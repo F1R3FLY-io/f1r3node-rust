@@ -1,19 +1,22 @@
 use std::collections::HashMap;
 
 use models::rhoapi::{expr, var, EVar, Expr, Par, Var as model_var};
+use models::rust::par_construction::ParConstruction;
 use rholang_parser::ast::{Name, Names, Var};
 
 use crate::rust::interpreter::compiler::exports::{
-    BoundContext, FreeContext, NameVisitInputs, NameVisitOutputs, ProcVisitInputs,
+    BoundContext, FreeContext, NameVisitInputs, NameVisitOutputs as PublicNameVisitOutputs,
 };
-use crate::rust::interpreter::compiler::normalize::VarSort;
+use crate::rust::interpreter::compiler::normalize::{append_planned_expr, VarSort};
 use crate::rust::interpreter::compiler::normalize_drive::{
-    norm_drive_from, NormKont, NormVal, NormWork, Step,
+    norm_drive_from, NameVisitOutputs, NormKont, NormVal, NormWork, ProcVisitInputs, Step,
 };
 use crate::rust::interpreter::compiler::normalizer::remainder_normalizer_matcher::normalize_match_name;
 use crate::rust::interpreter::compiler::span_utils::SpanContext;
 use crate::rust::interpreter::errors::InterpreterError;
-use crate::rust::interpreter::util::prepend_expr;
+use crate::rust::interpreter::matcher::has_locally_free::{
+    expr_connective_used_ref, expr_locally_free_ref,
+};
 
 /// Normalize one name, on a **fresh** drive.
 ///
@@ -22,20 +25,26 @@ use crate::rust::interpreter::util::prepend_expr;
 /// through the machine rather than through the native stack. Callers *inside*
 /// the SCC never use this function — they push a [`NormWork::Name`] onto the
 /// drive they are already on, so the whole traversal remains one loop. This
-/// entry point exists for [`normalize_names`] and for the unit tests, and it is
+/// entry point exists for direct callers and for the unit tests, and it is
 /// `O(1)` in native stack exactly like the top-level entry.
 pub fn normalize_name<'ast>(
     name: &Name<'ast>,
     input: NameVisitInputs,
     env: &HashMap<String, Par>,
     parser: &'ast rholang_parser::RholangParser<'ast>,
-) -> Result<NameVisitOutputs, InterpreterError> {
-    norm_drive_from(
+) -> Result<PublicNameVisitOutputs, InterpreterError> {
+    let mut construction = ParConstruction::new();
+    let result = norm_drive_from(
         Step::Tail(NormWork::Name { name: *name, input }),
+        &mut construction,
         env,
         parser,
-    )
-    .map(NormVal::into_name)
+    )?
+    .into_name();
+    Ok(PublicNameVisitOutputs {
+        par: construction.finish(result.par)?,
+        free_map: result.free_map,
+    })
 }
 
 /// The `Name` dispatch — every arm but `Quote` is a leaf.
@@ -43,7 +52,30 @@ pub fn normalize_name<'ast>(
 pub(crate) fn descend_name<'ast>(
     name: Name<'ast>,
     input: NameVisitInputs,
+    construction: &mut ParConstruction,
 ) -> Result<Step<'ast>, InterpreterError> {
+    fn planned_name(
+        expr: Expr,
+        input: NameVisitInputs,
+        construction: &mut ParConstruction,
+    ) -> Result<NameVisitOutputs, InterpreterError> {
+        let depth = input.bound_map_chain.depth() as i32;
+        let locally_free = expr_locally_free_ref(&expr, depth);
+        let connective_used = expr_connective_used_ref(&expr);
+        let empty = construction.empty_par()?;
+        Ok(NameVisitOutputs {
+            par: append_planned_expr(
+                construction,
+                empty,
+                &expr,
+                &[],
+                locally_free,
+                connective_used,
+            )?,
+            free_map: input.free_map,
+        })
+    }
+
     match name {
         Name::NameVar(var) => {
             match var {
@@ -59,14 +91,9 @@ pub(crate) fn descend_name<'ast>(
                         })),
                     };
 
-                    Ok(Step::Done(NormVal::Name(NameVisitOutputs {
-                        par: prepend_expr(
-                            Par::default(),
-                            new_expr,
-                            input.bound_map_chain.depth() as i32,
-                        ),
-                        free_map: wildcard_bind_result,
-                    })))
+                    let mut result = planned_name(new_expr, input, construction)?;
+                    result.free_map = wildcard_bind_result;
+                    Ok(Step::Done(NormVal::Name(result)))
                 }
 
                 Var::Id(id) => {
@@ -91,14 +118,11 @@ pub(crate) fn descend_name<'ast>(
                                     })),
                                 };
 
-                                Ok(Step::Done(NormVal::Name(NameVisitOutputs {
-                                    par: prepend_expr(
-                                        Par::default(),
-                                        new_expr,
-                                        input.bound_map_chain.depth() as i32,
-                                    ),
-                                    free_map: input.free_map,
-                                })))
+                                Ok(Step::Done(NormVal::Name(planned_name(
+                                    new_expr,
+                                    input,
+                                    construction,
+                                )?)))
                             }
 
                             BoundContext {
@@ -129,14 +153,9 @@ pub(crate) fn descend_name<'ast>(
                                     })),
                                 };
 
-                                Ok(Step::Done(NormVal::Name(NameVisitOutputs {
-                                    par: prepend_expr(
-                                        Par::default(),
-                                        new_expr,
-                                        input.bound_map_chain.depth() as i32,
-                                    ),
-                                    free_map: updated_free_map,
-                                })))
+                                let mut result = planned_name(new_expr, input, construction)?;
+                                result.free_map = updated_free_map;
+                                Ok(Step::Done(NormVal::Name(result)))
                             }
                             Some(FreeContext {
                                 source_span: first_span,
@@ -161,7 +180,7 @@ pub(crate) fn descend_name<'ast>(
                 work: NormWork::Proc {
                     proc: ann_proc,
                     input: ProcVisitInputs {
-                        par: Par::default(),
+                        par: construction.empty_par()?,
                         bound_map_chain: input.bound_map_chain,
                         free_map: input.free_map,
                     },
@@ -187,20 +206,27 @@ pub fn normalize_names<'ast>(
     input: NameVisitInputs,
     env: &HashMap<String, Par>,
     parser: &'ast rholang_parser::RholangParser<'ast>,
-) -> Result<NameVisitOutputs, InterpreterError> {
+) -> Result<PublicNameVisitOutputs, InterpreterError> {
+    let mut construction = ParConstruction::new();
     let mut current_input = input;
-    let mut accumulated_par = Par::default();
+    let mut accumulated_par = construction.empty_par()?;
 
-    // Process each name in the names vector
+    // One construction arena covers the whole sequence. In particular, quoted
+    // processes remain planned handles until the final result is emitted; no
+    // per-name resident Par is constructed and reimported.
     for name in &names.names {
-        let name_result = normalize_name(name, current_input.clone(), env, parser)?;
-        let name_par = name_result.par;
+        let name_result = norm_drive_from(
+            Step::Tail(NormWork::Name {
+                name: *name,
+                input: current_input.clone(),
+            }),
+            &mut construction,
+            env,
+            parser,
+        )?
+        .into_name();
+        accumulated_par = construction.parallel(accumulated_par, name_result.par)?;
 
-        // ParBag addition performs the same parallel composition directly on
-        // the authoritative prefix-compressed representation.
-        accumulated_par = accumulated_par.append(name_par);
-
-        // Update free map for next iteration
         current_input.free_map = name_result.free_map;
     }
 
@@ -215,18 +241,24 @@ pub fn normalize_names<'ast>(
                 expr_instance: Some(expr::ExprInstance::EVarBody(EVar { v: Some(var) })),
             };
 
-            accumulated_par = prepend_expr(
+            let depth = current_input.bound_map_chain.depth() as i32;
+            let locally_free = expr_locally_free_ref(&remainder_expr, depth);
+            let connective_used = expr_connective_used_ref(&remainder_expr);
+            accumulated_par = append_planned_expr(
+                &mut construction,
                 accumulated_par,
-                remainder_expr,
-                current_input.bound_map_chain.depth() as i32,
-            );
+                &remainder_expr,
+                &[],
+                locally_free,
+                connective_used,
+            )?;
         }
 
         current_input.free_map = updated_free_map;
     }
 
-    Ok(NameVisitOutputs {
-        par: accumulated_par,
+    Ok(PublicNameVisitOutputs {
+        par: construction.finish(accumulated_par)?,
         free_map: current_input.free_map,
     })
 }
@@ -239,6 +271,7 @@ mod tests {
 
     use super::*;
     use crate::rust::interpreter::test_utils::utils::name_visit_inputs_and_env;
+    use crate::rust::interpreter::util::prepend_expr;
 
     fn bound_name_inputs_with_bound_map_chain(
         input: NameVisitInputs,

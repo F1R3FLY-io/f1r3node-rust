@@ -1,12 +1,15 @@
 use std::collections::HashMap;
 
 use models::rhoapi::Par;
+use models::rust::par_construction::ParConstruction;
 use rholang_parser::ast::{AnnProc, Bind, Id, Name, SendType, SyncSendCont};
 use uuid::Uuid;
 
-use crate::rust::interpreter::compiler::exports::{ProcVisitInputs, ProcVisitOutputs};
+use crate::rust::interpreter::compiler::exports::{
+    ProcVisitInputs as PublicProcVisitInputs, ProcVisitOutputs as PublicProcVisitOutputs,
+};
 use crate::rust::interpreter::compiler::normalize_drive::{
-    norm_drive_from, NormVal, NormWork, Step,
+    norm_drive_from, NormWork, ProcVisitInputs, Step,
 };
 use crate::rust::interpreter::errors::InterpreterError;
 
@@ -130,12 +133,22 @@ pub fn normalize_p_send_sync<'ast>(
     messages: &'ast rholang_parser::ast::ProcList<'ast>,
     cont: &SyncSendCont<'ast>,
     span: &rholang_parser::SourceSpan,
-    input: ProcVisitInputs,
+    input: PublicProcVisitInputs,
     env: &HashMap<String, Par>,
     parser: &'ast rholang_parser::RholangParser<'ast>,
-) -> Result<ProcVisitOutputs, InterpreterError> {
-    let step = descend_p_send_sync(channel, messages, cont, span, input, parser);
-    norm_drive_from(step, env, parser).map(NormVal::into_proc)
+) -> Result<PublicProcVisitOutputs, InterpreterError> {
+    let mut construction = ParConstruction::new();
+    let planned_input = ProcVisitInputs {
+        par: construction.import_par(&input.par)?,
+        bound_map_chain: input.bound_map_chain,
+        free_map: input.free_map,
+    };
+    let step = descend_p_send_sync(channel, messages, cont, span, planned_input, parser);
+    let result = norm_drive_from(step, &mut construction, env, parser)?.into_proc();
+    Ok(PublicProcVisitOutputs {
+        par: construction.finish(result.par)?,
+        free_map: result.free_map,
+    })
 }
 
 #[cfg(test)]
@@ -151,8 +164,8 @@ mod tests {
         use rholang_parser::ast::{Name, Var};
         use rholang_parser::{SourcePos, SourceSpan};
 
-        fn inputs() -> ProcVisitInputs {
-            ProcVisitInputs {
+        fn inputs() -> PublicProcVisitInputs {
+            PublicProcVisitInputs {
                 par: Par::default(),
                 bound_map_chain: BoundMapChain::new(),
                 free_map: FreeMap::<VarSort>::new(),

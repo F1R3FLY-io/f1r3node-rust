@@ -1023,7 +1023,7 @@ const PP_NAMES: &[&str] = &[
 /// ★ Every difference between a cited block and its source, beyond
 /// [`pp_rename`], as DATA.
 ///
-/// **Twenty entries** across six functions. They fall into three groups, and
+/// **Thirty-three entries** across six functions. They fall into three groups, and
 /// keeping them in a table rather than as prose is what stops a seventh from
 /// appearing unannounced: [`no_undeclared_pretty_printer_deviations`] fails when
 /// an entry stops being needed, so the list cannot rot into a licence for drift
@@ -1217,11 +1217,102 @@ const PP_DEVIATIONS: &[Deviation] = &[
     Deviation {
         path: "rholang/src/rust/interpreter/pretty_printer.rs",
         from: "                let mut result = String::new();\n\n                // Process bundles",
-        to: "                let mut result = String::new();\n                let bundles = p.decode_occurrences::<Bundle>();\n                let sends = p.decode_occurrences::<RhoSend>();\n                let receives = p.decode_occurrences::<Receive>();\n                let news = p.decode_occurrences::<New>();\n                let exprs = p.decode_occurrences::<Expr>();\n                let matches = p.decode_occurrences::<Match>();\n                let unforgeables = p.decode_occurrences::<GUnforgeable>();\n                let connectives = p.decode_occurrences::<Connective>();\n\n                // Process bundles",
+        to: "                let mut result = String::new();\n                let bundles = p.decode_occurrences::<Bundle>();\n                let sends = p.decode_occurrences::<RhoSend>();\n                let receives = p.decode_occurrences::<Receive>();\n                let news = p.decode_occurrences::<New>();\n                let exprs = p.decode_occurrences::<Expr>();\n                let matches = p.decode_occurrences::<Match>();\n                let unforgeables = p.decode_occurrences::<GUnforgeable>();\n                let connectives = p.decode_occurrences::<Connective>();\n                let conditionals = p.decode_occurrences::<If>();\n\n                // Process bundles",
         reason: "REPRESENTATION-FORCED. Decode each authoritative ParBag family once, in the \
                  historical family order, so the copied loop structure can retain its exact \
-                 separators and ordering. This is a presentation boundary; production storage \
-                 remains a trie and no Vec projection is persisted or serialized.",
+                 separators and ordering. `If` is the ninth ParBag family and is decoded by the \
+                 same presentation-only boundary. Production storage remains a trie and no Vec \
+                 projection is persisted or serialized.",
+    },
+    Deviation {
+        path: "rholang/src/rust/interpreter/pretty_printer.rs",
+        from: r#"        PpNode::Unforgeable(u) => {
+"#,
+        to: r#"        PpNode::If(value) => {
+            let condition = self.oracle_build_string_from_message(
+                value
+                    .condition
+                    .as_ref()
+                    .expect("condition field on If was None, should be Some"),
+            );
+            let if_true = self._oracle_build_string_from_message(
+                PpNode::Par(
+                    value
+                        .if_true
+                        .as_ref()
+                        .expect("if_true field on If was None, should be Some"),
+                ),
+                indent + 1,
+            )?;
+            let if_false = self._oracle_build_string_from_message(
+                PpNode::Par(
+                    value
+                        .if_false
+                        .as_ref()
+                        .expect("if_false field on If was None, should be Some"),
+                ),
+                indent + 1,
+            )?;
+            Ok(format!(
+                "if ({}) {{\n{}{}\n{}}} else {{\n{}{}\n{}}}",
+                condition,
+                self.indent_string().repeat(indent + 1),
+                if_true,
+                self.indent_string().repeat(indent),
+                self.indent_string().repeat(indent + 1),
+                if_false,
+                self.indent_string().repeat(indent),
+            ))
+        }
+        PpNode::Unforgeable(u) => {
+"#,
+        reason: "SCHEMA-FORCED and independently implemented. `If` became a ninth Par \
+                 component family, making the closed `PpNode` match non-exhaustive. The recursive \
+                 oracle renders its three child Pars directly in source order; the production PDA \
+                 uses separate descent and combine frames, and the If-family differential compares \
+                 their results.",
+    },
+    Deviation {
+        path: "rholang/src/rust/interpreter/pretty_printer.rs",
+        from: r#"                        if index != p.connectives.len() - 1 {
+                            result
+                                .push_str(&format!(" |\n{}", self.indent_string().repeat(indent)));
+                        }
+                    }
+                }
+
+                Ok(result)
+"#,
+        to: r#"                        if index != connectives.len() - 1 {
+                            result
+                                .push_str(&format!(" |\n{}", self.indent_string().repeat(indent)));
+                        }
+                    }
+                    prev_non_empty = true;
+                }
+
+                if !conditionals.is_empty() {
+                    if prev_non_empty {
+                        result.push_str(&format!(" |\n{}", self.indent_string().repeat(indent)));
+                    }
+                    for (index, conditional) in conditionals.iter().enumerate() {
+                        result.push_str(&self._oracle_build_string_from_message(
+                            PpNode::If(conditional),
+                            indent,
+                        )?);
+                        if index != conditionals.len() - 1 {
+                            result
+                                .push_str(&format!(" |\n{}", self.indent_string().repeat(indent)));
+                        }
+                    }
+                }
+
+                Ok(result)
+"#,
+        reason: "SCHEMA-FORCED. The copied family-order fold ended at Connective because the \
+                 historical Par schema had eight families. `If` is appended in its protobuf/tag \
+                 order, using the same separator protocol and recursive oracle entry point. The \
+                 production PDA traverses the trie-backed If family independently.",
     },
     Deviation {
         path: "rholang/src/rust/interpreter/pretty_printer.rs",
@@ -1841,21 +1932,20 @@ fn no_undeclared_pretty_printer_deviations() {
 // pre-trampoline evaluator over the shared `combine_*` helpers".
 //
 // The word "copy" was wrong, and measurably so. The twin is a REWRITE: the
-// per-arm arithmetic, comparison and collection logic was lifted into the
-// shared `combine_*` helpers and the twin calls them — the same helpers the
-// trampoline calls. So this section does NOT check byte-identity, because there
-// is none to check. It pins the RELATIONSHIP instead.
+// per-arm scalar/operator logic was lifted into shared `combine_*` helpers.
+// Five collection arms deliberately remain independent: the recursive oracle
+// rebuilds decoded values while production uses `ParConstruction` plans. So
+// this section does NOT check byte-identity, because there is none to check. It
+// pins the exact sharing/independence RELATIONSHIP instead.
 //
 // ⚠ Why an inequality is the right guard here. The hazard the other two
 // sections address is an oracle drifting toward its machine. This oracle
-// already SHARES code with its machine by construction, which bounds what the
-// differential can prove: it proves the descend/combine WIRING and cannot see
-// inside a `combine_*` helper, because both sides would compute the same wrong
-// answer. That bound is a property a reader must be told, and the way it gets
-// silently lost is exactly what happened — a comment calling the twin a "copy".
-// So the RELATIONSHIP is checked: if someone makes the twin a real copy, or
-// removes the sharing, this test fails and the prose describing the
-// differential's reach has to be rewritten with it.
+// SHARES scalar/operator code with its machine by construction, which bounds
+// what that part of the differential can prove. Conversely, the five
+// collection arms do not share their construction code and therefore check the
+// planned representation boundary. Both facts are properties a reader must be
+// told. The exact relationship is checked: making the twin a real copy,
+// removing undeclared sharing, or introducing undeclared independence fails.
 //
 // ===========================================================================
 // ★ WHY THIS SECTION NO LONGER COUNTS LINES — the defect, and the repair
@@ -1895,11 +1985,11 @@ fn no_undeclared_pretty_printer_deviations() {
 //          the byte-identity it replaces: a twin re-copied from the original
 //          and then reformatted, or re-commented, is byte-different and token-
 //          IDENTICAL, so the old check would have called it a rewrite.
-//       2. THE SHARING, positively. The pre-trampoline `reduce.rs` contains the
-//          token `combine_` ZERO times; the twin calls the helpers, and every
-//          helper it calls is also called from OUTSIDE the twin family — which
-//          is what "shares code with the machine it checks" means and what
-//          bounds the differential's reach.
+//       2. THE BOUNDARY, positively. The pre-trampoline `reduce.rs` contains
+//          the token `combine_` ZERO times. Every scalar/operator helper the
+//          twin calls is also called outside the twin family. Exactly five
+//          collection helpers are oracle-only and each has a production
+//          `plan_*` counterpart.
 //       3. THE LIFTING, as an inequality on TOKENS, not lines: the arm table
 //          that `eval_expr_to_expr` carried inline is gone, so the twin is a
 //          multiple smaller than the original. Reformatting does not change a
@@ -1950,6 +2040,17 @@ const ARM_TABLE_COLLAPSE_FLOOR: usize = 3;
 /// collapse claim is about — the other five were small before the conversion
 /// and are within a few tokens of their originals.
 const ARM_TABLE_FN: &str = "eval_expr_to_expr";
+
+/// The exact collection boundary where sharing would weaken the differential:
+/// the recursive oracle rebuilds decoded values, while production constructs
+/// a deferred `ParConstruction` plan through the paired method.
+const INDEPENDENT_COLLECTION_COMBINERS: &[(&str, &str)] = &[
+    ("combine_elist", "plan_elist"),
+    ("combine_etuple", "plan_etuple"),
+    ("combine_epathmap", "plan_epathmap"),
+    ("combine_eset", "plan_eset"),
+    ("combine_emap", "plan_emap"),
+];
 
 const REDUCE: &str = "rholang/src/rust/interpreter/reduce.rs";
 const REDUCE_EXPRESSION_ORACLE: &str = "rholang/tests/support/reduce_expression_oracle.rs";
@@ -2099,6 +2200,9 @@ struct TwinAssessment {
     twin_calls: BTreeSet<String>,
     /// `combine_*` helpers called from outside the twin family — the machine.
     machine_calls: BTreeSet<String>,
+    /// Declared independent collection helpers whose production `plan_*`
+    /// counterpart disappeared.
+    missing_collection_plans: Vec<String>,
     /// Occurrences of the token `combine_` in the PRE-trampoline file. The
     /// helpers did not exist then, so this anchors the sharing claim at 0.
     pre_combine_occurrences: usize,
@@ -2149,6 +2253,14 @@ fn assess_twin(before: &str, now: &str) -> TwinAssessment {
     let in_twin = |idx: usize| twin_spans.iter().any(|s| s.contains(&idx));
     let twin_calls = combine_identifiers(&blanked_now, in_twin);
     let machine_calls = combine_identifiers(&blanked_now, |i| !in_twin(i));
+    let missing_collection_plans = INDEPENDENT_COLLECTION_COMBINERS
+        .iter()
+        .filter_map(|(combine, plan)| {
+            impl_fn_body(now, plan)
+                .is_none()
+                .then(|| format!("{combine} -> {plan}"))
+        })
+        .collect();
     let pre_combine_occurrences = combine_identifiers(&blank_rust(before), |_| true).len();
 
     TwinAssessment {
@@ -2156,6 +2268,7 @@ fn assess_twin(before: &str, now: &str) -> TwinAssessment {
         token_identical,
         twin_calls,
         machine_calls,
+        missing_collection_plans,
         pre_combine_occurrences,
         arm_table_tokens,
     }
@@ -2205,15 +2318,29 @@ impl TwinAssessment {
                     .to_string(),
             );
         }
-        let unshared: Vec<&String> = self.twin_calls.difference(&self.machine_calls).collect();
-        if !unshared.is_empty() {
+        let unshared: BTreeSet<String> = self
+            .twin_calls
+            .difference(&self.machine_calls)
+            .cloned()
+            .collect();
+        let expected_unshared: BTreeSet<String> = INDEPENDENT_COLLECTION_COMBINERS
+            .iter()
+            .map(|(combine, _)| (*combine).to_string())
+            .collect();
+        if unshared != expected_unshared {
             bad.push(format!(
-                "  NOT SHARED: the twin calls {:?}, which nothing OUTSIDE the twin family calls. \
-                 The differential's reach is described in terms of the oracle SHARING code with \
-                 the machine it checks — it proves the descend/combine wiring and cannot see \
-                 inside a shared combiner. A helper only the oracle calls is not shared, and the \
-                 description no longer holds.",
-                unshared
+                "  SHARING BOUNDARY MOVED: oracle-only helpers are {unshared:?}; the declared \
+                 collection boundary is {expected_unshared:?}. Scalar/operator combiners must \
+                 remain shared; collection construction must remain independent so the \
+                 differential can check `ParConstruction` against decoded rebuilding."
+            ));
+        }
+        if !self.missing_collection_plans.is_empty() {
+            bad.push(format!(
+                "  COLLECTION PLAN MISSING: {:?}. Every independent oracle combiner must have \
+                 the named production `plan_*` counterpart or it is no longer checking the \
+                 planned-construction boundary.",
+                self.missing_collection_plans
             ));
         }
 
@@ -2403,8 +2530,9 @@ fn the_trampoline_banner_table_is_a_checkable_citation() {
     );
 }
 
-/// ★ The evaluator twin, AS IT STANDS, is a REWRITE over shared combiners — not
-/// a copy. Checked structurally: token non-identity, the sharing, the collapse.
+/// ★ The evaluator twin, AS IT STANDS, is a REWRITE with a declared
+/// sharing/independence boundary—not a copy. Checked structurally: token
+/// non-identity, the boundary, and the collapse.
 ///
 /// None of the three reads a line number, so the 1,057-line refactor that broke
 /// the old line-count proxy leaves all three untouched; each of them goes red if
@@ -2418,7 +2546,7 @@ fn the_trampoline_twin_is_a_rewrite_not_a_copy() {
     let a = assess_twin(&before, &now);
     if let Err(bad) = a.verdict() {
         panic!(
-            "\n\u{2605} THE TRAMPOLINE TWIN IS NO LONGER A REWRITE OVER SHARED COMBINERS.\n\
+            "\n\u{2605} THE TRAMPOLINE TWIN'S SHARING/INDEPENDENCE BOUNDARY MOVED.\n\
              \n\
              {REDUCE}'s RECURSIVE TWIN banner states this relationship and the differential's \
              reach is described in terms of it, so the two move together.\n\
@@ -2430,19 +2558,20 @@ fn the_trampoline_twin_is_a_rewrite_not_a_copy() {
         );
     }
 
-    // ANTI-VACUITY: the sharing set is substantial, not one incidental call.
+    // ANTI-VACUITY: the shared set is substantial and the independent set is
+    // exactly the five planned collection families.
+    let shared_count = a.twin_calls.intersection(&a.machine_calls).count();
     assert!(
-        a.twin_calls.len() >= 15,
-        "the twin calls only {} `combine_*` helper(s); the lifting produced 18, so either the \
-         helpers are being re-inlined or this check has stopped seeing most of them",
-        a.twin_calls.len()
+        shared_count >= 13,
+        "the twin shares only {shared_count} `combine_*` helper(s); the measured scalar/operator \
+         lifting produced 13, so either helpers are being re-inlined or the census lost reach"
     );
     println!(
-        "trampoline twin: 0/{} token-identical; {} shared `combine_*` helpers (pre-trampoline \
-         file had {}); `{ARM_TABLE_FN}` {} tokens \u{2192} {} ({:.2}\u{d7} collapse, floor \
-         {ARM_TABLE_COLLAPSE_FLOOR}\u{d7})",
+        "trampoline twin: 0/{} token-identical; {shared_count} shared scalar/operator helpers + \
+         {} independent collection helpers (pre-trampoline file had {}); `{ARM_TABLE_FN}` {} \
+         tokens \u{2192} {} ({:.2}\u{d7} collapse, floor {ARM_TABLE_COLLAPSE_FLOOR}\u{d7})",
         TRAMPOLINE_TWIN_SHAPE.len(),
-        a.twin_calls.len(),
+        INDEPENDENT_COLLECTION_COMBINERS.len(),
         a.pre_combine_occurrences,
         a.arm_table_tokens.0,
         a.arm_table_tokens.1,

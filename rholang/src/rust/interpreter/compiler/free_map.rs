@@ -5,12 +5,52 @@ use models::rhoapi::connective::ConnectiveInstance;
 use super::free_context::FreeContext;
 use super::id_context::{IdContextPos, IdContextSpan};
 
+/// Non-recursive diagnostic identity of a connective encountered while
+/// normalizing a free pattern.
+///
+/// `FreeMap` needs the connective's kind and source span for rejection
+/// messages; retaining `ConnAnd`/`ConnOr`/`ConnNot` bodies duplicated an
+/// arbitrarily deep `Par` solely for diagnostics and prevented the planned
+/// normalizer from remaining handle-only. Scalar payloads are preserved where
+/// they are part of the connective identity.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FreeMapConnective {
+    And,
+    Or,
+    Not,
+    VarRef { index: i32, depth: i32 },
+    Bool(bool),
+    Int(bool),
+    String(bool),
+    Uri(bool),
+    ByteArray(bool),
+}
+
+impl From<ConnectiveInstance> for FreeMapConnective {
+    fn from(connective: ConnectiveInstance) -> Self {
+        match connective {
+            ConnectiveInstance::ConnAndBody(_) => Self::And,
+            ConnectiveInstance::ConnOrBody(_) => Self::Or,
+            ConnectiveInstance::ConnNotBody(_) => Self::Not,
+            ConnectiveInstance::VarRefBody(var) => Self::VarRef {
+                index: var.index,
+                depth: var.depth,
+            },
+            ConnectiveInstance::ConnBool(value) => Self::Bool(value),
+            ConnectiveInstance::ConnInt(value) => Self::Int(value),
+            ConnectiveInstance::ConnString(value) => Self::String(value),
+            ConnectiveInstance::ConnUri(value) => Self::Uri(value),
+            ConnectiveInstance::ConnByteArray(value) => Self::ByteArray(value),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct FreeMap<T: Clone> {
     pub next_level: usize,
     pub level_bindings: HashMap<String, FreeContext<T>>,
     pub wildcards: Vec<rholang_parser::SourceSpan>,
-    pub connectives: Vec<(ConnectiveInstance, rholang_parser::SourceSpan)>,
+    pub connectives: Vec<(FreeMapConnective, rholang_parser::SourceSpan)>,
 }
 
 impl<T: Clone> FreeMap<T> {
@@ -130,6 +170,14 @@ impl<T: Clone> FreeMap<T> {
     pub fn add_connective(
         &self,
         connective: ConnectiveInstance,
+        source_span: rholang_parser::SourceSpan,
+    ) -> Self {
+        self.add_connective_kind(connective.into(), source_span)
+    }
+
+    pub fn add_connective_kind(
+        &self,
+        connective: FreeMapConnective,
         source_span: rholang_parser::SourceSpan,
     ) -> Self {
         let mut updated_connectives = self.connectives.clone();

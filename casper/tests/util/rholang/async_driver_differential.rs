@@ -15,7 +15,8 @@
 //     #4 (deployLog reproduced) and #1 (presence consistent). This is THE consensus proof and holds on
 //     both the OLD driver (pre-change baseline) and the NEW driver.
 //   * Layer 2 (old-vs-new golden; cross-process): capture per-program (is_failed, cost, deployLog
-//     fingerprint, balanced) on the PRE-CHANGE checkout, assert byte-identical on the NEW driver.
+//     COMM-multiset fingerprint, balanced) on the PRE-CHANGE checkout, assert byte-identical on the
+//     NEW driver. This deliberately does not assign an order to parallel Rholang processes.
 //
 // GENESIS DETERMINISM NOTE: the shared test genesis now uses the fixed default validator/vault
 // keyspace. Layer 2 nevertheless records only driver-relevant portable projections; Layer 1 proves

@@ -19,6 +19,7 @@ use std::collections::HashMap;
 
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::{Expr, Par};
+use models::rust::par_construction::ParConstruction;
 use models::rust::rholang::sorter::par_sort_matcher::ParSortMatcher;
 use models::rust::rholang::sorter::sortable::Sortable;
 use prost::Message;
@@ -28,9 +29,9 @@ use rholang_parser::{RholangParser, SourceSpan};
 use super::ir::Sig;
 use crate::rust::interpreter::accounting::{Sig as NativeSig, SignatureChannel};
 use crate::rust::interpreter::compiler::bound_map_chain::BoundMapChain;
-use crate::rust::interpreter::compiler::normalize::{ProcVisitInputs, VarSort};
+use crate::rust::interpreter::compiler::normalize::VarSort;
 use crate::rust::interpreter::compiler::normalize_drive::{
-    norm_drive_from, NormKont, NormVal, NormWork, SigInput, Step,
+    norm_drive_from, NormKont, NormVal, NormWork, ProcVisitInputs, SigInput, Step,
 };
 use crate::rust::interpreter::errors::InterpreterError;
 
@@ -183,11 +184,13 @@ pub fn signature_to_ir<'ast>(
     env: &HashMap<String, Par>,
     parser: &'ast RholangParser<'ast>,
 ) -> Result<Sig, InterpreterError> {
+    let mut construction = ParConstruction::new();
     norm_drive_from(
         Step::Tail(NormWork::Sig {
             sig: SigInput::Ref(sig),
             bound_map_chain: bound_map_chain.clone(),
         }),
+        &mut construction,
         env,
         parser,
     )
@@ -273,24 +276,30 @@ pub fn canon_ground(name: &str) -> Vec<u8> {
 #[inline(never)]
 pub(crate) fn descend_canon_quote<'ast>(
     proc: AnnProc<'ast>,
+    construction: &mut ParConstruction,
 ) -> Result<Step<'ast>, InterpreterError> {
     Ok(Step::Descend {
         kont: NormKont::CanonQuote,
         work: NormWork::Proc {
             proc,
-            input: ProcVisitInputs::new(),
+            input: ProcVisitInputs {
+                par: construction.empty_par()?,
+                bound_map_chain: BoundMapChain::new(),
+                free_map: crate::rust::interpreter::compiler::free_map::FreeMap::new(),
+            },
         },
     })
 }
 
 /// `canon_quote`, combine half — sort-canonicalise and encode.
 #[inline(never)]
-pub(crate) fn combine_canon_quote<'ast>(value: NormVal) -> Result<Step<'ast>, InterpreterError> {
+pub(crate) fn combine_canon_quote<'ast>(
+    value: NormVal,
+    construction: &ParConstruction,
+) -> Result<Step<'ast>, InterpreterError> {
     let normalized = value.into_proc();
     Ok(Step::Done(NormVal::Bytes(
-        ParSortMatcher::sort_match(&normalized.par)
-            .term
-            .encode_to_vec(),
+        construction.protobuf_bytes(normalized.par),
     )))
 }
 
@@ -300,8 +309,10 @@ pub fn canon_quote<'ast>(
     env: &HashMap<String, Par>,
     parser: &'ast RholangParser<'ast>,
 ) -> Result<Vec<u8>, InterpreterError> {
+    let mut construction = ParConstruction::new();
     norm_drive_from(
         Step::Tail(NormWork::CanonQuote { proc: *proc }),
+        &mut construction,
         env,
         parser,
     )

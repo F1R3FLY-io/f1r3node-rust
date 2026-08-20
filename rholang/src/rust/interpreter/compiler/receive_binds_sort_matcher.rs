@@ -1,10 +1,12 @@
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/compiler/ReceiveBindsSortMatcher.scala
 
 use models::rhoapi::{Par, ReceiveBind, Var};
+use models::rust::par_construction::{ParConstruction, PlannedPar};
 use models::rust::rholang::sorter::receive_sort_matcher::ReceiveSortMatcher;
 use models::rust::rholang::sorter::score_tree::ScoredTerm;
 
 use crate::rust::interpreter::compiler::exports::FreeMap;
+use crate::rust::interpreter::compiler::normalize_drive::PlannedReceiveBind;
 use crate::rust::interpreter::errors::InterpreterError;
 
 pub fn pre_sort_binds<T: Clone + std::fmt::Debug>(
@@ -31,6 +33,45 @@ pub fn pre_sort_binds<T: Clone + std::fmt::Debug>(
     Ok(bind_sortings
         .into_iter()
         .map(|scored_term| scored_term.term)
+        .collect())
+}
+
+/// Planned-arena equivalent of [`pre_sort_binds`]. Canonical score comparison
+/// and protobuf tie-breaking are both cursor-based; no pattern or channel is
+/// finished into a resident `Par` for ordering.
+pub(crate) fn pre_sort_planned_binds<T: Clone + std::fmt::Debug>(
+    arena: &mut ParConstruction,
+    binds: Vec<(Vec<PlannedPar>, Option<Var>, PlannedPar, FreeMap<T>)>,
+) -> Result<Vec<(PlannedReceiveBind, FreeMap<T>)>, InterpreterError> {
+    let mut planned = Vec::with_capacity(binds.len());
+    for (patterns, remainder, source, known_free) in binds {
+        let free_count = i32::try_from(known_free.count_no_wildcards()).map_err(|_| {
+            InterpreterError::NormalizerError(
+                "receive-bind free count exceeds the protobuf i32 domain".to_string(),
+            )
+        })?;
+        let shell = ReceiveBind {
+            patterns: vec![Par::default(); patterns.len()],
+            source: Some(Par::default()),
+            remainder: remainder.clone(),
+            free_count,
+        };
+        let order = arena.receive_bind_order(&shell, &patterns, source)?;
+        planned.push((
+            order,
+            PlannedReceiveBind {
+                patterns,
+                source,
+                remainder,
+                free_count,
+            },
+            known_free,
+        ));
+    }
+    planned.sort_by(|left, right| arena.compare_receive_bind_orders(left.0, right.0));
+    Ok(planned
+        .into_iter()
+        .map(|(_, bind, free_map)| (bind, free_map))
         .collect())
 }
 

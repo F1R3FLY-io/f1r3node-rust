@@ -4,12 +4,16 @@ use models::rhoapi::connective::ConnectiveInstance;
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::g_unforgeable::UnfInstance;
 use models::rhoapi::{
-    Bundle, Connective, Expr, GSysAuthToken, GUnforgeable, If, Match, New, Par, Receive, Send,
+    Bundle, Connective, ConnectiveBody, Expr, GSysAuthToken, GUnforgeable, If, Match, New, Par,
+    Receive, Send,
 };
 use models::rust::par_bag::{
+    canonical_if_parts, canonical_par_connective_used, canonical_single_if_from_par,
     with_component_key, CanonicalParBagKey, ParBag, ParBagCodecError, ParBagProtobufError,
     ParComponentTag, PAR_BAG_KEY_DOMAIN,
 };
+use models::rust::par_construction::{ParConstruction, PlannedConnective};
+use models::rust::rholang::implicits::{single_expr, single_unforgeable};
 use prost::Message as _;
 use rspace_plus_plus::rspace::bag::{Bag, BagError, Multiplicity};
 
@@ -59,8 +63,294 @@ fn canonical_par_corpus() -> Par {
     par
 }
 
+#[test]
+fn canonical_if_cursor_borrows_children_and_rejects_noncanonical_framing() {
+    let condition = Par::default().with_exprs(vec![Expr {
+        expr_instance: Some(ExprInstance::GInt(11)),
+    }]);
+    let if_true = Par::default().with_exprs(vec![Expr {
+        expr_instance: Some(ExprInstance::GInt(12)),
+    }]);
+    let if_false = Par::default().with_exprs(vec![Expr {
+        expr_instance: Some(ExprInstance::GInt(13)),
+    }]);
+    let conditional = If {
+        condition: Some(condition.clone()),
+        if_true: Some(if_true.clone()),
+        if_false: Some(if_false.clone()),
+        locally_free: vec![1],
+        connective_used: true,
+    };
+    let conditional_bytes = models::rust::rholang::protobuf_encoder::encode_to_vec(&conditional);
+    let parts = canonical_if_parts(&conditional_bytes).expect("canonical If cursor");
+    assert_eq!(
+        parts.condition,
+        models::rust::rholang::protobuf_encoder::encode_to_vec(&condition)
+    );
+    assert_eq!(
+        parts.if_true,
+        models::rust::rholang::protobuf_encoder::encode_to_vec(&if_true)
+    );
+    assert_eq!(
+        parts.if_false,
+        models::rust::rholang::protobuf_encoder::encode_to_vec(&if_false)
+    );
+
+    let mut carrier = Par::default().with_conditionals(vec![conditional]);
+    carrier.replace_locally_free(vec![2]);
+    carrier.replace_connective_used(true);
+    let carrier_bytes = models::rust::rholang::protobuf_encoder::encode_to_vec(&carrier);
+    assert_eq!(canonical_par_connective_used(&carrier_bytes), Some(true));
+    assert_eq!(
+        canonical_par_connective_used(&models::rust::rholang::protobuf_encoder::encode_to_vec(
+            &condition
+        )),
+        Some(false)
+    );
+    assert_eq!(
+        canonical_single_if_from_par(&carrier_bytes),
+        Some(conditional_bytes.as_slice())
+    );
+
+    let mut trailing_if = conditional_bytes.clone();
+    trailing_if.extend_from_slice(&[0x30, 0x01]);
+    assert!(canonical_if_parts(&trailing_if).is_none());
+    let mut trailing_carrier = carrier_bytes;
+    trailing_carrier.extend_from_slice(&[0x08, 0x01]);
+    assert!(canonical_single_if_from_par(&trailing_carrier).is_none());
+}
+
 fn occurrence_count(par: &Par) -> usize {
     usize::try_from(par.cardinality()).expect("fixture cardinality fits usize")
+}
+
+#[test]
+fn singleton_projections_require_one_total_bag_occurrence() {
+    let bundle = Bundle {
+        body: Some(Par::default()),
+        write_flag: true,
+        read_flag: false,
+    };
+    let connective = Connective {
+        connective_instance: Some(ConnectiveInstance::ConnBool(true)),
+    };
+    let conditional = If {
+        condition: Some(Par::default()),
+        if_true: Some(Par::default()),
+        if_false: Some(Par::default()),
+        ..If::default()
+    };
+    let unforgeable = GUnforgeable {
+        unf_instance: Some(UnfInstance::GSysAuthTokenBody(GSysAuthToken {})),
+    };
+
+    assert_eq!(
+        Par::default()
+            .with_bundles(vec![bundle.clone()])
+            .single_bundle(),
+        Some(bundle.clone())
+    );
+    assert!(Par::default()
+        .with_bundles(vec![bundle])
+        .with_conditionals(vec![conditional.clone()])
+        .single_bundle()
+        .is_none());
+    assert_eq!(
+        Par::default()
+            .with_connectives(vec![connective.clone()])
+            .single_connective(),
+        Some(connective.clone())
+    );
+    assert!(Par::default()
+        .with_connectives(vec![connective.clone()])
+        .with_conditionals(vec![conditional])
+        .single_connective()
+        .is_none());
+    assert!(Par::default()
+        .with_connectives(vec![connective])
+        .with_unforgeables(vec![unforgeable])
+        .single_connective()
+        .is_none());
+
+    let expression = Expr {
+        expr_instance: Some(ExprInstance::GInt(1)),
+    };
+    let unforgeable = GUnforgeable {
+        unf_instance: Some(UnfInstance::GSysAuthTokenBody(GSysAuthToken {})),
+    };
+    assert_eq!(
+        single_expr(&Par::default().with_exprs(vec![expression.clone()])),
+        Some(expression.clone())
+    );
+    assert!(single_expr(
+        &Par::default()
+            .with_exprs(vec![expression])
+            .with_unforgeables(vec![unforgeable.clone()])
+    )
+    .is_none());
+    assert_eq!(
+        single_unforgeable(&Par::default().with_unforgeables(vec![unforgeable.clone()])),
+        Some(unforgeable.clone())
+    );
+    assert!(single_unforgeable(
+        &Par::default()
+            .with_unforgeables(vec![unforgeable])
+            .with_conditionals(vec![If {
+                condition: Some(Par::default()),
+                if_true: Some(Par::default()),
+                if_false: Some(Par::default()),
+                ..If::default()
+            }])
+    )
+    .is_none());
+
+    assert!(Par::default().is_nil());
+    assert!(!Par::default()
+        .with_conditionals(vec![If {
+            condition: Some(Par::default()),
+            if_true: Some(Par::default()),
+            if_false: Some(Par::default()),
+            ..If::default()
+        }])
+        .is_nil());
+}
+
+#[test]
+fn all_components_are_is_exact_across_families_and_saturated_cardinality() {
+    let expression = Expr {
+        expr_instance: Some(ExprInstance::GInt(1)),
+    };
+    let mut pure = Par::default();
+    pure.insert_component_many(
+        &expression,
+        Multiplicity::new(u64::MAX).expect("positive maximum multiplicity"),
+        Vec::new(),
+        false,
+    )
+    .expect("one endpoint can hold the maximum multiplicity");
+    pure.insert_component(
+        &Expr {
+            expr_instance: Some(ExprInstance::GInt(2)),
+        },
+        Vec::new(),
+        false,
+    )
+    .expect("a second Expr endpoint may saturate projected cardinality");
+
+    assert!(pure.cardinality_is_saturated());
+    assert!(pure.family_cardinality_is_saturated::<Expr>());
+    assert!(
+        pure.all_components_are::<Expr>(),
+        "arbitrary Expr multiplicity remains a pure Expr family"
+    );
+
+    pure.insert_component(&Send::default(), Vec::new(), false)
+        .expect("foreign family endpoint");
+    assert_eq!(
+        pure.cardinality(),
+        pure.family_cardinality::<Expr>(),
+        "the projected counters intentionally demonstrate why cardinality equality is unsound"
+    );
+    assert!(
+        !pure.all_components_are::<Expr>(),
+        "an exact family-domain predicate must see the foreign endpoint after saturation"
+    );
+
+    assert!(Par::default().all_components_are::<Expr>());
+    assert!(Par::default().all_components_are::<If>());
+}
+
+#[test]
+fn family_partitions_are_lazy_multiplicity_allocations_in_legacy_first_order() {
+    let first = Expr {
+        expr_instance: Some(ExprInstance::GInt(1)),
+    };
+    let second = Expr {
+        expr_instance: Some(ExprInstance::GInt(2)),
+    };
+    let mut bag = ParBag::new();
+    bag.insert_many(&first, Multiplicity::new(3).expect("positive multiplicity"))
+        .expect("first endpoint");
+    bag.insert_many(
+        &second,
+        Multiplicity::new(2).expect("positive multiplicity"),
+    )
+    .expect("second endpoint");
+
+    let allocations = bag
+        .family_partitions::<Expr>(1, 2)
+        .map(|(selected, complement)| {
+            (
+                selected.count(&first),
+                selected.count(&second),
+                complement.count(&first),
+                complement.count(&second),
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(allocations, vec![
+        (1, 0, 2, 2),
+        (2, 0, 1, 2),
+        (0, 1, 3, 1),
+        (1, 1, 2, 1),
+        (0, 2, 3, 0),
+    ]);
+
+    let mut compressed = ParBag::new();
+    compressed
+        .insert_many(
+            &first,
+            Multiplicity::new(u64::MAX).expect("positive maximum multiplicity"),
+        )
+        .expect("one endpoint stores the full multiplicity domain");
+    let mut partitions = compressed.family_partitions::<Expr>(u64::MAX, u64::MAX);
+    let (selected, complement) = partitions
+        .next()
+        .expect("the exact full-cardinality partition exists");
+    assert_eq!(selected.count(&first), u64::MAX);
+    assert!(complement.is_empty());
+    assert!(partitions.next().is_none());
+}
+
+#[test]
+fn planned_import_retains_singleton_bundle_and_connective_algebra() {
+    let leaf = Par::default().with_exprs(vec![Expr {
+        expr_instance: Some(ExprInstance::GInt(7)),
+    }]);
+    let bundle = Bundle {
+        body: Some(leaf.clone()),
+        write_flag: true,
+        read_flag: false,
+    };
+    let connective = Connective {
+        connective_instance: Some(ConnectiveInstance::ConnAndBody(ConnectiveBody {
+            ps: vec![leaf.clone(), Par::default()],
+        })),
+    };
+
+    let mut construction = ParConstruction::new();
+    let planned_bundle = construction
+        .import_par(&Par::default().with_bundles(vec![bundle]))
+        .expect("import singleton Bundle");
+    let (planned_body, write_flag, read_flag) = construction
+        .single_bundle(planned_bundle)
+        .expect("retain singleton Bundle shape");
+    assert_eq!(construction.finish(planned_body).unwrap(), leaf);
+    assert!(write_flag);
+    assert!(!read_flag);
+
+    let planned_connective = construction
+        .import_par(&Par::default().with_connectives(vec![connective]))
+        .expect("import singleton Connective");
+    let PlannedConnective::And(children) = construction
+        .single_connective(planned_connective)
+        .expect("retain singleton Connective shape")
+    else {
+        panic!("imported ConnAnd must retain its planned algebraic shape");
+    };
+    assert_eq!(children.len(), 2);
+    assert_eq!(construction.finish(children[0]).unwrap(), leaf);
+    assert_eq!(construction.finish(children[1]).unwrap(), Par::default());
 }
 
 #[test]

@@ -90,21 +90,28 @@ use models::rhoapi::connective::ConnectiveInstance;
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::var::VarInstance;
 use models::rhoapi::{
-    Bundle, Connective, ConnectiveBody, EPathMap, EVar, Expr, GUnforgeable, If, Match, MatchCase,
-    New, Par, Receive, ReceiveBind, Send, Var, VarRef,
+    Bundle, Connective, ConnectiveBody, EVar, Expr, GUnforgeable, If, Match, MatchCase, New, Par,
+    Receive, ReceiveBind, Send, Var, VarRef,
 };
 use models::rust::canonical_path::decode_trie_path;
-use models::rust::rhoapi_ext::{EntryTrie, OwnedEPathMapEntries, OwnedEPathMapEntry};
+use models::rust::epathmap_trie_codec::{EPathMapMode, EPathMapRepr};
+use models::rust::par_bag::{Multiplicity, ParBagComponent};
+use models::rust::par_construction::{ParConstruction, PlannedComponent, PlannedPar};
+use models::rust::rhoapi_ext::{OwnedEPathMapEntries, OwnedEPathMapEntry};
+use models::rust::utils::union;
+use pathmap::PathMap;
 use rspace_plus_plus::rspace::history::Either;
 
 use super::env::Env;
 use super::errors::InterpreterError;
+use super::matcher::has_locally_free::{
+    connective_connective_used_ref, connective_locally_free_ref, expr_connective_used_ref,
+    expr_locally_free_ref,
+};
 use super::substitute::Substitute;
 use super::substitute_combine::{
-    expr_arm_pattern_slots, fold_concatenate_par, fold_prepend_connective, fold_prepend_expr,
-    missing_required_field, rebuild_bundle, rebuild_connective, rebuild_expr_instance, rebuild_if,
-    rebuild_match, rebuild_match_case, rebuild_new, rebuild_par, rebuild_receive,
-    rebuild_receive_bind, rebuild_send, set_bits_until, split_expr_instance, ConnArm, ExprArm,
+    expr_arm_pattern_slots, missing_required_field, rebuild_connective, rebuild_expr_shell,
+    set_bits_until, split_expr_instance, BinaryArm, ConnArm, ExprArm,
 };
 
 // ===========================================================================
@@ -185,8 +192,37 @@ pub(crate) enum SubVal {
     Match(Match),
     If(If),
     Bundle(Bundle),
-    Bind(ReceiveBind),
-    Case(MatchCase),
+}
+
+struct PlannedComponentValue {
+    component: PlannedComponent,
+    locally_free: Vec<u8>,
+    connective_used: bool,
+}
+
+struct PlannedBind {
+    shell: ReceiveBind,
+    children: Vec<PlannedPar>,
+}
+
+struct PlannedCase {
+    shell: MatchCase,
+    pattern: PlannedPar,
+    source: PlannedPar,
+    guard: PlannedPar,
+}
+
+enum PlannedSubVal {
+    Par(PlannedPar),
+    Expr(PlannedComponentValue),
+    Send(PlannedComponent),
+    Receive(PlannedComponent),
+    New(PlannedComponent),
+    Match(PlannedComponent),
+    If(PlannedComponent),
+    Bundle(PlannedComponent),
+    Bind(PlannedBind),
+    Case(PlannedCase),
 }
 
 /// A pending unit of work.
@@ -212,13 +248,13 @@ pub(crate) enum SubWork {
     /// so `pop()` yields the next element in source order.
     SubExp {
         rest: Vec<Expr>,
-        acc: Par,
+        acc: PlannedPar,
         ctx: SubCtx,
     },
     /// One step of `sub_conn`'s resumable left fold, `rest` likewise reversed.
     SubConn {
         rest: Vec<Connective>,
-        acc: Par,
+        acc: PlannedPar,
         ctx: SubCtx,
     },
     Combine(SubKont),
@@ -230,13 +266,13 @@ pub(crate) enum SubKont {
     /// Resume `sub_exp` after one `Expr` child completed.
     SubExpResume {
         rest: Vec<Expr>,
-        acc: Par,
+        acc: PlannedPar,
         ctx: SubCtx,
     },
     /// Resume `sub_conn` after `n` `Par` children of one connective completed.
     SubConnResume {
         rest: Vec<Connective>,
-        acc: Par,
+        acc: PlannedPar,
         arm: ConnArm,
         n: usize,
         ctx: SubCtx,
@@ -244,6 +280,7 @@ pub(crate) enum SubKont {
     ExprArmK {
         arm: ExprArm,
         n: usize,
+        depth: i32,
         shift: i32,
     },
     PathMapSetK(Box<PathMapSubstitution>),
@@ -311,7 +348,10 @@ pub(crate) enum SubKont {
 
 pub(crate) struct PathMapSubstitution {
     entries: OwnedEPathMapEntries,
-    result: EPathMap,
+    result: EPathMapRepr<PlannedPar>,
+    locally_free: Vec<u8>,
+    connective_used: bool,
+    remainder: Option<Var>,
     ctx: SubCtx,
 }
 
@@ -323,9 +363,9 @@ pub(crate) struct PathMapSubstitution {
 macro_rules! sub_pop {
     ($name:ident, $variant:ident, $ty:ty) => {
         #[inline]
-        fn $name(vals: &mut Vec<SubVal>) -> $ty {
+        fn $name(vals: &mut Vec<PlannedSubVal>) -> $ty {
             match vals.pop() {
-                Some(SubVal::$variant(v)) => v,
+                Some(PlannedSubVal::$variant(v)) => v,
                 _ => unreachable!(concat!(
                     "sub_drive: expected ",
                     stringify!($variant),
@@ -336,22 +376,22 @@ macro_rules! sub_pop {
     };
 }
 
-sub_pop!(pop_par, Par, Par);
-sub_pop!(pop_expr, Expr, Expr);
-sub_pop!(pop_send, Send, Send);
-sub_pop!(pop_receive, Receive, Receive);
-sub_pop!(pop_new, New, New);
-sub_pop!(pop_match, Match, Match);
-sub_pop!(pop_if, If, If);
-sub_pop!(pop_bundle, Bundle, Bundle);
-sub_pop!(pop_bind, Bind, ReceiveBind);
-sub_pop!(pop_case, Case, MatchCase);
+sub_pop!(pop_par, Par, PlannedPar);
+sub_pop!(pop_expr, Expr, PlannedComponentValue);
+sub_pop!(pop_send, Send, PlannedComponent);
+sub_pop!(pop_receive, Receive, PlannedComponent);
+sub_pop!(pop_new, New, PlannedComponent);
+sub_pop!(pop_match, Match, PlannedComponent);
+sub_pop!(pop_if, If, PlannedComponent);
+sub_pop!(pop_bundle, Bundle, PlannedComponent);
+sub_pop!(pop_bind, Bind, PlannedBind);
+sub_pop!(pop_case, Case, PlannedCase);
 
 macro_rules! sub_pop_n {
     ($name:ident, $one:ident, $ty:ty) => {
         /// Pop `n` values, returning them in FORWARD (push) order.
         #[inline]
-        fn $name(vals: &mut Vec<SubVal>, n: usize) -> Vec<$ty> {
+        fn $name(vals: &mut Vec<PlannedSubVal>, n: usize) -> Vec<$ty> {
             let mut out = Vec::with_capacity(n);
             for _ in 0..n {
                 out.push($one(vals));
@@ -362,15 +402,56 @@ macro_rules! sub_pop_n {
     };
 }
 
-sub_pop_n!(pop_n_par, pop_par, Par);
-sub_pop_n!(pop_n_send, pop_send, Send);
-sub_pop_n!(pop_n_receive, pop_receive, Receive);
-sub_pop_n!(pop_n_new, pop_new, New);
-sub_pop_n!(pop_n_match, pop_match, Match);
-sub_pop_n!(pop_n_bundle, pop_bundle, Bundle);
-sub_pop_n!(pop_n_if, pop_if, If);
-sub_pop_n!(pop_n_bind, pop_bind, ReceiveBind);
-sub_pop_n!(pop_n_case, pop_case, MatchCase);
+sub_pop_n!(pop_n_par, pop_par, PlannedPar);
+sub_pop_n!(pop_n_send, pop_send, PlannedComponent);
+sub_pop_n!(pop_n_receive, pop_receive, PlannedComponent);
+sub_pop_n!(pop_n_new, pop_new, PlannedComponent);
+sub_pop_n!(pop_n_match, pop_match, PlannedComponent);
+sub_pop_n!(pop_n_bundle, pop_bundle, PlannedComponent);
+sub_pop_n!(pop_n_if, pop_if, PlannedComponent);
+sub_pop_n!(pop_n_bind, pop_bind, PlannedBind);
+sub_pop_n!(pop_n_case, pop_case, PlannedCase);
+
+fn finish_component<T>(
+    construction: &mut ParConstruction,
+    component: PlannedComponent,
+) -> Result<T, InterpreterError>
+where
+    T: ParBagComponent + Clone,
+{
+    let root = construction.singleton_component(component, Vec::new(), false)?;
+    let root = construction.finish(root)?;
+    Ok(root
+        .first::<T>()
+        .expect("a planned component finishes to a canonical ParBag key")
+        .expect("a planned singleton component remains present")
+        .0)
+}
+
+fn finish_planned(
+    construction: &mut ParConstruction,
+    value: PlannedSubVal,
+) -> Result<SubVal, InterpreterError> {
+    Ok(match value {
+        PlannedSubVal::Par(par) => SubVal::Par(construction.finish(par)?),
+        PlannedSubVal::Expr(expr) => SubVal::Expr(finish_component(construction, expr.component)?),
+        PlannedSubVal::Send(component) => SubVal::Send(finish_component(construction, component)?),
+        PlannedSubVal::Receive(component) => {
+            SubVal::Receive(finish_component(construction, component)?)
+        }
+        PlannedSubVal::New(component) => SubVal::New(finish_component(construction, component)?),
+        PlannedSubVal::Match(component) => {
+            SubVal::Match(finish_component(construction, component)?)
+        }
+        PlannedSubVal::If(component) => SubVal::If(finish_component(construction, component)?),
+        PlannedSubVal::Bundle(component) => {
+            SubVal::Bundle(finish_component(construction, component)?)
+        }
+        PlannedSubVal::Bind(_) | PlannedSubVal::Case(_) => {
+            unreachable!("sub_drive: an interior planned value reached the public boundary")
+        }
+    })
+}
 
 /// Push `items` so that they are POPPED in forward order.
 #[inline]
@@ -454,8 +535,10 @@ impl Substitute {
         env: &Env<Par>,
     ) -> Result<SubVal, InterpreterError> {
         let view = EnvView::new(env);
+        let mut construction = ParConstruction::new();
+        let empty = construction.empty_par()?;
         let mut work: Vec<SubWork> = Vec::with_capacity(64);
-        let mut vals: Vec<SubVal> = Vec::with_capacity(64);
+        let mut vals: Vec<PlannedSubVal> = Vec::with_capacity(64);
         work.push(root);
 
         while let Some(w) = work.pop() {
@@ -465,7 +548,7 @@ impl Substitute {
                         Some(p) => p,
                         None => return Err(missing_required_field::<Par>()),
                     };
-                    descend_par(term, ctx, view, &mut work);
+                    descend_par(term, ctx, view, empty, &mut work);
                 }
                 SubWork::Expr(term, ctx) => descend_expr(term, ctx, view, &mut work)?,
                 SubWork::Send(term, ctx) => descend_send(term, ctx, view, &mut work),
@@ -476,20 +559,36 @@ impl Substitute {
                 SubWork::Bundle(term, ctx) => descend_bundle(term, ctx, &mut work),
                 SubWork::Bind(term, ctx) => descend_bind(term, ctx, &mut work),
                 SubWork::Case(term, ctx) => descend_case(term, ctx, view, &mut work),
-                SubWork::PathMap(state) => step_pathmap(state, &mut work, &mut vals),
-                SubWork::SubExp { rest, acc, ctx } => {
-                    step_sub_exp(rest, acc, ctx, view, &mut work, &mut vals)?
+                SubWork::PathMap(state) => {
+                    step_pathmap(state, &mut construction, &mut work, &mut vals)?
                 }
-                SubWork::SubConn { rest, acc, ctx } => {
-                    step_sub_conn(rest, acc, ctx, view, &mut work, &mut vals)?
-                }
-                SubWork::Combine(k) => combine(k, view, &mut work, &mut vals),
+                SubWork::SubExp { rest, acc, ctx } => step_sub_exp(
+                    rest,
+                    acc,
+                    ctx,
+                    view,
+                    &mut construction,
+                    &mut work,
+                    &mut vals,
+                )?,
+                SubWork::SubConn { rest, acc, ctx } => step_sub_conn(
+                    rest,
+                    acc,
+                    ctx,
+                    view,
+                    &mut construction,
+                    &mut work,
+                    &mut vals,
+                )?,
+                SubWork::Combine(k) => combine(k, empty, &mut construction, &mut work, &mut vals)?,
             }
         }
 
-        Ok(vals
+        let result = vals
             .pop()
-            .expect("sub_drive: exactly one value must remain on the stack"))
+            .expect("sub_drive: exactly one value must remain on the stack");
+        debug_assert!(vals.is_empty(), "sub_drive leaves no sibling values");
+        finish_planned(&mut construction, result)
     }
 }
 
@@ -499,7 +598,13 @@ impl Substitute {
 // is what makes an early `?` return the identical error.
 // ---------------------------------------------------------------------------
 
-fn descend_par(mut term: Par, ctx: SubCtx, view: EnvView<'_>, work: &mut Vec<SubWork>) {
+fn descend_par(
+    mut term: Par,
+    ctx: SubCtx,
+    view: EnvView<'_>,
+    empty: PlannedPar,
+    work: &mut Vec<SubWork>,
+) {
     let sends = term.take_occurrences::<Send>();
     let receives = term.take_occurrences::<Receive>();
     let news = term.take_occurrences::<New>();
@@ -539,7 +644,7 @@ fn descend_par(mut term: Par, ctx: SubCtx, view: EnvView<'_>, work: &mut Vec<Sub
     conn_rest.reverse();
     work.push(SubWork::SubConn {
         rest: conn_rest,
-        acc: Par::default(),
+        acc: empty,
         ctx,
     });
 
@@ -547,7 +652,7 @@ fn descend_par(mut term: Par, ctx: SubCtx, view: EnvView<'_>, work: &mut Vec<Sub
     expr_rest.reverse();
     work.push(SubWork::SubExp {
         rest: expr_rest,
-        acc: Par::default(),
+        acc: empty,
         ctx,
     });
 }
@@ -561,15 +666,22 @@ fn descend_expr(
     let instance = super::unwrap_option_safe(term.expr_instance)?;
     if let ExprInstance::EPathmapBody(pathmap) = instance {
         let parts = pathmap.into_owned_parts();
-        let result = EPathMap::new(
-            EntryTrie::default(),
-            set_bits_until(parts.locally_free, view.shift(ctx)),
-            parts.connective_used,
-            parts.remainder,
-        );
+        let mode = match &parts.entries {
+            OwnedEPathMapEntries::Empty => EPathMapMode::Empty,
+            OwnedEPathMapEntries::Set(_) => EPathMapMode::Set,
+            OwnedEPathMapEntries::Map(_) => EPathMapMode::Map,
+        };
+        let result = match mode {
+            EPathMapMode::Empty => EPathMapRepr::Empty,
+            EPathMapMode::Set => EPathMapRepr::Set(PathMap::new()),
+            EPathMapMode::Map => EPathMapRepr::Map(PathMap::new()),
+        };
         work.push(SubWork::PathMap(Box::new(PathMapSubstitution {
             entries: parts.entries,
             result,
+            locally_free: set_bits_until(parts.locally_free, view.shift(ctx)),
+            connective_used: parts.connective_used,
+            remainder: parts.remainder,
             ctx,
         })));
         return Ok(());
@@ -587,6 +699,7 @@ fn descend_expr(
     work.push(SubWork::Combine(SubKont::ExprArmK {
         arm,
         n,
+        depth: ctx.depth,
         shift: view.shift(ctx),
     }));
     // Reversed, so the slots pop in `split_expr_instance` order; the index is
@@ -603,9 +716,10 @@ fn descend_expr(
 
 fn step_pathmap(
     mut state: Box<PathMapSubstitution>,
+    construction: &mut ParConstruction,
     work: &mut Vec<SubWork>,
-    vals: &mut Vec<SubVal>,
-) {
+    vals: &mut Vec<PlannedSubVal>,
+) -> Result<(), InterpreterError> {
     match state.entries.next() {
         Some(OwnedEPathMapEntry::Set(key)) => {
             let entry =
@@ -623,10 +737,21 @@ fn step_pathmap(
             work.push(SubWork::Par(Some(value), ctx));
             work.push(SubWork::Par(Some(entry_key), ctx));
         }
-        None => vals.push(SubVal::Expr(Expr {
-            expr_instance: Some(ExprInstance::EPathmapBody(state.result)),
-        })),
+        None => {
+            let component = construction.epathmap_repr_expr_component(
+                state.result,
+                state.locally_free.clone(),
+                state.connective_used,
+                state.remainder,
+            )?;
+            vals.push(PlannedSubVal::Expr(PlannedComponentValue {
+                component,
+                locally_free: state.locally_free,
+                connective_used: state.connective_used,
+            }));
+        }
     }
+    Ok(())
 }
 
 fn descend_send(term: Send, ctx: SubCtx, view: EnvView<'_>, work: &mut Vec<SubWork>) {
@@ -794,14 +919,15 @@ fn descend_bundle(mut term: Bundle, ctx: SubCtx, work: &mut Vec<SubWork>) {
 
 fn step_sub_exp(
     mut rest: Vec<Expr>,
-    acc: Par,
+    acc: PlannedPar,
     ctx: SubCtx,
     view: EnvView<'_>,
+    construction: &mut ParConstruction,
     work: &mut Vec<SubWork>,
-    vals: &mut Vec<SubVal>,
+    vals: &mut Vec<PlannedSubVal>,
 ) -> Result<(), InterpreterError> {
     let Some(expr) = rest.pop() else {
-        vals.push(SubVal::Par(acc));
+        vals.push(PlannedSubVal::Par(acc));
         return Ok(());
     };
 
@@ -814,14 +940,21 @@ fn step_sub_exp(
         }
         Some(ExprInstance::EVarBody(e)) => {
             let acc = match maybe_substitute_evar_view(e, ctx, view)? {
-                Either::Left(e) => fold_prepend_expr(
-                    acc,
-                    Expr {
+                Either::Left(e) => {
+                    let expr = Expr {
                         expr_instance: Some(ExprInstance::EVarBody(e)),
-                    },
-                    ctx.depth,
-                ),
-                Either::Right(p) => fold_concatenate_par(acc, p),
+                    };
+                    let value = PlannedComponentValue {
+                        component: construction.expr_component(&expr, &[], false)?,
+                        locally_free: expr_locally_free_ref(&expr, ctx.depth),
+                        connective_used: expr_connective_used_ref(&expr),
+                    };
+                    append_planned_component(construction, acc, value)?
+                }
+                Either::Right(p) => {
+                    let substituted = construction.import_par(&p)?;
+                    construction.parallel(substituted, acc)?
+                }
             };
             work.push(SubWork::SubExp { rest, acc, ctx });
             Ok(())
@@ -841,14 +974,15 @@ fn step_sub_exp(
 
 fn step_sub_conn(
     mut rest: Vec<Connective>,
-    acc: Par,
+    acc: PlannedPar,
     ctx: SubCtx,
     view: EnvView<'_>,
+    construction: &mut ParConstruction,
     work: &mut Vec<SubWork>,
-    vals: &mut Vec<SubVal>,
+    vals: &mut Vec<PlannedSubVal>,
 ) -> Result<(), InterpreterError> {
     let Some(conn) = rest.pop() else {
-        vals.push(SubVal::Par(acc));
+        vals.push(PlannedSubVal::Par(acc));
         return Ok(());
     };
 
@@ -863,14 +997,17 @@ fn step_sub_conn(
             let acc = match maybe_substitute_var_ref_view(v, ctx, view)? {
                 // `VarRef` is `Copy`, so rebuilding the connective from it is
                 // byte-identical to the original the recursive form prepends.
-                Either::Left(_) => fold_prepend_connective(
-                    acc,
-                    Connective {
+                Either::Left(_) => {
+                    let connective = Connective {
                         connective_instance: Some(ConnectiveInstance::VarRefBody(v)),
-                    },
-                    ctx.depth,
-                ),
-                Either::Right(new_par) => fold_concatenate_par(acc, new_par),
+                    };
+                    let value = plan_connective(construction, &connective, &[], ctx.depth)?;
+                    append_planned_component(construction, acc, value)?
+                }
+                Either::Right(new_par) => {
+                    let substituted = construction.import_par(&new_par)?;
+                    construction.parallel(substituted, acc)?
+                }
             };
             work.push(SubWork::SubConn { rest, acc, ctx });
         }
@@ -905,11 +1042,9 @@ fn step_sub_conn(
             // ships. Routing this arm through the shared function makes
             // `rebuild_connective` what its name says: the single place a
             // `Connective` is rebuilt from its arm, in both lanes.
-            let acc = fold_prepend_connective(
-                acc,
-                rebuild_connective(ConnArm::Ground(ground), Vec::new()),
-                ctx.depth,
-            );
+            let connective = rebuild_connective(ConnArm::Ground(ground), Vec::new());
+            let value = plan_connective(construction, &connective, &[], ctx.depth)?;
+            let acc = append_planned_component(construction, acc, value)?;
             work.push(SubWork::SubConn { rest, acc, ctx });
         }
     }
@@ -919,7 +1054,7 @@ fn step_sub_conn(
 fn push_conn_children(
     work: &mut Vec<SubWork>,
     rest: Vec<Connective>,
-    acc: Par,
+    acc: PlannedPar,
     arm: ConnArm,
     ps: Vec<Par>,
     ctx: SubCtx,
@@ -935,15 +1070,103 @@ fn push_conn_children(
     push_reversed(work, ps, |p| SubWork::Par(Some(p), ctx));
 }
 
+fn append_planned_component(
+    construction: &mut ParConstruction,
+    acc: PlannedPar,
+    value: PlannedComponentValue,
+) -> Result<PlannedPar, InterpreterError> {
+    Ok(construction.append_component(
+        acc,
+        value.component,
+        value.locally_free,
+        value.connective_used,
+    )?)
+}
+
+fn plan_connective(
+    construction: &mut ParConstruction,
+    shell: &Connective,
+    children: &[PlannedPar],
+    depth: i32,
+) -> Result<PlannedComponentValue, InterpreterError> {
+    Ok(PlannedComponentValue {
+        component: construction.connective_component(shell, children)?,
+        locally_free: connective_locally_free_ref(shell, depth),
+        connective_used: connective_connective_used_ref(shell),
+    })
+}
+
+fn plan_expr(
+    construction: &mut ParConstruction,
+    arm: ExprArm,
+    mut children: Vec<PlannedPar>,
+    depth: i32,
+    shift: i32,
+) -> Result<PlannedComponentValue, InterpreterError> {
+    let metadata = match &arm {
+        ExprArm::Unary(_) => Some((
+            construction.locally_free(children[0]).to_vec(),
+            construction.connective_used(children[0]),
+        )),
+        ExprArm::Binary(kind) => Some((
+            union(
+                construction.locally_free(children[0]).to_vec(),
+                construction.locally_free(children[1]).to_vec(),
+            ),
+            match kind {
+                BinaryArm::EMatches => construction.connective_used(children[0]),
+                _ => {
+                    construction.connective_used(children[0])
+                        || construction.connective_used(children[1])
+                }
+            },
+        )),
+        _ => None,
+    };
+    let opaque_no_descent = matches!(
+        &arm,
+        ExprArm::NoDescent(ExprInstance::EPathmapBody(_) | ExprInstance::EZipperBody(_))
+    );
+    let method = matches!(&arm, ExprArm::EMethod { .. });
+    let shell = Expr {
+        expr_instance: Some(rebuild_expr_shell(arm, children.len(), shift)),
+    };
+    let (locally_free, connective_used) = metadata.unwrap_or_else(|| {
+        (
+            expr_locally_free_ref(&shell, depth),
+            expr_connective_used_ref(&shell),
+        )
+    });
+    let component = if opaque_no_descent {
+        construction.import_component(&shell)?
+    } else {
+        if method {
+            children.rotate_left(1);
+        }
+        construction.expr_component(&shell, &children, false)?
+    };
+    Ok(PlannedComponentValue {
+        component,
+        locally_free,
+        connective_used,
+    })
+}
+
 // ---------------------------------------------------------------------------
 // combine — the post-order bodies, every one delegating to `substitute_combine`
 // ---------------------------------------------------------------------------
 
-fn combine(k: SubKont, _view: EnvView<'_>, work: &mut Vec<SubWork>, vals: &mut Vec<SubVal>) {
+fn combine(
+    k: SubKont,
+    empty: PlannedPar,
+    construction: &mut ParConstruction,
+    work: &mut Vec<SubWork>,
+    vals: &mut Vec<PlannedSubVal>,
+) -> Result<(), InterpreterError> {
     match k {
         SubKont::SubExpResume { rest, acc, ctx } => {
             let e = pop_expr(vals);
-            let acc = fold_prepend_expr(acc, e, ctx.depth);
+            let acc = append_planned_component(construction, acc, e)?;
             work.push(SubWork::SubExp { rest, acc, ctx });
         }
         SubKont::SubConnResume {
@@ -954,27 +1177,50 @@ fn combine(k: SubKont, _view: EnvView<'_>, work: &mut Vec<SubWork>, vals: &mut V
             ctx,
         } => {
             let children = pop_n_par(vals, n);
-            let acc = fold_prepend_connective(acc, rebuild_connective(arm, children), ctx.depth);
+            let shell = rebuild_connective(arm, vec![Par::default(); children.len()]);
+            let connective = plan_connective(construction, &shell, &children, ctx.depth)?;
+            let acc = append_planned_component(construction, acc, connective)?;
             work.push(SubWork::SubConn { rest, acc, ctx });
         }
-        SubKont::ExprArmK { arm, n, shift } => {
+        SubKont::ExprArmK {
+            arm,
+            n,
+            depth,
+            shift,
+        } => {
             let children = pop_n_par(vals, n);
-            vals.push(SubVal::Expr(Expr {
-                expr_instance: Some(rebuild_expr_instance(arm, children, shift)),
-            }));
+            vals.push(PlannedSubVal::Expr(plan_expr(
+                construction,
+                arm,
+                children,
+                depth,
+                shift,
+            )?));
         }
         SubKont::PathMapSetK(mut state) => {
-            state.result.insert_entry(pop_par(vals));
+            let key = construction.canonical_path_bytes(pop_par(vals))?;
+            match &mut state.result {
+                EPathMapRepr::Set(entries) => {
+                    entries.insert(&key, ());
+                }
+                EPathMapRepr::Empty | EPathMapRepr::Map(_) => {
+                    unreachable!("set-mode EPathMap substitution changed representation")
+                }
+            }
             work.push(SubWork::PathMap(state));
         }
         SubKont::PathMapMapK(mut state) => {
-            let mut children = pop_n_par(vals, 2).into_iter();
-            let key = children.next().expect("EPathMap map key result");
-            let value = children.next().expect("EPathMap map value result");
-            state
-                .result
-                .insert_map_entry(key, value)
-                .expect("a fresh map-mode substitution result cannot contain set entries");
+            let value = pop_par(vals);
+            let key = pop_par(vals);
+            let key = construction.canonical_path_bytes(key)?;
+            match &mut state.result {
+                EPathMapRepr::Map(entries) => {
+                    entries.insert(&key, value);
+                }
+                EPathMapRepr::Empty | EPathMapRepr::Set(_) => {
+                    unreachable!("map-mode EPathMap substitution changed representation")
+                }
+            }
             work.push(SubWork::PathMap(state));
         }
         SubKont::ParK {
@@ -998,20 +1244,27 @@ fn combine(k: SubKont, _view: EnvView<'_>, work: &mut Vec<SubWork>, vals: &mut V
             let sends = pop_n_send(vals, n_sends);
             let connectives_par = pop_par(vals);
             let exprs_par = pop_par(vals);
-            vals.push(SubVal::Par(rebuild_par(
-                exprs_par,
-                connectives_par,
-                sends,
-                receives,
-                news,
-                matches,
-                bundles,
-                conditionals,
-                unforgeables,
-                locally_free,
+            let unforgeables = unforgeables
+                .into_iter()
+                .map(|unforgeable| construction.unforgeable_component(&unforgeable))
+                .collect::<Result<Vec<_>, _>>()?;
+            let occurrences = sends
+                .into_iter()
+                .chain(receives)
+                .chain(news)
+                .chain(matches)
+                .chain(bundles)
+                .chain(conditionals)
+                .chain(unforgeables)
+                .map(|component| (component, Multiplicity::ONE));
+            let shell = construction.par(
+                occurrences,
+                set_bits_until(locally_free, shift),
                 connective_used,
-                shift,
-            )));
+            )?;
+            let root = construction.parallel(connectives_par, shell)?;
+            let root = construction.parallel(exprs_par, root)?;
+            vals.push(PlannedSubVal::Par(root));
         }
         SubKont::SendK {
             persistent,
@@ -1022,14 +1275,17 @@ fn combine(k: SubKont, _view: EnvView<'_>, work: &mut Vec<SubWork>, vals: &mut V
         } => {
             let data = pop_n_par(vals, n_data);
             let chan = pop_par(vals);
-            vals.push(SubVal::Send(rebuild_send(
-                chan,
-                data,
+            let shell = Send {
+                chan: Some(Par::default()),
+                data: vec![Par::default(); data.len()],
                 persistent,
-                locally_free,
+                locally_free: set_bits_until(locally_free, shift),
                 connective_used,
-                shift,
-            )));
+            };
+            let children: Vec<_> = std::iter::once(chan).chain(data).collect();
+            vals.push(PlannedSubVal::Send(
+                construction.send_component(&shell, &children)?,
+            ));
         }
         SubKont::BindK {
             remainder,
@@ -1038,9 +1294,17 @@ fn combine(k: SubKont, _view: EnvView<'_>, work: &mut Vec<SubWork>, vals: &mut V
         } => {
             let patterns = pop_n_par(vals, n_patterns);
             let source = pop_par(vals);
-            vals.push(SubVal::Bind(rebuild_receive_bind(
-                source, patterns, remainder, free_count,
-            )));
+            let shell = ReceiveBind {
+                patterns: vec![Par::default(); patterns.len()],
+                source: Some(Par::default()),
+                remainder,
+                free_count,
+            };
+            let children = patterns
+                .into_iter()
+                .chain(std::iter::once(source))
+                .collect();
+            vals.push(PlannedSubVal::Bind(PlannedBind { shell, children }));
         }
         SubKont::ReceiveK {
             persistent,
@@ -1052,24 +1316,29 @@ fn combine(k: SubKont, _view: EnvView<'_>, work: &mut Vec<SubWork>, vals: &mut V
             has_condition,
             shift,
         } => {
-            let condition = if has_condition {
-                Some(pop_par(vals))
-            } else {
-                None
-            };
+            let condition = if has_condition { pop_par(vals) } else { empty };
             let body = pop_par(vals);
             let binds = pop_n_bind(vals, n_binds);
-            vals.push(SubVal::Receive(rebuild_receive(
-                binds,
-                body,
-                condition,
+            let mut bind_shells = Vec::with_capacity(binds.len());
+            let mut children = Vec::new();
+            for bind in binds {
+                bind_shells.push(bind.shell);
+                children.extend(bind.children);
+            }
+            children.extend([body, condition]);
+            let shell = Receive {
+                binds: bind_shells,
+                body: Some(Par::default()),
                 persistent,
                 peek,
                 bind_count,
-                locally_free,
+                locally_free: set_bits_until(locally_free, shift),
                 connective_used,
-                shift,
-            )));
+                condition: has_condition.then(Par::default),
+            };
+            vals.push(PlannedSubVal::Receive(
+                construction.receive_component(&shell, &children)?,
+            ));
         }
         SubKont::NewK {
             bind_count,
@@ -1079,25 +1348,42 @@ fn combine(k: SubKont, _view: EnvView<'_>, work: &mut Vec<SubWork>, vals: &mut V
             shift,
         } => {
             let body = pop_par(vals);
-            vals.push(SubVal::New(rebuild_new(
-                body,
+            let mut children = Vec::with_capacity(injections.len() + 1);
+            children.push(body);
+            let mut shell_injections = BTreeMap::new();
+            for (key, value) in injections {
+                children.push(construction.import_par(&value)?);
+                shell_injections.insert(key, Par::default());
+            }
+            let shell = New {
                 bind_count,
+                p: Some(Par::default()),
                 uri,
-                injections,
-                locally_free,
-                shift,
-            )));
+                injections: shell_injections,
+                locally_free: set_bits_until(locally_free, shift),
+            };
+            vals.push(PlannedSubVal::New(
+                construction.new_component(&shell, &children)?,
+            ));
         }
         SubKont::CaseK {
             free_count,
             has_guard,
         } => {
-            let guard = if has_guard { Some(pop_par(vals)) } else { None };
+            let guard = if has_guard { pop_par(vals) } else { empty };
             let pattern = pop_par(vals);
             let source = pop_par(vals);
-            vals.push(SubVal::Case(rebuild_match_case(
-                source, pattern, guard, free_count,
-            )));
+            vals.push(PlannedSubVal::Case(PlannedCase {
+                shell: MatchCase {
+                    pattern: Some(Par::default()),
+                    source: Some(Par::default()),
+                    free_count,
+                    guard: has_guard.then(Par::default),
+                },
+                pattern,
+                source,
+                guard,
+            }));
         }
         SubKont::MatchK {
             locally_free,
@@ -1107,13 +1393,22 @@ fn combine(k: SubKont, _view: EnvView<'_>, work: &mut Vec<SubWork>, vals: &mut V
         } => {
             let cases = pop_n_case(vals, n_cases);
             let target = pop_par(vals);
-            vals.push(SubVal::Match(rebuild_match(
-                target,
-                cases,
-                locally_free,
+            let mut case_shells = Vec::with_capacity(cases.len());
+            let mut children = Vec::with_capacity(1 + cases.len() * 3);
+            children.push(target);
+            for case in cases {
+                case_shells.push(case.shell);
+                children.extend([case.pattern, case.source, case.guard]);
+            }
+            let shell = Match {
+                target: Some(Par::default()),
+                cases: case_shells,
+                locally_free: set_bits_until(locally_free, shift),
                 connective_used,
-                shift,
-            )));
+            };
+            vals.push(PlannedSubVal::Match(
+                construction.match_component(&shell, &children)?,
+            ));
         }
         SubKont::IfK {
             locally_free,
@@ -1123,20 +1418,34 @@ fn combine(k: SubKont, _view: EnvView<'_>, work: &mut Vec<SubWork>, vals: &mut V
             let if_false = pop_par(vals);
             let if_true = pop_par(vals);
             let condition = pop_par(vals);
-            vals.push(SubVal::If(rebuild_if(
-                condition,
-                if_true,
-                if_false,
-                locally_free,
+            let shell = If {
+                condition: Some(Par::default()),
+                if_true: Some(Par::default()),
+                if_false: Some(Par::default()),
+                locally_free: set_bits_until(locally_free, shift),
                 connective_used,
-                shift,
-            )));
+            };
+            vals.push(PlannedSubVal::If(
+                construction.if_component(&shell, &[condition, if_true, if_false])?,
+            ));
         }
-        SubKont::BundleK { shell } => {
-            let sub_bundle = pop_par(vals);
-            vals.push(SubVal::Bundle(rebuild_bundle(shell, sub_bundle)));
+        SubKont::BundleK { mut shell } => {
+            let body = pop_par(vals);
+            let body = match construction.single_bundle(body) {
+                Some((inner, write_flag, read_flag)) => {
+                    shell.write_flag &= write_flag;
+                    shell.read_flag &= read_flag;
+                    inner
+                }
+                None => body,
+            };
+            shell.body = Some(Par::default());
+            vals.push(PlannedSubVal::Bundle(
+                construction.bundle_component(&shell, &[body])?,
+            ));
         }
     }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------

@@ -81,7 +81,8 @@
 //! different one now: the refused set and the fired set are disjoint.
 
 use models::rhoapi::Par;
-use rho_pure_eval::{undecidable_nodes, SpatialSupport};
+use models::rust::par_construction::{ParConstruction, PlannedPar};
+use rho_pure_eval::{undecidable_nodes, undecidable_planned_nodes, SpatialSupport};
 
 use super::errors::InterpreterError;
 
@@ -126,6 +127,29 @@ pub fn reject_undecidable_guard(guard: &Par, clause: &'static str) -> Result<(),
     Err(InterpreterError::UndecidableGuard {
         clause,
         obstructions: obstructions.iter().map(|n| n.to_string()).collect(),
+    })
+}
+
+/// Arena-native compile-time guard gate. This is semantically identical to
+/// [`reject_undecidable_guard`] but follows planned handles before the
+/// normalizer emits its one resident root.
+pub fn reject_undecidable_planned_guard(
+    arena: &ParConstruction,
+    guard: PlannedPar,
+    clause: &'static str,
+) -> Result<(), InterpreterError> {
+    let obstructions =
+        undecidable_planned_nodes(arena, guard, GUARD_SPATIAL_SUPPORT).map_err(|error| {
+            InterpreterError::NormalizerError(format!(
+                "cannot classify planned {clause} guard: {error}"
+            ))
+        })?;
+    if obstructions.is_empty() {
+        return Ok(());
+    }
+    Err(InterpreterError::UndecidableGuard {
+        clause,
+        obstructions: obstructions.iter().map(|node| node.to_string()).collect(),
     })
 }
 

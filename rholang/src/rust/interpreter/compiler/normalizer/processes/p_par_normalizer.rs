@@ -1,18 +1,18 @@
-use models::rhoapi::Par;
 use rholang_parser::ast::{AnnProc, Proc};
 
 use crate::rust::interpreter::compiler::bound_map_chain::BoundMapChain;
-use crate::rust::interpreter::compiler::exports::{ProcVisitInputs, ProcVisitOutputs};
 use crate::rust::interpreter::compiler::normalize::VarSort;
-use crate::rust::interpreter::compiler::normalize_drive::{NormKont, NormVal, NormWork, Step};
+use crate::rust::interpreter::compiler::normalize_drive::{
+    NormKont, NormVal, NormWork, ProcVisitInputs, Step,
+};
 use crate::rust::interpreter::errors::InterpreterError;
 
-/// Flatten a `|` spine into its operands. Already iterative before the
-/// conversion, and left that way: it walks `Proc::Par` nodes with an explicit
-/// stack and never touches the normalizer.
-fn flatten_par<'ast>(root: AnnProc<'ast>) -> Vec<AnnProc<'ast>> {
+/// Flatten both roots of a `|` node into one left-to-right operand schedule.
+/// It walks `Proc::Par` nodes with an explicit stack and allocates only the
+/// final schedule plus that traversal stack.
+fn flatten_par<'ast>(left: AnnProc<'ast>, right: AnnProc<'ast>) -> Vec<AnnProc<'ast>> {
     let mut result = Vec::new();
-    let mut stack = vec![root];
+    let mut stack = vec![right, left];
 
     while let Some(current) = stack.pop() {
         match current.proc {
@@ -40,12 +40,7 @@ pub(crate) fn descend_p_par<'ast>(
     right: &'ast AnnProc<'ast>,
     input: ProcVisitInputs,
 ) -> Step<'ast> {
-    let flattened_left = flatten_par(*left);
-    let flattened_right = flatten_par(*right);
-
-    let mut all_procs = Vec::with_capacity(flattened_left.len() + flattened_right.len());
-    all_procs.extend(flattened_left);
-    all_procs.extend(flattened_right);
+    let all_procs = flatten_par(*left, *right);
 
     debug_assert!(
         !all_procs.is_empty(),
@@ -105,13 +100,6 @@ pub(crate) fn combine_p_par<'ast>(
         },
     })
 }
-
-/// Retained so the unused-import lint does not fire on `ProcVisitOutputs`,
-/// which the module's public contract still mentions in its documentation.
-#[allow(dead_code)]
-type _ProcVisitOutputs = ProcVisitOutputs;
-#[allow(dead_code)]
-type _Par = Par;
 
 // See rholang/src/test/scala/coop/rchain/rholang/interpreter/compiler/normalizer/ProcMatcherSpec.scala
 #[cfg(test)]

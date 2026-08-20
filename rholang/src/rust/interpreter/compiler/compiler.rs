@@ -2,7 +2,6 @@
 
 use std::collections::HashMap;
 
-use models::rhoapi::connective::ConnectiveInstance;
 use models::rhoapi::Par;
 use models::rust::rholang::par_children::dismantle;
 use models::rust::rholang::sorter::par_sort_matcher::ParSortMatcher;
@@ -98,11 +97,14 @@ impl Compiler {
     /// on the free map, never on the term.
     fn top_level_error(free_map: FreeMap<VarSort>) -> InterpreterError {
         if !free_map.connectives.is_empty() {
-            fn connective_instance_to_string(conn: ConnectiveInstance) -> String {
+            fn connective_instance_to_string(
+                conn: crate::rust::interpreter::compiler::free_map::FreeMapConnective,
+            ) -> String {
+                use crate::rust::interpreter::compiler::free_map::FreeMapConnective;
                 match conn {
-                    ConnectiveInstance::ConnAndBody(_) => String::from("/\\ (conjunction)"),
-                    ConnectiveInstance::ConnOrBody(_) => String::from("\\/ (disjunction)"),
-                    ConnectiveInstance::ConnNotBody(_) => String::from("~ (negation)"),
+                    FreeMapConnective::And => String::from("/\\ (conjunction)"),
+                    FreeMapConnective::Or => String::from("\\/ (disjunction)"),
+                    FreeMapConnective::Not => String::from("~ (negation)"),
                     _ => format!("{:?}", conn),
                 }
             }

@@ -11,6 +11,7 @@
 use casper::rust::block_status::{BlockError, InvalidBlock};
 use casper::rust::casper::MultiParentCasper;
 use casper::rust::util::construct_deploy;
+use rholang::rust::interpreter::pretty_printer::PrettyPrinter;
 use rholang::rust::interpreter::util::vault_address::VaultAddress;
 use rspace_plus_plus::rspace::history::Either;
 
@@ -344,7 +345,11 @@ async fn validator_key_lookup_should_succeed_in_all_bonds() {
     );
 
     // The lookup should succeed (KEY_FOUND)
-    let result_str = format!("{:?}", result);
+    let result_str = result
+        .iter()
+        .map(|par| PrettyPrinter::new().build_string_from_message(par))
+        .collect::<Vec<_>>()
+        .join(" | ");
     assert!(
         result_str.contains("KEY_FOUND"),
         "Validator key should be found in allBonds: {:?}",

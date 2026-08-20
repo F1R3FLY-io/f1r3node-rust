@@ -172,17 +172,6 @@ const RECURSION_DISPOSITIONS: &[(&str, Disposition)] = &[
         "rholang/src/rust/interpreter/compiler/normalize.rs",
         Disposition::Measured("gate subject `normalize`; the production path is converted"),
     ),
-    (
-        "rholang/src/rust/interpreter/compiler/normalize_drive.rs",
-        Disposition::Measured("the driver half of `normalize`"),
-    ),
-    (
-        "rholang/src/rust/interpreter/compiler/normalizer/processes/p_input_normalizer.rs",
-        Disposition::Measured(
-            "★ participates in a CROSS-FILE cycle with normalize.rs and normalize_drive.rs — \
-             the shape a per-file scan structurally cannot see",
-        ),
-    ),
     // ── substitution ───────────────────────────────────────────────────────────────
     (
         "rholang/src/rust/interpreter/substitute.rs",
@@ -249,6 +238,15 @@ const RECURSION_DISPOSITIONS: &[(&str, Disposition)] = &[
              `encoded_len`/`protobuf_encoded_len` edge is a conservative same-name merge: \
              the prost trait wrapper calls the bounded ParBag byte-length computation, which \
              does not call back into the trait wrapper",
+        ),
+    ),
+    (
+        "models/src/rust/par_construction.rs",
+        Disposition::NotATermDepthCycle(
+            "textual false positive: `ParConstructionError::fmt` delegates the bounded \
+             `Multiplicity(BagError)` leaf through `BagError::fmt`; the error carries no Par, \
+             construction plan, or child error, and neither formatter calls upward. The scanner \
+             intentionally merges same-named trait methods into an apparent `fmt` self-loop",
         ),
     ),
     (

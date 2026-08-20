@@ -73,7 +73,7 @@ use crate::util::rholang::resources::generate_scope_id;
 const N_BUILDS: usize = 6;
 const N_CHEAP_BUILDS: usize = 24;
 const DEFAULT_GENESIS_POST_STATE_HASH: &str =
-    "9dd75ebae52af3ae038f2e79dd34f51f2543b2f30014a22a053b2ce9f56fd23f";
+    "87b8dedea0e1483869d020c76d5337073f7f835b995dbb55b545dcc8846da87b";
 
 /// The consensus-visible projection of a vault list: the base58 addresses **in order**, paired with
 /// their balances. This is what `VaultsGenerator` renders, so two vault lists with this projection
@@ -436,7 +436,11 @@ async fn genesis_post_state_hash_is_identical_across_independent_builds() {
 /// `Secp256k1::new_key_pair()` in `lazy_static!` values. After replacing them with the shared
 /// deterministic fixture keyspace,
 /// [`default_genesis_post_state_hash_is_pinned_across_processes`] passed in four independent
-/// processes at `9dd75ebae52af3ae…f56fd23f` (8.86–8.98 s each).
+/// processes at the then-current `9dd75ebae52af3ae…f56fd23f` checkpoint (8.86–8.98 s each).
+/// Complete planned `Par` construction subsequently moved normalized blessed terms under retired
+/// CBR-055; the current `87b8dedea0e14838…846da87b` root was reproduced in three independent
+/// processes. Both checkpoints establish process determinism; neither value is inferred from source
+/// order among Rholang's parallel components.
 ///
 /// # ⚠ Why asserting agreement is the CORRECT gate and not merely the convenient one
 ///

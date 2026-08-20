@@ -93,7 +93,7 @@ use models::rhoapi::var::VarInstance;
 use models::rhoapi::{
     Bundle, Connective, EAnd, EDiv, EEq, EGt, EGte, EList, ELt, ELte, EMatches, EMinus,
     EMinusMinus, EMod, EMult, ENeg, ENeq, ENot, EOr, EPathMap, EPercentPercent, EPlus,
-    EPlusPlus, ETuple, EVar, Expr, GUnforgeable, Match, MatchCase, New, Par, Receive,
+    EPlusPlus, ETuple, EVar, Expr, GUnforgeable, If, Match, MatchCase, New, Par, Receive,
     Send as RhoSend,
 };
 use models::rust::bundle_ops::BundleOps;
@@ -930,6 +930,42 @@ impl PrettyPrinter {
                 "}"
             ))
         }
+        PpNode::If(value) => {
+            let condition = self.oracle_build_string_from_message(
+                value
+                    .condition
+                    .as_ref()
+                    .expect("condition field on If was None, should be Some"),
+            );
+            let if_true = self._oracle_build_string_from_message(
+                PpNode::Par(
+                    value
+                        .if_true
+                        .as_ref()
+                        .expect("if_true field on If was None, should be Some"),
+                ),
+                indent + 1,
+            )?;
+            let if_false = self._oracle_build_string_from_message(
+                PpNode::Par(
+                    value
+                        .if_false
+                        .as_ref()
+                        .expect("if_false field on If was None, should be Some"),
+                ),
+                indent + 1,
+            )?;
+            Ok(format!(
+                "if ({}) {{\n{}{}\n{}}} else {{\n{}{}\n{}}}",
+                condition,
+                self.indent_string().repeat(indent + 1),
+                if_true,
+                self.indent_string().repeat(indent),
+                self.indent_string().repeat(indent + 1),
+                if_false,
+                self.indent_string().repeat(indent),
+            ))
+        }
         PpNode::Unforgeable(u) => {
             self.build_string_from_unforgeable(u)
         }
@@ -987,6 +1023,7 @@ impl PrettyPrinter {
                 let matches = p.decode_occurrences::<Match>();
                 let unforgeables = p.decode_occurrences::<GUnforgeable>();
                 let connectives = p.decode_occurrences::<Connective>();
+                let conditionals = p.decode_occurrences::<If>();
 
                 // Process bundles
                 if !bundles.is_empty() {
@@ -1101,6 +1138,23 @@ impl PrettyPrinter {
                     for (index, connective) in connectives.iter().enumerate() {
                         result.push_str(&self._oracle_build_string_from_message(PpNode::Connective(connective), indent)?);
                         if index != connectives.len() - 1 {
+                            result
+                                .push_str(&format!(" |\n{}", self.indent_string().repeat(indent)));
+                        }
+                    }
+                    prev_non_empty = true;
+                }
+
+                if !conditionals.is_empty() {
+                    if prev_non_empty {
+                        result.push_str(&format!(" |\n{}", self.indent_string().repeat(indent)));
+                    }
+                    for (index, conditional) in conditionals.iter().enumerate() {
+                        result.push_str(&self._oracle_build_string_from_message(
+                            PpNode::If(conditional),
+                            indent,
+                        )?);
+                        if index != conditionals.len() - 1 {
                             result
                                 .push_str(&format!(" |\n{}", self.indent_string().repeat(indent)));
                         }

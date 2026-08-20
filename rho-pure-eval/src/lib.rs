@@ -44,7 +44,9 @@ mod error;
 mod eval;
 mod oracle;
 
-pub use decidable::{undecidable_nodes, SpatialSupport, UndecidableNode};
+pub use decidable::{
+    undecidable_nodes, undecidable_planned_nodes, SpatialSupport, UndecidableNode,
+};
 pub use env::Env;
 pub use error::EvalError;
 pub use eval::{eval, eval_with};

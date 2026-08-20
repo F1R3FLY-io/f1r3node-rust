@@ -10,7 +10,7 @@
 | **Companion surface** | `mettail-rust`, branch `feature/rho-native-set-automata`. |
 | **Companion reports** | the [stack-safety report](../design/stack-safety/stack-safety-report-2026-07-29.md) and the [PathMap report](../design/pathmap/pathmap-report-2026-08-03.md), which carry the equivalence evidence this register's retirements cite. |
 | **Audience** | F1r3node consensus reviewers deciding whether to accept the fork risk of a coordinated protocol-version bump. |
-| **Date** | 2026-07-29, re-scoped to the final criterion 2026-08-03, revised through 2026-08-17 |
+| **Date** | 2026-07-29, re-scoped to the final criterion 2026-08-03, revised through 2026-08-20 |
 | **Maintenance** | [§7](#7-maintenance). Adding an entry is filling the form in [Appendix A](#appendix-a--the-entry-template). |
 
 ---
@@ -101,8 +101,8 @@ the Surface-L acceptance set (L07, L08 in flight, L10, L11, L14, L15), binder-sh
 route (L24). **The metering axis was re-derived
 under the D3 token model** (consensus cost = evaluated `Send`/`Receive` prefix events; per-op prices
 are diagnostics): **CBR-L20, CBR-L23, and CBR-L24 move that prefix-event schedule**; the
-register's one historical `UNVERIFIED` cell resolved in the same derivation. **55 further changes
-were examined and retired** with typed reasons — 42 bug fixes, 4
+register's one historical `UNVERIFIED` cell resolved in the same derivation. **63 further changes
+were examined and retired** with typed reasons — 49 bug fixes, 5
 measured-neutral optimizations, 5 equivalence-proven conversions, 3 dormant additions or removals, and the
 formerly-open wire-asymmetry hazard, closed against CBR-044 — each a one-line row in
 [Appendix B.1](#b1-retired-register-entries) whose full historical body remains in git history.
@@ -147,7 +147,7 @@ with typed reasons so the account stays checkable.
 3. A **derived** register (§3, §4): 24 entries, each with all six axes answered, a stated blast
    radius, a direction, an evidence grade, and — where one exists — the owner ruling that authorised
    it, quoted verbatim with its date.
-4. The **negative results**: 55 retired entries with typed reasons (Appendix B.1) and 21 commit-level
+4. The **negative results**: 63 retired entries with typed reasons (Appendix B.1) and 21 commit-level
    exemptions (Appendix B.2), which are what make the inclusion criterion checkable rather than
    merely asserted.
 
@@ -461,7 +461,7 @@ conversions proven equivalent to their recursive counterparts definitely do not 
 while **data-model, wire-format, and deliberate semantic changes** (the EPathMap representation and
 EPM1 being the named exemplar) are what this register exists to carry. Every entry was re-classified
 under that criterion; the 46 that no longer qualified at re-scope—and later classified findings
-through CBR-054—are retired to typed rows in
+through CBR-062—are retired to typed rows in
 [Appendix B.1](#b1-retired-register-entries), and their full bodies remain in git history at the
 pre-refactor revision.
 
@@ -610,8 +610,8 @@ is a *future* fork, not a present one).
 MECHANISM-ONLY (**CBR-013**), 1 LATENT (**CBR-L14**), and 1 UNVERIFIED (**CBR-053**). By direction:
 **15 CORRECTIVE, 4 PERMISSIVE, 4 REGRESSIVE, 1 UNVERIFIED**. Axis cells reading `UNVERIFIED`: **2** —
 CBR-053's verdict and post-state axes. The register's historical CBR-L07 metering `?` remains
-resolved under the token model (§3.3). The 55 retired entries are
-[Appendix B.1](#b1-retired-register-entries); 24 + 55 = 79 historical identifiers, none reused.
+resolved under the token model (§3.3). The 63 retired entries are
+[Appendix B.1](#b1-retired-register-entries); 24 + 63 = 87 historical identifiers, none reused.
 
 ### 4.2 Entry template
 
@@ -4086,7 +4086,7 @@ Quote actual numbers. The RED, the measurement, the acceptance matrix. Tag each 
 
 ### B.1 Retired register entries
 
-The 55 entries retired under the 2026-08-03 inclusion criterion (§3.2). Each keeps its **former
+The 56 entries retired under the 2026-08-03 inclusion criterion (§3.2). Each keeps its **former
 identifier forever** — identifiers are never reused, and a historical citation of any `CBR-*` below
 resolves to this table. Full bodies remain in git history at the pre-refactor revision of this file.
 Reasons are the closed retirement enum of §3.2; the evidence column points at where the discharging
@@ -4134,6 +4134,14 @@ material now lives.
 | `CBR-051` | `c1feaf36` | Configured gRPC receive bounds apply to complete protobuf messages rather than individual HTTP/2 frames | `BUG_FIX_RULED_NONCONSENSUS` | This enforces the existing operator byte policy before protobuf decode; it changes no normalized term, Rholang value, protobuf encoding, block byte, post-state hash, D3 communication-prefix count, token settlement, EPathMap mode, or PathMap operation. Black-box API and peer tests prove an under-limit request dispatches and an over-limit request returns `OutOfRange` without entering the handler; threat model TM-CA-167 records the pre-runtime boundary. |
 | `CBR-052` | this checkpoint; `mettail-rust` FLT Track A checkpoint; pgmcp #5300 | An AC remainder preserves target-position identity, so one selected duplicate occurrence no longer expands to every structurally equal target and a generated float worklist strictly decreases | `BUG_FIX_RULED_NONCONSENSUS` | the three-identical-send witness captures exactly two occurrences; production PDA and bounded compatibility equation agree on the duplicate corpus; the complete 50-test matcher target and 7 maximum-matching tests pass; isolated Ambient and nine-cell co-install executions quiesce with exact multiplicity; admission-free `CrossLanguageSeparation.v` proves positional deletion and strict soup-size descent. Stack-safety report §5.25. |
 | `CBR-054` | this checkpoint; prior repair `bd436d89` | MakeMint decrement consumes gain a literal `"decr"` selector, making their receive language disjoint from `setLog` while preserving exact mint-capability authorization | `BUG_FIX_RULED_NONCONSENSUS` | source-shape guards prove the persistent listeners differ by arity and first pattern; fresh-purse `setLog` answers `Nil`; a tagged request with the wrong capability answers `false`; the original logging fixture completes 3/3 plus its control; and the complete seven-case MakeMint release specification passes under an 8 GiB, zero-swap cap. Raw blessed bytes move `7ac55f…a5d3`/11,187 to `5d09c9…520d`/11,240; the normalized protobuf term moves `b31e21…04b0`/7,367 to `1ac943…2070`/7,347. |
+| `CBR-055` | this checkpoint | Complete transient `ParConstruction` replaces repeated resident-ancestor rebuilding across normalization, substitution, and evaluation while preserving the recursive construction equations | `BUG_FIX_RULED_NONCONSENSUS` | all 11 normalizable blessed resources and all seven asynchronous-driver sources compare planned versus independent recursive normalization on protobuf bytes, stable bincode bytes, free maps, and binder closure; the exact bounded-string continuation additionally compares recursive/production substitution and string-`length` evaluation on result bytes and charge traces. The completed construction moves the 11 normalized blessed pins and the default-genesis root to `87b8dede…da87b`, stable in three independent processes. Six async rows remain byte-identical; bounded-string retains success, cost 36, 34 COMMs, and its unbalanced-state verdict while its order-independent COMM-multiset fingerprint moves to `8157140966823070477`, reproduced in three runs. Stack-safety report §5.28. |
+| `CBR-056` | this checkpoint | Singleton projections require exactly one occurrence in the complete ParBag, so a valid component can no longer hide a sibling from another family | `BUG_FIX_RULED_NONCONSENSUS` | `models/tests/par_bag.rs::singleton_projections_require_one_total_bag_occurrence` and `reduce.rs::single_unforgeable_projection_is_total_bag_exact` reject Bundle+If and Unforgeable+If witnesses while preserving the one-occurrence result; focused gates pass under an 8 GiB zero-swap cap |
+| `CBR-057` | this checkpoint | Boolean, integer, single-expression, and fused scalar projections test total-Par family purity instead of a saturating aggregate cardinality | `BUG_FIX_RULED_NONCONSENSUS` | every non-Expr family paired with one Expr agrees with the recursive evaluator's refusal; a compressed `u64::MAX` Expr endpoint plus one Send rejects without expansion, and the historical two-Expr errors remain pinned |
+| `CBR-058` | this checkpoint | Spatial matching treats `If` as the ninth ParBag family and checks exact `Connective` cardinality | `BUG_FIX_RULED_NONCONSENSUS` | concrete inequality, three conditional-child bindings, late-child rollback, PathMap family partitions, generated byte-identity indexing, a bounded recursive-oracle differential, and depth 128 on a 128 KiB stack pass; stack-safety report §5.29 |
+| `CBR-059` | this checkpoint | The matcher's count interval uses a logical `u64::MAX` top instead of silently refusing legal cardinalities above 1,000 | `BUG_FIX_RULED_NONCONSENSUS` | one compressed endpoint of multiplicity 1,001 is admitted and partitioned for Send, Receive, New, Expr, Match, GUnforgeable, Bundle, and If; the top is met with finite target cardinality before positional work and no occurrence vector is built |
+| `CBR-060` | this checkpoint | Evaluator metadata reconstruction covers `If` and depth-zero connective variable references exactly once per distinct PathMap endpoint | `BUG_FIX_RULED_NONCONSENSUS` | a `u64::MAX` conditional multiplicity plus one `VarRef` endpoint produces the union of both locally-free bitsets without occurrence expansion; a materializable collection child exercises the production rebuild boundary |
+| `CBR-061` | this checkpoint | The pushdown pretty printer renders `If` components instead of dropping them from a `Par` or printing `Nil` | `BUG_FIX_RULED_NONCONSENSUS` | an If-only witness renders condition, true branch, and false branch; a mixed Expr+If witness preserves canonical family presentation. This changes replay-visible diagnostic text where the omitted family was previously printed, but does not impose execution order on parallel processes. |
+| `CBR-062` | this checkpoint | Singleton-`If` spatial matching advances through shared canonical protobuf ranges instead of repeatedly decoding every remaining nested suffix | `OPTIMIZATION_MEASURED_NEUTRAL` | the bounded recursive oracle agrees on verdict and complete `FreeMap`; late-child refusal restores the attempt snapshot; canonical/malformed cursor gates and the 64-byte Job/Frame layout gate pass; depth 4,096 succeeds on a 128 KiB stack; the release ladder is 55.002 µs at depth 128 and 1.5387 ms at 4,096, with linear allocation growth. No value, verdict, binding, byte, hash, COMM, charge, accepted program, PathMap operation, or parallel execution order moves. Stack-safety report §5.29. |
 | `CBR-L01` | `3ff1c98b`, `f586e138` | Equal operator precedence becomes representable; Rholang's ladder corrected | `BUG_FIX_RULED_NONCONSENSUS` | entry body at the pre-refactor revision (git history) |
 | `CBR-L02` | `0f3d298c` | The substrate lane stops answering "false" for a guard it could not decide | `BUG_FIX_RULED_NONCONSENSUS` | entry body at the pre-refactor revision (git history) |
 | `CBR-L03` | `69c66cd1` | A residual binder rests the COMM, whatever the formula collapsed to | `BUG_FIX_RULED_NONCONSENSUS` | entry body at the pre-refactor revision (git history) |
@@ -4183,6 +4191,75 @@ changed from `28ca4bcf…925ca` for the overlapping listener to `9dd75eba…fd23
 listener. The valid deposit result, mint-capability decision, failure rollback, accepted source
 syntax, and D3 `Send`/`Receive` prefix count are unchanged. Under the 2026-08-03 inclusion ruling,
 this is retained as a witnessed bug fix rather than promoted to the active may-change-consensus set.
+
+**CBR-055 classification continuation (2026-08-20).** The completed construction path retains a
+recursive child as a planned arena handle until the root boundary instead of serializing and
+decoding a complete resident ancestor at every level. This is a resource repair, but normalization
+and runtime construction are consensus-visible, so the moved bytes are recorded rather than called
+neutral. The successor result is bound to the independent recursive equations at three separate
+layers: complete-source normalization, the real bounded-string receive-continuation substitution,
+and direct evaluation of the received string's `length` method. Each comparison includes protobuf
+and stable bincode output; substitution and evaluation also include the ordered accounting-token
+trace and total charge.
+
+Rholang's parallel composition does not impose source-order execution. Accordingly, the asynchronous
+golden does not compare a scheduler order or use `stdlog!` as a sequencing witness. It filters actual
+COMM events, serializes each event canonically, sorts the byte strings, length-delimits them, and
+fingerprints that **multiset**. The bounded-string movement therefore says that the matched COMM
+payload multiset changed under completed canonical construction; it does not claim that one parallel
+branch ran before another. Its COMM count, evaluated-prefix cost, success, and balanced-state verdict
+remain fixed, and all six other corpus multisets remain unchanged.
+
+The eleven blessed raw-source pins are unchanged, while their normalized protobuf terms and the
+derived default-genesis post-state root move. The new root reproduced in three independent processes;
+the bounded-string multiset fingerprint reproduced in three runs. The exact historical point within
+the formerly partial same-commit construction sequence that produced the superseded golden is not
+proven, so this register does not invent one. Under the owner-ruled inclusion criterion, restoring the
+complete recursive construction contract while removing quadratic rebuilding is retained as a
+witnessed bug fix rather than promoted to the active may-change-consensus table.
+
+**CBR-056 through CBR-061 classification continuation (2026-08-20).** These six records close one
+shared representation-assumption defect: consumers treated `Par` as if a projection over one
+repeated field described the complete value, while the authoritative representation is one
+PathMap-backed product of nine Bags. Total singleton and scalar projections now inspect the complete
+Bag; matcher counts, partitions, candidate values, and the PDA include `If`; metadata reconstruction
+visits every distinct relevant endpoint; and the printer walks the same complete family product.
+
+The corrected matcher can change a verdict and binding for a quoted process containing a
+conditional, and the count-domain repair admits valid wildcard/remainder matches with cardinality
+greater than 1,000. The scalar and singleton repairs refuse malformed mixed-family values that could
+previously be projected as one valid scalar or unforgeable. The printer repair changes diagnostic
+text for a value whose conditional was formerly invisible. These are observable movements, but each
+direction restores the declared protobuf/ParBag family product rather than choosing new language
+semantics; the owner-ruled criterion therefore retains them as bug fixes.
+
+The implementation does not serialize parallel execution. An `If` component's three child fields
+are matched in schema order only to reproduce its structural equation and deterministic binding
+rollback. Sibling components of an enclosing Rholang `Par` remain unordered, and no `stdlog!` call or
+source placement is used as a happens-before witness. The asynchronous consensus evidence continues
+to use canonical COMM multisets.
+
+Focused evidence is recorded in stack-safety report §5.29. SS-Y9 in that report deliberately keeps
+the nested-`If` repeated-decode defect visible after repair rather than deleting the bad-news row.
+CBR-062 closes it through shared canonical byte ranges and terminal-only decoding while preserving
+the CBR-058 verdict, binding, and rollback relation exactly. The complete release workspace result
+remains pending at this checkpoint and is not implied by the focused rows.
+
+**CBR-062 classification continuation (2026-08-20).** The optimization applies only when both
+target and pattern are exact singleton-`If` ParBag carriers. Each authoritative top-level protobuf
+body is copied once into immutable shared storage; child continuations carry byte ranges into that
+storage. Canonical framing is inspected without decoding, equal non-connective child messages may
+succeed directly, and every unequal terminal or unproven shape delegates to the complete generated
+decoder and the same heterogeneous matcher PDA. The cursor does not create a second resident
+representation, sort components, project a `Vec<Par>`, or modify PathMap.
+
+The three child obligations retain the established condition/true/false proof-search order solely
+so `FreeMap` writes and rollback reproduce CBR-058. That internal order is not an execution schedule:
+Rholang `Par` remains an unordered parallel Bag, sibling processes acquire no happens-before edge,
+and `stdlog!` remains an ordinary concurrent process rather than a sequencing primitive. The
+recursive-oracle differential compares verdict and complete bindings, while asynchronous consensus
+evidence continues to compare canonical COMM multisets. Under §3.2 this measured-neutral resource
+repair is retired rather than promoted to the active may-change-consensus table.
 
 **CBR-033 living evidence continuation (2026-08-11; pgmcp #5301).** `7983bf4b` makes the
 read-only hot-store snapshot total over the union of datum and continuation key domains. A datum
@@ -4864,6 +4941,6 @@ is the point: the derivation's surplus is real, and it is small and classifiable
 ---
 
 *The register's identifiers are stable and never reused. The 2026-08-03 re-scope retired 46 entries
-to B.1; subsequent classified findings through CBR-054 and CBR-L22 bring the living appendix to 55. The re-scope also removed
+to B.1; subsequent classified findings through CBR-062 and CBR-L22 bring the living appendix to 63. The re-scope also removed
 the mechanised drift gate with its machine index; the pre-refactor revision, with every then-retired
 body and the gate's specification, remains in git history.*

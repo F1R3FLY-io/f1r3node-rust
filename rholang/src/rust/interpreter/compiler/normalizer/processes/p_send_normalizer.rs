@@ -1,12 +1,11 @@
 use models::rhoapi::{Par, Send};
+use models::rust::par_construction::ParConstruction;
 use models::rust::utils::union;
 use rholang_parser::ast::{Name, SendType};
 
-use crate::rust::interpreter::compiler::exports::{
-    NameVisitInputs, ProcVisitInputs, ProcVisitOutputs,
-};
+use crate::rust::interpreter::compiler::exports::NameVisitInputs;
 use crate::rust::interpreter::compiler::normalize_drive::{
-    NormKont, NormVal, NormWork, SendK, Step,
+    NormKont, NormVal, NormWork, ProcVisitInputs, ProcVisitOutputs, SendK, Step,
 };
 use crate::rust::interpreter::errors::InterpreterError;
 
@@ -26,7 +25,6 @@ pub(crate) fn descend_p_send<'ast>(
         rholang_parser::ast::SendType::Single => false,
         rholang_parser::ast::SendType::Multiple => true,
     };
-    let input_depth = input.bound_map_chain.depth() as i32;
     Step::Descend {
         kont: NormKont::Send(Box::new(SendK {
             inputs,
@@ -38,7 +36,6 @@ pub(crate) fn descend_p_send<'ast>(
             free_map: input.free_map.clone(),
             bound_map_chain: input.bound_map_chain.clone(),
             input_par: input.par,
-            input_depth,
             persistent,
         })),
         work: NormWork::Name {
@@ -56,6 +53,7 @@ pub(crate) fn descend_p_send<'ast>(
 pub(crate) fn combine_p_send<'ast>(
     mut k: Box<SendK<'ast>>,
     value: NormVal,
+    construction: &mut ParConstruction,
 ) -> Result<Step<'ast>, InterpreterError> {
     if k.idx == 0 {
         // The CHANNEL has just finished.
@@ -67,8 +65,8 @@ pub(crate) fn combine_p_send<'ast>(
         // ★ Leg-1: read the shallow fields, then MOVE. See
         // `collection_normalize_matcher::combine_collect`.
         let proc_match_result = value.into_proc();
-        let child_locally_free = proc_match_result.par.locally_free().to_vec();
-        let child_connective_used = proc_match_result.par.connective_used();
+        let child_locally_free = construction.locally_free(proc_match_result.par).to_vec();
+        let child_connective_used = construction.connective_used(proc_match_result.par);
         k.acc_pars.push(proc_match_result.par);
         k.free_map = proc_match_result.free_map;
         k.acc_locally_free = union(std::mem::take(&mut k.acc_locally_free), child_locally_free);
@@ -77,7 +75,7 @@ pub(crate) fn combine_p_send<'ast>(
 
     if let Some(next) = k.inputs.get(k.idx).copied() {
         let child_input = ProcVisitInputs {
-            par: Par::default(),
+            par: construction.empty_par()?,
             bound_map_chain: k.bound_map_chain.clone(),
             free_map: k.free_map.clone(),
         };
@@ -98,37 +96,38 @@ pub(crate) fn combine_p_send<'ast>(
         acc_locally_free,
         acc_connective_used,
         free_map,
-        bound_map_chain,
         input_par,
-        // ⚠ Retained on the frame but INERT here: the depth argument of
-        // `<Par as HasLocallyFree<Par>>::locally_free` is `_depth` — the impl
-        // returns the cached field and never consults it — so removing the
-        // by-value reader removed the only consumer.
-        input_depth: _,
         persistent,
         ..
     } = *k;
     let name_par = name_par.expect("combine_p_send: the channel slot is filled before any message");
-    let _ = bound_map_chain;
-
     // ★ Leg-1 at the reader. `<Par as HasLocallyFree<Par>>::locally_free` is
     // `|_, p, _| p.locally_free` and `connective_used` is `|_, p| p.connective_used`
     // — neither recurses, both take the subject BY VALUE, so the by-value
     // signature forced `name_par.clone().locally_free(name_par.clone(), d)`:
     // two full Θ(depth) deep clones to read one cached bitset. The fields are
     // read directly instead, which is byte-identical by construction.
-    let name_locally_free = name_par.locally_free().to_vec();
-    let name_connective_used = name_par.connective_used();
+    let name_locally_free = construction.locally_free(name_par).to_vec();
+    let name_connective_used = construction.connective_used(name_par);
     let send = Send {
-        chan: Some(name_par),
-        data: acc_pars,
+        chan: Some(Par::default()),
+        data: vec![Par::default(); acc_pars.len()],
         persistent,
         locally_free: union(name_locally_free, acc_locally_free),
         connective_used: name_connective_used || acc_connective_used,
     };
+    let children: Vec<_> = std::iter::once(name_par)
+        .chain(acc_pars.iter().copied())
+        .collect();
+    let component = construction.send_component(&send, &children)?;
 
     Ok(Step::Done(NormVal::Proc(ProcVisitOutputs {
-        par: input_par.prepend_send(send),
+        par: construction.append_component(
+            input_par,
+            component,
+            send.locally_free,
+            send.connective_used,
+        )?,
         free_map,
     })))
 }

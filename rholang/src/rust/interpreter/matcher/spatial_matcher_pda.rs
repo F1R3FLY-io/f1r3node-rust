@@ -18,6 +18,9 @@ use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::If;
 use models::rust::canonical_path::decode_trie_path;
 use models::rust::epathmap_trie_codec::EPathMapMode;
+use models::rust::par_bag::{
+    canonical_if_parts, canonical_par_connective_used, canonical_single_if_from_par,
+};
 use models::rust::par_map_type_mapper::ParMapTypeMapper;
 use models::rust::par_set_type_mapper::ParSetTypeMapper;
 use models::rust::rhoapi_ext::{EntryTrie, OwnedEPathMapEntry};
@@ -196,6 +199,14 @@ pub(super) fn send_target_index_shape(targets: Vec<Send>) -> (u64, usize) {
     (index.bag.cardinality(), index.bag.distinct_len())
 }
 
+#[cfg(test)]
+pub(super) fn if_target_index_shape(targets: Vec<If>) -> (u64, usize) {
+    let targets = targets.into_iter().map(MatchValue::If).collect::<Vec<_>>();
+    let index = ListTargetIndex::from_targets(&targets)
+        .expect("test targets fit the Bag target-index representation");
+    (index.bag.cardinality(), index.bag.distinct_len())
+}
+
 pub(super) fn match_par_pair(
     context: &mut SpatialMatcherContext,
     target: (Par, Par),
@@ -231,11 +242,14 @@ pda_entry!(match_new, New, New);
 pda_entry!(match_expr, Expr, Expr);
 pda_entry!(match_match, Match, Match);
 pda_entry!(match_unforgeable, Unforgeable, GUnforgeable);
+pda_entry!(match_if, If, If);
 pda_entry!(match_receive_bind, ReceiveBind, ReceiveBind);
 pda_entry!(match_case, MatchCase, MatchCase);
 
 enum Job {
     Match(Box<MatchPair>),
+    EncodedPar(EncodedRegion, EncodedRegion),
+    EncodedIf(EncodedRegion, EncodedRegion),
     ParConnectives(Box<ParConnectiveState>),
     ConnectiveCandidates(Box<ConnectiveCandidates>),
     ListInit(ListRequest),
@@ -268,6 +282,9 @@ enum Frame {
     Not {
         snapshot: FreeMap,
     },
+    EncodedIf {
+        branches: Box<EncodedIfBranches>,
+    },
     BindOnSuccess {
         level: i32,
         value: Box<Par>,
@@ -288,6 +305,11 @@ enum Frame {
         target_key: Vec<u8>,
         snapshot: FreeMap,
     },
+}
+
+struct EncodedIfBranches {
+    if_true: Option<(EncodedRegion, EncodedRegion)>,
+    if_false: (EncodedRegion, EncodedRegion),
 }
 
 /// Contiguous heap continuation stack. `Frame` never owns another `Frame`, so
@@ -313,8 +335,51 @@ enum MatchPair {
     Expr(Expr, Expr),
     Match(Match, Match),
     Unforgeable(GUnforgeable, GUnforgeable),
+    If(If, If),
     ReceiveBind(ReceiveBind, ReceiveBind),
     MatchCase(MatchCase, MatchCase),
+}
+
+/// An immutable range inside one canonical protobuf component body.
+///
+/// Descents clone only the `Arc` header and adjust offsets. A deeply nested
+/// schema walk therefore retains one allocation per top-level ParBag endpoint,
+/// not one decoded AST or copied suffix per level.
+#[derive(Clone)]
+struct EncodedRegion {
+    // `Arc<Vec<u8>>` deliberately uses a thin Arc pointer. An `Arc<[u8]>` is a
+    // fat pointer and made a pair of ranges widen `Job` beyond one cache line.
+    // The Vec is never mutated after publication; descendants share it exactly
+    // as immutable CoW storage.
+    bytes: Arc<Vec<u8>>,
+    start: usize,
+    end: usize,
+}
+
+impl EncodedRegion {
+    fn whole(bytes: Arc<Vec<u8>>) -> Self {
+        let end = bytes.len();
+        Self {
+            bytes,
+            start: 0,
+            end,
+        }
+    }
+
+    fn as_slice(&self) -> &[u8] { &self.bytes[self.start..self.end] }
+
+    fn child(&self, child: &[u8]) -> Option<Self> {
+        let root_start = self.as_slice().as_ptr() as usize;
+        let child_start = child.as_ptr() as usize;
+        let relative = child_start.checked_sub(root_start)?;
+        let start = self.start.checked_add(relative)?;
+        let end = start.checked_add(child.len())?;
+        (start >= self.start && end <= self.end).then(|| Self {
+            bytes: Arc::clone(&self.bytes),
+            start,
+            end,
+        })
+    }
 }
 
 fn drive(context: &mut SpatialMatcherContext, root: MatchPair) -> Option<()> {
@@ -327,6 +392,8 @@ fn drive_job(context: &mut SpatialMatcherContext, mut job: Job) -> Option<()> {
     loop {
         job = match job {
             Job::Match(pair) => evaluate_pair(context, *pair, &mut frames),
+            Job::EncodedPar(target, pattern) => evaluate_encoded_par(target, pattern),
+            Job::EncodedIf(target, pattern) => evaluate_encoded_if(target, pattern, &mut frames),
             Job::ParConnectives(state) => step_par_connectives(*state, &mut frames),
             Job::ConnectiveCandidates(state) => {
                 step_connective_candidates(context, *state, &mut frames)
@@ -394,6 +461,17 @@ fn resume(
         Frame::Not { snapshot } => {
             context.free_map = snapshot;
             Job::Return(!result)
+        }
+        Frame::EncodedIf { mut branches } => {
+            if !result {
+                Job::Return(false)
+            } else if let Some((target, pattern)) = branches.if_true.take() {
+                frames.push(Frame::EncodedIf { branches });
+                Job::EncodedPar(target, pattern)
+            } else {
+                let (target, pattern) = branches.if_false;
+                Job::EncodedPar(target, pattern)
+            }
         }
         Frame::BindOnSuccess { level, value } => {
             if result {
@@ -505,7 +583,7 @@ fn evaluate_pair(
     frames: &mut FrameStack,
 ) -> Job {
     match pair {
-        MatchPair::Par(target, pattern) => evaluate_par(target, pattern),
+        MatchPair::Par(target, pattern) => evaluate_par(context, target, pattern, frames),
         MatchPair::ParPair((tk, tv), (pk, pv)) => start_jobs(
             pair_jobs([MatchPair::Par(tk, pk), MatchPair::Par(tv, pv)]),
             frames,
@@ -520,9 +598,23 @@ fn evaluate_pair(
         MatchPair::Expr(target, pattern) => evaluate_expr(target, pattern, frames),
         MatchPair::Match(target, pattern) => evaluate_match(target, pattern, frames),
         MatchPair::Unforgeable(target, pattern) => evaluate_unforgeable(target, pattern),
+        MatchPair::If(target, pattern) => evaluate_if(target, pattern, frames),
         MatchPair::ReceiveBind(target, pattern) => evaluate_receive_bind(target, pattern),
         MatchPair::MatchCase(target, pattern) => evaluate_match_case(target, pattern),
     }
+}
+
+fn singleton_if_region(par: &Par) -> Option<EncodedRegion> {
+    if par.family_cardinality::<If>() != 1 || !par.all_components_are::<If>() {
+        return None;
+    }
+    let mut result = None;
+    par.visit_encoded::<If>(|entry| {
+        if entry.multiplicity().get() == 1 {
+            result = Some(EncodedRegion::whole(Arc::new(entry.payload().to_vec())));
+        }
+    });
+    result
 }
 
 struct ConnectivePlan {
@@ -542,13 +634,43 @@ struct ParConnectiveState {
 struct ConnectiveCandidates {
     parent: ParConnectiveState,
     connective: Option<Connective>,
-    candidates: std::vec::IntoIter<(Par, Par)>,
+    candidates: std::iter::Peekable<Box<dyn Iterator<Item = (Par, Par)>>>,
     free_map_is_unreachable: bool,
 }
 
-fn evaluate_par(target: Par, mut pattern: Par) -> Job {
+fn evaluate_par(
+    context: &SpatialMatcherContext,
+    target: Par,
+    mut pattern: Par,
+    frames: &mut FrameStack,
+) -> Job {
     if !pattern.connective_used() {
         return Job::Return(match_pars(&target, &pattern));
+    }
+
+    // An exact singleton `If` carrier has no AC choice to enumerate. Retain
+    // the authoritative component bodies once and let the PDA descend through
+    // shared protobuf ranges. This is a representation transition only: the
+    // three children remain independent matching obligations and imply no
+    // execution order between the Rholang processes they contain.
+    if let Some(pattern_if) = singleton_if_region(&pattern) {
+        return match singleton_if_region(&target) {
+            Some(target_if) => {
+                frames.push(Frame::RestoreOnFailure {
+                    snapshot: context.free_map.clone(),
+                });
+                Job::EncodedIf(target_if, pattern_if)
+            }
+            None => Job::Return(false),
+        };
+    }
+
+    // Unary AND and OR are both logical identities. The ParBag endpoint can
+    // prove and peel an arbitrary mixed spine directly in its canonical bytes,
+    // decoding only the terminal child. This transition is exact and avoids
+    // constructing every intermediate connective before the PDA starts.
+    if let Some(terminal) = pattern.canonical_unary_connective_terminal() {
+        return match_job(MatchPair::Par(target, terminal));
     }
 
     let mut expressions = pattern.take_occurrences::<Expr>();
@@ -600,7 +722,7 @@ fn evaluate_par(target: Par, mut pattern: Par) -> Job {
     let count = ParCount::new(&pattern);
     let min_remainder = count.clone();
     let max_remainder = if wildcard || remainder_level.is_some() {
-        count._max()
+        ParCount::unbounded()
     } else {
         count.clone()
     };
@@ -639,18 +761,42 @@ fn evaluate_par(target: Par, mut pattern: Par) -> Job {
     }))
 }
 
+fn evaluate_encoded_par(target: EncodedRegion, pattern: EncodedRegion) -> Job {
+    if target.as_slice() == pattern.as_slice()
+        && canonical_par_connective_used(pattern.as_slice()) == Some(false)
+    {
+        return Job::Return(true);
+    }
+
+    let target_if =
+        canonical_single_if_from_par(target.as_slice()).and_then(|body| target.child(body));
+    let pattern_if =
+        canonical_single_if_from_par(pattern.as_slice()).and_then(|body| pattern.child(body));
+    if let (Some(target_if), Some(pattern_if)) = (target_if, pattern_if) {
+        return Job::EncodedIf(target_if, pattern_if);
+    }
+
+    // The ParBag importer already validated these canonical messages. Decode
+    // only at a terminal or at a shape that the byte cursor cannot prove; the
+    // complete generated decoder remains the semantic authority for both.
+    let target = models::rust::rholang::protobuf_decoder::decode_par(target.as_slice())
+        .expect("an authoritative nested If target Par is canonical");
+    let pattern = models::rust::rholang::protobuf_decoder::decode_par(pattern.as_slice())
+        .expect("an authoritative nested If pattern Par is canonical");
+    match_job(MatchPair::Par(target, pattern))
+}
+
 fn step_par_connectives(mut state: ParConnectiveState, frames: &mut FrameStack) -> Job {
     let Some(plan) = state.plans.next() else {
         return start_par_fields(state, frames);
     };
-    let candidates: Vec<_> = sub_pars(
+    let candidates = sub_pars(
         &state.target,
         &plan.bounds.0,
         &plan.bounds.1,
         &plan.remainder_bounds.0,
         &plan.remainder_bounds.1,
-    )
-    .collect();
+    );
     let free_map_is_unreachable = matches!(
         plan.connective.connective_instance,
         Some(ConnBool(_))
@@ -661,10 +807,11 @@ fn step_par_connectives(mut state: ParConnectiveState, frames: &mut FrameStack) 
             | Some(VarRefBody(_))
             | None
     );
+    let candidates: Box<dyn Iterator<Item = (Par, Par)>> = Box::new(candidates);
     Job::ConnectiveCandidates(Box::new(ConnectiveCandidates {
         parent: state,
         connective: Some(plan.connective),
-        candidates: candidates.into_iter(),
+        candidates: candidates.peekable(),
         free_map_is_unreachable,
     }))
 }
@@ -681,7 +828,7 @@ fn step_connective_candidates(
     // Every candidate except the last needs a reusable connective. Move the
     // final one so singleton candidate searches never clone a recursively
     // nested connective merely to satisfy continuation ownership.
-    let connective = if state.candidates.len() == 0 {
+    let connective = if state.candidates.peek().is_none() {
         state
             .connective
             .take()
@@ -809,6 +956,21 @@ fn start_par_fields(state: ParConnectiveState, frames: &mut FrameStack) -> Job {
                 .map(MatchValue::Unforgeable)
                 .collect(),
             Merger::ParUnforgeables,
+            level,
+            wildcard,
+        ),
+        ListRequest::new(
+            target
+                .take_occurrences::<If>()
+                .into_iter()
+                .map(MatchValue::If)
+                .collect(),
+            pattern
+                .take_occurrences::<If>()
+                .into_iter()
+                .map(MatchValue::If)
+                .collect(),
+            Merger::ParConditionals,
             level,
             wildcard,
         ),
@@ -1229,6 +1391,83 @@ fn evaluate_unforgeable(target: GUnforgeable, pattern: GUnforgeable) -> Job {
     }
 }
 
+fn evaluate_if(target: If, pattern: If, frames: &mut FrameStack) -> Job {
+    // `connective_used` is derived metadata, not an `If` child to match.  This
+    // evaluator is reached precisely when the pattern is connective-aware, so
+    // its bit may be true while the corresponding concrete target bit is
+    // false.  Requiring equality here would reject the child connective before
+    // the PDA gets a chance to interpret it.
+    start_jobs(
+        pair_jobs([
+            MatchPair::Par(
+                target.condition.expect("If.condition (target)"),
+                pattern.condition.expect("If.condition (pattern)"),
+            ),
+            MatchPair::Par(
+                target.if_true.expect("If.if_true (target)"),
+                pattern.if_true.expect("If.if_true (pattern)"),
+            ),
+            MatchPair::Par(
+                target.if_false.expect("If.if_false (target)"),
+                pattern.if_false.expect("If.if_false (pattern)"),
+            ),
+        ]),
+        frames,
+    )
+}
+
+fn evaluate_encoded_if(
+    target: EncodedRegion,
+    pattern: EncodedRegion,
+    frames: &mut FrameStack,
+) -> Job {
+    let Some(target_parts) = canonical_if_parts(target.as_slice()) else {
+        let target = models::rust::rholang::protobuf_decoder::decode_if(target.as_slice())
+            .expect("an authoritative If target endpoint is canonical");
+        let pattern = models::rust::rholang::protobuf_decoder::decode_if(pattern.as_slice())
+            .expect("an authoritative If pattern endpoint is canonical");
+        return evaluate_if(target, pattern, frames);
+    };
+    let Some(pattern_parts) = canonical_if_parts(pattern.as_slice()) else {
+        let target = models::rust::rholang::protobuf_decoder::decode_if(target.as_slice())
+            .expect("an authoritative If target endpoint is canonical");
+        let pattern = models::rust::rholang::protobuf_decoder::decode_if(pattern.as_slice())
+            .expect("an authoritative If pattern endpoint is canonical");
+        return evaluate_if(target, pattern, frames);
+    };
+
+    let Some(target_condition) = target.child(target_parts.condition) else {
+        unreachable!("canonical If condition is a subrange of its endpoint")
+    };
+    let Some(target_true) = target.child(target_parts.if_true) else {
+        unreachable!("canonical If true branch is a subrange of its endpoint")
+    };
+    let Some(target_false) = target.child(target_parts.if_false) else {
+        unreachable!("canonical If false branch is a subrange of its endpoint")
+    };
+    let Some(pattern_condition) = pattern.child(pattern_parts.condition) else {
+        unreachable!("canonical If condition is a subrange of its endpoint")
+    };
+    let Some(pattern_true) = pattern.child(pattern_parts.if_true) else {
+        unreachable!("canonical If true branch is a subrange of its endpoint")
+    };
+    let Some(pattern_false) = pattern.child(pattern_parts.if_false) else {
+        unreachable!("canonical If false branch is a subrange of its endpoint")
+    };
+
+    // This is the matcher's deterministic proof-search continuation, not a
+    // Rholang scheduling relation. Source processes remain a parallel bag.
+    // One compact branch frame replaces a heap Vec of three heterogeneous
+    // Jobs, so encoded traversal never inherits the decoded MatchPair size.
+    frames.push(Frame::EncodedIf {
+        branches: Box::new(EncodedIfBranches {
+            if_true: Some((target_true, pattern_true)),
+            if_false: (target_false, pattern_false),
+        }),
+    });
+    Job::EncodedPar(target_condition, pattern_condition)
+}
+
 fn evaluate_receive_bind(target: ReceiveBind, pattern: ReceiveBind) -> Job {
     if target.patterns != pattern.patterns {
         Job::Return(false)
@@ -1262,6 +1501,7 @@ enum MatchValue {
     Match(Match),
     Bundle(Bundle),
     Unforgeable(GUnforgeable),
+    If(If),
     ReceiveBind(ReceiveBind),
 }
 
@@ -1299,6 +1539,9 @@ impl MatchValue {
             (Self::Unforgeable(left), Self::Unforgeable(right)) => {
                 shares_cow_bincode_identity(ParCursor::from(left), ParCursor::from(right))
             }
+            (Self::If(left), Self::If(right)) => {
+                shares_cow_bincode_identity(ParCursor::from(left), ParCursor::from(right))
+            }
             (Self::ReceiveBind(left), Self::ReceiveBind(right)) => {
                 shares_cow_bincode_identity(ParCursor::from(left), ParCursor::from(right))
             }
@@ -1324,6 +1567,7 @@ impl MatchValue {
             Self::Match(value) => output.push(&encode_match_path(ParCursor::from(value))),
             Self::Bundle(value) => output.push(&encode_match_path(ParCursor::from(value))),
             Self::Unforgeable(value) => output.push(&encode_match_path(ParCursor::from(value))),
+            Self::If(value) => output.push(&encode_match_path(ParCursor::from(value))),
             Self::ReceiveBind(value) => output.push(&encode_match_path(ParCursor::from(value))),
         }
         output.finish()
@@ -1355,6 +1599,7 @@ impl MatchValue {
             Self::Match(value) => push_identity!(value),
             Self::Bundle(value) => push_identity!(value),
             Self::Unforgeable(value) => push_identity!(value),
+            Self::If(value) => push_identity!(value),
             Self::ReceiveBind(value) => push_identity!(value),
         }
         output.finish()
@@ -1407,6 +1652,11 @@ impl MatchValue {
                 exact,
                 captures,
             )?],
+            Self::If(value) => vec![rho_path_query_cursor_atom(
+                ParCursor::from(value),
+                exact,
+                captures,
+            )?],
             Self::ReceiveBind(value) => vec![rho_path_query_cursor_atom(
                 ParCursor::from(value),
                 exact,
@@ -1449,6 +1699,7 @@ impl MatchValue {
             MatchValue::New(value) => value.p.as_ref().expect("New.p").connective_used(),
             MatchValue::Expr(value) => expr_connective_used(value),
             MatchValue::Match(value) => value.connective_used,
+            MatchValue::If(value) => value.connective_used,
             MatchValue::Bundle(_) | MatchValue::Unforgeable(_) => false,
             MatchValue::ReceiveBind(value) => value
                 .source
@@ -1469,6 +1720,7 @@ impl MatchValue {
             MatchValue::Match(value) => context.locally_free(value.clone(), 0).is_empty(),
             MatchValue::Bundle(value) => context.locally_free(value.clone(), 0).is_empty(),
             MatchValue::Unforgeable(value) => context.locally_free(value.clone(), 0).is_empty(),
+            MatchValue::If(value) => context.locally_free(value.clone(), 0).is_empty(),
             MatchValue::ReceiveBind(value) => context.locally_free(value.clone(), 0).is_empty(),
         }
     }
@@ -1501,6 +1753,9 @@ impl MatchValue {
             }
             (MatchValue::Unforgeable(target), MatchValue::Unforgeable(pattern)) => {
                 Some(MatchPair::Unforgeable(target, pattern))
+            }
+            (MatchValue::If(target), MatchValue::If(pattern)) => {
+                Some(MatchPair::If(target, pattern))
             }
             (MatchValue::ReceiveBind(target), MatchValue::ReceiveBind(pattern)) => {
                 Some(MatchPair::ReceiveBind(target, pattern))
@@ -1569,29 +1824,30 @@ impl ListCandidatePlan {
     }
 }
 
+fn is_single_connective_carrier(pattern: &Par) -> bool {
+    pattern.family_cardinality::<Connective>() == 1 && pattern.all_components_are::<Connective>()
+}
+
 fn single_connective_carrier(pattern: &Par) -> Option<Connective> {
-    (pattern.family_cardinality::<Send>() == 0
-        && pattern.family_cardinality::<Receive>() == 0
-        && pattern.family_cardinality::<New>() == 0
-        && pattern.family_cardinality::<Expr>() == 0
-        && pattern.family_cardinality::<Match>() == 0
-        && pattern.family_cardinality::<GUnforgeable>() == 0
-        && pattern.family_cardinality::<Bundle>() == 0
-        && pattern.family_cardinality::<Connective>() == 1
-        && pattern.family_cardinality::<If>() == 0)
-        .then(|| {
-            pattern
-                .first::<Connective>()
-                .expect("resident Par Connective endpoints are canonical")
-                .expect("the family cardinality proved one Connective")
-                .0
-        })
+    is_single_connective_carrier(pattern).then(|| {
+        pattern
+            .first::<Connective>()
+            .expect("resident Par Connective endpoints are canonical")
+            .expect("the family cardinality proved one Connective")
+            .0
+    })
 }
 
 fn compile_par_candidate_plan(root: &Par, captures: &mut PathMap<()>) -> ListCandidatePlan {
     #[cfg(feature = "spatial-matcher-connective-domain-differential")]
-    if single_connective_carrier(root).is_some() && FORCE_CONNECTIVE_DOMAIN_ALL.with(Cell::get) {
+    if is_single_connective_carrier(root) && FORCE_CONNECTIVE_DOMAIN_ALL.with(Cell::get) {
         return ListCandidatePlan::All;
+    }
+
+    if let Some(terminal) = root.canonical_unary_connective_terminal() {
+        return rho_path_query_atom(&terminal, captures)
+            .map(|atom| ListCandidatePlan::Query(RhoPathQuery::structural_sequence([atom], false)))
+            .unwrap_or(ListCandidatePlan::All);
     }
 
     let mut work = vec![CandidateCompileWork::Enter(root.clone())];
@@ -1721,6 +1977,7 @@ enum Merger {
     ParMatches,
     ParBundles,
     ParUnforgeables,
+    ParConditionals,
     ESet,
     EMap,
 }
@@ -1748,6 +2005,7 @@ impl Merger {
             Merger::ParMatches => par.with_matches(typed!(Match)),
             Merger::ParBundles => par.with_bundles(typed!(Bundle)),
             Merger::ParUnforgeables => par.with_unforgeables(typed!(Unforgeable)),
+            Merger::ParConditionals => par.with_conditionals(typed!(If)),
             Merger::ESet => {
                 par.with_exprs(vec![new_eset_expr(typed!(Par), Vec::new(), false, None)])
             }

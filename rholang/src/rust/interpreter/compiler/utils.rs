@@ -6,10 +6,18 @@ use models::rhoapi::{
 
 pub trait UnaryExpr {
     fn from_par(&self, p: Par) -> Expr;
+
+    /// Schema shell used by the planned normalizer. Recursive slots are empty
+    /// resident placeholders; the real children remain arena handles.
+    fn shell(&self) -> Expr { self.from_par(Par::default()) }
 }
 
 pub trait BinaryExpr {
     fn from_pars(&self, p1: Par, p2: Par) -> Expr;
+
+    /// Schema shell used by the planned normalizer. Recursive slots are empty
+    /// resident placeholders; the real children remain arena handles.
+    fn shell(&self) -> Expr { self.from_pars(Par::default(), Par::default()) }
 }
 
 impl UnaryExpr for ENot {

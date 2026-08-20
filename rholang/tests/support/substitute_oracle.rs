@@ -533,6 +533,7 @@ mod differential_substitute_worklist {
     #[derive(PartialEq, Debug)]
     struct Trace {
         result: Result<Vec<u8>, String>,
+        stable_hash_bytes: Result<Vec<u8>, String>,
         charges: Vec<(BillableKind, u64)>,
         total: i64,
     }
@@ -549,13 +550,26 @@ mod differential_substitute_worklist {
 
     fn trace_of(s: &Substitute, result: Result<Par, InterpreterError>) -> Trace {
         let (charges, total) = charge_trace(s);
+        let stable_hash_bytes = result
+            .as_ref()
+            .map(|p| models::rust::rholang::bincode_encoder::encode(p))
+            .map_err(|e| format!("{:?}", e));
         Trace {
             result: result
                 .map(|p| p.encode_to_vec())
                 .map_err(|e| format!("{:?}", e)),
+            stable_hash_bytes,
             charges,
             total,
         }
+    }
+
+    fn result_bytes<T: prost::Message>(
+        result: Result<T, InterpreterError>,
+    ) -> Result<Vec<u8>, String> {
+        result
+            .map(|value| value.encode_to_vec())
+            .map_err(|error| format!("{:?}", error))
     }
 
     /// Run one case through BOTH paths on FRESH budgets and compare the audit's
@@ -593,6 +607,152 @@ mod differential_substitute_worklist {
         for case in &corpus {
             assert_agree(case, &populated, "populated");
             assert_agree(case, &empty, "empty");
+        }
+    }
+
+    #[test]
+    fn received_string_length_substitution_agrees_with_the_recursive_oracle() {
+        use models::rhoapi::expr::ExprInstance;
+        use models::rhoapi::var::VarInstance;
+        use models::rhoapi::{EMethod, EVar, Expr, Var};
+
+        let bound_target = Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::EVarBody(EVar {
+                v: Some(Var {
+                    var_instance: Some(VarInstance::BoundVar(0)),
+                }),
+            })),
+        }]);
+        let term = Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::EMethodBody(EMethod {
+                method_name: "length".to_owned(),
+                target: Some(bound_target),
+                arguments: Vec::new(),
+                locally_free: vec![0],
+                connective_used: false,
+            })),
+        }]);
+        let env = Env::new().put(Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::GString("A".repeat(32))),
+        }]));
+        let case = SubstitutionCase {
+            name: "received-string-length".to_owned(),
+            term,
+            depth: 0,
+        };
+
+        assert_agree(&case, &env, "single received string");
+    }
+
+    #[test]
+    fn bounded_string_continuation_substitution_agrees_with_the_recursive_oracle() {
+        use std::collections::HashMap;
+
+        use rholang_parser::RholangParser;
+        use validated::Validated;
+
+        use crate::rust::interpreter::compiler::exports::ProcVisitInputs;
+        use crate::rust::interpreter::compiler::normalize::normalize_ann_proc;
+
+        const SOURCE: &str = "new x, loop in { \
+             x!(\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\") | \
+             for(@s <- x){ \
+               contract loop(@n) = { match n { 0 => Nil  _ => loop!(n - 1) } } | \
+               loop!(s.length()) } }";
+
+        let parser = RholangParser::new();
+        let ast = match parser.parse(SOURCE) {
+            Validated::Good(mut processes) if processes.len() == 1 => processes.remove(0),
+            other => panic!("bounded-string differential source did not parse: {other:?}"),
+        };
+        let mut normalized =
+            normalize_ann_proc(&ast, ProcVisitInputs::new(), &HashMap::new(), &parser)
+                .expect("bounded-string source normalizes")
+                .par;
+        let outer = normalized
+            .take_occurrences::<New>()
+            .pop()
+            .expect("bounded-string source has one outer new");
+        let mut outer_body = outer.p.expect("outer new retains its body");
+        let receive = outer_body
+            .take_occurrences::<Receive>()
+            .pop()
+            .expect("outer body has one receive");
+        let continuation = receive.body.expect("receive retains its continuation");
+
+        // The real reducer substitutes this body at depth zero under the two
+        // freshly allocated outer names, shifted past the receive's one bound
+        // pattern variable. Concrete values do not matter to the driving
+        // proof, but distinct bindings ensure both de Bruijn lookups fire.
+        let outer_env = Env::new()
+            .put(gint(700))
+            .put(Par::default().with_exprs(vec![Expr {
+                expr_instance: Some(ExprInstance::GString("loop-channel".to_owned())),
+            }]));
+        let shifted = outer_env.shift(receive.bind_count);
+        let case = SubstitutionCase {
+            name: "bounded-string-continuation".to_owned(),
+            term: continuation,
+            depth: 0,
+        };
+
+        assert_agree(&case, &shifted, "bounded-string receive continuation");
+    }
+
+    #[test]
+    fn every_public_no_sort_root_agrees_with_the_recursive_oracle() {
+        let env = populated_env();
+        for case in substitution_corpus() {
+            let ctx = SubCtx::root(case.depth);
+            let mut components = case.term;
+
+            for value in components.take_occurrences::<Expr>() {
+                let expected = result_bytes(expr_recursive(value.clone(), ctx, EnvView::new(&env)));
+                let actual =
+                    result_bytes(subject().substitute_expr_no_sort(value, case.depth, &env));
+                assert_eq!(expected, actual, "Expr root divergence in `{}`", case.name);
+            }
+            for value in components.take_occurrences::<Send>() {
+                let expected = result_bytes(send_recursive(value.clone(), ctx, EnvView::new(&env)));
+                let actual = result_bytes(subject().substitute_no_sort(value, case.depth, &env));
+                assert_eq!(expected, actual, "Send root divergence in `{}`", case.name);
+            }
+            for value in components.take_occurrences::<Receive>() {
+                let expected =
+                    result_bytes(receive_recursive(value.clone(), ctx, EnvView::new(&env)));
+                let actual = result_bytes(subject().substitute_no_sort(value, case.depth, &env));
+                assert_eq!(
+                    expected, actual,
+                    "Receive root divergence in `{}`",
+                    case.name
+                );
+            }
+            for value in components.take_occurrences::<New>() {
+                let expected = result_bytes(new_recursive(value.clone(), ctx, EnvView::new(&env)));
+                let actual = result_bytes(subject().substitute_no_sort(value, case.depth, &env));
+                assert_eq!(expected, actual, "New root divergence in `{}`", case.name);
+            }
+            for value in components.take_occurrences::<Match>() {
+                let expected =
+                    result_bytes(match_recursive(value.clone(), ctx, EnvView::new(&env)));
+                let actual = result_bytes(subject().substitute_no_sort(value, case.depth, &env));
+                assert_eq!(expected, actual, "Match root divergence in `{}`", case.name);
+            }
+            for value in components.take_occurrences::<If>() {
+                let expected = result_bytes(if_recursive(value.clone(), ctx, EnvView::new(&env)));
+                let actual = result_bytes(subject().substitute_no_sort(value, case.depth, &env));
+                assert_eq!(expected, actual, "If root divergence in `{}`", case.name);
+            }
+            for value in components.take_occurrences::<Bundle>() {
+                let expected =
+                    result_bytes(bundle_recursive(value.clone(), ctx, EnvView::new(&env)));
+                let actual = result_bytes(subject().substitute_no_sort(value, case.depth, &env));
+                assert_eq!(
+                    expected, actual,
+                    "Bundle root divergence in `{}`",
+                    case.name
+                );
+            }
         }
     }
 

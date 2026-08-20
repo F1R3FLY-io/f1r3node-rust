@@ -22,14 +22,19 @@ use models::rhoapi::{
 };
 use models::rust::canonical_path::{decode_trie_path, encode_trie_path};
 use models::rust::epathmap_trie_codec::EPathMapMode;
+use models::rust::par_construction::{ParConstruction, PlannedPar};
 use models::rust::par_map::ParMap;
 use models::rust::par_map_type_mapper::ParMapTypeMapper;
 use models::rust::par_set::ParSet;
 use models::rust::par_set_type_mapper::ParSetTypeMapper;
 use models::rust::pathmap_integration::{segments_to_key, CursorKind};
 use models::rust::pathmap_zipper::decode_cursor;
-use models::rust::rholang::implicits::{concatenate_pars, single_bundle, single_expr};
+#[cfg(test)]
+use models::rust::rholang::implicits::concatenate_pars;
+use models::rust::rholang::implicits::{single_bundle, single_expr};
+#[cfg(test)]
 use models::rust::sorted_par_hash_set::SortedParHashSet;
+#[cfg(test)]
 use models::rust::sorted_par_map::SortedParMap;
 use models::rust::string_ops::StringOps;
 use models::rust::utils::{
@@ -458,8 +463,10 @@ trait Method {
 //   * PRE-order charges (`method_call_cost`; `op_call_cost` for %% / ++ / --)
 //     run in the `descend_*` handler BEFORE any child is pushed.
 //   * POST-order charges run in `Combine` AFTER all child values are available.
-//   * Each arm's INTERNAL statement order (e.g. reserve(division_cost) THEN the
-//     rhs==0 check) is reproduced verbatim by the shared `combine_*` helper.
+//   * Each scalar/operator arm's INTERNAL statement order (e.g.
+//     reserve(division_cost) THEN the rhs==0 check) is reproduced by its shared
+//     `combine_*` helper. Collection construction uses explicit plan frames and
+//     is checked against independent decoded rebuilds in the recursive oracle.
 //   * A `?` abort discards `work`/`vals` and leaves already-reserved charges
 //     reserved — identical to the recursive `?`.
 //
@@ -469,8 +476,80 @@ trait Method {
 // re-evaluation semantics without nesting another evaluator drive.
 // ============================================================================
 
+/// A `Par` produced by the evaluator.
+///
+/// Structural results remain in the drive's flat construction arena. Native
+/// methods and other already-resident boundaries keep their value intact until
+/// a structural parent actually needs to import it.
+enum EvParStorage {
+    Planned(PlannedPar),
+    Resident(Par),
+}
+
+struct EvPar {
+    storage: EvParStorage,
+    /// Recomputed from evaluated top-level components. `None` is retained only
+    /// for resident native-method results and is filled on first structural use.
+    structural_locally_free: Option<Vec<u8>>,
+}
+
+impl EvPar {
+    fn planned(value: PlannedPar, structural_locally_free: Vec<u8>) -> Self {
+        Self {
+            storage: EvParStorage::Planned(value),
+            structural_locally_free: Some(structural_locally_free),
+        }
+    }
+
+    fn resident(value: Par) -> Self {
+        Self {
+            storage: EvParStorage::Resident(value),
+            structural_locally_free: None,
+        }
+    }
+}
+
+/// An `Expr` produced by the evaluator. A planned expression is represented by
+/// the singleton planned `Par` that owns its component; this lets `ToParWrap`
+/// be an identity edge and avoids materializing every nested collection.
+enum EvExprStorage {
+    Planned(PlannedPar),
+    Resident(Expr),
+}
+
+struct EvExpr {
+    storage: EvExprStorage,
+    locally_free: Vec<u8>,
+}
+
+impl EvExpr {
+    fn resident(value: Expr) -> Self {
+        let locally_free = expr_locally_free_ref(&value);
+        Self {
+            storage: EvExprStorage::Resident(value),
+            locally_free,
+        }
+    }
+
+    fn planned(value: PlannedPar, locally_free: Vec<u8>) -> Self {
+        Self {
+            storage: EvExprStorage::Planned(value),
+            locally_free,
+        }
+    }
+}
+
 /// A produced value, tagged by the evaluator that produced it.
 enum EvVal {
+    Par(EvPar),
+    Expr(EvExpr),
+    Bool(bool),
+    I64(i64),
+}
+
+/// Owned result emitted after the transient construction arena has been
+/// finished at the public evaluator boundary.
+enum EvalResult {
     Par(Par),
     Expr(Expr),
     Bool(bool),
@@ -585,8 +664,14 @@ struct MethodInvocation {
     args: Vec<Par>,
 }
 
+enum PreparedMethodValue {
+    Par(Par),
+    Expr(Expr),
+    I64(i64),
+}
+
 struct PreparedMethodValues {
-    values: std::vec::IntoIter<EvVal>,
+    values: std::vec::IntoIter<PreparedMethodValue>,
 }
 
 impl PreparedMethodValues {
@@ -596,7 +681,7 @@ impl PreparedMethodValues {
         }
     }
 
-    fn new(values: Vec<EvVal>) -> Self {
+    fn new(values: Vec<PreparedMethodValue>) -> Self {
         Self {
             values: values.into_iter(),
         }
@@ -604,21 +689,21 @@ impl PreparedMethodValues {
 
     fn next_par(&mut self) -> Par {
         match self.values.next() {
-            Some(EvVal::Par(value)) => value,
+            Some(PreparedMethodValue::Par(value)) => value,
             _ => unreachable!("method PDA: expected a prepared Par"),
         }
     }
 
     fn next_expr(&mut self) -> Expr {
         match self.values.next() {
-            Some(EvVal::Expr(value)) => value,
+            Some(PreparedMethodValue::Expr(value)) => value,
             _ => unreachable!("method PDA: expected a prepared Expr"),
         }
     }
 
     fn next_i64(&mut self) -> i64 {
         match self.values.next() {
-            Some(EvVal::I64(value)) => value,
+            Some(PreparedMethodValue::I64(value)) => value,
             _ => unreachable!("method PDA: expected a prepared i64"),
         }
     }
@@ -672,13 +757,13 @@ enum EvWork<'e> {
 /// counts (never child values — those live on the `vals` stack).
 enum EvKont<'e> {
     // ---- eval_expr ----
-    /// Fold `concatenate_pars` over `n` child Pars onto the shell of `par`.
+    /// Bag-union `n` planned child Pars with the expression-free shell of `par`.
     Join {
         par: &'e Par,
         n: usize,
     },
     // ---- eval_expr_to_par ----
-    /// `Par::default().with_exprs(vec![child_expr])`.
+    /// Treat a planned singleton expression as a Par, or wrap a resident leaf.
     ToParWrap,
     /// `method.apply(target, args)` -> Par (Display "Unimplemented method" error).
     ToParMethod {
@@ -755,6 +840,13 @@ enum EvKont<'e> {
         prepared_count: usize,
         output: MethodOutput,
     },
+    /// Replay an encoded `length(getLeaf(zipper))` spine after its single
+    /// terminal value has been decoded. Each step calls the existing length
+    /// implementation, preserving its cost, result, and error behavior.
+    LengthReentry {
+        remaining: usize,
+        output: MethodOutput,
+    },
     // ---- eval_to_bool / eval_to_i64 ([e] arm: extract from an evaluated Expr) ----
     BoolExtract,
     I64Extract,
@@ -765,14 +857,14 @@ enum EvKont<'e> {
 // variant; a mismatch is a trampoline bug, hence `expect`).
 // ---------------------------------------------------------------------------
 #[inline]
-fn ev_pop_par(vals: &mut Vec<EvVal>) -> Par {
+fn ev_pop_par(vals: &mut Vec<EvVal>) -> EvPar {
     match vals.pop() {
         Some(EvVal::Par(p)) => p,
         _ => unreachable!("eval_drive: expected Par on value stack"),
     }
 }
 #[inline]
-fn ev_pop_expr(vals: &mut Vec<EvVal>) -> Expr {
+fn ev_pop_expr(vals: &mut Vec<EvVal>) -> EvExpr {
     match vals.pop() {
         Some(EvVal::Expr(e)) => e,
         _ => unreachable!("eval_drive: expected Expr on value stack"),
@@ -788,9 +880,42 @@ fn ev_pop_bool(vals: &mut Vec<EvVal>) -> bool {
 // (no `ev_pop_i64`: an i64 value is only ever produced as a drive ROOT — for the
 // `eval_to_i64` wrapper / `nth` — and never pushed as a child, so no `Combine`
 // pops one off the value stack.)
-/// Pop `n` Pars, returning them in FORWARD (push) order.
+fn ev_finish_par(
+    value: EvPar,
+    construction: &ParConstruction,
+) -> Result<Par, models::rust::par_construction::ParConstructionError> {
+    match value.storage {
+        EvParStorage::Planned(value) => construction.finish(value),
+        EvParStorage::Resident(value) => Ok(value),
+    }
+}
+
+fn ev_finish_expr(
+    value: EvExpr,
+    construction: &ParConstruction,
+) -> Result<Expr, models::rust::par_construction::ParConstructionError> {
+    match value.storage {
+        EvExprStorage::Resident(value) => Ok(value),
+        EvExprStorage::Planned(value) => {
+            let value = construction.finish(value)?;
+            Ok(single_expr(&value).expect("planned Expr value must remain one expression"))
+        }
+    }
+}
+
+fn ev_plan_par(
+    value: EvPar,
+    construction: &mut ParConstruction,
+) -> Result<PlannedPar, models::rust::par_construction::ParConstructionError> {
+    match value.storage {
+        EvParStorage::Planned(value) => Ok(value),
+        EvParStorage::Resident(value) => construction.import_par(&value),
+    }
+}
+
+/// Pop `n` Pars in FORWARD (push) order.
 #[inline]
-fn ev_pop_n_par(vals: &mut Vec<EvVal>, n: usize) -> Vec<Par> {
+fn ev_pop_n_par(vals: &mut Vec<EvVal>, n: usize) -> Vec<EvPar> {
     let mut out = Vec::with_capacity(n);
     for _ in 0..n {
         out.push(ev_pop_par(vals));
@@ -800,22 +925,40 @@ fn ev_pop_n_par(vals: &mut Vec<EvVal>, n: usize) -> Vec<Par> {
 }
 
 #[inline]
-fn ev_pop_n_expr(vals: &mut Vec<EvVal>, n: usize) -> Vec<Expr> {
+fn ev_pop_n_expr(
+    vals: &mut Vec<EvVal>,
+    n: usize,
+    construction: &ParConstruction,
+) -> Result<Vec<Expr>, models::rust::par_construction::ParConstructionError> {
     let mut out = Vec::with_capacity(n);
     for _ in 0..n {
-        out.push(ev_pop_expr(vals));
+        out.push(ev_finish_expr(ev_pop_expr(vals), construction)?);
     }
     out.reverse();
-    out
+    Ok(out)
 }
 
 #[inline]
-fn ev_pop_n_values(vals: &mut Vec<EvVal>, n: usize) -> Vec<EvVal> {
+fn ev_pop_n_prepared_values(
+    vals: &mut Vec<EvVal>,
+    n: usize,
+    construction: &ParConstruction,
+) -> Result<Vec<PreparedMethodValue>, models::rust::par_construction::ParConstructionError> {
     let split = vals
         .len()
         .checked_sub(n)
         .expect("method PDA produced fewer prepared values than requested");
     vals.split_off(split)
+        .into_iter()
+        .map(|value| match value {
+            EvVal::Par(value) => ev_finish_par(value, construction).map(PreparedMethodValue::Par),
+            EvVal::Expr(value) => {
+                ev_finish_expr(value, construction).map(PreparedMethodValue::Expr)
+            }
+            EvVal::I64(value) => Ok(PreparedMethodValue::I64(value)),
+            EvVal::Bool(_) => unreachable!("method PDA cannot prepare a bool operand"),
+        })
+        .collect()
 }
 
 /// By-reference equivalent of `expr.locally_free(expr.clone(), 0)`.
@@ -947,6 +1090,16 @@ impl DebruijnInterpreter {
         // detached branch's error is localizable. Display-only (NOT consensus).
         path: SmallVec<[u32; 8]>,
     ) -> Result<(), InterpreterError> {
+        // Bundle evaluation is structural identity apart from its observation
+        // event. With no reduction observer installed, collapse an exact unary
+        // Bundle spine in the authoritative ParBag bytes and decode only the
+        // terminal process. Capture/step sessions retain the ordinary per-node
+        // path so their event stream and pause count remain byte-for-byte exact.
+        if !self.space.has_reduction_observer() {
+            if let Some(terminal) = par.canonical_unary_bundle_terminal() {
+                par = terminal;
+            }
+        }
         let terms: Vec<GeneratedMessage> = vec![
             par.take_occurrences::<Send>()
                 .into_iter()
@@ -2514,17 +2667,25 @@ impl DebruijnInterpreter {
         &self,
         root: EvWork<'root>,
         env: &'root Env<Par>,
-    ) -> Result<EvVal, InterpreterError> {
+    ) -> Result<EvalResult, InterpreterError> {
         let decoded_entries = Arena::new();
         let decoded_exprs = Arena::new();
         let method_invocations = Arena::new();
-        self.eval_drive_with_arena(
+        let mut construction = ParConstruction::new();
+        let value = self.eval_drive_with_arena(
             root,
             env,
             &decoded_entries,
             &decoded_exprs,
             &method_invocations,
-        )
+            &mut construction,
+        )?;
+        Ok(match value {
+            EvVal::Par(value) => EvalResult::Par(ev_finish_par(value, &construction)?),
+            EvVal::Expr(value) => EvalResult::Expr(ev_finish_expr(value, &construction)?),
+            EvVal::Bool(value) => EvalResult::Bool(value),
+            EvVal::I64(value) => EvalResult::I64(value),
+        })
     }
 
     /// Execute one evaluator PDA while retaining any set-mode EPathMap entries
@@ -2538,6 +2699,7 @@ impl DebruijnInterpreter {
         decoded_entries: &'e Arena<Par>,
         decoded_exprs: &'e Arena<Expr>,
         method_invocations: &'e Arena<MethodInvocation>,
+        construction: &mut ParConstruction,
     ) -> Result<EvVal, InterpreterError> {
         let mut work: Vec<EvWork<'e>> = Vec::with_capacity(64);
         let mut vals: Vec<EvVal> = Vec::with_capacity(64);
@@ -2545,7 +2707,7 @@ impl DebruijnInterpreter {
         while let Some(w) = work.pop() {
             match w {
                 EvWork::EEval(p) => {
-                    self.descend_eval(p, env, decoded_exprs, &mut work, &mut vals)?
+                    self.descend_eval(p, env, decoded_entries, decoded_exprs, &mut work, &mut vals)?
                 }
                 EvWork::EToPar(e) => {
                     self.descend_to_par(e, env, decoded_entries, &mut work, &mut vals)?
@@ -2553,9 +2715,14 @@ impl DebruijnInterpreter {
                 EvWork::EToExpr(e) => {
                     self.descend_to_expr(e, env, decoded_entries, &mut work, &mut vals)?
                 }
-                EvWork::ESingle(p) => {
-                    self.descend_single(p, env, decoded_exprs, &mut work, &mut vals)?
-                }
+                EvWork::ESingle(p) => self.descend_single(
+                    p,
+                    env,
+                    decoded_entries,
+                    decoded_exprs,
+                    &mut work,
+                    &mut vals,
+                )?,
                 EvWork::EBool(p) => {
                     self.descend_bool(p, env, decoded_entries, decoded_exprs, &mut work, &mut vals)?
                 }
@@ -2568,6 +2735,7 @@ impl DebruijnInterpreter {
                     decoded_entries,
                     decoded_exprs,
                     method_invocations,
+                    construction,
                     &mut work,
                     &mut vals,
                 )?,
@@ -2584,13 +2752,13 @@ impl DebruijnInterpreter {
     // =======================================================================
     pub fn eval_expr(&self, par: &Par, env: &Env<Par>) -> Result<Par, InterpreterError> {
         match self.eval_drive(EvWork::EEval(par), env)? {
-            EvVal::Par(p) => Ok(p),
+            EvalResult::Par(p) => Ok(p),
             _ => unreachable!("eval_expr: drive produced non-Par"),
         }
     }
     pub fn eval_expr_to_par(&self, expr: &Expr, env: &Env<Par>) -> Result<Par, InterpreterError> {
         match self.eval_drive(EvWork::EToPar(expr), env)? {
-            EvVal::Par(p) => Ok(p),
+            EvalResult::Par(p) => Ok(p),
             _ => unreachable!("eval_expr_to_par: drive produced non-Par"),
         }
     }
@@ -2601,41 +2769,29 @@ impl DebruijnInterpreter {
     #[cfg_attr(not(test), allow(dead_code))]
     fn eval_expr_to_expr(&self, expr: &Expr, env: &Env<Par>) -> Result<Expr, InterpreterError> {
         match self.eval_drive(EvWork::EToExpr(expr), env)? {
-            EvVal::Expr(e) => Ok(e),
+            EvalResult::Expr(e) => Ok(e),
             _ => unreachable!("eval_expr_to_expr: drive produced non-Expr"),
         }
     }
     #[cfg_attr(not(test), allow(dead_code))]
     fn eval_single_expr(&self, p: &Par, env: &Env<Par>) -> Result<Expr, InterpreterError> {
         match self.eval_drive(EvWork::ESingle(p), env)? {
-            EvVal::Expr(e) => Ok(e),
+            EvalResult::Expr(e) => Ok(e),
             _ => unreachable!("eval_single_expr: drive produced non-Expr"),
         }
     }
-    #[cfg(test)]
-    fn eval_to_bool(&self, p: &Par, env: &Env<Par>) -> Result<bool, InterpreterError> {
+    pub fn eval_to_bool(&self, p: &Par, env: &Env<Par>) -> Result<bool, InterpreterError> {
         match self.eval_drive(EvWork::EBool(p), env)? {
-            EvVal::Bool(b) => Ok(b),
+            EvalResult::Bool(b) => Ok(b),
             _ => unreachable!("eval_to_bool: drive produced non-Bool"),
         }
     }
     #[cfg_attr(not(test), allow(dead_code))]
     fn eval_to_i64(&self, p: &Par, env: &Env<Par>) -> Result<i64, InterpreterError> {
         match self.eval_drive(EvWork::EI64(p), env)? {
-            EvVal::I64(i) => Ok(i),
+            EvalResult::I64(i) => Ok(i),
             _ => unreachable!("eval_to_i64: drive produced non-I64"),
         }
-    }
-
-    /// Byte-identical shallow equivalent of `par.with_exprs(Vec::new())`: clears
-    /// `exprs` and clones every OTHER field. `with_exprs` builds `Par { exprs:
-    /// new, ..self.clone() }`, i.e. it deep-clones `exprs` then discards them —
-    /// on a D-deep spine that is a D-deep recursive clone (a second SO source and
-    /// O(D^2) waste). This produces the identical value without touching `exprs`.
-    fn ev_par_shell(par: &Par) -> Par {
-        let mut shell = par.clone();
-        shell.replace_exprs(Vec::new());
-        shell
     }
 
     // =======================================================================
@@ -2648,11 +2804,39 @@ impl DebruijnInterpreter {
     fn descend_eval<'e>(
         &self,
         par: &'e Par,
-        _env: &Env<Par>,
+        env: &Env<Par>,
+        decoded_entries: &'e Arena<Par>,
         decoded_exprs: &'e Arena<Expr>,
         work: &mut Vec<EvWork<'e>>,
-        _vals: &mut Vec<EvVal>,
+        vals: &mut Vec<EvVal>,
     ) -> Result<(), InterpreterError> {
+        // A pure EPathMap method spine is already one canonical Expr endpoint.
+        // Recognize it through the endpoint's borrowed protobuf regions before
+        // `decode_occurrences` constructs the complete nested semantic graph.
+        // Rejected shapes fall through without consuming cost or changing the
+        // historical evaluating path.
+        if let Some(action) = self.begin_fused_method_chain_par(par, env)? {
+            Self::continue_fused_action(action, FusedOutput::Par, decoded_entries, work, vals);
+            return Ok(());
+        }
+        if let Some(reentry) = self.begin_encoded_method_reentry(par)? {
+            work.push(EvWork::Combine(EvKont::LengthReentry {
+                remaining: reentry.depth,
+                output: MethodOutput::Par,
+            }));
+            work.push(EvWork::ESingle(decoded_entries.alloc(reentry.terminal)));
+            return Ok(());
+        }
+        // `ParBag` maintains an exact, CoW-shared certificate for the dominant
+        // ground singleton shape. Process-only Pars are also identities because
+        // this evaluator folds only top-level expressions. Preserve the shared
+        // PathMap root directly instead of decoding and rebuilding a certified
+        // normal form through the PDA. A false certificate always falls through
+        // to the complete evaluating path below.
+        if models::rust::pathmap_crate_type_mapper::reducer_eval_identity(par) {
+            vals.push(EvVal::Par(EvPar::resident(par.clone())));
+            return Ok(());
+        }
         let expressions = decoded_exprs.alloc_extend(par.decode_occurrences::<Expr>());
         work.push(EvWork::Combine(EvKont::Join {
             par,
@@ -2729,17 +2913,20 @@ impl DebruijnInterpreter {
         &self,
         p: &'e Par,
         _env: &Env<Par>,
+        decoded_entries: &'e Arena<Par>,
         decoded_exprs: &'e Arena<Expr>,
         work: &mut Vec<EvWork<'e>>,
         _vals: &mut Vec<EvVal>,
     ) -> Result<(), InterpreterError> {
-        if p.family_cardinality::<Send>() != 0
-            || p.family_cardinality::<Receive>() != 0
-            || p.family_cardinality::<New>() != 0
-            || p.family_cardinality::<Match>() != 0
-            || p.family_cardinality::<GUnforgeable>() != 0
-            || p.family_cardinality::<Bundle>() != 0
-        {
+        if let Some(reentry) = self.begin_encoded_method_reentry(p)? {
+            work.push(EvWork::Combine(EvKont::LengthReentry {
+                remaining: reentry.depth,
+                output: MethodOutput::Expr,
+            }));
+            work.push(EvWork::ESingle(decoded_entries.alloc(reentry.terminal)));
+            return Ok(());
+        }
+        if !p.all_components_are::<Expr>() {
             return Err(InterpreterError::ReduceError(String::from(
                 "Error: parallel or non expression found where expression expected.",
             )));
@@ -2813,7 +3000,7 @@ impl DebruijnInterpreter {
         vals: &mut Vec<EvVal>,
     ) {
         match output {
-            MethodOutput::Par => vals.push(EvVal::Par(result)),
+            MethodOutput::Par => vals.push(EvVal::Par(EvPar::resident(result))),
             MethodOutput::Expr => work.push(EvWork::ESingle(decoded_entries.alloc(result))),
         }
     }
@@ -2894,13 +3081,7 @@ impl DebruijnInterpreter {
         work: &mut Vec<EvWork<'e>>,
         vals: &mut Vec<EvVal>,
     ) -> Result<(), InterpreterError> {
-        if p.family_cardinality::<Send>() != 0
-            && p.family_cardinality::<Receive>() != 0
-            && p.family_cardinality::<New>() != 0
-            && p.family_cardinality::<Match>() != 0
-            && p.family_cardinality::<GUnforgeable>() != 0
-            && p.family_cardinality::<Bundle>() != 0
-        {
+        if !p.all_components_are::<Expr>() {
             return Err(InterpreterError::ReduceError(String::from(
                 "Error: parallel or non expression found where expression expected.",
             )));
@@ -2941,13 +3122,7 @@ impl DebruijnInterpreter {
         work: &mut Vec<EvWork<'e>>,
         vals: &mut Vec<EvVal>,
     ) -> Result<(), InterpreterError> {
-        if p.family_cardinality::<Send>() != 0
-            && p.family_cardinality::<Receive>() != 0
-            && p.family_cardinality::<New>() != 0
-            && p.family_cardinality::<Match>() != 0
-            && p.family_cardinality::<GUnforgeable>() != 0
-            && p.family_cardinality::<Bundle>() != 0
-        {
+        if !p.all_components_are::<Expr>() {
             return Err(InterpreterError::ReduceError(String::from(
                 "Error: parallel or non expression found where expression expected.",
             )));
@@ -2999,63 +3174,63 @@ impl DebruijnInterpreter {
         match expr_instance {
             // ---- ground leaves (no charge, no children) ----
             ExprInstance::GBool(x) => {
-                vals.push(EvVal::Expr(Expr {
+                vals.push(EvVal::Expr(EvExpr::resident(Expr {
                     expr_instance: Some(ExprInstance::GBool(*x)),
-                }));
+                })));
                 Ok(())
             }
             ExprInstance::GInt(x) => {
-                vals.push(EvVal::Expr(Expr {
+                vals.push(EvVal::Expr(EvExpr::resident(Expr {
                     expr_instance: Some(ExprInstance::GInt(*x)),
-                }));
+                })));
                 Ok(())
             }
             ExprInstance::GString(x) => {
-                vals.push(EvVal::Expr(Expr {
+                vals.push(EvVal::Expr(EvExpr::resident(Expr {
                     expr_instance: Some(ExprInstance::GString(x.clone())),
-                }));
+                })));
                 Ok(())
             }
             ExprInstance::GUri(x) => {
-                vals.push(EvVal::Expr(Expr {
+                vals.push(EvVal::Expr(EvExpr::resident(Expr {
                     expr_instance: Some(ExprInstance::GUri(x.clone())),
-                }));
+                })));
                 Ok(())
             }
             ExprInstance::GByteArray(x) => {
-                vals.push(EvVal::Expr(Expr {
+                vals.push(EvVal::Expr(EvExpr::resident(Expr {
                     expr_instance: Some(ExprInstance::GByteArray(x.clone())),
-                }));
+                })));
                 Ok(())
             }
             ExprInstance::GDouble(x) => {
-                vals.push(EvVal::Expr(Expr {
+                vals.push(EvVal::Expr(EvExpr::resident(Expr {
                     expr_instance: Some(ExprInstance::GDouble(*x)),
-                }));
+                })));
                 Ok(())
             }
             ExprInstance::GBigInt(x) => {
-                vals.push(EvVal::Expr(Expr {
+                vals.push(EvVal::Expr(EvExpr::resident(Expr {
                     expr_instance: Some(ExprInstance::GBigInt(x.clone())),
-                }));
+                })));
                 Ok(())
             }
             ExprInstance::GBigRat(x) => {
-                vals.push(EvVal::Expr(Expr {
+                vals.push(EvVal::Expr(EvExpr::resident(Expr {
                     expr_instance: Some(ExprInstance::GBigRat(x.clone())),
-                }));
+                })));
                 Ok(())
             }
             ExprInstance::GFixedPoint(x) => {
-                vals.push(EvVal::Expr(Expr {
+                vals.push(EvVal::Expr(EvExpr::resident(Expr {
                     expr_instance: Some(ExprInstance::GFixedPoint(x.clone())),
-                }));
+                })));
                 Ok(())
             }
             ExprInstance::EZipperBody(zipper) => {
-                vals.push(EvVal::Expr(Expr {
+                vals.push(EvVal::Expr(EvExpr::resident(Expr {
                     expr_instance: Some(ExprInstance::EZipperBody(zipper.clone())),
-                }));
+                })));
                 Ok(())
             }
 
@@ -3242,9 +3417,9 @@ impl DebruijnInterpreter {
                 // evaluation of open keys/values retain their existing order,
                 // charges, errors, and semantics.
                 if models::rust::pathmap_crate_type_mapper::reducer_eval_identity_epathmap(e1) {
-                    vals.push(EvVal::Expr(Expr {
+                    vals.push(EvVal::Expr(EvExpr::resident(Expr {
                         expr_instance: Some(ExprInstance::EPathmapBody(e1.clone())),
-                    }));
+                    })));
                     return Ok(());
                 }
                 let child_count = match e1.mode() {
@@ -3338,11 +3513,54 @@ impl DebruijnInterpreter {
     }
 
     // =======================================================================
-    // combine: pop child values, run the arm's post-order body (via the shared
-    // combine_* helper), push the result value. Re-eval of shallow owned
+    // combine: pop child values, run the arm's post-order body (via a shared
+    // scalar/operator helper or a collection `ParConstruction` plan), push the
+    // result value. Re-eval of shallow owned
     // intermediates is dispatched here (trampoline: self.eval_*) so the shared
     // helpers stay pure; the recursive twin passes its *_recursive closures.
     // =======================================================================
+    fn ev_par_structural_locally_free(&self, value: &EvPar) -> Vec<u8> {
+        match &value.structural_locally_free {
+            Some(locally_free) => locally_free.clone(),
+            None => match &value.storage {
+                EvParStorage::Resident(value) => self.computed_locally_free_par(value),
+                EvParStorage::Planned(_) => {
+                    unreachable!("every structurally planned Par carries its summary")
+                }
+            },
+        }
+    }
+
+    /// Apply the evaluator's historical `update_locally_free_par` boundary to
+    /// one collection child without finishing a planned recursive value.
+    fn plan_collection_child(
+        &self,
+        value: EvPar,
+        construction: &mut ParConstruction,
+    ) -> Result<PlannedPar, InterpreterError> {
+        let EvPar {
+            storage,
+            structural_locally_free,
+        } = value;
+        match storage {
+            EvParStorage::Planned(value) => {
+                let locally_free = structural_locally_free
+                    .expect("every structurally planned Par carries its summary");
+                if construction.locally_free(value) == locally_free.as_slice() {
+                    Ok(value)
+                } else {
+                    Ok(construction.with_locally_free(value, locally_free)?)
+                }
+            }
+            EvParStorage::Resident(mut value) => {
+                let locally_free = structural_locally_free
+                    .unwrap_or_else(|| self.computed_locally_free_par(&value));
+                value.replace_locally_free(locally_free);
+                Ok(construction.import_par(&value)?)
+            }
+        }
+    }
+
     fn combine<'e>(
         &self,
         k: EvKont<'e>,
@@ -3350,28 +3568,50 @@ impl DebruijnInterpreter {
         decoded_entries: &'e Arena<Par>,
         decoded_exprs: &'e Arena<Expr>,
         method_invocations: &'e Arena<MethodInvocation>,
+        construction: &mut ParConstruction,
         work: &mut Vec<EvWork<'e>>,
         vals: &mut Vec<EvVal>,
     ) -> Result<(), InterpreterError> {
         match k {
             EvKont::Join { par, n } => {
                 let children = ev_pop_n_par(vals, n);
-                let result = children
-                    .into_iter()
-                    .fold(Self::ev_par_shell(par), |acc, expr| {
-                        concatenate_pars(acc, expr)
-                    });
-                vals.push(EvVal::Par(result));
+                let mut shell = par.clone();
+                shell.replace_exprs(Vec::new());
+                let mut structural_locally_free = self.computed_locally_free_par(&shell);
+                let mut result = construction.import_par(&shell)?;
+                for child in children {
+                    structural_locally_free = union(
+                        structural_locally_free,
+                        self.ev_par_structural_locally_free(&child),
+                    );
+                    let child = ev_plan_par(child, construction)?;
+                    result = construction.parallel(result, child)?;
+                }
+                vals.push(EvVal::Par(EvPar::planned(result, structural_locally_free)));
                 Ok(())
             }
             EvKont::ToParWrap => {
-                let e = ev_pop_expr(vals);
-                vals.push(EvVal::Par(Par::default().with_exprs(vec![e])));
+                let EvExpr {
+                    storage,
+                    locally_free,
+                } = ev_pop_expr(vals);
+                vals.push(match storage {
+                    EvExprStorage::Planned(value) => {
+                        EvVal::Par(EvPar::planned(value, locally_free))
+                    }
+                    EvExprStorage::Resident(value) => EvVal::Par(EvPar {
+                        storage: EvParStorage::Resident(Par::default().with_exprs(vec![value])),
+                        structural_locally_free: Some(locally_free),
+                    }),
+                });
                 Ok(())
             }
             EvKont::ToParMethod { emethod, argc } => {
-                let args = ev_pop_n_par(vals, argc);
-                let target = ev_pop_par(vals);
+                let args = ev_pop_n_par(vals, argc)
+                    .into_iter()
+                    .map(|value| ev_finish_par(value, construction))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let target = ev_finish_par(ev_pop_par(vals), construction)?;
                 self.begin_prepared_method(
                     emethod,
                     target,
@@ -3386,49 +3626,49 @@ impl DebruijnInterpreter {
                 )
             }
             EvKont::Neg => {
-                let v = ev_pop_expr(vals);
+                let v = ev_finish_expr(ev_pop_expr(vals), construction)?;
                 let e = self.combine_neg(v)?;
-                vals.push(EvVal::Expr(e));
+                vals.push(EvVal::Expr(EvExpr::resident(e)));
                 Ok(())
             }
             EvKont::Not => {
                 let b = ev_pop_bool(vals);
-                vals.push(EvVal::Expr(Expr {
+                vals.push(EvVal::Expr(EvExpr::resident(Expr {
                     expr_instance: Some(ExprInstance::GBool(!b)),
-                }));
+                })));
                 Ok(())
             }
             EvKont::Mult => {
-                let v2 = ev_pop_expr(vals);
-                let v1 = ev_pop_expr(vals);
+                let v2 = ev_finish_expr(ev_pop_expr(vals), construction)?;
+                let v1 = ev_finish_expr(ev_pop_expr(vals), construction)?;
                 let e = self.combine_mult(v1, v2)?;
-                vals.push(EvVal::Expr(e));
+                vals.push(EvVal::Expr(EvExpr::resident(e)));
                 Ok(())
             }
             EvKont::Div => {
-                let v2 = ev_pop_expr(vals);
-                let v1 = ev_pop_expr(vals);
+                let v2 = ev_finish_expr(ev_pop_expr(vals), construction)?;
+                let v1 = ev_finish_expr(ev_pop_expr(vals), construction)?;
                 let e = self.combine_div(v1, v2)?;
-                vals.push(EvVal::Expr(e));
+                vals.push(EvVal::Expr(EvExpr::resident(e)));
                 Ok(())
             }
             EvKont::Mod => {
-                let v2 = ev_pop_expr(vals);
-                let v1 = ev_pop_expr(vals);
+                let v2 = ev_finish_expr(ev_pop_expr(vals), construction)?;
+                let v1 = ev_finish_expr(ev_pop_expr(vals), construction)?;
                 let e = self.combine_mod(v1, v2)?;
-                vals.push(EvVal::Expr(e));
+                vals.push(EvVal::Expr(EvExpr::resident(e)));
                 Ok(())
             }
             EvKont::Plus => {
-                let v2 = ev_pop_expr(vals);
-                let v1 = ev_pop_expr(vals);
+                let v2 = ev_finish_expr(ev_pop_expr(vals), construction)?;
+                let v1 = ev_finish_expr(ev_pop_expr(vals), construction)?;
                 let step = self.combine_plus(v1, v2, env)?;
                 Self::continue_eval_single(step, decoded_entries, work, vals);
                 Ok(())
             }
             EvKont::Minus => {
-                let v2 = ev_pop_expr(vals);
-                let v1 = ev_pop_expr(vals);
+                let v2 = ev_finish_expr(ev_pop_expr(vals), construction)?;
+                let v1 = ev_finish_expr(ev_pop_expr(vals), construction)?;
                 let step = self.combine_minus(v1, v2, env)?;
                 Self::continue_eval_single(step, decoded_entries, work, vals);
                 Ok(())
@@ -3438,55 +3678,55 @@ impl DebruijnInterpreter {
                 relopi,
                 relops,
             } => {
-                let v2 = ev_pop_expr(vals);
-                let v1 = ev_pop_expr(vals);
+                let v2 = ev_finish_expr(ev_pop_expr(vals), construction)?;
+                let v1 = ev_finish_expr(ev_pop_expr(vals), construction)?;
                 let e = self.combine_relop(v1, v2, relopb, relopi, relops)?;
-                vals.push(EvVal::Expr(e));
+                vals.push(EvVal::Expr(EvExpr::resident(e)));
                 Ok(())
             }
             EvKont::Eq => {
-                let v2 = ev_pop_par(vals);
-                let v1 = ev_pop_par(vals);
+                let v2 = ev_finish_par(ev_pop_par(vals), construction)?;
+                let v1 = ev_finish_par(ev_pop_par(vals), construction)?;
                 let e = self.combine_eq(v1, v2, env)?;
-                vals.push(EvVal::Expr(e));
+                vals.push(EvVal::Expr(EvExpr::resident(e)));
                 Ok(())
             }
             EvKont::Neq => {
-                let v2 = ev_pop_par(vals);
-                let v1 = ev_pop_par(vals);
+                let v2 = ev_finish_par(ev_pop_par(vals), construction)?;
+                let v1 = ev_finish_par(ev_pop_par(vals), construction)?;
                 let e = self.combine_neq(v1, v2, env)?;
-                vals.push(EvVal::Expr(e));
+                vals.push(EvVal::Expr(EvExpr::resident(e)));
                 Ok(())
             }
             EvKont::And => {
                 let b2 = ev_pop_bool(vals);
                 let b1 = ev_pop_bool(vals);
                 self.metering.reserve_primitive(boolean_and_cost())?;
-                vals.push(EvVal::Expr(Expr {
+                vals.push(EvVal::Expr(EvExpr::resident(Expr {
                     expr_instance: Some(ExprInstance::GBool(b1 && b2)),
-                }));
+                })));
                 Ok(())
             }
             EvKont::Or => {
                 let b2 = ev_pop_bool(vals);
                 let b1 = ev_pop_bool(vals);
                 self.metering.reserve_primitive(boolean_or_cost())?;
-                vals.push(EvVal::Expr(Expr {
+                vals.push(EvVal::Expr(EvExpr::resident(Expr {
                     expr_instance: Some(ExprInstance::GBool(b1 || b2)),
-                }));
+                })));
                 Ok(())
             }
             EvKont::Matches { pattern } => {
-                let evaled_target = ev_pop_par(vals);
+                let evaled_target = ev_finish_par(ev_pop_par(vals), construction)?;
                 let e = self.combine_matches(evaled_target, pattern, env)?;
-                vals.push(EvVal::Expr(e));
+                vals.push(EvVal::Expr(EvExpr::resident(e)));
                 Ok(())
             }
             EvKont::PercentPercent => {
-                let v2 = ev_pop_expr(vals);
-                let v1 = ev_pop_expr(vals);
+                let v2 = ev_finish_expr(ev_pop_expr(vals), construction)?;
+                let v1 = ev_finish_expr(ev_pop_expr(vals), construction)?;
                 match self.combine_percent_percent(v1, v2)? {
-                    InterpolateStep::Complete(e) => vals.push(EvVal::Expr(e)),
+                    InterpolateStep::Complete(e) => vals.push(EvVal::Expr(EvExpr::resident(e))),
                     InterpolateStep::Evaluate { source, pairs } => {
                         work.push(EvWork::Combine(EvKont::InterpolateK {
                             source,
@@ -3501,40 +3741,53 @@ impl DebruijnInterpreter {
                 Ok(())
             }
             EvKont::PlusPlus => {
-                let v2 = ev_pop_expr(vals);
-                let v1 = ev_pop_expr(vals);
+                let v2 = ev_finish_expr(ev_pop_expr(vals), construction)?;
+                let v1 = ev_finish_expr(ev_pop_expr(vals), construction)?;
                 let step = self.combine_plus_plus(v1, v2, env)?;
                 Self::continue_eval_single(step, decoded_entries, work, vals);
                 Ok(())
             }
             EvKont::MinusMinus => {
-                let v2 = ev_pop_expr(vals);
-                let v1 = ev_pop_expr(vals);
+                let v2 = ev_finish_expr(ev_pop_expr(vals), construction)?;
+                let v1 = ev_finish_expr(ev_pop_expr(vals), construction)?;
                 let step = self.combine_minus_minus(v1, v2, env)?;
                 Self::continue_eval_single(step, decoded_entries, work, vals);
                 Ok(())
             }
             EvKont::EListK { e1, n } => {
-                let evaled_ps = ev_pop_n_par(vals, n);
-                let e = self.combine_elist(evaled_ps, e1)?;
+                let evaled_ps = ev_pop_n_par(vals, n)
+                    .into_iter()
+                    .map(|value| self.plan_collection_child(value, construction))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let e = self.plan_elist(&evaled_ps, e1, construction)?;
                 vals.push(EvVal::Expr(e));
                 Ok(())
             }
             EvKont::ETupleK { e1, n } => {
-                let evaled_ps = ev_pop_n_par(vals, n);
-                let e = self.combine_etuple(evaled_ps, e1)?;
+                let evaled_ps = ev_pop_n_par(vals, n)
+                    .into_iter()
+                    .map(|value| self.plan_collection_child(value, construction))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let e = self.plan_etuple(&evaled_ps, e1, construction)?;
                 vals.push(EvVal::Expr(e));
                 Ok(())
             }
             EvKont::EPathmapK { e1, n } => {
-                let evaled_ps = ev_pop_n_par(vals, n);
-                let e = self.combine_epathmap(evaled_ps, e1)?;
+                let evaled_ps = ev_pop_n_par(vals, n)
+                    .into_iter()
+                    .map(|value| self.plan_collection_child(value, construction))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let e = self.plan_epathmap(&evaled_ps, e1, construction)?;
                 vals.push(EvVal::Expr(e));
                 Ok(())
             }
             EvKont::ESetK { eset, n } => {
-                let evaled_ps = ev_pop_n_par(vals, n);
-                vals.push(EvVal::Expr(self.combine_eset(evaled_ps, eset)?));
+                let evaled_ps = ev_pop_n_par(vals, n)
+                    .into_iter()
+                    .map(|value| self.plan_collection_child(value, construction))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let e = self.plan_eset(&evaled_ps, eset, construction)?;
+                vals.push(EvVal::Expr(e));
                 Ok(())
             }
             EvKont::EMapK { emap, n } => {
@@ -3542,20 +3795,12 @@ impl DebruijnInterpreter {
                     vals,
                     n.checked_mul(2)
                         .expect("an addressable map cannot overflow its value count"),
-                );
-                let mut values = evaled.into_iter();
-                let entries = (0..n)
-                    .map(|_| {
-                        let key = values
-                            .next()
-                            .expect("EMap continuation has one evaluated key per entry");
-                        let value = values
-                            .next()
-                            .expect("EMap continuation has one evaluated value per entry");
-                        (key, value)
-                    })
-                    .collect();
-                vals.push(EvVal::Expr(self.combine_emap(entries, emap)?));
+                )
+                .into_iter()
+                .map(|value| ev_plan_par(value, construction))
+                .collect::<Result<Vec<_>, _>>()?;
+                let e = self.plan_emap(&evaled, emap, construction)?;
+                vals.push(EvVal::Expr(e));
                 Ok(())
             }
             EvKont::InterpolateK { source, pair_count } => {
@@ -3564,27 +3809,31 @@ impl DebruijnInterpreter {
                     pair_count
                         .checked_mul(2)
                         .expect("an addressable interpolation map cannot overflow"),
-                );
-                vals.push(EvVal::Expr(
+                    construction,
+                )?;
+                vals.push(EvVal::Expr(EvExpr::resident(
                     self.finish_percent_percent(source, pair_count, evaled)?,
-                ));
+                )));
                 Ok(())
             }
             EvKont::FusedAfterA { state, output } => {
-                let arg = ev_pop_par(vals);
+                let arg = ev_finish_par(ev_pop_par(vals), construction)?;
                 let action = self.continue_fused_after_position_a(state, arg)?;
                 Self::continue_fused_action(action, output, decoded_entries, work, vals);
                 Ok(())
             }
             EvKont::FusedAfterB { state, output } => {
-                let arg = ev_pop_par(vals);
+                let arg = ev_finish_par(ev_pop_par(vals), construction)?;
                 let action = self.continue_fused_after_position_b(state, arg)?;
                 Self::continue_fused_action(action, output, decoded_entries, work, vals);
                 Ok(())
             }
             EvKont::EMethodExprK { emethod, argc } => {
-                let args = ev_pop_n_par(vals, argc);
-                let target = ev_pop_par(vals);
+                let args = ev_pop_n_par(vals, argc)
+                    .into_iter()
+                    .map(|value| ev_finish_par(value, construction))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let target = ev_finish_par(ev_pop_par(vals), construction)?;
                 self.begin_prepared_method(
                     emethod,
                     target,
@@ -3604,7 +3853,11 @@ impl DebruijnInterpreter {
                 prepared_count,
                 output,
             } => {
-                let mut prepared = PreparedMethodValues::new(ev_pop_n_values(vals, prepared_count));
+                let mut prepared = PreparedMethodValues::new(ev_pop_n_prepared_values(
+                    vals,
+                    prepared_count,
+                    construction,
+                )?);
                 let method = self
                     .method_named(&emethod.method_name)
                     .expect("a method present before operand evaluation must remain present");
@@ -3613,14 +3866,32 @@ impl DebruijnInterpreter {
                 Self::push_method_result(result, output, decoded_entries, work, vals);
                 Ok(())
             }
+            EvKont::LengthReentry { remaining, output } => {
+                let base_expr = ev_finish_expr(ev_pop_expr(vals), construction)?;
+                let mut prepared =
+                    PreparedMethodValues::new(vec![PreparedMethodValue::Expr(base_expr)]);
+                let result =
+                    self.length_method()
+                        .apply(&Par::default(), &[], &mut prepared, env)?;
+                if remaining == 1 {
+                    Self::push_method_result(result, output, decoded_entries, work, vals);
+                } else {
+                    work.push(EvWork::Combine(EvKont::LengthReentry {
+                        remaining: remaining - 1,
+                        output,
+                    }));
+                    work.push(EvWork::ESingle(decoded_entries.alloc(result)));
+                }
+                Ok(())
+            }
             EvKont::BoolExtract => {
-                let evaled = ev_pop_expr(vals);
+                let evaled = ev_finish_expr(ev_pop_expr(vals), construction)?;
                 let b = Self::extract_bool(evaled)?;
                 vals.push(EvVal::Bool(b));
                 Ok(())
             }
             EvKont::I64Extract => {
-                let evaled = ev_pop_expr(vals);
+                let evaled = ev_finish_expr(ev_pop_expr(vals), construction)?;
                 let i = Self::extract_i64(evaled)?;
                 vals.push(EvVal::I64(i));
                 Ok(())
@@ -3645,7 +3916,7 @@ impl DebruijnInterpreter {
                 work.push(EvWork::EEval(decoded_entries.alloc(arg)));
             }
             FusedAction::Complete(par) => match output {
-                FusedOutput::Par => vals.push(EvVal::Par(par)),
+                FusedOutput::Par => vals.push(EvVal::Par(EvPar::resident(par))),
                 FusedOutput::Expr => work.push(EvWork::ESingle(decoded_entries.alloc(par))),
             },
         }
@@ -3658,7 +3929,7 @@ impl DebruijnInterpreter {
         vals: &mut Vec<EvVal>,
     ) {
         match step {
-            EvalSingleStep::Complete(expr) => vals.push(EvVal::Expr(expr)),
+            EvalSingleStep::Complete(expr) => vals.push(EvVal::Expr(EvExpr::resident(expr))),
             EvalSingleStep::Evaluate(par) => {
                 work.push(EvWork::ESingle(decoded_entries.alloc(par)));
             }
@@ -3696,11 +3967,11 @@ impl DebruijnInterpreter {
     }
 
     // =======================================================================
-    // combine_* helpers: each is the EXACT post-order body of an eval_expr_to_expr
-    // arm, with the child sub-values passed in as parameters instead of being
-    // produced by `eval_*(child)?`. SHARED by the trampoline `combine` and by the
-    // recursive twin dispatcher, so the intricate arithmetic/charge/error logic
-    // lives in exactly one place.
+    // combine_* helpers: scalar/operator post-order bodies with child values
+    // passed as parameters. SHARED by the trampoline and recursive twin, so
+    // intricate arithmetic/charge/error logic lives in one place. Collection
+    // bodies instead use `plan_*`; their decoded rebuilds live only in the
+    // test-source recursive oracle so planned construction is independently checked.
     // =======================================================================
 
     // relop (ELt/ELte/EGt/EGte). v1,v2 already `eval_single_expr`'d.
@@ -4148,10 +4419,10 @@ impl DebruijnInterpreter {
             (ExprInstance::ESetBody(lhs), rhs) => {
                 self.metering.reserve_primitive(op_call_cost())?;
                 let mut prepared = PreparedMethodValues::new(vec![
-                    EvVal::Expr(Expr {
+                    PreparedMethodValue::Expr(Expr {
                         expr_instance: Some(ExprInstance::ESetBody(lhs)),
                     }),
-                    EvVal::Par(Par::default().with_exprs(vec![Expr {
+                    PreparedMethodValue::Par(Par::default().with_exprs(vec![Expr {
                         expr_instance: Some(rhs),
                     }])),
                 ]);
@@ -4276,10 +4547,10 @@ impl DebruijnInterpreter {
             (ExprInstance::EMapBody(lhs), rhs) => {
                 self.metering.reserve_primitive(op_call_cost())?;
                 let mut prepared = PreparedMethodValues::new(vec![
-                    EvVal::Expr(Expr {
+                    PreparedMethodValue::Expr(Expr {
                         expr_instance: Some(ExprInstance::EMapBody(lhs)),
                     }),
-                    EvVal::Par(Par::default().with_exprs(vec![Expr {
+                    PreparedMethodValue::Par(Par::default().with_exprs(vec![Expr {
                         expr_instance: Some(rhs),
                     }])),
                 ]);
@@ -4296,10 +4567,10 @@ impl DebruijnInterpreter {
             (ExprInstance::ESetBody(lhs), rhs) => {
                 self.metering.reserve_primitive(op_call_cost())?;
                 let mut prepared = PreparedMethodValues::new(vec![
-                    EvVal::Expr(Expr {
+                    PreparedMethodValue::Expr(Expr {
                         expr_instance: Some(ExprInstance::ESetBody(lhs)),
                     }),
-                    EvVal::Par(Par::default().with_exprs(vec![Expr {
+                    PreparedMethodValue::Par(Par::default().with_exprs(vec![Expr {
                         expr_instance: Some(rhs),
                     }])),
                 ]);
@@ -4572,10 +4843,10 @@ impl DebruijnInterpreter {
 
             (ExprInstance::EMapBody(lhs), ExprInstance::EMapBody(rhs)) => {
                 let mut prepared = PreparedMethodValues::new(vec![
-                    EvVal::Expr(Expr {
+                    PreparedMethodValue::Expr(Expr {
                         expr_instance: Some(ExprInstance::EMapBody(lhs)),
                     }),
-                    EvVal::Expr(Expr {
+                    PreparedMethodValue::Expr(Expr {
                         expr_instance: Some(ExprInstance::EMapBody(rhs)),
                     }),
                 ]);
@@ -4590,10 +4861,10 @@ impl DebruijnInterpreter {
 
             (ExprInstance::ESetBody(lhs), ExprInstance::ESetBody(rhs)) => {
                 let mut prepared = PreparedMethodValues::new(vec![
-                    EvVal::Expr(Expr {
+                    PreparedMethodValue::Expr(Expr {
                         expr_instance: Some(ExprInstance::ESetBody(lhs)),
                     }),
-                    EvVal::Expr(Expr {
+                    PreparedMethodValue::Expr(Expr {
                         expr_instance: Some(ExprInstance::ESetBody(rhs)),
                     }),
                 ]);
@@ -4648,10 +4919,10 @@ impl DebruijnInterpreter {
         let completed = match (v1.expr_instance.unwrap(), v2.expr_instance.unwrap()) {
             (ExprInstance::ESetBody(lhs), ExprInstance::ESetBody(rhs)) => {
                 let mut prepared = PreparedMethodValues::new(vec![
-                    EvVal::Expr(Expr {
+                    PreparedMethodValue::Expr(Expr {
                         expr_instance: Some(ExprInstance::ESetBody(lhs)),
                     }),
-                    EvVal::Expr(Expr {
+                    PreparedMethodValue::Expr(Expr {
                         expr_instance: Some(ExprInstance::ESetBody(rhs)),
                     }),
                 ]);
@@ -4678,84 +4949,122 @@ impl DebruijnInterpreter {
         completed.map(EvalSingleStep::Complete)
     }
 
-    // EList. evaled_ps already `eval_expr`'d (owned -> no p.clone()).
-    fn combine_elist(&self, evaled_ps: Vec<Par>, e1: &EList) -> Result<Expr, InterpreterError> {
-        let updated_ps: Vec<Par> = evaled_ps
-            .into_iter()
-            .map(|p| self.update_locally_free_par(p))
-            .collect();
-
-        Ok(Expr {
-            expr_instance: Some(ExprInstance::EListBody(self.update_locally_free_elist(
-                EList {
-                    ps: updated_ps,
-                    locally_free: e1.locally_free.clone(),
-                    connective_used: e1.connective_used,
-                    remainder: None,
-                },
-            ))),
-        })
-    }
-
-    // ETuple.
-    fn combine_etuple(&self, evaled_ps: Vec<Par>, e1: &ETuple) -> Result<Expr, InterpreterError> {
-        let updated_ps: Vec<Par> = evaled_ps
-            .into_iter()
-            .map(|p| self.update_locally_free_par(p))
-            .collect();
-
-        Ok(Expr {
-            expr_instance: Some(ExprInstance::ETupleBody(self.update_locally_free_etuple(
-                ETuple {
-                    ps: updated_ps,
-                    locally_free: e1.locally_free.clone(),
-                    connective_used: e1.connective_used,
-                },
-            ))),
-        })
-    }
-
-    // EPathmap.
-    fn combine_epathmap(
+    /// Store one evaluated expression as a singleton planned `Par`. The root
+    /// summaries stay neutral because the historical `ToParWrap` is
+    /// `Par::default().with_exprs(...)`; the expression's own summaries remain
+    /// in its schema shell and are incorporated by any enclosing collection.
+    fn plan_evaluated_expr(
         &self,
-        evaled_ps: Vec<Par>,
-        e1: &EPathMap,
-    ) -> Result<Expr, InterpreterError> {
-        let updated_ps: Vec<Par> = evaled_ps
-            .into_iter()
-            .map(|p| self.update_locally_free_par(p))
-            .collect();
+        shell: &Expr,
+        children: &[PlannedPar],
+        construction: &mut ParConstruction,
+    ) -> Result<EvExpr, InterpreterError> {
+        let locally_free = expr_locally_free_ref(shell);
+        let component = construction.expr_component(shell, children, false)?;
+        let value = construction.singleton_component(component, Vec::new(), false)?;
+        Ok(EvExpr::planned(value, locally_free))
+    }
 
-        let rebuilt = match e1.mode() {
-            EPathMapMode::Empty | EPathMapMode::Set => EPathMap::new(
-                updated_ps,
-                e1.locally_free.clone(),
-                e1.connective_used,
-                None,
-            ),
-            EPathMapMode::Map => {
-                let mut values = updated_ps.into_iter();
-                let entries = std::iter::from_fn(|| {
-                    let key = values.next()?;
-                    let value = values
-                        .next()
-                        .expect("map-mode evaluator produces one value for every key");
-                    Some((key, value))
-                });
-                EPathMap::new_map(entries, e1.locally_free.clone(), e1.connective_used, None)
-            }
+    /// Planned counterpart of `combine_elist`. No evaluated child is finished
+    /// merely to embed it in the enclosing protobuf body.
+    fn plan_elist(
+        &self,
+        children: &[PlannedPar],
+        source: &EList,
+        construction: &mut ParConstruction,
+    ) -> Result<EvExpr, InterpreterError> {
+        let locally_free = children.iter().fold(Vec::new(), |acc, child| {
+            union(acc, construction.locally_free(*child).to_vec())
+        });
+        let shell = Expr {
+            expr_instance: Some(ExprInstance::EListBody(EList {
+                ps: vec![Par::default(); children.len()],
+                locally_free,
+                connective_used: source.connective_used,
+                remainder: None,
+            })),
         };
-        // ★ The canonicalization call is GONE, because the constructor is
-        // the canonicalizer now. `EPathMap::new` files every entry into the
-        // map's trie, so `rebuilt` is ALREADY in trie order, deduplicated,
-        // and recursively canonical — runtime and normalization agree, the
-        // same map however constructed compares structurally-equal (COMM
-        // fires order-insensitively), and it hashes to one preimage.
-        // `canonicalize_ground_epathmap(&rebuilt)` would have been the
-        // identity, so it is deleted rather than kept as a no-op.
-        Ok(Expr {
-            expr_instance: Some(ExprInstance::EPathmapBody(rebuilt)),
-        })
+        self.plan_evaluated_expr(&shell, children, construction)
+    }
+
+    fn plan_etuple(
+        &self,
+        children: &[PlannedPar],
+        source: &ETuple,
+        construction: &mut ParConstruction,
+    ) -> Result<EvExpr, InterpreterError> {
+        let locally_free = children.iter().fold(Vec::new(), |acc, child| {
+            union(acc, construction.locally_free(*child).to_vec())
+        });
+        let shell = Expr {
+            expr_instance: Some(ExprInstance::ETupleBody(ETuple {
+                ps: vec![Par::default(); children.len()],
+                locally_free,
+                connective_used: source.connective_used,
+            })),
+        };
+        self.plan_evaluated_expr(&shell, children, construction)
+    }
+
+    fn plan_epathmap(
+        &self,
+        children: &[PlannedPar],
+        source: &EPathMap,
+        construction: &mut ParConstruction,
+    ) -> Result<EvExpr, InterpreterError> {
+        // `expr_component` reads only mode/cardinality plus metadata from this
+        // shell; it constructs the new set/map trie directly from `children`.
+        // Cloning the source preserves the PathMap root through CoW and never
+        // projects it to a positional collection.
+        let mut shell = source.clone();
+        shell.remainder = None;
+        self.plan_evaluated_expr(
+            &Expr {
+                expr_instance: Some(ExprInstance::EPathmapBody(shell)),
+            },
+            children,
+            construction,
+        )
+    }
+
+    fn plan_eset(
+        &self,
+        children: &[PlannedPar],
+        source: &ESet,
+        construction: &mut ParConstruction,
+    ) -> Result<EvExpr, InterpreterError> {
+        let shell = Expr {
+            expr_instance: Some(ExprInstance::ESetBody(ESet {
+                ps: vec![Par::default(); children.len()],
+                locally_free: source.locally_free.clone(),
+                connective_used: source.connective_used,
+                remainder: source.remainder.clone(),
+            })),
+        };
+        self.plan_evaluated_expr(&shell, children, construction)
+    }
+
+    fn plan_emap(
+        &self,
+        children: &[PlannedPar],
+        source: &EMap,
+        construction: &mut ParConstruction,
+    ) -> Result<EvExpr, InterpreterError> {
+        debug_assert_eq!(children.len() % 2, 0);
+        let shell = Expr {
+            expr_instance: Some(ExprInstance::EMapBody(EMap {
+                kvs: (0..children.len() / 2)
+                    .map(|_| KeyValuePair {
+                        key: Some(Par::default()),
+                        value: Some(Par::default()),
+                    })
+                    .collect(),
+                locally_free: source.locally_free.clone(),
+                connective_used: source.connective_used,
+                remainder: source.remainder.clone(),
+            })),
+        };
+        self.plan_evaluated_expr(&shell, children, construction)
     }
 
     fn prepare_eset(&self, eset: &ESet) -> Vec<Par> {
@@ -4764,48 +5073,11 @@ impl DebruijnInterpreter {
             .sorted_pars
     }
 
-    fn combine_eset(&self, evaled_ps: Vec<Par>, eset: &ESet) -> Result<Expr, InterpreterError> {
-        let updated_ps: Vec<Par> = evaled_ps
-            .into_iter()
-            .map(|p| self.update_locally_free_par(p))
-            .collect();
-
-        let rebuilt = ParSet {
-            ps: SortedParHashSet::create_from_vec(updated_ps),
-            connective_used: eset.connective_used,
-            locally_free: eset.locally_free.clone(),
-            remainder: eset.remainder.clone(),
-        };
-        Ok(Expr {
-            expr_instance: Some(ExprInstance::ESetBody(ParSetTypeMapper::par_set_to_eset(
-                rebuilt,
-            ))),
-        })
-    }
-
     fn prepare_emap(&self, emap: &EMap) -> Vec<(Par, Par)> {
         ParMapTypeMapper::emap_to_par_map(emap.clone())
             .ps
             .into_iter()
             .collect()
-    }
-
-    fn combine_emap(
-        &self,
-        evaled_ps: Vec<(Par, Par)>,
-        emap: &EMap,
-    ) -> Result<Expr, InterpreterError> {
-        let rebuilt = ParMap {
-            ps: SortedParMap::create_from_vec(evaled_ps),
-            connective_used: emap.connective_used,
-            locally_free: emap.locally_free.clone(),
-            remainder: emap.remainder.clone(),
-        };
-        Ok(Expr {
-            expr_instance: Some(ExprInstance::EMapBody(ParMapTypeMapper::par_map_to_emap(
-                rebuilt,
-            ))),
-        })
     }
 
     /// Test-only recursive twin of the production method-input continuation.
@@ -4841,9 +5113,15 @@ impl DebruijnInterpreter {
                 MethodEvalSource::Arg(index) => &arg_vals[index],
             };
             values.push(match request.kind {
-                MethodEvalKind::Par => EvVal::Par(self.eval_expr_recursive(par, env)?),
-                MethodEvalKind::Single => EvVal::Expr(self.eval_single_expr_recursive(par, env)?),
-                MethodEvalKind::I64 => EvVal::I64(self.eval_to_i64_recursive(par, env)?),
+                MethodEvalKind::Par => {
+                    PreparedMethodValue::Par(self.eval_expr_recursive(par, env)?)
+                }
+                MethodEvalKind::Single => {
+                    PreparedMethodValue::Expr(self.eval_single_expr_recursive(par, env)?)
+                }
+                MethodEvalKind::I64 => {
+                    PreparedMethodValue::I64(self.eval_to_i64_recursive(par, env)?)
+                }
             });
         }
         method.apply(
@@ -9102,23 +9380,21 @@ impl DebruijnInterpreter {
     // (eval_single_expr moved: now a thin wrapper over eval_drive, above.)
 
     fn eval_single_unforgeable(&self, p: &Par) -> Result<GUnforgeable, InterpreterError> {
-        if p.family_cardinality::<Send>() != 0
-            || p.family_cardinality::<Receive>() != 0
-            || p.family_cardinality::<New>() != 0
-            || p.family_cardinality::<Match>() != 0
-            || p.family_cardinality::<Expr>() != 0
-            || p.family_cardinality::<Bundle>() != 0
-        {
+        if !p.all_components_are::<GUnforgeable>() {
             Err(InterpreterError::ReduceError(String::from(
                 "Error: non unforgeable found where unforgeable expected.",
             )))
-        } else {
+        } else if p.family_cardinality::<GUnforgeable>() == 1 {
             p.first::<GUnforgeable>()
                 .expect("resident Par unforgeable endpoints are canonical")
-                .and_then(|(value, multiplicity)| (multiplicity.get() == 1).then_some(value))
+                .map(|(value, _)| value)
                 .ok_or_else(|| {
                     InterpreterError::ReduceError("Error: Multiple unforgeables given.".to_string())
                 })
+        } else {
+            Err(InterpreterError::ReduceError(
+                "Error: Multiple unforgeables given.".to_string(),
+            ))
         }
     }
 
@@ -9126,68 +9402,57 @@ impl DebruijnInterpreter {
 
     // (eval_to_bool moved: now a thin wrapper over eval_drive, above.)
 
-    fn update_locally_free_par(&self, mut par: Par) -> Par {
+    fn computed_locally_free_par(&self, par: &Par) -> Vec<u8> {
         let mut locally_free = Vec::new();
 
-        locally_free = union(
-            locally_free,
-            par.decode_occurrences::<Send>()
-                .iter()
-                .flat_map(|send| send.locally_free.clone())
-                .collect(),
-        );
+        // Locally-free union is idempotent, so multiplicity cannot change the
+        // result. Visit each distinct PathMap endpoint exactly once instead of
+        // expanding a component with multiplicity N into N decoded values.
+        macro_rules! union_family {
+            ($family:ty, $summary:expr) => {{
+                par.try_visit_components::<$family, std::convert::Infallible>(
+                    |component, _multiplicity| {
+                        locally_free = union(
+                            std::mem::take(&mut locally_free),
+                            $summary(component.as_ref()),
+                        );
+                        Ok(())
+                    },
+                )
+                .expect("resident Par family endpoints are canonical");
+            }};
+        }
 
-        locally_free = union(
-            locally_free,
-            par.decode_occurrences::<Receive>()
-                .iter()
-                .flat_map(|receive| receive.locally_free.clone())
-                .collect(),
-        );
+        union_family!(Send, |send: &Send| send.locally_free.clone());
+        union_family!(Receive, |receive: &Receive| receive.locally_free.clone());
+        union_family!(New, |new_proc: &New| new_proc.locally_free.clone());
+        union_family!(Expr, |expr: &Expr| expr_locally_free_ref(expr));
+        union_family!(Match, |match_proc: &Match| match_proc.locally_free.clone());
+        union_family!(GUnforgeable, |_unforgeable: &GUnforgeable| Vec::new());
+        union_family!(Bundle, |bundle: &Bundle| bundle
+            .body
+            .as_ref()
+            .expect("Bundle.body")
+            .locally_free()
+            .to_vec());
+        union_family!(Connective, |connective: &Connective| {
+            crate::rust::interpreter::matcher::has_locally_free::connective_locally_free_ref(
+                connective, 0,
+            )
+        });
+        union_family!(If, |conditional: &If| conditional.locally_free.clone());
 
-        locally_free = union(
-            locally_free,
-            par.decode_occurrences::<New>()
-                .iter()
-                .flat_map(|new_proc| new_proc.locally_free.clone())
-                .collect(),
-        );
+        locally_free
+    }
 
-        locally_free = union(
-            locally_free,
-            par.decode_occurrences::<Expr>()
-                .iter()
-                .flat_map(|expr| expr_locally_free_ref(expr))
-                .collect(),
-        );
-
-        locally_free = union(
-            locally_free,
-            par.decode_occurrences::<Match>()
-                .iter()
-                .flat_map(|match_proc| match_proc.locally_free.clone())
-                .collect(),
-        );
-
-        locally_free = union(
-            locally_free,
-            par.decode_occurrences::<Bundle>()
-                .iter()
-                .flat_map(|bundle_proc| {
-                    bundle_proc
-                        .body
-                        .as_ref()
-                        .expect("Bundle.body")
-                        .locally_free()
-                        .to_vec()
-                })
-                .collect(),
-        );
-
+    #[cfg(test)]
+    fn update_locally_free_par(&self, mut par: Par) -> Par {
+        let locally_free = self.computed_locally_free_par(&par);
         par.replace_locally_free(locally_free);
         par
     }
 
+    #[cfg(test)]
     fn update_locally_free_elist(&self, mut elist: EList) -> EList {
         elist.locally_free = elist
             .ps
@@ -9198,6 +9463,7 @@ impl DebruijnInterpreter {
         elist
     }
 
+    #[cfg(test)]
     fn update_locally_free_etuple(&self, mut etuple: ETuple) -> ETuple {
         etuple.locally_free = etuple
             .ps
@@ -9530,16 +9796,7 @@ fn divide_fixed_points(
 /// Returns `Some(b)` iff `par` represents the bool value `b` —
 /// exactly one Expr (a `GBool`) and nothing else of substance.
 fn extract_bool(par: &Par) -> Option<bool> {
-    if par.family_cardinality::<Send>() != 0
-        || par.family_cardinality::<Receive>() != 0
-        || par.family_cardinality::<New>() != 0
-        || par.family_cardinality::<Match>() != 0
-        || par.family_cardinality::<Bundle>() != 0
-        || par.family_cardinality::<GUnforgeable>() != 0
-        || par.family_cardinality::<Connective>() != 0
-        || par.family_cardinality::<If>() != 0
-        || par.family_cardinality::<Expr>() != 1
-    {
+    if !par.all_components_are::<Expr>() || par.family_cardinality::<Expr>() != 1 {
         return None;
     }
     match par.first::<Expr>().ok()??.0.expr_instance? {
@@ -9549,16 +9806,7 @@ fn extract_bool(par: &Par) -> Option<bool> {
 }
 
 fn describe_par_type(par: &Par) -> String {
-    if par.family_cardinality::<Expr>() == 1
-        && par.family_cardinality::<Send>() == 0
-        && par.family_cardinality::<Receive>() == 0
-        && par.family_cardinality::<New>() == 0
-        && par.family_cardinality::<Match>() == 0
-        && par.family_cardinality::<Bundle>() == 0
-        && par.family_cardinality::<GUnforgeable>() == 0
-        && par.family_cardinality::<Connective>() == 0
-        && par.family_cardinality::<If>() == 0
-    {
+    if par.all_components_are::<Expr>() && par.family_cardinality::<Expr>() == 1 {
         match par
             .first::<Expr>()
             .expect("resident Par Expr endpoints are canonical")
@@ -9593,12 +9841,13 @@ fn describe_par_type(par: &Par) -> String {
 // a FRESH budget, and asserts:
 //
 // ⚠ The oracle is a REWRITE, not a copy. This line used to call it "a faithful
-// copy of the pre-trampoline evaluator over the shared `combine_*` helpers",
+// copy of the pre-trampoline evaluator over shared `combine_*` helpers",
 // and the word "copy" was wrong: measured against `a929a2d6^`, ZERO of the six
 // replaced functions are byte-identical and `eval_expr_to_expr` collapses from
 // 1,213 lines to 167. See the RECURSIVE TWIN banner above for the table and for
-// what that costs the differential — briefly, it proves the WIRING and cannot
-// see inside a shared `combine_*` helper.
+// what that costs the differential: it proves the WIRING, cannot see inside
+// shared scalar/operator helpers, and independently checks planned collection
+// construction against decoded recursive rebuilds.
 //
 //   (1) byte-identical result  (protobuf `encode_to_vec`, or identical Err), AND
 //   (2) identical charge trace  (the ordered `(BillableKind, weight)` sequence
@@ -9718,29 +9967,67 @@ mod differential_trampoline {
     /// evaluating it.  This is the adversarial carrier that makes method
     /// operand replay exercise a newly revealed method rather than merely a
     /// ground value.
-    fn opaque_zipper(value: Par) -> Par {
-        let key = new_gstring_par("method-pda-key".to_owned(), Vec::new(), false);
-        let map = EPathMap::new_map([(key.clone(), value)], Vec::new(), false, None);
-        expr_par(ExprInstance::EZipperBody(EZipper {
-            pathmap: Some(map),
-            current_path: par_to_path(&key),
-            is_write_zipper: false,
-            locally_free: Vec::new(),
-            connective_used: false,
-            cursor_kind: CursorKind::of(&key).to_wire(),
-        }))
-    }
-
-    /// Each layer first reveals the next method through `getLeaf`, then asks
-    /// `length` to evaluate that newly revealed target.  Before the method PDA
-    /// this nested one evaluator drive per layer on the native stack.
     fn method_reentry_chain(depth: usize) -> Par {
-        let mut value = elist(vec![new_gint_par(7, Vec::new(), false)]);
+        let key = new_gstring_par("method-pda-key".to_owned(), Vec::new(), false);
+        let mut construction = ParConstruction::new();
+        let key_plan = construction.import_par(&key).expect("import zipper key");
+        let terminal = elist(vec![new_gint_par(7, Vec::new(), false)]);
+        let mut value = construction
+            .import_par(&terminal)
+            .expect("import method-chain terminal");
+        let zipper_shell = Expr {
+            expr_instance: Some(ExprInstance::EZipperBody(EZipper {
+                pathmap: Some(EPathMap::new_map(
+                    [(key.clone(), Par::default())],
+                    Vec::new(),
+                    false,
+                    None,
+                )),
+                current_path: par_to_path(&key),
+                is_write_zipper: false,
+                locally_free: Vec::new(),
+                connective_used: false,
+                cursor_kind: CursorKind::of(&key).to_wire(),
+            })),
+        };
+        let method_shell = |name: &str| Expr {
+            expr_instance: Some(ExprInstance::EMethodBody(EMethod {
+                method_name: name.to_owned(),
+                target: Some(Par::default()),
+                arguments: Vec::new(),
+                locally_free: Vec::new(),
+                connective_used: false,
+            })),
+        };
+
+        // Each layer first reveals the next method through `getLeaf`, then asks
+        // `length` to evaluate that newly revealed target. The construction
+        // graph retains child handles and emits the one final canonical ParBag
+        // endpoint once, so fixture formation is linear in the adversarial
+        // depth rather than repeatedly copying the already-built suffix.
         for _ in 0..depth {
-            let revealed = method(opaque_zipper(value), "getLeaf", Vec::new());
-            value = method(revealed, "length", Vec::new());
+            let zipper = construction
+                .expr_component(&zipper_shell, &[key_plan, value], false)
+                .expect("plan opaque zipper");
+            let zipper = construction
+                .singleton_component(zipper, Vec::new(), false)
+                .expect("plan zipper Par");
+            let get_leaf = construction
+                .expr_component(&method_shell("getLeaf"), &[zipper], false)
+                .expect("plan getLeaf method");
+            let get_leaf = construction
+                .singleton_component(get_leaf, Vec::new(), false)
+                .expect("plan getLeaf Par");
+            let length = construction
+                .expr_component(&method_shell("length"), &[get_leaf], false)
+                .expect("plan length method");
+            value = construction
+                .singleton_component(length, Vec::new(), false)
+                .expect("plan length Par");
         }
-        value
+        construction
+            .finish(value)
+            .expect("finish method reentry chain")
     }
     fn reflected_send() -> Par { Par::default().with_sends(vec![Send::default()]) }
 
@@ -9749,6 +10036,7 @@ mod differential_trampoline {
     #[derive(PartialEq, Debug)]
     struct Trace {
         result: Result<Vec<u8>, String>,
+        stable_hash_bytes: Result<Vec<u8>, String>,
         charges: Vec<(BillableKind, u64)>,
         total: i64,
     }
@@ -9776,10 +10064,15 @@ mod differential_trampoline {
         let r_rec = build().await;
         let res_rec = r_rec.eval_expr_recursive(term, &env);
         let (charges_rec, total_rec) = charge_trace(&r_rec);
+        let stable_hash_bytes_rec = res_rec
+            .as_ref()
+            .map(|p| models::rust::rholang::bincode_encoder::encode(p))
+            .map_err(|e| format!("{:?}", e));
         let trace_rec = Trace {
             result: res_rec
                 .map(|p| p.encode_to_vec())
                 .map_err(|e| format!("{:?}", e)),
+            stable_hash_bytes: stable_hash_bytes_rec,
             charges: charges_rec,
             total: total_rec,
         };
@@ -9787,10 +10080,15 @@ mod differential_trampoline {
         let r_tr = build().await;
         let res_tr = r_tr.eval_expr(term, &env);
         let (charges_tr, total_tr) = charge_trace(&r_tr);
+        let stable_hash_bytes_tr = res_tr
+            .as_ref()
+            .map(|p| models::rust::rholang::bincode_encoder::encode(p))
+            .map_err(|e| format!("{:?}", e));
         let trace_tr = Trace {
             result: res_tr
                 .map(|p| p.encode_to_vec())
                 .map_err(|e| format!("{:?}", e)),
+            stable_hash_bytes: stable_hash_bytes_tr,
             charges: charges_tr,
             total: total_tr,
         };
@@ -9893,6 +10191,52 @@ mod differential_trampoline {
         assert_agree(&method_reentry_chain(2)).await;
     }
 
+    #[tokio::test(flavor = "current_thread")]
+    async fn received_string_length_evaluation_matches_the_recursive_oracle() {
+        use models::rust::utils::new_boundvar_par;
+
+        let env = Env::new().put(new_gstring_par("A".repeat(32), Vec::new(), false));
+        let term = method(new_boundvar_par(0, Vec::new(), false), "length", Vec::new());
+
+        let recursive = build().await;
+        let expected = recursive.eval_expr_recursive(&term, &env);
+        let expected_trace = charge_trace(&recursive);
+        let driven = build().await;
+        let actual = driven.eval_expr(&term, &env);
+        let actual_trace = charge_trace(&driven);
+        let literal = new_gint_par(32, Vec::new(), false);
+        let expected_value = expected
+            .as_ref()
+            .expect("the recursive evaluator accepts string.length()");
+        let actual_value = actual
+            .as_ref()
+            .expect("the production evaluator accepts string.length()");
+        assert_eq!(expected_value, &literal);
+        assert_eq!(actual_value, &literal);
+        assert_eq!(
+            expected_value.compact_snapshot(),
+            literal.compact_snapshot()
+        );
+        assert_eq!(actual_value.compact_snapshot(), literal.compact_snapshot());
+        assert_eq!(
+            models::rust::rholang::bincode_encoder::encode(expected_value),
+            models::rust::rholang::bincode_encoder::encode(&literal),
+        );
+        assert_eq!(
+            models::rust::rholang::bincode_encoder::encode(actual_value),
+            models::rust::rholang::bincode_encoder::encode(&literal),
+        );
+        assert_eq!(
+            expected
+                .map(|value| value.encode_to_vec())
+                .map_err(|error| format!("{error:?}")),
+            actual
+                .map(|value| value.encode_to_vec())
+                .map_err(|error| format!("{error:?}")),
+        );
+        assert_eq!(expected_trace, actual_trace);
+    }
+
     // ---- the six wrappers each vs their _recursive twin (also exercises the
     //      eval_expr_to_expr / eval_single_expr / eval_to_bool / eval_to_i64
     //      wrappers directly) ----
@@ -9940,17 +10284,239 @@ mod differential_trampoline {
         let r1 = build().await;
         let r2 = build().await;
         assert_eq!(
-            r1.eval_to_i64_recursive(&p, &env).ok(),
-            r2.eval_to_i64(&p, &env).ok()
+            r1.eval_to_i64_recursive(&p, &env)
+                .map_err(|error| format!("{error:?}")),
+            r2.eval_to_i64(&p, &env)
+                .map_err(|error| format!("{error:?}"))
         );
         // eval_to_bool
         let pb = eand(b(true), enot(b(false)));
         let r1 = build().await;
         let r2 = build().await;
         assert_eq!(
-            r1.eval_to_bool_recursive(&pb, &env).ok(),
-            r2.eval_to_bool(&pb, &env).ok()
+            r1.eval_to_bool_recursive(&pb, &env)
+                .map_err(|error| format!("{error:?}")),
+            r2.eval_to_bool(&pb, &env)
+                .map_err(|error| format!("{error:?}"))
         );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn scalar_projection_rejects_each_non_expr_parbag_family() {
+        const PARALLEL_ERROR: &str =
+            "Error: parallel or non expression found where expression expected.";
+        let env: Env<Par> = Env::new();
+        let recursive = build().await;
+        let driven = build().await;
+
+        let foreign = [
+            ("Send", Par::default().with_sends(vec![Send::default()])),
+            (
+                "Receive",
+                Par::default().with_receives(vec![Receive::default()]),
+            ),
+            ("New", Par::default().with_news(vec![New::default()])),
+            ("Match", Par::default().with_matches(vec![Match::default()])),
+            (
+                "GUnforgeable",
+                Par::default().with_unforgeables(vec![GUnforgeable::default()]),
+            ),
+            (
+                "Bundle",
+                Par::default().with_bundles(vec![Bundle::default()]),
+            ),
+            (
+                "Connective",
+                Par::default().with_connectives(vec![Connective::default()]),
+            ),
+            ("If", Par::default().with_conditionals(vec![If::default()])),
+        ];
+
+        for (family, component) in foreign {
+            let integer = new_gint_par(7, Vec::new(), false).append(component.clone());
+            let recursive_integer = recursive.eval_to_i64_recursive(&integer, &env);
+            let driven_integer = driven.eval_to_i64(&integer, &env);
+            assert!(
+                matches!(&recursive_integer, Err(InterpreterError::ReduceError(message)) if message == PARALLEL_ERROR),
+                "the recursive integer projection accepted or misclassified Expr + {family}: \
+                 {recursive_integer:?}"
+            );
+            assert_eq!(
+                recursive_integer.map_err(|error| format!("{error:?}")),
+                driven_integer.map_err(|error| format!("{error:?}")),
+                "integer projection parity failed for Expr + {family}"
+            );
+
+            let boolean = new_gbool_par(true, Vec::new(), false).append(component.clone());
+            let recursive_boolean = recursive.eval_to_bool_recursive(&boolean, &env);
+            let driven_boolean = driven.eval_to_bool(&boolean, &env);
+            assert!(
+                matches!(&recursive_boolean, Err(InterpreterError::ReduceError(message)) if message == PARALLEL_ERROR),
+                "the recursive boolean projection accepted or misclassified Expr + {family}: \
+                 {recursive_boolean:?}"
+            );
+            assert_eq!(
+                recursive_boolean.map_err(|error| format!("{error:?}")),
+                driven_boolean.map_err(|error| format!("{error:?}")),
+                "boolean projection parity failed for Expr + {family}"
+            );
+
+            let recursive_single = recursive.eval_single_expr_recursive(&integer, &env);
+            let driven_single = driven.eval_single_expr(&integer, &env);
+            assert!(
+                matches!(&recursive_single, Err(InterpreterError::ReduceError(message)) if message == PARALLEL_ERROR),
+                "the recursive single-expression projection accepted or misclassified Expr + \
+                 {family}: {recursive_single:?}"
+            );
+            assert_eq!(
+                recursive_single.map_err(|error| format!("{error:?}")),
+                driven_single.map_err(|error| format!("{error:?}")),
+                "single-expression projection parity failed for Expr + {family}"
+            );
+        }
+
+        // Do not derive family purity from the saturating aggregate
+        // cardinality. One compressed Expr endpoint at u64::MAX plus one
+        // foreign endpoint is still a parallel/non-expression Par. The driven
+        // path must reject it before any occurrence expansion; the recursive
+        // oracle is intentionally not invoked on this non-materializable
+        // multiplicity witness.
+        use rspace_plus_plus::rspace::bag::Multiplicity;
+        let mut saturated_mixed = Par::default();
+        saturated_mixed
+            .insert_component_many(
+                &Expr {
+                    expr_instance: Some(ExprInstance::GInt(7)),
+                },
+                Multiplicity::new(u64::MAX).expect("positive maximum multiplicity"),
+                Vec::new(),
+                false,
+            )
+            .expect("one Expr endpoint stores maximum multiplicity");
+        saturated_mixed
+            .insert_component(&Send::default(), Vec::new(), false)
+            .expect("one foreign endpoint remains independently visible");
+        assert!(saturated_mixed.cardinality_is_saturated());
+        assert!(matches!(
+            driven.eval_to_i64(&saturated_mixed, &env),
+            Err(InterpreterError::ReduceError(ref message)) if message == PARALLEL_ERROR
+        ));
+        assert!(matches!(
+            driven.eval_single_expr(&saturated_mixed, &env),
+            Err(InterpreterError::ReduceError(ref message)) if message == PARALLEL_ERROR
+        ));
+
+        let two_integers = Par::default().with_exprs(vec![
+            Expr {
+                expr_instance: Some(ExprInstance::GInt(1)),
+            },
+            Expr {
+                expr_instance: Some(ExprInstance::GInt(2)),
+            },
+        ]);
+        assert!(matches!(
+            driven.eval_to_i64(&two_integers, &env),
+            Err(InterpreterError::ReduceError(ref message))
+                if message == "Error: Integer expected, or unimplemented expression."
+        ));
+        assert!(matches!(
+            driven.eval_single_expr(&two_integers, &env),
+            Err(InterpreterError::ReduceError(ref message))
+                if message == "Error: Multiple expressions given."
+        ));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn single_unforgeable_projection_is_total_bag_exact() {
+        let reducer = build().await;
+        let first = GUnforgeable {
+            unf_instance: Some(UnfInstance::GPrivateBody(GPrivate { id: vec![1] })),
+        };
+        let second = GUnforgeable {
+            unf_instance: Some(UnfInstance::GPrivateBody(GPrivate { id: vec![2] })),
+        };
+        assert_eq!(
+            reducer
+                .eval_single_unforgeable(&Par::default().with_unforgeables(vec![first.clone()]))
+                .expect("one pure unforgeable"),
+            first
+        );
+        assert!(matches!(
+            reducer.eval_single_unforgeable(
+                &Par::default().with_unforgeables(vec![first.clone(), second])
+            ),
+            Err(InterpreterError::ReduceError(ref message))
+                if message == "Error: Multiple unforgeables given."
+        ));
+        assert!(matches!(
+            reducer.eval_single_unforgeable(
+                &Par::default()
+                    .with_unforgeables(vec![first])
+                    .with_conditionals(vec![If::default()])
+            ),
+            Err(InterpreterError::ReduceError(ref message))
+                if message == "Error: non unforgeable found where unforgeable expected."
+        ));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn locally_free_rebuild_covers_if_and_connective_without_expanding_multiplicity() {
+        use models::rhoapi::connective::ConnectiveInstance::VarRefBody;
+        use models::rhoapi::VarRef;
+        use rspace_plus_plus::rspace::bag::Multiplicity;
+
+        let reducer = build().await;
+        let if_bits = models::create_bit_vector(&[2]);
+        let connective_bits = models::create_bit_vector(&[5]);
+        let conditional = If {
+            condition: Some(Par::default()),
+            if_true: Some(Par::default()),
+            if_false: Some(Par::default()),
+            locally_free: if_bits.clone(),
+            connective_used: false,
+        };
+        let connective = Connective {
+            connective_instance: Some(VarRefBody(VarRef { index: 5, depth: 0 })),
+        };
+        let expected = union(if_bits, connective_bits);
+
+        // A maximum multiplicity is a non-vacuity witness for distinct-endpoint
+        // visitation: an occurrence-expanding implementation cannot complete
+        // this computation, while the PathMap visitor decodes each key once.
+        let mut compressed = Par::default();
+        compressed
+            .insert_component_many(
+                &conditional,
+                Multiplicity::new(u64::MAX).expect("positive maximum multiplicity"),
+                Vec::new(),
+                false,
+            )
+            .expect("one If endpoint stores maximum multiplicity");
+        compressed
+            .insert_component(&connective, Vec::new(), false)
+            .expect("one Connective endpoint");
+        assert_eq!(reducer.computed_locally_free_par(&compressed), expected);
+
+        // Exercise the real collection-child boundary with materializable
+        // multiplicities, not only the private summary helper.
+        let child = Par::default()
+            .prepend_if(conditional)
+            .with_connectives(vec![connective]);
+        let evaluated = reducer
+            .eval_expr(&elist(vec![child]), &Env::new())
+            .expect("collection evaluation must rebuild child metadata");
+        let expression = evaluated
+            .first::<Expr>()
+            .expect("evaluated Par endpoints are canonical")
+            .expect("the evaluated list remains one expression")
+            .0;
+        let ExprInstance::EListBody(list) = expression
+            .expr_instance
+            .expect("the evaluated expression retains its variant")
+        else {
+            panic!("the evaluated list changed expression variant");
+        };
+        assert_eq!(list.ps[0].locally_free(), expected.as_slice());
     }
 
     // ---- shallow plus/list: the recursive twin has exceptionally large DEBUG
@@ -9972,6 +10538,32 @@ mod differential_trampoline {
             u = elist(vec![u]);
         }
         assert_agree(&u).await;
+    }
+
+    #[test]
+    fn nested_list_evaluation_finishes_once_on_a_fixed_small_stack() {
+        std::thread::Builder::new()
+            .name("evaluator-planned-list-depth-4096".to_owned())
+            .stack_size(256 * 1024)
+            .spawn(|| {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("build current-thread runtime");
+                runtime.block_on(async {
+                    let reducer = build().await;
+                    let input = Par::wrap_unary_elist(4_096, new_gint_par(0, Vec::new(), false))
+                        .expect("the canonical nested-list fixture is addressable");
+                    let expected = input.encode_to_vec();
+                    let output = reducer
+                        .eval_expr(&input, &Env::new())
+                        .expect("planned evaluator construction must finish");
+                    assert_eq!(output.encode_to_vec(), expected);
+                });
+            })
+            .expect("spawn fixed-stack planned-evaluator probe")
+            .join()
+            .expect("planned-evaluator probe panicked");
     }
 
     // ---- proptest: arbitrary bounded expression trees ----
@@ -10130,6 +10722,15 @@ mod differential_trampoline {
         let terms: Vec<Par> = vec![
             new_boundvar_par(0, vec![], false),
             new_boundvar_par(1, vec![], false),
+            // Collection evaluation must replace this deliberately stale child
+            // summary after BoundVar(0) resolves to the ground integer.
+            elist(vec![new_boundvar_par(0, vec![1], false)]),
+            // EMap is the deliberate legacy exception: unlike list/tuple/set
+            // evaluation it does not call `update_locally_free_par` on entries.
+            emap(vec![(
+                new_boundvar_par(0, vec![1], false),
+                new_gint_par(9, vec![], false),
+            )]),
             eplus(
                 new_boundvar_par(0, vec![], false),
                 new_gint_par(1, vec![], false),
@@ -10178,14 +10779,22 @@ mod differential_trampoline {
                     .expect("build current-thread runtime");
                 runtime.block_on(async {
                     let reducer = build().await;
-                    let mut process = Par::default();
+                    let mut construction = ParConstruction::new();
+                    let mut process = construction.empty_par().expect("plan Nil process");
+                    let shell = Bundle {
+                        body: Some(Par::default()),
+                        write_flag: true,
+                        read_flag: true,
+                    };
                     for _ in 0..4_096 {
-                        process = Par::default().with_bundles(vec![Bundle {
-                            body: Some(process),
-                            write_flag: true,
-                            read_flag: true,
-                        }]);
+                        let component = construction
+                            .bundle_component(&shell, &[process])
+                            .expect("plan bundle component");
+                        process = construction
+                            .singleton_component(component, Vec::new(), false)
+                            .expect("plan bundle process");
                     }
+                    let process = construction.finish(process).expect("finish bundle spine");
 
                     reducer
                         .eval(

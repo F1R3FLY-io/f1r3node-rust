@@ -248,6 +248,23 @@ fn compile_ordered_nested_query(
                     if !is_single_expr_match_carrier(par) {
                         return None;
                     }
+                    // Nested `Par` values are represented in RMP1 by their
+                    // opaque ParBag summary. Unlike the outer atom projection,
+                    // the generated cursor cannot expose a nested sole Expr's
+                    // descendants beneath that summary. Exact-matching a
+                    // dynamic nested Par would therefore compare the pattern's
+                    // Bag digest with the datum's and reject valid captures
+                    // such as `(x, (y, z))`. Retain the ordered outer prefix,
+                    // but make the complete nested Par one conservative
+                    // wildcard; the authoritative spatial PDA still performs
+                    // every inner match and binding.
+                    if par.connective_used() || !par.locally_free().is_empty() {
+                        flush_exact_query_part(&mut parts, &mut exact);
+                        parts.push(RhoMatchQueryPart::Wildcard);
+                        suppressed_nodes = 1;
+                        saw_hole = true;
+                        continue;
+                    }
                 }
                 match cursor {
                     ParCursor::EList(list) if list.remainder.is_some() => return None,

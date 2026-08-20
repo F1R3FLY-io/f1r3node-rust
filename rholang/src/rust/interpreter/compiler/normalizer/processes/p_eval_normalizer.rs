@@ -1,10 +1,14 @@
 use models::rhoapi::Par;
+use models::rust::par_construction::{ParConstruction, PlannedPar};
 use rholang_parser::ast::Name;
 
 use crate::rust::interpreter::compiler::exports::{
-    NameVisitInputs, ProcVisitInputs, ProcVisitOutputs,
+    NameVisitInputs, ProcVisitInputs as PublicProcVisitInputs,
+    ProcVisitOutputs as PublicProcVisitOutputs,
 };
-use crate::rust::interpreter::compiler::normalize_drive::{NormKont, NormVal, NormWork, Step};
+use crate::rust::interpreter::compiler::normalize_drive::{
+    NormKont, NormVal, NormWork, ProcVisitInputs, ProcVisitOutputs, Step,
+};
 use crate::rust::interpreter::errors::InterpreterError;
 
 /// `*x`, descend half — one name child.
@@ -31,23 +35,40 @@ pub(crate) fn descend_p_eval<'ast>(
 /// pushes [`descend_p_eval`]'s `Step` onto the drive it is already on.
 pub fn normalize_p_eval<'ast>(
     eval_name: &'ast Name<'ast>,
-    input: ProcVisitInputs,
+    input: PublicProcVisitInputs,
     env: &std::collections::HashMap<String, Par>,
     parser: &'ast rholang_parser::RholangParser<'ast>,
-) -> Result<ProcVisitOutputs, InterpreterError> {
+) -> Result<PublicProcVisitOutputs, InterpreterError> {
     use crate::rust::interpreter::compiler::normalize_drive::norm_drive_from;
-    norm_drive_from(descend_p_eval(eval_name, input), env, parser).map(NormVal::into_proc)
+    let mut construction = ParConstruction::new();
+    let planned_input = ProcVisitInputs {
+        par: construction.import_par(&input.par)?,
+        bound_map_chain: input.bound_map_chain,
+        free_map: input.free_map,
+    };
+    let result = norm_drive_from(
+        descend_p_eval(eval_name, planned_input),
+        &mut construction,
+        env,
+        parser,
+    )?
+    .into_proc();
+    Ok(PublicProcVisitOutputs {
+        par: construction.finish(result.par)?,
+        free_map: result.free_map,
+    })
 }
 
 /// `*x`, combine half.
 #[inline(never)]
 pub(crate) fn combine_p_eval<'ast>(
-    input_par: Par,
+    input_par: PlannedPar,
     value: NormVal,
+    construction: &mut ParConstruction,
 ) -> Result<Step<'ast>, InterpreterError> {
     let name_match_result = value.into_name();
     Ok(Step::Done(NormVal::Proc(ProcVisitOutputs {
-        par: input_par.append(name_match_result.par),
+        par: construction.parallel(input_par, name_match_result.par)?,
         free_map: name_match_result.free_map,
     })))
 }

@@ -654,6 +654,11 @@ enum Observed {
     Ok {
         /// (1) the protobuf bytes of the resulting term
         bytes: Vec<u8>,
+        /// (1b) the consensus event-hash image of the resulting term. This is
+        /// deliberately distinct from protobuf: RSpace hashes the legacy
+        /// bincode contract, whose Par body contains the canonical ParBag
+        /// snapshot.
+        stable_hash_bytes: Vec<u8>,
         /// (2) the final free map — de Bruijn numbering, wildcards, connectives
         free_map: FreeMap<VarSort>,
         /// (2b) the numbering as a sorted list, so a failure message shows it
@@ -680,6 +685,7 @@ fn observe(
             levels.sort();
             Observed::Ok {
                 bytes: out.par.encode_to_vec(),
+                stable_hash_bytes: models::rust::rholang::bincode_encoder::encode(&out.par),
                 free_map: out.free_map,
                 levels,
                 // The traversal must leave the chain it was handed: every binder
@@ -759,6 +765,95 @@ fn differing_sibling_bind_counts_agree() {
 fn every_structural_arm_agrees() {
     for case in STRUCTURAL {
         check(case);
+    }
+}
+
+/// The complete unsubstituted blessed-contract surface that contributes a
+/// normalized `Par` to genesis. This is the non-vacuity bridge between the
+/// normalizer differential and the consensus pins: a planned-construction
+/// change cannot move a blessed term unless the independent recursive oracle
+/// produces the same bytes.
+#[test]
+fn every_normalizable_blessed_source_agrees_with_the_recursive_oracle() {
+    const RESOURCES: &[&str] = &[
+        "Registry.rho",
+        "ListOps.rho",
+        "Either.rho",
+        "NonNegativeNumber.rho",
+        "MakeMint.rho",
+        "AuthKey.rho",
+        "SystemVault.rho",
+        "MultiSigSystemVault.rho",
+        "Stack.rho",
+        "CapabilitiesRegistry.rhox",
+        "Exchange.rhox",
+    ];
+
+    let resource_root =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../casper/src/main/resources");
+    for resource in RESOURCES {
+        let source = std::fs::read_to_string(resource_root.join(resource))
+            .unwrap_or_else(|error| panic!("cannot read blessed resource {resource}: {error}"));
+        let (machine, oracle) = both(&source);
+        assert_eq!(
+            machine, oracle,
+            "★ CONSENSUS DIFFERENTIAL: planned normalization of blessed resource {resource} \
+             differs from the recursive oracle"
+        );
+    }
+}
+
+/// The exact cross-process async-driver corpus whose COMM projections are
+/// pinned by `casper/tests/util/rholang/async_driver_goldens.json`.
+///
+/// A moved COMM fingerprint can originate in normalization, evaluation, or
+/// RSpace event construction. Binding these complete sources to the recursive
+/// normalizer oracle keeps those causal layers separate: if this test is green,
+/// a later COMM-only movement cannot be attributed to the normalizer PDA.
+#[test]
+fn async_driver_sources_agree_with_the_recursive_normalizer_oracle() {
+    const SOURCES: &[(&str, &str)] = &[
+        (
+            "parallel sends",
+            "new a, b, c, d in { a!(1) | b!(2) | c!(3) | d!(4) | \
+             for(@x <- a){ Nil } | for(@y <- b){ Nil } | \
+             for(@z <- c){ Nil } | for(@w <- d){ Nil } }",
+        ),
+        (
+            "persistent receive",
+            "new ch in { for(@x <= ch){ Nil } | ch!(1) }",
+        ),
+        (
+            "parallel persistent contract calls",
+            "new loop in { contract loop(@n) = { Nil } | loop!(1) | loop!(2) | loop!(3) }",
+        ),
+        ("peek read", "new ch in { ch!(42) | for(@x <<- ch){ Nil } }"),
+        (
+            "two-source join",
+            "new a, b in { a!(1) | b!(2) | for(@x <- a & @y <- b){ Nil } }",
+        ),
+        (
+            "bounded loop",
+            "new loop in { \
+             contract loop(@n) = { match n { 0 => Nil  _ => loop!(n - 1) } } | \
+             loop!(256) }",
+        ),
+        (
+            "bounded string length loop",
+            "new x, loop in { \
+             x!(\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\") | \
+             for(@s <- x){ \
+               contract loop(@n) = { match n { 0 => Nil  _ => loop!(n - 1) } } | \
+               loop!(s.length()) } }",
+        ),
+    ];
+
+    for (label, source) in SOURCES {
+        let (machine, oracle) = both(source);
+        assert_eq!(
+            machine, oracle,
+            "★ ASYNC-DRIVER NORMALIZER DIFFERENTIAL: {label} differs from the recursive oracle"
+        );
     }
 }
 

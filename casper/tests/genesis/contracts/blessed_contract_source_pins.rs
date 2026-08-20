@@ -108,7 +108,8 @@
 //! | one | ONE, shared | **agree** (1 distinct value) | `genesis_vaults_order_determinism::genesis_post_state_hash_is_identical_across_independent_builds`, PASS in 88 s |
 //! | one | SIX, one per build | **agree** (1 distinct value) | `…::genesis_post_state_hash_is_identical_across_independent_rspace_scopes`, PASS in 76.63 s |
 //! | FOUR, before the fixture repair | four | **DISAGREE** — 4 distinct values: `1083c5e0…`, `64088270…`, `a8f6ee11…`, `979b2fbc…` | the `--no-capture` log of `tree_hash_map_delete_restores_never_set`, four cells |
-//! | FOUR, after the authoritative ParBag cutover | four | **agree** — `9dd75ebae52af3ae…f56fd23f` in every process | `default_genesis_post_state_hash_is_pinned_across_processes`, repeated independent processes, 8.86–8.98 s each |
+//! | FOUR, after the authoritative ParBag cutover | four | **agree** — `9dd75ebae52af3ae…f56fd23f` in every process | historical `default_genesis_post_state_hash_is_pinned_across_processes` checkpoint, repeated independent processes, 8.86–8.98 s each |
+//! | THREE, after complete planned `Par` construction | three | **agree** — `87b8dedea0e14838…846da87b` in every process | current `default_genesis_post_state_hash_is_pinned_across_processes`; the normalized-term movement is filed as retired CBR-055 |
 //!
 //! The historical premise that those four processes had identical inputs was false in one precise
 //! place. `build_genesis_parameters_with_defaults(None, None)` read two `lazy_static!` key cohorts
@@ -198,8 +199,8 @@ fn pins() -> Vec<Pin> {
             digest: "5e9660ca03b041d20b4a6b33e15c89f6885cce5ffbefeb6bfa73d3c2dd0f7726",
             length: 27707,
             normalized: Some(NormalizedPin {
-                digest: "6e2d07f013ff28c8f3ea1ab981be6e3ef966364ec93a353a9d588d1339840dc8",
-                length: 25184,
+                digest: "6117f1e344275d7047e1c32cf32621136edd949c71f4b69efafa3595f40d88bb",
+                length: 28455,
             }),
         },
         Pin {
@@ -209,8 +210,8 @@ fn pins() -> Vec<Pin> {
             digest: "ed72b1408de9a48491b3eac532466d5a1ddca8b2103fc71158c41be86fbe9571",
             length: 16922,
             normalized: Some(NormalizedPin {
-                digest: "e26c861f777adfbc94c9f179fc858a67b1e9794bdc499633f350d3fa242a04ac",
-                length: 17035,
+                digest: "7a4b5c1352b437101c69e282e2c936c31130c6f12fb9a74ba9e52fb160dfd334",
+                length: 18349,
             }),
         },
         Pin {
@@ -220,8 +221,8 @@ fn pins() -> Vec<Pin> {
             digest: "c3883297da1b71bbb48f086cea518f915c1b08eb01144e115fc5bfb86cf5a151",
             length: 12034,
             normalized: Some(NormalizedPin {
-                digest: "b66d40b3b073e9835558380dc3e26d006d7298aea8f503079fa9e6fdd3e78067",
-                length: 10376,
+                digest: "9f8ba7518d578d0558063e2c6a4288f4b9a49b80f299a2a38be2efb2c0b0e248",
+                length: 11048,
             }),
         },
         Pin {
@@ -231,8 +232,8 @@ fn pins() -> Vec<Pin> {
             digest: "1df954a04ce64b6a350338653ea1f147dbe5100b95a63831a23a77e4bc33c862",
             length: 4567,
             normalized: Some(NormalizedPin {
-                digest: "811172430ae697b233e1f1d99207acbbdeace3c2b5cee0ce10e22fe6de6385ed",
-                length: 2384,
+                digest: "eb17e6a37e7e3ccb54e0a142c05aaab638a0bb6cdc37f263d72722acb2889a92",
+                length: 2652,
             }),
         },
         Pin {
@@ -242,8 +243,8 @@ fn pins() -> Vec<Pin> {
             digest: "5d09c9d391762ce17191b6a4c4aa612d4d2303f91455068251e8c7928ff7520d",
             length: 11240,
             normalized: Some(NormalizedPin {
-                digest: "1ac9438fd9e10cdd04857676212dadae194dc0839aaafe5631d0c4167a752070",
-                length: 7347,
+                digest: "1b2d37a9e8818ebe9c5383c8fba8d8d237b9f9eb82a1fdbdfeeed8662457a8fc",
+                length: 8151,
             }),
         },
         Pin {
@@ -253,8 +254,8 @@ fn pins() -> Vec<Pin> {
             digest: "155f6db44ae9a2aa98c66227d5b3ae79508797e88ef497fe1eaadb838bbbf565",
             length: 4439,
             normalized: Some(NormalizedPin {
-                digest: "a8214686e5e9243ba44d24754af9acb187228494bf83fc87a9da55dc8525b539",
-                length: 1102,
+                digest: "5a0f1bcfb601ac2b2a7d56d6e0a20d965a034ad1fc601f0bd1535550882dcbc6",
+                length: 1200,
             }),
         },
         Pin {
@@ -264,8 +265,8 @@ fn pins() -> Vec<Pin> {
             digest: "5767bf0cb35a70c4e776ae0554a42fc17ff219612c91e08fba47bec30c2ece3b",
             length: 15023,
             normalized: Some(NormalizedPin {
-                digest: "13ff8e0936ada4c477142a1ba4e767dacbfd2803a1399a211f12fcd14009e754",
-                length: 11636,
+                digest: "7bb242be6a4c95a8467898a4abe1947c200b6cd6b834c604a4ed25eec33951a7",
+                length: 13102,
             }),
         },
         Pin {
@@ -275,8 +276,8 @@ fn pins() -> Vec<Pin> {
             digest: "f114b243acd7524f21eed93fe0046943763f1a88dabb6da4613a2dd5f86a8b1b",
             length: 14594,
             normalized: Some(NormalizedPin {
-                digest: "021a14cbb98b415a7eeaf63bf461e4926b374627b1afbf0c196bc1fe8aece533",
-                length: 12569,
+                digest: "660e9fe12788d10e8712c38af0b94df1c5bb75471980c07c913c507df58785b8",
+                length: 14299,
             }),
         },
         Pin {
@@ -286,8 +287,8 @@ fn pins() -> Vec<Pin> {
             digest: "1840b1204bd1e06393c5db659ee79fa0802d5839cc5ec591254347960f4d2649",
             length: 3866,
             normalized: Some(NormalizedPin {
-                digest: "cc9ae9acb1b4d8c90607a14428e5bb570d28ec757bdbcfe2fd5390c74f6011b4",
-                length: 3333,
+                digest: "a99f1355d6961509f9d97d78b977c66863b7f5e5174166ec82dbd06be0e6ae2a",
+                length: 3686,
             }),
         },
         Pin {
@@ -319,8 +320,8 @@ fn pins() -> Vec<Pin> {
             digest: "1577390b7abb4e61afc8558683da5efa230e30f41a5439167a4471e3bfbdab69",
             length: 9769,
             normalized: Some(NormalizedPin {
-                digest: "48926050c97f42d7a875647c411629436019892ce78ec20990fd46263cf3f813",
-                length: 5715,
+                digest: "9d7a65b8e0bc93f1d917fd508ff692da3acd50de92ccf15196b305403b68f3bf",
+                length: 6246,
             }),
         },
         Pin {
@@ -330,8 +331,8 @@ fn pins() -> Vec<Pin> {
             digest: "d367e84f3c7b46b3d8c373ca9370a8344bec1332b99e4b345ae8d44b47b10a53",
             length: 5423,
             normalized: Some(NormalizedPin {
-                digest: "0cefb2d4889051d94efffc1e5337fe6d13f0eae5594e45819e51174abb9436e7",
-                length: 499,
+                digest: "c1e843a86fa8f9b49641bdfc6fa4a39609b967c84c1da0c0db4f4900b72e335a",
+                length: 521,
             }),
         },
     ]

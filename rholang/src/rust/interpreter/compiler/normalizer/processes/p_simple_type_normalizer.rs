@@ -1,10 +1,36 @@
 use models::rhoapi::connective::ConnectiveInstance;
 use models::rhoapi::Connective;
+use models::rust::par_construction::ParConstruction;
 use rholang_parser::ast::SimpleType;
 
 use crate::rust::interpreter::compiler::exports::{ProcVisitInputs, ProcVisitOutputs};
 use crate::rust::interpreter::errors::InterpreterError;
 use crate::rust::interpreter::util::prepend_connective;
+
+pub(crate) fn plan_simple_type(
+    simple_type: &SimpleType,
+    input: crate::rust::interpreter::compiler::normalize_drive::ProcVisitInputs,
+    construction: &mut ParConstruction,
+) -> Result<crate::rust::interpreter::compiler::normalize_drive::ProcVisitOutputs, InterpreterError>
+{
+    let connective_instance = match simple_type {
+        SimpleType::Bool => ConnectiveInstance::ConnBool(true),
+        SimpleType::Int => ConnectiveInstance::ConnInt(true),
+        SimpleType::String => ConnectiveInstance::ConnString(true),
+        SimpleType::Uri => ConnectiveInstance::ConnUri(true),
+        SimpleType::ByteArray => ConnectiveInstance::ConnByteArray(true),
+    };
+    let connective = Connective {
+        connective_instance: Some(connective_instance),
+    };
+    let component = construction.connective_component(&connective, &[])?;
+    Ok(
+        crate::rust::interpreter::compiler::normalize_drive::ProcVisitOutputs {
+            par: construction.append_component(input.par, component, Vec::new(), true)?,
+            free_map: input.free_map,
+        },
+    )
+}
 
 pub fn normalize_simple_type<'ast>(
     simple_type: &SimpleType,

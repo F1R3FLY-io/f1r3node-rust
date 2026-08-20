@@ -78,12 +78,17 @@
 //! (`shared/tests/panic_expectation_gate.rs`).
 
 use models::rhoapi::connective::ConnectiveInstance::*;
-use models::rhoapi::{Connective, ConnectiveBody, Par, Send};
+use models::rhoapi::{
+    Bundle, Connective, ConnectiveBody, Expr, GUnforgeable, If, Match, New, Par, Receive, Send,
+};
+use models::rust::par_bag::Multiplicity;
 use models::rust::rholang::implicits::vector_par;
 use models::rust::utils::{
     new_free_map, new_freevar_par, new_gint_par, new_gstring_par, new_send, new_wildcard_par,
 };
+use rholang::rust::interpreter::matcher::par_count::ParCount;
 use rholang::rust::interpreter::matcher::spatial_matcher::{SpatialMatcher, SpatialMatcherContext};
+use rholang::rust::interpreter::matcher::sub_pars::sub_pars;
 use rholang::rust::interpreter::util::prepend_connective;
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -129,7 +134,7 @@ fn as_par(con: Connective) -> Par { prepend_connective(vector_par(Vec::new(), tr
 /// Without it the pattern's remainder bound is `(0, 0)`
 /// (`spatial_matcher.rs`'s `min_rem`/`max_rem`), so `sub_pars` offers the
 /// connective exactly ONE candidate — the whole target — and the retry loop
-/// never retries. The wildcard widens `max_rem` to `ParCount::_max()`, which is
+/// never retries. The wildcard widens `max_rem` to `ParCount::unbounded()`, which is
 /// what makes every subset of the target a candidate and the loop a real
 /// search.
 fn as_par_with_wildcard(con: Connective) -> Par {
@@ -163,6 +168,148 @@ fn send(chan: Par, data: Vec<Par>, connective_used: bool) -> Send {
 }
 
 fn par_of_sends(sends: Vec<Send>) -> Par { vector_par(Vec::new(), false).with_sends(sends) }
+
+#[test]
+fn trie_native_sub_pars_preserves_candidate_order_and_compresses_duplicate_positions() {
+    let zero = ParCount::new(&Par::default());
+    let mut exactly_one = zero.clone();
+    exactly_one.sends = 1;
+    let unconstrained_prune = ParCount::unbounded();
+
+    let distinct = par_of_sends(vec![
+        send(eight(), Vec::new(), false),
+        send(new_gint_par(9, Vec::new(), false), Vec::new(), false),
+        send(seven(), Vec::new(), false),
+    ]);
+    let selected_channels = sub_pars(
+        &distinct,
+        &exactly_one,
+        &exactly_one,
+        &zero,
+        &unconstrained_prune,
+    )
+    .map(|(selected, complement)| {
+        assert_eq!(selected.family_cardinality::<Send>(), 1);
+        assert_eq!(complement.family_cardinality::<Send>(), 2);
+        selected
+            .first::<Send>()
+            .expect("a trie-native matcher partition is canonical")
+            .expect("an exactly-one partition carries one Send")
+            .0
+            .chan
+            .expect("the fixture Send has a channel")
+    })
+    .collect::<Vec<_>>();
+    assert_eq!(selected_channels, vec![
+        seven(),
+        eight(),
+        new_gint_par(9, Vec::new(), false)
+    ]);
+
+    let duplicate = send(seven(), Vec::new(), false);
+    let duplicate_target = par_of_sends(vec![
+        duplicate.clone(),
+        duplicate.clone(),
+        duplicate.clone(),
+    ]);
+    let duplicate_candidates = sub_pars(
+        &duplicate_target,
+        &exactly_one,
+        &exactly_one,
+        &zero,
+        &unconstrained_prune,
+    )
+    .collect::<Vec<_>>();
+    assert_eq!(duplicate_candidates.len(), 1);
+    assert!(duplicate_candidates.iter().all(|(selected, complement)| {
+        selected.family_cardinality::<Send>() == 1 && complement.family_cardinality::<Send>() == 2
+    }));
+
+    let mut above_legacy_ceiling = Par::default();
+    above_legacy_ceiling
+        .insert_component_many(
+            &duplicate,
+            Multiplicity::new(1_001).expect("positive multiplicity"),
+            Vec::new(),
+            false,
+        )
+        .expect("one compressed Send endpoint stores 1,001 occurrences");
+    let mut exactly_all = zero.clone();
+    exactly_all.sends = 1_001;
+    let above_ceiling_candidates = sub_pars(
+        &above_legacy_ceiling,
+        &exactly_all,
+        &exactly_all,
+        &zero,
+        &ParCount::unbounded(),
+    )
+    .collect::<Vec<_>>();
+    assert_eq!(above_ceiling_candidates.len(), 1);
+    assert_eq!(
+        above_ceiling_candidates[0].0.family_cardinality::<Send>(),
+        1_001
+    );
+    assert_eq!(
+        above_ceiling_candidates[0].1.family_cardinality::<Send>(),
+        0
+    );
+}
+
+#[test]
+fn every_partitioned_par_family_admits_compressed_multiplicity_above_the_legacy_ceiling() {
+    const CARDINALITY: u64 = 1_001;
+    let zero = ParCount::zero();
+    let multiplicity = Multiplicity::new(CARDINALITY).expect("positive test multiplicity");
+
+    macro_rules! assert_family {
+        ($label:literal, $component:expr, $family:ty, $field:ident) => {{
+            let component: $family = $component;
+            let mut target = Par::default();
+            target
+                .insert_component_many(&component, multiplicity, Vec::new(), false)
+                .unwrap_or_else(|error| {
+                    panic!("cannot build compressed {} target: {error}", $label)
+                });
+            let mut exact = zero.clone();
+            exact.$field = CARDINALITY;
+
+            let candidates = sub_pars(&target, &exact, &exact, &zero, &ParCount::unbounded())
+                .collect::<Vec<_>>();
+            assert_eq!(
+                candidates.len(),
+                1,
+                "compressed {} target must have one exact-all partition",
+                $label
+            );
+            assert_eq!(
+                candidates[0].0.family_cardinality::<$family>(),
+                CARDINALITY,
+                "selected {} multiplicity was truncated",
+                $label
+            );
+            assert_eq!(
+                candidates[0].1.family_cardinality::<$family>(),
+                0,
+                "exact-all {} partition left a complement",
+                $label
+            );
+        }};
+    }
+
+    assert_family!("Send", Send::default(), Send, sends);
+    assert_family!("Receive", Receive::default(), Receive, receives);
+    assert_family!("New", New::default(), New, news);
+    assert_family!("Expr", Expr::default(), Expr, exprs);
+    assert_family!("Match", Match::default(), Match, matches);
+    assert_family!(
+        "GUnforgeable",
+        GUnforgeable::default(),
+        GUnforgeable,
+        unforgeables
+    );
+    assert_family!("Bundle", Bundle::default(), Bundle, bundles);
+    assert_family!("If", If::default(), If, conditionals);
+}
 
 // ─────────────────────────────────────────────────────────────────────────
 // The REDs

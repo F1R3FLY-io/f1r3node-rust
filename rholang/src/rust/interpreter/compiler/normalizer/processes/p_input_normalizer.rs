@@ -1,28 +1,29 @@
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/compiler/normalizer/processes/PInputNormalizer.scala
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use models::rhoapi::{Par, Receive, ReceiveBind};
-use models::rust::rholang::par_children::dismantle_all;
+use models::rust::par_construction::ParConstruction;
 use models::rust::utils::union;
 use rholang_parser::ast::{AnnProc, Bind, Name, Proc, Receipts, Source, Var};
-use rholang_parser::{SourcePos, SourceSpan};
+use rholang_parser::SourceSpan;
 use uuid::Uuid;
 
 use crate::rust::interpreter::compiler::exports::{
-    FreeMap, NameVisitInputs, ProcVisitInputs, ProcVisitOutputs,
+    FreeMap, NameVisitInputs, ProcVisitInputs as PublicProcVisitInputs,
+    ProcVisitOutputs as PublicProcVisitOutputs,
 };
 use crate::rust::interpreter::compiler::normalize::VarSort;
 use crate::rust::interpreter::compiler::normalize_drive::{
-    InputK, InputPhase, NormKont, NormVal, NormWork, Step,
+    InputK, InputPhase, NormKont, NormVal, NormWork, PlannedReceiveBind, ProcVisitInputs,
+    ProcVisitOutputs, Step,
 };
 use crate::rust::interpreter::compiler::normalizer::cost_accounting::pattern_guard::reject_cost_syntax_in_name_pattern;
 use crate::rust::interpreter::compiler::normalizer::processes::utils::fail_on_invalid_connective;
 use crate::rust::interpreter::compiler::normalizer::remainder_normalizer_matcher::normalize_match_name;
-use crate::rust::interpreter::compiler::receive_binds_sort_matcher::pre_sort_binds;
-use crate::rust::interpreter::compiler::span_utils::SpanContext;
+use crate::rust::interpreter::compiler::receive_binds_sort_matcher::pre_sort_planned_binds;
 use crate::rust::interpreter::errors::InterpreterError;
-use crate::rust::interpreter::guard::{reject_undecidable_guard, RECEIVE_WHERE};
+use crate::rust::interpreter::guard::{reject_undecidable_planned_guard, RECEIVE_WHERE};
 use crate::rust::interpreter::unwrap_option_safe;
 use crate::rust::interpreter::util::filter_and_adjust_bitset;
 
@@ -52,6 +53,7 @@ pub(crate) fn descend_p_input<'ast>(
     body: AnnProc<'ast>,
     input: ProcVisitInputs,
     parser: &'ast rholang_parser::RholangParser<'ast>,
+    construction: &mut ParConstruction,
 ) -> Result<Step<'ast>, InterpreterError> {
     fn create_ann_proc_with_span<'ast>(proc: &'ast Proc<'ast>, span: SourceSpan) -> AnnProc<'ast> {
         AnnProc { proc, span }
@@ -106,12 +108,10 @@ pub(crate) fn descend_p_input<'ast>(
             .flat_map(|receipt_group| receipt_group.iter())
             .try_fold(
                 (
-                    // Initial sends (Nil) - inherit span from for-comprehension
-                    // TODO: Update zero span
-                    create_ann_proc_with_span(
-                        parser.ast_builder().const_nil(),
-                        SpanContext::zero_span(), // Inherit from for-comprehension
-                    ),
+                    // Synthetic nodes belong to the enclosing comprehension;
+                    // retaining that span gives diagnostics a real source
+                    // location instead of an invented zero coordinate.
+                    create_ann_proc_with_span(parser.ast_builder().const_nil(), body.span),
                     // Initial continuation (original body)
                     body,
                 ),
@@ -119,9 +119,9 @@ pub(crate) fn descend_p_input<'ast>(
                     match bind {
                         Bind::Linear { lhs, rhs } => {
                             let identifier = Uuid::new_v4().to_string();
-                            // Create temporary variable - point to binding site
-                            // TODO: Update zero span
-                            let binding_span = SpanContext::zero_span();
+                            // The parser AST does not attach a span to `Bind`
+                            // itself, so use the enclosing comprehension span.
+                            let binding_span = body.span;
                             let temp_var = Name::NameVar(rholang_parser::ast::Var::Id(
                                 rholang_parser::ast::Id {
                                     name: parser.ast_builder().alloc_str(&identifier),
@@ -150,14 +150,13 @@ pub(crate) fn descend_p_input<'ast>(
                                     });
 
                                     // Add send: temp!()
-                                    // TODO: Update zero span
                                     let temp_send = create_ann_proc_with_span(
                                         parser.ast_builder().alloc_send(
                                             rholang_parser::ast::SendType::Single,
                                             temp_var,
                                             &[],
                                         ),
-                                        SpanContext::zero_span(), // Inherit from for-comprehension
+                                        body.span,
                                     );
 
                                     let new_continuation = AnnProc {
@@ -175,7 +174,7 @@ pub(crate) fn descend_p_input<'ast>(
                                     list_name_decl.push(rholang_parser::ast::NameDecl {
                                         id: rholang_parser::ast::Id {
                                             name: parser.ast_builder().alloc_str(&identifier),
-                                            pos: SourcePos { line: 0, col: 0 },
+                                            pos: body.span.start,
                                         },
                                         uri: None,
                                     });
@@ -189,10 +188,9 @@ pub(crate) fn descend_p_input<'ast>(
 
                                     // Prepend temp variable to inputs
                                     let mut new_inputs = Vec::new();
-                                    // TODO: Update zero span
                                     new_inputs.push(create_ann_proc_with_span(
                                         parser.ast_builder().alloc_eval(temp_var),
-                                        SpanContext::zero_span(), // Inherit from for-comprehension
+                                        body.span,
                                     ));
                                     new_inputs.extend(inputs.iter().cloned());
 
@@ -203,10 +201,7 @@ pub(crate) fn descend_p_input<'ast>(
                                             *name,
                                             &new_inputs,
                                         ),
-                                        span: SourceSpan {
-                                            start: SourcePos { line: 0, col: 0 },
-                                            end: SourcePos { line: 0, col: 0 },
-                                        },
+                                        span: body.span,
                                     };
 
                                     let new_sends = AnnProc {
@@ -276,10 +271,10 @@ pub(crate) fn descend_p_input<'ast>(
                     let source_name = match rhs {
                         Source::Simple { name } => *name,
                         _ => {
-                            return Err(InterpreterError::ParserError(
-                                "Only simple sources supported in current implementation"
+                            return Err(InterpreterError::BugFoundError(
+                                "complex receive source survived the mandatory input desugaring"
                                     .to_string(),
-                            ))
+                            ));
                         }
                     };
 
@@ -295,37 +290,9 @@ pub(crate) fn descend_p_input<'ast>(
                     let remainder = lhs.remainder;
                     Ok(((names, remainder), *rhs))
                 }
-                // Cost-accounted per-clause signed bind `{% y <- x %}[s]` (W1). The
-                // Phase-4 signed-JOIN dispatch (`normalize.rs` ForComprehension arm
-                // → `recognize_signed_join` → `strip_signed_binds`) demotes EVERY
-                // `Bind::Signed` to its linear bind BEFORE `normalize_p_input` sees
-                // it, so this arm is unreachable in normal operation (the
-                // `debug_assert` catches a dispatch regression). The release
-                // fallback treats it as its underlying LINEAR bind — identical
-                // receive shape / COMM count to the unsigned form, metered to the
-                // deploy envelope — so a dispatch bug degrades gracefully rather
-                // than miscompiling.
-                Bind::Signed { lhs, rhs, .. } => {
-                    debug_assert!(
-                        false,
-                        "Bind::Signed must be stripped by recognize_signed_join before \
-                         normalize_p_input (W1 Phase 4 dispatch)"
-                    );
-                    let names: &'ast [Name<'ast>] = lhs.names.as_slice();
-                    let remainder = lhs.remainder;
-
-                    let source_name = match rhs {
-                        Source::Simple { name } => *name,
-                        _ => {
-                            return Err(InterpreterError::ParserError(
-                                "Only simple sources supported in current implementation"
-                                    .to_string(),
-                            ))
-                        }
-                    };
-
-                    Ok(((names, remainder), source_name))
-                }
+                Bind::Signed { .. } => Err(InterpreterError::BugFoundError(
+                    "signed receive bind survived recognize_signed_join dispatch".to_string(),
+                )),
             })
             .collect();
 
@@ -336,42 +303,46 @@ pub(crate) fn descend_p_input<'ast>(
             Bind::Linear { .. } => (false, false),
             Bind::Repeated { .. } => (true, false),
             Bind::Peek { .. } => (false, true),
-            // A cost-accounted signed bind is the linear-receive form (non-
-            // persistent, non-peek); the signature decorates, it does not change
-            // the COMM shape (W1, recognition-only in Phase 1).
-            Bind::Signed { .. } => (false, false),
+            Bind::Signed { .. } => {
+                return Err(InterpreterError::BugFoundError(
+                    "signed receive bind survived recognize_signed_join dispatch".to_string(),
+                ));
+            }
         };
 
         // Extract patterns and sources
         let (patterns, sources): (Vec<_>, Vec<_>) = processed.into_iter().unzip();
 
         let source_free = input.free_map.clone();
-        advance_input(Box::new(InputK {
-            patterns,
-            sources,
-            guard: receipts[0].guard,
-            body,
-            persistent,
-            peek,
-            input,
-            phase: InputPhase::Patterns {
-                group_idx: 0,
-                name_idx: 0,
-            },
-            group_pars: Vec::new(),
-            group_free: FreeMap::new(),
-            group_locally_free: Vec::new(),
-            done_patterns: Vec::new(),
-            source_pars: Vec::new(),
-            source_free,
-            source_locally_free: Vec::new(),
-            source_connective_used: false,
-            body_env: Default::default(),
-            receive_binds: Vec::new(),
-            bind_count: 0,
-            patterns_locally_free: Vec::new(),
-            guard_out: None,
-        }))
+        advance_input(
+            Box::new(InputK {
+                patterns,
+                sources,
+                guard: receipts[0].guard,
+                body,
+                persistent,
+                peek,
+                input,
+                phase: InputPhase::Patterns {
+                    group_idx: 0,
+                    name_idx: 0,
+                },
+                group_pars: Vec::new(),
+                group_free: FreeMap::new(),
+                group_locally_free: Vec::new(),
+                done_patterns: Vec::new(),
+                source_pars: Vec::new(),
+                source_free,
+                source_locally_free: Vec::new(),
+                source_connective_used: false,
+                body_env: Default::default(),
+                receive_binds: Vec::new(),
+                bind_count: 0,
+                patterns_locally_free: Vec::new(),
+                guard_out: None,
+            }),
+            construction,
+        )
     }
 }
 
@@ -384,7 +355,10 @@ pub(crate) fn descend_p_input<'ast>(
 /// `match`. Every transition preserves `NormKont::filled`, so the driver's slot
 /// invariant holds across them.
 #[inline(never)]
-fn advance_input<'ast>(mut k: Box<InputK<'ast>>) -> Result<Step<'ast>, InterpreterError> {
+fn advance_input<'ast>(
+    mut k: Box<InputK<'ast>>,
+    construction: &mut ParConstruction,
+) -> Result<Step<'ast>, InterpreterError> {
     loop {
         match k.phase {
             InputPhase::Patterns {
@@ -452,44 +426,35 @@ fn advance_input<'ast>(mut k: Box<InputK<'ast>>) -> Result<Step<'ast>, Interpret
                 // duplicate channels, merge the per-bind free maps and open the
                 // body's scope — all of it verbatim from the recursive form.
                 let sources_par = std::mem::take(&mut k.source_pars);
-                let receive_binds_and_free_maps = pre_sort_binds(
-                    k.done_patterns
-                        .clone()
-                        .into_iter()
-                        .zip(sources_par)
-                        .map(|((a, b, c, _), e)| (a, b, e, c))
-                        .collect(),
-                )?;
+                let done_patterns = std::mem::take(&mut k.done_patterns);
+                let mut patterns_locally_free = Vec::new();
+                let bind_inputs = done_patterns
+                    .into_iter()
+                    .zip(sources_par)
+                    .map(|((patterns, remainder, free_map, locally_free), source)| {
+                        patterns_locally_free =
+                            union(std::mem::take(&mut patterns_locally_free), locally_free);
+                        (patterns, remainder, source, free_map)
+                    })
+                    .collect();
+                let receive_binds_and_free_maps =
+                    pre_sort_planned_binds(construction, bind_inputs)?;
 
                 let (receive_binds, receive_bind_free_maps): (
-                    Vec<ReceiveBind>,
+                    Vec<PlannedReceiveBind>,
                     Vec<FreeMap<VarSort>>,
                 ) = receive_binds_and_free_maps.into_iter().unzip();
 
-                // Channel duplicate check
-                let channels: Vec<Par> = receive_binds
-                    .clone()
-                    .into_iter()
-                    .map(|rb| {
-                        rb.source
-                            .expect("pre_sort_binds always emits a source for every bind")
-                    })
-                    .collect();
-
-                let channels_set: HashSet<Par> = channels.clone().into_iter().collect();
-                let has_same_channels = channels.len() > channels_set.len();
+                // Receive-bind canonical order begins with the source channel,
+                // so equal channels form one contiguous run. Compare planned
+                // cursors directly: no resident `Par`, hash set, or teardown
+                // path is needed.
+                let has_same_channels = receive_binds.windows(2).any(|pair| {
+                    construction.compare_pars(pair[0].source, pair[1].source)
+                        == std::cmp::Ordering::Equal
+                });
 
                 if has_same_channels {
-                    // ⚠ Tear the already-normalized patterns and channels down
-                    // iteratively: `<Par as Drop>` is Θ(depth), and this is a
-                    // REJECTION path, i.e. exactly where a hostile deploy lands.
-                    let mut pars: Vec<Par> = channels;
-                    for b in receive_binds {
-                        pars.extend(b.patterns);
-                        pars.extend(b.source);
-                    }
-                    dismantle_all(pars);
-                    // TODO: Review
                     return Err(InterpreterError::ReceiveOnSameChannelsError {
                         source_span: k.body.span,
                     });
@@ -522,10 +487,7 @@ fn advance_input<'ast>(mut k: Box<InputK<'ast>>) -> Result<Step<'ast>, Interpret
                     .input
                     .bound_map_chain
                     .absorb_free_span(&receive_binds_free_map);
-                k.patterns_locally_free = std::mem::take(&mut k.done_patterns)
-                    .into_iter()
-                    .map(|pattern| pattern.3)
-                    .fold(Vec::new(), union);
+                k.patterns_locally_free = patterns_locally_free;
                 k.receive_binds = receive_binds;
 
                 k.phase = if k.guard.is_some() {
@@ -546,7 +508,7 @@ fn advance_input<'ast>(mut k: Box<InputK<'ast>>) -> Result<Step<'ast>, Interpret
                     .guard
                     .expect("advance_input: InputPhase::Guard is only entered when a guard exists");
                 let child_input = ProcVisitInputs {
-                    par: Par::default(),
+                    par: construction.empty_par()?,
                     bound_map_chain: k.body_env.clone(),
                     free_map: k.source_free.clone(),
                 };
@@ -565,7 +527,7 @@ fn advance_input<'ast>(mut k: Box<InputK<'ast>>) -> Result<Step<'ast>, Interpret
                     None => k.source_free.clone(),
                 };
                 let child_input = ProcVisitInputs {
-                    par: Par::default(),
+                    par: construction.empty_par()?,
                     bound_map_chain: k.body_env.clone(),
                     free_map,
                 };
@@ -587,6 +549,7 @@ fn advance_input<'ast>(mut k: Box<InputK<'ast>>) -> Result<Step<'ast>, Interpret
 pub(crate) fn combine_p_input<'ast>(
     mut k: Box<InputK<'ast>>,
     value: NormVal,
+    construction: &mut ParConstruction,
 ) -> Result<Step<'ast>, InterpreterError> {
     match k.phase {
         InputPhase::Patterns {
@@ -598,7 +561,7 @@ pub(crate) fn combine_p_input<'ast>(
 
             // ★ Leg-1: shallow read, then MOVE. See
             // `collection_normalize_matcher::combine_collect`.
-            let pattern_locally_free = res.par.locally_free().to_vec();
+            let pattern_locally_free = construction.locally_free(res.par).to_vec();
             k.group_pars.push(res.par);
             k.group_free = res.free_map;
             k.group_locally_free = union(
@@ -609,14 +572,14 @@ pub(crate) fn combine_p_input<'ast>(
                 group_idx,
                 name_idx: name_idx + 1,
             };
-            advance_input(k)
+            advance_input(k, construction)
         }
 
         InputPhase::Sources { idx } => {
             let res = value.into_name();
             // ★ Leg-1: shallow reads, then MOVE.
-            let source_locally_free = res.par.locally_free().to_vec();
-            let source_connective_used = res.par.connective_used();
+            let source_locally_free = construction.locally_free(res.par).to_vec();
+            let source_connective_used = construction.connective_used(res.par);
             k.source_pars.push(res.par);
             k.source_free = res.free_map;
             k.source_locally_free = union(
@@ -625,7 +588,7 @@ pub(crate) fn combine_p_input<'ast>(
             );
             k.source_connective_used = k.source_connective_used || source_connective_used;
             k.phase = InputPhase::Sources { idx: idx + 1 };
-            advance_input(k)
+            advance_input(k, construction)
         }
 
         InputPhase::Guard => {
@@ -638,10 +601,10 @@ pub(crate) fn combine_p_input<'ast>(
             // is still in hand and refusing costs the author nothing but a
             // rewrite. See `interpreter::guard` for why refusing beats both
             // widening the decider and raising from inside the matcher.
-            reject_undecidable_guard(&guard_out.par, RECEIVE_WHERE)?;
+            reject_undecidable_planned_guard(construction, guard_out.par, RECEIVE_WHERE)?;
             k.guard_out = Some(guard_out);
             k.phase = InputPhase::Body;
-            advance_input(k)
+            advance_input(k, construction)
         }
 
         InputPhase::Body => {
@@ -659,45 +622,78 @@ pub(crate) fn combine_p_input<'ast>(
                 ..
             } = *k;
 
-            // The recursive implementation cloned the body before consuming
-            // its cache, so retain the nested bytes and copy only the shallow
-            // cache vector into `Receive::locally_free`.
             let guard_locally_free = guard_out
                 .as_ref()
-                .map(|gr| gr.par.locally_free().to_vec())
+                .map(|gr| construction.locally_free(gr.par).to_vec())
                 .unwrap_or_default();
             let guard_connective_used = guard_out
                 .as_ref()
-                .map(|gr| gr.par.connective_used())
+                .map(|gr| construction.connective_used(gr.par))
                 .unwrap_or(false);
             let guard_par = guard_out.map(|gr| gr.par);
-            let body_locally_free = proc_visit_outputs.par.locally_free().to_vec();
-            let body_connective_used = proc_visit_outputs.par.connective_used();
+            let body_locally_free = construction.locally_free(proc_visit_outputs.par).to_vec();
+            let body_connective_used = construction.connective_used(proc_visit_outputs.par);
+            let locally_free = union(
+                source_locally_free,
+                union(
+                    patterns_locally_free,
+                    filter_and_adjust_bitset(
+                        union(body_locally_free, guard_locally_free),
+                        bind_count,
+                    ),
+                ),
+            );
+            let connective_used =
+                source_connective_used || body_connective_used || guard_connective_used;
+            let bind_count = i32::try_from(bind_count).map_err(|_| {
+                InterpreterError::NormalizerError(
+                    "receive binder count exceeds the protobuf i32 domain".to_string(),
+                )
+            })?;
+
+            let shell = Receive {
+                binds: receive_binds
+                    .iter()
+                    .map(|bind| ReceiveBind {
+                        patterns: vec![Par::default(); bind.patterns.len()],
+                        source: Some(Par::default()),
+                        remainder: bind.remainder.clone(),
+                        free_count: bind.free_count,
+                    })
+                    .collect(),
+                body: Some(Par::default()),
+                persistent,
+                peek,
+                bind_count,
+                locally_free: locally_free.clone(),
+                connective_used,
+                condition: guard_par.map(|_| Par::default()),
+            };
+            let mut children = Vec::with_capacity(
+                receive_binds
+                    .iter()
+                    .map(|bind| bind.patterns.len() + 1)
+                    .sum::<usize>()
+                    + 2,
+            );
+            for bind in receive_binds {
+                children.extend(bind.patterns);
+                children.push(bind.source);
+            }
+            children.push(proc_visit_outputs.par);
+            children.push(match guard_par {
+                Some(guard) => guard,
+                None => construction.empty_par()?,
+            });
+            let component = construction.receive_component(&shell, &children)?;
 
             Ok(Step::Done(NormVal::Proc(ProcVisitOutputs {
-                par: input.par.prepend_receive(Receive {
-                    binds: receive_binds,
-                    body: Some(proc_visit_outputs.par),
-                    persistent,
-                    peek,
-                    bind_count: bind_count as i32,
-                    locally_free: {
-                        union(
-                            source_locally_free,
-                            union(
-                                patterns_locally_free,
-                                filter_and_adjust_bitset(
-                                    union(body_locally_free, guard_locally_free),
-                                    bind_count,
-                                ),
-                            ),
-                        )
-                    },
-                    connective_used: source_connective_used
-                        || body_connective_used
-                        || guard_connective_used,
-                    condition: guard_par,
-                }),
+                par: construction.append_component(
+                    input.par,
+                    component,
+                    locally_free,
+                    connective_used,
+                )?,
                 free_map: proc_visit_outputs.free_map,
             })))
         }
@@ -708,13 +704,23 @@ pub(crate) fn combine_p_input<'ast>(
 pub fn normalize_p_input<'ast>(
     receipts: &'ast Receipts<'ast>,
     body: &'ast AnnProc<'ast>,
-    input: ProcVisitInputs,
+    input: PublicProcVisitInputs,
     env: &HashMap<String, Par>,
     parser: &'ast rholang_parser::RholangParser<'ast>,
-) -> Result<ProcVisitOutputs, InterpreterError> {
+) -> Result<PublicProcVisitOutputs, InterpreterError> {
     use crate::rust::interpreter::compiler::normalize_drive::norm_drive_from;
-    let step = descend_p_input(receipts, *body, input, parser)?;
-    norm_drive_from(step, env, parser).map(NormVal::into_proc)
+    let mut construction = ParConstruction::new();
+    let planned_input = ProcVisitInputs {
+        par: construction.import_par(&input.par)?,
+        bound_map_chain: input.bound_map_chain,
+        free_map: input.free_map,
+    };
+    let step = descend_p_input(receipts, *body, planned_input, parser, &mut construction)?;
+    let result = norm_drive_from(step, &mut construction, env, parser)?.into_proc();
+    Ok(PublicProcVisitOutputs {
+        par: construction.finish(result.par)?,
+        free_map: result.free_map,
+    })
 }
 
 // See rholang/src/test/scala/coop/rchain/rholang/interpreter/compiler/normalizer/ProcMatcherSpec.scala
@@ -731,8 +737,8 @@ mod tests {
     use crate::rust::interpreter::compiler::compiler::Compiler;
     use crate::rust::interpreter::compiler::exports::BoundMapChain;
 
-    fn inputs_span() -> ProcVisitInputs {
-        ProcVisitInputs {
+    fn inputs_span() -> PublicProcVisitInputs {
+        PublicProcVisitInputs {
             par: Par::default(),
             bound_map_chain: BoundMapChain::new(),
             free_map: FreeMap::new(),

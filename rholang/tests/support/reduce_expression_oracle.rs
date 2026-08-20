@@ -3,10 +3,11 @@
 macro_rules! reducer_expression_oracle_methods {
     () => {
         // RECURSIVE TWIN — the oracle for the differential harness (`differential`
-        // module). Each function is a faithful recursive dispatcher over the SAME
-        // shared `combine_*` helpers the trampoline uses, so a byte-identical
-        // result + charge trace between the two proves the trampoline's descend/
-        // combine WIRING (the only new logic). cfg(test): excluded from production.
+        // module). Scalar/operator arms call the SAME shared `combine_*` helpers
+        // as the trampoline. Five collection arms independently rebuild ordinary
+        // values while production builds `ParConstruction` plans; byte-identical
+        // results prove that representation boundary as well as the trampoline's
+        // descend/combine wiring. cfg(test): excluded from production.
         //
         // ★ PROVENANCE, and what it is NOT.
         //
@@ -26,18 +27,16 @@ macro_rules! reducer_expression_oracle_methods {
         //   | eval_to_bool       |        48 |         28 | no             |
         //
         // ZERO of six. `eval_expr_to_expr` alone collapses 1,213 lines to 167,
-        // because the per-arm arithmetic, comparison and collection logic was
-        // LIFTED OUT into the `combine_*` helpers and the twin now calls them —
-        // the same helpers the trampoline calls.
+        // because per-arm scalar/operator logic was LIFTED OUT into shared
+        // `combine_*` helpers. The collection shells remain independent so the
+        // oracle can detect a defect in planned construction.
         //
         // ⚠ THE CONSEQUENCE, stated so nobody has to infer it: this oracle SHARES
-        // code with the machine it checks. The differential can therefore prove the
-        // trampoline's descend/combine WIRING — which is the only new logic, and is
-        // what the harness claims — and it CANNOT detect a bug inside a `combine_*`
-        // helper, because both sides would compute the same wrong answer. That is a
-        // deliberate, bounded trade (a duplicated 1,213-line arm table would test
-        // the copy rather than the driving), not an oversight; it is written down
-        // here because "faithful copy" invited exactly the opposite reading.
+        // scalar/operator code with the machine it checks. It CANNOT detect a bug
+        // inside one of those shared helpers. It CAN detect planned-construction
+        // defects for EList, ETuple, EPathMap, ESet, and EMap because these methods
+        // independently rebuild decoded values. This is a deliberate, measured
+        // boundary, not a claim that the complete 1,213-line arm table is copied.
         //
         // `rholang/tests/normalize_oracle_provenance.rs::
         // the_trampoline_twin_is_a_rewrite_not_a_copy` re-derives the table above
@@ -409,19 +408,144 @@ macro_rules! reducer_expression_oracle_methods {
             }
         }
 
+        // The five collection combiners are intentionally oracle-only. Production
+        // constructs their results through `plan_*` + `ParConstruction`; keeping
+        // these ordinary decoded rebuilds independent lets the differential test
+        // that representation change instead of sharing its implementation.
+        #[cfg(test)]
+        fn combine_elist(
+            &self,
+            evaled_ps: Vec<Par>,
+            e1: &EList,
+        ) -> Result<Expr, InterpreterError> {
+            let updated_ps: Vec<Par> = evaled_ps
+                .into_iter()
+                .map(|p| self.update_locally_free_par(p))
+                .collect();
+
+            Ok(Expr {
+                expr_instance: Some(ExprInstance::EListBody(self.update_locally_free_elist(
+                    EList {
+                        ps: updated_ps,
+                        locally_free: e1.locally_free.clone(),
+                        connective_used: e1.connective_used,
+                        remainder: None,
+                    },
+                ))),
+            })
+        }
+
+        #[cfg(test)]
+        fn combine_etuple(
+            &self,
+            evaled_ps: Vec<Par>,
+            e1: &ETuple,
+        ) -> Result<Expr, InterpreterError> {
+            let updated_ps: Vec<Par> = evaled_ps
+                .into_iter()
+                .map(|p| self.update_locally_free_par(p))
+                .collect();
+
+            Ok(Expr {
+                expr_instance: Some(ExprInstance::ETupleBody(
+                    self.update_locally_free_etuple(ETuple {
+                        ps: updated_ps,
+                        locally_free: e1.locally_free.clone(),
+                        connective_used: e1.connective_used,
+                    }),
+                )),
+            })
+        }
+
+        #[cfg(test)]
+        fn combine_epathmap(
+            &self,
+            evaled_ps: Vec<Par>,
+            e1: &EPathMap,
+        ) -> Result<Expr, InterpreterError> {
+            let updated_ps: Vec<Par> = evaled_ps
+                .into_iter()
+                .map(|p| self.update_locally_free_par(p))
+                .collect();
+
+            let rebuilt = match e1.mode() {
+                EPathMapMode::Empty | EPathMapMode::Set => EPathMap::new(
+                    updated_ps,
+                    e1.locally_free.clone(),
+                    e1.connective_used,
+                    None,
+                ),
+                EPathMapMode::Map => {
+                    let mut values = updated_ps.into_iter();
+                    let entries = std::iter::from_fn(|| {
+                        let key = values.next()?;
+                        let value = values
+                            .next()
+                            .expect("map-mode evaluator produces one value for every key");
+                        Some((key, value))
+                    });
+                    EPathMap::new_map(
+                        entries,
+                        e1.locally_free.clone(),
+                        e1.connective_used,
+                        None,
+                    )
+                }
+            };
+            Ok(Expr {
+                expr_instance: Some(ExprInstance::EPathmapBody(rebuilt)),
+            })
+        }
+
+        #[cfg(test)]
+        fn combine_eset(
+            &self,
+            evaled_ps: Vec<Par>,
+            eset: &ESet,
+        ) -> Result<Expr, InterpreterError> {
+            let updated_ps: Vec<Par> = evaled_ps
+                .into_iter()
+                .map(|p| self.update_locally_free_par(p))
+                .collect();
+            let rebuilt = ParSet {
+                ps: SortedParHashSet::create_from_vec(updated_ps),
+                connective_used: eset.connective_used,
+                locally_free: eset.locally_free.clone(),
+                remainder: eset.remainder.clone(),
+            };
+            Ok(Expr {
+                expr_instance: Some(ExprInstance::ESetBody(
+                    ParSetTypeMapper::par_set_to_eset(rebuilt),
+                )),
+            })
+        }
+
+        #[cfg(test)]
+        fn combine_emap(
+            &self,
+            evaled_ps: Vec<(Par, Par)>,
+            emap: &EMap,
+        ) -> Result<Expr, InterpreterError> {
+            let rebuilt = ParMap {
+                ps: SortedParMap::create_from_vec(evaled_ps),
+                connective_used: emap.connective_used,
+                locally_free: emap.locally_free.clone(),
+                remainder: emap.remainder.clone(),
+            };
+            Ok(Expr {
+                expr_instance: Some(ExprInstance::EMapBody(
+                    ParMapTypeMapper::par_map_to_emap(rebuilt),
+                )),
+            })
+        }
+
         #[cfg(test)]
         fn eval_single_expr_recursive(
             &self,
             p: &Par,
             env: &Env<Par>,
         ) -> Result<Expr, InterpreterError> {
-            if p.family_cardinality::<Send>() != 0
-                || p.family_cardinality::<Receive>() != 0
-                || p.family_cardinality::<New>() != 0
-                || p.family_cardinality::<Match>() != 0
-                || p.family_cardinality::<GUnforgeable>() != 0
-                || p.family_cardinality::<Bundle>() != 0
-            {
+            if !p.all_components_are::<Expr>() {
                 Err(InterpreterError::ReduceError(String::from(
                     "Error: parallel or non expression found where expression expected.",
                 )))
@@ -438,13 +562,7 @@ macro_rules! reducer_expression_oracle_methods {
 
         #[cfg(test)]
         fn eval_to_i64_recursive(&self, p: &Par, env: &Env<Par>) -> Result<i64, InterpreterError> {
-            if p.family_cardinality::<Send>() != 0
-                && p.family_cardinality::<Receive>() != 0
-                && p.family_cardinality::<New>() != 0
-                && p.family_cardinality::<Match>() != 0
-                && p.family_cardinality::<GUnforgeable>() != 0
-                && p.family_cardinality::<Bundle>() != 0
-            {
+            if !p.all_components_are::<Expr>() {
                 Err(InterpreterError::ReduceError(String::from(
                     "Error: parallel or non expression found where expression expected.",
                 )))
@@ -477,13 +595,7 @@ macro_rules! reducer_expression_oracle_methods {
             p: &Par,
             env: &Env<Par>,
         ) -> Result<bool, InterpreterError> {
-            if p.family_cardinality::<Send>() != 0
-                && p.family_cardinality::<Receive>() != 0
-                && p.family_cardinality::<New>() != 0
-                && p.family_cardinality::<Match>() != 0
-                && p.family_cardinality::<GUnforgeable>() != 0
-                && p.family_cardinality::<Bundle>() != 0
-            {
+            if !p.all_components_are::<Expr>() {
                 Err(InterpreterError::ReduceError(String::from(
                     "Error: parallel or non expression found where expression expected.",
                 )))

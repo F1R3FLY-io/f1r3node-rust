@@ -12,11 +12,12 @@
 
 **Repository** `f1r3node-rust-mettail`, branch `feature/mettail`
 **Companion repository** `mettail-rust`, branch `feature/rho-native-set-automata` (§5.6)
-**Report date** 2026-07-29, revised through 2026-08-17
+**Report date** 2026-07-29, revised through 2026-08-20
 **Measurement anchor** `f1r3node-rust-mettail@e67a6aaa` · `mettail-rust@b0aa4e09` (original measurement tree `8853f839`)
-**Living closure head** `f1r3node-rust-mettail@2142b2273` (canonical-protobuf `ParBag` keys with
-prepared typed lookup, direct trie-to-protobuf emission, canonical ACT import validation, and
-byte-native exact-key EPathMap
+**Living closure head** this checkpoint, based on `f1r3node-rust-mettail@1ee329be4`
+(complete transient `ParConstruction` planning across normalization, substitution, and evaluation,
+following canonical-protobuf `ParBag` keys with prepared typed lookup, direct trie-to-protobuf
+emission, canonical ACT import validation, and byte-native exact-key EPathMap
 subtraction/selection with one moving map write zipper, following adaptive exact-key/moving-zipper
 Bag deltas over one privately forked PathMap root and atomic accepted-match Bag publication,
 PathMap-pruned ordered elements inside the stack-safe associative-commutative matcher, and generated ordered-expression datum-first/receive-first
@@ -260,6 +261,9 @@ Abbreviations used throughout are ABI (application binary interface), CBR (conse
 | **SS-A9** | `e2cf939f`, `26d3e3b9` | f1r3node | node JSON boundary: `Par`/`Expr`/`Bundle`/`EPathMap` $`\rightarrow`$ `RhoExpr`, plus `RhoExpr` `Clone`, `Drop`, `Serialize`, and `Debug` | recursive calls/derives $`\rightarrow`$ explicit PDAs; depth 16,384 on a 256 KiB stack | **yes** | [5.13](#513-the-node-json-boundary-ss-a9) |
 | **SS-A10** | `78611b11`, `6799b406`, `fc497f94`, `98bb3d5e`, `acfd194f`, `714d618c`, `6f1412ee`, `3a3db311`, `4f022ad9b`, `efc48ab0d` | f1r3node | heterogeneous spatial-matcher SCC, including concrete binders, connective rollback, subset retry, sparse relational-row reuse, PathMap connective-domain algebra, `PathMap<()>` and `PathMap<Par>` | ~70,237 B/level debug on the recursive binding path $`\rightarrow`$ **0**; depth 4,096 and width 65,536; retained matcher RSS slope eliminated; the AND/OR depth-20,000 gate completes in 0.18 s on 256 KiB; the width-128 connective displacement witness falls from 699,263 nominal edge visits to 254 authoritative visits; width-4,096 rejecting-OR mean latency falls 97.44% | **yes** | [5.16](#516-spatial-matcher-and-pathmap-native-retry-pda-ss-a10) |
 | **SS-A11** | `8b81f223` | f1r3node | RSpace guarded candidate selector and enabled-rendezvous enumerator $`\rightarrow`$ one shared explicit-frame depth-first-search PDA | host recursion $`\Theta(b)`$ in receive-bind count $`b \rightarrow O(1)`$ native stack; **20,000 binds** on **256 KiB** in **2.61 s / 96,216 KiB RSS** | **yes** | [5.16.5](#5165-rspace-candidate-selection-and-enumeration-pda-ss-a11) |
+| **SS-A12** | this checkpoint | f1r3node | normalization, substitution, and evaluator recursive-result construction $`\rightarrow`$ one transient `ParConstruction` arena with planned score/protobuf graphs and persistent Bag occurrence roots | repeated resident ancestor materialization $`\Theta(d^2) \rightarrow \Theta(d)`$ bytes emitted for a depth-$`d`$ unary term; native stack remains $`O(1)`$; all eight recursive component families reach depth **8,192**, schema planning reaches **16,384**, and planned EPathMap value nesting reaches **4,096**, each on **256 KiB** | **yes**; recursive-oracle protobuf, stable-bincode, metadata, charge, and exact-PathMap-snapshot differentials | [5.28](#528-transient-par-construction-closure-ss-a12) |
+| **SS-A13** | this checkpoint | f1r3node | complete the existing spatial-matcher PDA and its PathMap Bag algebra for the ninth `If` family; replace the artificial `ParCount` top 1,000 with the logical `u64::MAX` top intersected with the finite target | omitted family / cardinality ceiling $`\rightarrow`$ explicit three-child PDA and multiplicity-lazy eight-family partitions; depth **4,096** on **128 KiB** after SS-A14; compressed multiplicity **1,001** for every partitioned family | **no** — semantic and limit completeness on the existing PDA | [5.29](#529-parbag-family-and-count-domain-completeness-ss-a13-ss-a14-ss-y9) |
+| **SS-A14** | this checkpoint | f1r3node | nested `If` matching: repeated decoded suffix materialization $`\rightarrow`$ canonical-protobuf byte cursor over one shared immutable ParBag endpoint buffer | predecessor depth 128 match **4.277937 s** debug $`\rightarrow`$ release **55.002 µs**; treatment depth **4,096** **1.5387 ms**; allocated-byte and allocation-count ladders remain linear in encoded input; **128 KiB** native stack | **no** — heap/time repair inside the existing matcher PDA; exact verdict, complete `FreeMap`, rollback, schema, and unordered-`Par` semantics retained | [5.29](#529-parbag-family-and-count-domain-completeness-ss-a13-ss-a14-ss-y9) |
 | **SS-B1** | `a929a2d6` | f1r3node | expression-evaluator SCC $`\rightarrow`$ `eval_drive` | overflow $`\approx`$ 1.5k $`\rightarrow`$ OK at 50,000 | **yes** | [5.2.1](#521-the-expression-evaluator-trampoline-a929a2d6) |
 | **SS-B2** | `29856679`, `55b97f84`, `a0a50473` | f1r3node | five async join sites detached | 300 s $`\rightarrow`$ **93.7 s CPU** | **yes** (heap chain) | [5.2.2](#522--the-tokio-fire-and-forget-driver--establishing-the-mechanism-not-assuming-it) |
 | **SS-B3** | `9843e4b6` | f1r3node | `StackGrowingFuture` + `stacker` **deleted** | — | dependency removed | [5.2.2](#522--the-tokio-fire-and-forget-driver--establishing-the-mechanism-not-assuming-it) |
@@ -345,6 +349,7 @@ Abbreviations used throughout are ABI (application binary interface), CBR (conse
 | **SS-Y6** | `c0385b79` | f1r3node | ★★★ **DISSOLVED, not repaired** — the `TRIE_INTERN` LRU dropped a deep `Par` through the recursive destructor **inside a global mutex, on an arbitrary thread**. The store is deleted, so the site no longer exists | ⌀ — the fault has no site; the destructor itself was later converted by SS-A8 | **n/a** — discharged by deletion | [PathMap §5.8](../pathmap/pathmap-report-2026-08-03.md#58-the-dissolved-intern-store) |
 | **SS-Y4** | *(pre-existing; PINNED by `6bdd6ad7`, REPAIRED by `HEAD`)* | f1r3node | ⛔★★★ **A live consensus SAFETY FORK** — sibling order is not a total function of the term. `combine_emap` chains only the **key's** score, so distinct canonical terms share a score tree; `sort_vec` is **stable**, so tied siblings keep their input order | seeded: **20/20** split over 40 processes · deterministic: `{3:30} \| {3:90}` $`\neq`$ `{3:90} \| {3:30}` | ★ **repaired** — sibling order is now TOTAL | [5.6.9](#569-ss-y4--sibling-order-is-not-a-total-function-of-the-term) |
 | **SS-Y8** | exposed by the 2026-08-08 source/evidence audit; repaired `50756ec2` | f1r3node | SS-A6's `ESet` / `EMap` printer arms still opened nested drives over owned canonical intermediates; re-canonicalizing each nested suffix also made the canonicalization component quadratic | native stack $`\Theta(d) \rightarrow O(1)`$; canonicalization $`\Theta(d^2) \rightarrow \Theta(d)`$ for a unary collection chain; depth **4,096** on **256 KiB**: set **0.12 s / 28,444 KiB**, map **0.23 s / 42,696 KiB**, zero swap | ✅ **repaired**; 27 recursive-oracle differential cases preserve replay-visible text | [5.1.3a](#513a-ss-y8--owned-canonical-collections-complete-the-printer-pda) |
+| **SS-Y9** | exposed by SS-A13's 2026-08-20 fixed-stack gate; repaired by SS-A14; pgmcp `spatial-matcher-byte-native-nested-if-decoding` | f1r3node | the stack-safe matcher repeatedly decoded the remaining inline protobuf suffix of a nested `If` component instead of advancing one generated byte cursor over the authoritative ParBag endpoint | one-sample predecessor debug match-only ladder: depth 32 **110.005 ms**, 64 **646.553 ms**, 128 **4.277937 s**; treatment release ladder: depth 128 **55.002 µs**, 512 **193.100 µs**, 2,048 **752.600 µs**, 4,096 **1.5387 ms** | ✅ **REPAIRED** — canonical byte ranges, terminal-only decode, linear allocation gate, recursive-oracle and rollback equivalence, depth 4,096 on 128 KiB | [5.29](#529-parbag-family-and-count-domain-completeness-ss-a13-ss-a14-ss-y9) |
 
 ⚠ **`SS-E1` and `SS-Y3` are a second instance of [Appendix F](#appendix-f--the-per-fix-template-fill-this-in-do-not-invent-a-shape)'s rule 4, in the same *revealed-by* form as `SS-G6`/`SS-Y2`**: `SS-E1`'s commits did not create the defect; they **measured** one that was already live and unquantified. `26876b65` discharged SS-Y3 by repair, and the row remains so the defect and its evidence cannot disappear.
 
@@ -8107,6 +8112,248 @@ the generated repeated-field `Par` is still the runtime and wire authority at th
 Consequently SS-C14 is `NO_PRODUCTION_CHANGE_MEASURED`; production activation still requires an
 explicit consensus review and complete byte, equality/order/hash, play/replay, post-state, charge,
 and release evidence.
+
+### 5.28 Transient `ParConstruction` closure [SS-A12]
+
+#### 5.28.1 The heap-work defect after native-stack conversion
+
+The normalizer, substitution machine, and evaluator were already driven by explicit work stacks,
+but each completed recursive child could still be materialized as a resident `Par` before its
+parent was built. For a unary depth-$`d`$ term, each parent then copied the complete canonical child
+score and protobuf body, yielding $`1+2+\dots+d=\Theta(d^2)`$ construction bytes despite an
+$`O(1)`$ native stack. **DERIVED** from the predecessor construction sites and from
+`models/src/rust/par_construction.rs`'s complete-body invariant.
+
+This was a heap/work slope, not permission to restore recursion, enlarge `RUST_MIN_STACK`, use
+`stacker`, or impose a depth limit. A stack-safe machine that retains quadratic ancestor rebuilding
+has removed the crash mechanism but has not completed the resource conversion.
+
+#### 5.28.2 Architecture and parallel-semantics boundary
+
+`ParConstruction` is a transient arena of flat handles to immutable protobuf fragments, canonical
+score fragments, and persistent balanced occurrence roots. Parents reference planned children;
+lengths are folded bottom-up and the completed root is emitted once by a heap worklist. Canonical
+component comparison reads lazy score/protobuf cursors rather than flattening either graph.
+Parallel composition applies multiplicity-preserving Bag addition over canonical component keys;
+an AVL path-copy touches only $`O(\log n)`$ occurrence nodes per distinct insertion and an equal key
+increments its checked `Multiplicity(u64)`.
+
+That Bag operation is a mathematical composition of unordered `Par` components. It creates **no
+evaluation order**: Rholang is concurrent, source order inside a `Par` is not a happens-before
+relation, and `stdlog!` in one parallel branch cannot sequence another branch. Schema wire order is
+used only when reconstructing protobuf child slots. The asynchronous regression therefore compares
+a byte-sorted, length-delimited **multiset** of canonical COMM-event bytes; it does not compare the
+scheduler's event order or infer causality from textual placement.
+
+EPathMap values retain the homogeneous `Empty | Set(PathMap<()>) | Map(PathMap<Par>)` boundary.
+Planned sets keep keys in `PathMap<()>`; planned maps keep canonical keys in `PathMap<()>` and
+planned-value handles in the corresponding transient `PathMap<PlannedPar>`. EPM1 topology is streamed
+from the trie and only the current map value is finished. No `Vec<Par>` entry projection, element
+sort, decoded shadow map, or PathMap source change is introduced. **DERIVED** from
+`ParConstruction::{planned_epathmap_repr,finish,protobuf_bytes}` and its zipper-driven tests.
+
+#### 5.28.3 Correctness and resource evidence
+
+The focused models gate passed **13/13** on 2026-08-20 under `MemoryMax=8G` and
+`MemorySwapMax=0`. **MEASURED (f).** It includes:
+
+- exact canonical score and protobuf equality for every top-level component family, associative and
+  commutative expression cases, multiplicities, metadata, and resident import;
+- exact EPM1/PathMap snapshots for set, map, and zipper shapes without entry projection;
+- an adversarial 4,096-key monotone insertion witness that checks AVL balance and bounds newly
+  allocated occurrence nodes per append by $`4(\lfloor\log_2 n\rfloor+2)`$;
+- all eight recursive component families at depth 8,192, schema planning at depth 16,384, and nested
+  planned EPathMap values at depth 4,096, each on a 256 KiB worker stack.
+
+The independent normalizer differential compares canonical protobuf bytes, stable bincode bytes,
+free maps, and binding-chain closure. The substitution differential compares protobuf and stable
+bincode results, ordered charge tokens, and total charge; its bounded-string case extracts the real
+receive continuation. The evaluator differential compares the same byte and charge surfaces, and
+the direct string-`length` witness additionally requires the literal `GInt(32)`, its compact
+snapshot, and its bincode image. **MEASURED (f)** for the focused gates; the complete release
+workspace revalidation is recorded only after it finishes and is not implied by this paragraph.
+
+#### 5.28.4 Cost, residuals, and consensus classification
+
+The construction arena is intentionally transient: resident `ParBag`/RPB2 remains the canonical
+component authority after `finish`, and PathMap copy-on-write roots are reused until mutation. The
+result is $`\Theta(d)`$ final emission for a unary depth-$`d`$ term, $`O(\log n)`$ persistent
+occurrence insertion for $`n`$ distinct keys, and $`O(1)`$ native stack. This checkpoint does not
+claim a paired wall-clock or process-RSS speedup; those axes are **NOT MEASURED** here because the
+focused run combines compilation and thirteen heterogeneous correctness gates.
+
+No production recursive fallback, artificial traversal limit, enlarged stack, or alternate stack
+remains in this construction path. Normalized bytes and the default-genesis root move relative to
+the incomplete intermediate checkpoint, so retired CBR-055 records the movement. Exact recursive
+normalizer/evaluator/substitution agreement identifies the successor as the corrected construction
+contract; it does not establish an execution order among parallel processes.
+
+---
+
+### 5.29 ParBag family and count-domain completeness [SS-A13, SS-A14, SS-Y9]
+
+#### 5.29.1 The defects
+
+`ParBag` has nine authoritative top-level component families, but the predecessor spatial matcher
+counted and partitioned only seven ordinary families, treated `Connective` separately, and omitted
+`If` entirely. The concrete fast path could consequently accept unequal `If` or `Connective`
+multiplicities, the connective-aware path could drop conditionals from a candidate partition, and
+the printer could render an `If`-only `Par` as `Nil`. **DERIVED** from the predecessor-to-current
+diff of `match_pars.rs`, `par_count.rs`, `sub_pars.rs`, `spatial_matcher_pda.rs`, and
+`pretty_printer.rs`.
+
+The same port represented the top of the count interval domain as 1,000. That number was neither a
+wire bound nor a resource policy: a legal target containing 1,001 occurrences could be excluded
+before the heap PDA saw it. Separately, scalar evaluators inferred expression purity from projected
+cardinality. Since projected family totals saturate at `u64::MAX`, one saturated expression family
+plus a foreign endpoint must not be mistaken for a pure expression `Par`. **DERIVED** from the
+retired `ParCount::unbounded` constant and the cardinality predicate replaced by
+`Par::all_components_are`.
+
+These are acceptance and completeness defects, not evidence that parallel components should be
+sequenced. A Rholang `Par` remains an unordered Bag: condition/true/false is the schema equation of
+one `If` component, while sibling processes in the enclosing `Par` remain concurrent.
+
+#### 5.29.2 Architecture of the repair
+
+The repair extends the existing heterogeneous matcher PDA rather than creating a second matcher.
+`MatchPair::If` schedules three heap-resident `MatchPair::Par` jobs in condition/true/false schema
+order. Existing attempt frames checkpoint and roll back `FreeMap`, so a true-branch refusal cannot
+leak a binding made while matching the condition. `MatchValue::If` uses the same generated
+canonical-byte identity, RhoPath structure/query compiler, and PathMap Bag candidate index as every
+other fixed-arity component.
+
+SS-A14 refines that equation without changing it. An exact singleton-`If` carrier copies each
+top-level authoritative ParBag endpoint once into immutable thin-`Arc` storage; every descendant is
+only an offset range into that same buffer. `Job::EncodedIf`, `Job::EncodedPar`, and one compact
+`EncodedIfBranches` continuation advance through canonical protobuf framing. The three required
+child messages are sliced without decoding. Equal non-connective child bytes succeed directly;
+unequal terminals and any cursor shape not proven canonical fall back to the complete generated
+protobuf decoder. The ParBag importer remains the canonicality authority. **DERIVED** from
+`par_bag.rs::canonical_if_parts`, `canonical_single_if_from_par`,
+`canonical_par_connective_used`, and `spatial_matcher_pda.rs::EncodedRegion`.
+
+The cursor's condition/true/false continuation order is deterministic proof search, not a scheduler.
+It adds no happens-before edge to Rholang: enclosing `Par` components remain an unordered parallel
+Bag, and neither source placement nor `stdlog!` is treated as sequencing evidence.
+
+`ParCount` now carries `conditionals: u64`. Its top is `u64::MAX`, a logical lattice element rather
+than a traversal budget; `feasible_range` meets that top with the finite target-family cardinality
+before a positional count is needed. `sub_pars` forms the Cartesian product of the eight
+non-Connective families through `ParBag::family_partitions`. Each partition is a lazy PathMap
+multiplicity allocation, and the selected/complement Bags are combined algebraically. No occurrence
+is expanded into a `Vec<Par>`, no shadow hash map is built, and PathMap source is unchanged.
+
+Scalar purity compares total distinct endpoints with the requested family's distinct endpoints.
+This predicate remains exact when aggregate cardinalities saturate. Locally-free reconstruction
+visits each distinct endpoint once and now includes both `If.locally_free` and depth-zero
+`Connective::VarRef`; multiplicity is algebraic and cannot multiply an idempotent bitset union.
+
+#### 5.29.3 What changed
+
+- concrete `Par` matching checks exact cardinality and content for `If` and exact cardinality for
+  `Connective`;
+- the count domain, PathMap family partitions, `MatchValue`, candidate index, merger, PDA dispatch,
+  public matcher trait, and locally-free reader all include `If`;
+- the test-only recursive oracle gained the same three-child `If` equation and family-list row;
+- evaluator and fused-chain scalar gates use total-Bag family exactness, including saturated
+  cardinality witnesses;
+- the pushdown pretty printer includes `If` in its canonical family walk and renders all three
+  children;
+- the artificial 1,000 top was deleted rather than raised to another finite policy number.
+- the singleton-`If` transition now shares canonical endpoint bytes across PDA frames, decodes only
+  terminal/unsupported shapes, preserves the existing rollback transaction, and keeps both `Job`
+  and `Frame` at or below one 64-byte cache line.
+
+#### 5.29.4 Results
+
+All commands below ran on 2026-08-20 under `MemoryMax=8G`, `MemorySwapMax=0`. **MEASURED (f).**
+
+| gate | result | discriminating evidence |
+|---|---:|---|
+| `models --test par_bag` | **24/24** | exact total-family predicates, saturated cardinality, lazy family partitions, direct ACT/protobuf paths, canonical `If` cursor and malformed framing |
+| matcher/connective/pretty-printer integration targets | **23/23** | 13 connective rollback/partition cases, 8 `If` cases including allocation slope, 2 printer cases |
+| recursive-oracle semantic corpus | **1/1** | `If` success and late-child refusal compare verdict and complete `FreeMap` |
+| evaluator scalar projection | **1/1** | every non-Expr family rejects; `u64::MAX` Expr plus one Send also rejects without expansion |
+| singleton, metadata, and fused scalar focused gates | **4/4** | total-Bag singleton, maximum-multiplicity endpoint visitation, fused family gate, byte-index identity |
+| fixed-stack `If` matcher | depth **4,096**, stack **128 KiB** | terminal free variable binds to `GInt(7)`; target and pattern are built by `ParConstruction` |
+| matcher layout | **1/1** | both heterogeneous `Job` and continuation `Frame` remain at most 64 bytes |
+| allocation slope + anti-vacuity | **1/1** | depth 128: 351 allocations / 433,695 B for 5,100 encoded input B; depth 1,024: 1,262 / 2,909,007 B for 41,724 input B; a synthetic quadratic ladder is rejected |
+| count-ceiling anti-vacuity | multiplicity **1,001** for each of eight partitioned families | one compressed endpoint per family; no 1,001-element fixture vector |
+
+The candidate-index witness uses two `If` values that are semantically equal under the model's
+derived-metadata rule but carry distinct canonical bytes. The PathMap Bag reports cardinality two
+and distinct length two, proving that its generated byte identity does not collapse those keys.
+
+#### 5.29.5 Cost, diagnosis, and closure of SS-Y9
+
+The fixed-stack gate also isolated a time/allocation slope. Temporary phase timing, removed after
+measurement, produced this single-sample debug ladder:
+
+| nested `If` depth | planning | final emission | matching only |
+|---:|---:|---:|---:|
+| 32 | 0.779 ms | 0.811 ms | **110.005 ms** |
+| 64 | 1.237 ms | 1.285 ms | **646.553 ms** |
+| 128 | 1.950 ms | 2.561 ms | **4,277.937 ms** |
+
+These are diagnostics, not a statistically powered benchmark: one debug sample per depth, with
+concurrent machine activity uncontrolled. They are nevertheless sufficient to localize the
+mechanism because construction and final emission remain millisecond-scale while matching consumes
+more than 99.8% of the depth-128 interval. Source inspection identifies repeated decoding of each
+remaining inline protobuf suffix through `take_occurrences::<If>`. The 512-, 1,024-, and
+4,096-depth debug attempts were stopped rather than reported as completed measurements.
+
+SS-A14 implements the preregistered generated-schema byte cursor rather than a fixture-specific
+recognizer. The release Criterion treatment, 20 samples per cell with construction and CoW root
+clone excluded, is:
+
+| nested `If` depth | 95% estimate interval | point estimate | ratio from prior depth |
+|---:|---:|---:|---:|
+| 128 | 54.960–55.037 µs | **55.002 µs** | — |
+| 512 | 193.000–193.230 µs | **193.100 µs** | 3.51× for 4× depth |
+| 2,048 | 751.610–753.340 µs | **752.600 µs** | 3.90× for 4× depth |
+| 4,096 | 1.5166–1.5717 ms | **1.5387 ms** | 2.04× for 2× depth |
+
+The complete protocol and raw intervals are
+[`measurements/spatial-matcher-if-byte-cursor-2026-08-20.tsv`](measurements/spatial-matcher-if-byte-cursor-2026-08-20.tsv).
+The machine had 32 logical CPUs and 69.51% aggregate idle capacity immediately before the run;
+two unrelated cargo test processes existed, which is retained as a caveat rather than hidden.
+**MEASURED (f).**
+
+The thread-local counting allocator independently binds the work class to canonical input size.
+Increasing depth 8× moves input 5,100 $`\rightarrow`$ 41,724 B, allocation count 351
+$`\rightarrow`$ 1,262, and requested bytes 433,695 $`\rightarrow`$ 2,909,007. Both remain
+inside a 1.5× envelope around linear depth growth; the same classifier rejects an explicit
+quadratic control. The guarded byte-equality refinement reduced the depth-1,024 diagnostic from
+132,332 allocations / 54,846,243 B to the final 1,262 / 2,909,007 B. These are allocation requests,
+not retained RSS. **MEASURED (f).**
+
+SS-Y9 is therefore repaired. No `Vec<Par>` projection, shadow index, element sort, enlarged stack,
+`stacker`, depth cap, PathMap fork, or execution-order assumption was introduced.
+
+#### 5.29.6 What is still recursive
+
+No production `If` matching call recurses on the native stack; the depth-4,096 / 128 KiB gate
+measures that fact. The deliberately recursive implementation under `rholang/tests/support/` is a
+bounded, test-only semantic oracle and is not linked into production. SS-Y9 was a heap/time defect
+caused by repeated decoding, not a stack-overflow risk in the production PDA; the byte-native timing,
+allocation, rollback, malformed-framing, layout, and oracle gates now close that resource class.
+
+#### 5.29.7 Anti-vacuity
+
+The controls are shaped so the repaired mechanisms must execute:
+
+- `If` versus `Nil`, one versus two conditionals, and one versus two connectives must reject;
+- a free variable in each conditional child must bind, while a later-child refusal must restore an
+  empty `FreeMap`;
+- a `u64::MAX` expression endpoint plus one Send must reject before occurrence expansion;
+- a `u64::MAX` conditional endpoint plus one `VarRef` endpoint must compute both locally-free bits
+  by distinct-endpoint visitation;
+- each 1,001-multiplicity family must produce a valid selected/complement partition;
+- two semantically equal but byte-distinct `If` values must occupy two candidate-index keys.
+
+Retired CBR-056 through CBR-061 classify the corrected observable surfaces. The complete release
+workspace result is not implied by these focused measurements and is appended only after execution.
 
 ---
 

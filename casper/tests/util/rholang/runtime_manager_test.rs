@@ -30,6 +30,7 @@ use rholang::rust::interpreter::accounting::resource_logic::ResourceSignature;
 use rholang::rust::interpreter::accounting::{self, Sig};
 use rholang::rust::interpreter::compiler::compiler::Compiler;
 use rholang::rust::interpreter::env::Env;
+use rholang::rust::interpreter::pretty_printer::PrettyPrinter;
 use rholang::rust::interpreter::rho_runtime::RhoRuntime;
 use rholang::rust::interpreter::rho_type::{Extractor, RhoBoolean};
 use rholang::rust::interpreter::system_processes::BlockData;
@@ -39,6 +40,16 @@ use rspace_plus_plus::rspace::history::Either;
 
 use crate::util::genesis_builder::GenesisContext;
 use crate::util::rholang::resources::with_runtime_manager;
+
+/// Render captured Rholang values through the language's stack-safe presentation
+/// boundary. `Par::Debug` is intentionally an O(1) summary of its authoritative
+/// PathMap-backed Bag and must never be scraped for semantic payloads.
+fn render_pars(pars: &[Par]) -> String {
+    pars.iter()
+        .map(|par| PrettyPrinter::new().build_string_from_message(par))
+        .collect::<Vec<_>>()
+        .join(" | ")
+}
 
 enum SystemDeployReplayResult<A> {
     ReplaySucceeded {
@@ -3215,7 +3226,7 @@ async fn cross_deploy_bridge_full_admin_flow() {
         "Step 1: bridge deploy wrote no data to deployId"
     );
 
-    let data_str = format!("{:?}", deploy1_data);
+    let data_str = render_pars(&deploy1_data);
     let uris: Vec<String> = uri_regex
         .find_iter(&data_str)
         .map(|m| m.as_str().to_string())
@@ -3613,7 +3624,7 @@ async fn bridge_query_survives_multi_parent_merge() {
     );
 
     let uri_regex = regex::Regex::new(r"rho:id:[a-zA-Z0-9]+").unwrap();
-    let data_str = format!("{:?}", bridge_data);
+    let data_str = render_pars(&bridge_data);
     let uris: Vec<String> = uri_regex
         .find_iter(&data_str)
         .map(|m| m.as_str().to_string())
@@ -4308,7 +4319,7 @@ in {
                 .expect("deploy contract");
             assert!(!uri_pars.is_empty(), "Contract deploy returned no URI");
 
-            let uri_str = format!("{:?}", uri_pars[0]);
+            let uri_str = render_pars(&uri_pars);
             let uri_regex = regex::Regex::new(r"rho:id:[a-zA-Z0-9]+").unwrap();
             let uri = uri_regex
                 .find(&uri_str)
@@ -5135,7 +5146,7 @@ async fn mintphlogiston_rejects_forged_or_absent_sys_auth_token() {
                 !results.is_empty(),
                 "the rejection result must be sent on the return channel"
             );
-            let printed = format!("{:?}", results);
+            let printed = render_pars(&results);
             assert!(
                 printed.contains("unauthorized mint"),
                 "an unauthorized mint must return (false, \"unauthorized mint\"); got: {}",
@@ -5196,7 +5207,7 @@ async fn wallet_channel_derivation_is_order_independent() {
                 !results.is_empty(),
                 "the join over the two-order-built channel must fire and return a result"
             );
-            let printed = format!("{:?}", results);
+            let printed = render_pars(&results);
             assert!(
                 printed.contains("true"),
                 "both producers must land on the identical content-addressed \

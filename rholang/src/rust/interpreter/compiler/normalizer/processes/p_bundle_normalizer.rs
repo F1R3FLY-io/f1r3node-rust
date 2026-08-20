@@ -1,15 +1,14 @@
 use std::result::Result;
 
 use models::rhoapi::{Bundle, Connective, Par};
-use models::rust::bundle_ops::BundleOps;
-use models::rust::rholang::par_children::dismantle;
+use models::rust::par_construction::ParConstruction;
 use rholang_parser::ast::{AnnProc, BundleType};
 use rholang_parser::SourceSpan;
 
 use super::exports::*;
-use crate::rust::interpreter::compiler::exports::{ProcVisitInputs, ProcVisitOutputs};
-use crate::rust::interpreter::compiler::normalize_drive::{NormKont, NormVal, NormWork, Step};
-use crate::rust::interpreter::util::prepend_bundle;
+use crate::rust::interpreter::compiler::normalize_drive::{
+    NormKont, NormVal, NormWork, ProcVisitInputs, ProcVisitOutputs, Step,
+};
 
 /// The free-variables-in-a-bundle rejection. Takes only the FREE MAP, never the
 /// term, so the caller can dismantle the (deep) body before or after building
@@ -70,12 +69,13 @@ pub(crate) fn descend_p_bundle<'ast>(
     proc: AnnProc<'ast>,
     input: ProcVisitInputs,
     span: SourceSpan,
-) -> Step<'ast> {
+    construction: &mut ParConstruction,
+) -> Result<Step<'ast>, InterpreterError> {
     let child_input = ProcVisitInputs {
-        par: Par::default(),
+        par: construction.empty_par()?,
         ..input.clone()
     };
-    Step::Descend {
+    Ok(Step::Descend {
         kont: NormKont::Bundle {
             bundle_type,
             span,
@@ -85,7 +85,7 @@ pub(crate) fn descend_p_bundle<'ast>(
             proc,
             input: child_input,
         },
-    }
+    })
 }
 
 /// `bundle+{ P }`, combine half — the three rejection conditions, then the
@@ -96,14 +96,16 @@ pub(crate) fn combine_p_bundle<'ast>(
     span: SourceSpan,
     input: ProcVisitInputs,
     value: NormVal,
+    construction: &mut ParConstruction,
 ) -> Result<Step<'ast>, InterpreterError> {
     let target_result = value.into_proc();
 
     // ★ Leg-1. The recursive form built `outermost_bundle` FIRST, cloning the
     // body into it, and only then tested the three rejection conditions — so
     // every bundle paid a deep `<Par as Clone>::clone` even on the paths that
-    // immediately threw it away. The conditions are tested first and the body
-    // is MOVED into the bundle on the one path that keeps it.
+    // immediately threw it away. The conditions are tested first; the one path
+    // that keeps it records only the planned body handle in the bundle schema
+    // graph.
     let (write_flag, read_flag) = match bundle_type {
         BundleType::BundleReadWrite => (true, true),
         BundleType::BundleRead => (false, true),
@@ -111,11 +113,7 @@ pub(crate) fn combine_p_bundle<'ast>(
         BundleType::BundleEquiv => (false, false),
     };
 
-    if target_result.par.family_cardinality::<Connective>() != 0 {
-        // ⚠ The rejected body is deep and `<Par as Drop>` is Θ(depth), so it is
-        // torn down with an explicit worklist rather than left to fall out of
-        // scope — otherwise a hostile bundle would overflow on the way OUT.
-        dismantle(target_result.par);
+    if construction.family_cardinality::<Connective>(target_result.par) != 0 {
         Err(InterpreterError::UnexpectedBundleContent(format!(
             "Illegal top-level connective in bundle at line {}, column {}.",
             span.start.line, span.start.col
@@ -129,22 +127,31 @@ pub(crate) fn combine_p_bundle<'ast>(
             Err(e) => e,
             Ok(_) => unreachable!("p_bundle::error always returns Err"),
         };
-        dismantle(target_result.par);
         Err(err)
     } else {
-        let single = target_result.par.single_bundle();
-        let outermost_bundle = Bundle {
-            body: Some(target_result.par),
-            write_flag,
-            read_flag,
+        let (body, merged_write, merged_read) = match construction.single_bundle(target_result.par)
+        {
+            Some((body, inner_write, inner_read)) => {
+                (body, write_flag && inner_write, read_flag && inner_read)
+            }
+            None => (target_result.par, write_flag, read_flag),
         };
-        let new_bundle = match single {
-            Some(single) => BundleOps::merge(&outermost_bundle, &single),
-            None => outermost_bundle,
+        let body_locally_free = construction.locally_free(body).to_vec();
+        let body_connective_used = construction.connective_used(body);
+        let new_bundle = Bundle {
+            body: Some(Par::default()),
+            write_flag: merged_write,
+            read_flag: merged_read,
         };
+        let component = construction.bundle_component(&new_bundle, &[body])?;
 
         Ok(Step::Done(NormVal::Proc(ProcVisitOutputs {
-            par: { prepend_bundle(input.par, new_bundle) },
+            par: construction.append_component(
+                input.par,
+                component,
+                body_locally_free,
+                body_connective_used,
+            )?,
             free_map: input.free_map,
         })))
     }

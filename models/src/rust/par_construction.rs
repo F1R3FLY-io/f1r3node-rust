@@ -30,7 +30,9 @@ use prost::encoding::{encoded_len_varint, key_len};
 
 use super::canonical_path::tag as path_tag;
 use super::epathmap_trie_codec::{self, EPathMapMode, EPathMapRepr};
-use super::par_bag::{Multiplicity, ParBag, ParBagComponent, ParComponentTag, PAR_BAG_KEY_DOMAIN};
+use super::par_bag::{
+    CanonicalParBagKey, Multiplicity, ParBag, ParBagComponent, ParComponentTag, PAR_BAG_KEY_DOMAIN,
+};
 use super::rholang::protobuf_encoder;
 use super::rholang::protobuf_schema::{ProtobufDescent, ProtobufNode, ProtobufSeq, NO_RESUME};
 use super::rholang::sorter::expr_sort_matcher::ExprSortMatcher;
@@ -41,7 +43,8 @@ use crate::rhoapi::connective::ConnectiveInstance;
 use crate::rhoapi::expr::ExprInstance;
 use crate::rhoapi::g_unforgeable::UnfInstance;
 use crate::rhoapi::{
-    Bundle, Connective, EPathMap, EZipper, Expr, GUnforgeable, If, Match, New, Par, Receive, Send,
+    Bundle, Connective, EPathMap, EZipper, Expr, GUnforgeable, If, Match, New, Par, Receive,
+    ReceiveBind, Send,
 };
 
 /// An index into a [`ParConstruction`]'s planned-Par arena.
@@ -55,6 +58,13 @@ pub struct PlannedScore(usize);
 /// An index into the planned-component arena.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct PlannedComponent(usize);
+
+/// Arena handle for the canonical order key of a receive bind.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PlannedReceiveBindOrder {
+    score: PlannedScore,
+    protobuf: usize,
+}
 
 /// An index into a transient homogeneous EPathMap arena. Keys remain in their
 /// prefix-compressed PathMap and map values are lightweight planned-Par
@@ -128,14 +138,22 @@ impl From<super::par_bag::BagError> for ParConstructionError {
 enum ScorePiece {
     Bytes(usize),
     Child(PlannedScore),
-    Repeat { child: PlannedScore, count: u64 },
-    EscapedWire { root: WireRoot, encoded_len: usize },
+    OccurrenceScores {
+        root: Option<usize>,
+        encoded_len: usize,
+    },
+    EscapedWire {
+        root: WireRoot,
+        encoded_len: usize,
+    },
 }
 
 enum ScoreCursorOp<'a> {
     Score(PlannedScore),
     Bytes { fragment: usize, offset: usize },
     Repeat { child: PlannedScore, remaining: u64 },
+    OccurrenceScores { root: Option<usize>, family: usize },
+    OccurrenceFamilyNode { node: usize, family: usize },
     EscapedWire(WireByteCursor<'a>),
     Byte(u8),
 }
@@ -173,10 +191,9 @@ impl Iterator for ScoreByteCursor<'_> {
                                 offset: 0,
                             },
                             ScorePiece::Child(child) => ScoreCursorOp::Score(child),
-                            ScorePiece::Repeat { child, count } => ScoreCursorOp::Repeat {
-                                child,
-                                remaining: count,
-                            },
+                            ScorePiece::OccurrenceScores { root, .. } => {
+                                ScoreCursorOp::OccurrenceScores { root, family: 0 }
+                            }
                             ScorePiece::EscapedWire { root, .. } => {
                                 ScoreCursorOp::EscapedWire(WireByteCursor::new(self.arena, root))
                             }
@@ -185,7 +202,9 @@ impl Iterator for ScoreByteCursor<'_> {
                 }
                 ScoreCursorOp::Bytes { fragment, offset } => {
                     let bytes = &self.arena.byte_fragments[fragment];
-                    let byte = *bytes.get(offset)?;
+                    let Some(&byte) = bytes.get(offset) else {
+                        continue;
+                    };
                     if offset + 1 < bytes.len() {
                         self.work.push(ScoreCursorOp::Bytes {
                             fragment,
@@ -205,8 +224,62 @@ impl Iterator for ScoreByteCursor<'_> {
                         self.work.push(ScoreCursorOp::Score(child));
                     }
                 }
+                ScoreCursorOp::OccurrenceScores { root, family } => {
+                    if family < PAR_SCORE_TAGS.len() {
+                        self.work.push(ScoreCursorOp::OccurrenceScores {
+                            root,
+                            family: family + 1,
+                        });
+                        if let Some(node) = root {
+                            self.work
+                                .push(ScoreCursorOp::OccurrenceFamilyNode { node, family });
+                        }
+                    }
+                }
+                ScoreCursorOp::OccurrenceFamilyNode { node, family } => {
+                    let occurrence_node = &self.arena.occurrence_nodes[node];
+                    let component = &self.arena.components[occurrence_node.occurrence.component.0];
+                    match component.tag.cmp(&PAR_SCORE_TAGS[family]) {
+                        Ordering::Less => {
+                            if let Some(right) = occurrence_node.right {
+                                self.work.push(ScoreCursorOp::OccurrenceFamilyNode {
+                                    node: right,
+                                    family,
+                                });
+                            }
+                        }
+                        Ordering::Greater => {
+                            if let Some(left) = occurrence_node.left {
+                                self.work.push(ScoreCursorOp::OccurrenceFamilyNode {
+                                    node: left,
+                                    family,
+                                });
+                            }
+                        }
+                        Ordering::Equal => {
+                            if let Some(right) = occurrence_node.right {
+                                self.work.push(ScoreCursorOp::OccurrenceFamilyNode {
+                                    node: right,
+                                    family,
+                                });
+                            }
+                            self.work.push(ScoreCursorOp::Repeat {
+                                child: component.score,
+                                remaining: occurrence_node.occurrence.multiplicity.get(),
+                            });
+                            if let Some(left) = occurrence_node.left {
+                                self.work.push(ScoreCursorOp::OccurrenceFamilyNode {
+                                    node: left,
+                                    family,
+                                });
+                            }
+                        }
+                    }
+                }
                 ScoreCursorOp::EscapedWire(mut cursor) => {
-                    let byte = cursor.next()?;
+                    let Some(byte) = cursor.next() else {
+                        continue;
+                    };
                     self.work.push(ScoreCursorOp::EscapedWire(cursor));
                     if byte == 0 {
                         self.work.push(ScoreCursorOp::Byte(0xff));
@@ -328,10 +401,16 @@ enum WireCursorOp<'a> {
     },
     Par(PlannedPar),
     Components {
-        occurrences: &'a [Occurrence],
-        index: usize,
-        remaining: u64,
+        root: Option<usize>,
         after_metadata: bool,
+    },
+    OccurrenceNode {
+        node: usize,
+        after_metadata: bool,
+    },
+    ComponentOccurrence {
+        occurrence: Occurrence,
+        remaining: u64,
     },
     RootMetadata(PlannedPar),
     EPathMapSnapshot {
@@ -443,43 +522,80 @@ impl Iterator for WireByteCursor<'_> {
                 WireCursorOp::Par(par) => {
                     let node = &self.arena.pars[par.0];
                     self.work.push(WireCursorOp::Components {
-                        occurrences: &node.occurrences,
-                        index: 0,
-                        remaining: 0,
+                        root: node.occurrence_root,
                         after_metadata: true,
                     });
                     self.work.push(WireCursorOp::RootMetadata(par));
                     self.work.push(WireCursorOp::Components {
-                        occurrences: &node.occurrences,
-                        index: 0,
-                        remaining: 0,
+                        root: node.occurrence_root,
                         after_metadata: false,
                     });
                 }
                 WireCursorOp::Components {
-                    occurrences,
-                    mut index,
-                    mut remaining,
+                    root,
                     after_metadata,
                 } => {
-                    while remaining == 0 && index < occurrences.len() {
-                        let occurrence = occurrences[index];
-                        index += 1;
-                        if is_after_metadata(self.arena.components[occurrence.component.0].tag)
-                            == after_metadata
-                        {
-                            remaining = occurrence.multiplicity.get();
-                            break;
+                    if let Some(node) = root {
+                        self.work.push(WireCursorOp::OccurrenceNode {
+                            node,
+                            after_metadata,
+                        });
+                    }
+                }
+                WireCursorOp::OccurrenceNode {
+                    node,
+                    after_metadata,
+                } => {
+                    let occurrence_node = &self.arena.occurrence_nodes[node];
+                    let occurrence = occurrence_node.occurrence;
+                    match is_after_metadata(self.arena.components[occurrence.component.0].tag)
+                        .cmp(&after_metadata)
+                    {
+                        Ordering::Less => {
+                            if let Some(right) = occurrence_node.right {
+                                self.work.push(WireCursorOp::OccurrenceNode {
+                                    node: right,
+                                    after_metadata,
+                                });
+                            }
+                        }
+                        Ordering::Greater => {
+                            if let Some(left) = occurrence_node.left {
+                                self.work.push(WireCursorOp::OccurrenceNode {
+                                    node: left,
+                                    after_metadata,
+                                });
+                            }
+                        }
+                        Ordering::Equal => {
+                            if let Some(right) = occurrence_node.right {
+                                self.work.push(WireCursorOp::OccurrenceNode {
+                                    node: right,
+                                    after_metadata,
+                                });
+                            }
+                            self.work.push(WireCursorOp::ComponentOccurrence {
+                                occurrence,
+                                remaining: occurrence.multiplicity.get(),
+                            });
+                            if let Some(left) = occurrence_node.left {
+                                self.work.push(WireCursorOp::OccurrenceNode {
+                                    node: left,
+                                    after_metadata,
+                                });
+                            }
                         }
                     }
+                }
+                WireCursorOp::ComponentOccurrence {
+                    occurrence,
+                    remaining,
+                } => {
                     if remaining != 0 {
-                        let occurrence = occurrences[index - 1];
                         let component = &self.arena.components[occurrence.component.0];
-                        self.work.push(WireCursorOp::Components {
-                            occurrences,
-                            index,
+                        self.work.push(WireCursorOp::ComponentOccurrence {
+                            occurrence,
                             remaining: remaining - 1,
-                            after_metadata,
                         });
                         self.work.push(WireCursorOp::Node {
                             node: component.protobuf,
@@ -542,7 +658,9 @@ impl Iterator for WireByteCursor<'_> {
                     }
                 }
                 WireCursorOp::Bytes { bytes, offset } => {
-                    let byte = *bytes.get(offset)?;
+                    let Some(&byte) = bytes.get(offset) else {
+                        continue;
+                    };
                     if offset + 1 < bytes.len() {
                         self.work.push(WireCursorOp::Bytes {
                             bytes,
@@ -570,6 +688,56 @@ struct ComponentNode {
     protobuf: usize,
     canonical_path_stable: bool,
     canonical_segment: Option<CanonicalSegment>,
+    semantic_shape: ComponentSemanticShape,
+}
+
+enum ComponentSemanticShape {
+    Opaque,
+    Expr(PlannedExprSemantic),
+    Bundle {
+        body: PlannedPar,
+        write_flag: bool,
+        read_flag: bool,
+    },
+    ConnectiveAnd(Box<[PlannedPar]>),
+    ConnectiveOr(Box<[PlannedPar]>),
+    ConnectiveOther,
+}
+
+enum PlannedExprSemantic {
+    Inert,
+    Unary(PlannedPar),
+    Binary(PlannedPar, PlannedPar),
+    MatchesTarget(PlannedPar),
+    Unsupported {
+        kind: &'static str,
+        detail: Option<String>,
+    },
+}
+
+/// Borrowed evaluator-relevant shape of one planned expression endpoint.
+pub enum PlannedExprShape<'a> {
+    Inert,
+    Unary(PlannedPar),
+    Binary(PlannedPar, PlannedPar),
+    MatchesTarget(PlannedPar),
+    Unsupported {
+        kind: &'static str,
+        detail: Option<&'a str>,
+    },
+    /// A component imported as already-canonical bytes. Normalizer-created
+    /// guards never contain this shape; callers must not guess its semantics.
+    Opaque,
+}
+
+/// Borrowed semantic view of the one top-level connective in a planned Par.
+///
+/// The view is maintained while the component is planned; it never decodes
+/// protobuf bytes or materializes a resident `Par` merely to inspect shape.
+pub enum PlannedConnective<'a> {
+    And(&'a [PlannedPar]),
+    Or(&'a [PlannedPar]),
+    Other,
 }
 
 enum CanonicalSegment {
@@ -585,8 +753,71 @@ struct Occurrence {
     multiplicity: Multiplicity,
 }
 
+/// Canonical score-family order is historical sorter order, which deliberately
+/// differs from protobuf field order (`Expr` precedes `New`, while metadata is
+/// emitted before `Bundle` and `If`).
+const PAR_SCORE_TAGS: [ParComponentTag; 9] = [
+    ParComponentTag::Send,
+    ParComponentTag::Receive,
+    ParComponentTag::Expr,
+    ParComponentTag::New,
+    ParComponentTag::Match,
+    ParComponentTag::Bundle,
+    ParComponentTag::Connective,
+    ParComponentTag::GUnforgeable,
+    ParComponentTag::If,
+];
+
+/// One immutable AVL node in the transient occurrence dictionary.
+///
+/// `ParNode` roots share these nodes persistently. Appending a component copies
+/// only the logarithmic search spine; it never recopies an accumulated prefix.
+/// Aggregates make Par score/wire planning constant-time once the new root is
+/// known. All edges are integer arena indices, so destruction remains flat.
+#[derive(Clone, Copy)]
+struct OccurrenceTreeNode {
+    occurrence: Occurrence,
+    left: Option<usize>,
+    right: Option<usize>,
+    height: usize,
+    distinct_len: usize,
+    score_len: usize,
+    protobuf_len: usize,
+    protobuf_zero_count: usize,
+}
+
+struct OccurrenceIter<'a> {
+    nodes: &'a [OccurrenceTreeNode],
+    stack: Vec<usize>,
+    cursor: Option<usize>,
+}
+
+impl<'a> OccurrenceIter<'a> {
+    fn new(nodes: &'a [OccurrenceTreeNode], root: Option<usize>) -> Self {
+        Self {
+            nodes,
+            stack: Vec::new(),
+            cursor: root,
+        }
+    }
+}
+
+impl Iterator for OccurrenceIter<'_> {
+    type Item = Occurrence;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        while let Some(node) = self.cursor {
+            self.stack.push(node);
+            self.cursor = self.nodes[node].left;
+        }
+        let node = self.stack.pop()?;
+        self.cursor = self.nodes[node].right;
+        Some(self.nodes[node].occurrence)
+    }
+}
+
 struct ParNode {
-    occurrences: Vec<Occurrence>,
+    occurrence_root: Option<usize>,
     locally_free: Vec<u8>,
     connective_used: bool,
     score: PlannedScore,
@@ -621,6 +852,7 @@ pub struct ParConstruction {
     protobuf_nodes: Vec<ProtoNode>,
     epathmaps: Vec<PlannedEPathMapNode>,
     components: Vec<ComponentNode>,
+    occurrence_nodes: Vec<OccurrenceTreeNode>,
     pars: Vec<ParNode>,
 }
 
@@ -636,6 +868,7 @@ impl ParConstruction {
             protobuf_nodes: Vec::new(),
             epathmaps: Vec::new(),
             components: Vec::new(),
+            occurrence_nodes: Vec::new(),
             pars: Vec::new(),
         }
     }
@@ -655,14 +888,7 @@ impl ParConstruction {
             let add = match *piece {
                 ScorePiece::Bytes(id) => self.byte_fragments[id].len(),
                 ScorePiece::Child(child) => self.scores[child.0].encoded_len,
-                ScorePiece::Repeat { child, count } => self.scores[child.0]
-                    .encoded_len
-                    .checked_mul(usize::try_from(count).map_err(|_| {
-                        ParConstructionError::LengthOverflow("canonical score multiplicity")
-                    })?)
-                    .ok_or(ParConstructionError::LengthOverflow(
-                        "canonical score multiplicity",
-                    ))?,
+                ScorePiece::OccurrenceScores { encoded_len, .. } => encoded_len,
                 ScorePiece::EscapedWire { encoded_len, .. } => encoded_len,
             };
             encoded_len = encoded_len
@@ -813,6 +1039,103 @@ impl ParConstruction {
 
     pub fn connective_used(&self, par: PlannedPar) -> bool { self.pars[par.0].connective_used }
 
+    /// Whether a planned value is exactly the canonical empty `Par`.
+    ///
+    /// Optional receive conditions and match guards collapse an empty value to
+    /// absence in the production sorter.  Planned construction must therefore
+    /// decide presence from the planned child, not from the schema shell's
+    /// deliberately empty placeholder.
+    pub fn is_empty(&self, par: PlannedPar) -> bool {
+        let node = &self.pars[par.0];
+        node.occurrence_root.is_none() && node.locally_free.is_empty() && !node.connective_used
+    }
+
+    /// Multiplicity of one top-level constructor family without decoding any
+    /// component body. The public projection matches `Par::family_cardinality`
+    /// by saturating at `u64::MAX`.
+    pub fn family_cardinality<T: ParBagComponent>(&self, par: PlannedPar) -> u64 {
+        OccurrenceIter::new(&self.occurrence_nodes, self.pars[par.0].occurrence_root)
+            .filter(|occurrence| self.components[occurrence.component.0].tag == T::TAG)
+            .fold(0u64, |sum, occurrence| {
+                sum.saturating_add(occurrence.multiplicity.get())
+            })
+    }
+
+    /// The one planned Bundle when this Par contains exactly that occurrence.
+    pub fn single_bundle(&self, par: PlannedPar) -> Option<(PlannedPar, bool, bool)> {
+        let node = &self.pars[par.0];
+        if self.occurrence_distinct_len(node.occurrence_root) != 1 {
+            return None;
+        }
+        let occurrence = self.occurrence_nodes[node.occurrence_root?].occurrence;
+        if occurrence.multiplicity != Multiplicity::ONE {
+            return None;
+        }
+        match &self.components[occurrence.component.0].semantic_shape {
+            ComponentSemanticShape::Bundle {
+                body,
+                write_flag,
+                read_flag,
+            } => Some((*body, *write_flag, *read_flag)),
+            _ => None,
+        }
+    }
+
+    /// The one planned Connective when this Par contains exactly that
+    /// occurrence. The returned children are borrowed arena handles.
+    pub fn single_connective(&self, par: PlannedPar) -> Option<PlannedConnective<'_>> {
+        let node = &self.pars[par.0];
+        if self.occurrence_distinct_len(node.occurrence_root) != 1 {
+            return None;
+        }
+        let occurrence = self.occurrence_nodes[node.occurrence_root?].occurrence;
+        if occurrence.multiplicity != Multiplicity::ONE {
+            return None;
+        }
+        match &self.components[occurrence.component.0].semantic_shape {
+            ComponentSemanticShape::ConnectiveAnd(children) => {
+                Some(PlannedConnective::And(children))
+            }
+            ComponentSemanticShape::ConnectiveOr(children) => Some(PlannedConnective::Or(children)),
+            ComponentSemanticShape::ConnectiveOther => Some(PlannedConnective::Other),
+            _ => None,
+        }
+    }
+
+    /// Visit the distinct top-level expression endpoints of a planned Par in
+    /// canonical component order. Multiplicity is intentionally quotiented:
+    /// pure decidability classification of one occurrence classifies every
+    /// identical occurrence.
+    pub fn visit_expr_shapes(&self, par: PlannedPar, mut visit: impl FnMut(PlannedExprShape<'_>)) {
+        for occurrence in
+            OccurrenceIter::new(&self.occurrence_nodes, self.pars[par.0].occurrence_root)
+        {
+            let component = &self.components[occurrence.component.0];
+            if component.tag != ParComponentTag::Expr {
+                continue;
+            }
+            visit(match &component.semantic_shape {
+                ComponentSemanticShape::Expr(PlannedExprSemantic::Inert) => PlannedExprShape::Inert,
+                ComponentSemanticShape::Expr(PlannedExprSemantic::Unary(child)) => {
+                    PlannedExprShape::Unary(*child)
+                }
+                ComponentSemanticShape::Expr(PlannedExprSemantic::Binary(left, right)) => {
+                    PlannedExprShape::Binary(*left, *right)
+                }
+                ComponentSemanticShape::Expr(PlannedExprSemantic::MatchesTarget(target)) => {
+                    PlannedExprShape::MatchesTarget(*target)
+                }
+                ComponentSemanticShape::Expr(PlannedExprSemantic::Unsupported { kind, detail }) => {
+                    PlannedExprShape::Unsupported {
+                        kind,
+                        detail: detail.as_deref(),
+                    }
+                }
+                _ => PlannedExprShape::Opaque,
+            });
+        }
+    }
+
     /// Exact canonical term order for planned `Par` values: semantic score,
     /// then emitted protobuf bytes. Both halves are compared as cursors.
     pub fn compare_pars(&self, left: PlannedPar, right: PlannedPar) -> Ordering {
@@ -821,6 +1144,45 @@ impl ParConstruction {
             .then_with(|| {
                 WireByteCursor::new(self, WireRoot::Par(left))
                     .cmp(WireByteCursor::new(self, WireRoot::Par(right)))
+            })
+    }
+
+    /// Plan the exact sorter score and protobuf tie-break for one receive bind.
+    /// Child order is patterns followed by source, matching the generated
+    /// schema walk.
+    pub fn receive_bind_order(
+        &mut self,
+        shell: &ReceiveBind,
+        patterns: &[PlannedPar],
+        source: PlannedPar,
+    ) -> Result<PlannedReceiveBindOrder, ParConstructionError> {
+        let mut children = Vec::with_capacity(patterns.len() + 1);
+        children.extend_from_slice(patterns);
+        children.push(source);
+        let protobuf = self.plan_protobuf(shell, &children)?;
+        let remainder = match &shell.remainder {
+            Some(var) => self.score_tree(&sort_var(var).score)?,
+            None => self.score_i64(Score::ABSENT as i64)?,
+        };
+        let score_children: Vec<_> = std::iter::once(self.par_score(source))
+            .chain(patterns.iter().map(|pattern| self.par_score(*pattern)))
+            .chain(std::iter::once(remainder))
+            .collect();
+        let score = self.score_node(score_children)?;
+        Ok(PlannedReceiveBindOrder { score, protobuf })
+    }
+
+    /// Exact total ordering used by `ScoredTerm::sort_vec` for receive binds.
+    pub fn compare_receive_bind_orders(
+        &self,
+        left: PlannedReceiveBindOrder,
+        right: PlannedReceiveBindOrder,
+    ) -> Ordering {
+        ScoreByteCursor::new(self, left.score)
+            .cmp(ScoreByteCursor::new(self, right.score))
+            .then_with(|| {
+                WireByteCursor::new(self, WireRoot::Proto(left.protobuf))
+                    .cmp(WireByteCursor::new(self, WireRoot::Proto(right.protobuf)))
             })
     }
 
@@ -879,10 +1241,10 @@ impl ParConstruction {
                         self.emit_par(par, &mut out);
                         continue;
                     }
-                    let occurrence = node
-                        .occurrences
-                        .first()
-                        .expect("a stable Par has one component occurrence");
+                    let occurrence = self.occurrence_nodes[node
+                        .occurrence_root
+                        .expect("a stable Par has one component occurrence")]
+                    .occurrence;
                     let component = &self.components[occurrence.component.0];
                     match component
                         .canonical_segment
@@ -1023,6 +1385,7 @@ impl ParConstruction {
             protobuf,
             canonical_path_stable,
             canonical_segment,
+            semantic_shape: ComponentSemanticShape::Opaque,
         });
         component
     }
@@ -1078,6 +1441,24 @@ impl ParConstruction {
             }
         };
 
+        self.planned_epathmap_repr(
+            repr,
+            &shell.locally_free,
+            shell.connective_used,
+            shell.remainder.as_ref(),
+        )
+    }
+
+    /// Finalize a homogeneous planned EPathMap representation into its EPM1
+    /// snapshot cursor and protobuf node. Both decoded-shell imports and
+    /// normalizer-native set construction share this path.
+    fn planned_epathmap_repr(
+        &mut self,
+        repr: EPathMapRepr<PlannedPar>,
+        locally_free: &[u8],
+        connective_used: bool,
+        remainder: Option<&crate::rhoapi::Var>,
+    ) -> Result<(PlannedEPathMap, usize), ParConstructionError> {
         let entries_stable = match &repr {
             EPathMapRepr::Empty => true,
             EPathMapRepr::Set(entries) => {
@@ -1146,16 +1527,16 @@ impl ParConstruction {
 
         let mut pieces = Vec::new();
         let mut bounded = Vec::new();
-        if !shell.locally_free.is_empty() {
-            prost::encoding::bytes::encode(3, &shell.locally_free, &mut bounded);
+        if !locally_free.is_empty() {
+            prost::encoding::bytes::encode(3, &locally_free.to_vec(), &mut bounded);
         }
-        if shell.connective_used {
+        if connective_used {
             prost::encoding::bool::encode(4, &true, &mut bounded);
         }
         if !bounded.is_empty() {
             pieces.push(ProtoPiece::Bytes(bounded.into_boxed_slice()));
         }
-        if let Some(remainder) = &shell.remainder {
+        if let Some(remainder) = remainder {
             let remainder = self.plan_protobuf(remainder, &[])?;
             pieces.push(ProtoPiece::Node {
                 tag: 5,
@@ -1165,6 +1546,117 @@ impl ParConstruction {
         pieces.push(ProtoPiece::EPathMapSnapshot { tag: 9, map });
         let protobuf = self.push_proto_node(pieces)?;
         Ok((map, protobuf))
+    }
+
+    pub fn epathmap_expr_component(
+        &mut self,
+        mode: EPathMapMode,
+        children: &[PlannedPar],
+        locally_free: Vec<u8>,
+        connective_used: bool,
+        remainder: Option<crate::rhoapi::Var>,
+    ) -> Result<PlannedComponent, ParConstructionError> {
+        let repr = match mode {
+            EPathMapMode::Empty => {
+                Self::require_arity("empty EPathMap", 0, children.len())?;
+                EPathMapRepr::Empty
+            }
+            EPathMapMode::Set => {
+                let mut entries = PathMap::new();
+                for &key in children {
+                    entries.insert(&self.canonical_path_bytes(key)?, ());
+                }
+                if entries.is_empty() {
+                    EPathMapRepr::Empty
+                } else {
+                    EPathMapRepr::Set(entries)
+                }
+            }
+            EPathMapMode::Map => {
+                if children.len() % 2 != 0 {
+                    return Err(ParConstructionError::ChildArity {
+                        context: "map EPathMap",
+                        expected: children.len().saturating_add(1),
+                        supplied: children.len(),
+                    });
+                }
+                let mut entries = PathMap::new();
+                for pair in children.chunks_exact(2) {
+                    entries.insert(&self.canonical_path_bytes(pair[0])?, pair[1]);
+                }
+                if entries.is_empty() {
+                    EPathMapRepr::Empty
+                } else {
+                    EPathMapRepr::Map(entries)
+                }
+            }
+        };
+        self.epathmap_repr_expr_component(repr, locally_free, connective_used, remainder)
+    }
+
+    /// Finish an already prefix-compressed set/map construction as one Expr.
+    /// Map values remain arena handles until final emission.
+    pub fn epathmap_repr_expr_component(
+        &mut self,
+        repr: EPathMapRepr<PlannedPar>,
+        locally_free: Vec<u8>,
+        connective_used: bool,
+        remainder: Option<crate::rhoapi::Var>,
+    ) -> Result<PlannedComponent, ParConstructionError> {
+        let repr = match repr {
+            EPathMapRepr::Set(entries) if entries.is_empty() => EPathMapRepr::Empty,
+            EPathMapRepr::Map(entries) if entries.is_empty() => EPathMapRepr::Empty,
+            repr => repr,
+        };
+        let (planned_map, map_protobuf) =
+            self.planned_epathmap_repr(repr, &locally_free, connective_used, remainder.as_ref())?;
+        let map_node = &self.epathmaps[planned_map.0];
+        let snapshot_score = self.score_wire_bytes(
+            WireRoot::EPathMapSnapshot(planned_map),
+            map_node.snapshot_len,
+            map_node.snapshot_zero_count,
+        )?;
+        let connective = self.score_i64(i64::from(connective_used))?;
+        let score = self.score_constructor(Score::EPATHMAP, [snapshot_score, connective])?;
+        let expr_protobuf = self.wrap_proto_node(32, map_protobuf)?;
+        let stable = remainder.is_none()
+            && locally_free.is_empty()
+            && !connective_used
+            && self.epathmaps[planned_map.0].entries_stable;
+        let component = self.component_from_proto(
+            ParComponentTag::Expr,
+            score,
+            expr_protobuf,
+            stable,
+            stable.then_some(CanonicalSegment::EPathMap(planned_map)),
+        );
+        self.components[component.0].semantic_shape =
+            ComponentSemanticShape::Expr(PlannedExprSemantic::Unsupported {
+                kind: "EPathmapBody",
+                detail: None,
+            });
+        Ok(component)
+    }
+
+    /// Plan an EPathMap set expression directly from canonical planned keys.
+    ///
+    /// This is the normalizer's `{| p1, …, pn |}` path: each key is emitted by
+    /// the canonical-path PDA straight into `PathMap<()>`; no child is finished
+    /// to a resident `Par`, and no decoded entry vector becomes authority.
+    pub fn epathmap_set_expr_component(
+        &mut self,
+        keys: &[PlannedPar],
+        locally_free: Vec<u8>,
+        connective_used: bool,
+        remainder: Option<crate::rhoapi::Var>,
+    ) -> Result<PlannedComponent, ParConstructionError> {
+        self.epathmap_expr_component(
+            EPathMapMode::Set,
+            keys,
+            locally_free,
+            connective_used,
+            remainder,
+        )
     }
 
     /// Plan one canonical component shell.
@@ -1188,8 +1680,27 @@ impl ParConstruction {
             protobuf,
             canonical_path_stable,
             canonical_segment: None,
+            semantic_shape: ComponentSemanticShape::Opaque,
         });
         Ok(id)
+    }
+
+    /// Import one already-canonical component as an opaque construction leaf.
+    /// Its RPB3 score and protobuf slices are copied once from the compiled key;
+    /// no recursively nested `Par` is decoded or made resident in the arena.
+    pub fn import_component<T: ParBagComponent>(
+        &mut self,
+        value: &T,
+    ) -> Result<PlannedComponent, ParConstructionError> {
+        let key = CanonicalParBagKey::compile(value);
+        let (encoded_score, encoded_protobuf) = key.parts();
+        let score = self.score_from_encoded(encoded_score)?;
+        let protobuf = self.push_proto_node(if encoded_protobuf.is_empty() {
+            Vec::new()
+        } else {
+            vec![ProtoPiece::Bytes(encoded_protobuf.into())]
+        })?;
+        Ok(self.component_from_proto(T::TAG, score, protobuf, key.canonical_path_stable(), None))
     }
 
     fn require_arity(
@@ -1240,7 +1751,13 @@ impl ParConstruction {
             (false, false) => Score::BUNDLE_EQUIV,
         };
         let score = self.score_constructor(constructor, [self.par_score(children[0])])?;
-        self.component(shell, children, score, false)
+        let component = self.component(shell, children, score, false)?;
+        self.components[component.0].semantic_shape = ComponentSemanticShape::Bundle {
+            body: children[0],
+            write_flag: shell.write_flag,
+            read_flag: shell.read_flag,
+        };
+        Ok(component)
     }
 
     /// Plan a canonical conditional in condition/true/false order.
@@ -1358,7 +1875,17 @@ impl ParConstruction {
                 self.score_i64(Score::ABSENT as i64)?
             }
         };
-        self.component(shell, children, score, false)
+        let component = self.component(shell, children, score, false)?;
+        self.components[component.0].semantic_shape = match shell.connective_instance.as_ref() {
+            Some(ConnectiveInstance::ConnAndBody(_)) => {
+                ComponentSemanticShape::ConnectiveAnd(children.into())
+            }
+            Some(ConnectiveInstance::ConnOrBody(_)) => {
+                ComponentSemanticShape::ConnectiveOr(children.into())
+            }
+            _ => ComponentSemanticShape::ConnectiveOther,
+        };
+        Ok(component)
     }
 
     /// Plan New. Children are body followed by injection values in BTreeMap
@@ -1435,10 +1962,7 @@ impl ParConstruction {
                 self.par_score(guard),
             ])?);
             wire_children.extend([pattern, source]);
-            let guard_present = source_case
-                .guard
-                .as_ref()
-                .is_some_and(|guard| guard != &Par::default());
+            let guard_present = source_case.guard.is_some() && !self.is_empty(guard);
             if guard_present {
                 wire_children.push(guard);
             } else {
@@ -1493,10 +2017,7 @@ impl ParConstruction {
         let body = children[cursor];
         let condition = children[cursor + 1];
         wire_children.push(body);
-        let condition_present = shell
-            .condition
-            .as_ref()
-            .is_some_and(|condition| condition != &Par::default());
+        let condition_present = shell.condition.is_some() && !self.is_empty(condition);
         let mut canonical_shell = shell.clone();
         if condition_present {
             wire_children.push(condition);
@@ -1522,6 +2043,69 @@ impl ParConstruction {
         let (canonical_segment, stable) = self.expr_canonical_segment(shell, par_children)?;
         let component = self.component(shell, par_children, score, stable)?;
         self.components[component.0].canonical_segment = canonical_segment;
+        self.components[component.0].semantic_shape =
+            ComponentSemanticShape::Expr(match shell.expr_instance.as_ref() {
+                Some(ExprInstance::ENotBody(_)) | Some(ExprInstance::ENegBody(_)) => {
+                    PlannedExprSemantic::Unary(par_children[0])
+                }
+                Some(ExprInstance::EMultBody(_))
+                | Some(ExprInstance::EDivBody(_))
+                | Some(ExprInstance::EModBody(_))
+                | Some(ExprInstance::EPlusBody(_))
+                | Some(ExprInstance::EMinusBody(_))
+                | Some(ExprInstance::ELtBody(_))
+                | Some(ExprInstance::ELteBody(_))
+                | Some(ExprInstance::EGtBody(_))
+                | Some(ExprInstance::EGteBody(_))
+                | Some(ExprInstance::EEqBody(_))
+                | Some(ExprInstance::ENeqBody(_))
+                | Some(ExprInstance::EAndBody(_))
+                | Some(ExprInstance::EOrBody(_)) => {
+                    PlannedExprSemantic::Binary(par_children[0], par_children[1])
+                }
+                Some(ExprInstance::EMatchesBody(_)) => {
+                    PlannedExprSemantic::MatchesTarget(par_children[0])
+                }
+                Some(ExprInstance::EMethodBody(method)) => PlannedExprSemantic::Unsupported {
+                    kind: "EMethodBody",
+                    detail: Some(format!("`{}`", method.method_name)),
+                },
+                Some(ExprInstance::EPercentPercentBody(_)) => PlannedExprSemantic::Unsupported {
+                    kind: "EPercentPercentBody",
+                    detail: None,
+                },
+                Some(ExprInstance::EPlusPlusBody(_)) => PlannedExprSemantic::Unsupported {
+                    kind: "EPlusPlusBody",
+                    detail: None,
+                },
+                Some(ExprInstance::EMinusMinusBody(_)) => PlannedExprSemantic::Unsupported {
+                    kind: "EMinusMinusBody",
+                    detail: None,
+                },
+                Some(ExprInstance::EPathmapBody(_)) => PlannedExprSemantic::Unsupported {
+                    kind: "EPathmapBody",
+                    detail: None,
+                },
+                Some(ExprInstance::EZipperBody(_)) => PlannedExprSemantic::Unsupported {
+                    kind: "EZipperBody",
+                    detail: None,
+                },
+                Some(ExprInstance::GBool(_))
+                | Some(ExprInstance::GInt(_))
+                | Some(ExprInstance::GString(_))
+                | Some(ExprInstance::GUri(_))
+                | Some(ExprInstance::GByteArray(_))
+                | Some(ExprInstance::GDouble(_))
+                | Some(ExprInstance::GBigInt(_))
+                | Some(ExprInstance::GBigRat(_))
+                | Some(ExprInstance::GFixedPoint(_))
+                | Some(ExprInstance::EListBody(_))
+                | Some(ExprInstance::ETupleBody(_))
+                | Some(ExprInstance::ESetBody(_))
+                | Some(ExprInstance::EMapBody(_))
+                | Some(ExprInstance::EVarBody(_))
+                | None => PlannedExprSemantic::Inert,
+            });
         Ok(component)
     }
 
@@ -1952,111 +2536,256 @@ impl ParConstruction {
         }
     }
 
+    fn occurrence_height(&self, root: Option<usize>) -> usize {
+        root.map_or(0, |node| self.occurrence_nodes[node].height)
+    }
+
+    fn occurrence_distinct_len(&self, root: Option<usize>) -> usize {
+        root.map_or(0, |node| self.occurrence_nodes[node].distinct_len)
+    }
+
+    fn push_occurrence_node(
+        &mut self,
+        occurrence: Occurrence,
+        left: Option<usize>,
+        right: Option<usize>,
+    ) -> Result<usize, ParConstructionError> {
+        let left_node = left.map(|node| &self.occurrence_nodes[node]);
+        let right_node = right.map(|node| &self.occurrence_nodes[node]);
+        let component = &self.components[occurrence.component.0];
+        let multiplicity = usize::try_from(occurrence.multiplicity.get())
+            .map_err(|_| ParConstructionError::LengthOverflow("Par component multiplicity"))?;
+        let body_len = self.protobuf_nodes[component.protobuf].encoded_len;
+        let prefix =
+            InlineWireBytes::length_delimited_prefix(component.tag.byte().into(), body_len);
+        let one_wire_len = key_len(component.tag.byte().into())
+            .checked_add(encoded_len_varint(body_len as u64))
+            .and_then(|len| len.checked_add(body_len))
+            .ok_or(ParConstructionError::LengthOverflow("Par component"))?;
+        let own_wire_len =
+            one_wire_len
+                .checked_mul(multiplicity)
+                .ok_or(ParConstructionError::LengthOverflow(
+                    "Par component multiplicity",
+                ))?;
+        let one_zero_count = prefix
+            .zero_count()
+            .checked_add(self.protobuf_nodes[component.protobuf].zero_count)
+            .ok_or(ParConstructionError::LengthOverflow(
+                "Par protobuf zero-byte count",
+            ))?;
+        let own_zero_count = one_zero_count.checked_mul(multiplicity).ok_or(
+            ParConstructionError::LengthOverflow("Par protobuf zero-byte count"),
+        )?;
+        let own_score_len = self.scores[component.score.0]
+            .encoded_len
+            .checked_mul(multiplicity)
+            .ok_or(ParConstructionError::LengthOverflow(
+                "Par component score multiplicity",
+            ))?;
+        let add_aggregates = |left: usize, own: usize, right: usize, what| {
+            left.checked_add(own)
+                .and_then(|sum| sum.checked_add(right))
+                .ok_or(ParConstructionError::LengthOverflow(what))
+        };
+        let height = self
+            .occurrence_height(left)
+            .max(self.occurrence_height(right))
+            .checked_add(1)
+            .ok_or(ParConstructionError::LengthOverflow(
+                "planned occurrence-tree height",
+            ))?;
+        let distinct_len = add_aggregates(
+            left_node.map_or(0, |node| node.distinct_len),
+            1,
+            right_node.map_or(0, |node| node.distinct_len),
+            "planned occurrence count",
+        )?;
+        let score_len = add_aggregates(
+            left_node.map_or(0, |node| node.score_len),
+            own_score_len,
+            right_node.map_or(0, |node| node.score_len),
+            "Par score body",
+        )?;
+        let protobuf_len = add_aggregates(
+            left_node.map_or(0, |node| node.protobuf_len),
+            own_wire_len,
+            right_node.map_or(0, |node| node.protobuf_len),
+            "Par protobuf body",
+        )?;
+        let protobuf_zero_count = add_aggregates(
+            left_node.map_or(0, |node| node.protobuf_zero_count),
+            own_zero_count,
+            right_node.map_or(0, |node| node.protobuf_zero_count),
+            "Par protobuf zero-byte count",
+        )?;
+        let node = self.occurrence_nodes.len();
+        self.occurrence_nodes.push(OccurrenceTreeNode {
+            occurrence,
+            left,
+            right,
+            height,
+            distinct_len,
+            score_len,
+            protobuf_len,
+            protobuf_zero_count,
+        });
+        Ok(node)
+    }
+
+    fn rebuild_occurrence_node(
+        &mut self,
+        occurrence: Occurrence,
+        left: Option<usize>,
+        right: Option<usize>,
+    ) -> Result<usize, ParConstructionError> {
+        let left_height = self.occurrence_height(left);
+        let right_height = self.occurrence_height(right);
+        if left_height > right_height && left_height - right_height > 1 {
+            let pivot = self.occurrence_nodes[left.expect("left-heavy AVL node has a left child")];
+            if self.occurrence_height(pivot.left) >= self.occurrence_height(pivot.right) {
+                let demoted = self.push_occurrence_node(occurrence, pivot.right, right)?;
+                return self.push_occurrence_node(pivot.occurrence, pivot.left, Some(demoted));
+            }
+            let middle = self.occurrence_nodes[pivot
+                .right
+                .expect("left-right AVL rotation has an inner child")];
+            let new_left = self.push_occurrence_node(pivot.occurrence, pivot.left, middle.left)?;
+            let new_right = self.push_occurrence_node(occurrence, middle.right, right)?;
+            return self.push_occurrence_node(middle.occurrence, Some(new_left), Some(new_right));
+        }
+        if right_height > left_height && right_height - left_height > 1 {
+            let pivot =
+                self.occurrence_nodes[right.expect("right-heavy AVL node has a right child")];
+            if self.occurrence_height(pivot.right) >= self.occurrence_height(pivot.left) {
+                let demoted = self.push_occurrence_node(occurrence, left, pivot.left)?;
+                return self.push_occurrence_node(pivot.occurrence, Some(demoted), pivot.right);
+            }
+            let middle = self.occurrence_nodes[pivot
+                .left
+                .expect("right-left AVL rotation has an inner child")];
+            let new_left = self.push_occurrence_node(occurrence, left, middle.left)?;
+            let new_right =
+                self.push_occurrence_node(pivot.occurrence, middle.right, pivot.right)?;
+            return self.push_occurrence_node(middle.occurrence, Some(new_left), Some(new_right));
+        }
+        self.push_occurrence_node(occurrence, left, right)
+    }
+
+    fn insert_occurrence(
+        &mut self,
+        root: Option<usize>,
+        occurrence: Occurrence,
+    ) -> Result<Option<usize>, ParConstructionError> {
+        enum Direction {
+            Left,
+            Right,
+        }
+        let mut path = Vec::new();
+        let mut cursor = root;
+        let rebuilt = loop {
+            let Some(node) = cursor else {
+                break self.push_occurrence_node(occurrence, None, None)?;
+            };
+            let current = self.occurrence_nodes[node];
+            match self.compare_components(occurrence.component, current.occurrence.component) {
+                Ordering::Less => {
+                    path.push((current.occurrence, current.right, Direction::Left));
+                    cursor = current.left;
+                }
+                Ordering::Greater => {
+                    path.push((current.occurrence, current.left, Direction::Right));
+                    cursor = current.right;
+                }
+                Ordering::Equal => {
+                    let merged = Occurrence {
+                        component: current.occurrence.component,
+                        multiplicity: current
+                            .occurrence
+                            .multiplicity
+                            .checked_add(occurrence.multiplicity)?,
+                    };
+                    break self.push_occurrence_node(merged, current.left, current.right)?;
+                }
+            }
+        };
+        let mut rebuilt = Some(rebuilt);
+        while let Some((parent, sibling, direction)) = path.pop() {
+            rebuilt = Some(match direction {
+                Direction::Left => self.rebuild_occurrence_node(parent, rebuilt, sibling)?,
+                Direction::Right => self.rebuild_occurrence_node(parent, sibling, rebuilt)?,
+            });
+        }
+        Ok(rebuilt)
+    }
+
+    fn union_occurrences(
+        &mut self,
+        left: Option<usize>,
+        right: Option<usize>,
+    ) -> Result<Option<usize>, ParConstructionError> {
+        let (mut root, smaller) =
+            if self.occurrence_distinct_len(left) >= self.occurrence_distinct_len(right) {
+                (left, right)
+            } else {
+                (right, left)
+            };
+        let mut stack = Vec::new();
+        let mut cursor = smaller;
+        loop {
+            while let Some(node) = cursor {
+                stack.push(node);
+                cursor = self.occurrence_nodes[node].left;
+            }
+            let Some(node) = stack.pop() else { break };
+            let source = self.occurrence_nodes[node];
+            cursor = source.right;
+            root = self.insert_occurrence(root, source.occurrence)?;
+        }
+        Ok(root)
+    }
+
     /// Plan a canonical `Par` from top-level component occurrences.
     ///
-    /// A multi-component value is ordered and coalesced by its exact eventual
-    /// RPB3 key. The singleton fast path performs no body materialization,
-    /// which is the critical skewed-recursion case.
+    /// Occurrences enter an immutable balanced dictionary keyed by their exact
+    /// eventual RPB3 identity. Duplicate keys coalesce with checked Bag
+    /// addition. No accumulated occurrence prefix is recopied.
     pub fn par(
         &mut self,
         occurrences: impl IntoIterator<Item = (PlannedComponent, Multiplicity)>,
         locally_free: Vec<u8>,
         connective_used: bool,
     ) -> Result<PlannedPar, ParConstructionError> {
-        let mut occurrences: Vec<Occurrence> = occurrences
-            .into_iter()
-            .map(|(component, multiplicity)| Occurrence {
+        let mut root = None;
+        for (component, multiplicity) in occurrences {
+            root = self.insert_occurrence(root, Occurrence {
                 component,
                 multiplicity,
-            })
-            .collect();
-
-        if occurrences.len() > 1 {
-            occurrences
-                .sort_by(|left, right| self.compare_components(left.component, right.component));
-            let mut coalesced: Vec<Occurrence> = Vec::with_capacity(occurrences.len());
-            for occurrence in occurrences {
-                if let Some(previous) = coalesced.last_mut() {
-                    if self.compare_components(previous.component, occurrence.component)
-                        == Ordering::Equal
-                    {
-                        previous.multiplicity =
-                            previous.multiplicity.checked_add(occurrence.multiplicity)?;
-                        continue;
-                    }
-                }
-                coalesced.push(occurrence);
-            }
-            occurrences = coalesced;
+            })?;
         }
+        self.par_from_occurrence_root(root, locally_free, connective_used)
+    }
 
-        let mut score_pieces = Vec::new();
-        for tag in [
-            ParComponentTag::Send,
-            ParComponentTag::Receive,
-            ParComponentTag::Expr,
-            ParComponentTag::New,
-            ParComponentTag::Match,
-            ParComponentTag::Bundle,
-            ParComponentTag::Connective,
-            ParComponentTag::GUnforgeable,
-            ParComponentTag::If,
-        ] {
-            for occurrence in &occurrences {
-                let component = &self.components[occurrence.component.0];
-                if component.tag == tag {
-                    score_pieces.push(ScorePiece::Repeat {
-                        child: component.score,
-                        count: occurrence.multiplicity.get(),
-                    });
-                }
-            }
-        }
+    fn par_from_occurrence_root(
+        &mut self,
+        occurrence_root: Option<usize>,
+        locally_free: Vec<u8>,
+        connective_used: bool,
+    ) -> Result<PlannedPar, ParConstructionError> {
+        let distinct_len = self.occurrence_distinct_len(occurrence_root);
+        let aggregate = occurrence_root.map(|root| self.occurrence_nodes[root]);
+        let occurrence_scores = self.score_from_pieces(vec![ScorePiece::OccurrenceScores {
+            root: occurrence_root,
+            encoded_len: aggregate.map_or(0, |node| node.score_len),
+        }])?;
         let connective_score = self.score_i64(i64::from(connective_used))?;
-        score_pieces.push(ScorePiece::Child(connective_score));
-        let score = self.score_node_with_pieces(Score::PAR, score_pieces)?;
+        let score = self.score_node_with_pieces(Score::PAR, vec![
+            ScorePiece::Child(occurrence_scores),
+            ScorePiece::Child(connective_score),
+        ])?;
 
-        let mut protobuf_len = 0usize;
-        let mut protobuf_zero_count = 0usize;
-        for occurrence in &occurrences {
-            let component = &self.components[occurrence.component.0];
-            let body_len = self.protobuf_nodes[component.protobuf].encoded_len;
-            let prefix =
-                InlineWireBytes::length_delimited_prefix(component.tag.byte().into(), body_len);
-            let one = key_len(component.tag.byte().into())
-                .checked_add(encoded_len_varint(body_len as u64))
-                .and_then(|n| n.checked_add(body_len))
-                .ok_or(ParConstructionError::LengthOverflow("Par component"))?;
-            let family = one
-                .checked_mul(usize::try_from(occurrence.multiplicity.get()).map_err(|_| {
-                    ParConstructionError::LengthOverflow("Par component multiplicity")
-                })?)
-                .ok_or(ParConstructionError::LengthOverflow(
-                    "Par component multiplicity",
-                ))?;
-            protobuf_len = protobuf_len
-                .checked_add(family)
-                .ok_or(ParConstructionError::LengthOverflow("Par protobuf body"))?;
-            let one_zeroes = prefix
-                .zero_count()
-                .checked_add(self.protobuf_nodes[component.protobuf].zero_count)
-                .ok_or(ParConstructionError::LengthOverflow(
-                    "Par protobuf zero-byte count",
-                ))?;
-            protobuf_zero_count = protobuf_zero_count
-                .checked_add(
-                    one_zeroes
-                        .checked_mul(usize::try_from(occurrence.multiplicity.get()).map_err(
-                            |_| ParConstructionError::LengthOverflow("Par component multiplicity"),
-                        )?)
-                        .ok_or(ParConstructionError::LengthOverflow(
-                            "Par protobuf zero-byte count",
-                        ))?,
-                )
-                .ok_or(ParConstructionError::LengthOverflow(
-                    "Par protobuf zero-byte count",
-                ))?;
-        }
+        let mut protobuf_len = aggregate.map_or(0, |node| node.protobuf_len);
+        let mut protobuf_zero_count = aggregate.map_or(0, |node| node.protobuf_zero_count);
         if !locally_free.is_empty() {
             protobuf_len = protobuf_len
                 .checked_add(prost::encoding::bytes::encoded_len(9, &locally_free))
@@ -2077,9 +2806,13 @@ impl ParConstruction {
                 .ok_or(ParConstructionError::LengthOverflow("Par connective flag"))?;
         }
 
-        let singleton = (occurrences.len() == 1
-            && occurrences[0].multiplicity == Multiplicity::ONE)
-            .then(|| &self.components[occurrences[0].component.0]);
+        let singleton_occurrence = (distinct_len == 1)
+            .then(|| {
+                self.occurrence_nodes[occurrence_root.expect("singleton root exists")].occurrence
+            })
+            .filter(|occurrence| occurrence.multiplicity == Multiplicity::ONE);
+        let singleton =
+            singleton_occurrence.map(|occurrence| &self.components[occurrence.component.0]);
         let canonical_path_stable = locally_free.is_empty()
             && !connective_used
             && singleton.is_some_and(|component| {
@@ -2099,7 +2832,7 @@ impl ParConstruction {
 
         let id = PlannedPar(self.pars.len());
         self.pars.push(ParNode {
-            occurrences,
+            occurrence_root,
             locally_free,
             connective_used,
             score,
@@ -2117,6 +2850,42 @@ impl ParConstruction {
         self.par(std::iter::empty(), Vec::new(), false)
     }
 
+    /// Construct one top-level occurrence with its already-derived root
+    /// summaries.
+    ///
+    /// Normalizer, reducer, and matcher PDAs use this as the common boundary
+    /// between a schema-specific component constructor and parallel
+    /// composition. Keeping it here prevents those callers from rebuilding a
+    /// temporary resident [`Par`] merely to insert one occurrence.
+    pub fn singleton_component(
+        &mut self,
+        component: PlannedComponent,
+        locally_free: Vec<u8>,
+        connective_used: bool,
+    ) -> Result<PlannedPar, ParConstructionError> {
+        self.par(
+            [(component, Multiplicity::ONE)],
+            locally_free,
+            connective_used,
+        )
+    }
+
+    /// Append one planned component to an existing planned parallel
+    /// composition without finishing either side.
+    ///
+    /// The component summaries describe the component itself; [`parallel`]
+    /// performs the exact Bag addition and summary union with `base`.
+    pub fn append_component(
+        &mut self,
+        base: PlannedPar,
+        component: PlannedComponent,
+        locally_free: Vec<u8>,
+        connective_used: bool,
+    ) -> Result<PlannedPar, ParConstructionError> {
+        let singleton = self.singleton_component(component, locally_free, connective_used)?;
+        self.parallel(base, singleton)
+    }
+
     /// Bag union of two planned parallel compositions. Component paths remain
     /// arena references; only the bounded occurrence descriptors and root
     /// summaries are merged here.
@@ -2125,30 +2894,45 @@ impl ParConstruction {
         left: PlannedPar,
         right: PlannedPar,
     ) -> Result<PlannedPar, ParConstructionError> {
-        let mut occurrences = Vec::with_capacity(
-            self.pars[left.0].occurrences.len() + self.pars[right.0].occurrences.len(),
-        );
-        occurrences.extend(
-            self.pars[left.0]
-                .occurrences
-                .iter()
-                .map(|occurrence| (occurrence.component, occurrence.multiplicity)),
-        );
-        occurrences.extend(
-            self.pars[right.0]
-                .occurrences
-                .iter()
-                .map(|occurrence| (occurrence.component, occurrence.multiplicity)),
-        );
+        let is_identity = |node: &ParNode| {
+            node.occurrence_root.is_none() && node.locally_free.is_empty() && !node.connective_used
+        };
+        if is_identity(&self.pars[left.0]) {
+            return Ok(right);
+        }
+        if is_identity(&self.pars[right.0]) {
+            return Ok(left);
+        }
+        let left_root = self.pars[left.0].occurrence_root;
+        let right_root = self.pars[right.0].occurrence_root;
+        let occurrence_root = self.union_occurrences(left_root, right_root)?;
         let locally_free = super::utils::union(
             self.pars[left.0].locally_free.clone(),
             self.pars[right.0].locally_free.clone(),
         );
-        self.par(
-            occurrences,
+        self.par_from_occurrence_root(
+            occurrence_root,
             locally_free,
             self.pars[left.0].connective_used || self.pars[right.0].connective_used,
         )
+    }
+
+    /// Replace a planned `Par`'s root locally-free summary while sharing its
+    /// immutable occurrence tree.
+    ///
+    /// Reducer collection evaluation historically recomputes this summary from
+    /// evaluated top-level components before embedding a child. Rebuilding the
+    /// resident `Par` merely to change that metadata would copy the complete
+    /// recursive protobuf body; this creates only a new root plan and retains
+    /// all component, score, and wire nodes.
+    pub fn with_locally_free(
+        &mut self,
+        par: PlannedPar,
+        locally_free: Vec<u8>,
+    ) -> Result<PlannedPar, ParConstructionError> {
+        let occurrence_root = self.pars[par.0].occurrence_root;
+        let connective_used = self.pars[par.0].connective_used;
+        self.par_from_occurrence_root(occurrence_root, locally_free, connective_used)
     }
 
     /// Import an already-authoritative resident `Par` without decoding any
@@ -2157,7 +2941,7 @@ impl ParConstruction {
     /// The PathMap zipper lends each RPB3 score/body pair exactly once. Those
     /// canonical fragments become leaves in this transient arena, so a later
     /// planned parent can reference the imported value without rebuilding it.
-    pub fn import_par(&mut self, par: &Par) -> Result<PlannedPar, ParConstructionError> {
+    fn import_par_opaque(&mut self, par: &Par) -> Result<PlannedPar, ParConstructionError> {
         let (canonical_path, singleton_stable) =
             super::canonical_path::encode_trie_path_with_stability(par);
         let canonical_segment = super::canonical_path::encode_trie_segment(par);
@@ -2189,12 +2973,15 @@ impl ParConstruction {
                 zero_count,
             });
             let component = PlannedComponent(self.components.len());
+            let component_segment = (singleton_stable && imported_is_singleton)
+                .then(|| CanonicalSegment::Bytes(canonical_segment.clone().into_boxed_slice()));
             self.components.push(ComponentNode {
                 tag,
                 score,
                 protobuf: protobuf_id,
                 canonical_path_stable: singleton_stable && imported_is_singleton,
-                canonical_segment: None,
+                canonical_segment: component_segment,
+                semantic_shape: ComponentSemanticShape::Opaque,
             });
             occurrences.push((component, multiplicity));
         }
@@ -2210,11 +2997,79 @@ impl ParConstruction {
         Ok(planned)
     }
 
+    /// Import an authoritative resident `Par`, retaining the immediate
+    /// singleton shape required by normalizer and substitution algebra.
+    ///
+    /// The complete component bag still enters through one byte-native zipper
+    /// pass. Only an exactly singleton Bundle or Connective is decoded, because
+    /// those constructors participate in outer Bundle flag merging and
+    /// conjunction/disjunction flattening. Their direct child Pars are imported
+    /// as opaque canonical fragments, so this boundary never recursively walks
+    /// the resident AST.
+    pub fn import_par(&mut self, par: &Par) -> Result<PlannedPar, ParConstructionError> {
+        let planned = self.import_par_opaque(par)?;
+        if par.cardinality() != 1 {
+            return Ok(planned);
+        }
+
+        let component = self.occurrence_nodes[self.pars[planned.0]
+            .occurrence_root
+            .expect("one authoritative occurrence has an arena root")]
+        .occurrence
+        .component;
+
+        let semantic_shape = if par.family_cardinality::<Bundle>() == 1 {
+            let bundle = par
+                .first::<Bundle>()
+                .expect("Par invariant: stored Bundle keys are canonical")
+                .expect("the cardinality check proved one Bundle")
+                .0;
+            let body = match bundle.body.as_ref() {
+                Some(body) => self.import_par_opaque(body)?,
+                None => self.empty_par()?,
+            };
+            ComponentSemanticShape::Bundle {
+                body,
+                write_flag: bundle.write_flag,
+                read_flag: bundle.read_flag,
+            }
+        } else if par.family_cardinality::<Connective>() == 1 {
+            let connective = par
+                .first::<Connective>()
+                .expect("Par invariant: stored Connective keys are canonical")
+                .expect("the cardinality check proved one Connective")
+                .0;
+            match connective.connective_instance {
+                Some(ConnectiveInstance::ConnAndBody(body)) => {
+                    let children = body
+                        .ps
+                        .iter()
+                        .map(|child| self.import_par_opaque(child))
+                        .collect::<Result<Vec<_>, _>>()?;
+                    ComponentSemanticShape::ConnectiveAnd(children.into_boxed_slice())
+                }
+                Some(ConnectiveInstance::ConnOrBody(body)) => {
+                    let children = body
+                        .ps
+                        .iter()
+                        .map(|child| self.import_par_opaque(child))
+                        .collect::<Result<Vec<_>, _>>()?;
+                    ComponentSemanticShape::ConnectiveOr(children.into_boxed_slice())
+                }
+                _ => ComponentSemanticShape::ConnectiveOther,
+            }
+        } else {
+            return Ok(planned);
+        };
+        self.components[component.0].semantic_shape = semantic_shape;
+        Ok(planned)
+    }
+
     /// Emit the root planned `Par` into its sole resident representation.
     pub fn finish(&self, root: PlannedPar) -> Result<Par, ParConstructionError> {
         let planned = &self.pars[root.0];
         let mut components = ParBag::new();
-        for occurrence in &planned.occurrences {
+        for occurrence in OccurrenceIter::new(&self.occurrence_nodes, planned.occurrence_root) {
             let component = &self.components[occurrence.component.0];
             let key = self.component_key(occurrence.component)?;
             components.insert_planned_key(
@@ -2281,50 +3136,7 @@ impl ParConstruction {
     }
 
     fn emit_score(&self, root: PlannedScore, out: &mut Vec<u8>) {
-        enum Op {
-            Score(PlannedScore),
-            Bytes(usize),
-            Repeat { child: PlannedScore, remaining: u64 },
-            EscapedWire(WireRoot),
-        }
-        let mut work = vec![Op::Score(root)];
-        while let Some(op) = work.pop() {
-            match op {
-                Op::Score(score) => {
-                    for piece in self.scores[score.0].pieces.iter().rev() {
-                        work.push(match *piece {
-                            ScorePiece::Bytes(bytes) => Op::Bytes(bytes),
-                            ScorePiece::Child(child) => Op::Score(child),
-                            ScorePiece::Repeat { child, count } => Op::Repeat {
-                                child,
-                                remaining: count,
-                            },
-                            ScorePiece::EscapedWire { root, .. } => Op::EscapedWire(root),
-                        });
-                    }
-                }
-                Op::Bytes(bytes) => out.extend_from_slice(&self.byte_fragments[bytes]),
-                Op::Repeat { child, remaining } => {
-                    if remaining != 0 {
-                        if remaining != 1 {
-                            work.push(Op::Repeat {
-                                child,
-                                remaining: remaining - 1,
-                            });
-                        }
-                        work.push(Op::Score(child));
-                    }
-                }
-                Op::EscapedWire(root) => {
-                    for byte in WireByteCursor::new(self, root) {
-                        out.push(byte);
-                        if byte == 0 {
-                            out.push(0xff);
-                        }
-                    }
-                }
-            }
-        }
+        out.extend(ScoreByteCursor::new(self, root));
     }
 
     fn emit_par(&self, root: PlannedPar, out: &mut Vec<u8>) {
@@ -2471,7 +3283,7 @@ impl ParConstruction {
                             prost::encoding::string::encode(1, key, &mut bytes);
                             pieces.push(ProtoPiece::Bytes(bytes.into_boxed_slice()));
                         }
-                        if !self.pars[par.0].occurrences.is_empty()
+                        if self.pars[par.0].occurrence_root.is_some()
                             || self.pars[par.0].connective_used
                         {
                             pieces.push(ProtoPiece::Par { tag: 2, par });
@@ -2643,9 +3455,9 @@ mod tests {
     use crate::rhoapi::expr::ExprInstance;
     use crate::rhoapi::g_unforgeable::UnfInstance;
     use crate::rhoapi::{
-        Bundle, Connective, ConnectiveBody, EMap, EMethod, ENot, EPathMap, EPlus, ESet, ETuple,
-        EZipper, Expr, GPrivate, GUnforgeable, If, KeyValuePair, Match, MatchCase, New, Receive,
-        ReceiveBind, Send,
+        Bundle, Connective, ConnectiveBody, EList, EMap, EMethod, ENot, EPathMap, EPlus, ESet,
+        ETuple, EZipper, Expr, GPrivate, GUnforgeable, If, KeyValuePair, Match, MatchCase, New,
+        Receive, ReceiveBind, Send,
     };
     use crate::rust::par_bag::with_component_key;
 
@@ -3393,6 +4205,63 @@ mod tests {
     }
 
     #[test]
+    fn stable_resident_import_remains_navigable_after_parallel_identity() {
+        let source = Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::EListBody(EList {
+                ps: vec![resident_gint(7)],
+                locally_free: Vec::new(),
+                connective_used: false,
+                remainder: None,
+            })),
+        }]);
+
+        let mut arena = ParConstruction::new();
+        let empty = arena.empty_par().expect("plan parallel identity");
+        let imported = arena.import_par(&source).expect("import stable singleton");
+        let recomposed = arena
+            .parallel(empty, imported)
+            .expect("apply planned Bag identity");
+
+        assert_eq!(arena.finish(recomposed).unwrap(), source);
+        assert_eq!(
+            arena.canonical_path_bytes(recomposed).unwrap(),
+            crate::rust::canonical_path::encode_trie_path(&source),
+            "component-level segment metadata must survive a new planned root",
+        );
+    }
+
+    #[test]
+    fn locally_free_replacement_shares_the_planned_occurrence_tree() {
+        let source = Par::default()
+            .with_exprs(vec![
+                Expr {
+                    expr_instance: Some(ExprInstance::GInt(1)),
+                },
+                Expr {
+                    expr_instance: Some(ExprInstance::GInt(2)),
+                },
+            ])
+            .with_locally_free(vec![1, 1]);
+        let expected = source.with_locally_free(vec![0, 1, 0]);
+
+        let mut arena = ParConstruction::new();
+        let original = arena.import_par(&source).expect("import resident Par");
+        let occurrence_count = arena.occurrence_nodes.len();
+        let occurrence_root = arena.pars[original.0].occurrence_root;
+        let replaced = arena
+            .with_locally_free(original, vec![0, 1, 0])
+            .expect("replace planned root metadata");
+
+        assert_eq!(arena.occurrence_nodes.len(), occurrence_count);
+        assert_eq!(arena.pars[replaced.0].occurrence_root, occurrence_root);
+        assert_eq!(arena.finish(replaced).unwrap(), expected);
+        assert_eq!(
+            arena.protobuf_bytes(replaced),
+            expected.protobuf_bytes().unwrap()
+        );
+    }
+
+    #[test]
     fn planned_parallel_uses_bag_addition_without_flattening_component_keys() {
         let left_value = Par::default().with_exprs(vec![Expr {
             expr_instance: Some(ExprInstance::GInt(7)),
@@ -3417,6 +4286,100 @@ mod tests {
 
         assert_eq!(actual, expected);
         assert_eq!(actual.compact_snapshot(), expected.compact_snapshot());
+    }
+
+    #[test]
+    fn planned_parallel_persistently_balances_occurrences_without_prefix_copying() {
+        const DISTINCT: usize = 4_096;
+
+        let mut arena = ParConstruction::new();
+        let mut planned = arena.empty_par().unwrap();
+        let mut expected_exprs = Vec::with_capacity(DISTINCT + 1);
+
+        // Monotone keys are the adversarial insertion order for an unbalanced
+        // search tree. Each append may allocate only a bounded AVL spine, not
+        // a copy of every occurrence accumulated so far.
+        for value in 0..DISTINCT {
+            let expr = Expr {
+                expr_instance: Some(ExprInstance::GInt(value as i64)),
+            };
+            expected_exprs.push(expr.clone());
+            let before = arena.occurrence_nodes.len();
+            let component = arena.expr_component(&expr, &[], true).unwrap();
+            let singleton = arena
+                .singleton_component(component, Vec::new(), false)
+                .unwrap();
+            planned = arena.parallel(planned, singleton).unwrap();
+            let allocated = arena.occurrence_nodes.len() - before;
+            let logarithmic_height = (usize::BITS - (value + 1).max(1).leading_zeros()) as usize;
+            assert!(
+                allocated <= 4 * (logarithmic_height + 2),
+                "append allocated {allocated} occurrence nodes at cardinality {}",
+                value + 1
+            );
+        }
+
+        // Equal canonical keys must retain Bag addition rather than becoming
+        // a second dictionary entry.
+        let duplicate = Expr {
+            expr_instance: Some(ExprInstance::GInt(7)),
+        };
+        expected_exprs.push(duplicate.clone());
+        let component = arena.expr_component(&duplicate, &[], true).unwrap();
+        let singleton = arena
+            .singleton_component(component, Vec::new(), false)
+            .unwrap();
+        planned = arena.parallel(planned, singleton).unwrap();
+
+        let root = arena.pars[planned.0]
+            .occurrence_root
+            .expect("nonempty occurrence dictionary");
+        let mut reachable = 0usize;
+        let mut work = vec![root];
+        while let Some(index) = work.pop() {
+            reachable += 1;
+            let node = arena.occurrence_nodes[index];
+            let left_height = arena.occurrence_height(node.left);
+            let right_height = arena.occurrence_height(node.right);
+            assert!(left_height.abs_diff(right_height) <= 1);
+            assert_eq!(node.height, left_height.max(right_height) + 1);
+            assert_eq!(
+                node.distinct_len,
+                arena.occurrence_distinct_len(node.left)
+                    + 1
+                    + arena.occurrence_distinct_len(node.right)
+            );
+            if let Some(left) = node.left {
+                assert_eq!(
+                    arena.compare_components(
+                        arena.occurrence_nodes[left].occurrence.component,
+                        node.occurrence.component,
+                    ),
+                    Ordering::Less
+                );
+                work.push(left);
+            }
+            if let Some(right) = node.right {
+                assert_eq!(
+                    arena.compare_components(
+                        arena.occurrence_nodes[right].occurrence.component,
+                        node.occurrence.component,
+                    ),
+                    Ordering::Greater
+                );
+                work.push(right);
+            }
+        }
+        assert_eq!(reachable, DISTINCT);
+        assert_eq!(arena.occurrence_distinct_len(Some(root)), DISTINCT);
+
+        let expected = Par::default().with_exprs(expected_exprs);
+        let actual = arena.finish(planned).unwrap();
+        assert_eq!(actual, expected);
+        assert_eq!(
+            arena.protobuf_bytes(planned),
+            expected.protobuf_bytes().unwrap()
+        );
     }
 
     #[test]

@@ -1,10 +1,15 @@
 use models::rhoapi::{connective, Connective, Par};
+use models::rust::par_construction::ParConstruction;
 use rholang_parser::ast::AnnProc;
 
-use crate::rust::interpreter::compiler::exports::{FreeMap, ProcVisitInputs, ProcVisitOutputs};
-use crate::rust::interpreter::compiler::normalize_drive::{NormKont, NormVal, NormWork, Step};
+use crate::rust::interpreter::compiler::exports::{
+    FreeMap, ProcVisitInputs as PublicProcVisitInputs, ProcVisitOutputs as PublicProcVisitOutputs,
+};
+use crate::rust::interpreter::compiler::free_map::FreeMapConnective;
+use crate::rust::interpreter::compiler::normalize_drive::{
+    NormKont, NormVal, NormWork, ProcVisitInputs, ProcVisitOutputs, Step,
+};
 use crate::rust::interpreter::errors::InterpreterError;
-use crate::rust::interpreter::util::prepend_connective;
 
 /// `~P`, descend half.
 ///
@@ -16,14 +21,15 @@ pub(crate) fn descend_p_negation<'ast>(
     arg: AnnProc<'ast>,
     unary_expr_span: rholang_parser::SourceSpan,
     input: ProcVisitInputs,
-) -> Step<'ast> {
+    construction: &mut ParConstruction,
+) -> Result<Step<'ast>, InterpreterError> {
     // Use the actual span of the entire UnaryExp (~<expr>) for accurate source location
     let ann_proc = AnnProc {
         proc: arg.proc,
         span: unary_expr_span,
     };
     let bound_map_chain = input.bound_map_chain.clone();
-    Step::Descend {
+    Ok(Step::Descend {
         kont: NormKont::Negation {
             input,
             span: unary_expr_span,
@@ -31,32 +37,46 @@ pub(crate) fn descend_p_negation<'ast>(
         work: NormWork::Proc {
             proc: ann_proc,
             input: ProcVisitInputs {
-                par: Par::default(),
+                par: construction.empty_par()?,
                 bound_map_chain,
                 free_map: FreeMap::default(),
             },
         },
-    }
+    })
 }
 
 /// `~P` on a **fresh** drive. Only the unit tests enter here.
 pub fn normalize_p_negation<'ast>(
     arg: &'ast rholang_parser::ast::Proc<'ast>,
     unary_expr_span: rholang_parser::SourceSpan,
-    input: ProcVisitInputs,
+    input: PublicProcVisitInputs,
     env: &std::collections::HashMap<String, Par>,
     parser: &'ast rholang_parser::RholangParser<'ast>,
-) -> Result<ProcVisitOutputs, InterpreterError> {
-    use crate::rust::interpreter::compiler::normalize_drive::{norm_drive_from, NormVal};
+) -> Result<PublicProcVisitOutputs, InterpreterError> {
+    use crate::rust::interpreter::compiler::normalize_drive::norm_drive_from;
+    let mut construction = ParConstruction::new();
+    let planned_input = ProcVisitInputs {
+        par: construction.import_par(&input.par)?,
+        bound_map_chain: input.bound_map_chain,
+        free_map: input.free_map,
+    };
     let step = descend_p_negation(
         AnnProc {
             proc: arg,
             span: unary_expr_span,
         },
         unary_expr_span,
-        input,
-    );
-    norm_drive_from(step, env, parser).map(NormVal::into_proc)
+        ProcVisitInputs {
+            par: planned_input.par,
+            ..planned_input
+        },
+        &mut construction,
+    )?;
+    let result = norm_drive_from(step, &mut construction, env, parser)?.into_proc();
+    Ok(PublicProcVisitOutputs {
+        par: construction.finish(result.par)?,
+        free_map: result.free_map,
+    })
 }
 
 /// `~P`, combine half.
@@ -65,26 +85,21 @@ pub(crate) fn combine_p_negation<'ast>(
     input: ProcVisitInputs,
     unary_expr_span: rholang_parser::SourceSpan,
     value: NormVal,
+    construction: &mut ParConstruction,
 ) -> Result<Step<'ast>, InterpreterError> {
     let body_result = value.into_proc();
 
     // Create Connective with ConnNotBody
     let connective = Connective {
-        connective_instance: Some(connective::ConnectiveInstance::ConnNotBody(body_result.par)),
+        connective_instance: Some(connective::ConnectiveInstance::ConnNotBody(Par::default())),
     };
-
-    let updated_par = prepend_connective(
-        input.par,
-        connective.clone(),
-        input.bound_map_chain.depth() as i32,
-    );
+    let component = construction.connective_component(&connective, &[body_result.par])?;
+    let updated_par = construction.append_component(input.par, component, Vec::new(), true)?;
 
     Ok(Step::Done(NormVal::Proc(ProcVisitOutputs {
         par: updated_par,
-        free_map: input.free_map.add_connective(
-            connective
-                .connective_instance
-                .expect("combine_p_negation: the connective was just constructed as `Some`"),
+        free_map: input.free_map.add_connective_kind(
+            FreeMapConnective::Not,
             unary_expr_span, // Use the actual span of the entire negation operation
         ),
     })))

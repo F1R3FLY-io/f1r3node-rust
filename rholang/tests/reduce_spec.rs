@@ -2944,7 +2944,9 @@ async fn one_matches_one_should_return_true() {
         &env,
     );
     assert!(res.is_ok());
-    assert_eq!(res.unwrap().decode_occurrences::<Expr>(), vec![new_gbool_expr(true)])
+    assert_eq!(res.unwrap().decode_occurrences::<Expr>(), vec![
+        new_gbool_expr(true)
+    ])
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -2964,7 +2966,9 @@ async fn one_matches_zero_should_return_false() {
         &env,
     );
     assert!(res.is_ok());
-    assert_eq!(res.unwrap().decode_occurrences::<Expr>(), vec![new_gbool_expr(false)])
+    assert_eq!(res.unwrap().decode_occurrences::<Expr>(), vec![
+        new_gbool_expr(false)
+    ])
 }
 
 // "1 matches _"
@@ -2985,7 +2989,9 @@ async fn one_matches_wildcard_should_return_true() {
         &env,
     );
     assert!(res.is_ok());
-    assert_eq!(res.unwrap().decode_occurrences::<Expr>(), vec![new_gbool_expr(true)])
+    assert_eq!(res.unwrap().decode_occurrences::<Expr>(), vec![
+        new_gbool_expr(true)
+    ])
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -3006,7 +3012,9 @@ async fn x_matches_one_should_return_true_when_x_is_bound_to_one() {
         &env,
     );
     assert!(res.is_ok());
-    assert_eq!(res.unwrap().decode_occurrences::<Expr>(), vec![new_gbool_expr(true)])
+    assert_eq!(res.unwrap().decode_occurrences::<Expr>(), vec![
+        new_gbool_expr(true)
+    ])
 }
 
 // "1 matches =x"
@@ -3030,7 +3038,9 @@ async fn one_matches_equal_sign_x_should_return_true_when_x_is_bound_to_one() {
         &env,
     );
     assert!(res.is_ok());
-    assert_eq!(res.unwrap().decode_occurrences::<Expr>(), vec![new_gbool_expr(true)])
+    assert_eq!(res.unwrap().decode_occurrences::<Expr>(), vec![
+        new_gbool_expr(true)
+    ])
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -3053,7 +3063,9 @@ async fn length_should_return_the_length_of_the_string() {
         &env,
     );
     assert!(res.is_ok());
-    assert_eq!(res.unwrap().decode_occurrences::<Expr>(), vec![new_gint_expr(3)])
+    assert_eq!(res.unwrap().decode_occurrences::<Expr>(), vec![
+        new_gint_expr(3)
+    ])
 }
 
 // "'abcabac'.slice(3, 6)" should "return 'aba'"
@@ -3080,9 +3092,9 @@ async fn slice_should_work_correctly_1() {
         &env,
     );
     assert!(res.is_ok());
-    assert_eq!(res.unwrap().decode_occurrences::<Expr>(), vec![new_gstring_expr(
-        "aba".to_string()
-    )])
+    assert_eq!(res.unwrap().decode_occurrences::<Expr>(), vec![
+        new_gstring_expr("aba".to_string())
+    ])
 }
 
 // "'abcabcac'.slice(2,1)" should "return empty string"
@@ -3109,7 +3121,9 @@ async fn slice_should_work_correctly_2() {
         &env,
     );
     assert!(res.is_ok());
-    assert_eq!(res.unwrap().decode_occurrences::<Expr>(), vec![new_gstring_expr("".to_string())])
+    assert_eq!(res.unwrap().decode_occurrences::<Expr>(), vec![
+        new_gstring_expr("".to_string())
+    ])
 }
 
 // "'abcabcac'.slice(8,9)" should "return empty string"
@@ -3136,7 +3150,9 @@ async fn slice_should_work_correctly_3() {
         &env,
     );
     assert!(res.is_ok());
-    assert_eq!(res.unwrap().decode_occurrences::<Expr>(), vec![new_gstring_expr("".to_string())])
+    assert_eq!(res.unwrap().decode_occurrences::<Expr>(), vec![
+        new_gstring_expr("".to_string())
+    ])
 }
 
 // "'abcabcac'.slice(-2,2)" should "return 'ab'"
@@ -3163,7 +3179,9 @@ async fn slice_should_work_correctly_4() {
         &env,
     );
     assert!(res.is_ok());
-    assert_eq!(res.unwrap().decode_occurrences::<Expr>(), vec![new_gstring_expr("ab".to_string())])
+    assert_eq!(res.unwrap().decode_occurrences::<Expr>(), vec![
+        new_gstring_expr("ab".to_string())
+    ])
 }
 
 // "'Hello, ${name}!' % {'name': 'Alice'}" should "return 'Hello, Alice!"
@@ -3195,9 +3213,9 @@ async fn percent_percent_should_work_correctly() {
         &env,
     );
     assert!(res.is_ok());
-    assert_eq!(res.unwrap().decode_occurrences::<Expr>(), vec![new_gstring_expr(
-        "Hello, Alice!".to_string()
-    )])
+    assert_eq!(res.unwrap().decode_occurrences::<Expr>(), vec![
+        new_gstring_expr("Hello, Alice!".to_string())
+    ])
 }
 
 // "'abc' ++ 'def'" should "return 'abcdef"
@@ -3218,9 +3236,9 @@ async fn plus_plus_should_work_correctly_with_string() {
         &env,
     );
     assert!(res.is_ok());
-    assert_eq!(res.unwrap().decode_occurrences::<Expr>(), vec![new_gstring_expr(
-        "abcdef".to_string()
-    )])
+    assert_eq!(res.unwrap().decode_occurrences::<Expr>(), vec![
+        new_gstring_expr("abcdef".to_string())
+    ])
 }
 
 // "ByteArray('dead') ++ ByteArray('beef)'" should "return ByteArray('deadbeef')"
@@ -3290,9 +3308,9 @@ async fn interpolate_should_work_correctly() {
         &env,
     );
     assert!(res.is_ok());
-    assert_eq!(res.unwrap().decode_occurrences::<Expr>(), vec![new_gstring_expr(
-        "1 ${b} 2 ${a}".to_string()
-    )])
+    assert_eq!(res.unwrap().decode_occurrences::<Expr>(), vec![
+        new_gstring_expr("1 ${b} 2 ${a}".to_string())
+    ])
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -3316,9 +3334,9 @@ async fn interpolate_should_interpolate_boolean_values() {
         &env,
     );
     assert!(res.is_ok());
-    assert_eq!(res.unwrap().decode_occurrences::<Expr>(), vec![new_gstring_expr(
-        "false true".to_string()
-    )])
+    assert_eq!(res.unwrap().decode_occurrences::<Expr>(), vec![
+        new_gstring_expr("false true".to_string())
+    ])
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -3346,9 +3364,9 @@ async fn interpolate_should_interpolate_uris() {
         &env,
     );
     assert!(res.is_ok());
-    assert_eq!(res.unwrap().decode_occurrences::<Expr>(), vec![new_gstring_expr(
-        "testUriA testUriB".to_string()
-    )])
+    assert_eq!(res.unwrap().decode_occurrences::<Expr>(), vec![
+        new_gstring_expr("testUriA testUriB".to_string())
+    ])
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -3384,7 +3402,9 @@ async fn length_should_return_the_length_of_the_list() {
         &env,
     );
     assert!(res.is_ok());
-    assert_eq!(res.unwrap().decode_occurrences::<Expr>(), vec![new_gint_expr(4)])
+    assert_eq!(res.unwrap().decode_occurrences::<Expr>(), vec![
+        new_gint_expr(4)
+    ])
 }
 
 // "[3, 7, 2, 9, 4, 3, 7].slice(3, 5)" should "return [9, 4]"
@@ -3636,19 +3656,21 @@ async fn plus_plus_should_work_correctly_with_list() {
         &env,
     );
     assert!(res.is_ok());
-    assert_eq!(res.unwrap().decode_occurrences::<Expr>(), vec![new_elist_expr(
-        vec![
-            new_gint_par(3, Vec::new(), false),
-            new_gint_par(2, Vec::new(), false),
-            new_gint_par(9, Vec::new(), false),
-            new_gint_par(6, Vec::new(), false),
-            new_gint_par(1, Vec::new(), false),
-            new_gint_par(7, Vec::new(), false),
-        ],
-        Vec::new(),
-        false,
-        None
-    )])
+    assert_eq!(res.unwrap().decode_occurrences::<Expr>(), vec![
+        new_elist_expr(
+            vec![
+                new_gint_par(3, Vec::new(), false),
+                new_gint_par(2, Vec::new(), false),
+                new_gint_par(9, Vec::new(), false),
+                new_gint_par(6, Vec::new(), false),
+                new_gint_par(1, Vec::new(), false),
+                new_gint_par(7, Vec::new(), false),
+            ],
+            Vec::new(),
+            false,
+            None
+        )
+    ])
 }
 
 // "{1: 'a', 2: 'b'}.getOrElse(1, 'c')" should "return 'a'"
@@ -3690,7 +3712,9 @@ async fn get_or_else_method_should_work_correctly_1() {
         &env,
     );
     assert!(res.is_ok());
-    assert_eq!(res.unwrap().decode_occurrences::<Expr>(), vec![new_gstring_expr("a".to_string())])
+    assert_eq!(res.unwrap().decode_occurrences::<Expr>(), vec![
+        new_gstring_expr("a".to_string())
+    ])
 }
 
 // "{1: 'a', 2: 'b'}.getOrElse(3, 'c')" should "return 'c'"
@@ -3732,7 +3756,9 @@ async fn get_or_else_method_should_work_correctly_2() {
         &env,
     );
     assert!(res.is_ok());
-    assert_eq!(res.unwrap().decode_occurrences::<Expr>(), vec![new_gstring_expr("c".to_string())])
+    assert_eq!(res.unwrap().decode_occurrences::<Expr>(), vec![
+        new_gstring_expr("c".to_string())
+    ])
 }
 
 // "{1: 'a', 2: 'b'}.set(3, 'c')" should "return {1: 'a', 2: 'b', 3: 'c'}"
@@ -3939,7 +3965,9 @@ async fn size_method_should_work_correctly_emap() {
         &env,
     );
     assert!(res.is_ok());
-    assert_eq!(res.unwrap().decode_occurrences::<Expr>(), vec![new_gint_expr(3)])
+    assert_eq!(res.unwrap().decode_occurrences::<Expr>(), vec![
+        new_gint_expr(3)
+    ])
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -3972,7 +4000,9 @@ async fn size_method_should_work_correctly_with_eset() {
         &env,
     );
     assert!(res.is_ok());
-    assert_eq!(res.unwrap().decode_occurrences::<Expr>(), vec![new_gint_expr(3)])
+    assert_eq!(res.unwrap().decode_occurrences::<Expr>(), vec![
+        new_gint_expr(3)
+    ])
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -4412,16 +4442,18 @@ async fn to_list_method_should_transform_set_into_list() {
         &env,
     );
     assert!(res.is_ok());
-    assert_eq!(res.unwrap().decode_occurrences::<Expr>(), vec![new_elist_expr(
-        vec![
-            new_gint_par(1, Vec::new(), false),
-            new_gint_par(2, Vec::new(), false),
-            new_gint_par(3, Vec::new(), false),
-        ],
-        Vec::new(),
-        false,
-        None
-    )])
+    assert_eq!(res.unwrap().decode_occurrences::<Expr>(), vec![
+        new_elist_expr(
+            vec![
+                new_gint_par(1, Vec::new(), false),
+                new_gint_par(2, Vec::new(), false),
+                new_gint_par(3, Vec::new(), false),
+            ],
+            Vec::new(),
+            false,
+            None
+        )
+    ])
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -4461,25 +4493,27 @@ async fn to_list_method_should_transform_map_into_list_of_tuples() {
         &env,
     );
     assert!(res.is_ok());
-    assert_eq!(res.unwrap().decode_occurrences::<Expr>(), vec![new_elist_expr(
-        vec![
-            new_etuple_par(vec![
-                new_gstring_par("a".to_string(), Vec::new(), false),
-                new_gint_par(1, Vec::new(), false),
-            ]),
-            new_etuple_par(vec![
-                new_gstring_par("b".to_string(), Vec::new(), false),
-                new_gint_par(2, Vec::new(), false),
-            ]),
-            new_etuple_par(vec![
-                new_gstring_par("c".to_string(), Vec::new(), false),
-                new_gint_par(3, Vec::new(), false),
-            ])
-        ],
-        Vec::new(),
-        false,
-        None
-    )])
+    assert_eq!(res.unwrap().decode_occurrences::<Expr>(), vec![
+        new_elist_expr(
+            vec![
+                new_etuple_par(vec![
+                    new_gstring_par("a".to_string(), Vec::new(), false),
+                    new_gint_par(1, Vec::new(), false),
+                ]),
+                new_etuple_par(vec![
+                    new_gstring_par("b".to_string(), Vec::new(), false),
+                    new_gint_par(2, Vec::new(), false),
+                ]),
+                new_etuple_par(vec![
+                    new_gstring_par("c".to_string(), Vec::new(), false),
+                    new_gint_par(3, Vec::new(), false),
+                ])
+            ],
+            Vec::new(),
+            false,
+            None
+        )
+    ])
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -4512,16 +4546,18 @@ async fn to_list_method_should_transform_tuple_into_list() {
         &env,
     );
     assert!(res.is_ok());
-    assert_eq!(res.unwrap().decode_occurrences::<Expr>(), vec![new_elist_expr(
-        vec![
-            new_gint_par(1, Vec::new(), false),
-            new_gint_par(2, Vec::new(), false),
-            new_gint_par(3, Vec::new(), false),
-        ],
-        Vec::new(),
-        false,
-        None
-    )])
+    assert_eq!(res.unwrap().decode_occurrences::<Expr>(), vec![
+        new_elist_expr(
+            vec![
+                new_gint_par(1, Vec::new(), false),
+                new_gint_par(2, Vec::new(), false),
+                new_gint_par(3, Vec::new(), false),
+            ],
+            Vec::new(),
+            false,
+            None
+        )
+    ])
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

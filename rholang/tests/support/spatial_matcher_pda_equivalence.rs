@@ -14,6 +14,7 @@ use models::rhoapi::{
     If, KeyValuePair, Match, New, PCost, Par, Receive, ReceiveBind, Send,
 };
 use models::rust::par_bag::ParBag;
+use models::rust::par_construction::ParConstruction;
 use models::rust::rholang::match_path::{encode_match_path, encode_par_match_atom};
 use models::rust::rholang::match_schema::{RhoPathCursor, RhoPathEvent};
 use models::rust::rholang::match_schema_tables::{ParCursor, RHO_MATCH_REGISTRY};
@@ -30,8 +31,8 @@ use super::recursive_oracle::spatial_matcher::{
 };
 use super::spatial_matcher::{SpatialMatcher, SpatialMatcherContext};
 use super::spatial_matcher_pda::{
-    match_par_list_with_stats, match_send_list_with_remainder_stats, match_send_list_with_stats,
-    send_target_index_shape,
+    if_target_index_shape, match_par_list_with_stats, match_send_list_with_remainder_stats,
+    match_send_list_with_stats, send_target_index_shape,
 };
 
 fn compare(label: &str, target: Par, pattern: Par) {
@@ -477,6 +478,20 @@ fn new_scope(body: Par, connective_used: bool) -> Par {
     }
 }
 
+fn conditional(condition: Par, if_true: Par, if_false: Par, connective_used: bool) -> Par {
+    models::par_from_default! {
+        conditionals: vec![If {
+            condition: Some(condition),
+            if_true: Some(if_true),
+            if_false: Some(if_false),
+            locally_free: Vec::new(),
+            connective_used,
+        }],
+        connective_used,
+        ..Default::default()
+    }
+}
+
 fn pathmap(map: EPathMap, connective_used: bool) -> Par {
     models::par_from_default! {
         exprs: vec![Expr {
@@ -515,6 +530,11 @@ fn recursive_oracle_and_pda_agree_on_the_semantic_corpus() {
         tuple(vec![free(0), free(1)], true),
     );
     compare(
+        "nested tuple fields",
+        tuple(vec![seven(), tuple(vec![one(), two()], false)], false),
+        tuple(vec![free(0), tuple(vec![free(1), free(2)], true)], true),
+    );
+    compare(
         "send channel and data",
         send(one(), vec![seven()], false),
         send(free(0), vec![free(1)], true),
@@ -547,6 +567,26 @@ fn recursive_oracle_and_pda_agree_on_the_semantic_corpus() {
         "new body",
         new_scope(seven(), false),
         new_scope(free(0), true),
+    );
+    compare(
+        "conditional children",
+        conditional(
+            new_gint_par(11, Vec::new(), false),
+            new_gint_par(12, Vec::new(), false),
+            new_gint_par(13, Vec::new(), false),
+            false,
+        ),
+        conditional(free(0), free(1), free(2), true),
+    );
+    compare(
+        "conditional child refusal",
+        conditional(
+            new_gint_par(11, Vec::new(), false),
+            new_gint_par(12, Vec::new(), false),
+            new_gint_par(13, Vec::new(), false),
+            false,
+        ),
+        conditional(free(0), new_gint_par(99, Vec::new(), false), free(1), true),
     );
 
     compare(
@@ -968,14 +1008,33 @@ fn connective_candidate_plan_compilation_and_matching_are_stack_safe_at_depth_tw
         .stack_size(256 * 1024)
         .spawn(|| {
             for conjunction in [false, true] {
-                let mut nested = new_gint_par(1, Vec::new(), false);
-                for _ in 0..DEPTH {
-                    nested = connective(if conjunction {
-                        ConnAndBody(ConnectiveBody { ps: vec![nested] })
+                let mut construction = ParConstruction::new();
+                let terminal = new_gint_par(1, Vec::new(), false);
+                let mut nested = construction
+                    .import_par(&terminal)
+                    .expect("import connective terminal");
+                let shell = Connective {
+                    connective_instance: Some(if conjunction {
+                        ConnAndBody(ConnectiveBody {
+                            ps: vec![Par::default()],
+                        })
                     } else {
-                        ConnOrBody(ConnectiveBody { ps: vec![nested] })
-                    });
+                        ConnOrBody(ConnectiveBody {
+                            ps: vec![Par::default()],
+                        })
+                    }),
+                };
+                for _ in 0..DEPTH {
+                    let component = construction
+                        .connective_component(&shell, &[nested])
+                        .expect("plan unary connective");
+                    nested = construction
+                        .singleton_component(component, Vec::new(), true)
+                        .expect("plan connective carrier");
                 }
+                let nested = construction
+                    .finish(nested)
+                    .expect("finish connective spine");
                 let mut context = SpatialMatcherContext::new();
                 let (result, stats) = match_par_list_with_stats(
                     &mut context,
@@ -1051,6 +1110,25 @@ fn production_list_pda_reuses_adjacent_duplicate_bag_identity() {
     assert_eq!(first.cmp(&second), std::cmp::Ordering::Equal);
 
     assert_eq!(send_target_index_shape(vec![first, second]), (2, 2));
+}
+
+#[test]
+fn conditional_target_index_retains_distinct_generated_byte_identities() {
+    let first = If {
+        condition: Some(new_gint_par(7, Vec::new(), false)),
+        if_true: Some(new_gint_par(11, Vec::new(), false)),
+        if_false: Some(new_gint_par(13, Vec::new(), false)),
+        locally_free: Vec::new(),
+        connective_used: false,
+    };
+    let mut second = first.clone();
+    second.locally_free = vec![1];
+
+    // Semantic matching deliberately ignores the derived cache, while the
+    // generated byte identity used as the PathMap index key must not collapse
+    // the two encoded values.
+    assert_eq!(first, second, "If AlwaysEqual ignores locally_free");
+    assert_eq!(if_target_index_shape(vec![first, second]), (2, 2));
 }
 
 #[test]

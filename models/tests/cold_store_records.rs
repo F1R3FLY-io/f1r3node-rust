@@ -339,7 +339,11 @@ fn a_datum_too_deep_for_the_derived_decoder_still_reads_back() {
                 assert_eq!(entry.multiplicity().get(), 1);
                 depth = entry.canonical_unary_elist_depth();
             });
-            assert_eq!(depth, Some(4096), "the DECODED datum must carry the nesting");
+            assert_eq!(
+                depth,
+                Some(4096),
+                "the DECODED datum must carry the nesting"
+            );
 
             let datums = datums;
             for d in datums {

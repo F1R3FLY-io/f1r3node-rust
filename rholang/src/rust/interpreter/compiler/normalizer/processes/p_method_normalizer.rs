@@ -1,13 +1,13 @@
 use models::rhoapi::{expr, EMethod, Expr, Par};
+use models::rust::par_construction::ParConstruction;
 use models::rust::utils::union;
 use rholang_parser::ast::{AnnProc, Id};
 
-use crate::rust::interpreter::compiler::exports::{ProcVisitInputs, ProcVisitOutputs};
+use crate::rust::interpreter::compiler::normalize::append_planned_expr;
 use crate::rust::interpreter::compiler::normalize_drive::{
-    MethodK, NormKont, NormVal, NormWork, Step,
+    MethodK, NormKont, NormVal, NormWork, ProcVisitInputs, ProcVisitOutputs, Step,
 };
 use crate::rust::interpreter::errors::InterpreterError;
-use crate::rust::interpreter::util::prepend_expr;
 
 /// `P.m(a, b, …)`, descend half — the RECEIVER first.
 ///
@@ -24,11 +24,11 @@ pub(crate) fn descend_p_method<'ast>(
     name_id: &'ast Id<'ast>,
     args: &'ast rholang_parser::ast::ProcList<'ast>,
     input: ProcVisitInputs,
-) -> Step<'ast> {
-    let input_depth = input.bound_map_chain.depth() as i32;
+    construction: &mut ParConstruction,
+) -> Result<Step<'ast>, InterpreterError> {
     let bound_map_chain = input.bound_map_chain.clone();
     let free_map = input.free_map.clone();
-    Step::Descend {
+    Ok(Step::Descend {
         kont: NormKont::Method(Box::new(MethodK {
             args,
             idx: 0,
@@ -39,17 +39,16 @@ pub(crate) fn descend_p_method<'ast>(
             acc_connective_used: false,
             free_map,
             bound_map_chain,
-            input_par: input.par.clone(),
-            input_depth,
+            input_par: input.par,
         })),
         work: NormWork::Proc {
             proc: receiver,
             input: ProcVisitInputs {
-                par: Par::default(),
+                par: construction.empty_par()?,
                 ..input
             },
         },
-    }
+    })
 }
 
 /// Argument `i` **in reverse source order** — the `i`-th one the recursive
@@ -70,6 +69,7 @@ fn arg_at<'ast>(
 pub(crate) fn combine_p_method<'ast>(
     mut k: Box<MethodK<'ast>>,
     value: NormVal,
+    construction: &mut ParConstruction,
 ) -> Result<Step<'ast>, InterpreterError> {
     let result = value.into_proc();
     if k.idx == 0 {
@@ -79,8 +79,8 @@ pub(crate) fn combine_p_method<'ast>(
     } else {
         // Argument `idx - 1` (in reverse source order) has just finished.
         // ★ Leg-1: shallow fields first, then MOVE.
-        let child_locally_free = result.par.locally_free().to_vec();
-        let child_connective_used = result.par.connective_used();
+        let child_locally_free = construction.locally_free(result.par).to_vec();
+        let child_connective_used = construction.connective_used(result.par);
         k.acc_args.insert(0, result.par);
         k.free_map = result.free_map;
         k.acc_locally_free = union(std::mem::take(&mut k.acc_locally_free), child_locally_free);
@@ -89,7 +89,7 @@ pub(crate) fn combine_p_method<'ast>(
 
     if let Some(next) = arg_at(k.args, k.idx) {
         let child_input = ProcVisitInputs {
-            par: Par::default(),
+            par: construction.empty_par()?,
             bound_map_chain: k.bound_map_chain.clone(),
             free_map: k.free_map.clone(),
         };
@@ -111,29 +111,35 @@ pub(crate) fn combine_p_method<'ast>(
         acc_connective_used,
         free_map,
         input_par,
-        input_depth,
         ..
     } = *k;
     let target = target.expect("combine_p_method: the receiver slot is filled before any argument");
 
     // ★ Leg-1 at the reader — see `p_send_normalizer`.
-    let target_locally_free = target.locally_free().to_vec();
-    let target_connective_used = target.connective_used();
+    let target_locally_free = construction.locally_free(target).to_vec();
+    let target_connective_used = construction.connective_used(target);
+    let method_locally_free = union(target_locally_free, acc_locally_free);
+    let method_connective_used = target_connective_used || acc_connective_used;
     let method = EMethod {
         method_name,
-        target: Some(target),
-        arguments: acc_args,
-        locally_free: union(target_locally_free, acc_locally_free),
-        connective_used: target_connective_used || acc_connective_used,
+        target: Some(Par::default()),
+        arguments: vec![Par::default(); acc_args.len()],
+        locally_free: method_locally_free.clone(),
+        connective_used: method_connective_used,
     };
 
-    let updated_par = prepend_expr(
+    let mut children = acc_args;
+    children.push(target);
+    let updated_par = append_planned_expr(
+        construction,
         input_par,
-        Expr {
+        &Expr {
             expr_instance: Some(expr::ExprInstance::EMethodBody(method)),
         },
-        input_depth,
-    );
+        &children,
+        method_locally_free,
+        method_connective_used,
+    )?;
 
     Ok(Step::Done(NormVal::Proc(ProcVisitOutputs {
         par: updated_par,

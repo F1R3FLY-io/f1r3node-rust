@@ -1006,6 +1006,242 @@ fn canonical_single_varint_field(message: &[u8], expected_key: u64) -> Option<u6
     (at == message.len()).then_some(value)
 }
 
+/// Extract the sole Connective component body from a canonical singleton
+/// connective `Par`. Root locally-free/connective metadata may follow the
+/// component, exactly as emitted by the canonical protobuf encoder.
+fn canonical_single_connective_from_par(message: &[u8]) -> Option<&[u8]> {
+    const CONNECTIVE_KEY: u64 = (8 << 3) | 2;
+    const LOCALLY_FREE_KEY: u64 = (9 << 3) | 2;
+    const CONNECTIVE_USED_KEY: u64 = 10 << 3;
+
+    let mut at = 0usize;
+    (read_canonical_varint(message, &mut at)? == CONNECTIVE_KEY).then_some(())?;
+    let len = usize::try_from(read_canonical_varint(message, &mut at)?).ok()?;
+    let end = at.checked_add(len)?;
+    let connective = message.get(at..end)?;
+    at = end;
+    if at < message.len() {
+        let key = read_canonical_varint(message, &mut at)?;
+        if key == LOCALLY_FREE_KEY {
+            let len = usize::try_from(read_canonical_varint(message, &mut at)?).ok()?;
+            at = at.checked_add(len).filter(|end| *end <= message.len())?;
+            if at < message.len() && read_canonical_varint(message, &mut at)? != CONNECTIVE_USED_KEY
+            {
+                return None;
+            }
+            if at < message.len() {
+                let _ = read_canonical_varint(message, &mut at)?;
+            }
+        } else if key == CONNECTIVE_USED_KEY {
+            let _ = read_canonical_varint(message, &mut at)?;
+        } else {
+            return None;
+        }
+    }
+    (at == message.len()).then_some(connective)
+}
+
+/// Borrowed child-message regions from one canonical `If` protobuf body.
+///
+/// These are the three semantic children only. `locally_free` and
+/// `connective_used` are derived summaries and are deliberately validated but
+/// not returned as matching obligations.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CanonicalIfParts<'a> {
+    pub condition: &'a [u8],
+    pub if_true: &'a [u8],
+    pub if_false: &'a [u8],
+}
+
+#[inline]
+fn take_canonical_delimited_field<'a>(
+    message: &'a [u8],
+    at: &mut usize,
+    expected_key: u64,
+) -> Option<&'a [u8]> {
+    (read_canonical_varint(message, at)? == expected_key).then_some(())?;
+    let len = usize::try_from(read_canonical_varint(message, at)?).ok()?;
+    let end = at.checked_add(len)?;
+    let body = message.get(*at..end)?;
+    *at = end;
+    Some(body)
+}
+
+/// Split a canonical `If` protobuf body into its three canonical `Par`
+/// messages without materializing any AST node.
+///
+/// The accepted language is exactly the field order emitted by the canonical
+/// protobuf encoder: three required child messages followed by optional
+/// derived metadata. Any missing, duplicate, reordered, unknown, non-minimal,
+/// or trailing field is rejected so callers can conservatively fall back to
+/// the complete generated decoder.
+pub fn canonical_if_parts(message: &[u8]) -> Option<CanonicalIfParts<'_>> {
+    const CONDITION_KEY: u64 = (1 << 3) | 2;
+    const IF_TRUE_KEY: u64 = (2 << 3) | 2;
+    const IF_FALSE_KEY: u64 = (3 << 3) | 2;
+    const LOCALLY_FREE_KEY: u64 = (4 << 3) | 2;
+    const CONNECTIVE_USED_KEY: u64 = 5 << 3;
+
+    let mut at = 0usize;
+    let condition = take_canonical_delimited_field(message, &mut at, CONDITION_KEY)?;
+    let if_true = take_canonical_delimited_field(message, &mut at, IF_TRUE_KEY)?;
+    let if_false = take_canonical_delimited_field(message, &mut at, IF_FALSE_KEY)?;
+
+    if at < message.len() {
+        let key = read_canonical_varint(message, &mut at)?;
+        if key == LOCALLY_FREE_KEY {
+            let len = usize::try_from(read_canonical_varint(message, &mut at)?).ok()?;
+            at = at.checked_add(len).filter(|end| *end <= message.len())?;
+            if at < message.len() && read_canonical_varint(message, &mut at)? != CONNECTIVE_USED_KEY
+            {
+                return None;
+            }
+            if at < message.len() && read_canonical_varint(message, &mut at)? != 1 {
+                return None;
+            }
+        } else if key == CONNECTIVE_USED_KEY {
+            if read_canonical_varint(message, &mut at)? != 1 {
+                return None;
+            }
+        } else {
+            return None;
+        }
+    }
+
+    (at == message.len()).then_some(CanonicalIfParts {
+        condition,
+        if_true,
+        if_false,
+    })
+}
+
+/// Extract the sole `If` component body from a canonical singleton-`If`
+/// `Par`. The root summaries precede field 12 in canonical schema order.
+pub fn canonical_single_if_from_par(message: &[u8]) -> Option<&[u8]> {
+    const LOCALLY_FREE_KEY: u64 = (9 << 3) | 2;
+    const CONNECTIVE_USED_KEY: u64 = 10 << 3;
+    const IF_KEY: u64 = (12 << 3) | 2;
+
+    let mut at = 0usize;
+    if at < message.len() && message[at] == LOCALLY_FREE_KEY as u8 {
+        let _ = read_canonical_varint(message, &mut at)?;
+        let len = usize::try_from(read_canonical_varint(message, &mut at)?).ok()?;
+        at = at.checked_add(len).filter(|end| *end <= message.len())?;
+    }
+    if at < message.len() && message[at] == CONNECTIVE_USED_KEY as u8 {
+        (read_canonical_varint(message, &mut at)? == CONNECTIVE_USED_KEY).then_some(())?;
+        (read_canonical_varint(message, &mut at)? == 1).then_some(())?;
+    }
+    let body = take_canonical_delimited_field(message, &mut at, IF_KEY)?;
+    (at == message.len()).then_some(body)
+}
+
+/// Read `Par.connective_used` from a canonical protobuf message without
+/// decoding any component body.
+///
+/// Every non-summary `Par` field is length-delimited; field 10 is the sole
+/// varint. Resident ParBag messages have already passed full canonical
+/// validation, but this cursor remains total so external callers can fall back
+/// conservatively when handed another byte language.
+pub fn canonical_par_connective_used(message: &[u8]) -> Option<bool> {
+    const CONNECTIVE_USED_FIELD: u64 = 10;
+
+    let mut at = 0usize;
+    let mut connective_used = false;
+    while at < message.len() {
+        let key = read_canonical_varint(message, &mut at)?;
+        let field = key >> 3;
+        let wire = key & 0x07;
+        if field == CONNECTIVE_USED_FIELD {
+            (wire == 0 && !connective_used).then_some(())?;
+            (read_canonical_varint(message, &mut at)? == 1).then_some(())?;
+            connective_used = true;
+        } else {
+            (wire == 2).then_some(())?;
+            let len = usize::try_from(read_canonical_varint(message, &mut at)?).ok()?;
+            at = at.checked_add(len).filter(|end| *end <= message.len())?;
+        }
+    }
+    Some(connective_used)
+}
+
+/// Follow an exact non-empty chain of singleton AND/OR connectives and decode
+/// only its terminal child. Both connectives are unary identities, so this is
+/// an algebraically exact normalization rather than a conservative shortcut.
+fn decode_unary_connective_terminal(mut connective: &[u8]) -> Option<Par> {
+    const AND_KEY: u64 = (1 << 3) | 2;
+    const OR_KEY: u64 = (2 << 3) | 2;
+    const CHILD_KEY: u64 = (1 << 3) | 2;
+
+    loop {
+        let body = canonical_single_delimited_field(connective, AND_KEY)
+            .or_else(|| canonical_single_delimited_field(connective, OR_KEY))?;
+        let child = canonical_single_delimited_field(body, CHILD_KEY)?;
+        match canonical_single_connective_from_par(child) {
+            Some(next) => connective = next,
+            None => {
+                return crate::rust::rholang::protobuf_decoder::decode_par(child).ok();
+            }
+        }
+    }
+}
+
+fn canonical_single_bundle_from_par(message: &[u8]) -> Option<&[u8]> {
+    let mut at = 0usize;
+    let mut bundle = None;
+    while at < message.len() {
+        let key = read_canonical_varint(message, &mut at)?;
+        match (key >> 3, key & 0x07) {
+            (9, 2) => {
+                let len = usize::try_from(read_canonical_varint(message, &mut at)?).ok()?;
+                at = at.checked_add(len).filter(|end| *end <= message.len())?;
+            }
+            (10, 0) => {
+                let _ = read_canonical_varint(message, &mut at)?;
+            }
+            (11, 2) if bundle.is_none() => {
+                let len = usize::try_from(read_canonical_varint(message, &mut at)?).ok()?;
+                let end = at.checked_add(len)?;
+                bundle = Some(message.get(at..end)?);
+                at = end;
+            }
+            _ => return None,
+        }
+    }
+    bundle
+}
+
+fn canonical_bundle_body(bundle: &[u8]) -> Option<&[u8]> {
+    const BODY_KEY: u64 = (1 << 3) | 2;
+    let mut at = 0usize;
+    (read_canonical_varint(bundle, &mut at)? == BODY_KEY).then_some(())?;
+    let len = usize::try_from(read_canonical_varint(bundle, &mut at)?).ok()?;
+    let end = at.checked_add(len)?;
+    let body = bundle.get(at..end)?;
+    at = end;
+    while at < bundle.len() {
+        let key = read_canonical_varint(bundle, &mut at)?;
+        if !matches!((key >> 3, key & 0x07), (2 | 3, 0)) {
+            return None;
+        }
+        let _ = read_canonical_varint(bundle, &mut at)?;
+    }
+    Some(body)
+}
+
+/// Follow a non-empty exact unary Bundle spine and decode only its terminal
+/// body. Bundle capability flags do not change process evaluation; callers
+/// that expose per-bundle observation must retain the ordinary semantic path.
+fn decode_unary_bundle_terminal(mut bundle: &[u8]) -> Option<Par> {
+    loop {
+        let body = canonical_bundle_body(bundle)?;
+        match canonical_single_bundle_from_par(body) {
+            Some(next) => bundle = next,
+            None => return crate::rust::rholang::protobuf_decoder::decode_par(body).ok(),
+        }
+    }
+}
+
 #[inline]
 fn score_segment_is(actual: &[u8], at: &mut usize, expected: &[u8]) -> bool {
     let Some(end) = at.checked_add(expected.len()) else {
@@ -1794,6 +2030,21 @@ impl<'a, T: ParBagComponent> EncodedParComponent<'a, T> {
     pub fn decode(self) -> Result<T, ParBagCodecError> { decode_exact::<T>(self.payload) }
 }
 
+impl EncodedParComponent<'_, Connective> {
+    /// Decode only the terminal below an exact non-empty spine of unary AND/OR
+    /// connectives. Every intermediate `Par` remains a borrowed protobuf
+    /// region inside this authoritative trie endpoint.
+    pub(crate) fn canonical_unary_connective_terminal(self) -> Option<Par> {
+        decode_unary_connective_terminal(self.payload)
+    }
+}
+
+impl EncodedParComponent<'_, Bundle> {
+    pub(crate) fn canonical_unary_bundle_terminal(self) -> Option<Par> {
+        decode_unary_bundle_terminal(self.payload)
+    }
+}
+
 impl EncodedParComponent<'_, Expr> {
     /// Return the depth of an exact canonical
     /// `ENot(Par(ENot(.. Par::default() ..)))` component.
@@ -1852,6 +2103,15 @@ impl<T: ParBagComponent> CanonicalParBagKey<T> {
     }
 
     pub fn as_bytes(&self) -> &[u8] { &self.bytes }
+
+    pub(crate) fn parts(&self) -> (&[u8], &[u8]) {
+        let (tag, score, protobuf) = split_key_parts(&self.bytes)
+            .expect("a compiled canonical component key has valid framing");
+        debug_assert_eq!(tag, T::TAG);
+        (score, protobuf)
+    }
+
+    pub(crate) const fn canonical_path_stable(&self) -> bool { self.canonical_path_stable }
 }
 
 impl<T: ParBagComponent> fmt::Debug for CanonicalParBagKey<T> {
@@ -1961,6 +2221,162 @@ pub struct ParBag {
     /// shared by CoW clones. A successful mutation detaches this compact
     /// metadata/cache block exactly once.
     aux: Arc<ParBagAux>,
+}
+
+/// Lazy unique partitions of one Par component family.
+///
+/// One counter is retained per distinct PathMap endpoint, not per occurrence.
+/// Counter zero varies fastest, which is the order in which the legacy
+/// positional bit-subset enumerator first encountered each distinct Bag
+/// partition. Positional duplicates are observationally identical to the
+/// matcher and are deliberately emitted once.
+#[derive(Clone)]
+pub struct FamilyPartitions {
+    entries: Arc<[(Arc<[u8]>, Multiplicity)]>,
+    selected: Box<[u64]>,
+    selected_total: u128,
+    minimum: u128,
+    maximum: u128,
+    started: bool,
+    exhausted: bool,
+}
+
+impl FamilyPartitions {
+    fn new(entries: Vec<(Arc<[u8]>, Multiplicity)>, minimum: u64, maximum: u64) -> Self {
+        let entries: Arc<[(Arc<[u8]>, Multiplicity)]> = entries.into();
+        Self {
+            // Mixed-radix multiplicity counters, not locally-free bit-vector
+            // bytes. Keep the element type explicit so the source-level
+            // bitset-producer census cannot misclassify this scratch state.
+            selected: vec![0u64; entries.len()].into_boxed_slice(),
+            entries,
+            selected_total: 0,
+            minimum: u128::from(minimum),
+            maximum: u128::from(maximum),
+            started: false,
+            exhausted: minimum > maximum,
+        }
+    }
+
+    /// Advance the mixed-radix counter at or above `start`, resetting every
+    /// less-significant digit. Returns the digit that changed.
+    fn advance_from(&mut self, start: usize) -> Option<usize> {
+        for index in 0..start {
+            self.selected_total -= u128::from(self.selected[index]);
+            self.selected[index] = 0;
+        }
+        for index in start..self.entries.len() {
+            let available = self.entries[index].1.get();
+            if self.selected[index] < available {
+                self.selected[index] += 1;
+                self.selected_total += 1;
+                return Some(index);
+            }
+            self.selected_total -= u128::from(self.selected[index]);
+            self.selected[index] = 0;
+        }
+        None
+    }
+
+    /// Raise only digits less significant than `end` to the smallest value
+    /// whose total reaches `minimum`.
+    fn fill_minimum_below(&mut self, end: usize) -> bool {
+        let mut needed = self.minimum.saturating_sub(self.selected_total);
+        for index in 0..end {
+            if needed == 0 {
+                break;
+            }
+            let room = self.entries[index].1.get() - self.selected[index];
+            let added = u128::from(room).min(needed) as u64;
+            self.selected[index] += added;
+            self.selected_total += u128::from(added);
+            needed -= u128::from(added);
+        }
+        needed == 0
+    }
+
+    fn initialize(&mut self) -> bool {
+        self.fill_minimum_below(self.entries.len()) && self.selected_total <= self.maximum
+    }
+
+    fn advance_to_feasible(&mut self) -> bool {
+        let Some(mut changed) = self.advance_from(0) else {
+            return false;
+        };
+        loop {
+            if self.selected_total > self.maximum {
+                let Some(next_changed) = self.advance_from(changed + 1) else {
+                    return false;
+                };
+                changed = next_changed;
+                continue;
+            }
+            if self.selected_total < self.minimum {
+                if self.fill_minimum_below(changed) {
+                    return true;
+                }
+                let Some(next_changed) = self.advance_from(changed + 1) else {
+                    return false;
+                };
+                changed = next_changed;
+                continue;
+            }
+            return true;
+        }
+    }
+
+    fn current_partition(&self) -> (ParBag, ParBag) {
+        let mut selected = Bag::new();
+        let mut complement = Bag::new();
+        for ((path, available), selected_count) in self.entries.iter().zip(self.selected.iter()) {
+            if *selected_count != 0 {
+                selected.set_count(
+                    path,
+                    Some(
+                        Multiplicity::new(*selected_count)
+                            .expect("a selected positive count is a multiplicity"),
+                    ),
+                );
+            }
+            let complement_count = available.get() - *selected_count;
+            if complement_count != 0 {
+                complement.set_count(
+                    path,
+                    Some(
+                        Multiplicity::new(complement_count)
+                            .expect("a complementary positive count is a multiplicity"),
+                    ),
+                );
+            }
+        }
+        (
+            ParBag::from_components(selected),
+            ParBag::from_components(complement),
+        )
+    }
+}
+
+impl Iterator for FamilyPartitions {
+    type Item = (ParBag, ParBag);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        while !self.exhausted {
+            if self.started {
+                if !self.advance_to_feasible() {
+                    self.exhausted = true;
+                    return None;
+                }
+            } else {
+                self.started = true;
+                if !self.initialize() {
+                    self.exhausted = true;
+                    return None;
+                }
+            }
+            return Some(self.current_partition());
+        }
+        None
+    }
 }
 
 impl Default for ParBag {
@@ -2449,6 +2865,26 @@ impl ParBag {
 
     pub fn family_cardinality_is_saturated<T: ParBagComponent>(&self) -> bool {
         self.aux.metrics.exact_cardinalities[T::TAG.index()] > u64::MAX as u128
+    }
+
+    /// Lazily enumerate the unique Bag partitions of one component family.
+    ///
+    /// Canonical RPB3 keys stay encoded and one counter is carried per distinct
+    /// PathMap endpoint. A key with multiplicity N therefore consumes O(1)
+    /// iterator state rather than N `Arc` slots. Counter zero varies fastest,
+    /// preserving the first-occurrence order of the legacy positional subset
+    /// enumeration while suppressing duplicate identical Bag candidates.
+    pub fn family_partitions<T: ParBagComponent>(
+        &self,
+        min_size: u64,
+        max_size: u64,
+    ) -> FamilyPartitions {
+        let mut entries = Vec::with_capacity(self.family_distinct_len::<T>());
+        self.components
+            .visit_prefix(&component_prefix(T::TAG), |path, multiplicity| {
+                entries.push((Arc::from(path), multiplicity));
+            });
+        FamilyPartitions::new(entries, min_size, max_size)
     }
 
     /// Visit one constructor family without decoding its payloads.

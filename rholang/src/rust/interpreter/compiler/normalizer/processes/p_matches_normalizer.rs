@@ -1,10 +1,16 @@
 use models::rhoapi::{expr, EMatches, Expr, Par};
+use models::rust::par_construction::ParConstruction;
+use models::rust::utils::union;
 use rholang_parser::ast::AnnProc;
 
 use super::exports::InterpreterError;
-use crate::rust::interpreter::compiler::exports::{FreeMap, ProcVisitInputs, ProcVisitOutputs};
-use crate::rust::interpreter::compiler::normalize_drive::{NormKont, NormVal, NormWork, Step};
-use crate::rust::interpreter::util::prepend_expr;
+use crate::rust::interpreter::compiler::exports::{
+    FreeMap, ProcVisitInputs as PublicProcVisitInputs, ProcVisitOutputs as PublicProcVisitOutputs,
+};
+use crate::rust::interpreter::compiler::normalize::append_planned_expr;
+use crate::rust::interpreter::compiler::normalize_drive::{
+    NormKont, NormVal, NormWork, ProcVisitInputs, ProcVisitOutputs, Step,
+};
 
 /// `P matches Q`, descend half — the target.
 ///
@@ -17,10 +23,11 @@ pub(crate) fn descend_p_matches<'ast>(
     left: AnnProc<'ast>,
     right: AnnProc<'ast>,
     input: ProcVisitInputs,
-) -> Step<'ast> {
+    construction: &mut ParConstruction,
+) -> Result<Step<'ast>, InterpreterError> {
     let bound_map_chain = input.bound_map_chain.clone();
     let free_map = input.free_map.clone();
-    Step::Descend {
+    Ok(Step::Descend {
         kont: NormKont::Matches {
             right,
             input,
@@ -29,12 +36,12 @@ pub(crate) fn descend_p_matches<'ast>(
         work: NormWork::Proc {
             proc: left,
             input: ProcVisitInputs {
-                par: Par::default(),
+                par: construction.empty_par()?,
                 bound_map_chain,
                 free_map,
             },
         },
-    }
+    })
 }
 
 /// `P matches Q`, combine half.
@@ -44,13 +51,23 @@ pub(crate) fn descend_p_matches<'ast>(
 pub fn normalize_p_matches<'ast>(
     left: &'ast AnnProc<'ast>,
     right: &'ast AnnProc<'ast>,
-    input: ProcVisitInputs,
+    input: PublicProcVisitInputs,
     env: &std::collections::HashMap<String, Par>,
     parser: &'ast rholang_parser::RholangParser<'ast>,
-) -> Result<ProcVisitOutputs, InterpreterError> {
+) -> Result<PublicProcVisitOutputs, InterpreterError> {
     use crate::rust::interpreter::compiler::normalize_drive::norm_drive_from;
-    let step = descend_p_matches(*left, *right, input);
-    norm_drive_from(step, env, parser).map(NormVal::into_proc)
+    let mut construction = ParConstruction::new();
+    let planned_input = ProcVisitInputs {
+        par: construction.import_par(&input.par)?,
+        bound_map_chain: input.bound_map_chain,
+        free_map: input.free_map,
+    };
+    let step = descend_p_matches(*left, *right, planned_input, &mut construction)?;
+    let result = norm_drive_from(step, &mut construction, env, parser)?.into_proc();
+    Ok(PublicProcVisitOutputs {
+        par: construction.finish(result.par)?,
+        free_map: result.free_map,
+    })
 }
 
 #[inline(never)]
@@ -59,6 +76,7 @@ pub(crate) fn combine_p_matches<'ast>(
     input: ProcVisitInputs,
     left: Option<ProcVisitOutputs>,
     value: NormVal,
+    construction: &mut ParConstruction,
 ) -> Result<Step<'ast>, InterpreterError> {
     let result = value.into_proc();
     let Some(left_result) = left else {
@@ -71,7 +89,7 @@ pub(crate) fn combine_p_matches<'ast>(
             work: NormWork::Proc {
                 proc: right,
                 input: ProcVisitInputs {
-                    par: Par::default(),
+                    par: construction.empty_par()?,
                     bound_map_chain: input.bound_map_chain.push(),
                     free_map: FreeMap::default(),
                 },
@@ -81,12 +99,25 @@ pub(crate) fn combine_p_matches<'ast>(
 
     let new_expr = Expr {
         expr_instance: Some(expr::ExprInstance::EMatchesBody(EMatches {
-            target: Some(left_result.par),
-            pattern: Some(result.par),
+            target: Some(Par::default()),
+            pattern: Some(Par::default()),
         })),
     };
-
-    let prepend_par = prepend_expr(input.par, new_expr, input.bound_map_chain.depth() as i32);
+    let locally_free = union(
+        construction.locally_free(left_result.par).to_vec(),
+        construction.locally_free(result.par).to_vec(),
+    );
+    // `EMatches` historically propagates only the target's connective flag;
+    // pattern connectives are scoped to the match operation.
+    let connective_used = construction.connective_used(left_result.par);
+    let prepend_par = append_planned_expr(
+        construction,
+        input.par,
+        &new_expr,
+        &[left_result.par, result.par],
+        locally_free,
+        connective_used,
+    )?;
 
     Ok(Step::Done(NormVal::Proc(ProcVisitOutputs {
         par: prepend_par,

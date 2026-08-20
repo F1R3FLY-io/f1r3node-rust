@@ -1,5 +1,6 @@
 use std::result::Result;
 
+use models::rust::par_construction::ParConstruction;
 use models::rust::utils::{new_boundvar_expr, new_freevar_expr, new_wildcard_expr};
 use rholang_parser::ast::Var;
 
@@ -7,8 +8,93 @@ use super::exports::*;
 use crate::rust::interpreter::compiler::exports::{
     BoundContext, FreeContext, ProcVisitInputs, ProcVisitOutputs,
 };
-use crate::rust::interpreter::compiler::normalize::VarSort;
+use crate::rust::interpreter::compiler::normalize::{append_planned_expr, VarSort};
 use crate::rust::interpreter::compiler::span_utils::SpanContext;
+use crate::rust::interpreter::matcher::has_locally_free::{
+    expr_connective_used_ref, expr_locally_free_ref,
+};
+
+pub(crate) fn plan_p_var<'ast>(
+    var: &Var,
+    input: crate::rust::interpreter::compiler::normalize_drive::ProcVisitInputs,
+    var_span: rholang_parser::SourceSpan,
+    construction: &mut ParConstruction,
+) -> Result<crate::rust::interpreter::compiler::normalize_drive::ProcVisitOutputs, InterpreterError>
+{
+    fn append(
+        construction: &mut ParConstruction,
+        input: crate::rust::interpreter::compiler::normalize_drive::ProcVisitInputs,
+        expr: models::rhoapi::Expr,
+    ) -> Result<
+        crate::rust::interpreter::compiler::normalize_drive::ProcVisitOutputs,
+        InterpreterError,
+    > {
+        let depth = input.bound_map_chain.depth() as i32;
+        let locally_free = expr_locally_free_ref(&expr, depth);
+        let connective_used = expr_connective_used_ref(&expr);
+        Ok(
+            crate::rust::interpreter::compiler::normalize_drive::ProcVisitOutputs {
+                par: append_planned_expr(
+                    construction,
+                    input.par,
+                    &expr,
+                    &[],
+                    locally_free,
+                    connective_used,
+                )?,
+                free_map: input.free_map,
+            },
+        )
+    }
+
+    match var {
+        Var::Id(id) => {
+            let var_name = id.name;
+            match input.bound_map_chain.get(var_name) {
+                Some(BoundContext {
+                    index,
+                    typ,
+                    source_span,
+                }) => match typ {
+                    VarSort::ProcSort => {
+                        append(construction, input, new_boundvar_expr(index as i32))
+                    }
+                    VarSort::NameSort => Err(InterpreterError::UnexpectedProcContext {
+                        var_name: var_name.to_string(),
+                        name_var_source_span: source_span,
+                        process_source_span: var_span,
+                    }),
+                },
+                None => match input.free_map.get(var_name) {
+                    Some(FreeContext { source_span, .. }) => {
+                        Err(InterpreterError::UnexpectedReuseOfProcContextFree {
+                            var_name: var_name.to_string(),
+                            first_use: source_span,
+                            second_use: var_span,
+                        })
+                    }
+                    None => {
+                        let level = input.free_map.next_level as i32;
+                        let new_free_map = input.free_map.put_span((
+                            var_name.to_string(),
+                            VarSort::ProcSort,
+                            var_span,
+                        ));
+                        let mut result = append(construction, input, new_freevar_expr(level))?;
+                        result.free_map = new_free_map;
+                        Ok(result)
+                    }
+                },
+            }
+        }
+        Var::Wildcard => {
+            let wildcard_span = SpanContext::wildcard_span();
+            let mut result = append(construction, input, new_wildcard_expr())?;
+            result.free_map = result.free_map.add_wildcard(wildcard_span);
+            Ok(result)
+        }
+    }
+}
 
 pub fn normalize_p_var<'ast>(
     var: &Var,

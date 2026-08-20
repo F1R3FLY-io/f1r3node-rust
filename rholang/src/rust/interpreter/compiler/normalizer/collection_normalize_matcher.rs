@@ -1,24 +1,22 @@
 use models::rhoapi::expr::ExprInstance;
-use models::rhoapi::{EList, EPathMap, ETuple, Expr, Par, Var};
-use models::rust::par_map::ParMap;
-use models::rust::par_map_type_mapper::ParMapTypeMapper;
-use models::rust::par_set::ParSet;
-use models::rust::par_set_type_mapper::ParSetTypeMapper;
-use models::rust::sorted_par_hash_set::SortedParHashSet;
-use models::rust::sorted_par_map::SortedParMap;
+use models::rhoapi::{
+    EList, EMap, EPathMap, ESet, ETuple, Expr, KeyValuePair as ModelKeyValuePair, Par, Var,
+};
+use models::rust::par_construction::{ParConstruction, PlannedPar};
 use models::rust::utils::union;
 use rholang_parser::ast::{AnnProc, Collection, KeyValuePair};
 
 use crate::rust::interpreter::compiler::bound_map_chain::BoundMapChain;
-use crate::rust::interpreter::compiler::exports::{FreeMap, ProcVisitInputs, ProcVisitOutputs};
-use crate::rust::interpreter::compiler::normalize::VarSort;
+use crate::rust::interpreter::compiler::exports::FreeMap;
+use crate::rust::interpreter::compiler::normalize::{append_planned_expr, VarSort};
 use crate::rust::interpreter::compiler::normalize_drive::{
-    CollectKind, NormKont, NormVal, NormWork, Step,
+    CollectKind, NormKont, NormVal, NormWork, ProcVisitInputs, ProcVisitOutputs, Step,
 };
 use crate::rust::interpreter::compiler::normalizer::remainder_normalizer_matcher::normalize_remainder;
 use crate::rust::interpreter::errors::InterpreterError;
-use crate::rust::interpreter::matcher::has_locally_free::HasLocallyFree;
-use crate::rust::interpreter::util::prepend_expr;
+use crate::rust::interpreter::matcher::has_locally_free::{
+    expr_connective_used_ref, expr_locally_free_ref, HasLocallyFree,
+};
 
 // ===========================================================================
 // ★ THE REPRODUCER'S OWN PATH
@@ -74,16 +72,13 @@ pub(crate) fn build_collection_expr(
         }
 
         CollectKind::Set { remainder } => {
-            let mut tmp_par_set = ParSet {
-                ps: SortedParHashSet::create_from_vec(ps),
+            let mut eset = ESet {
+                ps,
                 locally_free,
                 connective_used,
                 remainder: remainder.clone(),
             };
-
-            tmp_par_set.connective_used = tmp_par_set.connective_used || remainder.is_some();
-
-            let eset = ParSetTypeMapper::par_set_to_eset(tmp_par_set);
+            eset.connective_used = eset.connective_used || remainder.is_some();
 
             Expr {
                 expr_instance: Some(ExprInstance::ESetBody(eset)),
@@ -105,6 +100,49 @@ pub(crate) fn build_collection_expr(
     }
 }
 
+fn append_collection(
+    construction: &mut ParConstruction,
+    kind: &CollectKind,
+    input_par: PlannedPar,
+    children: &[PlannedPar],
+    locally_free: Vec<u8>,
+    connective_used: bool,
+    input_depth: i32,
+) -> Result<PlannedPar, InterpreterError> {
+    if let CollectKind::PathMap { remainder } = kind {
+        let connective_used = connective_used || remainder.is_some();
+        let component = construction.epathmap_set_expr_component(
+            children,
+            locally_free.clone(),
+            connective_used,
+            remainder.clone(),
+        )?;
+        return Ok(construction.append_component(
+            input_par,
+            component,
+            locally_free,
+            connective_used,
+        )?);
+    }
+
+    let shell = build_collection_expr(
+        kind,
+        vec![Par::default(); children.len()],
+        locally_free,
+        connective_used,
+    );
+    let root_locally_free = expr_locally_free_ref(&shell, input_depth);
+    let root_connective_used = expr_connective_used_ref(&shell);
+    append_planned_expr(
+        construction,
+        input_par,
+        &shell,
+        children,
+        root_locally_free,
+        root_connective_used,
+    )
+}
+
 /// A collection literal, descend half.
 ///
 /// Selects the constructor, normalizes the `...remainder` (which is a leaf — it
@@ -114,6 +152,7 @@ pub(crate) fn build_collection_expr(
 pub(crate) fn descend_collection<'ast>(
     proc: &'ast Collection<'ast>,
     input: ProcVisitInputs,
+    construction: &mut ParConstruction,
 ) -> Result<Step<'ast>, InterpreterError> {
     let (kind, known_free, elements): (CollectKind, FreeMap<VarSort>, &'ast [AnnProc<'ast>]) =
         match proc {
@@ -174,12 +213,13 @@ pub(crate) fn descend_collection<'ast>(
             } => {
                 let (optional_remainder, known_free) =
                     normalize_remainder(remainder, input.free_map.clone())?;
-                return Ok(descend_collect_map(
+                return descend_collect_map(
                     optional_remainder,
                     elements.as_slice(),
                     known_free,
                     input,
-                ));
+                    construction,
+                );
             }
         };
 
@@ -189,9 +229,16 @@ pub(crate) fn descend_collection<'ast>(
     let Some(first) = elements.first().copied() else {
         // `fold_match` over an empty element list runs its constructor on empty
         // accumulators and returns the entry free map untouched.
-        let expr = build_collection_expr(&kind, Vec::new(), Vec::new(), false);
         return Ok(Step::Done(NormVal::Proc(ProcVisitOutputs {
-            par: prepend_expr(input.par, expr, input_depth),
+            par: append_collection(
+                construction,
+                &kind,
+                input.par,
+                &[],
+                Vec::new(),
+                false,
+                input_depth,
+            )?,
             free_map: known_free,
         })));
     };
@@ -212,7 +259,7 @@ pub(crate) fn descend_collection<'ast>(
         work: NormWork::Proc {
             proc: first,
             input: ProcVisitInputs {
-                par: Par::default(),
+                par: construction.empty_par()?,
                 bound_map_chain,
                 free_map: known_free,
             },
@@ -227,26 +274,26 @@ pub(crate) fn combine_collect<'ast>(
     kind: CollectKind,
     elements: &'ast [AnnProc<'ast>],
     idx: usize,
-    mut acc_pars: Vec<Par>,
+    mut acc_pars: Vec<PlannedPar>,
     locally_free: Vec<u8>,
     connective_used: bool,
     known_free: FreeMap<VarSort>,
     bound_map_chain: BoundMapChain<VarSort>,
-    input_par: Par,
+    input_par: PlannedPar,
     input_depth: i32,
     value: NormVal,
+    construction: &mut ParConstruction,
 ) -> Result<Step<'ast>, InterpreterError> {
     let result = value.into_proc();
 
     // ★ Leg-1. `<Par as Clone>::clone` is itself a Θ(depth) NATIVE-STACK
     // traversal (15,850 B/level debug, 2,852 release — audit §5 row 5), so the
-    // recursive form's deep `Par` clone had to go. It cloned the child before
-    // consuming the original cache, however, so the nested child retained its
-    // `locally_free` bytes. Clone only that shallow byte vector, then move the
-    // PathMap-backed `Par`; this preserves the recursive wire image without
-    // reintroducing an AST traversal.
-    let child_locally_free = result.par.locally_free().to_vec();
-    let child_connective_used = result.par.connective_used();
+    // recursive form's deep `Par` clone had to go. The planned child is only an
+    // arena handle; copy its shallow `locally_free` summary and retain that
+    // handle in the collection schedule. This preserves the recursive wire
+    // image without materializing or traversing the resident AST.
+    let child_locally_free = construction.locally_free(result.par).to_vec();
+    let child_connective_used = construction.connective_used(result.par);
     acc_pars.push(result.par);
     let result_known_free = result.free_map;
     let locally_free = union(locally_free, child_locally_free);
@@ -269,7 +316,7 @@ pub(crate) fn combine_collect<'ast>(
             work: NormWork::Proc {
                 proc: next,
                 input: ProcVisitInputs {
-                    par: Par::default(),
+                    par: construction.empty_par()?,
                     bound_map_chain,
                     free_map: result_known_free,
                 },
@@ -277,9 +324,16 @@ pub(crate) fn combine_collect<'ast>(
         }),
         None => {
             let _ = known_free;
-            let expr = build_collection_expr(&kind, acc_pars, locally_free, connective_used);
             Ok(Step::Done(NormVal::Proc(ProcVisitOutputs {
-                par: prepend_expr(input_par, expr, input_depth),
+                par: append_collection(
+                    construction,
+                    &kind,
+                    input_par,
+                    &acc_pars,
+                    locally_free,
+                    connective_used,
+                    input_depth,
+                )?,
                 free_map: result_known_free,
             })))
         }
@@ -293,19 +347,30 @@ fn descend_collect_map<'ast>(
     pairs: &'ast [KeyValuePair<'ast>],
     known_free: FreeMap<VarSort>,
     input: ProcVisitInputs,
-) -> Step<'ast> {
+    construction: &mut ParConstruction,
+) -> Result<Step<'ast>, InterpreterError> {
     let input_depth = input.bound_map_chain.depth() as i32;
     let bound_map_chain = input.bound_map_chain;
 
     let Some(first) = pairs.first() else {
-        let expr = build_map_expr(&remainder, Vec::new(), Vec::new(), false);
-        return Step::Done(NormVal::Proc(ProcVisitOutputs {
-            par: prepend_expr(input.par, expr, input_depth),
+        let expr = build_map_expr(&remainder, 0, Vec::new(), false);
+        let locally_free = expr_locally_free_ref(&expr, input_depth);
+        let connective_used = expr_connective_used_ref(&expr);
+        let par = append_planned_expr(
+            construction,
+            input.par,
+            &expr,
+            &[],
+            locally_free,
+            connective_used,
+        )?;
+        return Ok(Step::Done(NormVal::Proc(ProcVisitOutputs {
+            par,
             free_map: known_free,
-        }));
+        })));
     };
 
-    Step::Descend {
+    Ok(Step::Descend {
         kont: NormKont::CollectMap {
             remainder,
             pairs,
@@ -323,12 +388,12 @@ fn descend_collect_map<'ast>(
         work: NormWork::Proc {
             proc: first.0,
             input: ProcVisitInputs {
-                par: Par::default(),
+                par: construction.empty_par()?,
                 bound_map_chain,
                 free_map: known_free,
             },
         },
-    }
+    })
 }
 
 /// `fold_match_map`'s terminal expression, extracted so the empty-map case and
@@ -336,7 +401,7 @@ fn descend_collect_map<'ast>(
 #[inline(never)]
 fn build_map_expr(
     remainder: &Option<Var>,
-    acc_pairs: Vec<(Par, Par)>,
+    pair_count: usize,
     locally_free: Vec<u8>,
     connective_used: bool,
 ) -> Expr {
@@ -351,14 +416,17 @@ fn build_map_expr(
     };
 
     Expr {
-        expr_instance: Some(ExprInstance::EMapBody(ParMapTypeMapper::par_map_to_emap(
-            ParMap {
-                ps: SortedParMap::create_from_vec(acc_pairs.into_iter().rev().collect()),
-                connective_used: connective_used || remainder_connective_used,
-                locally_free: union(locally_free, remainder_locally_free),
-                remainder: remainder.clone(),
-            },
-        ))),
+        expr_instance: Some(ExprInstance::EMapBody(EMap {
+            kvs: (0..pair_count)
+                .map(|_| ModelKeyValuePair {
+                    key: Some(Par::default()),
+                    value: Some(Par::default()),
+                })
+                .collect(),
+            connective_used: connective_used || remainder_connective_used,
+            locally_free: union(locally_free, remainder_locally_free),
+            remainder: remainder.clone(),
+        })),
     }
 }
 
@@ -371,15 +439,16 @@ pub(crate) fn combine_collect_map<'ast>(
     pairs: &'ast [KeyValuePair<'ast>],
     idx: usize,
     on_value: bool,
-    key_par: Option<Par>,
-    mut acc_pairs: Vec<(Par, Par)>,
+    key_par: Option<PlannedPar>,
+    mut acc_pairs: Vec<(PlannedPar, PlannedPar)>,
     locally_free: Vec<u8>,
     connective_used: bool,
     known_free: FreeMap<VarSort>,
     bound_map_chain: BoundMapChain<VarSort>,
-    input_par: Par,
+    input_par: PlannedPar,
     input_depth: i32,
     value: NormVal,
+    construction: &mut ParConstruction,
 ) -> Result<Step<'ast>, InterpreterError> {
     let result = value.into_proc();
 
@@ -408,7 +477,7 @@ pub(crate) fn combine_collect_map<'ast>(
             work: NormWork::Proc {
                 proc: pairs[idx].1,
                 input: ProcVisitInputs {
-                    par: Par::default(),
+                    par: construction.empty_par()?,
                     bound_map_chain,
                     free_map: result.free_map,
                 },
@@ -420,13 +489,13 @@ pub(crate) fn combine_collect_map<'ast>(
     let key = key_par.expect("combine_collect_map: a value arrived with no key");
     // ★ Leg-1. `<Par as Clone>::clone` is itself a Θ(depth) NATIVE-STACK
     // traversal (15,850 B/level debug, 2,852 release — audit §5 row 5), so the
-    // recursive form's deep `Par` clones had to go. Those clones retained the
-    // key/value root caches. Copy only the shallow cache bytes before moving
-    // the PathMap-backed children, preserving the recursive wire image.
-    let key_locally_free = key.locally_free().to_vec();
-    let key_connective_used = key.connective_used();
-    let value_locally_free = result.par.locally_free().to_vec();
-    let value_connective_used = result.par.connective_used();
+    // recursive form's deep `Par` clones had to go. The key and value are
+    // scalar arena handles; copy only their shallow root summaries before
+    // retaining those handles, preserving the recursive wire image.
+    let key_locally_free = construction.locally_free(key).to_vec();
+    let key_connective_used = construction.connective_used(key);
+    let value_locally_free = construction.locally_free(result.par).to_vec();
+    let value_connective_used = construction.connective_used(result.par);
     acc_pairs.push((key, result.par));
     let result_known_free = result.free_map;
     let locally_free = union(locally_free, union(key_locally_free, value_locally_free));
@@ -451,7 +520,7 @@ pub(crate) fn combine_collect_map<'ast>(
             work: NormWork::Proc {
                 proc: next.0,
                 input: ProcVisitInputs {
-                    par: Par::default(),
+                    par: construction.empty_par()?,
                     bound_map_chain,
                     free_map: result_known_free,
                 },
@@ -459,9 +528,22 @@ pub(crate) fn combine_collect_map<'ast>(
         }),
         None => {
             let _ = known_free;
-            let expr = build_map_expr(&remainder, acc_pairs, locally_free, connective_used);
+            let expr = build_map_expr(&remainder, acc_pairs.len(), locally_free, connective_used);
+            let children: Vec<_> = acc_pairs
+                .iter()
+                .flat_map(|(key, value)| [*key, *value])
+                .collect();
+            let root_locally_free = expr_locally_free_ref(&expr, input_depth);
+            let root_connective_used = expr_connective_used_ref(&expr);
             Ok(Step::Done(NormVal::Proc(ProcVisitOutputs {
-                par: prepend_expr(input_par, expr, input_depth),
+                par: append_planned_expr(
+                    construction,
+                    input_par,
+                    &expr,
+                    &children,
+                    root_locally_free,
+                    root_connective_used,
+                )?,
                 free_map: result_known_free,
             })))
         }

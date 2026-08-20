@@ -43,20 +43,25 @@ use models::canonical_bit_vector;
 use models::rhoapi::connective::ConnectiveInstance;
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::{
-    Bundle, Connective, ConnectiveBody, EAnd, EDiv, EEq, EGt, EGte, EList, ELt, ELte, EMatches,
-    EMethod, EMinus, EMinusMinus, EMod, EMult, ENeg, ENeq, ENot, EOr, EPercentPercent, EPlus,
-    EPlusPlus, ETuple, Expr, If, Match, MatchCase, New, Par, Receive, ReceiveBind, Send, Var,
+    Bundle, Connective, ConnectiveBody, EAnd, EDiv, EEq, EGt, EGte, EList, ELt, ELte, EMap,
+    EMatches, EMethod, EMinus, EMinusMinus, EMod, EMult, ENeg, ENeq, ENot, EOr, EPercentPercent,
+    EPlus, EPlusPlus, ESet, ETuple, KeyValuePair, Par, Var,
 };
+#[cfg(test)]
+use models::rhoapi::{Expr, If, Match, MatchCase, New, Receive, ReceiveBind, Send};
 use models::rust::bundle_ops::BundleOps;
 use models::rust::par_map::ParMap;
 use models::rust::par_map_type_mapper::ParMapTypeMapper;
 use models::rust::par_set::ParSet;
 use models::rust::par_set_type_mapper::ParSetTypeMapper;
-use models::rust::rholang::implicits::{concatenate_pars, single_bundle};
+#[cfg(test)]
+use models::rust::rholang::implicits::concatenate_pars;
+use models::rust::rholang::implicits::single_bundle;
 use models::rust::sorted_par_hash_set::SortedParHashSet;
 use models::rust::sorted_par_map::SortedParMap;
 
 use super::errors::InterpreterError;
+#[cfg(test)]
 use super::util::{prepend_connective, prepend_expr};
 
 /// `locally_free` truncation at the environment shift.
@@ -496,6 +501,44 @@ pub(crate) fn rebuild_expr_instance(
     }
 }
 
+pub(crate) fn rebuild_expr_shell(arm: ExprArm, child_count: usize, shift: i32) -> ExprInstance {
+    match arm {
+        ExprArm::ESet {
+            connective_used,
+            locally_free,
+            remainder,
+        } => ExprInstance::ESetBody(ESet {
+            ps: vec![Par::default(); child_count],
+            locally_free: set_bits_until(locally_free, shift),
+            connective_used,
+            remainder,
+        }),
+        ExprArm::EMap {
+            connective_used,
+            locally_free,
+            remainder,
+        } => {
+            assert_eq!(
+                child_count % 2,
+                0,
+                "rebuild_expr_shell: EMap children must be key/value pairs"
+            );
+            ExprInstance::EMapBody(EMap {
+                kvs: (0..child_count / 2)
+                    .map(|_| KeyValuePair {
+                        key: Some(Par::default()),
+                        value: Some(Par::default()),
+                    })
+                    .collect(),
+                locally_free: set_bits_until(locally_free, shift),
+                connective_used,
+                remainder,
+            })
+        }
+        other => rebuild_expr_instance(other, vec![Par::default(); child_count], shift),
+    }
+}
+
 // ===========================================================================
 // Connective (the `sub_conn` fold's per-element arms)
 // ===========================================================================
@@ -535,6 +578,7 @@ pub(crate) fn rebuild_connective(arm: ConnArm, children: Vec<Par>) -> Connective
 // ===========================================================================
 
 /// `Send`'s post-order body: `chan` first, then the `data` list.
+#[cfg(test)]
 pub(crate) fn rebuild_send(
     chan: Par,
     data: Vec<Par>,
@@ -554,6 +598,7 @@ pub(crate) fn rebuild_send(
 
 /// `ReceiveBind`'s post-order body: the source channel first, then the
 /// patterns (which the recursive form substitutes at `depth + 1`).
+#[cfg(test)]
 pub(crate) fn rebuild_receive_bind(
     source: Par,
     patterns: Vec<Par>,
@@ -569,6 +614,7 @@ pub(crate) fn rebuild_receive_bind(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[cfg(test)]
 pub(crate) fn rebuild_receive(
     binds: Vec<ReceiveBind>,
     body: Par,
@@ -598,6 +644,7 @@ pub(crate) fn rebuild_receive(
 /// recursive form does (`injections: term.injections`). They are URI-keyed
 /// system channels resolved at normalization; substituting them would change
 /// the term.
+#[cfg(test)]
 pub(crate) fn rebuild_new(
     body: Par,
     bind_count: i32,
@@ -618,6 +665,7 @@ pub(crate) fn rebuild_new(
 /// `MatchCase`'s post-order body. Child order is `source`, `pattern`, `guard` —
 /// the order the recursive form substitutes them in, which matters because a
 /// `?` on the first discards the rest.
+#[cfg(test)]
 pub(crate) fn rebuild_match_case(
     source: Par,
     pattern: Par,
@@ -632,6 +680,7 @@ pub(crate) fn rebuild_match_case(
     }
 }
 
+#[cfg(test)]
 pub(crate) fn rebuild_match(
     target: Par,
     cases: Vec<MatchCase>,
@@ -647,6 +696,7 @@ pub(crate) fn rebuild_match(
     }
 }
 
+#[cfg(test)]
 pub(crate) fn rebuild_if(
     condition: Par,
     if_true: Par,
@@ -681,6 +731,7 @@ pub(crate) fn rebuild_bundle(mut shell: Bundle, sub_bundle: Par) -> Bundle {
 /// `Par`'s post-order body: the two folded `Par`s produced by `sub_exp` and
 /// `sub_conn`, concatenated onto the shell carrying every other slot.
 #[allow(clippy::too_many_arguments)]
+#[cfg(test)]
 pub(crate) fn rebuild_par(
     exprs_par: Par,
     connectives_par: Par,
@@ -714,6 +765,7 @@ pub(crate) fn rebuild_par(
 
 /// One step of `sub_exp`'s left fold, for an element that produced a
 /// substituted `Expr`.
+#[cfg(test)]
 pub(crate) fn fold_prepend_expr(acc: Par, e: Expr, depth: i32) -> Par {
     prepend_expr(acc, e, depth)
 }
@@ -721,12 +773,14 @@ pub(crate) fn fold_prepend_expr(acc: Par, e: Expr, depth: i32) -> Par {
 /// One step of `sub_exp`'s left fold, for an `EVar` that the environment
 /// replaced with a whole `Par`. ⚠ Argument order is `(new_par, acc)` — the
 /// substituted par goes FIRST, as in the recursive form.
+#[cfg(test)]
 pub(crate) fn fold_concatenate_par(acc: Par, substituted: Par) -> Par {
     concatenate_pars(substituted, acc)
 }
 
 /// One step of `sub_conn`'s left fold, for an element that produced a
 /// substituted `Connective`.
+#[cfg(test)]
 pub(crate) fn fold_prepend_connective(acc: Par, c: Connective, depth: i32) -> Par {
     prepend_connective(acc, c, depth)
 }

@@ -1,12 +1,12 @@
 use models::rhoapi::{If, Par};
+use models::rust::par_construction::ParConstruction;
 use models::rust::utils::union;
 use rholang_parser::ast::AnnProc;
 
 use crate::rust::interpreter::compiler::bound_map_chain::BoundMapChain;
-use crate::rust::interpreter::compiler::exports::{ProcVisitInputs, ProcVisitOutputs};
 use crate::rust::interpreter::compiler::normalize::VarSort;
 use crate::rust::interpreter::compiler::normalize_drive::{
-    IfPhase, NormKont, NormVal, NormWork, Step,
+    IfPhase, NormKont, NormVal, NormWork, ProcVisitInputs, ProcVisitOutputs, Step,
 };
 use crate::rust::interpreter::errors::InterpreterError;
 
@@ -28,12 +28,13 @@ pub(crate) fn descend_p_if<'ast>(
     if_true: AnnProc<'ast>,
     if_false: Option<AnnProc<'ast>>,
     input: ProcVisitInputs,
-) -> Step<'ast> {
+    construction: &mut ParConstruction,
+) -> Result<Step<'ast>, InterpreterError> {
     // Follow same pattern as original IfElse: use empty Par for normalization,
     // then append original Par
     let outer_par = input.par;
     let bound_map_chain = input.bound_map_chain;
-    Step::Descend {
+    Ok(Step::Descend {
         kont: NormKont::If {
             if_true,
             if_false,
@@ -46,12 +47,12 @@ pub(crate) fn descend_p_if<'ast>(
         work: NormWork::Proc {
             proc: condition,
             input: ProcVisitInputs {
-                par: Par::default(),
+                par: construction.empty_par()?,
                 bound_map_chain,
                 free_map: input.free_map,
             },
         },
-    }
+    })
 }
 
 /// `if (C) T else F`, combine half.
@@ -61,12 +62,13 @@ pub(crate) fn combine_p_if<'ast>(
     if_true: AnnProc<'ast>,
     if_false: Option<AnnProc<'ast>>,
     bound_map_chain: BoundMapChain<VarSort>,
-    outer_par: Par,
+    outer_par: models::rust::par_construction::PlannedPar,
     phase: IfPhase,
     condition: Option<ProcVisitOutputs>,
     true_case: Option<ProcVisitOutputs>,
     value: NormVal,
     parser: &'ast rholang_parser::RholangParser<'ast>,
+    construction: &mut ParConstruction,
 ) -> Result<Step<'ast>, InterpreterError> {
     let result = value.into_proc();
     match phase {
@@ -83,7 +85,7 @@ pub(crate) fn combine_p_if<'ast>(
             work: NormWork::Proc {
                 proc: if_true,
                 input: ProcVisitInputs {
-                    par: Par::default(),
+                    par: construction.empty_par()?,
                     bound_map_chain,
                     free_map: result.free_map,
                 },
@@ -117,7 +119,7 @@ pub(crate) fn combine_p_if<'ast>(
                 work: NormWork::Proc {
                     proc: false_proc,
                     input: ProcVisitInputs {
-                        par: Par::default(),
+                        par: construction.empty_par()?,
                         bound_map_chain,
                         free_map: result.free_map,
                     },
@@ -133,25 +135,35 @@ pub(crate) fn combine_p_if<'ast>(
             let false_case_body = result;
 
             // ★ Leg-1: three shallow reads, then three MOVES.
-            let cond_lf = target_result.par.locally_free().to_vec();
-            let true_lf = true_case_body.par.locally_free().to_vec();
-            let false_lf = false_case_body.par.locally_free().to_vec();
-            let connective_used = target_result.par.connective_used()
-                || true_case_body.par.connective_used()
-                || false_case_body.par.connective_used();
+            let cond_lf = construction.locally_free(target_result.par).to_vec();
+            let true_lf = construction.locally_free(true_case_body.par).to_vec();
+            let false_lf = construction.locally_free(false_case_body.par).to_vec();
+            let connective_used = construction.connective_used(target_result.par)
+                || construction.connective_used(true_case_body.par)
+                || construction.connective_used(false_case_body.par);
+            let locally_free = union(union(cond_lf, true_lf), false_lf);
             let desugared_if = If {
-                condition: Some(target_result.par),
-                if_true: Some(true_case_body.par),
-                if_false: Some(false_case_body.par),
-                locally_free: union(union(cond_lf, true_lf), false_lf),
+                condition: Some(Par::default()),
+                if_true: Some(Par::default()),
+                if_false: Some(Par::default()),
+                locally_free: locally_free.clone(),
                 connective_used,
             };
 
             // `normalize_p_if` prepends onto its own (empty) `par`; the
             // `IfThenElse` arm then appends the caller's.
-            let updated_par = Par::default().prepend_if(desugared_if);
+            let component = construction.if_component(&desugared_if, &[
+                target_result.par,
+                true_case_body.par,
+                false_case_body.par,
+            ])?;
             Ok(Step::Done(NormVal::Proc(ProcVisitOutputs {
-                par: updated_par.append(outer_par),
+                par: construction.append_component(
+                    outer_par,
+                    component,
+                    locally_free,
+                    connective_used,
+                )?,
                 free_map: false_case_body.free_map,
             })))
         }

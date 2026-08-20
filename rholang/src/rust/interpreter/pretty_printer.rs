@@ -9,7 +9,7 @@ use models::rhoapi::var::VarInstance;
 use models::rhoapi::{
     Bundle, Connective, EAnd, EDiv, EEq, EGt, EGte, EList, ELt, ELte, EMap, EMatches, EMinus,
     EMinusMinus, EMod, EMult, ENeg, ENeq, ENot, EOr, EPathMap, EPercentPercent, EPlus, EPlusPlus,
-    ESet, ETuple, EVar, EZipper, Expr, GUnforgeable, Match, MatchCase, New, Par, Receive, Var,
+    ESet, ETuple, EVar, EZipper, Expr, GUnforgeable, If, Match, MatchCase, New, Par, Receive, Var,
 };
 use models::rust::bundle_ops::BundleOps;
 use models::rust::epathmap_trie_codec::EPathMapMode;
@@ -108,6 +108,7 @@ pub enum PpNode<'a> {
     New(&'a New),
     Expr(&'a Expr),
     Match(&'a Match),
+    If(&'a If),
     Unforgeable(&'a GUnforgeable),
     Connective(&'a Connective),
     Par(&'a Par),
@@ -141,6 +142,7 @@ as_pp_node!(Bundle, Bundle);
 as_pp_node!(New, New);
 as_pp_node!(Expr, Expr);
 as_pp_node!(Match, Match);
+as_pp_node!(If, If);
 as_pp_node!(GUnforgeable, Unforgeable);
 as_pp_node!(Connective, Connective);
 as_pp_node!(Par, Par);
@@ -880,16 +882,7 @@ impl PrettyPrinter {
     // `PpKont::CaseJoin`). Production reaches those folds only through
     // [`drive`]; keeping a second production copy would be a dual path.
     //
-    pub(super) fn is_empty_par(&self, p: &Par) -> bool {
-        p.family_cardinality::<models::rhoapi::Send>() == 0
-            && p.family_cardinality::<Receive>() == 0
-            && p.family_cardinality::<New>() == 0
-            && p.family_cardinality::<Expr>() == 0
-            && p.family_cardinality::<Match>() == 0
-            && p.family_cardinality::<GUnforgeable>() == 0
-            && p.family_cardinality::<Bundle>() == 0
-            && p.family_cardinality::<Connective>() == 0
-    }
+    pub(super) fn is_empty_par(&self, p: &Par) -> bool { p.components_is_empty() }
 
     /// Does the variable at de Bruijn `level` name something a `New` bound?
     ///
@@ -1268,7 +1261,6 @@ mod drive {
     //! | `RecvBindJoin` takes patterns before source | ✔ | 4 witnesses |
     //! | `Receive`'s `where` guard renders BEFORE the interposed `AddBoundShift` | ✔ | `receive_with_a_where_guard_over_its_binder` |
     //! | `New` mutates `bound_shift` before `build_variables` | **EQUIVALENT since `a4c23a58`** | proven + executed at `the_equivalent_mutants_really_are_equivalent` |
-    //! | `ParK`'s category-length array permuted | **EQUIVALENT** | proven at [`render_par_categories`], executed over all 8! permutations |
     //!
     //! ## ⚠ Executing the table falsified one of its rows
     //!
@@ -1472,10 +1464,6 @@ mod drive {
     /// variable, and no second code path in a shipped binary — the alternative
     /// branches do not exist in one. What exists in production is exactly what
     /// existed before, with an `if false` around the mutant half.
-    ///
-    /// `ParK`'s permuted category-length array is deliberately absent from this
-    /// enum. It is an EQUIVALENT mutant, and equivalence is a theorem rather
-    /// than a test outcome; see [`render_par_categories`].
     #[derive(Clone, Copy, PartialEq, Eq, Debug)]
     #[cfg_attr(not(test), allow(dead_code))]
     pub(super) enum DriveMutation {
@@ -1727,6 +1715,9 @@ mod drive {
             m: &'a Match,
             indent: usize,
         },
+        IfK {
+            indent: usize,
+        },
         ConnectiveK {
             conn: &'a Connective,
         },
@@ -1755,85 +1746,6 @@ mod drive {
         /// shell that no `Par` can supply.
         #[cfg(test)]
         TestJoinThree,
-    }
-
-    /// Render a `Par`'s already-rendered children, grouped into eight
-    /// categories, separated by `separator`.
-    ///
-    /// # ★ The `lengths` array is PARTITION-INVARIANT, and that is a theorem
-    ///
-    /// The module's mutation table records `ParK`'s category-length array being
-    /// permuted and **not caught**, calling it "an EQUIVALENT mutant". That was
-    /// a claim about the mutant's semantics, asserted rather than established —
-    /// which is worse than an unchecked positive claim, because "the test suite
-    /// cannot see this defect" and "this is not a defect" look identical from
-    /// the outside and have opposite consequences.
-    ///
-    /// It is a theorem, and here is the proof.
-    ///
-    /// Let the non-zero entries of `lengths`, in array order, be
-    /// `l₁ … l_k`, and let `n = Σ lᵢ`. The loop below:
-    ///
-    /// * skips every zero-length group entirely, leaving `prev_non_empty`
-    ///   untouched, so zero entries contribute neither text nor separators;
-    /// * for the `j`-th non-zero group emits `children[next .. next+lⱼ]` in
-    ///   order, interleaved with `lⱼ − 1` separators (the `index != length − 1`
-    ///   guard suppresses the trailing one), and advances `next` by `lⱼ`;
-    /// * emits exactly one separator before every non-zero group after the
-    ///   first (`prev_non_empty`).
-    ///
-    /// So the emitted text is `children[0 .. n]` in index order, with
-    /// `Σⱼ (lⱼ − 1) + (k − 1) = n − k + k − 1 = n − 1` separators — one between
-    /// each adjacent pair and nowhere else. That is `children[0..n].join(sep)`,
-    /// and the expression depends on `lengths` **only through `n`**.
-    ///
-    /// A permutation preserves both the multiset of entries and their sum, so
-    /// it preserves `n`, so it preserves the output. Byte-identically, for every
-    /// input. ∎
-    ///
-    /// Two corollaries worth stating, because they bound the claim:
-    ///
-    /// 1. The equivalence is a property of *this separator discipline* — one
-    ///    string used both between categories and within one. Give any category
-    ///    its own separator and the permutation becomes observable immediately.
-    ///    The grouped form is kept for exactly that reason (it mirrors the
-    ///    recursive body line for line and stays correct under such a change),
-    ///    and this proof is what a future author must re-derive if they make it.
-    /// 2. Equivalence does NOT extend to arbitrary edits of `lengths`. Anything
-    ///    that changes `n` — reading a category twice, dropping one — changes
-    ///    `take(vals, …)` and is caught loudly. Only permutations are equivalent.
-    ///
-    /// `drive_mutations::the_category_partition_is_not_observable` executes the
-    /// theorem over **all 8! = 40,320 permutations** of a corpus of length
-    /// vectors, so "equivalent mutant" is now a checked statement rather than a
-    /// recorded one.
-    pub(super) fn render_par_categories(
-        children: &[String],
-        lengths: [usize; 8],
-        separator: &str,
-    ) -> String {
-        let mut prev_non_empty = false;
-        let mut result = String::new();
-        let mut next = 0usize;
-        for length in lengths {
-            if length != 0 {
-                if prev_non_empty {
-                    result.push_str(separator);
-                }
-                for index in 0..length {
-                    result.push_str(&children[next]);
-                    next += 1;
-                    if index != length - 1 {
-                        result.push_str(separator);
-                    }
-                }
-                // ⚠ The recursive form omits this assignment in the LAST
-                // (connectives) block only. Unobservable: nothing reads the flag
-                // afterwards.
-                prev_non_empty = true;
-            }
-        }
-        result
     }
 
     /// Push a catching sub-render: `EndCatch`, then the guarded work, then
@@ -1877,7 +1789,7 @@ mod drive {
     }
 
     /// Initial capacity for both stacks. A `Par` of any interesting size
-    /// immediately pushes eight categories' worth of children plus their catch
+    /// immediately pushes nine categories' worth of children plus their catch
     /// triples; preallocating removes the first several growth reallocations
     /// from every render.
     const STACK_HINT: usize = 64;
@@ -1892,6 +1804,7 @@ mod drive {
         New(New),
         Expr(Expr),
         Match(Match),
+        If(If),
         Unforgeable(GUnforgeable),
         Connective(Connective),
     }
@@ -1905,6 +1818,7 @@ mod drive {
                 Self::New(value) => PpNode::New(value),
                 Self::Expr(value) => PpNode::Expr(value),
                 Self::Match(value) => PpNode::Match(value),
+                Self::If(value) => PpNode::If(value),
                 Self::Unforgeable(value) => PpNode::Unforgeable(value),
                 Self::Connective(value) => PpNode::Connective(value),
             }
@@ -2463,6 +2377,28 @@ mod drive {
                 });
             }
 
+            PpNode::If(value) => {
+                work.push(PpWork::Combine(PpKont::IfK { indent }));
+                work.push(PpWork::OptPar {
+                    field: &value.if_false,
+                    message: "if_false field on If was None, should be Some",
+                    render: OptRender::Message,
+                    indent: indent + 1,
+                });
+                work.push(PpWork::OptPar {
+                    field: &value.if_true,
+                    message: "if_true field on If was None, should be Some",
+                    render: OptRender::Message,
+                    indent: indent + 1,
+                });
+                work.push(PpWork::OptPar {
+                    field: &value.condition,
+                    message: "condition field on If was None, should be Some",
+                    render: OptRender::Message,
+                    indent: 0,
+                });
+            }
+
             PpNode::Unforgeable(u) => vals.push(pp.build_string_from_unforgeable(u)?),
 
             PpNode::Connective(c) => match &c.connective_instance {
@@ -2497,11 +2433,27 @@ mod drive {
             PpNode::Par(p) => {
                 if pp.is_empty_par(p) {
                     vals.push(String::from("Nil"));
+                } else if let Some((depth, terminal)) = p.canonical_unary_elist_gint_parts() {
+                    let terminal = terminal.to_string();
+                    let mut rendered = String::with_capacity(
+                        depth
+                            .checked_mul(2)
+                            .and_then(|brackets| brackets.checked_add(terminal.len()))
+                            .unwrap_or(terminal.len()),
+                    );
+                    rendered.extend(std::iter::repeat_n('[', depth));
+                    rendered.push_str(&terminal);
+                    rendered.extend(std::iter::repeat_n(']', depth));
+                    vals.push(rendered);
                 } else {
                     work.push(PpWork::Combine(PpKont::ParK { par: p, indent }));
-                    // The eight categories, in the order the recursive form
+                    // The nine categories, in the order the recursive form
                     // walks them, pushed in REVERSE so they pop in order. All
                     // non-catching, all at the SAME indent.
+                    for value in p.decode_occurrences::<If>().into_iter().rev() {
+                        let value = decoded_components.alloc(OwnedPpNode::If(value));
+                        work.push(PpWork::Node(value.as_node(), indent));
+                    }
                     for value in p.decode_occurrences::<Connective>().into_iter().rev() {
                         let value = decoded_components.alloc(OwnedPpNode::Connective(value));
                         work.push(PpWork::Node(value.as_node(), indent));
@@ -3243,6 +3195,22 @@ mod drive {
                 ));
             }
 
+            PpKont::IfK { indent } => {
+                let if_false = one(vals);
+                let if_true = one(vals);
+                let condition = one(vals);
+                vals.push(format!(
+                    "if ({}) {{\n{}{}\n{}}} else {{\n{}{}\n{}}}",
+                    condition,
+                    pp.indent_string().repeat(indent + 1),
+                    if_true,
+                    pp.indent_string().repeat(indent),
+                    pp.indent_string().repeat(indent + 1),
+                    if_false,
+                    pp.indent_string().repeat(indent),
+                ));
+            }
+
             PpKont::ConnectiveK { conn } => match &conn.connective_instance {
                 Some(ConnectiveInstance::ConnAndBody(value)) => {
                     let ps = take(vals, value.ps.len());
@@ -3264,40 +3232,11 @@ mod drive {
             },
 
             PpKont::ParK { par, indent } => {
-                // The eight categories, in walk order.
-                //
-                // ⚠ The category PARTITION is not observable in the output, and
-                // that is worth knowing rather than discovering. The separator
-                // between two categories and the separator between two siblings
-                // WITHIN a category are the same string, so this whole loop is
-                // extensionally `children.join(&separator)` for *any* partition
-                // of the same total. A mutation permuting this array therefore
-                // passes the differential — measured, not assumed. What the
-                // differential does police is the DESCEND order (which child
-                // lands at which index), which is where a worklist conversion
-                // actually goes wrong; a mutation un-reversing any one of the
-                // eight pushes below is caught.
-                //
-                // The grouped form is kept because it mirrors the recursive
-                // body line for line, and because it is the form that stays
-                // correct if a category ever gets its own separator.
-                let lengths = [
-                    par.family_cardinality::<Bundle>(),
-                    par.family_cardinality::<models::rhoapi::Send>(),
-                    par.family_cardinality::<Receive>(),
-                    par.family_cardinality::<New>(),
-                    par.family_cardinality::<Expr>(),
-                    par.family_cardinality::<Match>(),
-                    par.family_cardinality::<GUnforgeable>(),
-                    par.family_cardinality::<Connective>(),
-                ];
-                let lengths = lengths.map(|length| {
-                    usize::try_from(length)
-                        .expect("Par family cardinality exceeds the addressable printer range")
-                });
-                let children = take(vals, lengths.iter().sum());
+                let cardinality = usize::try_from(par.cardinality())
+                    .expect("Par cardinality exceeds the addressable printer range");
+                let children = take(vals, cardinality);
                 let separator = format!(" |\n{}", pp.indent_string().repeat(indent));
-                vals.push(render_par_categories(&children, lengths, &separator));
+                vals.push(children.join(&separator));
             }
 
             PpKont::ChannelK { par } => {
@@ -3562,9 +3501,9 @@ mod differential {
     //!
     //! | corpus | what it covers |
     //! |---|---|
-    //! | [`tame`]d `generate_par(1..=4)` | the *structural* product — `Send` x `Receive` x `New` x `Match` x `Bundle` x `Connective` x `Expr` nested to depth 4, with counts small enough that the printer's `i32` arithmetic is well-defined |
+    //! | [`tame`]d `generate_par(1..=4)` | the *structural* product — every authoritative ParBag family nested to depth 4, with counts small enough that the printer's `i32` arithmetic is well-defined |
     //! | RAW `generate_par(1..=4)` | the same shapes with `free_count` / `bind_count` / var levels drawn from `any::<i32>()`, compared by *disposition* — the two forms must agree even where the shared arithmetic overflows |
-    //! | [`every_node_kind`] | all ten [`PpNode`] variants, each reached through the entry point that actually reaches it |
+    //! | [`every_node_kind`] | every [`PpNode`] variant, each reached through the entry point that actually reaches it |
     //! | [`every_expr_arm`] | all 36 `ExprInstance` arms, including the owned-canonical (`ESet`, `EMap`, `EZipper`) paths and both `wrap_with_braces` shapes |
     //! | [`nested_unsorted_sets_and_maps_match_the_recursive_oracle`] | nested canonical collection intermediates reuse their recursively sorted representation without changing one output byte |
     //! | [`two_binds_that_bind_different_counts`] | ★ the ONLY shape where a *sequenced* `bound_shift` differs from a precomputed one |
@@ -3598,7 +3537,7 @@ mod differential {
         Bundle, Connective, ConnectiveBody, EAnd, EDiv, EEq, EGt, EGte, EList, ELt, ELte, EMap,
         EMatches, EMethod, EMinus, EMinusMinus, EMod, EMult, ENeg, ENeq, ENot, EOr,
         EPercentPercent, EPlus, EPlusPlus, ESet, ETuple, EVar, EZipper, Expr, GBigRational,
-        GFixedPoint, GPrivate, GUnforgeable, KeyValuePair, Match, MatchCase, New, Par, Receive,
+        GFixedPoint, GPrivate, GUnforgeable, If, KeyValuePair, Match, MatchCase, New, Par, Receive,
         ReceiveBind, Send, Var, VarRef,
     };
     use models::rust::rhoapi_ext::EPathMap;
@@ -3744,6 +3683,19 @@ mod differential {
             }
         }
         par.replace_bundles(bundles);
+        let mut conditionals = par.take_occurrences::<If>();
+        for conditional in &mut conditionals {
+            if let Some(condition) = &mut conditional.condition {
+                tame(condition);
+            }
+            if let Some(if_true) = &mut conditional.if_true {
+                tame(if_true);
+            }
+            if let Some(if_false) = &mut conditional.if_false {
+                tame(if_false);
+            }
+        }
+        par.replace_conditionals(conditionals);
         let mut connectives = par.take_occurrences::<Connective>();
         for c in &mut connectives {
             connective(c);
@@ -4189,6 +4141,15 @@ mod differential {
         }
     }
 
+    fn gbool(value: bool) -> Par {
+        models::par_from_default! {
+            exprs: vec![Expr {
+                expr_instance: Some(ExprInstance::GBool(value)),
+            }],
+            ..Default::default()
+        }
+    }
+
     fn bound_var(level: i32) -> Par {
         models::par_from_default! {
             exprs: vec![Expr {
@@ -4240,12 +4201,11 @@ mod differential {
         }
     }
 
-    /// ★ Every one of the ten [`PpNode`] variants, each through the entry point
-    /// that actually reaches it.
+    /// ★ Every [`PpNode`] variant, each through the entry point that reaches it.
     #[test]
     fn every_node_kind() {
         // Par / Expr / Send / Receive / New / Match / Bundle / Connective /
-        // Unforgeable, all inside ONE term so that the state they thread
+        // Unforgeable / If, all inside ONE term so that the state they thread
         // interacts.
         let term = models::par_from_default! {
             bundles: vec![Bundle {
@@ -4298,6 +4258,13 @@ mod differential {
                 locally_free: vec![],
                 connective_used: false,
             }],
+            conditionals: vec![If {
+                condition: Some(gbool(true)),
+                if_true: Some(gint(11)),
+                if_false: Some(gint(12)),
+                locally_free: vec![],
+                connective_used: false,
+            }],
             unforgeables: vec![GUnforgeable {
                 unf_instance: Some(UnfInstance::GPrivateBody(GPrivate {
                     id: vec![0xde, 0xad],
@@ -4345,7 +4312,7 @@ mod differential {
             ..Default::default()
         };
 
-        // ANTI-VACUITY: the fixture really does carry all eight categories.
+        // ANTI-VACUITY: the fixture really does carry all nine categories.
         assert!(
             term.family_cardinality::<Bundle>() != 0
                 && term.family_cardinality::<Send>() != 0
@@ -4354,7 +4321,8 @@ mod differential {
                 && term.family_cardinality::<Expr>() != 0
                 && term.family_cardinality::<Match>() != 0
                 && term.family_cardinality::<GUnforgeable>() != 0
-                && term.family_cardinality::<Connective>() != 0,
+                && term.family_cardinality::<Connective>() != 0
+                && term.family_cardinality::<If>() != 0,
             "the every_node_kind fixture lost a category"
         );
         agree("every_node_kind", &term);
@@ -5789,6 +5757,74 @@ mod differential {
         );
     }
 
+    /// The conditional driver must project its three required children lazily
+    /// in exactly the same order and with exactly the same panic disposition as
+    /// the recursive oracle. This guards the explicit-worklist conversion as
+    /// well as the newly restored `If` ParBag family dispatch.
+    #[test]
+    fn a_conditional_with_a_missing_required_child_matches_the_oracle_disposition() {
+        let complete = If {
+            condition: Some(gbool(true)),
+            if_true: Some(gint(1)),
+            if_false: Some(gint(2)),
+            locally_free: vec![],
+            connective_used: false,
+        };
+
+        for (field, conditional, expected) in [
+            (
+                "condition",
+                If {
+                    condition: None,
+                    ..complete.clone()
+                },
+                "condition field on If was None, should be Some",
+            ),
+            (
+                "if_true",
+                If {
+                    if_true: None,
+                    ..complete.clone()
+                },
+                "if_true field on If was None, should be Some",
+            ),
+            (
+                "if_false",
+                If {
+                    if_false: None,
+                    ..complete.clone()
+                },
+                "if_false field on If was None, should be Some",
+            ),
+        ] {
+            let term = models::par_from_default! {
+                conditionals: vec![conditional],
+                ..Default::default()
+            };
+            let driven = quietly(|| PrettyPrinter::new().build_string_from_message(&term));
+            let recursive =
+                quietly(|| PrettyPrinter::new().oracle_build_string_from_message(&term));
+            assert_eq!(
+                driven, recursive,
+                "the driver and recursive oracle disagree when `If::{field}` is absent"
+            );
+            assert_eq!(
+                driven,
+                Err(expected.to_string()),
+                "the absent `If::{field}` field no longer uses the required-field panic"
+            );
+        }
+
+        let term = models::par_from_default! {
+            conditionals: vec![complete],
+            ..Default::default()
+        };
+        assert!(
+            quietly(|| PrettyPrinter::new().build_string_from_message(&term)).is_ok(),
+            "the anti-vacuity control panics even though all conditional children are present"
+        );
+    }
+
     /// The unwind must drop the failed sub-render's **spawned work and pending
     /// values**, not merely the item that failed.
     ///
@@ -6334,15 +6370,12 @@ mod differential {
     #[test]
     fn the_driver_renders_far_past_the_recursive_ceiling() {
         const DEPTH: usize = 4_096;
-        let mut term = gint(0);
-        for _ in 0..DEPTH {
-            term = expr_par(ExprInstance::EListBody(EList {
-                ps: vec![term],
-                locally_free: vec![],
-                connective_used: false,
-                remainder: None,
-            }));
-        }
+        // Build the fixture with the same linear planned-construction path
+        // used by production normalization. Repeated resident wrapping would
+        // re-canonicalize every growing prefix and make this printer gate
+        // measure quadratic fixture setup instead of the printer PDA.
+        let term = Par::wrap_unary_elist(DEPTH, gint(0))
+            .expect("the canonical deep-list fixture is addressable");
         let printed = PrettyPrinter::new().build_string_from_message(&term);
         assert_eq!(
             printed.chars().take_while(|c| *c == '[').count(),
@@ -6350,16 +6383,9 @@ mod differential {
             "the driver did not render the full nesting"
         );
 
-        // Iterative teardown: `<Par as Drop>` is still recursive.
-        let mut peel = term;
-        loop {
-            let expression = peel.take_occurrences::<Expr>().into_iter().next();
-            let next = match expression.and_then(|e| e.expr_instance) {
-                Some(ExprInstance::EListBody(mut list)) if !list.ps.is_empty() => list.ps.remove(0),
-                _ => break,
-            };
-            peel = next;
-        }
+        // `Par` owns one PathMap root rather than a resident recursive shadow;
+        // dropping it delegates to PathMap's stack-safe teardown.
+        drop(term);
     }
 }
 
@@ -6745,114 +6771,15 @@ mod drive_mutations {
     //! A comparator that rejected everything would fail the control; one that
     //! accepted everything would fail the leg. Both directions, in the shape of
     //! `rholang/tests/normalize_oracle_provenance.rs::the_provenance_check_can_go_red`.
-    //!
-    //! ## The ninth row is a theorem, not a test
-    //!
-    //! `ParK`'s permuted category-length array is recorded as "not caught — an
-    //! EQUIVALENT mutant". Equivalence is a claim about the mutant's semantics,
-    //! and it was itself unchecked — which is the more dangerous of the two
-    //! readings, because "the suite cannot see this defect" and "this is not a
-    //! defect" are indistinguishable from the outside and have opposite
-    //! consequences. It is proven at [`super::drive::render_par_categories`] and
-    //! executed at [`the_category_partition_is_not_observable`], over every one
-    //! of the 8! = 40,320 permutations.
-
     use models::rhoapi::expr::ExprInstance;
     use models::rhoapi::var::VarInstance;
     use models::rhoapi::{EVar, Expr, Match, MatchCase, New, Par, Receive, ReceiveBind, Send, Var};
 
     use super::drive::{
         every_mutation, mutations_that_are_equivalent, mutations_the_differential_must_separate,
-        render_par_categories, with_mutation, DriveMutation,
+        with_mutation, DriveMutation,
     };
     use super::PrettyPrinter;
-
-    // -----------------------------------------------------------------------
-    // row 9 — the equivalent mutant, as a checked theorem
-    // -----------------------------------------------------------------------
-
-    /// Every permutation of every length vector renders byte-identically, and
-    /// identically to `children.join(separator)`.
-    ///
-    /// This is the executed form of the proof at
-    /// [`super::drive::render_par_categories`]. It is exhaustive in the
-    /// permutation (all 8! of them) and representative in the shape: the length
-    /// vectors below cover the empty partition, a single non-empty category,
-    /// several non-empty categories with zeroes interleaved (the case where
-    /// `prev_non_empty` matters), and every category non-empty.
-    #[test]
-    fn the_category_partition_is_not_observable() {
-        /// Heap's algorithm — every permutation of an 8-element array.
-        fn permutations(mut a: [usize; 8], k: usize, out: &mut Vec<[usize; 8]>) {
-            match k {
-                1 => out.push(a),
-                _ => {
-                    for i in 0..k {
-                        permutations(a, k - 1, out);
-                        match k % 2 {
-                            0 => a.swap(i, k - 1),
-                            _ => a.swap(0, k - 1),
-                        }
-                    }
-                }
-            }
-        }
-
-        let vectors: [[usize; 8]; 6] = [
-            [0, 0, 0, 0, 0, 0, 0, 0],
-            [3, 0, 0, 0, 0, 0, 0, 0],
-            [1, 0, 2, 0, 0, 1, 0, 0],
-            [0, 0, 0, 0, 0, 0, 0, 4],
-            [1, 1, 1, 1, 1, 1, 1, 1],
-            [2, 0, 1, 3, 0, 0, 2, 1],
-        ];
-        let separator = " |\n  ";
-
-        let mut checked = 0usize;
-        for lengths in vectors {
-            let total: usize = lengths.iter().sum();
-            let children: Vec<String> = (0..total).map(|i| format!("c{i}")).collect();
-            let expected = children.join(separator);
-
-            // The join identity itself — the proof's conclusion, not just its
-            // invariance. Without this the theorem could hold vacuously by the
-            // function returning a constant.
-            assert_eq!(
-                render_par_categories(&children, lengths, separator),
-                expected,
-                "the grouped render must equal `children.join(separator)` for {lengths:?}"
-            );
-
-            let mut perms = Vec::with_capacity(40_320);
-            permutations(lengths, 8, &mut perms);
-            assert_eq!(
-                perms.len(),
-                40_320,
-                "Heap's algorithm must emit 8! permutations"
-            );
-            for perm in perms {
-                assert_eq!(
-                    render_par_categories(&children, perm, separator),
-                    expected,
-                    "permuting the category lengths from {lengths:?} to {perm:?} CHANGED the \
-                     render. The mutation table calls this an equivalent mutant; if this \
-                     fires, it is not one, and it is an uncaught defect rather than a \
-                     harmless permutation."
-                );
-                checked += 1;
-            }
-        }
-
-        // N2: the exhaustion actually ran, and on non-degenerate data. A vector
-        // of all zeroes permutes to itself, so without a populated vector this
-        // test would be 40,320 comparisons of "" against "".
-        assert_eq!(checked, 6 * 40_320, "every vector must be exhausted");
-        let populated = vectors
-            .iter()
-            .filter(|v| v.iter().sum::<usize>() > 0)
-            .count();
-        assert!(populated >= 5, "the corpus must be mostly non-degenerate");
-    }
 
     // -----------------------------------------------------------------------
     // rows 1-8 — the mutants the differential must separate
@@ -7141,8 +7068,8 @@ mod drive_mutations {
             "the differential does NOT separate {unseparated:?}. The mutation table in \
              `drive`'s documentation records every one of these as caught; if a row is no \
              longer caught, either the drive changed so the mutation is now equivalent — in \
-             which case it needs a proof like `render_par_categories`'s — or the witness \
-             corpus stopped reaching its site. Full report: {separated_by:?}"
+             which case it needs a proof — or the witness corpus stopped reaching its site. \
+             Full report: {separated_by:?}"
         );
 
         for (mutation, witnesses) in &separated_by {

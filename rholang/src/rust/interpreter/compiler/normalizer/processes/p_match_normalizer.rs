@@ -1,14 +1,16 @@
 use models::rhoapi::{Match, MatchCase, Par};
+use models::rust::par_construction::ParConstruction;
 use models::rust::utils::union;
 use rholang_parser::ast::{AnnProc, Case};
 
-use crate::rust::interpreter::compiler::exports::{FreeMap, ProcVisitInputs, ProcVisitOutputs};
+use crate::rust::interpreter::compiler::exports::FreeMap;
 use crate::rust::interpreter::compiler::normalize_drive::{
-    MatchK, MatchPhase, NormKont, NormVal, NormWork, Step,
+    MatchK, MatchPhase, NormKont, NormVal, NormWork, PlannedMatchCase, ProcVisitInputs,
+    ProcVisitOutputs, Step,
 };
 use crate::rust::interpreter::compiler::normalizer::cost_accounting::pattern_guard::reject_cost_syntax_in_pattern;
 use crate::rust::interpreter::errors::InterpreterError;
-use crate::rust::interpreter::guard::{reject_undecidable_guard, MATCH_CASE_WHERE};
+use crate::rust::interpreter::guard::{reject_undecidable_planned_guard, MATCH_CASE_WHERE};
 use crate::rust::interpreter::util::filter_and_adjust_bitset;
 
 /// `match E { p₁ => b₁ … }`, descend half — the SCRUTINEE first.
@@ -35,13 +37,14 @@ pub(crate) fn descend_p_match<'ast>(
     expression: AnnProc<'ast>,
     cases: &'ast [Case<'ast>],
     input: ProcVisitInputs,
-) -> Step<'ast> {
+    construction: &mut ParConstruction,
+) -> Result<Step<'ast>, InterpreterError> {
     let child_input = ProcVisitInputs {
-        par: Par::default(),
+        par: construction.empty_par()?,
         ..input.clone()
     };
     let case_env = input.bound_map_chain.clone();
-    Step::Descend {
+    Ok(Step::Descend {
         kont: NormKont::Match(Box::new(MatchK {
             cases,
             case_idx: 0,
@@ -62,12 +65,15 @@ pub(crate) fn descend_p_match<'ast>(
             proc: expression,
             input: child_input,
         },
-    }
+    })
 }
 
 /// Schedule the next case's PATTERN, or finish the `match` if the cases are
 /// exhausted.
-fn next_case<'ast>(mut k: Box<MatchK<'ast>>) -> Result<Step<'ast>, InterpreterError> {
+fn next_case<'ast>(
+    mut k: Box<MatchK<'ast>>,
+    construction: &mut ParConstruction,
+) -> Result<Step<'ast>, InterpreterError> {
     let Some(case) = k.cases.get(k.case_idx) else {
         // Every case is in — assemble.
         let MatchK {
@@ -82,20 +88,45 @@ fn next_case<'ast>(mut k: Box<MatchK<'ast>>) -> Result<Step<'ast>, InterpreterEr
         let target_result =
             target.expect("combine_p_match: the scrutinee is filled before any case");
 
-        let cases: Vec<MatchCase> = acc_cases.into_iter().rev().collect();
+        let cases: Vec<PlannedMatchCase> = acc_cases.into_iter().rev().collect();
         // ★ Leg-1: shallow reads, then MOVE the scrutinee into the `Match`.
-        let target_locally_free = target_result.par.locally_free().to_vec();
+        let target_locally_free = construction.locally_free(target_result.par).to_vec();
         let locally_free = union(acc_locally_free, target_locally_free);
-        let connective_used = acc_connective_used || target_result.par.connective_used();
+        let connective_used =
+            acc_connective_used || construction.connective_used(target_result.par);
 
         let result_match = Match {
-            target: Some(target_result.par),
-            cases,
-            locally_free,
+            target: Some(Par::default()),
+            cases: cases
+                .iter()
+                .map(|case| MatchCase {
+                    pattern: Some(Par::default()),
+                    source: Some(Par::default()),
+                    free_count: case.free_count,
+                    guard: case.guard.map(|_| Par::default()),
+                })
+                .collect(),
+            locally_free: locally_free.clone(),
             connective_used,
         };
+        let mut children = Vec::with_capacity(1 + 3 * cases.len());
+        children.push(target_result.par);
+        for case in cases {
+            children.push(case.pattern);
+            children.push(case.source);
+            children.push(match case.guard {
+                Some(guard) => guard,
+                None => construction.empty_par()?,
+            });
+        }
+        let component = construction.match_component(&result_match, &children)?;
         return Ok(Step::Done(NormVal::Proc(ProcVisitOutputs {
-            par: input.par.prepend_match(result_match),
+            par: construction.append_component(
+                input.par,
+                component,
+                locally_free,
+                connective_used,
+            )?,
             free_map: known_free,
         })));
     };
@@ -108,7 +139,7 @@ fn next_case<'ast>(mut k: Box<MatchK<'ast>>) -> Result<Step<'ast>, InterpreterEr
 
     let pattern = case.pattern;
     let child_input = ProcVisitInputs {
-        par: Par::default(),
+        par: construction.empty_par()?,
         bound_map_chain: k.input.bound_map_chain.push(),
         free_map: FreeMap::default(),
     };
@@ -129,13 +160,14 @@ fn next_case<'ast>(mut k: Box<MatchK<'ast>>) -> Result<Step<'ast>, InterpreterEr
 pub(crate) fn combine_p_match<'ast>(
     mut k: Box<MatchK<'ast>>,
     value: NormVal,
+    construction: &mut ParConstruction,
 ) -> Result<Step<'ast>, InterpreterError> {
     match k.phase {
         MatchPhase::Target => {
             let target_result = value.into_proc();
             k.known_free = target_result.free_map.clone();
             k.target = Some(target_result);
-            next_case(k)
+            next_case(k, construction)
         }
 
         MatchPhase::Pattern => {
@@ -147,7 +179,7 @@ pub(crate) fn combine_p_match<'ast>(
                 .absorb_free_span(&pattern_result.free_map);
             k.bound_count = pattern_result.free_map.count_no_wildcards();
             k.case_env = case_env;
-            k.pattern_locally_free = pattern_result.par.locally_free().to_vec();
+            k.pattern_locally_free = construction.locally_free(pattern_result.par).to_vec();
             k.pattern_par = Some(pattern_result.par);
 
             let case = &k.cases[k.case_idx];
@@ -157,7 +189,7 @@ pub(crate) fn combine_p_match<'ast>(
             // bool-ness is enforced at runtime by the matcher in Phase 6.
             if let Some(guard) = case.guard {
                 let child_input = ProcVisitInputs {
-                    par: Par::default(),
+                    par: construction.empty_par()?,
                     bound_map_chain: k.case_env.clone(),
                     free_map: k.known_free.clone(),
                 };
@@ -172,7 +204,7 @@ pub(crate) fn combine_p_match<'ast>(
             }
             let body = case.proc;
             let child_input = ProcVisitInputs {
-                par: Par::default(),
+                par: construction.empty_par()?,
                 bound_map_chain: k.case_env.clone(),
                 free_map: k.known_free.clone(),
             };
@@ -194,10 +226,10 @@ pub(crate) fn combine_p_match<'ast>(
             // undecidable class and must inherit the same refusal — gating one
             // guard language and not the other is precisely how this defect
             // class recurs.
-            reject_undecidable_guard(&guard_result.par, MATCH_CASE_WHERE)?;
+            reject_undecidable_planned_guard(construction, guard_result.par, MATCH_CASE_WHERE)?;
             let body = k.cases[k.case_idx].proc;
             let child_input = ProcVisitInputs {
-                par: Par::default(),
+                par: construction.empty_par()?,
                 bound_map_chain: k.case_env.clone(),
                 free_map: guard_result.free_map.clone(),
             };
@@ -224,19 +256,24 @@ pub(crate) fn combine_p_match<'ast>(
 
             // ★ Leg-1: shallow reads, then MOVE both the case body and the
             // guard into the `MatchCase`.
-            let body_locally_free = case_body_result.par.locally_free().to_vec();
-            let body_connective_used = case_body_result.par.connective_used();
+            let body_locally_free = construction.locally_free(case_body_result.par).to_vec();
+            let body_connective_used = construction.connective_used(case_body_result.par);
             let guard_locally_free = guard_result
                 .as_ref()
-                .map(|gr| gr.par.locally_free().to_vec());
+                .map(|gr| construction.locally_free(gr.par).to_vec());
             let guard_connective_used = guard_result
                 .as_ref()
-                .map(|gr| gr.par.connective_used())
+                .map(|gr| construction.connective_used(gr.par))
                 .unwrap_or(false);
-            k.acc_cases.insert(0, MatchCase {
-                pattern: Some(pattern_par),
-                source: Some(case_body_result.par),
-                free_count: bound_count as i32,
+            let free_count = i32::try_from(bound_count).map_err(|_| {
+                InterpreterError::NormalizerError(
+                    "match-case binder count exceeds the protobuf i32 domain".to_string(),
+                )
+            })?;
+            k.acc_cases.insert(0, PlannedMatchCase {
+                pattern: pattern_par,
+                source: case_body_result.par,
+                free_count,
                 guard: guard_result.map(|gr| gr.par),
             });
             k.known_free = case_body_result.free_map;
@@ -260,7 +297,7 @@ pub(crate) fn combine_p_match<'ast>(
                 k.acc_connective_used || body_connective_used || guard_connective_used;
 
             k.case_idx += 1;
-            next_case(k)
+            next_case(k, construction)
         }
     }
 }

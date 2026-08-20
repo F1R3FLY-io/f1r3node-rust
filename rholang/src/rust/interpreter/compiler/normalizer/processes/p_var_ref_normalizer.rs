@@ -2,21 +2,101 @@ use std::result::Result;
 
 use models::rhoapi::connective::ConnectiveInstance;
 use models::rhoapi::{Connective, VarRef};
+use models::rust::par_construction::ParConstruction;
 use rholang_parser::ast::{Id, VarRefKind};
 
 use crate::rust::interpreter::compiler::exports::{
-    BoundContext, ProcVisitInputs, ProcVisitOutputs,
+    BoundContext, ProcVisitInputs as PublicProcVisitInputs,
+    ProcVisitOutputs as PublicProcVisitOutputs,
 };
 use crate::rust::interpreter::compiler::normalize::VarSort;
+use crate::rust::interpreter::compiler::normalize_drive::{ProcVisitInputs, ProcVisitOutputs};
 use crate::rust::interpreter::errors::InterpreterError;
+use crate::rust::interpreter::matcher::has_locally_free::{
+    connective_connective_used_ref, connective_locally_free_ref,
+};
 use crate::rust::interpreter::util::prepend_connective;
 
 pub fn normalize_p_var_ref(
     var_ref_kind: VarRefKind,
     var_id: &Id,
+    input: PublicProcVisitInputs,
+    var_ref_span: rholang_parser::SourceSpan,
+) -> Result<PublicProcVisitOutputs, InterpreterError> {
+    fn success(index: i32, depth: i32, input: PublicProcVisitInputs) -> PublicProcVisitOutputs {
+        let chain_depth = input.bound_map_chain.depth() as i32;
+        PublicProcVisitOutputs {
+            par: prepend_connective(
+                input.par,
+                Connective {
+                    connective_instance: Some(ConnectiveInstance::VarRefBody(VarRef {
+                        index,
+                        depth,
+                    })),
+                },
+                chain_depth,
+            ),
+            free_map: input.free_map,
+        }
+    }
+
+    match input.bound_map_chain.find(var_id.name) {
+        Some((context, depth)) => match (context.typ, var_ref_kind) {
+            (VarSort::ProcSort, VarRefKind::Proc) => {
+                Ok(success(context.index as i32, depth as i32, input))
+            }
+            (VarSort::NameSort, VarRefKind::Name) => {
+                Ok(success(context.index as i32, depth as i32, input))
+            }
+            (VarSort::ProcSort, _) => Err(InterpreterError::UnexpectedProcContext {
+                var_name: var_id.name.to_string(),
+                name_var_source_span: context.source_span,
+                process_source_span: var_ref_span,
+            }),
+            (VarSort::NameSort, _) => Err(InterpreterError::UnexpectedNameContext {
+                var_name: var_id.name.to_string(),
+                proc_var_source_span: context.source_span,
+                name_source_span: var_ref_span,
+            }),
+        },
+        None => Err(InterpreterError::UnboundVariableRefSpan {
+            var_name: var_id.name.to_string(),
+            source_span: var_ref_span,
+        }),
+    }
+}
+
+pub(crate) fn plan_p_var_ref(
+    var_ref_kind: VarRefKind,
+    var_id: &Id,
     input: ProcVisitInputs,
     var_ref_span: rholang_parser::SourceSpan,
+    construction: &mut ParConstruction,
 ) -> Result<ProcVisitOutputs, InterpreterError> {
+    fn success(
+        index: i32,
+        depth: i32,
+        input: ProcVisitInputs,
+        construction: &mut ParConstruction,
+    ) -> Result<ProcVisitOutputs, InterpreterError> {
+        let connective = Connective {
+            connective_instance: Some(ConnectiveInstance::VarRefBody(VarRef { index, depth })),
+        };
+        let locally_free =
+            connective_locally_free_ref(&connective, input.bound_map_chain.depth() as i32);
+        let connective_used = connective_connective_used_ref(&connective);
+        let component = construction.connective_component(&connective, &[])?;
+        Ok(ProcVisitOutputs {
+            par: construction.append_component(
+                input.par,
+                component,
+                locally_free,
+                connective_used,
+            )?,
+            free_map: input.free_map,
+        })
+    }
+
     match input.bound_map_chain.find(var_id.name) {
         Some((
             BoundContext {
@@ -27,19 +107,7 @@ pub fn normalize_p_var_ref(
             depth,
         )) => match typ {
             VarSort::ProcSort => match var_ref_kind {
-                VarRefKind::Proc => Ok(ProcVisitOutputs {
-                    par: prepend_connective(
-                        input.par,
-                        Connective {
-                            connective_instance: Some(ConnectiveInstance::VarRefBody(VarRef {
-                                index: index as i32,
-                                depth: depth as i32,
-                            })),
-                        },
-                        input.bound_map_chain.depth() as i32,
-                    ),
-                    free_map: input.free_map,
-                }),
+                VarRefKind::Proc => success(index as i32, depth as i32, input, construction),
 
                 _ => Err(InterpreterError::UnexpectedProcContext {
                     var_name: var_id.name.to_string(),
@@ -48,19 +116,7 @@ pub fn normalize_p_var_ref(
                 }),
             },
             VarSort::NameSort => match var_ref_kind {
-                VarRefKind::Name => Ok(ProcVisitOutputs {
-                    par: prepend_connective(
-                        input.par,
-                        Connective {
-                            connective_instance: Some(ConnectiveInstance::VarRefBody(VarRef {
-                                index: index as i32,
-                                depth: depth as i32,
-                            })),
-                        },
-                        input.bound_map_chain.depth() as i32,
-                    ),
-                    free_map: input.free_map,
-                }),
+                VarRefKind::Name => success(index as i32, depth as i32, input, construction),
 
                 _ => Err(InterpreterError::UnexpectedNameContext {
                     var_name: var_id.name.to_string(),

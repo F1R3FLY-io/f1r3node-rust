@@ -39,6 +39,18 @@ pub fn reducer_eval_identity_epathmap(e_pathmap: &EPathMap) -> bool {
     e_pathmap.remainder.is_none() && e_pathmap.entry_trie().entries_reducer_eval_identity()
 }
 
+/// Certify that reducer `eval_expr` returns this complete `Par` byte-for-byte.
+///
+/// The singleton ground case is answered from `ParBag`'s CoW-shared canonical
+/// stability cell. A `Par` with no top-level expressions is also an identity:
+/// `eval_expr` preserves every process family and root metadata while folding
+/// only the expression family. Both checks are independent of the environment
+/// and require no semantic projection of the PathMap-backed component bag.
+#[inline]
+pub fn reducer_eval_identity(par: &Par) -> bool {
+    reducer_eval_identity_par(par, eval_stable_par(par))
+}
+
 /// A sufficient, byte-exact certificate for one EPathMap key or value.
 ///
 /// * canonical-codec stable terms are evaluator normal forms;
@@ -109,8 +121,7 @@ pub(crate) fn eval_stable_par(root: &Par) -> bool {
     }
 
     let stable = eval_stable_par_uncached(root);
-    root.components()
-        .cache_canonical_path_stability(stable);
+    root.components().cache_canonical_path_stability(stable);
     stable
 }
 

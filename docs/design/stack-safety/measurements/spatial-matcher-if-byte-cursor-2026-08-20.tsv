@@ -1,0 +1,10 @@
+# Spatial matcher canonical-protobuf If cursor scaling, 2026-08-20.
+# Command: systemd-run --user --scope -p MemoryMax=8G -p MemorySwapMax=0 cargo bench -p rholang --bench spatial_matcher_if_cursor -- --noplot
+# Host: x86_64, 32 logical CPUs; mpstat immediately before the run reported 69.51% average idle.
+# Concurrent caveat: two unrelated cargo test processes existed, but aggregate idle capacity remained ~22 CPUs.
+# Criterion: release profile; 20 samples; 1 s warm-up and 3 s measurement per depth; fixture construction and CoW root clone excluded.
+depth	lower_ns	point_ns	upper_ns	input_shape	verdict
+128	54960	55002	55037	unary If condition spine; fixed true/false leaves; terminal free capture	match
+512	193000	193100	193230	unary If condition spine; fixed true/false leaves; terminal free capture	match
+2048	751610	752600	753340	unary If condition spine; fixed true/false leaves; terminal free capture	match
+4096	1516600	1538700	1571700	unary If condition spine; fixed true/false leaves; terminal free capture	match

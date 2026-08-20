@@ -74,6 +74,7 @@ use models::rhoapi::{
     Par,
 };
 use models::rust::par_bag::ParComponentItem;
+use models::rust::par_construction::{ParConstruction, PlannedExprShape, PlannedPar};
 
 /// Whether the caller can supply a [`SpatialMatch`][crate::SpatialMatch]
 /// oracle, which is what decides `EMatchesBody`.
@@ -242,6 +243,74 @@ pub fn undecidable_nodes(guard: &Par, spatial: SpatialSupport) -> Vec<Undecidabl
     let mut owned_exprs = OwnedSlots::<Expr>::default();
     work.push(GuardWork::BorrowedPar(guard));
     drive_guard_work(spatial, &mut work, &mut owned_pars, &mut owned_exprs)
+}
+
+/// Planned-arena equivalent of [`undecidable_nodes`].
+///
+/// The normalizer calls this before finishing its root `Par`, so classification
+/// follows integer arena handles and never serializes or decodes an
+/// intermediate term. `Err` means the caller supplied an opaque component
+/// imported as canonical bytes; such a caller still has the resident value and
+/// must use [`undecidable_nodes`] before importing it.
+pub fn undecidable_planned_nodes(
+    arena: &ParConstruction,
+    guard: PlannedPar,
+    spatial: SpatialSupport,
+) -> Result<Vec<UndecidableNode>, &'static str> {
+    enum PlannedGuardExpr {
+        Inert,
+        Unary(PlannedPar),
+        Binary(PlannedPar, PlannedPar),
+        MatchesTarget(PlannedPar),
+        Unsupported {
+            kind: &'static str,
+            detail: Option<String>,
+        },
+        Opaque,
+    }
+
+    let mut work = vec![guard];
+    let mut found = Vec::new();
+    while let Some(par) = work.pop() {
+        let mut expressions = Vec::new();
+        arena.visit_expr_shapes(par, |shape| {
+            expressions.push(match shape {
+                PlannedExprShape::Inert => PlannedGuardExpr::Inert,
+                PlannedExprShape::Unary(child) => PlannedGuardExpr::Unary(child),
+                PlannedExprShape::Binary(left, right) => PlannedGuardExpr::Binary(left, right),
+                PlannedExprShape::MatchesTarget(target) => PlannedGuardExpr::MatchesTarget(target),
+                PlannedExprShape::Unsupported { kind, detail } => PlannedGuardExpr::Unsupported {
+                    kind,
+                    detail: detail.map(str::to_owned),
+                },
+                PlannedExprShape::Opaque => PlannedGuardExpr::Opaque,
+            });
+        });
+        for shape in expressions.into_iter().rev() {
+            match shape {
+                PlannedGuardExpr::Inert => {}
+                PlannedGuardExpr::Unary(child) => work.push(child),
+                PlannedGuardExpr::Binary(left, right) => {
+                    work.push(right);
+                    work.push(left);
+                }
+                PlannedGuardExpr::MatchesTarget(target) => match spatial {
+                    SpatialSupport::Available => work.push(target),
+                    SpatialSupport::Absent => found.push(UndecidableNode {
+                        kind: "EMatchesBody",
+                        detail: None,
+                    }),
+                },
+                PlannedGuardExpr::Unsupported { kind, detail } => {
+                    found.push(UndecidableNode { kind, detail });
+                }
+                PlannedGuardExpr::Opaque => {
+                    return Err("planned guard contains an opaque imported expression")
+                }
+            }
+        }
+    }
+    Ok(found)
 }
 
 fn drive_guard_work<'g>(

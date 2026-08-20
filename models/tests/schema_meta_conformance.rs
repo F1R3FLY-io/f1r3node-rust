@@ -24,8 +24,6 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use prost::Message;
-
 use models::rust::rholang::bincode_schema_tables::CONFORMANCE_REGISTRY;
 use models::rust::rholang::protobuf_schema::{ProtobufField, ProtobufKind};
 use models::rust::rholang::protobuf_schema_tables::PROTOBUF_CONFORMANCE_REGISTRY;
@@ -34,6 +32,7 @@ use models::rust::rholang::schema_meta_tables::{
     DERIVE_DISPOSITION_REGISTRY, DISPOSITIONED_DERIVES, HAND_WRITTEN_TRAVERSALS, RECURSIVE_TYPES,
     SCHEMA_CHILDREN, SCHEMA_SCC,
 };
+use prost::Message;
 
 // ===========================================================================
 // §0  The four outputs exist and are not degenerate
@@ -679,10 +678,10 @@ fn every_recursive_derive_surface_has_a_driver_or_a_bounded_cut_set_path() {
     assert_eq!(
         converted.iter().copied().collect::<Vec<_>>(),
         vec!["Deserialize::deserialize", "Serialize::serialize"]
-        .into_iter()
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .collect::<Vec<_>>(),
+            .into_iter()
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>(),
         "only the two whole-value bincode surfaces remain converted in the generated acyclic \
          schema; recursive protobuf and term operations now terminate at external Par"
     );

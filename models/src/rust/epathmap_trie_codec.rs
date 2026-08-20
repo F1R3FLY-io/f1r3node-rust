@@ -685,6 +685,33 @@ pub(crate) fn inspect_canonical_map_snapshot(
     Ok(inspection)
 }
 
+/// Borrow the protobuf body associated with the first requested canonical key.
+///
+/// This is the encoded-view counterpart of `PathMap::get`: it validates the
+/// canonical EPM1/ACT image, walks its prefix-compressed key topology without
+/// constructing an `EPathMap`, and returns a slice of the existing value table.
+/// `ordered_keys` supplies lookup precedence (notably bare-before-split for a
+/// [`CursorKind::Prefix`](crate::rust::pathmap_integration::CursorKind::Prefix)
+/// cursor). No `Par`, entry projection, or decoded-key collection is built.
+pub fn canonical_map_value_body_at_ordered_keys<'a>(
+    bytes: &'a [u8],
+    ordered_keys: &[&[u8]],
+) -> Result<Option<&'a [u8]>, TrieCodecError> {
+    let inspection = inspect_canonical_map_snapshot(bytes)?;
+    for requested in ordered_keys {
+        for (key, value_body) in inspection.keys.iter().zip(&inspection.value_bodies) {
+            let candidate = match key {
+                CanonicalSnapshotKey::Relative(range) => &bytes[range.clone()],
+                CanonicalSnapshotKey::Owned(key) => key.as_slice(),
+            };
+            if candidate == *requested {
+                return Ok(Some(&bytes[value_body.clone()]));
+            }
+        }
+    }
+    Ok(None)
+}
+
 fn push_varint(out: &mut Vec<u8>, value: u64) { prost::encoding::encode_varint(value, out); }
 
 fn read_len(bytes: &[u8], cursor: &mut usize, label: &str) -> Result<usize, TrieCodecError> {
@@ -909,6 +936,36 @@ mod tests {
         assert_eq!(
             protobuf_encoder::encode_to_vec(map.get(b"same/prefix/b").expect("b exists")),
             protobuf_encoder::encode_to_vec(&int(2))
+        );
+    }
+
+    #[test]
+    fn encoded_view_lookup_borrows_the_first_requested_act_value() {
+        let mut map = PathMap::new();
+        map.insert(b"same/prefix/a", int(1));
+        map.insert(b"same/prefix/b", int(2));
+        let bytes = encode(&EPathMapRepr::Map(map));
+
+        let selected = canonical_map_value_body_at_ordered_keys(&bytes, &[
+            b"absent",
+            b"same/prefix/b",
+            b"same/prefix/a",
+        ])
+        .expect("canonical EPM1 snapshot")
+        .expect("the second requested key exists");
+        assert_eq!(selected, protobuf_encoder::encode_to_vec(&int(2)));
+        assert!(selected.as_ptr() >= bytes.as_ptr());
+        assert!(selected.as_ptr() < bytes[bytes.len()..].as_ptr());
+
+        let first =
+            canonical_map_value_body_at_ordered_keys(&bytes, &[b"same/prefix/a", b"same/prefix/b"])
+                .expect("canonical EPM1 snapshot")
+                .expect("the first requested key exists");
+        assert_eq!(first, protobuf_encoder::encode_to_vec(&int(1)));
+        assert_eq!(
+            canonical_map_value_body_at_ordered_keys(&bytes, &[b"absent"])
+                .expect("canonical EPM1 snapshot"),
+            None
         );
     }
 

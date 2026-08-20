@@ -1,4 +1,5 @@
 use models::create_bit_vector;
+use models::rhoapi::If;
 use models::rust::utils::union;
 
 use super::exports::*;
@@ -144,6 +145,12 @@ impl HasLocallyFree<GUnforgeable> for SpatialMatcherContext {
     fn connective_used(&self, _unf: GUnforgeable) -> bool { false }
 
     fn locally_free(&self, _s: GUnforgeable, _depth: i32) -> Vec<u8> { Default::default() }
+}
+
+impl HasLocallyFree<If> for SpatialMatcherContext {
+    fn connective_used(&self, conditional: If) -> bool { conditional.connective_used }
+
+    fn locally_free(&self, conditional: If, _depth: i32) -> Vec<u8> { conditional.locally_free }
 }
 
 impl HasLocallyFree<Expr> for SpatialMatcherContext {

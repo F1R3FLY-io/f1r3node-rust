@@ -1,17 +1,18 @@
 use std::collections::HashMap;
 
 use models::rhoapi::{EMinus, EPlus, Expr, Par};
+use models::rust::par_construction::{ParConstruction, PlannedPar};
+use models::rust::utils::union;
 use rholang_parser::ast::{AnnProc, Proc};
 use rholang_parser::RholangParser;
 
 use super::bound_map_chain::BoundMapChain;
 use super::free_map::FreeMap;
 use super::normalize_drive::{norm_drive, NormKont, NormVal, NormWork, Step};
-use crate::rust::interpreter::compiler::normalizer::processes::p_ground_normalizer::normalize_p_ground;
-use crate::rust::interpreter::compiler::normalizer::processes::p_simple_type_normalizer::normalize_simple_type;
+use crate::rust::interpreter::compiler::normalizer::processes::p_ground_normalizer::plan_p_ground;
+use crate::rust::interpreter::compiler::normalizer::processes::p_simple_type_normalizer::plan_simple_type;
 use crate::rust::interpreter::compiler::utils::{BinaryExpr, UnaryExpr};
 use crate::rust::interpreter::errors::InterpreterError;
-use crate::rust::interpreter::util::prepend_expr;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum VarSort {
@@ -27,13 +28,13 @@ pub enum VarSort {
  * @param knownFree
  */
 #[derive(Clone, Debug, PartialEq)]
-pub struct ProcVisitInputs {
-    pub par: Par,
+pub struct ProcVisitInputs<P = Par> {
+    pub par: P,
     pub bound_map_chain: BoundMapChain<VarSort>,
     pub free_map: FreeMap<VarSort>,
 }
 
-impl ProcVisitInputs {
+impl ProcVisitInputs<Par> {
     pub fn new() -> Self {
         ProcVisitInputs {
             par: Par::default(),
@@ -43,14 +44,14 @@ impl ProcVisitInputs {
     }
 }
 
-impl Default for ProcVisitInputs {
+impl Default for ProcVisitInputs<Par> {
     fn default() -> Self { Self::new() }
 }
 
 /// Returns the update Par and an updated map of free variables.
 #[derive(Clone, Debug, PartialEq)]
-pub struct ProcVisitOutputs {
-    pub par: Par,
+pub struct ProcVisitOutputs<P = Par> {
+    pub par: P,
     pub free_map: FreeMap<VarSort>,
 }
 
@@ -61,8 +62,8 @@ pub struct NameVisitInputs {
 }
 
 #[derive(Clone, Debug)]
-pub struct NameVisitOutputs {
-    pub par: Par,
+pub struct NameVisitOutputs<P = Par> {
+    pub par: P,
     pub free_map: FreeMap<VarSort>,
 }
 
@@ -107,7 +108,13 @@ pub fn normalize_ann_proc<'ast>(
     env: &HashMap<String, Par>,
     parser: &'ast RholangParser<'ast>,
 ) -> Result<ProcVisitOutputs, InterpreterError> {
-    norm_drive(
+    let mut construction = ParConstruction::new();
+    let input = ProcVisitInputs {
+        par: construction.import_par(&input.par)?,
+        bound_map_chain: input.bound_map_chain,
+        free_map: input.free_map,
+    };
+    let normalized = norm_drive(
         NormWork::Proc {
             // `AnnProc` is `Copy` (a `&'ast Proc` plus a span), so the machine
             // carries nodes by value. That is what lets a *synthesised* node —
@@ -117,10 +124,32 @@ pub fn normalize_ann_proc<'ast>(
             proc: *proc,
             input,
         },
+        &mut construction,
         env,
         parser,
-    )
-    .map(NormVal::into_proc)
+    )?
+    .into_proc();
+    Ok(ProcVisitOutputs {
+        par: construction.finish(normalized.par)?,
+        free_map: normalized.free_map,
+    })
+}
+
+/// Insert one planned expression into a planned parallel composition.
+///
+/// Callers derive the expression's root summaries while they already have its
+/// child handles. The schema shell contains only scalar fields and empty `Par`
+/// placeholders; [`ParConstruction`] streams the real children at finish.
+pub(crate) fn append_planned_expr(
+    construction: &mut ParConstruction,
+    base: PlannedPar,
+    shell: &Expr,
+    children: &[PlannedPar],
+    locally_free: Vec<u8>,
+    connective_used: bool,
+) -> Result<PlannedPar, InterpreterError> {
+    let component = construction.expr_component(shell, children, false)?;
+    Ok(construction.append_component(base, component, locally_free, connective_used)?)
 }
 
 /// The `Proc` dispatch — this file's original `match`, with every recursive call
@@ -136,7 +165,8 @@ pub fn normalize_ann_proc<'ast>(
 /// | validate, then desugar | `SignedTerm`, `TokenStack`, signed `for` | [`Step::Descend`] onto a signature, whose combine is a [`Step::Tail`] |
 pub(crate) fn descend_proc<'ast>(
     proc: AnnProc<'ast>,
-    input: ProcVisitInputs,
+    input: ProcVisitInputs<PlannedPar>,
+    construction: &mut ParConstruction,
     _env: &HashMap<String, Par>,
     parser: &'ast RholangParser<'ast>,
 ) -> Result<Step<'ast>, InterpreterError> {
@@ -164,19 +194,25 @@ pub(crate) fn descend_proc<'ast>(
         | Proc::FloatLiteral { .. }
         | Proc::FixedPointLiteral { .. }
         | Proc::StringLiteral(_)
-        | Proc::UriLiteral(_) => Ok(Step::Done(NormVal::Proc(normalize_p_ground(
-            proc.proc, input,
+        | Proc::UriLiteral(_) => Ok(Step::Done(NormVal::Proc(plan_p_ground(
+            proc.proc,
+            input,
+            construction,
         )?))),
 
-        Proc::SimpleType(simple_type) => Ok(Step::Done(NormVal::Proc(normalize_simple_type(
+        Proc::SimpleType(simple_type) => Ok(Step::Done(NormVal::Proc(plan_simple_type(
             simple_type,
             input,
+            construction,
         )?))),
 
         Proc::ProcVar(var) => {
-            use crate::rust::interpreter::compiler::normalizer::processes::p_var_normalizer::normalize_p_var;
-            Ok(Step::Done(NormVal::Proc(normalize_p_var(
-                var, input, proc.span,
+            use crate::rust::interpreter::compiler::normalizer::processes::p_var_normalizer::plan_p_var;
+            Ok(Step::Done(NormVal::Proc(plan_p_var(
+                var,
+                input,
+                proc.span,
+                construction,
             )?)))
         }
 
@@ -186,14 +222,15 @@ pub(crate) fn descend_proc<'ast>(
 
         // UnaryExp - handle all unary operators
         Proc::UnaryExp { op, arg } => match op {
-            rholang_parser::ast::UnaryExpOp::Negation => Ok(
-                // ⚠ `arg.span`, NOT `proc.span`. The recursive form passed the
-                // ARGUMENT's span, and that span is what the free map records
-                // for the connective; using the whole `~P` span instead is
-                // byte-visible in the error text a rejected pattern produces.
-                // The differential caught exactly this on `~7`.
-                p::p_negation_normalizer::descend_p_negation(*arg, arg.span, input),
-            ),
+            rholang_parser::ast::UnaryExpOp::Negation =>
+            // ⚠ `arg.span`, NOT `proc.span`. The recursive form passed the
+            // ARGUMENT's span, and that span is what the free map records
+            // for the connective; using the whole `~P` span instead is
+            // byte-visible in the error text a rejected pattern produces.
+            // The differential caught exactly this on `~7`.
+            {
+                p::p_negation_normalizer::descend_p_negation(*arg, arg.span, input, construction)
+            }
             rholang_parser::ast::UnaryExpOp::Not => {
                 use models::rhoapi::ENot;
                 Ok(descend_unary(*arg, input, Box::new(ENot::default())))
@@ -208,14 +245,24 @@ pub(crate) fn descend_proc<'ast>(
         Proc::BinaryExp { op, left, right } => {
             match op {
                 // Logical connectives
-                rholang_parser::ast::BinaryExpOp::Conjunction => Ok(
-                    p::p_conjunction_normalizer::descend_p_conjunction(*left, *right, input),
-                ),
-                rholang_parser::ast::BinaryExpOp::Disjunction => Ok(
-                    p::p_disjunction_normalizer::descend_p_disjunction(*left, *right, input),
-                ),
+                rholang_parser::ast::BinaryExpOp::Conjunction => {
+                    Ok(p::p_conjunction_normalizer::descend_p_conjunction(
+                        *left,
+                        *right,
+                        input,
+                        construction,
+                    )?)
+                }
+                rholang_parser::ast::BinaryExpOp::Disjunction => {
+                    Ok(p::p_disjunction_normalizer::descend_p_disjunction(
+                        *left,
+                        *right,
+                        input,
+                        construction,
+                    )?)
+                }
                 rholang_parser::ast::BinaryExpOp::Matches => Ok(
-                    p::p_matches_normalizer::descend_p_matches(*left, *right, input),
+                    p::p_matches_normalizer::descend_p_matches(*left, *right, input, construction)?,
                 ),
 
                 // Arithmetic
@@ -379,8 +426,12 @@ pub(crate) fn descend_proc<'ast>(
             if_true,
             if_false,
         } => Ok(p::p_if_normalizer::descend_p_if(
-            *condition, *if_true, *if_false, input,
-        )),
+            *condition,
+            *if_true,
+            *if_false,
+            input,
+            construction,
+        )?),
 
         // Method - handle method calls
         Proc::Method {
@@ -388,8 +439,12 @@ pub(crate) fn descend_proc<'ast>(
             name,
             args,
         } => Ok(p::p_method_normalizer::descend_p_method(
-            *receiver, name, args, input,
-        )),
+            *receiver,
+            name,
+            args,
+            input,
+            construction,
+        )?),
 
         // Bundle - handle bundle constructs
         Proc::Bundle {
@@ -400,7 +455,8 @@ pub(crate) fn descend_proc<'ast>(
             *body,
             input,
             body.span,
-        )),
+            construction,
+        )?),
 
         // Send - handle send operations
         Proc::Send {
@@ -421,7 +477,9 @@ pub(crate) fn descend_proc<'ast>(
         )),
 
         // New - handle name declarations and scoping
-        Proc::New { decls, proc: body } => p::p_new_normalizer::descend_p_new(decls, *body, input),
+        Proc::New { decls, proc: body } => {
+            p::p_new_normalizer::descend_p_new(decls, *body, input, construction)
+        }
 
         // Contract - handle contract declarations
         Proc::Contract {
@@ -437,12 +495,13 @@ pub(crate) fn descend_proc<'ast>(
             *expression,
             cases.as_slice(),
             input,
-        )),
+            construction,
+        )?),
 
         // Collection - handle data structures (lists, tuples, sets, maps)
         Proc::Collection(collection) => {
             use crate::rust::interpreter::compiler::normalizer::collection_normalize_matcher::descend_collection;
-            descend_collection(collection, input)
+            descend_collection(collection, input, construction)
         }
 
         // ForComprehension - handle for-comprehensions (was Input in old AST)
@@ -475,7 +534,13 @@ pub(crate) fn descend_proc<'ast>(
                     parser,
                 ))
             } else {
-                p::p_input_normalizer::descend_p_input(receipts, *continuation, input, parser)
+                p::p_input_normalizer::descend_p_input(
+                    receipts,
+                    *continuation,
+                    input,
+                    parser,
+                    construction,
+                )
             }
         }
 
@@ -495,9 +560,13 @@ pub(crate) fn descend_proc<'ast>(
 
         // VarRef - handle variable references
         Proc::VarRef { kind, var } => {
-            use crate::rust::interpreter::compiler::normalizer::processes::p_var_ref_normalizer::normalize_p_var_ref;
-            Ok(Step::Done(NormVal::Proc(normalize_p_var_ref(
-                *kind, var, input, proc.span,
+            use crate::rust::interpreter::compiler::normalizer::processes::p_var_ref_normalizer::plan_p_var_ref;
+            Ok(Step::Done(NormVal::Proc(plan_p_var_ref(
+                *kind,
+                var,
+                input,
+                proc.span,
+                construction,
             )?)))
         }
 
@@ -542,7 +611,7 @@ pub(crate) fn descend_proc<'ast>(
 #[inline(never)]
 fn descend_unary<'ast>(
     sub_proc: AnnProc<'ast>,
-    input: ProcVisitInputs,
+    input: ProcVisitInputs<PlannedPar>,
     ctor: Box<dyn UnaryExpr>,
 ) -> Step<'ast> {
     let input_par = input.par.clone();
@@ -563,15 +632,25 @@ fn descend_unary<'ast>(
 /// `unary_exp`, combine half.
 #[inline(never)]
 pub(crate) fn combine_unary<'ast>(
-    input_par: Par,
-    input_depth: i32,
+    input_par: PlannedPar,
+    _input_depth: i32,
     ctor: Box<dyn UnaryExpr>,
     value: NormVal,
+    construction: &mut ParConstruction,
 ) -> Result<Step<'ast>, InterpreterError> {
     let sub_result = value.into_proc();
-    let expr = ctor.from_par(sub_result.par);
+    let locally_free = construction.locally_free(sub_result.par).to_vec();
+    let connective_used = construction.connective_used(sub_result.par);
+    let expr = ctor.shell();
     Ok(Step::Done(NormVal::Proc(ProcVisitOutputs {
-        par: prepend_expr(input_par, expr, input_depth),
+        par: append_planned_expr(
+            construction,
+            input_par,
+            &expr,
+            &[sub_result.par],
+            locally_free,
+            connective_used,
+        )?,
         free_map: sub_result.free_map,
     })))
 }
@@ -587,7 +666,7 @@ pub(crate) fn combine_unary<'ast>(
 fn descend_binary<'ast>(
     left_proc: AnnProc<'ast>,
     right_proc: AnnProc<'ast>,
-    input: ProcVisitInputs,
+    input: ProcVisitInputs<PlannedPar>,
     ctor: Box<dyn BinaryExpr>,
 ) -> Step<'ast> {
     let input_par = input.par.clone();
@@ -614,12 +693,13 @@ fn descend_binary<'ast>(
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn combine_binary<'ast>(
     right: AnnProc<'ast>,
-    input_par: Par,
+    input_par: PlannedPar,
     input_depth: i32,
     bound_map_chain: BoundMapChain<VarSort>,
     ctor: Box<dyn BinaryExpr>,
-    left_par: Option<Par>,
+    left_par: Option<PlannedPar>,
     value: NormVal,
+    construction: &mut ParConstruction,
 ) -> Result<Step<'ast>, InterpreterError> {
     let result = value.into_proc();
     match left_par {
@@ -637,7 +717,7 @@ pub(crate) fn combine_binary<'ast>(
             work: NormWork::Proc {
                 proc: right,
                 input: ProcVisitInputs {
-                    par: Par::default(),
+                    par: construction.empty_par()?,
                     bound_map_chain,
                     free_map: result.free_map,
                 },
@@ -645,9 +725,22 @@ pub(crate) fn combine_binary<'ast>(
         }),
         // The right operand has just finished.
         Some(lp) => {
-            let expr: Expr = ctor.from_pars(lp, result.par);
+            let expr = ctor.shell();
+            let locally_free = union(
+                construction.locally_free(lp).to_vec(),
+                construction.locally_free(result.par).to_vec(),
+            );
+            let connective_used =
+                construction.connective_used(lp) || construction.connective_used(result.par);
             Ok(Step::Done(NormVal::Proc(ProcVisitOutputs {
-                par: prepend_expr(input_par, expr, input_depth),
+                par: append_planned_expr(
+                    construction,
+                    input_par,
+                    &expr,
+                    &[lp, result.par],
+                    locally_free,
+                    connective_used,
+                )?,
                 free_map: result.free_map,
             })))
         }

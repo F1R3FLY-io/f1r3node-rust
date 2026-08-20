@@ -76,8 +76,8 @@
 //!    ┌────────────────────────┐                  ┌──────────────────┐
 //!    │ Proc(child_i, input_i) │ ── descend ──▶   │                  │
 //!    ├────────────────────────┤                  │  at most ONE     │
-//!    │ Combine(K, filled=i)   │ ◀─ pushed FIRST  │  value is ever   │
-//!    ├────────────────────────┤                  │  resident        │
+//!    │ Combine(K, filled=i)   │ ◀─ pushed FIRST  │  produced value  │
+//!    ├────────────────────────┤                  │  is live         │
 //!    │ Combine(K', …)         │                  │                  │
 //!    │ …                      │                  └──────────────────┘
 //!    └────────────────────────┘
@@ -150,14 +150,12 @@
 //!
 //! ## Teardown
 //!
-//! `Drop` for `Par` is itself a Θ(depth) recursive traversal (audit §5 row 10),
-//! so an error path that simply let `work` and `vals` fall out of scope would
-//! re-introduce the very class this conversion removes — on the *error* path,
-//! which is exactly where a hostile input lands. [`norm_drive`] therefore hands
-//! everything it still owns to [`models::rust::rholang::par_children::dismantle_all`]
-//! before returning an `Err`. This is the same defect
-//! `b98fa20a` found and fixed for `substitute` (audit §12.5, vacuity instance
-//! #4).
+//! The machine never owns a recursively nested resident `Par`. Values and
+//! continuations carry scalar [`PlannedPar`] handles into [`ParConstruction`],
+//! whose graph is stored in flat vectors of integer edges. Consequently both a
+//! successful teardown and an early `Err` drop only flat arenas and worklists;
+//! neither path needs a special dismantler or can re-enter recursive `Par`
+//! destruction. Synthesized syntax is parser-arena-owned and borrowed here.
 //!
 //! ## Neutrality
 //!
@@ -174,7 +172,7 @@
 use std::collections::HashMap;
 
 use models::rhoapi::{Par, Var as ModelsVar};
-use models::rust::rholang::par_children::dismantle_all;
+use models::rust::par_construction::{ParConstruction, PlannedPar};
 use rholang_parser::ast::{
     AnnProc, BundleType, Case, KeyValuePair, Name, Names, ProcList, Signature, Var,
 };
@@ -182,12 +180,20 @@ use rholang_parser::{RholangParser, SourceSpan};
 
 use super::bound_map_chain::BoundMapChain;
 use super::exports::{
-    FreeMap, NameVisitInputs, NameVisitOutputs, ProcVisitInputs, ProcVisitOutputs,
+    FreeMap, NameVisitInputs, NameVisitOutputs as PublicNameVisitOutputs,
+    ProcVisitInputs as PublicProcVisitInputs, ProcVisitOutputs as PublicProcVisitOutputs,
 };
 use super::normalize::VarSort;
 use super::normalizer::cost_accounting::ir::Sig;
 use super::utils::{BinaryExpr, UnaryExpr};
 use crate::rust::interpreter::errors::InterpreterError;
+
+/// Internal normalizer values carry arena indices. The public carrier types
+/// default to resident [`Par`], so every existing caller keeps the same API;
+/// only this machine selects the planned representation explicitly.
+pub(crate) type ProcVisitInputs = PublicProcVisitInputs<PlannedPar>;
+pub(crate) type ProcVisitOutputs = PublicProcVisitOutputs<PlannedPar>;
+pub(crate) type NameVisitOutputs = PublicNameVisitOutputs<PlannedPar>;
 
 // ===========================================================================
 // values
@@ -237,15 +243,6 @@ impl NormVal {
             _ => unreachable!("norm_drive: expected a Sig value on the value stack"),
         }
     }
-
-    /// Every `Par` this value owns, for iterative teardown on the error path.
-    fn into_pars(self) -> Vec<Par> {
-        match self {
-            NormVal::Proc(p) => vec![p.par],
-            NormVal::Name(n) => vec![n.par],
-            NormVal::Bytes(_) | NormVal::Sig(_) => Vec::new(),
-        }
-    }
 }
 
 // ===========================================================================
@@ -289,20 +286,6 @@ pub(crate) enum NormWork<'ast> {
     },
     /// Run a continuation against the value on top of the value stack.
     Combine(NormKont<'ast>),
-}
-
-impl NormWork<'_> {
-    /// Every `Par` this obligation owns, for iterative teardown on the error
-    /// path.
-    fn into_pars(self) -> Vec<Par> {
-        match self {
-            NormWork::Proc { input, .. } => vec![input.par],
-            NormWork::Name { .. } | NormWork::CanonQuote { .. } | NormWork::Sig { .. } => {
-                Vec::new()
-            }
-            NormWork::Combine(k) => k.into_pars(),
-        }
-    }
 }
 
 // ===========================================================================
@@ -362,6 +345,24 @@ pub(crate) enum CollectKind {
     PathMap { remainder: Option<ModelsVar> },
 }
 
+/// One normalized receive bind before the final schema shell is emitted.
+/// Recursive children are construction-arena handles; scalar binder metadata
+/// stays inline in the continuation that already owns it.
+pub(crate) struct PlannedReceiveBind {
+    pub patterns: Vec<PlannedPar>,
+    pub source: PlannedPar,
+    pub remainder: Option<ModelsVar>,
+    pub free_count: i32,
+}
+
+/// One normalized match case before the final schema shell is emitted.
+pub(crate) struct PlannedMatchCase {
+    pub pattern: PlannedPar,
+    pub source: PlannedPar,
+    pub guard: Option<PlannedPar>,
+    pub free_count: i32,
+}
+
 /// `normalize_p_input`'s frame. Boxed: it is by far the widest continuation and
 /// `NormKont` is stored by value in a `Vec`.
 pub(crate) struct InputK<'ast> {
@@ -381,21 +382,26 @@ pub(crate) struct InputK<'ast> {
     pub phase: InputPhase,
 
     // ---- pattern accumulators (per group, reset at each group) ----------
-    pub group_pars: Vec<Par>,
+    pub group_pars: Vec<PlannedPar>,
     pub group_free: FreeMap<VarSort>,
     pub group_locally_free: Vec<u8>,
     /// `process_patterns`' output, one entry per completed group.
-    pub done_patterns: Vec<(Vec<Par>, Option<ModelsVar>, FreeMap<VarSort>, Vec<u8>)>,
+    pub done_patterns: Vec<(
+        Vec<PlannedPar>,
+        Option<ModelsVar>,
+        FreeMap<VarSort>,
+        Vec<u8>,
+    )>,
 
     // ---- source accumulators --------------------------------------------
-    pub source_pars: Vec<Par>,
+    pub source_pars: Vec<PlannedPar>,
     pub source_free: FreeMap<VarSort>,
     pub source_locally_free: Vec<u8>,
     pub source_connective_used: bool,
 
     // ---- computed once, at the Sources → Guard/Body transition ----------
     pub body_env: BoundMapChain<VarSort>,
-    pub receive_binds: Vec<models::rhoapi::ReceiveBind>,
+    pub receive_binds: Vec<PlannedReceiveBind>,
     pub bind_count: usize,
     pub patterns_locally_free: Vec<u8>,
     pub guard_out: Option<ProcVisitOutputs>,
@@ -411,7 +417,7 @@ pub(crate) struct MatchK<'ast> {
     pub target: Option<ProcVisitOutputs>,
     /// `init_acc.0` — built with `insert(0, …)` and reversed at the end, exactly
     /// as the recursive form does.
-    pub acc_cases: Vec<models::rhoapi::MatchCase>,
+    pub acc_cases: Vec<PlannedMatchCase>,
     /// `init_acc.1` — the free map threaded across cases.
     pub known_free: FreeMap<VarSort>,
     /// `init_acc.2`.
@@ -422,7 +428,7 @@ pub(crate) struct MatchK<'ast> {
     // ---- per-case slots -------------------------------------------------
     pub case_env: BoundMapChain<VarSort>,
     pub bound_count: usize,
-    pub pattern_par: Option<Par>,
+    pub pattern_par: Option<PlannedPar>,
     pub pattern_locally_free: Vec<u8>,
     pub guard_out: Option<ProcVisitOutputs>,
 }
@@ -433,25 +439,13 @@ pub(crate) struct SendK<'ast> {
     /// `0` means "the channel name has not been normalized yet"; `i ≥ 1` means
     /// `inputs[i − 1]` is next.
     pub idx: usize,
-    pub name_par: Option<Par>,
-    pub acc_pars: Vec<Par>,
+    pub name_par: Option<PlannedPar>,
+    pub acc_pars: Vec<PlannedPar>,
     pub acc_locally_free: Vec<u8>,
     pub acc_connective_used: bool,
     pub free_map: FreeMap<VarSort>,
     pub bound_map_chain: BoundMapChain<VarSort>,
-    pub input_par: Par,
-    /// ⚠ Retained but INERT, and deliberately so.
-    ///
-    /// `<Par as HasLocallyFree<Par>>::locally_free` names its depth parameter
-    /// `_depth` — the impl returns the node's cached bitset and never consults
-    /// it — so the Leg-1 removal of that by-value reader removed this field's
-    /// only consumer. It is kept because [`MethodK`] carries the same slot and
-    /// *does* still read it (`prepend_expr` needs the binding depth), and a
-    /// reader comparing the two continuations should see the same shape;
-    /// deleting it here would imply a difference between `Send` and `Method`
-    /// that does not exist.
-    #[allow(dead_code)]
-    pub input_depth: i32,
+    pub input_par: PlannedPar,
     pub persistent: bool,
 }
 
@@ -468,14 +462,13 @@ pub(crate) struct MethodK<'ast> {
     /// `i`-th argument *in reverse source order* is next.
     pub idx: usize,
     pub method_name: String,
-    pub target: Option<Par>,
-    pub acc_args: Vec<Par>,
+    pub target: Option<PlannedPar>,
+    pub acc_args: Vec<PlannedPar>,
     pub acc_locally_free: Vec<u8>,
     pub acc_connective_used: bool,
     pub free_map: FreeMap<VarSort>,
     pub bound_map_chain: BoundMapChain<VarSort>,
-    pub input_par: Par,
-    pub input_depth: i32,
+    pub input_par: PlannedPar,
 }
 
 /// `normalize_p_contr`'s frame.
@@ -485,7 +478,7 @@ pub(crate) struct ContrK<'ast> {
     /// `formals.names.len() + 1` = the body.
     pub idx: usize,
     pub name_out: Option<NameVisitOutputs>,
-    pub acc_patterns: Vec<Par>,
+    pub acc_patterns: Vec<PlannedPar>,
     pub acc_free: FreeMap<VarSort>,
     pub acc_locally_free: Vec<u8>,
     pub remainder: Option<ModelsVar>,
@@ -504,18 +497,18 @@ pub(crate) enum NormKont<'ast> {
     // ---- normalize.rs ---------------------------------------------------
     /// `normalize_ann_proc::unary_exp`.
     Unary {
-        input_par: Par,
+        input_par: PlannedPar,
         input_depth: i32,
         ctor: Box<dyn UnaryExpr>,
     },
     /// `normalize_ann_proc::binary_exp`.
     Binary {
         right: AnnProc<'ast>,
-        input_par: Par,
+        input_par: PlannedPar,
         input_depth: i32,
         bound_map_chain: BoundMapChain<VarSort>,
         ctor: Box<dyn BinaryExpr>,
-        left_par: Option<Par>,
+        left_par: Option<PlannedPar>,
     },
 
     // ---- one file per node type ------------------------------------------
@@ -532,12 +525,12 @@ pub(crate) enum NormKont<'ast> {
         kind: CollectKind,
         elements: &'ast [AnnProc<'ast>],
         idx: usize,
-        acc_pars: Vec<Par>,
+        acc_pars: Vec<PlannedPar>,
         locally_free: Vec<u8>,
         connective_used: bool,
         known_free: FreeMap<VarSort>,
         bound_map_chain: BoundMapChain<VarSort>,
-        input_par: Par,
+        input_par: PlannedPar,
         input_depth: i32,
     },
     /// `normalize_collection`'s `fold_match_map`, fused with
@@ -548,28 +541,30 @@ pub(crate) enum NormKont<'ast> {
         idx: usize,
         /// `false` = the next value is a key, `true` = it is a value.
         on_value: bool,
-        key_par: Option<Par>,
-        acc_pairs: Vec<(Par, Par)>,
+        key_par: Option<PlannedPar>,
+        acc_pairs: Vec<(PlannedPar, PlannedPar)>,
         locally_free: Vec<u8>,
         connective_used: bool,
         known_free: FreeMap<VarSort>,
         bound_map_chain: BoundMapChain<VarSort>,
-        input_par: Par,
+        input_par: PlannedPar,
         input_depth: i32,
     },
     /// `normalize_p_conjunction`.
     Conjunction {
-        right: AnnProc<'ast>,
+        operands: Vec<AnnProc<'ast>>,
+        spans: Vec<SourceSpan>,
+        idx: usize,
+        acc_pars: Vec<PlannedPar>,
         input: ProcVisitInputs,
-        span: SourceSpan,
-        left_par: Option<Par>,
     },
     /// `normalize_p_disjunction`.
     Disjunction {
-        right: AnnProc<'ast>,
+        operands: Vec<AnnProc<'ast>>,
+        spans: Vec<SourceSpan>,
+        idx: usize,
+        acc_pars: Vec<PlannedPar>,
         input: ProcVisitInputs,
-        span: SourceSpan,
-        left_par: Option<Par>,
     },
     /// `normalize_p_matches`.
     Matches {
@@ -583,7 +578,7 @@ pub(crate) enum NormKont<'ast> {
         span: SourceSpan,
     },
     /// `normalize_p_eval`.
-    Eval { input_par: Par },
+    Eval { input_par: PlannedPar },
     /// `normalize_p_send`.
     Send(Box<SendK<'ast>>),
     /// `normalize_p_method`.
@@ -595,7 +590,7 @@ pub(crate) enum NormKont<'ast> {
         if_true: AnnProc<'ast>,
         if_false: Option<AnnProc<'ast>>,
         bound_map_chain: BoundMapChain<VarSort>,
-        outer_par: Par,
+        outer_par: PlannedPar,
         phase: IfPhase,
         condition: Option<ProcVisitOutputs>,
         true_case: Option<ProcVisitOutputs>,
@@ -606,7 +601,7 @@ pub(crate) enum NormKont<'ast> {
     New {
         new_count: usize,
         uris: Vec<String>,
-        input_par: Par,
+        input_par: PlannedPar,
     },
     /// `normalize_p_contr`.
     Contr(Box<ContrK<'ast>>),
@@ -686,10 +681,12 @@ impl NormKont<'_> {
 
             // two operands
             NormKont::Binary { .. } => 2,
-            NormKont::Conjunction { .. } => 2,
-            NormKont::Disjunction { .. } => 2,
             NormKont::Matches { .. } => 2,
             NormKont::SigCompound { .. } => 2,
+
+            NormKont::Conjunction { operands, .. } | NormKont::Disjunction { operands, .. } => {
+                operands.len()
+            }
 
             // `condition`, `if_true`, `if_false`-or-`Nil`
             NormKont::If { .. } => 3,
@@ -756,8 +753,7 @@ impl NormKont<'_> {
             | NormKont::SignedTerm { .. } => 0,
 
             NormKont::Binary { left_par, .. } => usize::from(left_par.is_some()),
-            NormKont::Conjunction { left_par, .. } => usize::from(left_par.is_some()),
-            NormKont::Disjunction { left_par, .. } => usize::from(left_par.is_some()),
+            NormKont::Conjunction { idx, .. } | NormKont::Disjunction { idx, .. } => *idx,
             NormKont::Matches { left, .. } => usize::from(left.is_some()),
             NormKont::SigCompound { left, .. } => usize::from(left.is_some()),
 
@@ -816,156 +812,6 @@ impl NormKont<'_> {
             NormKont::TokenStack { idx, .. } => *idx,
         }
     }
-
-    /// Every `Par` this continuation owns, for the error path's shared iterative
-    /// teardown worklist.
-    fn into_pars(self) -> Vec<Par> {
-        fn push_opt(out: &mut Vec<Par>, p: Option<Par>) { out.extend(p); }
-        let mut out = Vec::new();
-        match self {
-            NormKont::Unary { input_par, .. } => out.push(input_par),
-            NormKont::Binary {
-                input_par,
-                left_par,
-                ..
-            } => {
-                out.push(input_par);
-                push_opt(&mut out, left_par);
-            }
-            NormKont::ParSeq { .. } => {}
-            NormKont::Collect {
-                acc_pars,
-                input_par,
-                ..
-            } => {
-                out.extend(acc_pars);
-                out.push(input_par);
-            }
-            NormKont::CollectMap {
-                acc_pairs,
-                key_par,
-                input_par,
-                ..
-            } => {
-                for (k, v) in acc_pairs {
-                    out.push(k);
-                    out.push(v);
-                }
-                push_opt(&mut out, key_par);
-                out.push(input_par);
-            }
-            NormKont::Conjunction {
-                input, left_par, ..
-            }
-            | NormKont::Disjunction {
-                input, left_par, ..
-            } => {
-                out.push(input.par);
-                push_opt(&mut out, left_par);
-            }
-            NormKont::Matches { input, left, .. } => {
-                out.push(input.par);
-                if let Some(l) = left {
-                    out.push(l.par);
-                }
-            }
-            NormKont::Negation { input, .. } | NormKont::Bundle { input, .. } => {
-                out.push(input.par)
-            }
-            NormKont::Eval { input_par } => out.push(input_par),
-            NormKont::Send(k) => {
-                let SendK {
-                    name_par,
-                    acc_pars,
-                    input_par,
-                    ..
-                } = *k;
-                push_opt(&mut out, name_par);
-                out.extend(acc_pars);
-                out.push(input_par);
-            }
-            NormKont::Method(k) => {
-                let MethodK {
-                    target,
-                    acc_args,
-                    input_par,
-                    ..
-                } = *k;
-                push_opt(&mut out, target);
-                out.extend(acc_args);
-                out.push(input_par);
-            }
-            NormKont::If {
-                outer_par,
-                condition,
-                true_case,
-                ..
-            } => {
-                out.push(outer_par);
-                out.extend(condition.map(|c| c.par));
-                out.extend(true_case.map(|t| t.par));
-            }
-            NormKont::Match(k) => {
-                let MatchK {
-                    input,
-                    target,
-                    acc_cases,
-                    pattern_par,
-                    guard_out,
-                    ..
-                } = *k;
-                out.push(input.par);
-                out.extend(target.map(|t| t.par));
-                for c in acc_cases {
-                    out.extend(c.pattern);
-                    out.extend(c.source);
-                    out.extend(c.guard);
-                }
-                push_opt(&mut out, pattern_par);
-                out.extend(guard_out.map(|g| g.par));
-            }
-            NormKont::New { input_par, .. } => out.push(input_par),
-            NormKont::Contr(k) => {
-                let ContrK {
-                    name_out,
-                    acc_patterns,
-                    input,
-                    ..
-                } = *k;
-                out.extend(name_out.map(|n| n.par));
-                out.extend(acc_patterns);
-                out.push(input.par);
-            }
-            NormKont::Input(k) => {
-                let InputK {
-                    input,
-                    group_pars,
-                    done_patterns,
-                    source_pars,
-                    receive_binds,
-                    guard_out,
-                    ..
-                } = *k;
-                out.push(input.par);
-                out.extend(group_pars);
-                for (pars, _, _, _) in done_patterns {
-                    out.extend(pars);
-                }
-                out.extend(source_pars);
-                for b in receive_binds {
-                    out.extend(b.patterns);
-                    out.extend(b.source);
-                }
-                out.extend(guard_out.map(|g| g.par));
-            }
-            NormKont::NameQuote | NormKont::CanonQuote | NormKont::SigHash => {}
-            NormKont::SigCompound { .. } => {}
-            NormKont::SignedTerm { input, .. }
-            | NormKont::SignedJoin { input, .. }
-            | NormKont::TokenStack { input, .. } => out.push(input.par),
-        }
-        out
-    }
 }
 
 // ===========================================================================
@@ -996,13 +842,14 @@ pub(crate) enum Step<'ast> {
 /// sibling width; the recursion lives in `work`.
 ///
 /// See the module documentation for the conservation law, the slot invariant,
-/// and why the error path dismantles rather than drops.
+/// and flat-arena teardown on both success and error paths.
 pub(crate) fn norm_drive<'ast>(
     root: NormWork<'ast>,
+    construction: &mut ParConstruction,
     env: &HashMap<String, Par>,
     parser: &'ast RholangParser<'ast>,
 ) -> Result<NormVal, InterpreterError> {
-    norm_drive_from(Step::Tail(root), env, parser)
+    norm_drive_from(Step::Tail(root), construction, env, parser)
 }
 
 /// [`norm_drive`], seeded from a [`Step`] rather than from a bare obligation.
@@ -1015,6 +862,7 @@ pub(crate) fn norm_drive<'ast>(
 /// each is `O(1)` in native stack for the same reason.
 pub(crate) fn norm_drive_from<'ast>(
     initial: Step<'ast>,
+    construction: &mut ParConstruction,
     env: &HashMap<String, Par>,
     parser: &'ast RholangParser<'ast>,
 ) -> Result<NormVal, InterpreterError> {
@@ -1081,9 +929,9 @@ pub(crate) fn norm_drive_from<'ast>(
                     Some(v) => v,
                     None => unreachable!("norm_drive: a Combine ran with an empty value stack"),
                 };
-                let step = match run_combine(kont, value, env, parser) {
+                let step = match run_combine(kont, value, construction, env, parser) {
                     Ok(s) => s,
-                    Err(e) => return Err(unwind(e, work, vals)),
+                    Err(e) => return Err(e),
                 };
                 // A continuation that has just absorbed its LAST child must
                 // produce a value; one that has not must schedule exactly one
@@ -1106,9 +954,9 @@ pub(crate) fn norm_drive_from<'ast>(
             }
             descend => {
                 descends -= 1;
-                match run_descend(descend, env, parser) {
+                match run_descend(descend, construction, env, parser) {
                     Ok(s) => s,
-                    Err(e) => return Err(unwind(e, work, vals)),
+                    Err(e) => return Err(e),
                 }
             }
         };
@@ -1145,27 +993,6 @@ pub(crate) fn norm_drive_from<'ast>(
         .expect("norm_drive: exactly one value must remain when the work stack drains"))
 }
 
-/// Tear the machine down **iteratively** on the error path and hand the error
-/// back unchanged.
-///
-/// `?` in the recursive form discarded pending work by unwinding; here the
-/// pending work is a heap structure holding `Par`s, and `<Par as Drop>` is
-/// itself Θ(depth) (audit §5 row 10, 470 B/level debug). Letting `work` and
-/// `vals` fall out of scope would therefore re-introduce the class on precisely
-/// the path a hostile input takes.
-#[inline(never)]
-fn unwind(err: InterpreterError, work: Vec<NormWork<'_>>, vals: Vec<NormVal>) -> InterpreterError {
-    let mut pars: Vec<Par> = Vec::new();
-    for item in work {
-        pars.extend(item.into_pars());
-    }
-    for v in vals {
-        pars.extend(v.into_pars());
-    }
-    dismantle_all(pars);
-    err
-}
-
 // ===========================================================================
 // dispatch
 // ===========================================================================
@@ -1174,16 +1001,19 @@ fn unwind(err: InterpreterError, work: Vec<NormWork<'_>>, vals: Vec<NormVal>) ->
 #[inline]
 fn run_descend<'ast>(
     work: NormWork<'ast>,
+    construction: &mut ParConstruction,
     env: &HashMap<String, Par>,
     parser: &'ast RholangParser<'ast>,
 ) -> Result<Step<'ast>, InterpreterError> {
     match work {
-        NormWork::Proc { proc, input } => super::normalize::descend_proc(proc, input, env, parser),
+        NormWork::Proc { proc, input } => {
+            super::normalize::descend_proc(proc, input, construction, env, parser)
+        }
         NormWork::Name { name, input } => {
-            super::normalizer::name_normalize_matcher::descend_name(name, input)
+            super::normalizer::name_normalize_matcher::descend_name(name, input, construction)
         }
         NormWork::CanonQuote { proc } => {
-            super::normalizer::cost_accounting::sig::descend_canon_quote(proc)
+            super::normalizer::cost_accounting::sig::descend_canon_quote(proc, construction)
         }
         NormWork::Sig {
             sig,
@@ -1206,6 +1036,7 @@ fn run_descend<'ast>(
 fn run_combine<'ast>(
     kont: NormKont<'ast>,
     value: NormVal,
+    construction: &mut ParConstruction,
     env: &HashMap<String, Par>,
     parser: &'ast RholangParser<'ast>,
 ) -> Result<Step<'ast>, InterpreterError> {
@@ -1219,7 +1050,7 @@ fn run_combine<'ast>(
             input_par,
             input_depth,
             ctor,
-        } => super::normalize::combine_unary(input_par, input_depth, ctor, value),
+        } => super::normalize::combine_unary(input_par, input_depth, ctor, value, construction),
         NormKont::Binary {
             right,
             input_par,
@@ -1235,6 +1066,7 @@ fn run_combine<'ast>(
             ctor,
             left_par,
             value,
+            construction,
         ),
         NormKont::ParSeq {
             procs,
@@ -1264,6 +1096,7 @@ fn run_combine<'ast>(
             input_par,
             input_depth,
             value,
+            construction,
         ),
         NormKont::CollectMap {
             remainder,
@@ -1292,32 +1125,49 @@ fn run_combine<'ast>(
             input_par,
             input_depth,
             value,
+            construction,
         ),
         NormKont::Conjunction {
-            right,
+            operands,
+            spans,
+            idx,
+            acc_pars,
             input,
-            span,
-            left_par,
-        } => {
-            p::p_conjunction_normalizer::combine_p_conjunction(right, input, span, left_par, value)
-        }
+        } => p::p_conjunction_normalizer::combine_p_conjunction(
+            operands,
+            spans,
+            idx,
+            acc_pars,
+            input,
+            value,
+            construction,
+        ),
         NormKont::Disjunction {
-            right,
+            operands,
+            spans,
+            idx,
+            acc_pars,
             input,
-            span,
-            left_par,
-        } => {
-            p::p_disjunction_normalizer::combine_p_disjunction(right, input, span, left_par, value)
-        }
+        } => p::p_disjunction_normalizer::combine_p_disjunction(
+            operands,
+            spans,
+            idx,
+            acc_pars,
+            input,
+            value,
+            construction,
+        ),
         NormKont::Matches { right, input, left } => {
-            p::p_matches_normalizer::combine_p_matches(right, input, left, value)
+            p::p_matches_normalizer::combine_p_matches(right, input, left, value, construction)
         }
         NormKont::Negation { input, span } => {
-            p::p_negation_normalizer::combine_p_negation(input, span, value)
+            p::p_negation_normalizer::combine_p_negation(input, span, value, construction)
         }
-        NormKont::Eval { input_par } => p::p_eval_normalizer::combine_p_eval(input_par, value),
-        NormKont::Send(k) => p::p_send_normalizer::combine_p_send(k, value),
-        NormKont::Method(k) => p::p_method_normalizer::combine_p_method(k, value),
+        NormKont::Eval { input_par } => {
+            p::p_eval_normalizer::combine_p_eval(input_par, value, construction)
+        }
+        NormKont::Send(k) => p::p_send_normalizer::combine_p_send(k, value, construction),
+        NormKont::Method(k) => p::p_method_normalizer::combine_p_method(k, value, construction),
         NormKont::If {
             if_true,
             if_false,
@@ -1336,22 +1186,27 @@ fn run_combine<'ast>(
             true_case,
             value,
             parser,
+            construction,
         ),
-        NormKont::Match(k) => p::p_match_normalizer::combine_p_match(k, value),
+        NormKont::Match(k) => p::p_match_normalizer::combine_p_match(k, value, construction),
         NormKont::New {
             new_count,
             uris,
             input_par,
-        } => p::p_new_normalizer::combine_p_new(new_count, uris, input_par, value, env),
-        NormKont::Contr(k) => p::p_contr_normalizer::combine_p_contr(k, value),
+        } => {
+            p::p_new_normalizer::combine_p_new(new_count, uris, input_par, value, env, construction)
+        }
+        NormKont::Contr(k) => p::p_contr_normalizer::combine_p_contr(k, value, construction),
         NormKont::Bundle {
             bundle_type,
             span,
             input,
-        } => p::p_bundle_normalizer::combine_p_bundle(bundle_type, span, input, value),
-        NormKont::Input(k) => p::p_input_normalizer::combine_p_input(k, value),
+        } => {
+            p::p_bundle_normalizer::combine_p_bundle(bundle_type, span, input, value, construction)
+        }
+        NormKont::Input(k) => p::p_input_normalizer::combine_p_input(k, value, construction),
         NormKont::NameQuote => name::combine_name_quote(value),
-        NormKont::CanonQuote => sig::combine_canon_quote(value),
+        NormKont::CanonQuote => sig::combine_canon_quote(value, construction),
         NormKont::SigHash => sig::combine_sig_hash(value),
         NormKont::SigCompound {
             right,

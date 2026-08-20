@@ -124,6 +124,11 @@ pub trait ISpace<
     /// no-op, the `RSpace` override is one observer `is_none` check.
     fn observe_reduction(&self, _redex: &C, _kind: super::logging::ReductionKind) {}
 
+    /// Whether [`Self::observe_reduction`] has a live consumer. Structural
+    /// evaluator identities may collapse intermediate nodes only when this is
+    /// false; a capture-only observer can return true even without a step gate.
+    fn has_reduction_observer(&self) -> bool { false }
+
     /**
     Reverts the ISpace to the state checkpointed using {@link #createSoftCheckpoint()}
     */

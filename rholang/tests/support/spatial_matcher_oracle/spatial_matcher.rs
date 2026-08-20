@@ -1,5 +1,6 @@
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/SpatialMatcher.scala - trait SpatialMatcher
 
+use models::rhoapi::If;
 use models::rust::par_map_type_mapper::ParMapTypeMapper;
 use models::rust::par_set_type_mapper::ParSetTypeMapper;
 use models::rust::rholang::implicits::{single_expr, vector_par};
@@ -24,6 +25,7 @@ list_match!(
     Match,
     Bundle,
     GUnforgeable,
+    If,
     ReceiveBind
 );
 
@@ -316,7 +318,7 @@ impl SpatialMatcher<Par, Par> for SpatialMatcherContext {
             // println!("pc: {:?}", pc);
             let min_rem = pc.clone();
             let max_rem = if wildcard || !var_level.is_none() {
-                pc._max()
+                ParCount::unbounded()
             } else {
                 pc.clone()
             };
@@ -373,7 +375,7 @@ impl SpatialMatcher<Par, Par> for SpatialMatcherContext {
             /// answer: they are what `return Some(sp.1)` is carrying home.
             ///
             /// ⚠ The fan-out here is the widest in the matcher — `ConnNotBody`'s
-            /// `min_max_con` is `(_new(), _max())` (`par_count.rs`), i.e. the full
+            /// `min_max_con` is `(zero(), unbounded())` (`par_count.rs`), i.e. the full
             /// subset lattice of the target — so this is the one site where the
             /// entry clone can be paid many times per match. Two things bound it:
             /// the elision below, and the fact that TODAY (before this fix)
@@ -513,6 +515,15 @@ impl SpatialMatcher<Par, Par> for SpatialMatcherContext {
                     wildcard,
                 )
             })
+            .and_then(|_| {
+                self.list_match_single_(
+                    remainder.take_occurrences::<If>(),
+                    pattern.take_occurrences::<If>(),
+                    &|p, conditionals| p.with_conditionals(conditionals),
+                    var_level,
+                    wildcard,
+                )
+            })
         }
     }
 }
@@ -525,6 +536,30 @@ impl SpatialMatcher<Bundle, Bundle> for SpatialMatcherContext {
         // println!("Target: {:?}\n", target);
         // println!("Pattern: {:?}", pattern);
         guard(pattern == target)
+    }
+}
+
+// Test-only recursive equation retained as the semantic oracle for the
+// production PDA. `connective_used` and `locally_free` are derived metadata;
+// the three child Pars are the semantic fields, in schema order.
+impl SpatialMatcher<If, If> for SpatialMatcherContext {
+    fn spatial_match(&mut self, target: If, pattern: If) -> Option<()> {
+        self.spatial_match(
+            target.condition.expect("If.condition (target)"),
+            pattern.condition.expect("If.condition (pattern)"),
+        )
+        .and_then(|_| {
+            self.spatial_match(
+                target.if_true.expect("If.if_true (target)"),
+                pattern.if_true.expect("If.if_true (pattern)"),
+            )
+        })
+        .and_then(|_| {
+            self.spatial_match(
+                target.if_false.expect("If.if_false (target)"),
+                pattern.if_false.expect("If.if_false (pattern)"),
+            )
+        })
     }
 }
 

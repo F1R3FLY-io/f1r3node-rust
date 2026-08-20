@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use casper::rust::api::block_api::BlockAPI;
 use casper::rust::util::construct_deploy;
 use crypto::rust::public_key::PublicKey;
+use rholang::rust::interpreter::pretty_printer::PrettyPrinter;
 
 use crate::helper::test_node::TestNode;
 use crate::util::genesis_builder::GenesisBuilder;
@@ -151,7 +152,11 @@ async fn exploratory_deploy_should_get_data_from_read_only_node() {
             assert!(!pars.is_empty(), "Exploratory deploy should return data");
 
             // The result should contain our stored data "data"
-            let result_str = format!("{:?}", pars);
+            let result_str = pars
+                .iter()
+                .map(|par| PrettyPrinter::new().build_string_from_message(par))
+                .collect::<Vec<_>>()
+                .join(" | ");
             assert!(
                 result_str.contains(stored_data),
                 "Result should contain stored data '{}', got: {:?}",

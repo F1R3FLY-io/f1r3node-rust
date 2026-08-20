@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 
 use models::rhoapi::Par;
+use models::rust::par_construction::ParConstruction;
 use rholang_parser::ast::{
     AnnProc, Bind, Id, LetBinding, Name, NameDecl, Names, SendType, Source, Var,
 };
@@ -10,9 +11,11 @@ use rholang_parser::SourceSpan;
 use uuid::Uuid;
 
 use super::exports::InterpreterError;
-use crate::rust::interpreter::compiler::exports::{ProcVisitInputs, ProcVisitOutputs};
+use crate::rust::interpreter::compiler::exports::{
+    ProcVisitInputs as PublicProcVisitInputs, ProcVisitOutputs as PublicProcVisitOutputs,
+};
 use crate::rust::interpreter::compiler::normalize_drive::{
-    norm_drive_from, NormVal, NormWork, Step,
+    norm_drive_from, NormWork, ProcVisitInputs, Step,
 };
 use crate::rust::interpreter::compiler::span_utils::SpanContext;
 
@@ -394,12 +397,22 @@ pub fn normalize_p_let<'ast>(
     body: &'ast AnnProc<'ast>,
     concurrent: bool,
     let_span: SourceSpan,
-    input: ProcVisitInputs,
+    input: PublicProcVisitInputs,
     env: &HashMap<String, Par>,
     parser: &'ast rholang_parser::RholangParser<'ast>,
-) -> Result<ProcVisitOutputs, InterpreterError> {
-    let step = descend_p_let(bindings, *body, concurrent, let_span, input, parser);
-    norm_drive_from(step, env, parser).map(NormVal::into_proc)
+) -> Result<PublicProcVisitOutputs, InterpreterError> {
+    let mut construction = ParConstruction::new();
+    let planned_input = ProcVisitInputs {
+        par: construction.import_par(&input.par)?,
+        bound_map_chain: input.bound_map_chain,
+        free_map: input.free_map,
+    };
+    let step = descend_p_let(bindings, *body, concurrent, let_span, planned_input, parser);
+    let result = norm_drive_from(step, &mut construction, env, parser)?.into_proc();
+    Ok(PublicProcVisitOutputs {
+        par: construction.finish(result.par)?,
+        free_map: result.free_map,
+    })
 }
 
 //rholang/src/test/scala/coop/rchain/rholang/interpreter/LetSpec.scala

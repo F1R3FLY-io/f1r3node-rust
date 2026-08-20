@@ -1,3 +1,4 @@
+use models::rhoapi::If;
 use models::rust::par_bag::ParComponentItem;
 
 use super::exports::*;
@@ -12,6 +13,7 @@ pub struct ParCount {
     pub matches: u64,
     pub unforgeables: u64,
     pub bundles: u64,
+    pub conditionals: u64,
 }
 
 impl ParCount {
@@ -24,10 +26,11 @@ impl ParCount {
             matches: par.family_cardinality::<Match>(),
             unforgeables: par.family_cardinality::<GUnforgeable>(),
             bundles: par.family_cardinality::<Bundle>(),
+            conditionals: par.family_cardinality::<If>(),
         }
     }
 
-    pub fn _new(&self) -> Self {
+    pub const fn zero() -> Self {
         ParCount {
             sends: 0,
             receives: 0,
@@ -36,6 +39,7 @@ impl ParCount {
             matches: 0,
             unforgeables: 0,
             bundles: 0,
+            conditionals: 0,
         }
     }
 
@@ -48,18 +52,26 @@ impl ParCount {
             matches: self.matches.max(other.matches),
             unforgeables: self.unforgeables.max(other.unforgeables),
             bundles: self.bundles.max(other.bundles),
+            conditionals: self.conditionals.max(other.conditionals),
         }
     }
 
-    pub fn _max(&self) -> ParCount {
+    /// Top element of the matcher count interval domain.
+    ///
+    /// This is a logical bound, not a resource budget. The historical port
+    /// used `1000`, which silently rejected legal wildcard/remainder matches
+    /// above that cardinality. Each search intersects this value with the
+    /// finite target family before producing positional candidates.
+    pub const fn unbounded() -> ParCount {
         Self {
-            sends: 1000,
-            receives: 1000,
-            news: 1000,
-            matches: 1000,
-            exprs: 1000,
-            unforgeables: 1000,
-            bundles: 1000,
+            sends: u64::MAX,
+            receives: u64::MAX,
+            news: u64::MAX,
+            matches: u64::MAX,
+            exprs: u64::MAX,
+            unforgeables: u64::MAX,
+            bundles: u64::MAX,
+            conditionals: u64::MAX,
         }
     }
 
@@ -72,6 +84,7 @@ impl ParCount {
             matches: self.matches.min(other.matches),
             unforgeables: self.unforgeables.min(other.unforgeables),
             bundles: self.bundles.min(other.bundles),
+            conditionals: self.conditionals.min(other.conditionals),
         }
     }
 
@@ -84,6 +97,7 @@ impl ParCount {
             matches: self.matches.saturating_add(other.matches),
             unforgeables: self.unforgeables.saturating_add(other.unforgeables),
             bundles: self.bundles.saturating_add(other.bundles),
+            conditionals: self.conditionals.saturating_add(other.conditionals),
         }
     }
 
@@ -96,6 +110,7 @@ impl ParCount {
             matches: self.matches.saturating_mul(amount),
             unforgeables: self.unforgeables.saturating_mul(amount),
             bundles: self.bundles.saturating_mul(amount),
+            conditionals: self.conditionals.saturating_mul(amount),
         }
     }
 
@@ -143,8 +158,9 @@ impl ParCount {
             matches: par.family_cardinality::<Match>(),
             unforgeables: par.family_cardinality::<GUnforgeable>(),
             bundles: par.family_cardinality::<Bundle>(),
+            conditionals: par.family_cardinality::<If>(),
         };
-        let base = (pc.clone(), if wildcard { self._max() } else { pc });
+        let base = (pc.clone(), if wildcard { Self::unbounded() } else { pc });
         (par.family_distinct_len::<Connective>(), base)
     }
 
@@ -206,15 +222,15 @@ impl ParCount {
                                 work.push(CountWork::Visit(CountNode::Par(par)));
                             }
                         }
-                        Some(ConnNotBody(_)) => values.push((self._new(), self._max())),
+                        Some(ConnNotBody(_)) => values.push((Self::zero(), Self::unbounded())),
                         None | Some(VarRefBody(_)) => {
-                            values.push((self._new(), self._new()));
+                            values.push((Self::zero(), Self::zero()));
                         }
                         Some(
                             ConnBool(_) | ConnInt(_) | ConnString(_) | ConnUri(_)
                             | ConnByteArray(_),
                         ) => {
-                            let mut one = self._new();
+                            let mut one = Self::zero();
                             one.exprs = 1;
                             values.push((one.clone(), one));
                         }
@@ -234,15 +250,15 @@ impl ParCount {
                                 work.push(CountWork::Visit(CountNode::OwnedPar(par)));
                             }
                         }
-                        Some(ConnNotBody(_)) => values.push((self._new(), self._max())),
+                        Some(ConnNotBody(_)) => values.push((Self::zero(), Self::unbounded())),
                         None | Some(VarRefBody(_)) => {
-                            values.push((self._new(), self._new()));
+                            values.push((Self::zero(), Self::zero()));
                         }
                         Some(
                             ConnBool(_) | ConnInt(_) | ConnString(_) | ConnUri(_)
                             | ConnByteArray(_),
                         ) => {
-                            let mut one = self._new();
+                            let mut one = Self::zero();
                             one.exprs = 1;
                             values.push((one.clone(), one));
                         }
@@ -268,7 +284,7 @@ impl ParCount {
                 }
                 CountWork::ReduceAnd(child_count) => {
                     let start = values.len() - child_count;
-                    let mut result = (self._new(), self._max());
+                    let mut result = (Self::zero(), Self::unbounded());
                     for (child_min, child_max) in values.drain(start..) {
                         result.0 = result.0.max(&child_min);
                         result.1 = result.1.min(&child_max);
@@ -277,7 +293,7 @@ impl ParCount {
                 }
                 CountWork::ReduceOr(child_count) => {
                     let start = values.len() - child_count;
-                    let mut result = (self._max(), self._new());
+                    let mut result = (Self::unbounded(), Self::zero());
                     for (child_min, child_max) in values.drain(start..) {
                         result.0 = result.0.min(&child_min);
                         result.1 = result.1.max(&child_max);

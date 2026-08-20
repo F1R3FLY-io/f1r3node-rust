@@ -3,6 +3,12 @@ use std::fmt;
 
 use rspace_plus_plus::rspace::errors::RSpaceError;
 
+impl From<models::rust::par_construction::ParConstructionError> for InterpreterError {
+    fn from(error: models::rust::par_construction::ParConstructionError) -> Self {
+        Self::NormalizerError(format!("planned Par construction failed: {error}"))
+    }
+}
+
 // PartialEq here is needed for testing purposes
 #[derive(thiserror::Error)]
 pub enum InterpreterError {

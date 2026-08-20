@@ -1,16 +1,17 @@
 use std::collections::{BTreeMap, HashMap};
 
 use models::rhoapi::{New, Par};
+use models::rust::par_construction::{ParConstruction, PlannedPar};
 use rholang_parser::ast::{AnnProc, NameDecl};
 use rholang_parser::SourcePos;
 
-use crate::rust::interpreter::compiler::exports::{
-    BoundMapChain, IdContextPos, ProcVisitInputs, ProcVisitOutputs,
-};
+use crate::rust::interpreter::compiler::exports::{BoundMapChain, IdContextPos};
 use crate::rust::interpreter::compiler::normalize::VarSort;
-use crate::rust::interpreter::compiler::normalize_drive::{NormKont, NormVal, NormWork, Step};
+use crate::rust::interpreter::compiler::normalize_drive::{
+    NormKont, NormVal, NormWork, ProcVisitInputs, ProcVisitOutputs, Step,
+};
 use crate::rust::interpreter::errors::InterpreterError;
-use crate::rust::interpreter::util::{filter_and_adjust_bitset, prepend_new};
+use crate::rust::interpreter::util::filter_and_adjust_bitset;
 
 /// `new x, y in { P }`, descend half.
 ///
@@ -26,6 +27,7 @@ pub(crate) fn descend_p_new<'ast>(
     decls: &[NameDecl<'ast>],
     proc: AnnProc<'ast>,
     input: ProcVisitInputs,
+    construction: &mut ParConstruction,
 ) -> Result<Step<'ast>, InterpreterError> {
     // TODO: bindings within a single new shouldn't have overlapping names. - OLD
     let new_tagged_bindings: Vec<(Option<String>, String, VarSort, usize, usize)> = decls
@@ -80,7 +82,7 @@ pub(crate) fn descend_p_new<'ast>(
         work: NormWork::Proc {
             proc,
             input: ProcVisitInputs {
-                par: Par::default(),
+                par: construction.empty_par()?,
                 bound_map_chain: new_env,
                 free_map: input.free_map,
             },
@@ -93,30 +95,51 @@ pub(crate) fn descend_p_new<'ast>(
 pub(crate) fn combine_p_new<'ast>(
     new_count: usize,
     uris: Vec<String>,
-    input_par: Par,
+    input_par: PlannedPar,
     value: NormVal,
     env: &HashMap<String, Par>,
+    construction: &mut ParConstruction,
 ) -> Result<Step<'ast>, InterpreterError> {
     let body_result = value.into_proc();
 
-    // TODO: we should build btree_map with real values, not a copied references from env: ref &HashMap
-    let btree_map: BTreeMap<String, Par> =
-        env.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+    let btree_map: BTreeMap<String, Par> = env
+        .keys()
+        .map(|key| (key.clone(), Par::default()))
+        .collect();
+    let injection_children: Vec<_> = btree_map
+        .keys()
+        .map(|key| {
+            construction.import_par(
+                env.get(key)
+                    .expect("New injection key came from the same environment"),
+            )
+        })
+        .collect::<Result<_, _>>()?;
 
-    // The recursive implementation cloned the body before consuming its
-    // cache, so the nested body retained the same bytes. Copy only the shallow
-    // cache vector and move the PathMap-backed body.
-    let body_locally_free = body_result.par.locally_free().to_vec();
+    // Derive the enclosing summaries from the planned body handle. The body
+    // itself stays in the shared construction arena and is referenced by the
+    // generated protobuf/score PDAs; it is neither cloned nor materialized.
+    let body_locally_free = construction.locally_free(body_result.par).to_vec();
+    let locally_free = filter_and_adjust_bitset(body_locally_free, new_count);
     let result_new = New {
-        bind_count: new_count as i32,
-        p: Some(body_result.par),
+        bind_count: i32::try_from(new_count).map_err(|_| {
+            InterpreterError::NormalizerError(
+                "new binder count exceeds the protobuf i32 domain".to_string(),
+            )
+        })?,
+        p: Some(Par::default()),
         uri: uris,
         injections: btree_map,
-        locally_free: filter_and_adjust_bitset(body_locally_free, new_count),
+        locally_free: locally_free.clone(),
     };
+    let mut children = Vec::with_capacity(1 + injection_children.len());
+    children.push(body_result.par);
+    children.extend(injection_children);
+    let component = construction.new_component(&result_new, &children)?;
+    let connective_used = construction.connective_used(body_result.par);
 
     Ok(Step::Done(NormVal::Proc(ProcVisitOutputs {
-        par: prepend_new(input_par, result_new),
+        par: construction.append_component(input_par, component, locally_free, connective_used)?,
         free_map: body_result.free_map,
     })))
 }

@@ -22,9 +22,9 @@ use rholang_parser::{RholangParser, SourceSpan};
 use super::desugar;
 use super::ir::Sig;
 use crate::rust::interpreter::compiler::bound_map_chain::BoundMapChain;
-use crate::rust::interpreter::compiler::normalize::{ProcVisitInputs, VarSort};
+use crate::rust::interpreter::compiler::normalize::VarSort;
 use crate::rust::interpreter::compiler::normalize_drive::{
-    NormKont, NormVal, NormWork, SigInput, Step,
+    NormKont, NormVal, NormWork, ProcVisitInputs, ProcVisitOutputs, SigInput, Step,
 };
 use crate::rust::interpreter::errors::InterpreterError;
 
@@ -138,12 +138,10 @@ fn schedule_layer<'ast>(
                 },
             }
         }
-        None => Step::Done(NormVal::Proc(
-            crate::rust::interpreter::compiler::normalize::ProcVisitOutputs {
-                par: input.par,
-                free_map: input.free_map,
-            },
-        )),
+        None => Step::Done(NormVal::Proc(ProcVisitOutputs {
+            par: input.par,
+            free_map: input.free_map,
+        })),
     }
 }
 

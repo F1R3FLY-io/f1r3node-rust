@@ -5,6 +5,7 @@
 //! API while preventing calls through a different message type from silently
 //! reintroducing mutual native-stack recursion.
 
+use models::rhoapi::If;
 use models::rust::rholang::implicits::vector_par;
 use models::rust::utils::{guard, new_free_map, FreeMap, IsolatableState};
 
@@ -25,6 +26,7 @@ list_match!(
     Match,
     Bundle,
     GUnforgeable,
+    If,
     ReceiveBind
 );
 
@@ -113,5 +115,6 @@ pda_impl!(New, match_new);
 pda_impl!(Expr, match_expr);
 pda_impl!(Match, match_match);
 pda_impl!(GUnforgeable, match_unforgeable);
+pda_impl!(If, match_if);
 pda_impl!(ReceiveBind, match_receive_bind);
 pda_impl!(MatchCase, match_case);

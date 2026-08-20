@@ -390,6 +390,8 @@ where
         }
     }
 
+    fn has_reduction_observer(&self) -> bool { self.step_observer.is_some() }
+
     async fn revert_to_soft_checkpoint(
         &self,
         checkpoint: SoftCheckpoint<C, P, A, K>,

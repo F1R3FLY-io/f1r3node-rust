@@ -1,13 +1,12 @@
-use models::rhoapi::connective::ConnectiveInstance;
-
+use crate::rust::interpreter::compiler::free_map::FreeMapConnective;
 use crate::rust::interpreter::compiler::normalize::{NameVisitOutputs, ProcVisitInputs};
 use crate::rust::interpreter::errors::InterpreterError;
 use crate::rust::interpreter::errors::InterpreterError::PatternReceiveError;
 
-pub fn fail_on_invalid_connective(
-    input: &ProcVisitInputs,
-    name_res: &NameVisitOutputs,
-) -> Result<NameVisitOutputs, InterpreterError> {
+pub fn fail_on_invalid_connective<P: Clone>(
+    input: &ProcVisitInputs<P>,
+    name_res: &NameVisitOutputs<P>,
+) -> Result<NameVisitOutputs<P>, InterpreterError> {
     if input.bound_map_chain.depth() == 0 {
         name_res
             .free_map
@@ -15,11 +14,11 @@ pub fn fail_on_invalid_connective(
             .iter()
             .find_map(
                 |(connective_instance, source_span)| match connective_instance {
-                    ConnectiveInstance::ConnOrBody(_) => Some(PatternReceiveError(format!(
+                    FreeMapConnective::Or => Some(PatternReceiveError(format!(
                         "\\/ (disjunction) at {:?}",
                         source_span
                     ))),
-                    ConnectiveInstance::ConnNotBody(_) => Some(PatternReceiveError(format!(
+                    FreeMapConnective::Not => Some(PatternReceiveError(format!(
                         "~ (negation) at {:?}",
                         source_span
                     ))),

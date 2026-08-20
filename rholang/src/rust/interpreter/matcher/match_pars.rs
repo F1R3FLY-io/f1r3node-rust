@@ -1,5 +1,5 @@
 use models::rhoapi::{
-    Bundle, Connective, Expr, GUnforgeable, Match, New, Par, Receive, ReceiveBind, Send,
+    Bundle, Connective, Expr, GUnforgeable, If, Match, New, Par, Receive, ReceiveBind, Send,
 };
 
 /*
@@ -45,6 +45,13 @@ pub fn compare_connectives_without_locally_free(a: &Connective, b: &Connective) 
     a.connective_instance == b.connective_instance
 }
 
+pub fn compare_ifs_without_locally_free(a: &If, b: &If) -> bool {
+    a.condition == b.condition
+        && a.if_true == b.if_true
+        && a.if_false == b.if_false
+        && a.connective_used == b.connective_used
+}
+
 pub fn compare_receive_binds_without_locally_free(a: &ReceiveBind, b: &ReceiveBind) -> bool {
     match_pars_drive(MatchWork::ReceiveBind(a.clone(), b.clone()))
 }
@@ -77,6 +84,9 @@ fn match_pars_drive(root: MatchWork) -> bool {
                         != pattern.family_cardinality::<GUnforgeable>()
                     || target.family_cardinality::<Bundle>()
                         != pattern.family_cardinality::<Bundle>()
+                    || target.family_cardinality::<Connective>()
+                        != pattern.family_cardinality::<Connective>()
+                    || target.family_cardinality::<If>() != pattern.family_cardinality::<If>()
                     || target.connective_used() != pattern.connective_used()
                 {
                     return false;
@@ -94,6 +104,8 @@ fn match_pars_drive(root: MatchWork) -> bool {
                 let pattern_bundles = pattern.decode_occurrences::<Bundle>();
                 let target_connectives = target.decode_occurrences::<Connective>();
                 let pattern_connectives = pattern.decode_occurrences::<Connective>();
+                let target_conditionals = target.decode_occurrences::<If>();
+                let pattern_conditionals = pattern.decode_occurrences::<If>();
 
                 if !target_sends
                     .iter()
@@ -127,6 +139,10 @@ fn match_pars_drive(root: MatchWork) -> bool {
                             compare_connectives_without_locally_free(target, pattern)
                         },
                     )
+                    || !target_conditionals
+                        .iter()
+                        .zip(&pattern_conditionals)
+                        .all(|(target, pattern)| compare_ifs_without_locally_free(target, pattern))
                 {
                     return false;
                 }

@@ -804,14 +804,27 @@ impl<'e> Traversal for EvalTraversal<'e> {
             EvNode::Expr(expr) => descend_ev_expr(expr, self.env, self.matcher, work, vals),
             EvNode::OwnedExpr(expr) => {
                 let stable = expr.as_ref() as *const Expr;
-                work.push(Step::Combine(EvKont::KeepOwnedExpr(expr)));
-                // SAFETY: the KeepOwnedExpr continuation now owns the Box and
-                // sits below every obligation descend_ev_expr can push. Box
-                // movement does not move its allocation, so stable remains
-                // valid until those obligations finish and the continuation
-                // consumes their one result.
+                let work_floor = work.len();
+                let value_floor = vals.len();
+                // SAFETY: `expr` retains the Box during `descend_ev_expr`. If
+                // that call schedules borrowed child obligations, the Box is
+                // moved into a continuation inserted below the whole new
+                // region before this method returns. Box movement does not
+                // move its allocation. A leaf schedules no borrowed work and
+                // has already cloned or resolved its result before `expr` is
+                // dropped here.
                 let stable: &'t Expr = unsafe { &*stable };
-                descend_ev_expr(stable, self.env, self.matcher, work, vals)
+                if let Err(error) = descend_ev_expr(stable, self.env, self.matcher, work, vals) {
+                    work.truncate(work_floor);
+                    return Err(error);
+                }
+                if work.len() == work_floor {
+                    debug_assert_eq!(vals.len(), value_floor + 1);
+                } else {
+                    debug_assert_eq!(vals.len(), value_floor);
+                    work.insert(work_floor, Step::Combine(EvKont::KeepOwnedExpr(expr)));
+                }
+                Ok(())
             }
         }
     }
@@ -1800,7 +1813,7 @@ mod differential_eval_with {
                 .expect("same operator set both ways");
             let a = eval_with(&term, &env, &NoSpatialMatch);
             let b = eval_with(&swapped, &env, &NoSpatialMatch);
-            if format!("{a:?}") != format!("{b:?}") {
+            if a != b {
                 disagreements += 1;
             }
         }

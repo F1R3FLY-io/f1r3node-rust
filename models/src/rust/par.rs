@@ -153,6 +153,19 @@ impl Par {
         self.components.family_distinct_len::<T>()
     }
 
+    /// Whether every authoritative component belongs to family `T`.
+    ///
+    /// This is an exact O(1) endpoint-domain test. It deliberately compares
+    /// distinct endpoint counts rather than projected cardinalities: logical
+    /// multiplicity counters saturate at `u64::MAX`, while the presence of one
+    /// endpoint from another family must remain observable even when both
+    /// projected cardinalities are saturated. The empty `Par` satisfies this
+    /// predicate vacuously; callers that require one or more `T` occurrences
+    /// must check that arity separately.
+    pub fn all_components_are<T: ParBagComponent>(&self) -> bool {
+        self.distinct_len() == self.family_distinct_len::<T>()
+    }
+
     pub fn family_cardinality<T: ParBagComponent>(&self) -> u64 {
         self.components.family_cardinality::<T>()
     }
@@ -425,25 +438,10 @@ impl Par {
             && self.family_cardinality::<Expr>() == 0
     }
 
-    pub fn is_nil(&self) -> bool {
-        self.family_cardinality::<Send>() == 0
-            && self.family_cardinality::<Receive>() == 0
-            && self.family_cardinality::<New>() == 0
-            && self.family_cardinality::<Match>() == 0
-            && self.family_cardinality::<Bundle>() == 0
-            && self.family_cardinality::<GUnforgeable>() == 0
-            && self.family_cardinality::<Connective>() == 0
-            && self.family_cardinality::<Expr>() == 0
-    }
+    pub fn is_nil(&self) -> bool { self.components_is_empty() }
 
     pub fn single_connective(&self) -> Option<Connective> {
-        let other_families_are_empty = self.family_cardinality::<Send>() == 0
-            && self.family_cardinality::<Receive>() == 0
-            && self.family_cardinality::<New>() == 0
-            && self.family_cardinality::<Expr>() == 0
-            && self.family_cardinality::<Match>() == 0
-            && self.family_cardinality::<Bundle>() == 0;
-        (other_families_are_empty && self.family_cardinality::<Connective>() == 1).then(|| {
+        (self.cardinality() == 1 && self.family_cardinality::<Connective>() == 1).then(|| {
             self.first::<Connective>()
                 .expect("Par invariant: stored Connective keys are canonical")
                 .expect("the cardinality check proved one Connective")
@@ -452,14 +450,7 @@ impl Par {
     }
 
     pub fn single_bundle(&self) -> Option<Bundle> {
-        let other_families_are_empty = self.family_cardinality::<Send>() == 0
-            && self.family_cardinality::<Receive>() == 0
-            && self.family_cardinality::<New>() == 0
-            && self.family_cardinality::<Expr>() == 0
-            && self.family_cardinality::<Match>() == 0
-            && self.family_cardinality::<GUnforgeable>() == 0
-            && self.family_cardinality::<Connective>() == 0;
-        (other_families_are_empty && self.family_cardinality::<Bundle>() == 1).then(|| {
+        (self.cardinality() == 1 && self.family_cardinality::<Bundle>() == 1).then(|| {
             self.first::<Bundle>()
                 .expect("Par invariant: stored Bundle keys are canonical")
                 .expect("the cardinality check proved one Bundle")
@@ -485,6 +476,86 @@ impl Par {
     /// The ETuple specialization of [`Par::wrap_unary_elist`].
     pub fn wrap_unary_etuple(depth: usize, terminal: Self) -> Option<Self> {
         super::par_bag::wrap_canonical_unary_etuple_par(depth, terminal)
+    }
+
+    /// Recognize an exact singleton `EList([..EList([GInt])..])` directly in
+    /// the authoritative component key. No nested `Par` is decoded.
+    pub fn canonical_unary_elist_gint_parts(&self) -> Option<(usize, i64)> {
+        if !self.locally_free.is_empty()
+            || self.connective_used
+            || self.cardinality() != 1
+            || self.family_cardinality::<Expr>() != 1
+        {
+            return None;
+        }
+        let mut result = None;
+        self.visit_encoded::<Expr>(|entry| {
+            if entry.multiplicity().get() == 1 {
+                result = entry.canonical_unary_elist_parts();
+            }
+        });
+        result
+    }
+
+    /// Recognize an exact singleton `ETuple(..ETuple(GInt)..)` directly in
+    /// the authoritative component key. No nested `Par` is decoded.
+    pub fn canonical_unary_etuple_gint_parts(&self) -> Option<(usize, i64)> {
+        if !self.locally_free.is_empty()
+            || self.connective_used
+            || self.cardinality() != 1
+            || self.family_cardinality::<Expr>() != 1
+        {
+            return None;
+        }
+        let mut result = None;
+        self.visit_encoded::<Expr>(|entry| {
+            if entry.multiplicity().get() == 1 {
+                result = entry.canonical_unary_etuple_parts();
+            }
+        });
+        result
+    }
+
+    /// Peel an exact non-empty spine of unary AND/OR connectives directly from
+    /// the canonical component bytes and decode only its terminal `Par`.
+    ///
+    /// Singleton conjunction and disjunction are both logical identities.
+    /// Candidate-plan compilation and spatial matching can therefore consume
+    /// the terminal without allocating any intermediate connective or `Par`.
+    pub fn canonical_unary_connective_terminal(&self) -> Option<Self> {
+        if self.cardinality() != 1
+            || self.family_cardinality::<Connective>() != 1
+            || !self.all_components_are::<Connective>()
+        {
+            return None;
+        }
+        let mut result = None;
+        self.visit_encoded::<Connective>(|entry| {
+            if entry.multiplicity().get() == 1 {
+                result = entry.canonical_unary_connective_terminal();
+            }
+        });
+        result
+    }
+
+    /// Peel an exact non-empty unary Bundle spine and decode only its terminal
+    /// process. Bundle flags constrain channel use when a bundle is a value;
+    /// they do not alter evaluation of its body. Reducer callers must preserve
+    /// the ordinary path when per-bundle observation is active.
+    pub fn canonical_unary_bundle_terminal(&self) -> Option<Self> {
+        if self.cardinality() != 1
+            || self.family_cardinality::<Bundle>() != 1
+            || !self.all_components_are::<Bundle>()
+        {
+            return None;
+        }
+        let mut result = None;
+        self.visit_encoded::<Bundle>(|entry| {
+            if entry.multiplicity().get() == 1 {
+                result = entry.canonical_unary_bundle_terminal();
+            }
+        });
+        result
     }
 
     pub fn protobuf_encoded_len(&self) -> Result<usize, ParProtobufError> {

@@ -109,3 +109,7 @@ harness = false
 name = "spatial_matcher_connective_domains"
 harness = false
 required-features = ["spatial-matcher-connective-domain-differential"]
+
+[[bench]]
+name = "spatial_matcher_if_cursor"
+harness = false

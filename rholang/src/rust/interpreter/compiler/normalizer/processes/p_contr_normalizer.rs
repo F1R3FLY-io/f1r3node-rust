@@ -1,13 +1,12 @@
 use models::rhoapi::{Par, Receive, ReceiveBind};
+use models::rust::par_construction::ParConstruction;
 use models::rust::utils::union;
 use rholang_parser::ast::{AnnProc, Name, Names};
 
-use crate::rust::interpreter::compiler::exports::{
-    FreeMap, NameVisitInputs, ProcVisitInputs, ProcVisitOutputs,
-};
+use crate::rust::interpreter::compiler::exports::{FreeMap, NameVisitInputs};
 use crate::rust::interpreter::compiler::normalize::VarSort;
 use crate::rust::interpreter::compiler::normalize_drive::{
-    ContrK, NormKont, NormVal, NormWork, Step,
+    ContrK, NormKont, NormVal, NormWork, ProcVisitInputs, ProcVisitOutputs, Step,
 };
 use crate::rust::interpreter::compiler::normalizer::cost_accounting::pattern_guard::reject_cost_syntax_in_name_pattern;
 use crate::rust::interpreter::compiler::normalizer::processes::utils::fail_on_invalid_connective;
@@ -58,6 +57,7 @@ pub(crate) fn descend_p_contr<'ast>(
 pub(crate) fn combine_p_contr<'ast>(
     mut k: Box<ContrK<'ast>>,
     value: NormVal,
+    construction: &mut ParConstruction,
 ) -> Result<Step<'ast>, InterpreterError> {
     let n_formals = k.formals.names.len();
 
@@ -73,7 +73,7 @@ pub(crate) fn combine_p_contr<'ast>(
         // ★ Leg-1 at the reader AND the accumulator: `HasLocallyFree<Par>` is a
         // by-value field read, so the recursive form paid TWO deep clones per
         // formal to obtain one cached bitset.
-        let formal_locally_free = result.par.locally_free().to_vec();
+        let formal_locally_free = construction.locally_free(result.par).to_vec();
         k.acc_patterns.insert(0, result.par);
         k.acc_free = result.free_map;
         k.acc_locally_free = union(std::mem::take(&mut k.acc_locally_free), formal_locally_free);
@@ -92,36 +92,52 @@ pub(crate) fn combine_p_contr<'ast>(
         let name_match_result =
             name_out.expect("combine_p_contr: the contract name is filled before the body");
 
-        // The recursive implementation cloned the body before consuming its
-        // cache, so both the nested body and `Receive::locally_free` retain the
-        // bytes. Copy only the shallow cache vector and move the ParBag body.
-        let name_locally_free = name_match_result.par.locally_free().to_vec();
-        let name_connective_used = name_match_result.par.connective_used();
-        let body_locally_free = body_result.par.locally_free().to_vec();
-        let body_connective_used = body_result.par.connective_used();
+        // Preserve the body's root summaries while retaining only its scalar
+        // arena handle in the enclosing Receive. No resident body is cloned or
+        // materialized.
+        let name_locally_free = construction.locally_free(name_match_result.par).to_vec();
+        let name_connective_used = construction.connective_used(name_match_result.par);
+        let body_locally_free = construction.locally_free(body_result.par).to_vec();
+        let body_connective_used = construction.connective_used(body_result.par);
+        let bound_count = i32::try_from(bound_count).map_err(|_| {
+            InterpreterError::NormalizerError(
+                "contract binder count exceeds the protobuf i32 domain".to_string(),
+            )
+        })?;
+        let patterns: Vec<_> = acc_patterns.into_iter().rev().collect();
+        let locally_free = union(
+            name_locally_free,
+            union(
+                acc_locally_free,
+                filter_and_adjust_bitset(body_locally_free, bound_count as usize),
+            ),
+        );
         let receive = Receive {
             binds: vec![ReceiveBind {
-                patterns: acc_patterns.into_iter().rev().collect(),
-                source: Some(name_match_result.par),
+                patterns: vec![Par::default(); patterns.len()],
+                source: Some(Par::default()),
                 remainder,
-                free_count: bound_count as i32,
+                free_count: bound_count,
             }],
-            body: Some(body_result.par),
+            body: Some(Par::default()),
             persistent: true,
             peek: false,
-            bind_count: bound_count as i32,
-            locally_free: union(
-                name_locally_free,
-                union(
-                    acc_locally_free,
-                    filter_and_adjust_bitset(body_locally_free, bound_count),
-                ),
-            ),
+            bind_count: bound_count,
+            locally_free: locally_free.clone(),
             connective_used: name_connective_used || body_connective_used,
             condition: None,
         };
-        //TODO: I should create new Expr for prepend_expr and provide it instead of receive.clone().into
-        let updated_par = input.par.prepend_receive(receive);
+        let mut children = patterns;
+        children.push(name_match_result.par);
+        children.push(body_result.par);
+        children.push(construction.empty_par()?);
+        let component = construction.receive_component(&receive, &children)?;
+        let updated_par = construction.append_component(
+            input.par,
+            component,
+            locally_free,
+            receive.connective_used,
+        )?;
         return Ok(Step::Done(NormVal::Proc(ProcVisitOutputs {
             par: updated_par,
             free_map: body_result.free_map,
@@ -176,7 +192,7 @@ pub(crate) fn combine_p_contr<'ast>(
         work: NormWork::Proc {
             proc: body,
             input: ProcVisitInputs {
-                par: Par::default(),
+                par: construction.empty_par()?,
                 bound_map_chain: new_enw,
                 free_map: name_free_map,
             },

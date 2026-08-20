@@ -438,41 +438,13 @@ fn ground_etuple_carrier(elements: Vec<Par>) -> Par {
 /// ParBag endpoint.  The payload cursor is linear and borrowed; no suffix
 /// `Par`, score tree, or temporary PathMap is materialized.
 fn encoded_unary_elist_parts(par: &Par) -> Option<(usize, i64)> {
-    if !par.locally_free().is_empty()
-        || par.connective_used()
-        || par.cardinality() != 1
-        || par.family_cardinality::<Expr>() != 1
-    {
-        return None;
-    }
-
-    let mut result = None;
-    par.visit_encoded::<Expr>(|entry| {
-        if entry.multiplicity().get() == 1 {
-            result = entry.canonical_unary_elist_parts();
-        }
-    });
-    result
+    par.canonical_unary_elist_gint_parts()
 }
 
 /// Recognize an exact unary `ETuple` spine in the authoritative ParBag bytes.
 /// The cursor is borrowed and linear; no nested Par suffix is materialized.
 fn encoded_unary_etuple_parts(par: &Par) -> Option<(usize, i64)> {
-    if !par.locally_free().is_empty()
-        || par.connective_used()
-        || par.cardinality() != 1
-        || par.family_cardinality::<Expr>() != 1
-    {
-        return None;
-    }
-
-    let mut result = None;
-    par.visit_encoded::<Expr>(|entry| {
-        if entry.multiplicity().get() == 1 {
-            result = entry.canonical_unary_etuple_parts();
-        }
-    });
-    result
+    par.canonical_unary_etuple_gint_parts()
 }
 
 fn epathmap_carrier(repr: EPathMapRepr<Par>) -> Par {

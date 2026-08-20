@@ -31,10 +31,9 @@
 //!     `atPath`/1. A value-producer mid-chain ⇒ `None` (today's path handles
 //!     the follow-on on the produced value).
 //! * Spine: every intermediate `target` is a pure single-expr Par whose expr
-//!   is the next `EMethodBody` (the same 6-field emptiness `eval_single_expr`
-//!   enforces at reduce.rs:7008-7013; `connectives` deliberately unchecked —
-//!   today's path ignores them too, and a link result is always rebuilt
-//!   fresh so wrapper-Par metadata never propagates).
+//!   is the next `EMethodBody`. Purity is the authoritative ParBag predicate:
+//!   every endpoint belongs to `Expr`, so no historical or future constructor
+//!   family can be ignored by either the fused gate or `eval_single_expr`.
 //! * Base: a single-expr `EVarBody` over a `BoundVar`, resolved BY BORROW via
 //!   the additive `Env::get_ref` (rho-pure-eval) to a pure single-expr
 //!   `EPathmapBody`/`EZipperBody` Par — or such a literal directly. Anything
@@ -129,10 +128,7 @@
 
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::var::VarInstance;
-use models::rhoapi::{
-    Bundle, EMethod, EPathMap, EZipper, Expr, GUnforgeable, Match, New, Par, Receive,
-    Send as RhoSend,
-};
+use models::rhoapi::{EMethod, EPathMap, EZipper, Expr, Par};
 use models::rust::pathmap_integration::{
     composed_cursor_kind, par_to_path, segments_to_key, CursorKind,
 };
@@ -313,8 +309,8 @@ enum FusedBase {
 struct FusedChain {
     /// Walk order: `links[0]` = OUTERMOST (applied last, the terminal link);
     /// `links[n-1]` = innermost (applied first).
-    links: Vec<EMethod>,
-    /// `kinds[i]` classifies `links[i]`.
+    arguments: Vec<Vec<Par>>,
+    /// `kinds[i]` classifies `arguments[i]`.
     kinds: Vec<LinkKind>,
     base: FusedBase,
     // ⛔ The `interned: Arc<InternedEPathMap>` field is GONE.
@@ -366,21 +362,12 @@ impl FusedChain {
     }
 }
 
-/// The pure single-expr carrier test — the SAME six-field emptiness
-/// `eval_single_expr` enforces (reduce.rs:7008-7013). `connectives`,
-/// `locally_free`, and `connective_used` are deliberately NOT checked:
-/// today's path ignores them at every point a chain Par flows through
-/// (`eval_expr` preserves them into the evaluated wrapper, `eval_single_expr`
-/// never looks, and every link result is rebuilt fresh), so they cannot
-/// affect parity.
+/// The pure single-expr carrier test used by the fusion recognizer and the
+/// evaluator. `all_components_are` is exact even when logical multiplicities
+/// saturate their public `u64` projection and automatically rejects every
+/// current or future non-Expr constructor family.
 fn pure_single_expr(par: &Par) -> Option<ExprInstance> {
-    if par.family_cardinality::<RhoSend>() != 0
-        || par.family_cardinality::<Receive>() != 0
-        || par.family_cardinality::<New>() != 0
-        || par.family_cardinality::<Match>() != 0
-        || par.family_cardinality::<GUnforgeable>() != 0
-        || par.family_cardinality::<Bundle>() != 0
-    {
+    if !par.all_components_are::<Expr>() {
         return None;
     }
     (par.family_cardinality::<Expr>() == 1)
@@ -388,40 +375,318 @@ fn pure_single_expr(par: &Par) -> Option<ExprInstance> {
         .flatten()
 }
 
-/// Recognize the maximal fusable spine rooted at `emethod` and gate it.
-/// `None` ⇒ the caller must run today's per-link path unchanged.
-fn recognize_chain(emethod: &EMethod, env: &Env<Par>) -> Option<FusedChain> {
-    let mut links: Vec<EMethod> = Vec::new();
-    let mut kinds: Vec<LinkKind> = Vec::new();
-    let mut cursor = emethod.clone();
-
-    let base_par = loop {
-        let kind = LinkKind::from_name(&cursor.method_name)?;
-        if cursor.arguments.len() != kind.exact_arity() {
-            // Wrong arity ⇒ fallback; today's `apply` raises the identical
-            // MethodArgumentNumberMismatch after argument evaluation.
+/// Read one protobuf varint while retaining a byte offset into a borrowed
+/// canonical component body.
+fn read_varint(bytes: &[u8], cursor: &mut usize) -> Option<u64> {
+    let mut value = 0u64;
+    for shift in (0u32..=63).step_by(7) {
+        let byte = *bytes.get(*cursor)?;
+        *cursor += 1;
+        if shift == 63 && byte > 1 {
             return None;
         }
-        if !links.is_empty() && !kind.is_view_preserving() {
-            // A value producer below the terminal position exits the view
-            // domain (its result is an arbitrary stored Par) — fallback.
-            return None;
+        value |= u64::from(byte & 0x7f) << shift;
+        if byte & 0x80 == 0 {
+            return Some(value);
         }
-        links.push(cursor.clone());
-        kinds.push(kind);
+    }
+    None
+}
 
-        let target = cursor.target.as_ref()?;
-        match pure_single_expr(target) {
-            Some(ExprInstance::EMethodBody(next)) => cursor = next,
-            _ => break target.clone(),
+fn read_length_delimited<'a>(bytes: &'a [u8], cursor: &mut usize) -> Option<&'a [u8]> {
+    let length = usize::try_from(read_varint(bytes, cursor)?).ok()?;
+    let end = cursor.checked_add(length)?;
+    let value = bytes.get(*cursor..end)?;
+    *cursor = end;
+    Some(value)
+}
+
+/// Extract the sole Expr body from an exact scalar-expression `Par` wire
+/// image. Root metadata fields are accepted because `pure_single_expr` has
+/// always ignored them; every process/component family other than Expr is a
+/// hard rejection.
+fn encoded_single_expr_body(bytes: &[u8]) -> Option<&[u8]> {
+    let mut cursor = 0usize;
+    let mut expression = None;
+    while cursor < bytes.len() {
+        let key = read_varint(bytes, &mut cursor)?;
+        match (key >> 3, key & 0x07) {
+            (5, 2) if expression.is_none() => {
+                expression = Some(read_length_delimited(bytes, &mut cursor)?);
+            }
+            (9, 2) => {
+                let _ = read_length_delimited(bytes, &mut cursor)?;
+            }
+            (10, 0) => {
+                let _ = read_varint(bytes, &mut cursor)?;
+            }
+            _ => return None,
         }
-    };
+    }
+    expression
+}
 
+struct EncodedMethod<'a> {
+    method_name: &'a str,
+    target: &'a [u8],
+    arguments: Vec<&'a [u8]>,
+}
+
+/// A complete `length(getLeaf(zipper))` re-entry spine discovered without
+/// decoding its nested method/zipper/EPathMap carriers. Only `terminal` crosses
+/// the semantic protobuf decoder; `depth` tells the evaluator PDA how many
+/// existing `length` applications must be replayed during its unwind.
+pub(crate) struct EncodedMethodReentry {
+    pub(crate) terminal: Par,
+    pub(crate) depth: usize,
+}
+
+/// Parse one exact EMethod Expr from its canonical protobuf body. This cursor
+/// borrows target and argument regions; descending a target therefore advances
+/// into one nested sub-slice instead of decoding or copying its complete
+/// remaining suffix.
+fn encoded_method(bytes: &[u8]) -> Option<EncodedMethod<'_>> {
+    let mut expression_cursor = 0usize;
+    let expression_key = read_varint(bytes, &mut expression_cursor)?;
+    if (expression_key >> 3, expression_key & 0x07) != (24, 2) {
+        return None;
+    }
+    let method = read_length_delimited(bytes, &mut expression_cursor)?;
+    if expression_cursor != bytes.len() {
+        return None;
+    }
+
+    let mut cursor = 0usize;
+    let mut method_name = None;
+    let mut target = None;
+    let mut arguments = Vec::new();
+    while cursor < method.len() {
+        let key = read_varint(method, &mut cursor)?;
+        match (key >> 3, key & 0x07) {
+            (1, 2) if method_name.is_none() => {
+                method_name =
+                    Some(std::str::from_utf8(read_length_delimited(method, &mut cursor)?).ok()?);
+            }
+            (2, 2) if target.is_none() => {
+                target = Some(read_length_delimited(method, &mut cursor)?);
+            }
+            (3, 2) => arguments.push(read_length_delimited(method, &mut cursor)?),
+            (5, 2) => {
+                let _ = read_length_delimited(method, &mut cursor)?;
+            }
+            (6, 0) => {
+                let _ = read_varint(method, &mut cursor)?;
+            }
+            _ => return None,
+        }
+    }
+    Some(EncodedMethod {
+        method_name: method_name.unwrap_or(""),
+        target: target?,
+        arguments,
+    })
+}
+
+fn encoded_epathmap_snapshot(bytes: &[u8]) -> Option<&[u8]> {
+    let mut cursor = 0usize;
+    let mut snapshot = None;
+    let mut locally_free_seen = false;
+    let mut connective_seen = false;
+    let mut remainder_seen = false;
+    while cursor < bytes.len() {
+        let key = read_varint(bytes, &mut cursor)?;
+        match (key >> 3, key & 0x07) {
+            (3, 2) if !locally_free_seen => {
+                locally_free_seen = true;
+                let _ = read_length_delimited(bytes, &mut cursor)?;
+            }
+            (4, 0) if !connective_seen => {
+                connective_seen = true;
+                let _ = read_varint(bytes, &mut cursor)?;
+            }
+            (5, 2) if !remainder_seen => {
+                remainder_seen = true;
+                let _ = read_length_delimited(bytes, &mut cursor)?;
+            }
+            (9, 2) if snapshot.is_none() => {
+                snapshot = Some(read_length_delimited(bytes, &mut cursor)?);
+            }
+            // Current writers emit only EPM1 field 9. Legacy entry-list and
+            // serialized-path images deliberately retain the ordinary decoder.
+            _ => return None,
+        }
+    }
+    snapshot
+}
+
+struct EncodedZipper<'a> {
+    snapshot: &'a [u8],
+    current_path: Vec<&'a [u8]>,
+    cursor_kind: CursorKind,
+}
+
+/// Parse the exact generated protobuf shape of one EZipper Expr while keeping
+/// the EPM1 snapshot and cursor segments borrowed from the enclosing ParBag.
+fn encoded_zipper(bytes: &[u8]) -> Option<EncodedZipper<'_>> {
+    let mut expression_cursor = 0usize;
+    let expression_key = read_varint(bytes, &mut expression_cursor)?;
+    if (expression_key >> 3, expression_key & 0x07) != (33, 2) {
+        return None;
+    }
+    let zipper = read_length_delimited(bytes, &mut expression_cursor)?;
+    if expression_cursor != bytes.len() {
+        return None;
+    }
+
+    let mut cursor = 0usize;
+    let mut snapshot = None;
+    let mut pathmap_seen = false;
+    let mut current_path = Vec::new();
+    let mut is_write_seen = false;
+    let mut locally_free_seen = false;
+    let mut connective_seen = false;
+    let mut cursor_kind = None;
+    while cursor < zipper.len() {
+        let key = read_varint(zipper, &mut cursor)?;
+        match (key >> 3, key & 0x07) {
+            (1, 2) if !pathmap_seen => {
+                pathmap_seen = true;
+                snapshot = encoded_epathmap_snapshot(read_length_delimited(zipper, &mut cursor)?);
+            }
+            (2, 2) => current_path.push(read_length_delimited(zipper, &mut cursor)?),
+            (3, 0) if !is_write_seen => {
+                is_write_seen = true;
+                let _ = read_varint(zipper, &mut cursor)?;
+            }
+            (4, 2) if !locally_free_seen => {
+                locally_free_seen = true;
+                let _ = read_length_delimited(zipper, &mut cursor)?;
+            }
+            (5, 0) if !connective_seen => {
+                connective_seen = true;
+                let _ = read_varint(zipper, &mut cursor)?;
+            }
+            (6, 0) if cursor_kind.is_none() => {
+                cursor_kind = Some(u32::try_from(read_varint(zipper, &mut cursor)?).ok()?);
+            }
+            _ => return None,
+        }
+    }
+    Some(EncodedZipper {
+        snapshot: snapshot?,
+        current_path,
+        cursor_kind: CursorKind::from_wire(cursor_kind.unwrap_or(0))?,
+    })
+}
+
+fn encoded_cursor_value<'a>(zipper: &EncodedZipper<'a>) -> Option<Option<&'a [u8]>> {
+    let bare_len = zipper
+        .current_path
+        .iter()
+        .map(|segment| segment.len())
+        .sum::<usize>();
+    let mut bare = Vec::with_capacity(bare_len + 1);
+    for segment in &zipper.current_path {
+        bare.extend_from_slice(segment);
+    }
+    match zipper.cursor_kind {
+        CursorKind::Bare => {
+            models::rust::epathmap_trie_codec::canonical_map_value_body_at_ordered_keys(
+                zipper.snapshot,
+                &[bare.as_slice()],
+            )
+            .ok()
+        }
+        CursorKind::Split => {
+            bare.push(0);
+            models::rust::epathmap_trie_codec::canonical_map_value_body_at_ordered_keys(
+                zipper.snapshot,
+                &[bare.as_slice()],
+            )
+            .ok()
+        }
+        CursorKind::Prefix => {
+            let mut split = Vec::with_capacity(bare.len() + 1);
+            split.extend_from_slice(&bare);
+            split.push(0);
+            models::rust::epathmap_trie_codec::canonical_map_value_body_at_ordered_keys(
+                zipper.snapshot,
+                &[bare.as_slice(), split.as_slice()],
+            )
+            .ok()
+        }
+    }
+}
+
+fn is_zero_arity_method<'a>(bytes: &'a [u8], expected: &str) -> Option<EncodedMethod<'a>> {
+    let method = encoded_method(bytes)?;
+    (method.method_name == expected && method.arguments.is_empty()).then_some(method)
+}
+
+fn recognize_encoded_method_reentry(par: &Par) -> Option<EncodedMethodReentry> {
+    if !par.all_components_are::<Expr>() || par.family_cardinality::<Expr>() != 1 {
+        return None;
+    }
+    let mut reentry = None;
+    par.visit_encoded::<Expr>(|entry| {
+        if entry.multiplicity().get() != 1 {
+            return;
+        }
+        let mut current = entry.payload();
+        let mut depth = 0usize;
+        loop {
+            let Some(length) = is_zero_arity_method(current, "length") else {
+                return;
+            };
+            let Some(get_leaf_expr) = encoded_single_expr_body(length.target) else {
+                return;
+            };
+            let Some(get_leaf) = is_zero_arity_method(get_leaf_expr, "getLeaf") else {
+                return;
+            };
+            let Some(zipper_expr) = encoded_single_expr_body(get_leaf.target) else {
+                return;
+            };
+            let Some(zipper) = encoded_zipper(zipper_expr) else {
+                return;
+            };
+            let Some(value) = encoded_cursor_value(&zipper) else {
+                return;
+            };
+            depth += 1;
+            let Some(value) = value else {
+                reentry = Some(EncodedMethodReentry {
+                    terminal: Par::default(),
+                    depth,
+                });
+                return;
+            };
+
+            if let Some(next) = encoded_single_expr_body(value) {
+                if is_zero_arity_method(next, "length").is_some() {
+                    current = next;
+                    continue;
+                }
+            }
+            let Some(terminal) = models::rust::rholang::protobuf_decoder::decode_par(value).ok()
+            else {
+                return;
+            };
+            reentry = Some(EncodedMethodReentry { terminal, depth });
+            return;
+        }
+    });
+    reentry
+}
+
+fn gate_chain(
+    arguments: Vec<Vec<Par>>,
+    kinds: Vec<LinkKind>,
+    base_par: Par,
+    env: &Env<Par>,
+) -> Option<FusedChain> {
     let (base, source_map) = match pure_single_expr(&base_par)? {
         ExprInstance::EPathmapBody(map) => (FusedBase::LitMap, map),
-        // A zipper whose embedded map is `None` would make today's methods
-        // panic on their `.expect("zipper pathmap was None")` — fall back so
-        // the behavior (panic included) stays today's.
         ExprInstance::EZipperBody(zipper) => {
             let source_map = zipper.pathmap.clone()?;
             (FusedBase::LitZipper(zipper), source_map)
@@ -430,10 +695,6 @@ fn recognize_chain(emethod: &EMethod, env: &Env<Par>) -> Option<FusedChain> {
             let var = evar.v.as_ref()?;
             match &var.var_instance {
                 Some(VarInstance::BoundVar(level)) => {
-                    // Resolve BY BORROW (the additive Env::get_ref). An
-                    // unbound level falls back: today charges var_eval then
-                    // raises the "Unbound variable" ReduceError, and the
-                    // fallback reproduces exactly that.
                     let bound = env.get_ref(level)?;
                     match pure_single_expr(bound)? {
                         ExprInstance::EPathmapBody(map) => (FusedBase::VarMap, map),
@@ -444,26 +705,105 @@ fn recognize_chain(emethod: &EMethod, env: &Env<Par>) -> Option<FusedChain> {
                         _ => return None,
                     }
                 }
-                // Wildcard/FreeVar/None: today's eval_var raises — fallback.
                 _ => return None,
             }
         }
         _ => return None,
     };
 
-    // THE GATE: fusion skips today's ground re-evaluation, which is only
-    // byte-invisible when `eval_stable_epathmap` certifies the map. The
-    // classifier is read directly; no intern-store rendezvous exists.
     if !models::rust::pathmap_crate_type_mapper::eval_stable_epathmap(&source_map) {
         return None;
     }
 
     Some(FusedChain {
-        links,
+        arguments,
         kinds,
         base,
         source_map,
     })
+}
+
+/// Recognize a fused method spine directly in the authoritative ParBag Expr
+/// endpoint. Only the base and actual arguments cross the semantic decoder;
+/// method targets remain borrowed nested byte regions throughout the scan.
+fn recognize_encoded_chain(par: &Par, env: &Env<Par>) -> Option<FusedChain> {
+    if !par.all_components_are::<Expr>() || par.family_cardinality::<Expr>() != 1 {
+        return None;
+    }
+    let mut chain = None;
+    par.visit_encoded::<Expr>(|entry| {
+        if entry.multiplicity().get() == 1 {
+            chain = recognize_encoded_expression(entry.payload(), env);
+        }
+    });
+    chain
+}
+
+fn recognize_encoded_expression(mut cursor: &[u8], env: &Env<Par>) -> Option<FusedChain> {
+    let mut arguments = Vec::new();
+    let mut kinds = Vec::new();
+
+    let base_par = loop {
+        let method = encoded_method(cursor)?;
+        let kind = LinkKind::from_name(method.method_name)?;
+        if method.arguments.len() != kind.exact_arity() {
+            return None;
+        }
+        if !kinds.is_empty() && !kind.is_view_preserving() {
+            return None;
+        }
+        let decoded_arguments = method
+            .arguments
+            .into_iter()
+            .map(models::rust::rholang::protobuf_decoder::decode_par)
+            .collect::<Result<Vec<_>, _>>()
+            .ok()?;
+        arguments.push(decoded_arguments);
+        kinds.push(kind);
+
+        let Some(target_expression) = encoded_single_expr_body(method.target) else {
+            break models::rust::rholang::protobuf_decoder::decode_par(method.target).ok()?;
+        };
+        if encoded_method(target_expression).is_some() {
+            cursor = target_expression;
+        } else {
+            break models::rust::rholang::protobuf_decoder::decode_par(method.target).ok()?;
+        }
+    };
+
+    gate_chain(arguments, kinds, base_par, env)
+}
+
+/// Recognize the maximal fusable spine rooted at `emethod` and gate it.
+/// `None` ⇒ the caller must run today's per-link path unchanged.
+fn recognize_chain(emethod: &EMethod, env: &Env<Par>) -> Option<FusedChain> {
+    let mut arguments: Vec<Vec<Par>> = Vec::new();
+    let mut kinds: Vec<LinkKind> = Vec::new();
+    let mut cursor = emethod.clone();
+
+    let base_par = loop {
+        let kind = LinkKind::from_name(&cursor.method_name)?;
+        if cursor.arguments.len() != kind.exact_arity() {
+            // Wrong arity ⇒ fallback; today's `apply` raises the identical
+            // MethodArgumentNumberMismatch after argument evaluation.
+            return None;
+        }
+        if !arguments.is_empty() && !kind.is_view_preserving() {
+            // A value producer below the terminal position exits the view
+            // domain (its result is an arbitrary stored Par) — fallback.
+            return None;
+        }
+        arguments.push(cursor.arguments.clone());
+        kinds.push(kind);
+
+        let target = cursor.target.as_ref()?;
+        match pure_single_expr(target) {
+            Some(ExprInstance::EMethodBody(next)) => cursor = next,
+            _ => break target.clone(),
+        }
+    };
+
+    gate_chain(arguments, kinds, base_par, env)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -548,6 +888,48 @@ fn single_expr_par(expr_instance: ExprInstance) -> Par {
 }
 
 impl DebruijnInterpreter {
+    /// Recognize the adversarial method-reentry shape before the generated
+    /// protobuf decoder constructs its complete nested semantic graph. The
+    /// reservation order is exactly the historical outer-to-inner sequence:
+    /// `length` dispatch, `getLeaf` dispatch, then PathMap lookup per layer.
+    pub(crate) fn begin_encoded_method_reentry(
+        &self,
+        par: &Par,
+    ) -> Result<Option<EncodedMethodReentry>, InterpreterError> {
+        #[cfg(any(test, feature = "epathmap-fusion-differential"))]
+        {
+            if fusion_test_support::force_disabled() {
+                return Ok(None);
+            }
+        }
+        let Some(reentry) = recognize_encoded_method_reentry(par) else {
+            return Ok(None);
+        };
+        for _ in 0..reentry.depth {
+            self.metering.reserve_primitive(method_call_cost())?;
+            self.metering.reserve_primitive(method_call_cost())?;
+            self.metering.reserve_primitive(lookup_cost())?;
+        }
+        Ok(Some(reentry))
+    }
+
+    pub(crate) fn begin_fused_method_chain_par(
+        &self,
+        par: &Par,
+        env: &Env<Par>,
+    ) -> Result<Option<FusedAction>, InterpreterError> {
+        #[cfg(any(test, feature = "epathmap-fusion-differential"))]
+        {
+            if fusion_test_support::force_disabled() {
+                return Ok(None);
+            }
+        }
+        let Some(chain) = recognize_encoded_chain(par, env) else {
+            return Ok(None);
+        };
+        self.begin_recognized_fused_chain(chain).map(Some)
+    }
+
     pub(crate) fn begin_fused_method_chain(
         &self,
         emethod: &EMethod,
@@ -569,10 +951,17 @@ impl DebruijnInterpreter {
             None => return Ok(None),
         };
 
+        self.begin_recognized_fused_chain(chain).map(Some)
+    }
+
+    fn begin_recognized_fused_chain(
+        &self,
+        chain: FusedChain,
+    ) -> Result<FusedAction, InterpreterError> {
         #[cfg(any(test, feature = "epathmap-fusion-differential"))]
         fusion_test_support::record_hit(chain.shape_key());
 
-        for _ in &chain.links {
+        for _ in &chain.kinds {
             self.metering.reserve_primitive(method_call_cost())?;
         }
 
@@ -595,14 +984,14 @@ impl DebruijnInterpreter {
 
         let state = FusedEval {
             next_index: chain
-                .links
+                .kinds
                 .len()
                 .checked_sub(1)
                 .expect("a recognized chain contains at least one link"),
             chain,
             mode,
         };
-        self.advance_fused(state).map(Some)
+        self.advance_fused(state)
     }
 
     pub(crate) fn continue_fused_after_position_a(
@@ -634,8 +1023,7 @@ impl DebruijnInterpreter {
         loop {
             let kind = state.chain.kinds[state.next_index];
             if kind.exact_arity() == 1 {
-                let arg = state.chain.links[state.next_index]
-                    .arguments
+                let arg = state.chain.arguments[state.next_index]
                     .first()
                     .expect("an arity-one fused link has one argument")
                     .clone();
@@ -1240,7 +1628,11 @@ pub mod fusion_test_support {
 
 #[cfg(test)]
 mod stack_safety_tests {
-    use models::rhoapi::{BindPattern, ListParWithRandom, TaggedContinuation};
+    use models::rhoapi::{
+        BindPattern, Bundle, Connective, GUnforgeable, If, ListParWithRandom, Match, New, Receive,
+        Send, TaggedContinuation,
+    };
+    use models::rust::par_construction::{ParConstruction, PlannedPar};
     use models::rust::utils::new_gstring_par;
     use rspace_plus_plus::rspace::rspace::RSpace;
 
@@ -1257,24 +1649,91 @@ mod stack_safety_tests {
         }
     }
 
-    fn call(target: Par, method_name: &str) -> Par {
-        expr(ExprInstance::EMethodBody(EMethod {
-            method_name: method_name.to_owned(),
-            target: Some(target),
-            arguments: Vec::new(),
-            locally_free: Vec::new(),
-            connective_used: false,
-        }))
+    fn plan_call(
+        construction: &mut ParConstruction,
+        target: PlannedPar,
+        method_name: &str,
+        arguments: &[PlannedPar],
+    ) -> PlannedPar {
+        let shell = Expr {
+            expr_instance: Some(ExprInstance::EMethodBody(EMethod {
+                method_name: method_name.to_owned(),
+                target: Some(Par::default()),
+                arguments: vec![Par::default(); arguments.len()],
+                locally_free: Vec::new(),
+                connective_used: false,
+            })),
+        };
+        // `expr_component` accepts method children in canonical-score order:
+        // arguments first, target last. The schema planner performs the single
+        // protobuf-order permutation without materializing any suffix Par.
+        let mut children = Vec::with_capacity(arguments.len() + 1);
+        children.extend_from_slice(arguments);
+        children.push(target);
+        let component = construction
+            .expr_component(&shell, &children, false)
+            .expect("plan method component");
+        construction
+            .singleton_component(component, Vec::new(), false)
+            .expect("plan singleton method Par")
     }
 
-    fn call_with_argument(target: Par, method_name: &str, argument: Par) -> Par {
-        expr(ExprInstance::EMethodBody(EMethod {
-            method_name: method_name.to_owned(),
-            target: Some(target),
-            arguments: vec![argument],
-            locally_free: Vec::new(),
-            connective_used: false,
-        }))
+    fn finish_chain(
+        base: Par,
+        links: impl IntoIterator<Item = (&'static str, Option<Par>)>,
+    ) -> Par {
+        let mut construction = ParConstruction::new();
+        let mut chain = construction.import_par(&base).expect("import chain base");
+        for (method_name, argument) in links {
+            let argument = argument.as_ref().map(|value| {
+                construction
+                    .import_par(value)
+                    .expect("import method argument")
+            });
+            chain = match argument {
+                Some(argument) => plan_call(&mut construction, chain, method_name, &[argument]),
+                None => plan_call(&mut construction, chain, method_name, &[]),
+            };
+        }
+        construction.finish(chain).expect("finish method chain")
+    }
+
+    #[test]
+    fn fusion_scalar_gate_rejects_each_non_expr_parbag_family() {
+        let scalar = expr(ExprInstance::GInt(7));
+        assert!(
+            pure_single_expr(&scalar).is_some(),
+            "the pure-scalar control must be recognized"
+        );
+
+        let foreign = [
+            ("Send", Par::default().with_sends(vec![Send::default()])),
+            (
+                "Receive",
+                Par::default().with_receives(vec![Receive::default()]),
+            ),
+            ("New", Par::default().with_news(vec![New::default()])),
+            ("Match", Par::default().with_matches(vec![Match::default()])),
+            (
+                "GUnforgeable",
+                Par::default().with_unforgeables(vec![GUnforgeable::default()]),
+            ),
+            (
+                "Bundle",
+                Par::default().with_bundles(vec![Bundle::default()]),
+            ),
+            (
+                "Connective",
+                Par::default().with_connectives(vec![Connective::default()]),
+            ),
+            ("If", Par::default().with_conditionals(vec![If::default()])),
+        ];
+        for (family, component) in foreign {
+            assert!(
+                pure_single_expr(&scalar.clone().append(component)).is_none(),
+                "the fused scalar gate accepted an Expr mixed with {family}"
+            );
+        }
     }
 
     #[test]
@@ -1293,12 +1752,12 @@ mod stack_safety_tests {
                     >()
                     .await;
 
-                    let mut chain = expr(ExprInstance::EPathmapBody(EPathMap::default()));
-                    chain = call(chain, "readZipper");
-                    for _ in 0..4_096 {
-                        chain = call(chain, "reset");
-                    }
-                    chain = call(chain, "pathExists");
+                    let chain = finish_chain(
+                        expr(ExprInstance::EPathmapBody(EPathMap::default())),
+                        std::iter::once(("readZipper", None))
+                            .chain(std::iter::repeat_n(("reset", None), 4_096))
+                            .chain(std::iter::once(("pathExists", None))),
+                    );
 
                     let result = reducer
                         .eval_expr(&chain, &Env::new())
@@ -1329,16 +1788,13 @@ mod stack_safety_tests {
                     >()
                     .await;
 
-                    let mut chain = expr(ExprInstance::EPathmapBody(EPathMap::default()));
-                    chain = call(chain, "readZipper");
-                    for _ in 0..4_096 {
-                        chain = call_with_argument(
-                            chain,
-                            "descendTo",
-                            new_gstring_par("x".to_owned(), Vec::new(), false),
-                        );
-                    }
-                    chain = call(chain, "pathExists");
+                    let argument = new_gstring_par("x".to_owned(), Vec::new(), false);
+                    let chain = finish_chain(
+                        expr(ExprInstance::EPathmapBody(EPathMap::default())),
+                        std::iter::once(("readZipper", None))
+                            .chain(std::iter::repeat_n(("descendTo", Some(argument)), 4_096))
+                            .chain(std::iter::once(("pathExists", None))),
+                    );
 
                     let result = reducer
                         .eval_expr(&chain, &Env::new())

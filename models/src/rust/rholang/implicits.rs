@@ -33,13 +33,7 @@ impl GPrivateBuilder {
 }
 
 pub fn single_expr(p: &Par) -> Option<Expr> {
-    if p.family_cardinality::<crate::rhoapi::Send>() == 0
-        && p.family_cardinality::<crate::rhoapi::Receive>() == 0
-        && p.family_cardinality::<crate::rhoapi::New>() == 0
-        && p.family_cardinality::<crate::rhoapi::Match>() == 0
-        && p.family_cardinality::<Bundle>() == 0
-        && p.family_cardinality::<Expr>() == 1
-    {
+    if p.cardinality() == 1 && p.family_cardinality::<Expr>() == 1 {
         p.first::<Expr>()
             .expect("Par invariant: stored Expr keys are canonical")
             .map(|(value, _)| value)
@@ -51,15 +45,7 @@ pub fn single_expr(p: &Par) -> Option<Expr> {
 pub fn single_bundle(p: &Par) -> Option<Bundle> { p.single_bundle() }
 
 pub fn single_unforgeable(p: &Par) -> Option<GUnforgeable> {
-    if p.family_cardinality::<crate::rhoapi::Send>() == 0
-        && p.family_cardinality::<crate::rhoapi::Receive>() == 0
-        && p.family_cardinality::<crate::rhoapi::New>() == 0
-        && p.family_cardinality::<Expr>() == 0
-        && p.family_cardinality::<crate::rhoapi::Match>() == 0
-        && p.family_cardinality::<Bundle>() == 0
-        && p.family_cardinality::<crate::rhoapi::Connective>() == 0
-        && p.family_cardinality::<GUnforgeable>() == 1
-    {
+    if p.cardinality() == 1 && p.family_cardinality::<GUnforgeable>() == 1 {
         p.first::<GUnforgeable>()
             .expect("Par invariant: stored GUnforgeable keys are canonical")
             .map(|(value, _)| value)
