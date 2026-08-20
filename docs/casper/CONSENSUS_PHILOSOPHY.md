@@ -6,85 +6,85 @@
 
 ## 1. Purpose and scope
 
-This document records the design philosophy of the Casper consensus implementation. It captures the principles behind consensus decisions, not the mechanics. The protocol documents in this directory describe the mechanics.
+This document records the design philosophy of the Casper consensus implementation. It records the principles behind consensus decisions. The protocol documents in this directory describe the mechanics.
 
-The f1r3node-rust platform is designed to be consensus and state-machine-replication neutral. The Casper consensus code will later move to an independent repository. This document belongs to the Casper consensus and moves with it.
+The f1r3node-rust platform is designed to be neutral about consensus and state-machine replication. The Casper consensus code will later move to an independent repository. This document belongs to the Casper consensus and moves with it.
 
-Each section below grows from a concrete engineering decision. The first entry comes from the deploy-starvation remediation (issue #294).
+Each entry below comes from one concrete engineering decision. The first entry comes from the deploy-starvation remediation (issue #294).
 
 ## 2. Case study: same-key contention starvation (issue #294)
 
-Three concurrent deploys performed delete-and-set on one contract key. One deploy never landed. Every merge rejected it, recovery re-proposed it faithfully, and its validity window closed. The deploy terminated `Expired` with no error surfaced, while consensus stayed healthy.
+Three concurrent deploys performed delete-and-set on one contract key. One deploy never landed. Every merge rejected the deploy, and recovery re-proposed the deploy faithfully. The validity window closed, and the deploy terminated `Expired` with no error surfaced. Consensus stayed healthy through the full sequence.
 
 The investigation found two distinct starvation facets:
 
-1. **Content-deterministic adjudication.** Conflict adjudication ordered contenders by content alone: total cost, then maximum single-deploy cost, then lexicographic signature. A deploy's content never changes. The same matchup therefore produced the same loser in every merge, forever.
-2. **Main-parent base bias.** The merge bases on the proposing validator's main parent. When the base already commits a contender's effect, the starved deploy's chain is stale against that base. Rejecting a stale chain is correct for each merge. A proposer that always bases on the contender's side therefore starves the retry structurally, with every individual rejection being sound.
+1. **Content-deterministic adjudication.** Conflict adjudication ordered contenders by content alone: total cost, then maximum single-deploy cost, then lexicographic signature. The content of a deploy never changes. The same matchup therefore produced the same loser in every merge.
+2. **Main-parent base bias.** The merge bases on the main parent of the proposing validator. When the base already commits the effect of a contender, the chain of the starved deploy is stale against that base. Each merge rejects a stale chain correctly. A proposer that always bases on the contender side therefore starves the retry structurally. Each individual rejection stays sound.
 
-The first facet was fixed by loss-aware adjudication (Section 4, Principle P1). The second facet is the subject of the remedy ladder in Section 5.
+Loss-aware adjudication removed the first facet (Section 4, Principle P1). The remedy ladder in Section 5 addresses the second facet.
 
 ## 3. The core principle: local safety can compose into global starvation
 
-Every individual merge decision in the starvation case was safety-correct. Re-applying a stale diff would corrupt state, so the rejection was mandatory. The liveness failure emerged only from the composition of individually-correct decisions.
+Every individual merge decision in the starvation case was safety-correct. To re-apply a stale diff would corrupt state, so each rejection was mandatory. The liveness failure emerged only from the composition of individually-correct decisions.
 
-This is the classical safety-versus-liveness tension from distributed-computing theory, not a CAP-style impossibility. No theorem forbids deterministic deploy-level fairness together with safe consensus. The constraints are engineering risk gradients, not hard walls. Remedies can therefore be layered incrementally, with stronger fairness bought at each step for bounded and observable risk.
+This is the classical safety-versus-liveness tension from distributed-computing theory. It is not a CAP-style impossibility. No theorem forbids deterministic deploy-level fairness together with safe consensus. The constraints are risk gradients, not impossibility results. Remedies can therefore apply in layers. Each layer adds fairness at a bounded and observable risk.
 
-One near-impossibility does appear at the extreme. The fork-choice rule cannot be made responsive to user-controllable deploy data without creating an influence channel over consensus (Principle P4).
+One near-impossibility remains at the extreme. The fork-choice rule cannot respond to user-controllable deploy data without an influence channel over consensus (Principle P4).
 
 ## 4. Ground truths of the implementation
 
-Four facts about the implementation shape every remedy. Function names are the stable anchors, since line numbers drift.
+Four facts about the implementation shape every remedy. Function names are the stable anchors, because line numbers drift.
 
-1. **Validators replay declared parents, not fork choice.** `Validate::parents` checks the parent count, the parent-depth spread, and validator progress. It never recomputes the estimator. Main-parent order is bound only indirectly, through the recomputed merge base (`state_facts` equality) and the bonds read from `parents[0]`. Parent selection, including the main-parent choice, is proposer policy.
-2. **Deploy packaging is discretionary.** No validation rule constrains which deploys a proposer packages. `PrematureDeployRetry` is a lower bound on retry timing. Deferring a deploy further is always peer-safe.
-3. **The merge base has a deterministic fallback rule.** The base is the main parent. When the main parent's state does not hold the floor's settled content, the base falls back to the floor (`compute_parents_post_state`). Validators recompute the choice from the block's own justifications.
-4. **Per-scope inclusion leadership exists.** `deploy_inclusion_progress` elects a deterministic leader with a lease-based liveness escape. It is proposer-side only. The recovery path deliberately dropped leader election in favor of owner-scoped buffers plus the floor-paced retry gate.
+1. **Validators replay declared parents, not fork choice.** `Validate::parents` checks the parent count, the parent-depth spread, and validator progress. It never recomputes the estimator. Only indirect checks bind the main-parent order: the recomputed merge base (`state_facts` equality) and the bonds read from `parents[0]`. Parent selection, which includes the main-parent choice, is proposer policy.
+2. **Deploy packaging is discretionary.** No validation rule constrains which deploys a proposer packages. `PrematureDeployRetry` is only a lower bound on retry timing. A proposer can always defer a deploy without risk of peer rejection.
+3. **The merge base has a deterministic fallback rule.** The base is the main parent. When the state of the main parent does not hold the settled content of the floor, the base falls back to the floor (`compute_parents_post_state`). Validators recompute the choice from the recorded justifications of the block.
+4. **Per-scope inclusion leadership exists.** `deploy_inclusion_progress` elects a deterministic leader with a lease-based liveness escape. The mechanism runs only on the proposer side. The recovery path deliberately dropped leader election in favor of owner-scoped buffers plus the floor-paced retry gate.
 
 ## 5. The remedy ladder for base-bias starvation
 
-The options are ordered by guarantee strength and by risk. The axes are: fairness strength, consensus-layer stability, and coordination cost (node-local policy versus lockstep upgrade).
+The options are ordered by guarantee strength and by risk. The axes are fairness strength, consensus-layer stability, and coordination cost. Coordination cost separates node-local policy from a lockstep upgrade.
 
 ### Option A — proposer rotation as the liveness mechanism
 
-Accept that fork choice's tie-break (stake score, then ascending block hash) makes the base side effectively a coin flip per round. Over rounds, the starved deploy's carrier becomes the base and the deploy lands.
+The fork-choice tie-break is the stake score, then the ascending block hash. The tie-break gives each side of a contention an even chance to become the base in each round. Over many rounds, the carrier of the starved deploy becomes the base, and the deploy lands.
 
-- **Pros:** no code change. No new risk surface.
-- **Cons:** liveness becomes probabilistic. The retry gate paces re-proposals on floor settlement, so a deploy gets roughly two to three attempts inside its 50-block window. The observed failure had exactly two rejections. A coin flip per attempt leaves an expiry probability far too high for a liveness claim.
-- **Verdict:** necessary as the test-evidence component. Insufficient alone.
+- **Pros:** This option needs no code change. It adds no new risk surface.
+- **Cons:** Liveness becomes probabilistic. The retry gate paces re-proposals on floor settlement, so a deploy gets two or three attempts inside its 50-block window. The observed failure had exactly two rejections. An even chance per attempt leaves an expiry probability that is too high for a liveness claim.
+- **Verdict:** This option is necessary as the test-evidence component. It is not sufficient alone.
 
 ### Option B1 — merged-frontier retry packaging (recommended next step)
 
-The owner packages a gated retry only when its own tip already merges every same-key contender it can see. The retry then executes fresh and sequentially on top of the settled contention, instead of racing as a sibling. When an unseen contender still races in, loss-aware adjudication covers the adjudicable subset.
+The owner packages a gated retry only when its own tip already merges every same-key contender that the owner can see. The retry then executes fresh and sequentially on top of the settled contention. It does not race as a sibling. When an unseen contender still races in, loss-aware adjudication covers the adjudicable subset.
 
-- **Pros:** node-local. No consensus change, no wire change, no upgrade coordination. Small diff in `prepare_user_deploys_with_policy`. Peer-safe by Ground Truth 2.
-- **Cons:** heuristic, not a guarantee. Under saturated contention the quiet frontier never arrives. Deferral spends validity window to buy success probability. It does not influence merges that other validators build.
+- **Pros:** The policy is node-local. It needs no consensus change, no wire change, and no upgrade coordination. The diff in `prepare_user_deploys_with_policy` is small. Ground Truth 2 makes the deferral safe from peer rejection.
+- **Cons:** The policy is a heuristic, not a guarantee. Under saturated contention, a merged frontier without contenders never occurs. Each deferral spends validity window to increase the success probability. The policy does not influence merges that other validators build.
 
 ### Option B2 — per-key contender serialization
 
-Extend the inclusion-leadership machinery to serialize same-key contenders through a deterministic leader per contended key.
+This option extends the inclusion-leadership mechanism to serialize same-key contenders through a deterministic leader per contended key.
 
-- **Pros:** deterministic ordering of contenders. Proposer-side only, so peer-safe.
-- **Cons:** the touched keys are known only after execution, which complicates admission-time gating. It re-introduces the leader election that the recovery path deliberately removed. The burden of proof sits with this option: it must show that owner-scoping plus the retry gate does not already cover the case.
+- **Pros:** The option orders contenders deterministically. It runs only on the proposer side, so peers cannot reject a block for it.
+- **Cons:** The touched keys are known only after execution, which complicates admission-time gating. The option re-introduces the leader election that the recovery path deliberately removed. The burden of proof sits with this option. It must show that owner-scoping plus the retry gate does not already cover the case.
 
 ### Option C1 — loss-aware main-parent declaration (escalation candidate)
 
-When a proposer's parent set contains a sibling that carries a strictly higher-priority retry chain, the proposer declares that sibling as `parents[0]`. The retry is then in the base and lands structurally.
+A proposer applies this rule when its parent set contains a sibling that carries a chain with strictly more prior rejections. The proposer declares that sibling as `parents[0]`. The retry is then in the base and lands structurally.
 
-- **Pros:** the strongest liveness effect available without a validation change. Ground Truth 1 makes it proposer policy: validators replay the declared parents and recompute the same merge. Deterministic, because the priority derives from on-chain records.
-- **Cons:** the spine follows main parents. Fork-choice scores credit only the main-parent chain, and `prefer_certified_main_parent` exists to keep the spine on certified ground. Systematic deviation for fairness reasons risks finalization-health regressions. It also opens a mild griefing vector: cheap manufactured losses could steer other proposers' main-parent choice. This option must enter behind soak evidence.
+- **Pros:** This option gives the strongest liveness effect that needs no validation change. Ground Truth 1 makes it proposer policy: validators replay the declared parents and recompute the same merge. The priority derives from on-chain records, so the rule is deterministic.
+- **Cons:** The spine follows main parents. Fork-choice scores credit only the main-parent chain, and `prefer_certified_main_parent` exists to keep the spine on certified ground. Systematic deviation for fairness reasons risks finalization-health regressions. The option also opens a mild griefing vector: cheap manufactured losses could steer the main-parent choice of other proposers. This option must enter only after soak evidence supports it.
 
 ### Option C2 — loss-aware base fallback (reserve)
 
-Extend the existing base fallback rule: when a strictly higher-priority retry chain is in scope but stale against the main-parent base, base on the floor instead. The matchup then becomes adjudicable and loss-aware selection decides.
+This option extends the existing base fallback rule. When a retry chain with strictly more prior rejections is in scope but stale against the main-parent base, the merge bases on the floor instead. The matchup then becomes adjudicable, and loss-aware selection decides.
 
-- **Pros:** a deterministic guarantee independent of who proposes. No fork-choice perturbation. The rule shape already exists (Ground Truth 3) and validators recompute it identically.
-- **Cons:** a true consensus change: every node must upgrade in lockstep. Floor-based merges carry the scope size and cost that the base-on-main-parent migration removed. It re-opens the expensive path exactly in contended windows.
+- **Pros:** The guarantee is deterministic and independent of the proposer. The option does not perturb fork choice. The rule shape already exists (Ground Truth 3), and validators recompute it identically.
+- **Cons:** The option is a true consensus change: every node must upgrade in lockstep. Floor-based merges carry the scope size and cost that the base-on-main-parent migration removed. The option re-opens the expensive path exactly in contended windows.
 
 ### Option C3 — loss-aware fork-choice weights (rejected)
 
-Bias fork-choice scoring by starved-retry priority.
+This option biases fork-choice scoring by starved-retry priority.
 
-- **Verdict: rejected.** It couples safety-critical fork choice to user-controllable deploy content. An attacker could accumulate rejection records to buy fork-choice influence. It also invalidates the estimator's formal-verification analysis. The other options achieve the goal without this.
+- **Verdict: rejected.** The option couples safety-critical fork choice to user-controllable deploy content. An attacker could accumulate rejection records to gain fork-choice influence. The option also invalidates the formal-verification analysis of the estimator. The other options achieve the goal without this cost.
 
 ### Comparison
 
@@ -110,14 +110,14 @@ flowchart TD
 
 ## 6. Ratified principles
 
-The following principles generalize from this case. Later consensus decisions should cite them or amend them.
+The principles below generalize from this case. Later consensus decisions must cite them or amend them.
 
-- **P1 — Adjudication consults history, not only content.** A conflict tie-break that is a pure function of deploy content produces the same loser forever. Recorded prior losses outrank content order, so every loss raises the loser's priority and starvation is bounded.
-- **P2 — Escapes derive from on-chain data only.** Any fairness or priority term must be a deterministic function of consensus data that every validator sees. A node-local escape forks the network (`PrematureDeployRetry`, `InvalidRejectedDeploy`).
-- **P3 — Packaging discretion is the safe extension surface.** Proposers own deploy selection. Deferring inclusion is always peer-safe. Prefer node-local packaging policy before any validation-rule change.
-- **P4 — Fork choice stays deploy-content-blind.** Coupling fork-choice weights to user-controllable data creates an influence channel over consensus. This boundary is treated as hard.
-- **P5 — Climb the ladder on evidence.** Prefer the weakest remedy that the observed failure requires. Escalate to spine-affecting or lockstep changes only when soak or integration evidence shows the residual failure class.
-- **P6 — Per-merge safety is non-negotiable.** A liveness remedy never licenses applying a stale diff. Fairness mechanisms reshape which matchups occur, never the correctness rules inside one.
+- **P1 — Adjudication consults history, not only content.** A conflict tie-break that is a pure function of deploy content produces the same loser in every merge. Recorded prior losses outrank content order. Every loss then raises the priority of the loser, and starvation stays bounded.
+- **P2 — Escapes derive from on-chain data only.** A fairness or priority term must be a deterministic function of consensus data that every validator sees. A node-local escape forks the network (`PrematureDeployRetry`, `InvalidRejectedDeploy`).
+- **P3 — Packaging discretion is the safe extension surface.** Proposers own deploy selection. A proposer can always defer inclusion without risk of peer rejection. Prefer node-local packaging policy before a validation-rule change.
+- **P4 — Fork choice stays deploy-content-blind.** A fork-choice weight that depends on user-controllable data creates an influence channel over consensus. This boundary is absolute.
+- **P5 — Escalate the remedy ladder on evidence.** Prefer the weakest remedy that the observed failure requires. Move to spine-affecting or lockstep changes only when soak or integration evidence shows the residual failure class.
+- **P6 — Per-merge safety is non-negotiable.** A liveness remedy never licenses the application of a stale diff. Fairness mechanisms reshape which matchups occur. They never change the correctness rules inside one merge.
 
 ## 7. Decision record
 
