@@ -25,7 +25,7 @@ on:
         default: dev
         type: string
       duration:
-        description: Requested soak duration (ignored when window_end_epoch is set)
+        description: Requested soak duration; weekend-60h is the 60h stability soak, daily-24h the dev integration soak (ignored when window_end_epoch is set)
         required: true
         default: daily-24h
         type: choice
@@ -49,8 +49,8 @@ on:
         type: string
       series:
         description: >-
-          Restart mode: which published series (daily | weekend) the run
-          belongs to. Required alongside window_end_epoch — a remainder span
+          Restart mode: which published series the run belongs to (daily =
+          dev integration soak | weekend = 60h stability soak). Required alongside window_end_epoch — a remainder span
           no longer identifies the series by duration.
         required: false
         default: ""
@@ -110,7 +110,7 @@ env:
   # iterations) and the orchestrator host guardian (every iteration) use it.
   SOAK_HOST_FREE_FLOOR_MB: "8192"
   # Third pin site; keep identical to the other two — bump via scripts/repin-system-integration.sh.
-  SYSTEM_INTEGRATION_REF: 231aac63bf090a16ce4649b275c6c1dba0768548
+  SYSTEM_INTEGRATION_REF: 56884ab896a8d37d7fa7cba8eed2a0ffef9c1b6a
   # Pinned OCI CLI installer (release tag + sha256). The checksum fails closed
   # if the tag is ever moved. Bump both together when upgrading.
   OCI_CLI_INSTALLER_URL: "https://raw.githubusercontent.com/oracle/oci-cli/v3.89.1/scripts/install/install.sh"
@@ -603,6 +603,81 @@ jobs:
             echo "checkpoint_4=$cp4"
             echo "checkpoint_5=$cp5"
           } >> "$GITHUB_OUTPUT"
+
+  # Advisory docs link sweep for the 60h stability soak. Checks the
+  # external URLs that the blocking CI Link Checker no longer covers
+  # (general-web domains answer runner IPs inconsistently). This job has
+  # no needs-edge into the soak job and never fails: it can only emit a
+  # warning annotation and a result artifact that the ONS verdict email
+  # includes. It must never block the soak or any other job.
+  docs_link_sweep:
+    name: Docs External Link Sweep (advisory)
+    needs: schedule_gate
+    if: needs.schedule_gate.outputs.should_run == 'true' && needs.schedule_gate.outputs.kind == 'weekend'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Advisory at the job level too: an infrastructure failure inside this
+    # job (checkout, jq, artifact upload) must not turn the workflow
+    # conclusion red. The soak email treats a missing result artifact as
+    # "sweep did not run", never as a soak failure.
+    continue-on-error: true
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout soak target
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          ref: ${{ needs.schedule_gate.outputs.target_sha }}
+          persist-credentials: false
+
+      - name: Sweep external documentation links
+        id: sweep
+        uses: lycheeverse/lychee-action@e7477775783ea5526144ba13e8db5eec57747ce8
+        with:
+          args: >-
+            --no-progress
+            --exclude-loopback
+            --exclude 'https://www\.gutenberg\.org/ebooks/132'
+            --max-retries 2
+            --retry-wait-time 5
+            --timeout 45
+            --accept 200..=299,403,429,503,504
+            --format json
+            './**/*.md'
+          output: /tmp/link-sweep.json
+          fail: false
+
+      - name: Summarize sweep result
+        env:
+          SWEEP_EXIT: ${{ steps.sweep.outputs.exit_code }}
+        shell: bash -euo pipefail {0}
+        run: |
+          broken=0
+          if [ -s /tmp/link-sweep.json ]; then
+            broken="$(jq -r '[.fail_map[]? | length] | add // 0' /tmp/link-sweep.json)"
+          fi
+          jq -n \
+            --argjson broken "$broken" \
+            --arg exit_code "${SWEEP_EXIT:-unknown}" \
+            '{broken: $broken, exit_code: $exit_code}' > /tmp/docs-link-sweep.json
+          if [ "$broken" -gt 0 ]; then
+            echo "::warning::advisory docs link sweep found $broken broken external link(s); see the docs-link-sweep artifact (does not gate the soak)"
+          fi
+          {
+            echo "### Docs external link sweep (advisory)"
+            echo
+            echo "Broken external links: $broken. This sweep never gates the soak."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload sweep artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: docs-link-sweep
+          path: |
+            /tmp/docs-link-sweep.json
+            /tmp/link-sweep.json
+          retention-days: 14
+          if-no-files-found: warn
 
   preflight_pending:
     name: Mark Integration Preflight Pending
@@ -1610,12 +1685,21 @@ jobs:
           ci-control/scripts/bench/aggregate-perf-report.sh
           cat "$OUT_DIR/perf-report.md" >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Fetch docs link sweep result (advisory)
+        if: always() && needs.schedule_gate.outputs.kind == 'weekend'
+        continue-on-error: true
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: docs-link-sweep
+          path: /tmp/merge-recovery-soak/link-sweep
+
       - name: Publish ONS alert email
         if: always() && needs.schedule_gate.outputs.preflight_only != 'true' && needs.schedule_gate.outputs.run_benchmarks == 'true' && steps.integration_preflight.outputs.result == 'passed' && steps.reset_telemetry.outcome == 'success'
         shell: bash -e {0}
         env:
           REPORT_DIR: /tmp/merge-recovery-soak/report
           ONS_TOPIC_OCID: ${{ vars.SOAK_ONS_TOPIC_OCID }}
+          LINK_SWEEP_JSON: /tmp/merge-recovery-soak/link-sweep/docs-link-sweep.json
           DASHBOARD_URL: https://f1r3fly-io.github.io/f1r3node-rust/
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
