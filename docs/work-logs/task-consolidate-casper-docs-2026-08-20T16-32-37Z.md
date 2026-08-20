@@ -37,9 +37,9 @@ This work log records the pre-consolidation catalog (two exhaustive sweeps,
    all implemented in Rholang" claim is corrected: Casper CBC is implemented
    (Rust consensus with a Rholang economic layer, `PoS.rhox`); Cordial
    Miners, RGB PSSM, and Casanova are design intentions.
-6. **Archive and wire in.** Stale strays move to `docs/archive/`, the
+6. **Archive and wire in.** Stale strays move to `docs/archive/`. The
    inverted heartbeat root copy and the byte-identical audit duplicate are
-   deleted, and the four orphaned PNGs are wired into the BFT document.
+   deleted. The four orphaned PNGs are wired into the BFT document.
 7. **Method anchors.** The contradictory `PoS.rhox` line-number citations in
    the slashing dossier convert to method-name anchors. Rust test comments
    keep their line references.
@@ -66,10 +66,11 @@ anchor-deep), `slashing-verification.md` and `sage FINDINGS.md` (19 each).
 All links are relative. `docs/README.md` never indexed the old theory tree —
 78% of consensus documentation was unreachable from the docs index.
 
-Staleness: Scala-era "Key Source Files" presented as current in
-`docs/casper/`; the root heartbeat doc documents env vars removed in
-v0.4.10 while its archive copy is current (inverted); sealed-floor status
-pins dead branches and PR #77; one byte-identical archive duplicate.
+Staleness findings: Scala-era "Key Source Files" read as current in
+`docs/casper/`. The root heartbeat doc documents env vars removed in
+v0.4.10 while its archive copy is current (inverted). The sealed-floor
+status doc pins dead branches and PR #77. One archive duplicate is
+byte-identical to its root copy.
 
 ## Catalog summary — Rholang consensus code
 
