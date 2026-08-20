@@ -1,11 +1,11 @@
 // References below to `formal/{rocq,tlaplus,sage}/slashing/`,
 // `FINDINGS.md`, `slashing-search-horizon.{md,sh}`, `slashing-traceability.md`,
-// `docs/theory/slashing/methodology/`, and `.mutants.toml` point at
+// `docs/casper/theory/slashing/methodology/`, and `.mutants.toml` point at
 // audit-corpus artifacts preserved on the `analysis/slashing` branch.
 //
 // UC-71 — Partial batch slash failure atomicity.
 //
-// Maps to: docs/theory/slashing/slashing-specification.md §12 UC-71.
+// Maps to: docs/casper/theory/slashing/slashing-specification.md §12 UC-71.
 // Theorem: T-IdemMany boundary (`bm_slash_many_order_independent`,
 // formal/rocq/slashing/theories/PoSContract.v).
 // Reference: formal/sage/slashing/FINDINGS.md row 12 + 23 — "batch

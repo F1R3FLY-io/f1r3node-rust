@@ -2,7 +2,7 @@
 // `is_slashable()` catch-all arm of
 // `MultiParentCasperImpl::handle_invalid_block`.
 //
-// Reference: docs/theory/slashing/design/14-test-plan.md §14.3.5
+// Reference: docs/casper/theory/slashing/design/14-test-plan.md §14.3.5
 // (production-path integration). Plan-agent designed.
 //
 // The recipe is the existing smoke test
@@ -19,7 +19,7 @@
 // Running this test against the parent of the bug-#3 fix commit
 // reproduces the bug.
 //
-// UC-35 from docs/theory/slashing/slashing-specification.md §12.
+// UC-35 from docs/casper/theory/slashing/slashing-specification.md §12.
 
 use casper::rust::block_status::{BlockError, InvalidBlock};
 use casper::rust::casper::Casper;

@@ -11,7 +11,7 @@
 This glossary is load-bearing: documentation, ADRs, and code reviews cite
 its anchors. See `**Preferred usage.**` subsections for canonical vs. avoided
 phrasings. Mathematical notation and theorem naming remain in
-`docs/theory/slashing/design/02-glossary-and-notation.md` pending unification
+`docs/casper/theory/slashing/design/02-glossary-and-notation.md` pending unification
 (BACKLOG-DOC-001).
 
 ## Architecture Overview
