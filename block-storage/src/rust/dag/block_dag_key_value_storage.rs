@@ -719,6 +719,21 @@ pub struct BlockDagKeyValueStorage {
     /// Monotonically increasing counter incremented on every successful block insert.
     /// Used by caches to detect when the DAG has changed.
     pub(crate) dag_generation: Arc<AtomicU64>,
+    /// Lower bound on `fault_tolerance_value` across `finalized_block_set`,
+    /// held as `f32` bits (`f32::to_bits` / `from_bits`) so it fits an atomic.
+    /// `propagate_ft_to_finalized_blocks` reads it to skip a scan that could
+    /// only raise blocks already at or above `ft_value`.
+    ///
+    /// The invariant is one-sided: too LOW costs one needless scan, too HIGH
+    /// skips a scan that was needed and leaves blocks under-propagated. So
+    /// lowering is free and may happen at any time, while raising is only
+    /// sound once a scan has actually rewritten every finalized block.
+    ///
+    /// Both writers hold `global_lock` exclusively — the lowering in
+    /// `record_directly_finalized`'s persist closure and the raise at the end
+    /// of `propagate_ft_to_finalized_blocks`. That is what makes `Relaxed`
+    /// sufficient here; a reader outside the lock would need stronger
+    /// ordering, and could observe a stale-high bound.
     pub(crate) ft_lower_bound: Arc<AtomicU32>,
 }
 
@@ -784,7 +799,7 @@ impl BlockDagKeyValueStorage {
         })
     }
 
-    // P2-16: the following three methods bypass `global_lock` — production
+    // P2-16: the following two methods bypass `global_lock` — production
     // code MUST route through `access_equivocations_tracker` to honor the
     // Bug #2 / T-9.2 atomicity contract (see
     // `docs/theory/slashing/slashing-verification.md` §9.2 and
@@ -805,19 +820,6 @@ impl BlockDagKeyValueStorage {
         record: EquivocationRecord,
     ) -> Result<(), KvStoreError> {
         self.equivocation_tracker_index.add(record)
-    }
-
-    #[cfg(any(test, feature = "test-internals"))]
-    #[doc(hidden)]
-    pub fn update_equivocation_record(
-        &self,
-        mut record: EquivocationRecord,
-        block_hash: BlockHash,
-    ) -> Result<(), KvStoreError> {
-        self.equivocation_tracker_index.add({
-            record.equivocation_detected_block_hashes.insert(block_hash);
-            record
-        })
     }
 
     /// Phase 11 (visibility hardening): test fixtures used to build a
@@ -1271,6 +1273,21 @@ impl BlockDagKeyValueStorage {
 
                 // P2-12: record_finalized mutates block metadata; exclusive lock.
                 let _lock_guard = self.global_lock.write();
+
+                // These blocks enter at `ft_value`, possibly below what earlier
+                // rounds propagated — the bound has to follow them down. Lowered
+                // BEFORE the fallible write, not after: `record_finalized` adds to
+                // `finalized_block_set` before it persists, so an error on the way
+                // out would leave those blocks in the set with the bound still
+                // high, and every later propagate at or under it would skip the
+                // scan that raises them. Lowering early can only cost one
+                // unnecessary scan.
+                let _ = self.ft_lower_bound.fetch_update(
+                    Ordering::Relaxed,
+                    Ordering::Relaxed,
+                    |bits| (ft_value < f32::from_bits(bits)).then(|| ft_value.to_bits()),
+                );
+
                 let mut block_metadata_index_guard = self.block_metadata_index.write();
                 block_metadata_index_guard.record_finalized(
                     directly_finalized_hash.clone(),
@@ -1278,14 +1295,6 @@ impl BlockDagKeyValueStorage {
                     ft_value,
                 )?;
                 drop(block_metadata_index_guard);
-
-                // These blocks enter at `ft_value`, possibly below what earlier
-                // rounds propagated — the bound has to follow them down.
-                let _ = self.ft_lower_bound.fetch_update(
-                    Ordering::Relaxed,
-                    Ordering::Relaxed,
-                    |bits| (ft_value < f32::from_bits(bits)).then(|| ft_value.to_bits()),
-                );
                 Ok(())
             };
 
