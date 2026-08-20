@@ -90,13 +90,33 @@ behaviors:
           contenders over a NEUTRAL base, where the now-live loss-aware
           adjudication does decide in its favor.
         decision_needed: |
-          Maintainer direction wanted on the base-bias facet, e.g.: (a) accept
-          proposer rotation as the liveness mechanism and reshape the B4 test
-          to a neutral-base or rotating-proposer shape that the loss-aware fix
-          provably wins; (b) pursue a retry-targeting change (owner defers
-          re-proposal until its carrier can be the base, or targets a
-          contention-free tip); (c) pursue fork-choice/parent-selection
-          awareness of starved retries (deepest consensus change).
+          Maintainer direction wanted on the base-bias facet. The full
+          analysis is ratified into docs/casper/CONSENSUS_PHILOSOPHY.md
+          (Section 5, remedy ladder): A rotation-as-liveness, B1
+          merged-frontier retry packaging, B2 per-key serialization, C1
+          loss-aware main-parent declaration, C2 loss-aware base fallback,
+          C3 fork-choice weights (rejected — Principle P4). Recommended
+          path: B1 + A now, C1 as the soak-evidence escalation, C2 in
+          reserve. Behaviors B6 and B7 below pre-stage the recommended
+          path and await ratification.
+  - id: B6
+    statement: "A gated retry is packaged only onto a tip that already merges every same-key contender the owner can see"
+    priority: must
+    deep_module: false
+    done: false
+    pending_ratification: true
+    notes:
+      - "Phase 2, option B1 (merged-frontier retry packaging) from docs/casper/CONSENSUS_PHILOSOPHY.md Section 5. Node-local packaging policy in prepare_user_deploys_with_policy; peer-safe by Ground Truth 2 (deferral is always legal). RED shape: in the racing harness, assert the owner block never packages the retry as a sibling of an unmerged contender."
+    cycle_log: []
+  - id: B7
+    statement: "Under rotating merge proposers, a repeatedly rejected deploy lands before its validity window closes"
+    priority: must
+    deep_module: false
+    done: false
+    pending_ratification: true
+    notes:
+      - "Phase 2, option A (rotation as the liveness mechanism): reshape loss_priority_spec so merge proposers alternate. With B6 plus loss-aware adjudication this must go deterministically GREEN. The adversarial always-contender-merges shape stays as an #[ignore]d sentinel documenting the residual base-bias facet (C1 escalation trigger)."
+    cycle_log: []
   - id: B5
     statement: "Prior-rejection counts derive only from kept (non-duplicate) records visible in the merge scope"
     priority: should
@@ -145,6 +165,27 @@ kept (non-duplicate) `RejectedDeploy` records visible in the merge scope
 higher counts first in conflict adjudication, falling back to the
 existing content ordering on ties. Each loss raises the loser's on-chain
 count, so starvation is bounded.
+
+## Phase 2 (pending maintainer decision)
+
+Phase 1 (B1–B3, B5) fixed the content-deterministic adjudication facet.
+The harness surfaced a second facet — main-parent base bias — that no
+within-merge priority can fix (B4, blocked). The canonical analysis is
+[docs/casper/CONSENSUS_PHILOSOPHY.md](../casper/CONSENSUS_PHILOSOPHY.md):
+Section 5 holds the remedy ladder (A / B1 / B2 / C1 / C2 / C3 with the
+comparison table), Section 6 the ratified principles P1–P6.
+
+Recommended path, pre-staged here as behaviors awaiting ratification:
+
+- **B6** — merged-frontier retry packaging (ladder option B1): node-local
+  packaging policy, peer-safe, small diff.
+- **B7** — rotating-proposer harness claim (ladder option A): the
+  provable GREEN reshape of `loss_priority_spec`; the adversarial shape
+  stays `#[ignore]`d as the C1 escalation sentinel.
+
+Escalation: C1 (loss-aware main-parent declaration) only behind soak
+evidence of residual expiries; C2 in reserve; C3 rejected (Principle P4:
+fork choice stays deploy-content-blind).
 
 ## Boundaries
 
