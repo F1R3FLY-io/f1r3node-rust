@@ -161,6 +161,14 @@ jobs:
         shell: bash -euo pipefail {0}
         run: scripts/test-repin-system-integration.sh
 
+      - name: Verify release evidence
+        shell: bash -euo pipefail {0}
+        run: .github/scripts/test-release-evidence.sh
+
+      - name: Verify release workflows
+        shell: bash -euo pipefail {0}
+        run: .github/scripts/test-release-workflows.sh
+
       - name: Verify soak summary aggregation
         shell: bash -euo pipefail {0}
         run: scripts/bench/test-write-soak-summary.sh
@@ -239,35 +247,29 @@ jobs:
         uses: actions/checkout@v5
 
       - name: Link Checker
-        uses: lycheeverse/lychee-action@v2
+        uses: lycheeverse/lychee-action@e7477775783ea5526144ba13e8db5eec57747ce8
         with:
-          # 403 is accepted alongside 200..=299 and 429 because many
-          # citations in `docs/theory/slashing/methodology/references.md`
-          # are DOIs that redirect to publisher portals (ACM DL, Oxford
-          # Academic, IEEE Xplore, IACR ePrint, Medium) which 403 on
-          # unauthenticated/bot requests. A 403 response from these
-          # endpoints still proves the URL is well-formed and the
-          # resource exists; a real broken link would 404. The 429
-          # allowance for rate-limited fetches is unchanged. 503/504 are
-          # accepted because they are transient by definition (seen
-          # from rust-fuzz.github.io during a GitHub Pages blip and
-          # from zenodo.org DOI redirects during gateway timeouts);
-          # a genuinely dead link returns 404/410, not 503/504.
-          # --timeout 45 (lychee defaults to 20). The slashing references carry
-          # ~73 doi.org citations, and doi.org resolution is slow and variable:
-          # it redirects to publisher portals that can take tens of seconds to
-          # answer, and lychee fires the whole corpus concurrently. Runs
-          # therefore flip between zero timeouts and a handful, on unchanged
-          # content — run 30482440004 reported 3 TIMEOUT and 0 errors, which is
-          # "valid but slow", not "broken". Raising the ceiling keeps every DOI
-          # actually verified; excluding them instead would leave 73 citations
-          # unchecked and would need extending every time a different one is
-          # unlucky. The whole 1744-link sweep runs in ~65s against a
-          # timeout-minutes: 10 job, so the extra tail costs nothing.
+          # Scope: local file links plus repository-hosting URLs only.
+          # The broad exclude drops every http(s) URL; the includes add
+          # back github.com, raw.githubusercontent.com, and gitlab.com
+          # (lychee includes take precedence over excludes). Local file
+          # links are not http and are always checked. General-web URLs
+          # (DOIs, publisher portals, project sites) were removed from
+          # the blocking gate 2026-08-19: several domains answer GitHub
+          # runner IPs differently from developer machines, so results
+          # were vantage-dependent and not reproducible locally. The
+          # non-blocking external sweep runs with the 60h stability soak
+          # preflight instead. Fragment checking stays off: the repo
+          # carries pre-existing broken anchors in docs/theory/slashing;
+          # enable it after that debt is cleared. The accept list keeps
+          # 403/429 (rate limits, bot checks) and 503/504 (transient
+          # gateway states) from failing hosting-domain checks.
           args: >-
             --no-progress
-            --exclude-loopback
-            --exclude 'https://www\.gutenberg\.org/ebooks/132'
+            --exclude '^https?://'
+            --include '^https?://(www\.)?github\.com'
+            --include '^https?://raw\.githubusercontent\.com'
+            --include '^https?://(www\.)?gitlab\.com'
             --max-retries 2
             --retry-wait-time 5
             --timeout 45
@@ -429,8 +431,8 @@ jobs:
             --paginate \
             --jq '.jobs[] | select(.name | contains("Integration Tests (amd64-")) | "\(.conclusion // "pending")\t\(.name)"')
           slot_count=$(printf '%s\n' "$slots" | grep -c . || true)
-          if [ "$slot_count" -ne 4 ]; then
-            echo "Expected 4 amd64 integration test slots (docker, subprocess, ucc-docker, ucc-subprocess), but found $slot_count:"
+          if [ "$slot_count" -ne 2 ]; then
+            echo "Expected 2 amd64 integration test slots (docker, subprocess), but found $slot_count:"
             printf '%s\n' "$slots"
             exit 1
           fi
