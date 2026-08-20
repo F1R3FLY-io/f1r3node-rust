@@ -4277,6 +4277,25 @@ authority of the unchanged spatial equations. The independent recursive oracle a
 semantic corpus, while dedicated anti-vacuity cases force unordered reassignment, later EMap-value
 failure after an earlier key capture, and exact set/map remainder binding.
 
+The first release-workspace diagnostic found that the initial outer singleton-`Expr` dispatch had
+conflated one byte-cursor result with that semantic relation. When a target carried a valid outer
+message-valued oneof but omitted a required Rholang child, `canonical_expr_parts` correctly declined
+to prove the recursive payload; the dispatch incorrectly answered `None` before the complete
+generated decoder and predecessor assertion could run. This was not a newly accepted malformed
+shape and is not assigned a new CBR row. The correction separates an exact shallow oneof-envelope
+proof from recursive-child validation: only a proven different variant answers no-match; a same or
+unproved variant delegates to the existing complete path. Thus a missing required child remains an
+internal invariant violation, as recorded by the pre-existing reachability, disposition, and FFI
+subprocess gates.
+
+The correction is witnessed by **28/28** ParBag cursor tests, **6/6** recursive-family cursor tests,
+**17/17** recursive-oracle tests, **8/8** singleton-`If` tests, **5/5** absent-child reachability
+tests, **15/15** generated-variant disposition tests, and **2/2** FFI boundary tests. The new nested
+same-tag control must fail at `EMinus.p1 (target)`; its different-tag twin must return a clean
+non-match without inspecting that child. The earlier release-workspace attempt remains a diagnostic,
+not a passing closure run, because it was terminated after localization rather than allowed to spend
+days in the separately tracked quadratic deep-fixture construction boundary.
+
 Canonical child order is retained only as a deterministic proof-search and binding-fold witness.
 It does not order Rholang evaluation: `Par` remains unordered parallel composition, no sibling gains
 a happens-before edge, and `stdlog!` is not a sequencing primitive. No value, verdict, binding,

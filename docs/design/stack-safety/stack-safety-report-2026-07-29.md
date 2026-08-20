@@ -8420,10 +8420,13 @@ All focused commands ran on 2026-08-20 with `MemorySwapMax=0` and a systemd RSS 
 
 | gate | result | discriminating evidence |
 |---|---:|---|
-| `models --test par_bag` | **27/27** | borrowed ESet/EMap members, key/value boundaries, signed free remainder, wildcard remainder, root metadata, and malformed/bound-remainder fast-path refusal |
-| recursive-family cursor target | **4/4** | fixed stack, allocation slope, late-failure rollback, and unordered backtracking plus set/map remainder materialization |
+| `models --test par_bag` | **28/28** | borrowed ESet/EMap members, key/value boundaries, signed free remainder, wildcard remainder, root metadata, malformed/bound-remainder fast-path refusal, and separation of a proven outer `Expr` tag from recursive-child validity |
+| recursive-family cursor target | **6/6** | fixed stack, allocation slope, late-failure rollback, unordered backtracking plus set/map remainder materialization, and same-tag/different-tag malformed-child controls |
 | recursive matcher oracle | **17/17** | production PDA and bounded independent recursive equation agree on verdict and complete `FreeMap`, including legacy set/map and Bag residual cases |
 | singleton-`If` regression target | **8/8** | SS-A14 cursor, rollback, layout-sensitive traversal, and allocation slope remain green |
+| absent-required-child reachability | **5/5** | a decoded required-child omission remains an invariant violation rather than becoming a semantic non-match |
+| matcher disposition | **15/15** | all generated optional child slots retain the predecessor assert/no-match partition |
+| FFI absent-required-child boundary | **2/2** | the well-formed control returns and the malformed input retains the predecessor process-abort disposition |
 | fixed native stack | **13 families × depth 4,096 on 128 KiB** | every fixture reaches and captures the terminal; connective NOT additionally proves capture isolation |
 
 The unordered collection test is deliberately not a one-element zip. Its free-variable ESet row can
@@ -8432,6 +8435,27 @@ reassignment. EMap key matching binds and its later value refuses, requiring the
 transaction to roll back. Separate set and map remainder cases require exact Bag subtraction and
 materialization of only the residual members. These witnesses would fail if candidate traversal
 were mistaken for semantic or execution order.
+
+The first release-workspace diagnostic after the byte-cursor checkpoint exposed a separate
+anti-vacuity gap in the focused matrix. A recursive pattern proved by `canonical_expr_parts` could
+meet a target whose outer protobuf `Expr` oneof was valid but whose message-valued arm omitted a
+required Rholang child. The target cursor then returned “unproved”; the outer singleton dispatch
+mistook that parser result for the semantic verdict `false`. That contradicted the already recorded
+malformed-input disposition: `Option<()>` has no third result for an invalid AST, so a required-child
+omission must reach the complete generated decoder and the owned matcher assertion rather than
+masquerade as a well-formed non-match.
+
+The correction introduces a deliberately shallow, exact canonical oneof-envelope proof. A proven
+**different** target tag can still return `false` without reading the malformed arm. A same tag, or
+an envelope the shallow cursor cannot prove, enters the existing `EncodedExpr` route; deeper cursor
+failure there delegates to the generated decoder and owned semantic evaluator. The helper does not
+validate or bless message-valued payloads. Dedicated subprocess evidence now forces a nested
+`ENot -> EMinus` target with absent `EMinus.p1` to reach the predecessor assertion, while an absent-
+child `EMinus` against a proven `EPlus` pattern remains an ordinary variant mismatch. The three
+pre-existing malformed-child gates above were retained unchanged. The incomplete release diagnostic
+is not reported as a workspace pass: it was stopped after this failure was localized because the
+remaining very-deep construction fixtures exercise the separately tracked quadratic-construction
+boundary rather than this matcher correction.
 
 #### 5.30.4 Resource results and closure of SS-Y10
 

@@ -981,6 +981,57 @@ fn read_canonical_varint(bytes: &[u8], at: &mut usize) -> Option<u64> {
     None
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct CanonicalExprEnvelope<'a> {
+    tag: u32,
+    payload: &'a [u8],
+}
+
+/// Prove that `message` is exactly one canonically encoded, known `Expr`
+/// oneof field while deliberately leaving a message-valued arm's payload
+/// uninterpreted.
+///
+/// This shallow proof is distinct from [`canonical_expr_parts`]: a proto3
+/// message arm can have a valid outer envelope while omitting one of the
+/// required child messages assumed by the Rholang AST. Matcher dispatch may
+/// use the returned tag to reject a proven different variant, but must still
+/// delegate a same-tag payload that the deeper cursor cannot prove.
+fn canonical_expr_envelope(message: &[u8]) -> Option<CanonicalExprEnvelope<'_>> {
+    let mut at = 0usize;
+    let key = read_canonical_varint(message, &mut at)?;
+    let tag = u32::try_from(key >> 3).ok()?;
+    let wire = key & 0x07;
+    let payload_start = at;
+    let payload = match (tag, wire) {
+        (1 | 2, 0) => {
+            let _ = read_canonical_varint(message, &mut at)?;
+            message.get(payload_start..at)?
+        }
+        (34, 1) => {
+            at = at.checked_add(8).filter(|end| *end <= message.len())?;
+            message.get(payload_start..at)?
+        }
+        (3..=25 | 27..=33 | 35..=37, 2) => {
+            let len = usize::try_from(read_canonical_varint(message, &mut at)?).ok()?;
+            let end = at.checked_add(len)?;
+            let payload = message.get(at..end)?;
+            at = end;
+            payload
+        }
+        _ => return None,
+    };
+    (at == message.len()).then_some(CanonicalExprEnvelope { tag, payload })
+}
+
+/// Return the sole canonical `Expr` oneof field number without validating a
+/// recursive arm's child-message invariants.
+///
+/// `None` means only that this shallow cursor could not prove the envelope. It
+/// must never be interpreted as a semantic negative by a matcher.
+pub fn canonical_expr_oneof_tag(message: &[u8]) -> Option<u32> {
+    canonical_expr_envelope(message).map(|envelope| envelope.tag)
+}
+
 /// Match a canonical message containing exactly one length-delimited field and
 /// return that field's body. This deliberately accepts no unknown, duplicate,
 /// reordered, or trailing field: Prost's canonical encoder would emit none of
@@ -1567,14 +1618,7 @@ fn canonical_method_parts(message: &[u8]) -> Option<CanonicalExprParts<'_>> {
 /// Parse only recursive expression families whose spatial equation can be
 /// continued directly over borrowed canonical child messages.
 pub fn canonical_expr_parts(message: &[u8]) -> Option<CanonicalExprParts<'_>> {
-    let mut at = 0usize;
-    let key = read_canonical_varint(message, &mut at)?;
-    let tag = u32::try_from(key >> 3).ok()?;
-    ((key & 0x07) == 2).then_some(())?;
-    let len = usize::try_from(read_canonical_varint(message, &mut at)?).ok()?;
-    let end = at.checked_add(len)?;
-    let body = message.get(at..end)?;
-    (end == message.len()).then_some(())?;
+    let CanonicalExprEnvelope { tag, payload: body } = canonical_expr_envelope(message)?;
 
     match tag {
         5 | 6 => Some(CanonicalExprParts::Unary {

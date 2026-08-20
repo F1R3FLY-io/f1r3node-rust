@@ -12,11 +12,11 @@ use std::collections::BTreeMap;
 use models::rhoapi::connective::ConnectiveInstance;
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::{
-    Connective, EList, EMap, EMatches, EMethod, ENot, EPlus, ESet, ETuple, Expr, KeyValuePair,
-    Match, MatchCase, New, Par, Receive, ReceiveBind, Send,
+    Connective, EList, EMap, EMatches, EMethod, EMinus, ENot, EPlus, ESet, ETuple, Expr,
+    KeyValuePair, Match, MatchCase, New, Par, Receive, ReceiveBind, Send,
 };
 use models::rust::par_construction::ParConstruction;
-use models::rust::rholang::protobuf_encoder;
+use models::rust::rholang::{protobuf_decoder, protobuf_encoder};
 use models::rust::utils::{
     new_emap_par, new_eset_par, new_freevar_par, new_freevar_var, new_gint_par,
 };
@@ -27,6 +27,8 @@ mod counting_alloc;
 
 #[global_allocator]
 static ALLOCATOR: counting_alloc::Counting = counting_alloc::Counting;
+
+const MALFORMED_CHILD_PROCESS: &str = "RHOLANG_RECURSIVE_CURSOR_MALFORMED_CHILD";
 
 #[derive(Clone, Copy, Debug)]
 enum Family {
@@ -322,6 +324,140 @@ fn assert_family_match(family: Family, target: Par, pattern: Par) {
     } else {
         assert_matches_terminal(target, pattern);
     }
+}
+
+fn append_varint(mut value: usize, bytes: &mut Vec<u8>) {
+    loop {
+        let mut byte = (value & 0x7f) as u8;
+        value >>= 7;
+        if value != 0 {
+            byte |= 0x80;
+        }
+        bytes.push(byte);
+        if value == 0 {
+            return;
+        }
+    }
+}
+
+fn delimited(field_key: u8, body: &[u8]) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(body.len() + 3);
+    bytes.push(field_key);
+    append_varint(body.len(), &mut bytes);
+    bytes.extend_from_slice(body);
+    bytes
+}
+
+/// Canonical protobuf bytes for an `EMinus` carrier whose required `p1`
+/// child is absent. Proto3 accepts this envelope even though it is not a valid
+/// Rholang AST node.
+fn absent_eminus_par_bytes() -> Vec<u8> {
+    let p2 = protobuf_encoder::encode_to_vec(&new_gint_par(2, Vec::new(), false));
+    let eminus_body = delimited(0x12, &p2); // EMinus.p2 = field 2
+    let expression = delimited(0x52, &eminus_body); // Expr.e_minus_body = field 10
+    delimited(0x2a, &expression) // Par.exprs = field 5
+}
+
+fn nested_absent_eminus_par_bytes() -> Vec<u8> {
+    let inner = absent_eminus_par_bytes();
+    let enot_body = delimited(0x0a, &inner); // ENot.p = field 1
+    let expression = delimited(0x2a, &enot_body); // Expr.e_not_body = field 5
+    delimited(0x2a, &expression) // Par.exprs = field 5
+}
+
+fn nested_eminus_pattern(outer_not: bool) -> Par {
+    let inner = Par::default()
+        .with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::EMinusBody(EMinus {
+                p1: Some(new_freevar_par(0, Vec::new())),
+                p2: Some(new_gint_par(2, Vec::new(), false)),
+            })),
+        }])
+        .with_connective_used(true);
+    if outer_not {
+        Par::default()
+            .with_exprs(vec![Expr {
+                expr_instance: Some(ExprInstance::ENotBody(ENot { p: Some(inner) })),
+            }])
+            .with_connective_used(true)
+    } else {
+        inner
+    }
+}
+
+#[test]
+fn nested_same_tag_absent_child_delegates_to_the_owned_invariant() {
+    if std::env::var(MALFORMED_CHILD_PROCESS).is_ok() {
+        let well_formed_inner = Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::EMinusBody(EMinus {
+                p1: Some(new_gint_par(7, Vec::new(), false)),
+                p2: Some(new_gint_par(2, Vec::new(), false)),
+            })),
+        }]);
+        let well_formed = Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::ENotBody(ENot {
+                p: Some(well_formed_inner),
+            })),
+        }]);
+        let control =
+            SpatialMatcherContext::new().spatial_match(well_formed, nested_eminus_pattern(true));
+        println!("MALFORMED_CHILD_CONTROL_MATCHED={}", control.is_some());
+
+        let target = protobuf_decoder::decode_par(nested_absent_eminus_par_bytes().as_slice())
+            .expect("proto3 accepts the absent required child");
+        let result =
+            SpatialMatcherContext::new().spatial_match(target, nested_eminus_pattern(true));
+        println!("MALFORMED_CHILD_SURVIVED=true result={result:?}");
+        return;
+    }
+
+    let output = std::process::Command::new(
+        std::env::current_exe().expect("the integration test knows its executable"),
+    )
+    .env(MALFORMED_CHILD_PROCESS, "1")
+    .args([
+        "nested_same_tag_absent_child_delegates_to_the_owned_invariant",
+        "--exact",
+        "--nocapture",
+        "--test-threads=1",
+    ])
+    .output()
+    .expect("the malformed-child subprocess starts");
+    let text = String::from_utf8_lossy(&output.stdout).into_owned()
+        + &String::from_utf8_lossy(&output.stderr);
+    assert!(
+        text.contains("MALFORMED_CHILD_CONTROL_MATCHED=true"),
+        "the control did not prove the nested ENot -> EMinus route\n{text}"
+    );
+    assert!(
+        !text.contains("MALFORMED_CHILD_SURVIVED=true"),
+        "the same-tag malformed target was silently classified as a non-match\n{text}"
+    );
+    assert!(
+        !output.status.success(),
+        "the malformed child must assert\n{text}"
+    );
+    assert!(
+        text.contains("EMinus.p1 (target)"),
+        "the failure did not come from the owned semantic invariant\n{text}"
+    );
+}
+
+#[test]
+fn proven_different_expr_tag_does_not_read_an_absent_child() {
+    let target = protobuf_decoder::decode_par(absent_eminus_par_bytes().as_slice())
+        .expect("proto3 accepts the absent required child");
+    let pattern = Par::default()
+        .with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::EPlusBody(EPlus {
+                p1: Some(new_freevar_par(0, Vec::new())),
+                p2: Some(new_gint_par(2, Vec::new(), false)),
+            })),
+        }])
+        .with_connective_used(true);
+    let mut context = SpatialMatcherContext::new();
+    assert_eq!(context.spatial_match(target, pattern), None);
+    assert!(context.free_map.is_empty());
 }
 
 #[test]

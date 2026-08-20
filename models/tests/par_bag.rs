@@ -4,12 +4,12 @@ use models::rhoapi::connective::ConnectiveInstance;
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::g_unforgeable::UnfInstance;
 use models::rhoapi::{
-    Bundle, Connective, ConnectiveBody, EMap, ENot, ESet, Expr, GSysAuthToken, GUnforgeable, If,
-    KeyValuePair, Match, New, Par, Receive, Send, Var,
+    Bundle, Connective, ConnectiveBody, EMap, EMinus, ENot, ESet, Expr, GSysAuthToken,
+    GUnforgeable, If, KeyValuePair, Match, New, Par, Receive, Send, Var,
 };
 use models::rust::par_bag::{
-    canonical_collection_remainder, canonical_expr_parts, canonical_if_parts,
-    canonical_match_parts, canonical_new_parts, canonical_par_connective_used,
+    canonical_collection_remainder, canonical_expr_oneof_tag, canonical_expr_parts,
+    canonical_if_parts, canonical_match_parts, canonical_new_parts, canonical_par_connective_used,
     canonical_par_locally_free_is_empty, canonical_receive_parts, canonical_send_parts,
     canonical_single_expr_from_par, canonical_single_if_from_par, canonical_single_match_from_par,
     canonical_single_new_from_par, canonical_single_receive_from_par,
@@ -276,6 +276,69 @@ fn canonical_recursive_family_cursors_expose_only_semantic_children() {
     let mut malformed_expr = expression_bytes;
     malformed_expr.extend_from_slice(&[0x28, 0x00]);
     assert!(canonical_expr_parts(&malformed_expr).is_none());
+}
+
+#[test]
+fn canonical_expr_envelope_separates_outer_variant_proof_from_child_validity() {
+    let encode = |instance| {
+        models::rust::rholang::protobuf_encoder::encode_to_vec(&Expr {
+            expr_instance: Some(instance),
+        })
+    };
+    let child = Par::default().with_exprs(vec![Expr {
+        expr_instance: Some(ExprInstance::GInt(7)),
+    }]);
+
+    for (instance, expected_tag) in [
+        (ExprInstance::GBool(true), 1),
+        (ExprInstance::GInt(-7), 2),
+        (ExprInstance::GString("rho".to_owned()), 3),
+        (ExprInstance::GDouble((-0.0f64).to_bits()), 34),
+    ] {
+        let bytes = encode(instance);
+        assert_eq!(canonical_expr_oneof_tag(&bytes), Some(expected_tag));
+        assert!(
+            canonical_expr_parts(&bytes).is_none(),
+            "scalar tag {expected_tag} is an envelope, not a recursive cursor family"
+        );
+    }
+
+    let absent_left = encode(ExprInstance::EMinusBody(EMinus {
+        p1: None,
+        p2: Some(child.clone()),
+    }));
+    assert_eq!(canonical_expr_oneof_tag(&absent_left), Some(10));
+    assert!(
+        canonical_expr_parts(&absent_left).is_none(),
+        "the shallow envelope must not bless an absent required child"
+    );
+
+    let well_formed = encode(ExprInstance::EMinusBody(EMinus {
+        p1: Some(child.clone()),
+        p2: Some(child),
+    }));
+    assert_eq!(canonical_expr_oneof_tag(&well_formed), Some(10));
+    assert!(matches!(
+        canonical_expr_parts(&well_formed),
+        Some(CanonicalExprParts::Binary { tag: 10, .. })
+    ));
+
+    let duplicate_bool = {
+        let one = encode(ExprInstance::GBool(true));
+        [one.as_slice(), one.as_slice()].concat()
+    };
+    for malformed in [
+        Vec::new(),
+        vec![0x2a, 0x01],       // truncated length-delimited body
+        vec![0xaa, 0x00, 0x00], // non-minimal field key
+        vec![0x08, 0x80, 0x00], // non-minimal varint value
+        vec![0x2a, 0x80, 0x00], // non-minimal length
+        duplicate_bool,         // a second oneof field
+        vec![0x2b, 0x2c],       // groups are not Expr oneof encodings
+        vec![0x92, 0x02, 0x00], // fixed64 tag with length-delimited wire
+    ] {
+        assert_eq!(canonical_expr_oneof_tag(&malformed), None);
+    }
 }
 
 #[test]

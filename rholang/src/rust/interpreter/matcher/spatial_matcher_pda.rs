@@ -19,8 +19,8 @@ use models::rhoapi::If;
 use models::rust::canonical_path::decode_trie_path;
 use models::rust::epathmap_trie_codec::EPathMapMode;
 use models::rust::par_bag::{
-    canonical_collection_remainder, canonical_expr_parts, canonical_if_parts,
-    canonical_match_parts, canonical_new_parts, canonical_par_connective_used,
+    canonical_collection_remainder, canonical_expr_oneof_tag, canonical_expr_parts,
+    canonical_if_parts, canonical_match_parts, canonical_new_parts, canonical_par_connective_used,
     canonical_par_locally_free_is_empty, canonical_receive_parts, canonical_send_parts,
     canonical_single_expr_from_par, canonical_single_if_from_par, canonical_single_match_from_par,
     canonical_single_new_from_par, canonical_single_receive_from_par,
@@ -768,15 +768,15 @@ fn evaluate_par(
         let pattern_tag = canonical_expr_parts(pattern_expr.as_slice()).map(|parts| parts.tag());
         if let Some(pattern_tag) = pattern_tag {
             return match singleton_component_region::<Expr>(&target) {
-                Some(target_expr)
-                    if canonical_expr_parts(target_expr.as_slice())
-                        .is_some_and(|parts| parts.tag() == pattern_tag) =>
-                {
-                    frames.push(Frame::RestoreOnFailure {
-                        snapshot: context.free_map.clone(),
-                    });
-                    Job::EncodedExpr(target_expr, pattern_expr)
-                }
+                Some(target_expr) => match canonical_expr_oneof_tag(target_expr.as_slice()) {
+                    Some(target_tag) if target_tag != pattern_tag => Job::Return(false),
+                    _ => {
+                        frames.push(Frame::RestoreOnFailure {
+                            snapshot: context.free_map.clone(),
+                        });
+                        Job::EncodedExpr(target_expr, pattern_expr)
+                    }
+                },
                 _ => Job::Return(false),
             };
         }
@@ -931,10 +931,12 @@ fn evaluate_encoded_par(target: EncodedRegion, pattern: EncodedRegion) -> Job {
     let pattern_expr =
         canonical_single_expr_from_par(pattern.as_slice()).and_then(|body| pattern.child(body));
     if let (Some(target_expr), Some(pattern_expr)) = (target_expr, pattern_expr) {
-        let target_tag = canonical_expr_parts(target_expr.as_slice()).map(|parts| parts.tag());
         let pattern_tag = canonical_expr_parts(pattern_expr.as_slice()).map(|parts| parts.tag());
-        if target_tag.is_some() && target_tag == pattern_tag {
-            return Job::EncodedExpr(target_expr, pattern_expr);
+        if let Some(pattern_tag) = pattern_tag {
+            return match canonical_expr_oneof_tag(target_expr.as_slice()) {
+                Some(target_tag) if target_tag != pattern_tag => Job::Return(false),
+                _ => Job::EncodedExpr(target_expr, pattern_expr),
+            };
         }
     }
 
@@ -2173,10 +2175,10 @@ impl MatchValue {
     }
 
     /// Collision-free identity for every unordered `Par` field type. Each
-/// A resident generated-schema root uses the one-walk, stack-safe canonical
-/// bincode emitter. A borrowed collection member uses its already-validated
-/// canonical protobuf body. Both use the same injective sequence framing as
-/// structure, and a list never mixes the two representations.
+    /// A resident generated-schema root uses the one-walk, stack-safe canonical
+    /// bincode emitter. A borrowed collection member uses its already-validated
+    /// canonical protobuf body. Both use the same injective sequence framing as
+    /// structure, and a list never mixes the two representations.
     fn rho_path_identity(&self) -> Vec<u8> {
         let mut output = StructuralSequenceEncoder::with_capacity(match self {
             Self::ParPair(_) | Self::EncodedParPair(_) => 2,
