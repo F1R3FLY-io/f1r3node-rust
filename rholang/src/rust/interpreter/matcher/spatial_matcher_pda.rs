@@ -19,7 +19,12 @@ use models::rhoapi::If;
 use models::rust::canonical_path::decode_trie_path;
 use models::rust::epathmap_trie_codec::EPathMapMode;
 use models::rust::par_bag::{
-    canonical_if_parts, canonical_par_connective_used, canonical_single_if_from_par,
+    canonical_collection_remainder, canonical_expr_parts, canonical_if_parts,
+    canonical_match_parts, canonical_new_parts, canonical_par_connective_used,
+    canonical_par_locally_free_is_empty, canonical_receive_parts, canonical_send_parts,
+    canonical_single_expr_from_par, canonical_single_if_from_par, canonical_single_match_from_par,
+    canonical_single_new_from_par, canonical_single_receive_from_par,
+    canonical_single_send_from_par, CanonicalExprParts, ParBagComponent,
 };
 use models::rust::par_map_type_mapper::ParMapTypeMapper;
 use models::rust::par_set_type_mapper::ParSetTypeMapper;
@@ -250,6 +255,11 @@ enum Job {
     Match(Box<MatchPair>),
     EncodedPar(EncodedRegion, EncodedRegion),
     EncodedIf(EncodedRegion, EncodedRegion),
+    EncodedNew(EncodedRegion, EncodedRegion),
+    EncodedSend(EncodedRegion, EncodedRegion),
+    EncodedReceive(EncodedRegion, EncodedRegion),
+    EncodedMatch(EncodedRegion, EncodedRegion),
+    EncodedExpr(EncodedRegion, EncodedRegion),
     ParConnectives(Box<ParConnectiveState>),
     ConnectiveCandidates(Box<ConnectiveCandidates>),
     ListInit(ListRequest),
@@ -282,8 +292,15 @@ enum Frame {
     Not {
         snapshot: FreeMap,
     },
+    NotSpine {
+        snapshot: FreeMap,
+        negated: bool,
+    },
     EncodedIf {
         branches: Box<EncodedIfBranches>,
+    },
+    EncodedSibling {
+        sibling: Box<(EncodedRegion, EncodedRegion)>,
     },
     BindOnSuccess {
         level: i32,
@@ -356,6 +373,20 @@ struct EncodedRegion {
     end: usize,
 }
 
+impl PartialEq for EncodedRegion {
+    fn eq(&self, other: &Self) -> bool { self.as_slice() == other.as_slice() }
+}
+
+impl Eq for EncodedRegion {}
+
+impl PartialOrd for EncodedRegion {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> { Some(self.cmp(other)) }
+}
+
+impl Ord for EncodedRegion {
+    fn cmp(&self, other: &Self) -> Ordering { self.as_slice().cmp(other.as_slice()) }
+}
+
 impl EncodedRegion {
     fn whole(bytes: Arc<Vec<u8>>) -> Self {
         let end = bytes.len();
@@ -394,6 +425,19 @@ fn drive_job(context: &mut SpatialMatcherContext, mut job: Job) -> Option<()> {
             Job::Match(pair) => evaluate_pair(context, *pair, &mut frames),
             Job::EncodedPar(target, pattern) => evaluate_encoded_par(target, pattern),
             Job::EncodedIf(target, pattern) => evaluate_encoded_if(target, pattern, &mut frames),
+            Job::EncodedNew(target, pattern) => evaluate_encoded_new(target, pattern),
+            Job::EncodedSend(target, pattern) => {
+                evaluate_encoded_send(target, pattern, &mut frames)
+            }
+            Job::EncodedReceive(target, pattern) => {
+                evaluate_encoded_receive(target, pattern, &mut frames)
+            }
+            Job::EncodedMatch(target, pattern) => {
+                evaluate_encoded_match(target, pattern, &mut frames)
+            }
+            Job::EncodedExpr(target, pattern) => {
+                evaluate_encoded_expr(target, pattern, &mut frames)
+            }
             Job::ParConnectives(state) => step_par_connectives(*state, &mut frames),
             Job::ConnectiveCandidates(state) => {
                 step_connective_candidates(context, *state, &mut frames)
@@ -462,6 +506,10 @@ fn resume(
             context.free_map = snapshot;
             Job::Return(!result)
         }
+        Frame::NotSpine { snapshot, negated } => {
+            context.free_map = snapshot;
+            Job::Return(if negated { !result } else { result })
+        }
         Frame::EncodedIf { mut branches } => {
             if !result {
                 Job::Return(false)
@@ -471,6 +519,14 @@ fn resume(
             } else {
                 let (target, pattern) = branches.if_false;
                 Job::EncodedPar(target, pattern)
+            }
+        }
+        Frame::EncodedSibling { sibling } => {
+            if result {
+                let (target, pattern) = *sibling;
+                Job::EncodedPar(target, pattern)
+            } else {
+                Job::Return(false)
             }
         }
         Frame::BindOnSuccess { level, value } => {
@@ -604,12 +660,12 @@ fn evaluate_pair(
     }
 }
 
-fn singleton_if_region(par: &Par) -> Option<EncodedRegion> {
-    if par.family_cardinality::<If>() != 1 || !par.all_components_are::<If>() {
+fn singleton_component_region<T: ParBagComponent>(par: &Par) -> Option<EncodedRegion> {
+    if par.family_cardinality::<T>() != 1 || !par.all_components_are::<T>() {
         return None;
     }
     let mut result = None;
-    par.visit_encoded::<If>(|entry| {
+    par.visit_encoded::<T>(|entry| {
         if entry.multiplicity().get() == 1 {
             result = Some(EncodedRegion::whole(Arc::new(entry.payload().to_vec())));
         }
@@ -653,8 +709,8 @@ fn evaluate_par(
     // shared protobuf ranges. This is a representation transition only: the
     // three children remain independent matching obligations and imply no
     // execution order between the Rholang processes they contain.
-    if let Some(pattern_if) = singleton_if_region(&pattern) {
-        return match singleton_if_region(&target) {
+    if let Some(pattern_if) = singleton_component_region::<If>(&pattern) {
+        return match singleton_component_region::<If>(&target) {
             Some(target_if) => {
                 frames.push(Frame::RestoreOnFailure {
                     snapshot: context.free_map.clone(),
@@ -664,12 +720,79 @@ fn evaluate_par(
             None => Job::Return(false),
         };
     }
+    if let Some(pattern_new) = singleton_component_region::<New>(&pattern) {
+        return match singleton_component_region::<New>(&target) {
+            Some(target_new) => {
+                frames.push(Frame::RestoreOnFailure {
+                    snapshot: context.free_map.clone(),
+                });
+                Job::EncodedNew(target_new, pattern_new)
+            }
+            None => Job::Return(false),
+        };
+    }
+    if let Some(pattern_send) = singleton_component_region::<Send>(&pattern) {
+        return match singleton_component_region::<Send>(&target) {
+            Some(target_send) => {
+                frames.push(Frame::RestoreOnFailure {
+                    snapshot: context.free_map.clone(),
+                });
+                Job::EncodedSend(target_send, pattern_send)
+            }
+            None => Job::Return(false),
+        };
+    }
+    if let Some(pattern_receive) = singleton_component_region::<Receive>(&pattern) {
+        return match singleton_component_region::<Receive>(&target) {
+            Some(target_receive) => {
+                frames.push(Frame::RestoreOnFailure {
+                    snapshot: context.free_map.clone(),
+                });
+                Job::EncodedReceive(target_receive, pattern_receive)
+            }
+            None => Job::Return(false),
+        };
+    }
+    if let Some(pattern_match) = singleton_component_region::<Match>(&pattern) {
+        return match singleton_component_region::<Match>(&target) {
+            Some(target_match) => {
+                frames.push(Frame::RestoreOnFailure {
+                    snapshot: context.free_map.clone(),
+                });
+                Job::EncodedMatch(target_match, pattern_match)
+            }
+            None => Job::Return(false),
+        };
+    }
+    if let Some(pattern_expr) = singleton_component_region::<Expr>(&pattern) {
+        let pattern_tag = canonical_expr_parts(pattern_expr.as_slice()).map(|parts| parts.tag());
+        if let Some(pattern_tag) = pattern_tag {
+            return match singleton_component_region::<Expr>(&target) {
+                Some(target_expr)
+                    if canonical_expr_parts(target_expr.as_slice())
+                        .is_some_and(|parts| parts.tag() == pattern_tag) =>
+                {
+                    frames.push(Frame::RestoreOnFailure {
+                        snapshot: context.free_map.clone(),
+                    });
+                    Job::EncodedExpr(target_expr, pattern_expr)
+                }
+                _ => Job::Return(false),
+            };
+        }
+    }
 
-    // Unary AND and OR are both logical identities. The ParBag endpoint can
-    // prove and peel an arbitrary mixed spine directly in its canonical bytes,
-    // decoding only the terminal child. This transition is exact and avoids
-    // constructing every intermediate connective before the PDA starts.
-    if let Some(terminal) = pattern.canonical_unary_connective_terminal() {
+    // Unary AND/OR are identities and unary NOT contributes only parity plus
+    // binding isolation. Peel an arbitrary mixed spine directly from the
+    // authoritative endpoint, then retain at most one NOT continuation. This
+    // transition is matcher proof control, never Rholang execution ordering.
+    if let Some((terminal, negated, has_not)) = pattern.canonical_unary_connective_spine() {
+        if has_not {
+            frames.push(Frame::NotSpine {
+                snapshot: context.free_map.clone(),
+                negated,
+            });
+        }
         return match_job(MatchPair::Par(target, terminal));
     }
 
@@ -775,15 +898,479 @@ fn evaluate_encoded_par(target: EncodedRegion, pattern: EncodedRegion) -> Job {
     if let (Some(target_if), Some(pattern_if)) = (target_if, pattern_if) {
         return Job::EncodedIf(target_if, pattern_if);
     }
+    let target_new =
+        canonical_single_new_from_par(target.as_slice()).and_then(|body| target.child(body));
+    let pattern_new =
+        canonical_single_new_from_par(pattern.as_slice()).and_then(|body| pattern.child(body));
+    if let (Some(target_new), Some(pattern_new)) = (target_new, pattern_new) {
+        return Job::EncodedNew(target_new, pattern_new);
+    }
+    let target_send =
+        canonical_single_send_from_par(target.as_slice()).and_then(|body| target.child(body));
+    let pattern_send =
+        canonical_single_send_from_par(pattern.as_slice()).and_then(|body| pattern.child(body));
+    if let (Some(target_send), Some(pattern_send)) = (target_send, pattern_send) {
+        return Job::EncodedSend(target_send, pattern_send);
+    }
+    let target_receive =
+        canonical_single_receive_from_par(target.as_slice()).and_then(|body| target.child(body));
+    let pattern_receive =
+        canonical_single_receive_from_par(pattern.as_slice()).and_then(|body| pattern.child(body));
+    if let (Some(target_receive), Some(pattern_receive)) = (target_receive, pattern_receive) {
+        return Job::EncodedReceive(target_receive, pattern_receive);
+    }
+    let target_match =
+        canonical_single_match_from_par(target.as_slice()).and_then(|body| target.child(body));
+    let pattern_match =
+        canonical_single_match_from_par(pattern.as_slice()).and_then(|body| pattern.child(body));
+    if let (Some(target_match), Some(pattern_match)) = (target_match, pattern_match) {
+        return Job::EncodedMatch(target_match, pattern_match);
+    }
+    let target_expr =
+        canonical_single_expr_from_par(target.as_slice()).and_then(|body| target.child(body));
+    let pattern_expr =
+        canonical_single_expr_from_par(pattern.as_slice()).and_then(|body| pattern.child(body));
+    if let (Some(target_expr), Some(pattern_expr)) = (target_expr, pattern_expr) {
+        let target_tag = canonical_expr_parts(target_expr.as_slice()).map(|parts| parts.tag());
+        let pattern_tag = canonical_expr_parts(pattern_expr.as_slice()).map(|parts| parts.tag());
+        if target_tag.is_some() && target_tag == pattern_tag {
+            return Job::EncodedExpr(target_expr, pattern_expr);
+        }
+    }
 
     // The ParBag importer already validated these canonical messages. Decode
     // only at a terminal or at a shape that the byte cursor cannot prove; the
     // complete generated decoder remains the semantic authority for both.
     let target = models::rust::rholang::protobuf_decoder::decode_par(target.as_slice())
-        .expect("an authoritative nested If target Par is canonical");
+        .expect("an authoritative nested recursive target Par is canonical");
     let pattern = models::rust::rholang::protobuf_decoder::decode_par(pattern.as_slice())
-        .expect("an authoritative nested If pattern Par is canonical");
+        .expect("an authoritative nested recursive pattern Par is canonical");
     match_job(MatchPair::Par(target, pattern))
+}
+
+fn evaluate_encoded_new(target: EncodedRegion, pattern: EncodedRegion) -> Job {
+    let Some(target_parts) = canonical_new_parts(target.as_slice()) else {
+        let target = models::rust::rholang::protobuf_decoder::decode_new(target.as_slice())
+            .expect("an authoritative New target endpoint is canonical");
+        let pattern = models::rust::rholang::protobuf_decoder::decode_new(pattern.as_slice())
+            .expect("an authoritative New pattern endpoint is canonical");
+        return evaluate_new(target, pattern);
+    };
+    let Some(pattern_parts) = canonical_new_parts(pattern.as_slice()) else {
+        let target = models::rust::rholang::protobuf_decoder::decode_new(target.as_slice())
+            .expect("an authoritative New target endpoint is canonical");
+        let pattern = models::rust::rholang::protobuf_decoder::decode_new(pattern.as_slice())
+            .expect("an authoritative New pattern endpoint is canonical");
+        return evaluate_new(target, pattern);
+    };
+    if target_parts.bind_count != pattern_parts.bind_count {
+        return Job::Return(false);
+    }
+    let Some(target_body) = target.child(target_parts.body) else {
+        unreachable!("canonical New body is a subrange of its endpoint")
+    };
+    let Some(pattern_body) = pattern.child(pattern_parts.body) else {
+        unreachable!("canonical New body is a subrange of its endpoint")
+    };
+    Job::EncodedPar(target_body, pattern_body)
+}
+
+fn evaluate_encoded_send(
+    target: EncodedRegion,
+    pattern: EncodedRegion,
+    frames: &mut FrameStack,
+) -> Job {
+    let Some(target_parts) = canonical_send_parts(target.as_slice()) else {
+        let target = models::rust::rholang::protobuf_decoder::decode_send(target.as_slice())
+            .expect("an authoritative Send target endpoint is canonical");
+        let pattern = models::rust::rholang::protobuf_decoder::decode_send(pattern.as_slice())
+            .expect("an authoritative Send pattern endpoint is canonical");
+        return evaluate_send(target, pattern, frames);
+    };
+    let Some(pattern_parts) = canonical_send_parts(pattern.as_slice()) else {
+        let target = models::rust::rholang::protobuf_decoder::decode_send(target.as_slice())
+            .expect("an authoritative Send target endpoint is canonical");
+        let pattern = models::rust::rholang::protobuf_decoder::decode_send(pattern.as_slice())
+            .expect("an authoritative Send pattern endpoint is canonical");
+        return evaluate_send(target, pattern, frames);
+    };
+    if target_parts.persistent != pattern_parts.persistent
+        || target_parts.data.len() != pattern_parts.data.len()
+    {
+        return Job::Return(false);
+    }
+    let Some(target_channel) = target.child(target_parts.channel) else {
+        unreachable!("canonical Send channel is a subrange of its endpoint")
+    };
+    let Some(pattern_channel) = pattern.child(pattern_parts.channel) else {
+        unreachable!("canonical Send channel is a subrange of its endpoint")
+    };
+    if target_parts.data.is_empty() {
+        return Job::EncodedPar(target_channel, pattern_channel);
+    }
+    let mut jobs = Vec::with_capacity(target_parts.data.len() + 1);
+    jobs.push(Job::EncodedPar(target_channel, pattern_channel));
+    for (target_data, pattern_data) in target_parts.data.into_iter().zip(pattern_parts.data) {
+        let Some(target_data) = target.child(target_data) else {
+            unreachable!("canonical Send datum is a subrange of its endpoint")
+        };
+        let Some(pattern_data) = pattern.child(pattern_data) else {
+            unreachable!("canonical Send datum is a subrange of its endpoint")
+        };
+        jobs.push(Job::EncodedPar(target_data, pattern_data));
+    }
+    start_jobs(jobs, frames)
+}
+
+fn evaluate_encoded_receive(
+    target: EncodedRegion,
+    pattern: EncodedRegion,
+    frames: &mut FrameStack,
+) -> Job {
+    let Some(target_parts) = canonical_receive_parts(target.as_slice()) else {
+        let target = models::rust::rholang::protobuf_decoder::decode_receive(target.as_slice())
+            .expect("an authoritative Receive target endpoint is canonical");
+        let pattern = models::rust::rholang::protobuf_decoder::decode_receive(pattern.as_slice())
+            .expect("an authoritative Receive pattern endpoint is canonical");
+        return evaluate_receive(target, pattern, frames);
+    };
+    let Some(pattern_parts) = canonical_receive_parts(pattern.as_slice()) else {
+        let target = models::rust::rholang::protobuf_decoder::decode_receive(target.as_slice())
+            .expect("an authoritative Receive target endpoint is canonical");
+        let pattern = models::rust::rholang::protobuf_decoder::decode_receive(pattern.as_slice())
+            .expect("an authoritative Receive pattern endpoint is canonical");
+        return evaluate_receive(target, pattern, frames);
+    };
+    if target_parts.persistent != pattern_parts.persistent
+        || target_parts.binds.len() != pattern_parts.binds.len()
+    {
+        return Job::Return(false);
+    }
+    let Some(target_body) = target.child(target_parts.body) else {
+        unreachable!("canonical Receive body is a subrange of its endpoint")
+    };
+    let Some(pattern_body) = pattern.child(pattern_parts.body) else {
+        unreachable!("canonical Receive body is a subrange of its endpoint")
+    };
+    if target_parts.binds.is_empty() {
+        return Job::EncodedPar(target_body, pattern_body);
+    }
+
+    let targets = target_parts
+        .binds
+        .into_iter()
+        .map(|body| {
+            models::rust::rholang::protobuf_decoder::decode_receive_bind(body)
+                .expect("an authoritative ReceiveBind target is canonical")
+        })
+        .map(MatchValue::ReceiveBind)
+        .collect();
+    let patterns = pattern_parts
+        .binds
+        .into_iter()
+        .map(|body| {
+            models::rust::rholang::protobuf_decoder::decode_receive_bind(body)
+                .expect("an authoritative ReceiveBind pattern is canonical")
+        })
+        .map(MatchValue::ReceiveBind)
+        .collect();
+    start_jobs(
+        vec![
+            Job::ListInit(ListRequest::new(
+                targets,
+                patterns,
+                Merger::Identity,
+                None,
+                false,
+            )),
+            Job::EncodedPar(target_body, pattern_body),
+        ],
+        frames,
+    )
+}
+
+fn evaluate_encoded_match(
+    target: EncodedRegion,
+    pattern: EncodedRegion,
+    frames: &mut FrameStack,
+) -> Job {
+    let Some(target_parts) = canonical_match_parts(target.as_slice()) else {
+        let target = models::rust::rholang::protobuf_decoder::decode_match(target.as_slice())
+            .expect("an authoritative Match target endpoint is canonical");
+        let pattern = models::rust::rholang::protobuf_decoder::decode_match(pattern.as_slice())
+            .expect("an authoritative Match pattern endpoint is canonical");
+        return evaluate_match(target, pattern, frames);
+    };
+    let Some(pattern_parts) = canonical_match_parts(pattern.as_slice()) else {
+        let target = models::rust::rholang::protobuf_decoder::decode_match(target.as_slice())
+            .expect("an authoritative Match target endpoint is canonical");
+        let pattern = models::rust::rholang::protobuf_decoder::decode_match(pattern.as_slice())
+            .expect("an authoritative Match pattern endpoint is canonical");
+        return evaluate_match(target, pattern, frames);
+    };
+    if target_parts.cases.len() != pattern_parts.cases.len() {
+        return Job::Return(false);
+    }
+    let Some(target_root) = target.child(target_parts.target) else {
+        unreachable!("canonical Match target is a subrange of its endpoint")
+    };
+    let Some(pattern_root) = pattern.child(pattern_parts.target) else {
+        unreachable!("canonical Match target is a subrange of its endpoint")
+    };
+    if target_parts.cases.is_empty() {
+        return Job::EncodedPar(target_root, pattern_root);
+    }
+
+    let mut jobs = Vec::with_capacity(target_parts.cases.len() + 1);
+    jobs.push(Job::EncodedPar(target_root, pattern_root));
+    jobs.extend(target_parts.cases.into_iter().zip(pattern_parts.cases).map(
+        |(target, pattern)| {
+            let target = models::rust::rholang::protobuf_decoder::decode_match_case(target)
+                .expect("an authoritative MatchCase target is canonical");
+            let pattern = models::rust::rholang::protobuf_decoder::decode_match_case(pattern)
+                .expect("an authoritative MatchCase pattern is canonical");
+            match_job(MatchPair::MatchCase(target, pattern))
+        },
+    ));
+    start_jobs(jobs, frames)
+}
+
+fn encoded_child(parent: &EncodedRegion, child: &[u8], label: &'static str) -> EncodedRegion {
+    parent
+        .child(child)
+        .unwrap_or_else(|| unreachable!("canonical {label} is a subrange of its endpoint"))
+}
+
+fn encoded_collection_remainder(remainder: Option<&[u8]>) -> Option<(Option<i32>, bool)> {
+    match remainder {
+        None => Some((None, false)),
+        Some(remainder) => canonical_collection_remainder(remainder),
+    }
+}
+
+fn evaluate_encoded_expr(
+    target: EncodedRegion,
+    pattern: EncodedRegion,
+    frames: &mut FrameStack,
+) -> Job {
+    let Some(target_parts) = canonical_expr_parts(target.as_slice()) else {
+        let target = models::rust::rholang::protobuf_decoder::decode_expr(target.as_slice())
+            .expect("an authoritative Expr target endpoint is canonical");
+        let pattern = models::rust::rholang::protobuf_decoder::decode_expr(pattern.as_slice())
+            .expect("an authoritative Expr pattern endpoint is canonical");
+        return evaluate_expr(target, pattern, frames);
+    };
+    let Some(pattern_parts) = canonical_expr_parts(pattern.as_slice()) else {
+        let target = models::rust::rholang::protobuf_decoder::decode_expr(target.as_slice())
+            .expect("an authoritative Expr target endpoint is canonical");
+        let pattern = models::rust::rholang::protobuf_decoder::decode_expr(pattern.as_slice())
+            .expect("an authoritative Expr pattern endpoint is canonical");
+        return evaluate_expr(target, pattern, frames);
+    };
+
+    match (target_parts, pattern_parts) {
+        (
+            CanonicalExprParts::Unary {
+                tag: target_tag,
+                child: target_child,
+            },
+            CanonicalExprParts::Unary {
+                tag: pattern_tag,
+                child: pattern_child,
+            },
+        ) if target_tag == pattern_tag => Job::EncodedPar(
+            encoded_child(&target, target_child, "unary Expr child"),
+            encoded_child(&pattern, pattern_child, "unary Expr child"),
+        ),
+        (
+            CanonicalExprParts::Binary {
+                tag: target_tag,
+                left: target_left,
+                right: target_right,
+            },
+            CanonicalExprParts::Binary {
+                tag: pattern_tag,
+                left: pattern_left,
+                right: pattern_right,
+            },
+        ) if target_tag == pattern_tag => {
+            let left = (
+                encoded_child(&target, target_left, "binary Expr left child"),
+                encoded_child(&pattern, pattern_left, "binary Expr left child"),
+            );
+            let right = (
+                encoded_child(&target, target_right, "binary Expr right child"),
+                encoded_child(&pattern, pattern_right, "binary Expr right child"),
+            );
+            frames.push(Frame::EncodedSibling {
+                sibling: Box::new(right),
+            });
+            Job::EncodedPar(left.0, left.1)
+        }
+        (
+            CanonicalExprParts::Sequence {
+                tag: target_tag,
+                children: target_children,
+                ..
+            },
+            CanonicalExprParts::Sequence {
+                tag: pattern_tag,
+                children: pattern_children,
+                remainder: None,
+            },
+        ) if matches!(target_tag, 20 | 21)
+            && target_tag == pattern_tag
+            && target_children.len() == pattern_children.len() =>
+        {
+            let mut jobs = target_children.into_iter().zip(pattern_children).map(
+                |(target_child, pattern_child)| {
+                    Job::EncodedPar(
+                        encoded_child(&target, target_child, "ordered Expr child"),
+                        encoded_child(&pattern, pattern_child, "ordered Expr child"),
+                    )
+                },
+            );
+            let Some(first) = jobs.next() else {
+                return Job::Return(true);
+            };
+            let mut remaining: Vec<_> = jobs.collect();
+            if !remaining.is_empty() {
+                remaining.reverse();
+                frames.push(Frame::Sequence { remaining });
+            }
+            first
+        }
+        (
+            CanonicalExprParts::Sequence {
+                tag: 22,
+                children: target_children,
+                ..
+            },
+            CanonicalExprParts::Sequence {
+                tag: 22,
+                children: pattern_children,
+                remainder,
+            },
+        ) => {
+            let Some((level, wildcard)) = encoded_collection_remainder(remainder) else {
+                let target =
+                    models::rust::rholang::protobuf_decoder::decode_expr(target.as_slice())
+                        .expect("an authoritative ESet target endpoint is canonical");
+                let pattern =
+                    models::rust::rholang::protobuf_decoder::decode_expr(pattern.as_slice())
+                        .expect("an authoritative ESet pattern endpoint is canonical");
+                return evaluate_expr(target, pattern, frames);
+            };
+            Job::ListInit(ListRequest::new(
+                target_children
+                    .into_iter()
+                    .map(|child| {
+                        MatchValue::EncodedPar(encoded_child(&target, child, "ESet member"))
+                    })
+                    .collect(),
+                pattern_children
+                    .into_iter()
+                    .map(|child| {
+                        MatchValue::EncodedPar(encoded_child(&pattern, child, "ESet member"))
+                    })
+                    .collect(),
+                Merger::ESet,
+                level,
+                wildcard,
+            ))
+        }
+        (
+            CanonicalExprParts::Map {
+                entries: target_entries,
+                ..
+            },
+            CanonicalExprParts::Map {
+                entries: pattern_entries,
+                remainder,
+            },
+        ) => {
+            let Some((level, wildcard)) = encoded_collection_remainder(remainder) else {
+                let target =
+                    models::rust::rholang::protobuf_decoder::decode_expr(target.as_slice())
+                        .expect("an authoritative EMap target endpoint is canonical");
+                let pattern =
+                    models::rust::rholang::protobuf_decoder::decode_expr(pattern.as_slice())
+                        .expect("an authoritative EMap pattern endpoint is canonical");
+                return evaluate_expr(target, pattern, frames);
+            };
+            Job::ListInit(ListRequest::new(
+                target_entries
+                    .into_iter()
+                    .map(|(key, value)| {
+                        MatchValue::EncodedParPair((
+                            encoded_child(&target, key, "EMap key"),
+                            encoded_child(&target, value, "EMap value"),
+                        ))
+                    })
+                    .collect(),
+                pattern_entries
+                    .into_iter()
+                    .map(|(key, value)| {
+                        MatchValue::EncodedParPair((
+                            encoded_child(&pattern, key, "EMap key"),
+                            encoded_child(&pattern, value, "EMap value"),
+                        ))
+                    })
+                    .collect(),
+                Merger::EMap,
+                level,
+                wildcard,
+            ))
+        }
+        (
+            CanonicalExprParts::Method {
+                method_name: target_name,
+                children: target_children,
+            },
+            CanonicalExprParts::Method {
+                method_name: pattern_name,
+                children: pattern_children,
+            },
+        ) if target_name == pattern_name && target_children.len() == pattern_children.len() => {
+            let mut jobs = target_children.into_iter().zip(pattern_children).map(
+                |(target_child, pattern_child)| {
+                    Job::EncodedPar(
+                        encoded_child(&target, target_child, "method Expr child"),
+                        encoded_child(&pattern, pattern_child, "method Expr child"),
+                    )
+                },
+            );
+            let Some(first) = jobs.next() else {
+                return Job::Return(true);
+            };
+            let mut remaining: Vec<_> = jobs.collect();
+            if !remaining.is_empty() {
+                remaining.reverse();
+                frames.push(Frame::Sequence { remaining });
+            }
+            first
+        }
+        (
+            CanonicalExprParts::Matches {
+                target: target_root,
+                pattern: target_pattern,
+            },
+            CanonicalExprParts::Matches {
+                target: pattern_root,
+                pattern: pattern_pattern,
+            },
+        ) if target_pattern == pattern_pattern => Job::EncodedPar(
+            encoded_child(&target, target_root, "EMatches target"),
+            encoded_child(&pattern, pattern_root, "EMatches target"),
+        ),
+        _ => {
+            let target = models::rust::rholang::protobuf_decoder::decode_expr(target.as_slice())
+                .expect("an authoritative Expr target endpoint is canonical");
+            let pattern = models::rust::rholang::protobuf_decoder::decode_expr(pattern.as_slice())
+                .expect("an authoritative Expr pattern endpoint is canonical");
+            evaluate_expr(target, pattern, frames)
+        }
+    }
 }
 
 fn step_par_connectives(mut state: ParConnectiveState, frames: &mut FrameStack) -> Job {
@@ -1494,6 +2081,8 @@ fn evaluate_match_case(target: MatchCase, pattern: MatchCase) -> Job {
 enum MatchValue {
     Par(Par),
     ParPair((Par, Par)),
+    EncodedPar(EncodedRegion),
+    EncodedParPair((EncodedRegion, EncodedRegion)),
     Send(Send),
     Receive(Receive),
     New(New),
@@ -1518,6 +2107,11 @@ impl MatchValue {
                         ParCursor::from(right_value),
                     )
             }
+            (Self::EncodedPar(left), Self::EncodedPar(right)) => left == right,
+            (
+                Self::EncodedParPair((left_key, left_value)),
+                Self::EncodedParPair((right_key, right_value)),
+            ) => left_key == right_key && left_value == right_value,
             (Self::Send(left), Self::Send(right)) => {
                 shares_cow_bincode_identity(ParCursor::from(left), ParCursor::from(right))
             }
@@ -1551,7 +2145,7 @@ impl MatchValue {
 
     fn rho_path_structure(&self) -> Vec<u8> {
         let mut output = StructuralSequenceEncoder::with_capacity(match self {
-            Self::ParPair(_) => 2,
+            Self::ParPair(_) | Self::EncodedParPair(_) => 2,
             _ => 1,
         });
         match self {
@@ -1559,6 +2153,11 @@ impl MatchValue {
             Self::ParPair((key, value)) => {
                 output.push(&encode_par_match_atom(key));
                 output.push(&encode_par_match_atom(value));
+            }
+            Self::EncodedPar(value) => output.push(value.as_slice()),
+            Self::EncodedParPair((key, value)) => {
+                output.push(key.as_slice());
+                output.push(value.as_slice());
             }
             Self::Send(value) => output.push(&encode_match_path(ParCursor::from(value))),
             Self::Receive(value) => output.push(&encode_match_path(ParCursor::from(value))),
@@ -1574,11 +2173,13 @@ impl MatchValue {
     }
 
     /// Collision-free identity for every unordered `Par` field type. Each
-    /// generated-schema root uses the one-walk, stack-safe canonical bincode
-    /// emitter and the same injective sequence framing as structure.
+/// A resident generated-schema root uses the one-walk, stack-safe canonical
+/// bincode emitter. A borrowed collection member uses its already-validated
+/// canonical protobuf body. Both use the same injective sequence framing as
+/// structure, and a list never mixes the two representations.
     fn rho_path_identity(&self) -> Vec<u8> {
         let mut output = StructuralSequenceEncoder::with_capacity(match self {
-            Self::ParPair(_) => 2,
+            Self::ParPair(_) | Self::EncodedParPair(_) => 2,
             _ => 1,
         });
         macro_rules! push_identity {
@@ -1591,6 +2192,11 @@ impl MatchValue {
             Self::ParPair((key, value)) => {
                 push_identity!(key);
                 push_identity!(value);
+            }
+            Self::EncodedPar(value) => output.push(value.as_slice()),
+            Self::EncodedParPair((key, value)) => {
+                output.push(key.as_slice());
+                output.push(value.as_slice());
             }
             Self::Send(value) => push_identity!(value),
             Self::Receive(value) => push_identity!(value),
@@ -1610,6 +2216,12 @@ impl MatchValue {
         context: &SpatialMatcherContext,
         captures: &mut PathMap<()>,
     ) -> Option<RhoPathQuery> {
+        if matches!(self, Self::EncodedPar(_) | Self::EncodedParPair(_)) {
+            // The byte-native collection relation remains authoritative. A
+            // future protobuf-to-RMP1 cursor may add conservative pruning;
+            // `None` means the current proof search scans the full domain.
+            return None;
+        }
         let exact = !self.connective_used(context) && self.locally_free_is_empty(context);
         let atoms = match self {
             Self::Par(value) => vec![rho_path_query_atom(value, captures)?],
@@ -1617,6 +2229,7 @@ impl MatchValue {
                 rho_path_query_atom(key, captures)?,
                 rho_path_query_atom(value, captures)?,
             ],
+            Self::EncodedPar(_) | Self::EncodedParPair(_) => unreachable!(),
             Self::Send(value) => vec![rho_path_query_cursor_atom(
                 ParCursor::from(value),
                 exact,
@@ -1684,6 +2297,7 @@ impl MatchValue {
     ) -> ListCandidatePlan {
         match self {
             Self::Par(pattern) => compile_par_candidate_plan(pattern, captures),
+            Self::EncodedPar(_) | Self::EncodedParPair(_) => ListCandidatePlan::All,
             _ => self
                 .rho_path_query(context, captures)
                 .map_or(ListCandidatePlan::All, ListCandidatePlan::Query),
@@ -1694,6 +2308,14 @@ impl MatchValue {
         match self {
             MatchValue::Par(value) => value.connective_used(),
             MatchValue::ParPair((key, value)) => key.connective_used() || value.connective_used(),
+            MatchValue::EncodedPar(value) => canonical_par_connective_used(value.as_slice())
+                .expect("an authoritative encoded collection member is canonical"),
+            MatchValue::EncodedParPair((key, value)) => {
+                canonical_par_connective_used(key.as_slice())
+                    .expect("an authoritative encoded map key is canonical")
+                    || canonical_par_connective_used(value.as_slice())
+                        .expect("an authoritative encoded map value is canonical")
+            }
             MatchValue::Send(value) => value.connective_used,
             MatchValue::Receive(value) => value.connective_used,
             MatchValue::New(value) => value.p.as_ref().expect("New.p").connective_used(),
@@ -1713,6 +2335,14 @@ impl MatchValue {
         match self {
             MatchValue::Par(value) => context.locally_free(value.clone(), 0).is_empty(),
             MatchValue::ParPair(value) => context.locally_free(value.clone(), 0).is_empty(),
+            MatchValue::EncodedPar(value) => canonical_par_locally_free_is_empty(value.as_slice())
+                .expect("an authoritative encoded collection member is canonical"),
+            MatchValue::EncodedParPair((key, value)) => {
+                canonical_par_locally_free_is_empty(key.as_slice())
+                    .expect("an authoritative encoded map key is canonical")
+                    && canonical_par_locally_free_is_empty(value.as_slice())
+                        .expect("an authoritative encoded map value is canonical")
+            }
             MatchValue::Send(value) => context.locally_free(value.clone(), 0).is_empty(),
             MatchValue::Receive(value) => context.locally_free(value.clone(), 0).is_empty(),
             MatchValue::New(value) => context.locally_free(value.clone(), 0).is_empty(),
@@ -1725,44 +2355,83 @@ impl MatchValue {
         }
     }
 
-    fn into_pair(self, pattern: MatchValue) -> Option<MatchPair> {
+    fn semantic_eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::EncodedPar(target), Self::EncodedPar(pattern)) => {
+                target == pattern || decode_encoded_par(target) == decode_encoded_par(pattern)
+            }
+            (
+                Self::EncodedParPair((target_key, target_value)),
+                Self::EncodedParPair((pattern_key, pattern_value)),
+            ) => {
+                (target_key == pattern_key
+                    || decode_encoded_par(target_key) == decode_encoded_par(pattern_key))
+                    && (target_value == pattern_value
+                        || decode_encoded_par(target_value) == decode_encoded_par(pattern_value))
+            }
+            _ => self == other,
+        }
+    }
+
+    fn is_encoded_collection_value(&self) -> bool {
+        matches!(self, Self::EncodedPar(_) | Self::EncodedParPair(_))
+    }
+
+    fn into_job(self, pattern: MatchValue, frames: &mut FrameStack) -> Option<Job> {
         match (self, pattern) {
             (MatchValue::Par(target), MatchValue::Par(pattern)) => {
-                Some(MatchPair::Par(target, pattern))
+                Some(match_job(MatchPair::Par(target, pattern)))
             }
             (MatchValue::ParPair(target), MatchValue::ParPair(pattern)) => {
-                Some(MatchPair::ParPair(target, pattern))
+                Some(match_job(MatchPair::ParPair(target, pattern)))
+            }
+            (MatchValue::EncodedPar(target), MatchValue::EncodedPar(pattern)) => {
+                Some(Job::EncodedPar(target, pattern))
+            }
+            (
+                MatchValue::EncodedParPair((target_key, target_value)),
+                MatchValue::EncodedParPair((pattern_key, pattern_value)),
+            ) => {
+                frames.push(Frame::EncodedSibling {
+                    sibling: Box::new((target_value, pattern_value)),
+                });
+                Some(Job::EncodedPar(target_key, pattern_key))
             }
             (MatchValue::Send(target), MatchValue::Send(pattern)) => {
-                Some(MatchPair::Send(target, pattern))
+                Some(match_job(MatchPair::Send(target, pattern)))
             }
             (MatchValue::Receive(target), MatchValue::Receive(pattern)) => {
-                Some(MatchPair::Receive(target, pattern))
+                Some(match_job(MatchPair::Receive(target, pattern)))
             }
             (MatchValue::New(target), MatchValue::New(pattern)) => {
-                Some(MatchPair::New(target, pattern))
+                Some(match_job(MatchPair::New(target, pattern)))
             }
             (MatchValue::Expr(target), MatchValue::Expr(pattern)) => {
-                Some(MatchPair::Expr(target, pattern))
+                Some(match_job(MatchPair::Expr(target, pattern)))
             }
             (MatchValue::Match(target), MatchValue::Match(pattern)) => {
-                Some(MatchPair::Match(target, pattern))
+                Some(match_job(MatchPair::Match(target, pattern)))
             }
             (MatchValue::Bundle(target), MatchValue::Bundle(pattern)) => {
-                Some(MatchPair::Bundle(target, pattern))
+                Some(match_job(MatchPair::Bundle(target, pattern)))
             }
             (MatchValue::Unforgeable(target), MatchValue::Unforgeable(pattern)) => {
-                Some(MatchPair::Unforgeable(target, pattern))
+                Some(match_job(MatchPair::Unforgeable(target, pattern)))
             }
             (MatchValue::If(target), MatchValue::If(pattern)) => {
-                Some(MatchPair::If(target, pattern))
+                Some(match_job(MatchPair::If(target, pattern)))
             }
             (MatchValue::ReceiveBind(target), MatchValue::ReceiveBind(pattern)) => {
-                Some(MatchPair::ReceiveBind(target, pattern))
+                Some(match_job(MatchPair::ReceiveBind(target, pattern)))
             }
             _ => None,
         }
     }
+}
+
+fn decode_encoded_par(value: &EncodedRegion) -> Par {
+    models::rust::rholang::protobuf_decoder::decode_par(value.as_slice())
+        .expect("an authoritative encoded collection member is canonical")
 }
 
 enum CandidateCompileWork {
@@ -2006,15 +2675,34 @@ impl Merger {
             Merger::ParBundles => par.with_bundles(typed!(Bundle)),
             Merger::ParUnforgeables => par.with_unforgeables(typed!(Unforgeable)),
             Merger::ParConditionals => par.with_conditionals(typed!(If)),
-            Merger::ESet => {
-                par.with_exprs(vec![new_eset_expr(typed!(Par), Vec::new(), false, None)])
-            }
-            Merger::EMap => par.with_exprs(vec![new_emap_expr(
-                typed!(ParPair)
+            Merger::ESet => par.with_exprs(vec![new_eset_expr(
+                values
                     .into_iter()
-                    .map(|(key, value)| KeyValuePair {
-                        key: Some(key),
-                        value: Some(value),
+                    .map(|value| match value {
+                        MatchValue::Par(value) => value,
+                        MatchValue::EncodedPar(value) => decode_encoded_par(&value),
+                        _ => panic!("ESet merger expected Par"),
+                    })
+                    .collect(),
+                Vec::new(),
+                false,
+                None,
+            )]),
+            Merger::EMap => par.with_exprs(vec![new_emap_expr(
+                values
+                    .into_iter()
+                    .map(|value| {
+                        let (key, value) = match value {
+                            MatchValue::ParPair(value) => value,
+                            MatchValue::EncodedParPair((key, value)) => {
+                                (decode_encoded_par(&key), decode_encoded_par(&value))
+                            }
+                            _ => panic!("EMap merger expected Par pair"),
+                        };
+                        KeyValuePair {
+                            key: Some(key),
+                            value: Some(value),
+                        }
                     })
                     .collect(),
                 Vec::new(),
@@ -2085,9 +2773,10 @@ struct ListTargetGroup {
 /// Derived prefix-compressed target catalog for one unordered list match.
 ///
 /// The authoritative trie is a [`Bag`]: a `PathMap<Multiplicity>` whose key is
-/// the framed RMP1 structure followed by a collision-free, stack-safe bincode
-/// identity. Structurally equal values therefore share trie prefixes while
-/// semantically equal values share one multiplicity cell. A parallel
+/// the framed RMP1 structure followed by a collision-free identity. Resident
+/// values use stack-safe canonical bincode; borrowed collection values use
+/// their canonical protobuf region. Structurally equal values therefore share
+/// trie prefixes while byte-identical values share one multiplicity cell. A parallel
 /// fixed-width group id reaches the only position vectors retained by this
 /// derived matcher index. Those positions are an ordering witness, not the
 /// membership representation; the Bag remains authoritative for cardinality.
@@ -2434,15 +3123,14 @@ fn init_list(
             .pop()
             .expect("the singleton pattern exists");
         if !pattern.connective_used(context) {
-            return Job::Return(target == pattern);
+            return Job::Return(target.semantic_eq(&pattern));
         }
-        let Some(pair) = target.into_pair(pattern) else {
-            return Job::Return(false);
-        };
         frames.push(Frame::RestoreOnFailure {
             snapshot: context.free_map.clone(),
         });
-        return match_job(pair);
+        return target
+            .into_job(pattern, frames)
+            .unwrap_or(Job::Return(false));
     }
     if pattern_len == 0 && target_len == 0 && request.remainder.is_none() {
         return Job::Return(true);
@@ -2762,7 +3450,7 @@ fn step_list(
         update_list_relation_stats(|stats| stats.edge_evaluations += 1);
         let pattern = &machine.patterns[pattern_index];
         if !pattern.connective_used(context) {
-            if &machine.targets[target_index] == pattern {
+            if machine.targets[target_index].semantic_eq(pattern) {
                 #[cfg(test)]
                 update_list_relation_stats(|stats| {
                     stats.successful_edge_evaluations += 1;
@@ -2777,12 +3465,8 @@ fn step_list(
                 }
             }
         } else {
-            let Some(pair) = machine.targets[target_index]
-                .clone()
-                .into_pair(pattern.clone())
-            else {
-                continue;
-            };
+            let target = machine.targets[target_index].clone();
+            let pattern = pattern.clone();
             let snapshot = context.free_map.clone();
             frames.push(Frame::ListEdge {
                 machine: Box::new(machine),
@@ -2790,7 +3474,9 @@ fn step_list(
                 candidate_was_seen,
                 snapshot,
             });
-            return match_job(pair);
+            return target
+                .into_job(pattern, frames)
+                .unwrap_or(Job::Return(false));
         }
     }
 }
@@ -2871,10 +3557,18 @@ fn finish_list(context: &mut SpatialMatcherContext, machine: ListMachine) -> Job
             Some(ListAssignment::Remainder) | None => None,
         })
         .collect();
+    let encoded_collection = targets.iter().all(MatchValue::is_encoded_collection_value);
     ordered.sort_by(|(left_index, _), (right_index, _)| {
-        match targets[*left_index].cmp(&targets[*right_index]) {
-            Ordering::Equal => left_index.cmp(right_index),
-            order => order,
+        if encoded_collection {
+            // Canonical ESet/EMap protobuf children are already in the
+            // predecessor's semantic order. This index is only a deterministic
+            // binding-fold witness; it does not order Rholang execution.
+            left_index.cmp(right_index)
+        } else {
+            match targets[*left_index].cmp(&targets[*right_index]) {
+                Ordering::Equal => left_index.cmp(right_index),
+                order => order,
+            }
         }
     });
     let maps = ordered

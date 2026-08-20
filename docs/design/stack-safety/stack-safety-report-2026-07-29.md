@@ -264,6 +264,7 @@ Abbreviations used throughout are ABI (application binary interface), CBR (conse
 | **SS-A12** | this checkpoint | f1r3node | normalization, substitution, and evaluator recursive-result construction $`\rightarrow`$ one transient `ParConstruction` arena with planned score/protobuf graphs and persistent Bag occurrence roots | repeated resident ancestor materialization $`\Theta(d^2) \rightarrow \Theta(d)`$ bytes emitted for a depth-$`d`$ unary term; native stack remains $`O(1)`$; all eight recursive component families reach depth **8,192**, schema planning reaches **16,384**, and planned EPathMap value nesting reaches **4,096**, each on **256 KiB** | **yes**; recursive-oracle protobuf, stable-bincode, metadata, charge, and exact-PathMap-snapshot differentials | [5.28](#528-transient-par-construction-closure-ss-a12) |
 | **SS-A13** | this checkpoint | f1r3node | complete the existing spatial-matcher PDA and its PathMap Bag algebra for the ninth `If` family; replace the artificial `ParCount` top 1,000 with the logical `u64::MAX` top intersected with the finite target | omitted family / cardinality ceiling $`\rightarrow`$ explicit three-child PDA and multiplicity-lazy eight-family partitions; depth **4,096** on **128 KiB** after SS-A14; compressed multiplicity **1,001** for every partitioned family | **no** — semantic and limit completeness on the existing PDA | [5.29](#529-parbag-family-and-count-domain-completeness-ss-a13-ss-a14-ss-y9) |
 | **SS-A14** | this checkpoint | f1r3node | nested `If` matching: repeated decoded suffix materialization $`\rightarrow`$ canonical-protobuf byte cursor over one shared immutable ParBag endpoint buffer | predecessor depth 128 match **4.277937 s** debug $`\rightarrow`$ release **55.002 µs**; treatment depth **4,096** **1.5387 ms**; allocated-byte and allocation-count ladders remain linear in encoded input; **128 KiB** native stack | **no** — heap/time repair inside the existing matcher PDA; exact verdict, complete `FreeMap`, rollback, schema, and unordered-`Par` semantics retained | [5.29](#529-parbag-family-and-count-domain-completeness-ss-a13-ss-a14-ss-y9) |
+| **SS-A15** | this checkpoint | f1r3node | generalize the shared canonical-protobuf matcher cursor through recursive New/Send/Receive/Match/Expr families and feed borrowed ESet/EMap members into the existing unordered Bag/PathMap ListPDA | all **13** named recursive families reach depth **4,096** on **128 KiB**; allocation count and bytes remain subquadratic from depth 128 to 1,024; ESet depth-128 debug diagnostic **3.009 s $`\rightarrow`$ 0.825 ms**, EMap **1.609 s $`\rightarrow`$ 1.099 ms** | **no** — exact matcher verdict, complete `FreeMap`, rollback, unordered backtracking/remainders, canonical bytes, and parallel semantics retained | [5.30](#530-general-recursive-family-byte-cursor-and-unordered-collection-closure-ss-a15-ss-y10) |
 | **SS-B1** | `a929a2d6` | f1r3node | expression-evaluator SCC $`\rightarrow`$ `eval_drive` | overflow $`\approx`$ 1.5k $`\rightarrow`$ OK at 50,000 | **yes** | [5.2.1](#521-the-expression-evaluator-trampoline-a929a2d6) |
 | **SS-B2** | `29856679`, `55b97f84`, `a0a50473` | f1r3node | five async join sites detached | 300 s $`\rightarrow`$ **93.7 s CPU** | **yes** (heap chain) | [5.2.2](#522--the-tokio-fire-and-forget-driver--establishing-the-mechanism-not-assuming-it) |
 | **SS-B3** | `9843e4b6` | f1r3node | `StackGrowingFuture` + `stacker` **deleted** | — | dependency removed | [5.2.2](#522--the-tokio-fire-and-forget-driver--establishing-the-mechanism-not-assuming-it) |
@@ -350,6 +351,7 @@ Abbreviations used throughout are ABI (application binary interface), CBR (conse
 | **SS-Y4** | *(pre-existing; PINNED by `6bdd6ad7`, REPAIRED by `HEAD`)* | f1r3node | ⛔★★★ **A live consensus SAFETY FORK** — sibling order is not a total function of the term. `combine_emap` chains only the **key's** score, so distinct canonical terms share a score tree; `sort_vec` is **stable**, so tied siblings keep their input order | seeded: **20/20** split over 40 processes · deterministic: `{3:30} \| {3:90}` $`\neq`$ `{3:90} \| {3:30}` | ★ **repaired** — sibling order is now TOTAL | [5.6.9](#569-ss-y4--sibling-order-is-not-a-total-function-of-the-term) |
 | **SS-Y8** | exposed by the 2026-08-08 source/evidence audit; repaired `50756ec2` | f1r3node | SS-A6's `ESet` / `EMap` printer arms still opened nested drives over owned canonical intermediates; re-canonicalizing each nested suffix also made the canonicalization component quadratic | native stack $`\Theta(d) \rightarrow O(1)`$; canonicalization $`\Theta(d^2) \rightarrow \Theta(d)`$ for a unary collection chain; depth **4,096** on **256 KiB**: set **0.12 s / 28,444 KiB**, map **0.23 s / 42,696 KiB**, zero swap | ✅ **repaired**; 27 recursive-oracle differential cases preserve replay-visible text | [5.1.3a](#513a-ss-y8--owned-canonical-collections-complete-the-printer-pda) |
 | **SS-Y9** | exposed by SS-A13's 2026-08-20 fixed-stack gate; repaired by SS-A14; pgmcp `spatial-matcher-byte-native-nested-if-decoding` | f1r3node | the stack-safe matcher repeatedly decoded the remaining inline protobuf suffix of a nested `If` component instead of advancing one generated byte cursor over the authoritative ParBag endpoint | one-sample predecessor debug match-only ladder: depth 32 **110.005 ms**, 64 **646.553 ms**, 128 **4.277937 s**; treatment release ladder: depth 128 **55.002 µs**, 512 **193.100 µs**, 2,048 **752.600 µs**, 4,096 **1.5387 ms** | ✅ **REPAIRED** — canonical byte ranges, terminal-only decode, linear allocation gate, recursive-oracle and rollback equivalence, depth 4,096 on 128 KiB | [5.29](#529-parbag-family-and-count-domain-completeness-ss-a13-ss-a14-ss-y9) |
+| **SS-Y10** | exposed while generalizing SS-A14; repaired by SS-A15; pgmcp `spatial-matcher-byte-native-nested-if-decoding` | f1r3node | the same repeated-suffix decode remained behind New, Send, Receive, Match, recursive Expr, and the ESet/EMap unordered-list boundary; the latter projected each remaining collection suffix to owned `Par` values before matching | predecessor depth-128 one-sample debug diagnostics: New **~1.936 s**, Send **~1.804 s**, Receive **~2.749 s**, Match **~1.556 s**, ENot **~2.106 s**, ESet **3.009 s**, EMap **1.609 s**; permanent treatment allocation ladders are subquadratic for all 13 families | ✅ **REPAIRED** — borrowed encoded regions, existing Bag/PathMap relation, terminal/remainder-only decode, oracle/rollback/backtracking equivalence, depth 4,096 on 128 KiB | [5.30](#530-general-recursive-family-byte-cursor-and-unordered-collection-closure-ss-a15-ss-y10) |
 
 ⚠ **`SS-E1` and `SS-Y3` are a second instance of [Appendix F](#appendix-f--the-per-fix-template-fill-this-in-do-not-invent-a-shape)'s rule 4, in the same *revealed-by* form as `SS-G6`/`SS-Y2`**: `SS-E1`'s commits did not create the defect; they **measured** one that was already live and unquantified. `26876b65` discharged SS-Y3 by repair, and the row remains so the defect and its evidence cannot disappear.
 
@@ -8354,6 +8356,120 @@ The controls are shaped so the repaired mechanisms must execute:
 
 Retired CBR-056 through CBR-061 classify the corrected observable surfaces. The complete release
 workspace result is not implied by these focused measurements and is appended only after execution.
+
+---
+
+### 5.30 General recursive-family byte cursor and unordered-collection closure [SS-A15, SS-Y10]
+
+#### 5.30.1 Residual defect and hypothesis
+
+SS-A14 proved that a stack-safe matcher can still have a catastrophic heap/time slope: decoding the
+complete remaining protobuf suffix at every explicit-PDA level turns a linear spine into repeated
+ancestor materialization. Its first repair covered singleton `If`, but the same boundary remained in
+`New`, `Send`, `Receive`, `Match`, recursive `Expr` families, and the unordered `ESet`/`EMap`
+relation. The collection arms were especially important: after decoding an ancestor they projected
+its members to owned `Vec<Par>` / `Vec<(Par, Par)>` inputs for `ListMachine`. **DERIVED** from the
+predecessor `evaluate_encoded_par`, `evaluate_expr`, `ParSetTypeMapper`, and `ParMapTypeMapper`
+paths.
+
+The hypothesis was that the existing matcher equations and the existing Bag/PathMap maximum-
+matching relation could remain authoritative while recursive children became borrowed byte ranges.
+If correct, matcher work and allocation would grow with the encoded input rather than with the sum
+of all remaining suffix sizes. This is a resource hypothesis, not a proposal to serialize Rholang
+or to replace unordered matching with positional zipping.
+
+#### 5.30.2 Architecture and semantic boundary
+
+`EncodedRegion` owns one thin `Arc<Vec<u8>>` root plus a start/end range. Canonical cursors validate
+and expose the semantic children of `New`, `Send`, `Receive`, `Match`, and these `Expr` classes:
+
+- unary `ENot` / `ENeg`;
+- the binary arithmetic, comparison, Boolean, match, and collection operators;
+- ordered `EList` / `ETuple` children;
+- `EMethod` target/arguments and `EMatches` target;
+- unordered `ESet` members and `EMap` key/value pairs.
+
+Unknown, malformed, terminal, or otherwise unproved shapes still delegate to the complete generated
+protobuf decoder. The ParBag importer remains the canonicality authority. Recursive descent clones
+only an `Arc` header and changes two offsets; it neither copies a suffix nor creates a resident
+ancestor.
+
+For `ESet` and `EMap`, `MatchValue::EncodedPar` and `EncodedParPair` carry those ranges into the
+existing `ListMachine`. They are **not** a semantic entry projection: no `Par` is decoded to build
+the relation. The same augmenting-path PDA performs unordered search, rollback, multiplicity-aware
+Bag subtraction, wildcard handling, and remainder binding. When a remainder is actually published,
+only its selected residual members are decoded to construct the legacy public ESet/EMap value.
+Unequal non-connective terminals similarly decode only at the final semantic-equality boundary so
+the model's derived-metadata equality rule is retained.
+
+The target catalog remains a `Bag` (`PathMap<Multiplicity>`). Encoded values use injectively framed
+canonical protobuf bytes as their conservative identity; candidate compilation currently returns
+the universal domain for these borrowed rows, so it can admit extra edge probes but cannot exclude
+a legacy success. Canonical ESet/EMap child order is retained only as the deterministic final
+`FreeMap` aggregation witness. It is not membership authority and is not Rholang execution order.
+
+This distinction is mandatory: `Par` is unordered parallel composition. Candidate order, schema
+child order, frame order, and canonical wire order establish no happens-before relation between
+processes. `stdlog!` remains an ordinary concurrent process and cannot serve as a sequencing
+witness. Asynchronous equivalence therefore remains a comparison of canonical COMM multisets.
+
+#### 5.30.3 Correctness and anti-vacuity evidence
+
+All focused commands ran on 2026-08-20 with `MemorySwapMax=0` and a systemd RSS cap. **MEASURED
+(f).**
+
+| gate | result | discriminating evidence |
+|---|---:|---|
+| `models --test par_bag` | **27/27** | borrowed ESet/EMap members, key/value boundaries, signed free remainder, wildcard remainder, root metadata, and malformed/bound-remainder fast-path refusal |
+| recursive-family cursor target | **4/4** | fixed stack, allocation slope, late-failure rollback, and unordered backtracking plus set/map remainder materialization |
+| recursive matcher oracle | **17/17** | production PDA and bounded independent recursive equation agree on verdict and complete `FreeMap`, including legacy set/map and Bag residual cases |
+| singleton-`If` regression target | **8/8** | SS-A14 cursor, rollback, layout-sensitive traversal, and allocation slope remain green |
+| fixed native stack | **13 families × depth 4,096 on 128 KiB** | every fixture reaches and captures the terminal; connective NOT additionally proves capture isolation |
+
+The unordered collection test is deliberately not a one-element zip. Its free-variable ESet row can
+first consume the concrete target needed by the next row, so success requires an augmenting-path
+reassignment. EMap key matching binds and its later value refuses, requiring the entire edge
+transaction to roll back. Separate set and map remainder cases require exact Bag subtraction and
+materialization of only the residual members. These witnesses would fail if candidate traversal
+were mistaken for semantic or execution order.
+
+#### 5.30.4 Resource results and closure of SS-Y10
+
+The temporary one-sample debug diagnostics, removed after localization, measured ESet depth 16/32/
+64/128 at 21.83/91.45/490.77/3,009 ms and EMap at 24.07/90.56/378.23/1,609 ms. After borrowed
+collection regions entered the existing ListPDA, the same depth-128 fixtures completed in **0.825
+ms** and **1.099 ms**, respectively. These timings are diagnostic rather than a controlled
+Criterion experiment; they establish the mechanism and direction but no population effect size.
+
+The permanent counting allocator supplies the work-class gate. Values are allocation count / total
+requested bytes for matching only; construction is outside the measurement closure.
+
+| family | depth 128 | depth 1,024 |
+|---|---:|---:|
+| New | 219 / 234,452 B | 231 / 1,304,276 B |
+| Send | 218 / 213,746 B | 230 / 1,138,418 B |
+| Receive | 221 / 300,786 B | 233 / 1,834,738 B |
+| Match | 217 / 192,242 B | 229 / 966,386 B |
+| ENot | 217 / 188,613 B | 229 / 937,669 B |
+| EPlus | 353 / 268,624 B | 1,264 / 1,580,368 B |
+| EList | 730 / 248,818 B | 4,326 / 1,418,994 B |
+| ETuple | 729 / 227,314 B | 4,325 / 1,246,962 B |
+| EMethod | 1,379 / 386,251 B | 9,458 / 2,524,858 B |
+| EMatches | 219 / 235,051 B | 231 / 1,308,459 B |
+| ESet | 992 / 363,847 B | 6,383 / 2,342,215 B |
+| EMap | 1,626 / 351,576 B | 11,497 / 2,247,785 B |
+| Connective NOT | 177 / 117,664 B | 183 / 393,632 B |
+
+Every count and byte ladder passes the preregistered subquadratic classifier; an explicit quadratic
+control is rejected. Input bytes also remain linear in depth, preventing a compressed-input
+vacuity. The depth-4,096 / 128 KiB gate separately establishes constant native stack.
+
+SS-Y10 is therefore repaired for the named families. No `Vec<Par>` collection projection, shadow
+semantic map, element sort, global scheduler, enlarged stack, `stacker`, traversal cap, PathMap
+fork, or alternate recursive fallback was introduced. A future protobuf-to-RMP1 cursor could prune
+encoded collection candidate domains further; the present universal domain is a conservative
+performance opportunity, not a correctness or stack-safety deferral. Complete release-workspace
+validation remains a separate gate and is not implied by these focused results.
 
 ---
 

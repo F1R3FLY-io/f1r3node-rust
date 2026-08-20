@@ -1,9 +1,6 @@
 //! `If` is the ninth authoritative `ParBag` family and must remain visible at
 //! every layer of concrete and connective-aware spatial matching.
 
-use std::alloc::{GlobalAlloc, Layout, System};
-use std::cell::Cell;
-
 use models::rhoapi::connective::ConnectiveInstance;
 use models::rhoapi::{Connective, Expr, If, Par};
 use models::rust::par_construction::ParConstruction;
@@ -14,55 +11,8 @@ use rholang::rust::interpreter::matcher::par_count::ParCount;
 use rholang::rust::interpreter::matcher::spatial_matcher::{SpatialMatcher, SpatialMatcherContext};
 use rholang::rust::interpreter::matcher::sub_pars::sub_pars;
 
-mod counting_alloc {
-    use super::*;
-
-    thread_local! {
-        static ALLOCATIONS: Cell<usize> = const { Cell::new(0) };
-        static BYTES: Cell<usize> = const { Cell::new(0) };
-    }
-
-    fn bump(bytes: usize) {
-        let _ = ALLOCATIONS.try_with(|count| count.set(count.get() + 1));
-        let _ = BYTES.try_with(|count| count.set(count.get() + bytes));
-    }
-
-    fn read() -> (usize, usize) {
-        (
-            ALLOCATIONS.try_with(Cell::get).unwrap_or(0),
-            BYTES.try_with(Cell::get).unwrap_or(0),
-        )
-    }
-
-    pub struct Counting;
-
-    unsafe impl GlobalAlloc for Counting {
-        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-            bump(layout.size());
-            unsafe { System.alloc(layout) }
-        }
-
-        unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-            unsafe { System.dealloc(ptr, layout) }
-        }
-
-        unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-            bump(new_size);
-            unsafe { System.realloc(ptr, layout, new_size) }
-        }
-    }
-
-    pub fn measure<R>(body: impl FnOnce() -> R) -> (R, usize, usize) {
-        let (allocations_before, bytes_before) = read();
-        let result = body();
-        let (allocations_after, bytes_after) = read();
-        (
-            result,
-            allocations_after - allocations_before,
-            bytes_after - bytes_before,
-        )
-    }
-}
+#[path = "support/counting_alloc.rs"]
+mod counting_alloc;
 
 #[global_allocator]
 static ALLOCATOR: counting_alloc::Counting = counting_alloc::Counting;
@@ -299,24 +249,6 @@ fn nested_conditional_matcher_allocation_growth_is_linear() {
         (allocations, bytes, input_bytes)
     }
 
-    fn subquadratic_verdict(
-        label: &str,
-        low_depth: usize,
-        low: usize,
-        high_depth: usize,
-        high: usize,
-    ) -> Result<(), String> {
-        let depth_ratio = high_depth / low_depth;
-        (high <= low.saturating_mul(depth_ratio + depth_ratio / 2))
-            .then_some(())
-            .ok_or_else(|| {
-                format!(
-                    "{label} grew from {low} at depth {low_depth} to {high} at depth \
-                     {high_depth}; this exceeds a 1.5x envelope around linear encoded-input growth"
-                )
-            })
-    }
-
     let low_depth = 128;
     let high_depth = 1_024;
     let (low_allocations, low_bytes, low_input) = sample(low_depth);
@@ -327,7 +259,7 @@ fn nested_conditional_matcher_allocation_growth_is_linear() {
          {high_input} input B"
     );
     assert_linear_input_growth(low_depth, low_input, high_depth, high_input);
-    subquadratic_verdict(
+    counting_alloc::assert_subquadratic(
         "allocation count",
         low_depth,
         low_allocations,
@@ -335,7 +267,7 @@ fn nested_conditional_matcher_allocation_growth_is_linear() {
         high_allocations,
     )
     .expect("allocation count remains subquadratic");
-    subquadratic_verdict(
+    counting_alloc::assert_subquadratic(
         "allocated bytes",
         low_depth,
         low_bytes,
@@ -344,7 +276,7 @@ fn nested_conditional_matcher_allocation_growth_is_linear() {
     )
     .expect("allocated bytes remain subquadratic");
 
-    let synthetic = subquadratic_verdict(
+    let synthetic = counting_alloc::assert_subquadratic(
         "synthetic quadratic control",
         low_depth,
         low_depth * low_depth,

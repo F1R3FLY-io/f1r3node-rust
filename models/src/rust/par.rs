@@ -538,6 +538,25 @@ impl Par {
         result
     }
 
+    /// Peel an exact non-empty unary AND/OR/NOT spine. The returned boolean is
+    /// the parity of NOT nodes; a true value also tells the spatial matcher to
+    /// restore the pre-spine binding map after matching the terminal.
+    pub fn canonical_unary_connective_spine(&self) -> Option<(Self, bool, bool)> {
+        if self.cardinality() != 1
+            || self.family_cardinality::<Connective>() != 1
+            || !self.all_components_are::<Connective>()
+        {
+            return None;
+        }
+        let mut result = None;
+        self.visit_encoded::<Connective>(|entry| {
+            if entry.multiplicity().get() == 1 {
+                result = entry.canonical_unary_connective_spine();
+            }
+        });
+        result
+    }
+
     /// Peel an exact non-empty unary Bundle spine and decode only its terminal
     /// process. Bundle flags constrain channel use when a bundle is a value;
     /// they do not alter evaluation of its body. Reducer callers must preserve

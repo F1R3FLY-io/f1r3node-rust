@@ -1053,6 +1053,86 @@ pub struct CanonicalIfParts<'a> {
     pub if_false: &'a [u8],
 }
 
+/// Borrowed semantic fields from one canonical `New` protobuf body.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CanonicalNewParts<'a> {
+    /// Canonical protobuf zig-zag representation of `bind_count`.
+    pub bind_count: u64,
+    pub body: &'a [u8],
+}
+
+/// Borrowed semantic fields from one canonical `Send` protobuf body.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CanonicalSendParts<'a> {
+    pub channel: &'a [u8],
+    pub data: Vec<&'a [u8]>,
+    pub persistent: bool,
+}
+
+/// Borrowed semantic fields from one canonical `Receive` protobuf body.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CanonicalReceiveParts<'a> {
+    pub binds: Vec<&'a [u8]>,
+    pub body: &'a [u8],
+    pub persistent: bool,
+}
+
+/// Borrowed semantic fields from one canonical `Match` protobuf body.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CanonicalMatchParts<'a> {
+    pub target: &'a [u8],
+    pub cases: Vec<&'a [u8]>,
+}
+
+/// Recursive semantic children of one canonical `Expr` protobuf body.
+///
+/// Scalar expressions and expression families whose matcher requires another
+/// semantic authority are intentionally not represented. Ordered collections
+/// expose their child messages, while unordered sets/maps expose borrowed
+/// members for the matcher's existing Bag/PathMap relation. Returning `None`
+/// for every other shape makes the complete generated decoder the explicit
+/// fallback instead of silently changing its equations.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CanonicalExprParts<'a> {
+    Unary {
+        tag: u32,
+        child: &'a [u8],
+    },
+    Binary {
+        tag: u32,
+        left: &'a [u8],
+        right: &'a [u8],
+    },
+    Sequence {
+        tag: u32,
+        children: Vec<&'a [u8]>,
+        remainder: Option<&'a [u8]>,
+    },
+    Map {
+        entries: Vec<(&'a [u8], &'a [u8])>,
+        remainder: Option<&'a [u8]>,
+    },
+    Method {
+        method_name: &'a [u8],
+        children: Vec<&'a [u8]>,
+    },
+    Matches {
+        target: &'a [u8],
+        pattern: &'a [u8],
+    },
+}
+
+impl CanonicalExprParts<'_> {
+    pub const fn tag(&self) -> u32 {
+        match self {
+            Self::Unary { tag, .. } | Self::Binary { tag, .. } | Self::Sequence { tag, .. } => *tag,
+            Self::Map { .. } => 23,
+            Self::Method { .. } => 24,
+            Self::Matches { .. } => 27,
+        }
+    }
+}
+
 #[inline]
 fn take_canonical_delimited_field<'a>(
     message: &'a [u8],
@@ -1136,6 +1216,459 @@ pub fn canonical_single_if_from_par(message: &[u8]) -> Option<&[u8]> {
     (at == message.len()).then_some(body)
 }
 
+/// Split a canonical `New` protobuf body without materializing its recursively
+/// nested process. URI and injection fields are validated and skipped because
+/// the spatial equation, like the historical matcher, constrains only
+/// `bind_count` and `p`.
+pub fn canonical_new_parts(message: &[u8]) -> Option<CanonicalNewParts<'_>> {
+    let mut at = 0usize;
+    let mut bind_count = 0u64;
+    let mut body = None;
+    let mut last_field = 0u64;
+    let mut saw_bind_count = false;
+    let mut saw_locally_free = false;
+
+    while at < message.len() {
+        let key = read_canonical_varint(message, &mut at)?;
+        let field = key >> 3;
+        let wire = key & 0x07;
+        (field >= last_field).then_some(())?;
+        last_field = field;
+        match (field, wire) {
+            (1, 0) if !saw_bind_count => {
+                bind_count = read_canonical_varint(message, &mut at)?;
+                (bind_count != 0).then_some(())?;
+                saw_bind_count = true;
+            }
+            (2, 2) if body.is_none() => {
+                let len = usize::try_from(read_canonical_varint(message, &mut at)?).ok()?;
+                let end = at.checked_add(len)?;
+                body = Some(message.get(at..end)?);
+                at = end;
+            }
+            (3 | 4, 2) => {
+                let len = usize::try_from(read_canonical_varint(message, &mut at)?).ok()?;
+                at = at.checked_add(len).filter(|end| *end <= message.len())?;
+            }
+            (5, 2) if !saw_locally_free => {
+                let len = usize::try_from(read_canonical_varint(message, &mut at)?).ok()?;
+                (len != 0).then_some(())?;
+                at = at.checked_add(len).filter(|end| *end <= message.len())?;
+                saw_locally_free = true;
+            }
+            _ => return None,
+        }
+    }
+
+    Some(CanonicalNewParts {
+        bind_count,
+        body: body?,
+    })
+}
+
+/// Split a canonical `Send` protobuf body into its ordered child messages.
+pub fn canonical_send_parts(message: &[u8]) -> Option<CanonicalSendParts<'_>> {
+    let mut at = 0usize;
+    let mut channel = None;
+    let mut data = Vec::new();
+    let mut persistent = false;
+    let mut last_field = 0u64;
+    let mut saw_locally_free = false;
+    let mut saw_connective = false;
+
+    while at < message.len() {
+        let key = read_canonical_varint(message, &mut at)?;
+        let field = key >> 3;
+        let wire = key & 0x07;
+        (field >= last_field).then_some(())?;
+        last_field = field;
+        match (field, wire) {
+            (1, 2) if channel.is_none() => {
+                let len = usize::try_from(read_canonical_varint(message, &mut at)?).ok()?;
+                let end = at.checked_add(len)?;
+                channel = Some(message.get(at..end)?);
+                at = end;
+            }
+            (2, 2) => {
+                let len = usize::try_from(read_canonical_varint(message, &mut at)?).ok()?;
+                let end = at.checked_add(len)?;
+                data.push(message.get(at..end)?);
+                at = end;
+            }
+            (3, 0) if !persistent => {
+                (read_canonical_varint(message, &mut at)? == 1).then_some(())?;
+                persistent = true;
+            }
+            (5, 2) if !saw_locally_free => {
+                let len = usize::try_from(read_canonical_varint(message, &mut at)?).ok()?;
+                (len != 0).then_some(())?;
+                at = at.checked_add(len).filter(|end| *end <= message.len())?;
+                saw_locally_free = true;
+            }
+            (6, 0) if !saw_connective => {
+                (read_canonical_varint(message, &mut at)? == 1).then_some(())?;
+                saw_connective = true;
+            }
+            _ => return None,
+        }
+    }
+
+    Some(CanonicalSendParts {
+        channel: channel?,
+        data,
+        persistent,
+    })
+}
+
+/// Split a canonical `Receive` protobuf body without decoding its recursive
+/// body. Bind messages remain separately borrowed so callers can decode or
+/// cursor-match each unordered relation element without ever decoding the
+/// complete body suffix again.
+pub fn canonical_receive_parts(message: &[u8]) -> Option<CanonicalReceiveParts<'_>> {
+    let mut at = 0usize;
+    let mut binds = Vec::new();
+    let mut body = None;
+    let mut persistent = false;
+    let mut last_field = 0u64;
+    let mut saw_peek = false;
+    let mut saw_bind_count = false;
+    let mut saw_locally_free = false;
+    let mut saw_connective = false;
+    let mut saw_condition = false;
+
+    while at < message.len() {
+        let key = read_canonical_varint(message, &mut at)?;
+        let field = key >> 3;
+        let wire = key & 0x07;
+        (field >= last_field).then_some(())?;
+        last_field = field;
+        match (field, wire) {
+            (1, 2) => {
+                let len = usize::try_from(read_canonical_varint(message, &mut at)?).ok()?;
+                let end = at.checked_add(len)?;
+                binds.push(message.get(at..end)?);
+                at = end;
+            }
+            (2, 2) if body.is_none() => {
+                let len = usize::try_from(read_canonical_varint(message, &mut at)?).ok()?;
+                let end = at.checked_add(len)?;
+                body = Some(message.get(at..end)?);
+                at = end;
+            }
+            (3, 0) if !persistent => {
+                (read_canonical_varint(message, &mut at)? == 1).then_some(())?;
+                persistent = true;
+            }
+            (4, 0) if !saw_peek => {
+                (read_canonical_varint(message, &mut at)? == 1).then_some(())?;
+                saw_peek = true;
+            }
+            (5, 0) if !saw_bind_count => {
+                (read_canonical_varint(message, &mut at)? != 0).then_some(())?;
+                saw_bind_count = true;
+            }
+            (6, 2) if !saw_locally_free => {
+                let len = usize::try_from(read_canonical_varint(message, &mut at)?).ok()?;
+                (len != 0).then_some(())?;
+                at = at.checked_add(len).filter(|end| *end <= message.len())?;
+                saw_locally_free = true;
+            }
+            (7, 0) if !saw_connective => {
+                (read_canonical_varint(message, &mut at)? == 1).then_some(())?;
+                saw_connective = true;
+            }
+            (8, 2) if !saw_condition => {
+                let len = usize::try_from(read_canonical_varint(message, &mut at)?).ok()?;
+                at = at.checked_add(len).filter(|end| *end <= message.len())?;
+                saw_condition = true;
+            }
+            _ => return None,
+        }
+    }
+
+    Some(CanonicalReceiveParts {
+        binds,
+        body: body?,
+        persistent,
+    })
+}
+
+/// Split a canonical `Match` protobuf body without decoding its recursive
+/// target. Cases remain individually borrowed bounded messages.
+pub fn canonical_match_parts(message: &[u8]) -> Option<CanonicalMatchParts<'_>> {
+    let mut at = 0usize;
+    let mut target = None;
+    let mut cases = Vec::new();
+    let mut last_field = 0u64;
+    let mut saw_locally_free = false;
+    let mut saw_connective = false;
+
+    while at < message.len() {
+        let key = read_canonical_varint(message, &mut at)?;
+        let field = key >> 3;
+        let wire = key & 0x07;
+        (field >= last_field).then_some(())?;
+        last_field = field;
+        match (field, wire) {
+            (1, 2) if target.is_none() => {
+                let len = usize::try_from(read_canonical_varint(message, &mut at)?).ok()?;
+                let end = at.checked_add(len)?;
+                target = Some(message.get(at..end)?);
+                at = end;
+            }
+            (2, 2) => {
+                let len = usize::try_from(read_canonical_varint(message, &mut at)?).ok()?;
+                let end = at.checked_add(len)?;
+                cases.push(message.get(at..end)?);
+                at = end;
+            }
+            (4, 2) if !saw_locally_free => {
+                let len = usize::try_from(read_canonical_varint(message, &mut at)?).ok()?;
+                (len != 0).then_some(())?;
+                at = at.checked_add(len).filter(|end| *end <= message.len())?;
+                saw_locally_free = true;
+            }
+            (5, 0) if !saw_connective => {
+                (read_canonical_varint(message, &mut at)? == 1).then_some(())?;
+                saw_connective = true;
+            }
+            _ => return None,
+        }
+    }
+
+    Some(CanonicalMatchParts {
+        target: target?,
+        cases,
+    })
+}
+
+fn canonical_binary_par_parts(message: &[u8]) -> Option<(&[u8], &[u8])> {
+    let mut at = 0usize;
+    let left = take_canonical_delimited_field(message, &mut at, (1 << 3) | 2)?;
+    let right = take_canonical_delimited_field(message, &mut at, (2 << 3) | 2)?;
+    (at == message.len()).then_some((left, right))
+}
+
+fn canonical_par_sequence_parts(
+    message: &[u8],
+    allow_remainder: bool,
+) -> Option<(Vec<&[u8]>, Option<&[u8]>)> {
+    let mut at = 0usize;
+    let mut children = Vec::new();
+    let mut last_field = 0u64;
+    let mut saw_locally_free = false;
+    let mut saw_connective = false;
+    let mut remainder = None;
+    while at < message.len() {
+        let key = read_canonical_varint(message, &mut at)?;
+        let field = key >> 3;
+        let wire = key & 0x07;
+        (field >= last_field).then_some(())?;
+        last_field = field;
+        match (field, wire) {
+            (1, 2) => {
+                let len = usize::try_from(read_canonical_varint(message, &mut at)?).ok()?;
+                let end = at.checked_add(len)?;
+                children.push(message.get(at..end)?);
+                at = end;
+            }
+            (3, 2) if !saw_locally_free => {
+                let len = usize::try_from(read_canonical_varint(message, &mut at)?).ok()?;
+                (len != 0).then_some(())?;
+                at = at.checked_add(len).filter(|end| *end <= message.len())?;
+                saw_locally_free = true;
+            }
+            (4, 0) if !saw_connective => {
+                (read_canonical_varint(message, &mut at)? == 1).then_some(())?;
+                saw_connective = true;
+            }
+            (5, 2) if allow_remainder && remainder.is_none() => {
+                let len = usize::try_from(read_canonical_varint(message, &mut at)?).ok()?;
+                let end = at.checked_add(len)?;
+                remainder = Some(message.get(at..end)?);
+                at = end;
+            }
+            _ => return None,
+        }
+    }
+    Some((children, remainder))
+}
+
+fn canonical_map_parts(message: &[u8]) -> Option<(Vec<(&[u8], &[u8])>, Option<&[u8]>)> {
+    let (entries, remainder) = canonical_par_sequence_parts(message, true)?;
+    Some((
+        entries
+            .into_iter()
+            .map(canonical_binary_par_parts)
+            .collect::<Option<Vec<_>>>()?,
+        remainder,
+    ))
+}
+
+fn canonical_method_parts(message: &[u8]) -> Option<CanonicalExprParts<'_>> {
+    let mut at = 0usize;
+    let mut method_name = &message[0..0];
+    let mut target = None;
+    let mut arguments = Vec::new();
+    let mut last_field = 0u64;
+    let mut saw_name = false;
+    let mut saw_locally_free = false;
+    let mut saw_connective = false;
+    while at < message.len() {
+        let key = read_canonical_varint(message, &mut at)?;
+        let field = key >> 3;
+        let wire = key & 0x07;
+        (field >= last_field).then_some(())?;
+        last_field = field;
+        match (field, wire) {
+            (1, 2) if !saw_name => {
+                let len = usize::try_from(read_canonical_varint(message, &mut at)?).ok()?;
+                (len != 0).then_some(())?;
+                let end = at.checked_add(len)?;
+                method_name = message.get(at..end)?;
+                std::str::from_utf8(method_name).ok()?;
+                at = end;
+                saw_name = true;
+            }
+            (2, 2) if target.is_none() => {
+                let len = usize::try_from(read_canonical_varint(message, &mut at)?).ok()?;
+                let end = at.checked_add(len)?;
+                target = Some(message.get(at..end)?);
+                at = end;
+            }
+            (3, 2) => {
+                let len = usize::try_from(read_canonical_varint(message, &mut at)?).ok()?;
+                let end = at.checked_add(len)?;
+                arguments.push(message.get(at..end)?);
+                at = end;
+            }
+            (5, 2) if !saw_locally_free => {
+                let len = usize::try_from(read_canonical_varint(message, &mut at)?).ok()?;
+                (len != 0).then_some(())?;
+                at = at.checked_add(len).filter(|end| *end <= message.len())?;
+                saw_locally_free = true;
+            }
+            (6, 0) if !saw_connective => {
+                (read_canonical_varint(message, &mut at)? == 1).then_some(())?;
+                saw_connective = true;
+            }
+            _ => return None,
+        }
+    }
+    let mut children = Vec::with_capacity(arguments.len() + 1);
+    children.push(target?);
+    children.extend(arguments);
+    Some(CanonicalExprParts::Method {
+        method_name,
+        children,
+    })
+}
+
+/// Parse only recursive expression families whose spatial equation can be
+/// continued directly over borrowed canonical child messages.
+pub fn canonical_expr_parts(message: &[u8]) -> Option<CanonicalExprParts<'_>> {
+    let mut at = 0usize;
+    let key = read_canonical_varint(message, &mut at)?;
+    let tag = u32::try_from(key >> 3).ok()?;
+    ((key & 0x07) == 2).then_some(())?;
+    let len = usize::try_from(read_canonical_varint(message, &mut at)?).ok()?;
+    let end = at.checked_add(len)?;
+    let body = message.get(at..end)?;
+    (end == message.len()).then_some(())?;
+
+    match tag {
+        5 | 6 => Some(CanonicalExprParts::Unary {
+            tag,
+            child: canonical_single_delimited_field(body, (1 << 3) | 2)?,
+        }),
+        7..=18 | 28..=31 => {
+            let (left, right) = canonical_binary_par_parts(body)?;
+            Some(CanonicalExprParts::Binary { tag, left, right })
+        }
+        20..=22 => {
+            let (children, remainder) = canonical_par_sequence_parts(body, matches!(tag, 20 | 22))?;
+            Some(CanonicalExprParts::Sequence {
+                tag,
+                children,
+                remainder,
+            })
+        }
+        23 => {
+            let (entries, remainder) = canonical_map_parts(body)?;
+            Some(CanonicalExprParts::Map { entries, remainder })
+        }
+        24 => canonical_method_parts(body),
+        27 => {
+            let (target, pattern) = canonical_binary_par_parts(body)?;
+            Some(CanonicalExprParts::Matches { target, pattern })
+        }
+        _ => None,
+    }
+}
+
+fn canonical_single_par_component(message: &[u8], expected_field: u64) -> Option<&[u8]> {
+    const LOCALLY_FREE_FIELD: u64 = 9;
+    const CONNECTIVE_USED_FIELD: u64 = 10;
+
+    let mut at = 0usize;
+    let mut body = None;
+    let mut last_field = 0u64;
+    let mut saw_locally_free = false;
+    let mut saw_connective_used = false;
+    while at < message.len() {
+        let key = read_canonical_varint(message, &mut at)?;
+        let field = key >> 3;
+        let wire = key & 0x07;
+        (field >= last_field).then_some(())?;
+        last_field = field;
+        match (field, wire) {
+            (field, 2) if field == expected_field && body.is_none() => {
+                let len = usize::try_from(read_canonical_varint(message, &mut at)?).ok()?;
+                let end = at.checked_add(len)?;
+                body = Some(message.get(at..end)?);
+                at = end;
+            }
+            (LOCALLY_FREE_FIELD, 2) if !saw_locally_free => {
+                let len = usize::try_from(read_canonical_varint(message, &mut at)?).ok()?;
+                (len != 0).then_some(())?;
+                at = at.checked_add(len).filter(|end| *end <= message.len())?;
+                saw_locally_free = true;
+            }
+            (CONNECTIVE_USED_FIELD, 0) if !saw_connective_used => {
+                (read_canonical_varint(message, &mut at)? == 1).then_some(())?;
+                saw_connective_used = true;
+            }
+            _ => return None,
+        }
+    }
+    body
+}
+
+/// Extract the sole `New` component body from a canonical singleton carrier.
+pub fn canonical_single_new_from_par(message: &[u8]) -> Option<&[u8]> {
+    canonical_single_par_component(message, ParComponentTag::New.byte().into())
+}
+
+/// Extract the sole `Send` component body from a canonical singleton carrier.
+pub fn canonical_single_send_from_par(message: &[u8]) -> Option<&[u8]> {
+    canonical_single_par_component(message, ParComponentTag::Send.byte().into())
+}
+
+/// Extract the sole `Receive` component body from a canonical singleton carrier.
+pub fn canonical_single_receive_from_par(message: &[u8]) -> Option<&[u8]> {
+    canonical_single_par_component(message, ParComponentTag::Receive.byte().into())
+}
+
+/// Extract the sole `Match` component body from a canonical singleton carrier.
+pub fn canonical_single_match_from_par(message: &[u8]) -> Option<&[u8]> {
+    canonical_single_par_component(message, ParComponentTag::Match.byte().into())
+}
+
+/// Extract the sole `Expr` component body from a canonical singleton carrier.
+pub fn canonical_single_expr_from_par(message: &[u8]) -> Option<&[u8]> {
+    canonical_single_par_component(message, ParComponentTag::Expr.byte().into())
+}
+
 /// Read `Par.connective_used` from a canonical protobuf message without
 /// decoding any component body.
 ///
@@ -1165,25 +1698,105 @@ pub fn canonical_par_connective_used(message: &[u8]) -> Option<bool> {
     Some(connective_used)
 }
 
-/// Follow an exact non-empty chain of singleton AND/OR connectives and decode
-/// only its terminal child. Both connectives are unary identities, so this is
-/// an algebraically exact normalization rather than a conservative shortcut.
-fn decode_unary_connective_terminal(mut connective: &[u8]) -> Option<Par> {
+/// Test the root `Par.locally_free` summary without decoding any component.
+/// Canonical nonempty bytes mean the summary is nonempty; omission means the
+/// empty bitset. The complete field stream is validated while it is skipped.
+pub fn canonical_par_locally_free_is_empty(message: &[u8]) -> Option<bool> {
+    const LOCALLY_FREE_FIELD: u64 = 9;
+    const CONNECTIVE_USED_FIELD: u64 = 10;
+
+    let mut at = 0usize;
+    let mut saw_locally_free = false;
+    let mut saw_connective = false;
+    let mut last_field = 0u64;
+    while at < message.len() {
+        let key = read_canonical_varint(message, &mut at)?;
+        let field = key >> 3;
+        let wire = key & 0x07;
+        (field >= last_field).then_some(())?;
+        last_field = field;
+        if field == LOCALLY_FREE_FIELD {
+            (wire == 2 && !saw_locally_free).then_some(())?;
+            let len = usize::try_from(read_canonical_varint(message, &mut at)?).ok()?;
+            (len != 0).then_some(())?;
+            at = at.checked_add(len).filter(|end| *end <= message.len())?;
+            saw_locally_free = true;
+        } else if field == CONNECTIVE_USED_FIELD {
+            (wire == 0 && !saw_connective).then_some(())?;
+            (read_canonical_varint(message, &mut at)? == 1).then_some(())?;
+            saw_connective = true;
+        } else {
+            (wire == 2).then_some(())?;
+            let len = usize::try_from(read_canonical_varint(message, &mut at)?).ok()?;
+            at = at.checked_add(len).filter(|end| *end <= message.len())?;
+        }
+    }
+    Some(!saw_locally_free)
+}
+
+/// Interpret the only two collection-remainder forms accepted by the spatial
+/// matcher without constructing a generated `Var` value.
+///
+/// The first component is a free-variable level; the second marks a wildcard.
+/// Bound, absent, and malformed variables return `None`, which makes the
+/// matcher use its complete generated decoder rather than widening the wire
+/// language accepted by this fast path.
+pub fn canonical_collection_remainder(message: &[u8]) -> Option<(Option<i32>, bool)> {
+    const FREE_VAR_KEY: u64 = 2 << 3;
+    const WILDCARD_KEY: u64 = (3 << 3) | 2;
+
+    let mut at = 0usize;
+    let key = read_canonical_varint(message, &mut at)?;
+    if key == FREE_VAR_KEY {
+        let encoded = u32::try_from(read_canonical_varint(message, &mut at)?).ok()?;
+        (at == message.len()).then_some(())?;
+        let level = ((encoded >> 1) as i32) ^ -((encoded & 1) as i32);
+        Some((Some(level), false))
+    } else if key == WILDCARD_KEY {
+        (read_canonical_varint(message, &mut at)? == 0 && at == message.len()).then_some(())?;
+        Some((None, true))
+    } else {
+        None
+    }
+}
+
+/// Follow an exact non-empty chain of singleton AND/OR/NOT connectives and
+/// decode only its terminal child. AND and OR are unary identities; NOT
+/// contributes one parity bit. This is an algebraically exact normalization,
+/// including the binding-isolation semantics applied by the matcher.
+fn decode_unary_connective_spine(mut connective: &[u8]) -> Option<(Par, bool, bool)> {
     const AND_KEY: u64 = (1 << 3) | 2;
     const OR_KEY: u64 = (2 << 3) | 2;
+    const NOT_KEY: u64 = (3 << 3) | 2;
     const CHILD_KEY: u64 = (1 << 3) | 2;
 
+    let mut negated = false;
+    let mut has_not = false;
     loop {
-        let body = canonical_single_delimited_field(connective, AND_KEY)
-            .or_else(|| canonical_single_delimited_field(connective, OR_KEY))?;
-        let child = canonical_single_delimited_field(body, CHILD_KEY)?;
+        let child = if let Some(body) = canonical_single_delimited_field(connective, AND_KEY)
+            .or_else(|| canonical_single_delimited_field(connective, OR_KEY))
+        {
+            canonical_single_delimited_field(body, CHILD_KEY)?
+        } else {
+            negated = !negated;
+            has_not = true;
+            canonical_single_delimited_field(connective, NOT_KEY)?
+        };
         match canonical_single_connective_from_par(child) {
             Some(next) => connective = next,
             None => {
-                return crate::rust::rholang::protobuf_decoder::decode_par(child).ok();
+                return crate::rust::rholang::protobuf_decoder::decode_par(child)
+                    .ok()
+                    .map(|terminal| (terminal, negated, has_not));
             }
         }
     }
+}
+
+fn decode_unary_connective_terminal(connective: &[u8]) -> Option<Par> {
+    decode_unary_connective_spine(connective)
+        .filter(|(_terminal, negated, _has_not)| !negated)
+        .map(|(terminal, _negated, _has_not)| terminal)
 }
 
 fn canonical_single_bundle_from_par(message: &[u8]) -> Option<&[u8]> {
@@ -2036,6 +2649,10 @@ impl EncodedParComponent<'_, Connective> {
     /// region inside this authoritative trie endpoint.
     pub(crate) fn canonical_unary_connective_terminal(self) -> Option<Par> {
         decode_unary_connective_terminal(self.payload)
+    }
+
+    pub(crate) fn canonical_unary_connective_spine(self) -> Option<(Par, bool, bool)> {
+        decode_unary_connective_spine(self.payload)
     }
 }
 

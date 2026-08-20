@@ -4,13 +4,17 @@ use models::rhoapi::connective::ConnectiveInstance;
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::g_unforgeable::UnfInstance;
 use models::rhoapi::{
-    Bundle, Connective, ConnectiveBody, Expr, GSysAuthToken, GUnforgeable, If, Match, New, Par,
-    Receive, Send,
+    Bundle, Connective, ConnectiveBody, EMap, ENot, ESet, Expr, GSysAuthToken, GUnforgeable, If,
+    KeyValuePair, Match, New, Par, Receive, Send, Var,
 };
 use models::rust::par_bag::{
-    canonical_if_parts, canonical_par_connective_used, canonical_single_if_from_par,
-    with_component_key, CanonicalParBagKey, ParBag, ParBagCodecError, ParBagProtobufError,
-    ParComponentTag, PAR_BAG_KEY_DOMAIN,
+    canonical_collection_remainder, canonical_expr_parts, canonical_if_parts,
+    canonical_match_parts, canonical_new_parts, canonical_par_connective_used,
+    canonical_par_locally_free_is_empty, canonical_receive_parts, canonical_send_parts,
+    canonical_single_expr_from_par, canonical_single_if_from_par, canonical_single_match_from_par,
+    canonical_single_new_from_par, canonical_single_receive_from_par,
+    canonical_single_send_from_par, with_component_key, CanonicalExprParts, CanonicalParBagKey,
+    ParBag, ParBagCodecError, ParBagProtobufError, ParComponentTag, PAR_BAG_KEY_DOMAIN,
 };
 use models::rust::par_construction::{ParConstruction, PlannedConnective};
 use models::rust::rholang::implicits::{single_expr, single_unforgeable};
@@ -118,6 +122,264 @@ fn canonical_if_cursor_borrows_children_and_rejects_noncanonical_framing() {
     let mut trailing_carrier = carrier_bytes;
     trailing_carrier.extend_from_slice(&[0x08, 0x01]);
     assert!(canonical_single_if_from_par(&trailing_carrier).is_none());
+}
+
+#[test]
+fn canonical_new_and_send_cursors_borrow_children_and_reject_noncanonical_framing() {
+    let channel = Par::default().with_exprs(vec![Expr {
+        expr_instance: Some(ExprInstance::GInt(21)),
+    }]);
+    let datum = Par::default().with_exprs(vec![Expr {
+        expr_instance: Some(ExprInstance::GInt(22)),
+    }]);
+    let body = Par::default().with_exprs(vec![Expr {
+        expr_instance: Some(ExprInstance::GInt(23)),
+    }]);
+
+    let send = Send {
+        chan: Some(channel.clone()),
+        data: vec![datum.clone()],
+        persistent: true,
+        locally_free: vec![1],
+        connective_used: true,
+    };
+    let send_bytes = models::rust::rholang::protobuf_encoder::encode_to_vec(&send);
+    let send_parts = canonical_send_parts(&send_bytes).expect("canonical Send cursor");
+    assert_eq!(
+        send_parts.channel,
+        models::rust::rholang::protobuf_encoder::encode_to_vec(&channel)
+    );
+    assert_eq!(send_parts.data.len(), 1);
+    assert_eq!(
+        send_parts.data[0],
+        models::rust::rholang::protobuf_encoder::encode_to_vec(&datum)
+    );
+    assert!(send_parts.persistent);
+
+    let new = New {
+        bind_count: 3,
+        p: Some(body.clone()),
+        uri: vec!["rho:id:one".to_owned()],
+        injections: BTreeMap::from([("x".to_owned(), datum)]),
+        locally_free: vec![2],
+    };
+    let new_bytes = models::rust::rholang::protobuf_encoder::encode_to_vec(&new);
+    let new_parts = canonical_new_parts(&new_bytes).expect("canonical New cursor");
+    assert_eq!(
+        new_parts.bind_count, 6,
+        "sint32 is retained as zig-zag wire data"
+    );
+    assert_eq!(
+        new_parts.body,
+        models::rust::rholang::protobuf_encoder::encode_to_vec(&body)
+    );
+
+    let send_carrier = Par::default().with_sends(vec![send]);
+    let send_carrier_bytes = models::rust::rholang::protobuf_encoder::encode_to_vec(&send_carrier);
+    assert_eq!(
+        canonical_single_send_from_par(&send_carrier_bytes),
+        Some(send_bytes.as_slice())
+    );
+    let new_carrier = Par::default().with_news(vec![new]);
+    let new_carrier_bytes = models::rust::rholang::protobuf_encoder::encode_to_vec(&new_carrier);
+    assert_eq!(
+        canonical_single_new_from_par(&new_carrier_bytes),
+        Some(new_bytes.as_slice())
+    );
+
+    let mut malformed_send = send_bytes;
+    malformed_send.extend_from_slice(&[0x18, 0x01]);
+    assert!(canonical_send_parts(&malformed_send).is_none());
+    let mut malformed_new = new_bytes;
+    malformed_new.extend_from_slice(&[0x10, 0x00]);
+    assert!(canonical_new_parts(&malformed_new).is_none());
+    let mut duplicate_root_metadata = send_carrier_bytes;
+    duplicate_root_metadata.extend_from_slice(&[0x52, 0x01, 0x01]);
+    assert!(canonical_single_send_from_par(&duplicate_root_metadata).is_none());
+}
+
+#[test]
+fn canonical_recursive_family_cursors_expose_only_semantic_children() {
+    let child = Par::default().with_exprs(vec![Expr {
+        expr_instance: Some(ExprInstance::GInt(31)),
+    }]);
+    let child_bytes = models::rust::rholang::protobuf_encoder::encode_to_vec(&child);
+
+    let receive = Receive {
+        body: Some(child.clone()),
+        peek: true,
+        bind_count: 2,
+        locally_free: vec![1],
+        connective_used: true,
+        condition: Some(child.clone()),
+        ..Receive::default()
+    };
+    let receive_bytes = models::rust::rholang::protobuf_encoder::encode_to_vec(&receive);
+    let receive_parts = canonical_receive_parts(&receive_bytes).expect("canonical Receive cursor");
+    assert!(receive_parts.binds.is_empty());
+    assert_eq!(receive_parts.body, child_bytes);
+    assert!(!receive_parts.persistent);
+
+    let match_term = Match {
+        target: Some(child.clone()),
+        locally_free: vec![2],
+        connective_used: true,
+        ..Match::default()
+    };
+    let match_bytes = models::rust::rholang::protobuf_encoder::encode_to_vec(&match_term);
+    let match_parts = canonical_match_parts(&match_bytes).expect("canonical Match cursor");
+    assert_eq!(match_parts.target, child_bytes);
+    assert!(match_parts.cases.is_empty());
+
+    let expression = Expr {
+        expr_instance: Some(ExprInstance::ENotBody(ENot {
+            p: Some(child.clone()),
+        })),
+    };
+    let expression_bytes = models::rust::rholang::protobuf_encoder::encode_to_vec(&expression);
+    assert_eq!(
+        canonical_expr_parts(&expression_bytes),
+        Some(CanonicalExprParts::Unary {
+            tag: 5,
+            child: child_bytes.as_slice(),
+        })
+    );
+
+    let receive_carrier = Par::default().with_receives(vec![receive]);
+    assert_eq!(
+        canonical_single_receive_from_par(&models::rust::rholang::protobuf_encoder::encode_to_vec(
+            &receive_carrier
+        )),
+        Some(receive_bytes.as_slice())
+    );
+    let match_carrier = Par::default().with_matches(vec![match_term]);
+    assert_eq!(
+        canonical_single_match_from_par(&models::rust::rholang::protobuf_encoder::encode_to_vec(
+            &match_carrier
+        )),
+        Some(match_bytes.as_slice())
+    );
+    let expr_carrier = Par::default().with_exprs(vec![expression]);
+    assert_eq!(
+        canonical_single_expr_from_par(&models::rust::rholang::protobuf_encoder::encode_to_vec(
+            &expr_carrier
+        )),
+        Some(expression_bytes.as_slice())
+    );
+
+    let mut malformed_receive = receive_bytes;
+    malformed_receive.extend_from_slice(&[0x18, 0x00]);
+    assert!(canonical_receive_parts(&malformed_receive).is_none());
+    let mut malformed_match = match_bytes;
+    malformed_match.extend_from_slice(&[0x2a, 0x00]);
+    assert!(canonical_match_parts(&malformed_match).is_none());
+    let mut malformed_expr = expression_bytes;
+    malformed_expr.extend_from_slice(&[0x28, 0x00]);
+    assert!(canonical_expr_parts(&malformed_expr).is_none());
+}
+
+#[test]
+fn canonical_unordered_collection_cursors_borrow_members_and_remainders() {
+    use models::rhoapi::var::{VarInstance, WildcardMsg};
+
+    let key = Par::default().with_exprs(vec![Expr {
+        expr_instance: Some(ExprInstance::GInt(41)),
+    }]);
+    let value = Par::default().with_exprs(vec![Expr {
+        expr_instance: Some(ExprInstance::GInt(42)),
+    }]);
+    let free_remainder = Var {
+        var_instance: Some(VarInstance::FreeVar(-7)),
+    };
+    let free_bytes = models::rust::rholang::protobuf_encoder::encode_to_vec(&free_remainder);
+
+    let set_expr = Expr {
+        expr_instance: Some(ExprInstance::ESetBody(ESet {
+            ps: vec![value.clone()],
+            locally_free: vec![1],
+            connective_used: true,
+            remainder: Some(free_remainder),
+        })),
+    };
+    let set_bytes = models::rust::rholang::protobuf_encoder::encode_to_vec(&set_expr);
+    let Some(CanonicalExprParts::Sequence {
+        tag: 22,
+        children,
+        remainder: Some(remainder),
+    }) = canonical_expr_parts(&set_bytes)
+    else {
+        panic!("canonical ESet shape")
+    };
+    assert_eq!(children.len(), 1);
+    assert_eq!(
+        children[0],
+        models::rust::rholang::protobuf_encoder::encode_to_vec(&value)
+    );
+    assert_eq!(remainder, free_bytes);
+    assert_eq!(
+        canonical_collection_remainder(remainder),
+        Some((Some(-7), false))
+    );
+
+    let wildcard = Var {
+        var_instance: Some(VarInstance::Wildcard(WildcardMsg {})),
+    };
+    let wildcard_bytes = models::rust::rholang::protobuf_encoder::encode_to_vec(&wildcard);
+    let map_expr = Expr {
+        expr_instance: Some(ExprInstance::EMapBody(EMap {
+            kvs: vec![KeyValuePair {
+                key: Some(key.clone()),
+                value: Some(value.clone()),
+            }],
+            locally_free: vec![2],
+            connective_used: true,
+            remainder: Some(wildcard),
+        })),
+    };
+    let map_bytes = models::rust::rholang::protobuf_encoder::encode_to_vec(&map_expr);
+    let Some(CanonicalExprParts::Map {
+        entries,
+        remainder: Some(remainder),
+    }) = canonical_expr_parts(&map_bytes)
+    else {
+        panic!("canonical EMap shape")
+    };
+    assert_eq!(entries.len(), 1);
+    assert_eq!(
+        entries[0].0,
+        models::rust::rholang::protobuf_encoder::encode_to_vec(&key)
+    );
+    assert_eq!(
+        entries[0].1,
+        models::rust::rholang::protobuf_encoder::encode_to_vec(&value)
+    );
+    assert_eq!(remainder, wildcard_bytes);
+    assert_eq!(
+        canonical_collection_remainder(remainder),
+        Some((None, true))
+    );
+
+    let plain = models::rust::rholang::protobuf_encoder::encode_to_vec(&Par::default());
+    assert_eq!(canonical_par_locally_free_is_empty(&plain), Some(true));
+    let mut summarized = Par::default();
+    summarized.replace_locally_free(vec![1]);
+    assert_eq!(
+        canonical_par_locally_free_is_empty(
+            &models::rust::rholang::protobuf_encoder::encode_to_vec(&summarized)
+        ),
+        Some(false)
+    );
+
+    let bound = Var {
+        var_instance: Some(VarInstance::BoundVar(1)),
+    };
+    assert_eq!(
+        canonical_collection_remainder(&models::rust::rholang::protobuf_encoder::encode_to_vec(
+            &bound
+        )),
+        None
+    );
+    assert_eq!(canonical_collection_remainder(&[0x1a, 0x01, 0x00]), None);
 }
 
 fn occurrence_count(par: &Par) -> usize {

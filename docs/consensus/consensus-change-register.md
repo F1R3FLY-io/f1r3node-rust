@@ -101,8 +101,8 @@ the Surface-L acceptance set (L07, L08 in flight, L10, L11, L14, L15), binder-sh
 route (L24). **The metering axis was re-derived
 under the D3 token model** (consensus cost = evaluated `Send`/`Receive` prefix events; per-op prices
 are diagnostics): **CBR-L20, CBR-L23, and CBR-L24 move that prefix-event schedule**; the
-register's one historical `UNVERIFIED` cell resolved in the same derivation. **63 further changes
-were examined and retired** with typed reasons — 49 bug fixes, 5
+register's one historical `UNVERIFIED` cell resolved in the same derivation. **64 further changes
+were examined and retired** with typed reasons — 49 bug fixes, 6
 measured-neutral optimizations, 5 equivalence-proven conversions, 3 dormant additions or removals, and the
 formerly-open wire-asymmetry hazard, closed against CBR-044 — each a one-line row in
 [Appendix B.1](#b1-retired-register-entries) whose full historical body remains in git history.
@@ -147,7 +147,7 @@ with typed reasons so the account stays checkable.
 3. A **derived** register (§3, §4): 24 entries, each with all six axes answered, a stated blast
    radius, a direction, an evidence grade, and — where one exists — the owner ruling that authorised
    it, quoted verbatim with its date.
-4. The **negative results**: 63 retired entries with typed reasons (Appendix B.1) and 21 commit-level
+4. The **negative results**: 64 retired entries with typed reasons (Appendix B.1) and 21 commit-level
    exemptions (Appendix B.2), which are what make the inclusion criterion checkable rather than
    merely asserted.
 
@@ -461,7 +461,7 @@ conversions proven equivalent to their recursive counterparts definitely do not 
 while **data-model, wire-format, and deliberate semantic changes** (the EPathMap representation and
 EPM1 being the named exemplar) are what this register exists to carry. Every entry was re-classified
 under that criterion; the 46 that no longer qualified at re-scope—and later classified findings
-through CBR-062—are retired to typed rows in
+through CBR-063—are retired to typed rows in
 [Appendix B.1](#b1-retired-register-entries), and their full bodies remain in git history at the
 pre-refactor revision.
 
@@ -610,8 +610,8 @@ is a *future* fork, not a present one).
 MECHANISM-ONLY (**CBR-013**), 1 LATENT (**CBR-L14**), and 1 UNVERIFIED (**CBR-053**). By direction:
 **15 CORRECTIVE, 4 PERMISSIVE, 4 REGRESSIVE, 1 UNVERIFIED**. Axis cells reading `UNVERIFIED`: **2** —
 CBR-053's verdict and post-state axes. The register's historical CBR-L07 metering `?` remains
-resolved under the token model (§3.3). The 63 retired entries are
-[Appendix B.1](#b1-retired-register-entries); 24 + 63 = 87 historical identifiers, none reused.
+resolved under the token model (§3.3). The 64 retired entries are
+[Appendix B.1](#b1-retired-register-entries); 24 + 64 = 88 historical identifiers, none reused.
 
 ### 4.2 Entry template
 
@@ -4142,6 +4142,7 @@ material now lives.
 | `CBR-060` | this checkpoint | Evaluator metadata reconstruction covers `If` and depth-zero connective variable references exactly once per distinct PathMap endpoint | `BUG_FIX_RULED_NONCONSENSUS` | a `u64::MAX` conditional multiplicity plus one `VarRef` endpoint produces the union of both locally-free bitsets without occurrence expansion; a materializable collection child exercises the production rebuild boundary |
 | `CBR-061` | this checkpoint | The pushdown pretty printer renders `If` components instead of dropping them from a `Par` or printing `Nil` | `BUG_FIX_RULED_NONCONSENSUS` | an If-only witness renders condition, true branch, and false branch; a mixed Expr+If witness preserves canonical family presentation. This changes replay-visible diagnostic text where the omitted family was previously printed, but does not impose execution order on parallel processes. |
 | `CBR-062` | this checkpoint | Singleton-`If` spatial matching advances through shared canonical protobuf ranges instead of repeatedly decoding every remaining nested suffix | `OPTIMIZATION_MEASURED_NEUTRAL` | the bounded recursive oracle agrees on verdict and complete `FreeMap`; late-child refusal restores the attempt snapshot; canonical/malformed cursor gates and the 64-byte Job/Frame layout gate pass; depth 4,096 succeeds on a 128 KiB stack; the release ladder is 55.002 µs at depth 128 and 1.5387 ms at 4,096, with linear allocation growth. No value, verdict, binding, byte, hash, COMM, charge, accepted program, PathMap operation, or parallel execution order moves. Stack-safety report §5.29. |
+| `CBR-063` | this checkpoint | Shared canonical-protobuf ranges replace repeated suffix decoding across recursive New/Send/Receive/Match/Expr matching, and borrowed ESet/EMap members enter the existing unordered Bag/PathMap ListPDA | `OPTIMIZATION_MEASURED_NEUTRAL` | the 17/17 bounded recursive-oracle gate agrees on verdict and complete `FreeMap`; unordered augmenting-path reassignment, map key/value rollback, and exact set/map remainders pass; all 13 named families reach depth 4,096 on a 128 KiB stack and have subquadratic allocation ladders. Diagnostic depth-128 ESet/EMap matching falls from 3.009/1.609 s to 0.825/1.099 ms. No value, verdict, binding, byte, hash, COMM, charge, accepted program, PathMap algebra, or parallel execution order moves. Stack-safety report §5.30. |
 | `CBR-L01` | `3ff1c98b`, `f586e138` | Equal operator precedence becomes representable; Rholang's ladder corrected | `BUG_FIX_RULED_NONCONSENSUS` | entry body at the pre-refactor revision (git history) |
 | `CBR-L02` | `0f3d298c` | The substrate lane stops answering "false" for a guard it could not decide | `BUG_FIX_RULED_NONCONSENSUS` | entry body at the pre-refactor revision (git history) |
 | `CBR-L03` | `69c66cd1` | A residual binder rests the COMM, whatever the formula collapsed to | `BUG_FIX_RULED_NONCONSENSUS` | entry body at the pre-refactor revision (git history) |
@@ -4260,6 +4261,29 @@ and `stdlog!` remains an ordinary concurrent process rather than a sequencing pr
 recursive-oracle differential compares verdict and complete bindings, while asynchronous consensus
 evidence continues to compare canonical COMM multisets. Under §3.2 this measured-neutral resource
 repair is retired rather than promoted to the active may-change-consensus table.
+
+**CBR-063 classification continuation (2026-08-20).** The same byte-range architecture now follows
+the recursive semantic children of New, Send, Receive, Match, unary/binary/ordered/method/matches
+expressions, and unordered ESet/EMap collections. ESet members and EMap key/value pairs remain
+borrowed protobuf ranges when they enter the established `ListMachine`; that machine retains its
+Bag/PathMap target catalog, augmenting-path search, rollback transaction, multiplicity-aware
+subtraction, wildcard semantics, and remainder equation. Only a selected residual is decoded when
+the public legacy ESet/EMap remainder value must be materialized. Unsupported or unproved shapes
+still delegate to the complete generated decoder.
+
+The conservative encoded-row candidate plan is the universal domain. It may perform extra edge
+probes but cannot remove a predecessor success; final verdicts and binding environments remain the
+authority of the unchanged spatial equations. The independent recursive oracle agrees on the full
+semantic corpus, while dedicated anti-vacuity cases force unordered reassignment, later EMap-value
+failure after an earlier key capture, and exact set/map remainder binding.
+
+Canonical child order is retained only as a deterministic proof-search and binding-fold witness.
+It does not order Rholang evaluation: `Par` remains unordered parallel composition, no sibling gains
+a happens-before edge, and `stdlog!` is not a sequencing primitive. No value, verdict, binding,
+protobuf or bincode byte, hash, COMM multiset, D3 charge, accepted program, EPathMap mode, or PathMap
+algebra/lattice operation moves. Under §3.2 this measured-neutral resource repair is retired rather
+than promoted to the active may-change-consensus table. Complete release-workspace validation is a
+separate pending gate and is not implied by the focused evidence.
 
 **CBR-033 living evidence continuation (2026-08-11; pgmcp #5301).** `7983bf4b` makes the
 read-only hot-store snapshot total over the union of datum and continuation key domains. A datum
@@ -4941,6 +4965,6 @@ is the point: the derivation's surplus is real, and it is small and classifiable
 ---
 
 *The register's identifiers are stable and never reused. The 2026-08-03 re-scope retired 46 entries
-to B.1; subsequent classified findings through CBR-062 and CBR-L22 bring the living appendix to 63. The re-scope also removed
+to B.1; subsequent classified findings through CBR-063 and CBR-L22 bring the living appendix to 64. The re-scope also removed
 the mechanised drift gate with its machine index; the pre-refactor revision, with every then-retired
 body and the gate's specification, remains in git history.*
