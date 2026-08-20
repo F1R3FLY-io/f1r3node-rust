@@ -52,6 +52,28 @@ use super::r#match::{rho_path_query_atom, rho_path_query_cursor_atom};
 use super::spatial_matcher::SpatialMatcherContext;
 use super::sub_pars::sub_pars;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum EncodedExprOuterRoute {
+    RejectProvenDifferent,
+    Delegate,
+}
+
+/// Decide only the outer-variant refinement. `None` is unproved evidence and
+/// therefore always delegates to the encoded/decode fallback; it is never a
+/// semantic negative.
+#[inline]
+pub(super) const fn encoded_expr_outer_route(
+    target_outer_tag: Option<u32>,
+    pattern_deep_tag: Option<u32>,
+) -> EncodedExprOuterRoute {
+    match (target_outer_tag, pattern_deep_tag) {
+        (Some(target), Some(pattern)) if target != pattern => {
+            EncodedExprOuterRoute::RejectProvenDifferent
+        }
+        _ => EncodedExprOuterRoute::Delegate,
+    }
+}
+
 pub(super) fn match_par(
     context: &mut SpatialMatcherContext,
     target: Par,
@@ -768,9 +790,12 @@ fn evaluate_par(
         let pattern_tag = canonical_expr_parts(pattern_expr.as_slice()).map(|parts| parts.tag());
         if let Some(pattern_tag) = pattern_tag {
             return match singleton_component_region::<Expr>(&target) {
-                Some(target_expr) => match canonical_expr_oneof_tag(target_expr.as_slice()) {
-                    Some(target_tag) if target_tag != pattern_tag => Job::Return(false),
-                    _ => {
+                Some(target_expr) => match encoded_expr_outer_route(
+                    canonical_expr_oneof_tag(target_expr.as_slice()),
+                    Some(pattern_tag),
+                ) {
+                    EncodedExprOuterRoute::RejectProvenDifferent => Job::Return(false),
+                    EncodedExprOuterRoute::Delegate => {
                         frames.push(Frame::RestoreOnFailure {
                             snapshot: context.free_map.clone(),
                         });
@@ -933,9 +958,12 @@ fn evaluate_encoded_par(target: EncodedRegion, pattern: EncodedRegion) -> Job {
     if let (Some(target_expr), Some(pattern_expr)) = (target_expr, pattern_expr) {
         let pattern_tag = canonical_expr_parts(pattern_expr.as_slice()).map(|parts| parts.tag());
         if let Some(pattern_tag) = pattern_tag {
-            return match canonical_expr_oneof_tag(target_expr.as_slice()) {
-                Some(target_tag) if target_tag != pattern_tag => Job::Return(false),
-                _ => Job::EncodedExpr(target_expr, pattern_expr),
+            return match encoded_expr_outer_route(
+                canonical_expr_oneof_tag(target_expr.as_slice()),
+                Some(pattern_tag),
+            ) {
+                EncodedExprOuterRoute::RejectProvenDifferent => Job::Return(false),
+                EncodedExprOuterRoute::Delegate => Job::EncodedExpr(target_expr, pattern_expr),
             };
         }
     }

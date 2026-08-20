@@ -107,6 +107,7 @@ fn every_repository_boundary_pda_has_one_production_proof_and_oracle_binding() {
         "node::RhoExpr::Drop",
         "rholang::SpatialMatcher heterogeneous PDA",
         "rholang::SpatialMatcher state isolation",
+        "rholang::Encoded Expr outer-envelope routing",
         "rholang::EPathMap singleton owned-zipper matching",
         "models::RMP1 generated cursor encoder",
         "rholang::RMP1 ordered query compiler",

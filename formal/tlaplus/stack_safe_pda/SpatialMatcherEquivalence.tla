@@ -141,6 +141,85 @@ FailedBranchesCarryNoBindings ==
     \A index \in 1..Len(values) :
        ~values[index].ok => values[index].bindings = {}
 
+(******************************************************************************
+Finite cross-check for the encoded Expr outer-envelope router.  This is
+deliberately independent of protobuf parsing: evidence is either absent or a
+proven outer tag.  The downstream result includes Invalid so the model checks
+that insufficient evidence is delegated rather than collapsed to no-match.
+******************************************************************************)
+
+ExprTags == {"Tag10", "Tag11"}
+NoEvidence == "NoEvidence"
+TagEvidence == ExprTags \union {NoEvidence}
+RouteOutcomes == {"Accepted", "Rejected", "Invalid"}
+
+ReferenceOuterRoute(targetEvidence, patternEvidence, downstream) ==
+    IF targetEvidence \in ExprTags
+       /\ patternEvidence \in ExprTags
+       /\ targetEvidence # patternEvidence
+    THEN "Rejected"
+    ELSE downstream
+
+ImplementationOuterDecision(targetEvidence, patternEvidence) ==
+    IF targetEvidence \in ExprTags
+       /\ patternEvidence \in ExprTags
+       /\ targetEvidence # patternEvidence
+    THEN "RejectProvenDifferent"
+    ELSE "Delegate"
+
+ImplementationOuterRoute(targetEvidence, patternEvidence, downstream) ==
+    IF ImplementationOuterDecision(targetEvidence, patternEvidence)
+         = "RejectProvenDifferent"
+    THEN "Rejected"
+    ELSE downstream
+
+OuterEnvelopeRoutingEquivalent ==
+    \A targetEvidence \in TagEvidence,
+       patternEvidence \in TagEvidence,
+       downstream \in RouteOutcomes :
+       ReferenceOuterRoute(targetEvidence, patternEvidence, downstream)
+         = ImplementationOuterRoute(targetEvidence, patternEvidence, downstream)
+
+SameOrUnprovedDelegatesExactly ==
+    \A targetEvidence \in TagEvidence,
+       patternEvidence \in TagEvidence,
+       downstream \in RouteOutcomes :
+       (targetEvidence = NoEvidence
+        \/ patternEvidence = NoEvidence
+        \/ targetEvidence = patternEvidence)
+       => ImplementationOuterRoute(targetEvidence, patternEvidence, downstream)
+            = downstream
+
+OnlyProvenDifferentMayShortCircuit ==
+    \A targetEvidence \in TagEvidence,
+       patternEvidence \in TagEvidence :
+       (ImplementationOuterDecision(targetEvidence, patternEvidence)
+          = "RejectProvenDifferent")
+       <=> (targetEvidence \in ExprTags
+            /\ patternEvidence \in ExprTags
+            /\ targetEvidence # patternEvidence)
+
+DelegatedInvalidIsNotCollapsedAbsentDifferentTags ==
+    \A targetEvidence \in TagEvidence,
+       patternEvidence \in TagEvidence :
+       ~(targetEvidence \in ExprTags
+         /\ patternEvidence \in ExprTags
+         /\ targetEvidence # patternEvidence)
+       => ImplementationOuterRoute(targetEvidence, patternEvidence, "Invalid")
+            = "Invalid"
+
+\* Mutation reproducing the removed rule: a proven pattern plus unproved
+\* target deep parser was collapsed to semantic rejection.
+CollapsedDeepFailureRoute(targetDeep, patternDeep, downstream) ==
+    IF patternDeep \in ExprTags /\ targetDeep = NoEvidence
+    THEN "Rejected"
+    ELSE ImplementationOuterRoute(targetDeep, patternDeep, downstream)
+
+CollapsedDeepFailureMutationIsDetected ==
+    \E tag \in ExprTags :
+       /\ ImplementationOuterRoute(tag, tag, "Invalid") = "Invalid"
+       /\ CollapsedDeepFailureRoute(NoEvidence, tag, "Invalid") = "Rejected"
+
 Spec == Init /\ [][Next]_vars
 
 =============================================================================

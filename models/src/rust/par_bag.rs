@@ -42,7 +42,8 @@ use crate::rhoapi::g_unforgeable::UnfInstance;
 use crate::rhoapi::var::VarInstance;
 use crate::rhoapi::{Bundle, Connective, Expr, GUnforgeable, If, Match, New, Par, Receive, Send};
 use crate::rust::rholang::protobuf_encoder;
-use crate::rust::rholang::protobuf_schema::{ProtobufDescent, ProtobufNode};
+use crate::rust::rholang::protobuf_schema::{ProtobufDescent, ProtobufNode, ProtobufWireType};
+use crate::rust::rholang::protobuf_schema_tables::expr_instance_protobuf_kind_by_tag;
 use crate::rust::rholang::sorter::bundle_sort_matcher::BundleSortMatcher;
 use crate::rust::rholang::sorter::connective_sort_matcher::ConnectiveSortMatcher;
 use crate::rust::rholang::sorter::expr_sort_matcher::ExprSortMatcher;
@@ -987,9 +988,9 @@ struct CanonicalExprEnvelope<'a> {
     payload: &'a [u8],
 }
 
-/// Prove that `message` is exactly one canonically encoded, known `Expr`
-/// oneof field while deliberately leaving a message-valued arm's payload
-/// uninterpreted.
+/// Prove the exact outer framing of one known `Expr` oneof field under the
+/// authoritative ParBag-byte provenance while deliberately leaving the arm's
+/// payload uninterpreted.
 ///
 /// This shallow proof is distinct from [`canonical_expr_parts`]: a proto3
 /// message arm can have a valid outer envelope while omitting one of the
@@ -1001,30 +1002,35 @@ fn canonical_expr_envelope(message: &[u8]) -> Option<CanonicalExprEnvelope<'_>> 
     let key = read_canonical_varint(message, &mut at)?;
     let tag = u32::try_from(key >> 3).ok()?;
     let wire = key & 0x07;
+    let expected_wire = expr_instance_protobuf_kind_by_tag(tag)?.wire_type()?;
+    (wire == expected_wire.code()).then_some(())?;
     let payload_start = at;
-    let payload = match (tag, wire) {
-        (1 | 2, 0) => {
+    let payload = match expected_wire {
+        ProtobufWireType::Varint => {
             let _ = read_canonical_varint(message, &mut at)?;
             message.get(payload_start..at)?
         }
-        (34, 1) => {
+        ProtobufWireType::Fixed64 => {
             at = at.checked_add(8).filter(|end| *end <= message.len())?;
             message.get(payload_start..at)?
         }
-        (3..=25 | 27..=33 | 35..=37, 2) => {
+        ProtobufWireType::LengthDelimited => {
             let len = usize::try_from(read_canonical_varint(message, &mut at)?).ok()?;
             let end = at.checked_add(len)?;
             let payload = message.get(at..end)?;
             at = end;
             payload
         }
-        _ => return None,
+        ProtobufWireType::Fixed32 => {
+            at = at.checked_add(4).filter(|end| *end <= message.len())?;
+            message.get(payload_start..at)?
+        }
     };
     (at == message.len()).then_some(CanonicalExprEnvelope { tag, payload })
 }
 
-/// Return the sole canonical `Expr` oneof field number without validating a
-/// recursive arm's child-message invariants.
+/// Return the sole canonically framed outer `Expr` oneof field number without
+/// validating scalar payload semantics or recursive child-message invariants.
 ///
 /// `None` means only that this shallow cursor could not prove the envelope. It
 /// must never be interpreted as a semantic negative by a matcher.

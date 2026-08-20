@@ -456,3 +456,195 @@ Theorem unsupported_rho_path_patterns_fail_closed :
 Proof. intros query compiled. inversion compiled. Qed.
 
 End GeneratedRhoPathQueryCompiler.
+
+(** The encoded Expr cursor performs one shallow outer-variant refinement
+    before entering the existing matcher.  [Unproved] is deliberately evidence
+    about the cursor, not a semantic result.  Therefore only two independently
+    proven, unequal tags may reject without delegation.  This section proves
+    that routing law parametrically; protobuf parsing and canonical ParBag
+    admission remain executable obligations. *)
+Section EncodedExprOuterEnvelopeRouting.
+
+Context {Fault : Type}.
+
+Inductive route_outcome : Type :=
+| RouteAccepted : free_map -> route_outcome
+| RouteRejected : route_outcome
+| RouteInvalid : Fault -> route_outcome.
+
+Inductive tag_evidence : Type :=
+| Unproved : tag_evidence
+| Proven : nat -> tag_evidence.
+
+Inductive route_decision : Type :=
+| RejectProvenDifferent : route_decision
+| Delegate : route_decision.
+
+Definition outer_route_decision
+    (target_outer pattern_deep : tag_evidence) : route_decision :=
+  match target_outer, pattern_deep with
+  | Proven target, Proven pattern =>
+      if Nat.eqb target pattern then Delegate else RejectProvenDifferent
+  | _, _ => Delegate
+  end.
+
+Definition apply_outer_route
+    (decision : route_decision) (downstream : route_outcome) : route_outcome :=
+  match decision with
+  | RejectProvenDifferent => RouteRejected
+  | Delegate => downstream
+  end.
+
+Theorem outer_route_rejects_iff_tags_are_proven_different :
+  forall target pattern,
+    outer_route_decision target pattern = RejectProvenDifferent <->
+    exists target_tag pattern_tag,
+      target = Proven target_tag /\
+      pattern = Proven pattern_tag /\
+      target_tag <> pattern_tag.
+Proof.
+  intros target pattern.
+  destruct target as [|target_tag], pattern as [|pattern_tag]; simpl.
+  - split; [discriminate|]. intros [target [pattern [absurd _]]]. discriminate.
+  - split; [discriminate|]. intros [target [pattern [absurd _]]]. discriminate.
+  - split; [discriminate|]. intros [target [pattern [_ [absurd _]]]]. discriminate.
+  - destruct (Nat.eqb target_tag pattern_tag) eqn:equal.
+    + apply Nat.eqb_eq in equal. subst pattern_tag.
+      split; [discriminate|].
+      intros [witness_target [witness_pattern
+        [target_eq [pattern_eq different]]]].
+      injection target_eq as target_equal.
+      injection pattern_eq as pattern_equal.
+      subst witness_target witness_pattern.
+      exfalso. exact (different eq_refl).
+    + split.
+      * intros _. exists target_tag, pattern_tag. repeat split; try reflexivity.
+        now apply Nat.eqb_neq.
+      * intros _. reflexivity.
+Qed.
+
+Theorem same_or_unproved_outer_route_delegates_exactly :
+  forall target pattern,
+    (target = Unproved \/ pattern = Unproved \/
+     exists tag, target = Proven tag /\ pattern = Proven tag) ->
+    outer_route_decision target pattern = Delegate.
+Proof.
+  intros target pattern evidence.
+  destruct target as [|target_tag], pattern as [|pattern_tag]; simpl; try reflexivity.
+  destruct evidence as [absurd | [absurd | [tag [target_eq pattern_eq]]]];
+    try discriminate.
+  inversion target_eq. inversion pattern_eq. subst.
+  now rewrite Nat.eqb_refl.
+Qed.
+
+Theorem delegation_preserves_outcome_and_free_map :
+  forall decision downstream,
+    decision = Delegate ->
+    apply_outer_route decision downstream = downstream.
+Proof. intros [] downstream delegated; [discriminate|reflexivity]. Qed.
+
+Theorem delegated_invalid_payload_is_not_a_semantic_negative :
+  forall target pattern fault,
+    outer_route_decision target pattern = Delegate ->
+    apply_outer_route
+      (outer_route_decision target pattern)
+      (RouteInvalid fault) = RouteInvalid fault.
+Proof. intros target pattern fault delegated. now rewrite delegated. Qed.
+
+Theorem outer_route_different_tag_rejection_has_no_binding_output :
+  forall target pattern,
+    outer_route_decision target pattern = RejectProvenDifferent ->
+    apply_outer_route
+      (outer_route_decision target pattern)
+      (RouteAccepted empty_free_map) = RouteRejected.
+Proof. intros target pattern rejected. now rewrite rejected. Qed.
+
+(** Conditional bridge to the owned matcher authority.  The assumptions state
+    exactly the Rust/executable boundary: proven tags are sound, different
+    decoded variants reject without reading children, and every delegated path
+    returns the owned authority's complete outcome.  No assumption claims that
+    arbitrary protobuf bytes are valid. *)
+Context {Encoded Expr : Type}.
+Variable decode_expr : Encoded -> Expr.
+Variable expr_tag : Expr -> nat.
+Variable target_outer_evidence : Encoded -> tag_evidence.
+Variable pattern_deep_evidence : Encoded -> tag_evidence.
+Variable delegate_match : Encoded -> Encoded -> free_map -> route_outcome.
+Variable authoritative_match : Expr -> Expr -> free_map -> route_outcome.
+
+Hypothesis target_outer_evidence_sound :
+  forall encoded tag,
+    target_outer_evidence encoded = Proven tag ->
+    expr_tag (decode_expr encoded) = tag.
+
+Hypothesis pattern_deep_evidence_sound :
+  forall encoded tag,
+    pattern_deep_evidence encoded = Proven tag ->
+    expr_tag (decode_expr encoded) = tag.
+
+Hypothesis different_decoded_expr_tags_reject :
+  forall target pattern initial,
+    expr_tag (decode_expr target) <> expr_tag (decode_expr pattern) ->
+    authoritative_match (decode_expr target) (decode_expr pattern) initial =
+      RouteRejected.
+
+Hypothesis delegated_branch_is_authoritative :
+  forall target pattern initial,
+    outer_route_decision
+      (target_outer_evidence target)
+      (pattern_deep_evidence pattern) = Delegate ->
+    delegate_match target pattern initial =
+      authoritative_match (decode_expr target) (decode_expr pattern) initial.
+
+Definition encoded_outer_envelope_match
+    (target pattern : Encoded) (initial : free_map) : route_outcome :=
+  apply_outer_route
+    (outer_route_decision
+      (target_outer_evidence target)
+      (pattern_deep_evidence pattern))
+    (delegate_match target pattern initial).
+
+Theorem encoded_outer_envelope_route_preserves_authoritative_match :
+  forall target pattern initial,
+    encoded_outer_envelope_match target pattern initial =
+    authoritative_match (decode_expr target) (decode_expr pattern) initial.
+Proof.
+  intros target pattern initial.
+  unfold encoded_outer_envelope_match.
+  destruct (outer_route_decision
+    (target_outer_evidence target)
+    (pattern_deep_evidence pattern)) eqn:decision.
+  - apply outer_route_rejects_iff_tags_are_proven_different in decision.
+    destruct decision as [target_tag [pattern_tag [target_proven [pattern_proven unequal]]]].
+    simpl.
+    rewrite (@different_decoded_expr_tags_reject target pattern initial).
+    + reflexivity.
+    + rewrite (@target_outer_evidence_sound target target_tag target_proven).
+      rewrite (@pattern_deep_evidence_sound pattern pattern_tag pattern_proven).
+      exact unequal.
+  - simpl. now apply delegated_branch_is_authoritative.
+Qed.
+
+(** The prior defective rule collapsed target deep-parser refusal to semantic
+    rejection whenever the pattern deep parser had succeeded.  This witness is
+    executable anti-vacuity for the distinction above. *)
+Definition collapsed_deep_failure_route
+    (target_deep pattern_deep : tag_evidence)
+    (downstream : route_outcome) : route_outcome :=
+  match pattern_deep, target_deep with
+  | Proven pattern, Proven target =>
+      if Nat.eqb target pattern then downstream else RouteRejected
+  | Proven _, Unproved => RouteRejected
+  | _, _ => downstream
+  end.
+
+Theorem prior_deep_failure_collapse_is_detected :
+  forall fault,
+    apply_outer_route
+      (outer_route_decision (Proven 10) (Proven 10))
+      (RouteInvalid fault) = RouteInvalid fault /\
+    collapsed_deep_failure_route
+      Unproved (Proven 10) (RouteInvalid fault) = RouteRejected.
+Proof. intros fault. split; reflexivity. Qed.
+
+End EncodedExprOuterEnvelopeRouting.

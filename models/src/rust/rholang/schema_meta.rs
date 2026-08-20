@@ -246,6 +246,15 @@ pub static BOUNDARY_PDA_EQUIVALENCE_EVIDENCE: &[BoundaryEquivalenceEvidence] = &
         executable_marker: "recursive_oracle_and_pda_agree_on_the_semantic_corpus",
     },
     BoundaryEquivalenceEvidence {
+        surface: "rholang::Encoded Expr outer-envelope routing",
+        production_file: "rholang/src/rust/interpreter/matcher/spatial_matcher_pda.rs",
+        production_marker: "pub(super) const fn encoded_expr_outer_route(",
+        proof_file: "formal/rocq/stack_safe_pda/theories/SpatialMatcher.v",
+        theorem: "encoded_outer_envelope_route_preserves_authoritative_match",
+        executable_file: "rholang/tests/support/spatial_matcher_pda_equivalence.rs",
+        executable_marker: "encoded_expr_outer_route_rejects_only_proven_different_tags",
+    },
+    BoundaryEquivalenceEvidence {
         surface: "rholang::EPathMap singleton owned-zipper matching",
         production_file: "rholang/src/rust/interpreter/matcher/spatial_matcher_pda.rs",
         production_marker: "fn init_single_path(",

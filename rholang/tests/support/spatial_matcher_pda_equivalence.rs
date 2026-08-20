@@ -31,9 +31,25 @@ use super::recursive_oracle::spatial_matcher::{
 };
 use super::spatial_matcher::{SpatialMatcher, SpatialMatcherContext};
 use super::spatial_matcher_pda::{
-    if_target_index_shape, match_par_list_with_stats, match_send_list_with_remainder_stats,
-    match_send_list_with_stats, send_target_index_shape,
+    encoded_expr_outer_route, if_target_index_shape, match_par_list_with_stats,
+    match_send_list_with_remainder_stats, match_send_list_with_stats, send_target_index_shape,
+    EncodedExprOuterRoute,
 };
+
+#[test]
+fn encoded_expr_outer_route_rejects_only_proven_different_tags() {
+    use EncodedExprOuterRoute::{Delegate, RejectProvenDifferent};
+
+    for target in [None, Some(10), Some(11)] {
+        for pattern in [None, Some(10), Some(11)] {
+            let expected = match (target, pattern) {
+                (Some(target), Some(pattern)) if target != pattern => RejectProvenDifferent,
+                _ => Delegate,
+            };
+            assert_eq!(encoded_expr_outer_route(target, pattern), expected);
+        }
+    }
+}
 
 fn compare(label: &str, target: Par, pattern: Par) {
     let mut recursive = RecursiveContext::new();

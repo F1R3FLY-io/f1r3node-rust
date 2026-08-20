@@ -4142,7 +4142,7 @@ material now lives.
 | `CBR-060` | this checkpoint | Evaluator metadata reconstruction covers `If` and depth-zero connective variable references exactly once per distinct PathMap endpoint | `BUG_FIX_RULED_NONCONSENSUS` | a `u64::MAX` conditional multiplicity plus one `VarRef` endpoint produces the union of both locally-free bitsets without occurrence expansion; a materializable collection child exercises the production rebuild boundary |
 | `CBR-061` | this checkpoint | The pushdown pretty printer renders `If` components instead of dropping them from a `Par` or printing `Nil` | `BUG_FIX_RULED_NONCONSENSUS` | an If-only witness renders condition, true branch, and false branch; a mixed Expr+If witness preserves canonical family presentation. This changes replay-visible diagnostic text where the omitted family was previously printed, but does not impose execution order on parallel processes. |
 | `CBR-062` | this checkpoint | Singleton-`If` spatial matching advances through shared canonical protobuf ranges instead of repeatedly decoding every remaining nested suffix | `OPTIMIZATION_MEASURED_NEUTRAL` | the bounded recursive oracle agrees on verdict and complete `FreeMap`; late-child refusal restores the attempt snapshot; canonical/malformed cursor gates and the 64-byte Job/Frame layout gate pass; depth 4,096 succeeds on a 128 KiB stack; the release ladder is 55.002 µs at depth 128 and 1.5387 ms at 4,096, with linear allocation growth. No value, verdict, binding, byte, hash, COMM, charge, accepted program, PathMap operation, or parallel execution order moves. Stack-safety report §5.29. |
-| `CBR-063` | this checkpoint | Shared canonical-protobuf ranges replace repeated suffix decoding across recursive New/Send/Receive/Match/Expr matching, and borrowed ESet/EMap members enter the existing unordered Bag/PathMap ListPDA | `OPTIMIZATION_MEASURED_NEUTRAL` | the 17/17 bounded recursive-oracle gate agrees on verdict and complete `FreeMap`; unordered augmenting-path reassignment, map key/value rollback, and exact set/map remainders pass; all 13 named families reach depth 4,096 on a 128 KiB stack and have subquadratic allocation ladders. Diagnostic depth-128 ESet/EMap matching falls from 3.009/1.609 s to 0.825/1.099 ms. No value, verdict, binding, byte, hash, COMM, charge, accepted program, PathMap algebra, or parallel execution order moves. Stack-safety report §5.30. |
+| `CBR-063` | this checkpoint | Shared canonical-protobuf ranges replace repeated suffix decoding across recursive New/Send/Receive/Match/Expr matching, and borrowed ESet/EMap members enter the existing unordered Bag/PathMap ListPDA | `OPTIMIZATION_MEASURED_NEUTRAL` | the 18/18 bounded recursive-oracle gate agrees on verdict and complete `FreeMap`; unordered augmenting-path reassignment, map key/value rollback, and exact set/map remainders pass; all 13 named families reach depth 4,096 on a 128 KiB stack and have subquadratic allocation ladders. Diagnostic depth-128 ESet/EMap matching falls from 3.009/1.609 s to 0.825/1.099 ms. No value, verdict, binding, byte, hash, COMM, charge, accepted program, PathMap algebra, or parallel execution order moves. Stack-safety report §5.30. |
 | `CBR-L01` | `3ff1c98b`, `f586e138` | Equal operator precedence becomes representable; Rholang's ladder corrected | `BUG_FIX_RULED_NONCONSENSUS` | entry body at the pre-refactor revision (git history) |
 | `CBR-L02` | `0f3d298c` | The substrate lane stops answering "false" for a guard it could not decide | `BUG_FIX_RULED_NONCONSENSUS` | entry body at the pre-refactor revision (git history) |
 | `CBR-L03` | `69c66cd1` | A residual binder rests the COMM, whatever the formula collapsed to | `BUG_FIX_RULED_NONCONSENSUS` | entry body at the pre-refactor revision (git history) |
@@ -4288,13 +4288,23 @@ unproved variant delegates to the existing complete path. Thus a missing require
 internal invariant violation, as recorded by the pre-existing reachability, disposition, and FFI
 subprocess gates.
 
-The correction is witnessed by **28/28** ParBag cursor tests, **6/6** recursive-family cursor tests,
-**17/17** recursive-oracle tests, **8/8** singleton-`If` tests, **5/5** absent-child reachability
+The correction is witnessed by **29/29** ParBag cursor tests, **14/14** generated protobuf encoder
+differentials covering all **36/36** `ExprInstance` arms, **6/6** recursive-family cursor tests,
+**18/18** recursive-oracle tests, **8/8** singleton-`If` tests, **5/5** absent-child reachability
 tests, **15/15** generated-variant disposition tests, and **2/2** FFI boundary tests. The new nested
 same-tag control must fail at `EMinus.p1 (target)`; its different-tag twin must return a clean
 non-match without inspecting that child. The earlier release-workspace attempt remains a diagnostic,
 not a passing closure run, because it was terminated after localization rather than allowed to spend
 days in the separately tracked quadratic deep-fixture construction boundary.
+
+The shallow lookup is generated from the protobuf descriptor and rejects a wrong wire type for every
+current arm; it is not a handwritten tag range and it does not validate message payloads. The pure
+router is additionally bound by the **6/6** formal-equivalence manifest to a conditional Rocq
+refinement theorem and an executable truth-table differential. The aggregate Rocq/Verus/Z3/TLA+/
+mCRL2 gate passes; the independent TLA+ model exhausts **478** reachable states and includes the
+removed invalid-to-no-match collapse as a detected mutant. These proofs establish only the routing
+refinement under explicit tag-soundness and delegated-authority hypotheses. Executable descriptor,
+malformed-wire, and subprocess gates retain responsibility for the protobuf and invariant boundary.
 
 Canonical child order is retained only as a deterministic proof-search and binding-fold witness.
 It does not order Rholang evaluation: `Par` remains unordered parallel composition, no sibling gains

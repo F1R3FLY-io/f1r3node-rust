@@ -18,6 +18,7 @@ use models::rust::par_bag::{
 };
 use models::rust::par_construction::{ParConstruction, PlannedConnective};
 use models::rust::rholang::implicits::{single_expr, single_unforgeable};
+use models::rust::rholang::protobuf_schema_tables::EXPR_INSTANCE_PROTOBUF_VARIANTS;
 use prost::Message as _;
 use rspace_plus_plus::rspace::bag::{Bag, BagError, Multiplicity};
 
@@ -323,21 +324,54 @@ fn canonical_expr_envelope_separates_outer_variant_proof_from_child_validity() {
         Some(CanonicalExprParts::Binary { tag: 10, .. })
     ));
 
+    // This cursor proves only the outer arm under authoritative ParBag-byte
+    // provenance. Payload semantics remain the generated decoder's job.
+    assert_eq!(canonical_expr_oneof_tag(&[0x08, 0x02]), Some(1));
+    assert_eq!(canonical_expr_oneof_tag(&[0x1a, 0x01, 0xff]), Some(3));
+
     let duplicate_bool = {
         let one = encode(ExprInstance::GBool(true));
         [one.as_slice(), one.as_slice()].concat()
     };
     for malformed in [
         Vec::new(),
-        vec![0x2a, 0x01],       // truncated length-delimited body
-        vec![0xaa, 0x00, 0x00], // non-minimal field key
-        vec![0x08, 0x80, 0x00], // non-minimal varint value
-        vec![0x2a, 0x80, 0x00], // non-minimal length
-        duplicate_bool,         // a second oneof field
-        vec![0x2b, 0x2c],       // groups are not Expr oneof encodings
-        vec![0x92, 0x02, 0x00], // fixed64 tag with length-delimited wire
+        vec![0x2a, 0x01],                      // truncated length-delimited body
+        vec![0xaa, 0x00, 0x00],                // non-minimal field key
+        vec![0x08, 0x80, 0x00],                // non-minimal varint value
+        vec![0x2a, 0x80, 0x00],                // non-minimal length
+        duplicate_bool,                        // a second oneof field
+        vec![0x2b, 0x2c],                      // groups are not Expr oneof encodings
+        vec![0x92, 0x02, 0x00],                // fixed64 tag with length-delimited wire
+        vec![0x91, 0x02, 0, 0, 0, 0, 0, 0, 0], // truncated fixed64 payload
     ] {
         assert_eq!(canonical_expr_oneof_tag(&malformed), None);
+    }
+}
+
+#[test]
+fn canonical_expr_outer_envelope_rejects_wrong_wire_for_every_generated_arm() {
+    let arms = corpus::every_expr_instance();
+    assert_eq!(arms.len(), EXPR_INSTANCE_PROTOBUF_VARIANTS.len());
+    for ((label, instance), field) in arms.into_iter().zip(EXPR_INSTANCE_PROTOBUF_VARIANTS) {
+        assert_eq!(label, field.name);
+        let mut bytes = models::rust::rholang::protobuf_encoder::encode_to_vec(&Expr {
+            expr_instance: Some(instance),
+        });
+        let actual = field
+            .kind
+            .wire_type()
+            .expect("a selected oneof arm has one concrete wire type")
+            .code() as u8;
+        let wrong = [0u8, 1, 2, 5]
+            .into_iter()
+            .find(|wire| *wire != actual)
+            .expect("the protobuf alphabet has more than one wire type");
+        bytes[0] = (bytes[0] & !0x07) | wrong;
+        assert_eq!(
+            canonical_expr_oneof_tag(&bytes),
+            None,
+            "{label}: a descriptor-incompatible wire type was accepted"
+        );
     }
 }
 

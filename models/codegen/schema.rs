@@ -91,6 +91,7 @@
 //!   rhoapi_protobuf_schema.rs
 //!     <TY>_PROTOBUF_PROGRAM : &'static [ProtobufField]   ASCENDING MINIMUM TAG
 //!     <ONEOF>_PROTOBUF_VARIANTS                       each arm's OWN tag
+//!     <oneof>_protobuf_kind_by_tag(tag)                descriptor-derived O(1) lookup
 //!     PROTOBUF_CONFORMANCE_REGISTRY                   every message, for the probe
 //!
 //!   rhoapi_schema_meta.rs
@@ -3236,6 +3237,7 @@ fn emit_protobuf_oneof(src: &mut String, oneof: &Oneof) {
         variants,
     } = oneof;
     let table_ident = format!("{}_PROTOBUF_VARIANTS", proto_name.to_uppercase());
+    let lookup_ident = format!("{}_protobuf_kind_by_tag", proto_name.to_snake_case());
 
     writeln!(
         src,
@@ -3250,10 +3252,7 @@ fn emit_protobuf_oneof(src: &mut String, oneof: &Oneof) {
     )
     .expect("write");
     for v in variants {
-        let kind = match &v.message_leaf {
-            Some(_) => "ProtobufKind::Message".to_string(),
-            None => format!("ProtobufKind::{}", protobuf_scalar_variant(v.ty)),
-        };
+        let kind = protobuf_oneof_variant_kind(v);
         writeln!(
             src,
             "    ProtobufField {{ tag: {}, kind: {}, name: \"{}\" }}, // serde index {}",
@@ -3262,6 +3261,24 @@ fn emit_protobuf_oneof(src: &mut String, oneof: &Oneof) {
         .expect("write");
     }
     src.push_str("];\n\n");
+
+    writeln!(
+        src,
+        "/// Resolve one declared `{proto_name}` arm by the tag that arm writes.\n\
+         ///\n\
+         /// Generated from the same descriptor vector as [`{table_ident}`]. Unknown or\n\
+         /// future tags return `None`, so callers can delegate rather than infer a semantic\n\
+         /// result from an unproved schema shape.\n\
+         #[inline]\n\
+         pub const fn {lookup_ident}(tag: u32) -> Option<ProtobufKind> {{\n\
+         \x20   match tag {{"
+    )
+    .expect("write");
+    for v in variants {
+        let kind = protobuf_oneof_variant_kind(v);
+        writeln!(src, "        {} => Some({kind}),", v.tag).expect("write");
+    }
+    src.push_str("        _ => None,\n    }\n}\n\n");
 
     // ── the exhaustive impl: no wildcard arm, so a new variant fails to compile ──
     writeln!(
@@ -3344,6 +3361,13 @@ fn emit_protobuf_oneof(src: &mut String, oneof: &Oneof) {
         .expect("write");
     }
     src.push_str("        }\n    }\n}\n\n");
+}
+
+fn protobuf_oneof_variant_kind(variant: &Variant) -> String {
+    match &variant.message_leaf {
+        Some(_) => "ProtobufKind::Message".to_string(),
+        None => format!("ProtobufKind::{}", protobuf_scalar_variant(variant.ty)),
+    }
 }
 
 fn emit_protobuf_conformance_registry(

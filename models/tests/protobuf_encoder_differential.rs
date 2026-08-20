@@ -68,10 +68,12 @@ use models::rhoapi::{
     BindPattern, Connective, Expr, ListParWithRandom, New, Par, ParWithRandom, Send,
     TaggedContinuation,
 };
+use models::rust::par_bag::canonical_expr_oneof_tag;
 use models::rust::rholang::bincode_schema_tables::EXPR_INSTANCE_VARIANT_COUNT;
 use models::rust::rholang::protobuf_encoder;
 use models::rust::rholang::protobuf_schema::{ProtobufDescent, ProtobufNode, NO_RESUME};
 use models::rust::rholang::protobuf_schema_tables::{
+    expr_instance_protobuf_kind_by_tag, EXPR_INSTANCE_PROTOBUF_VARIANTS,
     PROTOBUF_CONFORMANCE_REGISTRY, TAGGEDCONTINUATION_PROTOBUF_PROGRAM,
 };
 use models::rust::test_utils::test_utils::generate_par;
@@ -360,6 +362,60 @@ fn every_expr_instance_encodes_identically() {
         };
         assert_encodes_identically(&format!("Expr::{label}"), &expr);
         assert_appends_identically(&format!("Expr::{label}"), &expr);
+    }
+}
+
+/// The constant-time lookup and the diagnostic table are generated from the
+/// same descriptor vector, while the corpus and emitted field key independently
+/// witness that every current Rust arm is represented.
+#[test]
+fn generated_expr_oneof_lookup_is_exhaustive_and_matches_encoded_arms() {
+    let arms = corpus::every_expr_instance();
+    assert_eq!(arms.len(), EXPR_INSTANCE_VARIANT_COUNT);
+    assert_eq!(arms.len(), EXPR_INSTANCE_PROTOBUF_VARIANTS.len());
+
+    for ((label, instance), field) in arms.into_iter().zip(EXPR_INSTANCE_PROTOBUF_VARIANTS) {
+        assert_eq!(label, field.name, "the corpus and descriptor table drifted");
+        assert_eq!(
+            expr_instance_protobuf_kind_by_tag(field.tag),
+            Some(field.kind),
+            "{label}: generated tag lookup disagrees with its descriptor table"
+        );
+
+        let bytes = protobuf_encoder::encode_to_vec(&Expr {
+            expr_instance: Some(instance),
+        });
+        let mut input = bytes.as_slice();
+        let key = prost::encoding::decode_varint(&mut input).unwrap_or_else(|error| {
+            panic!("{label}: generated encoder wrote no field key: {error}")
+        });
+        assert_eq!(
+            u32::try_from(key >> 3).ok(),
+            Some(field.tag),
+            "{label}: emitted arm tag disagrees with the descriptor"
+        );
+        assert_eq!(
+            key & 0x07,
+            field
+                .kind
+                .wire_type()
+                .expect("a selected oneof arm has one concrete wire type")
+                .code(),
+            "{label}: emitted wire type disagrees with the descriptor kind"
+        );
+        assert_eq!(
+            canonical_expr_oneof_tag(&bytes),
+            Some(field.tag),
+            "{label}: the shallow ParBag envelope proof missed a generated arm"
+        );
+    }
+
+    for unknown in [0, 26, 38, u32::MAX] {
+        assert_eq!(
+            expr_instance_protobuf_kind_by_tag(unknown),
+            None,
+            "unknown tag {unknown} must retain the semantic fallback"
+        );
     }
 }
 

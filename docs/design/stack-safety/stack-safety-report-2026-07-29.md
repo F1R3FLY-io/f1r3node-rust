@@ -8420,13 +8420,16 @@ All focused commands ran on 2026-08-20 with `MemorySwapMax=0` and a systemd RSS 
 
 | gate | result | discriminating evidence |
 |---|---:|---|
-| `models --test par_bag` | **28/28** | borrowed ESet/EMap members, key/value boundaries, signed free remainder, wildcard remainder, root metadata, malformed/bound-remainder fast-path refusal, and separation of a proven outer `Expr` tag from recursive-child validity |
+| `models --test par_bag` | **29/29** | borrowed ESet/EMap members, key/value boundaries, signed free remainder, wildcard remainder, root metadata, malformed/bound-remainder fast-path refusal, separation of a proven outer `Expr` tag from recursive-child validity, and wrong-wire rejection for every generated `ExprInstance` arm |
+| `models --test protobuf_encoder_differential` | **14/14** | the descriptor-generated outer-tag lookup covers all **36/36** `ExprInstance` arms and agrees with each arm's emitted protobuf key; unknown tags remain unproved |
 | recursive-family cursor target | **6/6** | fixed stack, allocation slope, late-failure rollback, unordered backtracking plus set/map remainder materialization, and same-tag/different-tag malformed-child controls |
-| recursive matcher oracle | **17/17** | production PDA and bounded independent recursive equation agree on verdict and complete `FreeMap`, including legacy set/map and Bag residual cases |
+| recursive matcher oracle | **18/18** | production PDA and bounded independent recursive equation agree on verdict and complete `FreeMap`, including legacy set/map and Bag residual cases; the pure router truth table rejects only two proven unequal tags |
 | singleton-`If` regression target | **8/8** | SS-A14 cursor, rollback, layout-sensitive traversal, and allocation slope remain green |
 | absent-required-child reachability | **5/5** | a decoded required-child omission remains an invariant violation rather than becoming a semantic non-match |
 | matcher disposition | **15/15** | all generated optional child slots retain the predecessor assert/no-match partition |
 | FFI absent-required-child boundary | **2/2** | the well-formed control returns and the malformed input retains the predecessor process-abort disposition |
+| formal production/proof/oracle manifest | **6/6** | the encoded-Expr router is bound to its production marker, Rocq refinement theorem, and executable differential |
+| aggregate formal gate | **PASS** | Rocq proves the conditional refinement and detects the prior collapse mutant; TLC independently checks all **478** reachable finite matcher/router states, including invalid-downstream preservation; Verus, Z3, and mCRL2 remain green |
 | fixed native stack | **13 families × depth 4,096 on 128 KiB** | every fixture reaches and captures the terminal; connective NOT additionally proves capture isolation |
 
 The unordered collection test is deliberately not a one-element zip. Its free-variable ESet row can
@@ -8445,17 +8448,29 @@ malformed-input disposition: `Option<()>` has no third result for an invalid AST
 omission must reach the complete generated decoder and the owned matcher assertion rather than
 masquerade as a well-formed non-match.
 
-The correction introduces a deliberately shallow, exact canonical oneof-envelope proof. A proven
-**different** target tag can still return `false` without reading the malformed arm. A same tag, or
-an envelope the shallow cursor cannot prove, enters the existing `EncodedExpr` route; deeper cursor
-failure there delegates to the generated decoder and owned semantic evaluator. The helper does not
-validate or bless message-valued payloads. Dedicated subprocess evidence now forces a nested
+The correction introduces a deliberately shallow, exact canonical oneof-envelope proof. Its tag and
+wire-type table is emitted from the protobuf descriptor rather than maintained as a handwritten
+range: all **36** current `ExprInstance` arms map to the key they actually encode, while unknown tags
+remain unproved. A proven **different** target tag can still return `false` without reading the
+malformed arm. A same tag, or an envelope the shallow cursor cannot prove, enters the existing
+`EncodedExpr` route; deeper cursor failure there delegates to the generated decoder and owned
+semantic evaluator. The helper proves only outer framing and does not validate or bless
+message-valued payloads. Dedicated subprocess evidence now forces a nested
 `ENot -> EMinus` target with absent `EMinus.p1` to reach the predecessor assertion, while an absent-
 child `EMinus` against a proven `EPlus` pattern remains an ordinary variant mismatch. The three
 pre-existing malformed-child gates above were retained unchanged. The incomplete release diagnostic
 is not reported as a workspace pass: it was stopped after this failure was localized because the
 remaining very-deep construction fixtures exercise the separately tracked quadratic-construction
 boundary rather than this matcher correction.
+
+The formal claim is intentionally narrower than a verified protobuf parser. Rocq proves that early
+rejection is equivalent to two sound, proven, unequal tags and that every same/unproved branch
+preserves the authoritative matcher's accepted `FreeMap`, rejection, or invalid outcome. The bridge
+states tag soundness and delegated-authority agreement as explicit hypotheses. An independent finite
+TLA+ router checks those equations over accepted, rejected, and invalid downstream outcomes and
+contains a mutant for the removed deep-parser-failure collapse. The descriptor differential,
+wrong-wire corpus, and subprocess disposition gates discharge the executable boundary. **MEASURED
+(f)** by `scripts/check-stack-safe-pda-proofs.sh` and the formal-equivalence manifest on 2026-08-20.
 
 #### 5.30.4 Resource results and closure of SS-Y10
 

@@ -91,6 +91,24 @@
 // §1  The protobuf field alphabet
 // ===========================================================================
 
+/// The four protobuf wire encodings used by ordinary fields.
+///
+/// Groups (wire codes 3 and 4) are deliberately absent: the Rholang schema
+/// declares no group field, so accepting one would not prove a schema arm.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum ProtobufWireType {
+    Varint = 0,
+    Fixed64 = 1,
+    LengthDelimited = 2,
+    Fixed32 = 5,
+}
+
+impl ProtobufWireType {
+    #[inline]
+    pub const fn code(self) -> u64 { self as u64 }
+}
+
 /// The protobuf encoding of one field — which `prost::encoding` module writes
 /// it, and whether reading it can descend into an arbitrarily deep child.
 ///
@@ -166,6 +184,37 @@ pub enum ProtobufKind {
 }
 
 impl ProtobufKind {
+    /// The selected arm's wire encoding, when this kind denotes one concrete
+    /// protobuf field. An enclosing [`ProtobufKind::Oneof`] has no wire type of
+    /// its own because the selected arm supplies both tag and encoding.
+    #[inline]
+    pub const fn wire_type(self) -> Option<ProtobufWireType> {
+        match self {
+            ProtobufKind::Bool
+            | ProtobufKind::Int32
+            | ProtobufKind::Sint32
+            | ProtobufKind::Uint32
+            | ProtobufKind::Int64
+            | ProtobufKind::Sint64
+            | ProtobufKind::Uint64 => Some(ProtobufWireType::Varint),
+            ProtobufKind::Sfixed64 | ProtobufKind::Fixed64 | ProtobufKind::Double => {
+                Some(ProtobufWireType::Fixed64)
+            }
+            ProtobufKind::String
+            | ProtobufKind::Bytes
+            | ProtobufKind::RepeatedString
+            | ProtobufKind::RepeatedBytes
+            | ProtobufKind::Message
+            | ProtobufKind::RepeatedMessage
+            | ProtobufKind::MapStringMessage
+            | ProtobufKind::EPathMapSnapshot => Some(ProtobufWireType::LengthDelimited),
+            ProtobufKind::Sfixed32 | ProtobufKind::Fixed32 | ProtobufKind::Float => {
+                Some(ProtobufWireType::Fixed32)
+            }
+            ProtobufKind::Oneof => None,
+        }
+    }
+
     /// Whether writing this field can descend into an arbitrarily deep child —
     /// i.e. whether a driver must suspend at it.
     #[inline]
