@@ -111,6 +111,12 @@ pub fn resolve_conflicts<R: Clone + Eq + std::hash::Hash + PartialOrd + Ord>(
     late_seq: Vec<R>,
     depends: &impl Fn(&R, &R) -> bool,
     cost: &impl Fn(&R) -> u64,
+    // Prior on-DAG rejections per item (issue #294). Rejection-option
+    // selection minimizes this BEFORE cost: a chain that already lost
+    // merges must not keep losing on the same content-deterministic
+    // criteria, or it starves to expiry. Zero everywhere reproduces the
+    // pure cost-optimal selection.
+    prior_losses: &impl Fn(&R) -> u64,
     mergeable_channels: &impl Fn(&R) -> NumberChannelsDiff,
     get_data: &impl Fn(Blake2b256Hash) -> Result<Vec<Datum<ListParWithRandom>>, HistoryError>,
     // Splits a set of items into branches whose elements are mutually
@@ -329,10 +335,12 @@ pub fn resolve_conflicts<R: Clone + Eq + std::hash::Hash + PartialOrd + Ord>(
         }
     };
 
-    // Compute optimal rejection using cost function
-    let optimal_rejection = get_optimal_rejection(rejection_options_with_overflow, |branch| {
-        branch.0.iter().map(|item| cost(item)).sum()
-    });
+    // Compute optimal rejection using prior losses, then cost
+    let optimal_rejection = get_optimal_rejection(
+        rejection_options_with_overflow,
+        |branch| branch.0.iter().map(|item| cost(item)).sum(),
+        |branch| branch.0.iter().map(|item| prior_losses(item)).sum(),
+    );
 
     if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
         tracing::debug!(target: "f1r3fly.merge.step", step = "resolve_conflicts.optimal_rejection",
@@ -763,6 +771,9 @@ pub fn merge<
         late_seq,
         &depends,
         &cost,
+        // This wrapper merges a bare chain set with no block context, so no
+        // prior-loss records exist to consult.
+        &|_| 0,
         &mergeable_channels,
         &get_data,
         &compute_branches,
@@ -794,6 +805,7 @@ pub fn merge<
 fn get_optimal_rejection<R: Eq + std::hash::Hash + Clone + Ord>(
     options: HashableSet<HashableSet<Branch<R>>>,
     target_f: impl Fn(&Branch<R>) -> u64,
+    losses_f: impl Fn(&Branch<R>) -> u64,
 ) -> HashableSet<Branch<R>> {
     assert!(
         options
@@ -821,6 +833,18 @@ fn get_optimal_rejection<R: Eq + std::hash::Hash + Clone + Ord>(
     // Convert to sorted list for deterministic processing
     let mut options_vec: Vec<_> = options.0.into_iter().collect();
     options_vec.sort_by(|a, b| {
+        // Zeroth criterion (issue #294): total prior losses of the rejected
+        // set, ascending — reject the branches with the FEWEST recorded
+        // losses, so a chain that already lost gains priority with every
+        // loss instead of losing the same tie forever. All-zero counts fall
+        // through to the cost criterion unchanged.
+        let a_losses: u64 = a.0.iter().map(|branch| losses_f(branch)).sum();
+        let b_losses: u64 = b.0.iter().map(|branch| losses_f(branch)).sum();
+
+        if a_losses != b_losses {
+            return a_losses.cmp(&b_losses);
+        }
+
         // First criterion: sum of target function values
         let a_sum: u64 = a.0.iter().map(|branch| target_f(branch)).sum();
         let b_sum: u64 = b.0.iter().map(|branch| target_f(branch)).sum();
@@ -1141,9 +1165,11 @@ mod tests {
         let option_b = rejection_option(&[branch(&[2]), branch(&[3])]);
         let options = HashableSet(HashSet::from([option_b.clone(), option_a.clone()]));
 
-        let chosen = get_optimal_rejection(options, |branch| {
-            branch.0.iter().map(|value| *value as u64).sum()
-        });
+        let chosen = get_optimal_rejection(
+            options,
+            |branch| branch.0.iter().map(|value| *value as u64).sum(),
+            |_branch| 0u64,
+        );
 
         assert_eq!(chosen, option_a);
     }
@@ -1158,7 +1184,7 @@ mod tests {
             HashableSet(HashSet::from([option_a.clone(), option_b.clone()])),
             HashableSet(HashSet::from([option_b.clone(), option_a.clone()])),
         ] {
-            let chosen = get_optimal_rejection(options, |_branch| 0u64);
+            let chosen = get_optimal_rejection(options, |_branch| 0u64, |_branch| 0u64);
             assert_eq!(chosen, option_a);
         }
     }
