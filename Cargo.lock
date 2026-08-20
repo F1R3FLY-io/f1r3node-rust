@@ -799,7 +799,6 @@ dependencies = [
  "metrics 0.23.1",
  "metrics-util 0.17.0",
  "models",
- "num_cpus",
  "parking_lot",
  "proptest",
  "prost 0.14.4",
