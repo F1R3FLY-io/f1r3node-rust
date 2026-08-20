@@ -119,7 +119,26 @@ The principles below generalize from this case. Later consensus decisions must c
 - **P5 — Escalate the remedy ladder on evidence.** Prefer the weakest remedy that the observed failure requires. Move to spine-affecting or lockstep changes only when soak or integration evidence shows the residual failure class.
 - **P6 — Per-merge safety is non-negotiable.** A liveness remedy never licenses the application of a stale diff. Fairness mechanisms reshape which matchups occur. They never change the correctness rules inside one merge.
 
-## 7. Decision record
+## 7. Relation to CBC Casper
+
+The principles in Section 6 are not new inventions. They extend the correct-by-construction (CBC) Casper tradition that this implementation inherits. The table below maps each aspect of that tradition to this philosophy. The divergences are extensions for deploy-level fairness, not contradictions of the CBC core.
+
+| Aspect | CBC Casper position | This philosophy | Relation |
+|---|---|---|---|
+| Safety guarantee | Asynchronous BFT safety holds while equivocating weight stays below a threshold | P6: per-merge safety is non-negotiable | Strong alignment. "Local safety composes into global starvation" is a concrete instance of the safety-versus-liveness tension that CBC deliberately accepts. |
+| Liveness | Not guaranteed under pure asynchrony. Progress relies on practical mechanisms under partial synchrony | The remedy ladder treats liveness as a risk gradient, escalated on evidence (P5) | Compatible. The ladder is an engineering elaboration of the same priority order. |
+| Estimator purity | The estimator is a pure function of validator messages and protocol state | P4: fork choice stays deploy-content-blind | Direct operationalization. Application data never enters the estimator. |
+| Conflict adjudication | Score-based selection. A justified switch needs strictly more support | P1: recorded prior losses raise adjudication priority | Extension by analogy (see the caution below). |
+| Proposer discretion | The protocol defines valid messages. Policy stays open so the core stays correct by construction | P3: packaging discretion is the safe extension surface | Strong alignment. Both keep the consensus core minimal and put fairness policy outside it. |
+| Escapes and priority terms | A priority must be reconstructible from the shared protocol state | P2: escapes derive from on-chain data only | Direct restatement of the CBC invariant. |
+| Finality | Subjective estimate safety plus economic finality through deposits and slashing | Remedies must not pull the spine off certified ground (the C1 risk) | Compatible. Finalization health is a higher-order constraint on fairness remedies. |
+| Griefing resistance | Cartel resistance was an explicit design goal of early CBC research | P4 is an absolute boundary. Section 5 notes griefing risk even for C1 | Aligned defensive posture against the same influence-attack class. |
+
+One caution applies to the P1 row. The CBC "justified switch" rule weighs validator support, which is consensus-native data. Prior-rejection counts weigh deploy history, which users can influence through the deploys they submit. The analogy holds because both rules demand new on-chain evidence before an outcome may change. The analogy does not make the two objects equivalent. P4 marks where the difference becomes unsafe: history may inform adjudication, but it must never inform the estimator.
+
+The method of this document also follows the CBC spirit. CBC derives protocols so that the safety theorems hold by construction. This document extracts principles bottom-up from one concrete failure, generalizes them, and requires every remedy to preserve the existing safety invariants.
+
+## 8. Decision record
 
 | Date | Decision | Status |
 |---|---|---|
