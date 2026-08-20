@@ -36,6 +36,13 @@ use crate::rust::validator_identity::ValidatorIdentity;
 
 #[async_trait]
 impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
+    async fn request_block_from_peers(&self, hash: BlockHash) -> Result<(), CasperError> {
+        self.block_retriever
+            .admit_hash(hash, None, AdmitHashReason::MissingDependencyRequested)
+            .await
+            .map(|_| ())
+    }
+
     async fn get_snapshot(&self) -> Result<CasperSnapshot, CasperError> {
         super::snapshot::compute_snapshot(self).await
     }

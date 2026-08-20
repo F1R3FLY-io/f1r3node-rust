@@ -89,6 +89,11 @@ impl Display for DeployError {
 pub trait Casper {
     async fn get_snapshot(&self) -> Result<CasperSnapshot, CasperError>;
 
+    /// Ask peers for one named block, honoring `BlockNotHeld`'s contract
+    /// ("naming the missing block lets the caller fetch it and retry").
+    /// Defaulted to a no-op so effect mocks need no retriever wiring.
+    async fn request_block_from_peers(&self, _hash: BlockHash) -> Result<(), CasperError> { Ok(()) }
+
     fn contains(&self, hash: &BlockHash) -> bool;
 
     fn dag_contains(&self, hash: &BlockHash) -> bool;
