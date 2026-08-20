@@ -8177,7 +8177,7 @@ workspace revalidation is recorded only after it finishes and is not implied by 
 
 #### 5.28.4 Cost, residuals, and consensus classification
 
-The construction arena is intentionally transient: resident `ParBag`/RPB2 remains the canonical
+The construction arena is intentionally transient: resident `ParBag`/RPB3 remains the canonical
 component authority after `finish`, and PathMap copy-on-write roots are reused until mutation. The
 result is $`\Theta(d)`$ final emission for a unary depth-$`d`$ term, $`O(\log n)`$ persistent
 occurrence insertion for $`n`$ distinct keys, and $`O(1)`$ native stack. This checkpoint does not
@@ -8189,6 +8189,36 @@ remains in this construction path. Normalized bytes and the default-genesis root
 the incomplete intermediate checkpoint, so retired CBR-055 records the movement. Exact recursive
 normalizer/evaluator/substitution agreement identifies the successor as the corrected construction
 contract; it does not establish an execution order among parallel processes.
+
+#### 5.28.5 Release-gate fixture construction follow-through
+
+The first complete release-workspace diagnostic exposed a boundary outside the production machines:
+several deep validation fixtures still constructed their input by repeatedly wrapping an already
+resident `Par`. Moving the accumulator kept native-stack use constant, but each RPB3 parent key still
+copied the complete child score and protobuf body. These final-root-only fixtures therefore retained
+the same $`\sum_{i=1}^{d} i=\Theta(d^2)`$ construction work that `ParConstruction` had removed from
+normalization, substitution, and evaluation. Validators that cloned and decoded every successive
+suffix could independently reproduce the same slope. **DERIVED** from the fixture sources and the
+RPB3 complete-body invariant.
+
+The first two release blockers now use existing byte-native, already-differentially-verified APIs:
+`Par::wrap_unary_elist` emits the sole final root, and
+`Par::canonical_unary_elist_gint_parts` proves exact depth and terminal without materializing any
+descendant `Par`. No production code, PathMap implementation, traversal depth, or test assertion
+changed.
+
+| release target | predecessor workspace diagnostic | fixture-linear successor | interpretation |
+|---|---:|---:|---|
+| `par_read_stack_safety_registry` | about **1,974 s** before interruption | **4/4 in 0.694 s**; depth-4,096 generated-reader leg **0.010 s** | repeated resident construction and suffix decoding removed |
+| `event_hash_leg_depth_probe` | about **1,215 s** at depth 65,536 | **3/3 in 0.213 s** across all six legs | one exact unary-list root feeds the unchanged event-hash encoders |
+
+Both successor runs used the release profile, `MemorySwapMax=0`, and hard RSS caps on 2026-08-20.
+The elapsed values are **diagnostic**, not paired benchmark populations: they establish removal of
+the multi-minute/hour fixture mechanism but do not support a population effect size. Controlled
+construction work, allocation, hardware-counter, and RSS ladders remain required; AMD uProf, the
+counting allocator, heaptrack/Massif, and process/cgroup high-water measurements are selected for
+that protocol. Other final-root-only deep fixtures remain under the same reviewed migration, so
+this paragraph does not claim complete release-workspace closure. **MEASURED (f).**
 
 ---
 

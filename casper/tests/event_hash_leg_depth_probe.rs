@@ -20,7 +20,7 @@
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::tagged_continuation::TaggedCont;
 use models::rhoapi::{
-    BindPattern, EList, EPathMap, Expr, ListParWithRandom, Par, ParWithRandom, TaggedContinuation,
+    BindPattern, EPathMap, Expr, ListParWithRandom, Par, ParWithRandom, TaggedContinuation,
 };
 use models::rust::event_hash_bytes::{
     event_hash_bytes_bind_pattern, event_hash_bytes_list_par_with_random,
@@ -93,21 +93,9 @@ fn expr_par(instance: ExprInstance) -> Par {
     }
 }
 
-fn elist(ps: Vec<Par>) -> Par {
-    expr_par(ExprInstance::EListBody(EList {
-        ps,
-        locally_free: vec![],
-        connective_used: false,
-        remainder: None,
-    }))
-}
-
 fn nested_list(depth: usize) -> Par {
-    let mut par = new_gint_par(0, vec![], false);
-    for _ in 0..depth {
-        par = elist(vec![par]);
-    }
-    par
+    Par::wrap_unary_elist(depth, new_gint_par(0, vec![], false))
+        .expect("requested unary-list depth is addressable")
 }
 
 fn map_with_nested_value(depth: usize) -> Par {

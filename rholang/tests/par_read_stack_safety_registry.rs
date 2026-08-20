@@ -16,8 +16,7 @@
 
 use std::path::{Path, PathBuf};
 
-use models::rhoapi::expr::ExprInstance;
-use models::rhoapi::{EList, Expr, Par};
+use models::rhoapi::Par;
 use models::rust::rholang::{protobuf_decoder, protobuf_encoder};
 use models::rust::utils::new_gint_par;
 use prost::Message;
@@ -80,43 +79,15 @@ fn code_without_line_comments(text: &str) -> String {
 }
 
 fn nested_list(depth: usize) -> Par {
-    let mut par = new_gint_par(0, Vec::new(), false);
-    for _ in 0..depth {
-        par = models::par_from_default! {
-            exprs: vec![Expr {
-                expr_instance: Some(ExprInstance::EListBody(EList {
-                    ps: vec![par],
-                    locally_free: Vec::new(),
-                    connective_used: false,
-                    remainder: None,
-                })),
-            }],
-            ..Default::default()
-        };
-    }
-    par
+    Par::wrap_unary_elist(depth, new_gint_par(0, Vec::new(), false))
+        .expect("requested unary-list depth is addressable")
 }
 
 fn par_depth(par: &Par) -> usize {
-    let mut depth = 0usize;
-    let mut cursor = par.clone();
-    loop {
-        match cursor
-            .first::<Expr>()
-            .expect("resident expression decodes")
-            .and_then(|(expr, _)| expr.expr_instance)
-        {
-            Some(ExprInstance::EListBody(list)) if !list.ps.is_empty() => {
-                depth += 1;
-                cursor = list
-                    .ps
-                    .into_iter()
-                    .next()
-                    .expect("non-empty list has a first child");
-            }
-            _ => return depth,
-        }
-    }
+    par.canonical_unary_elist_gint_parts()
+        .filter(|(_depth, terminal)| *terminal == 0)
+        .map(|(depth, _terminal)| depth)
+        .expect("fixture is exactly a unary EList spine ending in GInt(0)")
 }
 
 #[test]
