@@ -262,26 +262,25 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorInstance<T> {
                     .await;
 
                     match result {
-                        Ok(res) => {
+                        Ok(BlockProcessOutcome::Processed(block, res)) => {
                             tracing::info!("Block {} processing finished.", block_str);
-                            match result_tx.send(res).await {
+                            match result_tx.send((block, res)).await {
                                 Ok(_) => {}
                                 Err(err) => {
                                     tracing::error!(error = %err, "block processing result send failed")
                                 }
                             }
                         }
-                        Err(e) => match &e {
-                            CasperError::Other(msg) if msg == "Missing dependencies" => {
-                                tracing::warn!(
-                                    "Block {} delayed: missing dependencies.",
-                                    block_str
-                                );
-                            }
-                            _ => {
-                                tracing::error!(block = %block_str, error = %e, "block processing failed");
-                            }
-                        },
+                        Ok(BlockProcessOutcome::MissingDependencies) => {
+                            tracing::warn!("Block {} delayed: missing dependencies.", block_str);
+                        }
+                        // Already logged at INFO by the pipeline; a routine
+                        // drop is not a failure.
+                        Ok(BlockProcessOutcome::NotOfInterest)
+                        | Ok(BlockProcessOutcome::Malformed) => {}
+                        Err(e) => {
+                            tracing::error!(block = %block_str, error = %e, "block processing failed");
+                        }
                     }
 
                     // Release in-flight marker before scanning dependency-free pendants.
@@ -419,6 +418,17 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorInstance<T> {
     }
 }
 
+/// A processing attempt's outcome. The non-`Processed` variants are normal
+/// pipeline exits — a duplicate delivery, a malformed block, a block waiting
+/// on its dependencies — not failures, and they must never travel the error
+/// channel: an `Err` here means something actually broke.
+enum BlockProcessOutcome {
+    Processed(BlockMessage, ValidBlockProcessing),
+    NotOfInterest,
+    Malformed,
+    MissingDependencies,
+}
+
 /// Process a block through all validation steps
 ///
 /// This implements the Scala pipeline:
@@ -432,7 +442,7 @@ async fn process_block_with_steps<T: TransportLayer + Send + Sync>(
     block_processor: Arc<BlockProcessor<T>>,
     casper: Arc<dyn MultiParentCasper + Send + Sync + 'static>,
     block: BlockMessage,
-) -> Result<(BlockMessage, ValidBlockProcessing), CasperError> {
+) -> Result<BlockProcessOutcome, CasperError> {
     let block_str = PrettyPrinter::build_string_bytes(&block.block_hash);
 
     // Step 1: Check if block is of interest
@@ -464,7 +474,7 @@ async fn process_block_with_steps<T: TransportLayer + Send + Sync>(
                     block_str, err
                 ))
             })?;
-        return Err(CasperError::Other("Block not of interest".to_string()));
+        return Ok(BlockProcessOutcome::NotOfInterest);
     }
 
     // Step 2: Check if well-formed and store
@@ -496,7 +506,7 @@ async fn process_block_with_steps<T: TransportLayer + Send + Sync>(
                     block_str, err
                 ))
             })?;
-        return Err(CasperError::Other("Block is malformed".to_string()));
+        return Ok(BlockProcessOutcome::Malformed);
     }
 
     // Step 3: Log started
@@ -514,7 +524,7 @@ async fn process_block_with_steps<T: TransportLayer + Send + Sync>(
         .await
     {
         Ok(true) => {
-            return Ok((
+            return Ok(BlockProcessOutcome::Processed(
                 block,
                 rspace_plus_plus::rspace::history::Either::Left(
                     casper::rust::block_status::BlockError::AdmittedSettled,
@@ -560,7 +570,7 @@ async fn process_block_with_steps<T: TransportLayer + Send + Sync>(
     if !has_dependencies {
         tracing::info!("Block {} missing dependencies.", block_str);
         // `check_dependencies_with_effects` already performs ack/cleanup for this path.
-        return Err(CasperError::Other("Missing dependencies".to_string()));
+        return Ok(BlockProcessOutcome::MissingDependencies);
     }
 
     // Step 5: Validate block with effects
@@ -588,7 +598,7 @@ async fn process_block_with_steps<T: TransportLayer + Send + Sync>(
 
     tracing::info!("Block {} validated {:?}.", block_str, validation_result);
 
-    Ok((block, validation_result))
+    Ok(BlockProcessOutcome::Processed(block, validation_result))
 }
 
 #[cfg(test)]
