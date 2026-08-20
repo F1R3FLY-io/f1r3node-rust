@@ -1128,6 +1128,8 @@ async fn build_block_with_invalid_justification(
         rejected_deploys: vec![],
         system_deploys: vec![],
         extra_bytes: Bytes::new(),
+        applied_from_scope: vec![],
+        merge_base: Bytes::new(),
     };
 
     let serialized_justifications = vec![Justification {

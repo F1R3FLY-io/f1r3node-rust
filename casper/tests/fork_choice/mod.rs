@@ -32,6 +32,12 @@
 //   proptests live in-module in snapshot.rs's `mod tests` (`deploy_support_*`), not
 //   here. See docs/theory/fork-choice/fork-choice-verification.md §6.2.
 
+//   merged_sibling_scores — the MULTI-PARENT case the proptests above never
+//   build: every fixture in this directory is single-parent, and on a
+//   single-parent DAG "score every DAG ancestor" and "score every main-parent
+//   ancestor" coincide. This one separates them.
+
+mod merged_sibling_scores;
 mod prop_bound;
 mod prop_estimator_determinism;
 mod prop_filter_deep_parents;

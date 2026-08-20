@@ -1,6 +1,13 @@
 //! Finalization runner — background task, RAII guard,
 //! `compute_last_finalized_block`, `update_last_finalized_block`.
 //!
+//! The LFB DECISION does not live here: it is `floor::floor_of_view` — the
+//! one finality clock, shared with every block operation's floor
+//! derivation. This module hosts only the runner scaffolding around it:
+//! pacing (`finalization_rate`), the queued-run loop with its timeout
+//! backstop, and the finalization effects (`record_directly_finalized`,
+//! event publication) applied when the clock advances.
+//!
 //! Phase 3 (Commit 2): extracted from `engine::multi_parent_casper`.
 //! The functions here are reachable via:
 //!   * `MultiParentCasper::last_finalized_block` (mod.rs) →
@@ -38,6 +45,11 @@
 //!
 //! If you are here because a static diff told you a fix went missing: it didn't.
 //! Re-run the test above before restoring anything.
+//!
+//! Deploy-STORAGE release does not happen in this module at all: the
+//! deploy-lifecycle register names the moment a deploy stops being
+//! re-proposable (its write-once terminal verdict), and block admission
+//! releases the pool copy against exactly that list.
 
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -58,12 +70,7 @@ use shared::rust::store::key_value_store::KvStoreError;
 use super::events::finalised_event;
 use super::types::MultiParentCasperImpl;
 use crate::rust::errors::CasperError;
-use crate::rust::finality::finalizer::Finalizer;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
-
-// Phase 13 (TC-1): the previous `FINALIZER_BLOCKING_TIMEOUT = 15s`
-// constant is now `CasperShardConf::finalizer_blocking_timeout`,
-// passed in via `FinalizationContext::finalizer_blocking_timeout`.
 
 /// RAII guard that ensures the finalization flag is reset on drop.
 /// This prevents the flag from being stuck in `true` state if the async block
@@ -89,8 +96,6 @@ pub(crate) struct FinalizationContext {
     pub(crate) finalization_in_progress: Arc<AtomicBool>,
     pub(crate) enable_mergeable_channel_gc: bool,
     pub(crate) ftt: crate::rust::safety::clique_oracle::FtThreshold,
-    pub(crate) finalizer_conf: crate::rust::casper_conf::FinalizerConf,
-    pub(crate) finalizer_blocking_timeout: std::time::Duration,
 }
 
 /// Build a `FinalizationContext` from a `MultiParentCasperImpl`. Single
@@ -114,8 +119,6 @@ pub(crate) fn build_finalization_context<
         ftt: crate::rust::safety::clique_oracle::FtThreshold::from_ppm(
             this.casper_shard_conf.fault_tolerance_threshold_ppm,
         ),
-        finalizer_conf: this.casper_shard_conf.finalizer_conf.clone(),
-        finalizer_blocking_timeout: this.casper_shard_conf.finalizer_blocking_timeout,
     }
 }
 
@@ -128,7 +131,9 @@ pub(crate) async fn run_queued_finalizer(
     let _task_guard = FinalizationGuard(finalizer_task_in_progress.as_ref());
     tracing::info!(target: "f1r3fly.casper", "finalizer-run-started");
 
-    let finalizer_blocking_timeout = ctx.finalizer_blocking_timeout;
+    // Backstop only: floor-of-view rides the persisted floor/frontier
+    // caches, so a cycle exceeding this is a stall to surface, not pace.
+    let finalizer_blocking_timeout = std::time::Duration::from_secs(15);
     loop {
         match tokio::time::timeout(
             finalizer_blocking_timeout,
@@ -169,10 +174,7 @@ pub(crate) async fn compute_last_finalized_block(
         finalization_in_progress,
         enable_mergeable_channel_gc,
         ftt,
-        finalizer_conf,
-        finalizer_blocking_timeout: _,
     } = ctx;
-    let finalizer_conf = &finalizer_conf;
     let lfb_lookup_started = std::time::Instant::now();
     // Get current LFB hash and height
     let dag = block_dag_storage.get_representation()?;
@@ -222,6 +224,13 @@ pub(crate) async fn compute_last_finalized_block(
                                     PrettyPrinter::build_string_bytes(block_hash)
                                 ))
                             })?;
+
+                            // Deploy-storage removal deliberately does NOT
+                            // happen here: node-local finalization of a
+                            // block is not evidence its deploys' effects
+                            // are canonical. The lifecycle register's
+                            // terminal verdicts drive the release, at
+                            // block admission.
 
                             // Remove block index from cache
                             runtime_manager.remove_block_index_cache(block_hash);
@@ -293,24 +302,62 @@ pub(crate) async fn compute_last_finalized_block(
         }
     };
 
-    // Run finalizer
+    // ONE finality clock: the LFB is the floor of the live view — the same
+    // derivation, candidate soundness, and exact `>= θ` decision every block
+    // operation uses (deliberately unifying away the old Finalizer's strict
+    // `> θ` LFB decision: an LFB lagging the floors at the exact threshold
+    // boundary would be a second clock). The derived floor advances the LFB
+    // only when it CAPTURES the current one — the same state-monotonicity
+    // predicate floor candidacy runs — so the read surface can never
+    // designate a state missing settled content.
     let finalizer_started = std::time::Instant::now();
-    let new_finalized_hash_opt = Finalizer::run(
-        &dag,
-        ftt,
-        last_finalized_block_height,
-        new_lfb_found_effect,
-        finalizer_conf,
-    )
-    .await
-    .map_err(CasperError::KvStoreError)?;
-    let finalizer_ms = finalizer_started.elapsed().as_millis();
-    let new_lfb_found = new_finalized_hash_opt.is_some();
+    let current = crate::rust::finality::floor::Floor {
+        hash: last_finalized_block_hash.clone(),
+        block_number: last_finalized_block_height,
+    };
+    let new_lfb_opt =
+        crate::rust::finality::floor::floor_of_view(&dag, &block_store, &current, ftt).await?;
 
-    // Get the final LFB hash (either new or existing)
-    let final_lfb_hash = new_finalized_hash_opt
-        .map(|(hash, _ft)| hash)
-        .unwrap_or(last_finalized_block_hash);
+    let new_lfb_found = new_lfb_opt.is_some();
+    let final_lfb_hash = if let Some(new_lfb) = new_lfb_opt {
+        let ft_value =
+            crate::rust::safety::clique_oracle::CliqueOracle::normalized_fault_tolerance(
+                &new_lfb.hash,
+                &dag,
+            )
+            .await
+            .map_err(CasperError::from)?;
+        // `floor_of_view` only ever returns an adoption that CAPTURES the
+        // current LFB, so `extends_previous_lfb` is true by construction —
+        // emitted anyway for parity with soak dashboards that alarm on it.
+        tracing::info!(
+            target: "f1r3fly.casper.finalization_lifecycle",
+            event = "candidate_finalized",
+            candidate_hash = %hex::encode(&new_lfb.hash),
+            candidate_height = new_lfb.block_number,
+            previous_lfb_hash = %hex::encode(&last_finalized_block_hash),
+            previous_lfb_height = last_finalized_block_height,
+            extends_previous_lfb = true,
+            fault_tolerance = ft_value,
+            "finalization lifecycle"
+        );
+        new_lfb_found_effect((new_lfb.hash.clone(), ft_value))
+            .await
+            .map_err(CasperError::KvStoreError)?;
+        new_lfb.hash
+    } else {
+        last_finalized_block_hash
+    };
+    let finalizer_ms = finalizer_started.elapsed().as_millis();
+
+    // Deploy-pool release is NOT done here. The register
+    // (`finality::deploy_lifecycle`) is the one component that re-evaluates
+    // as the floor advances, so it is the only component that can name the
+    // moment a deploy stops being re-proposable; block admission releases
+    // the pool copy against exactly its write-once terminal list. The
+    // finality marker is never a release edge: a marked block can still be
+    // excluded from every future cone, and an orphaned carrier's pool copy
+    // is its only route back into a live branch.
 
     // Return the finalized block
     let read_started = std::time::Instant::now();

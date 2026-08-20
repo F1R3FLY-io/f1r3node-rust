@@ -246,6 +246,7 @@ impl TestContext {
             HashMap::new(),
             None,
             None,
+            None,
         )
         .await
     }
@@ -525,6 +526,7 @@ async fn compute_block_checkpoint_should_merge_histories_in_case_of_multiple_par
                 &runtime_manager,
                 None,
                 None,
+                None,
             )
             .await
             .expect("Failed to validate block checkpoint");
@@ -702,6 +704,7 @@ async fn compute_block_checkpoint_should_merge_histories_in_case_of_multiple_par
                 &block_store,
                 &mut casper_snapshot,
                 &runtime_manager,
+                None,
                 None,
                 None,
             )
@@ -963,6 +966,7 @@ async fn validate_block_checkpoint_should_not_return_a_checkpoint_for_an_invalid
             &runtime_manager,
             None,
             None,
+            None,
         )
         .await
         .expect("Failed to validate block checkpoint");
@@ -1031,6 +1035,7 @@ async fn validate_block_checkpoint_should_return_a_checkpoint_with_the_right_has
                 HashMap::new(),
                 None,
                 None,
+                None,
             )
             .await
             .expect("Failed to compute deploys checkpoint");
@@ -1057,6 +1062,7 @@ async fn validate_block_checkpoint_should_return_a_checkpoint_with_the_right_has
                 Some(pre_state_hash),
                 None,
                 None,
+                None,
             );
 
             let dag2 = block_dag_storage
@@ -1069,6 +1075,7 @@ async fn validate_block_checkpoint_should_return_a_checkpoint_with_the_right_has
                 &block_store,
                 &mut casper_snapshot,
                 &runtime_manager,
+                None,
                 None,
                 None,
             )
@@ -1155,6 +1162,7 @@ contract @"recursionTest"(@list) = {
                 HashMap::new(),
                 None,
                 None,
+                None,
             )
             .await
             .expect("Failed to compute deploys checkpoint");
@@ -1181,6 +1189,7 @@ contract @"recursionTest"(@list) = {
                 Some(pre_state_hash),
                 None,
                 None,
+                None,
             );
 
             let dag2 = block_dag_storage
@@ -1193,6 +1202,7 @@ contract @"recursionTest"(@list) = {
                 &block_store,
                 &mut casper_snapshot,
                 &runtime_manager,
+                None,
                 None,
                 None,
             )
@@ -1283,6 +1293,7 @@ async fn validate_block_checkpoint_should_pass_persistent_produce_test_with_caus
                 HashMap::new(),
                 None,
                 None,
+                None,
             )
             .await
             .expect("Failed to compute deploys checkpoint");
@@ -1309,6 +1320,7 @@ async fn validate_block_checkpoint_should_pass_persistent_produce_test_with_caus
                 Some(pre_state_hash),
                 None,
                 None,
+                None,
             );
 
             let dag2 = block_dag_storage
@@ -1321,6 +1333,7 @@ async fn validate_block_checkpoint_should_pass_persistent_produce_test_with_caus
                 &block_store,
                 &mut casper_snapshot,
                 &runtime_manager,
+                None,
                 None,
                 None,
             )
@@ -1407,6 +1420,7 @@ new loop, primeCheck, stdoutAck(`rho:io:stdoutAck`) in {
                 HashMap::new(),
                 None,
                 None,
+                None,
             )
             .await
             .expect("Failed to compute deploys checkpoint");
@@ -1433,6 +1447,7 @@ new loop, primeCheck, stdoutAck(`rho:io:stdoutAck`) in {
                 Some(pre_state_hash),
                 None,
                 None,
+                None,
             );
 
             let dag2 = block_dag_storage
@@ -1445,6 +1460,7 @@ new loop, primeCheck, stdoutAck(`rho:io:stdoutAck`) in {
                 &block_store,
                 &mut casper_snapshot,
                 &runtime_manager,
+                None,
                 None,
                 None,
             )
@@ -1523,6 +1539,7 @@ async fn validate_block_checkpoint_should_pass_tests_involving_races() {
                     HashMap::new(),
                     None,
                     None,
+                    None,
                 )
                 .await
                 .expect("Failed to compute deploys checkpoint");
@@ -1549,6 +1566,7 @@ async fn validate_block_checkpoint_should_pass_tests_involving_races() {
                     Some(pre_state_hash),
                     Some(i + 1),
                     None,
+                    None,
                 );
 
                 let dag2 = block_dag_storage
@@ -1561,6 +1579,7 @@ async fn validate_block_checkpoint_should_pass_tests_involving_races() {
                     &block_store,
                     &mut casper_snapshot,
                     &runtime_manager,
+                    None,
                     None,
                     None,
                 )
@@ -1629,6 +1648,7 @@ async fn validate_block_checkpoint_should_return_none_for_logs_containing_extra_
                 HashMap::new(),
                 None,
                 None,
+                None,
             )
             .await
             .expect("Failed to compute deploys checkpoint");
@@ -1671,6 +1691,7 @@ async fn validate_block_checkpoint_should_return_none_for_logs_containing_extra_
                 Some(pre_state_hash),
                 None,
                 None,
+                None,
             );
 
             let dag2 = block_dag_storage
@@ -1683,6 +1704,7 @@ async fn validate_block_checkpoint_should_return_none_for_logs_containing_extra_
                 &block_store,
                 &mut casper_snapshot,
                 &runtime_manager,
+                None,
                 None,
                 None,
             )
@@ -1767,6 +1789,7 @@ async fn validate_block_checkpoint_should_pass_map_update_test() {
                     HashMap::new(),
                     None,
                     None,
+                    None,
                 )
                 .await
                 .expect("Failed to compute deploys checkpoint");
@@ -1793,6 +1816,7 @@ async fn validate_block_checkpoint_should_pass_map_update_test() {
                     Some(pre_state_hash),
                     Some(i + 1),
                     None,
+                    None,
                 );
 
                 let dag2 = block_dag_storage
@@ -1805,6 +1829,7 @@ async fn validate_block_checkpoint_should_pass_map_update_test() {
                     &block_store,
                     &mut casper_snapshot,
                     &runtime_manager,
+                    None,
                     None,
                     None,
                 )

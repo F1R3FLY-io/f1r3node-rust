@@ -25,7 +25,7 @@ on:
         default: dev
         type: string
       duration:
-        description: Requested soak duration (ignored when window_end_epoch is set)
+        description: Requested soak duration; weekend-60h is the 60h stability soak, daily-24h the dev integration soak (ignored when window_end_epoch is set)
         required: true
         default: daily-24h
         type: choice
@@ -49,8 +49,8 @@ on:
         type: string
       series:
         description: >-
-          Restart mode: which published series (daily | weekend) the run
-          belongs to. Required alongside window_end_epoch — a remainder span
+          Restart mode: which published series the run belongs to (daily =
+          dev integration soak | weekend = 60h stability soak). Required alongside window_end_epoch — a remainder span
           no longer identifies the series by duration.
         required: false
         default: ""
@@ -109,114 +109,8 @@ env:
   # of normal-operation clearance; both the pytest floor (subprocess
   # iterations) and the orchestrator host guardian (every iteration) use it.
   SOAK_HOST_FREE_FLOOR_MB: "8192"
-  # THIRD pin site. CI's pin-consistency check holds this identical to
-  # .github/oci-validation.env and _integration-pipeline.yml. Before that guard
-  # covered the soak pin, it rotted unnoticed and sat at
-  # a50eeb19 while CI advanced to 06f2020c, and a50eeb19 predates
-  # system-integration 81284fc, which added integration-tests/certs/validator4.
-  # compose.py bind-mounts that path, so with no host file Docker created a
-  # directory and every node start died on "Failed to read the X.509
-  # certificate: IO error: Is a directory (os error 21)" — the soak failed at
-  # bring-up nightly from ~2026-07-27, and since checkpoint publishes come from
-  # completed segments, the dashboard never published. Bump this whenever the
-  # other two move — `just repin-system-integration <sha>` rewrites all pin
-  # sites together and runs the invariants checker.
-  # 2026-07-30: bumped to the system-integration PR #68 merge (main tip) —
-  # adds the test_load.py drain-snapshot convergence fix and registry pull
-  # retries on top of the validator4 certs.
-  # 2026-07-30 (later): bumped to the PR #72 merge, a descendant of the above.
-  # This ref is load-bearing for the launch job, not just the test harness —
-  # cloud-init-runner.yml.tmpl is read from it at :445, so the runner's idle
-  # watchdog comes from whatever is pinned here. It carries three things:
-  #   - The watchdog fix. It decided "is a job running?" by grepping run.sh's
-  #     log for "Running job:", but that stdout is redirected to a file and
-  #     .NET block-buffers it, so the line can sit unflushed and the watchdog
-  #     kills a healthy runner at IDLE_TIMEOUT_SECS. Every job longer than
-  #     ~45min-minus-boot was exposed; the soak is exactly that shape, and this
-  #     is the leading explanation for run 30590630059. It now reads the
-  #     process table (Runner.Worker) instead.
-  #   - log() tees to /dev/console, which is what makes capture_diagnostics
-  #     below able to find anything: console history is the only VM-side
-  #     diagnostic that survives instance termination.
-  #   - PR #70's test_load.py resource-breach attribution, so a node killed by
-  #     the RSS/floor guardian names the ceiling that killed it instead of
-  #     surfacing a raw gRPC traceback — without which the tightened limits
-  #     below would be self-obscuring. Plus their reaper's soak guards.
-  # 2026-07-31: bumped to system-integration main (PR #76 merge). This is the
-  # bump that makes every bump above it mean anything.
-  #
-  # Until now this pin did not bind. launch-runner.sh registered every VM with
-  # one shared label set, so GitHub routed the soak job to whichever runner
-  # claimed it first -- frequently a VM some CI run had launched, carrying the
-  # cloud-init THAT workflow pinned. Run 30606130771 executed the pre-fix idle
-  # watchdog while this variable named the commit that fixed it; the console
-  # history has no pgrep and no Runner.Worker anywhere in 2410 lines. A pin that
-  # does not bind is worse than no pin, because it reads as a guarantee and
-  # stops people re-checking.
-  #
-  # This ref carries the RUNNER_LABELS override, so the soak now registers its
-  # runner under a label nothing else requests and therefore runs on the VM it
-  # launched. Verified on main by ancestry (git merge-base --is-ancestor), not
-  # by grep: main already contained the string __RUNNER_LABELS__, the cloud-init
-  # template placeholder, long before the override existed. Grepping would have
-  # said yes against a launcher that ignores the variable.
-  #
-  # 2026-08-10: bumped to the PR #99 merge (main tip) — AMD64_MEM_GB=48
-  # fleet default (the 48GB soak VM this workflow's guard values are sized
-  # for) plus the RUNNER_MEM_GB_OVERRIDE launch knob. Verified by content
-  # at the SHA: state.env AMD64_MEM_GB=48, override present in
-  # launch-runner.sh.
-  #
-  # 2026-08-11: bumped to the SI PR #103 merge — the harness monitor's
-  # per-core CPU sampling (resource-percore-timeseries.csv), which the
-  # driver's per-core extractor folds into the dashboard CPU grid. Verified
-  # by ancestry (a0c6fba6 is an ancestor, so the 48GB default and
-  # RUNNER_LABELS override carry forward) and by content at the SHA
-  # (state.env AMD64_MEM_GB=48; resource_monitor.py emits the per-core CSV).
-  #
-  # 2026-08-13: re-pointed to the SI PR #109 main merge. The previous SHA
-  # (f8e43643) was a commit on the temporary test/node-stability-pr-support
-  # branch, pinned by #210 while its CI was validated and landed without an
-  # entry here — so the block above misdescribed the pin as the #103 merge.
-  # Zero tree diff old..new (compare reports files:0; main is ahead only by
-  # the #107/#108/#109 merge commits and behind by nothing), so this changes
-  # provenance, not content: the main merge SHA stays reachable after the
-  # test branch is deleted, where the branch commit could be garbage
-  # collected out from under the secret-bearing launch job's checkout.
-  #
-  # 2026-08-15: bumped to the SI PR #115 main merge. The storage tests now
-  # wait for registry state visibility after deploy finalization, which closes
-  # the finalized-block versus canonical-effect race from CI run 31856863708.
-  # Verified that c4dbcd5 is the protected main tip and matches main exactly.
-  #
-  # 2026-08-15: bumped to the SI PR #117 main merge. Bonding and convergence
-  # now use dedicated shards, bond-map assertions handle epoch-boundary
-  # activation, and finalization checks select canonical finalized blocks
-  # instead of arbitrary orphan candidates. Verified that afcce4b1 is the
-  # protected main tip, all PR checks passed, and the bonding lifecycle passed
-  # locally against the node image built from master 35674b389.
-  #
-  # 2026-08-15: bumped to the reviewed SI PR #118 head. The convergence test
-  # now accepts finalized FT at or above FTT and checks monotonicity. Boundary
-  # bond blocks accept either valid closeBlock transition map, while a later
-  # finalized block must contain the exact activated map. Retired log snapshots
-  # now retain test-owner allowances without leaking allowances across tests,
-  # with focused unit coverage. Bond-map assertions use the finalization
-  # resolver's canonical deploy block instead of an orphaned first inclusion.
-  # Verified that 735a7b95 is the immutable PR head, the local bonding suite
-  # passed, and the local repin helper and workflow security invariants pass.
-  #
-  # 2026-08-15: bumped to the SI PR #119 main merge. Observer LFS coverage now
-  # runs in a dedicated shard and requires exact finalized multi-parent block
-  # metadata before observer attachment. Verified that 28b24d9c is the local
-  # and remote main tip, and the workflow security invariants pass.
-  #
-  # 2026-08-16: bumped to the SI PR #120 main merge. The harness uses common
-  # finalized anchors and repairs active-set, epoch-boundary, port-reuse,
-  # lifecycle-tracker, and bridge-read behavior from the failed preflight.
-  # Verified that 22121713 is the immutable GitHub merge commit. The focused
-  # concurrency suite and workflow security invariants pass.
-  SYSTEM_INTEGRATION_REF: 22121713d8874ac84f94f4b3ddb30dda78fa7f88
+  # Third pin site; keep identical to the other two — bump via scripts/repin-system-integration.sh.
+  SYSTEM_INTEGRATION_REF: 231aac63bf090a16ce4649b275c6c1dba0768548
   # Pinned OCI CLI installer (release tag + sha256). The checksum fails closed
   # if the tag is ever moved. Bump both together when upgrading.
   OCI_CLI_INSTALLER_URL: "https://raw.githubusercontent.com/oracle/oci-cli/v3.89.1/scripts/install/install.sh"
@@ -709,6 +603,81 @@ jobs:
             echo "checkpoint_4=$cp4"
             echo "checkpoint_5=$cp5"
           } >> "$GITHUB_OUTPUT"
+
+  # Advisory docs link sweep for the 60h stability soak. Checks the
+  # external URLs that the blocking CI Link Checker no longer covers
+  # (general-web domains answer runner IPs inconsistently). This job has
+  # no needs-edge into the soak job and never fails: it can only emit a
+  # warning annotation and a result artifact that the ONS verdict email
+  # includes. It must never block the soak or any other job.
+  docs_link_sweep:
+    name: Docs External Link Sweep (advisory)
+    needs: schedule_gate
+    if: needs.schedule_gate.outputs.should_run == 'true' && needs.schedule_gate.outputs.kind == 'weekend'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Advisory at the job level too: an infrastructure failure inside this
+    # job (checkout, jq, artifact upload) must not turn the workflow
+    # conclusion red. The soak email treats a missing result artifact as
+    # "sweep did not run", never as a soak failure.
+    continue-on-error: true
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout soak target
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          ref: ${{ needs.schedule_gate.outputs.target_sha }}
+          persist-credentials: false
+
+      - name: Sweep external documentation links
+        id: sweep
+        uses: lycheeverse/lychee-action@e7477775783ea5526144ba13e8db5eec57747ce8
+        with:
+          args: >-
+            --no-progress
+            --exclude-loopback
+            --exclude 'https://www\.gutenberg\.org/ebooks/132'
+            --max-retries 2
+            --retry-wait-time 5
+            --timeout 45
+            --accept 200..=299,403,429,503,504
+            --format json
+            './**/*.md'
+          output: /tmp/link-sweep.json
+          fail: false
+
+      - name: Summarize sweep result
+        env:
+          SWEEP_EXIT: ${{ steps.sweep.outputs.exit_code }}
+        shell: bash -euo pipefail {0}
+        run: |
+          broken=0
+          if [ -s /tmp/link-sweep.json ]; then
+            broken="$(jq -r '[.fail_map[]? | length] | add // 0' /tmp/link-sweep.json)"
+          fi
+          jq -n \
+            --argjson broken "$broken" \
+            --arg exit_code "${SWEEP_EXIT:-unknown}" \
+            '{broken: $broken, exit_code: $exit_code}' > /tmp/docs-link-sweep.json
+          if [ "$broken" -gt 0 ]; then
+            echo "::warning::advisory docs link sweep found $broken broken external link(s); see the docs-link-sweep artifact (does not gate the soak)"
+          fi
+          {
+            echo "### Docs external link sweep (advisory)"
+            echo
+            echo "Broken external links: $broken. This sweep never gates the soak."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload sweep artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: docs-link-sweep
+          path: |
+            /tmp/docs-link-sweep.json
+            /tmp/link-sweep.json
+          retention-days: 14
+          if-no-files-found: warn
 
   preflight_pending:
     name: Mark Integration Preflight Pending
@@ -1716,12 +1685,21 @@ jobs:
           ci-control/scripts/bench/aggregate-perf-report.sh
           cat "$OUT_DIR/perf-report.md" >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Fetch docs link sweep result (advisory)
+        if: always() && needs.schedule_gate.outputs.kind == 'weekend'
+        continue-on-error: true
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: docs-link-sweep
+          path: /tmp/merge-recovery-soak/link-sweep
+
       - name: Publish ONS alert email
         if: always() && needs.schedule_gate.outputs.preflight_only != 'true' && needs.schedule_gate.outputs.run_benchmarks == 'true' && steps.integration_preflight.outputs.result == 'passed' && steps.reset_telemetry.outcome == 'success'
         shell: bash -e {0}
         env:
           REPORT_DIR: /tmp/merge-recovery-soak/report
           ONS_TOPIC_OCID: ${{ vars.SOAK_ONS_TOPIC_OCID }}
+          LINK_SWEEP_JSON: /tmp/merge-recovery-soak/link-sweep/docs-link-sweep.json
           DASHBOARD_URL: https://f1r3fly-io.github.io/f1r3node-rust/
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |

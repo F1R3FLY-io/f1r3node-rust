@@ -102,6 +102,7 @@ impl TestFixture {
             None,
             None,
             None,
+            None,
         );
 
         // Create unified dependencies
@@ -113,6 +114,7 @@ impl TestFixture {
             transport_layer,
             connections_cell,
             rp_conf,
+            None,
         );
 
         Self {

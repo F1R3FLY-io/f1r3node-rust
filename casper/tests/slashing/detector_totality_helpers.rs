@@ -157,6 +157,8 @@ pub fn block(
             rejected_deploys: vec![],
             system_deploys: vec![],
             extra_bytes: Bytes::new(),
+            applied_from_scope: vec![],
+            merge_base: Bytes::new(),
         },
         justifications,
         sender,

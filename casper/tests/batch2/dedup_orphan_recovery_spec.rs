@@ -228,6 +228,7 @@ for(@_v <- @"dedup-orphan-shared") { Nil }
         HashMap::new(),
         None,
         None,
+        None,
     )
     .await
     .expect("compute block_a checkpoint");
@@ -283,6 +284,7 @@ for(@_v <- @"dedup-orphan-shared") { Nil }
         HashMap::new(),
         None,
         None,
+        None,
     )
     .await
     .expect("compute block_b checkpoint");
@@ -332,6 +334,9 @@ for(@_v <- @"dedup-orphan-shared") { Nil }
         None,
         Some(&rejected_deploy_buffer),
         None,
+        // The buffer populate is owner-scoped: this test models the node of
+        // the carriers' sender, the deploy's recovery owner.
+        Some(&validator),
     )
     .await
     .expect("compute_parents_post_state over [block_a, block_b]");

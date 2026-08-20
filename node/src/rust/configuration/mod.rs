@@ -385,7 +385,7 @@ mod embedded_defaults_tests {
 
         assert_eq!(
             cfg.logging.filter,
-            "info,tonic=error,hyper=error,tower=error,reqwest=error,heed=error,h2=error"
+            "info,tonic=error,hyper=error,tower=error,reqwest=error,heed=error,h2=error,comm::rust::transport::transport_layer=warn,casper::rust::engine::block_retriever=warn,casper::rust::engine::multi_parent_casper::validation_dispatcher=warn,casper::rust::util::rholang::interpreter_util=warn"
         );
         assert!(matches!(cfg.logging.format, LogFormat::Json));
         assert!(matches!(cfg.logging.sink, LogSink::Stdout));
