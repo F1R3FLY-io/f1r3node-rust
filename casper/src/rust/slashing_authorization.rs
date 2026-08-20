@@ -444,7 +444,7 @@ pub fn validate_received_slash_deploys(
         let metadata = snapshot
             .dag
             .lookup(invalid_block_hash)
-            .map_err(CasperError::KvStoreError)?
+            .map_err(CasperError::from)?
             .ok_or_else(|| SlashAuthError::ReferencesUnknownBlock {
                 hash: hex::encode(invalid_block_hash),
             })?;

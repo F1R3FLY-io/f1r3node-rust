@@ -584,6 +584,7 @@ async fn run_block_creator_phase_split_memory_profile() {
                 None,
                 None,
                 None,
+                None,
             )
             .await
             {

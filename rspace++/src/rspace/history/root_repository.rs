@@ -43,7 +43,7 @@ impl RootRepository {
             }
             None => {
                 tracing::error!(root = %root, "root not found in store: cannot set current root");
-                Err(RootError::UnknownRootError(format!("unknown root: {}", root)))
+                Err(RootError::RootNotFound(root))
             }
         }
     }

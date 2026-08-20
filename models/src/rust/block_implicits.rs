@@ -207,6 +207,8 @@ pub fn block_element_gen(
                         system_deploys: set_sys_deploys.clone().unwrap_or_default(),
                         rejected_deploys: Vec::new(),
                         extra_bytes: prost::bytes::Bytes::new(),
+                        applied_from_scope: Vec::new(),
+                        merge_base: prost::bytes::Bytes::new(),
                     },
                     justifications,
                     sender: validator.into(),

@@ -80,6 +80,10 @@ pub struct MultiParentCasperImpl<T: TransportLayer + Send + Sync> {
     /// happen synchronously inside the proposer (block_creator) and
     /// validator (validate.rs::repeat_deploy) — never across `.await`.
     pub rejected_deploy_buffer: Arc<Mutex<KeyValueRejectedDeployBuffer>>,
+    /// The deploy-lifecycle register's volatile half (threshold schedule +
+    /// clocks); persisted state lives in the DAG storage's lifecycle
+    /// tables. Driven from block admission.
+    pub deploy_lifecycle: Arc<crate::rust::finality::deploy_lifecycle::DeployLifecycle>,
     pub casper_buffer_storage: CasperBufferKeyValueStorage,
     pub validator_id: Option<ValidatorIdentity>,
     // TODO: this should be read from chain, for now read from startup options - OLD

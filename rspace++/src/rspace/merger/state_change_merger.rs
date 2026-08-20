@@ -248,6 +248,7 @@ pub fn compute_trie_actions<C: Clone, P: Clone, A: Clone, K: Clone>(
                 }
                 None => make_trie_action(
                     history_pointer,
+                    "datum",
                     |hash| base_reader.get_data_proj_binary(hash),
                     changes,
                     |hash| {
@@ -343,6 +344,7 @@ pub fn compute_trie_actions<C: Clone, P: Clone, A: Clone, K: Clone>(
             }
             make_trie_action(
                 history_pointer,
+                "joins",
                 |hash| base_reader.get_joins_proj_binary(hash),
                 changes,
                 |hash| {
@@ -386,6 +388,13 @@ pub fn compute_trie_actions<C: Clone, P: Clone, A: Clone, K: Clone>(
 
 fn make_trie_action<C: Clone, P: Clone, A: Clone, K: Clone>(
     history_pointer: &Blake2b256Hash,
+    // Which fold this action belongs to ("datum" | "joins"). The incoherence
+    // error below is otherwise indistinguishable between the two call sites,
+    // and they fail for different reasons: datum removals are checked against
+    // the base by the availability splitter, joins removals are checked by
+    // nothing. Naming the kind is the difference between knowing which guard
+    // failed and re-running the whole hunt to find out.
+    kind: &'static str,
     init_value: impl Fn(&Blake2b256Hash) -> Result<Vec<ByteVector>, HistoryError>,
     changes: &ChannelChange<ByteVector>,
     remove_action: impl Fn(&Blake2b256Hash) -> HotStoreTrieAction<C, P, A, K>,
@@ -415,13 +424,28 @@ fn make_trie_action<C: Clone, P: Clone, A: Clone, K: Clone>(
         }
         let unmatched: usize = remove_counts.values().sum();
         if unmatched > 0 {
+            // Digest the mismatch itself: which values the base holds versus
+            // which the diff wants gone. Without this the message says only
+            // that counts disagree, and identifying the stale value costs a
+            // debug-level re-run of the whole shard.
+            let digest = |items: &[ByteVector]| -> Vec<String> {
+                items
+                    .iter()
+                    .take(4)
+                    .map(|b| hex::encode(&b[..8.min(b.len())]))
+                    .collect()
+            };
             return Err(HistoryError::MergeError(format!(
-                "channel {}: {} removed datum(s) absent from the base (base holds {}, diff \
-                 removes {}) — applied diffs are incoherent with the base state",
+                "channel {} [{}]: {} removed item(s) absent from the base (base holds {}, diff \
+                 removes {}) — applied diffs are incoherent with the base state; base={:?} \
+                 removed={:?}",
                 hex::encode(history_pointer.clone().bytes()),
+                kind,
                 unmatched,
                 init.len(),
                 changes.removed.len(),
+                digest(&init),
+                digest(&changes.removed),
             )));
         }
         result.extend(changes.added.clone());
@@ -613,12 +637,21 @@ mod tests {
         }
     }
 
+    /// Removing a datum that is NOT in the base is record incoherence, and
+    /// it must be a hard error, never a silent no-op. Upstream layers
+    /// guarantee the shape cannot occur legitimately: the availability
+    /// splitters keep only chains whose consumes are available at the base,
+    /// and `ChannelChange::combine` nets producer→consumer pairs within one
+    /// application before this point. A silent no-op here is how stale diffs
+    /// apply "cleanly" onto a base without the work they assumed — the
+    /// applied state diverges from the record while every check passes.
     #[test]
     fn removal_absent_from_base_is_an_error_not_a_noop() {
         let phantom_removed: Vec<u8> = vec![0xdd; 32];
         let datum_new: Vec<u8> = vec![0xee; 32];
         let channel_hash = Blake2b256Hash::from_bytes(vec![0x02; 32]);
 
+        // Base holds NOTHING on the channel.
         let base_reader: Box<dyn HistoryReader<Blake2b256Hash, (), (), (), ()>> =
             Box::new(StubHistoryReaderBinary {
                 data_map: HashMap::new(),
@@ -646,6 +679,139 @@ mod tests {
 
         let result = compute_trie_actions(&changes, &base_reader, &mergeable_chs, no_override);
 
-        assert!(result.is_err(), "a removal absent from the base must return an error");
+        assert!(
+            result.is_err(),
+            "a datum removal absent from the base must hard-error (record incoherence), not \
+             silently no-op"
+        );
+
+        // The message must be actionable on its own. This error deterministically
+        // wedges every propose over the same scope, so a reader who has only this
+        // line must still learn WHICH fold failed and WHAT disagreed — recovering
+        // that from a debug-level re-run costs gigabytes per minute.
+        let message = result.unwrap_err().to_string();
+        assert!(
+            message.contains("[datum]"),
+            "the failing fold must be named — 'datum' and 'joins' share this error text and are \
+             checked by different guards: {message}"
+        );
+        assert!(
+            message.contains("removed=") && message.contains("base="),
+            "the message must digest base-vs-removed values, not just counts: {message}"
+        );
+    }
+
+    /// A continuation INSTALLED by one chain and COMM-FIRED by a dependent
+    /// chain in the same merge scope nets to an EMPTY cont change
+    /// (`ChannelChange::cancel_common`) whose map entry survives the
+    /// combine. That fully-netted entry is a legitimate no-op — the
+    /// consume pointer ends exactly at base — and must produce no trie
+    /// action and no join action, never the "empty consume change"
+    /// merging-logic error, which kills every propose whose scope spans an
+    /// install+fire pair.
+    #[test]
+    fn netted_install_fire_cont_change_is_a_noop_not_an_error() {
+        let kont: Vec<u8> = vec![0xcc; 48];
+        let channel = Blake2b256Hash::from_bytes(vec![0x03; 32]);
+
+        let install = StateChange {
+            datums_changes: DashMap::new(),
+            cont_changes: {
+                let m = DashMap::new();
+                m.insert(vec![channel.clone()], ChannelChange {
+                    added: vec![kont.clone()],
+                    removed: vec![],
+                });
+                m
+            },
+            consume_channels_to_join_serialized_map: DashMap::new(),
+        };
+        let fire = StateChange {
+            datums_changes: DashMap::new(),
+            cont_changes: {
+                let m = DashMap::new();
+                m.insert(vec![channel.clone()], ChannelChange {
+                    added: vec![],
+                    removed: vec![kont],
+                });
+                m
+            },
+            consume_channels_to_join_serialized_map: DashMap::new(),
+        };
+        let combined = install.combine(fire);
+
+        // Base holds no continuations anywhere.
+        let base_reader: Box<dyn HistoryReader<Blake2b256Hash, (), (), (), ()>> =
+            Box::new(StubHistoryReaderBinary {
+                data_map: HashMap::new(),
+            });
+        let mergeable_chs: NumberChannelsDiff = BTreeMap::new();
+        let no_override =
+            |_: &Blake2b256Hash,
+             _: &ChannelChange<Vec<u8>>,
+             _: &NumberChannelsDiff|
+             -> Result<Option<HotStoreTrieAction<(), (), (), ()>>, HistoryError> {
+                Ok(None)
+            };
+
+        let actions = compute_trie_actions(&combined, &base_reader, &mergeable_chs, no_override)
+            .expect("a fully-netted cont change is a no-op, not a merge error");
+        assert!(actions.is_empty(), "no trie action may be emitted for a netted install+fire pair");
+    }
+
+    /// The datum-side twin: a seed's produce and its dependent consume in
+    /// one merge scope net to an empty datum change; the channel ends
+    /// exactly at base and must produce no trie action, never the "empty
+    /// channel change for produce or join" error.
+    #[test]
+    fn netted_produce_consume_datum_change_is_a_noop_not_an_error() {
+        let datum: Vec<u8> = vec![0xab; 32];
+        let channel = Blake2b256Hash::from_bytes(vec![0x04; 32]);
+
+        let seed = StateChange {
+            datums_changes: {
+                let m = DashMap::new();
+                m.insert(channel.clone(), ChannelChange {
+                    added: vec![datum.clone()],
+                    removed: vec![],
+                });
+                m
+            },
+            cont_changes: DashMap::new(),
+            consume_channels_to_join_serialized_map: DashMap::new(),
+        };
+        let consume = StateChange {
+            datums_changes: {
+                let m = DashMap::new();
+                m.insert(channel.clone(), ChannelChange {
+                    added: vec![],
+                    removed: vec![datum],
+                });
+                m
+            },
+            cont_changes: DashMap::new(),
+            consume_channels_to_join_serialized_map: DashMap::new(),
+        };
+        let combined = seed.combine(consume);
+
+        let base_reader: Box<dyn HistoryReader<Blake2b256Hash, (), (), (), ()>> =
+            Box::new(StubHistoryReaderBinary {
+                data_map: HashMap::new(),
+            });
+        let mergeable_chs: NumberChannelsDiff = BTreeMap::new();
+        let no_override =
+            |_: &Blake2b256Hash,
+             _: &ChannelChange<Vec<u8>>,
+             _: &NumberChannelsDiff|
+             -> Result<Option<HotStoreTrieAction<(), (), (), ()>>, HistoryError> {
+                Ok(None)
+            };
+
+        let actions = compute_trie_actions(&combined, &base_reader, &mergeable_chs, no_override)
+            .expect("a fully-netted datum change is a no-op, not a merge error");
+        assert!(
+            actions.is_empty(),
+            "no trie action may be emitted for a netted produce+consume pair"
+        );
     }
 }

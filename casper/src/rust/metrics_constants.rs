@@ -256,7 +256,6 @@ pub const BLOCK_CREATOR_DEPLOY_ADMISSION_MISSING_PROGRESS_METADATA_METRIC: &str 
     "block-creator.deploy-admission.missing-progress-metadata";
 
 // Finalization pipeline.
-pub const FINALIZER_RUN_TIME_METRIC: &str = "finalizer.run.time";
 pub const CLIQUE_ORACLE_COMPUTE_TIME_METRIC: &str = "clique-oracle.compute.time";
 
 // Counter incremented every time `compute_parents_post_state` refuses to build
@@ -344,4 +343,3 @@ pub const CREATE_CHECKPOINT_SPAN: &str = "create-checkpoint";
 pub const REPLAY_SYSTEM_DEPLOY_SPAN: &str = "replay-system-deploy";
 pub const COMPUTE_MAX_CLIQUE_WEIGHT_SPAN: &str = "compute-max-clique-weight";
 pub const NORMALIZED_FAULT_TOLERANCE_SPAN: &str = "normalized-fault-tolerance";
-pub const FINALIZER_RUN_SPAN: &str = "finalizer-run";

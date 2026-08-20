@@ -55,6 +55,8 @@ fn fixture_block() -> BlockMessage {
             rejected_deploys: vec![],
             system_deploys: vec![],
             extra_bytes: Bytes::new(),
+            applied_from_scope: vec![],
+            merge_base: Bytes::new(),
         },
         justifications: vec![],
         sender: Bytes::from(vec![0xCD; 33]),
