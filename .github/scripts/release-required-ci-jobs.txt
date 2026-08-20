@@ -1,0 +1,25 @@
+Build Base
+Lint
+cargo-deny
+Markdown Link Check
+Test (casper)
+Test (rspace_plus_plus)
+Test (rholang)
+Test (shared)
+Test (node)
+Test (models)
+Test (crypto)
+Test (block-storage)
+Test (comm)
+Test (graphz)
+Heavy Pipeline / Build Docker Image (amd64)
+Heavy Pipeline / Build Docker Image (arm64)
+Heavy Pipeline / Smoke Test (Docker Standalone)
+Heavy Pipeline / Smoke Test (Docker Shard)
+Heavy Pipeline / Smoke Test (Local Standalone)
+Heavy Pipeline / Integration Tests (amd64-docker)
+Heavy Pipeline / Integration Tests (amd64-subprocess)
+Heavy Pipeline / Integration Tests (arm64-docker)
+Heavy Pipeline / Integration Tests (arm64-subprocess)
+Integration Tests (amd64)
+Integration Tests (arm64)

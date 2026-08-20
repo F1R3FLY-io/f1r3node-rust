@@ -29,6 +29,76 @@ correctness — proved, model-checked, and tested — is the organizing concern.
 
 ## Canonical Terms
 
+### Release candidate
+
+A release candidate is one immutable source commit with its tested artifacts and [release evidence](#release-evidence). Standard release gates evaluate this identity.
+
+**Preferred usage.** Use this term for the source, artifact, and evidence set. *Distinguish from* [Canary release](#canary-release): candidate identity versus candidate publication.
+
+### Canary release
+
+A canary release is the prerelease publication of a [release candidate](#release-candidate). Its Git tag, binaries, and versioned image tags are immutable.
+
+**Preferred usage.** Use this term for the published prerelease. *Distinguish from* a mutable channel alias and a [stable release](#stable-release).
+
+### Stable release
+
+A stable release is a [release candidate](#release-candidate) that passed all mandatory gates. It uses a final Semantic Versioning tag.
+
+**Preferred usage.** Use this term only after successful artifact promotion. *Distinguish from* [Canary release](#canary-release): final publication versus prerelease publication.
+
+### Release evidence
+
+Release evidence is the machine-readable record that binds gate results and artifact digests to one source SHA.
+
+**Preferred usage.** Use this term for commit-specific release records. *Distinguish from* a dashboard latest verdict, which does not identify one candidate.
+
+### Artifact promotion
+
+Artifact promotion copies verified candidate bytes and image digests to stable release names. Artifact promotion does not rebuild the source.
+
+**Preferred usage.** Use this term for canary-to-stable publication. *Avoid*: release build, when automation reuses candidate artifacts.
+
+### Deployment Train
+
+A Deployment Train is an independent release path that starts from a reviewed pull-request head SHA. A reviewed manifest controls each train.
+
+**Preferred usage.** Use this term for the complete independent release path. *Distinguish from* a CI job, workflow run, or branch.
+
+### 60h stability soak
+
+The 60h stability soak is the fixed 60-hour pre-promotion soak of one release candidate on a multi-validator shard. A passing run is a mandatory gate for [stable release](#stable-release) promotion.
+
+**Preferred usage.** Use this term for the pre-promotion release gate. *Avoid*: weekend soak. Machine identifiers keep the legacy values `weekend` and `weekend-60h` until a separate identifier migration. *Distinguish from* the [Dev integration soak](#dev-integration-soak): release gate versus integration monitoring.
+
+### Dev integration soak
+
+The dev integration soak is the scheduled variable-length soak of the `dev` integration branch. It publishes regression data and does not gate a release.
+
+**Preferred usage.** Use this term for the scheduled integration-branch soak. *Avoid*: daily soak. The machine series key keeps the legacy value `daily` until a separate identifier migration. *Distinguish from* the [60h stability soak](#60h-stability-soak): integration monitoring versus a release gate.
+
+### Test net
+
+The test net is the continuously running network of shards that hosts [Shard soak-ins](#shard-soak-in) and serves select partners and customers. Its shards run stable releases; nodes that complete a soak-in period hold the [Anchor](#anchor) role. Unlike the per-iteration soak shards, the test net does not restart between runs.
+
+**Preferred usage.** Use this term for the standing shard network. *Avoid*: long-running quorum of shards, standing quorum, and continuously running shard quorum. *Distinguish from* the casper test-network fixture, which is an in-process test helper, not infrastructure.
+
+### Shard soak-in
+
+A Shard soak-in is the post-promotion period in which a weekly [stable release](#stable-release) runs in the [test net](#test-net). The Shard soak-in measures node behavior with the current test net members, catches compatibility issues, and confirms that the new nodes stay up. Enrollment is scheduled for each stable release tag. The trigger is a stable release publication, which has passed the [60h stability soak](#60h-stability-soak) gate.
+
+**Preferred usage.** Use this term for post-promotion test net trials. *Avoid*: Soak-in, without the Shard qualifier, in new prose. *Distinguish from* the [60h stability soak](#60h-stability-soak), which is a pre-promotion release gate on one candidate.
+
+### Soak-in
+
+Deprecated name for the [Shard soak-in](#shard-soak-in).
+
+### Anchor
+
+An Anchor is a node that completed its [Shard soak-in](#shard-soak-in) period and holds full membership in the [test net](#test-net).
+
+**Preferred usage.** Use this term only after a completed Shard soak-in. *Distinguish from* a soaking node, which runs inside or adjacent to the test net without the Anchor role.
+
 ### Peak node RSS
 
 Peak node resident set size (RSS) is the maximum combined memory use of all

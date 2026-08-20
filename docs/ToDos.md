@@ -69,6 +69,107 @@ mr_status:
 
 ---
 
+### EPIC-013: Release Process and Deployment Trains
+
+```yaml
+---
+epic_id: EPIC-013
+title: "Release Process and Deployment Trains"
+status: in_progress
+priority: p1
+user_story: null
+blocked_by: []
+created_at: 2026-08-19
+claimed_by: claude-session-838e6241
+claimed_at: 2026-08-19T00:00:00Z
+tasks:
+  - id: TASK-013-1
+    title: "Specify and ratify the release process (docs/release-process.md)"
+    status: complete
+    completed_at: 2026-08-19T00:00:00Z
+    branch: feature/release-process-implementation
+    notes:
+      - "All 13 Section 19 items ratified 2026-08-19. Two amendments: the regression verdict is advisory with maintainer review plus an OCI Notifications alert, and one infra-failure restart is permitted when 60h coverage is preserved."
+      - "Includes the soak terminology rename (60h stability soak, dev integration soak, Shard soak-in), the Section 17.1 trigger and duration table, and glossary entries."
+  - id: TASK-013-2
+    title: "Phase 1: evidence-only release automation"
+    status: complete
+    completed_at: 2026-08-19T00:00:00Z
+    branch: feature/release-process-implementation
+    notes:
+      - "release-evidence.yml generates exact-run evidence; release.yml and soak-in.yml are held-state stubs; release-evidence.sh plus unit tests and the test-release-workflows.sh contract guard are in place."
+  - id: TASK-013-3
+    title: "Phase 2: canary publication (canary-publish.yml)"
+    status: in_progress
+    branch: feature/release-process-implementation
+    notes:
+      - "Implemented as canary-publish.yml: workflow_run on CI completion publishes the immutable canary tag, prerelease, and Docker Hub images by digest from the run's own artifacts; ineligible runs skip cleanly. Evidence upgrades to publication_mode: canary via release-evidence.sh record-images. OCIR canary deferred to Phase 3 (registry location is secret material). Remains in_progress until the first live master run proves it."
+    acceptance:
+      - "canary-publish.yml publishes immutable canary tags, prereleases, and images from tested artifacts on release-eligible master runs"
+  - id: TASK-013-4
+    title: "Phase 3: artifact-based validation (candidate digest modes)"
+    status: pending
+    acceptance:
+      - "merge-recovery-soak.yml and oci-validation.yml consume the candidate image digest without rebuilding"
+  - id: TASK-013-5
+    title: "Phase 4: stable promotion controller"
+    status: pending
+    acceptance:
+      - "release.yml performs exact-candidate promotion via release-gates.sh and promote-release.sh"
+      - "A regress verdict publishes an OCI Notifications alert to the soak-report list and holds promotion for documented maintainer review"
+  - id: TASK-013-6
+    title: "Phase 5: Deployment Trains"
+    status: pending
+    acceptance:
+      - "deployment-train.yml validates manifests under .github/deployment-trains/ and starts trains"
+      - "One non-publishing rehearsal completes, then the cost-accounting train (PR #216) publishes first"
+  - id: TASK-013-7
+    title: "Phase 6: Shard soak-in scheduling"
+    status: in_progress
+    blocked_by: [EPIC-014]
+    notes:
+      - "The release trigger is implemented: soak-in.yml fires on stable release publication (prereleases gate out) while enrollment stays held until the EPIC-014 test net exists."
+    acceptance:
+      - "soak-in.yml gains a release trigger: one enrollment per stable release tag"
+      - "The deferred parameters (soak-in period length, Anchor criteria, test net composition) are set and ratified"
+---
+```
+
+**Context:** `docs/release-process.md` is the ratified specification. This PR (feature/release-process-implementation, PR #279) delivers TASK-013-1 and TASK-013-2; later phases follow the Section 18 migration plan on follow-on branches.
+
+---
+
+### EPIC-014: Test Net (Continuously Running Shards)
+
+```yaml
+---
+epic_id: EPIC-014
+title: "Test Net (Continuously Running Shards)"
+status: pending
+priority: p2
+user_story: null
+blocked_by: [EPIC-013]
+created_at: 2026-08-19
+tasks:
+  - id: TASK-014-1
+    title: "Design the test net (topology, lifecycle, upgrade path)"
+    status: pending
+  - id: TASK-014-2
+    title: "Stand up the test net on OCI from existing fleet tooling"
+    status: pending
+  - id: TASK-014-3
+    title: "Wire Shard soak-in enrollment and Anchor promotion into the test net"
+    status: pending
+  - id: TASK-014-4
+    title: "Open selected test net shards to partners and customers"
+    status: pending
+---
+```
+
+**Context:** Unlike the soaks, which create a fresh shard per iteration, this epic delivers the test net: shards that run continuously. **Mechanism sketch (brief by intent — a follow-on branch/PR carries the design):** long-lived OCI instances run stable releases as test net members, reusing the existing fleet tooling (runner launch, monitoring, ONS alerts, soak dashboard) as the foundation. Each weekly stable release enrolls new nodes through the Shard soak-in (`docs/release-process.md` Section 12); nodes that complete the soak period gain the Anchor role. The test net is primarily internal release-validation infrastructure and also serves select partners and customers. This epic delivers the test net that release-process Phase 6 requires; the deferred Shard soak-in parameters are set here.
+
+---
+
 ### EPIC-012: Open-Issue Remediation PR Queue
 
 ```yaml
