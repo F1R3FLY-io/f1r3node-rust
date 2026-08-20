@@ -87,7 +87,7 @@ Scala source is faulty.
 | Equivocation tracker store | `slashing-specification.md` §3.5  | `block-storage/src/rust/dag/equivocation_tracker_store.rs`  | `coop/rchain/blockstorage/dag/EquivocationTrackerStore.scala` |
 | Block proposer             | `slashing-specification.md` §3.6  | `casper/src/rust/blocks/proposer/block_creator.rs`          | `coop/rchain/casper/blocks/proposer/BlockCreator.scala`       |
 | Slash deploy (system)      | `slashing-specification.md` §3.7  | `casper/src/rust/util/rholang/costacc/slash_deploy.rs`      | `coop/rchain/casper/util/rholang/costacc/SlashDeploy.scala`   |
-| PoS Rholang contract       | `slashing-specification.md` §5    | `casper/src/main/resources/PoS.rhox:432-495` (shared)       | same                                                          |
+| PoS Rholang contract       | `slashing-specification.md` §5    | `casper/src/main/resources/PoS.rhox` (the `slash` method, shared)       | same                                                          |
 | Fork-choice estimator      | `slashing-specification.md` §3.5.1 | `casper/src/rust/estimator.rs`                             | `coop/rchain/casper/Estimator.scala`                          |
 
 ## Headline claims (proved)

@@ -143,14 +143,14 @@ literal byte `1` in the `splitByte` call.
 
 [![Diagram 07 — PoS.slash() Rholang activity flow](../diagrams/07-activity-pos-slash-contract.svg)](../diagrams/07-activity-pos-slash-contract.svg)
 
-The contract lives at `casper/src/main/resources/PoS.rhox:446-507`
-(signature on line 436; lines 432-435 are the block-comment header).
+The contract lives in `casper/src/main/resources/PoS.rhox`
+(the `slash` method; a block-comment header precedes the signature).
 
 The activity flow:
 
 1. **Receive** `(deployerId, blockHash, sysAuthToken, returnCh)`.
 2. **Auth-token check** — `sysAuthTokenOps!("check", sysAuthToken,
-   *isValidTokenCh)` (PoS.rhox:448). If the token is invalid,
+   *isValidTokenCh)` (the first guard in the `slash` method). If the token is invalid,
    `returnCh!((false, "Invalid system auth token"))` and stop.
 3. **Parallel reads (fork-join):**
    - `getInvalidBlocks` → `invalidBlocks` map.
@@ -159,7 +159,7 @@ The activity flow:
 5. **Identify the offender:**
    - If `blockHash ∈ invalidBlocks`, then `validator ← invalidBlocks[blockHash]`.
    - Else: the contract returns `(false, "invalid slash evidence")`
-     and no state mutation occurs (`PoS.rhox:449`). There is **no**
+     and no state mutation occurs (the invalid-evidence branch). There is **no**
      fallback to "slash whoever submitted the deploy" — that would
      over-broaden the threat surface (a malicious sender could slash
      an honest deployer by submitting a bogus `blockHash`). The
@@ -174,7 +174,7 @@ The activity flow:
    *transferDoneCh)`.
 9. **Handle transfer result** on `transferDoneCh`:
    - On **success**: atomically construct the new state in one
-     `stateUpdateCh!` write at `PoS.rhox:449-510`:
+     `stateUpdateCh!` write in the `slash` method:
      ```
      atomic stateUpdate(state', (true, Nil)) where
        state'.allBonds          := state.allBonds[validator := 0]

@@ -94,7 +94,7 @@ SlashPending → Slashed → Removed
 | `Bonded → EquivocatorSuspect`              | Detector observes a second block at same seq num.                                                                                                                                               |
 | `EquivocatorSuspect → EquivocatorRecorded` | `insert_equivocation_record(v, s − 1, ∅)` succeeds.                                                                                                                                             |
 | `EquivocatorRecorded → SlashPending`       | Next proposer's `prepare_slashing_deploys` includes `v`.                                                                                                                                        |
-| `SlashPending → Slashed`                   | `@PoS!("slash", …)` succeeds (atomic stateUpdate at `PoS.rhox:449-510`).                                                                                                                        |
+| `SlashPending → Slashed`                   | `@PoS!("slash", …)` succeeds (atomic stateUpdate in the `slash` method of `PoS.rhox`).                                                                                                                        |
 | `Slashed → Removed`                        | PoS removes `v` from `activeValidators` (same atomic stateUpdate; the two states are not separately observable in the implementation but are listed separately to match the spec §6 lifecycle). |
 | `SlashPending → EquivocatorRecorded`       | Slash fails (transfer FIXME, bug fix #4 closes this — falls back to `EquivocatorRecorded`).                                                                                                     |
 | `Removed → ⊥`                              | Terminal — cannot rejoin without a fresh bond deploy (which transitions to `Unbonded → Bonded`).                                                                                                |
@@ -130,7 +130,7 @@ and to match the spec §6 model: `Slashed` projects on `bond := 0`,
 `Removed` projects on `v ∉ active`. Auditors verifying the
 state-machine should treat the `Slashed → Removed` transition as
 *conceptually instantaneous* — both are projections of the same
-atomic stateUpdate at `PoS.rhox:449-510`. Diagram 06 may visually
+atomic stateUpdate in the `slash` method of `PoS.rhox`. Diagram 06 may visually
 combine them or show them separately depending on the renderer; the
 spec is the authoritative source for state count.
 

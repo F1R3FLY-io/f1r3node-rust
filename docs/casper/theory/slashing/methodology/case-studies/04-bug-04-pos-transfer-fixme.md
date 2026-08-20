@@ -14,7 +14,8 @@ continuation listens for an error signal and returns
 ## 2 · Discovery technique
 
 **Primary**: FIXME audit pass. The pre-fix code carried the literal
-comment *“FIXME handle transfer failing case”* at `PoS.rhox:449`.
+comment *“FIXME handle transfer failing case”* in the `slash` method
+of `PoS.rhox`.
 
 **Corroborating**: Rocq mechanization of the slash transition under
 a transfer oracle (`BugFixTransferFailure.v`). The Rocq theorem

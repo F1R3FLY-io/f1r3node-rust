@@ -47,11 +47,12 @@ zero bond.
 
 Bug #10 is the **withdrawal-flow analog** of Bug #4: both close
 `posVault.transfer`-failure FIXMEs in `PoS.rhox`. Bug #4 fixed the
-slash arm (line 469); Bug #10 fixes the post-quarantine
-withdrawal arm (line 619). Bug #10's theorem set
+slash arm (the `slash` method); Bug #10 fixes the post-quarantine
+withdrawal arm (the `removeQuarantinedWithdrawers` flow). Bug #10's theorem set
 (T-9.10 / T-9.10' / T-9.10″) is mechanised in
 `BugFixWithdrawTransferFailure.v`, model-checked in
-`MC_WithdrawFlow.cfg`, and applied in PoS.rhox lines 615-651.
+`MC_WithdrawFlow.cfg`, and applied in the `removeQuarantinedWithdrawers`
+flow of `PoS.rhox`.
 
 > **Implementation status (current).** All eleven fixes are applied
 > in the Rust / Rholang source and mechanized in Rocq:
@@ -61,13 +62,13 @@ withdrawal arm (line 619). Bug #10's theorem set
 > | #1  | T-9.1   | `block_status.rs:216` — `IgnorableEquivocation` in `is_slashable()`  |
 > | #2  | T-9.2   | `engine/multi_parent_casper/validation_dispatcher.rs:459` — RMW via `access_equivocations_tracker` |
 > | #3  | T-9.3   | `engine/multi_parent_casper/validation_dispatcher.rs:502` — `status if status.is_slashable()` catch-all |
-> | #4  | T-9.4   | `PoS.rhox:449-515` — `match transferResult` with deterministic failure |
+> | #4  | T-9.4   | `PoS.rhox` (`slash` method) — `match transferResult` with deterministic failure |
 > | #5  | T-9.5   | `equivocation_detector.rs:285` — `if stake > 0` guard                |
 > | #6  | T-9.6   | `validate.rs:1247-1319` — self-regression filter dropped             |
 > | #7  | T-9.7   | `equivocation_detector.rs` — canonical self-chain child above base    |
 > | #8  | T-9.8   | `block_creator.rs:498-533` — proposer-bond early-return              |
 > | #9  | T-9.9   | `validate.rs:1448-1449` — per-target `slash_targets` exemption (§9.10) |
-> | #10 | T-9.10  | `PoS.rhox:615-651` — `payWithdraw` pattern-match + success-gated `computeRemove` |
+> | #10 | T-9.10  | `PoS.rhox` (`removeQuarantinedWithdrawers`) — `payWithdraw` pattern-match + success-gated `computeRemove` |
 > | #11 | T-9.11  | `equivocation_detector.rs` — total deterministic traversal with distinct child hashes |
 >
 > The "Cause" subsections below describe the *pre-fix* state
@@ -473,8 +474,9 @@ The eleven fixes interact in four notable ways:
    even when the block is self-correcting.
 
 4. **Fix #4 + Fix #10**: Bug #4 fixed the slash arm's
-   `posVault.transfer` failure path (PoS.rhox:469); Bug #10 fixes
-   the *withdrawal* arm's analogous failure path (PoS.rhox:619).
+   `posVault.transfer` failure path (in the `slash` method); Bug #10 fixes
+   the *withdrawal* arm's analogous failure path (in the
+   `removeQuarantinedWithdrawers` flow).
    Together they close every `posVault.transfer` callsite in
    `PoS.rhox` against fund-loss / hung-deploy regressions. The two
    fixes do not interact dynamically — slashing and withdrawal are
@@ -488,7 +490,7 @@ The eleven fixes interact in four notable ways:
 
 **Origin.** Scala-inherited.
 
-**Cause.** `casper/src/main/resources/PoS.rhox:619` carries the
+**Cause.** The pre-fix `casper/src/main/resources/PoS.rhox` carried the
 comment *"FIXME fix transfer in failure case"* inside
 `removeQuarantinedWithdrawers`. The pre-fix `payWithdraw` contract
 calls `payWithdrawer!(...)` and the surrounding flow proceeds to
@@ -502,8 +504,8 @@ the slash arm). The same `posVault.transfer` failure-handling pattern
 applies to both code paths; only the slash arm had been fixed before.
 
 **Pre-fix behavior.** A failed `posVault.transfer` results in:
-1. Validator removed from `state.withdrawers` (line 627).
-2. Validator's `committedRewards` cleared (line 626).
+1. Validator removed from `state.withdrawers` (the `computeRemove` fold).
+2. Validator's `committedRewards` cleared (the same fold).
 3. PoS vault balance unchanged (transfer rolled back at the vault
    layer).
 
@@ -518,7 +520,7 @@ downstream `computeRemove` fold is rewritten to remove **only**
 successful withdrawers from the maps; failed transfers leave the
 per-validator state intact for retry on a later block. Mirrors the
 Bug #4 fix already applied to the slash arm
-(PoS.rhox:472-510).
+(the transfer-result `match` in the `slash` method).
 
 **Theorem T-9.10.** *(`t_9_10_withdraw_transfer_failure_safety`,
 `BugFixWithdrawTransferFailure.v:225`.)* Under the fix, the

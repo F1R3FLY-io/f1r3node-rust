@@ -550,7 +550,7 @@ remaining names to the unforgeable channels `sys:casper:deployerId`,
 `sys:casper:invalidBlockHash`, `sys:casper:authToken`, and
 `sys:casper:return`. Note: `invalidBlockHash` is a hex string in the
 deploy and must be converted via `.hexToBytes()` before being passed
-to `slash` (which expects raw bytes per `PoS.rhox:454`).
+to `slash` (which expects raw bytes per the `slash` signature in `PoS.rhox`).
 
 Source seed: `splitByte(1)` of
 `generateSlashDeployRandomSeed(selfId, seqNum, invalidBlockHash)`.
@@ -575,10 +575,10 @@ deterministic byte projection.
 
 #### 3.4.1 PoS Rholang contract
 
-The on-chain `slash` method at
-`casper/src/main/resources/PoS.rhox:446-507` (signature on line 446;
-lines 432-434 are the `new commitRewards in {` wrapper plus block-comment
-header preceding the signature). Same file is loaded into
+The on-chain `slash` method in
+`casper/src/main/resources/PoS.rhox` (the `contract PoS(@"slash", …)`
+definition inside the `new commitRewards in { … }` wrapper, with a
+block-comment header preceding the signature). Same file is loaded into
 both Rust and Scala interpreters; the contract itself is bisimilar by
 construction. The contract:
 
@@ -590,7 +590,7 @@ construction. The contract:
 5. Otherwise transfers the bond to the Coop vault.
 6. Updates `state.allBonds`, `state.activeValidators`,
    `state.committedRewards` as a single atomic `stateUpdateCh!`
-   map-construction at `PoS.rhox:449-510` (one map write, not three
+   map-construction in the `slash` method (one map write, not three
    field writes).
 7. Returns `(true, Nil)` on `returnCh`; transfer failure returns
    `(false, "transfer failed: ...")` deterministically.
@@ -800,13 +800,16 @@ slash(ps, v) =
 ```
 
 **Idempotence is structural, not branch-explicit.** The implementation
-at `PoS.rhox:446-507` does not read `state.allBonds[v]` to short-circuit
+of the `slash` method in `PoS.rhox` does not read `state.allBonds[v]`
+to short-circuit
 on a second slash. Instead, a second slash on the same offender hits the
-same `invalidBlocks.contains(blockHash)` predicate (`PoS.rhox:449`), and
+same `invalidBlocks.contains(blockHash)` predicate in the `slash`
+method, and
 on the second attempt one of two structural identities applies: either
 (a) the block is no longer in `invalidBlocks` (the invalid-block index
 has been pruned post-slash), and the contract returns
-`(false, "invalid slash evidence")` at `PoS.rhox:449`; or (b) the
+`(false, "invalid slash evidence")` from the invalid-evidence branch
+of `slash`; or (b) the
 `posVault.transfer` of an already-zero `valBond` is a no-op map
 identity, and the subsequent `state.allBonds[v := 0]` overwrite of an
 already-zero entry leaves the state unchanged. The Rocq proof of T-Idem
@@ -860,9 +863,10 @@ For every PoS deploy invoking `@PoS!("slash", deployerId, blockHash,
 sysAuthToken, returnCh)` with `sysAuthToken` not equal to the system auth
 token introduced at PoS contract instantiation, the contract rejects the
 deploy at the first guard
-(`PoS.rhox:448`, `sysAuthTokenOps!("check", sysAuthToken,
+(the auth-token check in the `slash` method of `PoS.rhox`,
+`sysAuthTokenOps!("check", sysAuthToken,
 *isValidTokenCh)`) with `returnCh!((false, "Invalid system auth
-token"))` at `PoS.rhox:449`. No state mutation occurs and no transfer is
+token"))`. No state mutation occurs and no transfer is
 initiated. Rocq models this boundary with
 `execute_authenticated_slash_deploy`: invalid auth returns `(ps, false)`;
 valid auth is extensionally equal to `execute_slash_deploy`. TLA+ models the
@@ -1617,7 +1621,7 @@ design*; T-9.9 establishes that the widening is sound.
 ### 10.10 Bug #10 — PoS withdrawal transfer-failure FIXME
 
 - **Origin.** Scala-inherited.
-- **Cause.** `casper/src/main/resources/PoS.rhox:619` carries the
+- **Cause.** The pre-fix `casper/src/main/resources/PoS.rhox` carried the
   comment *"FIXME fix transfer in failure case"* inside the
   `removeQuarantinedWithdrawers` flow. Pre-fix, `payWithdraw` calls
   `payWithdrawer!(...)` without pattern-matching on the
@@ -1660,7 +1664,8 @@ design*; T-9.9 establishes that the widening is sound.
   `Inv_RemovedImpliesPaid`, `Inv_RewardsConsistent`,
   `Inv_TypeOK`) and the liveness property
   `Live_AllEventuallyPaid` under fair retry scheduling.
-- **Production application.** Applied at PoS.rhox:613-640
+- **Production application.** Applied in the `removeQuarantinedWithdrawers`
+  flow of `PoS.rhox`
   (the post-fix `payWithdraw` + `computeRemove` rewrite). See
   design §11.11 for the worked-example trace and design §9.12
   for the rationale.
@@ -2005,9 +2010,9 @@ Trace:
 7. Other validators replay bA: at the slash deploy,
    sysAuthTokenOps!("check", sysAuthToken, *isValidTokenCh)
    reports !isValid because A's auth token does not match the
-   system token (PoS.rhox:448).
+   system token (the auth-token check in the slash method of PoS.rhox).
 8. PoS contract returns (false, "Invalid system auth token") on
-   returnCh (PoS.rhox:503).
+   returnCh (the invalid-token branch of the slash method).
 9. bA is rejected as a malformed system-deploy result.
    A's CPU and gossip bandwidth wasted.
 

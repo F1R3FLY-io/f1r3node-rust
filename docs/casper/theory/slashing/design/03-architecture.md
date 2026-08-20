@@ -104,7 +104,7 @@ membership predicate.
 
 | Sub-component                     | Role                                                           | Source                                                    |
 |-----------------------------------|----------------------------------------------------------------|-----------------------------------------------------------|
-| **PoS Rholang contract**          | The on-chain `slash` method; mutates bonds and active set.     | `casper/src/main/resources/PoS.rhox` (lines 435-495)      |
+| **PoS Rholang contract**          | The on-chain `slash` method; mutates bonds and active set.     | `casper/src/main/resources/PoS.rhox` (the `slash` method)  |
 | **Bond map / Validator registry** | On-chain state inside the PoS contract: `state.allBonds`, etc. | `PoS.rhox` (state record)                                 |
 | **Coop vault**                    | Recipient of forfeited stake.                                  | A separate Rholang contract (`@posVault!("transfer", …)`) |
 
@@ -221,7 +221,7 @@ block-storage/src/rust/
     └── key_value_deploy_storage.rs     (DeployStorage)
 
 casper/src/main/resources/
-└── PoS.rhox                     (PoS contract; lines 435-495 are the slash method)
+└── PoS.rhox                     (PoS contract; defines the slash method)
 ```
 
 ## 3.6 Component dependency DAG
