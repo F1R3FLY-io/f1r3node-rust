@@ -1010,7 +1010,7 @@ async fn handle_block_finalized(
     block_hash: String,
     block_number: i64,
 ) {
-    use shared::rust::shared::f1r3fly_event::{DeployTransfers, F1r3flyEvent, TransferEvent};
+    use shared::rust::shared::f1r3fly_event::F1r3flyEvent;
 
     use crate::rust::web::block_info_enricher::extract_transfers_from_report;
 
@@ -1029,21 +1029,7 @@ async fn handle_block_finalized(
         Ok(report) => {
             let transfers_by_deploy = extract_transfers_from_report(&report, &transfer_unforgeable);
 
-            let deploy_transfers: Vec<DeployTransfers> = transfers_by_deploy
-                .into_iter()
-                .map(|(deploy_id, transfers)| DeployTransfers {
-                    deploy_id,
-                    transfers: transfers
-                        .into_iter()
-                        .map(|t| TransferEvent {
-                            from_addr: t.from_addr,
-                            to_addr: t.to_addr,
-                            amount: t.amount,
-                            success: t.success,
-                        })
-                        .collect(),
-                })
-                .collect();
+            let deploy_transfers = build_deploy_transfers(transfers_by_deploy);
 
             if !deploy_transfers.is_empty() {
                 if let Err(e) = event_publisher.publish(F1r3flyEvent::transfers_available(
@@ -1073,9 +1059,34 @@ async fn handle_block_finalized(
     }
 }
 
+fn build_deploy_transfers(
+    transfers_by_deploy: std::collections::HashMap<String, Vec<models::casper::TransferInfo>>,
+) -> Vec<shared::rust::shared::f1r3fly_event::DeployTransfers> {
+    use shared::rust::shared::f1r3fly_event::{DeployTransfers, TransferEvent};
+
+    transfers_by_deploy
+        .into_iter()
+        .filter(|(_, transfers)| !transfers.is_empty())
+        .map(|(deploy_id, transfers)| DeployTransfers {
+            deploy_id,
+            transfers: transfers
+                .into_iter()
+                .map(|t| TransferEvent {
+                    from_addr: t.from_addr,
+                    to_addr: t.to_addr,
+                    amount: t.amount,
+                    success: t.success,
+                })
+                .collect(),
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
-    use super::block_report_prewarm_enabled;
+    use models::casper::TransferInfo;
+
+    use super::{block_report_prewarm_enabled, build_deploy_transfers};
 
     #[test]
     fn block_report_prewarm_supports_read_only_and_dev_mode_nodes() {
@@ -1083,5 +1094,60 @@ mod tests {
         assert!(block_report_prewarm_enabled(false, true));
         assert!(block_report_prewarm_enabled(true, true));
         assert!(!block_report_prewarm_enabled(false, false));
+    }
+
+    fn transfer(from: &str, to: &str, amount: i64) -> TransferInfo {
+        TransferInfo {
+            from_addr: from.to_string(),
+            to_addr: to.to_string(),
+            amount,
+            success: true,
+            fail_reason: String::new(),
+        }
+    }
+
+    #[test]
+    fn build_deploy_transfers_drops_deploys_with_no_transfers() {
+        let mut map = std::collections::HashMap::new();
+        map.insert("deploy_with".to_string(), vec![transfer("a", "b", 10)]);
+        map.insert("deploy_without".to_string(), vec![]);
+
+        let out = build_deploy_transfers(map);
+
+        assert_eq!(out.len(), 1, "only deploys with transfers are kept");
+        let entry = &out[0];
+        assert_eq!(entry.deploy_id, "deploy_with");
+        assert_eq!(entry.transfers.len(), 1);
+        assert_eq!(entry.transfers[0].amount, 10);
+    }
+
+    #[test]
+    fn build_deploy_transfers_returns_empty_when_no_deploy_has_transfers() {
+        let mut map = std::collections::HashMap::new();
+        map.insert("d1".to_string(), vec![]);
+        map.insert("d2".to_string(), vec![]);
+
+        let out = build_deploy_transfers(map);
+
+        assert!(
+            out.is_empty(),
+            "no event payload when no deploy in the block has transfers"
+        );
+    }
+
+    #[test]
+    fn build_deploy_transfers_preserves_multiple_transfers_per_deploy() {
+        let mut map = std::collections::HashMap::new();
+        map.insert("d1".to_string(), vec![
+            transfer("a", "b", 1),
+            transfer("a", "c", 2),
+        ]);
+
+        let out = build_deploy_transfers(map);
+
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].transfers.len(), 2);
+        assert_eq!(out[0].transfers[0].amount, 1);
+        assert_eq!(out[0].transfers[1].amount, 2);
     }
 }
