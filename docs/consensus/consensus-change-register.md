@@ -4351,6 +4351,13 @@ rank test agrees. All eight AND/OR depth cells favor treatment. AMD uProf 5.3 ti
 attribute the control to decoded ParBag/PathMap traversal, vector growth, and allocator work; the
 treatment shifts samples to the explicit PDA and canonical cursors.
 
+Those experiment-302 Criterion cohorts ran in fixed control-then-treatment order. They are accepted
+selection evidence for CBR-063, but not an order-independent paired replication. Pgmcp child
+`spatial-matcher-exact-scalar-abba-replication` remains open for balanced randomized AB/BA pairs,
+including standalone equal and mismatch transitions; its result can strengthen or qualify the
+performance evidence but cannot change this consensus classification unless it reveals a semantic
+disagreement.
+
 The first release control exposed a release-only cursor defect: consuming the child key inside
 `debug_assert_eq!` erased that state transition when assertions were compiled out. The read is now
 unconditional, and both depth-20,000 branching gates pass in release as well as debug. That repair
@@ -4359,6 +4366,29 @@ operation, or execution ordering; it makes release execute the same validated cu
 exercised in debug. This continuation therefore remains `OPTIMIZATION_MEASURED_NEUTRAL` under
 CBR-063 rather than creating a new active entry. Stack-safety report §5.30 and its durable TSV carry
 the exact resource evidence. Complete release-workspace validation remains a separate pending gate.
+
+**CBR-065 release-policy continuation (2026-08-21).** The first release-workspace attempt recorded
+4,330 passes alongside two policy-gate failures. The recursion finding was a receiver-erasure false
+positive that joined `Iterator::all` to an unrelated `CandidatePlanBuilder::all`; both production
+query methods remain flat iterative walks. Rollback panic probes now execute in exact child processes
+and require an intended-panic reachability marker plus a during-unwind witness that observes the
+complete entry `FreeMap` after transaction `Drop`. This strengthens the evidence for CBR-065 without
+changing the transaction or matcher equation.
+
+Expected-failure depth-probe children now suppress core collection only after proving their child
+role. The control parent remains dumpable, signal status remains the measured observable, suppression
+failure is non-fatal, and an explicit environment override restores core generation. This is a
+test-harness resource correction only and cannot change admitted terms, values, matches, hashes,
+protobuf/bincode/EPM1 bytes, COMMs, charges, PathMap state, or parallel order.
+
+The corrected high-cap run then exposed a separate production complexity defect:
+`walk_demand_events` clones the complete remaining `Par` suffix once per nesting level merely to scan
+local Expr occurrences. That $`\Theta(d^2)`$ accounting walk is tracked under reachable pgmcp child
+`accounting-demand-local-occurrence-linear-walk`; the 1,905.63 s run was interrupted and is not
+claimed as passing evidence. Any repair must preserve exact demand, lane attribution, and `unknown`
+semantics and will receive its own consensus ruling. These findings do not alter CBR-065's
+`BUG_FIX_RULED_NONCONSENSUS` classification. Stack-safety report §5.31.6 contains the controls,
+limitations, and artifact digests.
 
 **CBR-033 living evidence continuation (2026-08-11; pgmcp #5301).** `7983bf4b` makes the
 read-only hot-store snapshot total over the union of datum and continuation key domains. A datum

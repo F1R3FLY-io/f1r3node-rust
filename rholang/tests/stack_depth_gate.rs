@@ -894,6 +894,7 @@ fn gate_child() {
         println!("gate_child: no GATE_SUBJECT — not a child invocation, nothing to do");
         return;
     };
+    let _ = shared::rust::test_process::suppress_expected_probe_core_dump();
     let depth: usize = std::env::var("GATE_DEPTH")
         .expect("GATE_DEPTH must accompany GATE_SUBJECT")
         .parse()

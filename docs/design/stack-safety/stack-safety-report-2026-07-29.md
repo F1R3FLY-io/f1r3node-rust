@@ -8662,6 +8662,14 @@ mean reduction or **6.67×** throughput. Welch $`p = 6.69 \times 10^{-155}`$ and
 $`d = -344.03`$; the non-normal treatment warning is answered by Mann–Whitney $`p = 0`$ at reported
 precision and Cliff's $`\delta = -1`$. All eight cells favor treatment.
 
+This accepted study is selection evidence, not yet order-independent replication: every Criterion
+registration ran the decoder control before the validated-byte treatment. Pgmcp child
+`spatial-matcher-exact-scalar-abba-replication` therefore remains open for a frozen, balanced,
+randomized paired AB/BA design over equal AND, late-success OR, standalone equality, and standalone
+mismatch. Until that child reports its paired log-ratio interval and order-interaction guard, the
+table supports the retained implementation and its causal hypothesis but does not establish that
+the measured ratio is free of run-order bias.
+
 AMD uProf 5.3.521.0 supplies mechanistic, not merely timing, evidence. Five-second time-based
 profiles at AND/4,096 put decoded ParBag/PathMap iteration, zipper construction, `RawVec` growth,
 `malloc`, and `free` among the decoder control's ten hottest functions. Allocator self samples are
@@ -8897,6 +8905,55 @@ outside this claim. No native recursion, stack-size increase,
 introduced. This section closes rollback retention and the exact FreeVar constant factor. Candidate
 mask retention, exact-scalar replicated matching, and cursor/body pairing remain separately named
 children of the campaign rather than being hidden inside this result.
+
+#### 5.31.6 Release-policy audit and high-cap gate diagnosis
+
+The first release-workspace attempt recorded **4,330 passing tests** alongside two policy-test
+failures: the handwritten-recursion census conflated two unrelated methods named
+`all` after erasing their receiver types, and the panic-expectation gate rejected test-local
+`catch_unwind` rollback probes. Four already-running high-cap depth gates were then interrupted;
+they were not counted as passes or product failures. The captured log has SHA-256 digest
+`40c812d204b163f06f9d5add6b5e1436fcdfd3edd00fc64950a7a1bc74339c0a`.
+
+The apparent recursion cycle is not executable. `RhoMatchQuery::is_exact` applies
+`Iterator::all` to a flat vector, whereas `CandidatePlanBuilder::all` is a distinct associated
+constructor; `RhoPathQuery::retained_prefix` itself is iterative and nested RMP1 values are skipped
+by an explicit closer worklist. The census now records that receiver-erasure false positive without
+rewriting the production methods merely to satisfy a textual approximation.
+
+The rollback tests now re-execute one exact child test and let the intended panic unwind normally.
+A safe `Rc<RefCell<_>>` witness is declared before the mutable borrow, so reverse destruction drops
+the transaction and releases the borrow before the witness checks the complete entry `FreeMap`.
+The parent requires a unique reachability marker, the intended full panic payload, unsuccessful child
+status, and `panicking=true restored=true`. Thus an early unrelated failure, a missing failpoint, a
+sentinel panic, or an incomplete rollback cannot certify the property. After making the intended
+panic payloads fully disjoint from the reachability and sentinel messages, the focused release suite
+passed **19/19** in **0.224 s** against the final source. Its log digest is
+`137785387ac323c50a1436db8f20e7d73104d5d2e3bc3f3f44c8b2ddb40959b7`.
+
+Deliberate stack-boundary children also disable core collection after, and only after, proving their
+child-role environment. Linux uses `prctl(PR_SET_DUMPABLE, 0)` because a zero `RLIMIT_CORE` alone does
+not bypass a piped `core_pattern`; other Unix targets set the soft core limit to zero, and unsupported
+targets retain the prior behavior. Signal delivery and exit status are unchanged, the ordinary test
+parent remains dumpable, setup failure is non-fatal, and `F1R3_DEPTH_PROBE_ALLOW_CORE=1` restores the
+diagnostic behavior explicitly. The negative ingress control passed **1/1** in **0.01 s** and emitted
+no target-worktree core artifact; its log digest is
+`b749c44f0460c415a82928d1a6d2feace7c7f1dafeba926be6a0cb5783fe1539`.
+
+The subsequent four-gate release run was intentionally stopped after **1,905.63 s** with all four
+tests still active. It revealed a production complexity defect rather than a collector stall:
+`walk_demand_events` clones the complete remaining nested `Par` into `ScanUnknown` at every visited
+level even though that state reads only local Expr occurrences. A depth-$`d`$ chain therefore
+performs suffix work proportional to $`d + (d-1) + \cdots + 1 = \Theta(d^2)`$; the depth-20,000
+accounting gate consumed one full core for more than 31 minutes. Pgmcp child
+`accounting-demand-local-occurrence-linear-walk` records the source-level repair and linearity gates.
+No depth cap is lowered and this interrupted run is not presented as validation evidence. Its log
+digest is `63455043becf0301face7e91efdbb65041f70e92eb9df44d66c46bc306996cd8`.
+
+All controls above are test-harness or traversal-complexity observations. Core suppression and
+subprocess assertion mechanics cannot move a Rholang value, match, hash, COMM, charge, byte stream,
+PathMap operation, or execution order. The accounting repair remains open and must receive its own
+semantic classification and measured result before the complete release-workspace gate is rerun.
 
 ---
 

@@ -403,6 +403,16 @@ const RECURSION_DISPOSITIONS: &[(&str, Disposition)] = &[
         ),
     ),
     (
+        "rspace++/src/rspace/rho_path.rs",
+        Disposition::NotATermDepthCycle(
+            "conservative receiver-erasure over-report: `RhoPathQuery::retained_prefix` calls \
+             `RhoMatchQuery::is_exact`, whose flat `Iterator::all` is merged with the unrelated \
+             `CandidatePlanBuilder::all`; the resulting textual SCC has no runtime back-edge. \
+             Both query methods iterate contiguous vectors, while nested RMP1 framing is the \
+             explicit `skip_rmp_value` closer worklist",
+        ),
+    ),
+    (
         "rspace++/src/rspace/history/radix_tree.rs",
         Disposition::NotATermDepthCycle(
             "★ EIGHT self-recursive functions (`go`, `update`, `delete`, `make_actions`, \

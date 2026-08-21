@@ -3,7 +3,9 @@
 #[path = "../../../models/tests/par_corpus/mod.rs"]
 mod par_corpus;
 
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
+use std::rc::Rc;
 
 use models::rhoapi::connective::ConnectiveInstance::{
     ConnAndBody, ConnBool, ConnByteArray, ConnInt, ConnNotBody, ConnOrBody, ConnString, ConnUri,
@@ -28,7 +30,10 @@ use models::rust::utils::{
 use pathmap::PathMap;
 use rspace_plus_plus::rspace::rho_path::{encode_structural_sequence, RhoPathQuery};
 
-use super::free_map_transaction::{panic_after_writes_for_test, BindingDelta, FreeMapTransaction};
+use super::free_map_transaction::{
+    assert_unwind_probe, panic_after_writes_for_test, unwind_probe_subject, BindingDelta,
+    FreeMapTransaction, UnwindRollbackWitness,
+};
 use super::r#match::{rho_path_query_atom, rho_path_query_cursor_atom};
 use super::recursive_oracle::spatial_matcher::{
     SpatialMatcher as RecursiveSpatialMatcher, SpatialMatcherContext as RecursiveContext,
@@ -1516,18 +1521,37 @@ fn nested_binding_journal_captures_exact_free_vars_without_terminal_par_decodes(
 
 #[test]
 fn matcher_drive_unwind_after_a_completed_binding_restores_the_entry_map() {
+    let module = module_path!()
+        .split_once("::")
+        .map(|(_, rest)| rest)
+        .expect("module_path! is crate-qualified");
+    let child = format!("{module}::matcher_drive_unwind_probe_child");
+    assert_unwind_probe(
+        &child,
+        "matcher-four-writes",
+        "FreeMap matcher write failpoint",
+    );
+}
+
+#[test]
+fn matcher_drive_unwind_probe_child() {
+    let Some(subject) = unwind_probe_subject() else {
+        return;
+    };
+    assert_eq!(subject, "matcher-four-writes");
+
     let baseline_value = new_gstring_par("entry baseline".into(), Vec::new(), false);
-    let mut context = SpatialMatcherContext::new();
-    context.free_map.insert(41, baseline_value);
-    let baseline = context.free_map.clone();
+    let shared = Rc::new(RefCell::new(SpatialMatcherContext::new()));
+    shared.borrow_mut().free_map.insert(41, baseline_value);
+    let baseline = shared.borrow().free_map.clone();
+    let _witness = UnwindRollbackWitness::new(Rc::clone(&shared), baseline, &subject);
+    let mut context = shared.borrow_mut();
     let pattern = planned_binding_conjunction(8, 1);
 
+    eprintln!("FREEMAP_UNWIND_REACHED subject={subject}");
     panic_after_writes_for_test(4);
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let _ = context.spatial_match(new_gint_par(1, Vec::new(), false), pattern);
-    }));
-    assert!(result.is_err());
-    assert_eq!(context.free_map, baseline);
+    let _ = context.spatial_match(new_gint_par(1, Vec::new(), false), pattern);
+    panic!("matcher unwind probe returned before its configured fourth-write failure");
 }
 
 #[test]

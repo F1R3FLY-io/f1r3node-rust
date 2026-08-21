@@ -6,6 +6,8 @@ pub mod metrics_constants;
 pub mod metrics_semaphore;
 pub mod shared;
 pub mod store;
+/// Process controls shared by out-of-process test probes.
+pub mod test_process;
 // Test-support only: process-scoped scratch directories that clean themselves up without a
 // `Drop` impl. Compiled unconditionally rather than behind a `test-utils` feature because
 // `rholang::rust::interpreter::test_utils` is itself an ungated `pub mod` that calls into it;

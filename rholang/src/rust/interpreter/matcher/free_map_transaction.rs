@@ -6,14 +6,101 @@
 //! or bypass transaction state.
 
 #[cfg(test)]
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::btree_map::Entry;
 use std::collections::BTreeMap;
+#[cfg(test)]
+use std::process::Command;
+#[cfg(test)]
+use std::rc::Rc;
 
 use models::rhoapi::Par;
 use models::rust::utils::FreeMap;
 
 use super::spatial_matcher::SpatialMatcherContext;
+
+#[cfg(test)]
+const UNWIND_PROBE_SUBJECT: &str = "RHOLANG_FREEMAP_UNWIND_PROBE_SUBJECT";
+
+/// Observe the public map after [`FreeMapTransaction::drop`] while the child
+/// process is still unwinding.  The witness is declared before the mutable
+/// `RefCell` borrow, so reverse-order destruction releases the transaction and
+/// borrow before this inspection runs.
+#[cfg(test)]
+pub(super) struct UnwindRollbackWitness {
+    context: Rc<RefCell<SpatialMatcherContext>>,
+    baseline: FreeMap,
+    subject: String,
+}
+
+#[cfg(test)]
+impl UnwindRollbackWitness {
+    pub(super) fn new(
+        context: Rc<RefCell<SpatialMatcherContext>>,
+        baseline: FreeMap,
+        subject: impl Into<String>,
+    ) -> Self {
+        Self {
+            context,
+            baseline,
+            subject: subject.into(),
+        }
+    }
+}
+
+#[cfg(test)]
+impl Drop for UnwindRollbackWitness {
+    fn drop(&mut self) {
+        let panicking = std::thread::panicking();
+        let restored = self
+            .context
+            .try_borrow()
+            .is_ok_and(|context| context.free_map == self.baseline);
+        eprintln!(
+            "FREEMAP_UNWIND_WITNESS subject={} panicking={panicking} restored={restored}",
+            self.subject
+        );
+    }
+}
+
+#[cfg(test)]
+pub(super) fn unwind_probe_subject() -> Option<String> { std::env::var(UNWIND_PROBE_SUBJECT).ok() }
+
+/// Re-execute exactly one child test and require anti-vacuous evidence that
+/// the intended failure was reached and transaction `Drop` restored the map
+/// during real unwinding. `panic_marker` must be a complete fragment unique to
+/// the intended panic payload, never merely a subject name that can occur in
+/// the reachability or witness markers. This keeps panic interception out of
+/// the test process while testing the property that matters at the process
+/// boundary.
+#[cfg(test)]
+pub(super) fn assert_unwind_probe(test_name: &str, subject: &str, panic_marker: &str) {
+    let output = Command::new(std::env::current_exe().expect("the test binary knows its path"))
+        .env(UNWIND_PROBE_SUBJECT, subject)
+        .args([test_name, "--exact", "--nocapture", "--test-threads=1"])
+        .output()
+        .expect("the FreeMap unwind child process starts");
+    let text = String::from_utf8_lossy(&output.stdout).into_owned()
+        + &String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !output.status.success(),
+        "the FreeMap unwind child unexpectedly succeeded for {subject}:\n{text}"
+    );
+    assert!(
+        text.contains(&format!("FREEMAP_UNWIND_REACHED subject={subject}")),
+        "the FreeMap unwind child never reached {subject}:\n{text}"
+    );
+    assert!(
+        text.contains(panic_marker),
+        "the FreeMap unwind child failed for the wrong reason at {subject}:\n{text}"
+    );
+    assert!(
+        text.contains(&format!(
+            "FREEMAP_UNWIND_WITNESS subject={subject} panicking=true restored=true"
+        )),
+        "the FreeMap unwind witness did not observe an exact restored map for {subject}:\n{text}"
+    );
+}
 
 #[cfg(test)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -288,8 +375,6 @@ impl Drop for FreeMapTransaction<'_> {
 
 #[cfg(test)]
 mod tests {
-    use std::panic::{catch_unwind, AssertUnwindSafe};
-
     use models::rust::utils::new_gint_par;
 
     use super::*;
@@ -348,17 +433,12 @@ mod tests {
         assert!(transaction.finish(false).is_none());
         assert_eq!(refused.free_map, baseline);
 
-        let mut unwound = SpatialMatcherContext::new();
-        unwound.free_map.insert(1, value(10));
-        let baseline = unwound.free_map.clone();
-        let result = catch_unwind(AssertUnwindSafe(|| {
-            let mut transaction = FreeMapTransaction::new(&mut unwound);
-            transaction.write(1, value(99));
-            transaction.write(2, value(20));
-            panic!("transaction unwind control");
-        }));
-        assert!(result.is_err());
-        assert_eq!(unwound.free_map, baseline);
+        let module = module_path!()
+            .split_once("::")
+            .map(|(_, rest)| rest)
+            .expect("module_path! is crate-qualified");
+        let child = format!("{module}::free_map_transaction_unwind_probe_child");
+        assert_unwind_probe(&child, "root-write", "transaction unwind control");
     }
 
     #[test]
@@ -370,22 +450,57 @@ mod tests {
             ExtractionFailpoint::DuringDeltaBuild,
             ExtractionFailpoint::AfterDeltaBuild,
         ] {
-            let mut context = SpatialMatcherContext::new();
-            context.free_map.insert(9, value(90));
-            let baseline = context.free_map.clone();
-            let result = catch_unwind(AssertUnwindSafe(|| {
-                let mut transaction = FreeMapTransaction::new(&mut context);
-                transaction.write(7, value(70));
-                let checkpoint = transaction.checkpoint();
-                transaction.write(1, value(10));
-                transaction.write(1, value(11));
-                transaction.write(2, value(20));
-                set_extraction_failpoint(failpoint);
-                let _ = transaction.take_delta_and_rollback(checkpoint);
-            }));
-            assert!(result.is_err(), "the {failpoint:?} failpoint must fire");
-            assert_eq!(context.free_map, baseline);
+            let module = module_path!()
+                .split_once("::")
+                .map(|(_, rest)| rest)
+                .expect("module_path! is crate-qualified");
+            let child = format!("{module}::free_map_transaction_unwind_probe_child");
+            let subject = format!("extract-{failpoint:?}");
+            assert_unwind_probe(
+                &child,
+                &subject,
+                &format!("FreeMap extraction failpoint: {failpoint:?}"),
+            );
         }
+    }
+
+    #[test]
+    fn free_map_transaction_unwind_probe_child() {
+        let Some(subject) = unwind_probe_subject() else {
+            return;
+        };
+
+        let shared = Rc::new(RefCell::new(SpatialMatcherContext::new()));
+        shared.borrow_mut().free_map.insert(9, value(90));
+        let baseline = shared.borrow().free_map.clone();
+        let _witness = UnwindRollbackWitness::new(Rc::clone(&shared), baseline, &subject);
+        let mut context = shared.borrow_mut();
+        eprintln!("FREEMAP_UNWIND_REACHED subject={subject}");
+
+        if subject == "root-write" {
+            let mut transaction = FreeMapTransaction::new(&mut context);
+            transaction.write(9, value(99));
+            transaction.write(2, value(20));
+            panic!("transaction unwind control");
+        }
+
+        let failpoint = match subject.as_str() {
+            "extract-BeforeReserve" => ExtractionFailpoint::BeforeReserve,
+            "extract-AfterReserve" => ExtractionFailpoint::AfterReserve,
+            "extract-AfterRollback" => ExtractionFailpoint::AfterRollback,
+            "extract-DuringDeltaBuild" => ExtractionFailpoint::DuringDeltaBuild,
+            "extract-AfterDeltaBuild" => ExtractionFailpoint::AfterDeltaBuild,
+            _ => panic!("unknown FreeMap unwind probe subject: {subject}"),
+        };
+        let mut transaction = FreeMapTransaction::new(&mut context);
+        transaction.write(7, value(70));
+        let checkpoint = transaction.checkpoint();
+        transaction.write(1, value(10));
+        transaction.write(1, value(11));
+        transaction.write(2, value(20));
+        set_extraction_failpoint(failpoint);
+        let _ = transaction.take_delta_and_rollback(checkpoint);
+        panic!("FreeMap extraction failpoint did not fire: {failpoint:?}");
     }
 
     #[test]

@@ -253,6 +253,7 @@ fn deploy_child() {
         println!("deploy_child: no DEPLOY_SUBJECT — not a child invocation, nothing to do");
         return;
     };
+    let _ = shared::rust::test_process::suppress_expected_probe_core_dump();
     let depth: usize = std::env::var("DEPLOY_DEPTH")
         .expect("DEPLOY_DEPTH must accompany DEPLOY_SUBJECT")
         .parse()

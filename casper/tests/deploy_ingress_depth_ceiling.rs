@@ -447,6 +447,7 @@ fn ingress_child() {
         println!("ingress_child: no INGRESS_DEPTH — not a child invocation, nothing to do");
         return;
     };
+    let _ = shared::rust::test_process::suppress_expected_probe_core_dump();
     let depth: usize = depth.parse().expect("INGRESS_DEPTH must be an integer");
     let stack: usize = std::env::var("INGRESS_STACK")
         .expect("INGRESS_STACK must accompany INGRESS_DEPTH")
