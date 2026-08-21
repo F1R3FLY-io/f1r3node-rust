@@ -587,44 +587,46 @@ async fn check_lfb_and_propose(
     } else {
         lfb_lag_blocks <= pending_deploy_max_lag
     };
-    let pending_deploys_due =
-        has_pending_deploys && (!self_recently_proposed || can_propose_pending_deploys_while_ahead);
+    let pending_deploys_due = has_pending_deploys
+        && !self_proposed_too_recently
+        && (!self_recently_proposed || can_propose_pending_deploys_while_ahead);
     // Backstop: even when high lag throttles pending-deploy proposals, force a bounded
     // retry based on local self-proposal cadence so deploys cannot starve indefinitely.
     let pending_deploy_backstop_due = has_pending_deploys
         && self_recently_proposed
         && !can_propose_pending_deploys_while_ahead
+        && lag_recovery_leader
+        && !self_proposed_too_recently
         && self_latest_block_timestamp_ms
             .map(|timestamp_ms| now.saturating_sub(timestamp_ms) >= stale_recovery_min_interval_ms)
-            .unwrap_or(true)
-        && (!self_proposed_too_recently || deploy_grace_active);
+            .unwrap_or(true);
     let can_follow_frontier_without_pending_deploys =
         deploy_recovery_hint || stale_recovery_interval_elapsed;
-    // Cooldown protects idle clusters from empty-block churn, but during deploy-driven
-    // recovery/finalization we should not wait out the full cooldown before advancing finality.
-    let allow_cooldown_override_for_deploy_recovery =
-        has_pending_deploys || has_new_parent_with_user_deploys;
     // When a peer parent with user deploys is observed, allow one frontier-follow step
     // while ahead (bounded by pending-deploy lag threshold) to unblock synchrony progress.
-    let allow_frontier_follow_while_ahead_for_deploy_parent =
-        has_new_parent_with_user_deploys && lfb_lag_blocks <= deploy_recovery_max_lag;
+    let allow_frontier_follow_while_ahead_for_deploy_parent = has_new_parent_with_user_deploys
+        && lfb_lag_blocks <= deploy_recovery_max_lag
+        && !self_proposed_too_recently;
     let can_chase_frontier_while_ahead = lfb_lag_blocks <= effective_frontier_chase_cap
         && has_new_parents
         && !empty_frontier_backpressure
-        && (!self_proposed_too_recently || allow_cooldown_override_for_deploy_recovery);
+        && !self_proposed_too_recently;
     let frontier_follow_due = !has_pending_deploys
         && has_new_parents
         && !empty_frontier_backpressure
+        && !self_proposed_too_recently
         && can_follow_frontier_without_pending_deploys
         && (!self_recently_proposed
             || can_chase_frontier_while_ahead
             || allow_frontier_follow_while_ahead_for_deploy_parent);
-    let stale_lfb_recovery_due = lfb_is_stale
-        && stale_recovery_window_open
-        && !empty_frontier_backpressure
-        && (!self_recently_proposed || can_chase_frontier_while_ahead || deploy_grace_active);
     let lag_recovery_threshold = pending_deploy_max_lag;
     let moderate_lag_recovery_threshold = std::cmp::max(1, lag_recovery_threshold / 2);
+    let stale_lfb_recovery_due = lfb_is_stale
+        && lfb_lag_blocks <= moderate_lag_recovery_threshold
+        && stale_recovery_window_open
+        && !empty_frontier_backpressure
+        && !self_proposed_too_recently
+        && (!self_recently_proposed || can_chase_frontier_while_ahead);
     let stale_lfb_leader_recovery_due = lfb_is_stale
         && (frontier_is_stale || lfb_lag_blocks > moderate_lag_recovery_threshold)
         && !has_pending_deploys
@@ -632,14 +634,14 @@ async fn check_lfb_and_propose(
         && lag_recovery_leader
         && stale_recovery_window_open
         && !empty_frontier_backpressure
-        && (!self_proposed_too_recently || deploy_grace_active)
+        && !self_proposed_too_recently
         && !stale_lfb_recovery_due;
     let high_lag_recovery_due = !has_pending_deploys
         && lfb_lag_blocks > lag_recovery_threshold
         && lag_recovery_leader
         && stale_recovery_window_open
         && !empty_frontier_backpressure
-        && (!self_proposed_too_recently || deploy_grace_active);
+        && !self_proposed_too_recently;
     // Convergence recovery: when the LFB is stale and we have unjustified peer blocks,
     // propose a convergence block that references all known tips. This breaks the deadlock
     // where validators diverge into independent forks and normal throttling prevents any
@@ -677,12 +679,11 @@ async fn check_lfb_and_propose(
             "pending user deploys in storage".to_string()
         } else if frontier_follow_due {
             format!(
-                "new parents observed (lag={}, self_recently_proposed={}, cooldown_active={}, cooldown_ms={}, cooldown_override_for_deploy_recovery={}, frontier_chase_cap={}, user_deploy_parent={}, deploy_grace_active={}, stale_recovery_interval_ms={}); proposing to keep frontier moving",
+                "new parents observed (lag={}, self_recently_proposed={}, cooldown_active={}, cooldown_ms={}, frontier_chase_cap={}, user_deploy_parent={}, deploy_grace_active={}, stale_recovery_interval_ms={}); proposing to keep frontier moving",
                 lfb_lag_blocks,
                 self_recently_proposed,
                 self_proposed_too_recently,
                 config.self_propose_cooldown.as_millis(),
-                allow_cooldown_override_for_deploy_recovery,
                 effective_frontier_chase_cap,
                 has_new_parent_with_user_deploys,
                 deploy_grace_active,
@@ -825,10 +826,9 @@ async fn check_lfb_and_propose(
                 )
             } else if has_new_parents && self_recently_proposed && !can_chase_frontier_while_ahead {
                 format!(
-                    "frontier-follow throttled: lag {}, cooldown_active={}, cooldown_override_for_deploy_recovery={}, deploy_parent_override={}, cap {} while already ahead",
+                    "frontier-follow throttled: lag {}, cooldown_active={}, deploy_parent_override={}, cap {} while already ahead",
                     lfb_lag_blocks,
                     self_proposed_too_recently,
-                    allow_cooldown_override_for_deploy_recovery,
                     allow_frontier_follow_while_ahead_for_deploy_parent,
                     effective_frontier_chase_cap
                 )
@@ -1525,6 +1525,11 @@ mod tests {
                 &mut snapshot,
                 validator_id.clone().into(),
             );
+            snapshot.parents[0].body.state.bonds.clear();
+            casper::rust::casper::test_helpers::TestCasperWithSnapshot::bond_validator_in_snapshot(
+                &mut snapshot,
+                validator_id.clone().into(),
+            );
 
             let lfb_hash = test_hash(1);
             add_test_metadata(
@@ -2094,6 +2099,147 @@ mod tests {
                 1,
                 "Pending deploys should bypass empty-frontier backpressure"
             );
+        }
+
+        #[tokio::test]
+        async fn high_lag_pending_deploy_backstop_is_leader_only() {
+            let validator = create_test_validator_identity();
+            let validator_id = validator.public_key.bytes.clone();
+            let (mut snapshot, lfb) = wide_unfinalized_snapshot(validator_id);
+            casper::rust::casper::test_helpers::TestCasperWithSnapshot::bond_validator_in_snapshot(
+                &mut snapshot,
+                Validator::from(vec![0]),
+            );
+
+            let casper: Arc<dyn MultiParentCasper + Send + Sync> = Arc::new(
+                casper::rust::casper::test_helpers::TestCasperWithSnapshot::new_with_pending_deploys(
+                    snapshot, lfb, 1,
+                ),
+            );
+            let (propose_count, propose_func) = create_counting_propose_function();
+            let mut config = empty_frontier_backpressure_config();
+            config.advanced.pending_deploy_max_lag = 1;
+            config.advanced.deploy_recovery_max_lag = 1;
+            let mut finality_progress = FinalityProgress::new(Instant::now());
+
+            let result = do_heartbeat_check(
+                casper,
+                &*propose_func,
+                &validator,
+                &config,
+                false,
+                false,
+                &mut finality_progress,
+            )
+            .await;
+
+            assert!(result.is_ok(), "do_heartbeat_check should succeed");
+            assert_eq!(propose_count.load(Ordering::SeqCst), 0);
+        }
+
+        #[tokio::test]
+        async fn high_lag_pending_deploy_backstop_allows_leader() {
+            let validator = create_test_validator_identity();
+            let validator_id = validator.public_key.bytes.clone();
+            let (snapshot, lfb) = wide_unfinalized_snapshot(validator_id);
+
+            let casper: Arc<dyn MultiParentCasper + Send + Sync> = Arc::new(
+                casper::rust::casper::test_helpers::TestCasperWithSnapshot::new_with_pending_deploys(
+                    snapshot, lfb, 1,
+                ),
+            );
+            let (propose_count, propose_func) = create_counting_propose_function();
+            let mut config = empty_frontier_backpressure_config();
+            config.advanced.pending_deploy_max_lag = 1;
+            config.advanced.deploy_recovery_max_lag = 1;
+            let mut finality_progress = FinalityProgress::new(Instant::now());
+
+            let result = do_heartbeat_check(
+                casper,
+                &*propose_func,
+                &validator,
+                &config,
+                false,
+                false,
+                &mut finality_progress,
+            )
+            .await;
+
+            assert!(result.is_ok(), "do_heartbeat_check should succeed");
+            assert_eq!(propose_count.load(Ordering::SeqCst), 1);
+        }
+
+        #[tokio::test]
+        async fn high_lag_stale_recovery_is_leader_only() {
+            let validator = create_test_validator_identity();
+            let validator_id = validator.public_key.bytes.clone();
+            let (mut snapshot, lfb) = wide_unfinalized_snapshot(validator_id);
+            casper::rust::casper::test_helpers::TestCasperWithSnapshot::bond_validator_in_snapshot(
+                &mut snapshot,
+                Validator::from(vec![0]),
+            );
+
+            let casper: Arc<dyn MultiParentCasper + Send + Sync> = Arc::new(
+                casper::rust::casper::test_helpers::TestCasperWithSnapshot::new(snapshot, lfb),
+            );
+            let (propose_count, propose_func) = create_counting_propose_function();
+            let mut config = empty_frontier_backpressure_config();
+            config.advanced.frontier_chase_max_lag = 1;
+            config.advanced.pending_deploy_max_lag = 1;
+            config.advanced.deploy_recovery_max_lag = 1;
+            config.advanced.empty_frontier_max_unfinalized_blocks = 100;
+            let mut finality_progress = FinalityProgress::new(Instant::now());
+
+            let result = do_heartbeat_check(
+                casper,
+                &*propose_func,
+                &validator,
+                &config,
+                false,
+                false,
+                &mut finality_progress,
+            )
+            .await;
+
+            assert!(result.is_ok(), "do_heartbeat_check should succeed");
+            assert_eq!(propose_count.load(Ordering::SeqCst), 0);
+        }
+
+        #[tokio::test]
+        async fn deploy_grace_does_not_bypass_self_propose_cooldown() {
+            let validator = create_test_validator_identity();
+            let validator_id = validator.public_key.bytes.clone();
+            let (snapshot, lfb) = wide_unfinalized_snapshot(validator_id);
+            let casper_impl = casper::rust::casper::test_helpers::TestCasperWithSnapshot::new_with_pending_deploys(
+                snapshot, lfb, 1,
+            );
+            let mut self_tip = models::rust::block_implicits::get_random_block_default();
+            self_tip.block_hash = test_hash(0x18);
+            self_tip.header.timestamp = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_millis() as i64;
+            casper_impl.insert_block(&self_tip);
+            let casper: Arc<dyn MultiParentCasper + Send + Sync> = Arc::new(casper_impl);
+            let (propose_count, propose_func) = create_counting_propose_function();
+            let mut config = empty_frontier_backpressure_config();
+            config.advanced.pending_deploy_max_lag = 1;
+            config.advanced.deploy_recovery_max_lag = 1;
+            let mut finality_progress = FinalityProgress::new(Instant::now());
+
+            let result = do_heartbeat_check(
+                casper,
+                &*propose_func,
+                &validator,
+                &config,
+                false,
+                true,
+                &mut finality_progress,
+            )
+            .await;
+
+            assert!(result.is_ok(), "do_heartbeat_check should succeed");
+            assert_eq!(propose_count.load(Ordering::SeqCst), 0);
         }
 
         /// The terminal ucc-stall state (session 3cd723b6): finalization

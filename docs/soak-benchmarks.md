@@ -390,6 +390,28 @@ the bar a real 60h weekend is judged against.
 Checkpoints still work — the shortened window is enumerated for the 07:30 and
 13:00 Pacific instants that remain inside it.
 
+### Running a soak without the integration preflight
+
+A manual dispatch can set `skip_integration_preflight=true` to start the soak
+segments without the full integration preflight, for any duration:
+
+```bash
+gh workflow run merge-recovery-soak.yml --ref dev \
+  -f target_ref=master -f duration=weekend-60h -f skip_integration_preflight=true
+```
+
+Use this mode when a known defect blocks the preflight and the soak data is
+still wanted. The flag is manual-only: a scheduled slot refuses it, and it
+cannot combine with `preflight_only` or `canary`. The automatic in-window
+restart carries the flag forward, so a restarted run skips the preflight too.
+
+**A run that skipped the preflight does not qualify as a release gate.** No
+integration preflight commit status is written for it, and the published
+summary and verdict carry `integration_preflight: "skipped"` and
+`gate_qualifying: false` (also stamped into `run.integration_preflight` in
+the history entry). The soak numbers are real and stay in the series. The
+candidate is not promotable on that run.
+
 ## Previewing the dashboard locally
 
 The page loads its data with `fetch()`, which browsers refuse over `file://`,
