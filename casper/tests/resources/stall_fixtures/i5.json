@@ -1,0 +1,2725 @@
+{
+ "base_height": 116,
+ "blocks": [
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": true,
+   "height": 116,
+   "id": "5ba9a3256f",
+   "justifications": {},
+   "main_parent": null,
+   "sender": "04801118"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": true,
+   "height": 116,
+   "id": "a8ec279d9c",
+   "justifications": {},
+   "main_parent": null,
+   "sender": "04d26c61"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 117,
+   "id": "631940d97e",
+   "justifications": {
+    "04d26c61": "a8ec279d9c"
+   },
+   "main_parent": "a8ec279d9c",
+   "sender": "04d26c61"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 117,
+   "id": "ea977ea474",
+   "justifications": {
+    "04801118": "5ba9a3256f"
+   },
+   "main_parent": "5ba9a3256f",
+   "sender": "04801118"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 118,
+   "id": "4f287e2d0b",
+   "justifications": {
+    "04801118": "ea977ea474",
+    "04d26c61": "631940d97e"
+   },
+   "main_parent": "ea977ea474",
+   "sender": "04801118"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 118,
+   "id": "d3ed74ca33",
+   "justifications": {
+    "04801118": "ea977ea474",
+    "04d26c61": "631940d97e"
+   },
+   "main_parent": "ea977ea474",
+   "sender": "04d26c61"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": true,
+   "filler_parent": false,
+   "height": 121,
+   "id": "2ff4f98bde",
+   "justifications": {
+    "04801118": "ea977ea474",
+    "04d26c61": "631940d97e"
+   },
+   "main_parent": "ea977ea474",
+   "sender": "04fa70d7"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": true,
+   "filler_parent": false,
+   "height": 122,
+   "id": "4e84b524a0",
+   "justifications": {
+    "04801118": "4f287e2d0b",
+    "04d26c61": "631940d97e",
+    "04fa70d7": "2ff4f98bde"
+   },
+   "main_parent": "4f287e2d0b",
+   "sender": "04801118"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 122,
+   "id": "6f14f6b5de",
+   "justifications": {
+    "04801118": "ea977ea474",
+    "04d26c61": "631940d97e",
+    "04fa70d7": "2ff4f98bde"
+   },
+   "main_parent": "2ff4f98bde",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": true,
+   "filler_parent": false,
+   "height": 122,
+   "id": "ff12aefeca",
+   "justifications": {
+    "04801118": "4f287e2d0b",
+    "04d26c61": "d3ed74ca33",
+    "04fa70d7": "2ff4f98bde"
+   },
+   "main_parent": "4f287e2d0b",
+   "sender": "04d26c61"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": true,
+   "filler_parent": false,
+   "height": 125,
+   "id": "3954b1cdbd",
+   "justifications": {
+    "04801118": "4f287e2d0b",
+    "04d26c61": "d3ed74ca33"
+   },
+   "main_parent": "d3ed74ca33",
+   "sender": "04fa70d7"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": true,
+   "filler_parent": false,
+   "height": 125,
+   "id": "9facec0441",
+   "justifications": {
+    "04801118": "4e84b524a0",
+    "04d26c61": "d3ed74ca33"
+   },
+   "main_parent": "4e84b524a0",
+   "sender": "04801118"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": true,
+   "filler_parent": false,
+   "height": 125,
+   "id": "e606c612db",
+   "justifications": {
+    "04801118": "4f287e2d0b",
+    "04d26c61": "d3ed74ca33"
+   },
+   "main_parent": "d3ed74ca33",
+   "sender": "04837a4c"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": true,
+   "filler_parent": false,
+   "height": 127,
+   "id": "86ac3faf3b",
+   "justifications": {
+    "04801118": "9facec0441",
+    "04d26c61": "ff12aefeca"
+   },
+   "main_parent": "9facec0441",
+   "sender": "04801118"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": true,
+   "filler_parent": false,
+   "height": 129,
+   "id": "1100f91605",
+   "justifications": {
+    "04801118": "4e84b524a0"
+   },
+   "main_parent": "4e84b524a0",
+   "sender": "04d26c61"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": true,
+   "filler_parent": false,
+   "height": 130,
+   "id": "d97f9a1859",
+   "justifications": {
+    "04801118": "86ac3faf3b"
+   },
+   "main_parent": "86ac3faf3b",
+   "sender": "04801118"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": true,
+   "filler_parent": false,
+   "height": 132,
+   "id": "5ff5725ebd",
+   "justifications": {
+    "04801118": "86ac3faf3b",
+    "04d26c61": "1100f91605"
+   },
+   "main_parent": "1100f91605",
+   "sender": "04d26c61"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": true,
+   "filler_parent": false,
+   "height": 132,
+   "id": "93b815ab6a",
+   "justifications": {
+    "04801118": "d97f9a1859"
+   },
+   "main_parent": "d97f9a1859",
+   "sender": "04801118"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 133,
+   "id": "4b51c18b2c",
+   "justifications": {
+    "04801118": "93b815ab6a"
+   },
+   "main_parent": "93b815ab6a",
+   "sender": "04801118"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": true,
+   "filler_parent": false,
+   "height": 135,
+   "id": "b6376a76fa",
+   "justifications": {
+    "04801118": "4b51c18b2c"
+   },
+   "main_parent": "4b51c18b2c",
+   "sender": "04801118"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": true,
+   "filler_parent": false,
+   "height": 139,
+   "id": "fb093aadde",
+   "justifications": {
+    "04801118": "b6376a76fa"
+   },
+   "main_parent": "b6376a76fa",
+   "sender": "04801118"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 140,
+   "id": "c356b01788",
+   "justifications": {
+    "04801118": "fb093aadde"
+   },
+   "main_parent": "fb093aadde",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 141,
+   "id": "78b2bae009",
+   "justifications": {
+    "0457feba": "c356b01788",
+    "04801118": "fb093aadde"
+   },
+   "main_parent": "c356b01788",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 142,
+   "id": "b9ba3922ff",
+   "justifications": {
+    "0457feba": "78b2bae009",
+    "04801118": "fb093aadde"
+   },
+   "main_parent": "78b2bae009",
+   "sender": "04801118"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 143,
+   "id": "17c6eab0c9",
+   "justifications": {
+    "0457feba": "78b2bae009",
+    "04801118": "b9ba3922ff"
+   },
+   "main_parent": "b9ba3922ff",
+   "sender": "04801118"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 144,
+   "id": "005b91fbef",
+   "justifications": {
+    "0457feba": "78b2bae009",
+    "04801118": "17c6eab0c9"
+   },
+   "main_parent": "17c6eab0c9",
+   "sender": "04801118"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 144,
+   "id": "3312cfee4c",
+   "justifications": {
+    "04801118": "17c6eab0c9"
+   },
+   "main_parent": "17c6eab0c9",
+   "sender": "0457feba"
+  },
+  {
+   "era": 1,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 145,
+   "id": "179ed0c340",
+   "justifications": {
+    "04801118": "005b91fbef"
+   },
+   "main_parent": "005b91fbef",
+   "sender": "04801118"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": true,
+   "filler_parent": false,
+   "height": 145,
+   "id": "91d1370643",
+   "justifications": {
+    "04801118": "17c6eab0c9"
+   },
+   "main_parent": "5ff5725ebd",
+   "sender": "04fa70d7"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 146,
+   "id": "5c82bd0c97",
+   "justifications": {
+    "0457feba": "3312cfee4c",
+    "04801118": "179ed0c340",
+    "04fa70d7": "91d1370643"
+   },
+   "main_parent": "179ed0c340",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 146,
+   "id": "80e42a426d",
+   "justifications": {
+    "0457feba": "3312cfee4c",
+    "04801118": "179ed0c340",
+    "04fa70d7": "91d1370643"
+   },
+   "main_parent": "179ed0c340",
+   "sender": "04837a4c"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 147,
+   "id": "18a247a8db",
+   "justifications": {
+    "0457feba": "5c82bd0c97",
+    "04801118": "179ed0c340",
+    "04fa70d7": "91d1370643"
+   },
+   "main_parent": "5c82bd0c97",
+   "sender": "04801118"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 148,
+   "id": "049f217d63",
+   "justifications": {
+    "0457feba": "5c82bd0c97",
+    "04801118": "18a247a8db",
+    "04837a4c": "80e42a426d"
+   },
+   "main_parent": "18a247a8db",
+   "sender": "04801118"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": true,
+   "filler_parent": false,
+   "height": 160,
+   "id": "8ae240aed6",
+   "justifications": {},
+   "main_parent": "049f217d63",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": true,
+   "filler_parent": false,
+   "height": 161,
+   "id": "09e1e3b821",
+   "justifications": {
+    "0457feba": "8ae240aed6"
+   },
+   "main_parent": "049f217d63",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": true,
+   "filler_parent": false,
+   "height": 162,
+   "id": "083354a2fa",
+   "justifications": {
+    "0457feba": "09e1e3b821"
+   },
+   "main_parent": "049f217d63",
+   "sender": "04fa70d7"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": true,
+   "filler_parent": false,
+   "height": 162,
+   "id": "4ca2cdf0e1",
+   "justifications": {
+    "0457feba": "09e1e3b821"
+   },
+   "main_parent": "049f217d63",
+   "sender": "0457feba"
+  },
+  {
+   "era": 2,
+   "extra_filler_parent": true,
+   "filler_parent": false,
+   "height": 162,
+   "id": "af5a3e458a",
+   "justifications": {
+    "0457feba": "09e1e3b821"
+   },
+   "main_parent": "049f217d63",
+   "sender": "04837a4c"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 163,
+   "id": "11dc19b3ee",
+   "justifications": {
+    "0457feba": "09e1e3b821",
+    "04837a4c": "af5a3e458a"
+   },
+   "main_parent": "af5a3e458a",
+   "sender": "04837a4c"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": true,
+   "filler_parent": false,
+   "height": 163,
+   "id": "67707a8353",
+   "justifications": {
+    "0457feba": "09e1e3b821",
+    "04fa70d7": "083354a2fa"
+   },
+   "main_parent": "049f217d63",
+   "sender": "04fa70d7"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": true,
+   "filler_parent": false,
+   "height": 163,
+   "id": "9b1fea8244",
+   "justifications": {
+    "0457feba": "4ca2cdf0e1"
+   },
+   "main_parent": "049f217d63",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": true,
+   "filler_parent": false,
+   "height": 164,
+   "id": "283883cf10",
+   "justifications": {
+    "0457feba": "4ca2cdf0e1",
+    "04837a4c": "11dc19b3ee"
+   },
+   "main_parent": "049f217d63",
+   "sender": "04837a4c"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": true,
+   "filler_parent": false,
+   "height": 164,
+   "id": "b747ee8ec2",
+   "justifications": {
+    "0457feba": "9b1fea8244",
+    "04837a4c": "af5a3e458a",
+    "04fa70d7": "083354a2fa"
+   },
+   "main_parent": "049f217d63",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": true,
+   "filler_parent": false,
+   "height": 164,
+   "id": "de3e5b5edc",
+   "justifications": {
+    "0457feba": "4ca2cdf0e1",
+    "04837a4c": "af5a3e458a",
+    "04fa70d7": "67707a8353"
+   },
+   "main_parent": "049f217d63",
+   "sender": "04fa70d7"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": true,
+   "filler_parent": false,
+   "height": 165,
+   "id": "0b1db89e24",
+   "justifications": {
+    "0457feba": "9b1fea8244",
+    "04837a4c": "11dc19b3ee",
+    "04fa70d7": "de3e5b5edc"
+   },
+   "main_parent": "11dc19b3ee",
+   "sender": "04fa70d7"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 165,
+   "id": "618e67e57d",
+   "justifications": {
+    "0457feba": "9b1fea8244",
+    "04837a4c": "283883cf10",
+    "04fa70d7": "67707a8353"
+   },
+   "main_parent": "283883cf10",
+   "sender": "04837a4c"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": true,
+   "filler_parent": false,
+   "height": 165,
+   "id": "e02affa495",
+   "justifications": {
+    "0457feba": "b747ee8ec2",
+    "04837a4c": "11dc19b3ee",
+    "04fa70d7": "67707a8353"
+   },
+   "main_parent": "11dc19b3ee",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": true,
+   "filler_parent": false,
+   "height": 166,
+   "id": "288fefb0b3",
+   "justifications": {
+    "0457feba": "e02affa495",
+    "04837a4c": "11dc19b3ee",
+    "04fa70d7": "de3e5b5edc"
+   },
+   "main_parent": "11dc19b3ee",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 166,
+   "id": "2decba0c6e",
+   "justifications": {
+    "0457feba": "9b1fea8244",
+    "04837a4c": "283883cf10",
+    "04fa70d7": "67707a8353"
+   },
+   "main_parent": "618e67e57d",
+   "sender": "04837a4c"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 166,
+   "id": "edbbeb782a",
+   "justifications": {
+    "0457feba": "b747ee8ec2",
+    "04837a4c": "11dc19b3ee",
+    "04fa70d7": "0b1db89e24"
+   },
+   "main_parent": "0b1db89e24",
+   "sender": "04fa70d7"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 167,
+   "id": "9fb0e9f391",
+   "justifications": {
+    "0457feba": "288fefb0b3",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "288fefb0b3",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 168,
+   "id": "96a64e6de9",
+   "justifications": {
+    "0457feba": "9fb0e9f391",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "9fb0e9f391",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 169,
+   "id": "4b73f483e4",
+   "justifications": {
+    "0457feba": "96a64e6de9",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "96a64e6de9",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 170,
+   "id": "1437fff64f",
+   "justifications": {
+    "0457feba": "4b73f483e4",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "4b73f483e4",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 171,
+   "id": "6cd46be65f",
+   "justifications": {
+    "0457feba": "1437fff64f",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "1437fff64f",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 172,
+   "id": "961435d9ba",
+   "justifications": {
+    "0457feba": "6cd46be65f",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "6cd46be65f",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 173,
+   "id": "1fbaa8d212",
+   "justifications": {
+    "0457feba": "961435d9ba",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "961435d9ba",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 174,
+   "id": "546d903b84",
+   "justifications": {
+    "0457feba": "1fbaa8d212",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "1fbaa8d212",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 175,
+   "id": "d6f8dc079f",
+   "justifications": {
+    "0457feba": "546d903b84",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "546d903b84",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 176,
+   "id": "0f7a999efa",
+   "justifications": {
+    "0457feba": "d6f8dc079f",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "d6f8dc079f",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 177,
+   "id": "b6946953ce",
+   "justifications": {
+    "0457feba": "0f7a999efa",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "0f7a999efa",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 178,
+   "id": "5d1a83812c",
+   "justifications": {
+    "0457feba": "b6946953ce",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "b6946953ce",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 179,
+   "id": "5613ae70fb",
+   "justifications": {
+    "0457feba": "5d1a83812c",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "5d1a83812c",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 180,
+   "id": "2fa82f02c4",
+   "justifications": {
+    "0457feba": "5613ae70fb",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "5613ae70fb",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 181,
+   "id": "510cb4eac8",
+   "justifications": {
+    "0457feba": "2fa82f02c4",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "2fa82f02c4",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 182,
+   "id": "ac0e66f958",
+   "justifications": {
+    "0457feba": "510cb4eac8",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "510cb4eac8",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 183,
+   "id": "a0f801bc4f",
+   "justifications": {
+    "0457feba": "ac0e66f958",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "ac0e66f958",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 184,
+   "id": "05a78626d2",
+   "justifications": {
+    "0457feba": "a0f801bc4f",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "a0f801bc4f",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 185,
+   "id": "b0000fe2fa",
+   "justifications": {
+    "0457feba": "05a78626d2",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "05a78626d2",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 186,
+   "id": "fee30b63b2",
+   "justifications": {
+    "0457feba": "b0000fe2fa",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "b0000fe2fa",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 187,
+   "id": "90cb097788",
+   "justifications": {
+    "0457feba": "fee30b63b2",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "fee30b63b2",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 188,
+   "id": "2c0a1e3c9b",
+   "justifications": {
+    "0457feba": "90cb097788",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "90cb097788",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 189,
+   "id": "c96aecb570",
+   "justifications": {
+    "0457feba": "2c0a1e3c9b",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "2c0a1e3c9b",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 190,
+   "id": "04b9dca3fa",
+   "justifications": {
+    "0457feba": "c96aecb570",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "c96aecb570",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 191,
+   "id": "f871baa30b",
+   "justifications": {
+    "0457feba": "04b9dca3fa",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "04b9dca3fa",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 192,
+   "id": "802ec9a3f4",
+   "justifications": {
+    "0457feba": "f871baa30b",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "f871baa30b",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 193,
+   "id": "51ce0fc1b6",
+   "justifications": {
+    "0457feba": "802ec9a3f4",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "802ec9a3f4",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 194,
+   "id": "b22f633426",
+   "justifications": {
+    "0457feba": "51ce0fc1b6",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "51ce0fc1b6",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 195,
+   "id": "674b580bfb",
+   "justifications": {
+    "0457feba": "b22f633426",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "b22f633426",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 196,
+   "id": "1fab4328a6",
+   "justifications": {
+    "0457feba": "674b580bfb",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "674b580bfb",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 197,
+   "id": "3a9314bc4d",
+   "justifications": {
+    "0457feba": "1fab4328a6",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "1fab4328a6",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 198,
+   "id": "6cde23d506",
+   "justifications": {
+    "0457feba": "3a9314bc4d",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "3a9314bc4d",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 199,
+   "id": "1b680ee38c",
+   "justifications": {
+    "0457feba": "6cde23d506",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "6cde23d506",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 200,
+   "id": "71fc9695e8",
+   "justifications": {
+    "0457feba": "1b680ee38c",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "1b680ee38c",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 201,
+   "id": "e3d6d704ae",
+   "justifications": {
+    "0457feba": "71fc9695e8",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "71fc9695e8",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 202,
+   "id": "67fda61759",
+   "justifications": {
+    "0457feba": "e3d6d704ae",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "e3d6d704ae",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 203,
+   "id": "92ab828582",
+   "justifications": {
+    "0457feba": "67fda61759",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "67fda61759",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 204,
+   "id": "07fb9f578a",
+   "justifications": {
+    "0457feba": "92ab828582",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "92ab828582",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 205,
+   "id": "84c931f6e4",
+   "justifications": {
+    "0457feba": "07fb9f578a",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "07fb9f578a",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 206,
+   "id": "0008168145",
+   "justifications": {
+    "0457feba": "84c931f6e4",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "84c931f6e4",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 207,
+   "id": "7656af4f81",
+   "justifications": {
+    "0457feba": "0008168145",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "0008168145",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 208,
+   "id": "55e2144591",
+   "justifications": {
+    "0457feba": "7656af4f81",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "7656af4f81",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 209,
+   "id": "7786c59bfa",
+   "justifications": {
+    "0457feba": "55e2144591",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "55e2144591",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 210,
+   "id": "53b1e1f80b",
+   "justifications": {
+    "0457feba": "7786c59bfa",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "7786c59bfa",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 211,
+   "id": "418388921e",
+   "justifications": {
+    "0457feba": "53b1e1f80b",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "53b1e1f80b",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 212,
+   "id": "688c4c2c4a",
+   "justifications": {
+    "0457feba": "418388921e",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "418388921e",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 213,
+   "id": "177e900b01",
+   "justifications": {
+    "0457feba": "688c4c2c4a",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "688c4c2c4a",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 214,
+   "id": "8bc96626a3",
+   "justifications": {
+    "0457feba": "177e900b01",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "177e900b01",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 215,
+   "id": "68b56054cd",
+   "justifications": {
+    "0457feba": "8bc96626a3",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "8bc96626a3",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 216,
+   "id": "5a0dc3d4b5",
+   "justifications": {
+    "0457feba": "68b56054cd",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "68b56054cd",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 217,
+   "id": "838510f327",
+   "justifications": {
+    "0457feba": "5a0dc3d4b5",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "5a0dc3d4b5",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 218,
+   "id": "ba492cc40e",
+   "justifications": {
+    "0457feba": "838510f327",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "838510f327",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 219,
+   "id": "9bfbc45563",
+   "justifications": {
+    "0457feba": "ba492cc40e",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "ba492cc40e",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 220,
+   "id": "9f5f9cff8e",
+   "justifications": {
+    "0457feba": "9bfbc45563",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "9bfbc45563",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 221,
+   "id": "5256b2e0ac",
+   "justifications": {
+    "0457feba": "9f5f9cff8e",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "9f5f9cff8e",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 222,
+   "id": "4322889458",
+   "justifications": {
+    "0457feba": "5256b2e0ac",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "5256b2e0ac",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 223,
+   "id": "181f97294a",
+   "justifications": {
+    "0457feba": "4322889458",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "4322889458",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 224,
+   "id": "ca0842f86a",
+   "justifications": {
+    "0457feba": "181f97294a",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "181f97294a",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 225,
+   "id": "80a98084f7",
+   "justifications": {
+    "0457feba": "ca0842f86a",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "ca0842f86a",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 226,
+   "id": "e66d332b03",
+   "justifications": {
+    "0457feba": "80a98084f7",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "80a98084f7",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 227,
+   "id": "4077968b9d",
+   "justifications": {
+    "0457feba": "e66d332b03",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "e66d332b03",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 228,
+   "id": "e0482f7ab4",
+   "justifications": {
+    "0457feba": "4077968b9d",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "4077968b9d",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 229,
+   "id": "970e5c438b",
+   "justifications": {
+    "0457feba": "e0482f7ab4",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "e0482f7ab4",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 230,
+   "id": "6e24eed07b",
+   "justifications": {
+    "0457feba": "970e5c438b",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "970e5c438b",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 231,
+   "id": "f66df54956",
+   "justifications": {
+    "0457feba": "6e24eed07b",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "6e24eed07b",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 232,
+   "id": "d659ebe259",
+   "justifications": {
+    "0457feba": "f66df54956",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "f66df54956",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 233,
+   "id": "2c9ec1d6f7",
+   "justifications": {
+    "0457feba": "d659ebe259",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "d659ebe259",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 234,
+   "id": "f4e0ee981a",
+   "justifications": {
+    "0457feba": "2c9ec1d6f7",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "2c9ec1d6f7",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 235,
+   "id": "3499b1d876",
+   "justifications": {
+    "0457feba": "f4e0ee981a",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "f4e0ee981a",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 236,
+   "id": "6be89d4402",
+   "justifications": {
+    "0457feba": "3499b1d876",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "3499b1d876",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 237,
+   "id": "f08e3d0d4a",
+   "justifications": {
+    "0457feba": "6be89d4402",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "6be89d4402",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 238,
+   "id": "774aea3da2",
+   "justifications": {
+    "0457feba": "f08e3d0d4a",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "f08e3d0d4a",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 239,
+   "id": "4167814973",
+   "justifications": {
+    "0457feba": "774aea3da2",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "774aea3da2",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 240,
+   "id": "7e2b775ae3",
+   "justifications": {
+    "0457feba": "4167814973",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "4167814973",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 241,
+   "id": "a172a64ce5",
+   "justifications": {
+    "0457feba": "7e2b775ae3",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "7e2b775ae3",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 242,
+   "id": "8b0f8f7b74",
+   "justifications": {
+    "0457feba": "a172a64ce5",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "a172a64ce5",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 243,
+   "id": "167eebe807",
+   "justifications": {
+    "0457feba": "8b0f8f7b74",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "8b0f8f7b74",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 244,
+   "id": "d651c3efa2",
+   "justifications": {
+    "0457feba": "167eebe807",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "167eebe807",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 245,
+   "id": "6875e20721",
+   "justifications": {
+    "0457feba": "d651c3efa2",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "d651c3efa2",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 246,
+   "id": "4daaa353d6",
+   "justifications": {
+    "0457feba": "6875e20721",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "6875e20721",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 247,
+   "id": "aeedba470d",
+   "justifications": {
+    "0457feba": "4daaa353d6",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "4daaa353d6",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 248,
+   "id": "b3325adb44",
+   "justifications": {
+    "0457feba": "aeedba470d",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "aeedba470d",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 249,
+   "id": "130f23ded3",
+   "justifications": {
+    "0457feba": "b3325adb44",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "b3325adb44",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 250,
+   "id": "ca3cef7052",
+   "justifications": {
+    "0457feba": "130f23ded3",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "130f23ded3",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 251,
+   "id": "c19cbc1efd",
+   "justifications": {
+    "0457feba": "ca3cef7052",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "ca3cef7052",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 252,
+   "id": "d997499c1f",
+   "justifications": {
+    "0457feba": "c19cbc1efd",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "c19cbc1efd",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 253,
+   "id": "1c44d546cf",
+   "justifications": {
+    "0457feba": "d997499c1f",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "d997499c1f",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 254,
+   "id": "b5b03e5688",
+   "justifications": {
+    "0457feba": "1c44d546cf",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "1c44d546cf",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 255,
+   "id": "c73667f303",
+   "justifications": {
+    "0457feba": "b5b03e5688",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "b5b03e5688",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 256,
+   "id": "a82e6478d5",
+   "justifications": {
+    "0457feba": "c73667f303",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "c73667f303",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 257,
+   "id": "2fbc82821f",
+   "justifications": {
+    "0457feba": "a82e6478d5",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "a82e6478d5",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 258,
+   "id": "d60df0c3fd",
+   "justifications": {
+    "0457feba": "2fbc82821f",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "2fbc82821f",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 259,
+   "id": "f3283b0be2",
+   "justifications": {
+    "0457feba": "d60df0c3fd",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "d60df0c3fd",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 260,
+   "id": "ca69a0da7a",
+   "justifications": {
+    "0457feba": "f3283b0be2",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "f3283b0be2",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 261,
+   "id": "c006f004b6",
+   "justifications": {
+    "0457feba": "ca69a0da7a",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "ca69a0da7a",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 262,
+   "id": "46eabe720c",
+   "justifications": {
+    "0457feba": "c006f004b6",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "c006f004b6",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 263,
+   "id": "4cf50c6514",
+   "justifications": {
+    "0457feba": "46eabe720c",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "46eabe720c",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 264,
+   "id": "191dfaade7",
+   "justifications": {
+    "0457feba": "4cf50c6514",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "4cf50c6514",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 265,
+   "id": "4acceadd41",
+   "justifications": {
+    "0457feba": "191dfaade7",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "191dfaade7",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 266,
+   "id": "c3dcd8288f",
+   "justifications": {
+    "0457feba": "4acceadd41",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "4acceadd41",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 267,
+   "id": "abdb78e666",
+   "justifications": {
+    "0457feba": "c3dcd8288f",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "c3dcd8288f",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 268,
+   "id": "3680ea8144",
+   "justifications": {
+    "0457feba": "abdb78e666",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "abdb78e666",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 269,
+   "id": "c39ee8d3f3",
+   "justifications": {
+    "0457feba": "3680ea8144",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "3680ea8144",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 270,
+   "id": "3a141ba925",
+   "justifications": {
+    "0457feba": "c39ee8d3f3",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "c39ee8d3f3",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 271,
+   "id": "1919b90a48",
+   "justifications": {
+    "0457feba": "3a141ba925",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "3a141ba925",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 272,
+   "id": "f9be5fbb24",
+   "justifications": {
+    "0457feba": "1919b90a48",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "1919b90a48",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 273,
+   "id": "1eac54d3b5",
+   "justifications": {
+    "0457feba": "f9be5fbb24",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "f9be5fbb24",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 274,
+   "id": "e3c22e7a58",
+   "justifications": {
+    "0457feba": "1eac54d3b5",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "1eac54d3b5",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 275,
+   "id": "2e94514d48",
+   "justifications": {
+    "0457feba": "e3c22e7a58",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "e3c22e7a58",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 276,
+   "id": "8739b7fd98",
+   "justifications": {
+    "0457feba": "2e94514d48",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "2e94514d48",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 277,
+   "id": "f51b157a81",
+   "justifications": {
+    "0457feba": "8739b7fd98",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "8739b7fd98",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 278,
+   "id": "b9eb348a20",
+   "justifications": {
+    "0457feba": "f51b157a81",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "f51b157a81",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 279,
+   "id": "db6d4cc5df",
+   "justifications": {
+    "0457feba": "b9eb348a20",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "b9eb348a20",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 280,
+   "id": "a5ccd72468",
+   "justifications": {
+    "0457feba": "db6d4cc5df",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "db6d4cc5df",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 281,
+   "id": "b545c5b6a4",
+   "justifications": {
+    "0457feba": "a5ccd72468",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "a5ccd72468",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 282,
+   "id": "70cb244d05",
+   "justifications": {
+    "0457feba": "b545c5b6a4",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "b545c5b6a4",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 283,
+   "id": "e19d362029",
+   "justifications": {
+    "0457feba": "70cb244d05",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "70cb244d05",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 284,
+   "id": "5aa3ecd4e8",
+   "justifications": {
+    "0457feba": "e19d362029",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "e19d362029",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 285,
+   "id": "80971a00d8",
+   "justifications": {
+    "0457feba": "5aa3ecd4e8",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "5aa3ecd4e8",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 286,
+   "id": "60859d58c3",
+   "justifications": {
+    "0457feba": "80971a00d8",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "80971a00d8",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 287,
+   "id": "3c7038507a",
+   "justifications": {
+    "0457feba": "60859d58c3",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "60859d58c3",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 288,
+   "id": "78a4501c23",
+   "justifications": {
+    "0457feba": "3c7038507a",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "3c7038507a",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 289,
+   "id": "33c2a7abb7",
+   "justifications": {
+    "0457feba": "78a4501c23",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "78a4501c23",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 290,
+   "id": "65aaf6ef5a",
+   "justifications": {
+    "0457feba": "33c2a7abb7",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "33c2a7abb7",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 291,
+   "id": "e32ef6f6c7",
+   "justifications": {
+    "0457feba": "65aaf6ef5a",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "65aaf6ef5a",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 292,
+   "id": "d07b1d90a9",
+   "justifications": {
+    "0457feba": "e32ef6f6c7",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "e32ef6f6c7",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 293,
+   "id": "5ddacc66ed",
+   "justifications": {
+    "0457feba": "d07b1d90a9",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "d07b1d90a9",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 294,
+   "id": "555a938efe",
+   "justifications": {
+    "0457feba": "5ddacc66ed",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "5ddacc66ed",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 295,
+   "id": "ae5fd0be5c",
+   "justifications": {
+    "0457feba": "555a938efe",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "555a938efe",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 296,
+   "id": "42c6111787",
+   "justifications": {
+    "0457feba": "ae5fd0be5c",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "ae5fd0be5c",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 297,
+   "id": "9f823d045b",
+   "justifications": {
+    "0457feba": "42c6111787",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "42c6111787",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 298,
+   "id": "db4549797b",
+   "justifications": {
+    "0457feba": "9f823d045b",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "9f823d045b",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 299,
+   "id": "6b904c8dcc",
+   "justifications": {
+    "0457feba": "db4549797b",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "db4549797b",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 300,
+   "id": "471f71656d",
+   "justifications": {
+    "0457feba": "6b904c8dcc",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "6b904c8dcc",
+   "sender": "0457feba"
+  },
+  {
+   "era": 0,
+   "extra_filler_parent": false,
+   "filler_parent": false,
+   "height": 301,
+   "id": "a6f57cbaeb",
+   "justifications": {
+    "0457feba": "471f71656d",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "main_parent": "471f71656d",
+   "sender": "0457feba"
+  }
+ ],
+ "eras": [
+  {
+   "0457feba": 100,
+   "04801118": 300,
+   "04837a4c": 100,
+   "04d26c61": 200,
+   "04fa70d7": 100
+  },
+  {
+   "0457feba": 100,
+   "04801118": 300,
+   "04837a4c": 100,
+   "04fa70d7": 100
+  },
+  {
+   "0457feba": 100,
+   "04837a4c": 100,
+   "04fa70d7": 100
+  }
+ ],
+ "ftt_ppm": 330000,
+ "instance": "i5",
+ "max_height": 301,
+ "samples": [
+  {
+   "agreeing": 500,
+   "decision": false,
+   "era": 0,
+   "kind": "fidelity",
+   "max_clique": 300,
+   "snapshot": {
+    "0457feba": "6f14f6b5de",
+    "04801118": "4f287e2d0b",
+    "04837a4c": "e606c612db",
+    "04d26c61": "ff12aefeca",
+    "04fa70d7": "3954b1cdbd"
+   },
+   "target": "4f287e2d0b",
+   "total": 800
+  },
+  {
+   "agreeing": 800,
+   "decision": false,
+   "era": 0,
+   "kind": "fidelity",
+   "max_clique": 300,
+   "snapshot": {
+    "0457feba": "c96aecb570",
+    "04801118": "049f217d63",
+    "04837a4c": "2decba0c6e",
+    "04d26c61": "5ff5725ebd",
+    "04fa70d7": "edbbeb782a"
+   },
+   "target": "4f287e2d0b",
+   "total": 800
+  },
+  {
+   "agreeing": 800,
+   "decision": false,
+   "era": 0,
+   "kind": "fidelity",
+   "max_clique": 300,
+   "snapshot": {
+    "0457feba": "a6f57cbaeb",
+    "04801118": "049f217d63",
+    "04837a4c": "2decba0c6e",
+    "04d26c61": "5ff5725ebd",
+    "04fa70d7": "edbbeb782a"
+   },
+   "target": "4f287e2d0b",
+   "total": 800
+  },
+  {
+   "agreeing": 400,
+   "decision": false,
+   "era": 1,
+   "kind": "fidelity",
+   "max_clique": 300,
+   "snapshot": {
+    "0457feba": "5c82bd0c97",
+    "04801118": "18a247a8db",
+    "04837a4c": "80e42a426d",
+    "04d26c61": "5ff5725ebd",
+    "04fa70d7": "91d1370643"
+   },
+   "target": "5c82bd0c97",
+   "total": 600
+  },
+  {
+   "agreeing": 600,
+   "decision": false,
+   "era": 1,
+   "kind": "fidelity",
+   "max_clique": 300,
+   "snapshot": {
+    "0457feba": "e3d6d704ae",
+    "04801118": "049f217d63",
+    "04837a4c": "2decba0c6e",
+    "04d26c61": "5ff5725ebd",
+    "04fa70d7": "edbbeb782a"
+   },
+   "target": "5c82bd0c97",
+   "total": 600
+  },
+  {
+   "agreeing": 600,
+   "decision": false,
+   "era": 1,
+   "kind": "fidelity",
+   "max_clique": 300,
+   "snapshot": {
+    "0457feba": "a6f57cbaeb",
+    "04801118": "049f217d63",
+    "04837a4c": "2decba0c6e",
+    "04d26c61": "5ff5725ebd",
+    "04fa70d7": "edbbeb782a"
+   },
+   "target": "5c82bd0c97",
+   "total": 600
+  },
+  {
+   "agreeing": 400,
+   "decision": false,
+   "era": 1,
+   "kind": "refined_red",
+   "max_clique": 300,
+   "snapshot": {
+    "0457feba": "5c82bd0c97",
+    "04801118": "18a247a8db",
+    "04837a4c": "80e42a426d",
+    "04d26c61": "5ff5725ebd",
+    "04fa70d7": "91d1370643"
+   },
+   "target": "5c82bd0c97",
+   "total": 600
+  },
+  {
+   "agreeing": 200,
+   "decision": false,
+   "era": 2,
+   "kind": "fidelity",
+   "max_clique": 100,
+   "snapshot": {
+    "0457feba": "e02affa495",
+    "04801118": "049f217d63",
+    "04837a4c": "11dc19b3ee",
+    "04d26c61": "5ff5725ebd",
+    "04fa70d7": "de3e5b5edc"
+   },
+   "target": "11dc19b3ee",
+   "total": 300
+  },
+  {
+   "agreeing": 200,
+   "decision": false,
+   "era": 2,
+   "kind": "fidelity",
+   "max_clique": 100,
+   "snapshot": {
+    "0457feba": "6e24eed07b",
+    "04801118": "049f217d63",
+    "04837a4c": "2decba0c6e",
+    "04d26c61": "5ff5725ebd",
+    "04fa70d7": "edbbeb782a"
+   },
+   "target": "11dc19b3ee",
+   "total": 300
+  },
+  {
+   "agreeing": 200,
+   "decision": false,
+   "era": 2,
+   "kind": "fidelity",
+   "max_clique": 100,
+   "snapshot": {
+    "0457feba": "471f71656d",
+    "04837a4c": "2decba0c6e",
+    "04fa70d7": "edbbeb782a"
+   },
+   "target": "11dc19b3ee",
+   "total": 300
+  }
+ ],
+ "source": "3fed9981",
+ "validators": [
+  "0457feba",
+  "04801118",
+  "04837a4c",
+  "04d26c61",
+  "04fa70d7"
+ ]
+}
