@@ -182,27 +182,11 @@ transient fault followed by recovery validates both parent and child.
 | `MC_LocalValidationRecovery.cfg` | pass | bounded deferred recovery, transport-failure safety, parent gating, and eventual parent/child validation |
 | `MC_LocalValidationRecovery_ready_unsafe.cfg` | violate `Inv_NoImmediateSelfRequeue` | retaining an inconclusive parent as a dependency-free pendant causes immediate self-requeue |
 
-`FundingAdmissionLifecycle.tla` closes the client-visible lifecycle for a
-state-bound funding decision. Proposal records both the decision and the exact
-pre-state supply from which it was derived. Validation recomputes from that
-recorded state. An underfunded attempt is therefore a terminal rejected record
-with no user effects, rather than an unrecorded candidate that remains pending
-until an unrelated later top-up changes its classification. A fundable deploy
-cannot be forged as rejected, and later supply cannot resurrect a finalized
-rejection.
-
-| Configuration | Expected result | Defect isolated |
-| --- | --- | --- |
-| `MC_FundingAdmissionLifecycle.cfg` | pass | proposal/validation agreement, terminal rejection, zero rejected effects, and eventual finalization |
-| `MC_FundingAdmissionLifecycle_live_state_unsafe.cfg` | violate `Inv_ValidatorUsesProposalPreState` | a validator reclassifies the block after an unrelated live-state top-up |
-| `MC_FundingAdmissionLifecycle_pending_unsafe.cfg` | violate `Inv_UnderfundedAttemptLeavesPending` | an attempted underfunded deploy has no consensus-visible terminal record and remains pending |
-
 ## Admission records and runtime-effect metadata
 
 A **status record** is a consensus-visible statement about a deploy lifecycle.
 An **effect record** is a deploy or system execution that entered the runtime and
-therefore has one position in the ordered merge-metadata stream. A terminal
-funding-admission rejection is a status record but not an effect record. An
+therefore has one position in the ordered merge-metadata stream. A terminal admission rejection is a status record but not an effect record. An
 ordinary deploy that entered the runtime and failed is both an execution-failure
 status and an effect record, because its attempted execution still owns its
 position in the state-witness and merge-metadata sequence.
@@ -221,7 +205,7 @@ $$
 
 `AdmissionEffectAlignment.tla` checks this refinement independently at three
 validators. Each validator indexes the same block containing one terminal
-funding rejection and one executed `closeBlock`. Under the effect projection,
+admission rejection and one executed `closeBlock`. Under the effect projection,
 one merge-metadata entry aligns with `closeBlock`; all validators can propose a
 successor, and a later deploy finalizes. The unsafe control counts both status
 records as effects, expects two metadata entries, blocks every validator at
@@ -239,7 +223,7 @@ admission rejection anywhere in the user-record sequence does not change the
 effect projection, an executed failure retains one slot, permutation does not
 change the required cardinality, and aligned metadata splits exactly between
 user and system executions. Its concrete regression theorem proves that one
-funding rejection plus one `closeBlock` requires one metadata entry, whereas
+admission rejection plus one `closeBlock` requires one metadata entry, whereas
 counting block-body status records would incorrectly require two.
 
 The liveness property permits two outcomes once every published occurrence is

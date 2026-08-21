@@ -21,7 +21,7 @@
    spine_walk_terminates | T-TERM (finite spine)  | floor.rs:60 DEEP_WALK_WARN
    ---------------------------------------------------------------------------
 
-   Companion doc: docs/theory/finalized-floor/finalized-floor-verification.md
+   Companion doc: docs/casper/theory/finalized-floor/finalized-floor-verification.md
    =========================================================================== *)
 
 From Stdlib Require Import Arith.Arith.
