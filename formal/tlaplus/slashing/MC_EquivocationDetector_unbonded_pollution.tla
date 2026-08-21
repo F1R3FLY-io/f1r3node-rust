@@ -17,7 +17,7 @@
 (*     into an UNBONDED offender's record; MUST REPRODUCE a counterexample    *)
 (*     to Inv_NoStampAgainstUnbonded (the fork's root cause).                 *)
 (*                                                                          *)
-(* Reference: docs/casper/theory/slashing/design/12-failure-modes.md §12.2.1a.      *)
+(* Reference: docs/theory/slashing/design/12-failure-modes.md §12.2.1a.      *)
 (****************************************************************************)
 
 EXTENDS EquivocationDetector, TLC

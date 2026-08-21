@@ -1,0 +1,39 @@
+# Validator Behavioral Contract — Rocq aggregation (Workstream E, stage E5)
+#
+# This project NAMES the built-in validator's behavioral contract. It does
+# NOT re-prove anything: each `validator_contract_*` theorem in
+# theories/Contract.v is a definitional alias (`:=`) of an obligation that is
+# ALREADY proven, kernel-checked, and axiom-free in the CostAccountedRho and
+# Slashing developments. Naming the obligations here gives a single Rocq
+# surface a custom validator (or a reviewer) can point at as "the contract",
+# mirroring the Lean surface in formal/lean/Validator/Contract.lean and the
+# TLA+ surface in formal/tlaplus/validator/Validator.tla.
+#
+# Because every clause is a `:=` alias, its kernel footprint is identical to
+# the underlying obligation; `Print Assumptions validator_contract_X` reports
+# exactly what `Print Assumptions <obligation>` reports — "Closed under the
+# global context" for all seven, so the axiom gate validates these clauses
+# just as it does the obligations they re-export.
+#
+# Contract <-> obligation <-> spec map (full table in
+# docs/theory/cost-accounting-impl/, also reproduced in Contract.v):
+#   S1  token-present / reject-malformed   §6.3   <- FuelGateSafety
+#   S2  accept iff Σ_s ≥ Δ_s (decidable)   §7.6   <- LinearLogicResources
+#   S3  linear no-double-spend             §7.7   <- LinearLogicResources
+#   S4  for-comp = atomic funded txn       §7.1   <- StepDeterminism
+#   P1  slash-authorization soundness      DR-12  <- MainTheorem / Validator (Slashing)
+#   P2  fork-choice exclusion of slashed   DR-12  <- MainTheorem (Slashing)
+#   P3  determinism / replay-equivalence   DR-12  <- StepDeterminism (== S4)
+#
+# The validator project depends on BOTH already-compiled developments. Their
+# .vo files must exist first (the cost_accounted_rho and slashing projects
+# compile independently via their own `rocq makefile -f _CoqProject`). The two
+# logical roots load together with no namespace or universe conflict (verified:
+# the Slashing `Validator` record and the CostAccountedRho process syntax
+# coexist cleanly).
+
+-Q ../cost_accounted_rho/theories CostAccountedRho
+-Q ../slashing/theories Slashing
+-Q theories Validator
+
+theories/Contract.v

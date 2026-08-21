@@ -1,0 +1,48 @@
+theory CostAccountingTokenAuthority
+begin
+
+/*
+  Cost-Accounted Rho — token-authority security model (Tamarin multiset rewriting).
+
+  A PROJECTION of the cost-accounted token discipline onto the authority view: a
+  token gate is a LINEAR fact (consumed exactly once when its COMM fires), the
+  natural multiset-rewriting image of "stack consumption is the modulus" and the
+  no-leak invariant (CAReduction / WrappingSubjectReduction.no_leak_requires_token).
+  Tamarin's linear-fact semantics then discharges:
+    - no_double_spend     : a token gate funds at most one firing,
+    - fire_needs_mint     : a firing is preceded by a mint (channel unforgeability),
+    - join_atomic         : a J2 combined token funds its whole join at most once
+                            (the "one combined payment or not at all", no partial
+                            funding within a join).
+  This is the security/authority projection, not the full operational semantics
+  (the per-rule determinism and funded-SN stay with the Rocq development).
+*/
+
+// Mint a fresh token gate.
+rule MintToken:
+  [ Fr(~t) ] --[ Mint(~t) ]-> [ Tok(~t) ]
+
+// A gated COMM consumes exactly one token (linear Tok), firing once.
+rule Comm:
+  [ Tok(~t) ] --[ Fire(~t) ]-> [ ]
+
+// A J2 join: ONE combined token funds the whole join atomically.
+rule MintCombined:
+  [ Fr(~ct) ] --[ MintC(~ct) ]-> [ Combined(~ct) ]
+
+rule JoinFire:
+  [ Combined(~ct) ] --[ JoinFire(~ct) ]-> [ ]
+
+// No double spend: a token gate is consumed at most once.
+lemma no_double_spend:
+  "All t #i #j. Fire(t) @ #i & Fire(t) @ #j ==> #i = #j"
+
+// Channel unforgeability: a firing is preceded by a mint of that token.
+lemma fire_needs_mint:
+  "All t #i. Fire(t) @ #i ==> (Ex #j. Mint(t) @ #j & #j < #i)"
+
+// Atomic join: a combined token funds its join at most once (no partial funding).
+lemma join_atomic:
+  "All ct #i #j. JoinFire(ct) @ #i & JoinFire(ct) @ #j ==> #i = #j"
+
+end

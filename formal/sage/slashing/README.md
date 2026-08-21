@@ -10,9 +10,9 @@ The models use Sage exact integers, sets, combinatorics, graph APIs, schedule pe
 
 `tracker_race_model.sage` models finite tracker schedules with Sage `DiGraph`, `Permutations`, and `Set`. It produces a minimal lost-update witness for the pre-fix read/write model and checks that atomic read-modify-write schedules keep every observed hash.
 
-`pipeline_effect_model.sage` enumerates small bond maps and slash sets with Sage `cartesian_product`, `Subsets`, `Integer`, `ZZ`, and `vector`. It checks exact accounting, idempotence, zeroing of slashed bonds, preservation of unslashed bonds, non-negative balances, and rejected-slash reissue no-op behavior.
+`pipeline_effect_model.sage` enumerates small bond maps and slash sets with Sage `cartesian_product`, `Subsets`, `Integer`, `ZZ`, and `vector`. It checks exact accounting, contract-level idempotence, zeroing of slashed bonds, preservation of unslashed bonds, and non-negative balances. Idempotent execution is defense in depth; it is not proposer authorization for a zero-bond target.
 
-`parent_prestate_authorization_model.sage` checks the receive-side split between ambient snapshot bonds, block parent-pre-state bonds, and PoS execution bonds. It also checks that recovered rejected slashes are reissued only when their invalid-block evidence is still current.
+`parent_prestate_authorization_model.sage` checks the receive-side split between ambient snapshot bonds, block parent-pre-state bonds, and PoS execution bonds. Its complete evidence scan ignores merge-rejection hints, selects one canonical hash per `(offender, epoch)`, and excludes zero-bond targets.
 
 `weighted_closure_model.sage` models the same neglect closure with stake weights and searches for active-stake quorum failures.
 
@@ -40,7 +40,7 @@ The models use Sage exact integers, sets, combinatorics, graph APIs, schedule pe
 
 `arithmetic_envelope_model.sage` computes fixed-width safe envelopes of the form `initialVault + validators * maxBond <= limit`.
 
-`record_normalization_model.sage` checks record meaning modulo insertion order and duplicate hashes, plus recovered rejected-slash normalization by invalid hash after own-detected coverage is removed.
+`record_normalization_model.sage` checks record meaning modulo insertion order and duplicate hashes, plus canonical one-candidate-per-target normalization.
 
 `adversarial_timing_game.sage` searches bounded adversarial choices of direct equivocation, neglect edges, visibility, reports, and stake distribution against objectives such as honest-slashed stake, quorum drop, accountability gap, delay, and damage ratio.
 
@@ -172,7 +172,7 @@ DOT_SAGE=/tmp/codex-sage sage formal/sage/slashing/hypothesis_search/hypothesis_
 Tracked findings and formalization follow-ups are maintained in `FINDINGS.md`.
 Cross-layer search expansion, including fuzzing, Kani, Miri, symbolic TLA+,
 and system-level adversarial testing, is documented in
-`docs/casper/theory/slashing/slashing-search-horizon.md`.
+`docs/theory/slashing/slashing-search-horizon.md`.
 
 Get the documented two-level closure counterexample:
 

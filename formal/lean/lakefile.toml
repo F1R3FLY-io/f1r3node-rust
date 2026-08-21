@@ -1,0 +1,19 @@
+# Lean 4 project for the Cost-Accounted Rho validator behavioral contract
+# (Workstream E). LOCAL-ONLY formal verification (never a CI gate).
+#
+# Deliberately dependency-free: no mathlib, no batteries — every validator
+# obligation is stated over core `Nat`/`List`/`Prop`, so `lake build` runs
+# fully offline using only the bundled Lean core (`Init`). Adding an external
+# require would introduce a network fetch; do not add one for the scoped
+# validator obligation set (DR-12).
+name = "f1r3_validator"
+defaultTargets = ["CostAccountedRho", "Validator"]
+
+# The cost-accounted calculus kernel — the validator-scoped subset of the Rocq
+# corpus (LinearLogicResources / FuelGateSafety / StepDeterminism mirrors).
+[[lean_lib]]
+name = "CostAccountedRho"
+
+# The validator / platform obligation library + the contract aggregator.
+[[lean_lib]]
+name = "Validator"

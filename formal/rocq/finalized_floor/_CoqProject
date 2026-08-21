@@ -22,19 +22,44 @@
 #   CliqueOracle -> Foundation   (agreeing sets, quorum finalization, L-ANC, L-SNAP)
 #   Floor -> CliqueOracle        (frontier-cache transparency: warm up-walk == cold walk)
 #   Merge                        (semilattice merge algebra: determinism + no-lost-write)
+#   OccurrenceDisposition         (exact-source rejection + order independence)
 #   Recovery                     (record-driven recovery: no-double-apply, T-NDA)
+#   AdmissionEffectAlignment     (status-record to runtime-effect refinement)
+#   EffectCausalClosure           (least exact-effect rejection closure)
+#   StateEffectProvenance         (exact accepted/rejected merge-effect recurrence)
+#   StateLineageFinality          (abstract certificate/admission separation)
+#   CertifiedFloorPromotion       (dual-certified all-parent floor discovery)
 #   MainTheorem -> all           (end-to-end capstone, axiom-free)
 
 -Q theories FinalizedFloor
 
 theories/Foundation.v
 theories/CliqueOracle.v
+theories/AccountableSafety.v
 theories/Floor.v
 theories/GuardBridge.v
 theories/Merge.v
+theories/OccurrenceDisposition.v
+theories/FinalizedOccurrenceStatus.v
 theories/Recovery.v
+theories/MergeRecoveryCoherence.v
+theories/AdmissionEffectAlignment.v
+theories/RejectionReasonConfluence.v
+theories/ProtocolVersionLifecycle.v
+theories/ProtocolActivationCoherence.v
 theories/Selection.v
 theories/IntegerAdd.v
 theories/FtExact.v
 theories/FtProvenance.v
+theories/FinalizerProgress.v
+theories/BootstrapReplayContext.v
+theories/LocalFaultDeferral.v
+theories/FundingAdmissionLifecycle.v
+theories/EffectCausalClosure.v
+theories/StateEffectProvenance.v
+theories/StateLineageFinality.v
+theories/CertifiedFloorPromotion.v
+theories/SnapshotFloorMaterialization.v
+theories/HeartbeatFinalityBackpressure.v
+theories/ParallelValidatorConsensus.v
 theories/MainTheorem.v

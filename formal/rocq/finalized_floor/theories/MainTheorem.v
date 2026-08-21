@@ -18,6 +18,7 @@
      T-DETMERGE  merge order-independent        -- no fork from parent fold order (¬S6)
      T-K1        no mergeable write lost         -- the ~400-block write-loss (¬S5)
      T-NDA       recovery not double-applied     -- effects applied at most once
+     T-LINEAGE   LFB promotion preserves every committed active state effect
 
    The H1 deterministic backstop (over-Δ merges refuse rather than substitute a
    lossy state) and its liveness are verified in TLA+ (SpecFixed:
@@ -34,13 +35,32 @@ Import ListNotations.
 
 From FinalizedFloor Require Import Foundation.
 From FinalizedFloor Require Import CliqueOracle.
+From FinalizedFloor Require Import AccountableSafety.
 From FinalizedFloor Require Import Floor.
 From FinalizedFloor Require Import Merge.
+From FinalizedFloor Require Import OccurrenceDisposition.
+From FinalizedFloor Require Import FinalizedOccurrenceStatus.
 From FinalizedFloor Require Import Recovery.
+From FinalizedFloor Require Import MergeRecoveryCoherence.
+From FinalizedFloor Require Import AdmissionEffectAlignment.
+From FinalizedFloor Require Import RejectionReasonConfluence.
+From FinalizedFloor Require Import ProtocolVersionLifecycle.
+From FinalizedFloor Require Import ProtocolActivationCoherence.
 From FinalizedFloor Require Import Selection.
 From FinalizedFloor Require Import IntegerAdd.
 From FinalizedFloor Require Import FtExact.
 From FinalizedFloor Require Import FtProvenance.
+From FinalizedFloor Require Import FinalizerProgress.
+From FinalizedFloor Require Import BootstrapReplayContext.
+From FinalizedFloor Require Import LocalFaultDeferral.
+From FinalizedFloor Require Import FundingAdmissionLifecycle.
+From FinalizedFloor Require Import EffectCausalClosure.
+From FinalizedFloor Require Import StateEffectProvenance.
+From FinalizedFloor Require Import StateLineageFinality.
+From FinalizedFloor Require Import CertifiedFloorPromotion.
+From FinalizedFloor Require Import SnapshotFloorMaterialization.
+From FinalizedFloor Require Import HeartbeatFinalityBackpressure.
+From FinalizedFloor Require Import ParallelValidatorConsensus.
 
 Theorem finalized_floor_merge_correct :
   (* T-TERM: the main-parent spine walk always reaches genesis. *)
@@ -75,6 +95,200 @@ Proof.
   - exact merge_or_perm.
   - exact merge_or_no_lost_bit.
   - exact apply_idem.
+Qed.
+
+Theorem finalized_floor_occurrence_correct :
+  (forall records rejected,
+     tombstoned (reject_occurrence records rejected) rejected)
+  /\
+  (forall records rejected survivor,
+     deploy_id rejected = deploy_id survivor ->
+     source_id rejected <> source_id survivor ->
+     active records survivor ->
+     active (reject_occurrence records rejected) survivor)
+  /\
+  (forall records left right candidate,
+     tombstoned (reject_occurrence (reject_occurrence records left) right) candidate <->
+     tombstoned (reject_occurrence (reject_occurrence records right) left) candidate)
+  /\
+  (forall winner loser,
+     deploy_id winner = deploy_id loser ->
+     source_id winner <> source_id loser ->
+     active (reject_occurrence [] loser) winner).
+Proof.
+  exact (conj rejection_is_source_exact
+          (conj distinct_source_survives_rejection
+            (conj rejection_order_independent one_winner_preserved))).
+Qed.
+
+Theorem finalized_floor_occurrence_status_scope_correct :
+  (forall records record,
+     In record records ->
+     recording_in_finalized_closure record = true ->
+     tombstoned
+       (finalized_rejection_targets records)
+       (rejection_target record))
+  /\
+  (tombstoned
+     (finalized_rejection_targets [secondary_example_record])
+     secondary_example_occurrence /\
+   ~ tombstoned
+       (main_chain_rejection_targets [secondary_example_record])
+       secondary_example_occurrence).
+Proof.
+  exact (conj finalized_closure_rejection_is_authoritative
+          main_chain_only_projection_is_incomplete).
+Qed.
+
+Theorem finalized_floor_recovery_admission_correct :
+  (forall records occurrences,
+     (forall candidate, In candidate occurrences -> ~ active records candidate) <->
+     all_sources_tombstoned records occurrences)
+  /\
+  (forall records occurrences valid_after next_block lifespan,
+     retry_eligible records occurrences valid_after next_block lifespan ->
+     forall candidate, In candidate occurrences -> ~ active records candidate)
+  /\
+  (forall records occurrences candidate valid_after next_block lifespan,
+     In candidate occurrences ->
+     active records candidate ->
+     ~ retry_eligible records occurrences valid_after next_block lifespan)
+  /\
+  (forall records occurrences valid_after next_block lifespan,
+     valid_after + lifespan <= next_block ->
+     ~ retry_eligible records occurrences valid_after next_block lifespan).
+Proof.
+  exact (conj no_active_iff_all_sources_tombstoned
+          (conj retry_requires_no_active_source
+            (conj active_source_blocks_retry expiry_closes_recovery))).
+Qed.
+
+Theorem finalized_floor_recovery_leadership_correct :
+  (forall validator_count finalized_height,
+     validator_count > 0 ->
+     1 <= recovery_leader validator_count finalized_height <= validator_count)
+  /\
+  (forall validator_count finalized_height proposer_a proposer_b,
+     recovery_authorized validator_count finalized_height proposer_a ->
+     recovery_authorized validator_count finalized_height proposer_b ->
+     proposer_a = proposer_b).
+Proof.
+  exact (conj recovery_leader_in_validator_set
+          recovery_authorization_unique_per_finalized_view).
+Qed.
+
+Theorem finalized_floor_merge_recovery_coherence_correct :
+  (forall base scope tombstones committed_receipt candidate,
+    base committed_receipt ->
+    same_deploy committed_receipt candidate ->
+    ~ selected base scope tombstones candidate)
+  /\
+  (forall base scope tombstones named candidate,
+    scope named ->
+    tombstones (receipt_occurrence named) ->
+    receipt_chain named = receipt_chain candidate ->
+    ~ selected base scope tombstones candidate)
+  /\
+  (forall base scope tombstones,
+    base_deploy_unique base ->
+    effect_identity_consistent scope ->
+    forall left right,
+      committed base scope tombstones left ->
+      committed base scope tombstones right ->
+      same_deploy left right ->
+      left = right)
+  /\
+  (forall base scope tombstones receipt,
+    committed base scope tombstones receipt <->
+    ordinary_applied base scope tombstones receipt /\
+    merge_metadata_bound base scope tombstones receipt)
+  /\
+  (forall base scope tombstones receipt,
+    base receipt ->
+    ~ retry_allowed base scope tombstones (receipt_deploy receipt))
+  /\
+  (forall base contributions,
+    length (materialize_number base contributions) = 1)
+  /\
+  (forall base left right,
+    Permutation left right ->
+    materialize_number base left = materialize_number base right).
+Proof.
+  exact (conj base_committed_dominates_scope
+          (conj tombstoned_chain_is_excluded
+            (conj committed_deploy_unique
+              (conj state_record_effect_coherence
+                (conj base_committed_blocks_retry
+                  (conj materialized_number_is_singleton
+                        materialized_number_permutation)))))).
+Qed.
+
+Theorem finalized_floor_admission_effect_alignment_correct :
+  (forall left right record_id,
+    user_effect_records
+      (left ++ {| user_record_id := record_id;
+                  user_record_disposition := AdmissionRejected |} :: right) =
+    user_effect_records (left ++ right))
+  /\
+  (forall record_id,
+    length
+      (user_effect_records
+        [{| user_record_id := record_id;
+            user_record_disposition := ExecutionFailed |}]) = 1)
+  /\
+  (forall left right,
+    Permutation left right ->
+    length (user_effect_records left) = length (user_effect_records right))
+  /\
+  (forall records system_effect_count metadata,
+    metadata_aligned records system_effect_count metadata ->
+    exists user_metadata system_metadata,
+      metadata = user_metadata ++ system_metadata /\
+      length user_metadata = length (user_effect_records records) /\
+      length system_metadata = system_effect_count)
+  /\
+  (forall record_id,
+    required_merge_metadata
+      [{| user_record_id := record_id;
+          user_record_disposition := AdmissionRejected |}]
+      1 = 1 /\
+    length
+      [{| user_record_id := record_id;
+          user_record_disposition := AdmissionRejected |}] + 1 = 2).
+Proof.
+  exact (conj admission_rejected_has_no_effect_slot
+          (conj executed_failure_retains_effect_slot
+            (conj effect_projection_permutation_length
+              (conj aligned_metadata_splits_exactly
+                    funding_rejection_close_block_regression)))).
+Qed.
+
+Theorem finalized_floor_rejection_reason_confluence_correct :
+  (forall left right,
+    canonical_reason_join left right = canonical_reason_join right left)
+  /\
+  (forall left middle right,
+    canonical_reason_join (canonical_reason_join left middle) right =
+    canonical_reason_join left (canonical_reason_join middle right))
+  /\
+  (forall reason,
+    canonical_reason_join reason reason = reason)
+  /\
+  (forall left right,
+    Permutation left right ->
+    fold_rejection_reasons left = fold_rejection_reasons right)
+  /\
+  (forall reason,
+    canonical_reason_join DuplicateOccurrence reason = DuplicateOccurrence)
+  /\
+  canonical_reason_join MergeConflict CollateralChainDrop = MergeConflict.
+Proof.
+  exact (conj canonical_reason_join_commutative
+          (conj canonical_reason_join_associative
+            (conj canonical_reason_join_idempotent
+              (conj fold_rejection_reasons_permutation
+                (conj duplicate_reason_dominates
+                      merge_reason_dominates_collateral))))).
 Qed.
 
 (* ===========================================================================
@@ -179,7 +393,7 @@ Close Scope Z_scope.
    Strengthens the A9 (ftexact) capstone at its one un-modelled seam: the SOURCING
    of the threshold numerator θ_ppm. A9 proves the decision is exact GIVEN θ_ppm;
    this proves θ_ppm is a pure function of the on-chain value (the unconditional
-   override at casper.rs:242), so local config cannot drive a fork,
+   override at casper.rs:266), so local config cannot drive a fork,
    AND that the exact decision is i128-overflow-free across the node's FULL
    validated ppm range num ∈ [-den, den] (the token_metadata_check.rs:105 range,
    including the negative-θ sentinels) — not just the narrower [0, den].
@@ -318,3 +532,472 @@ Proof.
               (conj L_SNAP_advance
                 (conj snap_extends_snap_advances Finalized_ft_hg_refines_Finalized))))).
 Qed.
+
+Theorem finalizer_progress_correct :
+  (forall (A : Type) (decides : A -> option bool) candidates selected,
+     scan decides candidates = Selected selected ->
+     In selected candidates /\ decides selected = Some true)
+  /\
+  (forall (A : Type) (decides : A -> option bool) candidates,
+     scan decides candidates = Exhausted ->
+     forall candidate, In candidate candidates -> decides candidate = Some false)
+  /\
+  (forall (A : Type) (decides : A -> option bool) candidates,
+     Forall (fun candidate => exists decision, decides candidate = Some decision) candidates ->
+     (exists candidate, In candidate candidates /\ decides candidate = Some true) ->
+     exists selected, scan decides candidates = Selected selected)
+  /\
+  scan (fun candidate => Some (Nat.eqb candidate 3)) (firstn 2 [1; 2; 3]) = Exhausted
+  /\
+  scan (fun candidate => Some (Nat.eqb candidate 3)) [1; 2; 3] = Selected 3
+  /\
+  (forall (A : Type)
+          (eq_dec : forall left right : A, {left = right} + {left <> right})
+          scheduled proposed,
+     NoDup (schedule_once A eq_dec scheduled proposed)
+     /\
+     forall candidate,
+       In candidate (schedule_once A eq_dec scheduled proposed) <->
+       In candidate scheduled \/ In candidate proposed).
+Proof.
+  destruct fixed_prefix_can_starve_a_finalizable_candidate as [Hprefix Hcomplete].
+  exact (conj scan_selected_sound
+          (conj scan_exhausted_complete
+            (conj complete_scan_selects_when_ready_candidate_exists
+              (conj Hprefix
+                (conj Hcomplete
+                  (fun A eq_dec scheduled proposed =>
+                    conj (schedule_once_has_no_duplicates A eq_dec scheduled proposed)
+                      (schedule_once_preserves_exact_membership A eq_dec scheduled proposed))))))).
+Qed.
+
+Theorem finalized_floor_protocol_activation_correct :
+  (forall active_version block_version record,
+    scope_admissible active_version block_version record ->
+    block_version = active_version)
+  /\
+  (forall version record,
+    exact_protocol version ->
+    encoding_matches version record ->
+    exists provenance, record_provenance record = Some provenance)
+  /\
+  (forall version record,
+    exact_protocol version ->
+    encoding_matches version record ->
+    record_reason record <> ReasonUnspecified)
+  /\
+  (forall version record,
+    version < 2 ->
+    encoding_matches version record ->
+    record_provenance record = None)
+  /\
+  (forall version record,
+    version < 2 ->
+    encoding_matches version record ->
+    record_reason record = ReasonUnspecified)
+  /\
+  (forall active_version floor_version block_version record,
+   forall base scope tombstones committed_receipt candidate,
+    exact_protocol active_version ->
+    floor_version < 2 ->
+    base committed_receipt ->
+    same_deploy committed_receipt candidate ->
+    ~ protocol_selected active_version block_version record
+        base scope tombstones candidate).
+Proof.
+  exact (conj admissible_scope_uses_active_version
+    (conj exact_encoding_requires_provenance
+      (conj exact_encoding_requires_reason
+        (conj legacy_encoding_forbids_provenance
+          (conj legacy_encoding_requires_unspecified_reason
+            legacy_floor_exact_activation_preserves_base_dominance))))).
+Qed.
+
+Print Assumptions finalized_floor_protocol_activation_correct.
+
+Theorem finalized_floor_protocol_lifecycle_correct :
+  (forall candidate_version approved_version local_versions,
+    candidate_version = ceremony_candidate current_protocol ->
+    approver_accepts current_protocol candidate_version = true ->
+    approved_version = candidate_version ->
+    approved_version = current_protocol /\
+    adopt_network approved_version local_versions =
+      repeat current_protocol (length local_versions) /\
+    Forall
+      (fun running_version =>
+        receiver_accepts running_version
+          (proposal_version approved_version) = true)
+      (adopt_network approved_version local_versions))
+  /\
+  (forall approved_version local_versions,
+    supported_protocol approved_version ->
+    admit_approved approved_version = Some approved_version /\
+    adopt_network approved_version local_versions =
+      repeat approved_version (length local_versions) /\
+    Forall
+      (fun running_version =>
+        receiver_accepts running_version
+          (proposal_version approved_version) = true)
+      (adopt_network approved_version local_versions))
+  /\
+  (forall version,
+    ~ supported_protocol version ->
+    admit_approved version = None)
+  /\
+  admit_approved legacy_protocol = None
+  /\
+  (forall configured_version candidate_version,
+    candidate_version <> configured_version ->
+    approver_accepts configured_version candidate_version = false)
+  /\
+  (forall active_version block_version record,
+    scope_admissible active_version block_version record ->
+    block_version = active_version).
+Proof.
+  exact (conj current_ceremony_end_to_end
+    (conj supported_recovery_end_to_end
+      (conj unsupported_approved_fails_closed
+        (conj legacy_approved_fails_closed
+          (conj mismatched_candidate_is_not_approved
+            admissible_scope_uses_active_version))))).
+Qed.
+
+Print Assumptions finalized_floor_protocol_lifecycle_correct.
+
+Theorem bootstrap_replay_and_local_fault_recovery_correct :
+  (forall (Context Root : Type)
+          (replay : Context -> Root -> Root)
+          (history : list (@ConsensusBlock Context Root replay)),
+    replay_history replay history = declared_history_roots replay history)
+  /\
+  (forall state,
+    validation_disposition (defer_local_fault state) =
+      validation_disposition state)
+  /\
+  (forall state,
+    queue_state (defer_local_fault state) <> Ready)
+  /\
+  (forall state,
+    queue_state state = Deferred ->
+    queue_state (recovery_request_failed state) <> Ready)
+  /\
+  (forall state,
+    regular_parent_satisfied state = true ->
+    validation_disposition state = Accepted).
+Proof.
+  split.
+  - intros Context Root replay history.
+    exact (consensus_history_replay_matches_declared_roots replay history).
+  - exact (conj local_fault_preserves_consensus_disposition
+      (conj local_fault_leaves_ready_queue
+        (conj failed_recovery_does_not_restore_ready_state
+          regular_child_requires_valid_parent))).
+Qed.
+
+Print Assumptions bootstrap_replay_and_local_fault_recovery_correct.
+
+Theorem terminal_funding_admission_lifecycle_correct :
+  (forall supply demand,
+    supply < demand ->
+    recorded_decision (propose supply demand) = Reject /\
+    user_effects (propose supply demand) = 0 /\
+    finalize_record (propose supply demand) = RejectedFinalized)
+  /\
+  (forall record (later_supply : nat),
+    recorded_decision record = Reject ->
+    finalize_record record = RejectedFinalized /\
+    user_effects record = 0)
+  /\
+  (forall supply demand,
+    demand <= supply ->
+    validate_record
+      {| recorded_supply := supply;
+         recorded_demand := demand;
+         recorded_decision := Reject |} = false).
+Proof.
+  exact (conj underfunded_proposal_is_terminal_rejection
+    (conj later_supply_does_not_resurrect_recorded_rejection
+      fundable_deploy_cannot_be_forged_as_rejected)).
+Qed.
+
+Print Assumptions terminal_funding_admission_lifecycle_correct.
+
+Theorem finalized_floor_effect_causal_closure_correct :
+  exact_effect_causal_closure_contract.
+Proof.
+  exact exact_effect_causal_closure_correct.
+Qed.
+
+Print Assumptions finalized_floor_effect_causal_closure_correct.
+
+Theorem finalized_floor_state_lineage_correct :
+  state_lineage_contract /\
+  promotion_preservation_contract /\
+  base_lineage_promotion_contract.
+Proof.
+  exact (conj state_lineage_end_to_end
+    (conj state_lineage_promotion_correct base_lineage_promotion_correct)).
+Qed.
+
+Print Assumptions finalized_floor_state_lineage_correct.
+
+Theorem finalized_floor_state_effect_provenance_correct :
+  state_effect_provenance_contract.
+Proof.
+  exact state_effect_provenance_end_to_end.
+Qed.
+
+Print Assumptions finalized_floor_state_effect_provenance_correct.
+
+Theorem finalized_floor_rebased_parent_selection_correct :
+  floor_rebased_parent_selection_contract.
+Proof.
+  exact floor_rebased_parent_selection_end_to_end.
+Qed.
+
+Print Assumptions finalized_floor_rebased_parent_selection_correct.
+
+Theorem finalized_floor_state_support_refines_causal_certificate :
+  forall
+    (d : DAG)
+    (state_ancestor : BlockHash -> BlockHash -> Prop),
+    (forall ancestor descendant,
+      state_ancestor ancestor descendant -> anc_of d ancestor descendant) ->
+    forall c J b num den,
+      StateFinalized_ft_hg state_ancestor c J b num den ->
+      Finalized_ft_hg d c J b num den.
+Proof.
+  exact state_finalization_refines_causal_finalization.
+Qed.
+
+Print Assumptions finalized_floor_state_support_refines_causal_certificate.
+
+Theorem finalized_floor_certified_promotion_correct :
+  certified_floor_promotion_contract.
+Proof.
+  exact certified_floor_promotion_end_to_end.
+Qed.
+
+Print Assumptions finalized_floor_certified_promotion_correct.
+
+Theorem finalized_floor_latest_message_coverage_correct :
+  forall
+    (Block Validator : Type)
+    (parent_edge : Block -> Block -> Prop)
+    (latest : Validator -> Block)
+    (candidate : Block)
+    (decide : (Validator -> Prop) -> Prop),
+    (forall left right,
+      (forall validator, left validator <-> right validator) ->
+      (decide left <-> decide right)) ->
+    decide
+      (fun validator =>
+        propagated_coverage parent_edge latest candidate validator) <->
+    decide
+      (fun validator =>
+        pairwise_support parent_edge latest candidate validator).
+Proof.
+  intros Block Validator parent_edge latest candidate decide Hextensional.
+  apply coverage_decision_transparent.
+  exact Hextensional.
+Qed.
+
+Print Assumptions finalized_floor_latest_message_coverage_correct.
+
+Theorem finalized_floor_linear_snapshot_reuse_correct :
+  forall
+    (Block Validator : Type)
+    (parent_edge : Block -> Block -> Prop)
+    (latest : Validator -> Block)
+    (predecessor parent candidate : Block)
+    (eligible : Block -> Prop),
+    (forall immediate,
+      parent_edge immediate parent -> immediate = predecessor) ->
+    (eligible parent ->
+      exists validator,
+        pairwise_support parent_edge latest parent validator) ->
+    (forall validator,
+      ~ pairwise_support parent_edge latest parent validator) ->
+    eligible candidate ->
+    dag_reaches parent_edge candidate parent ->
+    dag_reaches parent_edge candidate predecessor.
+Proof.
+  intros Block Validator parent_edge latest predecessor parent candidate
+    eligible Hunique Heligible_support Hparent_unsupported Hcandidate Hreaches.
+  apply (@unchanged_linear_snapshot_reuse_sound
+    Block Validator parent_edge latest
+    predecessor parent candidate eligible); assumption.
+Qed.
+
+Print Assumptions finalized_floor_linear_snapshot_reuse_correct.
+
+Theorem finalized_floor_snapshot_materialization_correct :
+  forall
+    (Block : Type)
+    (block_eq_dec : forall left right : Block, {left = right} + {left <> right})
+    (parents latest_messages finalizer_blocks cache : list Block),
+    snapshot_ready
+      parents latest_messages
+      (materialize_all
+        block_eq_dec
+        (snapshot_required parents latest_messages)
+        (materialize_all block_eq_dec finalizer_blocks cache))
+    /\
+    cache_equiv
+      (materialize_all
+        block_eq_dec
+        (snapshot_required parents latest_messages)
+        (materialize_all block_eq_dec finalizer_blocks cache))
+      (materialize_all block_eq_dec finalizer_blocks
+        (materialize_all
+          block_eq_dec
+          (snapshot_required parents latest_messages)
+          cache)).
+Proof.
+  intros Block block_eq_dec parents latest_messages finalizer_blocks cache.
+  destruct (SnapshotFloorMaterialization.finalized_floor_snapshot_materialization_correct
+    block_eq_dec parents latest_messages finalizer_blocks cache)
+    as [Hready [Hcommutes _]].
+  exact (conj Hready Hcommutes).
+Qed.
+
+Print Assumptions finalized_floor_snapshot_materialization_correct.
+
+Theorem finalized_floor_heartbeat_backpressure_correct :
+  heartbeat_backpressure_contract.
+Proof.
+  exact heartbeat_backpressure_end_to_end.
+Qed.
+
+Print Assumptions finalized_floor_heartbeat_backpressure_correct.
+
+Theorem finalized_floor_accountable_safety_correct :
+  forall
+    (dag : DAG)
+    (snapshot : Snapshot)
+    (incompatible : BlockHash -> BlockHash -> Prop)
+    (committee : Committee)
+    (faulty : list Validator)
+    (num den : Z)
+    (left right : BlockHash),
+    NoDup (map fst committee) ->
+    NoDup faulty ->
+    incl faulty (map fst committee) ->
+    causal_incompatibility_is_accountable
+      dag snapshot incompatible faulty ->
+    Finalized_ft dag committee snapshot left num den ->
+    Finalized_ft dag committee snapshot right num den ->
+    incompatible left right ->
+    (0 < num)%Z ->
+    (0 < den)%Z ->
+    (Z.of_nat
+      (validator_stake (committee_stake committee) faulty) * den <
+      Z.of_nat (cweight committee) * num)%Z ->
+    False.
+Proof.
+  exact exact_clique_certificates_are_accountably_safe.
+Qed.
+
+Print Assumptions finalized_floor_accountable_safety_correct.
+
+Theorem finalized_floor_strict_accountable_safety_correct :
+  forall
+    (dag : DAG)
+    (snapshot : Snapshot)
+    (incompatible : BlockHash -> BlockHash -> Prop)
+    (committee : Committee)
+    (faulty : list Validator)
+    (num den : Z)
+    (left right : BlockHash),
+    NoDup (map fst committee) ->
+    NoDup faulty ->
+    incl faulty (map fst committee) ->
+    causal_incompatibility_is_accountable
+      dag snapshot incompatible faulty ->
+    Finalized_ft_gt dag committee snapshot left num den ->
+    Finalized_ft_gt dag committee snapshot right num den ->
+    incompatible left right ->
+    (0 < den)%Z ->
+    (Z.of_nat
+      (validator_stake (committee_stake committee) faulty) * den <=
+      Z.of_nat (cweight committee) * num)%Z ->
+    False.
+Proof.
+  exact strict_exact_clique_certificates_are_accountably_safe.
+Qed.
+
+Print Assumptions finalized_floor_strict_accountable_safety_correct.
+
+Theorem finalized_floor_parallel_validator_consensus_correct :
+  forall
+    (Node Block Root Effect : Type)
+    (node_eq_dec : forall left right : Node, {left = right} + {left <> right})
+    (block_root : Block -> Root)
+    (block_effects : Block -> list Effect)
+    (certified state_certified : Block -> Prop),
+    parallel_validator_contract
+      node_eq_dec block_root block_effects certified state_certified.
+Proof.
+  intros Node Block Root Effect node_eq_dec block_root block_effects
+    certified state_certified.
+  apply parallel_validator_consensus_correct.
+Qed.
+
+Print Assumptions finalized_floor_parallel_validator_consensus_correct.
+
+Theorem finalized_floor_parallel_accountable_promotion_correct :
+  forall
+    (Node Root Effect : Type)
+    (node_eq_dec : forall left right : Node, {left = right} + {left <> right})
+    (block_root : BlockHash -> Root)
+    (block_effects : BlockHash -> list Effect)
+    (state_certified : BlockHash -> Prop)
+    (dag : DAG)
+    (snapshot : Snapshot)
+    (incompatible : BlockHash -> BlockHash -> Prop)
+    (committee : Committee)
+    (faulty : list Validator)
+    (num den : Z),
+    NoDup (map fst committee) ->
+    NoDup faulty ->
+    incl faulty (map fst committee) ->
+    causal_incompatibility_is_accountable
+      dag snapshot incompatible faulty ->
+    (0 < num)%Z ->
+    (0 < den)%Z ->
+    (Z.of_nat
+      (validator_stake (committee_stake committee) faulty) * den <
+      Z.of_nat (cweight committee) * num)%Z ->
+    parallel_validator_contract
+      node_eq_dec
+      block_root
+      block_effects
+      (fun block => Finalized_ft dag committee snapshot block num den)
+      state_certified
+    /\
+    (forall left right,
+      Finalized_ft dag committee snapshot left num den ->
+      Finalized_ft dag committee snapshot right num den ->
+      incompatible left right ->
+      False).
+Proof.
+  intros Node Root Effect node_eq_dec block_root block_effects
+    state_certified dag snapshot incompatible committee faulty num den
+    Hcommittee Hfaulty Hfaulty_in Haccountable Hnum Hden Hbudget.
+  split.
+  - apply parallel_validator_consensus_correct.
+  - intros left right Hleft Hright Hincompatible.
+    eapply exact_clique_certificates_are_accountably_safe.
+    + exact Hcommittee.
+    + exact Hfaulty.
+    + exact Hfaulty_in.
+    + exact Haccountable.
+    + exact Hleft.
+    + exact Hright.
+    + exact Hincompatible.
+    + exact Hnum.
+    + exact Hden.
+    + exact Hbudget.
+Qed.
+
+Print Assumptions finalized_floor_parallel_accountable_promotion_correct.
