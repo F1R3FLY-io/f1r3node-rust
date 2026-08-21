@@ -350,19 +350,9 @@ impl WebApi for WebApiImpl {
             })
             .collect();
 
-        let total_elapsed = total_start.elapsed();
-        if total_elapsed >= STATUS_SLOW_THRESHOLD {
-            warn!(
-                ?total_elapsed,
-                ?rp_conf_elapsed,
-                ?connections_elapsed,
-                ?discovery_elapsed,
-                peers,
-                nodes,
-                "Web API status assembly is slow"
-            );
-        }
-
+        // Timed below, not above: this is the one step that waits on `global_lock`,
+        // so it is the step a slow-status warning most needs to name.
+        let lfb_start = Instant::now();
         let lfb_number = match BlockAPI::last_finalized_block(&self.engine_cell).await {
             Ok(block_info) => block_info
                 .block_info
@@ -371,6 +361,21 @@ impl WebApi for WebApiImpl {
                 .unwrap_or(-1),
             Err(_) => -1,
         };
+        let lfb_elapsed = lfb_start.elapsed();
+
+        let total_elapsed = total_start.elapsed();
+        if total_elapsed >= STATUS_SLOW_THRESHOLD {
+            warn!(
+                ?total_elapsed,
+                ?rp_conf_elapsed,
+                ?connections_elapsed,
+                ?discovery_elapsed,
+                ?lfb_elapsed,
+                peers,
+                nodes,
+                "Web API status assembly is slow"
+            );
+        }
 
         let is_validator = self.trigger_propose_f.is_some();
         let is_ready = self.is_ready.load(Ordering::Relaxed);
