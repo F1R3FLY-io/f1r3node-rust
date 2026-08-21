@@ -111,6 +111,15 @@ TRACE_DIGEST_IDENTITY_FIELDS = [
     "weight",
 ]
 
+I64_MAX = 2**63 - 1
+U64_MAX = 2**64 - 1
+CONSENSUS_EVENT_KINDS = {
+    "source": 0,
+    "comm": 0,
+    "rspace_produce": 1,
+    "rspace_consume": 2,
+}
+
 
 def schema_json_default(value):
     try:
@@ -148,15 +157,137 @@ def canonical_event(
     }
 
 
+def authenticated_replay_fields(extra=None):
+    fields = [
+        "processed_deploy_cost",
+        "authority_cost_witness",
+        "authority_byte_events",
+        "replay_payload_hash",
+    ]
+    for field in extra or []:
+        if field not in fields:
+            fields.append(field)
+    return fields
+
+
+def expected_fixture_values(scenario):
+    events = list(scenario.get("events", []))
+    for event in events:
+        weight = int(event.get("weight", 0))
+        kind = str(event.get("kind", ""))
+        primitive_value = event.get("primitive_descriptor")
+        primitive = str(event.get("descriptor", "") if primitive_value is None else primitive_value)
+        if (
+            weight <= 0
+            or weight > I64_MAX
+            or len(event.get("path", [])) > 1024
+            or (kind not in CONSENSUS_EVENT_KINDS and kind not in ["reduction", "substitution"] and len(primitive.encode("utf-8")) > 512)
+        ):
+            return (0, 0, True, False)
+
+    def event_key(event):
+        path = tuple(int(component) for component in event.get("path", []))
+        stable_index = path[-1] if path else 0
+        redex_id = event.get("redex_id")
+        local_index = event.get("local_index")
+        return (
+            int(event.get("deploy", 0)),
+            int(event.get("deploy", 0)),
+            path,
+            int(stable_index if redex_id is None else redex_id),
+            int(stable_index if local_index is None else local_index),
+            CONSENSUS_EVENT_KINDS[str(event.get("kind", ""))],
+            int(event.get("weight", 0)),
+        )
+
+    consensus = sorted(
+        [event for event in events if str(event.get("kind", "")) in CONSENSUS_EVENT_KINDS],
+        key=event_key,
+    )
+    budget = int(scenario.get("initial_budget", 0))
+    consumed = 0
+    committed = 0
+    for event in consensus:
+        weight = int(event.get("weight", 0))
+        if consumed > I64_MAX - weight or consumed + weight > budget:
+            return (budget, committed + 1, False, True)
+        consumed += weight
+        committed += 1
+    return (consumed, committed, False, False)
+
+
+def vault_settlement(
+    available_supply,
+    physical_authority_bound,
+    quantitative_byte_bound,
+    fee,
+    realized_physical_authority_cost,
+    realized_quantitative_byte_cost,
+    expected_admitted=True,
+    authority="casper",
+    kind="execution",
+    **metadata
+):
+    available = int(available_supply)
+    physical_bound = int(physical_authority_bound)
+    byte_bound = int(quantitative_byte_bound)
+    fee_value = int(fee)
+    physical_cost = int(realized_physical_authority_cost)
+    byte_cost = int(realized_quantitative_byte_cost)
+    values = [available, physical_bound, byte_bound, fee_value, physical_cost, byte_cost]
+    nonnegative = all(value >= 0 for value in values)
+    in_range = all(value <= U64_MAX for value in values)
+    reservation_overflow = not in_range or physical_bound > U64_MAX - byte_bound or physical_bound + byte_bound > U64_MAX - fee_value
+    debit_overflow = not in_range or physical_cost > U64_MAX - byte_cost or physical_cost + byte_cost > U64_MAX - fee_value
+    reserved_max = None if reservation_overflow else physical_bound + byte_bound + fee_value
+    realized_debit = None if debit_overflow else physical_cost + byte_cost + fee_value
+    arithmetic_admissible = (
+        nonnegative
+        and not reservation_overflow
+        and not debit_overflow
+        and physical_cost <= physical_bound
+        and byte_cost <= byte_bound
+        and reserved_max <= available
+        and realized_debit <= reserved_max
+    )
+    admitted = bool(expected_admitted)
+    if admitted and not arithmetic_admissible:
+        raise ValueError("admitted settlement is not arithmetically fundable")
+    debit = realized_debit if admitted else 0
+    refund = reserved_max - realized_debit if admitted else 0
+    post_balance = available - realized_debit if admitted else available
+    burned_cost = physical_cost + byte_cost if admitted else 0
+    proposer_credit = fee_value if admitted else 0
+    result = {
+        "authority": str(authority),
+        "kind": str(kind),
+        "available_supply": available,
+        "physical_authority_bound": physical_bound,
+        "quantitative_byte_bound": byte_bound,
+        "fee": fee_value,
+        "realized_physical_authority_cost": physical_cost,
+        "realized_quantitative_byte_cost": byte_cost,
+        "reserved_max": reserved_max,
+        "expected_debit": debit,
+        "expected_refund": refund,
+        "expected_post_balance": post_balance,
+        "expected_burned_cost": burned_cost,
+        "expected_proposer_credit": proposer_credit,
+        "expected_admitted": admitted,
+        "arithmetic_admissible": arithmetic_admissible,
+        "reservation_overflow": reservation_overflow,
+        "debit_overflow": debit_overflow,
+    }
+    result.update(metadata)
+    return result
+
+
 def canonical_scenario(
     name,
     events=None,
     lifecycle=None,
     deploy_count=1,
     initial_budget=0,
-    phlo_limit=0,
-    phlo_price=0,
-    token_cost=0,
     replay_fields=None,
     replay_mutations=None,
     settlement=None,
@@ -239,9 +370,6 @@ def canonical_scenario(
         "lifecycle": lifecycle or [],
         "deploy_count": int(deploy_count),
         "initial_budget": int(initial_budget),
-        "phlo_limit": int(phlo_limit),
-        "phlo_price": int(phlo_price),
-        "token_cost": int(token_cost),
         "replay_fields": replay_fields or {},
         "replay_mutations": replay_mutations or [],
         "settlement": settlement or {},
@@ -396,6 +524,8 @@ def coverage_features(scenario, classification, witness=None):
     if scenario.get("term_family"):
         features = features.union(Set(["term_family"]))
         features = features.union(Set(["term_family:{}".format(scenario.get("term_family"))]))
+        if scenario.get("term_family") == "parallel_multi_deploy_permutation_stress":
+            features = features.union(Set(["parallel_schedule_stress"]))
     if scenario.get("term_parameters", {}):
         features = features.union(Set(["term_parameters"]))
     if scenario.get("metamorphic_relation"):

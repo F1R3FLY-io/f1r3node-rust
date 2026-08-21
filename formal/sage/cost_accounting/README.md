@@ -8,30 +8,34 @@ production Rust path before they motivate implementation changes.
 Run the representative models:
 
 ```sh
-sage formal/sage/cost_accounting/budget_admission_model.sage -- --json-out /tmp/budget.json
-sage formal/sage/cost_accounting/producer_routing_model.sage -- --json-out /tmp/producer.json
-sage formal/sage/cost_accounting/concurrency_schedule_model.sage -- --json-out /tmp/concurrency.json
-sage formal/sage/cost_accounting/settlement_model.sage -- --json-out /tmp/settlement.json
-sage formal/sage/cost_accounting/replay_auth_model.sage -- --json-out /tmp/replay.json
-sage formal/sage/cost_accounting/slashing_composition_model.sage -- --json-out /tmp/slashing.json
-sage formal/sage/cost_accounting/resource_exhaustion_model.sage -- --json-out /tmp/resources.json
-sage formal/sage/cost_accounting/objective_frontier_model.sage -- --json-out /tmp/frontier.json
-sage formal/sage/cost_accounting/hypothesis_search/hypothesis_scenario_search.sage -- --profile quick --search-mode frontier --objectives all --json-out /tmp/hypothesis.json --fixture-out /tmp/hypothesis-fixtures.json --coverage-out /tmp/hypothesis-coverage.json --rust-fixtures-out /tmp/hypothesis-rust-fixtures.json
-sage formal/sage/cost_accounting/hypothesis_search/horizon_v2_search.sage -- --profile quick --search-mode frontier --objectives all --source-root rholang/examples --json-out /tmp/horizon-v2.json --fixture-out /tmp/horizon-v2-fixtures.json --coverage-out /tmp/horizon-v2-coverage.json --rust-fixtures-out /tmp/horizon-v2-rust-fixtures.json
-sage formal/sage/cost_accounting/hypothesis_search/horizon_v3_stateful_search.sage -- --profile quick --search-mode frontier --objectives all --source-root rholang/examples --json-out /tmp/horizon-v3.json --fixture-out /tmp/horizon-v3-fixtures.json --coverage-out /tmp/horizon-v3-coverage.json --rust-fixtures-out /tmp/horizon-v3-rust-fixtures.json
-sage formal/sage/cost_accounting/hypothesis_search/horizon_v4_adversarial_search.sage -- --profile quick --search-mode frontier --objectives all --source-root rholang/examples --json-out /tmp/horizon-v4.json --fixture-out /tmp/horizon-v4-fixtures.json --coverage-out /tmp/horizon-v4-coverage.json --rust-fixtures-out /tmp/horizon-v4-rust-fixtures.json
-sage formal/sage/cost_accounting/hypothesis_search/horizon_v5_property_search.sage -- --profile quick --search-mode frontier --objectives all --source-root rholang/examples --json-out /tmp/horizon-v5.json --fixture-out /tmp/horizon-v5-fixtures.json --coverage-out /tmp/horizon-v5-coverage.json --rust-fixtures-out /tmp/horizon-v5-rust-fixtures.json
-sage formal/sage/cost_accounting/hypothesis_search/horizon_v6_production_frontier.sage -- --profile quick --search-mode frontier --objectives all --source-root rholang/examples --json-out /tmp/horizon-v6.json --fixture-out /tmp/horizon-v6-fixtures.json --coverage-out /tmp/horizon-v6-coverage.json --rust-fixtures-out /tmp/horizon-v6-rust-fixtures.json
-sage formal/sage/cost_accounting/hypothesis_search/horizon_v7_production_semantic_search.sage -- --profile quick --search-mode frontier --objectives all --source-root rholang/examples --json-out /tmp/horizon-v7.json --fixture-out /tmp/horizon-v7-fixtures.json --coverage-out /tmp/horizon-v7-coverage.json --rust-fixtures-out /tmp/horizon-v7-rust-fixtures.json
-sage formal/sage/cost_accounting/hypothesis_search/horizon_v8_generative_semantic_search.sage -- --profile quick --search-mode frontier --objectives all --source-root rholang/examples --json-out /tmp/horizon-v8.json --fixture-out /tmp/horizon-v8-fixtures.json --coverage-out /tmp/horizon-v8-coverage.json --rust-fixtures-out /tmp/horizon-v8-rust-fixtures.json
-sage formal/sage/cost_accounting/hypothesis_search/horizon_v9_differential_corpus_security_search.sage -- --profile quick --search-mode frontier --objectives all --source-root rholang/examples --json-out /tmp/horizon-v9.json --fixture-out /tmp/horizon-v9-fixtures.json --coverage-out /tmp/horizon-v9-coverage.json --rust-fixtures-out /tmp/horizon-v9-rust-fixtures.json
-sage formal/sage/cost_accounting/hypothesis_search/horizon_v10_hybrid_fuzz_security_search.sage -- --profile quick --search-mode frontier --objectives all --source-root rholang/examples --json-out /tmp/horizon-v10.json --fixture-out /tmp/horizon-v10-fixtures.json --coverage-out /tmp/horizon-v10-coverage.json --rust-fixtures-out /tmp/horizon-v10-rust-fixtures.json
-bash scripts/cost-accounting-source-surface.sh --json-out /tmp/source-surface.json
-sage formal/sage/cost_accounting/hypothesis_search/horizon_v11_source_anchored_security_search.sage -- --profile quick --search-mode frontier --objectives all --source-surface-json /tmp/source-surface.json --json-out /tmp/horizon-v11.json --fixture-out /tmp/horizon-v11-fixtures.json --coverage-out /tmp/horizon-v11-coverage.json --rust-fixtures-out /tmp/horizon-v11-rust-fixtures.json
-sage formal/sage/cost_accounting/hypothesis_search/horizon_v12_production_oracle_security_search.sage -- --profile quick --search-mode frontier --objectives all --source-surface-json /tmp/source-surface.json --json-out /tmp/horizon-v12.json --fixture-out /tmp/horizon-v12-fixtures.json --coverage-out /tmp/horizon-v12-coverage.json --rust-fixtures-out /tmp/horizon-v12-rust-fixtures.json
-sage formal/sage/cost_accounting/hypothesis_search/horizon_v13_source_semantic_security_search.sage -- --profile quick --search-mode frontier --objectives all --source-surface-json /tmp/source-surface.json --json-out /tmp/horizon-v13.json --fixture-out /tmp/horizon-v13-fixtures.json --coverage-out /tmp/horizon-v13-coverage.json --rust-fixtures-out /tmp/horizon-v13-rust-fixtures.json
-sage formal/sage/cost_accounting/hypothesis_search/horizon_v14_source_graph_security_search.sage -- --profile quick --search-mode frontier --objectives all --source-surface-json /tmp/source-surface.json --json-out /tmp/horizon-v14.json --fixture-out /tmp/horizon-v14-fixtures.json --coverage-out /tmp/horizon-v14-coverage.json --rust-fixtures-out /tmp/horizon-v14-rust-fixtures.json
-sage formal/sage/cost_accounting/scenario_search/corpus_generator.sage -- --json-out /tmp/corpus.json --fixture-out /tmp/corpus-fixtures.json
+SAGE_OUT="$PWD/target/verification/cost-accounted-rho/sage"
+mkdir -p "$SAGE_OUT/dot-sage" "$SAGE_OUT/tmp"
+export DOT_SAGE="$SAGE_OUT/dot-sage"
+export TMPDIR="$SAGE_OUT/tmp"
+sage formal/sage/cost_accounting/budget_admission_model.sage -- --json-out $SAGE_OUT/budget.json
+sage formal/sage/cost_accounting/producer_routing_model.sage -- --json-out $SAGE_OUT/producer.json
+sage formal/sage/cost_accounting/concurrency_schedule_model.sage -- --json-out $SAGE_OUT/concurrency.json
+sage formal/sage/cost_accounting/settlement_model.sage -- --json-out $SAGE_OUT/settlement.json
+sage formal/sage/cost_accounting/replay_auth_model.sage -- --json-out $SAGE_OUT/replay.json
+sage formal/sage/cost_accounting/slashing_composition_model.sage -- --json-out $SAGE_OUT/slashing.json
+sage formal/sage/cost_accounting/resource_exhaustion_model.sage -- --json-out $SAGE_OUT/resources.json
+sage formal/sage/cost_accounting/objective_frontier_model.sage -- --json-out $SAGE_OUT/frontier.json
+sage formal/sage/cost_accounting/hypothesis_search/hypothesis_scenario_search.sage -- --profile quick --search-mode frontier --objectives all --json-out $SAGE_OUT/hypothesis.json --fixture-out $SAGE_OUT/hypothesis-fixtures.json --coverage-out $SAGE_OUT/hypothesis-coverage.json --rust-fixtures-out $SAGE_OUT/hypothesis-rust-fixtures.json
+sage formal/sage/cost_accounting/hypothesis_search/horizon_v2_search.sage -- --profile quick --search-mode frontier --objectives all --source-root rholang/examples --json-out $SAGE_OUT/horizon-v2.json --fixture-out $SAGE_OUT/horizon-v2-fixtures.json --coverage-out $SAGE_OUT/horizon-v2-coverage.json --rust-fixtures-out $SAGE_OUT/horizon-v2-rust-fixtures.json
+sage formal/sage/cost_accounting/hypothesis_search/horizon_v3_stateful_search.sage -- --profile quick --search-mode frontier --objectives all --source-root rholang/examples --json-out $SAGE_OUT/horizon-v3.json --fixture-out $SAGE_OUT/horizon-v3-fixtures.json --coverage-out $SAGE_OUT/horizon-v3-coverage.json --rust-fixtures-out $SAGE_OUT/horizon-v3-rust-fixtures.json
+sage formal/sage/cost_accounting/hypothesis_search/horizon_v4_adversarial_search.sage -- --profile quick --search-mode frontier --objectives all --source-root rholang/examples --json-out $SAGE_OUT/horizon-v4.json --fixture-out $SAGE_OUT/horizon-v4-fixtures.json --coverage-out $SAGE_OUT/horizon-v4-coverage.json --rust-fixtures-out $SAGE_OUT/horizon-v4-rust-fixtures.json
+sage formal/sage/cost_accounting/hypothesis_search/horizon_v5_property_search.sage -- --profile quick --search-mode frontier --objectives all --source-root rholang/examples --json-out $SAGE_OUT/horizon-v5.json --fixture-out $SAGE_OUT/horizon-v5-fixtures.json --coverage-out $SAGE_OUT/horizon-v5-coverage.json --rust-fixtures-out $SAGE_OUT/horizon-v5-rust-fixtures.json
+sage formal/sage/cost_accounting/hypothesis_search/horizon_v6_production_frontier.sage -- --profile quick --search-mode frontier --objectives all --source-root rholang/examples --json-out $SAGE_OUT/horizon-v6.json --fixture-out $SAGE_OUT/horizon-v6-fixtures.json --coverage-out $SAGE_OUT/horizon-v6-coverage.json --rust-fixtures-out $SAGE_OUT/horizon-v6-rust-fixtures.json
+sage formal/sage/cost_accounting/hypothesis_search/horizon_v7_production_semantic_search.sage -- --profile quick --search-mode frontier --objectives all --source-root rholang/examples --json-out $SAGE_OUT/horizon-v7.json --fixture-out $SAGE_OUT/horizon-v7-fixtures.json --coverage-out $SAGE_OUT/horizon-v7-coverage.json --rust-fixtures-out $SAGE_OUT/horizon-v7-rust-fixtures.json
+sage formal/sage/cost_accounting/hypothesis_search/horizon_v8_generative_semantic_search.sage -- --profile quick --search-mode frontier --objectives all --source-root rholang/examples --json-out $SAGE_OUT/horizon-v8.json --fixture-out $SAGE_OUT/horizon-v8-fixtures.json --coverage-out $SAGE_OUT/horizon-v8-coverage.json --rust-fixtures-out $SAGE_OUT/horizon-v8-rust-fixtures.json
+sage formal/sage/cost_accounting/hypothesis_search/horizon_v9_differential_corpus_security_search.sage -- --profile quick --search-mode frontier --objectives all --source-root rholang/examples --json-out $SAGE_OUT/horizon-v9.json --fixture-out $SAGE_OUT/horizon-v9-fixtures.json --coverage-out $SAGE_OUT/horizon-v9-coverage.json --rust-fixtures-out $SAGE_OUT/horizon-v9-rust-fixtures.json
+sage formal/sage/cost_accounting/hypothesis_search/horizon_v10_hybrid_fuzz_security_search.sage -- --profile quick --search-mode frontier --objectives all --source-root rholang/examples --json-out $SAGE_OUT/horizon-v10.json --fixture-out $SAGE_OUT/horizon-v10-fixtures.json --coverage-out $SAGE_OUT/horizon-v10-coverage.json --rust-fixtures-out $SAGE_OUT/horizon-v10-rust-fixtures.json
+bash scripts/cost-accounting-source-surface.sh --json-out $SAGE_OUT/source-surface.json
+sage formal/sage/cost_accounting/hypothesis_search/horizon_v11_source_anchored_security_search.sage -- --profile quick --search-mode frontier --objectives all --source-surface-json $SAGE_OUT/source-surface.json --json-out $SAGE_OUT/horizon-v11.json --fixture-out $SAGE_OUT/horizon-v11-fixtures.json --coverage-out $SAGE_OUT/horizon-v11-coverage.json --rust-fixtures-out $SAGE_OUT/horizon-v11-rust-fixtures.json
+sage formal/sage/cost_accounting/hypothesis_search/horizon_v12_production_oracle_security_search.sage -- --profile quick --search-mode frontier --objectives all --source-surface-json $SAGE_OUT/source-surface.json --json-out $SAGE_OUT/horizon-v12.json --fixture-out $SAGE_OUT/horizon-v12-fixtures.json --coverage-out $SAGE_OUT/horizon-v12-coverage.json --rust-fixtures-out $SAGE_OUT/horizon-v12-rust-fixtures.json
+sage formal/sage/cost_accounting/hypothesis_search/horizon_v13_source_semantic_security_search.sage -- --profile quick --search-mode frontier --objectives all --source-surface-json $SAGE_OUT/source-surface.json --json-out $SAGE_OUT/horizon-v13.json --fixture-out $SAGE_OUT/horizon-v13-fixtures.json --coverage-out $SAGE_OUT/horizon-v13-coverage.json --rust-fixtures-out $SAGE_OUT/horizon-v13-rust-fixtures.json
+sage formal/sage/cost_accounting/hypothesis_search/horizon_v14_source_graph_security_search.sage -- --profile quick --search-mode frontier --objectives all --source-surface-json $SAGE_OUT/source-surface.json --json-out $SAGE_OUT/horizon-v14.json --fixture-out $SAGE_OUT/horizon-v14-fixtures.json --coverage-out $SAGE_OUT/horizon-v14-coverage.json --rust-fixtures-out $SAGE_OUT/horizon-v14-rust-fixtures.json
+sage formal/sage/cost_accounting/scenario_search/corpus_generator.sage -- --json-out $SAGE_OUT/corpus.json --fixture-out $SAGE_OUT/corpus-fixtures.json
 ```
 
 The JSON records use the same classification vocabulary as
@@ -144,7 +148,7 @@ by `generated_frontier_v13_*` and `cost_accounting_v13_*` nextest targets.
 The v14 source-graph security frontier expands v13 from cost-accounting
 semantics into current whole-node source surfaces. It binds API ingress,
 runtime/replay cost evidence, replay-cache payloads, slashing authorization,
-typed mergeable-channel accounting, TLS peer certificate handling, private-key
-debug exposure, and accepted RustSec policy exceptions to extracted
+typed mergeable-channel accounting, authenticated locally derived merge
+evidence, TLS peer certificate handling, private-key debug exposure, and accepted RustSec policy exceptions to extracted
 `f1r3node-rust` source anchors. V14 fixtures are consumed by
 `generated_frontier_v14_*` and `cost_accounting_v14_*` nextest targets.

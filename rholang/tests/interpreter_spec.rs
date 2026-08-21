@@ -291,45 +291,54 @@ async fn interpreter_should_capture_parsing_errors_without_token_charge() {
     .await
 }
 
-// D3 (DR-9, OD-3) RENAME: was `interpreter_should_exhaust_budget_on_first_metered_reduction`.
-// Under D3 per-op metering (Reduction/Primitive/Substitution weights in
-// costs.rs) is DIAGNOSTIC only and contributes ZERO to the liveness budget;
-// the budget is denominated in successful atomic RSpace matches. Unmatched I/O
-// costs zero; every completed binary or join match costs one. This test
-// exercises that boundary directly.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn interpreter_should_exhaust_budget_when_comm_count_exceeds_token_budget() {
+async fn interpreter_should_enforce_the_exact_weighted_rspace_budget() {
     with_runtime("metered-comm-spec-", |mut runtime| async move {
         runtime.cost.set_deploy_signature_funded(
             b"interpreter-metered-comm-deploy",
             Sig::Ground(b"interpreter-metered-comm-payer".to_vec()),
         );
         let one_comm = "new x in { x!(0) | for (_ <- x) { Nil } }";
-        let one_token = Cost::create(1, "single token budget");
+        let one_probe = runtime
+            .evaluate_with_phlo(one_comm, Cost::create(i64::MAX, "one COMM probe"))
+            .await
+            .unwrap();
+        assert!(one_probe.errors.is_empty());
+        assert!(one_probe.cost.value > 1);
+
+        let exact_one = Cost::create(one_probe.cost.value, "exact one-COMM budget");
         let admitted = runtime
-            .evaluate_with_phlo(one_comm, one_token.clone())
+            .evaluate_with_phlo(one_comm, exact_one.clone())
             .await
             .unwrap();
         assert!(
             admitted.errors.is_empty(),
-            "D3: one COMM exactly fits a 1-token budget — no OOP (got {:?})",
+            "the exact introduction, transfer, trace, and COMM budget must admit (got {:?})",
             admitted.errors
         );
-        // Consensus cost = COMM count = 1 (`total_cost` == consumed_units).
-        assert_eq!(admitted.cost.value, 1);
+        assert_eq!(admitted.cost.value, exact_one.value);
 
         let two_comms =
             "new x, y in { x!(0) | for (_ <- x) { Nil } | y!(1) | for (_ <- y) { Nil } }";
+        let two_probe = runtime
+            .evaluate_with_phlo(two_comms, Cost::create(i64::MAX, "two COMM probe"))
+            .await
+            .unwrap();
+        assert!(two_probe.errors.is_empty());
+        assert!(two_probe.cost.value > exact_one.value);
+
         let exhausted = runtime
-            .evaluate_with_phlo(two_comms, one_token.clone())
+            .evaluate_with_phlo(two_comms, exact_one.clone())
             .await
             .unwrap();
         assert!(
-            !exhausted.errors.is_empty(),
-            "D3: a second COMM over a 1-token budget must OOP"
+            matches!(exhausted.errors.as_slice(), [
+                InterpreterError::OutOfPhlogistonsError
+            ]),
+            "the larger weighted trace must exhaust the one-COMM reservation: {:?}",
+            exhausted.errors
         );
-        // On OOP, consumed_units is clamped UP to `initial` (the 1-token budget).
-        assert_eq!(exhausted.cost.value, one_token.value);
+        assert_eq!(exhausted.cost.value, exact_one.value);
     })
     .await
 }

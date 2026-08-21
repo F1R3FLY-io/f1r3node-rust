@@ -1872,9 +1872,8 @@ async fn validate_block_checkpoint_should_pass_map_update_test() {
     .await;
 }
 
-// Test for cost mismatch between play and replay in case of out of phlo error
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn used_deploy_with_insufficient_phlos_should_be_added_to_a_block_with_all_phlos_consumed() {
+async fn authority_funded_deploy_reports_realized_cost() {
     let ctx = TestContext::new().await;
 
     let sample_term = r#"
@@ -1929,17 +1928,14 @@ async fn used_deploy_with_insufficient_phlos_should_be_added_to_a_block_with_all
         "Block should have exactly 1 deploy"
     );
 
-    // D3/DR-9 (OD-1): accepted deploys run UNMETERED-for-liveness — the
-    // acceptance gate (Σ_s ≥ Δ_s) proves fundedness, so the legacy per-deploy
-    // `phlo_limit` (3000) no longer caps execution. The deploy therefore runs
-    // to its ACTUAL per-COMM cost; it never "consumes all phlos" on
-    // insufficiency. Mirrors the sibling `replay_should_match_in_case_of_out_of_phlo_error`
-    // (this file, ~L1786): assert `0 < cost < limit`, not `cost == limit`.
-    let deploy_cost = b.body.deploys[0].cost.cost;
+    let processed = &b.body.deploys[0];
     assert!(
-        deploy_cost > 0 && deploy_cost < 3000,
-        "Under D3 unmetered-for-liveness the deploy runs to its actual cost ({deploy_cost}), \
-         not capped at the legacy phlo_limit (3000)"
+        !processed.is_failed,
+        "Authority-funded deploy should succeed"
+    );
+    assert!(
+        processed.cost.cost > 0,
+        "Authority-funded deploy should report positive realized protocol cost"
     );
 }
 
@@ -1960,7 +1956,7 @@ const MULTI_BRANCH_SAMPLE_TERM_WITH_ERROR: &str = r#"
 "#;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn replay_should_match_in_case_of_out_of_phlo_error() {
+async fn replay_matches_when_realized_cost_exceeds_legacy_phlo_limit() {
     let ctx = TestContext::new().await;
 
     let timestamp = std::time::SystemTime::now()
@@ -1971,7 +1967,7 @@ async fn replay_should_match_in_case_of_out_of_phlo_error() {
     let deploy = construct_deploy::source_deploy(
         MULTI_BRANCH_SAMPLE_TERM_WITH_ERROR.to_string(),
         timestamp,
-        Some(20000), // phlo_limit — advisory only under D3/DR-9 (deploys run unmetered-for-liveness)
+        Some(20000),
         None,
         None,
         None,
@@ -1994,22 +1990,19 @@ async fn replay_should_match_in_case_of_out_of_phlo_error() {
         "Block should have exactly 1 deploy"
     );
 
-    // D3/DR-9 (OD-1): accepted deploys run UNMETERED-for-liveness — the acceptance
-    // gate proves fundedness, so the legacy per-deploy `phlo_limit` no longer caps
-    // execution. This deploy therefore runs to its ACTUAL cost and errors at the
-    // user `.xxx()` fault, rather than consuming the full 20000-phlo limit (the
-    // pre-D3 out-of-phlo behavior). Play and replay agree on this actual cost (the
-    // erroring deploy is processed deterministically — validated by `add_block`).
-    let deploy_cost = b.body.deploys[0].cost.cost;
+    let processed = &b.body.deploys[0];
     assert!(
-        deploy_cost > 0 && deploy_cost < 20000,
-        "Under D3 unmetered-for-liveness the deploy runs to its actual cost ({deploy_cost}), \
-         erroring at .xxx() — not capped at the legacy phlo_limit (20000)"
+        processed.is_failed,
+        "Execution should reach the deterministic user error"
+    );
+    assert!(
+        processed.cost.cost > 20000,
+        "The ignored legacy phlo_limit must not truncate authority-funded execution"
     );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn replay_should_match_in_case_of_user_execution_error() {
+async fn replay_matches_for_authority_funded_user_execution_error() {
     let ctx = TestContext::new().await;
 
     let timestamp = std::time::SystemTime::now()
@@ -2020,7 +2013,7 @@ async fn replay_should_match_in_case_of_user_execution_error() {
     let deploy = construct_deploy::source_deploy(
         MULTI_BRANCH_SAMPLE_TERM_WITH_ERROR.to_string(),
         timestamp,
-        Some(300000), //Enough phlo
+        None,
         None,
         None,
         None,
@@ -2049,7 +2042,7 @@ async fn replay_should_match_in_case_of_user_execution_error() {
         "Deploy should fail with user error"
     );
     assert!(
-        deploy_cost > 0 && deploy_cost < 300000,
-        "User execution errors should report consumed tokens without exhausting the full budget"
+        deploy_cost > 0,
+        "User execution errors should report positive realized protocol cost"
     );
 }

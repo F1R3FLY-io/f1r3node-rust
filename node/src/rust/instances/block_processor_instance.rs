@@ -1,16 +1,20 @@
 // See node/src/main/scala/coop/rchain/node/instances/BlockProcessorInstance.scala
 
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
 
 use casper::rust::blocks::block_processor::BlockProcessor;
 use casper::rust::casper::MultiParentCasper;
 use casper::rust::errors::CasperError;
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+use casper::rust::metrics_constants::ALLOCATOR_TRIM_TOTAL_METRIC;
 use casper::rust::metrics_constants::{
     BLOCKS_IN_PROCESSING_SIZE_METRIC, BLOCK_PROCESSING_ACTIVE_METRIC,
     BLOCK_PROCESSING_PARALLEL_LIMIT_METRIC, BLOCK_PROCESSOR_METRICS_SOURCE, PROCESS_RSS_KB_METRIC,
 };
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+use casper::rust::util::rholang::runtime_manager::RuntimeManager;
 use casper::rust::{ProposeFunction, ValidBlockProcessing};
 use comm::rust::transport::transport_layer::TransportLayer;
 use dashmap::DashSet;
@@ -24,25 +28,38 @@ const MAX_BLOCKS_IN_PROCESSING_ENV: &str = "F1R3_MAX_BLOCKS_IN_PROCESSING";
 const MAX_PARALLEL_BLOCKS_DEFAULT: usize = 2;
 const MAX_PARALLEL_BLOCKS_ENV: &str = "F1R3_MAX_PARALLEL_BLOCKS";
 const BLOCK_PROCESSING_RESULT_QUEUE_CAPACITY: usize = 128;
-#[cfg(target_os = "linux")]
-static PROCESSED_BLOCKS: AtomicUsize = AtomicUsize::new(0);
-#[cfg(target_os = "linux")]
+const MALLOC_TRIM_EVERY_BLOCKS_DEFAULT: usize = 1;
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+static BLOCKS_SINCE_ALLOCATOR_TRIM: AtomicUsize = AtomicUsize::new(0);
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
 static MALLOC_TRIM_EVERY_BLOCKS: OnceLock<usize> = OnceLock::new();
 static MAX_BLOCKS_IN_PROCESSING: OnceLock<usize> = OnceLock::new();
 static TRIGGER_PROPOSE_AFTER_BLOCK_PROCESSING: OnceLock<bool> = OnceLock::new();
 
-#[cfg(target_os = "linux")]
-unsafe extern "C" {
-    fn malloc_trim(pad: usize) -> i32;
+fn configured_malloc_trim_every_blocks(value: Option<&str>) -> usize {
+    value
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(MALLOC_TRIM_EVERY_BLOCKS_DEFAULT)
 }
 
-#[cfg(target_os = "linux")]
+fn next_trim_counter(current: usize, interval: usize) -> (usize, bool) {
+    if interval == 0 {
+        (current, false)
+    } else if current >= interval - 1 {
+        (0, true)
+    } else {
+        (current + 1, false)
+    }
+}
+
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
 fn malloc_trim_every_blocks() -> usize {
     *MALLOC_TRIM_EVERY_BLOCKS.get_or_init(|| {
-        std::env::var("F1R3_MALLOC_TRIM_EVERY_BLOCKS")
-            .ok()
-            .and_then(|v| v.parse::<usize>().ok())
-            .unwrap_or(0)
+        configured_malloc_trim_every_blocks(
+            std::env::var("F1R3_MALLOC_TRIM_EVERY_BLOCKS")
+                .ok()
+                .as_deref(),
+        )
     })
 }
 
@@ -80,24 +97,41 @@ fn trigger_propose_after_block_processing_enabled() -> bool {
     })
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
 fn maybe_trim_allocator_after_block() {
     let interval = malloc_trim_every_blocks();
     if interval == 0 {
         return;
     }
 
-    let count = PROCESSED_BLOCKS.fetch_add(1, Ordering::Relaxed) + 1;
-    if count.is_multiple_of(interval) {
-        #[cfg(target_os = "linux")]
-        unsafe {
-            let _ = malloc_trim(0);
+    let mut current = BLOCKS_SINCE_ALLOCATOR_TRIM.load(Ordering::Relaxed);
+    let should_trim = loop {
+        let (next, should_trim) = next_trim_counter(current, interval);
+        match BLOCKS_SINCE_ALLOCATOR_TRIM.compare_exchange_weak(
+            current,
+            next,
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+        ) {
+            Ok(_) => break should_trim,
+            Err(observed) => current = observed,
         }
+    };
+    if should_trim {
+        RuntimeManager::trim_allocator();
+        metrics::counter!(ALLOCATOR_TRIM_TOTAL_METRIC, "source" => BLOCK_PROCESSOR_METRICS_SOURCE)
+            .increment(1);
     }
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(all(target_os = "linux", target_env = "gnu")))]
 fn maybe_trim_allocator_after_block() {}
+
+struct BlockProcessingHeapBoundary;
+
+impl Drop for BlockProcessingHeapBoundary {
+    fn drop(&mut self) { maybe_trim_allocator_after_block(); }
+}
 
 /// Ensures the in-flight marker is always cleared, even on early-return or
 /// panic.
@@ -222,6 +256,7 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorInstance<T> {
 
                 // Spawn task to process the block
                 tokio::spawn(async move {
+                    let _heap_boundary = BlockProcessingHeapBoundary;
                     let _active_guard = ActiveBlockProcessingGuard::new();
                     let block_str = PrettyPrinter::build_string_bytes(&block.block_hash);
                     if !blocks_in_processing.contains(&block.block_hash) {
@@ -404,7 +439,6 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorInstance<T> {
                         }
                     }
 
-                    maybe_trim_allocator_after_block();
                     metrics::gauge!(
                         BLOCKS_IN_PROCESSING_SIZE_METRIC,
                         "source" => BLOCK_PROCESSOR_METRICS_SOURCE
@@ -596,5 +630,40 @@ mod tests {
             configured_max_parallel_blocks(Some(&max)),
             tokio::sync::Semaphore::MAX_PERMITS
         );
+    }
+
+    #[test]
+    fn allocator_trim_defaults_to_every_completed_block() {
+        assert_eq!(configured_malloc_trim_every_blocks(None), 1);
+        assert_eq!(configured_malloc_trim_every_blocks(Some("")), 1);
+        assert_eq!(configured_malloc_trim_every_blocks(Some("invalid")), 1);
+    }
+
+    #[test]
+    fn allocator_trim_interval_accepts_explicit_values() {
+        assert_eq!(configured_malloc_trim_every_blocks(Some("0")), 0);
+        assert_eq!(configured_malloc_trim_every_blocks(Some("8")), 8);
+    }
+
+    #[test]
+    fn allocator_trim_schedule_is_bounded_and_overflow_safe() {
+        assert_eq!(next_trim_counter(usize::MAX, 0), (usize::MAX, false));
+        assert_eq!(next_trim_counter(0, 1), (0, true));
+        assert_eq!(next_trim_counter(6, 8), (7, false));
+        assert_eq!(next_trim_counter(7, 8), (0, true));
+        assert_eq!(next_trim_counter(usize::MAX, 8), (0, true));
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn allocator_trim_counter_never_exceeds_interval(
+            current in proptest::num::usize::ANY,
+            interval in 1usize..=usize::MAX,
+        ) {
+            let (next, should_trim) = next_trim_counter(current, interval);
+            proptest::prop_assert!(next < interval);
+            proptest::prop_assert_eq!(should_trim, current >= interval - 1);
+            proptest::prop_assert_eq!(should_trim, next == 0 && current >= interval - 1);
+        }
     }
 }

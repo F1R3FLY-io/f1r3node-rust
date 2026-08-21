@@ -20,7 +20,7 @@ use super::rspace::RSpace;
 use super::trace::Log;
 use super::trace::event::{COMM, Consume, Produce};
 use crate::rspace::rspace_interface::{
-    CommObserver, ISpace, MaybeConsumeResult, MaybeProduceResult,
+    ISpace, MaybeConsumeResult, MaybeProduceResult, RSpaceAccountingObserver,
 };
 
 /// ReportingRspace works exactly like how ReplayRspace works. It can replay the
@@ -247,8 +247,11 @@ where
     A: Clone + Debug + Default + Send + Sync + Serialize + for<'a> Deserialize<'a> + 'static,
     K: Clone + Debug + Default + Send + Sync + Serialize + for<'a> Deserialize<'a> + 'static,
 {
-    fn set_comm_observer(&self, observer: Option<Arc<dyn CommObserver<A, K>>>) {
-        self.replay_rspace.set_comm_observer(observer);
+    fn set_accounting_observer(
+        &self,
+        observer: Option<Arc<dyn RSpaceAccountingObserver<C, P, A, K>>>,
+    ) {
+        self.replay_rspace.set_accounting_observer(observer);
     }
 
     async fn create_checkpoint(&self) -> Result<Checkpoint, RSpaceError> {

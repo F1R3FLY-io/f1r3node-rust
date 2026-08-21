@@ -2,52 +2,96 @@
 EXTENDS Naturals, FiniteSets, TLC
 
 CONSTANTS
+    \* @type: Set(Str);
     Payers,
+    \* @type: Set(Str);
     Validators,
+    \* @type: Set(Str);
     Names,
+    \* @type: Set(Str);
     Callers,
+    \* @type: Str;
     Sponsor,
+    \* @type: Str;
+    Outer,
+    \* @type: Str;
     Slot,
+    \* @type: Str;
     Gateway,
+    \* @type: Str;
     Attacker,
+    \* @type: Str;
     Proposer,
+    \* @type: Str;
     DivergentValidator,
+    \* @type: Str;
+    OuterAddress,
+    \* @type: Str;
     SlotAddress,
+    \* @type: Str;
     SlotCapability,
+    \* @type: Str;
     NoPayer,
+    \* @type: Str;
     NoCaller,
+    \* @type: Str -> Int;
     InitialBalance,
-    FundingAmount,
+    \* @type: Int;
+    OuterFundingAmount,
+    \* @type: Int;
+    SlotFundingAmount,
+    \* @type: Int;
+    OuterCertifiedCostBound,
+    \* @type: Int;
     CertifiedCostBound,
+    \* @type: Int;
+    OuterRealizedCost,
+    \* @type: Int;
     RealizedCost,
+    \* @type: Int;
     FixedFee,
+    \* @type: Bool;
     AllowFundingCopy,
+    \* @type: Bool;
     AllowCapabilityLeak,
+    \* @type: Bool;
     AllowPayerCollapse,
+    \* @type: Bool;
     AllowReplayOmission,
+    \* @type: Bool;
     AllowMissingOuter,
+    \* @type: Bool;
     AllowGatewayAuthBypass,
+    \* @type: Bool;
+    AllowActivationBeforeFunding,
+    \* @type: Bool;
     ChargeCertifiedBound
 
-ASSUME /\ Payers = {Sponsor, Slot, Gateway, Proposer}
-       /\ Cardinality(Payers) = 4
+ASSUME /\ Payers = {Sponsor, Outer, Slot, Gateway, Proposer}
+       /\ Cardinality(Payers) = 5
        /\ Validators # {}
        /\ Callers = {Gateway, Attacker}
        /\ Gateway # Attacker
        /\ Attacker \notin Payers
        /\ DivergentValidator \in Validators
+       /\ OuterAddress \in Names
        /\ SlotAddress \in Names
        /\ SlotCapability \in Names
-       /\ SlotAddress # SlotCapability
+       /\ Cardinality({OuterAddress, SlotAddress, SlotCapability}) = 3
        /\ NoPayer \notin Payers
        /\ NoCaller \notin Callers
        /\ InitialBalance \in [Payers -> Nat]
-       /\ FundingAmount \in Nat \ {0}
-       /\ FundingAmount <= InitialBalance[Sponsor]
+       /\ OuterFundingAmount \in Nat \ {0}
+       /\ SlotFundingAmount \in Nat \ {0}
+       /\ OuterFundingAmount + SlotFundingAmount <= InitialBalance[Sponsor]
+       /\ OuterCertifiedCostBound \in Nat \ {0}
        /\ CertifiedCostBound \in Nat \ {0}
+       /\ OuterRealizedCost \in Nat
        /\ RealizedCost \in Nat
+       /\ OuterRealizedCost <= OuterCertifiedCostBound
        /\ RealizedCost <= CertifiedCostBound
-       /\ CertifiedCostBound <= InitialBalance[Slot] + FundingAmount
+       /\ OuterCertifiedCostBound <= InitialBalance[Outer] + OuterFundingAmount
+       /\ CertifiedCostBound <= InitialBalance[Slot] + SlotFundingAmount
        /\ FixedFee \in Nat
        /\ FixedFee <= InitialBalance[Gateway]
        /\ \A flag \in {
@@ -57,59 +101,90 @@ ASSUME /\ Payers = {Sponsor, Slot, Gateway, Proposer}
             AllowReplayOmission,
             AllowMissingOuter,
             AllowGatewayAuthBypass,
+            AllowActivationBeforeFunding,
             ChargeCertifiedBound
           } : flag \in BOOLEAN
 
 VARIABLES
+    \* @type: Str;
     phase,
+    \* @type: Bool;
     outerCommitted,
+    \* @type: Bool;
     continuationStored,
-    addressPublished,
+    \* @type: Bool;
+    addressesPublished,
+    \* @type: Bool;
     continuationHasCapability,
+    \* @type: Bool;
     gatewayHasCapability,
+    \* @type: Bool;
     gatewayAuthenticated,
+    \* @type: Str;
     authorizedCaller,
+    \* @type: Bool;
     unauthorizedAttempted,
+    \* @type: Bool;
     fundingCommitted,
+    \* @type: Str -> Int;
     balance,
+    \* @type: Int;
     burned,
+    \* @type: Str -> Str;
     validationStatus,
-    validationPayer,
+    \* @type: Str -> Str;
+    validationOuterPayer,
+    \* @type: Str -> Str;
+    validationContinuationPayer,
+    \* @type: Str -> Int;
     preSettlementBalance,
+    \* @type: Bool;
     committed,
+    \* @type: Str -> Int;
     replayBalance,
+    \* @type: Int;
     replayBurned,
-    replayPayer
+    \* @type: Str;
+    replayOuterPayer,
+    \* @type: Str;
+    replayContinuationPayer
 
-vars == <<phase, outerCommitted, continuationStored, addressPublished,
+vars == <<phase, outerCommitted, continuationStored, addressesPublished,
           continuationHasCapability, gatewayHasCapability, gatewayAuthenticated,
           authorizedCaller, unauthorizedAttempted, fundingCommitted,
-          balance, burned, validationStatus, validationPayer,
-          preSettlementBalance, committed, replayBalance, replayBurned,
-          replayPayer>>
+          balance, burned, validationStatus, validationOuterPayer,
+          validationContinuationPayer, preSettlementBalance, committed,
+          replayBalance, replayBurned, replayOuterPayer,
+          replayContinuationPayer>>
 
-RECURSIVE SumSet(_, _)
+CanonicalTotal(function) ==
+    function[Sponsor] + function[Outer] + function[Slot]
+      + function[Gateway] + function[Proposer]
 
-SumSet(function, domain) ==
-    IF domain = {}
-    THEN 0
-    ELSE LET element == CHOOSE value \in domain : TRUE
-         IN function[element] + SumSet(function, domain \ {element})
+CanonicalOuterPayer(validator) ==
+    IF AllowPayerCollapse /\ validator = DivergentValidator
+    THEN Gateway
+    ELSE Outer
 
-CanonicalPayer(validator) ==
+CanonicalContinuationPayer(validator) ==
     IF AllowPayerCollapse /\ validator = DivergentValidator
     THEN Gateway
     ELSE Slot
 
-ChargedCost ==
+ChargedOuterCost ==
+    IF ChargeCertifiedBound THEN OuterCertifiedCostBound ELSE OuterRealizedCost
+
+ChargedContinuationCost ==
     IF ChargeCertifiedBound THEN CertifiedCostBound ELSE RealizedCost
 
 ValidatorCanAdmit(validator) ==
     /\ gatewayAuthenticated
+    /\ fundingCommitted
     /\ continuationStored
     /\ continuationHasCapability
     /\ (outerCommitted \/ AllowMissingOuter)
-    /\ balance[CanonicalPayer(validator)] >= CertifiedCostBound
+    /\ balance[CanonicalOuterPayer(validator)] >= OuterCertifiedCostBound
+    /\ balance[CanonicalContinuationPayer(validator)] >= CertifiedCostBound
     /\ balance[Gateway] >= FixedFee
 
 AllValidated ==
@@ -118,14 +193,16 @@ AllValidated ==
 AllAdmitted ==
     \A validator \in Validators : validationStatus[validator] = "Admitted"
 
-AllCertifiedForSlot ==
-    \A validator \in Validators : validationPayer[validator] = Slot
+AllCertifiedForLocatedPurses ==
+    \A validator \in Validators :
+      /\ validationOuterPayer[validator] = Outer
+      /\ validationContinuationPayer[validator] = Slot
 
 Init ==
     /\ phase = "Install"
     /\ outerCommitted = FALSE
     /\ continuationStored = FALSE
-    /\ addressPublished = FALSE
+    /\ addressesPublished = FALSE
     /\ continuationHasCapability = FALSE
     /\ gatewayHasCapability = FALSE
     /\ gatewayAuthenticated = FALSE
@@ -135,40 +212,48 @@ Init ==
     /\ balance = InitialBalance
     /\ burned = 0
     /\ validationStatus = [validator \in Validators |-> "Unknown"]
-    /\ validationPayer = [validator \in Validators |-> NoPayer]
+    /\ validationOuterPayer = [validator \in Validators |-> NoPayer]
+    /\ validationContinuationPayer = [validator \in Validators |-> NoPayer]
     /\ preSettlementBalance = InitialBalance
     /\ committed = FALSE
     /\ replayBalance = InitialBalance
     /\ replayBurned = 0
-    /\ replayPayer = NoPayer
+    /\ replayOuterPayer = NoPayer
+    /\ replayContinuationPayer = NoPayer
 
 Install ==
     /\ phase = "Install"
     /\ outerCommitted' = ~AllowMissingOuter
-    /\ continuationStored' = TRUE
-    /\ addressPublished' = TRUE
-    /\ continuationHasCapability' = TRUE
+    /\ continuationStored' = FALSE
+    /\ addressesPublished' = TRUE
+    /\ continuationHasCapability' = FALSE
     /\ gatewayHasCapability' = AllowCapabilityLeak
-    /\ phase' = "Fund"
+    /\ phase' = IF AllowActivationBeforeFunding THEN "Authorize" ELSE "Fund"
     /\ UNCHANGED <<gatewayAuthenticated, authorizedCaller,
                     unauthorizedAttempted, fundingCommitted, balance, burned,
-                    validationStatus,
-                    validationPayer, preSettlementBalance, committed,
-                    replayBalance, replayBurned, replayPayer>>
+                    validationStatus, validationOuterPayer,
+                    validationContinuationPayer, preSettlementBalance, committed,
+                    replayBalance, replayBurned, replayOuterPayer,
+                    replayContinuationPayer>>
 
 Fund ==
     /\ phase = "Fund"
     /\ balance' =
          [balance EXCEPT
-           ![Sponsor] = IF AllowFundingCopy THEN @ ELSE @ - FundingAmount,
-           ![Slot] = @ + FundingAmount]
+           ![Sponsor] = IF AllowFundingCopy
+                         THEN @
+                         ELSE @ - OuterFundingAmount - SlotFundingAmount,
+           ![Outer] = @ + OuterFundingAmount,
+           ![Slot] = @ + SlotFundingAmount]
     /\ fundingCommitted' = TRUE
     /\ phase' = "Authorize"
-    /\ UNCHANGED <<outerCommitted, continuationStored, addressPublished,
+    /\ UNCHANGED <<outerCommitted, continuationStored, addressesPublished,
                     continuationHasCapability, gatewayHasCapability, burned,
                     gatewayAuthenticated, authorizedCaller, unauthorizedAttempted,
-                    validationStatus, validationPayer, preSettlementBalance,
-                    committed, replayBalance, replayBurned, replayPayer>>
+                    validationStatus, validationOuterPayer,
+                    validationContinuationPayer, preSettlementBalance, committed,
+                    replayBalance, replayBurned, replayOuterPayer,
+                    replayContinuationPayer>>
 
 Authorize(caller) ==
     /\ phase = "Authorize"
@@ -177,82 +262,97 @@ Authorize(caller) ==
        THEN /\ gatewayAuthenticated' = TRUE
             /\ authorizedCaller' = caller
             /\ unauthorizedAttempted' = (unauthorizedAttempted \/ caller = Attacker)
+            /\ continuationStored' = TRUE
+            /\ continuationHasCapability' = TRUE
             /\ phase' = "Validate"
        ELSE /\ ~unauthorizedAttempted
             /\ gatewayAuthenticated' = FALSE
             /\ authorizedCaller' = NoCaller
             /\ unauthorizedAttempted' = TRUE
+            /\ continuationStored' = FALSE
+            /\ continuationHasCapability' = FALSE
             /\ phase' = "Authorize"
-    /\ UNCHANGED <<outerCommitted, continuationStored, addressPublished,
-                    continuationHasCapability, gatewayHasCapability,
+    /\ UNCHANGED <<outerCommitted, addressesPublished, gatewayHasCapability,
                     fundingCommitted, balance, burned, validationStatus,
-                    validationPayer, preSettlementBalance, committed,
-                    replayBalance, replayBurned, replayPayer>>
+                    validationOuterPayer, validationContinuationPayer,
+                    preSettlementBalance, committed, replayBalance,
+                    replayBurned, replayOuterPayer, replayContinuationPayer>>
 
 Validate(validator) ==
     /\ phase = "Validate"
     /\ validator \in Validators
     /\ validationStatus[validator] = "Unknown"
-    /\ validationPayer' =
-         [validationPayer EXCEPT ![validator] = CanonicalPayer(validator)]
+    /\ validationOuterPayer' =
+         [validationOuterPayer EXCEPT ![validator] = CanonicalOuterPayer(validator)]
+    /\ validationContinuationPayer' =
+         [validationContinuationPayer EXCEPT
+            ![validator] = CanonicalContinuationPayer(validator)]
     /\ validationStatus' =
          [validationStatus EXCEPT
            ![validator] =
              IF ValidatorCanAdmit(validator) THEN "Admitted" ELSE "Rejected"]
     /\ UNCHANGED <<phase, outerCommitted, continuationStored,
-                    addressPublished, continuationHasCapability,
+                    addressesPublished, continuationHasCapability,
                     gatewayHasCapability, gatewayAuthenticated,
                     authorizedCaller, unauthorizedAttempted,
                     fundingCommitted, balance, burned,
                     preSettlementBalance, committed, replayBalance,
-                    replayBurned, replayPayer>>
+                    replayBurned, replayOuterPayer, replayContinuationPayer>>
 
 Commit ==
     /\ phase = "Validate"
     /\ AllValidated
     /\ AllAdmitted
-    /\ AllCertifiedForSlot
-    /\ balance[Slot] >= ChargedCost
+    /\ AllCertifiedForLocatedPurses
+    /\ balance[Outer] >= ChargedOuterCost
+    /\ balance[Slot] >= ChargedContinuationCost
     /\ balance[Gateway] >= FixedFee
     /\ preSettlementBalance' = balance
     /\ balance' =
          [balance EXCEPT
-           ![Slot] = @ - ChargedCost,
+           ![Outer] = @ - ChargedOuterCost,
+           ![Slot] = @ - ChargedContinuationCost,
            ![Gateway] = @ - FixedFee,
            ![Proposer] = @ + FixedFee]
-    /\ burned' = burned + ChargedCost
+    /\ burned' = burned + ChargedOuterCost + ChargedContinuationCost
     /\ committed' = TRUE
     /\ phase' = "Replay"
-    /\ UNCHANGED <<outerCommitted, continuationStored, addressPublished,
+    /\ UNCHANGED <<outerCommitted, continuationStored, addressesPublished,
                     continuationHasCapability, gatewayHasCapability,
                     gatewayAuthenticated, authorizedCaller, unauthorizedAttempted,
-                    fundingCommitted, validationStatus, validationPayer,
-                    replayBalance, replayBurned, replayPayer>>
+                    fundingCommitted, validationStatus, validationOuterPayer,
+                    validationContinuationPayer, replayBalance, replayBurned,
+                    replayOuterPayer, replayContinuationPayer>>
 
 Replay ==
     /\ phase = "Replay"
     /\ IF AllowReplayOmission
        THEN /\ replayBalance' = preSettlementBalance
             /\ replayBurned' = 0
-            /\ replayPayer' = NoPayer
+            /\ replayOuterPayer' = NoPayer
+            /\ replayContinuationPayer' = NoPayer
        ELSE /\ replayBalance' =
                   [preSettlementBalance EXCEPT
-                    ![Slot] = @ - ChargedCost,
+                    ![Outer] = @ - ChargedOuterCost,
+                    ![Slot] = @ - ChargedContinuationCost,
                     ![Gateway] = @ - FixedFee,
                     ![Proposer] = @ + FixedFee]
-            /\ replayBurned' = ChargedCost
-            /\ replayPayer' = Slot
+            /\ replayBurned' = ChargedOuterCost + ChargedContinuationCost
+            /\ replayOuterPayer' = Outer
+            /\ replayContinuationPayer' = Slot
     /\ phase' = "Done"
-    /\ UNCHANGED <<outerCommitted, continuationStored, addressPublished,
+    /\ UNCHANGED <<outerCommitted, continuationStored, addressesPublished,
                     continuationHasCapability, gatewayHasCapability,
                     gatewayAuthenticated, authorizedCaller, unauthorizedAttempted,
                     fundingCommitted, balance, burned, validationStatus,
-                    validationPayer, preSettlementBalance, committed>>
+                    validationOuterPayer, validationContinuationPayer,
+                    preSettlementBalance, committed>>
 
 ValidateAny == \E validator \in Validators : Validate(validator)
 AuthorizeAny == \E caller \in Callers : Authorize(caller)
+Done == phase = "Done" /\ UNCHANGED vars
 
-Next == Install \/ Fund \/ AuthorizeAny \/ ValidateAny \/ Commit \/ Replay
+Next == Install \/ Fund \/ AuthorizeAny \/ ValidateAny \/ Commit \/ Replay \/ Done
 
 Spec ==
     /\ Init
@@ -268,7 +368,7 @@ TypeOK ==
     /\ phase \in {"Install", "Fund", "Authorize", "Validate", "Replay", "Done"}
     /\ outerCommitted \in BOOLEAN
     /\ continuationStored \in BOOLEAN
-    /\ addressPublished \in BOOLEAN
+    /\ addressesPublished \in BOOLEAN
     /\ continuationHasCapability \in BOOLEAN
     /\ gatewayHasCapability \in BOOLEAN
     /\ gatewayAuthenticated \in BOOLEAN
@@ -278,39 +378,53 @@ TypeOK ==
     /\ balance \in [Payers -> Nat]
     /\ burned \in Nat
     /\ validationStatus \in [Validators -> {"Unknown", "Admitted", "Rejected"}]
-    /\ validationPayer \in [Validators -> Payers \cup {NoPayer}]
+    /\ validationOuterPayer \in [Validators -> Payers \cup {NoPayer}]
+    /\ validationContinuationPayer \in [Validators -> Payers \cup {NoPayer}]
     /\ preSettlementBalance \in [Payers -> Nat]
     /\ committed \in BOOLEAN
     /\ replayBalance \in [Payers -> Nat]
     /\ replayBurned \in Nat
-    /\ replayPayer \in Payers \cup {NoPayer}
+    /\ replayOuterPayer \in Payers \cup {NoPayer}
+    /\ replayContinuationPayer \in Payers \cup {NoPayer}
 
 CanonicalCustodyConserved ==
-    SumSet(balance, Payers) + burned = SumSet(InitialBalance, Payers)
+    CanonicalTotal(balance) + burned = CanonicalTotal(InitialBalance)
 
-PublicAddressIsNotCapability == SlotAddress # SlotCapability
+PublicAddressesAreNotCapability ==
+    Cardinality({OuterAddress, SlotAddress, SlotCapability}) = 3
 
-FundingUsesAddressWithoutDelegatingDraw ==
-    fundingCommitted =>
-      /\ addressPublished
-      /\ ~gatewayHasCapability
-      /\ continuationHasCapability
+FundingUsesAddressesWithoutDelegatingDraw ==
+    /\ addressesPublished => ~gatewayHasCapability
+    /\ (fundingCommitted /\ phase = "Authorize") =>
+         /\ ~continuationStored
+         /\ ~continuationHasCapability
+
+FundingCommitsBothPursesAtomically ==
+    (fundingCommitted /\ ~committed) =>
+      /\ balance[Sponsor] =
+           InitialBalance[Sponsor] - OuterFundingAmount - SlotFundingAmount
+      /\ balance[Outer] = InitialBalance[Outer] + OuterFundingAmount
+      /\ balance[Slot] = InitialBalance[Slot] + SlotFundingAmount
+
+ContinuationActivationRequiresFunding == continuationStored => fundingCommitted
 
 ContinuationRequiresOuter == continuationStored => outerCommitted
 
 OnlyGatewayAuthorizesContinuation ==
     gatewayAuthenticated => authorizedCaller = Gateway
 
-UnauthorizedAttemptPreservesContinuation ==
+UnauthorizedAttemptPreservesPreActivationState ==
     (unauthorizedAttempted /\ ~gatewayAuthenticated) =>
       /\ phase = "Authorize"
-      /\ continuationStored
-      /\ continuationHasCapability
+      /\ ~continuationStored
+      /\ ~continuationHasCapability
       /\ ~committed
 
-CertifiedPayerIsSlot ==
+CertifiedPayersAreLocatedPurses ==
     \A validator \in Validators :
-      validationStatus[validator] # "Unknown" => validationPayer[validator] = Slot
+      validationStatus[validator] # "Unknown" =>
+        /\ validationOuterPayer[validator] = Outer
+        /\ validationContinuationPayer[validator] = Slot
 
 ValidatorsAgreeOnAdmission ==
     \A left \in Validators :
@@ -318,35 +432,44 @@ ValidatorsAgreeOnAdmission ==
         /\ validationStatus[left] # "Unknown"
         /\ validationStatus[right] # "Unknown"
         => /\ validationStatus[left] = validationStatus[right]
-           /\ validationPayer[left] = validationPayer[right]
+           /\ validationOuterPayer[left] = validationOuterPayer[right]
+           /\ validationContinuationPayer[left] = validationContinuationPayer[right]
 
-CommittedContinuationUsesSlot ==
+CommittedContinuationUsesLocatedPurses ==
     committed =>
       /\ gatewayAuthenticated
       /\ authorizedCaller = Gateway
+      /\ fundingCommitted
       /\ outerCommitted
       /\ continuationStored
       /\ continuationHasCapability
-      /\ AllCertifiedForSlot
+      /\ AllCertifiedForLocatedPurses
 
-RealizedCostAndFeeAreSeparated ==
+RealizedCostsAndFeeAreSeparated ==
     committed =>
       /\ balance[Sponsor] = preSettlementBalance[Sponsor]
-      /\ balance[Slot] + ChargedCost = preSettlementBalance[Slot]
+      /\ balance[Outer] + ChargedOuterCost = preSettlementBalance[Outer]
+      /\ balance[Slot] + ChargedContinuationCost = preSettlementBalance[Slot]
       /\ balance[Gateway] + FixedFee = preSettlementBalance[Gateway]
       /\ balance[Proposer] = preSettlementBalance[Proposer] + FixedFee
-      /\ burned = ChargedCost
+      /\ burned = ChargedOuterCost + ChargedContinuationCost
 
-UnusedCertifiedBoundIsRefunded ==
+UnusedCertifiedBoundsAreRefunded ==
     committed =>
-      balance[Slot]
-        = preSettlementBalance[Slot] - CertifiedCostBound
-            + (CertifiedCostBound - RealizedCost)
+      /\ balance[Outer]
+           = preSettlementBalance[Outer] - OuterCertifiedCostBound
+               + (OuterCertifiedCostBound - OuterRealizedCost)
+      /\ balance[Slot]
+           = preSettlementBalance[Slot] - CertifiedCostBound
+               + (CertifiedCostBound - RealizedCost)
 
 NoProtocolMintDuringFundingOrSettlement ==
-    SumSet(balance, Payers) + burned = SumSet(InitialBalance, Payers)
+    CanonicalTotal(balance) + burned = CanonicalTotal(InitialBalance)
 
-ReplayUsesCanonicalSlotPayer == phase = "Done" => replayPayer = Slot
+ReplayUsesCanonicalLocatedPayers ==
+    phase = "Done" =>
+      /\ replayOuterPayer = Outer
+      /\ replayContinuationPayer = Slot
 
 ReplayMatchesCommit ==
     phase = "Done" =>

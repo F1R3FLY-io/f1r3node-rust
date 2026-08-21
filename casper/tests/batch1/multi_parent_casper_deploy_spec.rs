@@ -79,14 +79,12 @@ async fn multi_parent_casper_should_not_create_a_block_with_a_repeated_deploy() 
     );
 }
 
-// D3 (DR-9, OD-1): `multi_parent_casper_should_fail_when_deploying_with_insufficient_phlos`
-// is REMOVED — accepted deploys run UNMETERED-FOR-LIVENESS (no per-deploy
-// phlo_limit cap), so a low budget no longer aborts an accepted deploy with
-// out-of-phlogistons. Fundedness is proven by the per-signature acceptance gate
-// (covered by `funded_unfunded_boundary_at_margin` / `drained_present_pool_rejects`).
+// D3 (DR-9, refined by DR-31): the client-selected phlo limit no longer controls
+// admission or execution. Production derives a finite capacity from authenticated
+// authority, and exhaustion rejects before a deployment can certify.
 
 #[tokio::test]
-async fn multi_parent_casper_should_succeed_if_given_enough_phlos_for_deploy() {
+async fn multi_parent_casper_should_succeed_with_authority_funded_deploy() {
     let genesis = GenesisBuilder::new()
         .build_genesis_with_parameters(None)
         .await
@@ -96,7 +94,7 @@ async fn multi_parent_casper_should_succeed_if_given_enough_phlos_for_deploy() {
 
     let deploy_data = construct_deploy::source_deploy_now_full(
         "Nil".to_string(),
-        Some(100),
+        None,
         None,
         None,
         None,
@@ -118,7 +116,7 @@ async fn multi_parent_casper_should_succeed_if_given_enough_phlos_for_deploy() {
     );
     assert!(
         !block.body.deploys[0].is_failed,
-        "Deploy should succeed with sufficient phlos"
+        "Authority-funded deploy should succeed"
     );
 }
 

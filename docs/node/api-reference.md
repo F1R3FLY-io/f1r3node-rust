@@ -107,7 +107,7 @@ curl http://localhost:40403/api/status
 | `shardId` | string | Shard identifier |
 | `peers` | int | Connected peer count |
 | `nodes` | int | Discovered node count |
-| `minPhloPrice` | int | Minimum phlogiston price for deploys |
+| `minPhloPrice` | int | Retained shard economic-configuration field; it is not a per-deploy admission price in D3 |
 | `peerList` | array | Detailed peer info with connection status |
 | `nativeTokenName` | string | Full token name from genesis |
 | `nativeTokenSymbol` | string | Token ticker symbol |
@@ -227,13 +227,13 @@ Submit a signed deploy to the network. Validator nodes only.
 |-------|------|----------|-------------|
 | `data.term` | string | yes | Rholang source code |
 | `data.timestamp` | int | yes | Deploy timestamp (ms since epoch) |
-| `data.phloPrice` | int | yes | Phlogiston price per unit |
-| `data.phloLimit` | int | yes | Maximum phlogiston to consume |
 | `data.validAfterBlockNumber` | int | yes | Deploy valid after this block number |
 | `data.shardId` | string | yes | Target shard (e.g. `"root"`) |
+| `data.authorityPresentations` | array | no | Located or compound cost-authority presentations; defaults to empty |
 | `deployer` | string | yes | Deployer public key (hex) |
 | `signature` | string | yes | Deploy signature (hex) |
 | `sigAlgorithm` | string | yes | Signature algorithm (`"secp256k1"`) |
+| `cosigners` | array | no | Additional signers over the same canonical message; defaults to empty |
 
 ```bash
 curl -X POST http://localhost:40413/api/deploy \
@@ -242,21 +242,27 @@ curl -X POST http://localhost:40413/api/deploy \
     "data": {
       "term": "new stdout(`rho:io:stdout`) in { stdout!(42) }",
       "timestamp": 1700000000000,
-      "phloPrice": 10,
-      "phloLimit": 100000,
       "validAfterBlockNumber": 0,
-      "shardId": "root"
+      "shardId": "root",
+      "authorityPresentations": []
     },
     "deployer": "04abc...",
     "signature": "3044...",
-    "sigAlgorithm": "secp256k1"
+    "sigAlgorithm": "secp256k1",
+    "cosigners": []
   }'
 ```
+
+The signature covers the canonical protocol encoding, not the displayed JSON
+text. Use a protocol-aware client such as `pyf1r3fly`. Deploy data contains no
+client-selected phlogiston limit, price, or escrow. State-bound admission
+derives the physical-authority, quantitative-byte, and fee maximum from
+authenticated wallet and located-purse custody.
 
 | Status | Condition |
 |--------|-----------|
 | `200` | Deploy accepted; body is the deploy ID (hex string) |
-| `400` | Malformed body or invalid field value: read-only node, wrong shard ID, forbidden key, phlo price below minimum, deploy expired (`invalid_request_body`, `illegal_argument`, `rholang_bad_term`) |
+| `400` | Malformed body or invalid field value: read-only node, wrong shard ID, forbidden key, invalid signature, or expired deploy (`invalid_request_body`, `illegal_argument`, `rholang_bad_term`) |
 | `422` | Term valid but execution failed (`rholang_execution_error`, `out_of_phlogistons`, `user_abort`) |
 | `500` | Node-side failure (`interpreter_internal_error`, `replay_failure`, `signing_error`) |
 | `502` | Peer communication failure (`comm_error`) |
@@ -283,19 +289,20 @@ curl "http://localhost:40403/api/deploy/abc123...?view=summary"
 | `blockHash` | string | Containing block hash |
 | `blockNumber` | int | Containing block number |
 | `timestamp` | int | Block timestamp |
-| `cost` | int | Phlogiston consumed |
+| `cost` | int | Committed COMM count plus canonical RSpace byte cost; not the physical REV debit |
 | `errored` | bool | Whether execution failed |
 | `isFinalized` | bool | Whether the containing block is finalized |
+| `finalizationState` | string | Canonical deploy-effect state (`Pending`, `Finalized`, or rejected state) |
+| `rejectionCount` | int | Number of canonical rejections observed for this deploy |
 | `deployer` | string | Deployer public key (full only) |
 | `term` | string | Rholang source (full only) |
 | `systemDeployError` | string | System deploy error message (full only) |
-| `phloPrice` | int | Phlo price (full only) |
-| `phloLimit` | int | Phlo limit (full only) |
 | `sigAlgorithm` | string | Signature algorithm (full only) |
 | `validAfterBlockNumber` | int | Valid-after constraint (full only) |
 | `transfers` | array/null | Transfer list or null on validators (full only) |
 
-**Summary** returns only: `deployId`, `blockHash`, `blockNumber`, `timestamp`, `cost`, `errored`, `isFinalized`.
+**Summary** returns only: `deployId`, `blockHash`, `blockNumber`, `timestamp`,
+`cost`, `errored`, `isFinalized`, `finalizationState`, and `rejectionCount`.
 
 | Status | Condition |
 |--------|-----------|
@@ -352,7 +359,12 @@ curl http://localhost:40403/api/prepare-deploy
 
 #### `POST /api/prepare-deploy`
 
-Same as GET, but additionally pre-generates unforgeable private names for a given deployer and timestamp. Equivalent to gRPC `previewPrivateNames`.
+Same as GET, but additionally pre-generates unforgeable private-name identities
+for a given deployer and timestamp. Equivalent to gRPC
+`previewPrivateNames`. These serialized identities are deterministic and are
+not confidentiality secrets. The returned bytes do not grant the corresponding
+first-class Rholang capability: source code has no bytes-to-`GPrivate`
+constructor.
 
 **Request body:**
 
@@ -387,7 +399,9 @@ The `names` array contains hex-encoded unforgeable names that will be produced b
 
 ### Exploratory Deploy
 
-Execute Rholang code in read-only mode. No block is created, no phlogiston is consumed. **Read-only nodes only.**
+Execute Rholang code in read-only mode. No block is created and no user purse
+is settled; the response may still report the simulated compute and byte cost.
+**Read-only nodes only.**
 
 #### `POST /api/explore-deploy`
 
@@ -716,7 +730,9 @@ curl http://localhost:40453/api/epoch/rewards
 
 #### `POST /api/estimate-cost`
 
-Estimate phlogiston cost of Rholang code without committing. Runs exploratory deploy and returns only the cost.
+Estimate committed-COMM plus canonical RSpace byte cost without committing or
+settling a user purse. This runs an exploratory deploy and returns the scalar
+cost projection.
 
 **Request body:**
 
@@ -743,7 +759,7 @@ curl -X POST http://localhost:40453/api/estimate-cost \
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `cost` | number | Estimated phlogiston (gas) cost |
+| `cost` | number | Estimated committed-COMM count plus canonical RSpace byte cost; not a physical REV settlement |
 | `blockNumber` | number | Block number the estimate ran against |
 | `blockHash` | string | Block hash the estimate ran against |
 | `deployerIdentity` | string | Which identity produced the estimate: `"provided"` (the caller-supplied `deployer` key was used) or `"ephemeral"` (no `deployer` was passed, so the term ran under a process-wide random key). `"ephemeral"` may significantly underestimate the real deploy cost for identity-dependent terms |
@@ -785,8 +801,8 @@ curl -X POST http://localhost:40405/api/propose
 
 | Method | Request | Response | Description |
 |--------|---------|----------|-------------|
-| `doDeploy` | `DeployDataProto` | `DeployResponse` | Submit a signed deploy. Validates phlo price, shard ID, signature, expiration. Triggers auto-propose if enabled |
-| `getBlock` | `BlockQuery` | `BlockResponse` | Get block by hash. Returns `BlockInfo` (header + deploys). Transfers enriched on readonly |
+| `doDeploy` | `DeployDataProto` | `DeployResponse` | Submit a signed deploy. Validates canonical signer authority, shard ID, and expiration; state-bound purse funding is checked during block assembly. Triggers auto-propose if enabled |
+| `getBlock` | `BlockQuery` | `BlockResponse` | Get block by hash. Returns `BlockInfo`; each `DeployInfo` includes protocol-v8 authority certificate/witness, adjacent roots, and admission status. Transfers are enriched on readonly nodes |
 | `getBlocks` | `BlocksQuery` | `stream BlockInfoResponse` | Get recent blocks by depth. Streaming. Returns `LightBlockInfo` (headers only) |
 | `showMainChain` | `BlocksQuery` | `stream BlockInfoResponse` | Walk the main chain path from tip. Streaming. Returns `LightBlockInfo` |
 | `getBlocksByHeights` | `BlocksQueryByHeight` | `stream BlockInfoResponse` | Get blocks in a height range. Streaming. Clamped by `api_max_blocks_limit` |
@@ -795,9 +811,9 @@ curl -X POST http://localhost:40405/api/propose
 | `findDeploy` | `FindDeployQuery` | `FindDeployResponse` | Find block containing a deploy. Retries up to 80x with 100ms intervals while deploy propagates through DAG |
 | `getDataAtName` | `DataAtNameByBlockQuery` | `RhoDataResponse` | Query data at a Rholang name in a specific block's post-state. Takes `Par` + block hash + `usePreStateHash` |
 | `listenForContinuationAtName` | `ContinuationAtNameQuery` | `ContinuationAtNameResponse` | Find processes waiting to receive on given channel names. Returns matching patterns and continuation bodies |
-| `exploratoryDeploy` | `ExploratoryDeployQuery` | `ExploratoryDeployResponse` | Execute Rholang read-only. No block created, no phlo consumed. Returns result `Par`s, block context, and cost. Readonly only |
+| `exploratoryDeploy` | `ExploratoryDeployQuery` | `ExploratoryDeployResponse` | Execute Rholang read-only without settling a user purse. Returns result `Par`s, block context, and simulated cost. Readonly only |
 | `bondStatus` | `BondStatusQuery` | `BondStatusResponse` | Check if a public key is bonded. Validates that the key is a 65-byte uncompressed secp256k1 point; returns error on invalid input. HTTP: `GET /api/bond-status/{pubkey}` |
-| `previewPrivateNames` | `PrivateNamePreviewQuery` | `PrivateNamePreviewResponse` | Generate unforgeable names from deployer key + timestamp. Allows clients to compute signatures over names before deploying. Max 1024 names |
+| `previewPrivateNames` | `PrivateNamePreviewQuery` | `PrivateNamePreviewResponse` | Generate deterministic serialized identities for unforgeable names from deployer key + timestamp. This supports signing before deployment but does not disclose a secret or create a first-class Rholang capability. Max 1024 names |
 | `getEventByHash` | `ReportQuery` | `EventInfoResponse` | Get full block execution trace — every COMM/produce/consume event per deploy and system deploy. Takes block hash + `forceReplay` flag. Used for debugging and auditing |
 | `visualizeDag` | `VisualizeDagQuery` | `stream VisualizeBlocksResponse` | DAG visualization in DOT format. Takes depth + startBlockNumber + showJustificationLines |
 | `machineVerifiableDag` | `MachineVerifyQuery` | `MachineVerifyResponse` | Machine-parseable DAG representation |
@@ -811,6 +827,15 @@ curl -X POST http://localhost:40405/api/propose
 | `proposeResult` | `ProposeResultQuery` | `ProposeResultResponse` | Get latest propose result. Blocks until current proposal completes if one is in progress |
 
 Proto definitions: `models/src/main/protobuf/DeployServiceV1.proto`, `ProposeServiceV1.proto`, `DeployServiceCommon.proto`.
+
+For an executed cost-accounted deploy, validate `DeployInfo` as one evidence
+bundle: `authorityFundingCertificate`, `authorityCostWitness`, `preStateHash`,
+`postStateHash`, and `admissionStatus`. The witness identifier must match the
+canonical certificate identifier; protocol and byte-schedule identities must
+agree; the certificate and witness roots must equal the adjacent deploy roots;
+and exact compute and byte settlements must remain within their component-wise
+allocations. `pyf1r3fly.cost_accounting.CostAuthorityEvidence` performs these
+checks. The scalar `cost` alone is not a proof of physical REV settlement.
 
 ---
 

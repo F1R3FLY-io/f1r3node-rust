@@ -33,7 +33,8 @@ use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 
 pub const LEGACY_CASPER_PROTOCOL_VERSION: i64 = 1;
 pub const STATE_EFFECT_PROVENANCE_PROTOCOL_VERSION: i64 = 3;
-pub const CURRENT_CASPER_PROTOCOL_VERSION: i64 = STATE_EFFECT_PROVENANCE_PROTOCOL_VERSION;
+pub const VAULT_BACKED_BYTE_ACCOUNTING_PROTOCOL_VERSION: i64 = 4;
+pub const CURRENT_CASPER_PROTOCOL_VERSION: i64 = VAULT_BACKED_BYTE_ACCOUNTING_PROTOCOL_VERSION;
 use crate::rust::validator_identity::ValidatorIdentity;
 
 pub fn is_supported_casper_protocol_version(version: i64) -> bool {
@@ -349,6 +350,25 @@ impl CasperSnapshot {
             max_seq_nums: HashMap::new(),
             on_chain_state: OnChainCasperState::new(CasperShardConf::new()),
         }
+    }
+
+    /// Returns the canonical, ordered validator committee used for proposal
+    /// leadership in this snapshot. The active set is authoritative when
+    /// present; positive bonds are the bootstrap fallback.
+    pub fn current_proposal_validators(&self) -> Vec<Validator> {
+        let mut validators = if !self.on_chain_state.active_validators.is_empty() {
+            self.on_chain_state.active_validators.clone()
+        } else {
+            self.on_chain_state
+                .bonds_map
+                .iter()
+                .filter(|(_, stake)| **stake > 0)
+                .map(|(validator, _)| validator.clone())
+                .collect()
+        };
+        validators.sort_unstable();
+        validators.dedup();
+        validators
     }
 }
 
@@ -729,6 +749,7 @@ pub mod test_helpers {
 mod protocol_version_tests {
     use models::rust::block_implicits::get_random_block_default;
     use proptest::prelude::*;
+    use prost::bytes::Bytes;
 
     use super::*;
 
@@ -758,6 +779,39 @@ mod protocol_version_tests {
             );
             assert_eq!(conf.casper_version, original);
         }
+    }
+
+    #[test]
+    fn proposal_validators_prefer_the_canonical_active_set() {
+        let mut snapshot = test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
+        let first = Bytes::from_static(b"a");
+        let second = Bytes::from_static(b"b");
+        let bonded_only = Bytes::from_static(b"c");
+        snapshot.on_chain_state.active_validators =
+            vec![second.clone(), first.clone(), second.clone()];
+        snapshot.on_chain_state.bonds_map.insert(bonded_only, 100);
+
+        assert_eq!(snapshot.current_proposal_validators(), vec![first, second]);
+    }
+
+    #[test]
+    fn proposal_validators_fall_back_to_distinct_positive_bonds() {
+        let mut snapshot = test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
+        let positive = Bytes::from_static(b"positive");
+        snapshot
+            .on_chain_state
+            .bonds_map
+            .insert(positive.clone(), 1);
+        snapshot
+            .on_chain_state
+            .bonds_map
+            .insert(Bytes::from_static(b"zero"), 0);
+        snapshot
+            .on_chain_state
+            .bonds_map
+            .insert(Bytes::from_static(b"negative"), -1);
+
+        assert_eq!(snapshot.current_proposal_validators(), vec![positive]);
     }
 
     proptest! {

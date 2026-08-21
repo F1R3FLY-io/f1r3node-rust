@@ -291,14 +291,12 @@ mod tests {
 
     /// The shared-basis integration invariant (handoff Coordination, Stage B
     /// Decision 5): `supply_channel(s)` is exactly `SignatureChannel::from_sig`
-    /// of `s` — the SAME basis WD-D0's `Sig::lane_hash` is anchored to
-    /// (accounting/mod.rs:1450 derives the lane key from `from_sig(self).par`).
+    /// of `s` — the SAME basis `Sig::lane_hash` is anchored to.
     /// We assert (a) the channel equality and (b) that `lane_hash` is the
     /// domain-separated Blake2b256 of exactly this channel's wire encoding, so
-    /// two signatures share a lane iff they share a supply channel — the
-    /// no-drift property.
+    /// two signatures share an identity key iff they share a supply channel.
     #[test]
-    fn supply_channel_equals_lane_pool_channel() {
+    fn supply_channel_matches_canonical_purse_identity() {
         use prost::Message;
 
         let sigs = vec![

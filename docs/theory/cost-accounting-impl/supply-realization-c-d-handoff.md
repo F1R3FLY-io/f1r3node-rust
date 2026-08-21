@@ -98,7 +98,7 @@ requirements but supersede that storage and settlement interpretation.
 - **`LinearLogicResources.v` (WD-D5a):** pure `delta_s` + `funding_decidable` (tex 1599) + `delta_s_tensor_additive`; reuse `ll_no_double_spend_single_witness` (:359) for "≤1 of competing proofs succeeds" (tex 1731-1741). **New:** `sigma_s_balance_eq_stack_count` (the balance `n` = `Σ_s` of a depth-`n` stack — the fidelity lemma), `funding_check_balance_sound` (`is_funded` over the balance ⇔ `Σ_s ≥ Δ_s`).
 - **`MintingInjection.v` (C):** `supply_write_injective_in_pk` (`from_sig∘Ground` injective ⇒ disjoint pools), `epoch_mint_idempotent_on_balance`, `halted_validator_supply_not_increased` (ties to `MintingHalt.v`, DR-3).
 - **`TokenConservation.v` (C↔D bridge):** `accept_commit_conserves` (`post = pre − ΣΔ_admitted` ∧ `ΣΔ_admitted = Σ reconcile.consumed`).
-- **`RuntimeBudgetRefinement.v` (WD-D0):** `rb_pool` / `rb_pool_total_cost = Σ rb_total_cost` (the supply balances seed per-lane `initial_tokens`).
+- **`RuntimeBudgetRefinement.v` (WD-D0):** `rb_pool` / `rb_pool_total_cost = Σ rb_total_cost` is the abstract composition theorem for independent purse settlement. Production seeds authenticated purse inventory and derives exact native authority events; it does not instantiate a per-purse `RuntimeBudget` map.
 - **`ChannelSeparation.v` (WD-D0):** `lane_pool_disjoint` (corollary of `fuel_gate_no_app_channel_overlap` :179).
 - **`Settlement.v` / `MultiSignerRefinement.v` (D4.1):** reinterpret `pos_charge`/`pos_refund` as wallet-draw/commit over balances; keep distinctness/FIFO lemmas verbatim (`fifo_drain_conservation` → `Σ released + Σ committed = Σ reserved`).
 

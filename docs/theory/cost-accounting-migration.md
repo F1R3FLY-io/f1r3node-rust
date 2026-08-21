@@ -15,6 +15,12 @@ TM-CA-151 demotion of the per-operation cost-trace digest to a diagnostic (conse
 is the conserved `total_cost` + status + post-state hash), and renders the design's
 diagrams from the shared `docs/theory/diagrams/` sources.
 
+Protocol-4 refinement note: historical statements below that use “cost” for a
+one-token-per-COMM count refer to the calculus execution projection. DR-47 keeps
+that projection and adds canonical RSpace introduction, payload-transfer, and
+committed-trace bytes to `total_cost` and the fixed RevVault settlement. See
+[`cost-accounting-impl/vault-backed-byte-accounting.md`](cost-accounting-impl/vault-backed-byte-accounting.md).
+
 ---
 
 ## Table of Contents
@@ -681,9 +687,18 @@ Key differences from `CostManager`:
 
 2. **No charges or refunds.** There is no `charge(amount)` / `charge(-refund)` dance. Cost goes in one direction: up by the deterministic weight of each billable source event.
 
-3. **No broad `ChargingRSpace`.** The tuple space no longer pre-charges and refunds every `produce`/`consume`. A narrow metered-match observer remains required so accounting is driven by fired recursive gates, not by attempted deposits or ordinary application COMMs.
+3. **No broad legacy `ChargingRSpace`.** Protocol 4 uses two narrow,
+   pre-mutation observers instead: an operation observer reserves the canonical
+   footprint of every stable semantic `produce` or `consume` introduction, and
+   a match observer reserves one compute unit plus every delivery and trace
+   byte for a complete COMM. Neither observer issues negative refunds or bills
+   scheduler-local reducer attempts.
 
-4. **Deterministic by construction.** Since cost is the sum of source-token event weights, and the source calculus proves confluence and cost determinism, the total is independent of scheduling order. The canonical event order is needed only to make out-of-phlogiston boundaries reproducible when the budget is insufficient for all enabled work.
+4. **Deterministic by construction.** Compute authority follows the
+   source-calculus confluence and cost-determinism proofs; quantitative cost is
+   the commutative sum of stable semantic introduction and committed COMM byte
+   events. Canonical evidence order makes certificate and replay comparison
+   reproducible, while an unaffordable event rejects before mutation.
 
 **Bounded-memory token budget.** The mathematical model (Section 4.1) represents a deploy's fuel as a right-nested token stack `TGate(s, TGate(s, ... TUnit))` of depth `n`. Translating this directly via `T⟦·⟧` would produce a deeply nested `POutput` term with `n` levels — impractical at production phlogiston limits (90K-1M) and hostile to parallelism. The Rust implementation must instead coalesce that stack into `TokenBudget { initial_tokens, consumed }` and treat each fired recursive gate as a finite macro of source-token consumption events:
 
@@ -712,7 +727,15 @@ and primitive-operation reservations. `DebruijnInterpreter` deliberately
 does not carry a legacy `cost` field, so accidental old-style
 `self.cost.charge(...)` calls fail at compile time.
 
-The runtime must not bill an attempted gate registration. In asynchronous RSpace, the gate may not be registered yet, multiple continuations may contend, and persistent mediators may interleave. Therefore `reserve_canonical()` is called only after the recursive metering kernel has identified a fired billable source gate. Application-level COMM events remain uncharged by the old storage wrapper; their cost is represented by source-token events selected by the recursive metering kernel.
+The runtime must distinguish a scheduler attempt from a semantic RSpace
+introduction. A reducer attempt that never reaches the RSpace operation
+boundary is diagnostic only. Once a stable `produce` or `consume` identity
+reaches that boundary, protocol 4 reserves its canonical introduction bytes
+before lookup or mutation, whether or not it immediately matches. Persistent
+fixed-point retries reuse the same paid identity. A complete application COMM
+then reserves one authority-backed compute unit plus canonical delivery and
+trace bytes while the channel group remains locked. Proposal and replay use the
+same identities and observer order.
 
 **Recursive metering kernel.** The business-critical implementation
 target is not the raw legacy `S_tr` image by itself. A raw `P_tr` gate
@@ -1007,7 +1030,13 @@ The `TokenBudget` (Section 5.3) maintains a **logical** cost counter via `Atomic
 TokenBudget.total_cost() + TokenBudget.remaining() = initial_tokens
 ```
 
-where `initial_tokens` is the deploy's phlogiston limit. This invariant can be checked as a debug assertion during migration testing (Section 6, steps 13–14) to verify that no billable source-token units are created or destroyed during evaluation — they are only consumed or left as logical remaining budget. The separate sweep assertion is that no metering artifacts remain in RSpace on the deploy's signature channels. Non-billable Split/Join routing markers must be tracked separately and must not affect the cost equality.
+where `initial_tokens` is the immutable authority and quantitative capacity
+derived from authenticated pre-state custody, not a client-supplied limit. This
+invariant verifies that evaluation creates no capacity: units are consumed or
+remain inside the certified maximum. The separate sweep assertion is that no
+metering artifacts remain in RSpace on deploy authority channels. Non-billable
+Split/Join routing markers are tracked separately and do not affect the
+equality.
 
 #### 5.8.6 Partial-Execution and Out-of-Phlogiston Semantics
 
@@ -1026,7 +1055,13 @@ A deploy that exhausts its phlogiston budget mid-evaluation raises `OutOfPhlogis
 
 The soft-checkpoint revert is unconditional and uniform: the post-revert tuple-space state is bit-identical to the pre-deploy state, modulo the deterministic event-log entries that record the failed execution and the sweep operations.
 
-**Cost retention (no refund).** Phlogiston consumed by billable source-token firings *before* the OOP boundary is *not* refunded. The `TokenBudget.total_cost()` at the moment of failure is the cost the deployer pays. This matches the existing F1R3Node semantics (`OutOfPhlogistonsError` already burns charges from the externalized model) and avoids the re-entrancy and accounting complexity that a refund mechanism would introduce. Deployers who wish to bound risk do so by sizing their phlo limit appropriately, exactly as today.
+**Rejected-candidate accounting.** Runtime counters retain the attempted
+canonical boundary long enough to produce deterministic rejection diagnostics,
+but an exhausted candidate cannot publish a certificate, speculative state, or
+RevVault settlement. The enclosing checkpoint restores user state, located
+stack custody, and vault effects together. Risk is bounded by the state-bound
+maximum derived from authenticated purses; there is no client-supplied phlo
+limit to resize.
 
 **Determinism across validators.** The OOP point is a deterministic function of the deploy's execution: every validator firing the same billable source-token sequence in the same canonical order (Section 8, "Event hashing") reaches the same `TokenBudget.total_cost()` and therefore raises `OutOfPhlogistonsError` on the same billable source-token firing. The event log records the OOP point as part of the deterministic per-deploy event stream, replayable via rig-and-reset like any other event sequence.
 
@@ -1042,63 +1077,42 @@ current replacement surface is:
 
 | Rust surface | Current role |
 |--------------|--------------|
-| `rholang/src/rust/interpreter/accounting/mod.rs` | `RuntimeBudget`, `BillableTokenEvent`, deterministic source-event weights, bounded trace retention, the consensus `total_cost`, and a diagnostic (non-consensus) digest/count (see the superseding note below and TM-CA-151). |
-| `rholang/src/rust/interpreter/metering.rs` | `MeteredMachine` bridge from interpreter frames to billable/nonbillable/system runtime-budget operations. |
-| `rholang/src/rust/interpreter/reduce.rs` | `FuturesUnordered` branch dispatch, stable error aggregation, and recursive metering of billable source events. |
-| `rholang/src/rust/interpreter/rho_runtime.rs` | Runtime construction with raw RSpace access and `RuntimeBudget`/unmetered budget selection by execution mode. |
-| `rholang/src/lib.rs` and `rholang/src/rholang_cli.rs` | Public cost reporting remains shape-compatible while `value` is interpreted as consumed source-token units and operation labels stay diagnostic/non-consensus. |
-| `casper/src/rust/rholang/runtime.rs` | Feeds deploy phlo limit into runtime-budget evaluation, records token cost in `ProcessedDeploy.cost`, and computes post-evaluation fee settlement from token cost. |
-| `casper/src/rust/rholang/replay_runtime.rs` | Replays the metered path and compares replayed cost trace digest/count/status against processed deploy evidence. |
-| `casper/src/rust/util/rholang/runtime_manager.rs` | Includes canonical cost trace digest/count and cost-bearing deploy fields in replay payload hashing/cache keys without depending on wall-clock completion order. |
-| `models/src/rust/casper/protocol/casper_message.rs` | `ProcessedDeploy::refund_amount()` uses `phlo_limit - cost` | Keep formula shape but define `cost` as token units. Guard overflow and negative values explicitly. |
-| `casper/src/rust/validate.rs`, APIs, websocket events, docs | Phlo-price validation and user-visible cost fields | Keep `phlo_price >= min_phlo_price`; update descriptions so `cost` means consumed source-token units. |
-| Test suites under `rholang/tests`, `casper/tests`, API docs | Hard-coded old cost totals and old determinism assumptions | Replace expected costs with token-model fixtures; add replay, OOP, settlement, and high-parallelism regression tests. |
+| `rholang/src/rust/interpreter/accounting/mod.rs` | Aggregate `RuntimeBudget`, stable introduction identities, native authority events, bounded diagnostics, and canonical compute/byte reconciliation. |
+| `rholang/src/rust/interpreter/accounting/authority.rs` | Demand/supply analysis, authority certificate and witness, physical allocation, located-stack reservations, and checked settlement evidence. |
+| `rholang/src/rust/interpreter/accounting/byte_accounting.rs` | Protocol-4 canonical introduction, delivery, and trace footprints plus versioned schedule digest. |
+| `rholang/src/rust/interpreter/metering.rs` | `MeteredMachine` bridge; structural reductions, primitives, and substitutions remain diagnostic unless represented by a consensus semantic event. |
+| `rholang/src/rust/interpreter/reduce.rs` | Parallel branch dispatch, stack-before-sibling materialization, stable error aggregation, and operation-local reservation lifecycle. |
+| `rspace++/src/rspace` | Pre-mutation introduction observer and locked atomic-COMM observer used identically by proposal and replay. |
+| `casper/src/rust/rholang/runtime.rs` | Authenticated execution, candidate checkpointing, exact certificate/witness construction, and failure-atomic stack/vault settlement. |
+| `casper/src/rust/rholang/replay_runtime.rs` | Per-deploy authenticated purse snapshot, causal replay, adjacent-root materialization, and rollback on any mismatch. |
+| `casper/src/rust/util/rholang/runtime_manager.rs` | State-bound fixed-point admission, complete economic solvency, retained execution, and proposal/replay evidence comparison. |
+| `models/src/main/protobuf/CasperMessage.proto` | Authority protocol-v8 certificate/witness and byte-schedule evidence carried by `ProcessedDeployProto`; retired phlo tags remain reserved. |
+| Casper validation, merge, and finality | Exact effect provenance, aggregate debit checks, locally reconstructed merge evidence, and state-preserving finalized-floor promotion. |
+| Test and formal suites | Example, property, Loom, replay, multi-node, Rocq, TLA+, Apalache, Sage, and Verus conformance and expected-refutation evidence. |
 
-Post-activation replay must treat the cost-trace digest and event count as
-required consensus evidence. A cost-accounted processed deploy without a
-cost-trace digest is replay-invalid, even if the scalar cost matches,
-because scalar cost alone does not authenticate the sequence of billable
-source-token events that justified fee settlement. Legacy non-cost-accounted
-replay remains accepted only through the explicit compatibility path. A
-zero-event deploy is not a special exemption: it carries a present digest
-commitment over an empty event set and an event count of zero, so the
-consensus distinction is "commitment present" rather than "trace non-empty."
+Replay treats the authority certificate, causal execution witness, protocol and
+byte-schedule identities, physical and byte allocations, settlement, status,
+and adjacent state roots as required consensus evidence. The bounded
+source-operation digest and count remain diagnostics and are not substituted
+for the causal RSpace witness. A zero-event deploy is still bound to a present
+protocol-v8 certificate and an exact empty witness where applicable.
 
-> **Superseded — consensus-surface update.** The preceding paragraph and
-> the `replay_runtime.rs` / `runtime_manager.rs` rows in the table above
-> describe the original design, in which the per-operation cost-trace
-> **digest** and **event count** were required consensus evidence compared
-> during replay and folded into the replay-payload hash. That is no longer
-> the design. The digest/event-count are **removed from consensus** (out
-> of the replay comparison, the replay-payload/cache key, and the signed
-> block-hash preimage) and retained as diagnostics; the `cost_trace_digest`
-> /`cost_trace_event_count` fields are not stored on `ProcessedDeploy`.
-> Consensus cost integrity is `total_cost` (clamped) + status + post-state
-> hash. Because these fields are **unreleased** (absent from `master` and
-> tag `v0.4.15`), this is a pre-merge consensus-surface decision with zero
-> migration cost. The "scalar cost alone does not authenticate the
-> sequence" concern is intentionally resolved differently: per-operation
-> metering integrity is *not* a consensus requirement (the OOP committed
-> set is schedule-dependent and so cannot be), while `total_cost`
-> determinism is guaranteed by the two guarded invariants (fresh-per-scope
-> metering counters; deterministic RSpace candidate selection). See §8.1's
-> consensus-surface update, §10, and TM-CA-151 in
-> [`cost-accounting-threat-model.md`](cost-accounting-threat-model.md).
-
-The trace boundary is also part of the replacement surface. Failed deploy
-rollback reverts tuple-space effects but retains the OOP boundary evidence
-needed for replay, oversized runtime weights are rejected before mutating
-cost or trace state, and scheduler/control frames remain non-billable and
-therefore cannot enter the consensus cost trace.
+The trace boundary is also part of the replacement surface. Rejected-candidate
+rollback clears every publishable certificate, settlement, stack birth, and
+speculative state effect; a local OOP descriptor may survive only as diagnostic
+failure context. Oversized runtime weights reject before the affected state or
+trace mutation, and scheduler/control frames remain non-billable diagnostics.
 
 #### 5.9.1 Primitive Work and Parser/Normalizer Costs
 
-The source calculus proves correctness for Rules 1-5. The Rust
-interpreter also charges work that sits outside that small calculus:
-parsing, normalization, substitution, pattern matching, arithmetic,
-collections, string/bytes operations, BigInt/BigRat operations, and
-pathmap operations. A complete replacement must route each such cost
-through one of two explicit paths:
+The source calculus proves correctness for Rules 1-5. The Rust interpreter also
+performs work outside that small calculus: parsing, normalization,
+substitution, pattern matching, arithmetic, collections, string/bytes
+operations, BigInt/BigRat operations, and pathmap operations. Production
+protocol 4 records structural, primitive, and substitution events as bounded
+diagnostics with zero consensus debit. Finite consensus cost comes from
+authority-backed semantic COMM and canonical RSpace bytes. Every additional
+resource surface must use one of two explicit paths:
 
 1. **Billable source-token event.** If the work is consensus-billable,
    define a deterministic `BillableTokenEvent` descriptor and weight.
@@ -1112,15 +1126,12 @@ through one of two explicit paths:
    evaluation, document it as an admission limit with deterministic
    rejection semantics. It must not be mixed into `ProcessedDeploy.cost`.
 
-Weighted primitive events are a finite coalescing of unit source-token
-steps: a weight `w` event is equivalent at the cost boundary to `w`
-unit token consumptions with the same canonical descriptor prefix. This
-keeps the bounded-memory runtime aligned with token conservation while
-avoiding an impractical expansion into `w` physical fuel gates. The
-implementation must add tests that compare weighted reservations with
-the equivalent unit-event expansion for small `w`, and must reject any
-weight computation that depends on heap layout, task completion order,
-hash-map iteration order, or host-specific numeric behavior.
+A future weighted primitive tariff would require a versioned consensus
+schedule and a proof that weight `w` is equivalent at the cost boundary to `w`
+unit token consumptions with the same canonical descriptor prefix. Until such
+a protocol is ratified, primitive weights cannot affect `ProcessedDeploy.cost`
+or settlement. Any proposed weight must reject dependence on heap layout, task
+completion order, hash-map iteration order, or host-specific numeric behavior.
 
 Parsing and normalization need special handling because they happen
 before the metered source state exists. The safe design is:
@@ -1135,92 +1146,65 @@ before the metered source state exists. The safe design is:
 
 #### 5.9.2 Casper Fee Settlement Is Not Runtime Metering
 
-The `costacc` system deploys and Casper precharge/refund code remain
-part of fee settlement, not the runtime cost-accounting algorithm. The
-new runtime computes `token_cost = TokenBudget.total_cost()` for the
-user deploy. Casper then settles payment using the existing economic
-shape:
+Casper settlement is the consensus boundary around runtime accounting, not a
+second metering algorithm. Deploy wire data no longer contains `phlo_limit`,
+`phlo_price`, or per-signer shares. State-bound admission instead derives, for
+each authenticated payer lane $`a`$, a fixed maximum from the merged pre-state:
 
-```
-escrowed_amount = phlo_limit * phlo_price
-charged_amount  = token_cost  * phlo_price
-refund_amount   = escrowed_amount - charged_amount
+```math
+B_A(a)+B_Q(a)+F(a)\leq\Sigma(a).
 ```
 
-This is a two-ledger boundary. During user evaluation the only mutable
-cost state is the deploy-local `TokenBudget`, and that budget is
-monotone: it may reserve source-token units or fail at a canonical OOP
-descriptor, but it may not receive refunds, top-ups, balance transfers,
-or a copied continuation with a larger remaining balance. Casper balance
-movement happens only after the deploy has either produced a final
-token count or failed with its deterministic OOP count. A deploy that
-needs to observe a refunded purse balance must do so in a later deploy
-or continuation after the system settlement deploy has committed.
+Here $`B_A`$ is the physical authority bound, $`B_Q`$ is the quantitative-byte
+bound, and $`F`$ is the fee allocation. The certificate commits these values,
+the program and pre-state roots, exact payer identities, reservation identity,
+and byte-schedule version and digest. A wallet credit that races with execution
+cannot enlarge this immutable certificate; it becomes available only to a
+later admission boundary.
 
-The fee-settlement arithmetic is deliberately small enough to audit:
-for a valid deploy with non-negative `phlo_limit` and `phlo_price`, and
-with `token_cost <= phlo_limit`, the refund is bounded by the escrow and
-`charged_amount + refund_amount = escrowed_amount`. Runtime validation
-must reject negative limits or prices before precharge, and the PoS
-refund contract must reject refunds larger than the deploy's recorded
-initial payment. These checks make the Rholang system deploy a bounded
-ledger operation over the runtime's consumed-token count rather than a
-second path for changing evaluation fuel.
+During execution, the runtime may consume authority for committed COMMs and
+quantitative capacity for canonical introduction, delivery, and trace events.
+It cannot mint authority, borrow from another lane, accept a mid-run refund, or
+copy a continuation with a larger remaining allocation. Exhaustion rejects the
+candidate before its speculative state becomes block evidence.
 
-Signatures and traces sit on the same boundary. The deploy signature
-authenticates the deploy data that includes `phlo_limit`, `phlo_price`,
-`term`, timestamp, shard, and expiry. The proposer block signature
-authenticates the block hash, which includes every `ProcessedDeploy`,
-its consumed-token `cost` (`total_cost`), failure status, the post-state
-hash, and the deploy event log used by replay. The per-operation
-cost-trace **digest** and **event count** are **not** in the block-hash
-preimage and are **not** stored on `ProcessedDeploy` — they are
-diagnostics (see §8.1's consensus-surface update, §10, and TM-CA-151).
-Replay-cache keys must include the same consensus replay payload so
-optimization cannot reuse a cached result across `total_cost`,
-failure-status, user-log, system-log, slash-field, or genesis-mode
-changes; the digest/count are likewise dropped from the cache key for
-coherence with consensus. The evaluation trace is still recorded
-alongside the signature for assurance and deterministic replay: it
-records the sequence of tuple-space effects and tie-breaker choices that
-led to the final state and cost, and it is required to compute
-`total_cost`. It does not authorize Casper to mutate balances during
-evaluation; it authenticates the post-evaluation settlement input through
-the consensus quantities above.
+For retained evidence, `SystemVault.applyCost` performs the proof-level maximum
+reservation, exact physical and byte debit, fee transfer, and unused-residual
+return inside one lexical transaction. No transient reservation cell survives
+into consensus state. Located-stack pops, vault deltas, user state, and the
+execution witness commit under the same node checkpoint. The concrete debit is:
 
-The settlement deploys themselves run as system deploys under an
-explicit unmetered/no-op budget. They must not preserve the old
-`CostManager` as a second runtime metering path. This keeps the trust
-boundary clean: user-code execution is cost-accounted by recursive
-metering; privileged fee movement is deterministic system accounting
-over the resulting token count.
+```math
+\operatorname{VaultDebit}(E)=A(E)+Q(E)+F(E),
+```
 
-Slashing composes with this boundary rather than entering the runtime
-metering algorithm. The slashing protocol's formal source remains
-f1r3node-rust's `analysis/slashing` branch, which proves slash
-authorization, slash effect correctness, two-level closure, validator
-lifetime handling, and the Rust/Scala slashing bisimilarity. This
-cost-accounting branch adopts only the interface needed for fee
-settlement: a slash system deploy may update PoS bond, vault, active-set,
-and slashed-validator state, but it must preserve the user deploy's
-`phlo_limit`, `phlo_price`, computed `token_cost`, final user fuel, and
-escrow/refund arithmetic. The bridge now models the slashing-side
-current-evidence predicate explicitly: complete canonical evidence scanning
-requires present evidence, both the evidence epoch and target activation epoch
-to equal the current epoch, and a positive canonical merged-pre-state bond.
-Authorization never reads an ambient post-state view, and a zero-bond execution
-no-op preserves the cost boundary. Mechanized bridge theorems in
-`SlashingComposition.v` prove
-that current cost-invalid block evidence can feed the slashing evidence
-pipeline without changing the already-computed user cost, and that
-applying a slash effect after evaluation cannot add fuel or alter
-settlement.
+where $`A`$ is realized physical authority and $`Q`$ is realized quantitative
+byte cost. The unused difference between certified maximum and exact debit was
+never a durable withdrawal, so settlement does not mint a refund.
 
-`ProcessedDeploy.cost.cost` remains the consensus-visible numeric field,
-but its unit changes to consumed source-token units. `CostProto.operation`
-and old operation-labelled logs, if retained for compatibility, are
-diagnostic only and must not affect replay validation, block hashes, or
-fee settlement.
+Signatures and traces bind this boundary. A deploy signature authenticates the
+canonical term, timestamp, valid-after height, shard, expiry, authority
+presentations, and complete signer algebra. A proposer signature authenticates
+the block hash, including each processed deploy's status, exact causal RSpace
+log, authority certificate and witness, scalar cost, and adjacent state roots.
+`ProcessedDeploy.cost` reports committed COMM count plus quantitative byte cost;
+it is not the physical REV debit. Replay independently re-derives the same
+certificate, physical allocation, byte evidence, fee, settlement, and roots.
+
+Privileged genesis, proof-of-stake, fee, and slashing effects compose with this
+boundary but cannot replenish user execution authority. Only authenticated
+system execution may call `SystemVault.protocolMint`. Slashing authorization
+uses present, current-epoch evidence and canonical merged-pre-state bond data;
+local replay or storage failure is never slash evidence. The mechanized bridge
+in `SlashingComposition.v` proves that applying an authorized slash after user
+evaluation cannot add user fuel or change the already authenticated settlement.
+
+Scheduler-local reducer attempts and legacy operation-labelled traces remain
+diagnostic. Consensus uses stable semantic introduction and COMM witnesses,
+protocol and schedule identities, exact settlement evidence, status, and roots.
+See [Cost-accounted Rholang](../rholang/13-cost-model.md) and
+[Wallet-funded process lifecycle](../rholang/20-wallet-funded-processes.md) for
+the complete production workflow.
 
 #### 5.9.3 Parallelism and Canonical OOP Boundaries
 
@@ -1358,10 +1342,10 @@ The migration from the externalized cost model to the internalized model is a fo
 
 21. **Benchmark throughput:** measure deploys/second with the new `FuturesUnordered` eval loop on the standard Rholang benchmark suite. Depends on step 20.
 
-22. **Coordinate the protocol-2 fresh-genesis cutover.** Stop the protocol-1
-    network, derive and review the protocol-2 genesis inputs for bonds, wallets,
+22. **Coordinate the protocol-4 fresh-genesis cutover.** Stop the retired
+    network, derive and review the protocol-4 genesis inputs for bonds, wallets,
     client fuel allocations, and shard parameters, and require every validator
-    to approve that protocol-2 candidate before starting the new shard. The D3
+    to approve that protocol-4 candidate before starting the new shard. The D3
     protobuf reserves the removed legacy cost fields, so this is not an
     in-place block-height transition and no mixed-version running window is
     valid. Depends on step 20 (all integration tests pass) and step 21
@@ -1452,32 +1436,37 @@ The architectural implications of internalizing cost accounting are discussed in
 
 ### 8.1 What Changes
 
-> **Consensus-surface update (supersedes the digest paragraphs below).**
-> The "Event hashing", "Cost validation", and "Replay transparency"
-> paragraphs in this subsection were written when the per-operation
-> cost-trace **digest** and **event count** were intended to be part of
-> the consensus replay payload and the signed block-hash preimage. That
-> is no longer the design: the per-operation digest/event-count are
-> **removed from consensus** (out of the replay comparison and the
-> block-hash preimage) and retained as diagnostics only. Consensus cost
-> integrity is carried by `total_cost` (clamped) + status + post-state
-> hash. The deterministic source-event canonicalization described below
-> is still how the diagnostic digest is *computed* and is still the basis
-> of `total_cost` determinism (the recorded multiset is a function of the
-> deploy via the two guarded invariants — fresh-per-scope metering
-> counters and deterministic RSpace candidate selection), but the digest
-> itself is not a validator-compared quantity. See §10 (Migration Note)
-> and TM-CA-151 in
-> [`cost-accounting-threat-model.md`](cost-accounting-threat-model.md) for
-> the authoritative consensus-surface statement; read the paragraphs
-> below as the source-event canonicalization design, with their
-> consensus-payload claims superseded.
+> **Current consensus surface.** Protocol 4 uses authority protocol-v8
+> certificates and exact causal execution witnesses. Per-operation source-trace
+> digest/count fields remain diagnostic, but the certificate, stable
+> introduction and COMM events, physical and byte allocations, settlement,
+> status, and adjacent roots are consensus evidence. Section 11 and
+> [End-to-end authority settlement](cost-accounting-impl/end-to-end-authority-settlement.md)
+> are the authoritative production contract. The source-token discussion below
+> explains the calculus refinement and diagnostic canonicalization; it does not
+> replace the protocol-v8 witness.
 
-**Cost computation.** The cost of a deploy changes from "sum of `storage_cost_*` charges and refunds minus event storage costs" to "sum of deterministic billable source-token event weights." The runtime observes those events as fired recursive metered gates and weighted primitive/source events, and must exclude pending registrations, continuation scheduling, and Split/Join mediator COMMs. The numerical value of the cost will differ between the two models for most deploys. This is a consensus-breaking change that requires coordinated network activation (Section 6, step 22).
+**Cost computation.** The public scalar cost is committed COMM count plus
+canonical RSpace introduction, delivery, and trace bytes. Physical authority
+draw and proposer fee remain separate certificate fields. Structural reducer,
+primitive, substitution, scheduler, and Split/Join mediator telemetry has zero
+consensus weight. The change is consensus-breaking and requires fresh-genesis
+protocol activation.
 
-**Cost determinism guarantee.** F1R3Node's `ChargingRSpace` already makes cost order-independent empirically: `cost_should_be_deterministic` re-runs each contract 20 times, `cost_should_be_repeatable_when_generated` runs 10,000 randomly-generated contracts, and `peek_with_parallel_produce_should_have_deterministic_replay_cost` directly guards the peek-with-parallel-produce class (`rholang/tests/accounting/cost_accounting_spec.rs:323,344,474`). Under the internalized model, cost determinism is upgraded to a machine-checked theorem (`ca_cost_deterministic`), proven via strong normalization plus local confluence composed through Newman's lemma. This is a strictly stronger guarantee than empirical test coverage: it holds for every reachable state, not just the sampled ones.
+**Cost determinism guarantee.** The calculus theorem `ca_cost_deterministic`
+establishes compute-authority determinism through strong normalization and
+local confluence. The protocol-4 byte refinement additionally proves
+arrival-order equality, idempotent persistent retries, non-persistent
+multiplicity, complete join coverage, no negative removal credit, checked
+arithmetic, and proposal/replay equality. Example and property tests retain the
+legacy order-sensitive regression corpus while Loom exercises the new
+linearization points.
 
-**Event hashing.** The events logged by the tuple space for replay and consensus purposes change. In the externalized model, events include produce and consume operations with their associated storage costs. In the internalized model, the cost-relevant events are fired recursive metered gates. Because the implementation intentionally maximizes parallelism, validators must not hash these events in completion order. The event digest must be computed from a deterministic canonicalization of the source-token events, such as sorting by deploy id, source-path/redex id, and local step index, or by a collision-resistant multiset commitment over the same descriptors. The Rocq theorem `fuel_events_consumed_perm` supplies exactly the multiset-determinism property this design needs.
+**Event hashing.** The consensus witness uses stable semantic introduction and
+COMM identities plus the ordered causal RSpace log. Diagnostic source-token
+events are canonicalized independently and must never be hashed in wall-clock
+completion order. The Rocq theorem `fuel_events_consumed_perm` supplies the
+multiset-determinism property for that diagnostic calculus projection.
 
 *Discriminating billable gates from mediator firings.* The Rocq cost notion is "one `ca_step` per fired recursive metered gate." The source `ca_step` relation is defined on the cost-accounted system (`SSigned | SToken | SPar`), which contains no Split or Join. Split and Join are `proc`-level mediators in the legacy translation target; they shuffle tokens between signature channels but do *not* correspond to `ca_step` reductions. The Rust evaluator therefore must count only the continuation-keyed gates installed by the recursive metering kernel, where the key is tied to a selected source successor. Legacy `P_tr` fuel-gate firings remain useful for local proof correspondence, but they are not sufficient as the whole-system billing discriminator. Mediator receivers (`Split`'s continuation `N⟦s₁⟧!(0) ∣ N⟦s₂⟧!(*t)`, `Join`'s continuation `N⟦s₁ & s₂⟧!(*t₁ ∣ *t₂)`) are syntactically distinct and must be excluded from the cost count and from the fuel-event digest.
 
@@ -1503,49 +1492,94 @@ deterministic.
 
 The intra-deploy ordering is *paper-original*: the token-chain encoding `T⟦σ:T'⟧ = N⟦σ⟧!(T⟦T'⟧)` ([4, Appendix A]) places at most one token message on any signature channel at a time, and each fuel-gate firing dequotes the next token via `*t` to release the subsequent gate. Validators executing the same translated process therefore observe the same fuel-event sequence not because they *agree* on an order, but because the process structure admits exactly one. The Rocq theorems verify this property: `ca_step_deterministic` (`StepDeterminism.v:156`) shows that any single-token system has a unique successor at each step; `single_token_path_unique` (`StepDeterminism.v:249`) lifts this to whole reduction paths; and `fuel_events_consumed_perm` (`FuelEventDecomposition.v:199`) proves the broader multiset-equality property from which list-equality drops out in the single-token case. None of these theorems introduce the ordering — they verify the algorithm the paper specifies. The cross-deploy case, by contrast, is *not* a paper claim: block-level ordering of per-deploy digests is a F1R3Node deployment choice (canonical deploy-index order, enforced by validator code), and what the Rocq proof contributes there is `ca_cost_deterministic` for the parallel composition of all in-block deploys, which guarantees the *aggregate* token count is order-independent. The block-level ordered hash chain therefore relies on (a) the paper's intra-deploy ordering algorithm (verified in Rocq) plus (b) protocol-level inter-deploy ordering by deploy index; both are required, and the paper-vs-protocol distinction should be kept explicit in any audit.
 
-Across deploys in a block, the deploy-level digests are combined in canonical block order (deploy index order) using the same incremental hash chain, yielding a block-level fuel-event digest. Application-level events continue to use the existing ordered event log (they are replayed in sequence via rig-and-reset and do not require any special hashing treatment).
+Across deploys in a block, causal RSpace logs and protocol-v8 witnesses are
+ordered by canonical deploy index and chained by adjacent pre/post-state roots.
+There is no separate block-level fuel-event digest that can replace those
+witnesses.
 
-**Phlogiston pricing.** The phlogiston cost of a deploy under the new model is the sum of deterministic source-token event weights reserved by `TokenBudget`. Direct rho steps use the Rule 1-5 source-token counts; primitive operations and other consensus-billable work use explicit deterministic weights (Section 5.9.1). This is a different cost metric than the protobuf-encoded size of stored data. Pricing and rate-limiting policies must be recalibrated against the token-weight schedule before activation.
+**REV-backed capacity.** Deploy data carries no phlogiston price or limit.
+Authenticated wallet and located-purse supply backs the physical authority,
+quantitative-byte, and fee maximum. The byte tariff is versioned and
+digest-bound; a rate change is a consensus protocol change.
 
-**Cost validation.** Under the externalized model, validators do not currently verify deploy costs — the only cost-related check is `phlo_price >= min_phlo_price` (`validate.rs`). Under the internalized model, cost is deterministic (by `ca_cost_deterministic`), so validators can and should verify cost correctness. During block validation, each validator re-executes the recursive metering protocol and compares the resulting `TokenBudget.total_cost()` with the cost field in the block's `ProcessedDeploy`. A mismatch indicates a faulty or malicious block proposer and is grounds for rejecting the block.
+**Cost validation.** Every validator independently reconstructs the canonical
+signer environment, pre-state purse supply, certificate, causal events,
+physical allocation, byte cost, fee, exact settlement, status, and roots. A
+mismatch in any field rejects the block. The scalar cost alone is insufficient
+to authenticate custody movement.
 
-**Replay transparency.** Recursive metered gate firings are standard COMM events in the translated pure rho calculus — they produce and consume data on continuation-keyed internal channels via the same `produce`/`consume` operations used by application-level communication. The rig-and-reset replay mechanism (`replay_rspace.rs`) partitions the event log into IO events (produces, consumes) and COMM events, then re-indexes them for deterministic replay. Metered-gate COMMs appear in this log as ordinary internal COMM events, while their cost digest is derived from canonical source-event descriptors rather than completion order. The matching logic itself remains the same as for all other COMMs.
+**Replay transparency.** ReplayRSpace rigs the exact causal IO/COMM log while an
+ordinary runtime snapshots each deployment's authenticated purse lanes at its
+materialized pre-state. The same operation and match observers recompute byte
+and authority evidence. Replay never queries future roots, trusts peer-provided
+merge vectors, or derives settlement from scheduler completion order.
 
 **Token sweep determinism.** The post-evaluation token sweep (Section 5.8.2) removes internal fuel artifacts from the deploy's signature channel(s) before the hard checkpoint. Because signature channels are scoped per-deploy, and because the sweep removes **all** metering data and unfired gate continuations on those channels, the sweep is deterministic: every validator performs the same removal on the same channels, yielding the same post-sweep tuple-space state. The sweep operation itself is recorded in the event log as a sequence of deterministic removals, which are replayed during rig-and-reset. Validators that replay a block containing a deploy with residual metering artifacts will replay both the fuel-gate COMMs and the sweep removals, arriving at the same final state.
 
 ### 8.2 What Does Not Change
 
-**Block structure.** Blocks still contain deploys, and deploys still have a cost field. The cost field now stores the token count rather than the accumulated phlogiston charges, but the block format is unchanged.
+**Block lifecycle.** Blocks still contain processed deploys and an ordered
+causal replay log. The wire schema changes at fresh genesis: retired phlo tags
+are reserved and `ProcessedDeployProto` carries protocol-v8 certificate and
+witness evidence. The public scalar `cost` remains only a projection.
 
 **The COMM rule.** The fundamental computational step of the rho calculus is unchanged. A receiver and a sender on the same channel fire, producing a substituted body. The fuel-gate mechanism adds a layer of COMM events (on signature channels) above the application-level COMM events, but the rule itself is the same.
 
-**Validator model.** Validators still propose blocks, validate deploys, and check costs. The validation logic changes (validators compare token counts instead of accumulated charges), but the validator protocol is unchanged.
+**Validator model.** Validators still propose blocks, independently replay
+deploys, and apply CBC Casper's majority/clique finality calculation. Cost
+validation now checks complete custody and replay evidence. Majority evidence
+alone cannot promote a state that bypasses an already certified finalized
+effect.
 
-**Replay.** The tuple space replay mechanism (rig-and-reset) continues to work. Events are replayed in the same order, and the cost is deterministic regardless of replay order (by token conservation).
+**Replay.** The tuple-space causal log remains the replay oracle. Validators
+materialize each adjacent root in order and install the same authority and byte
+observers, so independent scheduling cannot change cost or settlement.
 
-**Rholang language.** No changes to the Rholang language syntax or semantics. The recursive metering mechanism is inserted by the compiler/runtime's internal pass (between normalization and reduction), which is completely transparent to the Rholang programmer. Existing Rholang programs run unchanged with zero source modifications. A developer writing `new ch in { ch!(42) | for(@x <- ch){ stdout!(x) } }` today writes exactly the same code after the migration. The `Sig`, `Token`, and `SignedProcess` types are internal compiler IR — they never appear in Rholang source code, error messages, or developer-facing APIs.
+**Rholang compatibility.** Existing ordinary Rholang programs retain their
+source behavior under authority-backed accounting. New located-region,
+funding-slot, and linear-authority syntax exposes capabilities that ordinary
+programs need not use. Internal `Sig`, `Token`, and `SignedProcess` forms remain
+runtime/proof representations rather than public key material.
 
 **System deploy handling.** System deploys (genesis, slash, close-block, heartbeat, and fee-settlement deploys) are exempt from the cost-accounting translation and run without fuel gates under an explicit unmetered/no-op budget. They are not a reason to retain `CostManager` as a second runtime metering path. System deploys are identified by `is_system_deploy_id(deploy_id)` (`system_deploy.rs`) and bypass the Signature Annotator entirely. Slash system deploys may consume invalid-block evidence produced by cost validation or replay mismatch only when the evidence epoch and target activation epoch are current; the target epoch is part of the authenticated replay payload. The slash effect is confined to PoS slashing state and preserves user deploy fuel, token cost, and fee settlement inputs.
 
 **Typed mergeable-channel handling.** Mergeable channels now carry an explicit `MergeType`. `IntegerAdd` preserves the existing additive diff/merge path for numeric channels. `BitmaskOr` is used for registry-style bitmaps: multi-value observation OR-folds all numeric values, diffs record newly-set bits as `end & !previous`, and merge replays with OR so no set bit is lost. Tagged non-numeric values are not coerced into the numeric merge path; they fall through to the ordinary conflict-rejection path. The mergeable-channel cache persists the merge type alongside each diff, and the formal model proves this metadata update preserves user fuel and fee-settlement evidence.
 
+**Authenticated merge-evidence lifecycle.** The persisted diff vector is not a
+wire commitment and is never trusted from a peer. Nodes synchronize blocks and
+trie state, then locally reconstruct any absent entry by exact replay. The cache
+key binds pre-state, post-state, creator, sequence, and a domain-separated digest
+of the canonical executed user/system payload. Publication follows effect and
+final-state validation, so rejection cannot leave evidence behind. Distinct
+equivocations remain separately addressable and insertion order is irrelevant.
+Finalized-entry garbage collection derives the same complete key from the
+authenticated block, so retiring one execution cannot erase an equivocation
+that shared the legacy tuple. Eligibility remains conservative: finalization,
+strict depth-horizon separation, a nonempty child set, and latest-message
+advancement through a child are all required, and missing DAG evidence fails
+closed.
+The legacy request/response variants remain decodable for rolling compatibility,
+but honest responses contain no evidence bytes and receivers ignore all payloads.
+See DR-51 and
+[`cost-accounting-impl/mergeable-evidence-authentication.md`](cost-accounting-impl/mergeable-evidence-authentication.md).
+
 ### 8.3 Backward Compatibility
 
 Backward compatibility is at the Rholang source level, not at the active wire
 protocol boundary. This release implements the D3 fresh-genesis design:
-protocol 3 is the only supported running protocol, and all ordinary non-genesis
+protocol 4 is the only supported running protocol, and all ordinary non-genesis
 user execution uses the internalized cost model. A protocol-1 or protocol-2
 approved genesis, or an unknown approved version, fails closed before Casper
 starts. There is no
 `H_activation`, accounting enable/disable flag, A/B mode, or retained
 externalized charging engine in the user-deploy path.
 
-The network migration therefore creates and approves a fresh protocol-3 genesis.
+The network migration therefore creates and approves a fresh protocol-4 genesis.
 Required balances, bonds, client fuel allocations, and shard parameters are
-committed through the protocol-3 genesis inputs. Validators do not run the
-protocol-3 binary on top of a protocol-1 or protocol-2 approved block, and old
-pending deploy envelopes are not reinterpreted under the new wire contract;
-clients resubmit source-compatible programs in protocol-3 envelopes.
+committed through the protocol-4 genesis inputs. Validators do not run the
+protocol-4 binary on top of a protocol-1, protocol-2, or protocol-3 approved
+block, and old pending deploy envelopes are not reinterpreted under the new wire
+contract; clients resubmit source-compatible programs in protocol-4 envelopes.
 
 Historical version-1 disposition encodings remain modeled so state reducers and
 offline validation fail deterministically if such metadata is presented. The
@@ -1857,29 +1891,44 @@ over up to a million elements and bounds memory, and it leaves
   `deploy_id`/`initial`/`unmetered` are copied by value into scopes, so
   reset no longer requires a per-event lock read.
 
-## 11. Migration Note: Native Atomic-COMM Accounting
+## 11. Migration Note: Native Vault-Backed RSpace Accounting
 
 **Audience:** contract authors and node operators migrating from reducer-attempt
 or syntax-introduction accounting.
 
+The normative implementation contract, publication mapping, and verification
+matrix are in [Vault-Backed Quantitative Byte Accounting](cost-accounting-impl/vault-backed-byte-accounting.md).
+
 ### 11.1 Semantic boundary
 
-A **COMM** is one successful atomic RSpace match: one consume continuation and
-the complete producer set required by that continuation. A binary receive and
-an `n`-ary join therefore each produce one semantic event. Merely storing an
-unmatched send or receive produces no COMM and costs zero.
-
-For a successful execution with committed COMM trace `C`, native cost is:
+Protocol 4 composes the paper's linear execution authority with the legacy
+quantitative byte ceiling. Every stable semantic produce or consume identity
+introduced into RSpace pays its canonical protobuf footprint before lookup or
+mutation. Persistent fixed-point retries of the same identity are idempotent;
+distinct non-persistent occurrences retain multiplicity. A successful **COMM**
+then pays one calculus execution unit plus every transferred payload byte and
+its canonical trace footprint. For introduction multiset `I` and committed COMM
+trace `C`, native quantitative cost is:
 
 ```math
-\operatorname{cost}(C)=\lvert C\rvert.
+\operatorname{qcost}(I,C)=
+\sum_{i\in I}\operatorname{introBytes}(i)+
+\sum_{c\in C}\left(1+\operatorname{payloadBytes}(c)+
+\operatorname{traceBytes}(c)\right).
 ```
 
-The RSpace observer runs while the matching channel group is locked and before
-the event log or tuplespace is mutated. It reserves one authority unit for the
-complete match. If reservation fails, the operation returns an error without
-removing data, removing a continuation, appending a COMM, or consuming replay
-evidence. This ordering makes funding and state transition one atomic decision.
+Both sides of a complete interaction are therefore charged exactly once whether
+the producer or consumer arrives first. A persistent resident object pays its
+stable original identity once even when proposal and replay perform different
+numbers of internal retries; each later counterpart is a new introduction and
+each delivery is a new COMM. An identity is marked paid only after its
+reservation succeeds. Peek and removal never create negative credit.
+
+The operation observer runs before tuple-space lookup, counters, storage, or
+trace mutation. The COMM observer runs while the matching channel group is
+locked and before any matched data, continuation, event, or replay evidence is
+changed. If either charge exceeds the immutable reservation, that operation
+returns an error without its corresponding semantic mutation.
 
 Play and replay install the same observer. Both derive COMM identity from the
 same semantic projection: consume channel and pattern hashes, continuation
@@ -1898,42 +1947,51 @@ The accepted execution result is carried forward directly; it is not replayed a
 second time under an unconstrained scheduler. Validators independently derive
 the same capacity and replay the authenticated causal event witness.
 
-For each authority lane `s`, reservation and realization satisfy:
+Physical linear authority and quantitative cost are related but distinct. One
+COMM can discharge more than one located authority cell while still contributing
+one execution unit. For each payer lane `s`, reservation and realization satisfy:
 
 ```math
 0 \leq \operatorname{realized}_s \leq \operatorname{reserved}_s
 \leq \operatorname{available}_s.
 ```
 
-Settlement debits exact realized cost plus the authenticated fee and refunds
-the unused reservation. Genesis supply, block-one wallet draw, epoch minting,
-fee conversion, and slash-related supply changes use distinct authenticated
-transitions and replay the same arithmetic.
+Admission reserves the certified physical allocation, certified quantitative
+byte bound, and fee. Settlement burns exact realized physical authority plus
+exact realized quantitative cost, transfers the authenticated fee, and refunds
+the unused maximum. Authorized top-ups credit only unreserved custody and cannot
+enlarge an in-flight reservation. Genesis supply, epoch minting, ordinary wallet
+transfers, and slash-related changes use distinct authenticated transitions and
+replay the same arithmetic.
 
 ### 11.3 Diagnostic reservation machinery
 
-`RuntimeBudget` still retains a bounded canonical attempt reconciliation and an
-out-of-phlogiston boundary for diagnostics and resource control. This historical
-Option E machinery is not the definition of native Rholang cost. In particular,
-syntax introductions, fork-local counters, and compare-and-swap race winners
-cannot create a semantic charge. `cost_trace_digest`,
+`RuntimeBudget` retains a bounded canonical attempt reconciliation and an
+out-of-phlogiston boundary. For canonical `RSpaceProduce`, `RSpaceConsume`, and
+`Comm` events, the event weight is consensus cost and participates in the hard
+reservation ceiling. Structural reductions, primitive diagnostics, fork-local
+counters, and compare-and-swap race winners cannot create a semantic charge.
+`cost_trace_digest`,
 `cost_trace_event_count`, and `last_oop_event()` remain diagnostic interfaces
 rather than independent consensus commitments.
 
 ### 11.4 Observable migration changes
 
-- Eight unmatched sends cost zero; they no longer consume eight units merely
-  because eight syntax nodes were visited.
-- One receive that atomically matches eight producers costs one unit, not eight.
+- An unmatched send or receive pays its canonical introduction footprint; it
+  cannot retain unbounded bytes without consuming the reserved ceiling.
+- One receive that atomically matches eight producers pays one execution unit,
+  every producer payload byte, and the complete join trace footprint.
 - Producer-triggered and consumer-triggered discovery of the same match use the
   same cost identity.
-- An underfunded match leaves RSpace and replay evidence unchanged.
-- `total_cost()` reports the successful committed COMM count. Status and the
-  adjacent pre-state/post-state roots authenticate whether that execution
-  completed or rejected.
-- Tests compare play/replay COMM identities, exact cost, status, and adjacent
-  roots. They do not infer cost from send/receive introduction counts or
-  scheduler-local telemetry.
+- An unaffordable introduction or COMM leaves its corresponding RSpace and
+  replay mutation unchanged; previously committed charges are never refunded.
+- `total_cost()` reports canonical introduction bytes plus committed COMM
+  execution, payload, and trace cost. The byte schedule version and digest,
+  certified maximum, realized byte debit, status, and adjacent roots are
+  authenticated protocol-4 evidence.
+- Tests compare play/replay operation identities, COMM identities, exact
+  weighted cost, byte witness, settlement, status, and adjacent roots.
+  Scheduler-local telemetry remains outside consensus.
 
 ### 11.5 Lifecycle requirements
 

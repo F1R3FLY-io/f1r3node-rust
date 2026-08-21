@@ -77,24 +77,6 @@ def digest_value(value):
     return hashlib.sha256(json.dumps(value, sort_keys=True, default=schema_json_default).encode("utf-8")).hexdigest()[:16]
 
 
-def expected_fixture_values(scenario):
-    consumed = 0
-    count = 0
-    budget = int(scenario.get("initial_budget", 0))
-    for event in scenario.get("events", []):
-        weight = int(event.get("weight", 0))
-        primitive_descriptor = str(event.get("primitive_descriptor", event.get("descriptor", "")))
-        invalid_descriptor = str(event.get("kind", "")) == "primitive" and len(primitive_descriptor) > 512
-        invalid_source_path = len(event.get("path", [])) > 1024
-        if weight <= 0 or invalid_descriptor or invalid_source_path:
-            return (consumed, count, True, False)
-        if consumed + weight > budget:
-            return (budget, count + 1, False, True)
-        consumed += weight
-        count += 1
-    return (consumed, count, False, False)
-
-
 def discover_source_seeds(roots, limit):
     seeds = []
     for root in roots:
@@ -190,7 +172,7 @@ def v10_scenario(
         events=events,
         initial_budget=int(initial_budget),
         settlement=settlement or {},
-        replay_fields={"fields": ["cost", "cost_trace_digest", "cost_trace_event_count"]} if replay_mode == "play_replay" else {},
+        replay_fields={"fields": authenticated_replay_fields()} if replay_mode == "play_replay" else {},
         replay_mutations=replay_mutations or [],
         negative_mutations=negative_mutations or [],
         source_seed=source_seed or {},
@@ -282,13 +264,13 @@ def fuzz_records(profile, search_mode, objectives, roots, limit):
             "horizon_v10_fuzz_replay_payload_cost_fields",
             '@0!("v10-replay")',
             "fuzz_replay_payload_cost_fields",
-            "Replay-payload fuzz seeds must mutate every cost-trace payload field before promotion.",
+            "Replay-payload fuzz seeds must mutate every authenticated authority-cost field before promotion.",
             [v10_event("replay/cost_digest", 1, deploy=0, path=[0]), v10_event("replay/cost_count", 2, deploy=1, path=[0])],
             8,
             threat_family="hybrid_fuzz_replay",
             expected_outcome="replay_mutation_rejected",
-            replay_mutations=["cost", "cost_trace_digest", "cost_trace_event_count", "signature", "block_hash", "cost_trace_present"],
-            negative_mutations=["cost", "cost_trace_digest", "cost_trace_event_count", "signature", "block_hash", "cost_trace_present"],
+            replay_mutations=authenticated_replay_fields(["signature", "block_hash"]),
+            negative_mutations=authenticated_replay_fields(["signature", "block_hash"]),
             fuzz_target="replay_payload_cost_fields",
             fuzz_seed_kind="authenticated_payload_mutation",
             mutator_family="replay_payload_cost_fields",
@@ -316,14 +298,14 @@ def fuzz_records(profile, search_mode, objectives, roots, limit):
             "horizon_v10_fuzz_casper_block_auth_fields",
             '@0!("v10-block-auth")',
             "fuzz_casper_block_auth_fields",
-            "Block-auth fuzz seeds must cover cost trace digest/count, signature, block hash, and trace presence.",
+            "Block-auth fuzz seeds must cover processed cost, authority witness, byte events, replay-payload hash, signature, and block hash.",
             [v10_event("casper/block_auth", 2, path=[0])],
             6,
             threat_family="hybrid_fuzz_casper",
             expected_outcome="block_auth_rejects_mutation",
             production_oracle="casper_auth_composition",
-            differential_axes=["cost", "digest", "count", "signature", "block_hash", "trace_presence"],
-            negative_mutations=["cost_trace_digest", "cost_trace_event_count", "signature", "block_hash", "cost_trace_present"],
+            differential_axes=["processed_cost", "authority_witness", "byte_events", "payload_hash", "signature", "block_hash"],
+            negative_mutations=authenticated_replay_fields(["signature", "block_hash"]),
             fuzz_target="replay_payload_cost_fields",
             fuzz_seed_kind="block_auth_payload_mutation",
             mutator_family="casper_block_auth_fields",
@@ -449,16 +431,16 @@ def composition_records(objectives):
             "horizon_v10_settlement_refund_no_fuel_matrix",
             '@0!("v10-settlement")',
             "settlement_refund_no_fuel_matrix",
-            "Settlement refund matrix fixtures must preserve escrow/refund arithmetic without replenishing runtime fuel.",
+            "Settlement refund matrix fixtures must preserve reservation/refund arithmetic without replenishing runtime fuel.",
             [v10_event("settlement/refund", 2, path=[0])],
             6,
             threat_family="hybrid_settlement_matrix",
             expected_outcome="settlement_refund_isolated",
             production_oracle="casper_auth_composition",
             differential_axes=["cost", "digest", "count", "refund", "block_hash"],
-            settlement={"authority": "casper", "escrow": 15, "token_cost": 5, "refund": 10},
+            settlement=vault_settlement(15, 15, 0, 0, 5, 0),
             fuzz_target="settlement_refund_no_fuel",
-            fuzz_seed_kind="escrow_refund_matrix",
+            fuzz_seed_kind="reservation_refund_matrix",
             mutator_family="settlement_refund",
             production_replay_target="generated_frontier_v10_casper_block_auth_fixtures_hold",
             rust_test="generated_frontier_v10_casper_block_auth_fixtures_hold",
@@ -475,7 +457,7 @@ def composition_records(objectives):
             expected_outcome="slashing_cost_invalid_isolated",
             production_oracle="casper_auth_composition",
             differential_axes=["cost", "digest", "count", "slashing", "block_hash"],
-            settlement={"kind": "slash_after_evaluation", "authority": "casper", "escrow": 12, "token_cost": 4, "refund": 8, "slashing_scope": "post_eval"},
+            settlement=vault_settlement(12, 12, 0, 0, 4, 0, kind="slash_after_evaluation", slashing_scope="post_eval"),
             negative_mutations=["slash_fields", "genesis", "block_hash", "signature"],
             fuzz_target="slashing_cost_invalid_isolation",
             fuzz_seed_kind="slashing_evidence_matrix",
@@ -488,13 +470,13 @@ def composition_records(objectives):
             "horizon_v10_legacy_downgrade_quarantine_matrix",
             '@0!("v10-legacy")',
             "legacy_downgrade_quarantine_matrix",
-            "Legacy downgrade fixtures must keep absent cost traces quarantined from post-activation replay.",
+            "Legacy downgrade fixtures must keep absent authority-cost witnesses quarantined from post-activation replay.",
             [v10_event("legacy/downgrade", 1, path=[0])],
             4,
             threat_family="hybrid_legacy_quarantine",
             expected_outcome="legacy_downgrade_quarantined",
-            replay_mutations=["cost_trace_present", "cost_trace_digest", "cost_trace_event_count"],
-            negative_mutations=["cost_trace_present", "cost_trace_digest", "cost_trace_event_count", "block_hash"],
+            replay_mutations=authenticated_replay_fields(),
+            negative_mutations=authenticated_replay_fields(["block_hash"]),
             fuzz_target="replay_payload_cost_fields",
             fuzz_seed_kind="legacy_absent_trace_downgrade",
             mutator_family="legacy_replay_downgrade",

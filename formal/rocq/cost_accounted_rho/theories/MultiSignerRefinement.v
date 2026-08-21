@@ -59,7 +59,7 @@ From CostAccountedRho Require Import RuntimeBudgetRefinement.
    ─────────────────────────────────────────────────────────────────────── *)
 
 Definition pos_state := list (nat * nat).
-(** Association-list representation: each entry is (deployerId, charged_amount). *)
+(** Association-list representation: each entry is (deployerId, debited_amount). *)
 
 Fixpoint pos_get (d : nat) (s : pos_state) : option nat :=
   match s with

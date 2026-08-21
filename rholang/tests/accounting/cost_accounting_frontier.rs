@@ -1,9 +1,8 @@
 use std::{env, fs};
 
-use models::rust::casper::protocol::casper_message::DeployData;
 use rholang::rust::interpreter::accounting::costs::Cost;
 use rholang::rust::interpreter::accounting::{
-    BillableKind, BillableTokenEvent, RedexId, RuntimeBudget, SourcePath,
+    BillableKind, BillableTokenEvent, CostReservationBatch, RedexId, RuntimeBudget, SourcePath,
 };
 use rholang::rust::interpreter::metering::{ContinuationKey, MeteredFrame, MeteredMachine};
 use serde::Deserialize;
@@ -56,12 +55,6 @@ struct GeneratedFixtureSet {
     fixtures: Vec<GeneratedFixture>,
 }
 
-// D3 (DR-9): `expected_total_cost` (and several other serde fields) are stale
-// weight-based pins read from the JSON fixtures; they must stay for
-// deserialization but are no longer asserted (the per-COMM invariants are
-// derived from `events` / `initial_budget` instead). `#[allow(dead_code)]`
-// keeps the deserialized-but-unread fields without churning the JSON corpus.
-#[allow(dead_code)]
 #[derive(Clone, Debug, Deserialize)]
 struct GeneratedFixture {
     id: String,
@@ -140,6 +133,28 @@ struct GeneratedFixture {
     source_anchor_status: String,
     #[serde(default)]
     dependency_advisory_id: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct VaultSettlementProjection {
+    authority: String,
+    kind: String,
+    available_supply: u64,
+    physical_authority_bound: u64,
+    quantitative_byte_bound: u64,
+    fee: u64,
+    realized_physical_authority_cost: u64,
+    realized_quantitative_byte_cost: u64,
+    reserved_max: Option<u64>,
+    expected_debit: u64,
+    expected_refund: u64,
+    expected_post_balance: u64,
+    expected_burned_cost: u64,
+    expected_proposer_credit: u64,
+    expected_admitted: bool,
+    arithmetic_admissible: bool,
+    reservation_overflow: bool,
+    debit_overflow: bool,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -328,7 +343,10 @@ fn generated_event(index: u64, event: &GeneratedEvent) -> BillableTokenEvent {
     let redex_id = event.redex_id.unwrap_or(stable_index);
     let local_index = event.local_index.unwrap_or(stable_index);
     let kind = match event.kind.as_str() {
-        "source" => BillableKind::Comm,
+        "source" | "comm" => BillableKind::Comm,
+        "rspace_produce" => BillableKind::RSpaceProduce,
+        "rspace_consume" => BillableKind::RSpaceConsume,
+        "reduction" => BillableKind::Reduction,
         "substitution" => BillableKind::Substitution,
         _ => BillableKind::Primitive(
             event
@@ -355,6 +373,46 @@ fn trace_digest_field_names() -> Vec<String> {
         .into_iter()
         .map(String::from)
         .collect()
+}
+
+fn embedded_vault_settlement(
+    available_supply: u64,
+    physical_authority_bound: u64,
+    quantitative_byte_bound: u64,
+    fee: u64,
+    realized_physical_authority_cost: u64,
+    realized_quantitative_byte_cost: u64,
+) -> serde_json::Value {
+    let reserved_max = physical_authority_bound
+        .checked_add(quantitative_byte_bound)
+        .and_then(|total| total.checked_add(fee))
+        .expect("embedded reservation");
+    let expected_burned_cost = realized_physical_authority_cost
+        .checked_add(realized_quantitative_byte_cost)
+        .expect("embedded burn");
+    let expected_debit = expected_burned_cost
+        .checked_add(fee)
+        .expect("embedded debit");
+    serde_json::json!({
+        "authority": "casper",
+        "kind": "execution",
+        "available_supply": available_supply,
+        "physical_authority_bound": physical_authority_bound,
+        "quantitative_byte_bound": quantitative_byte_bound,
+        "fee": fee,
+        "realized_physical_authority_cost": realized_physical_authority_cost,
+        "realized_quantitative_byte_cost": realized_quantitative_byte_cost,
+        "reserved_max": reserved_max,
+        "expected_debit": expected_debit,
+        "expected_refund": reserved_max.checked_sub(expected_debit).expect("embedded refund"),
+        "expected_post_balance": available_supply.checked_sub(expected_debit).expect("embedded post balance"),
+        "expected_burned_cost": expected_burned_cost,
+        "expected_proposer_credit": fee,
+        "expected_admitted": true,
+        "arithmetic_admissible": true,
+        "reservation_overflow": false,
+        "debit_overflow": false
+    })
 }
 
 fn embedded_generated_fixtures() -> Vec<GeneratedFixture> {
@@ -387,11 +445,8 @@ fn embedded_generated_fixtures() -> Vec<GeneratedFixture> {
                     local_index: None,
                 },
             ],
-            // D3 (DR-9, OD-3): consensus cost = COMM count. 1 source (Comm, cost
-            // 1) + 1 primitive (diagnostic, cost 0) ⇒ total_cost 1 (was the
-            // weight-sum 3); both events still appear (event_count 2).
             expected_total_cost: 1,
-            expected_event_count: 2,
+            expected_event_count: 1,
             expects_invalid_admission: false,
             expects_oop: false,
             settlement: serde_json::Value::Null,
@@ -487,9 +542,6 @@ fn embedded_generated_fixtures() -> Vec<GeneratedFixture> {
             classification: "proof_or_model_strengthening".to_string(),
             threat_family: "concurrency_schedule".to_string(),
             promotion_target: "tla:RuntimeBudgetReplay".to_string(),
-            // D3 (DR-9, OD-3): a COMM costs ONE token. A 0-COMM budget OOPs on
-            // the first COMM (was budget 3 vs a weight-5 source); consumed
-            // clamps to the COMM budget (0).
             initial_budget: 0,
             events: vec![GeneratedEvent {
                 kind: "source".to_string(),
@@ -675,18 +727,11 @@ fn embedded_generated_fixtures() -> Vec<GeneratedFixture> {
                     local_index: None,
                 },
             ],
-            // D3 (DR-9, OD-3): 1 source (Comm, cost 1) + 1 primitive (cost 0) ⇒
-            // total_cost 1 (was the weight-sum 3); event_count 2.
-            expected_total_cost: 1,
-            expected_event_count: 2,
+            expected_total_cost: 2,
+            expected_event_count: 1,
             expects_invalid_admission: false,
             expects_oop: false,
-            settlement: serde_json::json!({
-                "escrow": 12,
-                "token_cost": 6,
-                "refund": 6,
-                "authority": "casper"
-            }),
+            settlement: embedded_vault_settlement(12, 8, 2, 2, 4, 1),
             replay_mutations: Vec::new(),
             coverage_features: vec![
                 "stateful".to_string(),
@@ -780,63 +825,91 @@ fn assert_terminal_classification(fixture: &GeneratedFixture) {
     );
 }
 
-/// D3 (DR-9, OD-3): the consensus cost of a fixture under the per-COMM model.
-/// The fixtures' `expected_total_cost` / `expected_event_count` fields are
-/// stale weight-based pins from the Sage horizon generator (pre-D3); rather
-/// than re-pin hundreds of JSON fixtures, we assert the per-COMM INVARIANTS the
-/// budget machinery must uphold for the SAME event stream:
-///   * `total_cost` equals the number of COMMITTED `Comm` events (each = 1);
-///   * `total_cost <= initial_budget` (the COMM budget is never exceeded);
-///   * `cost_trace_event_count` equals the committed-event count (+1 on OOP).
-///
-/// This validates the per-COMM consensus tally directly from the canonical
-/// reconciliation, independent of the obsolete weight pins.
 fn replay_generated_fixture(fixture: &GeneratedFixture) {
     assert_terminal_classification(fixture);
     let budget = RuntimeBudget::new(Cost::create(
         fixture.initial_budget,
         format!("generated fixture {}", fixture.id),
     ));
-    let mut saw_error = false;
-    for (index, event) in fixture.events.iter().enumerate() {
-        let result = budget.reserve_canonical(generated_event(index as u64, event));
-        if result.is_err() {
-            saw_error = true;
-        }
-    }
-
-    // Per-COMM invariants (D3): consensus cost == committed COMM count.
-    let committed_comm_count = budget
-        .get_canonical_event_log()
+    let events = fixture
+        .events
         .iter()
-        .filter(|e| e.kind == BillableKind::Comm)
-        .count() as i64;
+        .enumerate()
+        .map(|(index, event)| generated_event(index as u64, event))
+        .collect();
+    let result = budget.commit_canonical_batch(CostReservationBatch { events });
     assert_eq!(
-        budget.total_cost().value,
-        committed_comm_count,
-        "fixture {} per-COMM cost must equal the committed COMM count",
+        result.is_err(),
+        fixture.expects_invalid_admission,
+        "fixture {} admission classification",
         fixture.id
     );
-    assert!(
-        budget.total_cost().value <= fixture.initial_budget.max(0),
-        "fixture {} per-COMM cost must not exceed the COMM budget",
-        fixture.id
-    );
-
-    // D3 (DR-9): the fixtures' `expects_oop` / `expects_invalid_admission`
-    // flags are also weight-based — a fixture that OOP'd under the old
-    // weight-sum model may NOT under per-COMM (a single COMM of any weight costs
-    // 1). So we assert the per-COMM CONSISTENCY rather than the stale flag:
-    // whenever a reservation was rejected, the canonical reconciliation must
-    // carry the matching OOP / clamped evidence.
-    if saw_error {
-        assert!(
-            budget.last_oop_event().is_some()
-                || budget.total_cost().value <= fixture.initial_budget.max(0),
-            "fixture {} rejected a reservation but carries no OOP/clamp evidence",
+    if fixture.expects_invalid_admission {
+        assert_eq!(
+            budget.total_cost().value,
+            0,
+            "fixture {} atomic cost",
             fixture.id
         );
+        assert_eq!(
+            budget.cost_trace_event_count(),
+            0,
+            "fixture {} atomic trace count",
+            fixture.id
+        );
+        assert!(
+            budget.get_canonical_event_log().is_empty(),
+            "fixture {} atomic diagnostic trace",
+            fixture.id
+        );
+        assert!(
+            budget.last_oop_event().is_none(),
+            "fixture {} invalid OOP",
+            fixture.id
+        );
+        assert_eq!(
+            fixture.expected_total_cost, 0,
+            "fixture {} invalid cost pin",
+            fixture.id
+        );
+        assert_eq!(
+            fixture.expected_event_count, 0,
+            "fixture {} invalid count pin",
+            fixture.id
+        );
+        assert!(
+            !fixture.expects_oop,
+            "fixture {} invalid/OOP overlap",
+            fixture.id
+        );
+        return;
     }
+
+    let commit = result.expect("validated fixture batch");
+    let reconciled_oop = budget.last_oop_event();
+    assert_eq!(
+        commit.oop, reconciled_oop,
+        "fixture {} OOP reconciliation",
+        fixture.id
+    );
+    assert_eq!(
+        reconciled_oop.is_some(),
+        fixture.expects_oop,
+        "fixture {} OOP classification",
+        fixture.id
+    );
+    assert_eq!(
+        budget.total_cost().value,
+        fixture.expected_total_cost,
+        "fixture {} exact total cost",
+        fixture.id
+    );
+    assert_eq!(
+        budget.cost_trace_event_count(),
+        fixture.expected_event_count,
+        "fixture {} exact trace count",
+        fixture.id
+    );
 }
 
 #[test]
@@ -847,6 +920,39 @@ fn generated_frontier_replay_fixtures_hold() {
     for fixture in &fixtures {
         replay_generated_fixture(fixture);
     }
+}
+
+#[test]
+fn generated_fixture_invalid_batch_is_atomic() {
+    let budget = RuntimeBudget::new(Cost::create(8, "invalid generated batch"));
+    let valid = GeneratedEvent {
+        kind: "source".to_string(),
+        weight: 3,
+        descriptor: "valid".to_string(),
+        primitive_descriptor: None,
+        deploy: 0,
+        path: vec![0],
+        redex_id: None,
+        local_index: None,
+    };
+    let invalid = GeneratedEvent {
+        kind: "primitive".to_string(),
+        weight: 0,
+        descriptor: "invalid".to_string(),
+        primitive_descriptor: Some("invalid".to_string()),
+        deploy: 0,
+        path: vec![1],
+        redex_id: None,
+        local_index: None,
+    };
+    let result = budget.commit_canonical_batch(CostReservationBatch {
+        events: vec![generated_event(0, &valid), generated_event(1, &invalid)],
+    });
+    assert!(result.is_err());
+    assert_eq!(budget.total_cost().value, 0);
+    assert_eq!(budget.cost_trace_event_count(), 0);
+    assert!(budget.get_canonical_event_log().is_empty());
+    assert!(budget.last_oop_event().is_none());
 }
 
 fn trace_digest_for(
@@ -860,41 +966,184 @@ fn trace_digest_with_budget(
     initial_budget: i64,
 ) -> Option<rholang::rust::interpreter::accounting::CostTraceDigest> {
     let budget = RuntimeBudget::new(Cost::create(initial_budget, "metamorphic trace fixture"));
-    for (index, event) in events.iter().enumerate() {
-        if budget
-            .reserve_canonical(generated_event(index as u64, event))
-            .is_err()
-        {
-            return None;
-        }
+    let events = events
+        .iter()
+        .enumerate()
+        .map(|(index, event)| generated_event(index as u64, event))
+        .collect();
+    let commit = budget
+        .commit_canonical_batch(CostReservationBatch { events })
+        .ok()?;
+    if commit.oop.is_some() {
+        return None;
     }
     Some(budget.cost_trace_digest())
 }
 
-// D3 (DR-9): retained (the escrow settlement projection that consumed it is
-// removed); kept as a JSON i64 extractor for any future per-COMM fixture field.
-#[allow(dead_code)]
-fn settlement_i64(settlement: &serde_json::Value, field: &str) -> Option<i64> {
-    settlement.get(field).and_then(serde_json::Value::as_i64)
-}
+fn assert_settlement_projection(fixture: &GeneratedFixture) {
+    if fixture.settlement.is_null()
+        || fixture
+            .settlement
+            .as_object()
+            .is_some_and(serde_json::Map::is_empty)
+    {
+        return;
+    }
+    let settlement: VaultSettlementProjection = serde_json::from_value(fixture.settlement.clone())
+        .unwrap_or_else(|error| panic!("fixture {} settlement schema: {error}", fixture.id));
+    assert!(
+        !settlement.authority.is_empty(),
+        "fixture {} authority",
+        fixture.id
+    );
+    assert!(
+        !settlement.kind.is_empty(),
+        "fixture {} settlement kind",
+        fixture.id
+    );
 
-// D3 (DR-9, OD-2): the escrow settlement refund projection
-// (`refund = max(0, escrow - token_cost)`) has NO successor — a deploy carries
-// no phlo escrow; its cost is the per-COMM token count, settled once against
-// Σ⟦s⟧ at block close (no per-deploy refund). The fixtures' `settlement.escrow`
-// /`token_cost`/`refund` fields belong to the old model and are no longer
-// projected here.
-fn assert_settlement_projection(_fixture: &GeneratedFixture) {}
+    let reserved_max = settlement
+        .physical_authority_bound
+        .checked_add(settlement.quantitative_byte_bound)
+        .and_then(|total| total.checked_add(settlement.fee));
+    let burned_cost = settlement
+        .realized_physical_authority_cost
+        .checked_add(settlement.realized_quantitative_byte_cost);
+    let debit = burned_cost.and_then(|total| total.checked_add(settlement.fee));
+    let arithmetic_admissible = reserved_max.is_some_and(|reserved| {
+        debit.is_some_and(|debit| {
+            settlement.realized_physical_authority_cost <= settlement.physical_authority_bound
+                && settlement.realized_quantitative_byte_cost <= settlement.quantitative_byte_bound
+                && reserved <= settlement.available_supply
+                && debit <= reserved
+        })
+    });
+    assert_eq!(
+        settlement.reservation_overflow,
+        reserved_max.is_none(),
+        "fixture {} reservation overflow",
+        fixture.id
+    );
+    assert_eq!(
+        settlement.debit_overflow,
+        debit.is_none(),
+        "fixture {} debit overflow",
+        fixture.id
+    );
+    assert_eq!(
+        settlement.arithmetic_admissible, arithmetic_admissible,
+        "fixture {} arithmetic classification",
+        fixture.id
+    );
+    assert_eq!(
+        settlement.reserved_max, reserved_max,
+        "fixture {} reserve",
+        fixture.id
+    );
+
+    if settlement.expected_admitted {
+        let reserved = reserved_max.expect("admitted reservation");
+        let burned = burned_cost.expect("admitted burn");
+        let debit = debit.expect("admitted debit");
+        assert!(
+            arithmetic_admissible,
+            "fixture {} admitted funding",
+            fixture.id
+        );
+        assert_eq!(
+            settlement.expected_burned_cost, burned,
+            "fixture {} burn",
+            fixture.id
+        );
+        assert_eq!(
+            settlement.expected_proposer_credit, settlement.fee,
+            "fixture {} proposer credit",
+            fixture.id
+        );
+        assert_eq!(
+            settlement.expected_debit, debit,
+            "fixture {} debit",
+            fixture.id
+        );
+        assert_eq!(
+            settlement.expected_refund,
+            reserved
+                .checked_sub(debit)
+                .expect("admitted debit within reservation"),
+            "fixture {} refund",
+            fixture.id
+        );
+        assert_eq!(
+            settlement.expected_post_balance,
+            settlement
+                .available_supply
+                .checked_sub(debit)
+                .expect("admitted debit within supply"),
+            "fixture {} post balance",
+            fixture.id
+        );
+        assert_eq!(
+            settlement.expected_debit,
+            settlement
+                .expected_burned_cost
+                .checked_add(settlement.expected_proposer_credit)
+                .expect("admitted burn plus fee"),
+            "fixture {} debit conservation",
+            fixture.id
+        );
+    } else {
+        assert_eq!(
+            settlement.expected_debit, 0,
+            "fixture {} rejected debit",
+            fixture.id
+        );
+        assert_eq!(
+            settlement.expected_refund, 0,
+            "fixture {} rejected refund",
+            fixture.id
+        );
+        assert_eq!(
+            settlement.expected_burned_cost, 0,
+            "fixture {} rejected burn",
+            fixture.id
+        );
+        assert_eq!(
+            settlement.expected_proposer_credit, 0,
+            "fixture {} rejected proposer credit",
+            fixture.id
+        );
+        assert_eq!(
+            settlement.expected_post_balance, settlement.available_supply,
+            "fixture {} rejected balance",
+            fixture.id
+        );
+    }
+}
 
 fn valid_success_fixture(fixture: &GeneratedFixture) -> bool {
     !fixture.expects_invalid_admission
         && !fixture.expects_oop
-        && !fixture.events.is_empty()
-        && fixture.expected_event_count == fixture.events.len() as u64
+        && fixture.events.iter().any(|event| {
+            matches!(
+                event.kind.as_str(),
+                "source" | "comm" | "rspace_produce" | "rspace_consume"
+            )
+        })
 }
 
 fn event_weight_sum(events: &[GeneratedEvent]) -> i64 {
-    events.iter().map(|event| event.weight as i64).sum()
+    events
+        .iter()
+        .filter(|event| {
+            matches!(
+                event.kind.as_str(),
+                "source" | "comm" | "rspace_produce" | "rspace_consume"
+            )
+        })
+        .try_fold(0_i64, |total, event| {
+            total.checked_add(i64::try_from(event.weight).expect("validated fixture weight"))
+        })
+        .expect("fixture consensus weight sum")
 }
 
 fn mutate_consensus_trace(events: &[GeneratedEvent]) -> Option<Vec<GeneratedEvent>> {
@@ -1075,12 +1324,18 @@ fn generated_frontier_differential_fixtures_hold() {
                 .as_object()
                 .is_some_and(serde_json::Map::is_empty);
         if has_source_seed {
+            let has_projection = fixture.source_seed.as_object().is_some_and(|projection| {
+                projection.values().any(|value| match value {
+                    serde_json::Value::Null => false,
+                    serde_json::Value::String(value) => !value.is_empty(),
+                    serde_json::Value::Array(value) => !value.is_empty(),
+                    serde_json::Value::Object(value) => !value.is_empty(),
+                    serde_json::Value::Bool(value) => *value,
+                    serde_json::Value::Number(_) => true,
+                })
+            });
             assert!(
-                fixture
-                    .source_seed
-                    .get("seeds")
-                    .and_then(serde_json::Value::as_array)
-                    .is_some_and(|seeds| !seeds.is_empty()),
+                has_projection,
                 "fixture {} source seed projection",
                 fixture.id
             );
@@ -1434,59 +1689,23 @@ fn replay_matching_fixtures(
     fixtures
 }
 
-// D3 (DR-9): the deploy carries no phlo escrow price/limit (cost = per-COMM
-// token count). The fixture's settlement block no longer feeds a DeployData.
-fn deploy_data_from_fixture(_fixture: &GeneratedFixture) -> DeployData {
-    DeployData {
-        term: "v12-production-oracle".to_string(),
-        time_stamp: 0,
-        valid_after_block_number: 0,
-        shard_id: "root".to_string(),
-        expiration_timestamp: None,
-        authority_presentations: Vec::new(),
-    }
-}
-
 fn assert_v12_runtime_budget_oracle(fixture: &GeneratedFixture) {
-    let budget = RuntimeBudget::new(Cost::create(
-        fixture.initial_budget,
-        format!("v12 oracle {}", fixture.id),
-    ));
-    let mut saw_error = false;
-    for (index, event) in fixture.events.iter().enumerate() {
-        saw_error |= budget
-            .reserve_canonical(generated_event(index as u64, event))
-            .is_err();
-    }
-    // D3 (DR-9, OD-3): consensus cost = the committed COMM count (the fixtures'
-    // weight-based `expected_total_cost` and `expects_oop`-style dispositions
-    // are stale pins, so we assert the per-COMM invariants for each disposition
-    // instead of the obsolete weight value).
-    let committed_comm_count = budget
-        .get_canonical_event_log()
-        .iter()
-        .filter(|e| e.kind == BillableKind::Comm)
-        .count() as i64;
-    assert_eq!(
-        budget.total_cost().value,
-        committed_comm_count,
-        "fixture {} per-COMM cost must equal the committed COMM count",
-        fixture.id
-    );
+    replay_generated_fixture(fixture);
     match fixture.expected_disposition.as_str() {
         "accepted" => {
-            assert!(!saw_error, "fixture {} must be accepted", fixture.id);
+            assert!(!fixture.expects_invalid_admission);
+            assert!(!fixture.expects_oop);
         }
         "rejected_before_mutation" => {
-            assert!(saw_error, "fixture {} must reject", fixture.id);
-            // A pre-mutation rejection (validation failure) commits nothing.
-            assert_eq!(budget.total_cost().value, 0);
+            assert!(fixture.expects_invalid_admission);
+            assert!(!fixture.expects_oop);
+            assert_eq!(fixture.expected_total_cost, 0);
+            assert_eq!(fixture.expected_event_count, 0);
         }
         "oop_boundary" => {
-            // Per-COMM: an OOP clamps consumed to the COMM budget. (If the
-            // fixture's weight-based OOP no longer fires under per-COMM, the
-            // budget simply admits all its COMMs — still ≤ the budget.)
-            assert!(budget.total_cost().value <= fixture.initial_budget.max(0));
+            assert!(!fixture.expects_invalid_admission);
+            assert!(fixture.expects_oop);
+            assert_eq!(fixture.expected_total_cost, fixture.initial_budget);
         }
         other => panic!(
             "fixture {} has unsupported runtime-budget disposition {}",
@@ -1507,8 +1726,7 @@ fn assert_v12_metering_oracle(fixture: &GeneratedFixture) {
             assert_eq!(event_log.len(), 2);
             assert_eq!(event_log[0].source_path, SourcePath(vec![1]));
             assert_eq!(event_log[1].source_path, SourcePath(vec![2]));
-            // D3 (DR-9, OD-3): consensus cost = COMM count. 1 Comm + 1 (diagnostic)
-            // Substitution ⇒ total_cost 1 (the Substitution is 0).
+            // The unit-weight COMM costs 1; the diagnostic substitution costs 0.
             assert_eq!(budget.total_cost().value, 1);
         }
         "metering_nonbillable_trace_exclusion" => {
@@ -1545,19 +1763,22 @@ fn assert_v12_parallel_oracle(fixture: &GeneratedFixture) {
     assert_eq!(forward, reverse, "fixture {} canonical trace", fixture.id);
 }
 
-// D3 (DR-9, OD-2): the escrow SETTLEMENT oracle (refund projection / charge
-// overflow over `refund_amount_for_token_cost` / `checked_total_phlo_charge`)
-// has NO successor — the per-deploy escrow charge/refund arithmetic is removed.
-// A deploy's cost is the per-COMM token count, settled once against Σ⟦s⟧ at
-// block close (covered by the acceptance-gate + settlement-debit tests in
-// `casper/.../util/rholang/acceptance.rs`). The `settlement_*` oracle kinds are
-// therefore treated as a no-op here (the fixtures that carried them belong to
-// the Sage settlement model, re-pinned per-COMM in Commit 3).
 fn assert_v12_settlement_oracle(fixture: &GeneratedFixture) {
-    let _deploy = deploy_data_from_fixture(fixture);
+    assert_settlement_projection(fixture);
+    let settlement: VaultSettlementProjection = serde_json::from_value(fixture.settlement.clone())
+        .unwrap_or_else(|error| panic!("fixture {} settlement schema: {error}", fixture.id));
     match fixture.oracle_kind.as_str() {
-        "settlement_refund_projection" | "settlement_overflow_rejected" => {
-            // No escrow settlement under D3 — nothing to project/reject here.
+        "settlement_refund_projection" => {
+            assert!(settlement.expected_admitted);
+            assert!(settlement.quantitative_byte_bound > 0);
+            assert!(settlement.realized_quantitative_byte_cost > 0);
+            assert!(settlement.fee > 0);
+            assert!(settlement.expected_refund > 0);
+        }
+        "settlement_overflow_rejected" => {
+            assert!(!settlement.expected_admitted);
+            assert!(settlement.reservation_overflow);
+            assert!(!settlement.arithmetic_admissible);
         }
         other => panic!(
             "fixture {} has unsupported settlement oracle {}",
@@ -1657,12 +1878,40 @@ fn assert_v13_source_semantic_metadata(fixture: &GeneratedFixture) {
 
 fn assert_v13_runtime_metering_parallel_oracle(fixture: &GeneratedFixture) {
     match fixture.semantic_oracle.as_str() {
-        "runtime_to_settlement_fuel_isolation" => {
-            // D3 (DR-9, OD-3): the runtime fuel cost is the per-COMM count and
-            // is ISOLATED from any (now-removed) escrow settlement. Reserve the
-            // fixture's first event and assert the per-COMM consensus tally:
-            // a COMM costs 1, capped at the COMM budget; the result never
-            // exceeds `initial_budget`.
+        "runtime_to_replay_authenticated_witness" => {
+            assert_eq!(fixture.expected_disposition, "accepted");
+            for field in [
+                "processed_deploy_cost",
+                "authority_cost_witness",
+                "authority_byte_events",
+                "replay_payload_hash",
+            ] {
+                assert!(
+                    fixture
+                        .replay_mutations
+                        .iter()
+                        .any(|mutation| mutation == field),
+                    "fixture {} must authenticate runtime-to-replay field {}",
+                    fixture.id,
+                    field
+                );
+            }
+            for facet in [
+                "runtime_budget",
+                "casper_replay",
+                "authority_witness",
+                "byte_witness",
+            ] {
+                assert!(
+                    fixture.source_facets.iter().any(|value| value == facet),
+                    "fixture {} must expose runtime-to-replay facet {}",
+                    fixture.id,
+                    facet
+                );
+            }
+            replay_generated_fixture(fixture);
+        }
+        "runtime_to_settlement_vault_conservation" => {
             let budget = RuntimeBudget::new(Cost::create(
                 fixture.initial_budget,
                 format!("v13 settlement isolation {}", fixture.id),
@@ -1671,14 +1920,16 @@ fn assert_v13_runtime_metering_parallel_oracle(fixture: &GeneratedFixture) {
                 .events
                 .first()
                 .expect("v13 settlement isolation event");
-            let _ = budget.reserve_canonical(generated_event(0, event));
-            let committed_comm_count = budget
-                .get_canonical_event_log()
-                .iter()
-                .filter(|e| e.kind == BillableKind::Comm)
-                .count() as i64;
-            assert_eq!(budget.total_cost().value, committed_comm_count);
-            assert!(budget.total_cost().value <= fixture.initial_budget.max(0));
+            assert!(budget.reserve_canonical(generated_event(0, event)).is_err());
+            let oop = budget
+                .last_oop_event()
+                .expect("weighted event must establish an OOP boundary");
+            assert_eq!(oop.weight, event.weight);
+            assert_eq!(budget.total_cost().value, fixture.initial_budget.max(0));
+            assert!(
+                i64::try_from(oop.weight).expect("validated OOP weight")
+                    > budget.total_cost().value
+            );
             assert_settlement_projection(fixture);
         }
         "metering_to_parallel_digest_stability" => {
@@ -1753,7 +2004,9 @@ fn assert_v13_casper_settlement_slashing_oracle(fixture: &GeneratedFixture) {
 fn run_v13_source_semantic_oracle(fixture: &GeneratedFixture) {
     assert_v13_source_semantic_metadata(fixture);
     match fixture.semantic_oracle.as_str() {
-        "runtime_to_settlement_fuel_isolation" | "metering_to_parallel_digest_stability" => {
+        "runtime_to_replay_authenticated_witness"
+        | "runtime_to_settlement_vault_conservation"
+        | "metering_to_parallel_digest_stability" => {
             assert_v13_runtime_metering_parallel_oracle(fixture)
         }
         "replay_to_slashing_authentication" | "legacy_to_runtime_quarantine" => {
@@ -1996,6 +2249,95 @@ fn assert_v14_node_security_oracle(fixture: &GeneratedFixture) {
 fn run_v14_source_graph_oracle(fixture: &GeneratedFixture) {
     assert_v14_source_graph_metadata(fixture);
     match fixture.security_surface.as_str() {
+        "api_to_runtime_replay" => {
+            assert_eq!(fixture.external_input_kind, "deploy_api_request");
+            assert_eq!(fixture.auth_boundary, "authority_cost_witness");
+            assert_eq!(fixture.replay_boundary, "replay_payload_hash");
+            assert_eq!(fixture.expected_disposition, "accepted");
+            for field in [
+                "api_ingress",
+                "processed_deploy_cost",
+                "authority_cost_witness",
+                "authority_byte_events",
+                "replay_payload_hash",
+            ] {
+                assert!(
+                    fixture
+                        .replay_mutations
+                        .iter()
+                        .any(|mutation| mutation == field),
+                    "fixture {} must bind API-to-replay field {}",
+                    fixture.id,
+                    field
+                );
+            }
+            replay_generated_fixture(fixture);
+        }
+        "replay_cache_payload_binding" => {
+            assert_eq!(fixture.external_input_kind, "block_replay_payload");
+            assert_eq!(fixture.auth_boundary, "replay_payload_hash");
+            assert_eq!(fixture.replay_boundary, "replay_cache_key");
+            assert_eq!(fixture.expected_disposition, "accepted");
+            for field in [
+                "replay_cache",
+                "replay_payload_hash",
+                "processed_deploy_cost",
+                "authority_cost_witness",
+                "authority_byte_events",
+            ] {
+                assert!(
+                    fixture
+                        .replay_mutations
+                        .iter()
+                        .any(|mutation| mutation == field),
+                    "fixture {} must bind replay-cache field {}",
+                    fixture.id,
+                    field
+                );
+            }
+            replay_generated_fixture(fixture);
+        }
+        "mergeable_evidence_authentication" => {
+            assert_eq!(fixture.external_input_kind, "block_and_peer_merge_evidence");
+            assert_eq!(fixture.auth_boundary, "canonical_replay_equivalence_class");
+            assert_eq!(fixture.replay_boundary, "accepted_local_replay_publication");
+            assert_eq!(fixture.expected_disposition, "accepted");
+            for field in [
+                "pre_state_hash",
+                "post_state_hash",
+                "creator",
+                "sequence_number",
+                "canonical_user_event_multiset",
+                "canonical_system_event_multiset",
+                "peer_serialized_entry",
+                "final_state_validation",
+            ] {
+                assert!(
+                    fixture
+                        .replay_mutations
+                        .iter()
+                        .any(|mutation| mutation == field),
+                    "fixture {} must bind mergeable-evidence field {}",
+                    fixture.id,
+                    field
+                );
+            }
+            for facet in [
+                "mergeable_evidence",
+                "complete_execution_identity",
+                "schedule_independent_payload",
+                "local_derivation",
+                "peer_input_exclusion",
+            ] {
+                assert!(
+                    fixture.source_facets.iter().any(|value| value == facet),
+                    "fixture {} must expose mergeable-evidence facet {}",
+                    fixture.id,
+                    facet
+                );
+            }
+            replay_generated_fixture(fixture);
+        }
         "slashing_authorization" => assert_v14_slashing_oracle(fixture),
         "typed_mergeable_channel" => assert_v14_mergeable_channel_oracle(fixture),
         "transport_tls" | "crypto_key_material" | "dependency_advisory" => {
@@ -2546,11 +2888,14 @@ fn generated_frontier_v13_runtime_metering_parallel_oracles_hold() {
     let fixtures = replay_matching_fixtures("v13 runtime metering parallel", |fixture| {
         matches!(
             fixture.semantic_oracle.as_str(),
-            "runtime_to_settlement_fuel_isolation" | "metering_to_parallel_digest_stability"
+            "runtime_to_replay_authenticated_witness"
+                | "runtime_to_settlement_vault_conservation"
+                | "metering_to_parallel_digest_stability"
         )
     });
     for semantic_oracle in [
-        "runtime_to_settlement_fuel_isolation",
+        "runtime_to_replay_authenticated_witness",
+        "runtime_to_settlement_vault_conservation",
         "metering_to_parallel_digest_stability",
     ] {
         assert!(
@@ -2602,7 +2947,8 @@ fn generated_frontier_v13_coverage_adequacy_holds() {
         "v13 source-semantic fixtures must be embedded"
     );
     for semantic_oracle in [
-        "runtime_to_settlement_fuel_isolation",
+        "runtime_to_replay_authenticated_witness",
+        "runtime_to_settlement_vault_conservation",
         "metering_to_parallel_digest_stability",
         "replay_to_slashing_authentication",
         "legacy_to_runtime_quarantine",
@@ -2682,6 +3028,20 @@ fn generated_frontier_v14_mergeable_channel_oracles_hold() {
 }
 
 #[test]
+fn generated_frontier_v14_mergeable_evidence_oracles_hold() {
+    let fixtures = replay_matching_fixtures("v14 mergeable evidence security", |fixture| {
+        fixture.security_surface == "mergeable_evidence_authentication"
+    });
+    assert!(fixtures
+        .iter()
+        .any(|fixture| fixture.source_risk == "complete_execution_identity"));
+    for fixture in &fixtures {
+        assert_v14_source_graph_metadata(fixture);
+        run_v14_source_graph_oracle(fixture);
+    }
+}
+
+#[test]
 fn generated_frontier_v14_node_security_oracles_hold() {
     let fixtures = replay_matching_fixtures("v14 node security", |fixture| {
         matches!(
@@ -2718,6 +3078,9 @@ fn generated_frontier_v14_coverage_adequacy_holds() {
         "v14 source-graph fixtures must be embedded"
     );
     for surface in [
+        "api_to_runtime_replay",
+        "replay_cache_payload_binding",
+        "mergeable_evidence_authentication",
         "slashing_authorization",
         "typed_mergeable_channel",
         "transport_tls",
@@ -2732,6 +3095,8 @@ fn generated_frontier_v14_coverage_adequacy_holds() {
         );
     }
     for cost_surface in [
+        "runtime_budget",
+        "replay_cache",
         "slashing",
         "mergeable_channels",
         "transport_tls",
@@ -2772,32 +3137,68 @@ fn runtime_budget_event_sequence_properties_hold() {
         .iter()
         .filter(|fixture| !fixture.events.is_empty())
     {
-        let budget = RuntimeBudget::new(Cost::create(
-            fixture.initial_budget,
-            format!("property fixture {}", fixture.id),
-        ));
-        let mut saw_error = false;
-        for (index, event) in fixture.events.iter().enumerate() {
-            saw_error |= budget
-                .reserve_canonical(generated_event(index as u64, event))
-                .is_err();
-            assert!(budget.total_cost().value >= 0);
-            assert!(budget.remaining().value >= 0);
-            assert!(budget.total_cost().value <= fixture.initial_budget.max(0));
-        }
-        // D3 (DR-9, OD-3): `expects_invalid_admission` is a VALIDATION failure
-        // (zero-weight / oversized descriptor or source-path), independent of
-        // the cost model — it still fires under per-COMM. `expects_oop` is
-        // weight-based (a single COMM of any weight costs 1), so an OOP-flagged
-        // fixture may NOT OOP under per-COMM; we therefore only require a
-        // rejection for the validation case.
-        if fixture.expects_invalid_admission {
-            assert!(
-                saw_error,
-                "fixture {} expected a rejected (invalid-admission) event",
-                fixture.id
-            );
-        }
+        let run = |events: &[GeneratedEvent]| {
+            let budget = RuntimeBudget::new(Cost::create(
+                fixture.initial_budget,
+                format!("property fixture {}", fixture.id),
+            ));
+            let batch = CostReservationBatch {
+                events: events
+                    .iter()
+                    .enumerate()
+                    .map(|(index, event)| generated_event(index as u64, event))
+                    .collect(),
+            };
+            let invalid = budget.commit_canonical_batch(batch).is_err();
+            (
+                invalid,
+                budget.total_cost().value,
+                budget.remaining().value,
+                budget.cost_trace_event_count(),
+                budget.last_oop_event(),
+            )
+        };
+        let forward = run(&fixture.events);
+        let mut reversed = fixture.events.clone();
+        reversed.reverse();
+        let reverse = run(&reversed);
+        assert_eq!(
+            forward, reverse,
+            "fixture {} permutation outcome",
+            fixture.id
+        );
+        assert_eq!(
+            forward.0, fixture.expects_invalid_admission,
+            "fixture {} admission",
+            fixture.id
+        );
+        assert_eq!(
+            forward.1, fixture.expected_total_cost,
+            "fixture {} cost",
+            fixture.id
+        );
+        assert_eq!(
+            forward.3, fixture.expected_event_count,
+            "fixture {} count",
+            fixture.id
+        );
+        assert_eq!(
+            forward.4.is_some(),
+            fixture.expects_oop,
+            "fixture {} OOP",
+            fixture.id
+        );
+        assert!(forward.1 >= 0, "fixture {} nonnegative cost", fixture.id);
+        assert!(
+            forward.2 >= 0,
+            "fixture {} nonnegative remainder",
+            fixture.id
+        );
+        assert!(
+            forward.1 <= fixture.initial_budget.max(0),
+            "fixture {} fixed bound",
+            fixture.id
+        );
     }
 }
 

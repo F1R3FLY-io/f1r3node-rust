@@ -98,45 +98,38 @@ metering itself remains stack-safe.
 
 **Arithmetic overflow safety**: Division and negation operations guard against i64 overflow. `i64::MIN / -1` and `i64::MIN.neg()` return `InterpreterError::ReduceError("Arithmetic overflow in ...")` as soft deploy failures rather than panics.
 
-## Cost Accounting (Source Tokens)
+## Cost accounting
 
-Metered reduction events reserve source-token phlogiston from a shared atomic budget:
+`RuntimeBudget` coordinates one finite aggregate execution-capacity ceiling
+across reducer workers. Per-purse solvency and settlement are authoritative
+`CostAuthority` events allocated against authenticated inventory. Consensus
+accounting uses stable semantic RSpace events; source-path reducer telemetry is
+retained only for diagnostics.
 
-```rust
-pub struct RuntimeBudget {
-    initial_tokens: Arc<AtomicI64>,
-    consumed_tokens: Arc<AtomicI64>,
-    log: Arc<Mutex<VecDeque<Cost>>>,
-    event_log: Arc<Mutex<VecDeque<BillableTokenEvent>>>,
-    last_oop_event: Arc<Mutex<Option<BillableTokenEvent>>>,
-}
-```
+| Event class | Consensus debit |
+| --- | --- |
+| `RSpaceProduce` | Canonical produce-introduction bytes |
+| `RSpaceConsume` | Canonical consume-introduction bytes |
+| `Comm` | One authority compute unit plus canonical delivery and replay-trace bytes |
+| `Reduction` | Zero; diagnostic source-structure event |
+| `Primitive` | Zero; diagnostic operator event |
+| `Substitution` | Zero; diagnostic normalization/substitution event |
 
-- `reserve_canonical(event)` -- Atomically reserves the weighted source-token event; returns `OutOfPhlogistonsError` and commits consumed cost to the limit if exhausted.
-- `MeteredMachine::reserve_source_step(cost)` -- Enqueues and drains a structural rho reduction event.
-- `MeteredMachine::reserve_primitive(cost)` -- Records expression operators, methods, collection operations, and variable lookup as `Primitive` events.
-- `MeteredMachine::reserve_substitution(cost)` -- Records normalized substitution cost as `Substitution`.
-- `set(cost)` -- Reset balance and exhaustion descriptor.
-- `get()` / `remaining()` -- Query remaining tokens.
-- `total_cost()` -- Query consumed token units.
-
-**Cost table** (representative values):
-
-| Operation | Cost |
-|-----------|------|
-| Arithmetic (add, sub, mul, div, mod) | 3-9 phlos |
-| Boolean AND/OR | 2 phlos |
-| Comparison | 3 phlos |
-| Collection lookup/add/remove | 3 phlos each |
-| `hex_to_bytes` | O(string_length) |
-| Substitution | O(result_term_size) |
+The runtime keeps checked, monotone reservation state and a bounded diagnostic
+window. State-bound Casper admission supplies the maximum; a deploy cannot
+select its own phlogiston limit or price. Reconciliation produces the exact
+compute/byte witness used by proposal and replay. See
+[Cost-accounted Rholang](13-cost-model.md).
 
 ## RSpace and Cost Accounting
 
-RSpace is no longer wrapped for phlogiston metering. It owns tuple-space state,
-matching, cleanup, replay data, and deterministic event logs. The reducer owns
-source-token charging around the source work that causes RSpace operations, which
-keeps replay costs independent from scheduler timing and storage trigger direction.
+RSpace owns tuple-space state, matching, cleanup, replay data, and deterministic
+event logs. A pre-operation observer reserves canonical introduction bytes
+before lookup or mutation. A match observer runs while the channel group is
+locked and reserves physical authority, one COMM unit, delivered payload bytes,
+and trace bytes before committing the match. Persistent retries reuse a stable
+introduction identity. Proposal and replay install the same observers, so cost
+does not depend on scheduling or trigger direction.
 
 ## System Processes (Built-in Channels)
 

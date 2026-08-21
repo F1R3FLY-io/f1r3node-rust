@@ -106,7 +106,7 @@ decision record / the register · **C** = still-open scope-boundary.
 | Def 4–6 (`tex:2002`) | Token demand Δ, supply Σ, funding obligation Σ≥Δ | `LinearLogicResources.{delta_s,sigma_s,funding_check_balance_sound}` | Sage `budget_admission_model` | A |
 | §4.6/§4.7 | **Per-actor authority keyed by the signer's public key** — the payer is stable across deploys and never keyed by the wire signature | `WalletNaming.system_vault_name_injective` | Rust `accounting::funding_sig`, `vault_payer`, and state-bound admission | A |
 | Thm 1 (`tex:2060`) | Funding check decidable (linear-time) | `LinearLogicResources.funding_decidable` (decidability; linear-time is an impl property) | Rust `admit_by_funding` | A |
-| Def 7 (`tex:2138`) | Conservative demand + refund | `Settlement.{charged_plus_refund_eq_escrow,refund_le_escrow}`; `evaluation_cannot_receive_refund_fuel` | Sage `settlement_model` | A (DR-5) |
+| Def 7 (`tex:2138`) | Conservative demand + refund | `Settlement.{debit_plus_refund_eq_reservation,refund_le_reservation}`; `evaluation_cannot_receive_refund_fuel` | Sage `settlement_model` | A (DR-5) |
 | §7.7 (`tex:2231`) | Deployment boundary = unit of financial atomicity | `LinearLogicResources.admit_prefix_maximal`/`reject_both_sound` | TLA+ D2 acceptance; Rust `admit_by_funding` | A (DR-11/13) |
 | Rmk DB-atomicity (`tex:1805`) | Rules fire all-or-nothing | `WrappingSubjectReduction.no_leak_requires_token`; `ca_step_needs_fuel` | TLA+ invariants | A |
 | App A.3 (`tex:2975`) | `Imp_G ∘ η_G ≈ id_G` up to weak bisim | `CAInternalisation.ca_internalisation_retraction` | mCRL2 weak-bisim | A |
@@ -134,7 +134,7 @@ decision record / the register · **C** = still-open scope-boundary.
 | Thm 7.2 (`tex:792`) | Graded HM adequacy (sound **and** complete) | `CAGradedAdequacy.graded_adequacy_sound`; `CAGradedCompleteness.graded_finitary_adequacy`; `CAGradedLimit.graded_limit_adequacy` | mCRL2 modal-μ | A (exceeds) |
 | Prop 9.3 (`tex:1143`) | Adjunction II (internalisation as adjoint retraction) | `CAInternalisation.ca_internalisation_retraction` (unit-grade retraction, cross-sort `st_tr` + real COMM); `CAAdjunctionII.internalisation_adjoint_retraction` (counit-dissolution); full bicat coherence **delivered in core Lean** (DR-23, no longer a ceiling) | mCRL2 | A-minus (coherence delivered; **DR-23 (E)**: the Turing-complete/`ciGSLTtc` interpreter conditioning is a residual — Phase 2) |
 | Prop 12.1 (`tex:1434`) | Local sufficiency composes | `CALocatedPurses.local_sufficiency_composes`; `draw_disjoint` | TLA+ `LocatedPurse` | A |
-| §10.4 (`tex:1285`) | Located resource stacks | `CALocatedPurses`; `ChannelSeparation.lane_pool_disjoint` | Rust `Lane`/`DashMap` lanes; Sage `producer_routing` | A |
+| §10.4 (`tex:1285`) | Located resource stacks | `CALocatedPurses`; `ChannelSeparation.lane_pool_disjoint` | Persisted `CostAuthority`, authenticated purse inventory, physical draws, and SystemVault settlement; Sage `producer_routing` | A |
 | §11.2 (`tex:1337`) | Spatial/modal type connectives (linear/copyable/relevant) | `LLIdentities.{bang_weakening_admissible,whynot_weakening_admissible}`; `CATypeDiscipline.ca_linear_no_contraction` | — | A |
 
 ---
@@ -165,11 +165,16 @@ judgement calls. Load-bearing examples:
   The §8 refund is the unused reservation retained at the **settlement boundary**, with
   `EndToEndAuthority.refund_is_unused_reservation` and
   `evaluation_cannot_receive_refund_fuel` proving the boundary and no-mid-run-refund properties.
-- **DR-9** — cost unit = one token per COMM; per-operation gas is diagnostic only.
-- **DR-32** — the Rust refinement linearizes that unit at the locked successful
-  RSpace match: unmatched I/O is free, binary and join matches each cost one,
-  trigger side cannot affect identity, and reservation failure precedes all
-  event-log and tuplespace mutation.
+- **DR-9** — the calculus execution unit is one token per COMM;
+  reducer-operation gas remains diagnostic.
+- **DR-32** — the Rust refinement linearizes that execution unit at the locked
+  successful RSpace match: unmatched I/O consumes no COMM unit, binary and join
+  matches each consume one, trigger side cannot affect identity, and
+  reservation failure precedes all event-log and tuplespace mutation.
+- **DR-47** — protocol 4 adds canonical introduction, payload-transfer, and
+  committed-trace bytes to the same fixed RevVault ceiling. Consequently,
+  unmatched stored I/O has positive quantitative cost even though its calculus
+  COMM projection is zero.
 - **DR-11/DR-13/DR-31** — per-signature linear-proof admission, state-bound dependent evidence for ambient continuations, and supply on `Σ⟦s⟧ = from_sig(s)`.
 - **DR-16** — OQS removed; §4.5 G-parametricity realized by the `SignaturesAlg` trait.
 - **DR-20/DR-21** — Rule-4/5 re-seal proved cost-benign (GAP-2 dissolved); native four-sort

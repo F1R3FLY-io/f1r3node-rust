@@ -1303,6 +1303,51 @@ mod tests {
             prop_assert_eq!(&forward, &reverse);
             prop_assert_eq!(forward, expected);
         }
+
+        #[test]
+        fn complete_application_and_protocol_debit_rejects_exactly_one_of_three(
+            application_debit in 1i64..100_000,
+            physical_debit in 0i64..100_000,
+            byte_debit in 0i64..100_000,
+            fee in 0i64..100_000,
+            slack_seed in 0u64..400_000,
+        ) {
+            let channel = Blake2b256Hash::from_bytes(vec![13u8; 32]);
+            let complete_debit = application_debit + physical_debit + byte_debit + fee;
+            let slack = i64::try_from(slack_seed % u64::try_from(complete_debit).unwrap()).unwrap();
+            let base = 2 * complete_debit + slack;
+            let branches = HashableSet(HashSet::from([
+                branch(&[1]),
+                branch(&[2]),
+                branch(&[3]),
+            ]));
+            let contribution = |_: &i32| {
+                BTreeMap::from([(
+                    channel.clone(),
+                    (-complete_debit, MergeType::IntegerAdd),
+                )])
+            };
+
+            let rejected = fold_rejection(
+                HashMap::from([(channel.clone(), base)]),
+                &branches,
+                contribution,
+            );
+            let all = cal_merged_result_for_items(
+                [1, 2, 3].iter(),
+                HashMap::from([(channel.clone(), base)]),
+                contribution,
+            );
+            let first_two = cal_merged_result_for_items(
+                [1, 2].iter(),
+                HashMap::from([(channel.clone(), base)]),
+                contribution,
+            );
+
+            prop_assert_eq!(rejected.0.len(), 1);
+            prop_assert!(all.is_none());
+            prop_assert!(first_two.is_some());
+        }
     }
 
     #[test]

@@ -38,9 +38,10 @@ lazy_static! {
     };
 }
 
-// D3 (DR-9): `phlo_limit` / `phlo_price` are retained as (ignored) Option
-// parameters for test-caller signature stability — a deploy no longer carries
-// an escrow price/limit (cost = per-COMM count). They do not enter `DeployData`.
+// D3 (DR-9, refined by DR-31 and DR-47): `phlo_limit` / `phlo_price` are
+// retained as ignored parameters for test-caller signature stability. A deploy
+// no longer carries a client-selected escrow limit or price; protocol-4 cost is
+// measured under the finite capacity derived from authenticated authority.
 pub fn source_deploy(
     source: String,
     timestamp: i64,

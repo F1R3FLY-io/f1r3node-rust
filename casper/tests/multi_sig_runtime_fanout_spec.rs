@@ -13,7 +13,7 @@
 //! pre-charge / refund round-trip, hence no
 //! per-cosigner seeds to test. The surviving multi-signature SIGNATURE / wire /
 //! envelope behavior is covered by `multi_sig_pipeline_spec.rs` and
-//! `multi_sig_runtime_integration_spec.rs`; the per-COMM consensus cost
+//! `multi_sig_runtime_integration_spec.rs`; the weighted RSpace cost
 //! relationship (runtime consumed ≤ certified reservation, with equality for
 //! branch-free programs) is covered by `rholang/tests/accounting/delta_sigma_spec.rs`
 //! and the acceptance-gate tests in `casper/src/rust/util/rholang/acceptance.rs`.

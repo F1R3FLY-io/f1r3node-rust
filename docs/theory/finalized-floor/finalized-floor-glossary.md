@@ -16,7 +16,7 @@ make them correct.
 
 | Term | Definition |
 |---|---|
-| **block `B`** | A signed message in the block DAG; carries parents, a validator (sender), and signed *justifications* (each validator's latest block `B` saw). |
+| **block `B`** | An immutable, hash-addressed, validator-signed DAG vertex that batches one consensus transition. Its header carries parent hashes, timestamp, and protocol version; the signed envelope carries sender, sequence, shard, signature, and the frozen justifications; its body carries processed user/system deploys and the RChain state record, including pre/post-state roots and bonds. Current metadata additionally persists state-effect provenance. It is called a block because it packages and commits a bounded unit of ordered execution and consensus evidence, even though blocks form a DAG rather than only a chain. |
 | **parents `P₁…Pₖ`** | The blocks `B` merges. `parents[0]` is the **main parent** (the spine predecessor). |
 | **main-parent spine** | The chain `B → main_parent(B) → … → genesis` obtained by following `parents[0]` repeatedly. |
 | **`num(B)`** | Block number (height) — `num(genesis) = 0`, `num(child) = num(main_parent)+1`. |
@@ -46,6 +46,13 @@ make them correct.
 | **rebase** | Recompute a successor from the certified floor instead of reusing a stale covering-parent post-state. The floor is an explicit state input, so accepted floor effects become active again and later LFB progress is possible. |
 | **floor-rebased parent selection** | The proposer retains every valid validator latest message as causal fork-choice evidence, compacts direct parents only when another selected parent causally covers the removed tip, then computes state from the certified floor plus deterministic accepted deltas in the parent closure. State safety is a property of replay and promotion, not a filter over causal tips. |
 | **LFB parent fallback** | The non-empty parent rule used only when no valid latest message remains: the proposed block declares the snapshot LFB itself as its sole parent instead of falling back to genesis. |
+| **local finalizer view** | One node's immutable snapshot of its currently validated shard DAG and validator latest messages. Asynchronous delivery may make it a proper subgraph of another honest node's view. Missing latest messages contribute no agreement but do not remove their stake from the candidate committee. |
+| **direct finalization** | The exact causal/state-certified candidate selected as the next shard LFB. It is the only new block whose finality was decided by that finalizer invocation. |
+| **indirect finalization** | Marking an unfinalized all-parent DAG ancestor of a directly finalized candidate as finalized because it belongs to that candidate's committed causal history. This is causal closure of one decision, not another clique vote and not a sub-finalization rollup. |
+| **shard finality** | Finality within one shard DAG and its bonded committee. Nodes independently discover the same LFB from validated evidence. The current protocol has no automatic cross-shard aggregation into a global LFB. |
+| **finality-progress timer** | Task-local monotonic elapsed time since the node first observed the current LFB hash. Only observing another LFB hash resets it; producer timestamps, wall-clock block age, frontier movement, and latest-message churn do not. |
+| **heartbeat recovery round** | A zero-based interval of continued observation of one unchanged LFB. For ordered committee `C`, LFB height `h`, and round `r`, the unique local recovery leader is `C[(h+r) mod |C|]`. Different nodes may temporarily occupy different rounds without changing block validity or finality authority. |
+| **heartbeat backpressure** | The proposal-admission rules that keep liveness work within the serialized proposer queue, deploy-lag/cooldown limits, and the exact unfinalized-DAG cap. It controls when ordinary blocks may be requested; it cannot certify or promote an LFB. |
 
 ### 1.3 The floor and the merge
 
@@ -89,6 +96,7 @@ make them correct.
 | **T-CERTIFIED-FLOOR-PROMOTION** | Complete all-parent causal discovery promotes the highest dual-certified universal state floor independently of parent order; restricting discovery to main-parent spines starves an off-main committed state. |
 | **T-COVERAGE-TRANSPARENCY** | Propagated latest-message coverage equals pairwise DAG ancestry for every candidate and validator; therefore supporter filtering and the existing exact clique decision are unchanged. Linear-snapshot reuse preserves the eligible ancestor set only under its one-predecessor and older-snapshot premises. |
 | **T-SNAPSHOT-MATERIALIZATION** | Materializing the complete snapshot target set makes every required provenance entry available before selection; repeated materialization is idempotent, arbitrary snapshot/finalizer interleavings commute, and the parent-only control is incomplete. |
+| **T-HEARTBEAT-BACKPRESSURE** | Rotating recovery selects one in-committee leader per `(LFB,round)`, records at most one local attempt for that round, resets history only on observed LFB change, and preserves the proposal/validation capacity bound. It leaves the exact causal and state certificates unchanged. |
 | **Case-A / Case-B** | The two sound-base cases in `derive_floor`: **A** = candidate is a general ancestor of every parent; **B** = every *other* candidate is compatible (in the candidate's past, or mergeable via a common-descendant parent). |
 
 ---

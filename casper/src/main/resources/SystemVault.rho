@@ -29,6 +29,8 @@ new
   validateSettlement,
   settleReserved,
   splitAndDeposit,
+  prepareTransferBatch,
+  depositTransferBatch,
   protocolQuarantineStore
 in {
   rl!(`rho:system:makeMint`, *MakeMintCh) |
@@ -497,6 +499,42 @@ in {
                   }
                 }
               } |
+              contract systemVault(@"transferBatch", @transfers, authKey, ret) = {
+                new authKeyValidCh in {
+                  @AuthKey!("check", *authKey, (*_systemVault, ownVaultAddress), *authKeyValidCh) |
+                  for (@authKeyValid <- authKeyValidCh) {
+                    if (authKeyValid) {
+                      new prepareCh in {
+                        prepareTransferBatch!(transfers, [], Set(), 0, *prepareCh) |
+                        for (@prepareResult <- prepareCh) {
+                          match prepareResult {
+                            (true, prepared, total) => {
+                              new splitCh in {
+                                purse!("split", total, *splitCh) |
+                                for (@splitResult <- splitCh) {
+                                  match splitResult {
+                                    [reservedPurse] => {
+                                      depositTransferBatch!(reservedPurse, prepared, *ret)
+                                    }
+                                    _ => {
+                                      ret!((false, "Insufficient funds"))
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                            (false, error, _) => {
+                              ret!((false, error))
+                            }
+                          }
+                        }
+                      }
+                    } else {
+                      ret!((false, "Invalid AuthKey"))
+                    }
+                  }
+                }
+              } |
               // Set to Nil to disable logging
               contract systemVault(@"setLog", logCh, authKey, ret) = {
                 new authKeyValidCh in {
@@ -691,6 +729,81 @@ in {
                     }
                   }
                 }
+              }
+            }
+          } |
+          contract prepareTransferBatch(@pending, @prepared, @seen, @total, retCh) = {
+            match pending {
+              [(targetAddress, amount) ...tail] => {
+                if (seen.contains(targetAddress)) {
+                  retCh!((false, "Transfer targets must be distinct", 0))
+                } else if (amount > 0 and total <= 9223372036854775807 - amount) {
+                  new validCh in {
+                    VaultAddress!("validate", targetAddress, *validCh) |
+                    for (@valid <- validCh) {
+                      if (valid == Nil) {
+                        prepareTransferBatch!(
+                          tail,
+                          prepared ++ [(targetAddress, amount)],
+                          seen.add(targetAddress),
+                          total + amount,
+                          *retCh
+                        )
+                      } else {
+                        retCh!((false, "Invalid target vault address", 0))
+                      }
+                    }
+                  }
+                } else {
+                  retCh!((false, "Transfer amount must be positive and bounded", 0))
+                }
+              }
+              [] => {
+                if (prepared.length() > 0) {
+                  retCh!((true, prepared, total))
+                } else {
+                  retCh!((false, "Transfer batch must not be empty", 0))
+                }
+              }
+              _ => {
+                retCh!((false, "Malformed transfer batch", 0))
+              }
+            }
+          } |
+          contract depositTransferBatch(reservedPurse, @pending, retCh) = {
+            match pending {
+              [(targetAddress, amount) ...tail] => {
+                new targetVaultCh in {
+                  SystemVault!("findOrCreate", targetAddress, *targetVaultCh) |
+                  for (@targetVaultResult <- targetVaultCh) {
+                    match targetVaultResult {
+                      (true, _) => {
+                        new depositCh in {
+                          splitAndDeposit!(*reservedPurse, targetAddress, amount, *depositCh) |
+                          for (@depositResult <- depositCh) {
+                            match depositResult {
+                              (true, _) => {
+                                depositTransferBatch!(*reservedPurse, tail, *retCh)
+                              }
+                              (false, error) => {
+                                retCh!((false, error))
+                              }
+                            }
+                          }
+                        }
+                      }
+                      (false, error) => {
+                        retCh!((false, error))
+                      }
+                    }
+                  }
+                }
+              }
+              [] => {
+                retCh!((true, Nil))
+              }
+              _ => {
+                retCh!((false, "Malformed prepared transfer batch"))
               }
             }
           } |

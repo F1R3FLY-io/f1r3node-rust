@@ -20,7 +20,9 @@ use rspace_plus_plus::rspace::merger::merging_logic::are_conflicting;
 use rspace_plus_plus::rspace::metrics_constants::{PRODUCE_COMM_LABEL, RSPACE_METRICS_SOURCE};
 use rspace_plus_plus::rspace::replay_rspace::ReplayRSpace;
 use rspace_plus_plus::rspace::rspace::RSpace;
-use rspace_plus_plus::rspace::rspace_interface::{CommObserver, ContResult, ISpace, RSpaceResult};
+use rspace_plus_plus::rspace::rspace_interface::{
+    ContResult, ISpace, RSpaceAccountingObserver, RSpaceResult,
+};
 use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 use rspace_plus_plus::rspace::trace::event::{
@@ -117,8 +119,30 @@ impl Match<Pattern, String, String> for StringMatch {
 
 struct RejectingObserver(AtomicUsize);
 
-impl CommObserver<String, String> for RejectingObserver {
-    fn observe(
+impl RSpaceAccountingObserver<String, Pattern, String, String> for RejectingObserver {
+    fn observe_produce(
+        &self,
+        _: &Produce,
+        _: &String,
+        _: &String,
+        _: bool,
+    ) -> Result<(), RSpaceError> {
+        Ok(())
+    }
+
+    fn observe_consume(
+        &self,
+        _: &Consume,
+        _: &[String],
+        _: &[Pattern],
+        _: &String,
+        _: bool,
+        _: &BTreeSet<i32>,
+    ) -> Result<(), RSpaceError> {
+        Ok(())
+    }
+
+    fn observe_comm(
         &self,
         _: &COMM,
         _: &String,
@@ -127,6 +151,47 @@ impl CommObserver<String, String> for RejectingObserver {
     ) -> Result<(), RSpaceError> {
         self.0.fetch_add(1, Ordering::AcqRel);
         Err(RSpaceError::OutOfPhlogistons)
+    }
+}
+
+struct RejectingOperationObserver {
+    produces: AtomicUsize,
+    consumes: AtomicUsize,
+}
+
+impl RSpaceAccountingObserver<String, Pattern, String, String> for RejectingOperationObserver {
+    fn observe_produce(
+        &self,
+        _: &Produce,
+        _: &String,
+        _: &String,
+        _: bool,
+    ) -> Result<(), RSpaceError> {
+        self.produces.fetch_add(1, Ordering::AcqRel);
+        Err(RSpaceError::OutOfPhlogistons)
+    }
+
+    fn observe_consume(
+        &self,
+        _: &Consume,
+        _: &[String],
+        _: &[Pattern],
+        _: &String,
+        _: bool,
+        _: &BTreeSet<i32>,
+    ) -> Result<(), RSpaceError> {
+        self.consumes.fetch_add(1, Ordering::AcqRel);
+        Err(RSpaceError::OutOfPhlogistons)
+    }
+
+    fn observe_comm(
+        &self,
+        _: &COMM,
+        _: &String,
+        _: bool,
+        _: &[(&String, bool)],
+    ) -> Result<(), RSpaceError> {
+        Ok(())
     }
 }
 
@@ -335,7 +400,7 @@ async fn replay_observer_rejection_preserves_rspace_and_trace() {
         .unwrap();
 
     let observer = Arc::new(RejectingObserver(AtomicUsize::new(0)));
-    replay_space.set_comm_observer(Some(observer.clone()));
+    replay_space.set_accounting_observer(Some(observer.clone()));
     assert!(
         replay_space
             .consume(channels.clone(), patterns, continuation.clone(), false, BTreeSet::new())
@@ -355,6 +420,52 @@ async fn replay_observer_rejection_preserves_rspace_and_trace() {
     assert_eq!(replay_space.get_waiting_continuations(channels).await.len(), 1);
     let log = replay_space.take_event_log().await;
     assert!(log.is_empty());
+}
+
+#[tokio::test]
+async fn replay_operation_rejection_precedes_store_and_trace_mutation() {
+    let (_, replay_space) = fixture().await;
+    let observer = Arc::new(RejectingOperationObserver {
+        produces: AtomicUsize::new(0),
+        consumes: AtomicUsize::new(0),
+    });
+    replay_space.set_accounting_observer(Some(observer.clone()));
+
+    assert_eq!(
+        replay_space
+            .produce("channel".to_string(), "datum".to_string(), false)
+            .await,
+        Err(RSpaceError::OutOfPhlogistons)
+    );
+    assert!(
+        replay_space
+            .get_data(&"channel".to_string())
+            .await
+            .is_empty()
+    );
+    assert!(replay_space.take_event_log().await.is_empty());
+
+    assert_eq!(
+        replay_space
+            .consume(
+                vec!["channel".to_string()],
+                vec![Pattern::Wildcard],
+                "continuation".to_string(),
+                false,
+                BTreeSet::new(),
+            )
+            .await,
+        Err(RSpaceError::OutOfPhlogistons)
+    );
+    assert!(
+        replay_space
+            .get_waiting_continuations(vec!["channel".to_string()])
+            .await
+            .is_empty()
+    );
+    assert!(replay_space.take_event_log().await.is_empty());
+    assert_eq!(observer.produces.load(Ordering::Acquire), 1);
+    assert_eq!(observer.consumes.load(Ordering::Acquire), 1);
 }
 
 #[tokio::test]

@@ -96,6 +96,84 @@ For a block `B` with non-empty parent set `P₁…Pₖ` and frozen justification
   frequency MUST affect latency only: it MUST NOT change the snapshot, candidate
   closure, candidate order, or selected LFB.
 
+- **R-FINALIZER-LOCAL-VIEW.** A node MAY invoke the finalizer over its current
+  locally validated shard DAG, even while asynchronous delivery means that DAG
+  is a proper subgraph of another honest node's view. It MUST use every latest
+  message present in the frozen local view and the candidate's complete bonded
+  stake map. An absent latest message contributes no agreement; it MUST NOT
+  shrink the committee denominator. The implementation MUST NOT select an
+  arbitrary branch, connected component, or validator subset and finalize it
+  independently.
+- **R-FINALIZATION-CLOSURE.** The candidate that passes R-FINALIZER-ORDER is the
+  one **directly finalized** block and the next shard LFB. Recording that decision
+  MUST mark every previously unfinalized all-parent DAG ancestor indirectly
+  finalized, because the candidate commits its complete causal history. Indirect
+  ancestor marking is causal closure of one decision, not an independent vote or
+  a sub-finalization rollup.
+- **R-SHARD-FINALITY.** Finality is scoped to one shard DAG and its committee.
+  Honest nodes independently derive the same shard LFB after receiving sufficient
+  validated evidence. Separate shard LFBs MUST NOT be described or implemented as
+  sub-finalizations that are automatically aggregated into a cross-shard global
+  LFB; no such rollup exists in this protocol.
+
+### 2.1.1 Heartbeat recovery and validation backpressure
+
+Heartbeat recovery is proposal scheduling, not a finality decision. It MAY ask
+the ordinary proposer to create a block, but every emitted block remains subject
+to the unchanged Casper proposal, validation, causal-certificate,
+state-certificate, and LFB-admissibility rules above.
+
+- **R-HEARTBEAT-SEPARATION.** A heartbeat trigger MUST NOT directly mutate the
+  LFB, manufacture support, alter clique membership, change validator weights,
+  lower the hard-majority or exact-threshold tests, or bypass block validation.
+- **R-HEARTBEAT-PROGRESS.** A node MUST measure finality stagnation from the
+  task-local monotonic duration for which its observed LFB **hash** has remained
+  unchanged. A block's producer-controlled timestamp, wall-clock age, frontier
+  timestamp, latest-message churn, or block height alone MUST NOT reset or open a
+  finality-recovery round. Observing a different LFB hash MUST reset the stall
+  timer and completed-round history.
+- **R-HEARTBEAT-COMMITTEE.** Proposal and heartbeat recovery leadership MUST use
+  one canonical ordered committee from the captured `CasperSnapshot`: the
+  on-chain active-validator set when non-empty, otherwise the distinct
+  positive-bond validators as the bootstrap fallback. Zero or negative bonds,
+  parent ordering, duplicate entries, and a single parent's bond list MUST NOT
+  change leadership or bonded admission.
+- **R-HEARTBEAT-ROTATION.** Let `C` be that lexicographically ordered committee,
+  `h` the non-negative current-LFB height, and `r` the zero-based local recovery
+  round opened after each complete `max(max_lfb_age, check_interval)` interval of
+  observed stagnation. Exactly one validator is authorized for a given
+  `(LFB,r)` view:
+
+  ```math
+  leader(C,h,r) = C[(h+r) \bmod |C|].
+  ```
+
+  Empty committees and invalid negative LFB heights MUST fail closed. Advancing
+  `r` MUST rotate past an offline leader without changing the finality
+  certificate.
+- **R-HEARTBEAT-ONCE.** One heartbeat task MUST attempt idle recovery at most once
+  per observed `(LFB,r)` view. A concurrent proposal already in progress MAY
+  leave the round open because no new attempt was admitted; an admitted,
+  started, successful, or failed ordinary proposal closes that local round.
+- **R-HEARTBEAT-WORK.** Pending user deploys retain their bounded ordinary
+  proposal path. A newly observed parent carrying a user deploy MAY induce one
+  cooldown-limited support proposal. Missing self history, genesis, unreadable
+  latest metadata, system-only blocks, and latest-message divergence without a
+  user deploy MUST NOT create an empty-block feedback loop.
+- **R-HEARTBEAT-BACKPRESSURE.** Proposal admission MUST remain bounded by the
+  serialized proposer queue. Once the validator is already ahead, an idle
+  recovery proposal MUST respect the configured unfinalized-DAG cap at the exact
+  boundary. Pending-deploy admission remains subject to its lag cap, recovery
+  cap, cooldown, and backstop; continuous empty recovery MUST NOT outrun block
+  validation and replay.
+- **R-HEARTBEAT-ASYNC.** Honest nodes MAY observe the same LFB stall at different
+  times and therefore occupy different local recovery rounds. Such scheduling
+  differences MAY produce ordinary concurrent blocks, but cannot create a local
+  finality decision: R-FINALIZER-SNAPSHOT through R-SHARD-FINALITY remain the
+  only promotion authority. Under eventual delivery, fair validation, an online
+  threshold-supporting committee, and finite replay time, rotating recovery and
+  bounded admission MUST permit finality progress without unbounded backlog.
+
 ### 2.2 State derivation and LFB admissibility
 
 A **causal clique certificate** answers whether sufficient mutually agreeing
@@ -212,6 +290,33 @@ either certificate.
   hold over the same frozen snapshot. Main-parent ancestry MUST NOT be an
   additional admission condition: it describes vote propagation, not
   multi-parent state derivation.
+- **R-VALIDATOR-LOCAL-TRANSACTION.** Candidate receipt, floor capture, replay,
+  validation, support emission, support delivery, and promotion MUST be
+  validator-local transitions. The implementation MUST NOT require a global
+  validator phase or assume that honest validators execute these transitions in
+  the same order.
+- **R-LOCAL-ROOT-AUTHORITY.** Floor capture MUST bind one block/root/effect tuple
+  from the validator's local state. Replay and promotion MUST use that explicit
+  root or the exact locally replayed candidate root. A shared RSpace
+  current-root pointer MAY change as other runtimes reset or checkpoint, but it
+  MUST NOT authorize capture, validation, support, or publication.
+- **R-LOCAL-SUPPORT.** A validator MUST emit support only after its own exact
+  replay and final-state validation accept the candidate. Receiving another
+  validator's support or mergeable evidence MUST NOT substitute for local
+  replay. Delivered support MUST identify an actually emitted signer/candidate
+  pair.
+- **R-ATOMIC-FLOOR-PUBLICATION.** Promotion MUST atomically publish the
+  candidate block, its verified root, and its exact committed-effect set. A
+  reader MUST NOT observe a new block with an old state/root or an old block
+  with a new state/root.
+- **R-PARALLEL-FRAME.** Updating one validator's local phase or promoted state
+  MUST leave every other validator's local state unchanged. Promotions by
+  distinct validators MUST commute pointwise. Validators promoting the same
+  candidate MUST publish identical root and effect values.
+- **R-VALIDATION-RESTART.** A crash after capture or replay MUST publish no
+  partial support or floor. Restart MUST clear the incomplete phase and
+  recapture one current local tuple before replay. Recorded roots needed by an
+  active or restarted validation MUST remain available.
 - **R-PARENT-CAUSALITY.** Let `L` be the proposer-local LFB captured with a DAG
   snapshot and let `J(v)` be bonded validator `v`'s valid latest message in that
   snapshot. The map supplied to fork-choice estimation MUST retain every valid
@@ -256,10 +361,10 @@ either certificate.
   retroactively make an otherwise valid speculative block invalid. Consensus
   validity is block-structural; LFB eligibility is evaluated separately when the
   finalizer considers promotion.
-- **R-PROVENANCE-ACTIVATION.** Exact state-effect provenance is a protocol-3
-  consensus encoding. A node that supports only protocol 3 MUST start from a
-  protocol-3 genesis or resynchronize protocol-3 metadata; it MUST NOT infer
-  missing provenance for legacy persisted blocks.
+- **R-PROVENANCE-ACTIVATION.** Exact state-effect provenance begins with the
+  protocol-3 consensus encoding. This release supports only protocol 4 and MUST
+  start from a protocol-4 genesis or resynchronize complete current metadata; it
+  MUST NOT infer missing provenance for legacy persisted blocks.
 
 ## 3. Determinism (normative)
 
@@ -379,7 +484,7 @@ authorization for an in-place protocol upgrade.
   signing.
 - **R-APPROVED-SUPPORT.** Approved-block validation MUST reject every version
   outside the binary's explicit supported set before Casper starts. This release's
-  supported set is exactly protocol 3; protocols 1 and 2 and unknown future versions
+  supported set is exactly protocol 4; protocols 1 through 3 and unknown future versions
   MUST fail closed without mutating the running shard configuration.
 - **R-VERSION-ADOPTION.** After approved-block validation, every node MUST adopt
   that approved version into the authoritative running shard configuration.
@@ -391,8 +496,8 @@ authorization for an in-place protocol upgrade.
 - **R-VERSION-RECEPTION.** Peer-interest filtering and block validation MUST
   compare incoming blocks with the authoritative running version. They MUST NOT
   consult a second version source whose value can drift from proposal.
-- **R-FRESH-GENESIS.** Cost-accounted protocol 3 MUST activate through a fresh
-  protocol-3 genesis approved by every validator. There MUST NOT be a node-local
+- **R-FRESH-GENESIS.** Cost-accounted protocol 4 MUST activate through a fresh
+  protocol-4 genesis approved by every validator. There MUST NOT be a node-local
   accounting switch, an A/B mode, or a block-height window in which this binary
   accepts both externalized and internalized charging semantics.
 
@@ -431,6 +536,15 @@ authorization for an in-place protocol upgrade.
 - **R-FUNDING-AUTHENTICITY.** Validation MUST reconstruct the complete admitted
   and rejected partition from the recorded pre-state. A proposer MUST NOT mark
   a fundable deploy rejected or execute an underfunded deploy.
+- **R-ADMISSION-EFFECT-PROJECTION.** Merge metadata and adjacent state witnesses
+  MUST align with exactly the user records that entered runtime execution plus
+  every processed system execution. A terminal admission rejection MUST consume
+  no execution slot. An ordinary deploy that entered runtime and failed MUST
+  retain its slot.
+- **R-ADMISSION-EFFECT-FAIL-CLOSED.** The exact effect projection MUST drive
+  cardinality, user/system splitting, and execution indices. Missing or extra
+  effect metadata MUST remain an error; status-only records MUST NOT fabricate
+  empty effects or prevent indexing an otherwise valid parent.
 
 ## 6. Safety invariants — MUST NEVER happen
 
@@ -468,6 +582,12 @@ authorization for an in-place protocol upgrade.
 | **S30** | A dual-certified state remains absent from every block replay floor solely because it is secondary to every parent and main-spine discovery cannot see it (violates R-UNIVERSAL-FRONTIER). |
 | **S31** | Optimized latest-message coverage changes a validator support set, weight map, clique verdict, or permits a multi-parent unchanged-snapshot scan reuse (violates R-COVERAGE-EQUIVALENCE/R-LINEAR-SNAPSHOT-REUSE). |
 | **S32** | Snapshot selection inspects an off-parent latest message before its recursive floor provenance is materialized, or concurrent cache writes lose a required entry, causing node-local classification, repeated processing, or proposal failure (violates R-STATE-DEPENDENCIES/R-SNAPSHOT-PROVENANCE-CLOSURE). |
+| **S33** | A terminal admission rejection is counted as a runtime effect, or an ordinary runtime failure is removed from the effect sequence, shifting metadata and preventing valid-parent indexing (violates R-ADMISSION-EFFECT-PROJECTION/R-ADMISSION-EFFECT-FAIL-CLOSED). |
+| **S34** | Heartbeat recovery treats producer timestamps or frontier churn as finality progress, permits every validator to emit each round, fixes recovery to an offline leader, uses a non-canonical committee, admits an unbounded validation backlog, shrinks the finality denominator to a local subgraph, or treats indirect ancestor closure as an independently voted sub-finalization (violates R-FINALIZER-LOCAL-VIEW/R-FINALIZATION-CLOSURE/R-HEARTBEAT-*). |
+| **S35** | A validator captures or publishes a replay root through a shared mutable current-root pointer, so another runtime's reset changes its decision (violates R-LOCAL-ROOT-AUTHORITY). |
+| **S36** | Support is emitted before exact local replay, received support substitutes for local validation, or a delivered message lacks an emitted signer/candidate source (violates R-LOCAL-SUPPORT). |
+| **S37** | Concurrent promotion exposes a torn block/root/effect tuple, mutates another validator's state, fails to commute for distinct validators, or publishes different state for the same candidate (violates R-ATOMIC-FLOOR-PUBLICATION/R-PARALLEL-FRAME). |
+| **S38** | Crash or restart retains a partial validation, publishes support, loses a required recorded root, or combines a newly observed floor block with an older root/effect snapshot (violates R-VALIDATION-RESTART/R-VALIDATOR-LOCAL-TRANSACTION). |
 
 ## 7. Liveness invariants — MUST eventually happen
 
@@ -483,7 +603,10 @@ authorization for an in-place protocol upgrade.
 | **L8** | Every recorded funding decision eventually finalizes as either executed or rejected. |
 | **L9** | After a stale-state certified candidate is skipped, eventual delivery and proposal produce a floor-rebased descendant that all honest validators can promote. |
 | **L10** | Complete frozen evidence eventually promotes the highest dual-certified universal floor, and the finite descending coverage traversal completes without a node-local timeout or candidate cap. |
-| **L11** | Every finite frozen snapshot completes its required provenance closure and reaches parent selection despite arbitrary interleaving with idempotent finalizer cache writes. |
+| **L11** | Recording a terminal admission rejection cannot prevent every honest validator from indexing that parent, proposing successors, and finalizing later deploys. |
+| **L12** | Every finite frozen snapshot completes its required provenance closure and reaches parent selection despite arbitrary interleaving with idempotent finalizer cache writes. |
+| **L13** | If an LFB remains unchanged, at least one threshold-supporting validator remains online, validation and delivery are fair, and replay completes in finite time, rotating recovery eventually admits support and advances finality while the proposal/validation backlog remains bounded. |
+| **L14** | Under fair local execution and support delivery, independently scheduled honest validators that accept the same state-preserving candidate eventually publish its identical block/root/effect tuple regardless of unrelated runtime resets. |
 
 ## 8. Conformance
 

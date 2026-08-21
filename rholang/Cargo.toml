@@ -87,7 +87,3 @@ loom = "=0.7.2"
 
 [features]
 chromadb = ["dep:chroma", "dep:rust-bert"]
-
-[[bench]]
-name = "metering_bench"
-harness = false

@@ -159,6 +159,12 @@ jobs:
         shell: bash -euo pipefail {0}
         run: bash .github/scripts/check-workflow-invariants.sh
 
+      - name: Verify canonical Rholang parser pin
+        shell: bash -euo pipefail {0}
+        run: |
+          bash .github/scripts/test-rholang-parser-pin.sh
+          bash .github/scripts/check-rholang-parser-pin.sh
+
       - name: Verify soak schedule routing
         shell: bash -euo pipefail {0}
         run: bash .github/scripts/test-soak-schedule-routing.sh

@@ -264,11 +264,7 @@ async fn update_mergeable_cache_after_validation<T: TransportLayer + Send + Sync
         return;
     }
 
-    let maybe_mergeable = this.runtime_manager.load_mergeable_channels(
-        &block.body.state.post_state_hash,
-        block.sender.clone(),
-        block.seq_num,
-    );
+    let maybe_mergeable = this.runtime_manager.load_mergeable_channels(block);
 
     match maybe_mergeable {
         Ok(mergeable_chs) => {

@@ -72,24 +72,6 @@ def source_digest(source):
     return hashlib.sha256(source.encode("utf-8")).hexdigest()[:16]
 
 
-def expected_fixture_values(scenario):
-    consumed = 0
-    count = 0
-    budget = int(scenario.get("initial_budget", 0))
-    for event in scenario.get("events", []):
-        weight = int(event.get("weight", 0))
-        primitive_descriptor = str(event.get("primitive_descriptor", event.get("descriptor", "")))
-        invalid_descriptor = str(event.get("kind", "")) == "primitive" and len(primitive_descriptor) > 512
-        invalid_source_path = len(event.get("path", [])) > 1024
-        if weight <= 0 or invalid_descriptor or invalid_source_path:
-            return (0, 0, True, False)
-        if consumed + weight > budget:
-            return (budget, count + 1, False, True)
-        consumed += weight
-        count += 1
-    return (consumed, count, False, False)
-
-
 def discover_source_seeds(roots, limit):
     seeds = []
     for root in roots:
@@ -183,7 +165,7 @@ def v9_scenario(
         events=events,
         initial_budget=int(initial_budget),
         settlement=settlement or {},
-        replay_fields={"fields": ["cost", "cost_trace_digest", "cost_trace_event_count"]} if replay_mode == "play_replay" else {},
+        replay_fields={"fields": authenticated_replay_fields()} if replay_mode == "play_replay" else {},
         replay_mutations=replay_mutations or [],
         negative_mutations=negative_mutations or [],
         source_seed=source_seed or {},
@@ -421,14 +403,14 @@ def casper_security_records(objectives):
             "horizon_v9_casper_auth_payload_security_matrix",
             '@0!("v9-casper-auth")',
             "casper_auth_payload",
-            "Casper authenticated payload mutations cover cost, digest, count, signature, block hash, and trace presence.",
+            "Casper authenticated payload mutations cover processed cost, authority witness, byte events, replay-payload hash, signature, and block hash.",
             [v9_event("casper/auth_payload", 2, deploy=0, path=[0])],
             6,
             threat_family="casper_security_matrix",
             expected_outcome="auth_payload_rejects_mutation",
             production_oracle="casper_auth_composition",
-            differential_axes=["cost", "digest", "count", "signature", "block_hash", "trace_presence"],
-            negative_mutations=["cost", "cost_trace_digest", "cost_trace_event_count", "signature", "block_hash", "cost_trace_present"],
+            differential_axes=["processed_cost", "authority_witness", "byte_events", "payload_hash", "signature", "block_hash"],
+            negative_mutations=authenticated_replay_fields(["signature", "block_hash"]),
             security_axis="auth_payload_mutation",
             rust_test="generated_frontier_casper_security_matrix_fixtures_hold",
         ),
@@ -443,7 +425,7 @@ def casper_security_records(objectives):
             expected_outcome="settlement_slashing_isolated",
             production_oracle="casper_auth_composition",
             differential_axes=["cost", "digest", "count", "refund", "slashing", "block_hash"],
-            settlement={"authority": "casper", "escrow": 12, "token_cost": 4, "refund": 8, "slashing_scope": "post_eval"},
+            settlement=vault_settlement(12, 12, 0, 0, 4, 0, kind="slash_after_evaluation", slashing_scope="post_eval"),
             negative_mutations=["slash_fields", "block_hash", "signature"],
             security_axis="refund_slashing_isolation",
             rust_test="generated_frontier_casper_security_matrix_fixtures_hold",

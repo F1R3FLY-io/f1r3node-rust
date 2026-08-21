@@ -364,16 +364,16 @@ Definition rb_replay_mode_accepts_cost_trace
 Definition rb_finalize_trace_window (b : rb_state) : rb_state :=
   b.
 
-Fixpoint rb_sum_escrowed_amount (settlements : list fee_settlement) : nat :=
+Fixpoint rb_sum_reserved_amount (settlements : list fee_settlement) : nat :=
   match settlements with
   | [] => 0
-  | s :: rest => escrowed_amount s + rb_sum_escrowed_amount rest
+  | s :: rest => reserved_amount s + rb_sum_reserved_amount rest
   end.
 
-Fixpoint rb_sum_charged_amount (settlements : list fee_settlement) : nat :=
+Fixpoint rb_sum_debited_amount (settlements : list fee_settlement) : nat :=
   match settlements with
   | [] => 0
-  | s :: rest => charged_amount s + rb_sum_charged_amount rest
+  | s :: rest => debited_amount s + rb_sum_debited_amount rest
   end.
 
 Fixpoint rb_sum_refund_amount (settlements : list fee_settlement) : nat :=
@@ -2051,10 +2051,10 @@ Qed.
 
 Theorem rb_sum_settlement_app :
   forall left right,
-    rb_sum_escrowed_amount (left ++ right) =
-      rb_sum_escrowed_amount left + rb_sum_escrowed_amount right /\
-    rb_sum_charged_amount (left ++ right) =
-      rb_sum_charged_amount left + rb_sum_charged_amount right /\
+    rb_sum_reserved_amount (left ++ right) =
+      rb_sum_reserved_amount left + rb_sum_reserved_amount right /\
+    rb_sum_debited_amount (left ++ right) =
+      rb_sum_debited_amount left + rb_sum_debited_amount right /\
     rb_sum_refund_amount (left ++ right) =
       rb_sum_refund_amount left + rb_sum_refund_amount right /\
     rb_sum_settled_amount (left ++ right) =
@@ -2066,14 +2066,14 @@ Proof.
     repeat split; rewrite ?Hescrow, ?Hcharged, ?Hrefund, ?Hsettled; lia.
 Qed.
 
-Theorem rb_sum_refund_le_escrow :
+Theorem rb_sum_refund_le_reservation :
   forall settlements,
-    rb_sum_refund_amount settlements <= rb_sum_escrowed_amount settlements.
+    rb_sum_refund_amount settlements <= rb_sum_reserved_amount settlements.
 Proof.
   induction settlements as [| s rest IH].
   - simpl. lia.
   - simpl.
-    pose proof (refund_le_escrow s).
+    pose proof (refund_le_reservation s).
     lia.
 Qed.
 
@@ -2084,19 +2084,19 @@ Theorem rb_multi_deploy_settlement_frontier :
     rb_sum_settled_amount (left ++ right) =
       rb_sum_settled_amount left + rb_sum_settled_amount right /\
     rb_sum_refund_amount (left ++ right) <=
-      rb_sum_escrowed_amount (left ++ right).
+      rb_sum_reserved_amount (left ++ right).
 Proof.
   intros left right.
   destruct (rb_sum_settlement_app left right) as [_ [_ [Hrefund Hsettled]]].
   repeat split; try exact Hrefund; try exact Hsettled.
-  apply rb_sum_refund_le_escrow.
+  apply rb_sum_refund_le_reservation.
 Qed.
 
 Theorem rb_trace_mismatch_preserves_settlement_accounting :
   forall (trace1 trace2 : list rb_trace_entry) s,
     trace1 <> trace2 ->
-    escrowed_amount s = escrowed_amount s /\
-    charged_amount s = charged_amount s /\
+    reserved_amount s = reserved_amount s /\
+    debited_amount s = debited_amount s /\
     refund_amount s = refund_amount s /\
     settled_amount s = settled_amount s.
 Proof.
@@ -3921,17 +3921,14 @@ Proof.
 Qed.
 
 (* ═══════════════════════════════════════════════════════════════════════════
-   Per-Signature Token Pool (WD-D0)
+   Per-Signature Settlement Composition
    ═══════════════════════════════════════════════════════════════════════════
 
-   The Rust `RuntimeBudget` gains a per-signature token pool
-   `lanes : DashMap<[u8;32], Lane>` (spec §4.6 spectral decomposition into
-   per-signature pools; §7.6 "no interleaving" is PER-SIGNATURE, not global).
-   Each `Lane` mirrors the scalar `RuntimeBudget` fields and is reconciled by
-   the SAME canonical walk (`reconcile_lane`, extracted from the scalar
-   `reconcile`), so a lane is an INDEPENDENT INSTANCE of the proven scalar
-   budget model above. The deploy's consumed cost is the SUM over lanes
-   (`RuntimeBudget::lane_pool_total_cost`).
+   Native execution records each located resource debit in an AuthorityEvent
+   keyed by Sig::lane_hash. Admission and replay allocate those events from
+   independent purse inventories before the SystemVault applies their sum
+   atomically. The scalar RuntimeBudget is only the aggregate execution-
+   capacity ceiling; it is not a second per-purse ledger.
 
    We model:
    - a lane [rb_lane] as a scalar budget paired with the event list routed to
@@ -3952,9 +3949,8 @@ Qed.
    - [rb_pool_reconcile_preserves_valid]: each reconciled lane is valid, so the
      pool is a vector of valid scalar budgets (N independent instances).
    - [rb_pool_total_cost_permutation_invariant]: the pool total is INVARIANT
-     under reordering lanes — the commutative / order-independent sum that the
-     Rust `lane_pool_total_cost` and the 2-lane loom test rely on (disjoint
-     signatures contend on nothing, so visiting order is irrelevant).
+     under reordering lanes — the commutative / order-independent sum that
+     canonical authority settlement and its 2-lane loom model rely on.
 
    No `Axiom`, no `Admitted`: everything reduces to the scalar theorems above
    plus stdlib [map]/[fold_right]/[Permutation] facts. *)
@@ -3968,8 +3964,7 @@ Definition rb_pool : Type := list rb_lane.
 Definition rb_lane_reconcile (l : rb_lane) : rb_state :=
   rb_reconcile (fst l) (snd l).
 
-(* Reconcile every lane independently (mirrors mapping `reconcile_one_lane`
-   over the `DashMap` entries). *)
+(* Reconcile every located purse independently. *)
 Definition rb_pool_reconcile (p : rb_pool) : list rb_state :=
   map rb_lane_reconcile p.
 
@@ -4007,7 +4002,7 @@ Qed.
    `rb_total_cost` of each independently-reconciled lane. This is
    `rb_pool_total_cost = Σ rb_total_cost` (WD-D0): the per-signature pool's
    cost is exactly N independent applications of the scalar `rb_total_cost`,
-   one per lane, summed — the Rust `lane_pool_total_cost`. *)
+   one per lane, summed by native settlement. *)
 Theorem rb_pool_total_cost_eq_sum : forall p,
   rb_pool_reconciled_total_cost p =
   fold_right (fun l acc => rb_total_cost (rb_lane_reconcile l) + acc) 0 p.
@@ -4047,9 +4042,8 @@ Qed.
 
 (* `rb_pool_total_cost` is invariant under permutation of the lane-state list:
    the sum is commutative/associative, so it does not depend on the order in
-   which lanes are visited. This is the order-independence the Rust
-   `lane_pool_total_cost` (iterating a `DashMap`) and the 2-lane loom test
-   rely on. *)
+   which lanes are visited. This is the order-independence the native
+   authority allocator and the 2-lane loom test rely on. *)
 Theorem rb_pool_total_cost_permutation_invariant : forall states1 states2,
   Permutation states1 states2 ->
   rb_pool_total_cost states1 = rb_pool_total_cost states2.

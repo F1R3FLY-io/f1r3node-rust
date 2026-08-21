@@ -16,7 +16,7 @@ use models::rust::block::state_hash::{StateHash, StateHashSerde};
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::protocol::casper_message::{
     BlockMessage, Bond, DeployData, Event, ProcessedDeploy, ProcessedSystemDeploy, RejectedDeploy,
-    StateEffectId, SystemDeployData,
+    StateEffectId,
 };
 use models::rust::validator::Validator;
 use prost::Message;
@@ -53,16 +53,17 @@ use crate::rust::util::rholang::replay_cache::{
     InMemoryReplayCache, ReplayCache, ReplayCacheEntry, ReplayCacheKey,
 };
 use crate::rust::util::rholang::replay_failure::ReplayFailure;
-use crate::rust::util::rholang::state_hash_cache::StateHashCache;
 
 type MergeableStore = KeyValueTypedStoreImpl<ByteVector, Vec<DeployMergeableData>>;
 
 #[derive(serde::Serialize, serde::Deserialize)]
 struct MergeableKey {
-    state_hash: StateHashSerde,
+    post_state_hash: StateHashSerde,
+    pre_state_hash: StateHashSerde,
     #[serde(with = "shared::rust::serde_bytes")]
     creator: prost::bytes::Bytes,
     seq_num: i32,
+    payload_hash: Vec<u8>,
 }
 
 #[derive(Clone)]
@@ -88,8 +89,6 @@ pub struct RuntimeManager {
     pub parents_post_state_cache_order: Arc<Mutex<VecDeque<ParentsPostStateCacheKey>>>,
     /// Optional replay cache for delta replay optimization
     pub replay_cache: Option<Arc<InMemoryReplayCache>>,
-    /// Optional state hash cache for skipping known replays
-    pub state_hash_cache: Option<Arc<StateHashCache>>,
     pub external_services: ExternalServices,
 }
 
@@ -186,7 +185,6 @@ impl RuntimeManager {
     const MAX_REPLAY_CACHE_ENTRIES: usize = 192;
     const MAX_REPLAY_CACHE_BYTES: usize = 32 * 1024 * 1024;
     const MAX_REPLAY_CACHE_EVENT_LOG_ENTRIES: usize = 1_536;
-    const MAX_STATE_HASH_CACHE_ENTRIES: usize = 0;
 
     fn collect_replay_logs(
         usr_processed: &[ProcessedDeploy],
@@ -226,123 +224,33 @@ impl RuntimeManager {
         sys_processed: &[ProcessedSystemDeploy],
         is_genesis: bool,
     ) -> Vec<u8> {
-        #[inline]
         fn push_len_prefixed(bytes: &mut Vec<u8>, data: &[u8]) {
             bytes.extend_from_slice(&(data.len() as u64).to_le_bytes());
             bytes.extend_from_slice(data);
         }
 
-        #[inline]
-        fn push_event_log(bytes: &mut Vec<u8>, event_log: &[Event]) {
-            bytes.extend_from_slice(&(event_log.len() as u64).to_le_bytes());
-            let mut encoded_events = event_log
-                .iter()
-                .map(|event| event.to_proto().encode_to_vec())
-                .collect::<Vec<_>>();
-            encoded_events.sort();
-            for encoded in encoded_events {
-                push_len_prefixed(bytes, &encoded);
-            }
+        fn canonicalize_event_log(event_log: &mut [Event]) {
+            event_log.sort_by_cached_key(|event| event.to_proto().encode_to_vec());
         }
 
-        // Fingerprint replay-relevant payload so cache keys stay safe under adversarial input.
         let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"f1r3node:replay-payload:v2");
         bytes.extend_from_slice(&(usr_processed.len() as u64).to_le_bytes());
         for pd in usr_processed {
-            push_len_prefixed(&mut bytes, &pd.deploy.sig);
-            bytes.extend_from_slice(&pd.cost.cost.to_le_bytes());
-            bytes.push(u8::from(pd.is_failed));
-            push_event_log(&mut bytes, &pd.deploy_log);
-            match &pd.system_deploy_error {
-                Some(err) => {
-                    bytes.push(1);
-                    push_len_prefixed(&mut bytes, err.as_bytes());
-                }
-                None => bytes.push(0),
-            }
-            push_len_prefixed(&mut bytes, &pd.pre_state_hash);
-            push_len_prefixed(&mut bytes, &pd.post_state_hash);
+            let mut canonical = pd.clone();
+            canonicalize_event_log(&mut canonical.deploy_log);
+            push_len_prefixed(&mut bytes, &canonical.to_proto().encode_to_vec());
         }
         bytes.extend_from_slice(&(sys_processed.len() as u64).to_le_bytes());
         for psd in sys_processed {
-            match psd {
-                ProcessedSystemDeploy::Succeeded {
-                    event_list,
-                    system_deploy,
-                    pre_state_hash,
-                    post_state_hash,
-                } => {
-                    bytes.push(0);
-                    push_event_log(&mut bytes, event_list);
-                    push_len_prefixed(&mut bytes, pre_state_hash);
-                    push_len_prefixed(&mut bytes, post_state_hash);
-                    match system_deploy {
-                        SystemDeployData::Slash {
-                            invalid_block_hash,
-                            issuer_public_key,
-                            target_activation_epoch,
-                        } => {
-                            bytes.push(0);
-                            push_len_prefixed(&mut bytes, invalid_block_hash);
-                            push_len_prefixed(&mut bytes, &issuer_public_key.bytes);
-                            // Little-endian is consensus-determined for this
-                            // hash-affecting encoding — every node must agree
-                            // on the bytes fed into the post-state hash. Do
-                            // not switch to big-endian or `to_be_bytes`.
-                            bytes.extend_from_slice(&target_activation_epoch.to_le_bytes());
-                        }
-                        SystemDeployData::CloseBlockSystemDeployData => {
-                            bytes.push(1);
-                        }
-                        SystemDeployData::Empty => {
-                            bytes.push(2);
-                        }
-                        SystemDeployData::Redeem {
-                            validator_pk,
-                            outcome_tag,
-                            penalty,
-                            pos_multi_sig_public_keys,
-                            pos_multi_sig_quorum,
-                            authorizations,
-                        } => {
-                            // Cost-Accounted Rho Stage-C redemption (DR-7/DR-12).
-                            // Deterministic, length-prefixed encoding of the FULL
-                            // authorization material so every node feeds identical
-                            // bytes into the post-state hash. Little-endian is
-                            // consensus-determined here (mirrors the Slash arm
-                            // above); do not switch to big-endian.
-                            bytes.push(3);
-                            push_len_prefixed(&mut bytes, validator_pk);
-                            push_len_prefixed(&mut bytes, outcome_tag.as_bytes());
-                            bytes.extend_from_slice(&penalty.to_le_bytes());
-                            bytes.extend_from_slice(&(*pos_multi_sig_quorum).to_le_bytes());
-                            bytes.extend_from_slice(
-                                &(pos_multi_sig_public_keys.len() as u32).to_le_bytes(),
-                            );
-                            for key in pos_multi_sig_public_keys {
-                                push_len_prefixed(&mut bytes, key.as_bytes());
-                            }
-                            bytes.extend_from_slice(&(authorizations.len() as u32).to_le_bytes());
-                            for auth in authorizations {
-                                push_len_prefixed(&mut bytes, &auth.public_key);
-                                push_len_prefixed(&mut bytes, &auth.signature);
-                            }
-                        }
-                    }
-                }
-                ProcessedSystemDeploy::Failed {
-                    event_list,
-                    error_msg,
-                    pre_state_hash,
-                    post_state_hash,
-                } => {
-                    bytes.push(1);
-                    push_event_log(&mut bytes, event_list);
-                    push_len_prefixed(&mut bytes, error_msg.as_bytes());
-                    push_len_prefixed(&mut bytes, pre_state_hash);
-                    push_len_prefixed(&mut bytes, post_state_hash);
+            let mut canonical = psd.clone();
+            match &mut canonical {
+                ProcessedSystemDeploy::Succeeded { event_list, .. }
+                | ProcessedSystemDeploy::Failed { event_list, .. } => {
+                    canonicalize_event_log(event_list);
                 }
             }
+            push_len_prefixed(&mut bytes, &canonical.to_proto().encode_to_vec());
         }
         bytes.push(u8::from(is_genesis));
         Blake2b256::hash(bytes)
@@ -375,10 +283,8 @@ impl RuntimeManager {
         stats
     }
 
-    fn max_state_hash_cache_entries() -> usize { Self::MAX_STATE_HASH_CACHE_ENTRIES }
-
     pub fn trim_allocator() {
-        #[cfg(target_os = "linux")]
+        #[cfg(all(target_os = "linux", target_env = "gnu"))]
         unsafe {
             unsafe extern "C" {
                 fn malloc_trim(pad: usize) -> i32;
@@ -618,22 +524,20 @@ impl RuntimeManager {
             .cloned()
             .chain(sys_mergeable.into_iter())
             .collect();
-        let pre_state_hash = Blake2b256Hash::from_bytes_prost(&start_hash);
-        let post_state_hash = Blake2b256Hash::from_bytes_prost(&state_hash);
+        let replay_payload_hash = Self::replay_payload_hash(&usr_processed, &sys_processed, false);
         self.save_mergeable_channels(
-            post_state_hash,
+            &state_hash,
             sender.bytes.clone(),
             seq_num,
             mergeable_chs,
-            &pre_state_hash,
+            &start_hash,
+            replay_payload_hash.clone(),
         )?;
 
         let replay_cache_event_log_cap = Self::max_replay_cache_event_log_entries();
         if let Some(ref cache) = self.replay_cache {
             let all_logs = Self::collect_replay_logs(&usr_processed, &sys_processed);
             if !all_logs.is_empty() && all_logs.len() <= replay_cache_event_log_cap {
-                let replay_payload_hash =
-                    Self::replay_payload_hash(&usr_processed, &sys_processed, false);
                 let key = ReplayCacheKey::new(
                     start_hash.clone(),
                     sender.bytes.to_vec(),
@@ -645,10 +549,6 @@ impl RuntimeManager {
                 Self::record_replay_cache_metrics(cache);
             }
         }
-        if let Some(ref cache) = self.state_hash_cache {
-            cache.put(start_hash, state_hash.clone());
-        }
-
         // Reuse the same spawned runtime for bonds query (mirrors
         // compute_state_with_bonds).
         let bonds = runtime_ops.compute_bonds(&state_hash).await?;
@@ -822,33 +722,34 @@ impl RuntimeManager {
         let (pre_state, state_hash, processed) = runtime_ops
             .compute_genesis(terms, block_time, block_number)
             .await?;
-        let (processed_deploys, mergeable_chs) = processed.into_iter().unzip();
+        let (processed_deploys, mergeable_chs): (Vec<ProcessedDeploy>, Vec<NumberChannelsEndVal>) =
+            processed.into_iter().unzip();
 
         // Convert from final to diff values and persist mergeable (number) channels for post-state hash
-        let pre_state_hash = Blake2b256Hash::from_bytes_prost(&pre_state);
-        let post_state_hash = Blake2b256Hash::from_bytes_prost(&state_hash);
+        let replay_payload_hash = Self::replay_payload_hash(&processed_deploys, &[], true);
 
         // Save mergeable channels to store
         self.save_mergeable_channels(
-            post_state_hash,
+            &state_hash,
             prost::bytes::Bytes::new(),
             0,
             mergeable_chs,
-            &pre_state_hash,
+            &pre_state,
+            replay_payload_hash,
         )?;
 
         Ok((pre_state, state_hash, processed_deploys))
     }
 
-    pub async fn replay_compute_state(
+    async fn replay_compute_state_uncommitted(
         &self,
         start_hash: &StateHash,
         terms: Vec<ProcessedDeploy>,
         system_deploys: Vec<ProcessedSystemDeploy>,
         block_data: &BlockData,
         invalid_blocks: Option<HashMap<BlockHash, Validator>>,
-        is_genesis: bool, // FIXME have a better way of knowing this. Pass the replayDeploy function maybe? - OLD
-    ) -> Result<StateHash, CasperError> {
+        is_genesis: bool,
+    ) -> Result<(StateHash, Option<Vec<NumberChannelsEndVal>>), CasperError> {
         let sender = block_data.sender.clone();
         let seq_num = block_data.seq_num;
         let replay_payload_hash = Self::replay_payload_hash(&terms, &system_deploys, is_genesis);
@@ -886,97 +787,27 @@ impl RuntimeManager {
             })?;
         }
 
-        // Step 1: Check state-hash cache.
-        //
-        // IMPORTANT:
-        // `StateHashCache` is keyed only by pre-state, while mergeable channels are keyed by
-        // (post-state, creator, seq-num). Returning early here can skip writing mergeable data
-        // for a distinct block that shares the same pre-state, which later breaks
-        // parent-post-state/index reconstruction with "Missing mergeable entry ...".
-        //
-        // We only fast-return on cache hit if mergeable entry already exists for this block key.
-        // For empty blocks we can safely synthesize and persist an empty mergeable entry.
-        // Otherwise, fall through to full replay to materialize mergeable data.
-        if !is_genesis {
-            if let Some(ref cache) = self.state_hash_cache {
-                if let Some(cached_post) = cache.get(start_hash) {
-                    let mergeable_key = MergeableKey {
-                        state_hash: StateHashSerde(cached_post.clone()),
-                        creator: sender.bytes.clone(),
-                        seq_num,
-                    };
-                    let mergeable_key_encoded =
-                        bincode::serialize(&mergeable_key).map_err(|e| {
-                            CasperError::KvStoreError(KvStoreError::SerializationError(
-                                e.to_string(),
-                            ))
-                        })?;
-
-                    if self
-                        .mergeable_store
-                        .contains_key(mergeable_key_encoded.clone())?
-                    {
-                        tracing::info!(
-                        "[CACHE] StateHashCache hit: mergeable entry present, skipping full replay"
-                    );
-                        return Ok(cached_post);
-                    }
-
-                    let no_user_deploys = terms.is_empty();
-                    let no_system_deploys = system_deploys.is_empty();
-                    if no_user_deploys && no_system_deploys {
-                        if cached_post != *start_hash {
-                            tracing::warn!(
-                            "[CACHE] StateHashCache hit mismatch for empty block (seq={}): pre_state != cached_post, forcing full replay",
-                            seq_num
-                        );
-                            // Continue to full replay path for validation.
-                        } else {
-                            let pre_state_hash = Blake2b256Hash::from_bytes_prost(start_hash);
-                            let post_state_hash = Blake2b256Hash::from_bytes_prost(&cached_post);
-                            self.save_mergeable_channels(
-                                post_state_hash,
-                                sender.bytes.clone(),
-                                seq_num,
-                                Vec::new(),
-                                &pre_state_hash,
-                            )?;
-                            tracing::warn!(
-                            "[CACHE] StateHashCache hit without mergeable entry for empty block (seq={}); synthesized empty mergeable metadata",
-                            seq_num
-                        );
-                            return Ok(cached_post);
-                        }
-                    }
-
-                    tracing::warn!(
-                    "[CACHE] StateHashCache hit without mergeable entry for seq={}; falling back to full replay",
-                    seq_num
-                );
-                }
-            }
-        }
-
-        // Step 2: Check replay cache (deterministic replay delta)
         let replay_cache_key = ReplayCacheKey::new(
             start_hash.clone(),
             sender.bytes.to_vec(),
             seq_num as i64,
-            replay_payload_hash,
+            replay_payload_hash.clone(),
         );
         if let Some(ref cache) = self.replay_cache {
             if let Some(entry) = cache.get(&replay_cache_key) {
-                let mergeable_key = MergeableKey {
-                    state_hash: StateHashSerde(entry.post_state.clone()),
-                    creator: sender.bytes.clone(),
+                let mergeable_key = Self::mergeable_key_for_execution(
+                    start_hash,
+                    &entry.post_state,
+                    sender.bytes.clone(),
                     seq_num,
-                };
+                    replay_payload_hash.clone(),
+                );
                 let mergeable_key_encoded = bincode::serialize(&mergeable_key).map_err(|e| {
                     CasperError::KvStoreError(KvStoreError::SerializationError(e.to_string()))
                 })?;
                 if self.mergeable_store.contains_key(mergeable_key_encoded)? {
                     tracing::info!("[CACHE] ReplayCache hit for sender seq={}", seq_num);
-                    return Ok(entry.post_state);
+                    return Ok((entry.post_state, None));
                 }
                 tracing::warn!(
                     "[CACHE] ReplayCache hit without mergeable entry for seq={}; falling back to full replay",
@@ -985,7 +816,6 @@ impl RuntimeManager {
             }
         }
 
-        // Step 3: Full replay (cache miss)
         let invalid_blocks = invalid_blocks.unwrap_or_default();
         let replay_runtime = self.spawn_replay_runtime().await;
         let runtime_ops = RuntimeOps::new(replay_runtime);
@@ -1003,35 +833,29 @@ impl RuntimeManager {
             )
             .await?;
 
-        // Convert from final to diff values and persist mergeable (number) channels for post-state hash
-        let pre_state_hash = Blake2b256Hash::from_bytes_prost(start_hash);
         let post_state = state_hash.to_bytes_prost();
+        Ok((post_state, Some(mergeable_chs)))
+    }
 
-        // Phase 9 (G-1): surface persistence failure as a typed
-        // `CasperError` instead of a finalization-task panic. A panic
-        // here would crash the runtime_manager future with an
-        // unhelpful "task panicked" log; the typed Result lets the
-        // caller decide how to react (likely abort the proposal, not
-        // the whole node).
-        self.save_mergeable_channels(
-            state_hash.clone(),
-            sender.bytes,
-            seq_num,
-            mergeable_chs,
-            &pre_state_hash,
+    pub async fn replay_compute_state(
+        &self,
+        start_hash: &StateHash,
+        terms: Vec<ProcessedDeploy>,
+        system_deploys: Vec<ProcessedSystemDeploy>,
+        block_data: &BlockData,
+        invalid_blocks: Option<HashMap<BlockHash, Validator>>,
+        is_genesis: bool,
+    ) -> Result<StateHash, CasperError> {
+        self.replay_compute_state_uncommitted(
+            start_hash,
+            terms,
+            system_deploys,
+            block_data,
+            invalid_blocks,
+            is_genesis,
         )
-        .map_err(|e| {
-            CasperError::RuntimeError(format!("Failed to save mergeable channels: {:?}", e))
-        })?;
-
-        // Cache the result for future replays
-        if !is_genesis {
-            if let Some(ref cache) = self.state_hash_cache {
-                cache.put(start_hash.clone(), post_state.clone());
-            }
-        }
-
-        Ok(post_state)
+        .await
+        .map(|(post_state, _)| post_state)
     }
 
     pub async fn replay_block_from_consensus_data(
@@ -1070,15 +894,43 @@ impl RuntimeManager {
             .await?
         };
 
-        self.replay_compute_state(
-            start_hash,
-            deploys,
-            block.body.system_deploys.clone(),
-            &BlockData::from_block(block),
-            Some(invalid_blocks),
-            is_genesis,
-        )
-        .await
+        let block_data = BlockData::from_block(block);
+        let replay_payload_hash =
+            Self::replay_payload_hash(&deploys, &block.body.system_deploys, is_genesis);
+        let (computed_post_state, mergeable_chs) = self
+            .replay_compute_state_uncommitted(
+                start_hash,
+                deploys,
+                block.body.system_deploys.clone(),
+                &block_data,
+                Some(invalid_blocks),
+                is_genesis,
+            )
+            .await?;
+        if computed_post_state != block.body.state.post_state_hash {
+            return Err(CasperError::ReplayFailure(
+                ReplayFailure::effect_state_mismatch(
+                    format!("block:{}", hex::encode(&block.block_hash)),
+                    "final-post-state".to_string(),
+                    hex::encode(&block.body.state.post_state_hash),
+                    hex::encode(&computed_post_state),
+                ),
+            ));
+        }
+        if let Some(mergeable_chs) = mergeable_chs {
+            self.save_mergeable_channels(
+                &computed_post_state,
+                block_data.sender.bytes,
+                block_data.seq_num,
+                mergeable_chs,
+                start_hash,
+                replay_payload_hash,
+            )
+            .map_err(|error| {
+                CasperError::RuntimeError(format!("Failed to save mergeable channels: {error:?}"))
+            })?;
+        }
+        Ok(computed_post_state)
     }
 
     async fn verify_state_bound_admission_partition(
@@ -1487,24 +1339,41 @@ impl RuntimeManager {
             .set(self.parents_post_state_cache.len() as f64);
     }
 
-    /**
-     * Load mergeable channels from store
-     */
-    pub fn load_mergeable_channels(
-        &self,
-        state_hash_bs: &StateHash,
+    fn mergeable_key_for_execution(
+        pre_state_hash: &StateHash,
+        post_state_hash: &StateHash,
         creator: prost::bytes::Bytes,
         seq_num: i32,
-    ) -> Result<Vec<NumberChannelsDiff>, CasperError> {
-        let state_hash = Blake2b256Hash::from_bytes_prost(state_hash_bs);
-        let mergeable_key = MergeableKey {
-            state_hash: StateHashSerde(state_hash.to_bytes_prost()),
-            creator: creator.clone(),
+        payload_hash: Vec<u8>,
+    ) -> MergeableKey {
+        MergeableKey {
+            post_state_hash: StateHashSerde(post_state_hash.clone()),
+            pre_state_hash: StateHashSerde(pre_state_hash.clone()),
+            creator,
             seq_num,
-        };
+            payload_hash,
+        }
+    }
 
-        let get_key =
-            bincode::serialize(&mergeable_key).expect("Failed to serialize mergeable key");
+    fn admitted_block_deploys(block: &BlockMessage) -> Vec<ProcessedDeploy> {
+        if block.header.parents_hash_list.is_empty() {
+            block.body.deploys.clone()
+        } else {
+            block
+                .body
+                .deploys
+                .iter()
+                .filter(|deploy| !deploy.is_admission_rejected())
+                .cloned()
+                .collect()
+        }
+    }
+
+    pub fn load_mergeable_channels(
+        &self,
+        block: &BlockMessage,
+    ) -> Result<Vec<NumberChannelsDiff>, CasperError> {
+        let get_key = Self::mergeable_key_bytes_for_block(block)?;
 
         let res = self.mergeable_store.get_one(&get_key)?;
 
@@ -1523,67 +1392,32 @@ impl RuntimeManager {
             }
             None => {
                 let msg = format!(
-                    "Missing mergeable entry for state {} (creator={}, seq={})",
-                    state_hash.bytes().encode_hex::<String>(),
-                    creator.encode_hex::<String>(),
-                    seq_num
+                    "Missing mergeable entry for block {} at state {} (creator={}, seq={})",
+                    hex::encode(&block.block_hash),
+                    hex::encode(&block.body.state.post_state_hash),
+                    block.sender.encode_hex::<String>(),
+                    block.seq_num,
                 );
-                tracing::error!(state_hash = %state_hash.bytes().encode_hex::<String>(), creator = %creator.encode_hex::<String>(), seq_num, "mergeable entry missing for block");
+                tracing::error!(block_hash = %hex::encode(&block.block_hash), state_hash = %hex::encode(&block.body.state.post_state_hash), creator = %block.sender.encode_hex::<String>(), seq_num = block.seq_num, "mergeable entry missing for block");
                 Err(CasperError::KvStoreError(KvStoreError::KeyNotFound(msg)))
             }
         }
     }
 
-    /// Build the mergeable-store key bytes for a block.
-    pub fn mergeable_key_bytes_for_block(
-        block: &models::rust::casper::protocol::casper_message::BlockMessage,
-    ) -> Result<Vec<u8>, CasperError> {
-        let key = MergeableKey {
-            state_hash: StateHashSerde(block.body.state.post_state_hash.clone()),
-            creator: block.sender.clone(),
-            seq_num: block.seq_num,
-        };
+    fn mergeable_key_bytes_for_block(block: &BlockMessage) -> Result<Vec<u8>, CasperError> {
+        let is_genesis = block.header.parents_hash_list.is_empty();
+        let deploys = Self::admitted_block_deploys(block);
+        let payload_hash =
+            Self::replay_payload_hash(&deploys, &block.body.system_deploys, is_genesis);
+        let key = Self::mergeable_key_for_execution(
+            &block.body.state.pre_state_hash,
+            &block.body.state.post_state_hash,
+            block.sender.clone(),
+            block.seq_num,
+            payload_hash,
+        );
         bincode::serialize(&key)
             .map_err(|e| CasperError::KvStoreError(KvStoreError::SerializationError(e.to_string())))
-    }
-
-    /// Look up a block's mergeable-channels entry and return its over-the-wire
-    /// byte form. Returns `(key_bytes, Some(value_bytes))` if present,
-    /// `(key_bytes, None)` if absent. Re-serializes via bincode at the typed
-    /// store boundary so the wire format is independent of LMDB's internal
-    /// encoding.
-    pub fn get_mergeable_entry_bytes(
-        &self,
-        block: &models::rust::casper::protocol::casper_message::BlockMessage,
-    ) -> Result<(Vec<u8>, Option<Vec<u8>>), CasperError> {
-        let key_bytes = Self::mergeable_key_bytes_for_block(block)?;
-        let value: Option<Vec<DeployMergeableData>> = self.mergeable_store.get_one(&key_bytes)?;
-        let value_bytes = value
-            .map(|v| bincode::serialize(&v))
-            .transpose()
-            .map_err(|e| {
-                CasperError::KvStoreError(KvStoreError::SerializationError(e.to_string()))
-            })?;
-        Ok((key_bytes, value_bytes))
-    }
-
-    /// Store a mergeable-channels entry received over the wire. Decodes the
-    /// transported bytes and writes via the typed store. Empty `value_bytes`
-    /// signals "peer had no entry" and is a no-op.
-    pub fn put_mergeable_entry_bytes(
-        &self,
-        key_bytes: Vec<u8>,
-        value_bytes: Vec<u8>,
-    ) -> Result<(), CasperError> {
-        if value_bytes.is_empty() {
-            return Ok(());
-        }
-        let value: Vec<DeployMergeableData> = bincode::deserialize(&value_bytes).map_err(|e| {
-            CasperError::KvStoreError(KvStoreError::SerializationError(e.to_string()))
-        })?;
-        self.mergeable_store
-            .put_one(key_bytes, value)
-            .map_err(CasperError::KvStoreError)
     }
 
     /// True iff this node already holds the mergeable-channels entry for `block`.
@@ -1638,21 +1472,10 @@ impl RuntimeManager {
         Ok(())
     }
 
-    /// Delete mergeable channels entry keyed by (post-state-hash, creator, seq-num).
+    /// Delete the mergeable channels entry bound to one block execution.
     /// Returns `true` if the entry existed prior to deletion.
-    pub fn delete_mergeable_channels(
-        &self,
-        state_hash_bs: &StateHash,
-        creator: prost::bytes::Bytes,
-        seq_num: i32,
-    ) -> Result<bool, CasperError> {
-        let mergeable_key = MergeableKey {
-            state_hash: StateHashSerde(state_hash_bs.clone()),
-            creator,
-            seq_num,
-        };
-        let encoded_key =
-            bincode::serialize(&mergeable_key).expect("Failed to serialize mergeable key");
+    pub fn delete_mergeable_channels(&self, block: &BlockMessage) -> Result<bool, CasperError> {
+        let encoded_key = Self::mergeable_key_bytes_for_block(block)?;
         let existed = self.mergeable_store.contains_key(encoded_key.clone())?;
         if existed {
             self.mergeable_store.delete(vec![encoded_key])?;
@@ -1663,20 +1486,21 @@ impl RuntimeManager {
     /**
      * Converts final mergeable (number) channel values and save to mergeable store.
      *
-     * Tuple (postStateHash, creator, seqNum) is used as a key, preStateHash is used to
-     * read initial value to get the difference.
+     * The key binds the pre-state, post-state, creator, sequence number, and
+     * canonical replay payload. The pre-state is also used to read the initial
+     * value for each difference.
      */
     fn save_mergeable_channels(
         &self,
-        post_state_hash: Blake2b256Hash,
+        post_state_hash: &StateHash,
         creator: prost::bytes::Bytes,
         seq_num: i32,
         channels_data: Vec<NumberChannelsEndVal>,
-        // Used to calculate value difference from final values
-        pre_state_hash: &Blake2b256Hash,
+        pre_state_hash: &StateHash,
+        payload_hash: Vec<u8>,
     ) -> Result<(), CasperError> {
-        // Calculate difference values from final values on number channels
-        let diffs = self.convert_number_channels_to_diff(channels_data, pre_state_hash)?;
+        let pre_state_root = Blake2b256Hash::from_bytes_prost(pre_state_hash);
+        let diffs = self.convert_number_channels_to_diff(channels_data, &pre_state_root)?;
 
         // Convert to storage types
         let deploy_channels = diffs
@@ -1695,12 +1519,13 @@ impl RuntimeManager {
             })
             .collect();
 
-        // Key is composed from post-state hash and block creator with seq number
-        let mergeable_key = MergeableKey {
-            state_hash: StateHashSerde(post_state_hash.to_bytes_prost()),
+        let mergeable_key = Self::mergeable_key_for_execution(
+            pre_state_hash,
+            post_state_hash,
             creator,
             seq_num,
-        };
+            payload_hash,
+        );
 
         let key_encoded = bincode::serialize(&mergeable_key).map_err(|e| {
             CasperError::KvStoreError(KvStoreError::SerializationError(e.to_string()))
@@ -1815,8 +1640,6 @@ impl RuntimeManager {
         external_services: ExternalServices,
     ) -> RuntimeManager {
         let replay_cache_size = Self::max_replay_cache_entries();
-        let state_hash_cache_size = Self::max_state_hash_cache_entries();
-
         RuntimeManager {
             space: rspace,
             replay_space: replay_rspace,
@@ -1839,8 +1662,6 @@ impl RuntimeManager {
                     Self::max_replay_cache_bytes(),
                 ))
             }),
-            state_hash_cache: (state_hash_cache_size > 0)
-                .then(|| Arc::new(StateHashCache::new(state_hash_cache_size))),
             external_services,
         }
     }
@@ -1913,8 +1734,9 @@ mod tests {
     use crypto::rust::signatures::signatures_alg::SignaturesAlg;
     use models::rhoapi::PCost;
     use models::rust::casper::protocol::casper_message::{
-        BlockMessage, Body, F1r3flyState, Header, ProduceEvent,
+        BlockMessage, Body, F1r3flyState, Header, ProduceEvent, SystemDeployData,
     };
+    use proptest::prelude::*;
     use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
 
     use super::*;
@@ -2085,6 +1907,20 @@ mod tests {
         }
     }
 
+    fn processed_deploy_with_authority_byte_event(cost: u64, kind: i32) -> ProcessedDeploy {
+        let mut processed = processed_deploy(signed_deploy(), cost, vec![produce_event(1)]);
+        processed.authority_cost_witness = Some(models::casper::CostAuthorityWitnessProto {
+            byte_events: vec![models::casper::CostAuthorityByteEventProto {
+                event_id: vec![3; 32].into(),
+                kind,
+                authority: Some(models::rhoapi::CostAuthority::default()),
+                amount: 5,
+            }],
+            ..Default::default()
+        });
+        processed
+    }
+
     fn block_with_processed_deploy(deploy: ProcessedDeploy) -> BlockMessage {
         BlockMessage {
             block_hash: Vec::<u8>::new().into(),
@@ -2128,6 +1964,138 @@ mod tests {
             pre_state_hash: Vec::<u8>::new().into(),
             post_state_hash: Vec::<u8>::new().into(),
         }
+    }
+
+    #[test]
+    fn mergeable_key_binds_complete_execution_identity() {
+        let block = block_with_processed_deploy(processed_deploy_with_authority_byte_event(3, 0));
+        let base_key = RuntimeManager::mergeable_key_bytes_for_block(&block).unwrap();
+
+        let mut changed = block.clone();
+        changed.body.state.pre_state_hash = vec![2; 32].into();
+        assert_ne!(
+            base_key,
+            RuntimeManager::mergeable_key_bytes_for_block(&changed).unwrap()
+        );
+
+        let mut changed = block.clone();
+        changed.body.state.post_state_hash = vec![3; 32].into();
+        assert_ne!(
+            base_key,
+            RuntimeManager::mergeable_key_bytes_for_block(&changed).unwrap()
+        );
+
+        let mut changed = block.clone();
+        changed.body.deploys[0].cost.cost += 1;
+        assert_ne!(
+            base_key,
+            RuntimeManager::mergeable_key_bytes_for_block(&changed).unwrap()
+        );
+
+        let mut changed = block.clone();
+        changed.body.system_deploys.push(slash_system_deploy(9));
+        assert_ne!(
+            base_key,
+            RuntimeManager::mergeable_key_bytes_for_block(&changed).unwrap()
+        );
+
+        let mut changed = block.clone();
+        changed.sender = vec![8].into();
+        assert_ne!(
+            base_key,
+            RuntimeManager::mergeable_key_bytes_for_block(&changed).unwrap()
+        );
+
+        let mut changed = block.clone();
+        changed.seq_num += 1;
+        assert_ne!(
+            base_key,
+            RuntimeManager::mergeable_key_bytes_for_block(&changed).unwrap()
+        );
+
+        let mut changed = block;
+        changed.block_hash = vec![10; 32].into();
+        assert_eq!(
+            base_key,
+            RuntimeManager::mergeable_key_bytes_for_block(&changed).unwrap()
+        );
+    }
+
+    proptest! {
+        #[test]
+        fn mergeable_key_separates_every_bound_identity_component(
+            pre_state in any::<[u8; 32]>(),
+            post_state in any::<[u8; 32]>(),
+            creator in proptest::collection::vec(any::<u8>(), 1..128),
+            seq_num in any::<i32>(),
+            payload_hash in any::<[u8; 32]>(),
+            component in 0usize..5,
+        ) {
+            let base = MergeableKey {
+                post_state_hash: StateHashSerde(StateHash::from(post_state.to_vec())),
+                pre_state_hash: StateHashSerde(StateHash::from(pre_state.to_vec())),
+                creator: creator.clone().into(),
+                seq_num,
+                payload_hash: payload_hash.to_vec(),
+            };
+            let mut changed_pre_state = pre_state;
+            let mut changed_post_state = post_state;
+            let mut changed_creator = creator;
+            let mut changed_payload_hash = payload_hash;
+            let mut changed_seq_num = seq_num;
+            match component {
+                0 => changed_pre_state[0] ^= 1,
+                1 => changed_post_state[0] ^= 1,
+                2 => changed_creator.push(0),
+                3 => changed_seq_num = changed_seq_num.wrapping_add(1),
+                _ => changed_payload_hash[0] ^= 1,
+            }
+            let changed = MergeableKey {
+                post_state_hash: StateHashSerde(StateHash::from(changed_post_state.to_vec())),
+                pre_state_hash: StateHashSerde(StateHash::from(changed_pre_state.to_vec())),
+                creator: changed_creator.into(),
+                seq_num: changed_seq_num,
+                payload_hash: changed_payload_hash.to_vec(),
+            };
+
+            let base_encoded = bincode::serialize(&base).unwrap();
+            let changed_encoded = bincode::serialize(&changed).unwrap();
+            prop_assert_ne!(&base_encoded, &changed_encoded);
+
+            let mut entries = std::collections::BTreeMap::from([
+                (base_encoded.clone(), 1u8),
+                (changed_encoded.clone(), 2u8),
+            ]);
+            prop_assert_eq!(entries.remove(&base_encoded), Some(1));
+            prop_assert_eq!(entries.get(&changed_encoded), Some(&2));
+            prop_assert_eq!(entries.len(), 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn deleting_one_execution_preserves_a_legacy_key_alias() {
+        let manager = test_runtime_manager().await;
+        let target = block_with_processed_deploy(processed_deploy_with_authority_byte_event(3, 0));
+        let mut survivor = target.clone();
+        survivor.body.state.pre_state_hash = vec![2; 32].into();
+
+        let target_key = RuntimeManager::mergeable_key_bytes_for_block(&target).unwrap();
+        let survivor_key = RuntimeManager::mergeable_key_bytes_for_block(&survivor).unwrap();
+        assert_ne!(target_key, survivor_key);
+        manager
+            .mergeable_store
+            .put_one(target_key, Vec::new())
+            .unwrap();
+        manager
+            .mergeable_store
+            .put_one(survivor_key, Vec::new())
+            .unwrap();
+
+        assert!(manager.has_mergeable_entry(&target).unwrap());
+        assert!(manager.has_mergeable_entry(&survivor).unwrap());
+        assert!(manager.delete_mergeable_channels(&target).unwrap());
+        assert!(!manager.has_mergeable_entry(&target).unwrap());
+        assert!(manager.has_mergeable_entry(&survivor).unwrap());
     }
 
     async fn test_runtime_manager() -> RuntimeManager {
@@ -2430,6 +2398,51 @@ mod tests {
     }
 
     #[test]
+    fn replay_payload_hash_binds_authority_byte_event_kind() {
+        let deploy = signed_deploy();
+        let mut left = processed_deploy(deploy, 3, vec![produce_event(1)]);
+        let witness = models::casper::CostAuthorityWitnessProto {
+            byte_events: vec![models::casper::CostAuthorityByteEventProto {
+                event_id: vec![3; 32].into(),
+                kind: 0,
+                authority: Some(models::rhoapi::CostAuthority::default()),
+                amount: 5,
+            }],
+            ..Default::default()
+        };
+        left.authority_cost_witness = Some(witness);
+        let mut right = left.clone();
+        right.authority_cost_witness.as_mut().unwrap().byte_events[0].kind = 2;
+
+        assert_ne!(
+            RuntimeManager::replay_payload_hash(&[left], &[], false),
+            RuntimeManager::replay_payload_hash(&[right], &[], false)
+        );
+    }
+
+    #[test]
+    fn replay_payload_hash_binds_authority_certificate() {
+        let deploy = signed_deploy();
+        let mut left = processed_deploy(deploy, 3, vec![produce_event(1)]);
+        let certificate = models::casper::CostAuthorityFundingCertificateProto {
+            byte_cost_bound: 7,
+            ..Default::default()
+        };
+        left.authority_funding_certificate = Some(certificate);
+        let mut right = left.clone();
+        right
+            .authority_funding_certificate
+            .as_mut()
+            .unwrap()
+            .byte_cost_bound = 8;
+
+        assert_ne!(
+            RuntimeManager::replay_payload_hash(&[left], &[], false),
+            RuntimeManager::replay_payload_hash(&[right], &[], false)
+        );
+    }
+
+    #[test]
     fn replay_payload_hash_changes_when_system_deploy_log_changes() {
         let left = ProcessedSystemDeploy::Succeeded {
             event_list: vec![produce_event(1)],
@@ -2565,11 +2578,11 @@ mod tests {
 
         for fixture in fixtures {
             assert_eq!(fixture.oracle_kind, "casper_replay_payload_hash");
-            let deploy = signed_deploy();
-            let left = processed_deploy(deploy, 3, vec![produce_event(1)]);
+            let left = processed_deploy_with_authority_byte_event(3, 0);
 
             let right = match fixture.mutation_axis.as_str() {
-                "signature" => processed_deploy(signed_deploy(), 3, vec![produce_event(1)]),
+                "authority_cost_witness" => processed_deploy_with_authority_byte_event(3, 2),
+                "signature" => processed_deploy_with_authority_byte_event(3, 0),
                 other => panic!(
                     "unexpected v12 casper mutation axis {other} in {}",
                     fixture.id
@@ -2644,7 +2657,7 @@ mod tests {
             .filter(|fixture| {
                 matches!(
                     fixture.semantic_oracle.as_str(),
-                    "replay_to_slashing_authentication"
+                    "runtime_to_replay_authenticated_witness" | "replay_to_slashing_authentication"
                 )
             })
             .collect::<Vec<_>>();
@@ -2653,12 +2666,45 @@ mod tests {
         for fixture in fixtures {
             assert!(!fixture.source_anchor_digest.is_empty());
             assert!(!fixture.cross_surface_role.is_empty());
-            assert!(fixture
-                .replay_mutations
-                .iter()
-                .any(|field| field == "slash_fields"));
-
             match fixture.semantic_oracle.as_str() {
+                "runtime_to_replay_authenticated_witness" => {
+                    for field in [
+                        "processed_deploy_cost",
+                        "authority_cost_witness",
+                        "authority_byte_events",
+                        "replay_payload_hash",
+                    ] {
+                        assert!(
+                            fixture
+                                .replay_mutations
+                                .iter()
+                                .any(|mutation| mutation == field),
+                            "v13 fixture {} must include runtime/replay mutation field {}",
+                            fixture.id,
+                            field
+                        );
+                    }
+                    let left = processed_deploy_with_authority_byte_event(3, 0);
+                    let changed_cost = processed_deploy_with_authority_byte_event(4, 0);
+                    let changed_byte_event = processed_deploy_with_authority_byte_event(3, 2);
+                    let left_hash = RuntimeManager::replay_payload_hash(
+                        std::slice::from_ref(&left),
+                        &[],
+                        false,
+                    );
+                    assert_ne!(
+                        left_hash,
+                        RuntimeManager::replay_payload_hash(&[changed_cost], &[], false),
+                        "v13 fixture {} must authenticate runtime cost",
+                        fixture.id
+                    );
+                    assert_ne!(
+                        left_hash,
+                        RuntimeManager::replay_payload_hash(&[changed_byte_event], &[], false),
+                        "v13 fixture {} must authenticate authority byte events",
+                        fixture.id
+                    );
+                }
                 "replay_to_slashing_authentication" => {
                     for field in ["slash_fields", "block_hash", "signature"] {
                         assert!(
@@ -2690,7 +2736,7 @@ mod tests {
             .filter(|fixture| {
                 matches!(
                     fixture.semantic_oracle.as_str(),
-                    "runtime_to_settlement_fuel_isolation" | "legacy_to_runtime_quarantine"
+                    "runtime_to_settlement_vault_conservation" | "legacy_to_runtime_quarantine"
                 )
             })
             .collect::<Vec<_>>();
@@ -2700,13 +2746,7 @@ mod tests {
             assert!(!fixture.source_anchor_digest.is_empty());
             assert!(!fixture.cross_surface_role.is_empty());
             match fixture.semantic_oracle.as_str() {
-                "runtime_to_settlement_fuel_isolation" => {
-                    // D3 (DR-9, OD-2): the escrow refund/charge projection
-                    // (`refund_amount_for_token_cost` / `checked_total_phlo_charge`)
-                    // has no successor — a deploy carries no phlo price/limit. The
-                    // surviving invariant is that the recorded per-COMM
-                    // `ProcessedDeploy.cost` is the runtime's consumed cost
-                    // evidence (now settled once against Σ⟦s⟧ at block close).
+                "runtime_to_settlement_vault_conservation" => {
                     let user_deploy = processed_deploy(
                         signed_deploy(),
                         fixture.expected_total_cost as u64,
@@ -2735,10 +2775,17 @@ mod tests {
     }
 
     #[test]
-    fn cost_accounting_v14_replay_slashing_oracles_hold() {
+    fn cost_accounting_v14_replay_security_oracles_hold() {
         let fixtures = horizon_v14_fixtures()
             .into_iter()
-            .filter(|fixture| matches!(fixture.security_surface.as_str(), "slashing_authorization"))
+            .filter(|fixture| {
+                matches!(
+                    fixture.security_surface.as_str(),
+                    "api_to_runtime_replay"
+                        | "replay_cache_payload_binding"
+                        | "slashing_authorization"
+                )
+            })
             .collect::<Vec<_>>();
         assert!(!fixtures.is_empty());
 
@@ -2751,6 +2798,44 @@ mod tests {
             assert!(!fixture.secret_material_touched);
 
             match fixture.security_surface.as_str() {
+                "api_to_runtime_replay" | "replay_cache_payload_binding" => {
+                    for field in [
+                        "processed_deploy_cost",
+                        "authority_cost_witness",
+                        "authority_byte_events",
+                        "replay_payload_hash",
+                    ] {
+                        assert!(
+                            fixture
+                                .replay_mutations
+                                .iter()
+                                .any(|mutation| mutation == field),
+                            "v14 fixture {} must bind replay field {}",
+                            fixture.id,
+                            field
+                        );
+                    }
+                    let left = processed_deploy_with_authority_byte_event(3, 0);
+                    let changed_cost = processed_deploy_with_authority_byte_event(4, 0);
+                    let changed_byte_event = processed_deploy_with_authority_byte_event(3, 2);
+                    let left_hash = RuntimeManager::replay_payload_hash(
+                        std::slice::from_ref(&left),
+                        &[],
+                        false,
+                    );
+                    assert_ne!(
+                        left_hash,
+                        RuntimeManager::replay_payload_hash(&[changed_cost], &[], false),
+                        "v14 fixture {} must bind processed deploy cost",
+                        fixture.id
+                    );
+                    assert_ne!(
+                        left_hash,
+                        RuntimeManager::replay_payload_hash(&[changed_byte_event], &[], false),
+                        "v14 fixture {} must bind authority byte events",
+                        fixture.id
+                    );
+                }
                 "slashing_authorization" => {
                     assert_eq!(fixture.expected_disposition, "replay_invalid");
                     for field in [

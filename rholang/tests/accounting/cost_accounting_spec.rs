@@ -335,10 +335,9 @@ fn property_runner(cases: u32) -> TestRunner {
 }
 
 async fn check_phlo_limit_exceeded(contract: String, initial_phlo: i64) -> bool {
-    // D3 (DR-9, OD-3): `initial_phlo` is the per-COMM token budget. OOP fires
-    // when the contract's COMM count exceeds it; on OOP the consensus cost
-    // clamps to the budget. (The diagnostic per-op weight log is no longer
-    // bounded by this budget — weights are diagnostic, not the consensus cost.)
+    // `initial_phlo` is the immutable weighted execution reservation. OOP fires
+    // when canonical introduction or COMM cost exceeds it and clamps consensus
+    // cost to the reservation.
     let (evaluate_result, _cost_log) = evaluate_with_cost_log(initial_phlo, contract).await;
 
     assert_eq!(
@@ -349,7 +348,7 @@ async fn check_phlo_limit_exceeded(contract: String, initial_phlo: i64) -> bool 
 
     assert_eq!(
         evaluate_result.cost.value, initial_phlo,
-        "Out-of-phlo must commit exactly the exhausted COMM-token budget"
+        "Out-of-phlo must commit exactly the exhausted weighted budget"
     );
 
     true
@@ -358,9 +357,8 @@ async fn check_phlo_limit_exceeded(contract: String, initial_phlo: i64) -> bool 
 fn token_event(local_index: u64, weight: u64) -> BillableTokenEvent {
     BillableTokenEvent {
         deploy_id: [7; 32],
-        // D0: per-signature lane key, constant within a deploy. The scalar
-        // fast path leaves the lane pool empty, so a fixed sentinel keeps the
-        // canonical `Ord` (deploy_id, sig_hash, …) stable across these events.
+        // A fixed signature-identity sentinel keeps the canonical
+        // `Ord` (deploy_id, sig_hash, …) stable across these aggregate events.
         sig_hash: [0; 32],
         source_path: SourcePath(vec![local_index as u32]),
         redex_id: RedexId(local_index),
@@ -425,13 +423,32 @@ fn runtime_budget_property_preserves_consumed_remaining_invariant() {
         .unwrap();
 }
 
-// D3 (DR-9, OD-3): `weighted_events_property_refine_unit_token_expansion` is
-// REMOVED. Its premise — that a weight-W event is equivalent to W unit-weight
-// events — was the weight-based escrow cost model. Under D3 the consensus cost
-// is the COMM COUNT (one token per COMM, weight-independent), so a single COMM
-// of any weight costs 1, NOT W. The per-COMM tally is exercised by
-// `runtime_budget_property_preserves_consumed_remaining_invariant` and the
-// d0_lane_pool_tests in `accounting/mod.rs`.
+#[test]
+fn weighted_consensus_event_cost_refines_unit_expansion_total() {
+    let mut runner = property_runner(128);
+    runner
+        .run(&proptest::collection::vec(1u64..32, 0..32), |weights| {
+            let total = weights.iter().copied().sum::<u64>();
+            let weighted = RuntimeBudget::new(Cost::create(total as i64, "weighted"));
+            for (index, weight) in weights.iter().copied().enumerate() {
+                weighted
+                    .reserve_canonical(token_event(index as u64, weight))
+                    .unwrap();
+            }
+
+            let expanded = RuntimeBudget::new(Cost::create(total as i64, "expanded"));
+            for index in 0..total {
+                expanded.reserve_canonical(token_event(index, 1)).unwrap();
+            }
+
+            prop_assert_eq!(weighted.total_cost().value, total as i64);
+            prop_assert_eq!(expanded.total_cost().value, total as i64);
+            prop_assert_eq!(weighted.remaining().value, 0);
+            prop_assert_eq!(expanded.remaining().value, 0);
+            Ok(())
+        })
+        .unwrap();
+}
 
 #[test]
 fn unmetered_budget_property_never_consumes_or_records_events() {
@@ -563,13 +580,12 @@ fn reset_from_token_clears_all_recorded_state_between_deploys() {
     let sig = Sig::Ground(vec![7, 8, 9]);
     let budget = RuntimeBudget::new(Cost::create(64, "reset isolation"));
 
-    // Deploy 1: record 32 COMMs (each costs ONE token under D3; weight 2 is
-    // diagnostic). 32 COMMs ≤ 64-token budget ⇒ all commit, consensus cost = 32.
+    // Deploy 1: record 32 weighted consensus events at two units each.
     let events = (0..32).map(|path| token_event(path, 2)).collect::<Vec<_>>();
     budget
         .commit_canonical_batch(CostReservationBatch { events })
         .unwrap();
-    assert_eq!(budget.total_cost().value, 32);
+    assert_eq!(budget.total_cost().value, 64);
     assert_eq!(budget.cost_trace_event_count(), 32);
 
     // Reset for deploy 2.
@@ -642,8 +658,8 @@ fn cost_trace_digest_changes_with_cost_shape_but_not_causal_oop_identity() {
     assert_ne!(base.cost_trace_digest(), changed_weight.cost_trace_digest());
     assert_ne!(base.cost_trace_digest(), changed_deploy.cost_trace_digest());
 
-    let oop_left = RuntimeBudget::new(Cost::create(1, "oop left"));
-    let oop_right = RuntimeBudget::new(Cost::create(1, "oop right"));
+    let oop_left = RuntimeBudget::new(Cost::create(2, "oop left"));
+    let oop_right = RuntimeBudget::new(Cost::create(2, "oop right"));
     oop_left.reserve_canonical(token_event(0, 2)).unwrap();
     oop_right.reserve_canonical(token_event(0, 2)).unwrap();
     oop_left.reserve_canonical(token_event(1, 1)).unwrap_err();
@@ -708,9 +724,7 @@ fn cost_trace_digest_domain_separates_cost_kind_weight_and_multiplicity() {
 
 #[test]
 fn diagnostic_event_log_clearing_does_not_change_cost_trace_digest() {
-    // D3 (DR-9, OD-3): a COMM costs ONE token. A 1-COMM budget admits the first
-    // COMM and OOPs on the second.
-    let budget = RuntimeBudget::new(Cost::create(1, "diagnostic trace"));
+    let budget = RuntimeBudget::new(Cost::create(2, "diagnostic trace"));
     budget.reserve_canonical(token_event(0, 2)).unwrap();
     budget.reserve_canonical(token_event(1, 2)).unwrap_err();
     let before = budget.cost_trace_digest();
@@ -725,9 +739,7 @@ fn diagnostic_event_log_clearing_does_not_change_cost_trace_digest() {
 
 #[test]
 fn unmetered_system_mode_restoration_preserves_later_metering() {
-    // D3 (DR-9, OD-3): each COMM costs ONE token (weights are diagnostic). Two
-    // metered COMMs ⇒ consensus cost 2; the unmetered COMM in between is not
-    // recorded.
+    // The two metered events cost 3 + 4; the unmetered event is not recorded.
     let budget = RuntimeBudget::new(Cost::create(10, "system mode restoration"));
     budget.reserve_canonical(token_event(0, 3)).unwrap();
     let before_system = budget.cost_trace_digest();
@@ -740,8 +752,8 @@ fn unmetered_system_mode_restoration_preserves_later_metering() {
     budget.set_unmetered(false);
     budget.reserve_canonical(token_event(1, 4)).unwrap();
 
-    assert_eq!(budget.total_cost().value, 2);
-    assert_eq!(budget.remaining().value, 8);
+    assert_eq!(budget.total_cost().value, 7);
+    assert_eq!(budget.remaining().value, 3);
     assert_eq!(budget.cost_trace_event_count(), 2);
 }
 
@@ -789,12 +801,10 @@ fn runtime_budget_canonical_event_log_is_order_independent() {
 
 #[test]
 fn canonical_batch_commit_is_permutation_invariant() {
-    // D3 (DR-9, OD-3): each COMM costs ONE token. A 1-COMM budget admits the
-    // lowest-ranked COMM (source_path [1]) and OOPs on the next ([2]); the
-    // commit is invariant under input permutation (the batch is canonically
-    // sorted before the walk).
-    let left = RuntimeBudget::new(Cost::create(1, "left batch budget"));
-    let right = RuntimeBudget::new(Cost::create(1, "right batch budget"));
+    // A weight-60 budget admits the lowest-ranked event and OOPs on the next;
+    // canonical sorting makes the result permutation invariant.
+    let left = RuntimeBudget::new(Cost::create(60, "left batch budget"));
+    let right = RuntimeBudget::new(Cost::create(60, "right batch budget"));
     let events = vec![token_event(2, 50), token_event(1, 60)];
 
     let left_commit = left
@@ -824,18 +834,14 @@ fn canonical_batch_commit_is_permutation_invariant() {
             .map(|event| event.source_path.clone()),
         Some(SourcePath(vec![2]))
     );
-    assert_eq!(left.total_cost().value, 1);
-    assert_eq!(right.total_cost().value, 1);
+    assert_eq!(left.total_cost().value, 60);
+    assert_eq!(right.total_cost().value, 60);
     assert_eq!(left.cost_trace_digest(), right.cost_trace_digest());
 }
 
 #[test]
 fn batch_commit_charges_only_granted_execution_permits() {
-    // D3 (DR-9, OD-3): each COMM costs ONE token. A 1-COMM budget grants the
-    // first COMM and OOPs on the second. `consumed_weight` / `permit.weight`
-    // remain the DIAGNOSTIC per-op weight of the granted COMM (5); the CONSENSUS
-    // cost (`total_cost`) is the COMM count (1).
-    let budget = RuntimeBudget::new(Cost::create(1, "permit budget"));
+    let budget = RuntimeBudget::new(Cost::create(5, "permit budget"));
     let commit = budget
         .commit_canonical_batch(CostReservationBatch {
             events: vec![token_event(3, 5), token_event(4, 5)],
@@ -844,12 +850,9 @@ fn batch_commit_charges_only_granted_execution_permits() {
 
     let permitted_weight: u64 = commit.permits.iter().map(|permit| permit.weight).sum();
 
-    assert_eq!(
-        permitted_weight, 5,
-        "diagnostic weight of the one granted COMM"
-    );
+    assert_eq!(permitted_weight, 5, "weight of the one granted COMM");
     assert_eq!(commit.consumed_weight, 5);
-    assert_eq!(budget.total_cost().value, 1, "consensus cost = 1 COMM");
+    assert_eq!(budget.total_cost().value, 5, "consensus cost is weighted");
     assert_eq!(budget.remaining().value, 0);
     assert_eq!(budget.get_event_log().len(), 1);
     assert!(commit.oop.is_some());
@@ -858,15 +861,13 @@ fn batch_commit_charges_only_granted_execution_permits() {
 
 #[test]
 fn runtime_budget_commits_to_limit_on_depletion() {
-    // D3 (DR-9, OD-3): each COMM costs ONE token. A 1-COMM budget admits one
-    // COMM, then OOPs; consumed clamps to the COMM budget (1).
-    let budget = RuntimeBudget::new(Cost::create(1, "bounded budget"));
+    let budget = RuntimeBudget::new(Cost::create(3, "bounded budget"));
     budget.reserve_canonical(token_event(0, 3)).unwrap();
 
     let err = budget.reserve_canonical(token_event(1, 3)).unwrap_err();
 
     assert_eq!(err, InterpreterError::OutOfPhlogistonsError);
-    assert_eq!(budget.total_cost().value, 1);
+    assert_eq!(budget.total_cost().value, 3);
     assert_eq!(budget.remaining().value, 0);
 }
 
@@ -910,13 +911,9 @@ fn concurrent_runtime_budget_reservations_are_linearizable() {
             .map(|handle| handle.join().expect("reservation worker"))
             .collect::<Vec<_>>();
 
-        // D3 (DR-9, OD-3): runtime liveness vs canonical consensus, per-COMM.
-        // Each event is a COMM costing ONE token; the lock-free CAS race decides
-        // only the runtime grant (schedule-dependent). `get_event_log` reflects
-        // the CANONICAL committed set (schedule-independent), whose COMM COUNT is
-        // bounded by the budget. With 16 COMMs and a budget below 16, at least
-        // one thread is rejected. The per-op `weight` is diagnostic only and is
-        // NOT bounded by the COMM budget.
+        // The lock-free CAS race decides only runtime grants. Canonical
+        // reconciliation sorts the complete weighted attempt set and produces
+        // the schedule-independent committed prefix and OOP boundary.
         let successful_count: u64 =
             outcomes.iter().filter(|(_, result)| result.is_ok()).count() as u64;
         let errors = outcomes
@@ -942,16 +939,22 @@ fn concurrent_runtime_budget_reservations_are_linearizable() {
     // regression in the production walk rather than tautologically
     // matching it.
     fn expected_canonical_trace_count(events: &[BillableTokenEvent], initial: i64) -> u64 {
-        // D3 (DR-9, OD-3): the consensus cost is the COMM count — each COMM
-        // costs ONE token (weight is diagnostic). Walk in canonical order,
-        // committing COMMs until the budget is exhausted.
+        // Walk weighted consensus events in canonical order until the immutable
+        // reservation is exhausted.
         let mut sorted: Vec<BillableTokenEvent> = events.to_vec();
         sorted.sort();
         let mut consumed: i64 = 0;
         let mut committed: u64 = 0;
         let mut oop = false;
         for event in sorted {
-            let cost_unit = i64::from(event.kind == BillableKind::Comm);
+            let cost_unit = match event.kind {
+                BillableKind::Comm | BillableKind::RSpaceProduce | BillableKind::RSpaceConsume => {
+                    event.weight as i64
+                }
+                BillableKind::Reduction
+                | BillableKind::Primitive(_)
+                | BillableKind::Substitution => 0,
+            };
             let next = consumed.saturating_add(cost_unit);
             if cost_unit > 0 && next > initial {
                 oop = true;
@@ -963,28 +966,23 @@ fn concurrent_runtime_budget_reservations_are_linearizable() {
         committed + u64::from(oop)
     }
 
-    // D3 (DR-9, OD-3): 16 COMMs, each cost 1. A budget of 8 admits the first 8
-    // COMMs (canonical order = local_index ascending) and OOPs on the 9th
-    // (local_index = 8). The per-op weights are diagnostic and do not affect the
-    // count.
+    // Canonical weights are 1, 2, 3, 4, ... . A budget of 8 commits the first
+    // three events (sum 6) and OOPs on the fourth (weight 4).
     let initial_phlo: i64 = 8;
     let spawned_events: Vec<BillableTokenEvent> =
         (0..16u64).map(|i| token_event(i, i + 1)).collect();
     let expected_trace_count = expected_canonical_trace_count(&spawned_events, initial_phlo);
-    // 8 committed COMMs + 1 OOP boundary = 9.
-    assert_eq!(expected_trace_count, 9);
+    assert_eq!(expected_trace_count, 4);
 
     let budget_a = run_once(initial_phlo);
 
     // Consensus-side invariants derived from the canonical reconciliation:
     //
-    // - `total_cost` clamps to `initial_phlo` on canonical OOP (preserves
-    //   the deploy.cost == phlo_limit invariant the integration tests
-    //   rely on).
+    // - `total_cost` clamps to the installed runtime capacity on canonical OOP.
     // - `last_oop_event` is the canonical OOP boundary event — the
     //   smallest-rank event whose cumulative weight would have exceeded
     //   the budget under the canonical walk, NOT a runtime CAS loser.
-    //   For this fixture that is the event with local_index=8, weight=9.
+    //   For this fixture that is the event with local_index=3, weight=4.
     // - `cost_trace_event_count` is canonical commits + 1 (OOP fired).
     //   This must equal the simulator's answer derived purely from the
     //   spawned events, independent of Tokio scheduling.
@@ -996,7 +994,7 @@ fn concurrent_runtime_budget_reservations_are_linearizable() {
     let oop_a = budget_a
         .last_oop_event()
         .expect("canonical OOP must fire when weights overflow budget");
-    assert_eq!(oop_a, token_event(8, 9));
+    assert_eq!(oop_a, token_event(3, 4));
     assert_eq!(budget_a.cost_trace_event_count(), expected_trace_count);
     let digest_a = budget_a.cost_trace_digest();
     assert!(!digest_a.digest.is_empty());
@@ -1010,7 +1008,7 @@ fn concurrent_runtime_budget_reservations_are_linearizable() {
     // of (program, initial budget), not of runtime scheduling.
     let budget_b = run_once(initial_phlo);
     assert_eq!(budget_b.total_cost().value, initial_phlo);
-    assert_eq!(budget_b.last_oop_event(), Some(token_event(8, 9)));
+    assert_eq!(budget_b.last_oop_event(), Some(token_event(3, 4)));
     assert_eq!(budget_b.cost_trace_event_count(), expected_trace_count);
     let digest_b = budget_b.cost_trace_digest();
     assert_eq!(digest_a, digest_b);
@@ -1072,9 +1070,7 @@ fn max_sized_trace_descriptors_are_admitted_at_boundary() {
     budget.reserve_canonical(primitive).unwrap();
     budget.reserve_canonical(source_path).unwrap();
 
-    // D3 (DR-9, OD-3): consensus cost = COMM count. The Primitive is diagnostic
-    // (cost 0); only the COMM (cost 1) counts ⇒ total_cost 1. Both events are
-    // still admitted at the descriptor-size boundary and appear in the log.
+    // The primitive is diagnostic; the unit-weight COMM is consensus cost.
     assert_eq!(budget.total_cost().value, 1);
     assert_eq!(budget.remaining().value, 2);
     assert_eq!(budget.get_event_log().len(), 2);
@@ -1146,10 +1142,8 @@ fn scoped_unmetered_mode_restores_after_early_return() {
     );
     budget.reserve_canonical(token_event(0, 2)).unwrap();
 
-    // D3 (DR-9, OD-3): the one metered COMM after the unmetered scope costs 1
-    // (its weight 2 is diagnostic); the unmetered COMM is not recorded.
-    assert_eq!(budget.total_cost().value, 1);
-    assert_eq!(budget.remaining().value, 4);
+    assert_eq!(budget.total_cost().value, 2);
+    assert_eq!(budget.remaining().value, 3);
     assert_eq!(budget.cost_trace_event_count(), 1);
 }
 
@@ -1217,9 +1211,8 @@ fn runtime_budget_records_typed_billable_events_without_legacy_compat() {
         BillableKind::Primitive("method call".to_string()),
         BillableKind::Substitution
     ]);
-    // D3 (DR-9, OD-3): consensus cost = the COMM count. Only the `Comm` counts
-    // (=1); the diagnostic Primitive / Substitution contribute 0. (All three
-    // still appear in the bounded diagnostic event log.)
+    // Only the unit-weight COMM contributes consensus cost; the primitive and
+    // substitution remain in the bounded diagnostic event log.
     assert_eq!(budget.total_cost().value, 1);
     assert_eq!(budget.cost_trace_event_count(), 1);
     assert!(!budget.cost_trace_digest().digest.is_empty());
@@ -1236,7 +1229,7 @@ async fn evaluation_records_only_typed_billable_events() {
     let result = runtime
         .evaluate_with_phlo(
             "@0!(2) | for (_ <- @0) { Nil }",
-            Cost::create(1000, "typed event eval"),
+            Cost::create(100_000, "typed event eval"),
         )
         .await
         .unwrap();
@@ -1254,24 +1247,118 @@ async fn evaluation_records_only_typed_billable_events() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn unmatched_io_consumes_no_comm_tokens() {
+async fn unmatched_io_charges_bytes_without_a_comm_execution_event() {
     for contract in ["@0!(2)", "for (_ <- @0) { Nil }"] {
-        let (result, _, events) = evaluate_with_cost_events(1000, contract.to_string()).await;
+        let (result, _, events) = evaluate_with_cost_events(100_000, contract.to_string()).await;
         assert!(result.errors.is_empty());
-        assert_eq!(result.cost.value, 0);
+        assert!(result.cost.value > 0);
         assert!(events.iter().all(|event| event.kind != BillableKind::Comm));
+        assert!(events.iter().any(|event| matches!(
+            event.kind,
+            BillableKind::RSpaceProduce | BillableKind::RSpaceConsume
+        )));
     }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn parser_failure_after_a_paid_deploy_has_an_empty_authority_witness() {
+    let mut kvm = InMemoryStoreManager::new();
+    let store = kvm.r_space_stores().await.unwrap();
+    let (mut runtime, _, _) =
+        create_runtimes_with_cost_log(store, Some(false), Some(&mut Vec::new())).await;
+    install_test_payer(&runtime);
+
+    let paid = runtime
+        .evaluate_with_phlo(
+            "@0!(2) | for (_ <- @0) { Nil }",
+            Cost::create(100_000, "paid predecessor"),
+        )
+        .await
+        .unwrap();
+    assert!(paid.errors.is_empty());
+    assert!(!paid.authority_events.is_empty());
+    assert!(!paid.authority_byte_events.is_empty());
+
+    let malformed = runtime
+        .evaluate_with_phlo("for(", Cost::create(100_000, "malformed successor"))
+        .await
+        .unwrap();
+    assert!(!malformed.errors.is_empty());
+    assert_eq!(malformed.cost.value, 0);
+    assert!(malformed.authority_events.is_empty());
+    assert!(malformed.authority_byte_events.is_empty());
+    assert!(malformed.authority_realized.0.is_empty());
+    assert!(malformed.authority_stack_births.is_empty());
+    assert_eq!(malformed.quantitative_byte_cost, 0);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn reducer_operator_failure_preserves_prior_attempt_charges() {
+    let mut kvm = InMemoryStoreManager::new();
+    let store = kvm.r_space_stores().await.unwrap();
+    let (mut runtime, _, _) =
+        create_runtimes_with_cost_log(store, Some(false), Some(&mut Vec::new())).await;
+    install_test_payer(&runtime);
+
+    let failed = runtime
+        .evaluate_with_phlo(
+            r#"@0!(2) | for (_ <- @0) { @1!(1 + "not-a-number") }"#,
+            Cost::create(100_000, "comm then operator failure"),
+        )
+        .await
+        .unwrap();
+    assert!(failed.errors.iter().any(|error| matches!(
+        error,
+        InterpreterError::OperatorNotDefined { .. }
+            | InterpreterError::OperatorExpectedError { .. }
+    )));
+    assert!(failed.authority_stack_births.is_empty());
+    assert!(!failed.authority_events.is_empty());
+    assert!(!failed.authority_byte_events.is_empty());
+    assert!(failed.quantitative_byte_cost > 0);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn later_deploy_abort_rolls_back_stack_custody_without_refunding_work() {
+    let mut kvm = InMemoryStoreManager::new();
+    let store = kvm.r_space_stores().await.unwrap();
+    let (mut runtime, _, _) =
+        create_runtimes_with_cost_log(store, Some(false), Some(&mut Vec::new())).await;
+    install_test_payer(&runtime);
+
+    let failed = runtime
+        .evaluate_with_phlo(
+            r#"a :: () | new abort(`rho:execution:abort`) in { abort!("rollback") }"#,
+            Cost::create(100_000, "stack then abort"),
+        )
+        .await
+        .unwrap();
+    assert!(failed.errors.contains(&InterpreterError::UserAbortError));
+    assert!(failed.cost.value > 0);
+    assert!(failed.authority_stack_births.is_empty());
+    assert_eq!(
+        failed.authority_realized,
+        failed
+            .authority_events
+            .iter()
+            .try_fold(
+                rholang::rust::interpreter::accounting::authority::ResourceMultiset::default(),
+                |realized, event| realized.checked_add(&event.debit),
+            )
+            .unwrap()
+    );
+    assert!(failed.quantitative_byte_cost > 0);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn comm_cost_is_trigger_side_symmetric() {
+    let mut expected_cost = None;
     for contract in [
         "@0!(2) | for (_ <- @0) { Nil }",
         "for (_ <- @0) { Nil } | @0!(2)",
     ] {
-        let (result, _, events) = evaluate_with_cost_events(1000, contract.to_string()).await;
+        let (result, _, events) = evaluate_with_cost_events(100_000, contract.to_string()).await;
         assert!(result.errors.is_empty());
-        assert_eq!(result.cost.value, 1);
         assert_eq!(
             events
                 .iter()
@@ -1279,6 +1366,10 @@ async fn comm_cost_is_trigger_side_symmetric() {
                 .count(),
             1
         );
+        match expected_cost {
+            None => expected_cost = Some(result.cost),
+            Some(ref expected) => assert_eq!(&result.cost, expected),
+        }
     }
 }
 
@@ -1289,9 +1380,9 @@ async fn native_contract_output_comm_is_charged_at_rspace_commit() {
         for (_ <- ret) { Nil }
     }";
     for _ in 0..20 {
-        let (result, _, events) = evaluate_with_cost_events(1000, contract.to_string()).await;
+        let (result, _, events) = evaluate_with_cost_events(100_000, contract.to_string()).await;
         assert!(result.errors.is_empty());
-        assert_eq!(result.cost.value, 2);
+        assert!(result.cost.value > 2);
         assert_eq!(
             events
                 .iter()
@@ -1829,7 +1920,7 @@ async fn parallel_permutation_use_cases_preserve_cost() {
 
     let mut expected_cost = None;
     for contract in variants {
-        let (result, _) = evaluate_with_cost_log(1000, contract.to_string()).await;
+        let (result, _) = evaluate_with_cost_log(100_000, contract.to_string()).await;
         assert!(
             result.errors.is_empty(),
             "Contract errored: {}: {:?}",
@@ -1853,7 +1944,7 @@ async fn parallel_interpreter_cost_trace_digest_is_repeatable() {
     let mut expected = None;
 
     for _ in 0..8 {
-        let (result, digest) = evaluate_with_cost_trace_digest(1000, contract.to_string()).await;
+        let (result, digest) = evaluate_with_cost_trace_digest(100_000, contract.to_string()).await;
 
         assert!(
             result.errors.is_empty(),
@@ -1917,10 +2008,10 @@ async fn bounded_generated_terms_have_deterministic_play_replay_cost() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn structurally_equivalent_parallel_order_has_same_token_cost() {
-    let left = evaluate_with_cost_log(1000, "@0!(0) | @1!(1)".to_string())
+    let left = evaluate_with_cost_log(100_000, "@0!(0) | @1!(1)".to_string())
         .await
         .0;
-    let right = evaluate_with_cost_log(1000, "@1!(1) | @0!(0)".to_string())
+    let right = evaluate_with_cost_log(100_000, "@1!(1) | @0!(0)".to_string())
         .await
         .0;
 
@@ -1932,8 +2023,8 @@ async fn structurally_equivalent_parallel_order_has_same_token_cost() {
 /// D3 (DR-9, OD-3) — CONSENSUS COST EXCLUDES PER-OP GAS. Two contracts with the
 /// SAME number of COMMs but VERY different per-operation gas (one sends a plain
 /// literal, the other sends a deep arithmetic expression that charges many
-/// `Primitive` ops) must have the IDENTICAL consensus cost (the COMM count),
-/// because per-op gas is DIAGNOSTIC only and does not gate consensus.
+/// `Primitive` ops) must have identical consensus cost when they produce the
+/// same canonical RSpace footprints, because primitive gas remains diagnostic.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn consensus_cost_excludes_per_op_gas() {
     let plain = evaluate_with_cost_log(100_000, "@0!(1) | for (_ <- @0) { Nil }".to_string())
@@ -1959,27 +2050,22 @@ async fn consensus_cost_excludes_per_op_gas() {
 
     assert_eq!(
         plain.cost.value, heavy.cost.value,
-        "per-op gas must NOT change the per-COMM consensus cost (plain={}, heavy={})",
+        "primitive gas must not change canonical RSpace cost (plain={}, heavy={})",
         plain.cost.value, heavy.cost.value
     );
-    assert_eq!(
-        plain.cost.value, 1,
-        "one committed send/receive match is exactly one COMM token"
+    assert!(
+        plain.cost.value > 1,
+        "one interaction must include its execution unit and quantitative bytes"
     );
 }
 
-/// D3 (DR-9, OD-3): the CONSENSUS cost (`eval_result.cost`) is the per-COMM
-/// token count, NOT the sum of the diagnostic per-op weight log. The cost log
-/// is now diagnostic-only (it still records each charge's per-op weight, which
-/// sums to the old weight total), so `total_cost == Σ log weights` no longer
-/// holds. The D3-correct invariant: a non-empty metered contract consumes ≥ 1
-/// COMM token, the diagnostic log is still populated, and the consensus cost
-/// never exceeds the diagnostic event count (COMMs are a subset of all billable
-/// events, and each COMM contributes exactly 1).
+/// Consensus cost is the exact sum of canonical RSpace introduction and COMM
+/// weights. Structural reductions and primitive/substitution events remain
+/// diagnostic and contribute zero.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn consensus_cost_is_per_comm_count_with_diagnostic_log_populated() {
+async fn consensus_cost_is_exact_weighted_rspace_cost_with_diagnostics() {
     for contract in contracts() {
-        let initial_phlo = 10000i64;
+        let initial_phlo = i32::MAX as i64;
         let (eval_result, cost_log, event_log) =
             evaluate_with_cost_events(initial_phlo, contract.clone()).await;
         assert_eq!(
@@ -1988,23 +2074,26 @@ async fn consensus_cost_is_per_comm_count_with_diagnostic_log_populated() {
             "Contract errored: {}",
             contract
         );
-        let comm_count = event_log
+        let weighted_rspace_cost = event_log
             .iter()
-            .filter(|event| event.kind == BillableKind::Comm)
-            .count() as i64;
-        assert_eq!(eval_result.cost.value, comm_count, "Contract: {contract}");
+            .filter(|event| {
+                matches!(
+                    event.kind,
+                    BillableKind::Comm | BillableKind::RSpaceProduce | BillableKind::RSpaceConsume
+                )
+            })
+            .map(|event| i64::try_from(event.weight).expect("bounded test event weight"))
+            .sum::<i64>();
+        assert_eq!(
+            eval_result.cost.value, weighted_rspace_cost,
+            "Contract: {contract}"
+        );
         assert!(
             !cost_log.is_empty(),
             "diagnostic cost log must remain populated: {}",
             contract
         );
-        assert!(
-            eval_result.cost.value <= cost_log.len() as i64,
-            "per-COMM cost ({}) must not exceed diagnostic event count ({}) for '{}'",
-            eval_result.cost.value,
-            cost_log.len(),
-            contract
-        );
+        assert!(eval_result.cost.value >= 0);
     }
 }
 
@@ -2271,12 +2360,10 @@ fn option_e_throughput_regression_bench() {
     let digest = budget.cost_trace_digest();
     let elapsed = start.elapsed();
 
-    // Sanity: all 1600 COMM events fit the budget, no OOP. D3 (DR-9, OD-3): the
-    // consensus cost is the COMM COUNT (1600), NOT the weight sum (the per-op
-    // weight 5 is diagnostic).
+    // All 1,600 events of weight 5 fit the budget and consume exactly 8,000.
     assert_eq!(digest.event_count, 1600);
     assert_eq!(budget.last_oop_event(), None);
-    assert_eq!(budget.total_cost().value, 1600);
+    assert_eq!(budget.total_cost().value, 8000);
 
     // Generous regression bound — 30s on the slowest CI tier. Local
     // (Linux x86_64) typical: <500ms. A regression to the old commit_lock

@@ -5,19 +5,13 @@
 // rejected, after which the rejected deploy landed in
 // `KeyValueRejectedDeployBuffer` and was re-proposed.
 //
-// D3 REMOVES the per-deploy precharge, so two benign same-key deploys
-// (`@0!(0) | for(_<-@0)`, which write no mergeable number-channel diff) NO
-// LONGER conflict on a vault balance at merge — both branches merge cleanly.
-// The double-spend protection moved to the per-signature ACCEPTANCE GATE
-// (`util/rholang/acceptance.rs`: §7.7 reject-both / drained-pool), covered by
-// `reject_both_on_oversubscription` / `drained_present_pool_rejects` /
-// `per_signature_group_gate`. This test is therefore re-pinned to assert the
-// D3 behavior: the same-key benign deploys MERGE without a precharge-driven
-// rejection and both remain reachable. (The recovery-buffer/re-propose
-// machinery itself is consensus-critical and D3-independent; re-exercising it
-// under D3 requires a non-precharge merge-conflict trigger — a vault-draining
-// REV transfer or a provisioned Σ⟦s⟧ settlement-debit conflict — which is a
-// multi-parent-merge follow-on, not part of the D3 cost-model removal.)
+// D3 removes the maximum-cost precharge. Protocol 4 still commits each branch's
+// exact physical, byte, and fee settlement to the payer's vault, but both benign
+// same-key deploys fit the shared authenticated balance and therefore merge.
+// Admission proves every branch against its pre-state authority; merge then
+// checks the complete aggregate durable debit. The recovery-buffer/re-propose
+// path is exercised below with a genuine vault-draining transfer whose
+// application transfer plus protocol settlement crosses that aggregate bound.
 
 use casper::rust::casper::Casper;
 use casper::rust::util::construct_deploy;
@@ -55,7 +49,8 @@ impl TestContext {
 /// `block_index` discards failed-deploy diffs upstream of the merge
 /// engine, so an `OutOfPhlogistons` exit would erase the settlement
 /// diffs these merge tests exercise. This is a BENIGN contract: it
-/// transfers no REV, so under D3 it drives no merge-time vault rejection.
+/// transfers no application REV. Its exact protocol debit remains far below the
+/// funded aggregate boundary exercised by the benign merge tests.
 const CONFLICT_RHO: &str = r#"
 @0!(0) | for (_ <- @0) { 0 }
 "#;
@@ -84,11 +79,7 @@ fn assert_touched_integer_add_channels_single_valued(
     for block in blocks {
         let diffs = node
             .runtime_manager
-            .load_mergeable_channels(
-                &block.body.state.post_state_hash,
-                block.sender.clone(),
-                block.seq_num,
-            )
+            .load_mergeable_channels(block)
             .expect("load mergeable channels");
         for diff in diffs {
             for (hash, (_, merge_type)) in diff {
@@ -142,9 +133,9 @@ fn assert_touched_integer_add_channels_single_valued(
 ///         \     /
 ///       merge_block          both benign effects survive the merge
 ///
-/// This proves that removing precharge also removes its artificial same-payer
-/// merge conflict: signatures and branch ordering do not determine acceptance
-/// when neither deploy writes a conflicting mergeable resource.
+/// This proves that removing maximum precharge removes its artificial same-payer
+/// merge conflict: both complete exact branch debits fit, and signatures or
+/// branch order do not change acceptance.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[serial]
 async fn d3_same_key_benign_deploys_merge_without_precharge_conflict() {
@@ -277,16 +268,10 @@ async fn d3_same_key_benign_deploys_merge_without_precharge_conflict() {
     // by the per-deploy PRECHARGE (`phlo_limit × phlo_price` debited the source
     // REV vault; two same-key precharges drove its mergeable balance below zero,
     // which `conflict_set_merger::fold_rejection` rejected). D3 REMOVES the
-    // precharge: the benign `CONFLICT_RHO` (`@0!(0) | for(_<-@0)`) writes NO
-    // mergeable number-channel diff, so two same-key copies do NOT conflict on a
-    // vault balance — both branches merge cleanly. The double-spend protection
-    // moved to the per-signature ACCEPTANCE GATE (`util/rholang/acceptance.rs`):
-    // two deploys sharing a signature draw from one supply pool Σ⟦s⟧, and the
-    // §7.7 reject-both / drained-pool checks reject the second once the pool is
-    // committed — covered by the gate tests `reject_both_on_oversubscription`,
-    // `drained_present_pool_rejects`, and `per_signature_group_gate`. So under D3
-    // the merge admits both same-key benign deploys WITHOUT a precharge-driven
-    // rejection.
+    // precharge. Each benign `CONFLICT_RHO` branch still records exact physical,
+    // byte, and fee settlement, but the complete aggregate fits the shared
+    // authenticated vault. Admission and merge both enforce the same complete
+    // debit, so the merge admits both branches without a precharge artifact.
     let rejected_sigs: Vec<Bytes> = merge_block
         .body
         .rejected_deploys
@@ -296,9 +281,8 @@ async fn d3_same_key_benign_deploys_merge_without_precharge_conflict() {
     assert!(
         !rejected_sigs.iter().any(|s| *s == sig_a || *s == sig_b),
         "D3: neither same-key benign deploy is rejected at MERGE — the \
-         precharge-driven vault-balance conflict is removed; double-spend \
-         protection is the per-signature acceptance gate, not the merge \
-         engine's vault-balance check. Got merge rejected sigs={:?}, \
+         precharge-driven vault-balance conflict is removed; the complete \
+         application-plus-protocol aggregate remains solvent. Got merge rejected sigs={:?}, \
          sig_a={}, sig_b={}",
         rejected_sigs.iter().map(hex::encode).collect::<Vec<_>>(),
         hex::encode(&sig_a),
@@ -326,12 +310,11 @@ async fn d3_same_key_benign_deploys_merge_without_precharge_conflict() {
 }
 
 /// D3 (DR-9): three sibling blocks, one same-payer deploy each. Under the
-/// cost-accounted model precharge is removed, so a same-payer set does NOT
-/// over-spend a shared REV vault at merge (the precharge-era premise of this
-/// test — hence 0, not 2, user rejections). Funding settles per-signature at
-/// the acceptance gate: each sibling's lone deploy is individually fundable
-/// against the full genesis Σ⟦signer⟧, so none is gate-rejected, and the
-/// inherited deploys are merged (not re-gated). The merge still keeps the
+/// cost-accounted model precharge is removed. Each branch still carries exact
+/// physical, byte, and fee settlement, but the complete same-payer aggregate
+/// is solvent (hence 0, not 2, user rejections). Every sibling is individually
+/// certified, and merge independently checks the complete durable aggregate.
+/// The merge still keeps the
 /// touched purse single-valued and stays LIVE by dropping the redundant SYSTEM
 /// `CloseBlockDeploy` settlement branches (system chains — never mapped into
 /// user `rejected_deploys`). This mirrors the rejection count of
@@ -434,11 +417,9 @@ async fn three_validator_same_payer_merge_keeps_purses_single_valued_and_live() 
     assert_eq!(
         conflicting_rejections,
         0,
-        "D3 (DR-9): precharge is removed, so same-payer siblings do NOT over-spend a \
-         shared vault at merge (that was the precharge-era model). Funding settles \
-         per-signature at the acceptance gate — each sibling's lone deploy is \
-         individually fundable against the full genesis Σ⟦signer⟧, so none is \
-         gate-rejected, and the inherited deploys are merged, not re-gated. The merge \
+        "D3 (DR-9): maximum precharge is removed, and the complete exact debits of \
+         these same-payer siblings remain within the shared vault balance. Each \
+         sibling is individually certified and the merge verifies the aggregate. The merge \
          keeps the purse single-valued by dropping redundant SYSTEM (CloseBlockDeploy) \
          settlement branches, which are never user rejections; rejected={:?}",
         rejected_sigs.iter().map(hex::encode).collect::<Vec<_>>()
@@ -534,19 +515,12 @@ in {
 /// many REV. The `DEFAULT_PUB` vault is the shared merge-conflict channel below.
 const GENESIS_VAULT_BALANCE: i64 = 9_000_000;
 
-/// Per-transfer REV amount. Chosen so that (a) a SINGLE transfer is solvent
-/// against the full `GENESIS_VAULT_BALANCE` (each sibling's in-VM `NonNegativeNumber`
-/// `"sub"` sees the untouched genesis base and settles), (b) TWO transfers still
-/// fit (`2 × 4_000_000 = 8_000_000 ≤ 9_000_000`), but (c) all THREE over-drain
-/// (`3 × 4_000_000 = 12_000_000 > 9_000_000`). So the merge folds two `-4_000_000`
-/// diffs onto the `9_000_000` base (→ `1_000_000`) and the THIRD accepted branch
-/// would drive it to `-3_000_000`, so `fold_rejection` rejects exactly one branch.
-const TRANSFER_AMOUNT: i64 = 4_000_000;
-
-const _: () = {
-    assert!(2 * TRANSFER_AMOUNT <= GENESIS_VAULT_BALANCE);
-    assert!(3 * TRANSFER_AMOUNT > GENESIS_VAULT_BALANCE);
-};
+/// Per-transfer REV amount. The fixture verifies against every produced
+/// protocol-4 witness that one complete branch debit is solvent, two complete
+/// branch debits fit, and three complete branch debits overdraw the shared
+/// genesis vault. A complete branch debit includes the transfer, physical
+/// settlement, byte settlement, and fixed fee.
+const TRANSFER_AMOUNT: i64 = 3_900_000;
 
 pub(super) struct D3VaultConflictFixture {
     pub(super) nodes: Vec<TestNode>,
@@ -673,10 +647,79 @@ pub(super) async fn propose_d3_vault_rejecting_merge(
         })
         .cloned()
         .collect();
+    let transfer_accounting = fixture
+        .siblings
+        .iter()
+        .map(|block| {
+            let processed = &block.body.deploys[0];
+            let witness = processed
+                .authority_cost_witness
+                .as_ref()
+                .expect("transfer carries an authority cost witness");
+            let certificate = processed
+                .authority_funding_certificate
+                .as_ref()
+                .expect("transfer carries an authority funding certificate");
+            (
+                processed.cost.cost,
+                witness
+                    .realized
+                    .iter()
+                    .map(|resource| resource.amount)
+                    .sum::<u64>(),
+                witness
+                    .settlement
+                    .iter()
+                    .map(|resource| resource.amount)
+                    .sum::<u64>(),
+                witness.byte_cost,
+                witness
+                    .byte_settlement
+                    .iter()
+                    .map(|resource| resource.amount)
+                    .sum::<u64>(),
+                certificate
+                    .fee_allocation
+                    .iter()
+                    .map(|resource| resource.amount)
+                    .sum::<u64>(),
+                certificate
+                    .allocation
+                    .iter()
+                    .chain(&certificate.byte_allocation)
+                    .chain(&certificate.fee_allocation)
+                    .map(|resource| resource.amount)
+                    .sum::<u64>(),
+            )
+        })
+        .collect::<Vec<_>>();
+    let per_branch_protocol_debits = transfer_accounting
+        .iter()
+        .map(|accounting| accounting.2 + accounting.4 + accounting.5)
+        .collect::<Vec<_>>();
+    assert!(
+        per_branch_protocol_debits
+            .windows(2)
+            .all(|pair| pair[0] == pair[1]),
+        "economically identical siblings must have identical protocol debits: \
+         {per_branch_protocol_debits:?}"
+    );
+    let complete_branch_debit =
+        u128::from(TRANSFER_AMOUNT as u64) + u128::from(per_branch_protocol_debits[0]);
+    assert!(
+        2 * complete_branch_debit <= GENESIS_VAULT_BALANCE as u128
+            && 3 * complete_branch_debit > GENESIS_VAULT_BALANCE as u128,
+        "fixture must admit exactly two complete branch debits; branch debit \
+         {complete_branch_debit}, genesis balance {GENESIS_VAULT_BALANCE}, \
+         accounting {transfer_accounting:?}"
+    );
     assert_eq!(
         rejected_transfers.len(),
         1,
-        "three individually solvent transfers must produce exactly one vault rejection"
+        "three individually solvent transfers must produce exactly one vault rejection; \
+         accounting=(cost, realized, physical settlement, byte cost, byte settlement, fee, \
+         reservation) {transfer_accounting:?}; rejected={:?}",
+        merge_block.body.rejected_deploys,
     );
     let rejected_sig = rejected_transfers[0].clone();
     let recovery_validator_index = fixture

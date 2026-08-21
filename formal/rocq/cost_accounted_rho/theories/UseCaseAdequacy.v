@@ -135,29 +135,32 @@ Qed.
 
 (* UC-CA-009: Casper precharge and refund are post-evaluation settlement
    arithmetic over the final token cost. *)
-Theorem uc_ca_009_refund_is_bounded_by_escrow : forall s,
-  refund_amount s <= escrowed_amount s.
+Theorem uc_ca_009_refund_is_bounded_by_reservation : forall s,
+  refund_amount s <= reserved_amount s.
 Proof.
-  exact refund_le_escrow.
+  exact refund_le_reservation.
 Qed.
 
-Theorem uc_ca_009_charged_plus_refund_equals_escrow : forall s,
-  settlement_token_cost s <= settlement_limit s ->
-  settled_amount s = escrowed_amount s.
+Theorem uc_ca_009_debit_plus_refund_equals_reservation : forall s,
+  settlement_physical_cost s <= settlement_physical_bound s ->
+  settlement_byte_cost s <= settlement_byte_bound s ->
+  settled_amount s = reserved_amount s.
 Proof.
-  exact charged_plus_refund_eq_escrow.
+  exact debit_plus_refund_eq_reservation.
 Qed.
 
 Theorem uc_ca_009_post_evaluation_settlement_mints_no_fuel :
-  forall S S' price,
+  forall S S',
     ca_reachable S S' ->
     let consumed := system_token_count S - system_token_count S' in
     let settlement := {|
-      settlement_limit := system_token_count S;
-      settlement_price := price;
-      settlement_token_cost := consumed
+      settlement_physical_bound := system_token_count S;
+      settlement_byte_bound := 0;
+      settlement_fee := 0;
+      settlement_physical_cost := consumed;
+      settlement_byte_cost := 0
     |} in
-    settled_amount settlement = escrowed_amount settlement.
+    settled_amount settlement = reserved_amount settlement.
 Proof.
   exact post_evaluation_settlement_no_mint.
 Qed.
@@ -201,11 +204,11 @@ Qed.
 (* UC-CA-012: slashing effects preserve user cost and settlement arithmetic. *)
 Theorem uc_ca_012_cost_invalid_evidence_preserves_user_cost :
   forall evidence boundary,
-    settlement_token_cost
+    burned_amount
       (boundary_settlement
         (cost_invalid_boundary
           (record_cost_invalid_block evidence boundary))) =
-    settlement_token_cost (boundary_settlement boundary).
+    burned_amount (boundary_settlement boundary).
 Proof.
   exact cost_invalid_block_evidence_does_not_change_user_cost.
 Qed.
@@ -213,13 +216,17 @@ Qed.
 Theorem uc_ca_012_slashing_preserves_settlement_accounting :
   forall C E,
     let C' := apply_slash_system_effect C E in
-    escrowed_amount
+    reserved_amount
       (boundary_settlement (composed_cost_boundary C')) =
-      escrowed_amount
+      reserved_amount
         (boundary_settlement (composed_cost_boundary C)) /\
-    charged_amount
+    debited_amount
       (boundary_settlement (composed_cost_boundary C')) =
-      charged_amount
+      debited_amount
+        (boundary_settlement (composed_cost_boundary C)) /\
+    burned_amount
+      (boundary_settlement (composed_cost_boundary C')) =
+      burned_amount
         (boundary_settlement (composed_cost_boundary C)) /\
     refund_amount
       (boundary_settlement (composed_cost_boundary C')) =
@@ -500,26 +507,28 @@ Proof.
   exact rb_reserve_many_unmetered_no_cost.
 Qed.
 
-(* UC-CA-027: exhausted settlement refunds zero, while zero price yields zero
-   escrow, charge, and refund. *)
-Theorem uc_ca_027_settlement_exhaustion_and_zero_price :
+(* UC-CA-027: component-wise exhaustion refunds zero, while a fee-only
+   reservation transfers the fee and refunds no execution authority. *)
+Theorem uc_ca_027_settlement_exhaustion_and_fee_only :
   (forall s,
-    settlement_limit s <= settlement_token_cost s ->
+    settlement_physical_bound s <= settlement_physical_cost s ->
+    settlement_byte_bound s <= settlement_byte_cost s ->
     refund_amount s = 0) /\
-  (forall limit token_cost,
+  (forall fee,
     let s := {|
-      settlement_limit := limit;
-      settlement_price := 0;
-      settlement_token_cost := token_cost
+      settlement_physical_bound := 0;
+      settlement_byte_bound := 0;
+      settlement_fee := fee;
+      settlement_physical_cost := 0;
+      settlement_byte_cost := 0
     |} in
-    escrowed_amount s = 0 /\
-    charged_amount s = 0 /\
+    reserved_amount s = fee /\
+    debited_amount s = fee /\
     refund_amount s = 0).
 Proof.
   split.
-  - exact refund_zero_when_exhausted.
-  - intros limit token_cost.
-    repeat split; cbn; rewrite Nat.mul_0_r; reflexivity.
+  - exact refund_zero_when_components_exhausted.
+  - intros fee. repeat split; cbn; lia.
 Qed.
 
 (* UC-CA-028: slashing after user evaluation cannot add fuel. *)
@@ -913,10 +922,10 @@ Theorem uc_ca_034_multi_deploy_budget_isolation_and_settlement_sum :
     rb_event_log b2 = rb_event_log b2 /\
     rb_last_oop b2 = rb_last_oop b2) /\
   (forall left right,
-    rb_sum_escrowed_amount (left ++ right) =
-      rb_sum_escrowed_amount left + rb_sum_escrowed_amount right /\
-    rb_sum_charged_amount (left ++ right) =
-      rb_sum_charged_amount left + rb_sum_charged_amount right /\
+    rb_sum_reserved_amount (left ++ right) =
+      rb_sum_reserved_amount left + rb_sum_reserved_amount right /\
+    rb_sum_debited_amount (left ++ right) =
+      rb_sum_debited_amount left + rb_sum_debited_amount right /\
     rb_sum_refund_amount (left ++ right) =
       rb_sum_refund_amount left + rb_sum_refund_amount right /\
     rb_sum_settled_amount (left ++ right) =
@@ -968,8 +977,8 @@ Qed.
 Theorem uc_ca_037_trace_mismatch_preserves_settlement_accounting :
   forall (trace1 trace2 : list rb_trace_entry) s,
     trace1 <> trace2 ->
-    escrowed_amount s = escrowed_amount s /\
-    charged_amount s = charged_amount s /\
+    reserved_amount s = reserved_amount s /\
+    debited_amount s = debited_amount s /\
     refund_amount s = refund_amount s /\
     settled_amount s = settled_amount s.
 Proof.
@@ -1296,8 +1305,8 @@ Theorem uc_ca_052_cost_trace_mismatch_slashing_boundary :
     replay_cost_mismatch recorded observed = true) /\
   (forall (trace1 trace2 : list rb_trace_entry) s,
     trace1 <> trace2 ->
-    escrowed_amount s = escrowed_amount s /\
-    charged_amount s = charged_amount s /\
+    reserved_amount s = reserved_amount s /\
+    debited_amount s = debited_amount s /\
     refund_amount s = refund_amount s /\
     settled_amount s = settled_amount s).
 Proof.
@@ -1379,15 +1388,17 @@ Qed.
 (* UC-CA-058: refunds are settlement arithmetic, and unmetered settlement
    work cannot replenish or append to a user runtime trace. *)
 Theorem uc_ca_058_refund_cannot_replenish_runtime_fuel :
-  (forall S S' price,
+  (forall S S',
     ca_reachable S S' ->
     let consumed := system_token_count S - system_token_count S' in
     let settlement := {|
-      settlement_limit := system_token_count S;
-      settlement_price := price;
-      settlement_token_cost := consumed
+      settlement_physical_bound := system_token_count S;
+      settlement_byte_bound := 0;
+      settlement_fee := 0;
+      settlement_physical_cost := consumed;
+      settlement_byte_cost := 0
     |} in
-    settled_amount settlement = escrowed_amount settlement) /\
+    settled_amount settlement = reserved_amount settlement) /\
   (forall b e,
     rb_unmetered b = true ->
     rb_reserve b e = (b, RbReserveOk) /\
@@ -1752,7 +1763,7 @@ Theorem uc_ca_072_multi_deploy_settlement_frontier :
     rb_sum_settled_amount (left ++ right) =
       rb_sum_settled_amount left + rb_sum_settled_amount right /\
     rb_sum_refund_amount (left ++ right) <=
-      rb_sum_escrowed_amount (left ++ right).
+      rb_sum_reserved_amount (left ++ right).
 Proof.
   exact rb_multi_deploy_settlement_frontier.
 Qed.
@@ -1762,18 +1773,8 @@ Qed.
 Theorem uc_ca_073_slashing_composition_frontier :
   (forall C E,
     let C' := apply_slash_system_effect C E in
-    settlement_limit
-      (boundary_settlement (composed_cost_boundary C')) =
-      settlement_limit
-        (boundary_settlement (composed_cost_boundary C)) /\
-    settlement_price
-      (boundary_settlement (composed_cost_boundary C')) =
-      settlement_price
-        (boundary_settlement (composed_cost_boundary C)) /\
-    settlement_token_cost
-      (boundary_settlement (composed_cost_boundary C')) =
-      settlement_token_cost
-        (boundary_settlement (composed_cost_boundary C))) /\
+    boundary_settlement (composed_cost_boundary C') =
+      boundary_settlement (composed_cost_boundary C)) /\
   (forall C E,
     system_token_count
       (boundary_user_system
@@ -1896,24 +1897,10 @@ Theorem uc_ca_145_mergeable_channel_accounting_preserves_cost_boundary :
         (mergeable_accounting_boundary state))) /\
   (forall state channels,
     let state' := apply_mergeable_accounting state channels in
-    settlement_limit
-      (mergeable_boundary_settlement
-        (mergeable_accounting_boundary state')) =
-      settlement_limit
-        (mergeable_boundary_settlement
-          (mergeable_accounting_boundary state)) /\
-    settlement_price
-      (mergeable_boundary_settlement
-        (mergeable_accounting_boundary state')) =
-      settlement_price
-        (mergeable_boundary_settlement
-          (mergeable_accounting_boundary state)) /\
-    settlement_token_cost
-      (mergeable_boundary_settlement
-        (mergeable_accounting_boundary state')) =
-      settlement_token_cost
-        (mergeable_boundary_settlement
-          (mergeable_accounting_boundary state))).
+    mergeable_boundary_settlement
+      (mergeable_accounting_boundary state') =
+      mergeable_boundary_settlement
+        (mergeable_accounting_boundary state)).
 Proof.
   split.
   - exact mergeable_channel_accounting_preserves_user_budget.

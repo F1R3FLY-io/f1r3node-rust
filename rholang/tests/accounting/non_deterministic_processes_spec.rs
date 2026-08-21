@@ -20,7 +20,7 @@ use rholang::rust::interpreter::test_utils::resources::create_runtimes_with_serv
 use rspace_plus_plus::rspace::history::history_repository::HistoryRepository;
 use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
-use rspace_plus_plus::rspace::trace::event::Event;
+use rspace_plus_plus::rspace::trace::event::{Event, IOEvent};
 
 /// Helper to create external services with mock OpenAI and optional mock gRPC
 fn create_test_external_services(
@@ -382,7 +382,7 @@ async fn replay_gpt4_produces_consistent_costs() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn gpt4_out_of_phlogistons_rejects_before_comm_trace_or_state_mutation() {
+async fn gpt4_out_of_phlogistons_rejects_output_and_marks_the_invocation_failed() {
     let term = r#"new output, gpt4(`rho:ai:gpt4`) in { gpt4!("abc", *output) }"#;
     let completion = "a".repeat(1_000_000);
     let full_cost_services =
@@ -394,13 +394,12 @@ async fn gpt4_out_of_phlogistons_rejects_before_comm_trace_or_state_mutation() {
         full_cost_services,
     )
     .await;
-    // D3 (DR-9, OD-3): the GPT4 mock term `gpt4!("abc", *output)` is ONE COMM
-    // (the external-service call is a diagnostic primitive, not a COMM), so its
-    // per-COMM consensus cost is 1. A budget of `cost - 1` (= 0) then OOPs on
-    // that single COMM, exercising the replay OOP-consistency path.
+    // The external-service primitive is diagnostic; the RSpace introductions,
+    // payload/trace bytes, and committed COMM define the weighted cost. Reducing
+    // that exact cost by one exercises deterministic OOP rejection.
     assert!(
         full_cost_play.cost.value >= 1,
-        "GPT4 mock term should consume at least one COMM token"
+        "GPT4 mock term should consume positive canonical RSpace cost"
     );
 
     let mut kvm = InMemoryStoreManager::new();
@@ -420,20 +419,46 @@ async fn gpt4_out_of_phlogistons_rejects_before_comm_trace_or_state_mutation() {
         )
         .await
         .expect("evaluation must return a deterministic rejection");
-    assert!(matches!(rejected.errors.as_slice(), [
-        rholang::rust::interpreter::errors::InterpreterError::OutOfPhlogistonsError
-    ]));
+    match rejected.errors.as_slice() {
+        [rholang::rust::interpreter::errors::InterpreterError::ProduceFailureWithOutput {
+            cause,
+            output_not_produced,
+        }] => {
+            assert!(matches!(
+                cause.as_ref(),
+                rholang::rust::interpreter::errors::InterpreterError::OutOfPhlogistonsError
+            ));
+            assert_eq!(output_not_produced.len(), 1);
+        }
+        errors => panic!("unexpected rejection errors: {errors:?}"),
+    }
     assert_eq!(rejected.cost.value, full_cost_play.cost.value - 1);
 
     let checkpoint = runtime.create_checkpoint().await;
     assert_eq!(checkpoint.root, pre_state_root);
-    assert!(
-        checkpoint
-            .log
-            .iter()
-            .all(|event| !matches!(event, Event::Comm(_))),
-        "a rejected atomic match must not enter replay evidence"
-    );
+    let failed_inputs = checkpoint
+        .log
+        .iter()
+        .filter_map(|event| match event {
+            Event::IoEvent(IOEvent::Produce(produce)) => Some(produce),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(failed_inputs.len(), 1);
+    assert!(failed_inputs[0].failed);
+    assert!(failed_inputs[0].output_value.is_empty());
+    let comms = checkpoint
+        .log
+        .iter()
+        .filter_map(|event| match event {
+            Event::Comm(comm) => Some(comm),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(comms.len(), 1);
+    assert_eq!(comms[0].produces.len(), 1);
+    assert_eq!(comms[0].produces[0].hash, failed_inputs[0].hash);
+    assert!(comms[0].produces[0].failed);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

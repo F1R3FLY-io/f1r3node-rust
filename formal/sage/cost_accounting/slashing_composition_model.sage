@@ -11,7 +11,15 @@ def current_authorized(parent_bond, evidence_present, evidence_epoch, target_epo
 
 
 def records():
-    settlement_inputs = {"limit": 10, "price": 3, "token_cost": 4}
+    settlement_inputs = vault_settlement(
+        30,
+        12,
+        4,
+        2,
+        7,
+        3,
+        kind="slash_after_evaluation",
+    )
     preserved = dict(settlement_inputs)
     current_parent = {
         "parent_pre_state_bond": 1,
@@ -58,7 +66,7 @@ def records():
             "Cost-invalid slashing evidence does not rewrite deploy settlement inputs.",
             canonical_scenario(
                 "slashing_preserves_settlement_inputs",
-                settlement={"kind": "slash_after_evaluation"},
+                settlement=settlement_inputs,
                 threat_family="slashing_composition",
                 expected_invariants=["slash_preserves_fee_settlement_inputs"],
                 promotion_target="rocq:uc_ca_073",
@@ -192,7 +200,7 @@ def records():
             "Changing a slash target activation epoch changes the authenticated replay payload.",
             canonical_scenario(
                 "slash_target_epoch_replay_authentication",
-                replay_mutations=["slash_fields", "target_activation_epoch", "evidence_epoch", "cost_trace_digest"],
+                replay_mutations=["slash_fields", "target_activation_epoch", "evidence_epoch", "replay_payload_hash"],
                 slashing_authorization=current_parent,
                 threat_family="slashing_composition",
                 expected_invariants=["rb_full_replay_payload_slash_target_epoch_change_detected"],

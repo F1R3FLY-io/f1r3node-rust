@@ -24,7 +24,7 @@ use models::rust::block_hash::BlockHash;
 use models::rust::block_implicits::get_random_block;
 use models::rust::casper::protocol::casper_message::{
     ApprovedBlock, ApprovedBlockCandidate, BlockMessage, BlockRequest, CasperMessage, DeployData,
-    ForkChoiceTipRequest, HasBlock,
+    ForkChoiceTipRequest, HasBlock, MergeableEntryRequest,
 };
 use prost::bytes::Bytes;
 use prost::Message;
@@ -239,6 +239,40 @@ mod tests {
         } else {
             panic!("Expected BlockMessage");
         }
+    }
+
+    #[tokio::test]
+    async fn engine_refuses_to_export_mergeable_evidence() {
+        let fixture = TestFixture::new().await;
+        let genesis = fixture.genesis.clone();
+        fixture
+            .block_store
+            .put(genesis.block_hash.clone(), &genesis)
+            .expect("Failed to put genesis block");
+
+        fixture
+            .engine
+            .handle(
+                fixture.local.clone(),
+                CasperMessage::MergeableEntryRequest(MergeableEntryRequest {
+                    block_hash: genesis.block_hash.clone(),
+                }),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(fixture.transport_layer.request_count(), 1);
+        let sent_request = fixture.transport_layer.pop_request().unwrap();
+        assert_eq!(sent_request.peer, fixture.local);
+        let packet = match sent_request.msg.message {
+            Some(ProtocolMessage::Packet(packet)) => packet,
+            _ => panic!("Expected packet response"),
+        };
+        assert_eq!(packet.type_id, "MergeableEntryResponse");
+        let response = models::casper::MergeableEntryResponseProto::decode(packet.content)
+            .expect("MergeableEntryResponse payload");
+        assert_eq!(response.block_hash, genesis.block_hash);
+        assert!(response.serialized_entry.is_empty());
     }
 
     #[tokio::test]

@@ -65,6 +65,13 @@ pub fn create_event_log_index(
     )
 }
 
+fn effect_bearing_user_deploys(deploys: &[ProcessedDeploy]) -> Vec<&ProcessedDeploy> {
+    deploys
+        .iter()
+        .filter(|deploy| !deploy.is_admission_rejected())
+        .collect()
+}
+
 pub fn new(
     block_hash: &BlockHash,
     block_number: i64,
@@ -75,14 +82,14 @@ pub fn new(
     history_repository: &RhoHistoryRepository,
     mergeable_chs: &Vec<NumberChannelsDiff>,
 ) -> Result<BlockIndex, CasperError> {
-    // Connect mergeable channels data with processed deploys by index
-    let usr_count = usr_processed_deploys.len();
+    let usr_effect_deploys = effect_bearing_user_deploys(usr_processed_deploys);
+    let usr_count = usr_effect_deploys.len();
     let sys_count = sys_processed_deploys.len();
     let deploy_count = usr_count + sys_count;
     let mrg_count = mergeable_chs.len();
     if mrg_count != deploy_count {
         let msg = format!(
-            "Mergeable channel count mismatch for block {}: mergeable_maps={}, deploys={}",
+            "Mergeable channel count mismatch for block {}: mergeable_maps={}, effect_records={}",
             hex::encode(&block_hash[..std::cmp::min(10, block_hash.len())]),
             mrg_count,
             deploy_count
@@ -90,8 +97,8 @@ pub fn new(
         tracing::error!(
             block_hash = %hex::encode(&block_hash[..std::cmp::min(10, block_hash.len())]),
             mergeable_maps = mrg_count,
-            deploys = deploy_count,
-            "mergeable channel count does not match deploy count"
+            effect_records = deploy_count,
+            "mergeable channel count does not match effect-record count"
         );
         return Err(CasperError::RuntimeError(msg));
     }
@@ -99,7 +106,7 @@ pub fn new(
 
     let mut witness_count = 0usize;
     let mut empty_witness_count = 0usize;
-    for (pre, post) in usr_processed_deploys
+    for (pre, post) in usr_effect_deploys
         .iter()
         .map(|deploy| (&deploy.pre_state_hash, &deploy.post_state_hash))
         .chain(
@@ -128,7 +135,7 @@ pub fn new(
     let has_exact_state_witness = witness_count == deploy_count && deploy_count > 0;
     if has_exact_state_witness {
         let mut expected_pre = pre_state_hash.to_bytes_prost();
-        for (execution_index, (effect_pre, effect_post)) in usr_processed_deploys
+        for (execution_index, (effect_pre, effect_post)) in usr_effect_deploys
             .iter()
             .map(|deploy| (&deploy.pre_state_hash, &deploy.post_state_hash))
             .chain(
@@ -157,8 +164,8 @@ pub fn new(
 
     // Connect deploy with corresponding mergeable channels map
     let (usr_mergeable_chs, sys_mergeable_chs) = aligned_mergeable_chs.split_at(usr_count);
-    let usr_deploys_with_mergeable: Vec<_> = usr_processed_deploys
-        .iter()
+    let usr_deploys_with_mergeable: Vec<_> = usr_effect_deploys
+        .into_iter()
         .zip(usr_mergeable_chs.iter())
         .collect();
     let sys_deploys_with_mergeable: Vec<_> = sys_processed_deploys
@@ -329,4 +336,91 @@ pub fn new(
         block_hash: block_hash.clone(),
         deploy_chains: deploy_chain_indices,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use models::rust::casper::protocol::casper_message::{DeployAdmissionStatus, ProcessedDeploy};
+    use proptest::prelude::*;
+
+    use super::effect_bearing_user_deploys;
+    use crate::rust::util::construct_deploy::basic_processed_deploy;
+
+    fn processed_deploy(
+        id: i32,
+        admission_rejected: bool,
+        execution_failed: bool,
+    ) -> ProcessedDeploy {
+        let mut deploy = basic_processed_deploy(id, None).unwrap();
+        deploy.is_failed = execution_failed || admission_rejected;
+        deploy.admission_status = if admission_rejected {
+            DeployAdmissionStatus::Rejected
+        } else {
+            DeployAdmissionStatus::Executed
+        };
+        deploy
+    }
+
+    #[test]
+    fn funding_rejection_and_close_block_require_one_mergeable_map() {
+        let rejected = processed_deploy(0, true, true);
+        assert_eq!(effect_bearing_user_deploys(&[rejected]).len() + 1, 1);
+    }
+
+    #[test]
+    fn ordinary_execution_failure_retains_its_mergeable_map() {
+        let failed = processed_deploy(0, false, true);
+        assert_eq!(effect_bearing_user_deploys(&[failed]).len() + 1, 2);
+    }
+
+    #[test]
+    fn effect_projection_preserves_executed_order() {
+        let deploys = vec![
+            processed_deploy(0, false, false),
+            processed_deploy(1, true, true),
+            processed_deploy(2, false, true),
+        ];
+        let projected = effect_bearing_user_deploys(&deploys);
+        assert_eq!(projected.len(), 2);
+        assert_eq!(projected[0].deploy.data.term, "@0!(0)");
+        assert_eq!(projected[1].deploy.data.term, "@2!(2)");
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(256))]
+
+        #[test]
+        fn mergeable_cardinality_tracks_only_effect_bearing_records(
+            dispositions in proptest::collection::vec((any::<bool>(), any::<bool>()), 0..64),
+            system_deploy_count in 0usize..16,
+        ) {
+            let deploys: Vec<_> = dispositions
+                .iter()
+                .enumerate()
+                .map(|(index, (admission_rejected, execution_failed))| {
+                    processed_deploy(
+                        i32::try_from(index).unwrap(),
+                        *admission_rejected,
+                        *execution_failed,
+                    )
+                })
+                .collect();
+            let expected_user_effects = dispositions
+                .iter()
+                .filter(|(admission_rejected, _)| !admission_rejected)
+                .count();
+
+            prop_assert_eq!(
+                effect_bearing_user_deploys(&deploys).len() + system_deploy_count,
+                expected_user_effects + system_deploy_count,
+            );
+
+            let mut reversed = deploys;
+            reversed.reverse();
+            prop_assert_eq!(
+                effect_bearing_user_deploys(&reversed).len() + system_deploy_count,
+                expected_user_effects + system_deploy_count,
+            );
+        }
+    }
 }

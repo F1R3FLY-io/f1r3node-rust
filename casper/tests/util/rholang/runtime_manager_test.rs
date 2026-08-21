@@ -15,7 +15,7 @@ use casper::rust::util::rholang::costacc::slash_deploy::SlashDeploy;
 use casper::rust::util::rholang::costacc::vault_cost_deploy::{
     ApplyCostDeploy, ProtocolBurnDeploy, ProtocolMintDeploy, VaultAllocation, VaultSettlement,
 };
-use casper::rust::util::rholang::costacc::vault_payer::balance_query_source;
+use casper::rust::util::rholang::costacc::vault_payer::{balance_query_source, vault_payer};
 use casper::rust::util::rholang::replay_failure::ReplayFailure;
 use casper::rust::util::rholang::runtime_manager::RuntimeManager;
 use casper::rust::util::rholang::system_deploy::SystemDeployTrait;
@@ -33,14 +33,13 @@ use models::rust::casper::protocol::casper_message::{
     BlockMessage, Body, DeployData, Event, F1r3flyState, Header, ProcessedDeploy,
     ProcessedSystemDeploy,
 };
-use models::rust::rholang::sorter::par_sort_matcher::ParSortMatcher;
-use models::rust::rholang::sorter::sortable::Sortable;
 use models::rust::utils::new_gstring_par;
-use rholang::rust::interpreter::accounting::authority::sig_to_cost_signature;
-use rholang::rust::interpreter::accounting::costs::Cost;
+use rholang::rust::interpreter::accounting::authority::{
+    allocate_quantitative_events, authority_demand, sig_to_cost_signature, AuthorityByteEvent,
+    AuthorityByteEventKind, ResourceMultiset,
+};
 use rholang::rust::interpreter::accounting::{self, Sig};
 use rholang::rust::interpreter::compiler::compiler::Compiler;
-use rholang::rust::interpreter::env::Env;
 use rholang::rust::interpreter::rho_runtime::RhoRuntime;
 use rholang::rust::interpreter::rho_type::{Extractor, RhoBoolean, RhoNumber, RhoString};
 use rholang::rust::interpreter::system_processes::BlockData;
@@ -232,6 +231,79 @@ async fn protocol_mint_to_vault(
     )
 }
 
+async fn measured_authority_cost(
+    runtime_manager: &RuntimeManager,
+    state_hash: &StateHash,
+    deploy: &crypto::rust::signatures::signed::Cosigned<DeployData>,
+) -> (u64, u64, u64) {
+    let runtime = runtime_manager.spawn_runtime().await;
+    let mut ops = RuntimeOps::new(runtime);
+    ops.runtime
+        .reset(&Blake2b256Hash::from_bytes_prost(state_hash))
+        .await
+        .unwrap();
+    let (processed, _) = ops.process_deploy_cosigned(deploy.clone()).await.unwrap();
+    assert!(!processed.is_failed);
+    let witness = processed.authority_cost_witness.as_ref().unwrap();
+    let physical = witness
+        .events
+        .iter()
+        .flat_map(|event| &event.debit)
+        .try_fold(0_u64, |total, resource| total.checked_add(resource.amount))
+        .unwrap();
+    let byte_events = witness
+        .byte_events
+        .iter()
+        .map(|event| AuthorityByteEvent {
+            event_id: event.event_id.as_ref().try_into().unwrap(),
+            kind: AuthorityByteEventKind::from_tag(u8::try_from(event.kind).unwrap()).unwrap(),
+            authority: event.authority.clone().unwrap(),
+            amount: event.amount,
+        })
+        .collect::<Vec<_>>();
+    let upper_bound = byte_events
+        .iter()
+        .try_fold(0_u64, |total, event| {
+            let region_count = authority_demand(&event.authority)?
+                .0
+                .values()
+                .try_fold(0_u64, |sum, amount| sum.checked_add(*amount))
+                .ok_or(
+                    rholang::rust::interpreter::accounting::authority::AuthorityError::ArithmeticOverflow,
+                )?;
+            total
+                .checked_add(
+                    region_count
+                        .checked_mul(event.amount)
+                        .ok_or(
+                            rholang::rust::interpreter::accounting::authority::AuthorityError::ArithmeticOverflow,
+                        )?,
+                )
+                .ok_or(
+                    rholang::rust::interpreter::accounting::authority::AuthorityError::ArithmeticOverflow,
+                )
+        })
+        .unwrap();
+    let payer = accounting::funding_sig(deploy).lane_hash();
+    let byte_allocation = allocate_quantitative_events(
+        &byte_events,
+        &ResourceMultiset::singleton(payer, upper_bound),
+    )
+    .unwrap();
+    assert!(byte_allocation.0.keys().all(|key| *key == payer));
+    (physical, witness.byte_cost, byte_allocation.get(&payer))
+}
+
+fn exact_vault_funding(physical: u64, bytes: u64) -> i64 {
+    i64::try_from(
+        physical
+            .checked_add(bytes)
+            .and_then(|total| total.checked_add(1))
+            .unwrap(),
+    )
+    .unwrap()
+}
+
 async fn play_close(
     runtime_manager: &RuntimeManager,
     state_hash: &StateHash,
@@ -255,13 +327,6 @@ async fn play_close(
         SystemDeployResult::PlayFailed {
             processed_system_deploy,
         } => panic!("close failed: {processed_system_deploy:?}"),
-    }
-}
-
-fn system_event_list(processed: &ProcessedSystemDeploy) -> &[Event] {
-    match processed {
-        ProcessedSystemDeploy::Succeeded { event_list, .. }
-        | ProcessedSystemDeploy::Failed { event_list, .. } => event_list,
     }
 }
 
@@ -1905,13 +1970,12 @@ async fn state_bound_settlement_charges_the_realized_branch_and_replays_identica
                 .await
                 .unwrap();
             assert_eq!(processed.len(), 1);
-            assert_eq!(processed[0].cost.cost, 1);
 
             let replay_post = runtime_manager
                 .replay_compute_state(
                     &start_state,
                     processed.clone(),
-                    processed_system,
+                    processed_system.clone(),
                     &block_data,
                     None,
                     false,
@@ -1924,13 +1988,23 @@ async fn state_bound_settlement_charges_the_realized_branch_and_replays_identica
                 .as_ref()
                 .unwrap();
             let witness = processed[0].authority_cost_witness.as_ref().unwrap();
-            let reserved = certificate
+            let authority_reserved = certificate
                 .allocation
                 .iter()
                 .map(|resource| resource.amount)
                 .sum::<u64>();
-            let realized = witness
+            let byte_reserved = certificate
+                .byte_allocation
+                .iter()
+                .map(|resource| resource.amount)
+                .sum::<u64>();
+            let authority_realized = witness
                 .settlement
+                .iter()
+                .map(|resource| resource.amount)
+                .sum::<u64>();
+            let byte_realized = witness
+                .byte_settlement
                 .iter()
                 .map(|resource| resource.amount)
                 .sum::<u64>();
@@ -1939,18 +2013,62 @@ async fn state_bound_settlement_charges_the_realized_branch_and_replays_identica
                 .iter()
                 .map(|resource| resource.amount)
                 .sum::<u64>();
-            assert!(reserved >= realized);
-            assert_eq!(u64::try_from(admitted_realized).unwrap(), realized);
+            assert!(authority_reserved >= authority_realized);
+            assert!(byte_reserved >= byte_realized);
+            assert!(byte_realized >= witness.byte_cost);
+            assert_eq!(byte_reserved, byte_realized);
+            assert!(!witness.byte_events.is_empty());
+            assert_eq!(
+                witness
+                    .byte_events
+                    .iter()
+                    .map(|event| event.amount)
+                    .sum::<u64>(),
+                witness.byte_cost
+            );
+            assert_eq!(
+                processed[0].cost.cost,
+                u64::try_from(witness.events.len()).unwrap() + witness.byte_cost
+            );
+            assert_eq!(
+                u64::try_from(admitted_realized).unwrap(),
+                authority_realized + byte_realized
+            );
             assert_eq!(fee, 1);
             assert_eq!(certificate.fee_recipient, block_data.sender.bytes);
             assert_eq!(
                 system_vault_balance(&runtime_manager, &play_post, &payer_address).await,
-                initial_payer - i64::try_from(realized + fee).unwrap()
+                initial_payer - i64::try_from(authority_realized + byte_realized + fee).unwrap()
             );
             assert_eq!(
                 system_vault_balance(&runtime_manager, &play_post, &proposer_address).await,
                 initial_proposer + i64::try_from(fee).unwrap()
                     - casper::rust::util::rholang::costacc::VALIDATOR_HANDLER_COST_PER_DEPLOY
+            );
+
+            let mut tampered = processed;
+            let byte_event = &mut tampered[0]
+                .authority_cost_witness
+                .as_mut()
+                .unwrap()
+                .byte_events[0];
+            byte_event.kind = if byte_event.kind == 0 { 2 } else { 0 };
+            let error = runtime_manager
+                .replay_compute_state(
+                    &start_state,
+                    tampered,
+                    processed_system,
+                    &block_data,
+                    None,
+                    false,
+                )
+                .await
+                .expect_err("replay must reject a byte-event kind that differs from execution");
+            assert!(
+                error
+                    .to_string()
+                    .contains("replay quantitative byte trace differs from the committed witness"),
+                "{error:?}"
             );
         },
     )
@@ -2051,6 +2169,11 @@ async fn state_bound_execution_observes_the_authenticated_pre_reservation_vault_
                 .iter()
                 .map(|resource| resource.amount)
                 .sum::<u64>();
+            let byte_realized = witness
+                .byte_settlement
+                .iter()
+                .map(|resource| resource.amount)
+                .sum::<u64>();
             let fee = certificate
                 .fee_allocation
                 .iter()
@@ -2058,7 +2181,7 @@ async fn state_bound_execution_observes_the_authenticated_pre_reservation_vault_
                 .sum::<u64>();
             assert_eq!(
                 system_vault_balance(&runtime_manager, &play_post, &payer_address).await,
-                initial_payer - i64::try_from(realized + fee).unwrap()
+                initial_payer - i64::try_from(realized + byte_realized + fee).unwrap()
             );
 
             let replay_post = runtime_manager
@@ -2220,10 +2343,124 @@ async fn same_deploy_stack_transfer_is_vault_backed_consumed_and_replayed() {
                 VaultAddress::from_public_key(&genesis_context.genesis_vaults[0].1).unwrap();
             let initial_payer =
                 system_vault_balance(&runtime_manager, &start_state, &payer_address).await;
+            let stack_signature =
+                Compiler::source_to_adt("t :: ()").unwrap().cost_stacks[0].cells[0].clone();
+            let stack_payer = vault_payer(&stack_signature).unwrap();
+            let stack_funding = 100_000_i64;
+            assert_eq!(
+                system_vault_balance(&runtime_manager, &start_state, &stack_payer.address).await,
+                0
+            );
+            let funding_source = format!(
+                r#"
+                new rl(`rho:registry:lookup`), systemVaultCh,
+                    payerCh, targetCh, authKeyCh, transferCh,
+                    deployerId(`rho:system:deployerId`) in {{
+                  rl!(`rho:vault:system`, *systemVaultCh) |
+                  for (@(_, systemVault) <- systemVaultCh) {{
+                    @systemVault!("find", "{}", *payerCh) |
+                    @systemVault!("findOrCreate", "{}", *targetCh) |
+                    @systemVault!("deployerAuthKey", *deployerId, *authKeyCh) |
+                    for (@(true, payer) <- payerCh & @(true, _) <- targetCh & key <- authKeyCh) {{
+                      @payer!("transfer", "{}", {}, *key, *transferCh) |
+                      for (@result <- transferCh) {{
+                        @"same-deploy-stack-funded"!(result)
+                      }}
+                    }}
+                  }}
+                }}
+                "#,
+                payer_address.to_base58(),
+                stack_payer.address.to_base58(),
+                stack_payer.address.to_base58(),
+                stack_funding,
+            );
+            let funding = construct_deploy::source_deploy(
+                funding_source,
+                1,
+                None,
+                None,
+                Some(payer_key.clone()),
+                None,
+                Some(genesis_block.shard_id.clone()),
+            )
+            .unwrap();
+            let funding =
+                crypto::rust::signatures::signed::Cosigned::from_single_signer(funding).unwrap();
+            let funding_block = BlockData {
+                time_stamp: 1,
+                block_number: 2,
+                sender: genesis_context.validator_pks()[0].clone(),
+                seq_num: 2,
+            };
+            let funding_admission = runtime_manager
+                .certify_state_bound_admission(
+                    &start_state,
+                    vec![funding],
+                    &funding_block,
+                    &HashMap::new(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(funding_admission.outcome().admitted.len(), 1);
+            let funding_close = CloseBlockDeploy::new(
+                system_deploy_util::generate_close_deploy_random_seed_from_pk(
+                    funding_block.sender.clone(),
+                    funding_block.seq_num,
+                ),
+            );
+            let (funded_state, funding_processed, funding_system, _) = runtime_manager
+                .compute_state_with_bonds_cosigned_admitted(funding_admission, vec![
+                    casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum::Close(
+                        funding_close,
+                    ),
+                ])
+                .await
+                .unwrap();
+            assert_eq!(funding_processed.len(), 1);
+            let funding_certificate = funding_processed[0]
+                .authority_funding_certificate
+                .as_ref()
+                .unwrap();
+            let funding_witness = funding_processed[0]
+                .authority_cost_witness
+                .as_ref()
+                .unwrap();
+            let funding_charge = funding_witness
+                .settlement
+                .iter()
+                .chain(&funding_witness.byte_settlement)
+                .map(|resource| resource.amount)
+                .sum::<u64>()
+                + funding_certificate
+                    .fee_allocation
+                    .iter()
+                    .map(|resource| resource.amount)
+                    .sum::<u64>();
+            let replayed_funding = runtime_manager
+                .replay_compute_state(
+                    &start_state,
+                    funding_processed,
+                    funding_system,
+                    &funding_block,
+                    None,
+                    false,
+                )
+                .await
+                .unwrap();
+            assert_eq!(funded_state, replayed_funding);
+            assert_eq!(
+                system_vault_balance(&runtime_manager, &funded_state, &stack_payer.address).await,
+                stack_funding
+            );
+            assert_eq!(
+                system_vault_balance(&runtime_manager, &funded_state, &payer_address).await,
+                initial_payer - stack_funding - i64::try_from(funding_charge).unwrap()
+            );
             let source = r#"t :: t :: () | {% for(_ <- @"x"){ Nil } %}[ t ] | @"x"!(0)"#;
             let deploy = construct_deploy::source_deploy(
                 source.to_string(),
-                1,
+                2,
                 None,
                 None,
                 Some(payer_key),
@@ -2235,20 +2472,20 @@ async fn same_deploy_stack_transfer_is_vault_backed_consumed_and_replayed() {
                 crypto::rust::signatures::signed::Cosigned::from_single_signer(deploy).unwrap();
             let block_data = BlockData {
                 time_stamp: 2,
-                block_number: 2,
+                block_number: 3,
                 sender: genesis_context.validator_pks()[0].clone(),
-                seq_num: 2,
+                seq_num: 3,
             };
             let prepare_runtime = runtime_manager.spawn_runtime().await;
             let mut prepare_ops = RuntimeOps::new(prepare_runtime);
             prepare_ops
                 .runtime
-                .reset(&Blake2b256Hash::from_bytes_prost(&start_state))
+                .reset(&Blake2b256Hash::from_bytes_prost(&funded_state))
                 .await
                 .unwrap();
             let reader = acceptance::RuntimeOpsSupplyReader {
                 runtime_ops: &prepare_ops,
-                pre_state_root: start_state.as_ref().try_into().unwrap(),
+                pre_state_root: funded_state.as_ref().try_into().unwrap(),
             };
             let canonical = Compiler::source_to_adt(source).unwrap();
             let plan = rholang::rust::interpreter::accounting::delta_sigma::static_authority_plan(
@@ -2272,7 +2509,7 @@ async fn same_deploy_stack_transfer_is_vault_backed_consumed_and_replayed() {
             assert_eq!(prepared.certificate.allocation.0.values().sum::<u64>(), 3);
             let admission = runtime_manager
                 .certify_state_bound_admission(
-                    &start_state,
+                    &funded_state,
                     vec![cosigned],
                     &block_data,
                     &HashMap::new(),
@@ -2315,6 +2552,11 @@ async fn same_deploy_stack_transfer_is_vault_backed_consumed_and_replayed() {
                 .iter()
                 .map(|resource| resource.amount)
                 .sum::<u64>();
+            let byte_burned = witness
+                .byte_settlement
+                .iter()
+                .map(|resource| resource.amount)
+                .sum::<u64>();
             let fee = certificate
                 .fee_allocation
                 .iter()
@@ -2322,15 +2564,41 @@ async fn same_deploy_stack_transfer_is_vault_backed_consumed_and_replayed() {
                 .sum::<u64>();
             assert_eq!(reserved, 3);
             assert_eq!(burned, 3);
+            assert!(byte_burned > 0);
             assert_eq!(fee, 1);
+            let stack_debit = witness
+                .settlement
+                .iter()
+                .chain(&witness.byte_settlement)
+                .filter(|resource| resource.key.as_ref() == stack_payer.lane_key.as_slice())
+                .map(|resource| resource.amount)
+                .sum::<u64>();
+            let payer_lane =
+                accounting::funding_sig_single(&genesis_context.genesis_vaults[0].1.bytes)
+                    .lane_hash();
+            let payer_debit = witness
+                .settlement
+                .iter()
+                .chain(&witness.byte_settlement)
+                .filter(|resource| resource.key.as_ref() == payer_lane.as_slice())
+                .map(|resource| resource.amount)
+                .sum::<u64>();
+            assert!(stack_debit >= 3);
+            assert_eq!(stack_debit + payer_debit, burned + byte_burned);
+            assert_eq!(
+                system_vault_balance(&runtime_manager, &play_post, &stack_payer.address).await,
+                stack_funding - i64::try_from(stack_debit).unwrap()
+            );
             assert_eq!(
                 system_vault_balance(&runtime_manager, &play_post, &payer_address).await,
-                initial_payer - 4
+                initial_payer
+                    - stack_funding
+                    - i64::try_from(funding_charge + payer_debit + fee).unwrap()
             );
 
             let replay_post = runtime_manager
                 .replay_compute_state(
-                    &start_state,
+                    &funded_state,
                     processed,
                     processed_system,
                     &block_data,
@@ -2649,8 +2917,18 @@ async fn exactly_funded_stack_transfer_commits_and_replays_conservatively() {
             .unwrap();
             let deploy =
                 crypto::rust::signatures::signed::Cosigned::from_single_signer(deploy).unwrap();
-            let seeded_state =
-                protocol_mint_to_vault(&runtime_manager, &start_state, &payer_address, 3, 54).await;
+            let (physical_cost, byte_cost, byte_debit) =
+                measured_authority_cost(&runtime_manager, &start_state, &deploy).await;
+            assert_eq!(physical_cost, 2);
+            assert!(byte_cost > 0);
+            let seeded_state = protocol_mint_to_vault(
+                &runtime_manager,
+                &start_state,
+                &payer_address,
+                exact_vault_funding(physical_cost, byte_debit),
+                54,
+            )
+            .await;
             let block_data = BlockData {
                 time_stamp: 3,
                 block_number: 2,
@@ -2775,8 +3053,18 @@ async fn parallel_equal_stack_literals_have_distinct_conserving_transfers() {
             .unwrap();
             let deploy =
                 crypto::rust::signatures::signed::Cosigned::from_single_signer(deploy).unwrap();
-            let seeded_state =
-                protocol_mint_to_vault(&runtime_manager, &start_state, &payer_address, 5, 55).await;
+            let (physical_cost, byte_cost, byte_debit) =
+                measured_authority_cost(&runtime_manager, &start_state, &deploy).await;
+            assert_eq!(physical_cost, 4);
+            assert!(byte_cost > 0);
+            let seeded_state = protocol_mint_to_vault(
+                &runtime_manager,
+                &start_state,
+                &payer_address,
+                exact_vault_funding(physical_cost, byte_debit),
+                55,
+            )
+            .await;
             let block_data = BlockData {
                 time_stamp: 4,
                 block_number: 2,
@@ -2899,8 +3187,6 @@ async fn certified_execution_settles_split_surfaces_from_persistent_stacks() {
             let funding = accounting::funding_sig(&cosigned);
             let signature = sig_to_cost_signature(&funding).unwrap();
             let funding_channel = supply::supply_channel(&funding);
-            let funded_state =
-                protocol_mint_to_vault(&runtime_manager, &start_state, &payer_address, 1, 33).await;
             let first_tail = CostSignature {
                 value: Some(Value::Ground(b"first-tail".to_vec())),
             };
@@ -2911,7 +3197,7 @@ async fn certified_execution_settles_split_surfaces_from_persistent_stacks() {
             let mut seed_ops = RuntimeOps::new(seed_runtime);
             seed_ops
                 .runtime
-                .reset(&Blake2b256Hash::from_bytes_prost(&funded_state))
+                .reset(&Blake2b256Hash::from_bytes_prost(&start_state))
                 .await
                 .unwrap();
             for (tail, random_state) in [
@@ -2937,15 +3223,27 @@ async fn certified_execution_settles_split_surfaces_from_persistent_stacks() {
                     .await
                     .unwrap();
             }
-            let seeded_state = seed_ops
+            let stacks_state = seed_ops
                 .runtime
                 .create_checkpoint()
                 .await
                 .root
                 .to_bytes_prost();
+            let (physical_cost, byte_cost, byte_debit) =
+                measured_authority_cost(&runtime_manager, &stacks_state, &cosigned).await;
+            assert_eq!(physical_cost, 2);
+            assert!(byte_debit >= byte_cost);
+            let seeded_state = protocol_mint_to_vault(
+                &runtime_manager,
+                &stacks_state,
+                &payer_address,
+                exact_vault_funding(0, byte_debit),
+                33,
+            )
+            .await;
             assert_eq!(
                 system_vault_balance(&runtime_manager, &seeded_state, &payer_address).await,
-                1
+                exact_vault_funding(0, byte_debit)
             );
 
             let block_data = BlockData {
@@ -2964,7 +3262,15 @@ async fn certified_execution_settles_split_surfaces_from_persistent_stacks() {
                 .await
                 .unwrap();
             assert_eq!(admission.outcome().admitted.len(), 1);
-            assert!(admission.outcome().debits.is_empty());
+            assert_eq!(
+                admission
+                    .outcome()
+                    .debits
+                    .values()
+                    .map(|debit| debit.amount)
+                    .sum::<i64>(),
+                i64::try_from(byte_debit).unwrap()
+            );
             assert_eq!(
                 admission
                     .outcome()
@@ -3045,11 +3351,9 @@ async fn certified_execution_settles_split_surfaces_from_persistent_stacks() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn token_stack_persists_across_deploys_and_replays_before_consumption() {
+async fn candidate_created_stack_cannot_supply_same_deploy_lollipop_byte_capacity() {
     with_runtime_manager(
         |runtime_manager, genesis_context, genesis_block| async move {
-            use models::rhoapi::cost_signature::Value;
-
             let start_state = genesis_block.body.state.post_state_hash.clone();
             let signer = genesis_context.genesis_vaults[0].0.clone();
             let payer_address =
@@ -3067,22 +3371,9 @@ async fn token_stack_persists_across_deploys_and_replays_before_consumption() {
                 Some(genesis_block.shard_id.clone()),
             )
             .unwrap();
-            let consume = construct_deploy::source_deploy(
-                r#"@"trigger"!(0)"#.to_string(),
-                2,
-                None,
-                None,
-                Some(signer),
-                None,
-                Some(genesis_block.shard_id.clone()),
-            )
-            .unwrap();
             let deposit =
                 crypto::rust::signatures::signed::Cosigned::from_single_signer(deposit).unwrap();
-            let consume =
-                crypto::rust::signatures::signed::Cosigned::from_single_signer(consume).unwrap();
-            let funding = accounting::funding_sig(&deposit);
-            assert_eq!(funding, accounting::funding_sig(&consume));
+            let deposit_id = deposit.primary().sig.clone();
 
             let deposit_block = BlockData {
                 time_stamp: 1,
@@ -3127,163 +3418,23 @@ async fn token_stack_persists_across_deploys_and_replays_before_consumption() {
                 )
                 .await
                 .unwrap();
-            assert_eq!(deposit_admission.outcome().admitted.len(), 1);
+            assert!(deposit_admission.outcome().admitted.is_empty());
+            assert_eq!(deposit_admission.outcome().rejected, vec![deposit_id]);
             assert!(deposit_admission.outcome().stack_pops.is_empty());
-            let deposit_close = CloseBlockDeploy::new(
-                system_deploy_util::generate_close_deploy_random_seed_from_pk(
-                    deposit_block.sender.clone(),
-                    deposit_block.seq_num,
-                ),
-            );
-            let (deposited_state, deposited, deposited_system, _) = runtime_manager
-                .compute_state_with_bonds_cosigned_admitted(deposit_admission, vec![
-                    casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum::Close(
-                        deposit_close,
-                    ),
-                ])
-                .await
-                .unwrap();
-            let replayed_deposit = runtime_manager
-                .replay_compute_state(
-                    &start_state,
-                    deposited,
-                    deposited_system,
-                    &deposit_block,
-                    None,
-                    false,
-                )
-                .await
-                .unwrap();
-            assert_eq!(deposited_state, replayed_deposit);
-
+            assert!(deposit_admission.outcome().purse_stacks.is_empty());
+            assert_eq!(deposit_admission.pre_state(), &start_state);
             assert_eq!(
-                system_vault_balance(&runtime_manager, &deposited_state, &payer_address).await,
-                initial_payer - 4
+                system_vault_balance(&runtime_manager, &start_state, &payer_address).await,
+                initial_payer
             );
-
-            let published = runtime_manager
+            assert!(runtime_manager
                 .get_data(
-                    deposited_state.clone(),
+                    start_state,
                     &new_gstring_par("slot-registry".to_string(), Vec::new(), false),
                 )
                 .await
-                .unwrap();
-            assert_eq!(published.len(), 1);
-            let slot = ParSortMatcher::sort_match(&published[0]).term;
-            let signature = CostSignature {
-                value: Some(Value::Name(slot)),
-            };
-            let signature_sig =
-                rholang::rust::interpreter::accounting::authority::cost_signature_to_sig(
-                    &signature,
-                )
-                .unwrap();
-            let purse_channel = supply::supply_channel(&signature_sig);
-            let deposited_inventory = supply::decode_purse_inventory(
-                &runtime_manager
-                    .get_data_datums(deposited_state.clone(), &purse_channel)
-                    .await
-                    .unwrap(),
-                &signature,
-            )
-            .unwrap();
-            assert_eq!(deposited_inventory.stacks.len(), 1);
-            assert_eq!(deposited_inventory.stacks[0].stack.cells.len(), 2);
-            let persistent_stack_id = deposited_inventory.stacks[0].instance_id;
-
-            let consume_block = BlockData {
-                time_stamp: 2,
-                block_number: 3,
-                sender: genesis_context.validator_pks()[0].clone(),
-                seq_num: 3,
-            };
-            let consume_admission = runtime_manager
-                .certify_state_bound_admission(
-                    &deposited_state,
-                    vec![consume],
-                    &consume_block,
-                    &HashMap::new(),
-                )
-                .await
-                .unwrap();
-            assert_eq!(consume_admission.outcome().admitted.len(), 1);
-            let admission_stack_pops = consume_admission.outcome().stack_pops.clone();
-            assert_eq!(
-                admission_stack_pops.get(&persistent_stack_id),
-                Some(&1)
-            );
-            assert_eq!(admission_stack_pops.len(), 2);
-            assert!(admission_stack_pops.keys().all(|stack_id| consume_admission
-                .outcome()
-                .purse_stacks
-                .contains_key(stack_id)));
-            let consume_close = CloseBlockDeploy::new(
-                system_deploy_util::generate_close_deploy_random_seed_from_pk(
-                    consume_block.sender.clone(),
-                    consume_block.seq_num,
-                ),
-            );
-            let (consumed_state, consumed, consumed_system, _) = runtime_manager
-                .compute_state_with_bonds_cosigned_admitted(consume_admission, vec![
-                    casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum::Close(
-                        consume_close,
-                    ),
-                ])
-                .await
-                .unwrap();
-            let witness = consumed[0].authority_cost_witness.as_ref().unwrap();
-            let certificate = consumed[0]
-                .authority_funding_certificate
-                .as_ref()
-                .unwrap();
-            assert_eq!(certificate.stack_reservations.len(), 2);
-            for reservation in &certificate.stack_reservations {
-                let stack_id: [u8; 32] = reservation.stack_id.as_ref().try_into().unwrap();
-                assert_eq!(
-                    admission_stack_pops.get(&stack_id),
-                    Some(&reservation.pop_count)
-                );
-            }
-            assert_eq!(
-                witness
-                    .physical_draws
-                    .iter()
-                    .map(|draw| draw.stack_ids.len() as u64)
-                    .sum::<u64>(),
-                2
-            );
-            assert_eq!(consumed_system.len(), 1);
-            assert!(recorded_removal_pair_count(system_event_list(
-                &consumed_system[0]
-            )) >= 1);
-            let replayed_consume = runtime_manager
-                .replay_compute_state(
-                    &deposited_state,
-                    consumed,
-                    consumed_system,
-                    &consume_block,
-                    None,
-                    false,
-                )
-                .await
-                .unwrap();
-            assert_eq!(consumed_state, replayed_consume);
-
-            let consumed_inventory = supply::decode_purse_inventory(
-                &runtime_manager
-                    .get_data_datums(consumed_state.clone(), &purse_channel)
-                    .await
-                    .unwrap(),
-                &signature,
-            )
-            .unwrap();
-            assert_eq!(consumed_inventory.stacks.len(), 1);
-            assert_eq!(consumed_inventory.stacks[0].stack.cells.len(), 1);
-
-            assert_eq!(
-                system_vault_balance(&runtime_manager, &consumed_state, &payer_address).await,
-                initial_payer - 6
-            );
+                .unwrap()
+                .is_empty());
         },
     )
     .await
@@ -3301,7 +3452,8 @@ async fn wallet_funded_lollipop_slot_settles_across_deploys_and_replays() {
                 VaultAddress::from_public_key(&genesis_context.genesis_vaults[1].1).unwrap();
             let gateway_key = genesis_context.genesis_vaults[2].0.clone();
             let gateway_public_key = hex::encode(&genesis_context.genesis_vaults[2].1.bytes);
-            let installer_source = r#"new entry, slot, slotAddressCh,
+            let purse_funding = 100_000_i64;
+            let installer_source = r#"new entry, slot, entryAddressCh, slotAddressCh,
                 VaultAddress(`rho:vault:address`),
                 DeployerIdOps(`rho:system:deployerId:ops`) in {
               for (@request, deployerId <= @"agent-trigger") {
@@ -3309,15 +3461,19 @@ async fn wallet_funded_lollipop_slot_settles_across_deploys_and_replays() {
                   DeployerIdOps!("pubKeyBytes", *deployerId, *publicKeyCh) |
                   for (@publicKey <- publicKeyCh) {
                     if (publicKey == "GATEWAY_PUBLIC_KEY".hexToBytes()) {
+                      {% for(@accepted <- entry){
+                        new x in { x!(0) | for(@0 <- x){ @"agent-ran"!(true) } }
+                      } %}[ entry -o slot ] |
                       entry!(request)
                     }
                   }
                 }
               } |
-              {% for(@request <- entry){
-                new x in { x!(0) | for(@0 <- x){ @"agent-ran"!(true) } }
-              } %}[ entry -o slot ] |
               entry :: () |
+              VaultAddress!("fromUnforgeable", *entry, *entryAddressCh) |
+              for (@entryAddress <- entryAddressCh) {
+                @"agent-entry-address"!!(entryAddress)
+              } |
               VaultAddress!("fromUnforgeable", *slot, *slotAddressCh) |
               for (@slotAddress <- slotAddressCh) {
                 @"agent-slot-address"!!(slotAddress)
@@ -3379,6 +3535,17 @@ async fn wallet_funded_lollipop_slot_settles_across_deploys_and_replays() {
                 .unwrap();
             assert_eq!(installed_state, replayed_install);
 
+            let published_entry_address = runtime_manager
+                .get_data(
+                    installed_state.clone(),
+                    &new_gstring_par("agent-entry-address".to_string(), Vec::new(), false),
+                )
+                .await
+                .unwrap();
+            assert_eq!(published_entry_address.len(), 1);
+            let entry_address =
+                VaultAddress::parse(&RhoString::unapply(&published_entry_address[0]).unwrap())
+                    .unwrap();
             let published_address = runtime_manager
                 .get_data(
                     installed_state.clone(),
@@ -3393,31 +3560,45 @@ async fn wallet_funded_lollipop_slot_settles_across_deploys_and_replays() {
                 system_vault_balance(&runtime_manager, &installed_state, &slot_address).await,
                 0
             );
+            assert_eq!(
+                system_vault_balance(&runtime_manager, &installed_state, &entry_address).await,
+                0
+            );
 
             let initial_sponsor =
                 system_vault_balance(&runtime_manager, &installed_state, &sponsor_address).await;
             let funding_source = format!(
                 r#"
                 new rl(`rho:registry:lookup`), systemVaultCh,
-                    payerCh, slotCh, authKeyCh, transferCh,
+                    payerCh, entryCh, slotCh, authKeyCh,
+                    entryTransferCh, slotTransferCh,
                     deployerId(`rho:system:deployerId`) in {{
                   rl!(`rho:vault:system`, *systemVaultCh) |
                   for (@(_, systemVault) <- systemVaultCh) {{
                     @systemVault!("find", "{}", *payerCh) |
+                    @systemVault!("findOrCreate", "{}", *entryCh) |
                     @systemVault!("findOrCreate", "{}", *slotCh) |
                     @systemVault!("deployerAuthKey", *deployerId, *authKeyCh) |
-                    for (@(true, payer) <- payerCh & @(true, _) <- slotCh & key <- authKeyCh) {{
-                      @payer!("transfer", "{}", 2, *key, *transferCh) |
-                      for (@result <- transferCh) {{
-                        @"agent-slot-funded"!(result)
+                    for (@(true, payer) <- payerCh & @(true, _) <- entryCh &
+                         @(true, _) <- slotCh & key <- authKeyCh) {{
+                      @payer!("transfer", "{}", {}, *key, *entryTransferCh) |
+                      for (@entryResult <- entryTransferCh) {{
+                        @payer!("transfer", "{}", {}, *key, *slotTransferCh) |
+                        for (@slotResult <- slotTransferCh) {{
+                          @"agent-slot-funded"!(entryResult, slotResult)
+                        }}
                       }}
                     }}
                   }}
                 }}
                 "#,
                 sponsor_address.to_base58(),
+                entry_address.to_base58(),
                 slot_address.to_base58(),
+                entry_address.to_base58(),
+                purse_funding,
                 slot_address.to_base58(),
+                purse_funding,
             );
             let funding = construct_deploy::source_deploy(
                 funding_source,
@@ -3469,6 +3650,11 @@ async fn wallet_funded_lollipop_slot_settles_across_deploys_and_replays() {
                 .iter()
                 .map(|resource| resource.amount)
                 .sum::<u64>();
+            let funding_byte_cost = funding_witness
+                .byte_settlement
+                .iter()
+                .map(|resource| resource.amount)
+                .sum::<u64>();
             let funding_fee = funding_certificate
                 .fee_allocation
                 .iter()
@@ -3488,11 +3674,17 @@ async fn wallet_funded_lollipop_slot_settles_across_deploys_and_replays() {
             assert_eq!(funded_state, replayed_funding);
             assert_eq!(
                 system_vault_balance(&runtime_manager, &funded_state, &slot_address).await,
-                2
+                purse_funding
+            );
+            assert_eq!(
+                system_vault_balance(&runtime_manager, &funded_state, &entry_address).await,
+                purse_funding
             );
             assert_eq!(
                 system_vault_balance(&runtime_manager, &funded_state, &sponsor_address).await,
-                initial_sponsor - 2 - i64::try_from(funding_cost + funding_fee).unwrap()
+                initial_sponsor
+                    - purse_funding * 2
+                    - i64::try_from(funding_cost + funding_byte_cost + funding_fee).unwrap()
             );
             let funding_markers = runtime_manager
                 .get_data(
@@ -3501,7 +3693,7 @@ async fn wallet_funded_lollipop_slot_settles_across_deploys_and_replays() {
                 )
                 .await
                 .unwrap();
-            assert_eq!(funding_markers.len(), 1);
+            assert_eq!(funding_markers.len(), 2);
 
             let trigger_source = r#"new deployerId(`rho:system:deployerId`) in {
               @"agent-trigger"!(0, *deployerId)
@@ -3576,7 +3768,11 @@ async fn wallet_funded_lollipop_slot_settles_across_deploys_and_replays() {
             assert_eq!(unauthorized_state, replayed_unauthorized);
             assert_eq!(
                 system_vault_balance(&runtime_manager, &unauthorized_state, &slot_address).await,
-                2
+                purse_funding
+            );
+            assert_eq!(
+                system_vault_balance(&runtime_manager, &unauthorized_state, &entry_address).await,
+                purse_funding
             );
             assert!(runtime_manager
                 .get_data(
@@ -3651,10 +3847,14 @@ async fn wallet_funded_lollipop_slot_settles_across_deploys_and_replays() {
                 .await
                 .unwrap();
             assert_eq!(triggered_state, replayed_trigger);
-            assert_eq!(
-                system_vault_balance(&runtime_manager, &triggered_state, &slot_address).await,
-                1
-            );
+            let remaining_slot =
+                system_vault_balance(&runtime_manager, &triggered_state, &slot_address).await;
+            let remaining_entry =
+                system_vault_balance(&runtime_manager, &triggered_state, &entry_address).await;
+            assert!(remaining_slot < purse_funding);
+            assert!(remaining_entry < purse_funding);
+            assert!(remaining_slot > 0);
+            assert!(remaining_entry > 0);
             let ran = runtime_manager
                 .get_data(
                     triggered_state,
@@ -3913,13 +4113,16 @@ async fn compute_state_then_compute_bonds_should_be_replayable_after_all() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn compute_state_should_capture_rholang_parsing_errors_without_token_charge() {
+async fn state_bound_parser_rejection_has_no_processed_cost_evidence() {
     with_runtime_manager(
-        |mut runtime_manager, genesis_context, genesis_block| async move {
-            let bad_rholang =
-                r#" for(@x <- @"x" & @y <- @"y"){ @"xy"!(x + y) } | @"x"!(1) | @"y"!("hi") "#;
+        |runtime_manager, genesis_context, genesis_block| async move {
+            let start_state = genesis_block.body.state.post_state_hash.clone();
+            let payer_address =
+                VaultAddress::from_public_key(&genesis_context.genesis_vaults[0].1).unwrap();
+            let initial_payer =
+                system_vault_balance(&runtime_manager, &start_state, &payer_address).await;
             let deploy = construct_deploy::source_deploy_now_full(
-                bad_rholang.to_string(),
+                "for(".to_string(),
                 None,
                 None,
                 None,
@@ -3927,17 +4130,25 @@ async fn compute_state_should_capture_rholang_parsing_errors_without_token_charg
                 None,
             )
             .unwrap();
-
-            let result = compute_state(
-                &mut runtime_manager,
-                &genesis_context,
-                deploy,
-                &genesis_block.body.state.post_state_hash,
-            )
-            .await;
-
-            assert!(result.1.is_failed);
-            assert_eq!(result.1.cost.cost, 0);
+            let deploy =
+                crypto::rust::signatures::signed::Cosigned::from_single_signer(deploy).unwrap();
+            let deploy_id = deploy.primary().sig.clone();
+            let block_data = BlockData {
+                time_stamp: deploy.data().time_stamp,
+                block_number: 2,
+                sender: genesis_context.validator_pks()[0].clone(),
+                seq_num: 2,
+            };
+            let (evidence, rejected) = runtime_manager
+                .state_bound_cost_evidence(&start_state, vec![deploy], block_data, HashMap::new())
+                .await
+                .unwrap();
+            assert!(evidence.is_empty());
+            assert_eq!(rejected, vec![deploy_id]);
+            assert_eq!(
+                system_vault_balance(&runtime_manager, &start_state, &payer_address).await,
+                initial_payer
+            );
         },
     )
     .await
@@ -3945,13 +4156,11 @@ async fn compute_state_should_capture_rholang_parsing_errors_without_token_charg
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn compute_state_should_charge_for_execution_tokens() {
+async fn compute_state_should_charge_comm_execution_and_quantitative_bytes() {
     with_runtime_manager(
         |mut runtime_manager, genesis_context, genesis_block| async move {
             let correct_rholang =
-                r#" for(@x <- @"x" & @y <- @"y"){ @"xy"!(x + y) | @"x"!(1) | @"y"!(2) } "#;
-            let rand = Blake2b512Random::create_from_bytes(&Vec::new());
-            let inital_phlo = Cost::unsafe_max();
+                r#" for(@x <- @"x" & @y <- @"y"){ @"xy"!(x + y) } | @"x"!(1) | @"y"!(2) "#;
             let deploy = construct_deploy::source_deploy_now_full(
                 correct_rholang.to_string(),
                 None,
@@ -3962,13 +4171,6 @@ async fn compute_state_should_charge_for_execution_tokens() {
             )
             .unwrap();
 
-            let runtime = runtime_manager.spawn_runtime().await;
-            runtime.cost.set(inital_phlo.clone());
-            let term = Compiler::source_to_adt(&deploy.data.term).unwrap();
-            let _ = runtime.inj(term, Env::new(), rand).await;
-            let phlos_left = runtime.cost.get();
-            let reduction_cost = inital_phlo - phlos_left;
-
             let result = compute_state(
                 &mut runtime_manager,
                 &genesis_context,
@@ -3976,8 +4178,13 @@ async fn compute_state_should_charge_for_execution_tokens() {
                 &genesis_block.body.state.post_state_hash,
             )
             .await;
-
-            assert!(result.1.cost.cost == reduction_cost.value as u64);
+            let witness = result.1.authority_cost_witness.as_ref().unwrap();
+            assert_eq!(witness.events.len(), 1);
+            assert!(witness.byte_cost > 0);
+            assert_eq!(
+                result.1.cost.cost,
+                u64::try_from(witness.events.len()).unwrap() + witness.byte_cost
+            );
         },
     )
     .await
@@ -4348,9 +4555,18 @@ async fn compute_state_should_charge_deploys_separately() {
             let second_deploy_cost = deploy_cost(&second_deploy);
             let compound_deploy_cost = deploy_cost(&compound_deploy);
 
-            assert_eq!(first_deploy_cost, 1);
-            assert_eq!(second_deploy_cost, 1);
-            assert_eq!(compound_deploy_cost, 2);
+            for processed in first_deploy
+                .iter()
+                .chain(&second_deploy)
+                .chain(&compound_deploy)
+            {
+                let witness = processed.authority_cost_witness.as_ref().unwrap();
+                assert!(witness.byte_cost > 0);
+                assert_eq!(
+                    processed.cost.cost,
+                    u64::try_from(witness.events.len()).unwrap() + witness.byte_cost
+                );
+            }
             assert!(first_deploy_cost < compound_deploy_cost);
             assert!(second_deploy_cost < compound_deploy_cost);
 
@@ -4548,11 +4764,10 @@ async fn compute_state_should_just_work() {
       }
       "#.to_string();
 
-      // Budget must be affordable: the (multi-sig) pre-charge debits
-      // phlo_limit * phlo_price (price defaults to 1) from the signer's
-      // genesis vault (predefined balance 9_000_000) before evaluation, so an
-      // i64::MAX limit would fail pre-charge with "Insufficient funds". This
-      // budget is affordable and amply covers the parallel fan-out below.
+      // Protocol 4 derives the hard ceiling from authenticated RevVault
+      // custody and settles exact physical, byte, and fee debit. The legacy
+      // phlo-limit argument is retained only by this test helper's interface;
+      // it is not an escrow amount or a source of execution authority.
       let deploy = construct_deploy::source_deploy_now_full(source, Some(9_000_000), None, None, None, None).unwrap();
       let (play_state_hash1, processed_deploy, processed_system_deploys) = compute_state(&mut runtime_manager, &genesis_context, deploy, &gen_post_state).await;
       let replay_compute_state_result = replay_compute_state(&mut runtime_manager, &genesis_context, processed_deploy, processed_system_deploys, &gen_post_state).await.unwrap();
@@ -4701,13 +4916,40 @@ async fn matched_and_unmatched_deploys_keep_isolated_cost_traces() {
                 .iter()
                 .find(|deploy| deploy.deploy.data.term == unmatched_source)
                 .expect("unmatched deployment must be present in the execution evidence");
+            let matched_witness = matched.authority_cost_witness.as_ref().unwrap();
+            let unmatched_witness = unmatched.authority_cost_witness.as_ref().unwrap();
+            let matched_physical_authority = matched_witness
+                .settlement
+                .iter()
+                .map(|resource| resource.amount)
+                .sum::<u64>();
+            let unmatched_physical_authority = unmatched_witness
+                .settlement
+                .iter()
+                .map(|resource| resource.amount)
+                .sum::<u64>();
             assert_eq!(
-                matched.cost.cost, 1,
-                "the complete send/receive match is one atomic COMM"
+                matched_witness.events.len(),
+                1,
+                "the complete send/receive match records one atomic COMM authority event"
             );
             assert_eq!(
-                unmatched.cost.cost, 0,
-                "the unmatched send is an introduction, not a COMM"
+                unmatched_witness.events.len(),
+                0,
+                "the unmatched send records no COMM authority event"
+            );
+            assert!(matched_physical_authority > 0);
+            assert_eq!(unmatched_physical_authority, 0);
+            assert!(matched_witness.byte_cost > unmatched_witness.byte_cost);
+            assert!(unmatched_witness.byte_cost > 0);
+            assert_eq!(
+                matched.cost.cost,
+                u64::try_from(matched_witness.events.len()).unwrap() + matched_witness.byte_cost
+            );
+            assert_eq!(
+                unmatched.cost.cost,
+                u64::try_from(unmatched_witness.events.len()).unwrap()
+                    + unmatched_witness.byte_cost
             );
 
             let replay_state = runtime_manager
@@ -4730,6 +4972,158 @@ async fn matched_and_unmatched_deploys_keep_isolated_cost_traces() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn rejected_replay_post_state_witness_restores_block_pre_state() {
+    with_runtime_manager(
+        |runtime_manager, genesis_context, genesis_block| async move {
+            let start_state = genesis_block.body.state.post_state_hash;
+            let deploy = construct_deploy::source_deploy_now_full(
+                "@0!(0) | for(@0 <- @0){ Nil }".to_string(),
+                Some(10000),
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+            let block_data = BlockData {
+                time_stamp: deploy.data.time_stamp,
+                block_number: 1,
+                sender: genesis_context.validator_pks()[0].clone(),
+                seq_num: 1,
+            };
+            let (_, mut processed_deploys, processed_system_deploys) = runtime_manager
+                .compute_state(
+                    &start_state,
+                    vec![deploy],
+                    Vec::new(),
+                    block_data.clone(),
+                    None,
+                )
+                .await
+                .unwrap();
+            processed_deploys[0].post_state_hash = vec![0xa5; 32].into();
+
+            let replay_runtime = runtime_manager.spawn_replay_runtime().await;
+            let mut replay_ops = ReplayRuntimeOps::new_from_runtime(replay_runtime);
+            let result = replay_ops
+                .replay_compute_state(
+                    &start_state,
+                    processed_deploys,
+                    processed_system_deploys,
+                    &block_data,
+                    None,
+                    false,
+                    Some(&runtime_manager),
+                )
+                .await;
+
+            assert!(matches!(
+                result,
+                Err(CasperError::ReplayFailure(
+                    ReplayFailure::EffectStateMismatch { .. }
+                ))
+            ));
+            let checkpoint = replay_ops.runtime_ops.runtime.create_checkpoint().await;
+            assert_eq!(checkpoint.root.to_bytes_prost(), start_state);
+        },
+    )
+    .await
+    .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn rejected_block_final_state_does_not_publish_mergeable_evidence() {
+    with_runtime_manager(
+        |runtime_manager, genesis_context, genesis_block| async move {
+            let start_state = genesis_block.body.state.post_state_hash.clone();
+            let deploy = construct_deploy::source_deploy_now_full(
+                "@0!(0) | for(@0 <- @0){ Nil }".to_string(),
+                Some(10000),
+                None,
+                None,
+                None,
+                Some(genesis_block.shard_id.clone()),
+            )
+            .unwrap();
+            let block_data = BlockData {
+                time_stamp: deploy.data.time_stamp,
+                block_number: 1,
+                sender: genesis_context.validator_pks()[0].clone(),
+                seq_num: 1,
+            };
+            let (valid_post_state, processed_deploys, processed_system_deploys) = runtime_manager
+                .compute_state(
+                    &start_state,
+                    vec![deploy],
+                    Vec::new(),
+                    block_data.clone(),
+                    None,
+                )
+                .await
+                .unwrap();
+            let valid_block = BlockMessage {
+                block_hash: vec![0x71; 32].into(),
+                header: Header {
+                    parents_hash_list: vec![genesis_block.block_hash],
+                    timestamp: block_data.time_stamp,
+                    version: genesis_block.header.version,
+                    extra_bytes: Vec::<u8>::new().into(),
+                },
+                body: Body {
+                    state: F1r3flyState {
+                        pre_state_hash: start_state.clone(),
+                        post_state_hash: valid_post_state.clone(),
+                        bonds: Vec::new(),
+                        block_number: block_data.block_number,
+                    },
+                    deploys: processed_deploys,
+                    rejected_deploys: Vec::new(),
+                    rejected_state_effects: Vec::new(),
+                    system_deploys: processed_system_deploys,
+                    extra_bytes: Vec::<u8>::new().into(),
+                },
+                justifications: Vec::new(),
+                sender: block_data.sender.bytes.clone(),
+                seq_num: block_data.seq_num,
+                sig: Vec::<u8>::new().into(),
+                sig_algorithm: String::new(),
+                shard_id: genesis_block.shard_id,
+                extra_bytes: Vec::<u8>::new().into(),
+            };
+
+            assert!(runtime_manager
+                .delete_mergeable_channels(&valid_block)
+                .unwrap());
+            assert!(!runtime_manager.has_mergeable_entry(&valid_block).unwrap());
+
+            let mut forged_block = valid_block.clone();
+            forged_block.block_hash = vec![0x72; 32].into();
+            forged_block.body.state.post_state_hash = vec![0xb6; 32].into();
+            let result = runtime_manager
+                .replay_block_from_consensus_data(&start_state, &forged_block, None)
+                .await;
+            assert!(matches!(
+                result,
+                Err(CasperError::ReplayFailure(
+                    ReplayFailure::EffectStateMismatch { ref boundary, .. }
+                )) if boundary == "final-post-state"
+            ));
+            assert!(!runtime_manager.has_mergeable_entry(&valid_block).unwrap());
+            assert!(!runtime_manager.has_mergeable_entry(&forged_block).unwrap());
+
+            let replayed = runtime_manager
+                .replay_block_from_consensus_data(&start_state, &valid_block, None)
+                .await
+                .unwrap();
+            assert_eq!(replayed, valid_post_state);
+            assert!(runtime_manager.has_mergeable_entry(&valid_block).unwrap());
+        },
+    )
+    .await
+    .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn replaycomputestate_should_catch_discrepancies_in_initial_and_replay_cost_when_no_errors_are_thrown(
 ) {
     let result = invalid_replay("@0!(0) | for(@0 <- @0){ Nil }".to_string()).await;
@@ -4741,8 +5135,7 @@ async fn replaycomputestate_should_catch_discrepancies_in_initial_and_replay_cos
             // The test corrupts the recorded deploy cost by one token. Exact
             // totals belong to the reducer's source-token schedule, while the
             // replay contract here is that the mismatch is detected exactly.
-            assert_eq!(initial_cost, 0);
-            assert_eq!(replay_cost, 1);
+            assert_eq!(initial_cost.checked_add(1), Some(replay_cost));
         }
         _ => panic!("Expected ReplayCostMismatch error"),
     }
@@ -4759,8 +5152,7 @@ async fn replaycomputestate_should_not_catch_discrepancies_in_initial_and_replay
         })) => {
             // User execution errors are rollback-safe, but replay must still
             // reject a processed deploy whose charged token count was forged.
-            assert_eq!(initial_cost, 0);
-            assert_eq!(replay_cost, 1);
+            assert_eq!(initial_cost.checked_add(1), Some(replay_cost));
         }
         _ => panic!("Expected ReplayCostMismatch error"),
     }

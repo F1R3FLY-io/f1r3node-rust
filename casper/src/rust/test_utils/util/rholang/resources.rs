@@ -7,7 +7,7 @@ use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex, OnceLock};
-use std::{fs, io};
+use std::{fs, io, process};
 
 use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
 use block_storage::rust::dag::block_metadata_store::BlockMetadataStore;
@@ -37,6 +37,37 @@ use crate::rust::test_utils::util::genesis_builder::{GenesisBuilder, GenesisCont
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 
 static CACHED_GENESIS: OnceLock<Arc<Mutex<Option<GenesisContext>>>> = OnceLock::new();
+static SHARED_LMDB_CLEANUP_PATH: OnceLock<PathBuf> = OnceLock::new();
+
+#[cfg(unix)]
+unsafe extern "C" {
+    fn atexit(callback: extern "C" fn()) -> std::os::raw::c_int;
+}
+
+extern "C" fn cleanup_shared_lmdb_at_exit() {
+    if let Some(path) = SHARED_LMDB_CLEANUP_PATH.get() {
+        let _ = fs::remove_dir_all(path);
+    }
+}
+
+fn shared_lmdb_scratch_root() -> PathBuf {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .join("target/casper-test-scratch");
+    fs::create_dir_all(&root).expect("Failed to create Casper test scratch root");
+    root
+}
+
+fn register_shared_lmdb_cleanup(path: &Path) {
+    if SHARED_LMDB_CLEANUP_PATH.set(path.to_path_buf()).is_ok() {
+        #[cfg(unix)]
+        {
+            let status = unsafe { atexit(cleanup_shared_lmdb_at_exit) };
+            assert_eq!(status, 0, "Failed to register shared LMDB cleanup");
+        }
+    }
+}
 
 // Shared LMDB environment for all tests.
 //
@@ -47,15 +78,17 @@ static CACHED_GENESIS: OnceLock<Arc<Mutex<Option<GenesisContext>>>> = OnceLock::
 //
 // Resource Management:
 // - Single LMDB environment instead of 300+ separate environments
-// - Automatic cleanup when TempDir is dropped (at program exit)
+// - Normal-exit cleanup despite static test-harness ownership
 // - Works efficiently with parallel test execution (test-threads=4-8 recommended)
 lazy_static! {
     static ref SHARED_LMDB_ENV: (PathBuf, TempDir) = {
+        let prefix = format!("casper-shared-lmdb-{}-", process::id());
         let temp_dir = Builder::new()
-            .prefix("casper-shared-lmdb-")
-            .tempdir()
+            .prefix(&prefix)
+            .tempdir_in(shared_lmdb_scratch_root())
             .expect("Failed to create shared LMDB temp dir");
         let path = temp_dir.path().to_path_buf();
+        register_shared_lmdb_cleanup(&path);
         (path, temp_dir)
     };
 }
@@ -643,5 +676,41 @@ pub fn mk_dummy_casper_snapshot() -> CasperSnapshot {
             bonds_map: HashMap::new(),
             active_validators: Vec::new(),
         },
+    }
+}
+
+#[cfg(test)]
+mod shared_lmdb_cleanup_tests {
+    use super::*;
+
+    const CHILD_RESULT: &str = "F1R3_SHARED_LMDB_CLEANUP_CHILD_RESULT";
+
+    #[test]
+    fn shared_lmdb_is_disk_backed_and_removed_when_the_test_process_exits() {
+        if let Some(result_path) = std::env::var_os(CHILD_RESULT) {
+            let result_path = PathBuf::from(result_path);
+            assert!(result_path.starts_with(shared_lmdb_scratch_root()));
+            let shared_path = get_shared_lmdb_path();
+            assert!(shared_path.starts_with(shared_lmdb_scratch_root()));
+            fs::write(&result_path, shared_path.to_string_lossy().as_bytes()).unwrap();
+            return;
+        }
+
+        let result_path = shared_lmdb_scratch_root().join(format!(
+            "cleanup-result-{}-{}.txt",
+            process::id(),
+            Uuid::new_v4()
+        ));
+        let status = process::Command::new(std::env::current_exe().unwrap())
+            .arg("shared_lmdb_is_disk_backed_and_removed_when_the_test_process_exits")
+            .arg("--test-threads=1")
+            .env(CHILD_RESULT, &result_path)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let shared_path = PathBuf::from(fs::read_to_string(&result_path).unwrap());
+        fs::remove_file(result_path).unwrap();
+        assert!(shared_path.starts_with(shared_lmdb_scratch_root()));
+        assert!(!shared_path.exists());
     }
 }

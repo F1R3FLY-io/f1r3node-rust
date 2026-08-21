@@ -4,7 +4,9 @@ use models::rhoapi::{CostSignature, CostStack, Par};
 use models::rust::rholang::sorter::par_sort_matcher::ParSortMatcher;
 use models::rust::rholang::sorter::sortable::Sortable;
 use models::rust::utils::new_gstring_par;
-use rholang::rust::interpreter::accounting::authority::cost_signature_to_sig;
+use rholang::rust::interpreter::accounting::authority::{
+    authority_demand, cost_signature_to_sig, AuthorityByteEventKind,
+};
 use rholang::rust::interpreter::accounting::costs::Cost;
 use rholang::rust::interpreter::accounting::{BillableKind, Sig, SignatureChannel};
 use rholang::rust::interpreter::compiler::compiler::Compiler;
@@ -38,6 +40,72 @@ async fn evaluate(runtime: &mut RhoRuntimeImpl, source: &str) {
     assert!(result.errors.is_empty(), "{:?}", result.errors);
 }
 
+#[tokio::test]
+async fn unmetered_runtime_communication_has_no_authority_or_byte_trace() {
+    let mut runtime = runtime().await;
+    runtime.cost.set_unmetered(true);
+
+    let result = runtime
+        .evaluate_with_phlo(
+            r#"for(_ <- @"unmetered"){ Nil } | @"unmetered"!(0)"#,
+            Cost::create(1, "unmetered runtime communication"),
+        )
+        .await
+        .unwrap();
+
+    assert!(result.errors.is_empty(), "{:?}", result.errors);
+    assert_eq!(result.cost.value, 0);
+    assert_eq!(result.quantitative_byte_cost, 0);
+    assert!(result.authority_events.is_empty());
+    assert!(result.authority_byte_events.is_empty());
+}
+
+#[tokio::test]
+async fn peek_restoration_preserves_neutral_data_and_charges_the_active_deploy() {
+    let mut runtime = runtime().await;
+    let channel = new_gstring_par("neutral-peek".to_string(), Vec::new(), false);
+    runtime
+        .inj(
+            Compiler::source_to_adt(r#"@"neutral-peek"!(0)"#).unwrap(),
+            Env::new(),
+            Blake2b512Random::create_from_bytes(b"neutral peek setup"),
+        )
+        .await
+        .unwrap();
+    let before = runtime.get_data(&channel).await;
+    assert_eq!(before.len(), 1);
+    assert!(before[0].a.cost_authority.is_none());
+
+    let payer = Sig::Ground(b"neutral peek active payer".to_vec());
+    runtime
+        .cost
+        .set_deploy_signature_funded(b"neutral peek deploy", payer.clone());
+    let result = runtime
+        .evaluate_with_phlo(
+            r#"for(_ <<- @"neutral-peek"){ Nil }"#,
+            Cost::create(1_000_000, "neutral peek restoration"),
+        )
+        .await
+        .unwrap();
+
+    assert!(result.errors.is_empty(), "{:?}", result.errors);
+    let after = runtime.get_data(&channel).await;
+    assert_eq!(after.len(), 1);
+    assert!(after[0].a.cost_authority.is_none());
+    assert_eq!(
+        result
+            .authority_byte_events
+            .iter()
+            .filter(|event| event.kind == AuthorityByteEventKind::ProduceIntroduction)
+            .count(),
+        1
+    );
+    assert!(result.authority_byte_events.iter().all(|event| {
+        authority_demand(&event.authority)
+            .is_ok_and(|demand| demand.get(&payer.lane_hash()) == 1 && demand.0.len() == 1)
+    }));
+}
+
 fn comm_count(runtime: &RhoRuntimeImpl) -> usize {
     runtime
         .get_cost_event_log()
@@ -60,6 +128,43 @@ async fn bare_surfaces_are_wrapped_independently_by_construction() {
     assert_eq!(events.len(), 1);
     assert_eq!(events[0].authority.regions.len(), 2);
     events[0].verify_authority().unwrap();
+}
+
+#[tokio::test]
+async fn processed_cost_is_exactly_comm_units_plus_quantitative_bytes() {
+    let mut runtime = runtime().await;
+    let payer = Sig::Ground(b"combined debit payer".to_vec());
+    runtime
+        .cost
+        .set_deploy_signature_funded(b"combined debit deploy", payer);
+    let result = runtime
+        .evaluate_with_phlo(
+            r#"for(_ <- @"x"){ Nil } | @"x"!(0)"#,
+            Cost::create(1_000_000, "combined debit test"),
+        )
+        .await
+        .unwrap();
+    assert!(result.errors.is_empty(), "{:?}", result.errors);
+    let comm_units = u64::try_from(
+        runtime
+            .get_cost_event_log()
+            .iter()
+            .filter(|event| event.kind == BillableKind::Comm)
+            .count(),
+    )
+    .unwrap();
+
+    assert_eq!(
+        u64::try_from(result.cost.value).unwrap(),
+        comm_units + result.quantitative_byte_cost,
+        "{:?}",
+        runtime.get_cost_event_log()
+    );
+    assert_eq!(comm_units, 1);
+    assert_eq!(
+        result.authority_realized.0.values().copied().sum::<u64>(),
+        2
+    );
 }
 
 #[tokio::test]
@@ -192,6 +297,94 @@ async fn continuation_cost_stack_is_materialized_after_parent_reduction() {
 }
 
 #[tokio::test]
+async fn continuation_cost_stack_introduction_is_charged_to_continuation_authority() {
+    let mut runtime = runtime().await;
+    runtime.cost.set_deploy_signature_funded(
+        b"continuation stack byte deploy",
+        Sig::Ground(b"continuation stack byte payer".to_vec()),
+    );
+    let result = runtime
+        .evaluate_with_phlo(
+            r#"{% for(_ <- @"x"){ continuation :: () } %}[ outer -o continuation ] | @"x"!(0)"#,
+            Cost::create(1_000_000, "continuation stack byte authority"),
+        )
+        .await
+        .unwrap();
+    assert!(result.errors.is_empty(), "{:?}", result.errors);
+
+    let outer = lane("outer");
+    let continuation = lane("continuation");
+    let event = result
+        .authority_byte_events
+        .iter()
+        .find(|event| {
+            event.kind == AuthorityByteEventKind::ProduceIntroduction
+                && authority_demand(&event.authority)
+                    .is_ok_and(|demand| demand.get(&continuation) == 1)
+        })
+        .unwrap();
+    let demand = authority_demand(&event.authority).unwrap();
+    assert_eq!(demand.get(&outer), 0);
+    assert!(event.amount > 0);
+
+    let stack = Compiler::source_to_adt(r#"continuation :: ()"#)
+        .unwrap()
+        .cost_stacks
+        .remove(0);
+    let channel =
+        SignatureChannel::from_sig(&cost_signature_to_sig(stack.cells.first().unwrap()).unwrap())
+            .par;
+    let data = runtime.get_data(&channel).await;
+    assert_eq!(data.len(), 1);
+    assert_eq!(data[0].a.cost_stack.as_ref(), Some(&stack));
+    assert!(data[0].a.cost_authority.is_none());
+}
+
+#[tokio::test]
+async fn lollipop_receiver_introduction_is_paid_by_its_outer_authority() {
+    let mut runtime = runtime().await;
+    let creator = Sig::Ground(b"lollipop receiver creator".to_vec());
+    runtime
+        .cost
+        .set_deploy_signature_funded(b"lollipop receiver deploy", creator.clone());
+    let result = runtime
+        .evaluate_with_phlo(
+            r#"{% for(_ <- @"waiting"){ Nil } %}[ outer -o continuation ]"#,
+            Cost::create(1_000_000, "lollipop receiver introduction payer"),
+        )
+        .await
+        .unwrap();
+    assert!(result.errors.is_empty(), "{:?}", result.errors);
+
+    let event = result
+        .authority_byte_events
+        .iter()
+        .find(|event| event.kind == AuthorityByteEventKind::ConsumeIntroduction)
+        .unwrap();
+    let demand = authority_demand(&event.authority).unwrap();
+    assert_eq!(demand.get(&creator.lane_hash()), 0);
+    assert_eq!(demand.get(&lane("outer")), 1);
+    assert_eq!(demand.get(&lane("continuation")), 0);
+
+    let continuations = runtime
+        .get_continuations(vec![new_gstring_par(
+            "waiting".to_string(),
+            Vec::new(),
+            false,
+        )])
+        .await;
+    assert_eq!(continuations.len(), 1);
+    let interaction = continuations[0]
+        .continuation
+        .cost_authority
+        .as_ref()
+        .unwrap();
+    let interaction_demand = authority_demand(interaction).unwrap();
+    assert_eq!(interaction_demand.get(&lane("outer")), 1);
+    assert_eq!(interaction_demand.get(&creator.lane_hash()), 0);
+}
+
+#[tokio::test]
 async fn separately_signed_surfaces_charge_every_distinct_region_atomically() {
     let mut runtime = runtime().await;
     evaluate(
@@ -230,6 +423,31 @@ async fn lollipop_consumes_outer_then_continuation_authority_without_rewrapping(
     assert_eq!(realized.get(&lane("a")), 1);
     assert_eq!(realized.get(&lane("b")), 1);
     assert_eq!(comm_count(&runtime), 2);
+    let outer = lane("a");
+    let continuation = lane("b");
+    let byte_events = runtime.cost.authority_byte_events();
+    assert!(byte_events.iter().any(|event| {
+        rholang::rust::interpreter::accounting::authority::authority_demand(&event.authority)
+            .unwrap()
+            .get(&outer)
+            > 0
+    }));
+    assert!(byte_events.iter().any(|event| {
+        rholang::rust::interpreter::accounting::authority::authority_demand(&event.authority)
+            .unwrap()
+            .get(&continuation)
+            > 0
+    }));
+    assert!(byte_events.iter().all(|event| {
+        let demand =
+            rholang::rust::interpreter::accounting::authority::authority_demand(&event.authority)
+                .unwrap();
+        demand.get(&outer) == 0 || demand.get(&continuation) == 0
+    }));
+    assert_eq!(
+        byte_events.iter().map(|event| event.amount).sum::<u64>(),
+        runtime.cost.quantitative_byte_cost()
+    );
 }
 
 #[tokio::test]
@@ -245,6 +463,13 @@ async fn lollipop_does_not_charge_an_inert_continuation() {
     assert_eq!(realized.get(&lane("b")), 0);
     assert_eq!(realized.0.len(), 1);
     assert_eq!(comm_count(&runtime), 1);
+    let continuation = lane("b");
+    assert!(runtime.cost.authority_byte_events().iter().all(|event| {
+        rholang::rust::interpreter::accounting::authority::authority_demand(&event.authority)
+            .unwrap()
+            .get(&continuation)
+            == 0
+    }));
 }
 
 #[tokio::test]

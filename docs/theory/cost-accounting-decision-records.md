@@ -978,23 +978,21 @@ misalignments — several in the DR-22-era / this-session additions themselves.
 - ◆ **(J-1) Operational join key bridged.** `ca_join2` gates on `join_token_key` (left fold) but the
   conservation theorems were stated about `combined_key` (right-nested); the bridge `join_key_atoms_perm`
   + `join_authority_conserved_operational` are ADDED (Phase 1).
-- ◆ **Impl (C-impl, Phase 3 — equivalence argument).** Paper §8 specifies overcharge-and-refund:
-  escrow the conservative demand Δ_c^max at acceptance, refund Δ_c^max − κ after the run (κ = tokens
-  actually forced) → **net charge κ**. The Rust (DR-5) instead does **gate-on-conservative + exact-
-  charge**: the acceptance gate (`delta_sigma::is_funded` / `effective_supply`) requires per-signature
-  supply ≥ Δ_c^max *before* executing; settlement then debits the EXACT κ (no escrow, no refund step) →
-  **net charge κ**. The two schemes are therefore **economically identical** (same net κ); they differ
-  only mechanistically (escrow-then-refund vs gate-then-exact-debit).
-  - *Net-charge equivalence* — formally witnessed: the refund scheme's conservation `charged + refund =
-    escrow` with `charged = κ` is `Settlement.charged_plus_refund_eq_escrow` (+ `refund_le_escrow`,
-    `refund_zero_when_exhausted`); the gate scheme's debit IS κ by construction. Both net to `charged = κ`.
-  - *No-stranding* (the property the paper's escrow exists to guarantee) — preserved WITHOUT escrow: the
-    acceptance gate establishes supply ≥ Δ_c^max ≥ κ *before any step fires*, so every statically-
-    reachable branch is fully funded and no accepted deploy can stall mid-execution. Under the block-
-    assembly gate (DR-11) the per-signature supply is committed at acceptance, so concurrent deploys in a
-    block are all gated against the committed supply — no TOCTOU window. The escrow's availability
-    guarantee is thus discharged by the acceptance-time commit + the static linear-resource proof, not by
-    holding funds in escrow. So the §8 divergence is sound and DR-5/DR-11-documented, not a defect.
+- ◆ **Impl (C-impl, Phase 3 — protocol-4 realization).** Paper §8 specifies conservative
+  reservation and residual refund: reserve Δ_c^max before evaluation, debit the realized κ after
+  evaluation, and return Δ_c^max − κ. Protocol 4 realizes that lifecycle directly in RevVault custody.
+  Admission atomically fixes the physical-authority bound, canonical-byte bound, and fee allocation for
+  every located purse. Settlement burns the realized physical and byte components, transfers the fixed
+  fee, and refunds only the unused reservation. The removed legacy `phloLimit × phloPrice` precharge is
+  not part of this mechanism.
+  - *Exact conservation* — `Settlement.debit_plus_refund_eq_reservation`,
+    `refund_le_reservation`, and `refund_zero_when_components_exhausted` prove that exact debit plus
+    residual refund equals the fixed reservation. `VaultBackedByteAccounting` refines the debit into
+    physical authority, byte transfer, and fee components.
+  - *No-stranding* — the acceptance transaction moves the full conservative bound into reserved RevVault
+    custody before execution. Evaluation can consume only that immutable reservation; a concurrent top-up
+    changes unreserved balance but cannot expand an in-flight bound. Under the block-assembly gate (DR-11),
+    every accepted deploy is therefore fully funded without a TOCTOU window.
 
 **Remediation status.** Phase 1 (D banner, F comments, J-1 bridge, B scope note, this DR + audit
 refresh): done, gate-green. Phase 2 C (`CICat` lift) is done by DR-24. Phase 2 A (simultaneous
@@ -1528,7 +1526,7 @@ the Cost Monad §Data-dependent interaction; DR-5, DR-9, DR-11, DR-13, DR-28,
 DR-30; TM-CA-169; CA-P-038, CA-P-039, CA-P-042, CA-P-184; UC-CA-167; and
 `cost-accounting-impl/end-to-end-authority-settlement.md`.
 
-## DR-32 — Atomic RSpace COMM is the sole native semantic cost event
+## DR-32 — Atomic RSpace COMM is the sole calculus execution-cost event
 
 **Context.** Reducer-entry charging treated send and receive introductions as
 cost events. Whether a match was discovered by the producer or consumer path,
@@ -1540,7 +1538,10 @@ performed the same semantic Rho-calculus reductions.
 **Decision.** Native COMM accounting is observed exactly once at RSpace's locked
 complete-match boundary. The observer reserves one authority unit after match
 selection and before the COMM event log or tuplespace is mutated. Unmatched I/O
-costs zero. Binary COMM and N-way join each cost one. The stable identity uses
+consumes zero calculus execution units. Binary COMM and N-way join each consume
+one. DR-47 separately charges canonical quantitative bytes for every RSpace
+introduction and committed transfer, so unmatched stored I/O is not free in the
+protocol-4 total. The stable identity uses
 the matched consume/produce hashes and persistence metadata; reducer source
 paths, redex identifiers, local indices, probe order, and trigger side are
 excluded. Observer rejection leaves cost, event history, and RSpace state
@@ -1558,9 +1559,11 @@ trigger-dependent. Clamping play or replay cost hides a state-transition
 mismatch. Moving observation after mutation makes out-of-phlogiston rejection
 non-atomic.
 
-**Verification.** `AtomicCommAccounting.tla` checks unmatched-zero, exact
-successful-COMM cost, join-arity independence, trigger-order convergence,
-finite capacity, and replay equality. `AtomicCommRejection.tla` checks the
+**Verification.** `AtomicCommAccounting.tla` checks the unmatched-zero calculus
+projection, exact successful-COMM execution units, join-arity independence,
+trigger-order convergence, finite capacity, and replay equality.
+`VaultBackedByteAccounting.tla` checks the additional introduction, transfer,
+and trace-byte product sum. `AtomicCommRejection.tla` checks the
 zero-capacity rollback boundary. The introduction-charging configuration is a
 required counterexample to `ExactCommCost`. `AtomicCommAccounting.v` proves the
 same algebraic obligations without added axioms. RSpace tests exercise both
@@ -1568,6 +1571,9 @@ trigger sides and join rollback; Loom exhaustively checks charge-once and
 rejection-before-mutation across both two-thread arrival orders; Rholang example and property tests connect
 structural bounds to exact runtime matches; DR-31 models authenticated
 state-bound admission through settlement and independent-validator replay.
+`VaultBackedByteAccounting.v` proves that the quantitative refinement preserves
+the one-unit COMM projection, hard reservation ceiling, top-up snapshot, and
+play/replay equality.
 
 **Cross-refs.** RHO Rules 1–5 and transaction atomicity; MON
 data-dependent interaction; DR-9, DR-11, DR-28, DR-31; CA-P-185…188; and
@@ -1660,6 +1666,12 @@ DR-11, DR-28, DR-31, DR-32; TM-CA-171; O1–O14 in
 `formal/tlaplus/deploy_recovery/README.md`.
 
 ## DR-34 — The active protocol has one fresh-genesis version authority
+
+**Historical status.** DR-34 established the single-version authority chain at
+protocol 3. DR-47 preserves that authority chain and supersedes only the active
+version value: protocol 4 is now the sole running version because it adds the
+quantitative byte certificate and witness. Versions 1 through 3 remain
+non-runnable historical encodings.
 
 **Context.** DR-6 selected fresh-genesis deployment, and D3 removed and reserved
 the legacy deploy-cost wire fields. The implementation nevertheless left a
@@ -2479,3 +2491,579 @@ seconds, down from 63.21 seconds, without altering its candidate set.
 `finalized-floor-specification.md` R-COVERAGE-EQUIVALENCE/
 R-LINEAR-SNAPSHOT-REUSE and S31, and
 `finalized-floor-verification.md` C13/T-COVERAGE-TRANSPARENCY.
+
+## DR-47 — Restore quantitative RSpace bytes inside the RevVault hard ceiling
+
+**Context.** The cost-accounted rho papers make linear authority and one
+execution grade per COMM explicit, but rely on the node architecture for a
+finite quantitative resource ceiling. The retired `ChargingRSpace` recognized
+that serialized produces, consumes, transferred payloads, and trace records
+consume finite resources. Removing its broad wrapper also removed that safety
+constraint. Reintroducing only the side left waiting is unsound: producer-first
+and consumer-first schedules retain different structures and can produce
+different costs. Its negative refund path is likewise history-sensitive.
+
+**Decision.** Protocol 4 charges every stable semantic produce and consume
+identity at its canonical protobuf footprint before lookup or mutation.
+Persistent fixed-point retries of the same identity are idempotent, while
+distinct non-persistent occurrences retain multiplicity. The paid marker is
+committed only after reservation succeeds. Every committed COMM
+then charges one calculus execution unit plus every delivered payload byte and
+its canonical trace footprint before matched-state mutation. Persistent objects
+pay their original introduction once, later counterpart invocations pay their
+own introductions, every delivery pays a COMM charge, and removal or peek never
+creates negative credit. All arithmetic is checked.
+
+Admission binds a versioned schedule, schedule digest, physical-authority
+allocation, quantitative byte bound, and fee to one immutable SystemVault
+reservation. `ProcessedDeploy.cost` is COMM execution units plus quantitative
+bytes. Native settlement is independently the physical authority draw plus
+quantitative bytes, followed by the conserving fee transfer and refund of the
+unused maximum. The quantities coincide only in the single-cell-per-COMM
+projection. An authorized concurrent top-up credits unreserved custody and
+cannot enlarge an in-flight certificate.
+
+**Rejected alternatives.** Charging only unmatched retained state makes cost
+depend on arrival order. Restoring live negative refunds makes persistence and
+peek history part of consensus arithmetic. Charging external wire traffic would
+make validator cost depend on transport behavior rather than canonical
+execution. Treating physical authority as the COMM count weakens compound and
+located ownership; treating the physical cell count as the calculus execution
+grade changes the paper's semantics. A feature flag or compatibility meter would
+create two active accounting modes and is excluded.
+
+**Formal verification.** `VaultBackedByteAccounting.v` proves full
+producer/consumer lifecycle equality, product-sum decomposition, complete join
+payload charging, persistent-delivery behavior, no removal credit, exact bounded
+execution, permutation invariance, top-up conservation and reservation
+immutability, physical/execution separation, settlement conservation, and replay
+equality without assumptions. TLC exhaustively checks the safe lifecycle with a
+two-cell join and all existing cost/accounting models. Eight negative controls
+independently reproduce mutation-before-charge, trigger-side charging, join
+omission, persistent recharge, peek credit, replay omission, top-up expansion,
+and arithmetic wrapping. Apalache provides the independent SMT-backed bounded
+cross-check.
+
+**Implementation verification.** Canonical byte-kernel examples and proptests
+cover exact encoded sizes, join arity, overflow, and arrival-order equality.
+RSpace play/replay tests cover both trigger directions, persistent produce and
+consume retries, peek, join, and pre-mutation rejection. Loom explores
+reservation, top-up, settlement, refund, and persistent-identity interleavings.
+Casper regressions bind the byte
+schedule and witness to state-bound admission, distinguish processed cost from
+physical settlement, and require exact replay roots and debits.
+
+**Cross-refs.** TM-CA-181 through TM-CA-183, UC-CA-172 through UC-CA-174,
+[`cost-accounting-impl/vault-backed-byte-accounting.md`](cost-accounting-impl/vault-backed-byte-accounting.md),
+and protocol lifecycle version 4.
+
+## DR-48 — Prove complete economic debit across application and protocol layers
+
+**Context.** The atomic native settlement refinement proved physical authority,
+quantitative bytes, fee transfer, refund, and aggregate order independence, but
+its first state machine abstracted away application-level transfers performed by
+the same deployment. A recovery fixture then selected a transfer amount using
+only the application debit. Protocol 4 correctly added physical, byte, and fee
+settlement to every branch, so two supposedly fitting branches exceeded the
+shared 9,000,000 balance. The implementation rejected two of three siblings;
+the fixture incorrectly expected one rejection.
+
+This was a refinement-boundary failure in the verification campaign. The
+component models were individually sound, but no prior capstone required the
+application state transition and every protocol settlement component to share
+one per-payer solvency equation. Consequently, exhaustive exploration inside
+those abstractions could not discover the omitted term.
+
+**Decision.** The consensus-visible economic debit for deployment $`d`$ and
+payer $`p`$ is:
+
+```math
+D(d,p) = A(d,p) + P(d,p) + B(d,p) + F(d,p),
+```
+
+where $`A`$ is application debit, $`P`$ realized physical settlement, $`B`$
+realized quantitative-byte settlement, and $`F`$ fee. Individual admission,
+completed-branch merge, finality, and replay use this complete vector. For a set
+of concurrent siblings $`S`$ proved against the same pre-state balance $`V(p)`$:
+
+```math
+\sum_{d \in S} D(d,p) \le V(p).
+```
+
+Application and fee credits are included in the committed conserving state
+transition, but do not retroactively fund a concurrent sibling. A later
+deployment may use those credits only after they exist in its authenticated
+pre-state.
+
+Exact-boundary tests must compute their capacity from the produced funding
+certificate and cost witness. Application constants may shape a fixture but are
+not sufficient evidence for rejection cardinality.
+
+**Rejected alternatives.** Lowering the transfer amount without asserting the
+complete witnessed debit would preserve the abstraction hole. Ignoring protocol
+settlement at merge would permit real overdraw. Netting concurrent incoming
+credits against outgoing siblings would create an arrival- and selection-order
+dependency absent from their shared authenticated pre-state. Treating physical
+and byte settlement as one unnamed burn would conceal the dimension whose
+restoration exposed the defect.
+
+**Formal verification.** `AtomicVaultSettlementRefinement.tla` now models
+application debit/credit, physical burn, quantitative-byte burn, fee debit and
+credit, complete aggregate funding, atomic rejection, conservation, and replay.
+TLC and Apalache check the safe composition. Four independent unsafe
+configurations omit exactly one debit component and each must violate
+`FinalizedAggregateIsFunded`. Rocq proves the complete $`n`$-branch threshold and
+the concrete migrated recovery boundary without assumptions. Sage exhausts
+221,184 three-branch component and order traces and records witnesses where a
+projected check would admit complete overdraw.
+
+**Implementation verification.** A 512-case merger property varies application,
+physical, byte, and fee debit while constructing a balance for which exactly two
+complete branches fit. The recovery regression extracts physical settlement,
+byte settlement, and fee from every produced protocol-4 witness, requires
+identical siblings to have identical protocol debit, and asserts the exact
+two-fit/three-overdraw boundary before checking rejection cardinality. A static
+audit covers fixed-balance and exact-rejection-count fixtures and removes stale
+precharge-only explanations.
+
+**Cross-refs.** CA-P-195, TM-CA-184, UC-CA-175, CA-FR-082, and
+`AtomicVaultSettlementRefinementApplicationDebitOmissionUnsafe.cfg` plus the
+physical-, byte-, and fee-omission controls.
+
+## DR-49 — Stack introduction is one failure-atomic cross-ledger transaction
+
+**Context.** A located cost stack moves rivalrous linear cells from a source
+authority into an RSpace datum. Protocol 4 also charges the datum's canonical
+introduction bytes before RSpace mutation. The first implementation performed
+the physical debit before the fallible byte reservation and RSpace operation,
+then recorded the stack-birth witness afterward. A rejected byte charge or a
+failing matched continuation could therefore expose physical authority events
+without a committed produce or birth. Casper correctly rejected that orphaned
+witness as `InvalidCostSettlement`.
+
+The earlier verification campaign did not cover this composition. The located
+stack model ended at successful physical reservation, while the byte model
+treated physical demand as zero and represented charge plus mutation as one
+atomic action. Both component models were exhaustive inside their state spaces,
+but neither state space contained the real sequence
+$`prepare \rightarrow chargeBytes \rightarrow mutateRSpace \rightarrow
+continue \rightarrow commit`$. This was a refinement-boundary omission, not an
+insufficient search bound.
+
+**Decision.** A stack introduction uses a pending physical reservation. Pending
+cells count against capacity and identity uniqueness, but are absent from the
+committed event multiset, realized settlement, and stack-birth witness. The
+reservation remains live across the byte-charged RSpace operation and any
+matched continuation. It commits only after that operation succeeds. An
+operation-local error, early return, or unwind before success drops the pending
+reservation and restores exactly its cells without changing another operation's
+committed state. Reducer branch tasks are joined to completion rather than
+cancelled. If a different branch later makes the enclosing deployment fail, the
+deployment transaction removes every stack debit and birth committed by that
+deployment while the enclosing RSpace checkpoint restores its state. Attempted
+quantitative work remains chargeable.
+
+For operation $`o`$, committed cells $`C`$, pending cells $`P`$, and available
+cells $`A`$, every intermediate state satisfies:
+
+```math
+A + \sum_o P(o) + \sum_o C(o) = A_0.
+```
+
+An externally valid stack birth additionally satisfies:
+
+```math
+C(o) > 0 \iff Birth(o) \land Produce(o) \in Trace.
+```
+
+RSpace records a produce that immediately matches inside `COMM.produces` as
+well as, depending on the execution path, an ordinary produce event. Causal
+extraction therefore flattens every matched produce before the enclosing COMM,
+deduplicating by authority-event identity. This is evidence extraction only; it
+does not change RSpace matching, event identity, COMM ordering, settlement, or
+consensus voting.
+
+The implementation protocol is:
+
+```text
+prepare(op, cells):
+    validate identities and complete aggregate capacity
+    move cells from available to pending
+
+execute(op):
+    reserve canonical introduction and COMM byte charges
+    perform the RSpace operation and matched continuation
+
+finish(op, result):
+    if result succeeded:
+        atomically move pending cells to committed events and publish one birth
+    otherwise:
+        restore the exact pending cells and publish nothing
+```
+
+Quantitative byte and ordinary reducer costs remain attempt costs: they may be
+charged for failed work according to DR-47. The rollback rule applies to the
+physical stack transfer because no linear resource may be debited unless its
+corresponding stack birth is committed.
+
+**Rejected alternatives.** Filtering orphaned events during Casper settlement
+would hide a reducer inconsistency and could create validator-dependent supply.
+Publishing the birth before RSpace mutation merely reverses the partial-commit
+window. Refunding all byte work on a failed continuation would contradict the
+attempt-cost semantics and make resource use depend on rollback history. A test
+allowance for the orphaned witness would weaken the consensus boundary.
+
+**Formal verification.** `StackIntroductionAtomicity.tla` exposes preparation,
+byte acceptance or rejection, RSpace mutation, continuation success or failure,
+commit, abort, and replay as separate interleavable actions. TLC and Apalache
+check conservation, pending invisibility, exact operation abort, enclosing-
+deployment rollback, attempted-byte retention, one birth per committed stack,
+causal extraction, and replay equality. Six controls independently expose
+pending authority, omit operation abort, omit birth, omit deployment rollback,
+omit a nested matched produce, or omit replay state; each must violate its named
+invariant. Rocq proves the unbounded arithmetic refinement, deployment rollback,
+attempt-cost retention, and matched-produce extraction order without assumptions.
+Loom explores commit, rejection and pre-mutation cancellation, competing
+reservations, and enclosing-deployment rollback. It does not claim that dropping
+an arbitrary future can undo an already visible RSpace mutation.
+
+**Implementation verification.** Runtime unit and property tests require exact
+capacity restoration and preservation of unrelated commits. Casper regressions
+cover rejected candidate-created stacks, successful exactly funded stacks,
+parallel equal stack literals with distinct identities, matched produces nested
+inside a COMM, exact protocol-4 physical/byte/fee debit, and play/replay root
+equality. Reducer regressions additionally prove that a later deployment error
+removes all stack custody and births while preserving ordinary attempted work.
+
+**Cross-refs.** CA-P-196, TM-CA-185, UC-CA-176, E2E-059, DR-42, DR-47, and
+[`cost-accounting-impl/end-to-end-authority-settlement.md`](cost-accounting-impl/end-to-end-authority-settlement.md).
+
+## DR-50 — Evaluation and replay validation share one state-and-witness transaction
+
+**Context.** The interpreter, Casper play path, and Casper replay path originally
+owned different rollback fragments. Three composition defects followed. A parser
+failure occurred before the deploy budget reset and could therefore return the
+preceding deploy's witness. Reducer operator errors were classified like parser
+errors and erased work already attempted by the current deploy. Finally, play or
+replay could mutate RSpace successfully and only then reject malformed authority,
+birth, settlement, replay-cost, or adjacent-root evidence. In replay, an adjacent-
+root mismatch is detected after `create_checkpoint`, so a soft checkpoint alone
+cannot restore the history repository's active root.
+
+**Decision.** One evaluation transaction owns witness initialization, execution,
+linear-authority publication, RSpace state, post-execution validation, and active-
+root promotion. Its authenticated base root is $`B`$. A parser rejection before
+execution returns the empty witness. A reducer rejection retains the current
+attempt witness, removes every current-deploy linear stack effect, and lets the
+enclosing play checkpoint restore RSpace. Every validation error after successful
+execution restores the transaction's base state before returning the error.
+
+For output witness $`W_{out}`$, attempted-work witness $`W_{attempt}`$, active
+root $`H_{out}`$, and linear effects $`L_{out}`$, the rejection laws are:
+
+```math
+\begin{aligned}
+ParserReject &\Rightarrow W_{out}=\varnothing \land H_{out}=B,\\
+ReducerReject &\Rightarrow W_{out}=W_{attempt} \land L_{out}=\varnothing,\\
+PostValidateReject &\Rightarrow H_{out}=B \land L_{out}=\varnothing.
+\end{aligned}
+```
+
+The implementation uses a soft checkpoint only while the history base has not
+advanced. Whole-block replay resets explicitly to the authenticated block
+pre-state on any error because per-effect replay materializes intermediate roots
+before comparing their recorded post-state witnesses. Content-addressed history
+nodes may remain available for deduplication, but the rejected root is not the
+runtime's active state and cannot feed the next replay step or settlement.
+
+```text
+evaluate(base, source, evidence):
+    if parse(source) fails:
+        return reject(emptyWitness, base)
+
+    clearCurrentWitness()
+    result = execute(source)
+    if result is a reducer error:
+        rollbackCurrentDeployLinearEffects()
+        restoreRSpace(base)
+        return reject(attemptWitness, base)
+
+    candidate = checkpoint(result.state)
+    if validate(candidate, evidence) fails:
+        resetActiveRoot(base)
+        return reject(result.witness, base)
+
+    return accept(result.witness, candidate)
+```
+
+**Rejected alternatives.** Clearing every failure witness would refund attempted
+work and contradict DR-47. Returning the live budget on a parser failure would
+leak predecessor evidence. Treating post-validation as read-only would ignore
+that validation occurs after state mutation and, during replay, after candidate-
+root materialization. Reverting a soft checkpoint after `create_checkpoint`
+would combine an old hot-store snapshot with the new history base and would not
+restore $`B`$.
+
+**Formal verification.** `EvaluationTransactionIsolation.tla` represents parser
+rejection, fresh witness initialization, reducer work, play validation, replay
+candidate-checkpoint publication, and replay validation as separate actions. TLC
+and Apalache check all safe paths; five controls must respectively violate parser
+witness freshness, reducer attempt retention, play rollback, replay rollback
+after checkpoint publication, or final-state-gated merge-evidence publication.
+`EvaluationTransactionIsolation.v` proves the corresponding unbounded state
+projections, including pre-validation checkpoint discard and evidence
+non-publication on rejection, without assumptions. `StackIntroductionAtomicity.v` separately proves
+that enclosing-deployment rollback removes linear custody while retaining
+attempted byte work.
+
+**Implementation verification.** Interpreter regressions cover parser failure
+after a paid deploy, reducer operator failure after attempted charging, and a
+later deploy abort after committed stack introductions. Runtime-manager tests
+forge a replay post-state witness, require `EffectStateMismatch`, and then prove
+that the replay runtime's active checkpoint equals the block pre-state. Existing
+play/replay cost, status, authority, birth, settlement, and root-tamper tests cover
+the remaining validation exits.
+
+**Cross-refs.** CA-P-197, TM-CA-186, UC-CA-177, E2E-060, DR-47, DR-49, and
+[`cost-accounting-impl/evaluation-transaction-isolation.md`](cost-accounting-impl/evaluation-transaction-isolation.md).
+
+## DR-51 — Mergeable evidence is locally replayed and keyed by complete execution identity
+
+**Context.** Multi-parent merging needs a per-deployment vector of mergeable-
+channel differences. The vector is derived during execution but is not committed
+in `BlockMessage`. The cache formerly used only post-state, creator, and sequence
+number. Two equivocations can share those fields while having different
+pre-states, processed deployment witnesses, system deployments, and mergeable
+vectors. Their inserts therefore targeted one key and made lookup depend on
+arrival order. Last-finalized-state synchronization also accepted a peer's
+serialized vector directly even though no block commitment authenticated it.
+
+**Decision.** Treat mergeable evidence as reconstructible, consensus-adjacent
+auxiliary state. Only successful local execution or replay may publish it. The
+cache key is:
+
+```math
+K(B)=\operatorname{Encode}\left(
+H_{pre}(B),H_{post}(B),creator(B),sequence(B),
+h_{v2}(executedPayload(B),genesis(B))
+\right).
+```
+
+The payload digest is domain-separated, length-delimited, and binds every
+canonical processed user and system deployment witness plus genesis mode.
+Within each deployment, the event log is canonicalized as the replay-semantic
+multiset proven by `rb_replay_payload_canonical_user_trace_permutation` and
+`rb_replay_payload_canonical_system_trace_permutation`. This is the only
+quotient: deployment order and every non-log protobuf field remain bound.
+RSpace replay rigs the same multiset, and merge evidence is a function of that
+multiset together with the exact pre/post roots, so two keys alias only when
+their execution witnesses are already replay- and merge-equivalent.
+Ordinary admission-rejected records are excluded because they did not execute.
+Replay computes the candidate state and merge vectors without publishing,
+validates every recorded effect, compares the exact final post-state, and then
+performs the sole cache write. Any failure resets the active root to the
+authenticated block pre-state and leaves the cache unchanged.
+
+Initialization synchronizes authenticated blocks and trie nodes, not trusted
+merge vectors. It ignores every incoming `MergeableEntryResponse`. A running
+node retains wire compatibility by returning an empty response for a known
+block; an absent block remains a silent miss. Missing entries are deterministically
+replayed locally before merge. The legacy message variants remain decodable but
+their payload has no authority.
+
+The block hash is not a key component because proposal execution produces the
+evidence before the final hash exists. Complete execution identity is sufficient:
+distinct executions separate, while byte-identical executions derive identical
+evidence and may safely share an entry.
+
+Finalized-entry garbage collection receives the complete authenticated block,
+re-derives $`K(B)`$, and deletes exactly that key. It cannot delete by the
+legacy tuple. Eligibility requires finalization, strict separation beyond the
+configured parent-depth horizon plus safety buffer, a nonempty child set, and
+every recorded latest message advancing through a child along any DAG parent
+path. Secondary-parent integration is therefore sufficient evidence of causal
+advancement; a main-spine-only test is conservatively safe but leaks entries
+that are no longer reachable. Missing DAG evidence fails closed. If retired evidence is needed later, only local
+authenticated replay may reconstruct it.
+
+**Rejected alternatives.** Keeping the legacy key and storing a vector list
+would require every caller to identify which aliased vector matched its block,
+recreating the omitted identity at lookup. Adding only block hash would make the
+proposer unable to save under the final key and would duplicate a derived
+transition identity. Trusting a validator signature on the peer response would
+authenticate the sender, not the uncommitted vector. Replaying only when a peer
+payload is absent would preserve the unauthenticated fast path.
+
+**Formal verification.** `MergeableEvidenceAuthentication.tla` explores two
+validators, two equivocations sharing the legacy tuple, both replay orders, and
+peer-response races. TLC and Apalache require the safe model to preserve exact
+lookup, local provenance, overwrite exclusion, and opposite-order convergence.
+The legacy-key control must violate `OppositeArrivalOrdersConverge`; the peer-
+trust control must violate `LocallyDerivedEvidenceOnly`.
+The legacy-delete control must violate
+`DeletionCommutesWithDistinctReplay`, demonstrating that retiring one legacy
+alias and replaying the other cannot be reordered safely.
+The vacuous-latest control must violate `RetirementRequiresEverySafetyGuard`,
+demonstrating that an empty latest-message set is absence of advancement
+evidence rather than proof that every validator has moved beyond the block.
+The main-spine-only control must violate `SecondaryParentRetirementComplete`,
+demonstrating that a latest message can advance through a child solely by a
+secondary-parent path and must still permit retirement.
+`MergeableEvidenceAuthentication.v` proves complete-key injectivity, separation
+by every component, a concrete legacy alias, exact local publication, peer
+non-publication and non-overwrite, preservation of both distinct entries,
+pointwise insertion commutation, and opposite-order lookup equality without
+assumptions. It also proves exact target deletion, preservation of every
+distinct execution, and that retirement implies every conservative safety
+guard including a concrete latest-message witness.
+It additionally proves that full DAG ancestry recognizes every parent-path
+witness and exhibits the secondary-parent case that a main-spine-only
+recognizer misses.
+
+**Implementation verification.** Rust examples mutate every block identity
+dimension, and a generated property mutates every serialized key field. Engine
+regressions feed a forged nonempty response to initialization and require an
+unchanged store, then require a running node to return no evidence bytes. Loom
+exhausts concurrent equivocation insertions, a local-replay/peer race, and two
+validators with opposite replay orders, plus finalized retirement concurrent
+with replay of a distinct legacy-key alias. Replay regressions require rejected
+final-state witnesses to publish no key and missing entries to be reconstructed
+locally. Runtime-manager and storage-backed garbage-collection regressions
+require exact-key deletion while preserving an ineligible neighboring entry;
+the DAG-policy suite exercises every finality, depth, child, empty-latest, latest-message,
+and malformed-state guard.
+
+**Cross-refs.** CA-P-198, TM-CA-187, UC-CA-178, E2E-061, DR-50, and
+[`cost-accounting-impl/mergeable-evidence-authentication.md`](cost-accounting-impl/mergeable-evidence-authentication.md).
+
+## DR-52 — Close the allocator lifecycle at completed block boundaries
+
+**Context.** The canonical integration workload crossed the aggregate RSS
+ceiling even after replay caches, queues, and mergeable-evidence retention were
+bounded. Live-memory gauges accounted for only a small fraction of resident
+memory. Rust had dropped the per-block replay and RSpace values, but glibc kept
+their free pages in process arenas. A full canonical run reached approximately
+8.27 GB before guardian termination. A controlled six-node bonding path with
+per-block allocator reclamation remained approximately 2.1–2.7 GB before a
+separate harness assertion stopped the run.
+
+**Decision.** Treat allocator reclamation as a distinct, non-consensus
+refinement after Rust ownership ends. `BlockProcessorInstance` is the sole
+incoming-block lifecycle owner. On Linux/glibc it advances one bounded atomic
+completion counter and calls `RuntimeManager::trim_allocator` at the configured
+interval. The default interval is one. An outer drop guard closes every local
+proposal attempt, including empty, rejected, and unwound paths, after its
+transient values are destroyed. The inner Casper block processor no longer owns
+another counter or call.
+
+The counter resets at the boundary instead of wrapping a lifetime total. For
+any positive interval $`I`$, it remains in $`0..I-1`$ under arbitrary
+concurrent completion order. An interval of zero explicitly disables the
+incoming boundary. Reclamation is best-effort platform behavior and cannot be
+used as a proof that all free bytes leave RSS; the integration guardian remains
+the platform-refinement oracle.
+
+**Consensus boundary.** Allocator reclamation runs after semantic block work
+and has no access to consensus inputs or outputs. It cannot alter the block
+hash, deploy order, RSpace root, SystemVault state, cost witness, mergeable
+evidence, latest messages, committee, clique, or finalized floor. The causal
+majority and state-preservation algorithms are unchanged. A memory failure may
+not be repaired by shortening consensus history, reducing formal bounds,
+weakening validation, or raising the guardian ceiling.
+
+**Rejected alternatives.** Relying on Rust `Drop` ignores allocator arena
+retention demonstrated by the RSS experiment. Keeping both the Casper-internal
+and node-wrapper trim calls gives one completion two owners and inconsistent
+defaults. A wrapping lifetime counter delays arbitrary non-power-of-two
+intervals after machine-integer overflow. Trimming only every 64 blocks permits
+the observed workload to breach its host ceiling before the first effective
+boundary. Disabling replay caches or semantic evidence would trade a resource
+symptom for correctness and recovery failures.
+
+**Formal verification.** `BlockHeapLifecycle.tla` exhausts allocation and
+completion schedules across two slots, proves the interval resident envelope,
+and carries an independent committed-history reference to establish semantic
+noninterference. TLC and Apalache must both reject
+`BlockHeapLifecycleMissingBoundaryUnsafe.cfg`. `BlockHeapLifecycle.v` proves
+the bounded counter, exact boundary, default reclamation, interval invariant,
+resident envelope, and concrete missing-boundary witness without assumptions.
+The Loom model exhausts compare-and-exchange schedules for intervals one, two,
+and disabled reclamation.
+
+**Implementation verification.** Node examples cover default, invalid,
+disabled, explicit, boundary, corrupted-counter, and maximum-machine-integer
+inputs. A proptest ranges over arbitrary `usize` counters and positive
+intervals. Clippy and release builds cover both node and Casper ownership
+sites. The canonical Linux/glibc integration run executes without an environment
+override and records process RSS, active block count, and trim cadence under the
+same aggregate guardian used by CI.
+
+**Cross-refs.** CA-P-199, TM-CA-188, DR-51, and
+[`cost-accounting-impl/block-heap-lifecycle.md`](cost-accounting-impl/block-heap-lifecycle.md).
+
+## DR-53 — Terminal admission records are not runtime-effect records
+
+**Context.** DR-31 made an underfunded deploy consensus-visible as a terminal
+`ProcessedDeploy` so clients do not wait indefinitely and validators can
+recompute the decision from the authenticated proposal pre-state. The record is
+created after the admitted user sequence executes. It has no user cost, event
+log, or state transition. Runtime replay correctly excludes it and therefore
+produces no mergeable-channel map for it. `BlockIndex` nevertheless counted
+every block-body user record when aligning the locally reconstructed metadata.
+A block containing one terminal funding rejection and one executed `closeBlock`
+therefore carried one valid metadata map but was incorrectly required to carry
+two. Every validator failed parent indexing while proposing a successor, which
+stalled the shard and left later deploys pending.
+
+**Decision.** Define the ordered user effect projection as:
+
+```math
+E_U=[u\in U\mid u.\operatorname{admissionStatus}\ne\text{Rejected}].
+```
+
+For processed system executions $`S`$ and locally replayed merge metadata $`M`$,
+require $`|M|=|E_U|+|S|`$. `BlockIndex` MUST use $`E_U`$ consistently for
+cardinality, adjacent state-witness validation, user/system metadata splitting,
+and execution indices. An ordinary deploy with `is_failed=true` but
+`admissionStatus=Executed` remains effect-bearing because it entered the runtime
+and owns a metadata position. Only a terminal pre-execution admission rejection
+is excluded.
+
+The raw block body remains unchanged. Terminal rejections retain their complete
+signed envelope and consensus-visible status, while the runtime effect stream
+remains an exact representation of what executed. A true missing or extra map
+continues to fail closed.
+
+**Consensus boundary.** This decision does not change clique membership,
+majority weight, fork choice, block bytes, or the terminal admission decision.
+It repairs the refinement from consensus-visible lifecycle records to derived
+runtime effects. Failure of that refinement is availability-critical: identical
+honest validators can all reject successor construction even though they agree
+on the parent state.
+
+**Rejected alternatives.** Fabricating an empty metadata map for a rejected
+deploy would invent an execution. Filtering every `is_failed` record would shift
+ordinary executed-failure and system indices. Removing the terminal status would
+reintroduce indefinite pending. Ignoring all cardinality mismatches would admit
+genuine evidence loss. Retrying proposals or increasing timeouts cannot repair a
+deterministic projection error.
+
+**Formal verification.** `AdmissionEffectAlignment.tla` checks three independent
+validators, arbitrary indexing/proposal interleavings, exact metadata alignment,
+and later-deploy liveness. TLC and Apalache pass the effect projection; the raw
+status-counting control blocks the first validator and violates
+`Inv_StatusOnlyRecordCannotBlock`. Axiom-free Rocq
+`AdmissionEffectAlignment.v` proves rejection insertion transparency, executed-
+failure retention, cardinality permutation invariance, exact user/system split,
+and the concrete funding-rejection-plus-`closeBlock` regression.
+
+**Implementation verification.** Rust examples pin the concrete regression,
+ordinary execution failures, and projection order. A 256-case property varies
+admission status, runtime failure, user record order, and system count. The
+deploy-lifecycle gate runs the safe and unsafe TLC/Apalache controls and the Rust
+suite. The canonical multi-node workload remains the release oracle for proposal
+liveness after a terminal funding rejection.
+
+**Cross-refs.** CA-P-200, TM-CA-189, UC-CA-180, E2E-063, DR-31, DR-50,
+DR-51, and
+[`cost-accounting-impl/admission-effect-alignment.md`](cost-accounting-impl/admission-effect-alignment.md).

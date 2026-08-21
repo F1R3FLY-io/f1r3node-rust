@@ -430,18 +430,16 @@ pub struct HeartbeatConf {
         default = "default_self_propose_cooldown"
     )]
     pub self_propose_cooldown: Duration,
-    /// Minimum age of LFB/frontier before stale-recovery, leader-recovery,
-    /// and pending-deploy backstop are allowed to fire. Debounces empty-block
-    /// churn when the cluster is healthy.
+    /// Minimum age of this validator's latest proposal before the pending-deploy
+    /// recovery backstop is allowed to fire.
     #[serde(
         rename = "stale-recovery-min-interval",
         deserialize_with = "de_duration",
         default = "default_stale_recovery_min_interval"
     )]
     pub stale_recovery_min_interval: Duration,
-    /// When pending deploys land, opens a grace window during which lag caps
-    /// relax to `advanced.deploy_recovery_max_lag` and self-propose-cooldown
-    /// is bypassable. Burst-tolerance budget.
+    /// When pending deploys land, opens a grace window during which the lag cap
+    /// relaxes to `advanced.deploy_recovery_max_lag`.
     #[serde(
         rename = "deploy-finalization-grace",
         deserialize_with = "de_duration",
@@ -458,7 +456,7 @@ impl Default for HeartbeatConf {
         Self {
             enabled: false,
             check_interval: Duration::from_secs(5),
-            max_lfb_age: Duration::from_secs(5),
+            max_lfb_age: Duration::from_secs(15),
             self_propose_cooldown: default_self_propose_cooldown(),
             stale_recovery_min_interval: default_stale_recovery_min_interval(),
             deploy_finalization_grace: default_deploy_finalization_grace(),
@@ -478,23 +476,13 @@ fn default_deploy_finalization_grace() -> Duration { Duration::from_secs(25) }
 /// These thresholds bound DAG width relative to replay cost in lieu of
 /// adaptive backpressure. Treat as unstable API; field names may change.
 ///
-/// All three fields must be non-negative; HOCON values < 0 are rejected
+/// All fields must be non-negative; HOCON values < 0 are rejected
 /// at deserialization time. The proposer treats these as caps on a
 /// non-negative lag count (`lfb_lag_blocks`), so a negative value would
 /// silently disable the corresponding code path (e.g. `lag <= cap` where
 /// `cap < 0` is never true, leaving pending deploys unproposed).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct HeartbeatAdvancedConf {
-    /// When this validator is already ahead of LFB, how many blocks of lag
-    /// tolerate before "frontier-follow" proposing is throttled. `0` =
-    /// never frontier-chase while ahead unless deploy recovery is active
-    /// (which raises this dynamically).
-    #[serde(
-        rename = "frontier-chase-max-lag",
-        deserialize_with = "de_non_negative_i64",
-        default = "default_frontier_chase_max_lag"
-    )]
-    pub frontier_chase_max_lag: i64,
     /// If the validator has pending deploys but is already > N blocks
     /// ahead of LFB, suppress pending-deploy proposing. Prevents lag
     /// amplification: more deploys → more blocks → wider DAG → slower
@@ -532,15 +520,12 @@ pub struct HeartbeatAdvancedConf {
 impl Default for HeartbeatAdvancedConf {
     fn default() -> Self {
         Self {
-            frontier_chase_max_lag: default_frontier_chase_max_lag(),
             pending_deploy_max_lag: default_pending_deploy_max_lag(),
             deploy_recovery_max_lag: default_deploy_recovery_max_lag(),
             empty_frontier_max_unfinalized_blocks: default_empty_frontier_max_unfinalized_blocks(),
         }
     }
 }
-
-fn default_frontier_chase_max_lag() -> i64 { 0 }
 
 fn default_pending_deploy_max_lag() -> i64 { 20 }
 

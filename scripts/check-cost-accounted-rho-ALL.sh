@@ -50,6 +50,7 @@ for gate in "$ROOT"/scripts/check-cost-accounted-rho-*.sh; do
   out="$(bash "$gate" 2>&1)"; rc=$?
   if [ "$rc" -ne 0 ]; then
     verdict="FAIL"; overall=1
+    printf '\n--- %s failure output ---\n%s\n' "$base" "$out" >&2
   elif gate_reported_skip "$out"; then
     if [ "$strict" = "1" ]; then
       verdict="FAIL(SKIP)"; overall=1

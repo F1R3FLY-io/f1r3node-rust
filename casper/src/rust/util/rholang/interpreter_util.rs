@@ -1626,11 +1626,7 @@ pub async fn compute_parents_post_state_with_effects(
                 let b = block_store.get_unsafe(v);
                 let pre_state = &b.body.state.pre_state_hash;
                 let post_state = &b.body.state.post_state_hash;
-                let sender = b.sender.clone();
-                let seq_num = b.seq_num;
-
-                let mergeable_chs =
-                    runtime_manager.load_mergeable_channels(post_state, sender, seq_num)?;
+                let mergeable_chs = runtime_manager.load_mergeable_channels(&b)?;
 
                 runtime_manager.get_or_compute_block_index(
                     &b.block_hash,

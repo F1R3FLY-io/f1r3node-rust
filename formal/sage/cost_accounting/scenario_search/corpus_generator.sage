@@ -40,19 +40,19 @@ def corpus_records():
             {"oop": "single_boundary", "event_count": 1},
         ),
         (
-            "corpus_replay_digest_mutation",
+            "corpus_replay_authority_witness_mutation",
             "confirmed_safe",
             "replay_authentication",
             canonical_scenario(
-                "corpus_replay_digest_mutation",
-                replay_fields={"cost": 2, "digest": "a", "event_count": 1},
-                replay_mutations=["cost_trace_digest"],
+                "corpus_replay_authority_witness_mutation",
+                replay_fields={"processed_deploy_cost": 2, "authority_cost_witness": "a", "authority_byte_events": [], "replay_payload_hash": "payload-a"},
+                replay_mutations=["authority_cost_witness"],
                 threat_family="replay_authentication",
-                expected_invariants=["replay_digest_sensitivity"],
+                expected_invariants=["replay_payload_witness_sensitivity"],
                 promotion_target="rust:fuzz",
                 expected_classification="confirmed_safe",
             ),
-            {"replay_mutation": ["cost_trace_digest"], "accepted": False},
+            {"replay_mutation": ["authority_cost_witness"], "accepted": False},
         ),
         (
             "corpus_multi_deploy_settlement",
@@ -63,8 +63,8 @@ def corpus_records():
                 deploy_count=2,
                 settlement={
                     "deploys": [
-                        {"escrow": 10, "token_cost": 3, "refund": 7},
-                        {"escrow": 6, "token_cost": 6, "refund": 0},
+                        vault_settlement(10, 10, 0, 0, 3, 0),
+                        vault_settlement(6, 6, 0, 0, 6, 0),
                     ]
                 },
                 threat_family="settlement",
@@ -72,7 +72,7 @@ def corpus_records():
                 promotion_target="rocq:uc_ca_072",
                 expected_classification="proof_or_model_strengthening",
             ),
-            {"refund_sum": 7, "escrow_sum": 16},
+            {"refund_sum": 7, "reservation_sum": 16},
         ),
         (
             "corpus_descriptor_bound",

@@ -363,10 +363,6 @@ impl ConfigMapper<Options> for NodeConf {
                 run.heartbeat_deploy_finalization_grace,
             );
             Self::try_override_value(
-                &mut self.casper.heartbeat_conf.advanced.frontier_chase_max_lag,
-                run.heartbeat_advanced_frontier_chase_max_lag,
-            );
-            Self::try_override_value(
                 &mut self.casper.heartbeat_conf.advanced.pending_deploy_max_lag,
                 run.heartbeat_advanced_pending_deploy_max_lag,
             );
@@ -503,7 +499,6 @@ mod tests {
         "--heartbeat-self-propose-cooldown=555555seconds",
         "--heartbeat-stale-recovery-min-interval=333333seconds",
         "--heartbeat-deploy-finalization-grace=444444seconds",
-        "--heartbeat-advanced-frontier-chase-max-lag=111",
         "--heartbeat-advanced-pending-deploy-max-lag=222",
         "--heartbeat-advanced-deploy-recovery-max-lag=333",
         "--heartbeat-advanced-empty-frontier-max-unfinalized-blocks=444",
@@ -556,7 +551,6 @@ mod tests {
         // rejects negative integers; a negative cap would silently
         // disable the corresponding code path in the proposer.
         for flag in &[
-            "--heartbeat-advanced-frontier-chase-max-lag",
             "--heartbeat-advanced-pending-deploy-max-lag",
             "--heartbeat-advanced-deploy-recovery-max-lag",
             "--heartbeat-advanced-empty-frontier-max-unfinalized-blocks",
@@ -683,7 +677,6 @@ mod tests {
                 heartbeat_self_propose_cooldown: Some(Duration::from_secs(555555)),
                 heartbeat_stale_recovery_min_interval: Some(Duration::from_secs(333333)),
                 heartbeat_deploy_finalization_grace: Some(Duration::from_secs(444444)),
-                heartbeat_advanced_frontier_chase_max_lag: Some(111),
                 heartbeat_advanced_pending_deploy_max_lag: Some(222),
                 heartbeat_advanced_deploy_recovery_max_lag: Some(333),
                 heartbeat_advanced_empty_frontier_max_unfinalized_blocks: Some(444),
@@ -1050,14 +1043,6 @@ mod tests {
                 .heartbeat_conf
                 .deploy_finalization_grace,
             Duration::from_secs(444444)
-        );
-        assert_eq!(
-            default_config
-                .casper
-                .heartbeat_conf
-                .advanced
-                .frontier_chase_max_lag,
-            111
         );
         assert_eq!(
             default_config

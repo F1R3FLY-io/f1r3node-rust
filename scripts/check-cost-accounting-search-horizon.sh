@@ -16,24 +16,22 @@ if [[ -z "${SEARCH_PROFILE+x}" ]]; then
 fi
 SEARCH_MODE="${SEARCH_MODE:-frontier}"
 SAGE_OBJECTIVES="${SAGE_OBJECTIVES:-all}"
-SEARCH_RSS_LIMIT="${SEARCH_RSS_LIMIT:-32G}"
-# TLC heap lowered 28g -> 8g: the cost_accounted_rho models are small, and
-# 28g was ~3.5x this host's safe per-process envelope. SEARCH_RSS_LIMIT
-# stays 32G because it also caps the heavier sage/cargo/fuzz runs (e.g.
-# libfuzzer's 28G self-limit); TLC gets its own tighter ceiling below.
-TLC_MAX_HEAP="${TLC_MAX_HEAP:-8g}"
+SEARCH_RSS_LIMIT="${SEARCH_RSS_LIMIT:-8G}"
+TLC_MAX_HEAP="${TLC_MAX_HEAP:-2g}"
 TLC_JAR="${TLC_JAR:-/usr/share/java/tla2tools.jar}"
-export DOT_SAGE="${DOT_SAGE:-/tmp/sage}"
+export DOT_SAGE="${DOT_SAGE:-$OUT_DIR/dot-sage}"
+export TMPDIR="${TMPDIR:-$OUT_DIR/tmp}"
 
 mkdir -p "$OUT_DIR"
 mkdir -p "$DOT_SAGE"
+mkdir -p "$TMPDIR"
 
 # Route TLC model-checking through the shared memory-bounded launcher
 # (on-disk metadir, capped -Xmx heap, capped workers, systemd MemoryMax
-# ceiling). TLC gets its own tighter ceiling (TLC_RSS, default 16G) and a
+# ceiling). TLC gets its own tighter ceiling (TLC_RSS, default 4G) and a
 # single worker for memory headroom; the non-TLC searches keep using
 # run_bounded + SEARCH_RSS_LIMIT below.
-export TLC_REPO_ROOT="$ROOT" TLC_HEAP="$TLC_MAX_HEAP" TLC_RSS="${TLC_RSS:-16G}" TLC_WORKERS="${TLC_WORKERS:-1}"
+export TLC_REPO_ROOT="$ROOT" TLC_HEAP="$TLC_MAX_HEAP" TLC_RSS="${TLC_RSS:-4G}" TLC_WORKERS="${TLC_WORKERS:-1}"
 source "$ROOT/scripts/lib/tlc-run.sh"
 
 run() {
@@ -95,70 +93,85 @@ run_bounded() {
 nextest_fixture() {
   local fixture_file="$1"
   local test_name="$2"
-  echo "+ COST_ACCOUNTING_FRONTIER_FIXTURES_JSON=$fixture_file cargo nextest run -p rholang $test_name"
-  COST_ACCOUNTING_FRONTIER_FIXTURES_JSON="$fixture_file" \
-    cargo nextest run -p rholang "$test_name"
+  run_bounded env \
+    CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-1}" \
+    COST_ACCOUNTING_FRONTIER_FIXTURES_JSON="$fixture_file" \
+    cargo nextest run -j "${NEXTEST_JOBS:-1}" -p rholang "$test_name"
 }
 
 run_smoke_nextest() {
-  run cargo nextest run -p rholang cost_accounting_frontier_generated_fixtures_are_classified
-  run cargo nextest run -p rholang generated_frontier_replay_fixtures_hold
-  run cargo nextest run -p rholang generated_frontier_metamorphic_fixtures_hold
-  run cargo nextest run -p rholang generated_frontier_differential_fixtures_hold
-  run cargo nextest run -p rholang generated_frontier_stateful_campaign_fixtures_hold
-  run cargo nextest run -p rholang generated_frontier_adversarial_fixtures_hold
-  run cargo nextest run -p rholang generated_frontier_property_fixtures_hold
-  run cargo nextest run -p rholang generated_frontier_negative_auth_fixtures_hold
-  run cargo nextest run -p rholang generated_frontier_source_shape_fixtures_hold
-  run cargo nextest run -p rholang generated_frontier_production_fixtures_hold
-  run cargo nextest run -p rholang generated_frontier_rholang_eval_fixtures_hold
-  run cargo nextest run -p rholang generated_frontier_casper_boundary_fixtures_hold
-  run cargo nextest run -p rholang generated_frontier_semantic_eval_fixtures_hold
-  run cargo nextest run -p rholang generated_frontier_play_replay_fixtures_hold
-  run cargo nextest run -p rholang generated_frontier_phlo_boundary_fixtures_hold
-  run cargo nextest run -p rholang generated_frontier_state_root_fixtures_hold
-  run cargo nextest run -p rholang generated_frontier_auth_composition_fixtures_hold
-  run cargo nextest run -p rholang generated_frontier_generative_semantic_fixtures_hold
-  run cargo nextest run -p rholang generated_frontier_semantic_metamorphic_fixtures_hold
-  run cargo nextest run -p rholang generated_frontier_external_service_replay_fixtures_hold
-  run cargo nextest run -p rholang generated_frontier_coverage_adequacy_holds
-  run cargo nextest run -p rholang generated_frontier_corpus_semantic_fixtures_hold
-  run cargo nextest run -p rholang generated_frontier_grammar_mutation_fixtures_hold
-  run cargo nextest run -p rholang generated_frontier_differential_oracle_fixtures_hold
-  run cargo nextest run -p rholang generated_frontier_external_service_matrix_fixtures_hold
-  run cargo nextest run -p rholang generated_frontier_casper_security_matrix_fixtures_hold
-  run cargo nextest run -p rholang generated_frontier_runtime_trace_interleaving_properties_hold
-  run cargo nextest run -p rholang generated_frontier_v9_coverage_adequacy_holds
-  run cargo nextest run -p rholang generated_frontier_v10_fuzz_seed_fixtures_hold
-  run cargo nextest run -p rholang generated_frontier_v10_lifecycle_trace_fixtures_hold
-  run cargo nextest run -p rholang generated_frontier_v10_replay_payload_matrix_fixtures_hold
-  run cargo nextest run -p rholang generated_frontier_v10_casper_block_auth_fixtures_hold
-  run cargo nextest run -p rholang generated_frontier_v10_parallel_schedule_stress_fixtures_hold
-  run cargo nextest run -p rholang generated_frontier_v10_semantic_corpus_mutation_fixtures_hold
-  run cargo nextest run -p rholang generated_frontier_v10_coverage_adequacy_holds
-  run cargo nextest run -p rholang generated_frontier_v11_source_anchored_fixtures_hold
-  run cargo nextest run -p rholang generated_frontier_v11_runtime_budget_source_risks_hold
-  run cargo nextest run -p rholang generated_frontier_v11_casper_settlement_slashing_source_risks_hold
-  run cargo nextest run -p rholang generated_frontier_v11_coverage_adequacy_holds
-  run cargo nextest run -p rholang generated_frontier_v12_production_oracle_fixtures_hold
-  run cargo nextest run -p rholang generated_frontier_v12_runtime_metering_parallel_oracles_hold
-  run cargo nextest run -p rholang generated_frontier_v12_casper_settlement_slashing_oracles_hold
-  run cargo nextest run -p rholang generated_frontier_v12_coverage_adequacy_holds
-  run cargo nextest run -p rholang generated_frontier_v13_source_semantic_oracles_hold
-  run cargo nextest run -p rholang generated_frontier_v13_runtime_metering_parallel_oracles_hold
-  run cargo nextest run -p rholang generated_frontier_v13_casper_settlement_slashing_oracles_hold
-  run cargo nextest run -p rholang generated_frontier_v13_coverage_adequacy_holds
-  run cargo nextest run -p rholang generated_frontier_v14_mergeable_channel_oracles_hold
-  run cargo nextest run -p rholang generated_frontier_v14_slashing_security_oracles_hold
-  run cargo nextest run -p rholang generated_frontier_v14_node_security_oracles_hold
-  run cargo nextest run -p rholang generated_frontier_v14_coverage_adequacy_holds
-  run cargo nextest run -p casper cost_accounting_v12_casper_replay_payload_oracles_hold
-  run cargo nextest run -p casper cost_accounting_v12_slashing_replay_oracles_hold
-  run cargo nextest run -p casper cost_accounting_v13_source_semantic_replay_payload_oracles_hold
-  run cargo nextest run -p casper cost_accounting_v13_settlement_slashing_legacy_oracles_hold
-  run cargo nextest run -p casper cost_accounting_v14_replay_slashing_oracles_hold
-  run cargo nextest run -p rholang runtime_budget_event_sequence_properties_hold
-  run cargo nextest run -p rholang projection_risk
+  local test_name
+  local rholang_tests=(
+    cost_accounting_frontier_generated_fixtures_are_classified
+    generated_frontier_replay_fixtures_hold
+    generated_frontier_metamorphic_fixtures_hold
+    generated_frontier_differential_fixtures_hold
+    generated_frontier_stateful_campaign_fixtures_hold
+    generated_frontier_adversarial_fixtures_hold
+    generated_frontier_property_fixtures_hold
+    generated_frontier_negative_auth_fixtures_hold
+    generated_frontier_source_shape_fixtures_hold
+    generated_frontier_production_fixtures_hold
+    generated_frontier_rholang_eval_fixtures_hold
+    generated_frontier_casper_boundary_fixtures_hold
+    generated_frontier_semantic_eval_fixtures_hold
+    generated_frontier_play_replay_fixtures_hold
+    generated_frontier_phlo_boundary_fixtures_hold
+    generated_frontier_state_root_fixtures_hold
+    generated_frontier_auth_composition_fixtures_hold
+    generated_frontier_generative_semantic_fixtures_hold
+    generated_frontier_semantic_metamorphic_fixtures_hold
+    generated_frontier_external_service_replay_fixtures_hold
+    generated_frontier_coverage_adequacy_holds
+    generated_frontier_corpus_semantic_fixtures_hold
+    generated_frontier_grammar_mutation_fixtures_hold
+    generated_frontier_differential_oracle_fixtures_hold
+    generated_frontier_external_service_matrix_fixtures_hold
+    generated_frontier_casper_security_matrix_fixtures_hold
+    generated_frontier_runtime_trace_interleaving_properties_hold
+    generated_frontier_v9_coverage_adequacy_holds
+    generated_frontier_v10_fuzz_seed_fixtures_hold
+    generated_frontier_v10_lifecycle_trace_fixtures_hold
+    generated_frontier_v10_replay_payload_matrix_fixtures_hold
+    generated_frontier_v10_casper_block_auth_fixtures_hold
+    generated_frontier_v10_parallel_schedule_stress_fixtures_hold
+    generated_frontier_v10_semantic_corpus_mutation_fixtures_hold
+    generated_frontier_v10_coverage_adequacy_holds
+    generated_frontier_v11_source_anchored_fixtures_hold
+    generated_frontier_v11_runtime_budget_source_risks_hold
+    generated_frontier_v11_casper_settlement_slashing_source_risks_hold
+    generated_frontier_v11_coverage_adequacy_holds
+    generated_frontier_v12_production_oracle_fixtures_hold
+    generated_frontier_v12_runtime_metering_parallel_oracles_hold
+    generated_frontier_v12_casper_settlement_slashing_oracles_hold
+    generated_frontier_v12_coverage_adequacy_holds
+    generated_frontier_v13_source_semantic_oracles_hold
+    generated_frontier_v13_runtime_metering_parallel_oracles_hold
+    generated_frontier_v13_casper_settlement_slashing_oracles_hold
+    generated_frontier_v13_coverage_adequacy_holds
+    generated_frontier_v14_mergeable_channel_oracles_hold
+    generated_frontier_v14_mergeable_evidence_oracles_hold
+    generated_frontier_v14_slashing_security_oracles_hold
+    generated_frontier_v14_node_security_oracles_hold
+    generated_frontier_v14_coverage_adequacy_holds
+    runtime_budget_event_sequence_properties_hold
+    projection_risk
+  )
+  local casper_tests=(
+    cost_accounting_v12_casper_replay_payload_oracles_hold
+    cost_accounting_v12_slashing_replay_oracles_hold
+    cost_accounting_v13_source_semantic_replay_payload_oracles_hold
+    cost_accounting_v13_settlement_slashing_legacy_oracles_hold
+    cost_accounting_v14_replay_slashing_oracles_hold
+  )
+  for test_name in "${rholang_tests[@]}"; do
+    run_bounded env CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-1}" \
+      cargo nextest run -j "${NEXTEST_JOBS:-1}" -p rholang "$test_name"
+  done
+  for test_name in "${casper_tests[@]}"; do
+    run_bounded env CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-1}" \
+      cargo nextest run -j "${NEXTEST_JOBS:-1}" -p casper "$test_name"
+  done
 }
 
 run_sage_horizon() {
@@ -374,7 +387,8 @@ run_sage_horizon() {
   nextest_fixture "$horizon_v14-rust-fixtures.json" generated_frontier_v14_slashing_security_oracles_hold
   nextest_fixture "$horizon_v14-rust-fixtures.json" generated_frontier_v14_node_security_oracles_hold
   nextest_fixture "$horizon_v14-rust-fixtures.json" generated_frontier_v14_coverage_adequacy_holds
-  run cargo nextest run -p casper cost_accounting_v14_replay_slashing_oracles_hold
+  run_bounded env CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-1}" \
+    cargo nextest run -j "${NEXTEST_JOBS:-1}" -p casper cost_accounting_v14_replay_slashing_oracles_hold
   nextest_fixture "$hypothesis-rust-fixtures.json" projection_risk_witnesses_have_guarded_safe_disposition
   nextest_fixture "$horizon_v2-rust-fixtures.json" projection_risk_witnesses_have_guarded_safe_disposition
   nextest_fixture "$horizon_v4-rust-fixtures.json" projection_risk_witnesses_have_guarded_safe_disposition

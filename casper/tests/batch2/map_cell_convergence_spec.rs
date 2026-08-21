@@ -48,10 +48,10 @@ impl TestContext {
 }
 
 /// Distinct, genesis-funded deployer keys (one per validator) so the only conflict is
-/// the single-value-cell keep-one, not a shared-vault precharge. Supports up to 3.
+/// the single-value-cell keep-one, not a shared-purse aggregate debit. Supports up to 3.
 /// All three MUST be genesis-funded: 0/1 are DEFAULT_SEC/SEC2; 2 is the first EXTRA
 /// genesis vault key (funded 9M Rev for the default 4-validator genesis). An UNFUNDED
-/// key here fails precharge and never writes — which silently breaks the test.
+/// key cannot certify its complete protocol debit and never writes.
 fn signer_key(v: usize) -> PrivateKey {
     match v {
         0 => construct_deploy::DEFAULT_SEC.clone(),

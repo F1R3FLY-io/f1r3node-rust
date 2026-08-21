@@ -13,7 +13,7 @@ def reserve_all(balance, requested):
             balance[index] - requested[index]
             for index in range(len(balance))
         ),
-        "escrow": tuple(requested),
+        "reservation": tuple(requested),
     }
 
 
@@ -71,7 +71,7 @@ def exhaustive_lifecycle(max_balance=4, max_bound=4):
                 continue
             if (
                 total(reservation["balance"])
-                + total(reservation["escrow"])
+                + total(reservation["reservation"])
                 != total(before)
             ):
                 violations.append(("reservation_nonconserving", balance, bound))
@@ -188,6 +188,60 @@ def exhaustive_merge_refinement(max_balance=4):
     return {"traces": traces, "violations": violations}
 
 
+def exhaustive_application_cost_composition(max_balance=8):
+    traces = 0
+    violations = []
+    component_names = ("application", "physical", "byte", "fee")
+    omission_witnesses = {name: [] for name in component_names}
+    components = list(itertools.product(range(2), repeat=4))
+    for branches in itertools.product(components, repeat=3):
+        complete_debits = tuple(sum(branch) for branch in branches)
+        complete_total = sum(complete_debits)
+        for balance in range(max_balance + 1):
+            for component_index, component_name in enumerate(component_names):
+                projected_total = complete_total - sum(
+                    branch[component_index] for branch in branches
+                )
+                if projected_total <= balance < complete_total:
+                    omission_witnesses[component_name].append((balance, branches))
+            for order in itertools.permutations(range(3)):
+                traces += 1
+                remaining = balance
+                accepted = []
+                rejected = []
+                for index in order:
+                    debit = complete_debits[index]
+                    if debit <= remaining:
+                        remaining -= debit
+                        accepted.append(index)
+                    else:
+                        rejected.append(index)
+                if remaining < 0 or len(accepted) + len(rejected) != 3:
+                    violations.append(
+                        ("invalid_partition", balance, branches, order, remaining)
+                    )
+                if sum(complete_debits[index] for index in accepted) > balance:
+                    violations.append(
+                        ("accepted_overdraw", balance, branches, order, accepted)
+                    )
+                if complete_total <= balance and rejected:
+                    violations.append(
+                        ("funded_aggregate_rejected", balance, branches, order, rejected)
+                    )
+    return {
+        "traces": traces,
+        "violations": violations,
+        "omission_witness_counts": {
+            name: len(witnesses)
+            for name, witnesses in omission_witnesses.items()
+        },
+        "omission_witnesses": {
+            name: witnesses[0] if witnesses else None
+            for name, witnesses in omission_witnesses.items()
+        },
+    }
+
+
 def authorization_checks():
     client = 0
     provider = 1
@@ -239,12 +293,18 @@ def main():
     lifecycle = exhaustive_lifecycle()
     atomicity = exhaustive_atomicity()
     merge = exhaustive_merge_refinement()
+    application_cost_composition = exhaustive_application_cost_composition()
     authorization = authorization_checks()
     controls = negative_controls()
     overall_pass = (
         not lifecycle["violations"]
         and not atomicity["violations"]
         and not merge["violations"]
+        and not application_cost_composition["violations"]
+        and all(
+            count > 0
+            for count in application_cost_composition["omission_witness_counts"].values()
+        )
         and all(authorization.values())
         and all(controls.values())
     )
@@ -253,6 +313,7 @@ def main():
         "lifecycle": lifecycle,
         "atomicity": atomicity,
         "merge": merge,
+        "application_cost_composition": application_cost_composition,
         "authorization": authorization,
         "negative_controls": controls,
     }

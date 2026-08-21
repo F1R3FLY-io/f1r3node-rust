@@ -61,4 +61,5 @@ theories/StateLineageFinality.v
 theories/CertifiedFloorPromotion.v
 theories/SnapshotFloorMaterialization.v
 theories/HeartbeatFinalityBackpressure.v
+theories/ParallelValidatorConsensus.v
 theories/MainTheorem.v

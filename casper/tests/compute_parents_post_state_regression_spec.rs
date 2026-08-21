@@ -990,11 +990,7 @@ async fn run_compute_parents_post_state_missing_mergeable_regression() {
     .expect("Failed to step b3");
 
     let deleted = runtime_manager
-        .delete_mergeable_channels(
-            &b2.body.state.post_state_hash,
-            b2.sender.clone(),
-            b2.seq_num,
-        )
+        .delete_mergeable_channels(&b2)
         .expect("Failed to delete mergeable entry");
     assert!(
         deleted,
@@ -1037,10 +1033,8 @@ async fn run_compute_parents_post_state_missing_mergeable_regression() {
     );
     assert!(
         runtime_manager
-            .get_mergeable_entry_bytes(&b2)
-            .expect("mergeable entry query failed")
-            .1
-            .is_some(),
+            .has_mergeable_entry(&b2)
+            .expect("mergeable entry query failed"),
         "the missing mergeable entry should be materialized from its source block"
     );
 }

@@ -152,7 +152,7 @@ env:
   # PR #99's AMD64_MEM_GB=48 fleet default and RUNNER_MEM_GB_OVERRIDE. The
   # immutable merge commit has parents a2c690a1 and a0c6fba6, so the 48GB
   # guard sizing and cost-accounted integration coverage remain together.
-  SYSTEM_INTEGRATION_REF: 087487981ae5c5e08ce12c524dd772ca67a308a6
+  SYSTEM_INTEGRATION_REF: 5c0f6637cac290cd9ca526915072b39993a4ac54
   # Pinned OCI CLI installer (release tag + sha256). The checksum fails closed
   # if the tag is ever moved. Bump both together when upgrading.
   OCI_CLI_INSTALLER_URL: "https://raw.githubusercontent.com/oracle/oci-cli/v3.89.1/scripts/install/install.sh"

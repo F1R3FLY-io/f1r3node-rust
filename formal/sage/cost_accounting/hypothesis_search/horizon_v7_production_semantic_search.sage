@@ -71,24 +71,6 @@ def source_digest(source):
     return hashlib.sha256(source.encode("utf-8")).hexdigest()[:16]
 
 
-def expected_fixture_values(scenario):
-    consumed = 0
-    count = 0
-    budget = int(scenario.get("initial_budget", 0))
-    for event in scenario.get("events", []):
-        weight = int(event.get("weight", 0))
-        primitive_descriptor = str(event.get("primitive_descriptor", event.get("descriptor", "")))
-        invalid_descriptor = str(event.get("kind", "")) == "primitive" and len(primitive_descriptor) > 512
-        invalid_source_path = len(event.get("path", [])) > 1024
-        if weight <= 0 or invalid_descriptor or invalid_source_path:
-            return (0, 0, True, False)
-        if consumed + weight > budget:
-            return (budget, count + 1, False, True)
-        consumed += weight
-        count += 1
-    return (consumed, count, False, False)
-
-
 def discover_source_seeds(roots, limit):
     seeds = []
     for root in roots:
@@ -206,12 +188,12 @@ def play_replay_records(objectives):
         "horizon_v7_play_replay_state_root",
         events=[semantic_event("play-replay/state-root", 2, path=[0])],
         initial_budget=8,
-        replay_fields={"fields": ["cost", "cost_trace_digest", "cost_trace_event_count", "state_root"]},
-        replay_mutations=["cost_trace_digest", "cost_trace_event_count"],
+        replay_fields={"fields": authenticated_replay_fields(["state_root"])},
+        replay_mutations=authenticated_replay_fields(),
         rho_source=source,
         production_oracle="rholang_play_replay",
         expected_outcome="state_root_replayed",
-        differential_axes=["cost", "digest", "count", "state_root"],
+        differential_axes=["processed_cost", "authority_witness", "byte_events", "payload_hash", "state_root"],
         eval_phlo=100000,
         expected_error_kind="none",
         eval_result_axes=["cost", "digest", "count", "errors", "state_root"],
@@ -225,7 +207,7 @@ def play_replay_records(objectives):
         minimized_input_digest=digest_value("v7-play-replay-state-root"),
         reproducer_command=command_for_fixture("generated_frontier_play_replay_fixtures_hold"),
         threat_family="production_state_root",
-        expected_invariants=["play_replay_preserves_cost_digest_count_and_error_class"],
+        expected_invariants=["play_replay_preserves_authenticated_cost_witness_and_error_class"],
         rust_reproducer={"test": "generated_frontier_play_replay_fixtures_hold"},
         promotion_target="rust:test",
         expected_classification="confirmed_safe",
@@ -369,30 +351,30 @@ def auth_composition_records(objectives):
         return []
     source = '@0!("v7-auth-composition")'
     scenario = canonical_scenario(
-        "horizon_v7_auth_composition_cost_trace_payload",
+        "horizon_v7_auth_composition_authority_cost_payload",
         events=[semantic_event("auth-composition/source", 2, deploy=0, path=[0])],
         initial_budget=6,
         deploy_count=2,
-        settlement={"authority": "casper", "escrow": 12, "token_cost": 4, "refund": 8, "auth_composition": True},
-        replay_fields={"fields": ["cost", "cost_trace_digest", "cost_trace_event_count", "signature", "block_hash", "cost_trace_present"]},
-        negative_mutations=["cost", "cost_trace_digest", "cost_trace_event_count", "signature", "block_hash", "cost_trace_present"],
+        settlement=vault_settlement(12, 12, 0, 0, 4, 0, auth_composition=True),
+        replay_fields={"fields": authenticated_replay_fields(["signature", "block_hash"])},
+        negative_mutations=authenticated_replay_fields(["signature", "block_hash"]),
         rho_source=source,
         production_oracle="casper_auth_composition",
         expected_outcome="auth_composed",
-        differential_axes=["cost", "digest", "count", "signature", "block_hash", "trace_presence", "refund"],
+        differential_axes=["processed_cost", "authority_witness", "byte_events", "payload_hash", "signature", "block_hash", "refund"],
         eval_phlo=100000,
         expected_error_kind="none",
         eval_result_axes=["cost", "digest", "count", "errors"],
         rho_source_digest=source_digest(source),
         replay_mode="eval_only",
-        attack_campaign="v7_auth_composition_cost_trace_payload",
+        attack_campaign="v7_auth_composition_authority_cost_payload",
         oracle_kind="production_auth_composition",
         production_path="RhoRuntime eval result + Casper replay payload authentication",
-        campaign_steps=["evaluate_source", "project_cost_trace", "mutate_authenticated_axes", "assert_settlement_is_post_eval"],
+        campaign_steps=["evaluate_source", "project_authority_witness", "mutate_authenticated_axes", "assert_settlement_is_post_eval"],
         minimized_input_digest=digest_value("v7-auth-composition"),
         reproducer_command=command_for_fixture("generated_frontier_auth_composition_fixtures_hold"),
         threat_family="production_auth_composition",
-        expected_invariants=["auth_payload_axes_cover_eval_cost_trace_and_settlement_projection"],
+        expected_invariants=["auth_payload_axes_cover_authority_cost_witness_and_settlement_projection"],
         rust_reproducer={"test": "generated_frontier_auth_composition_fixtures_hold"},
         promotion_target="rust:test",
         expected_classification="confirmed_safe",
@@ -401,7 +383,7 @@ def auth_composition_records(objectives):
         record(
             "horizon_v7_auth_composition",
             "confirmed_safe",
-            "horizon_v7_auth_composition_cost_trace_payload",
+            "horizon_v7_auth_composition_authority_cost_payload",
             "Production eval cost evidence remains tied to replay-authenticated Casper payload axes and settlement isolation.",
             scenario,
             {"auth_composition": True, "casper_boundary": "replay_payload", "refund": 8},

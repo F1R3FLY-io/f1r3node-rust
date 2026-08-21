@@ -5,7 +5,8 @@
 # Runs every formal layer for the feature under a bounded memory envelope:
 #
 #   1. Rocq  (AUTHORITATIVE) — builds formal/rocq/finalized_floor and asserts the
-#      thirty-four headline results, including exact occurrence status and exact-effect causal rejection closure,
+#      forty headline results, including exact occurrence status, exact-effect causal rejection closure,
+#      and heartbeat recovery/backpressure refinement,
 #      plus the three GuardBridge lemmas that derive Floor.v's AdjDC premise from the
 #      Rust committee-constancy guard (guard_constant_committee_transparent,
 #      upgo_finalized, chain_adj_AdjDC) are axiom-free. Any failure here fails the gate.
@@ -83,7 +84,7 @@ if command -v coqc >/dev/null 2>&1 || [[ -x "$HOME/.opam/default/bin/coqc" ]]; t
   eval "$(opam env 2>/dev/null)" 2>/dev/null || true
   ( cd "$ROCQ_DIR" && coq_makefile -f _CoqProject -o Makefile ) >/dev/null 2>&1
   if capped make -C "$ROCQ_DIR" -j1 >"$LOG_DIR/ff_rocq_build.log" 2>&1; then
-    pass "Rocq build (Foundation, CliqueOracle, Floor, GuardBridge, Merge, OccurrenceDisposition, FinalizedOccurrenceStatus, Recovery, MergeRecoveryCoherence, RejectionReasonConfluence, ProtocolVersionLifecycle, ProtocolActivationCoherence, Selection, IntegerAdd, FtExact, StateEffectProvenance, CertifiedFloorPromotion, MainTheorem)"
+    pass "Rocq build (Foundation, CliqueOracle, AccountableSafety, Floor, GuardBridge, Merge, OccurrenceDisposition, FinalizedOccurrenceStatus, Recovery, MergeRecoveryCoherence, AdmissionEffectAlignment, RejectionReasonConfluence, ProtocolVersionLifecycle, ProtocolActivationCoherence, Selection, IntegerAdd, FtExact, StateEffectProvenance, CertifiedFloorPromotion, MainTheorem)"
     # Coq derives the module name from the file's basename, so it must be a valid
     # identifier (no dots) — use a fixed name inside a scratch dir.
     tmpd=$(mktemp -d "$LOG_DIR/rocq-gate.XXXXXX")
@@ -107,6 +108,7 @@ Print Assumptions finalized_floor_occurrence_status_scope_correct.
 Print Assumptions finalized_floor_recovery_admission_correct.
 Print Assumptions finalized_floor_recovery_leadership_correct.
 Print Assumptions finalized_floor_merge_recovery_coherence_correct.
+Print Assumptions finalized_floor_admission_effect_alignment_correct.
 Print Assumptions finalized_floor_rejection_reason_confluence_correct.
 Print Assumptions finalized_floor_protocol_activation_correct.
 Print Assumptions finalized_floor_protocol_lifecycle_correct.
@@ -135,14 +137,19 @@ Print Assumptions finalized_floor_certified_promotion_correct.
 Print Assumptions finalized_floor_latest_message_coverage_correct.
 Print Assumptions finalized_floor_linear_snapshot_reuse_correct.
 Print Assumptions finalized_floor_snapshot_materialization_correct.
+Print Assumptions finalized_floor_heartbeat_backpressure_correct.
+Print Assumptions finalized_floor_accountable_safety_correct.
+Print Assumptions finalized_floor_strict_accountable_safety_correct.
+Print Assumptions finalized_floor_parallel_validator_consensus_correct.
+Print Assumptions finalized_floor_parallel_accountable_promotion_correct.
 EOF
     out=$(coqc -Q "$ROCQ_DIR/theories" FinalizedFloor "$chk" 2>&1)
     rm -rf "$tmpd"
     n_closed=$(grep -c "Closed under the global context" <<<"$out")
-    if [[ "$n_closed" == "34" ]]; then
-      pass "all 34 headline results axiom-free, including exact occurrence status, exact-effect causal closure, floor-rebased causal inputs, merge-effect provenance, certified-floor promotion, coverage transparency, and snapshot materialization"
+    if [[ "$n_closed" == "40" ]]; then
+      pass "all 40 headline results axiom-free, including accountable parallel promotion, accountable finality, parallel-validator isolation, admission/effect alignment, exact occurrence status, exact-effect causal closure, floor-rebased causal inputs, merge-effect provenance, certified-floor promotion, coverage transparency, snapshot materialization, and heartbeat backpressure"
     else
-      fail "headline results NOT all axiom-free ($n_closed/34 Closed):"; printf '      %s\n' "${out//$'\n'/$'\n      '}"
+      fail "headline results NOT all axiom-free ($n_closed/40 Closed):"; printf '      %s\n' "${out//$'\n'/$'\n      '}"
     fi
     # Independent kernel re-check (coqchk) — the TRUSTED kernel re-verifies every
     # capstone + dependency `.vo`, not just the elaborator's Print Assumptions.
@@ -212,6 +219,51 @@ if [[ -f "$TLC_JAR" ]] || command -v tlc >/dev/null 2>&1; then
       fail "TLA+ finalizer ${unsafe_kind} control failed for the wrong reason (see $unsafe_log)"
     fi
   done
+  if tlc_run "$(tlc_metadir ff_heartbeat_backpressure)" "$TLA_DIR/MC_HeartbeatFinalityBackpressure.cfg" "$TLA_DIR/HeartbeatFinalityBackpressure.tla" >"$LOG_DIR/ff_tlc_heartbeat_backpressure.log" 2>&1; then
+    pass "TLA+ asynchronous heartbeat recovery preserves bounded admission, unique per-round leadership, exact dual certificates, and offline-leader liveness"
+  else
+    fail "TLA+ heartbeat/finality backpressure model failed (see $LOG_DIR/ff_tlc_heartbeat_backpressure.log)"
+  fi
+  if tlc_run "$(tlc_metadir ff_heartbeat_eager_unsafe)" "$TLA_DIR/MC_HeartbeatFinalityBackpressure_eager_unsafe.cfg" "$TLA_DIR/HeartbeatFinalityBackpressure.tla" >"$LOG_DIR/ff_tlc_heartbeat_eager_unsafe.log" 2>&1; then
+    fail "TLA+ eager-heartbeat control should exceed the validation backlog bound but passed"
+  elif grep -q "Inv_ValidationBacklogBounded is violated" "$LOG_DIR/ff_tlc_heartbeat_eager_unsafe.log"; then
+    pass "TLA+ eager-heartbeat control reproduces unbounded validation admission"
+  else
+    fail "TLA+ eager-heartbeat control failed for the wrong reason (see $LOG_DIR/ff_tlc_heartbeat_eager_unsafe.log)"
+  fi
+  if tlc_run "$(tlc_metadir ff_heartbeat_offline_leader_unsafe)" "$TLA_DIR/MC_HeartbeatFinalityBackpressure_offline_leader_unsafe.cfg" "$TLA_DIR/HeartbeatFinalityBackpressure.tla" >"$LOG_DIR/ff_tlc_heartbeat_offline_leader_unsafe.log" 2>&1; then
+    fail "TLA+ fixed-offline-leader control should starve finality recovery but passed"
+  elif grep -q "Temporal properties were violated" "$LOG_DIR/ff_tlc_heartbeat_offline_leader_unsafe.log"; then
+    pass "TLA+ fixed-offline-leader control reproduces finality starvation"
+  else
+    fail "TLA+ fixed-offline-leader control failed for the wrong reason (see $LOG_DIR/ff_tlc_heartbeat_offline_leader_unsafe.log)"
+  fi
+  if tlc_run "$(tlc_metadir ff_heartbeat_causal_only_unsafe)" "$TLA_DIR/MC_HeartbeatFinalityBackpressure_causal_only_unsafe.cfg" "$TLA_DIR/HeartbeatFinalityBackpressure.tla" >"$LOG_DIR/ff_tlc_heartbeat_causal_only_unsafe.log" 2>&1; then
+    fail "TLA+ causal-only heartbeat control should promote without a state certificate but passed"
+  elif grep -q "Inv_PromotionUsesExactStateMajority is violated" "$LOG_DIR/ff_tlc_heartbeat_causal_only_unsafe.log"; then
+    pass "TLA+ causal-only heartbeat control reproduces unsupported state-floor promotion"
+  else
+    fail "TLA+ causal-only heartbeat control failed for the wrong reason (see $LOG_DIR/ff_tlc_heartbeat_causal_only_unsafe.log)"
+  fi
+  if tlc_run "$(tlc_metadir ff_accountable_finality)" "$TLA_DIR/MC_AccountableFinality.cfg" "$TLA_DIR/AccountableFinality.tla" >"$LOG_DIR/ff_tlc_accountable_finality.log" 2>&1; then
+    pass "TLA+ asynchronous support interleavings preserve exact weighted accountable finality"
+  else
+    fail "TLA+ accountable-finality model failed (see $LOG_DIR/ff_tlc_accountable_finality.log)"
+  fi
+  if tlc_run "$(tlc_metadir ff_accountable_honest_double_support_unsafe)" "$TLA_DIR/MC_AccountableFinality_honest_double_support_unsafe.cfg" "$TLA_DIR/AccountableFinality.tla" >"$LOG_DIR/ff_tlc_accountable_honest_double_support_unsafe.log" 2>&1; then
+    fail "TLA+ honest-double-support control should create a conflict below the fault budget but passed"
+  elif grep -q "Inv_FloorConflictRequiresFaultBudget is violated" "$LOG_DIR/ff_tlc_accountable_honest_double_support_unsafe.log"; then
+    pass "TLA+ honest-double-support control reproduces unaccountable conflicting certificates"
+  else
+    fail "TLA+ honest-double-support control failed for the wrong reason (see $LOG_DIR/ff_tlc_accountable_honest_double_support_unsafe.log)"
+  fi
+  if tlc_run "$(tlc_metadir ff_accountable_fault_budget_unsafe)" "$TLA_DIR/MC_AccountableFinality_fault_budget_unsafe.cfg" "$TLA_DIR/AccountableFinality.tla" >"$LOG_DIR/ff_tlc_accountable_fault_budget_unsafe.log" 2>&1; then
+    fail "TLA+ over-budget Byzantine control should create conflicting floor certificates but passed"
+  elif grep -q "Inv_NoConflictingFloor is violated" "$LOG_DIR/ff_tlc_accountable_fault_budget_unsafe.log"; then
+    pass "TLA+ over-budget Byzantine control demonstrates the accountable-safety boundary"
+  else
+    fail "TLA+ over-budget Byzantine control failed for the wrong reason (see $LOG_DIR/ff_tlc_accountable_fault_budget_unsafe.log)"
+  fi
   if tlc_run "$(tlc_metadir ff_state_lineage)" "$TLA_DIR/MC_StateLineageFinality.cfg" "$TLA_DIR/StateLineageFinality.tla" >"$LOG_DIR/ff_tlc_state_lineage.log" 2>&1; then
     pass "TLA+ dual-certificate state admission preserves committed LFB state and rebase liveness without changing causal certificates"
   else
@@ -336,12 +388,89 @@ if [[ -f "$TLC_JAR" ]] || command -v tlc >/dev/null 2>&1; then
   else
     fail "TLA+ main-chain-only occurrence-status control failed for the wrong reason (see $LOG_DIR/ff_tlc_finalized_occurrence_status_unsafe.log)"
   fi
+  if "$REPO_ROOT/scripts/check-parallel-validator-consensus.sh" >"$LOG_DIR/ff_tlc_parallel_validator.log" 2>&1; then
+    pass "TLA+ independent validator replay, support delivery, crash, and floor-publication interleavings preserve state lineage; all eight defect controls are detected"
+  else
+    fail "TLA+ parallel-validator consensus model failed (see $LOG_DIR/ff_tlc_parallel_validator.log)"
+  fi
 else
   skip "no TLC jar (\$TLC_JAR) or 'tlc' on PATH"
 fi
 
 if command -v apalache-mc >/dev/null 2>&1; then
   apalache_out="$(mktemp -d "$LOG_DIR/apalache-state-lineage.XXXXXX")"
+  parallel_validator_output="$(cd "$TLA_DIR" && timeout 300 apalache-mc --out-dir="$apalache_out/parallel-validator-safe" check --config=MC_ParallelValidatorConsensusApalache.cfg --length=6 ParallelValidatorConsensus.tla 2>&1)"
+  parallel_validator_rc=$?
+  printf '%s\n' "$parallel_validator_output" >"$LOG_DIR/ff_apalache_parallel_validator.log"
+  if [[ $parallel_validator_rc -eq 0 ]] && grep -qE 'The outcome is: NoError|EXITCODE: OK' "$LOG_DIR/ff_apalache_parallel_validator.log"; then
+    pass "Apalache independent-validator replay, support, and floor-publication invariants through bound 6"
+  else
+    fail "Apalache parallel-validator consensus model failed (see $LOG_DIR/ff_apalache_parallel_validator.log)"
+  fi
+  parallel_validator_crash_output="$(cd "$TLA_DIR" && timeout 600 apalache-mc --out-dir="$apalache_out/parallel-validator-crash-safe" check --config=MC_ParallelValidatorConsensusCrashApalache.cfg --length=6 ParallelValidatorConsensus.tla 2>&1)"
+  parallel_validator_crash_rc=$?
+  printf '%s\n' "$parallel_validator_crash_output" >"$LOG_DIR/ff_apalache_parallel_validator_crash.log"
+  if [[ $parallel_validator_crash_rc -eq 0 ]] && grep -qE 'The outcome is: NoError|EXITCODE: OK' "$LOG_DIR/ff_apalache_parallel_validator_crash.log"; then
+    pass "Apalache validator-local roots survive crash/restart schedules through bound 6"
+  else
+    fail "Apalache parallel-validator crash model failed (see $LOG_DIR/ff_apalache_parallel_validator_crash.log)"
+  fi
+  parallel_validator_crash_unsafe_output="$(cd "$TLA_DIR" && timeout 300 apalache-mc --out-dir="$apalache_out/parallel-validator-crash-root-unsafe" check --config=MC_ParallelValidatorConsensus_crash_root_unsafe.cfg --length=5 ParallelValidatorConsensus.tla 2>&1)"
+  parallel_validator_crash_unsafe_rc=$?
+  printf '%s\n' "$parallel_validator_crash_unsafe_output" >"$LOG_DIR/ff_apalache_parallel_validator_crash_root_unsafe.log"
+  if [[ $parallel_validator_crash_unsafe_rc -ne 0 ]] \
+       && grep -qE 'state invariant [0-9]+ violated' "$LOG_DIR/ff_apalache_parallel_validator_crash_root_unsafe.log" \
+       && grep -q 'The outcome is: Error' "$LOG_DIR/ff_apalache_parallel_validator_crash_root_unsafe.log"; then
+    pass "Apalache crash-root deletion control finds lost validator-local replay state"
+  else
+    fail "Apalache crash-root deletion control did not reproduce the expected counterexample (see $LOG_DIR/ff_apalache_parallel_validator_crash_root_unsafe.log)"
+  fi
+  accountable_output="$(cd "$TLA_DIR" && timeout 300 apalache-mc --out-dir="$apalache_out/accountable-safe" check --config=MC_AccountableFinalityApalache.cfg --length=5 AccountableFinality.tla 2>&1)"
+  accountable_rc=$?
+  printf '%s\n' "$accountable_output" >"$LOG_DIR/ff_apalache_accountable_finality.log"
+  if [[ $accountable_rc -eq 0 ]] && grep -qE 'The outcome is: NoError|EXITCODE: OK' "$LOG_DIR/ff_apalache_accountable_finality.log"; then
+    pass "Apalache exact weighted accountable-finality invariants through bound 5"
+  else
+    fail "Apalache accountable-finality model failed (see $LOG_DIR/ff_apalache_accountable_finality.log)"
+  fi
+  accountable_unsafe_output="$(cd "$TLA_DIR" && timeout 300 apalache-mc --out-dir="$apalache_out/accountable-unsafe" check --config=MC_AccountableFinality_honest_double_support_unsafe_Apalache.cfg --length=3 AccountableFinality.tla 2>&1)"
+  accountable_unsafe_rc=$?
+  printf '%s\n' "$accountable_unsafe_output" >"$LOG_DIR/ff_apalache_accountable_finality_unsafe.log"
+  if [[ $accountable_unsafe_rc -ne 0 ]] \
+       && grep -qE 'state invariant [0-9]+ violated' "$LOG_DIR/ff_apalache_accountable_finality_unsafe.log" \
+       && grep -q 'The outcome is: Error' "$LOG_DIR/ff_apalache_accountable_finality_unsafe.log"; then
+    pass "Apalache honest-double-support control finds an unaccountable certificate conflict"
+  else
+    fail "Apalache accountable-finality negative control did not reproduce the expected counterexample (see $LOG_DIR/ff_apalache_accountable_finality_unsafe.log)"
+  fi
+  heartbeat_output="$(cd "$TLA_DIR" && timeout 300 apalache-mc --out-dir="$apalache_out/heartbeat-safe" check --config=MC_HeartbeatFinalityBackpressureApalache.cfg --length=10 HeartbeatFinalityBackpressure.tla 2>&1)"
+  heartbeat_rc=$?
+  printf '%s\n' "$heartbeat_output" >"$LOG_DIR/ff_apalache_heartbeat_backpressure.log"
+  if [[ $heartbeat_rc -eq 0 ]] && grep -qE 'The outcome is: NoError|EXITCODE: OK' "$LOG_DIR/ff_apalache_heartbeat_backpressure.log"; then
+    pass "Apalache asynchronous heartbeat/backpressure invariants through bound 10"
+  else
+    fail "Apalache heartbeat/finality backpressure model failed (see $LOG_DIR/ff_apalache_heartbeat_backpressure.log)"
+  fi
+  heartbeat_eager_output="$(cd "$TLA_DIR" && timeout 300 apalache-mc --out-dir="$apalache_out/heartbeat-eager-unsafe" check --config=MC_HeartbeatFinalityBackpressure_eager_unsafe_Apalache.cfg --length=8 HeartbeatFinalityBackpressure.tla 2>&1)"
+  heartbeat_eager_rc=$?
+  printf '%s\n' "$heartbeat_eager_output" >"$LOG_DIR/ff_apalache_heartbeat_eager_unsafe.log"
+  if [[ $heartbeat_eager_rc -ne 0 ]] \
+       && grep -qE 'state invariant [0-9]+ violated' "$LOG_DIR/ff_apalache_heartbeat_eager_unsafe.log" \
+       && grep -q 'The outcome is: Error' "$LOG_DIR/ff_apalache_heartbeat_eager_unsafe.log"; then
+    pass "Apalache eager-heartbeat control finds validation-backlog overflow"
+  else
+    fail "Apalache eager-heartbeat control did not reproduce the expected counterexample (see $LOG_DIR/ff_apalache_heartbeat_eager_unsafe.log)"
+  fi
+  heartbeat_causal_output="$(cd "$TLA_DIR" && timeout 300 apalache-mc --out-dir="$apalache_out/heartbeat-causal-unsafe" check --config=MC_HeartbeatFinalityBackpressure_causal_only_unsafe_Apalache.cfg --length=8 HeartbeatFinalityBackpressure.tla 2>&1)"
+  heartbeat_causal_rc=$?
+  printf '%s\n' "$heartbeat_causal_output" >"$LOG_DIR/ff_apalache_heartbeat_causal_only_unsafe.log"
+  if [[ $heartbeat_causal_rc -ne 0 ]] \
+       && grep -qE 'state invariant [0-9]+ violated' "$LOG_DIR/ff_apalache_heartbeat_causal_only_unsafe.log" \
+       && grep -q 'The outcome is: Error' "$LOG_DIR/ff_apalache_heartbeat_causal_only_unsafe.log"; then
+    pass "Apalache causal-only heartbeat control finds unsupported state-floor promotion"
+  else
+    fail "Apalache causal-only heartbeat control did not reproduce the expected counterexample (see $LOG_DIR/ff_apalache_heartbeat_causal_only_unsafe.log)"
+  fi
   safe_output="$(cd "$TLA_DIR" && timeout 300 apalache-mc --out-dir="$apalache_out/safe" check --config=MC_StateLineageFinalityApalache.cfg --length=8 StateLineageFinality.tla 2>&1)"
   safe_rc=$?
   printf '%s\n' "$safe_output" >"$LOG_DIR/ff_apalache_state_lineage.log"
@@ -661,6 +790,15 @@ if command -v cargo >/dev/null 2>&1; then
     pass "Rust complete-scan, main-parent convergence, unchanged-clique/state-preservation, off-main rebase progress, and execution-rebase regressions"
   else
     fail "Rust finalizer progress regressions failed (see $LOG_DIR/ff_rust_finalizer_progress.log)"; tail -20 "$LOG_DIR/ff_rust_finalizer_progress.log" | sed 's/^/      /'
+  fi
+  if cargo test -p node heartbeat_proposer >"$LOG_DIR/ff_rust_heartbeat.log" 2>&1 \
+       && grep -q "recovery_leader_is_unique_and_permutation_invariant ... ok" "$LOG_DIR/ff_rust_heartbeat.log" \
+       && grep -q "recovery_leader_rotation_visits_every_unique_validator ... ok" "$LOG_DIR/ff_rust_heartbeat.log" \
+       && grep -q "do_heartbeat_check_triggers_one_recovery_proposal_after_observed_lfb_stall ... ok" "$LOG_DIR/ff_rust_heartbeat.log" \
+       && grep -qE "test result: ok\. [1-9][0-9]* passed" "$LOG_DIR/ff_rust_heartbeat.log"; then
+    pass "Rust heartbeat recovery unit/property tests (observed LFB progress, bounded proposal admission, canonical committee, and rotating leadership)"
+  else
+    fail "Rust heartbeat/finality recovery regressions failed (see $LOG_DIR/ff_rust_heartbeat.log)"; tail -20 "$LOG_DIR/ff_rust_heartbeat.log" | sed 's/^/      /'
   fi
 else
   skip "no cargo on PATH"

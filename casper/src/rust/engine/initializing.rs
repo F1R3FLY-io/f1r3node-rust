@@ -22,8 +22,8 @@ use futures::stream::StreamExt;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{
-    ApprovedBlock, BlockMessage, CasperMessage, MergeableEntryRequest, MergeableEntryResponse,
-    ProcessedSystemDeploy, StoreItemsMessage, StoreItemsMessageRequest, SystemDeployData,
+    ApprovedBlock, BlockMessage, CasperMessage, ProcessedSystemDeploy, StoreItemsMessage,
+    StoreItemsMessageRequest, SystemDeployData,
 };
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::history::Either;
@@ -86,13 +86,9 @@ pub struct Initializing<T: TransportLayer + Send + Sync + Clone + 'static> {
     >,
     block_message_rx: Arc<Mutex<Option<mpsc::Receiver<BlockMessage>>>>,
     tuple_space_rx: Arc<Mutex<Option<mpsc::Receiver<StoreItemsMessage>>>>,
-    /// Receives `MergeableEntryResponse` routed from `handle_message_recv`.
-    /// Drained by `lfs_block_requester::stream` during `request_approved_state`.
-    mergeable_message_rx: Arc<Mutex<Option<mpsc::Receiver<MergeableEntryResponse>>>>,
     // Senders to enqueue messages from `handle` (producer side)
     pub block_message_tx: Arc<Mutex<Option<mpsc::Sender<BlockMessage>>>>,
     pub tuple_space_tx: Arc<Mutex<Option<mpsc::Sender<StoreItemsMessage>>>>,
-    pub mergeable_message_tx: Arc<Mutex<Option<mpsc::Sender<MergeableEntryResponse>>>>,
     block_message_queue_pending: Arc<AtomicUsize>,
     tuple_space_queue_pending: Arc<AtomicUsize>,
     trim_state: bool,
@@ -143,8 +139,6 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
         block_message_rx: mpsc::Receiver<BlockMessage>,
         tuple_space_tx: mpsc::Sender<StoreItemsMessage>,
         tuple_space_rx: mpsc::Receiver<StoreItemsMessage>,
-        mergeable_message_tx: mpsc::Sender<MergeableEntryResponse>,
-        mergeable_message_rx: mpsc::Receiver<MergeableEntryResponse>,
         trim_state: bool,
         disable_state_exporter: bool,
         event_publisher: F1r3flyEvents,
@@ -172,10 +166,8 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
             the_init,
             block_message_rx: Arc::new(Mutex::new(Some(block_message_rx))),
             tuple_space_rx: Arc::new(Mutex::new(Some(tuple_space_rx))),
-            mergeable_message_rx: Arc::new(Mutex::new(Some(mergeable_message_rx))),
             block_message_tx: Arc::new(Mutex::new(Some(block_message_tx))),
             tuple_space_tx: Arc::new(Mutex::new(Some(tuple_space_tx))),
-            mergeable_message_tx: Arc::new(Mutex::new(Some(mergeable_message_tx))),
             block_message_queue_pending: Arc::new(AtomicUsize::new(0)),
             tuple_space_queue_pending: Arc::new(AtomicUsize::new(0)),
             trim_state,
@@ -349,20 +341,10 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> Engine for Initializing<
                 Ok(())
             }
             CasperMessage::MergeableEntryResponse(resp) => {
-                // Forward to the channel drained by lfs_block_requester::stream.
-                let sender = self.mergeable_message_tx.lock().unwrap().as_ref().cloned();
-                if let Some(tx) = sender {
-                    if let Err(e) = tx.send(resp).await {
-                        tracing::warn!(
-                            "Failed to enqueue MergeableEntryResponse into mergeable channel: {:?}",
-                            e
-                        );
-                    }
-                } else {
-                    tracing::warn!(
-                        "mergeable_message_tx sender is None; mergeable channel not available (message dropped)"
-                    );
-                }
+                tracing::warn!(
+                    block_hash = %hex::encode(&resp.block_hash),
+                    "ignored unauthenticated mergeable-entry response during initialization"
+                );
                 Ok(())
             }
             _ => {
@@ -558,17 +540,6 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
                     CasperError::RuntimeError("Block message receiver not available".to_string())
                 })?;
 
-        let mergeable_response_rx = self
-            .mergeable_message_rx
-            .lock()
-            .unwrap()
-            .take()
-            .ok_or_else(|| {
-                CasperError::RuntimeError(
-                    "Mergeable-entry response receiver not available".to_string(),
-                )
-            })?;
-
         // Create block requester wrapper with needed components and stream
         let mut block_requester = BlockRequesterWrapper::new(
             &self.transport_layer,
@@ -576,8 +547,7 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
             &self.rp_conf_ask,
             self.block_store.clone(),
             Box::new(|block| self.validate_block(block)),
-        )
-        .with_runtime_manager(self.runtime_manager.clone());
+        );
 
         // Create empty queue for block requester (must be created outside tokio::join! for lifetime reasons)
         let empty_queue = VecDeque::new(); // Empty queue since we drained it above
@@ -601,7 +571,6 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
                 &empty_queue,
                 response_message_rx,
                 self.block_message_queue_pending.clone(),
-                mergeable_response_rx,
                 min_block_number_for_deploy_lifespan,
                 lfs_request_timeout,
                 &mut block_requester,
@@ -776,13 +745,9 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
         // stored post-state so `RuntimeManager::load_mergeable_channels`
         // succeeds during validation.
         //
-        // Merge of dev (EPOCH-004): dev's `lfs_block_requester::stream` now
-        // routes `MergeableEntryResponse` messages through
-        // `mergeable_message_rx` to populate the cache during sync, which
-        // covers most of the same ground. This explicit replay is the
-        // defensive companion path — it catches any block whose mergeable
-        // entry was missed by the streaming response (e.g. a peer that
-        // didn't ship one), and is a no-op when the cache is already warm.
+        // Mergeable-channel metadata is not committed by the block and cannot
+        // be authenticated from a peer response. Reconstruct it from the
+        // locally replayed block instead.
         self.replay_blocks_for_mergeable_channels(
             approved_block,
             min_block_number_for_deploy_lifespan,
@@ -891,14 +856,10 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
     /// This is necessary for multi-parent block validation, which requires mergeable
     /// channel data from parent blocks to compute merged state.
     ///
-    /// The LFS sync transfers the RSpace trie but not the mergeable channel store,
-    /// so we must regenerate any entries the streaming `MergeableEntryRequest`/
-    /// `MergeableEntryResponse` exchange in `lfs_block_requester` didn't already
-    /// fill in (see its `process_mergeable_entry`). That streaming path covers
-    /// every block downloaded during sync when the responding peer has an
-    /// entry, so this function is expected to find most (often all) blocks
-    /// already cached — it exists to catch the remainder (peer soft-misses,
-    /// blocks the node already had locally before this sync, etc).
+    /// The LFS sync transfers the RSpace trie but not authenticated mergeable
+    /// evidence, so every absent entry is regenerated by local replay. A peer
+    /// response cannot be trusted because the block does not commit that
+    /// auxiliary value.
     ///
     /// Before this fix, this loop replayed EVERY block from `min_block_number`
     /// to the LFB unconditionally, regardless of whether its cache entry was
@@ -956,9 +917,8 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
             blocks_to_replay.len()
         );
 
-        // Replay each block to populate mergeable channels, skipping any block
-        // whose entry is already cached (typically filled in by the streaming
-        // MergeableEntryResponse exchange during block download above).
+        // Replay each block to populate mergeable channels, skipping entries
+        // already derived by local execution or replay.
         let mut skipped = 0usize;
         let mut replayed = 0usize;
         for block_hash in blocks_to_replay {
@@ -971,8 +931,7 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
 
             if self
                 .runtime_manager
-                .get_mergeable_entry_bytes(&block)
-                .map(|(_, value)| value.is_some())
+                .has_mergeable_entry(&block)
                 .unwrap_or(false)
             {
                 skipped += 1;
@@ -1288,44 +1247,6 @@ impl<T: TransportLayer + Send + Sync> BlockRequesterOps for BlockRequesterWrappe
     }
 
     fn validate_block(&self, block: &BlockMessage) -> bool { (self.validate_block_fn)(block) }
-
-    async fn request_for_mergeable_entry(&self, block_hash: &BlockHash) -> Result<(), CasperError> {
-        let req = MergeableEntryRequest {
-            block_hash: block_hash.clone(),
-        };
-        self.transport_layer
-            .send_message_to_peers(
-                self.connections_cell,
-                self.rp_conf_ask,
-                Arc::new(req.to_proto()),
-                None,
-            )
-            .await
-            .map_err(|e| CasperError::RuntimeError(e.to_string()))?;
-        Ok(())
-    }
-
-    fn put_mergeable_entry(
-        &self,
-        block_hash: &BlockHash,
-        serialized_entry: &[u8],
-    ) -> Result<(), CasperError> {
-        if serialized_entry.is_empty() {
-            return Ok(());
-        }
-        // Look up the block to compute the local mergeable_key (must match
-        // the server's key exactly; both sides derive it from the block's
-        // post_state/sender/seq).
-        let block = self.block_store.get_unsafe(block_hash);
-        let key_bytes = RuntimeManager::mergeable_key_bytes_for_block(&block)?;
-        let runtime_manager = self.runtime_manager.as_ref().ok_or_else(|| {
-            CasperError::RuntimeError(
-                "BlockRequesterWrapper missing runtime_manager (mergeable-entry import)"
-                    .to_string(),
-            )
-        })?;
-        runtime_manager.put_mergeable_entry_bytes(key_bytes, serialized_entry.to_vec())
-    }
 }
 
 /// Wrapper struct for block request operations
@@ -1335,10 +1256,6 @@ pub struct BlockRequesterWrapper<'a, T: TransportLayer> {
     rp_conf_ask: &'a RPConf,
     block_store: KeyValueBlockStore,
     validate_block_fn: Box<dyn Fn(&BlockMessage) -> bool + Send + Sync + 'a>,
-    /// Optional runtime_manager handle for the mergeable-channels store
-    /// import path. Required in production; optional for tests that don't
-    /// exercise the mergeable path.
-    runtime_manager: Option<Arc<RuntimeManager>>,
 }
 
 impl<'a, T: TransportLayer> BlockRequesterWrapper<'a, T> {
@@ -1355,15 +1272,7 @@ impl<'a, T: TransportLayer> BlockRequesterWrapper<'a, T> {
             rp_conf_ask,
             block_store,
             validate_block_fn,
-            runtime_manager: None,
         }
-    }
-
-    /// Attach a `RuntimeManager` so the wrapper can import mergeable-channel
-    /// entries.
-    pub fn with_runtime_manager(mut self, runtime_manager: Arc<RuntimeManager>) -> Self {
-        self.runtime_manager = Some(runtime_manager);
-        self
     }
 }
 

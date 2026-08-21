@@ -35,9 +35,7 @@ use rholang::rust::interpreter::accounting::delta_sigma::{
     demand, demand_bound, demand_by_sig, desugar_for_funding, effective_supply,
     effective_supply_with, is_funded, match_channel_to_lane, sig_key, Decomposition, DemandEntry,
 };
-use rholang::rust::interpreter::accounting::{
-    envelope_sig_compound, BillableKind, RuntimeBudget, Sig,
-};
+use rholang::rust::interpreter::accounting::{envelope_sig_compound, BillableKind, Sig};
 use rholang::rust::interpreter::compiler::compiler::Compiler;
 use rholang::rust::interpreter::rho_runtime::{RhoRuntime, RhoRuntimeImpl};
 use rholang::rust::interpreter::test_utils::resources::create_runtimes;
@@ -604,29 +602,6 @@ fn demand_by_sig_defaults_unsigned_surfaces_to_the_deploy_authority() {
         by_sig.get(&env_key).copied(),
         Some(scalar),
         "the default lane equals structural demand"
-    );
-}
-
-/// W1 Phase 3 (GATE 3) — the scalar fast-path pin: a single-signer deploy leaves
-/// `any_signed_regions` FALSE (so the reducer does zero channel-match work per
-/// COMM — the 1.8 ns microbench path) and its `per_lane_demand` is the singleton
-/// envelope lane. This is the byte-identity guarantee the existing digest/cost
-/// pins (`cost_accounting_spec`, `cost_accounting_frontier`) verify end-to-end.
-#[test]
-fn single_sig_deploy_stays_on_the_scalar_fast_path() {
-    let budget = RuntimeBudget::new(Cost::create(100, "single-sig fast path"));
-    budget.set_deploy_signature(b"alice-wire-sig");
-    assert!(
-        !budget.any_signed_regions(),
-        "a single-signer deploy ⇒ NO per-redex channel match (scalar fast path)"
-    );
-    let lanes = budget.per_lane_demand();
-    assert_eq!(lanes.len(), 1, "single signer ⇒ one (envelope) lane");
-    let env_key = sig_key(&budget.signature());
-    assert_eq!(
-        lanes.get(&env_key).copied(),
-        Some(0),
-        "no COMMs charged ⇒ the envelope lane carries 0"
     );
 }
 

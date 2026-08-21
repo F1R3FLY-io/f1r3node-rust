@@ -24,8 +24,8 @@ use rspace_plus_plus::rspace::merger::merging_logic::MergeType;
 use rspace_plus_plus::rspace::r#match::Match;
 use rspace_plus_plus::rspace::replay_rspace_interface::IReplayRSpace;
 use rspace_plus_plus::rspace::rspace::{RSpace, RSpaceStore};
-use rspace_plus_plus::rspace::rspace_interface::{CommObserver, ISpace};
-use rspace_plus_plus::rspace::trace::event::COMM;
+use rspace_plus_plus::rspace::rspace_interface::{ISpace, RSpaceAccountingObserver};
+use rspace_plus_plus::rspace::trace::event::{Consume, Produce, COMM};
 use rspace_plus_plus::rspace::trace::Log;
 use rspace_plus_plus::rspace::tuplespace_interface::Tuplespace;
 
@@ -500,14 +500,79 @@ struct RhoCommObserver {
     budget: RuntimeBudget,
 }
 
-impl CommObserver<ListParWithRandom, TaggedContinuation> for RhoCommObserver {
-    fn observe(
+impl RSpaceAccountingObserver<Par, BindPattern, ListParWithRandom, TaggedContinuation>
+    for RhoCommObserver
+{
+    fn observe_produce(
+        &self,
+        source: &Produce,
+        channel: &Par,
+        data: &ListParWithRandom,
+        persistent: bool,
+    ) -> Result<(), RSpaceError> {
+        if !self.budget.has_comm_accounting_scope() || self.budget.is_unmetered() {
+            return Ok(());
+        }
+        let identity = super::accounting::byte_accounting::produce_introduction_identity(source);
+        let authority = self
+            .budget
+            .introduction_authority(
+                identity,
+                super::accounting::authority::AuthorityByteEventKind::ProduceIntroduction,
+            )
+            .map_err(interpreter_error_to_rspace)?;
+        let charge = super::accounting::byte_accounting::produce_introduction_charge(channel, data)
+            .and_then(|charge| {
+                charge.cost(super::accounting::byte_accounting::BYTE_COST_SCHEDULE_V1)
+            })
+            .map_err(|error| RSpaceError::InterpreterError(error.to_string()))?;
+        self.budget
+            .reserve_produce_introduction_identity(identity, &authority, charge, persistent)
+            .map_err(interpreter_error_to_rspace)
+    }
+
+    fn observe_consume(
+        &self,
+        source: &Consume,
+        channels: &[Par],
+        patterns: &[BindPattern],
+        continuation: &TaggedContinuation,
+        persistent: bool,
+        _peeks: &std::collections::BTreeSet<i32>,
+    ) -> Result<(), RSpaceError> {
+        if !self.budget.has_comm_accounting_scope() || self.budget.is_unmetered() {
+            return Ok(());
+        }
+        let identity = super::accounting::byte_accounting::consume_introduction_identity(source);
+        let authority = self
+            .budget
+            .introduction_authority(
+                identity,
+                super::accounting::authority::AuthorityByteEventKind::ConsumeIntroduction,
+            )
+            .map_err(interpreter_error_to_rspace)?;
+        let charge = super::accounting::byte_accounting::consume_introduction_charge(
+            channels,
+            patterns,
+            continuation,
+        )
+        .and_then(|charge| charge.cost(super::accounting::byte_accounting::BYTE_COST_SCHEDULE_V1))
+        .map_err(|error| RSpaceError::InterpreterError(error.to_string()))?;
+        self.budget
+            .reserve_consume_introduction_identity(identity, &authority, charge, persistent)
+            .map_err(interpreter_error_to_rspace)
+    }
+
+    fn observe_comm(
         &self,
         comm: &COMM,
         continuation: &TaggedContinuation,
         continuation_persistent: bool,
         data: &[(&ListParWithRandom, bool)],
     ) -> Result<(), RSpaceError> {
+        if !self.budget.has_comm_accounting_scope() || self.budget.is_unmetered() {
+            return Ok(());
+        }
         let bytes = comm.cost_identity().bytes();
         let identity: [u8; 32] = bytes
             .try_into()
@@ -546,13 +611,22 @@ impl CommObserver<ListParWithRandom, TaggedContinuation> for RhoCommObserver {
             identity,
         )
         .map_err(|error| RSpaceError::InterpreterError(error.to_string()))?;
+        let byte_cost = super::accounting::byte_accounting::comm_charge(comm, data)
+            .and_then(|charge| {
+                charge.cost(super::accounting::byte_accounting::BYTE_COST_SCHEDULE_V1)
+            })
+            .map_err(|error| RSpaceError::InterpreterError(error.to_string()))?;
         self.budget
-            .reserve_comm_authority_identity(identity, &authority)
-            .map_err(|error| match error {
-                InterpreterError::OutOfPhlogistonsError => RSpaceError::OutOfPhlogistons,
-                other => RSpaceError::InterpreterError(other.to_string()),
-            })?;
+            .reserve_comm_authority_identity_with_byte_cost(identity, &authority, byte_cost)
+            .map_err(interpreter_error_to_rspace)?;
         Ok(())
+    }
+}
+
+fn interpreter_error_to_rspace(error: InterpreterError) -> RSpaceError {
+    match error {
+        InterpreterError::OutOfPhlogistonsError => RSpaceError::OutOfPhlogistons,
+        other => RSpaceError::InterpreterError(other.to_string()),
     }
 }
 
@@ -1204,7 +1278,7 @@ async fn setup_reducer(
     chromadb_service: SharedChromaDBService,
     cost: RuntimeBudget,
 ) -> Arc<DebruijnInterpreter> {
-    rspace.set_comm_observer(Some(Arc::new(RhoCommObserver {
+    rspace.set_accounting_observer(Some(Arc::new(RhoCommObserver {
         budget: cost.clone(),
     })));
     let reducer_cell = Arc::new(std::sync::OnceLock::new());

@@ -1,35 +1,19 @@
 (* ═══════════════════════════════════════════════════════════════════════════
-   Settlement.v — Post-Evaluation Fee Settlement
+   Settlement.v — RevVault Reservation Settlement
    ═══════════════════════════════════════════════════════════════════════════
 
-   The cost-accounted rho calculus controls computation by consuming fuel
-   tokens during reduction. Casper payment movement is a different layer:
-   a deploy escrows phlo before evaluation and receives a refund only after
-   evaluation has produced its final consumed-token count.
+   The cost-accounted rho calculus controls computation by consuming finite
+   authority during reduction. Casper reserves the physical-authority bound,
+   quantitative-byte bound, and fee from the payer's RevVault purse before
+   execution. Settlement burns the realized physical and byte costs, transfers
+   the fee, and releases only the unused reservation.
 
    This file records that separation as small arithmetic theorems. The
    calculus-side theorem is imported from TokenConservation: reachable
    evaluation states cannot synthesize fuel. The settlement-side theorems
-   show that, when the runtime reports a consumed-token count bounded by the
-   deploy's limit, post-evaluation charged and refunded phlo exactly account
-   for the escrowed amount.
-
-   ─────────────────────────────────────────────────────────────────────────
-   Native realization (DR-9): SystemVault reservation and located authority
-   ─────────────────────────────────────────────────────────────────────────
-   The existing node realizes the paper's purse draw by reserving custody from
-   a canonical SystemVault or by consuming prepaid located RSpace authority.
-   A deploy reserves [limit] units, consumes [settlement_token_cost], and
-   releases the remainder. Under the unit-token reading [settlement_price] is 1, so
-   [escrowed_amount = limit], [charged_amount = token_cost], and
-   [refund_amount = limit - token_cost], and the headline laws below
-   ([charged_plus_refund_eq_escrow], [post_evaluation_settlement_no_mint]) read
-   as the reservation-conservation statements "reserved = charged + released"
-   and "no fuel synthesized by settlement". The theorems are stated for an
-   ARBITRARY [price] (including [price = 1]), so the UNIT reading is the
-   [price := 1] instance and the bodies are UNCHANGED — the Stage-D
-   reinterpretation is this note, not an edit. Cost is burned authority; the
-   separate flat fee is a direct canonical SystemVault ownership transfer.)
+   show that realized costs bounded component-wise by their certificate-bound
+   maxima conserve the reservation exactly. The fee is never refundable and
+   is credited once to the proposer.
    ═══════════════════════════════════════════════════════════════════════════ *)
 
 From Stdlib Require Import Arith.PeanoNat Lia.
@@ -39,79 +23,83 @@ From CostAccountedRho Require Import CostAccountedReduction.
 From CostAccountedRho Require Import TokenConservation.
 
 Record fee_settlement := {
-  settlement_limit : nat;
-  settlement_price : nat;
-  settlement_token_cost : nat
+  settlement_physical_bound : nat;
+  settlement_byte_bound : nat;
+  settlement_fee : nat;
+  settlement_physical_cost : nat;
+  settlement_byte_cost : nat
 }.
 
-Definition escrowed_amount (s : fee_settlement) : nat :=
-  settlement_limit s * settlement_price s.
+Definition reserved_amount (s : fee_settlement) : nat :=
+  settlement_physical_bound s + settlement_byte_bound s + settlement_fee s.
 
-Definition charged_amount (s : fee_settlement) : nat :=
-  settlement_token_cost s * settlement_price s.
+Definition burned_amount (s : fee_settlement) : nat :=
+  settlement_physical_cost s + settlement_byte_cost s.
+
+Definition debited_amount (s : fee_settlement) : nat :=
+  burned_amount s + settlement_fee s.
 
 Definition refund_amount (s : fee_settlement) : nat :=
-  (settlement_limit s - settlement_token_cost s) * settlement_price s.
+  (settlement_physical_bound s - settlement_physical_cost s) +
+  (settlement_byte_bound s - settlement_byte_cost s).
 
 Definition settled_amount (s : fee_settlement) : nat :=
-  charged_amount s + refund_amount s.
+  debited_amount s + refund_amount s.
 
-Theorem refund_le_escrow : forall s,
-  refund_amount s <= escrowed_amount s.
+Theorem refund_le_reservation : forall s,
+  refund_amount s <= reserved_amount s.
 Proof.
   intros s.
-  unfold refund_amount, escrowed_amount.
-  apply Nat.mul_le_mono_r.
+  unfold refund_amount, reserved_amount.
   lia.
 Qed.
 
-Theorem charged_le_escrow_when_bounded : forall s,
-  settlement_token_cost s <= settlement_limit s ->
-  charged_amount s <= escrowed_amount s.
+Theorem debit_le_reservation_when_bounded : forall s,
+  settlement_physical_cost s <= settlement_physical_bound s ->
+  settlement_byte_cost s <= settlement_byte_bound s ->
+  debited_amount s <= reserved_amount s.
 Proof.
-  intros s Hbounded.
-  unfold charged_amount, escrowed_amount.
-  apply Nat.mul_le_mono_r.
-  exact Hbounded.
+  intros s Hphysical Hbyte.
+  unfold debited_amount, burned_amount, reserved_amount.
+  lia.
 Qed.
 
-Theorem charged_plus_refund_eq_escrow : forall s,
-  settlement_token_cost s <= settlement_limit s ->
-  settled_amount s = escrowed_amount s.
+Theorem debit_plus_refund_eq_reservation : forall s,
+  settlement_physical_cost s <= settlement_physical_bound s ->
+  settlement_byte_cost s <= settlement_byte_bound s ->
+  settled_amount s = reserved_amount s.
 Proof.
-  intros s Hbounded.
-  unfold settled_amount, charged_amount, refund_amount, escrowed_amount.
-  rewrite <- Nat.mul_add_distr_r.
-  assert (settlement_token_cost s +
-          (settlement_limit s - settlement_token_cost s) =
-          settlement_limit s) by lia.
-  rewrite H.
-  reflexivity.
+  intros s Hphysical Hbyte.
+  unfold settled_amount, debited_amount, burned_amount, refund_amount,
+    reserved_amount.
+  lia.
 Qed.
 
-Theorem refund_zero_when_exhausted : forall s,
-  settlement_limit s <= settlement_token_cost s ->
+Theorem refund_zero_when_components_exhausted : forall s,
+  settlement_physical_bound s <= settlement_physical_cost s ->
+  settlement_byte_bound s <= settlement_byte_cost s ->
   refund_amount s = 0.
 Proof.
-  intros s Hexhausted.
+  intros s Hphysical Hbyte.
   unfold refund_amount.
-  assert (settlement_limit s - settlement_token_cost s = 0) by lia.
-  rewrite H.
   lia.
 Qed.
 
 Theorem settlement_deterministic : forall a b,
-  settlement_limit a = settlement_limit b ->
-  settlement_price a = settlement_price b ->
-  settlement_token_cost a = settlement_token_cost b ->
-  escrowed_amount a = escrowed_amount b /\
-  charged_amount a = charged_amount b /\
+  settlement_physical_bound a = settlement_physical_bound b ->
+  settlement_byte_bound a = settlement_byte_bound b ->
+  settlement_fee a = settlement_fee b ->
+  settlement_physical_cost a = settlement_physical_cost b ->
+  settlement_byte_cost a = settlement_byte_cost b ->
+  reserved_amount a = reserved_amount b /\
+  burned_amount a = burned_amount b /\
+  debited_amount a = debited_amount b /\
   refund_amount a = refund_amount b /\
   settled_amount a = settled_amount b.
 Proof.
-  intros a b Hlimit Hprice Hcost.
-  cbv [escrowed_amount charged_amount refund_amount settled_amount].
-  rewrite Hlimit, Hprice, Hcost.
+  intros a b Hphysical_bound Hbyte_bound Hfee Hphysical_cost Hbyte_cost.
+  cbv [reserved_amount burned_amount debited_amount refund_amount settled_amount].
+  rewrite Hphysical_bound, Hbyte_bound, Hfee, Hphysical_cost, Hbyte_cost.
   repeat split; reflexivity.
 Qed.
 
@@ -131,27 +119,21 @@ Proof.
   exact (token_strictly_decreases S S' Hstep).
 Qed.
 
-Theorem post_evaluation_settlement_no_mint : forall S S' price,
+Theorem post_evaluation_settlement_no_mint : forall S S',
   ca_reachable S S' ->
   let consumed := system_token_count S - system_token_count S' in
   let settlement := {|
-    settlement_limit := system_token_count S;
-    settlement_price := price;
-    settlement_token_cost := consumed
+    settlement_physical_bound := system_token_count S;
+    settlement_byte_bound := 0;
+    settlement_fee := 0;
+    settlement_physical_cost := consumed;
+    settlement_byte_cost := 0
   |} in
-  settled_amount settlement = escrowed_amount settlement.
+  settled_amount settlement = reserved_amount settlement.
 Proof.
-  intros S S' price Hreach.
+  intros S S' Hreach.
   pose proof (token_monotone_reachable S S' Hreach) as Hmono.
-  cbv [settled_amount charged_amount refund_amount escrowed_amount].
+  cbv [settled_amount debited_amount burned_amount refund_amount reserved_amount].
   cbn.
-  replace ((system_token_count S - system_token_count S') * price +
-           (system_token_count S -
-            (system_token_count S - system_token_count S')) * price)
-    with ((system_token_count S - system_token_count S' +
-           (system_token_count S -
-            (system_token_count S - system_token_count S'))) * price)
-    by (rewrite Nat.mul_add_distr_r; reflexivity).
-  f_equal.
   lia.
 Qed.

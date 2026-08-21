@@ -10,7 +10,7 @@ use super::errors::RSpaceError;
 use super::hashing::blake2b256_hash::Blake2b256Hash;
 use super::internal::{Datum, ProduceCandidate, Row, WaitingContinuation};
 use super::trace::Log;
-use super::trace::event::{COMM, Produce};
+use super::trace::event::{COMM, Consume, Produce};
 use crate::rspace::checkpoint::SoftCheckpoint;
 
 #[derive(Serialize, Deserialize, Debug, Clone, Eq, PartialEq, Hash)]
@@ -36,8 +36,26 @@ pub type MaybeConsumeResult<C, P, A, K> = Option<(ContResult<C, P, K>, Vec<RSpac
 pub type MaybeProduceResult<C, P, A, K> =
     Option<(ContResult<C, P, K>, Vec<RSpaceResult<C, A>>, Produce)>;
 
-pub trait CommObserver<A, K>: Send + Sync {
-    fn observe(
+pub trait RSpaceAccountingObserver<C, P, A, K>: Send + Sync {
+    fn observe_produce(
+        &self,
+        source: &Produce,
+        channel: &C,
+        data: &A,
+        persistent: bool,
+    ) -> Result<(), RSpaceError>;
+
+    fn observe_consume(
+        &self,
+        source: &Consume,
+        channels: &[C],
+        patterns: &[P],
+        continuation: &K,
+        persistent: bool,
+        peeks: &BTreeSet<i32>,
+    ) -> Result<(), RSpaceError>;
+
+    fn observe_comm(
         &self,
         comm: &COMM,
         continuation: &K,
@@ -65,7 +83,10 @@ pub trait ISpace<
     K: Clone + Send + Sync,
 >: Send + Sync
 {
-    fn set_comm_observer(&self, observer: Option<std::sync::Arc<dyn CommObserver<A, K>>>);
+    fn set_accounting_observer(
+        &self,
+        observer: Option<std::sync::Arc<dyn RSpaceAccountingObserver<C, P, A, K>>>,
+    );
 
     /** Creates a checkpoint.
      *

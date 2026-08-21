@@ -12,7 +12,8 @@ use crypto::rust::signatures::secp256k1::Secp256k1;
 use crypto::rust::signatures::signatures_alg::SignaturesAlg;
 use crypto::rust::signatures::signed::Signed;
 use models::casper::{
-    CostAuthorityEventProto, CostAuthorityResourceProto, CostAuthorityWitnessProto,
+    CostAuthorityByteEventProto, CostAuthorityEventProto, CostAuthorityResourceProto,
+    CostAuthorityWitnessProto,
 };
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::g_unforgeable::UnfInstance;
@@ -137,46 +138,50 @@ pub(crate) fn causal_authority_events(
     deploy_log: &[RSpaceEvent],
     events: &[AuthorityEvent<[u8; 32]>],
 ) -> Result<Vec<AuthorityEvent<[u8; 32]>>, CasperError> {
-    let trace = deploy_log.iter().filter_map(|event| match event {
-        RSpaceEvent::Comm(comm) => Some(AuthorityTraceItem::Comm(
-            comm.cost_identity()
-                .bytes()
-                .try_into()
-                .expect("COMM identity length"),
-        )),
-        RSpaceEvent::IoEvent(IOEvent::Produce(produce)) => Some(AuthorityTraceItem::Produce(
-            produce
-                .hash
-                .bytes()
-                .try_into()
-                .expect("RSpace produce identity length"),
-        )),
-        RSpaceEvent::IoEvent(IOEvent::Consume(_)) => None,
-    });
-    causal_authority_events_from_trace(trace, events, true)
+    causal_authority_events_from_trace(authority_trace_items(deploy_log), events, true)
 }
 
 pub(crate) fn causal_authority_events_from_lifecycle_trace(
     deploy_log: &[RSpaceEvent],
     events: &[AuthorityEvent<[u8; 32]>],
 ) -> Result<Vec<AuthorityEvent<[u8; 32]>>, CasperError> {
-    let trace = deploy_log.iter().filter_map(|event| match event {
-        RSpaceEvent::Comm(comm) => Some(AuthorityTraceItem::Comm(
-            comm.cost_identity()
-                .bytes()
-                .try_into()
-                .expect("COMM identity length"),
-        )),
-        RSpaceEvent::IoEvent(IOEvent::Produce(produce)) => Some(AuthorityTraceItem::Produce(
-            produce
-                .hash
-                .bytes()
-                .try_into()
-                .expect("RSpace produce identity length"),
-        )),
-        RSpaceEvent::IoEvent(IOEvent::Consume(_)) => None,
-    });
-    causal_authority_events_from_trace(trace, events, false)
+    causal_authority_events_from_trace(authority_trace_items(deploy_log), events, false)
+}
+
+fn authority_trace_items(deploy_log: &[RSpaceEvent]) -> Vec<AuthorityTraceItem> {
+    let mut trace = Vec::new();
+    for event in deploy_log {
+        match event {
+            RSpaceEvent::Comm(comm) => {
+                trace.extend(comm.produces.iter().map(|produce| {
+                    AuthorityTraceItem::Produce(
+                        produce
+                            .hash
+                            .bytes()
+                            .try_into()
+                            .expect("RSpace produce identity length"),
+                    )
+                }));
+                trace.push(AuthorityTraceItem::Comm(
+                    comm.cost_identity()
+                        .bytes()
+                        .try_into()
+                        .expect("COMM identity length"),
+                ));
+            }
+            RSpaceEvent::IoEvent(IOEvent::Produce(produce)) => {
+                trace.push(AuthorityTraceItem::Produce(
+                    produce
+                        .hash
+                        .bytes()
+                        .try_into()
+                        .expect("RSpace produce identity length"),
+                ));
+            }
+            RSpaceEvent::IoEvent(IOEvent::Consume(_)) => {}
+        }
+    }
+    trace
 }
 
 fn authority_resources_to_proto(
@@ -731,6 +736,8 @@ impl RuntimeOps {
                 let reserved_resources = prepared
                     .certificate
                     .allocation
+                    .checked_add(&prepared.certificate.byte_allocation)
+                    .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?
                     .checked_add(&prepared.certificate.fee_allocation)
                     .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
                 let mut reserve_allocations = Vec::new();
@@ -818,6 +825,22 @@ impl RuntimeOps {
                             .to_string(),
                     ));
                 }
+                let after_cost = prepared
+                    .inventory
+                    .balances
+                    .checked_sub(&physical_settlement.balance_debit)
+                    .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
+                let byte_settlement = rholang::rust::interpreter::accounting::authority::allocate_quantitative_events(
+                    &witness.byte_events,
+                    &after_cost,
+                )
+                .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
+                if byte_settlement != prepared.certificate.byte_allocation {
+                    return Err(CasperError::InvalidCostSettlement(
+                        "retained state-bound execution changed its quantitative byte settlement"
+                            .to_string(),
+                    ));
+                }
 
                 let mut settlement_stacks = prepared
                     .purse_stacks
@@ -854,8 +877,17 @@ impl RuntimeOps {
                     )
                     .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
                     let burn = physical_settlement.balance_debit.get(key);
+                    let byte_burn = byte_settlement.get(key);
                     let fee = prepared.certificate.fee_allocation.get(key);
-                    if burn.checked_add(fee).is_none_or(|total| total > *reserved_amount) {
+                    let total_burn = burn.checked_add(byte_burn).ok_or_else(|| {
+                        CasperError::InvalidCostSettlement(
+                            "actual vault burn overflows u64".to_string(),
+                        )
+                    })?;
+                    if total_burn
+                        .checked_add(fee)
+                        .is_none_or(|total| total > *reserved_amount)
+                    {
                         return Err(CasperError::InvalidCostSettlement(
                             "actual vault settlement exceeds its reservation".to_string(),
                         ));
@@ -863,7 +895,7 @@ impl RuntimeOps {
                     settlements.push(
                         crate::rust::util::rholang::costacc::vault_cost_deploy::VaultSettlement::new(
                             payer.address.to_base58(),
-                            i64::try_from(burn).map_err(|_| {
+                            i64::try_from(total_burn).map_err(|_| {
                                 CasperError::InvalidCostSettlement(
                                     "vault burn exceeds the platform range".to_string(),
                                 )
@@ -908,6 +940,7 @@ impl RuntimeOps {
                 witness.certificate_id = prepared.certificate.certificate_id();
                 witness.pre_state_root = pre_state_root;
                 witness.settlement = physical_settlement.balance_debit.clone();
+                witness.byte_settlement = byte_settlement;
                 witness.physical_draws = physical_settlement.draws;
                 witness
                     .verify_event_authorities()
@@ -1000,6 +1033,11 @@ impl RuntimeOps {
             crate::rust::util::rholang::acceptance::record_authority_debits(
                 &mut outcome.debits,
                 &prepared.maximum_cost_settlement.balance_debit,
+                &channels,
+            )?;
+            crate::rust::util::rholang::acceptance::record_authority_debits(
+                &mut outcome.debits,
+                &prepared.certificate.byte_allocation,
                 &channels,
             )?;
             crate::rust::util::rholang::acceptance::record_authority_debits(
@@ -1230,14 +1268,15 @@ impl RuntimeOps {
     /// authority supply and retains that execution as the block witness.
     /// Exhaustion is a rejection and cannot become a certificate. An admitted
     /// deploy therefore has exact state-bound evidence that its complete cost
-    /// fits the capacity, while `total_cost()` records the per-COMM consensus
-    /// cost. The single supply decrement is applied at block close after that
-    /// witnessed user state.
+    /// fits the capacity, while `total_cost()` records the canonical RSpace
+    /// introduction, payload-transfer, trace-byte, and COMM execution cost. The
+    /// single supply decrement is applied at block close after that witnessed
+    /// user state.
     ///
     /// This is now a thin wrapper over [`Self::process_deploy_cosigned`] (which
     /// owns the INNER soft-checkpoint that rolls back a FAILED user deploy's
     /// effects), plus the mergeable-channel data collection. `cost` on the
-    /// returned `ProcessedDeploy` is the per-COMM `total_cost()`.
+    /// returned `ProcessedDeploy` is the canonical weighted `total_cost()`.
     pub async fn play_ordinary_deploy_cosigned(
         &mut self,
         cosigned: crypto::rust::signatures::signed::Cosigned<DeployData>,
@@ -1280,8 +1319,10 @@ impl RuntimeOps {
     /// leaves no residue. Admission has reserved authority against Σ⟦s⟧, but
     /// settlement is deferred until the realized cost is known.
     ///
-    /// `cost` on the returned `ProcessedDeploy` is the per-COMM `total_cost()`
-    /// (DR-9). The `ProcessedDeploy.deploy: Signed<DeployData>` storage shape is
+    /// `cost` on the returned `ProcessedDeploy` is the canonical weighted
+    /// `total_cost()`: one execution unit per committed COMM plus quantitative
+    /// introduction, payload-transfer, and trace bytes. The
+    /// `ProcessedDeploy.deploy: Signed<DeployData>` storage shape is
     /// preserved by reconstituting the primary signer's `Signed<DeployData>`
     /// envelope via `Cosigned::into_legacy_signed_unchecked` — invariants
     /// were already enforced at `Cosigned::from_signed_data` construction so
@@ -1334,22 +1375,44 @@ impl RuntimeOps {
         // deploy it reverts that deploy's effects (D3: no pre-charge state).
         let fallback = self.runtime.create_soft_checkpoint().await;
 
-        let eval_result = self
+        let eval_result = match self
             .evaluate_cosigned_with_budget_and_authority_mode(
                 &cosigned,
                 budget,
                 authority_allocation,
                 default_authority,
             )
-            .await?;
+            .await
+        {
+            Ok(result) => result,
+            Err(error) => {
+                self.runtime.revert_to_soft_checkpoint(fallback).await;
+                return Err(error);
+            }
+        };
 
         let deploy_log = self.runtime.take_event_log().await;
-        let authority_events = causal_authority_events(&deploy_log, &eval_result.authority_events)?;
+        let authority_events =
+            match causal_authority_events(&deploy_log, &eval_result.authority_events) {
+                Ok(events) => events,
+                Err(error) => {
+                    self.runtime.revert_to_soft_checkpoint(fallback).await;
+                    return Err(error);
+                }
+            };
 
         let eval_succeeded = eval_result.errors.is_empty();
         let born_stacks = if eval_succeeded {
-            self.resolve_authority_stack_births(&eval_result.authority_stack_births)
-                .await?
+            match self
+                .resolve_authority_stack_births(&eval_result.authority_stack_births)
+                .await
+            {
+                Ok(births) => births,
+                Err(error) => {
+                    self.runtime.revert_to_soft_checkpoint(fallback).await;
+                    return Err(error);
+                }
+            }
         } else {
             Vec::new()
         };
@@ -1424,6 +1487,20 @@ impl RuntimeOps {
                         cells: birth.cells.clone(),
                     })
                     .collect(),
+                byte_cost_schedule_version: rholang::rust::interpreter::accounting::byte_accounting::BYTE_COST_SCHEDULE_VERSION,
+                byte_cost_schedule_digest: rholang::rust::interpreter::accounting::byte_accounting::byte_cost_schedule_digest().to_vec().into(),
+                byte_events: eval_result
+                    .authority_byte_events
+                    .iter()
+                    .map(|event| CostAuthorityByteEventProto {
+                        event_id: event.event_id.to_vec().into(),
+                        kind: i32::from(event.kind.tag()),
+                        authority: Some(event.authority.clone()),
+                        amount: event.amount,
+                    })
+                    .collect(),
+                byte_cost: eval_result.quantitative_byte_cost,
+                byte_settlement: Vec::new(),
             }),
             admission_status: Default::default(),
         };
@@ -2038,15 +2115,17 @@ impl RuntimeOps {
     {
         let fallback = self.runtime.create_soft_checkpoint().await;
 
-        // Execute action
-        let (a, success) = action().await?;
-
-        // Revert the state if failed
-        if !success {
-            self.runtime.revert_to_soft_checkpoint(fallback).await;
+        match action().await {
+            Ok((value, true)) => Ok(value),
+            Ok((value, false)) => {
+                self.runtime.revert_to_soft_checkpoint(fallback).await;
+                Ok(value)
+            }
+            Err(error) => {
+                self.runtime.revert_to_soft_checkpoint(fallback).await;
+                Err(error)
+            }
         }
-
-        Ok(a)
     }
 
     /* Evaluates and captures results */
@@ -2788,5 +2867,45 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![first, second, comm]
         );
+    }
+
+    #[test]
+    fn matched_produces_precede_their_comm_in_the_authority_trace() {
+        use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+        use rspace_plus_plus::rspace::trace::event::{Consume, Produce, COMM};
+
+        let first = Produce::new(
+            Blake2b256Hash::new(b"channel-a"),
+            Blake2b256Hash::new(b"produce-a"),
+            false,
+        );
+        let second = Produce::new(
+            Blake2b256Hash::new(b"channel-b"),
+            Blake2b256Hash::new(b"produce-b"),
+            false,
+        );
+        let comm = COMM {
+            consume: Consume {
+                channel_hashes: vec![Blake2b256Hash::new(b"channel-a")],
+                hash: Blake2b256Hash::new(b"consume"),
+                persistent: false,
+            },
+            produces: vec![first.clone(), second.clone()],
+            peeks: std::collections::BTreeSet::new(),
+            times_repeated: BTreeMap::from([(first.clone(), 1), (second.clone(), 1)]),
+        };
+        let comm_identity: [u8; 32] = comm.cost_identity().bytes().try_into().unwrap();
+
+        let trace = authority_trace_items(&[RSpaceEvent::Comm(comm)]);
+        assert!(matches!(
+            trace.as_slice(),
+            [
+                AuthorityTraceItem::Produce(first_hash),
+                AuthorityTraceItem::Produce(second_hash),
+                AuthorityTraceItem::Comm(actual_comm)
+            ] if first_hash == first.hash.bytes().as_slice()
+                && second_hash == second.hash.bytes().as_slice()
+                && actual_comm == &comm_identity
+        ));
     }
 }

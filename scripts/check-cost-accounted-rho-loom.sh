@@ -10,7 +10,24 @@
 #   - the N-ary join's atomic combined-token debit (CA-P-052/108,
 #     ↔ TokenGatedJoin.tla:Inv_M1_AtomicNoPartialPrefix),
 #   - native successful-COMM charge-once and rejection-before-mutation
-#     (CA-P-185/187, ↔ AtomicCommAccounting / AtomicCommRejection).
+#     (CA-P-185/187, ↔ AtomicCommAccounting / AtomicCommRejection),
+#   - immutable in-flight RevVault reservations, component-wise located byte
+#     settlement, atomic introduction-sponsor resolution, and failure-atomic
+#     stack introduction across pending physical authority and committed RSpace
+#     visibility, plus authenticated merge-evidence key separation and
+#     arrival-order independence (↔ LocatedVaultByteSettlement /
+#     IntroductionAuthorityRegistry / StackIntroductionAtomicity /
+#     MergeableEvidenceAuthentication),
+#   - concurrent block-completion heap reclamation and semantic noninterference
+#     (↔ BlockHeapLifecycle),
+#   - validator-local atomic floor publication under shared current-root churn,
+#     same-validator stale-capture rejection, crash/restart root retention, and
+#     distinct-validator framing
+#     (↔ ParallelValidatorConsensus),
+#   - multi-shard conservation, root/commit alignment, no cross-shard debit,
+#     optimistic retry and crash/restart without lost updates, and unique
+#     bounded shared-worker ownership
+#     (↔ MultiShardResourceIsolation).
 #
 # Fail-soft: absent cargo is reported and skipped (exit 0). A loom run that
 # explores an interleaving violating an assertion IS a failure.
@@ -46,6 +63,6 @@ if [ "$rc" -ne 0 ] || [ "${fails:-1}" != "0" ]; then
 fi
 
 passed="$(printf '%s\n' "$out" | grep -oE '[0-9]+ passed' | awk '{s+=$1} END{print s+0}')"
-echo "  loom: all interleavings explored, $passed passed / 0 failed (concurrent-admission + atomic-COMM)."
+echo "  loom: all interleavings explored, $passed passed / 0 failed (admission + COMM + located-byte + sponsor-registry + stack-introduction + merge-evidence + block-heap lifecycle + validator publication/restart + multi-shard root isolation/restart)."
 echo "Loom concurrency cross-witness passed."
 exit 0

@@ -108,6 +108,11 @@ impl From<DeployInfoSerde> for DeployInfo {
                 .map(TransferInfo::from)
                 .collect(),
             transfers_available,
+            authority_funding_certificate: None,
+            authority_cost_witness: None,
+            pre_state_hash: Default::default(),
+            post_state_hash: Default::default(),
+            admission_status: Default::default(),
         }
     }
 }

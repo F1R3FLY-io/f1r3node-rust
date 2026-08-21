@@ -63,7 +63,7 @@ pub async fn produce_balance(runtime_ops: &mut RuntimeOps, chan: &Par, n: i64); 
 - **Single-datum invariant:** `produce_balance` first consumes any existing balance datum, then produces the new one (channel holds exactly one). Read-modify-replace; `checked_add` overflow → `.expect("phlogiston supply overflow")`.
 - **Shared decoder:** WD-D1's `supply(s)` MUST call `supply::read_balance` / `decode_balance_datum` (not re-decode) — handoff Decision 5.
 - **Authority:** Rust-only, riding the close-block deploy's `mk_sys_auth_token` (no Rholang-reachable path) — handoff Decision 3.
-- **Integration invariant:** `supply_channel(s) == s.lane_pool channel` (WD-D0's `Sig::lane_pool`, accounting/mod.rs:1450) — same `from_sig` basis. Add test `supply_channel_equals_lane_pool_channel`.
+- **Integration invariant:** `supply_channel(s)` and `Sig::lane_hash(s)` derive from the same canonical `from_sig` basis. The retained regression is `supply_channel_matches_canonical_purse_identity`.
 - **`random_state`** for the produce: derived deterministically from the close-block deploy's `rand()` advanced per validator (byte-identical play/replay).
 
 ## Decision 6 — Replay-determinism
@@ -89,7 +89,7 @@ DR-13 already covers mint-replay/double-credit (**TM-CA-154**) and balance/commi
 - **decision-records.md:** no new DR; add a DR-3 sub-bullet (slash zeros `Σ⟦v⟧`) + a DR-13 note (producer seam = `CloseBlockDeploy::post_eval`, helper `supply.rs`).
 
 ## Implementation sequencing
-1. `supply.rs` (TOKEN_TAG, supply_channel, read_balance/decode_balance_datum, produce_balance) + `supply_channel_equals_lane_pool_channel` test; register in `mod.rs`.
+1. `supply.rs` (TOKEN_TAG, supply_channel, read_balance/decode_balance_datum, produce_balance) plus the test now named `supply_channel_matches_canonical_purse_identity`; register in `mod.rs`.
 2. `post_eval` (default no-op) on `SystemDeployTrait`; call in `play_system_deploy` + `replay_block_system_deploy` CloseBlock branch.
 3. `CloseBlockDeploy::post_eval` (recompute mint set, dual-write `Σ⟦v⟧`).
 4. Rholang `closeBlock`: add `mintedEpochs:{}` + `mintingHalted:{}` genesis-init; the `mintEpochPhlogiston` fold (epoch branch) + block-1 `initialPhlogiston` draw path; seed the matching validator `Σ` authority in the genesis root and suppress its block-1 Rust mirror; lift non-epoch branch to `runMVar`.

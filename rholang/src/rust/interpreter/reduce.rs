@@ -34,13 +34,12 @@ use models::rust::utils::{
 };
 use prost::Message;
 use rspace_plus_plus::rspace::merger::merging_logic::MergeType;
-use rspace_plus_plus::rspace::trace::event::Produce;
+use rspace_plus_plus::rspace::trace::event::{Consume, Produce};
 use rspace_plus_plus::rspace::util::unpack_option_with_peek;
 use tokio::sync::RwLock;
 
 use super::accounting::authority::{
     cost_region, cost_signature_to_sig, extend_authority, sig_to_cost_signature,
-    stack_transfer_event_id,
 };
 use super::accounting::costs::{
     bigint_comparison_cost, bigint_division_cost, bigint_modulo_cost, bigint_multiplication_cost,
@@ -320,6 +319,7 @@ impl DebruijnInterpreter {
         chan: Par,
         data: ListParWithRandom,
         persistent: bool,
+        introduction_authority: CostAuthority,
     ) -> Pin<
         Box<
             dyn std::future::Future<Output = Result<DispatchType, InterpreterError>>
@@ -328,7 +328,7 @@ impl DebruijnInterpreter {
         >,
     > {
         Box::pin(StackGrowingFuture {
-            inner: self.produce_inner(chan, data, persistent),
+            inner: self.produce_inner(chan, data, persistent, introduction_authority),
         })
     }
 
@@ -337,8 +337,15 @@ impl DebruijnInterpreter {
         chan: Par,
         data: ListParWithRandom,
         persistent: bool,
+        introduction_authority: CostAuthority,
     ) -> Result<DispatchType, InterpreterError> {
         self.update_mergeable_channels(&chan).await;
+        let source = Produce::create(&chan, &data, persistent);
+        self.metering.budget().register_introduction_authority(
+            super::accounting::byte_accounting::produce_introduction_identity(&source),
+            super::accounting::authority::AuthorityByteEventKind::ProduceIntroduction,
+            &introduction_authority,
+        )?;
         let produce_result = self
             .space
             .produce(chan.clone(), data.clone(), persistent)
@@ -356,6 +363,7 @@ impl DebruijnInterpreter {
                         is_replay,
                         produce_event.clone().output_value,
                         produce_event.failed,
+                        introduction_authority,
                     )
                     .await?;
 
@@ -397,6 +405,7 @@ impl DebruijnInterpreter {
         peek: bool,
         guard: Option<Par>,
         authority: CostAuthority,
+        introduction_authority: CostAuthority,
     ) -> Pin<
         Box<
             dyn std::future::Future<Output = Result<DispatchType, InterpreterError>>
@@ -405,7 +414,15 @@ impl DebruijnInterpreter {
         >,
     > {
         Box::pin(StackGrowingFuture {
-            inner: self.consume_inner(binds, body, persistent, peek, guard, authority),
+            inner: self.consume_inner(
+                binds,
+                body,
+                persistent,
+                peek,
+                guard,
+                authority,
+                introduction_authority,
+            ),
         })
     }
 
@@ -417,6 +434,7 @@ impl DebruijnInterpreter {
         peek: bool,
         guard: Option<Par>,
         authority: CostAuthority,
+        introduction_authority: CostAuthority,
     ) -> Result<DispatchType, InterpreterError> {
         let (patterns, sources): (Vec<BindPattern>, Vec<Par>) = binds.clone().into_iter().unzip();
 
@@ -425,16 +443,23 @@ impl DebruijnInterpreter {
             self.update_mergeable_channels(source).await;
         }
 
+        let continuation = TaggedContinuation {
+            tagged_cont: Some(TaggedCont::ParBody(body.clone())),
+            guard: guard.clone(),
+            cost_authority: (!authority.regions.is_empty()).then_some(authority.clone()),
+        };
+        let source = Consume::create(&sources, &patterns, &continuation, persistent);
+        self.metering.budget().register_introduction_authority(
+            super::accounting::byte_accounting::consume_introduction_identity(&source),
+            super::accounting::authority::AuthorityByteEventKind::ConsumeIntroduction,
+            &introduction_authority,
+        )?;
         let consume_result = self
             .space
             .consume(
                 sources.clone(),
                 patterns.clone(),
-                TaggedContinuation {
-                    tagged_cont: Some(TaggedCont::ParBody(body.clone())),
-                    guard: guard.clone(),
-                    cost_authority: (!authority.regions.is_empty()).then_some(authority.clone()),
-                },
+                continuation,
                 persistent,
                 if peek {
                     BTreeSet::from_iter((0..sources.len() as i32).collect::<Vec<i32>>())
@@ -455,6 +480,7 @@ impl DebruijnInterpreter {
             Vec::new(),
             guard,
             authority,
+            introduction_authority,
         )
         .await
     }
@@ -468,6 +494,7 @@ impl DebruijnInterpreter {
         is_replay: bool,
         previous_output: Vec<Vec<u8>>,
         trace_failed: bool,
+        introduction_authority: CostAuthority,
     ) -> Result<DispatchType, InterpreterError> {
         // During replay, if the trace shows a failed non-deterministic process,
         // we cannot replay it - the external service call failed during original execution
@@ -495,6 +522,7 @@ impl DebruijnInterpreter {
                     let data_clone = data.clone();
                     let persistent_flag = persistent;
                     let is_replay_flag = is_replay;
+                    let introduction_authority_clone = introduction_authority.clone();
 
                     let mut futures: Vec<
                         Pin<
@@ -526,7 +554,12 @@ impl DebruijnInterpreter {
 
                     futures.push(Box::pin(async move {
                         self_clone2
-                            .produce(chan_clone, data_clone, persistent_flag)
+                            .produce(
+                                chan_clone,
+                                data_clone,
+                                persistent_flag,
+                                introduction_authority_clone,
+                            )
                             .await
                     })
                         as Pin<
@@ -593,6 +626,7 @@ impl DebruijnInterpreter {
         previous_output: Vec<Vec<u8>>,
         guard: Option<Par>,
         authority: CostAuthority,
+        introduction_authority: CostAuthority,
     ) -> Result<DispatchType, InterpreterError> {
         let previous_output_as_par = previous_output
             .into_iter()
@@ -617,6 +651,7 @@ impl DebruijnInterpreter {
                     let is_replay_flag = is_replay;
                     let guard_clone = guard.clone();
                     let authority_clone = authority.clone();
+                    let introduction_authority_clone = introduction_authority.clone();
 
                     let mut futures: Vec<
                         Pin<
@@ -655,6 +690,7 @@ impl DebruijnInterpreter {
                                 peek_flag,
                                 guard_clone,
                                 authority_clone,
+                                introduction_authority_clone,
                             )
                             .await
                     })
@@ -758,7 +794,13 @@ impl DebruijnInterpreter {
             .enumerate()
             .map(|(index, (chan, _, removed_data, _))| {
                 let self_clone = self.with_metering_child(start_component + index);
-                Box::pin(async move { self_clone.produce(chan, removed_data, false).await })
+                let introduction_authority =
+                    removed_data.cost_authority.clone().unwrap_or_default();
+                Box::pin(async move {
+                    self_clone
+                        .produce(chan, removed_data, false, introduction_authority)
+                        .await
+                })
                     as Pin<
                         Box<
                             dyn futures::Future<Output = Result<DispatchType, InterpreterError>>
@@ -1050,10 +1092,11 @@ impl DebruijnInterpreter {
             ListParWithRandom {
                 pars: subst_data,
                 random_state: rand.to_bytes(),
-                cost_authority: (!authority.regions.is_empty()).then_some(authority),
+                cost_authority: (!authority.regions.is_empty()).then_some(authority.clone()),
                 cost_stack: None,
             },
             send.persistent,
+            authority,
         )
         .await?;
         Ok(())
@@ -1078,16 +1121,19 @@ impl DebruijnInterpreter {
                 "cost-accounting: a join must sign either every receive clause or none".to_string(),
             ));
         }
-        let authority = if authority.regions.is_empty()
-            && signed_binds == 0
-            && self.metering.budget().has_comm_accounting_scope()
-        {
-            let signature = sig_to_cost_signature(&self.metering.budget().signature())
-                .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
-            let region = cost_region(&signature, &entropy, 0)
-                .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
-            extend_authority(authority, region)
-                .map_err(|error| InterpreterError::ReduceError(error.to_string()))?
+        let introduction_authority =
+            if authority.regions.is_empty() && self.metering.budget().has_comm_accounting_scope() {
+                let signature = sig_to_cost_signature(&self.metering.budget().signature())
+                    .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
+                let region = cost_region(&signature, &entropy, 0)
+                    .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
+                extend_authority(authority, region)
+                    .map_err(|error| InterpreterError::ReduceError(error.to_string()))?
+            } else {
+                authority.clone()
+            };
+        let authority = if signed_binds == 0 {
+            introduction_authority.clone()
         } else {
             authority.clone()
         };
@@ -1168,6 +1214,7 @@ impl DebruijnInterpreter {
             receive.peek,
             subst_guard,
             receive_authority,
+            introduction_authority,
         )
         .await?;
         Ok(())
@@ -1503,17 +1550,14 @@ impl DebruijnInterpreter {
             .bytes()
             .try_into()
             .expect("RSpace produce hash length");
-        let identities = (0..datum.cost_stack.as_ref().expect("cost stack").cells.len())
-            .map(|cell_index| stack_transfer_event_id(&produce_hash, cell_index as u64))
-            .collect::<Vec<_>>();
         let cells = datum.cost_stack.as_ref().expect("cost stack").cells.clone();
-        self.metering
-            .budget()
-            .reserve_stack_transfer_authority_identities(&identities, &authority)?;
-        self.produce(channel, datum, false).await?;
-        self.metering
-            .budget()
-            .record_authority_stack_birth(produce_hash, cells)?;
+        let reservation = self.metering.budget().prepare_authority_stack_transfer(
+            produce_hash,
+            cells,
+            &authority,
+        )?;
+        self.produce(channel, datum, false, authority).await?;
+        reservation.commit();
         Ok(())
     }
 

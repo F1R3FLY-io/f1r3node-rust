@@ -1,69 +1,137 @@
 ---------------- MODULE AtomicVaultSettlementRefinement ----------------
-EXTENDS Naturals, FiniteSets, TLC
+EXTENDS Naturals, FiniteSets, TLC, Apalache
 
 CONSTANTS
+    \* @type: Set(Str);
     Payers,
+    \* @type: Set(Str);
     Deployments,
+    \* @type: Str -> Int;
     InitialBalance,
+    \* @type: Str -> (Str -> Int);
     CertifiedBound,
+    \* @type: Str -> (Str -> Int);
+    ApplicationDebit,
+    \* @type: Str -> (Str -> Int);
+    ApplicationCredit,
+    \* @type: Str -> (Str -> Int);
     RealizedBurn,
+    \* @type: Str -> (Str -> Int);
+    RealizedByteBurn,
+    \* @type: Str -> (Str -> Int);
     RealizedFee,
+    \* @type: Str -> Str;
     FeeRecipient,
+    \* @type: Str;
     NoDeployment,
-    ExposeReservationCell
+    \* @type: Bool;
+    ExposeReservationCell,
+    \* @type: Bool;
+    OmitApplicationDebit,
+    \* @type: Bool;
+    OmitPhysicalBurn,
+    \* @type: Bool;
+    OmitByteBurn,
+    \* @type: Bool;
+    OmitFee
 
 ASSUME /\ Payers # {}
        /\ Deployments # {}
        /\ InitialBalance \in [Payers -> Nat]
        /\ CertifiedBound \in [Deployments -> [Payers -> Nat]]
+       /\ ApplicationDebit \in [Deployments -> [Payers -> Nat]]
+       /\ ApplicationCredit \in [Deployments -> [Payers -> Nat]]
        /\ RealizedBurn \in [Deployments -> [Payers -> Nat]]
+       /\ RealizedByteBurn \in [Deployments -> [Payers -> Nat]]
        /\ RealizedFee \in [Deployments -> [Payers -> Nat]]
        /\ FeeRecipient \in [Deployments -> Payers]
        /\ NoDeployment \notin Deployments
        /\ ExposeReservationCell \in BOOLEAN
+       /\ OmitApplicationDebit \in BOOLEAN
+       /\ OmitPhysicalBurn \in BOOLEAN
+       /\ OmitByteBurn \in BOOLEAN
+       /\ OmitFee \in BOOLEAN
        /\ \A deployment \in Deployments :
             \A payer \in Payers :
               RealizedBurn[deployment][payer]
+                + RealizedByteBurn[deployment][payer]
                 + RealizedFee[deployment][payer]
                   <= CertifiedBound[deployment][payer]
 
 VARIABLES
+    \* @type: Str;
     phase,
+    \* @type: Set(Str);
     selected,
+    \* @type: Set(Str);
     finalized,
+    \* @type: Set(Str);
     rejected,
+    \* @type: Str -> Int;
     balance,
+    \* @type: Str -> Int;
     burned,
+    \* @type: Str -> Int;
     feeCredits,
+    \* @type: Str -> Int;
     replayBalance,
+    \* @type: Str -> Int;
     replayBurned,
+    \* @type: Str -> Int;
     replayFeeCredits,
+    \* @type: Str;
     reservationCell
 
 vars == <<phase, selected, finalized, rejected, balance, burned, feeCredits,
           replayBalance, replayBurned, replayFeeCredits, reservationCell>>
 
-RECURSIVE SumSet(_, _)
-
+\* @type: (Str -> Int, Set(Str)) => Int;
 SumSet(function, domain) ==
-    IF domain = {}
-    THEN 0
-    ELSE LET element == CHOOSE value \in domain : TRUE
-         IN function[element] + SumSet(function, domain \ {element})
+    LET AddValue(total, element) == total + function[element]
+    IN ApaFoldSet(AddValue, 0, domain)
 
-Settlement(deployment, payer) ==
-    RealizedBurn[deployment][payer] + RealizedFee[deployment][payer]
+ASSUME \A deployment \in Deployments :
+         SumSet(ApplicationDebit[deployment], Payers)
+           = SumSet(ApplicationCredit[deployment], Payers)
+
+CompleteSettlement(deployment, payer) ==
+    ApplicationDebit[deployment][payer]
+      + RealizedBurn[deployment][payer]
+      + RealizedByteBurn[deployment][payer]
+      + RealizedFee[deployment][payer]
+
+DecisionSettlement(deployment, payer) ==
+    (IF OmitApplicationDebit THEN 0 ELSE ApplicationDebit[deployment][payer])
+      + (IF OmitPhysicalBurn THEN 0 ELSE RealizedBurn[deployment][payer])
+      + (IF OmitByteBurn THEN 0 ELSE RealizedByteBurn[deployment][payer])
+      + (IF OmitFee THEN 0 ELSE RealizedFee[deployment][payer])
 
 AggregateSettlement(deployments, payer) ==
-    SumSet([deployment \in deployments |-> Settlement(deployment, payer)], deployments)
+    SumSet(
+      [deployment \in deployments |-> DecisionSettlement(deployment, payer)],
+      deployments)
+
+AggregateCompleteSettlement(deployments, payer) ==
+    SumSet(
+      [deployment \in deployments |-> CompleteSettlement(deployment, payer)],
+      deployments)
 
 AggregateBurn(deployments, payer) ==
-    SumSet([deployment \in deployments |-> RealizedBurn[deployment][payer]], deployments)
+    SumSet(
+      [deployment \in deployments |->
+        RealizedBurn[deployment][payer]
+          + RealizedByteBurn[deployment][payer]],
+      deployments)
 
 AggregateFee(deployments) ==
     SumSet(
       [deployment \in deployments |->
         SumSet(RealizedFee[deployment], Payers)],
+      deployments)
+
+ApplicationCreditTo(deployments, payer) ==
+    SumSet(
+      [deployment \in deployments |-> ApplicationCredit[deployment][payer]],
       deployments)
 
 FeeCredit(deployments, payer) ==
@@ -74,18 +142,28 @@ FeeCredit(deployments, payer) ==
         ELSE 0],
       deployments)
 
-IndividuallyAdmissible(deployment) ==
+CompletelyIndividuallyAdmissible(deployment) ==
     \A payer \in Payers :
-      CertifiedBound[deployment][payer] <= InitialBalance[payer]
+      ApplicationDebit[deployment][payer]
+        + CertifiedBound[deployment][payer]
+          <= InitialBalance[payer]
+
+IndividuallyAdmissible(deployment) ==
+    CompletelyIndividuallyAdmissible(deployment)
 
 AggregateAdmissible(deployments) ==
     \A payer \in Payers :
       AggregateSettlement(deployments, payer) <= InitialBalance[payer]
 
+CompleteAggregateAdmissible(deployments) ==
+    \A payer \in Payers :
+      AggregateCompleteSettlement(deployments, payer) <= InitialBalance[payer]
+
 VisibleBalance(deployments) ==
     [payer \in Payers |->
       InitialBalance[payer]
-        - AggregateSettlement(deployments, payer)
+        - AggregateCompleteSettlement(deployments, payer)
+        + ApplicationCreditTo(deployments, payer)
         + FeeCredit(deployments, payer)]
 
 VisibleBurn(deployments) ==
@@ -174,10 +252,10 @@ TypeOK ==
 NoPersistentReservationState == reservationCell = NoDeployment
 
 EverySelectedBranchWasStateBoundFunded ==
-    \A deployment \in selected : IndividuallyAdmissible(deployment)
+    \A deployment \in selected : CompletelyIndividuallyAdmissible(deployment)
 
 FinalizedAggregateIsFunded ==
-    finalized # {} => AggregateAdmissible(finalized)
+    finalized # {} => CompleteAggregateAdmissible(finalized)
 
 AtomicVisibleRefinement ==
     /\ balance =

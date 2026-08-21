@@ -47,24 +47,6 @@ def command_for_fixture(test_name):
     return "COST_ACCOUNTING_FRONTIER_FIXTURES_JSON=<fixtures> cargo nextest run -p rholang {}".format(test_name)
 
 
-def expected_fixture_values(scenario):
-    consumed = 0
-    count = 0
-    budget = int(scenario.get("initial_budget", 0))
-    for event in scenario.get("events", []):
-        weight = int(event.get("weight", 0))
-        primitive_descriptor = str(event.get("primitive_descriptor", event.get("descriptor", "")))
-        invalid_descriptor = str(event.get("kind", "")) == "primitive" and len(primitive_descriptor) > 512
-        invalid_source_path = len(event.get("path", [])) > 1024
-        if weight <= 0 or invalid_descriptor or invalid_source_path:
-            return (consumed, count, True, False)
-        if consumed + weight > budget:
-            return (budget, count + 1, False, True)
-        consumed += weight
-        count += 1
-    return (consumed, count, False, False)
-
-
 def load_source_surface(path):
     if not path:
         raise SystemExit("--source-surface-json is required for v11 source-anchored search")
@@ -129,29 +111,22 @@ def initial_budget_for(surface, event):
 def settlement_for(surface):
     cost_surface = str(surface.get("cost_surface", ""))
     if cost_surface == "settlement":
-        return {"authority": "casper", "escrow": 15, "token_cost": 5, "refund": 10}
+        return vault_settlement(15, 8, 4, 3, 3, 2)
     if cost_surface == "slashing":
-        return {
-            "kind": "slash_after_evaluation",
-            "authority": "casper",
-            "escrow": 12,
-            "token_cost": 4,
-            "refund": 8,
-            "slashing_scope": "post_eval",
-        }
+        return vault_settlement(12, 12, 0, 0, 4, 0, kind="slash_after_evaluation", slashing_scope="post_eval")
     return {}
 
 
 def replay_mutations_for(surface):
     cost_surface = str(surface.get("cost_surface", ""))
     if cost_surface == "casper_replay":
-        return ["cost_trace_digest", "cost_trace_event_count", "cost_trace_present", "block_hash", "signature"]
+        return authenticated_replay_fields(["block_hash", "signature"])
     if cost_surface == "settlement":
-        return ["cost", "cost_trace_digest", "cost_trace_event_count", "refund"]
+        return authenticated_replay_fields(["refund"])
     if cost_surface == "slashing":
-        return ["slash_fields", "cost_trace_digest", "cost_trace_event_count", "genesis", "block_hash", "signature"]
+        return authenticated_replay_fields(["slash_fields", "genesis", "block_hash", "signature"])
     if cost_surface == "legacy_quarantine":
-        return ["cost_trace_present", "cost_trace_digest", "cost_trace_event_count", "block_hash"]
+        return authenticated_replay_fields(["block_hash"])
     return []
 
 
@@ -173,14 +148,14 @@ def v11_record(surface, index):
         events=[event],
         initial_budget=initial_budget_for(surface, event),
         settlement=settlement_for(surface),
-        replay_fields={"fields": ["cost", "cost_trace_digest", "cost_trace_event_count"]} if replay_mutations else {},
+        replay_fields={"fields": authenticated_replay_fields()} if replay_mutations else {},
         replay_mutations=replay_mutations,
         negative_mutations=negative_mutations,
         source_seed={"source_surface": surface},
         rho_source='@0!("v11-source-anchored")',
         production_oracle="source_surface_replay",
         expected_outcome="source_surface_{}".format(source_status),
-        differential_axes=["cost", "digest", "count", "source_surface", cost_surface],
+        differential_axes=["processed_cost", "authority_witness", "byte_events", "payload_hash", "source_surface", cost_surface],
         eval_phlo=100000,
         expected_error_kind="none",
         eval_result_axes=["cost", "digest", "count", "errors"],

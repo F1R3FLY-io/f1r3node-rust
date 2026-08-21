@@ -59,35 +59,40 @@ When a block contains Rholang deployments, here's the detailed execution flow:
 
 ```mermaid
 flowchart TD
-    DEPLOY[📝 Rholang Deploy] --> PARSE[Parse to AST]
+    DEPLOY[📝 Signed Rholang Deploy] --> AUTH[Verify Authority and Freeze Pre-state Bound]
+    AUTH --> PARSE[Parse to AST]
     PARSE --> REDUCE[π-calculus Reduction]
     
     REDUCE --> CHANNEL{Channel Operation?}
     CHANNEL -->|Send| PRODUCE[Produce on Channel]
     CHANNEL -->|Receive| CONSUME[Consume from Channel]
     
-    PRODUCE --> MATCH_CHECK[Check for Waiting Continuations]
-    CONSUME --> PATTERN_MATCH[Pattern Match Against Data]
+    PRODUCE --> PRODUCE_BYTES[Reserve Canonical Produce Bytes]
+    CONSUME --> CONSUME_BYTES[Reserve Canonical Consume Bytes]
+    PRODUCE_BYTES --> MATCH_CHECK[Check for Waiting Continuations]
+    CONSUME_BYTES --> PATTERN_MATCH[Pattern Match Against Data]
     
-    MATCH_CHECK -->|Match Found| TRIGGER[Trigger Continuation]
+    MATCH_CHECK -->|Match Found| COMM_COST[Reserve Authority, COMM, Delivery, and Trace]
     MATCH_CHECK -->|No Match| STORE_DATA[Store Data in RSpace]
-    
-    PATTERN_MATCH -->|Match Found| TRIGGER
+
+    PATTERN_MATCH -->|Match Found| COMM_COST
     PATTERN_MATCH -->|No Match| STORE_CONT[Store Continuation in RSpace]
-    
-    TRIGGER --> COST[Deduct Phlogiston Cost]
-    STORE_DATA --> COST
-    STORE_CONT --> COST
-    
-    COST --> MORE{More Reductions?}
+
+    COMM_COST --> TRIGGER[Commit Match and Trigger Continuation]
+    TRIGGER --> MORE{More Reductions?}
+    STORE_DATA --> MORE
+    STORE_CONT --> MORE
     MORE -->|Yes| REDUCE
-    MORE -->|No| COMPLETE[✅ Execution Complete]
-    
-    COST -->|Insufficient Gas| OUT_OF_GAS[❌ Out of Phlogiston]
+    MORE -->|No| SETTLE[Atomically Settle Exact REV Cost and Fee]
+    SETTLE --> COMPLETE[✅ Certified Execution Complete]
+
+    PRODUCE_BYTES -->|Insufficient Bound| REJECT[❌ Reject Before Mutation]
+    CONSUME_BYTES -->|Insufficient Bound| REJECT
+    COMM_COST -->|Insufficient Bound| REJECT
     
     style TRIGGER fill:#4caf50,color:#fff
     style COMPLETE fill:#8bc34a,color:#fff
-    style OUT_OF_GAS fill:#f44336,color:#fff
+    style REJECT fill:#f44336,color:#fff
 ```
 
 ## Validator Block Creation
@@ -180,4 +185,3 @@ flowchart TD
 **Clique Oracle Safety** (`SafetyOracle`): Computes mathematical finality via `(cliqueWeight * 2 - totalStake) / totalStake`, finding maximum validator cliques that agree on target blocks.
 
 **Key Parameters**: `fault-tolerance-threshold=0.1`, `synchrony-constraint-threshold=0`, `height-constraint-threshold=1000`
-

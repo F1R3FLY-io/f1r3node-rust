@@ -34,7 +34,7 @@ def records():
             "producer_routing",
             "confirmed_safe",
             "sage_producer_zero_work_stays_nonbillable",
-            "Zero-capable variable-work producers must not emit authenticated trace evidence for no work.",
+            "Zero-capable variable-work producers must not emit diagnostic trace evidence for no work.",
             canonical_scenario(
                 "producer_zero_work_nonbillable",
                 events=[],

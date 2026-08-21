@@ -42,9 +42,9 @@ and are not current behavior.
 > region, NOT who pays (balanced pays). B2's consensus-Par change is never needed:
 > with balanced settlement the per-lane split is never a consensus quantity.
 
-This documented the producer that would make the W1 Phase-3 per-lane attribution
-infrastructure *active* — now moot for settlement per the resolution above; the
-Phase-3 channel-match infra remains dormant diagnostic forward-infra.
+This documented a producer considered before native `CostAuthority`
+persistence landed. The authority region itself is now the producer; the
+unused Phase-3 lane map and channel-match diagnostic have been removed.
 
 ## 0. Decisions already taken (frame the whole design)
 
@@ -55,11 +55,11 @@ Phase-3 channel-match infra remains dormant diagnostic forward-infra.
    Rule 1 was **deferred** by this design pending reconciliation with P8. DR-36
    and DR-41 resolve the apparent conflict: a located region selects its purse,
    while P8 balances only within a compound presentation.
-2. **Consequence — the per-lane split is DIAGNOSTIC, not consensus.** Since
-   settlement is balanced, the per-lane attribution feeds only *visibility*
-   (`per_lane_demand`-style reports: "which signature funds which COMMs"), never
-   the supply-pool debits. Consensus cost (`consumed_units`, the `Σ` balances, the
-   post-state) is **unchanged** by any option below.
+2. **Current correction — located authority is consensus evidence.** A located
+   region selects the purse or compound presentation that can fund the event;
+   P8 balances only within a compound presentation. `AuthorityEvent`,
+   `AuthorityByteEvent`, the authenticated physical draw, and the resulting
+   SystemVault debit are replay-checked consensus evidence.
 
 ## 1. The corrected cost model (why this is not the gate translation)
 
@@ -124,8 +124,7 @@ to "funding slots" *given the P8-balanced decision*.
 ## 3. Mechanism B1 — non-Par runtime side-table
 
 **Idea.** Thread a `region → lane` map from `recognize_signed_term/join` to the
-reducer; the reducer attributes each *runtime* COMM to its region's lane (a
-runtime-accurate per-lane count), feeding `note_channel_lane`/`per_lane_demand`.
+reducer. Native persisted authority superseded this side-table design.
 
 - **The hard part:** the AST→runtime COMM mapping is not 1:1 because a signed
   region under a persistent receive may fire many times. Scheduler-local reducer

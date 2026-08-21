@@ -389,7 +389,7 @@ def records():
             "concurrency_schedule",
             "proof_or_model_strengthening",
             "sage_concurrency_repeated_oop_boundary_is_single",
-            "Racing OOP branches retain one authenticated boundary event and do not leak trace slots.",
+            "Racing OOP branches retain one committed boundary event and do not leak trace slots.",
             canonical_scenario(
                 "concurrency_repeated_oop",
                 events=oop_race,

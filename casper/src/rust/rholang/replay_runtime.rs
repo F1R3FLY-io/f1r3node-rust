@@ -78,14 +78,24 @@ pub(crate) fn has_exactly_one_successful_terminal_close(
     matches!(close_positions.as_slice(), [index] if *index + 1 == system_deploys.len())
 }
 
-fn certified_replay_capacity(allocation: &ResourceMultiset<[u8; 32]>) -> Result<Cost, CasperError> {
-    let capacity = allocation.0.values().try_fold(0_u64, |total, amount| {
+fn certified_replay_capacity(
+    allocation: &ResourceMultiset<[u8; 32]>,
+    byte_cost_bound: u64,
+) -> Result<Cost, CasperError> {
+    let authority_capacity = allocation.0.values().try_fold(0_u64, |total, amount| {
         total.checked_add(*amount).ok_or_else(|| {
             CasperError::InvalidCostSettlement(
                 "certified authority replay capacity overflows u64".to_string(),
             )
         })
     })?;
+    let capacity = authority_capacity
+        .checked_add(byte_cost_bound)
+        .ok_or_else(|| {
+            CasperError::InvalidCostSettlement(
+                "certified authority and byte replay capacity overflows u64".to_string(),
+            )
+        })?;
     let capacity = i64::try_from(capacity).map_err(|_| {
         CasperError::InvalidCostSettlement(
             "certified authority replay capacity exceeds i64".to_string(),
@@ -246,12 +256,12 @@ impl ReplayRuntimeOps {
         tracing::debug!(target: "f1r3fly.casper.replay_rho_runtime", start_hash = %hex::encode(&start_hash[..8.min(start_hash.len())]), n_user = terms.len(), n_system = system_deploys.len(), "replay.replay_deploys ENTER (reset to pre-state, then replay deploys vs recorded COMMs)");
         // Time reset phase - Span[F].traceI("reset") from Scala
         let reset_start = Instant::now();
-        self.runtime_ops
-            .runtime
-            .reset(&Blake2b256Hash::from_bytes_prost(start_hash))
-            .await?;
+        let start_root = Blake2b256Hash::from_bytes_prost(start_hash);
+        self.runtime_ops.runtime.reset(&start_root).await?;
         metrics::histogram!(BLOCK_REPLAY_PHASE_RESET_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
             .record(reset_start.elapsed().as_secs_f64());
+
+        let result = async {
 
         if block_kind.requires_authority_settlement()
             && !has_exactly_one_successful_terminal_close(&system_deploys)
@@ -362,6 +372,22 @@ impl ReplayRuntimeOps {
 
         tracing::debug!(target: "f1r3fly.casper.replay_rho_runtime", computed_root = %hex::encode(&checkpoint.root.bytes()[..8.min(checkpoint.root.bytes().len())]), "replay.replay_deploys DONE (computed final replay root)");
         Ok((checkpoint.root, all_mergeable))
+        }
+        .await;
+
+        match result {
+            Ok(value) => Ok(value),
+            Err(error) => {
+                self.runtime_ops.runtime.reset(&start_root).await.map_err(
+                    |rollback_error| {
+                        CasperError::RuntimeError(format!(
+                            "replay failed ({error}); restoring the block pre-state failed: {rollback_error}"
+                        ))
+                    },
+                )?;
+                Err(error)
+            }
+        }
     }
 
     /**
@@ -397,6 +423,25 @@ impl ReplayRuntimeOps {
         processed_deploy: &ProcessedDeploy,
         purse_snapshot: Option<&crate::rust::util::rholang::acceptance::ReplayPurseSnapshot>,
     ) -> Result<NumberChannelsEndVal, CasperError> {
+        let fallback = self.runtime_ops.runtime.create_soft_checkpoint().await;
+        let result = self
+            .replay_deploy_e_with_snapshot_transaction(block_kind, processed_deploy, purse_snapshot)
+            .await;
+        if result.is_err() {
+            self.runtime_ops
+                .runtime
+                .revert_to_soft_checkpoint(fallback)
+                .await;
+        }
+        result
+    }
+
+    async fn replay_deploy_e_with_snapshot_transaction(
+        &mut self,
+        block_kind: ReplayBlockKind,
+        processed_deploy: &ProcessedDeploy,
+        purse_snapshot: Option<&crate::rust::util::rholang::acceptance::ReplayPurseSnapshot>,
+    ) -> Result<NumberChannelsEndVal, CasperError> {
         let mut mergeable_channels: HashMap<Par, MergeType> = HashMap::new();
         let execution_authority = if block_kind.requires_authority_settlement() {
             let certificate =
@@ -419,7 +464,7 @@ impl ReplayRuntimeOps {
                     ));
                 }
             };
-            let capacity = certified_replay_capacity(&allocation)?;
+            let capacity = certified_replay_capacity(&allocation, certificate.byte_cost_bound)?;
             Some((capacity, allocation))
         } else {
             None
@@ -480,9 +525,9 @@ impl ReplayRuntimeOps {
     /// D3 (DR-9, OD-1/OD-2): the escrow pre-charge/refund replay fan-out is
     /// removed. Replay derives the finite execution capacity from the same
     /// authenticated authority pre-state, reconstructs the complete cosigned
-    /// envelope, and rejects exhaustion. It then requires the per-COMM cost,
-    /// status, event log, post-state root, settlement, and fee carve to match the
-    /// state-bound evidence committed by the block.
+    /// envelope, and rejects exhaustion. It then requires the canonical weighted
+    /// RSpace cost, status, event log, post-state root, settlement, and fee carve
+    /// to match the state-bound evidence committed by the block.
     async fn process_ordinary_deploy(
         &mut self,
         processed_deploy: &ProcessedDeploy,
@@ -545,6 +590,8 @@ impl ReplayRuntimeOps {
         )?;
         let reserved_resources = certificate
             .allocation
+            .checked_add(&certificate.byte_allocation)
+            .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?
             .checked_add(&certificate.fee_allocation)
             .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
         let mut reserve_allocations = Vec::new();
@@ -636,6 +683,13 @@ impl ReplayRuntimeOps {
                 "replay authority trace differs from the committed witness".to_string(),
             ));
         }
+        if eval_result.authority_byte_events != witness.byte_events
+            || eval_result.quantitative_byte_cost != witness.byte_cost
+        {
+            return Err(CasperError::InvalidCostSettlement(
+                "replay quantitative byte trace differs from the committed witness".to_string(),
+            ));
+        }
         let actual_born_stacks = self
             .runtime_ops
             .resolve_authority_stack_births(&eval_result.authority_stack_births)
@@ -695,10 +749,27 @@ impl ReplayRuntimeOps {
             .balances
             .checked_sub(&physical_settlement.balance_debit)
             .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
+        let recomputed_byte =
+            rholang::rust::interpreter::accounting::authority::allocate_quantitative_events(
+                &witness.byte_events,
+                &after_cost,
+            )
+            .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
+        if recomputed_byte != witness.byte_settlement
+            || recomputed_byte != certificate.byte_allocation
+        {
+            return Err(CasperError::InvalidCostSettlement(
+                "replay quantitative byte allocation differs from its witness or certificate"
+                    .to_string(),
+            ));
+        }
+        let after_byte = after_cost
+            .checked_sub(&recomputed_byte)
+            .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
         let recomputed_fee =
             rholang::rust::interpreter::accounting::authority::allocate_authority_events(
                 std::slice::from_ref(&fee_event),
-                &after_cost,
+                &after_byte,
             )
             .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
         if recomputed_fee != certificate.fee_allocation {
@@ -725,8 +796,12 @@ impl ReplayRuntimeOps {
             let payer = crate::rust::util::rholang::costacc::vault_payer::vault_payer(signature)
                 .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
             let burn = physical_settlement.balance_debit.get(key);
+            let byte_burn = recomputed_byte.get(key);
             let fee = certificate.fee_allocation.get(key);
-            if burn
+            let total_burn = burn.checked_add(byte_burn).ok_or_else(|| {
+                CasperError::InvalidCostSettlement("replay vault burn overflows u64".to_string())
+            })?;
+            if total_burn
                 .checked_add(fee)
                 .is_none_or(|total| total > *reserved_amount)
             {
@@ -737,7 +812,7 @@ impl ReplayRuntimeOps {
             settlements.push(
                 crate::rust::util::rholang::costacc::vault_cost_deploy::VaultSettlement::new(
                     payer.address.to_base58(),
-                    i64::try_from(burn).map_err(|_| {
+                    i64::try_from(total_burn).map_err(|_| {
                         CasperError::InvalidCostSettlement(
                             "vault burn exceeds the platform range".to_string(),
                         )
@@ -1291,12 +1366,12 @@ mod tests {
     }
 
     #[test]
-    fn replay_capacity_is_the_checked_sum_of_certified_authority() {
+    fn replay_capacity_is_the_checked_sum_of_certified_authority_and_bytes() {
         let allocation = ResourceMultiset(BTreeMap::from([([1; 32], 2), ([2; 32], 3)]));
 
-        assert_eq!(certified_replay_capacity(&allocation).unwrap().value, 5);
+        assert_eq!(certified_replay_capacity(&allocation, 7).unwrap().value, 12);
         assert_eq!(
-            certified_replay_capacity(&ResourceMultiset::default())
+            certified_replay_capacity(&ResourceMultiset::default(), 0)
                 .unwrap()
                 .value,
             0
@@ -1307,6 +1382,11 @@ mod tests {
     fn replay_capacity_rejects_overflow() {
         let allocation = ResourceMultiset(BTreeMap::from([([1; 32], u64::MAX), ([2; 32], 1)]));
 
-        assert!(certified_replay_capacity(&allocation).is_err());
+        assert!(certified_replay_capacity(&allocation, 0).is_err());
+        assert!(certified_replay_capacity(
+            &ResourceMultiset(BTreeMap::from([([1; 32], 1)])),
+            u64::MAX
+        )
+        .is_err());
     }
 }

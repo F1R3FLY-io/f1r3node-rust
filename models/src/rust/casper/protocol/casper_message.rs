@@ -922,6 +922,11 @@ impl ProcessedDeploy {
             system_deploy_error: self.system_deploy_error.unwrap_or_default(),
             transfers: Vec::new(),
             transfers_available: false,
+            authority_funding_certificate: self.authority_funding_certificate,
+            authority_cost_witness: self.authority_cost_witness,
+            pre_state_hash: self.pre_state_hash,
+            post_state_hash: self.post_state_hash,
+            admission_status: self.admission_status.to_proto(),
         }
     }
 
@@ -2086,8 +2091,8 @@ impl MergeableEntryRequest {
 #[derive(Clone, Debug, PartialEq)]
 pub struct MergeableEntryResponse {
     pub block_hash: ByteString,
-    /// Bincode of `Vec<DeployMergeableData>`. Empty bytes = peer has the block
-    /// but no entry for it.
+    /// Deprecated compatibility field. Receivers ignore nonempty bytes because
+    /// mergeable evidence is not block-authenticated.
     pub serialized_entry: ByteString,
 }
 
@@ -2663,6 +2668,57 @@ mod tests {
             Secp256k1Eth::NAME
         );
         assert_eq!(ProcessedDeploy::from_proto(proto).unwrap(), processed);
+    }
+
+    #[test]
+    fn deploy_info_preserves_cost_authority_evidence() {
+        let certificate = CostAuthorityFundingCertificateProto {
+            protocol_version: 8,
+            program_hash: ByteString::from_static(&[1; 32]),
+            pre_state_root: ByteString::from_static(&[2; 32]),
+            reservation_id: ByteString::from_static(&[3; 32]),
+            byte_cost_schedule_version: 1,
+            byte_cost_schedule_digest: ByteString::from_static(&[4; 32]),
+            byte_cost_bound: 17,
+            ..Default::default()
+        };
+        let witness = CostAuthorityWitnessProto {
+            protocol_version: 8,
+            certificate_id: ByteString::from_static(&[5; 32]),
+            pre_state_root: ByteString::from_static(&[2; 32]),
+            post_state_root: ByteString::from_static(&[6; 32]),
+            byte_cost_schedule_version: 1,
+            byte_cost_schedule_digest: ByteString::from_static(&[4; 32]),
+            byte_cost: 11,
+            ..Default::default()
+        };
+        let pre_state = ByteString::from_static(&[2; 32]);
+        let post_state = ByteString::from_static(&[6; 32]);
+        let processed = ProcessedDeploy {
+            deploy: signed_deploy(deploy_data()),
+            cost: PCost { cost: 12 },
+            deploy_log: Vec::new(),
+            is_failed: false,
+            system_deploy_error: None,
+            cosigners: Vec::new(),
+            cosigner_threshold: 0,
+            pre_state_hash: pre_state.clone(),
+            post_state_hash: post_state.clone(),
+            authority_funding_certificate: Some(certificate.clone()),
+            authority_cost_witness: Some(witness.clone()),
+            admission_status: DeployAdmissionStatus::Executed,
+        };
+
+        let info = processed.to_deploy_info();
+
+        assert_eq!(info.authority_funding_certificate, Some(certificate));
+        assert_eq!(info.authority_cost_witness, Some(witness));
+        assert_eq!(info.pre_state_hash, pre_state);
+        assert_eq!(info.post_state_hash, post_state);
+        assert_eq!(
+            info.admission_status,
+            DeployAdmissionStatusProto::DeployAdmissionStatusExecuted as i32
+        );
     }
 
     #[test]

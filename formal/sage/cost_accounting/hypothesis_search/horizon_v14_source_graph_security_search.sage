@@ -13,10 +13,10 @@ CASES = [
         "primary_surface": "runtime_budget",
         "primary_risk": "invalid_admission_before_mutation",
         "secondary_surface": "api_ingress",
-        "secondary_risk": "private_name_preview_input",
+        "secondary_risk": "cosigned_deploy_ingress",
         "security_surface": "api_to_runtime_replay",
         "external_input_kind": "deploy_api_request",
-        "auth_boundary": "cost_trace_digest",
+        "auth_boundary": "authority_cost_witness",
         "replay_boundary": "replay_payload_hash",
         "expected_disposition": "accepted",
         "events": [
@@ -24,8 +24,8 @@ CASES = [
             canonical_event("primitive", 1, descriptor="v14/api/runtime/b", primitive_descriptor="v14/api/runtime/b", deploy=0, path=[14, 1]),
         ],
         "initial_budget": 8,
-        "replay_mutations": ["api_ingress", "cost_trace_digest", "cost_trace_event_count", "replay_payload_hash"],
-        "source_facets": ["runtime_budget", "admission", "api_ingress", "auth_boundary"],
+        "replay_mutations": ["api_ingress", "processed_deploy_cost", "authority_cost_witness", "authority_byte_events", "replay_payload_hash"],
+        "source_facets": ["runtime_budget", "atomic_admission", "api_ingress", "authority_witness", "byte_witness", "payload_hash", "auth_boundary"],
     },
     {
         "id": "v14_replay_cache_payload_binding",
@@ -42,8 +42,44 @@ CASES = [
             canonical_event("source", 1, descriptor="v14/cache/replay", deploy=0, path=[14, 2]),
         ],
         "initial_budget": 6,
-        "replay_mutations": ["replay_cache", "payload_hash", "cost_trace_digest", "cost_trace_event_count"],
-        "source_facets": ["replay_cache", "event_log_bound", "casper_replay", "payload_hash"],
+        "replay_mutations": ["replay_cache", "replay_payload_hash", "processed_deploy_cost", "authority_cost_witness", "authority_byte_events"],
+        "source_facets": ["replay_cache", "event_log_bound", "casper_replay", "payload_hash", "authority_witness", "byte_witness"],
+    },
+    {
+        "id": "v14_mergeable_evidence_authentication",
+        "primary_surface": "replay_cache",
+        "primary_risk": "complete_execution_identity",
+        "secondary_surface": "casper_replay",
+        "secondary_risk": "unauthenticated_peer_evidence_exclusion",
+        "security_surface": "mergeable_evidence_authentication",
+        "external_input_kind": "block_and_peer_merge_evidence",
+        "auth_boundary": "canonical_replay_equivalence_class",
+        "replay_boundary": "accepted_local_replay_publication",
+        "expected_disposition": "accepted",
+        "events": [
+            canonical_event("source", 1, descriptor="v14/mergeable/evidence", deploy=0, path=[14, 8]),
+        ],
+        "initial_budget": 6,
+        "replay_mutations": [
+            "pre_state_hash",
+            "post_state_hash",
+            "creator",
+            "sequence_number",
+            "canonical_user_event_multiset",
+            "canonical_system_event_multiset",
+            "peer_serialized_entry",
+            "final_state_validation",
+        ],
+        "source_facets": [
+            "replay_cache",
+            "casper_replay",
+            "mergeable_evidence",
+            "complete_execution_identity",
+            "schedule_independent_payload",
+            "local_derivation",
+            "peer_input_exclusion",
+            "auth_boundary",
+        ],
     },
     {
         "id": "v14_slashing_authorization_epoch_binding",
@@ -60,7 +96,7 @@ CASES = [
             canonical_event("source", 1, descriptor="v14/slashing/auth", deploy=0, path=[14, 3]),
         ],
         "initial_budget": 6,
-        "settlement": {"kind": "slash_after_evaluation", "authority": "casper", "escrow": 10, "token_cost": 3, "refund": 7, "phlo_limit": 10, "phlo_price": 1},
+        "settlement": vault_settlement(10, 10, 0, 0, 3, 0, kind="slash_after_evaluation"),
         "slashing_authorization": {
             "current_epoch": 2,
             "evidence_epoch": 2,
@@ -77,7 +113,7 @@ CASES = [
             "parent_pre_state_bond",
             "block_hash",
             "signature",
-            "cost_trace_digest",
+            "replay_payload_hash",
         ],
         "source_facets": ["slashing", "authorization", "epoch_boundary", "payload_hash", "parent_pre_state", "current_evidence"],
     },
@@ -96,7 +132,7 @@ CASES = [
             canonical_event("source", 1, descriptor="v14/slashing/canonical-current", deploy=0, path=[14, 7]),
         ],
         "initial_budget": 6,
-        "settlement": {"kind": "slash_after_evaluation", "authority": "casper", "escrow": 10, "token_cost": 3, "refund": 7, "phlo_limit": 10, "phlo_price": 1},
+        "settlement": vault_settlement(10, 10, 0, 0, 3, 0, kind="slash_after_evaluation"),
         "slashing_authorization": {
             "current_epoch": 2,
             "evidence_epoch": 2,
@@ -115,7 +151,7 @@ CASES = [
             "evidence_presence",
             "block_hash",
             "signature",
-            "cost_trace_digest",
+            "replay_payload_hash",
         ],
         "source_facets": ["slashing", "canonical_evidence", "authorization", "epoch_boundary", "parent_pre_state", "current_evidence", "positive_bond", "unique_target"],
     },
@@ -152,7 +188,7 @@ CASES = [
             canonical_event("source", 1, descriptor="v14/mergeable/non-numeric", deploy=0, path=[14, 5]),
         ],
         "initial_budget": 6,
-        "replay_mutations": ["merge_type", "payload_kind", "conflict_path", "cost_trace_digest"],
+        "replay_mutations": ["merge_type", "payload_kind", "conflict_path", "post_state_hash"],
         "source_facets": ["mergeable_channels", "non_numeric", "fallback_conflict_path", "type_propagation"],
     },
     {
@@ -281,25 +317,12 @@ def source_anchor_digest_for(primary, secondary, case):
     return digest_value([anchor for anchor in anchors if anchor])
 
 
-def expected_values(scenario):
-    consumed = 0
-    count = 0
-    budget = int(scenario.get("initial_budget", 0))
-    for event in scenario.get("events", []):
-        weight = int(event.get("weight", 0))
-        if weight <= 0 or weight > 2**63 - 1:
-            return (consumed, count, True, False)
-        if consumed + weight > budget:
-            return (budget, count + 1, False, True)
-        consumed += weight
-        count += 1
-    return (consumed, count, False, False)
-
-
 def rust_test_for(case):
     surface = case.get("security_surface", "")
     if surface in ["api_to_runtime_replay", "replay_cache_payload_binding"]:
         return "generated_frontier_v14_source_graph_oracles_hold"
+    if surface == "mergeable_evidence_authentication":
+        return "generated_frontier_v14_mergeable_evidence_oracles_hold"
     if surface == "slashing_authorization":
         return "generated_frontier_v14_slashing_security_oracles_hold"
     if surface == "typed_mergeable_channel":
@@ -417,6 +440,7 @@ def adequacy_record():
             "runtime_budget",
             "casper_replay",
             "replay_cache",
+            "mergeable_evidence_authentication",
             "slashing",
             "mergeable_channels",
             "transport_tls",
@@ -478,11 +502,13 @@ def frontier_records(args):
 
 def assert_adequacy(records):
     surfaces = set()
+    security_surfaces = set()
     features = set()
     boundaries = set()
     for item in records:
         scenario = item["scenario"]
         if scenario.get("security_surface") and scenario.get("security_surface") != "coverage_adequacy":
+            security_surfaces.add(scenario.get("security_surface"))
             surfaces.add(scenario.get("cost_surface", ""))
         for facet in scenario.get("source_facets", []):
             if facet in ["runtime_budget", "casper_replay", "replay_cache", "slashing", "mergeable_channels", "transport_tls", "crypto_key_material", "api_ingress", "dependency_advisory"]:
@@ -492,13 +518,15 @@ def assert_adequacy(records):
         for feature in item.get("coverage_features", []):
             features.add(feature)
     required_surfaces = set(["runtime_budget", "casper_replay", "replay_cache", "slashing", "mergeable_channels", "transport_tls", "crypto_key_material", "api_ingress", "dependency_advisory"])
+    required_security_surfaces = set(["api_to_runtime_replay", "replay_cache_payload_binding", "mergeable_evidence_authentication", "slashing_authorization", "typed_mergeable_channel", "transport_tls", "crypto_key_material", "dependency_advisory"])
     required_features = set(["source_graph_security", "security_surface", "external_input_kind", "auth_boundary", "replay_boundary", "source_anchor_status", "production_replay_target", "promotion_gate", "coverage_adequacy", "slashing_authorization"])
     missing_surfaces = sorted(required_surfaces - surfaces)
+    missing_security_surfaces = sorted(required_security_surfaces - security_surfaces)
     missing_features = sorted(required_features - features)
-    if missing_surfaces or missing_features or not boundaries:
+    if missing_surfaces or missing_security_surfaces or missing_features or not boundaries:
         raise SystemExit(
-            "v14 source-graph adequacy failure: missing_surfaces={} missing_features={} boundaries={}".format(
-                missing_surfaces, missing_features, sorted(boundaries)
+            "v14 source-graph adequacy failure: missing_surfaces={} missing_security_surfaces={} missing_features={} boundaries={}".format(
+                missing_surfaces, missing_security_surfaces, missing_features, sorted(boundaries)
             )
         )
 
@@ -523,7 +551,7 @@ def fixture_from_record(item):
 
 def rust_fixture_from_record(item):
     scenario = item["scenario"]
-    total, count, invalid, oop = expected_values(scenario)
+    total, count, invalid, oop = expected_fixture_values(scenario)
     return {
         "id": item["name"],
         "classification": item["classification"],

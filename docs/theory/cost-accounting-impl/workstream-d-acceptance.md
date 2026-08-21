@@ -29,6 +29,11 @@ No proto change to `Par`. The N=1 (single-signature) scalar fast-path is preserv
 ## Staged plan (dependency spine: D0 → D1 → D2 → D3 → D4 → D5 → D6; strict: **D2 before D4.1**)
 
 ### D0 — per-signature token pool (`accounting/mod.rs`)
+This historical prototype was removed after native persisted `CostAuthority`
+became the sole per-purse accounting path. The abstract `rb_pool` proofs still
+establish compositional and permutation-independent purse settlement; they no
+longer correspond to a second `RuntimeBudget` ledger.
+
 - `BillableTokenEvent` gains `sig_hash: [u8;32]` (placed right after `deploy_id` so the derived `Ord` makes
   per-lane order a refinement of the global order). New `Sig::lane_hash(&self) -> [u8;32]` (canonical digest;
   reuse `to_proto`+encode or `SignatureChannel::from_sig`, mod.rs:1198).
@@ -107,7 +112,8 @@ delete).
   has eight structural introductions but four realized atomic matches.
 - DR-31 supersedes historical OD-1: the single committed user execution and
   constrained replay install finite authority-derived capacity. Exhaustion rejects and cannot
-  certify; `total_cost()` still returns the real per-COMM count. The escrow precharge/
+  certify; under protocol 4, `total_cost()` returns the one-unit-per-COMM
+  execution projection plus canonical RSpace bytes (DR-47). The escrow precharge/
   refund fan-out (`play_deploy_with_cost_accounting_cosigned` + replay twin) was
   rewritten to gate-funded (KEEP the inner soft-checkpoint); `costacc/
   {pre_charge,refund}_deploy.rs` + the precharge/refund seeds + PoS.rhox

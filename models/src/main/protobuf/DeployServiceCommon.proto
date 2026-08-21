@@ -148,6 +148,11 @@ message DeployInfo{
   string systemDeployError    = 12;
   repeated TransferInfo transfers = 13;
   bool transfersAvailable         = 14; // true when transfers were extracted (readonly), false on validators
+  CostAuthorityFundingCertificateProto authorityFundingCertificate = 15;
+  CostAuthorityWitnessProto authorityCostWitness = 16;
+  bytes preStateHash = 17;
+  bytes postStateHash = 18;
+  DeployAdmissionStatusProto admissionStatus = 19;
 }
 
 message LightBlockInfo {

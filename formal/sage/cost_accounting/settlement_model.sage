@@ -9,37 +9,40 @@ load(os.path.join(os.path.dirname(os.path.abspath(sys.argv[0])), "scenario_schem
 I64_MAX = 2**63 - 1
 
 
-# D3 (DR-9, OD-2/OD-3): the singular-phlo escrow refund model (escrow =
-# limit * price, refund = (limit - token_cost) * price) is REMOVED. A deploy's
-# cost is the per-COMM token count `demand` (= Delta_s); funding is the
-# per-signature supply pool `supply` (= Sigma_s); the block-assembly gate admits
-# iff the EFFECTIVE supply meets the certified demand plus the fixed fee. The
-# close-block transition burns realized cost and transfers the fee from the
-# client pool to the validator fee pool. There is NO op-budget-exhaustion surface.
-def is_funded(demand, supply, fee):
-    # The pure Def-19/Thm-20 funding inequality (i128 in Rust; unbounded here).
-    return int(supply) >= int(demand) + int(fee)
+def is_funded(physical_bound, byte_bound, supply, fee):
+    return int(supply) >= int(physical_bound) + int(byte_bound) + int(fee)
 
 
-def settle(demand, supply, fee):
-    if demand < 0 or supply < 0 or fee < 0:
+def settle(physical_bound, byte_bound, realized_physical, realized_byte, supply, fee):
+    values = [physical_bound, byte_bound, realized_physical, realized_byte, supply, fee]
+    if any(value < 0 for value in values):
         return {"valid": False, "reason": "negative_input"}
-    funded = is_funded(demand, supply, fee)
-    # The per-COMM settlement debit is the demand (COMM count) for an admitted
-    # deploy; an unfunded deploy is rejected and debits nothing.
-    debit = int(demand) if funded else 0
-    fee_debit = int(fee) if funded else 0
-    post = int(supply) - debit - fee_debit
+    reservation = int(physical_bound) + int(byte_bound) + int(fee)
+    funded = is_funded(physical_bound, byte_bound, supply, fee)
+    bounded = int(realized_physical) <= int(physical_bound) and int(realized_byte) <= int(byte_bound)
+    admitted = bool(funded and bounded)
+    burned = int(realized_physical) + int(realized_byte) if admitted else 0
+    fee_debit = int(fee) if admitted else 0
+    debit = burned + fee_debit
+    refund = reservation - debit if admitted else 0
+    post = int(supply) - debit if admitted else int(supply)
     return {
         "valid": True,
-        "demand": int(demand),
+        "physical_bound": int(physical_bound),
+        "byte_bound": int(byte_bound),
+        "realized_physical": int(realized_physical),
+        "realized_byte": int(realized_byte),
         "supply": int(supply),
         "fee": int(fee),
         "funded": bool(funded),
-        # The single consensus decrement: post = pre - debit (>= 0 for admitted).
+        "bounded": bool(bounded),
+        "admitted": admitted,
+        "reserved_max": reservation if funded else None,
+        "burned": burned,
         "settlement_debit": debit,
         "fee_debit": fee_debit,
         "fee_credit": fee_debit,
+        "refund": refund,
         "supply_after": int(post),
     }
 
@@ -56,34 +59,27 @@ def settle(demand, supply, fee):
 # PRESENT pool (an int balance, incl. a drained 0), mirroring
 # `supply::read_balance_present`. The EFFECTIVE supply the funding inequality
 # sees is 0 for an absent pool (the paper's supply(s) = 0).
-def admit(demand, pool_present, fee):
-    if demand < 0 or fee < 0:
+def admit(physical_bound, byte_bound, pool_present, fee):
+    if physical_bound < 0 or byte_bound < 0 or fee < 0:
         return {"valid": False, "reason": "negative_input"}
     if pool_present is not None and int(pool_present) < 0:
         return {"valid": False, "reason": "negative_input"}
     absent = pool_present is None
     effective_supply = 0 if absent else int(pool_present)
 
-    funded = is_funded(demand, effective_supply, fee)
-    admitted = bool(funded)
-    debit = int(demand) if funded else 0
-    fee_debit = int(fee) if funded else 0
-    post = effective_supply - debit - fee_debit
-    return {
-        "valid": True,
-        "demand": int(demand),
-        "pool_present": (None if absent else int(pool_present)),
-        "effective_supply": int(effective_supply),
-        "fee": int(fee),
-        "enforced": True,
-        "admitted": bool(admitted),
-        "funded": bool(funded),
-        "settlement_debit": int(debit),
-        "fee_debit": int(fee_debit),
-        "fee_credit": int(fee_debit),
-        "supply_after": int(post),
-        "pool_after": (None if absent else int(post)),
-    }
+    result = settle(
+        physical_bound,
+        byte_bound,
+        physical_bound,
+        byte_bound,
+        effective_supply,
+        fee,
+    )
+    result["pool_present"] = None if absent else int(pool_present)
+    result["effective_supply"] = int(effective_supply)
+    result["enforced"] = True
+    result["pool_after"] = None if absent else result["supply_after"]
+    return result
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -419,28 +415,37 @@ def state_bound_fixed_point_search(max_supply=6, candidate_count=3):
 def records():
     # Funded boundary: Sigma = Delta + fee admits, and the cost plus fee debit
     # leaves a non-negative pool (no underflow).
-    funded = settle(demand=8, supply=10, fee=2)
+    funded = settle(physical_bound=8, byte_bound=0, realized_physical=8, realized_byte=0, supply=10, fee=2)
     # Just below the boundary: Sigma = Delta + fee - 1 is REJECTED (no debit).
-    rejected = settle(demand=8, supply=9, fee=2)
+    rejected = settle(physical_bound=8, byte_bound=0, realized_physical=8, realized_byte=0, supply=9, fee=2)
     # Drained pool: a present-but-zero supply rejects a further per-COMM demand
     # (the §7.7 duplicate-deploy double-spend shape).
-    drained = settle(demand=3, supply=0, fee=1)
+    drained = settle(physical_bound=3, byte_bound=0, realized_physical=3, realized_byte=0, supply=0, fee=1)
     # Block settlement is the sum of independent per-signature pool debits.
-    multi = [settle(8, 10, 1), settle(5, 4, 1), settle(3, 4, 1)]
+    multi = [
+        settle(8, 0, 8, 0, 10, 1),
+        settle(5, 0, 5, 0, 4, 1),
+        settle(3, 0, 3, 0, 4, 1),
+    ]
     multi_debit = sum(item.get("settlement_debit", 0) for item in multi if item["valid"])
     multi_supply_after = sum(item.get("supply_after", 0) for item in multi if item["valid"])
+    refunded = settle(8, 4, 5, 2, 15, 1)
 
-    absent_reject = admit(demand=5, pool_present=None, fee=1)
-    absent_zero_demand_reject = admit(demand=0, pool_present=None, fee=1)
-    funded_client = admit(demand=4, pool_present=10, fee=1)
+    absent_reject = admit(physical_bound=5, byte_bound=0, pool_present=None, fee=1)
+    absent_zero_demand_reject = admit(physical_bound=0, byte_bound=0, pool_present=None, fee=1)
+    funded_client = admit(physical_bound=4, byte_bound=0, pool_present=10, fee=1)
     # The model's own consistency asserts (a regression flips classification).
     assert absent_reject["admitted"] is False and absent_reject["settlement_debit"] == 0, \
         "absent + Δ>0 must be REJECTED with no debit"
     assert absent_zero_demand_reject["admitted"] is False, \
         "absent + Δ=0 must still be REJECTED when the fee cannot be funded"
-    assert funded_client["admitted"] is True and funded_client["settlement_debit"] == 4 \
+    assert funded_client["admitted"] is True and funded_client["settlement_debit"] == 5 \
         and funded_client["fee_debit"] == 1 and funded_client["supply_after"] == 5, \
         "present funded client must be ADMITTED and pay realized cost plus fee"
+    assert refunded["admitted"] is True and refunded["reserved_max"] == 13 \
+        and refunded["settlement_debit"] == 8 and refunded["refund"] == 5 \
+        and refunded["supply_after"] == 7, \
+        "component-wise RevVault settlement must debit actual cost plus fee and release the residual"
 
     # #12 — the EXACT per-component (Split/Join) compound settlement debit. The
     # bounded-EXHAUSTIVE sweep MUST find zero violations across every admissible
@@ -499,7 +504,7 @@ def records():
             "settlement",
             "confirmed_safe",
             "sage_state_bound_admission_fixed_point",
-            "State-bound proof execution removes exhausted or underfunded candidates, re-executes the retained sequence, and terminates with exact costs whose cost-plus-fee sum fits supply.",
+            "State-bound proof execution removes exhausted or underfunded candidates, re-executes the retained sequence, and terminates with certificate-bound physical, byte, and fee reservations that fit supply.",
             canonical_scenario(
                 "state_bound_admission_fixed_point",
                 threat_family="settlement",
@@ -518,27 +523,27 @@ def records():
         record(
             "settlement",
             "confirmed_safe",
-            "sage_per_comm_funding_admits_when_supply_meets_cost_plus_fee",
-            "A deploy is admitted iff Sigma_s >= Delta_s + fee; realized cost is burned and the fee is transferred without underflow.",
-            canonical_scenario("funded_admission", settlement={"kind": "per_comm_settle", "demand": 8, "supply": 10, "fee": 2}, expected_classification="confirmed_safe"),
+            "sage_vault_funding_admits_when_supply_meets_reservation",
+            "A deploy is admitted when its RevVault purse covers the certified physical bound, byte bound, and fee; realized costs are burned and the fee is transferred without underflow.",
+            canonical_scenario("funded_admission", settlement=vault_settlement(10, 8, 0, 2, 8, 0), expected_classification="confirmed_safe"),
             funded,
             ["Rocq: consumed_fuel_count_eq_token_drop / funded_settlement_debit_never_underflows_supply (kani)", "Rust: settlement_debit_equals_comm_count"],
         ),
         record(
             "settlement",
             "confirmed_safe",
-            "sage_per_comm_reject_below_cost_plus_fee",
-            "Sigma_s strictly below Delta_s + fee is rejected and debits nothing (§7.7 reject direction).",
-            canonical_scenario("rejected_admission", settlement={"kind": "per_comm_settle", "demand": 8, "supply": 9, "fee": 2}, expected_classification="confirmed_safe"),
+            "sage_vault_rejects_below_reservation",
+            "A RevVault purse strictly below the component-wise reservation is rejected and debits nothing.",
+            canonical_scenario("rejected_admission", settlement=vault_settlement(9, 8, 0, 2, 8, 0, expected_admitted=False), expected_classification="confirmed_safe"),
             rejected,
             ["Rocq: positive_exact_demand_cannot_use_absent_supply", "Rust: funded_unfunded_boundary_at_def19"],
         ),
         record(
             "settlement",
             "confirmed_safe",
-            "sage_per_comm_drained_pool_rejects_double_spend",
-            "A present-but-drained supply (Sigma = 0) rejects a further per-COMM demand — the §7.7 duplicate-deploy double-spend shape.",
-            canonical_scenario("drained_pool", settlement={"kind": "per_comm_settle", "demand": 3, "supply": 0, "fee": 1}, expected_classification="confirmed_safe"),
+            "sage_vault_drained_pool_rejects_double_spend",
+            "A present-but-drained RevVault purse rejects a further physical-cost reservation and fee.",
+            canonical_scenario("drained_pool", settlement=vault_settlement(0, 3, 0, 1, 3, 0, expected_admitted=False), expected_classification="confirmed_safe"),
             drained,
             ["Rust: drained_present_pool_rejects"],
         ),
@@ -546,8 +551,8 @@ def records():
             "settlement",
             "confirmed_safe",
             "sage_absent_pool_rejects_positive_reservation",
-            "An ABSENT pool has effective Sigma=0 and rejects a positive cost-plus-fee reservation before execution.",
-            canonical_scenario("absent_reject", settlement={"kind": "mandatory_admit", "demand": 5, "pool_present": None, "fee": 1}, expected_classification="confirmed_safe"),
+            "An absent RevVault purse has effective supply zero and rejects a positive physical bound plus fee before execution.",
+            canonical_scenario("absent_reject", settlement={"kind": "mandatory_admit", "physical_bound": 5, "byte_bound": 0, "pool_present": None, "fee": 1}, expected_classification="confirmed_safe"),
             absent_reject,
             ["Rocq: positive_exact_demand_cannot_use_absent_supply",
              "TLA+: EndToEndCostConsensus EveryExecutedDeploymentWasFunded",
@@ -558,7 +563,7 @@ def records():
             "confirmed_safe",
             "sage_absent_pool_cannot_pay_zero_cost_fee",
             "Even zero cost requires the deterministic fee, so an absent pool cannot admit a zero-demand deployment.",
-            canonical_scenario("absent_zero_demand_reject", settlement={"kind": "mandatory_admit", "demand": 0, "pool_present": None, "fee": 1}, expected_classification="confirmed_safe"),
+            canonical_scenario("absent_zero_demand_reject", settlement={"kind": "mandatory_admit", "physical_bound": 0, "byte_bound": 0, "pool_present": None, "fee": 1}, expected_classification="confirmed_safe"),
             absent_zero_demand_reject,
             ["Rust: zero_demand_is_fee_gated"],
         ),
@@ -567,16 +572,25 @@ def records():
             "confirmed_safe",
             "sage_funded_client_admitted_and_debited",
             "A client whose Sigma_c was seeded at genesis is admitted when it funds cost plus fee; close block burns realized cost and transfers the fee.",
-            canonical_scenario("funded_client", settlement={"kind": "mandatory_admit", "demand": 4, "pool_present": 10, "fee": 1}, expected_classification="confirmed_safe"),
+            canonical_scenario("funded_client", settlement=vault_settlement(10, 4, 0, 1, 4, 0), expected_classification="confirmed_safe"),
             funded_client,
             ["Rust: genesis_supply_is_committed_funded_and_replay_deterministic / funded_client_is_admitted_and_replays",
              "Rocq: funding_check_balance_sound", "TLA+: EvalScheduling acceptance gate"],
         ),
         record(
             "settlement",
+            "confirmed_safe",
+            "sage_vault_component_refund_conserves",
+            "A conservative physical and byte reservation debits only realized component costs plus the non-refundable fee and releases the exact residual.",
+            canonical_scenario("component_refund", settlement=vault_settlement(15, 8, 4, 1, 5, 2), expected_classification="confirmed_safe"),
+            refunded,
+            ["Rocq: debit_plus_refund_eq_reservation", "TLA+: VaultBackedByteAccounting", "Rust: exact authority settlement projection"],
+        ),
+        record(
+            "settlement",
             "proof_or_model_strengthening",
-            "sage_per_comm_block_settlement_adds_independently",
-            "Block settlement is the sum of independent per-signature pool debits (each = the admitted deploy's per-COMM demand).",
+            "sage_vault_block_settlement_adds_independently",
+            "Block settlement is the sum of independent per-signature RevVault debits, each equal to realized physical cost, byte cost, and fee.",
             canonical_scenario("multi_pool_settlement", settlement={"kind": "multi_pool"}, projection={"pools": len(multi)}, expected_classification="proof_or_model_strengthening"),
             {"pools": multi, "total_settlement_debit": int(multi_debit), "total_supply_after": int(multi_supply_after)},
             ["Rust: generated cost frontier replay fixtures", "Sage: objective frontier"],

@@ -85,10 +85,11 @@ Genesis creates the first block containing:
 ### Protocol-Version Authority
 
 The cost-accounted D3 rejected-deploy format begins at Casper protocol version 2.
-Exact per-execution state-effect provenance begins at version 3. This binary's
-supported running set is exactly `{3}`. Versions 1 and 2 remain recognizable as
-historical encoding metadata, but either historical approved genesis is rejected
-before Casper starts; an unknown future version is rejected identically.
+Exact per-execution state-effect provenance begins at version 3. Vault-backed
+quantitative byte evidence begins at version 4. This binary's supported running
+set is exactly `{4}`. Versions 1 through 3 remain recognizable as historical
+encoding metadata, but any historical approved genesis is rejected before Casper
+starts; an unknown future version is rejected identically.
 
 The genesis master writes the configured protocol version into the candidate.
 Every genesis validator checks that version before signing. Approved-block
@@ -103,7 +104,7 @@ version 2, and receivers compared proposals with the version-1 approved header.
 Honest protocol-2 proposals were discarded before validation. The repaired
 lifecycle has no independent receiver-side version source.
 
-Protocol 3 activates through a fresh protocol-3 genesis. There is no
+Protocol 4 activates through a fresh protocol-4 genesis. There is no
 block-height activation, node-local accounting switch, A/B mode, or mixed-version
 running interval. The TLA+ and Rocq models are cataloged in
 [`docs/formal-verification.md`](../formal-verification.md); the normative rules
@@ -173,7 +174,8 @@ Before building a block, the proposer verifies:
 
 For each selected deploy:
 1. Execute Rholang via `RhoRuntime` (play runtime)
-2. RSpace produce/consume operations with phlogiston cost metering
+2. Reserve canonical produce/consume introduction bytes before mutation and
+   reserve authority plus delivery/trace bytes for each locked atomic COMM
 3. `create_soft_checkpoint()` between deploys (isolates effects)
 
 Then execute system deploys:
@@ -343,6 +345,32 @@ block. The finalized floor, not a locally observed LFB, bounds the scope.
 ### System Deploys
 
 System deploys (`SlashDeploy`, `CloseBlockDeploy`) are deterministic and non-conflicting. They are not subject to conflict resolution.
+
+### Lifecycle-record and effect-record alignment
+
+`BlockMessage.body.deploys` is a lifecycle-record sequence, not necessarily an
+execution sequence. State-bound funding retains an underfunded deployment as a
+terminal admission-rejected `ProcessedDeploy`, but that record never enters the
+runtime and produces no mergeable-channel map. Multi-parent block indexing
+therefore projects user records by `admissionStatus != Rejected` before checking
+metadata cardinality, traversing adjacent state witnesses, splitting user and
+system metadata, or assigning execution indices.
+
+An ordinary `is_failed` deployment remains in the effect sequence when its
+admission status is `Executed`; it entered runtime and owns a metadata position.
+Only the pre-execution admission rejection is status-only. For user records
+$`U`$, processed system executions $`S`$, and locally reconstructed metadata
+$`M`$:
+
+```math
+|M|=|[u\in U\mid u.\operatorname{admissionStatus}\ne\text{Rejected}]|+|S|.
+```
+
+The exact cardinality still fails closed. This projection does not alter block
+bytes, parent selection, clique voting, fault tolerance, or finality; it ensures
+that an observable zero-effect rejection cannot make a valid parent impossible
+to index for the next proposal. See DR-53 and
+[`admission-effect-alignment.md`](../theory/cost-accounting-impl/admission-effect-alignment.md).
 
 ---
 

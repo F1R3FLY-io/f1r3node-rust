@@ -226,15 +226,14 @@ Proof.
 Qed.
 
 (* ═══════════════════════════════════════════════════════════════════════════
-   Section 6: Per-Signature Lane-Pool Disjointness (WD-D0)
+   Section 6: Per-Signature Purse Disjointness
    ═══════════════════════════════════════════════════════════════════════════
 
-   D0 introduces a per-signature token pool: the runtime
-   `RuntimeBudget` holds `lanes : DashMap<[u8;32], Lane>` keyed by
-   `Sig::lane_hash(s)`, which is derived from the SAME canonical basis as
-   the supply channel `SignatureChannel::from_sig(s)` (the C↔D integration
-   invariant). In this model the channel-keying basis is exactly [N_tr],
-   so the lane key of a signature [s] is its fuel-gate channel [N_tr s]:
+   Native authority resources, purse snapshots, funding certificates, and
+   SystemVault settlement are keyed by `Sig::lane_hash(s)`, derived from the
+   SAME canonical basis as `SignatureChannel::from_sig(s)`. In this model the
+   channel-keying basis is exactly [N_tr], so the lane key of a signature [s]
+   is its fuel-gate channel [N_tr s]:
 
      [lane_key s ≜ N_tr s].
 
@@ -247,7 +246,7 @@ Qed.
    therefore never an application channel [NVar k], two facts follow at
    once for any two signatures whose channels differ:
 
-   (1) their lane keys differ (the lanes are distinct DashMap entries), and
+   (1) their lane keys differ (the purses are distinct resources), and
    (2) neither lane key coincides with ANY application channel [NVar k]
        (so user-code reductions can never name — hence never contend —
        a lane's channel).
@@ -259,7 +258,7 @@ Qed.
 (* The lane key in the spectral-decomposition model: a signature's lane is
    keyed by its (canonical) fuel-gate / supply channel. This mirrors the
    Rust [Sig::lane_hash], which digests the very [SignatureChannel::from_sig]
-   channel, so the lane key and the supply channel share one basis. *)
+   channel used by authority settlement. *)
 Definition lane_key (s : sig) : name := N_tr s.
 
 (** Per-signature lane-pool disjointness. For any two signatures whose

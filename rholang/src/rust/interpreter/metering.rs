@@ -2,10 +2,7 @@ use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use models::rhoapi::Par;
-
 use super::accounting::costs::Cost;
-use super::accounting::delta_sigma::match_channel_to_lane;
 use super::accounting::{
     BillableKind, BillableTokenEvent, CostReservationBatch, RedexId, RuntimeBudget, SourcePath,
 };
@@ -90,36 +87,9 @@ impl MeteredMachine {
 
     /// Reserve one synthetic atomic-COMM event. Production evaluation records
     /// these through the RSpace match observer; this method remains for focused
-    /// budget and attribution tests. `amount` is diagnostic, while each
-    /// committed `Comm` contributes exactly one consensus unit.
+    /// budget and attribution tests, whose synthetic COMM amount is one unit.
     pub fn reserve_comm(&self, amount: Cost) -> Result<(), InterpreterError> {
         self.reserve_cost(BillableKind::Comm, amount)
-    }
-
-    /// Legacy signature-channel projection for budget diagnostics. AFTER a COMM's
-    /// channel is resolved, match it against the installed signer channels and
-    /// tally the match in [`RuntimeBudget::per_lane_demand`]. Native consensus
-    /// settlement does not consume this projection: `CostAuthority` regions on
-    /// the matched data and continuation produce the exact persisted authority
-    /// witness and physical purse draw. The COMM itself was already charged by
-    /// `reserve_comm`, so this method neither re-charges nor changes settlement.
-    /// The `any_signed_regions` gate keeps this diagnostic off the unsigned fast
-    /// path.
-    ///
-    /// For an unsigned surface every COMM is on a data channel rather than a
-    /// signature channel, so this legacy projection stays on the deploy default.
-    /// An explicit region is nevertheless preserved and settled by its native
-    /// authority witness; it is never collapsed to that default. The shared
-    /// diagnostic matcher is [`match_channel_to_lane`], also used by
-    /// [`demand_by_sig`](super::accounting::delta_sigma::demand_by_sig).
-    pub fn note_channel_lane(&self, channel: &Par) {
-        if !self.budget.any_signed_regions() {
-            return;
-        }
-        let signer_channels = self.budget.signer_channels_snapshot();
-        if let Some(lane) = match_channel_to_lane(channel, &signer_channels) {
-            self.budget.note_lane_comm(lane);
-        }
     }
 
     /// Charge a non-COMM structural reduction (new / match / if). D3 (DR-9,
@@ -327,12 +297,10 @@ mod tests {
         let budget = RuntimeBudget::new(Cost::create(1, "test"));
         let machine = MeteredMachine::new(budget.clone());
 
-        // D3 (DR-9, OD-3): a single COMM costs ONE token (its `Cost` weight is
-        // diagnostic), so it fits the 1-token budget and commits.
         machine
             .child(0)
-            .reserve_comm(Cost::create(11, "send eval"))
-            .ok();
+            .reserve_comm(Cost::create(1, "send eval"))
+            .unwrap();
         assert_eq!(budget.total_cost().value, 1);
     }
 
@@ -369,11 +337,11 @@ mod tests {
 
         machine
             .child(1)
-            .reserve_comm(Cost::create(11, "right branch"))
+            .reserve_comm(Cost::create(1, "right branch"))
             .unwrap();
         machine
             .child(0)
-            .reserve_comm(Cost::create(11, "left branch"))
+            .reserve_comm(Cost::create(1, "left branch"))
             .unwrap();
 
         let canonical = budget.get_canonical_event_log();
@@ -391,9 +359,9 @@ mod tests {
         let budget = RuntimeBudget::new(Cost::create(1, "test"));
         let machine = MeteredMachine::new(budget.clone());
 
-        machine.enqueue_billable(SourcePath(vec![2]), BillableKind::Comm, 11);
+        machine.enqueue_billable(SourcePath(vec![2]), BillableKind::Comm, 1);
         machine.enqueue_billable(SourcePath(vec![3]), BillableKind::Substitution, 3);
-        machine.enqueue_billable(SourcePath(vec![1]), BillableKind::Comm, 11);
+        machine.enqueue_billable(SourcePath(vec![1]), BillableKind::Comm, 1);
 
         assert_eq!(
             machine.drain_canonical(),

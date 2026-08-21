@@ -41,6 +41,22 @@ use crate::rust::util::rholang::{interpreter_util, system_deploy_util};
 use crate::rust::util::{construct_deploy, proto_util};
 use crate::rust::validator_identity::ValidatorIdentity;
 
+struct BlockCreationHeapBoundary;
+
+impl Drop for BlockCreationHeapBoundary {
+    fn drop(&mut self) {
+        #[cfg(all(target_os = "linux", target_env = "gnu"))]
+        {
+            RuntimeManager::trim_allocator();
+            metrics::counter!(
+                crate::rust::metrics_constants::ALLOCATOR_TRIM_TOTAL_METRIC,
+                "source" => crate::rust::metrics_constants::CASPER_METRICS_SOURCE
+            )
+            .increment(1);
+        }
+    }
+}
+
 /*
  * Overview of createBlock
  *
@@ -1696,28 +1712,10 @@ fn purge_recovered_already_in_scope(
     Ok(recovered_done.len())
 }
 
-fn current_proposal_validators(casper_snapshot: &CasperSnapshot) -> Vec<Validator> {
-    let mut validators: Vec<Validator> =
-        if !casper_snapshot.on_chain_state.active_validators.is_empty() {
-            casper_snapshot.on_chain_state.active_validators.clone()
-        } else {
-            casper_snapshot
-                .on_chain_state
-                .bonds_map
-                .iter()
-                .filter(|(_, stake)| **stake > 0)
-                .map(|(validator, _)| validator.clone())
-                .collect()
-        };
-    validators.sort();
-    validators.dedup();
-    validators
-}
-
 fn recovered_deploy_leader(
     casper_snapshot: &CasperSnapshot,
 ) -> Result<Option<Validator>, CasperError> {
-    let validators = current_proposal_validators(casper_snapshot);
+    let validators = casper_snapshot.current_proposal_validators();
     if validators.is_empty() {
         return Ok(None);
     }
@@ -1812,7 +1810,7 @@ fn deploy_inclusion_progress(
     casper_snapshot: &CasperSnapshot,
     block_store: &KeyValueBlockStore,
 ) -> Result<DeployInclusionProgress, CasperError> {
-    let validators = current_proposal_validators(casper_snapshot);
+    let validators = casper_snapshot.current_proposal_validators();
     let mut latest = None;
     for parent in &casper_snapshot.parents {
         if parent.sender.is_empty()
@@ -2479,6 +2477,7 @@ pub async fn create(
     block_store: &mut KeyValueBlockStore,
     allow_empty_blocks: bool,
 ) -> Result<BlockCreatorResult, CasperError> {
+    let _heap_boundary = BlockCreationHeapBoundary;
     use crate::rust::metrics_constants::{
         BLOCK_CREATOR_COMPUTE_DEPLOYS_CHECKPOINT_TIME_METRIC,
         BLOCK_CREATOR_COMPUTE_PARENTS_POST_STATE_TIME_METRIC,
@@ -3204,8 +3203,6 @@ pub async fn create(
         "source" => CASPER_METRICS_SOURCE
     )
     .record(create_started.elapsed().as_secs_f64());
-
-    RuntimeManager::trim_allocator();
 
     Ok(BlockCreatorResult::Created(
         signed_block,

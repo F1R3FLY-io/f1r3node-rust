@@ -305,27 +305,13 @@ Qed.
 Theorem mergeable_channel_accounting_preserves_fee_settlement_inputs :
   forall state channels,
     let state' := apply_mergeable_accounting state channels in
-    settlement_limit
-      (mergeable_boundary_settlement
-        (mergeable_accounting_boundary state')) =
-      settlement_limit
-        (mergeable_boundary_settlement
-          (mergeable_accounting_boundary state)) /\
-    settlement_price
-      (mergeable_boundary_settlement
-        (mergeable_accounting_boundary state')) =
-      settlement_price
-        (mergeable_boundary_settlement
-          (mergeable_accounting_boundary state)) /\
-    settlement_token_cost
-      (mergeable_boundary_settlement
-        (mergeable_accounting_boundary state')) =
-      settlement_token_cost
-        (mergeable_boundary_settlement
-          (mergeable_accounting_boundary state)).
+    mergeable_boundary_settlement
+      (mergeable_accounting_boundary state') =
+      mergeable_boundary_settlement
+        (mergeable_accounting_boundary state).
 Proof.
   intros state channels.
-  repeat split; reflexivity.
+  reflexivity.
 Qed.
 
 Theorem mergeable_channel_accounting_preserves_user_budget :

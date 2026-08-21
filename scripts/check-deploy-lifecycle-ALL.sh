@@ -364,8 +364,50 @@ if [[ -f "$TLC_JAR" ]] || command -v tlc >/dev/null 2>&1; then
   else
     fail "unrecorded underfunding failed for the wrong reason (see $LOG_DIR/funding_admission_pending_unsafe.log)"
   fi
+
+  if tlc_run "$(tlc_metadir admission_effect_alignment_post_gate)" "$RECOVERY_TLA_DIR/MC_AdmissionEffectAlignment.cfg" "$RECOVERY_TLA_DIR/AdmissionEffectAlignment.tla" >"$LOG_DIR/admission_effect_alignment_post.log" 2>&1; then
+    pass "TLA+ admission/status records align only with effect-bearing merge metadata and preserve proposal liveness"
+    rm -f "$LOG_DIR/admission_effect_alignment_post.log"
+  else
+    fail "TLA+ admission/effect alignment did NOT pass (see $LOG_DIR/admission_effect_alignment_post.log)"
+  fi
+
+  if tlc_run "$(tlc_metadir admission_effect_alignment_unsafe)" "$RECOVERY_TLA_DIR/MC_AdmissionEffectAlignment_status_count_unsafe.cfg" "$RECOVERY_TLA_DIR/AdmissionEffectAlignment.tla" >"$LOG_DIR/admission_effect_alignment_unsafe.log" 2>&1; then
+    fail "status-record counting should produce a counterexample but passed"
+  elif grep -q "Inv_StatusOnlyRecordCannotBlock is violated" "$LOG_DIR/admission_effect_alignment_unsafe.log"; then
+    pass "TLA+ status-record counting reproduces validator proposal failure"
+    rm -f "$LOG_DIR/admission_effect_alignment_unsafe.log"
+  else
+    fail "status-record counting failed for the wrong reason (see $LOG_DIR/admission_effect_alignment_unsafe.log)"
+  fi
 else
   skip "no TLC jar (\$TLC_JAR) or 'tlc' on PATH"
+fi
+
+if command -v apalache-mc >/dev/null 2>&1; then
+  apalache_out="$(mktemp -d "$LOG_DIR/apalache-admission-effect.XXXXXX")"
+  safe_output="$(cd "$RECOVERY_TLA_DIR" && timeout 300 apalache-mc --out-dir="$apalache_out/safe" check --config=MC_AdmissionEffectAlignmentApalache.cfg --length=8 AdmissionEffectAlignment.tla 2>&1)"
+  safe_rc=$?
+  printf '%s\n' "$safe_output" >"$LOG_DIR/admission_effect_alignment_apalache.log"
+  if [[ $safe_rc -eq 0 ]] && grep -qE 'The outcome is: NoError|EXITCODE: OK' "$LOG_DIR/admission_effect_alignment_apalache.log"; then
+    pass "Apalache admission/effect alignment remains safe through the complete lifecycle bound"
+    rm -f "$LOG_DIR/admission_effect_alignment_apalache.log"
+  else
+    fail "Apalache admission/effect alignment failed (see $LOG_DIR/admission_effect_alignment_apalache.log)"
+  fi
+
+  unsafe_output="$(cd "$RECOVERY_TLA_DIR" && timeout 300 apalache-mc --out-dir="$apalache_out/unsafe" check --config=MC_AdmissionEffectAlignmentUnsafeApalache.cfg --length=2 AdmissionEffectAlignment.tla 2>&1)"
+  unsafe_rc=$?
+  printf '%s\n' "$unsafe_output" >"$LOG_DIR/admission_effect_alignment_unsafe_apalache.log"
+  if [[ $unsafe_rc -ne 0 ]] && grep -q 'state invariant 1 violated' "$LOG_DIR/admission_effect_alignment_unsafe_apalache.log" && grep -q 'The outcome is: Error' "$LOG_DIR/admission_effect_alignment_unsafe_apalache.log"; then
+    pass "Apalache status-record counting reproduces validator proposal failure"
+    rm -f "$LOG_DIR/admission_effect_alignment_unsafe_apalache.log"
+  else
+    fail "Apalache status-record negative control failed for the wrong reason (see $LOG_DIR/admission_effect_alignment_unsafe_apalache.log)"
+  fi
+  rm -rf "$apalache_out"
+else
+  skip "no apalache-mc on PATH"
 fi
 
 echo "== [4/4] Rust admission and occurrence units (fail-soft) =="
@@ -388,6 +430,7 @@ if command -v cargo >/dev/null 2>&1; then
        && cargo test -p casper --test mod repeat_deploy_validation_rejects_duplicate_signatures_within_one_block >>"$LOG_DIR/dl_rust_admission.log" 2>&1 \
        && cargo test -p casper --test mod source_aware_rejection_in_secondary_parent_is_authoritative >>"$LOG_DIR/dl_rust_admission.log" 2>&1 \
        && cargo test -p models funding_admission_rejection_roundtrips_as_terminal_non_execution >>"$LOG_DIR/dl_rust_admission.log" 2>&1 \
+       && cargo test -p casper --lib rust::merging::block_index::tests >>"$LOG_DIR/dl_rust_admission.log" 2>&1 \
        && grep -qE "test result: ok\. [1-9][0-9]* passed" "$LOG_DIR/dl_rust_admission.log"; then
     pass "Rust admission and source-aware occurrence reducer units"
     rm -f "$LOG_DIR/dl_rust_admission.log"

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Multi-prover cross-witness (LOCAL-ONLY, fail-soft): the accounting runtime's
 # budget-conservation reconciliation core, Verus-verified (correspondence→proof).
-# Corroborates CASettlement.charged_plus_refund_eq_escrow on the Rust functional
+# Corroborates Settlement.debit_plus_refund_eq_reservation on the Rust functional
 # core (Creusot is the contracts-on-the-pure-fns alternative; the lock-free CAS
 # linearizability is the Iris leg).
 #

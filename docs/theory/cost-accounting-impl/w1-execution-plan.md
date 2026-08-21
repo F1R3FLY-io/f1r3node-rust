@@ -1,16 +1,27 @@
 # W1 Execution Plan — Cost-Accounted Surface Syntax → Native Runtime
 
 > **Historical implementation plan:** reducer-side `eval_send`/`eval_receive`
-> billing described below has been superseded. The implemented consensus unit
-> is one successful atomic RSpace match; unmatched I/O costs zero, joins cost
-> one, and production exactness comes from state-bound evidence. See
-> [End-to-End Authority Settlement](end-to-end-authority-settlement.md).
+> billing described below has been superseded. The implemented calculus
+> execution unit is one successful atomic RSpace match; unmatched I/O consumes
+> zero such units and joins consume one. Protocol 4 additionally charges
+> canonical introduction, payload-transfer, and committed-trace bytes, so
+> unmatched stored I/O has positive total cost. Production exactness comes from
+> state-bound evidence. See [End-to-End Authority
+> Settlement](end-to-end-authority-settlement.md) and [Vault-Backed RSpace Byte
+> Accounting](vault-backed-byte-accounting.md).
 
 > **Representation correction:** this plan predates native `CostSignedTerm`,
 > `CostStack`, persisted `CostAuthority`, runtime-bound funding slots, and exact
 > physical settlement. Those features are now implemented. Any phase below that
 > calls wrappers or stacks validation-only, erased, diagnostic, or lowered to
 > ordinary `Par` is historical rather than an instruction for current code.
+
+> **Accounting-path correction:** the experimental D0 `RuntimeBudget` lane map
+> and channel-match diagnostic described below never entered production
+> settlement and have been removed. The landed path records exact
+> `AuthorityEvent` and `AuthorityByteEvent` evidence, allocates it against
+> authenticated per-purse inventory, and applies the resulting physical,
+> quantitative-byte, and fee debits atomically through SystemVault.
 
 Status: GRANULAR EXECUTION PLAN (implementation, not research). Branch:
 `feature/cost-accounted-rho`. Consensus-touching. Dev `[patch]` already wired
@@ -93,12 +104,12 @@ Confirmed by reading both worktrees on 2026-06-15:
   `lane_hash` = domain-separated Blake2b256 of `from_sig(self).par` wire bytes
   (`:1589`). `envelope_sig_single`/`_compound`/`envelope_sig` are the ONE extracted
   derivations (`:1324`/`:1368`/`:1385`). `is_funding_former` (`:1631`) gates
-  `g|#P|s∘s`. `RuntimeBudget.lanes` + `attempt_in_lane` (`:773`) + `reconcile_lane`
-  (`:677`) + `lane_pool_total_cost` (`:869`) are the per-lane substrate; the N=1
-  scalar fast path keeps `lanes` empty (`legacy_single_sig_*` pins it).
+  `g|#P|s∘s`. The historical D0 lane-map prototype has been removed; native
+  `CostAuthority` regions, `AuthorityEvent` witnesses, physical allocation,
+  and quantitative-byte settlement are the sole per-purse substrate.
 - **`supply.rs`:** `supply_channel(sig) = SignatureChannel::from_sig(sig).par`
   (`:60`, debug-asserts `is_funding_former`). Test
-  `supply_channel_equals_lane_pool_channel` (`:472`) is the HOME for the §5
+  `supply_channel_matches_canonical_purse_identity` is the HOME for the §5
   no-alias audit test. DR-13: the only `Σ⟦s⟧` writer is `produce_balance` on a
   `GSysAuthToken` system deploy.
 - **`resource_logic.rs`:** `DefaultApportionment` (`:217`) ALREADY realizes Greg's
@@ -276,7 +287,8 @@ Add `Bind` is already imported (`use rholang_parser::ast::{… Bind …}`).
 - `p_input_normalizer.rs`: at the top of the simple-source branch, scan every
   bind's `lhs.names` with `reject_cost_syntax_in_name_pattern`; ALSO add
   `debug_assert!` that no `Bind::Signed` reaches here once Phase 4 lands (in
-  Phase 1 it MAY, so gate the assert behind a Phase-4 TODO comment).
+  Phase 1 it MAY, so the historical implementation sequence gates the assert
+  on Phase-4 completion).
 - `p_contr_normalizer.rs`: in the `for name in formals.names.iter()` loop (`:38`),
   call `reject_cost_syntax_in_name_pattern(name)?` before `normalize_name`.
 - `p_match_normalizer.rs`: at the top of `for case in cases` (`:31`), call
@@ -390,7 +402,7 @@ RUSTFLAGS="-C target-cpu=native" cargo test  -p casper supply_channel
   are equal map to the SAME native channel (document the divergence from the
   transpiler's `sigma_ground_and_quote_axes_are_disjoint`).
 - **§5 no-alias audit test** (HOME: extend `supply.rs`'s
-  `supply_channel_equals_lane_pool_channel` test module, OR a new
+  `supply_channel_matches_canonical_purse_identity` test module, OR a new
   `casper/.../supply.rs` test fn `user_surface_sig_never_aliases_envelope_pool`):
   for representative envelope sigs `v` (single via `envelope_sig_single`, compound
   via `envelope_sig_compound`) AND a fuzzed/adversarial set of user surface
@@ -464,7 +476,7 @@ override active inside a recognized signed region:
 
 ### 3.3 BLOCKER-1 attribution rule (signer pools only)
 A COMM whose resolved channel equals `from_sig(Ground(pk_i)).par` for some installed
-deploy signer attributes to `signer_i`'s lane (`attempt_in_lane`); otherwise it
+deploy signer attributes to `signer_i`'s authority purse; otherwise it
 attributes to the envelope-default lane (the byte-identical s₀ behavior). Post-§D2.9
 the signer channels are the signers' GROUND wallet pools, so single-sig: the only
 signer channel IS `Σ⟦Ground(pk)⟧` (`= funding_sig`'s lane), so everything collapses
@@ -618,8 +630,11 @@ byte-identity (AST → lowered `Par` → hash), so a `[patch]`-built node and a
 `rev`-built node could diverge by one `parser.c` byte ⇒ consensus fork. Before any
 push: published rev pinned in `rholang/Cargo.toml`, the workspace-root `[patch]`
 block ABSENT, `Cargo.lock` restored (un-skip-worktree), `cargo build -p rholang`
-green against the published rev. Add the CI assertion (currently a TODO per the
-design's §7 risk 1) that no `[patch]` / Cargo.lock churn lands on a release branch.
+green against the published rev. The required Lint job runs
+`.github/scripts/check-rholang-parser-pin.sh` and its mutation regressions. The
+guard rejects local `[patch]` sections, a mutable or malformed manifest pin,
+lockfile source skew across the three parser crates, and a local
+`skip-worktree` bit on `Cargo.lock`.
 
 **Final gate (all phases complete):**
 ```

@@ -519,7 +519,8 @@ pub struct RunOptions {
     #[arg(long = "heartbeat-check-interval", value_parser = ValueParser::new(parse_duration))]
     pub heartbeat_check_interval: Option<Duration>,
 
-    /// Maximum age of last finalized block before triggering heartbeat
+    /// Time the locally observed LFB hash may remain unchanged before opening
+    /// a bounded, rotating-leader finality-recovery round.
     #[arg(long = "heartbeat-max-lfb-age", value_parser = ValueParser::new(parse_duration))]
     pub heartbeat_max_lfb_age: Option<Duration>,
 
@@ -529,27 +530,15 @@ pub struct RunOptions {
     #[arg(long = "heartbeat-self-propose-cooldown", value_parser = ValueParser::new(parse_duration))]
     pub heartbeat_self_propose_cooldown: Option<Duration>,
 
-    /// Minimum age of LFB/frontier before stale-recovery, leader-recovery,
-    /// and pending-deploy backstop are allowed to fire. Debounces empty-block
-    /// churn when the cluster is healthy.
+    /// Minimum age of this validator's latest proposal before the pending-deploy
+    /// recovery backstop is allowed to fire.
     #[arg(long = "heartbeat-stale-recovery-min-interval", value_parser = ValueParser::new(parse_duration))]
     pub heartbeat_stale_recovery_min_interval: Option<Duration>,
 
-    /// When pending deploys land, opens a grace window during which lag caps
-    /// relax to advanced.deploy-recovery-max-lag and self-propose-cooldown
-    /// is bypassable. Burst-tolerance budget.
+    /// When pending deploys land, opens a grace window during which the lag cap
+    /// relaxes to advanced.deploy-recovery-max-lag.
     #[arg(long = "heartbeat-deploy-finalization-grace", value_parser = ValueParser::new(parse_duration))]
     pub heartbeat_deploy_finalization_grace: Option<Duration>,
-
-    /// EXPERIMENTAL: when this validator is already ahead of LFB, blocks of
-    /// lag tolerated before "frontier-follow" proposing is throttled.
-    /// Must be >= 0; negative values are rejected at parse time.
-    #[arg(
-        long = "heartbeat-advanced-frontier-chase-max-lag",
-        value_parser = ValueParser::new(parse_non_negative_i64),
-        hide_short_help = true
-    )]
-    pub heartbeat_advanced_frontier_chase_max_lag: Option<i64>,
 
     /// EXPERIMENTAL: if validator has pending deploys but is > N blocks
     /// ahead of LFB, suppress pending-deploy proposing. Lower → harder

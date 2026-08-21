@@ -106,23 +106,19 @@ def frontier_records(profile, search_mode, objectives):
         )
 
     if objective_enabled(objectives, "replay") or objective_enabled(objectives, "security"):
-        fields = [
-            "cost",
-            "cost_trace_digest",
-            "cost_trace_event_count",
-            "cost_trace_present",
+        fields = authenticated_replay_fields([
             "failed",
             "user_error",
             "system_error",
             "system_kind",
             "slash_fields",
             "genesis",
-        ]
+        ])
         mutation_set = find_or_none(
             st.lists(st.sampled_from(fields), min_size=int(1), max_size=int(4), unique=True),
-            lambda xs: "cost_trace_digest" in xs or "cost_trace_event_count" in xs,
+            lambda xs: "authority_cost_witness" in xs or "replay_payload_hash" in xs,
             cfg,
-        ) or ["cost_trace_digest"]
+        ) or ["authority_cost_witness"]
         scenario = canonical_scenario(
             "hypothesis_replay_mutation_matrix",
             replay_fields={"fields": fields, "mode": "cost_accounted"},
@@ -138,7 +134,7 @@ def frontier_records(profile, search_mode, objectives):
                 "hypothesis_replay_mutation",
                 "confirmed_safe",
                 "hypothesis_replay_mutation_matrix",
-                "Every minimized replay mutation set contains an authenticated cost-trace field or promotes to replay sensitivity coverage.",
+                "Every minimized replay mutation set contains an authenticated authority-cost witness or replay-payload field.",
                 scenario,
                 {"replay_mutation": mutation_set, "cache": "payload_sensitive"},
                 ["Rocq: uc_ca_071_replay_mutation_frontier", "Fuzz: replay_payload_cost_fields"],
@@ -148,25 +144,21 @@ def frontier_records(profile, search_mode, objectives):
     if objective_enabled(objectives, "settlement") or objective_enabled(objectives, "security"):
         settlement_input = find_or_none(
             st.tuples(
+                st.integers(min_value=int(0), max_value=int(12)),
                 st.integers(min_value=int(0), max_value=int(8)),
-                st.integers(min_value=int(0), max_value=int(4)),
                 st.integers(min_value=int(0), max_value=int(12)),
             ),
-            lambda values: values[2] > values[0] and values[1] > 0,
+            lambda values: values[0] >= values[1] and values[2] > values[1],
             cfg,
-        ) or (0, 1, 1)
-        phlo_limit, phlo_price, token_cost = [int(value) for value in settlement_input]
-        escrow = phlo_limit * phlo_price
+        ) or (1, 1, 2)
+        available, physical_bound, realized_physical = [int(value) for value in settlement_input]
         scenario = canonical_scenario(
             "hypothesis_settlement_overrun",
             deploy_count=1,
-            phlo_limit=phlo_limit,
-            phlo_price=phlo_price,
-            token_cost=token_cost,
-            settlement={"escrow": escrow, "authority": "casper", "refund": 0},
+            settlement=vault_settlement(available, physical_bound, 0, 0, realized_physical, 0, expected_admitted=False),
             threat_family="settlement",
             expected_invariants=[
-                "uc_ca_009_refund_is_bounded_by_escrow",
+                "uc_ca_009_refund_is_bounded_by_reservation",
                 "uc_ca_058_refund_cannot_replenish_runtime_fuel",
             ],
             rust_reproducer={"test": "settlement_edge_cases_are_total_and_deterministic"},
@@ -178,9 +170,9 @@ def frontier_records(profile, search_mode, objectives):
                 "hypothesis_settlement_authority",
                 "confirmed_safe",
                 "hypothesis_settlement_overrun_is_total",
-                "A token cost above prepaid escrow is minimized to a zero-refund settlement case, not a runtime-fuel mutation.",
+                "A realized physical cost above its certified reservation is minimized to a rejected, mutation-free settlement case.",
                 scenario,
-                {"precharge": escrow, "token_cost": token_cost, "refund": 0, "authority": "system"},
+                {"available_supply": available, "physical_bound": physical_bound, "realized_physical": realized_physical, "refund": 0, "authority": "rev_vault"},
                 ["Rocq: uc_ca_058_refund_cannot_replenish_runtime_fuel", "Rust: settlement property tests"],
             )
         )
@@ -252,7 +244,7 @@ def frontier_records(profile, search_mode, objectives):
         scenario = canonical_scenario(
             "hypothesis_slashing_post_eval",
             deploy_count=1,
-            settlement={"kind": "slash_after_evaluation", "cost_invalid_evidence": True},
+            settlement=vault_settlement(0, 0, 0, 0, 0, 0, expected_admitted=False, kind="slash_after_evaluation", cost_invalid_evidence=True),
             threat_family="slashing_composition",
             expected_invariants=[
                 "slash_system_effect_is_unmetered_for_user_budget",
@@ -302,21 +294,7 @@ def fixture_from_record(item):
 def rust_fixture_from_record(item):
     scenario = item["scenario"]
     events = scenario.get("events", [])
-    positive_events = [event for event in events if int(event.get("weight", 0)) > 0]
-    invalid_events = [event for event in events if int(event.get("weight", 0)) <= 0]
-    oversized_primitive_descriptor = any(
-        str(event.get("kind", "")) == "primitive"
-        and len(str(event.get("primitive_descriptor", event.get("descriptor", "")))) > 512
-        for event in events
-    )
-    oversized_source_path = any(len(event.get("path", [])) > 1024 for event in events)
-    weight_sum = sum(int(event.get("weight", 0)) for event in positive_events)
-    expected_event_count = len(positive_events)
-    if scenario.get("concurrency", {}).get("finalization_before_worker_join"):
-        expected_event_count = len(positive_events)
-    if oversized_primitive_descriptor or oversized_source_path:
-        expected_event_count = 0
-        weight_sum = 0
+    total, count, invalid, oop = expected_fixture_values(scenario)
     return {
         "id": item["name"],
         "classification": item["classification"],
@@ -324,12 +302,10 @@ def rust_fixture_from_record(item):
         "promotion_target": scenario.get("promotion_target", "record"),
         "initial_budget": int(scenario.get("initial_budget", 0)),
         "events": events,
-        "expected_total_cost": int(min(weight_sum, int(scenario.get("initial_budget", 0))) if events else 0),
-        "expected_event_count": int(expected_event_count),
-        "expects_invalid_admission": len(invalid_events) > 0
-        or oversized_primitive_descriptor
-        or oversized_source_path,
-        "expects_oop": bool(events and weight_sum > int(scenario.get("initial_budget", 0)) and int(scenario.get("initial_budget", 0)) >= 0),
+        "expected_total_cost": int(total),
+        "expected_event_count": int(count),
+        "expects_invalid_admission": bool(invalid),
+        "expects_oop": bool(oop),
         "settlement": scenario.get("settlement", {}),
         "replay_mutations": scenario.get("replay_mutations", []),
         "coverage_features": item.get("coverage_features", []),

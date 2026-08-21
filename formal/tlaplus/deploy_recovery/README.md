@@ -197,6 +197,51 @@ rejection.
 | `MC_FundingAdmissionLifecycle_live_state_unsafe.cfg` | violate `Inv_ValidatorUsesProposalPreState` | a validator reclassifies the block after an unrelated live-state top-up |
 | `MC_FundingAdmissionLifecycle_pending_unsafe.cfg` | violate `Inv_UnderfundedAttemptLeavesPending` | an attempted underfunded deploy has no consensus-visible terminal record and remains pending |
 
+## Admission records and runtime-effect metadata
+
+A **status record** is a consensus-visible statement about a deploy lifecycle.
+An **effect record** is a deploy or system execution that entered the runtime and
+therefore has one position in the ordered merge-metadata stream. A terminal
+funding-admission rejection is a status record but not an effect record. An
+ordinary deploy that entered the runtime and failed is both an execution-failure
+status and an effect record, because its attempted execution still owns its
+position in the state-witness and merge-metadata sequence.
+
+For user records $U$, system executions $S$, and merge metadata $M$, the
+alignment boundary is:
+
+$$
+\operatorname{effects}(U)
+  = [u \in U \mid u.\operatorname{admissionStatus} \ne \text{Rejected}]
+$$
+
+$$
+|M| = |\operatorname{effects}(U)| + |S|
+$$
+
+`AdmissionEffectAlignment.tla` checks this refinement independently at three
+validators. Each validator indexes the same block containing one terminal
+funding rejection and one executed `closeBlock`. Under the effect projection,
+one merge-metadata entry aligns with `closeBlock`; all validators can propose a
+successor, and a later deploy finalizes. The unsafe control counts both status
+records as effects, expects two metadata entries, blocks every validator at
+parent indexing, and prevents later finalization.
+
+| Configuration | Expected result | Defect isolated |
+| --- | --- | --- |
+| `MC_AdmissionEffectAlignment.cfg` | pass, including `Live_AllValidatorsPropose` and `Live_LaterDeployFinalizes` | exact status/effect projection preserves proposal liveness |
+| `MC_AdmissionEffectAlignment_status_count_unsafe.cfg` | violate `Inv_StatusOnlyRecordCannotBlock` | a terminal admission record is incorrectly assigned an execution slot |
+| `MC_AdmissionEffectAlignmentApalache.cfg` | pass | symbolic bounded verification of the exact effect projection |
+| `MC_AdmissionEffectAlignmentUnsafeApalache.cfg` | violate `Inv_StatusOnlyRecordCannotBlock` | symbolic reproduction of validator proposal failure |
+
+The Rocq refinement in `AdmissionEffectAlignment.v` proves that inserting an
+admission rejection anywhere in the user-record sequence does not change the
+effect projection, an executed failure retains one slot, permutation does not
+change the required cardinality, and aligned metadata splits exactly between
+user and system executions. Its concrete regression theorem proves that one
+funding rejection plus one `closeBlock` requires one metadata entry, whereas
+counting block-body status records would incorrectly require two.
+
 The liveness property permits two outcomes once every published occurrence is
 tombstoned and at least one online validator still sees the deploy in its valid
 proposal-height window: a new active occurrence is published or every online

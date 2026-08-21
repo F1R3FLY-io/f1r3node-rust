@@ -30,8 +30,8 @@ use super::metrics_constants::{
     REPLAY_WAITING_CONTINUATIONS_STORED_TOTAL_METRIC,
 };
 use super::rspace_interface::{
-    CommObserver, ContResult, ISpace, MaybeConsumeResult, MaybeProduceCandidate,
-    MaybeProduceResult, RSpaceResult,
+    ContResult, ISpace, MaybeConsumeResult, MaybeProduceCandidate, MaybeProduceResult,
+    RSpaceAccountingObserver, RSpaceResult,
 };
 use super::striped_locks::{self, ChannelLockGuard};
 use super::trace::Log;
@@ -53,7 +53,8 @@ pub struct ReplayRSpace<C, P, A, K> {
     event_log: Arc<Mutex<Log>>,
     produce_counter: Arc<Mutex<BTreeMap<Produce, i32>>>,
     matcher: Arc<Box<dyn Match<P, A, K>>>,
-    comm_observer: Arc<std::sync::RwLock<Option<Arc<dyn CommObserver<A, K>>>>>,
+    accounting_observer:
+        Arc<std::sync::RwLock<Option<Arc<dyn RSpaceAccountingObserver<C, P, A, K>>>>>,
     pub replay_data: Arc<Mutex<MultisetMultiMap<IOEvent, COMM>>>,
     logger: Arc<Mutex<Box<dyn RSpaceLogger<C, P, A, K>>>>,
     replay_waiting_continuations_estimate: Arc<AtomicI64>,
@@ -127,11 +128,14 @@ where
     A: Clone + Debug + Default + Serialize + 'static + Sync + Send,
     K: Clone + Debug + Default + Serialize + 'static + Sync + Send,
 {
-    fn set_comm_observer(&self, observer: Option<Arc<dyn CommObserver<A, K>>>) {
+    fn set_accounting_observer(
+        &self,
+        observer: Option<Arc<dyn RSpaceAccountingObserver<C, P, A, K>>>,
+    ) {
         *self
-            .comm_observer
+            .accounting_observer
             .write()
-            .expect("comm observer write lock") = observer;
+            .expect("accounting observer write lock") = observer;
     }
 
     async fn create_checkpoint(&self) -> Result<Checkpoint, RSpaceError> {
@@ -508,7 +512,7 @@ where
             history_repository: Arc::new(std::sync::RwLock::new(history_repository)),
             store: Arc::new(std::sync::RwLock::new(store)),
             matcher,
-            comm_observer: Arc::new(std::sync::RwLock::new(None)),
+            accounting_observer: Arc::new(std::sync::RwLock::new(None)),
             installs: Arc::new(Mutex::new(HashMap::new())),
             event_log: Arc::new(Mutex::new(Vec::new())),
             produce_counter: Arc::new(Mutex::new(BTreeMap::new())),
@@ -536,7 +540,7 @@ where
             history_repository: Arc::new(std::sync::RwLock::new(history_repository)),
             store: Arc::new(std::sync::RwLock::new(store)),
             matcher,
-            comm_observer: Arc::new(std::sync::RwLock::new(None)),
+            accounting_observer: Arc::new(std::sync::RwLock::new(None)),
             installs: Arc::new(Mutex::new(HashMap::new())),
             event_log: Arc::new(Mutex::new(Vec::new())),
             produce_counter: Arc::new(Mutex::new(BTreeMap::new())),
@@ -662,6 +666,8 @@ where
         tracing::trace!(target: "f1r3fly.rspace.ops", mark = "started-locked-consume", "locked_consume");
 
         tracing::trace!(target: "f1r3fly.rspace.ops", channels = ?consume_ref.channel_hashes, persist, "replay.consume ENTER");
+
+        self.observe_consume(&consume_ref, &channels, &patterns, &continuation, persist, &peeks)?;
 
         let wk = WaitingContinuation {
             patterns: patterns.clone(),
@@ -841,6 +847,8 @@ where
         // Span[F].traceI("locked-produce") from Scala - works because this is NOT async
         let _span = tracing::info_span!(target: "f1r3fly.rspace", "locked-produce").entered();
         tracing::trace!(target: "f1r3fly.rspace.ops", mark = "started-locked-produce", "locked_produce");
+
+        self.observe_produce(&produce_ref, &channel, &data, persist)?;
 
         let grouped_channels = self.get_store().get_joins(&channel);
 
@@ -1076,9 +1084,9 @@ where
         data_candidates: &[ConsumeCandidate<C, A>],
     ) -> Result<(), RSpaceError> {
         let observer = self
-            .comm_observer
+            .accounting_observer
             .read()
-            .expect("comm observer read lock")
+            .expect("accounting observer read lock")
             .clone();
         match observer {
             Some(observer) => {
@@ -1086,8 +1094,53 @@ where
                     .iter()
                     .map(|candidate| (&candidate.datum.a, candidate.datum.persist))
                     .collect::<Vec<_>>();
-                observer.observe(comm, continuation, continuation_persistent, &data)
+                observer.observe_comm(comm, continuation, continuation_persistent, &data)
             }
+            None => Ok(()),
+        }
+    }
+
+    fn observe_produce(
+        &self,
+        source: &Produce,
+        channel: &C,
+        data: &A,
+        persistent: bool,
+    ) -> Result<(), RSpaceError> {
+        let observer = self
+            .accounting_observer
+            .read()
+            .expect("accounting observer read lock")
+            .clone();
+        match observer {
+            Some(observer) => observer.observe_produce(source, channel, data, persistent),
+            None => Ok(()),
+        }
+    }
+
+    fn observe_consume(
+        &self,
+        source: &Consume,
+        channels: &[C],
+        patterns: &[P],
+        continuation: &K,
+        persistent: bool,
+        peeks: &BTreeSet<i32>,
+    ) -> Result<(), RSpaceError> {
+        let observer = self
+            .accounting_observer
+            .read()
+            .expect("accounting observer read lock")
+            .clone();
+        match observer {
+            Some(observer) => observer.observe_consume(
+                source,
+                channels,
+                patterns,
+                continuation,
+                persistent,
+                peeks,
+            ),
             None => Ok(()),
         }
     }

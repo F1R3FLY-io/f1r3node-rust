@@ -8,7 +8,9 @@ use rspace_plus_plus::rspace::merger::merging_logic::MergeType;
 use tokio::sync::RwLock;
 use tracing::{event, Level};
 
-use super::accounting::authority::{AuthorityEvent, AuthorityStackBirth, ResourceMultiset};
+use super::accounting::authority::{
+    AuthorityByteEvent, AuthorityEvent, AuthorityStackBirth, ResourceMultiset,
+};
 use super::accounting::costs::Cost;
 use super::accounting::{RuntimeBudget, SignedProcess};
 use super::compiler::compiler::Compiler;
@@ -29,8 +31,10 @@ pub struct EvaluateResult {
     pub errors: Vec<InterpreterError>,
     pub mergeable: HashMap<Par, MergeType>,
     pub authority_events: Vec<AuthorityEvent<[u8; 32]>>,
+    pub authority_byte_events: Vec<AuthorityByteEvent>,
     pub authority_realized: ResourceMultiset<[u8; 32]>,
     pub authority_stack_births: Vec<AuthorityStackBirth>,
+    pub quantitative_byte_cost: u64,
 }
 
 #[allow(async_fn_in_trait)]
@@ -73,8 +77,10 @@ impl Interpreter for InterpreterImpl {
                 ))],
                 mergeable: HashMap::new(),
                 authority_events: Vec::new(),
+                authority_byte_events: Vec::new(),
                 authority_realized: ResourceMultiset::default(),
                 authority_stack_births: Vec::new(),
+                quantitative_byte_cost: 0,
             });
         }
 
@@ -167,8 +173,10 @@ impl Interpreter for InterpreterImpl {
                         errors: Vec::new(),
                         mergeable: mergeable_channels,
                         authority_events: self.c.authority_events(),
+                        authority_byte_events: self.c.authority_byte_events(),
                         authority_realized: self.c.authority_realized(),
                         authority_stack_births: self.c.authority_stack_births(),
+                        quantitative_byte_cost: self.c.quantitative_byte_cost(),
                     })
                 }
                 Err(e) => {
@@ -190,97 +198,33 @@ impl InterpreterImpl {
     }
 
     fn handle_error(&self, error: InterpreterError) -> Result<EvaluateResult, InterpreterError> {
-        match error {
-            // Source that fails before a metered source state exists consumes no token cost.
-            InterpreterError::ParserError(_) => Ok(EvaluateResult {
+        if matches!(&error, InterpreterError::ParserError(_)) {
+            return Ok(EvaluateResult {
                 cost: Cost::create(0, "parse failure"),
                 errors: vec![error],
                 mergeable: HashMap::new(),
-                authority_events: self.c.authority_events(),
-                authority_realized: self.c.authority_realized(),
-                authority_stack_births: self.c.authority_stack_births(),
-            }),
-
-            // For Out Of Phlogistons error initial cost is used because evaluated cost can be higher
-            // all phlos are consumed
-            InterpreterError::OutOfPhlogistonsError => Ok(EvaluateResult {
-                cost: self.c.total_cost(),
-                errors: vec![error],
-                mergeable: HashMap::new(),
-                authority_events: self.c.authority_events(),
-                authority_realized: self.c.authority_realized(),
-                authority_stack_births: self.c.authority_stack_births(),
-            }),
-
-            // User triggered abort - execution failed, return cost consumed so far
-            InterpreterError::UserAbortError => Ok(EvaluateResult {
-                cost: self.c.total_cost(),
-                errors: vec![error],
-                mergeable: HashMap::new(),
-                authority_events: self.c.authority_events(),
-                authority_realized: self.c.authority_realized(),
-                authority_stack_births: self.c.authority_stack_births(),
-            }),
-
-            // Non-bool `if` condition - report actual consumed cost
-            InterpreterError::IfConditionTypeError { actual_type: _ } => Ok(EvaluateResult {
-                cost: self.c.total_cost(),
-                errors: vec![error],
-                mergeable: HashMap::new(),
-                authority_events: self.c.authority_events(),
-                authority_realized: self.c.authority_realized(),
-                authority_stack_births: self.c.authority_stack_births(),
-            }),
-
-            // InterpreterError(s) - multiple errors are result of parallel execution
-            InterpreterError::AggregateError { interpreter_errors } => Ok(EvaluateResult {
-                cost: self.c.total_cost(),
-                errors: interpreter_errors,
-                mergeable: HashMap::new(),
-                authority_events: self.c.authority_events(),
-                authority_realized: self.c.authority_realized(),
-                authority_stack_births: self.c.authority_stack_births(),
-            }),
-
-            // These malformed forms can escape parser classification and fail
-            // during reduction. They still happen before a valid source-token
-            // transition, so they return a parse-style zero-cost result.
-            InterpreterError::OperatorNotDefined {
-                op: _,
-                other_type: _,
-            } => Ok(EvaluateResult {
-                cost: Cost::create(0, "parse failure"),
-                errors: vec![error],
-                mergeable: HashMap::new(),
-                authority_events: self.c.authority_events(),
-                authority_realized: self.c.authority_realized(),
-                authority_stack_births: self.c.authority_stack_births(),
-            }),
-
-            // Same admission boundary as OperatorNotDefined: no source-token
-            // transition has fired, so no token cost is consumed.
-            InterpreterError::OperatorExpectedError {
-                op: _,
-                expected: _,
-                other_type: _,
-            } => Ok(EvaluateResult {
-                cost: Cost::create(0, "parse failure"),
-                errors: vec![error],
-                mergeable: HashMap::new(),
-                authority_events: self.c.authority_events(),
-                authority_realized: self.c.authority_realized(),
-                authority_stack_births: self.c.authority_stack_births(),
-            }),
-
-            // InterpreterError is returned as a result
-            _ => Ok(EvaluateResult {
-                cost: self.c.total_cost(),
-                errors: vec![error],
-                mergeable: HashMap::new(),
-                authority_events: self.c.authority_events(),
-                authority_realized: self.c.authority_realized(),
-                authority_stack_births: self.c.authority_stack_births(),
-            }),
+                authority_events: Vec::new(),
+                authority_byte_events: Vec::new(),
+                authority_realized: ResourceMultiset::default(),
+                authority_stack_births: Vec::new(),
+                quantitative_byte_cost: 0,
+            });
         }
+
+        self.c.rollback_authority_stack_transfers()?;
+        let errors = match error {
+            InterpreterError::AggregateError { interpreter_errors } => interpreter_errors,
+            error => vec![error],
+        };
+        Ok(EvaluateResult {
+            cost: self.c.total_cost(),
+            errors,
+            mergeable: HashMap::new(),
+            authority_events: self.c.authority_events(),
+            authority_byte_events: self.c.authority_byte_events(),
+            authority_realized: self.c.authority_realized(),
+            authority_stack_births: self.c.authority_stack_births(),
+            quantitative_byte_cost: self.c.quantitative_byte_cost(),
+        })
     }
 }

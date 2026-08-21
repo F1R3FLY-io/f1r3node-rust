@@ -72,24 +72,6 @@ def source_digest(source):
     return hashlib.sha256(source.encode("utf-8")).hexdigest()[:16]
 
 
-def expected_fixture_values(scenario):
-    consumed = 0
-    count = 0
-    budget = int(scenario.get("initial_budget", 0))
-    for event in scenario.get("events", []):
-        weight = int(event.get("weight", 0))
-        primitive_descriptor = str(event.get("primitive_descriptor", event.get("descriptor", "")))
-        invalid_descriptor = str(event.get("kind", "")) == "primitive" and len(primitive_descriptor) > 512
-        invalid_source_path = len(event.get("path", [])) > 1024
-        if weight <= 0 or invalid_descriptor or invalid_source_path:
-            return (0, 0, True, False)
-        if consumed + weight > budget:
-            return (budget, count + 1, False, True)
-        consumed += weight
-        count += 1
-    return (consumed, count, False, False)
-
-
 def discover_source_seed(roots):
     for root in roots:
         if not root:
@@ -170,7 +152,7 @@ def v8_runtime_scenario(
         events=events,
         initial_budget=int(initial_budget),
         settlement=settlement or {},
-        replay_fields={"fields": ["cost", "cost_trace_digest", "cost_trace_event_count"]} if replay_mode == "play_replay" else {},
+        replay_fields={"fields": authenticated_replay_fields()} if replay_mode == "play_replay" else {},
         replay_mutations=replay_mutations or [],
         negative_mutations=negative_mutations or [],
         source_seed=source_seed or {},
@@ -376,9 +358,9 @@ def cross_product_records(objectives):
             threat_family="semantic_cross_product",
             expected_outcome="auth_settlement_composed",
             production_oracle="casper_auth_composition",
-            differential_axes=["cost", "digest", "count", "signature", "block_hash", "refund", "slashing"],
-            settlement={"authority": "casper", "escrow": 12, "token_cost": 4, "refund": 8, "slashing_scope": "post_eval"},
-            negative_mutations=["cost", "cost_trace_digest", "cost_trace_event_count", "signature", "block_hash", "slash_fields"],
+            differential_axes=["processed_cost", "authority_witness", "byte_events", "payload_hash", "signature", "block_hash", "refund", "slashing"],
+            settlement=vault_settlement(12, 12, 0, 0, 4, 0, kind="slash_after_evaluation", slashing_scope="post_eval"),
+            negative_mutations=authenticated_replay_fields(["signature", "block_hash", "slash_fields"]),
             term_parameters={"composition_axes": ["auth", "settlement", "slashing"], "runtime_budget_mutation": "forbidden"},
             rust_test="generated_frontier_generative_semantic_fixtures_hold",
             adequacy_requirements=["auth_composition", "settlement", "slashing", "negative_auth"],

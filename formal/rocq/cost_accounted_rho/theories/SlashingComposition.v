@@ -402,11 +402,11 @@ Qed.
 
 Theorem cost_invalid_block_evidence_does_not_change_user_cost :
   forall evidence boundary,
-    settlement_token_cost
+    burned_amount
       (boundary_settlement
         (cost_invalid_boundary
           (record_cost_invalid_block evidence boundary))) =
-    settlement_token_cost (boundary_settlement boundary).
+    burned_amount (boundary_settlement boundary).
 Proof.
   reflexivity.
 Qed.
@@ -414,18 +414,11 @@ Qed.
 Theorem cost_invalid_block_evidence_preserves_settlement_inputs :
   forall evidence boundary,
     let recorded := record_cost_invalid_block evidence boundary in
-    settlement_limit
-      (boundary_settlement (cost_invalid_boundary recorded)) =
-      settlement_limit (boundary_settlement boundary) /\
-    settlement_price
-      (boundary_settlement (cost_invalid_boundary recorded)) =
-      settlement_price (boundary_settlement boundary) /\
-    settlement_token_cost
-      (boundary_settlement (cost_invalid_boundary recorded)) =
-      settlement_token_cost (boundary_settlement boundary).
+    boundary_settlement (cost_invalid_boundary recorded) =
+      boundary_settlement boundary.
 Proof.
   intros evidence boundary.
-  repeat split; reflexivity.
+  reflexivity.
 Qed.
 
 (* ═══════════════════════════════════════════════════════════════════════════
@@ -435,21 +428,11 @@ Qed.
 Theorem slash_preserves_fee_settlement_inputs :
   forall C E,
     let C' := apply_slash_system_effect C E in
-    settlement_limit
-      (boundary_settlement (composed_cost_boundary C')) =
-      settlement_limit
-        (boundary_settlement (composed_cost_boundary C)) /\
-    settlement_price
-      (boundary_settlement (composed_cost_boundary C')) =
-      settlement_price
-        (boundary_settlement (composed_cost_boundary C)) /\
-    settlement_token_cost
-      (boundary_settlement (composed_cost_boundary C')) =
-      settlement_token_cost
-        (boundary_settlement (composed_cost_boundary C)).
+    boundary_settlement (composed_cost_boundary C') =
+      boundary_settlement (composed_cost_boundary C).
 Proof.
   intros C E.
-  repeat split; reflexivity.
+  reflexivity.
 Qed.
 
 Theorem slash_preserves_settled_amount :
@@ -466,13 +449,17 @@ Qed.
 Theorem slash_preserves_settlement_accounting :
   forall C E,
     let C' := apply_slash_system_effect C E in
-    escrowed_amount
+    reserved_amount
       (boundary_settlement (composed_cost_boundary C')) =
-      escrowed_amount
+      reserved_amount
         (boundary_settlement (composed_cost_boundary C)) /\
-    charged_amount
+    debited_amount
       (boundary_settlement (composed_cost_boundary C')) =
-      charged_amount
+      debited_amount
+        (boundary_settlement (composed_cost_boundary C)) /\
+    burned_amount
+      (boundary_settlement (composed_cost_boundary C')) =
+      burned_amount
         (boundary_settlement (composed_cost_boundary C)) /\
     refund_amount
       (boundary_settlement (composed_cost_boundary C')) =
@@ -527,33 +514,37 @@ Qed.
 
 Theorem slash_after_evaluation_preserves_settlement_conservation :
   forall C E,
-    settlement_token_cost
+    settlement_physical_cost
       (boundary_settlement (composed_cost_boundary C)) <=
-    settlement_limit
+    settlement_physical_bound
+      (boundary_settlement (composed_cost_boundary C)) ->
+    settlement_byte_cost
+      (boundary_settlement (composed_cost_boundary C)) <=
+    settlement_byte_bound
       (boundary_settlement (composed_cost_boundary C)) ->
     settled_amount
       (boundary_settlement
         (composed_cost_boundary
           (apply_slash_system_effect C E))) =
-    escrowed_amount
+    reserved_amount
       (boundary_settlement
         (composed_cost_boundary
           (apply_slash_system_effect C E))).
 Proof.
-  intros C E Hbounded.
+  intros C E Hphysical Hbyte.
   rewrite slash_preserves_settled_amount.
   replace
-    (escrowed_amount
+    (reserved_amount
       (boundary_settlement
         (composed_cost_boundary
           (apply_slash_system_effect C E))))
     with
-      (escrowed_amount
+      (reserved_amount
         (boundary_settlement (composed_cost_boundary C)))
     by reflexivity.
-  exact (charged_plus_refund_eq_escrow
+  exact (debit_plus_refund_eq_reservation
     (boundary_settlement (composed_cost_boundary C))
-    Hbounded).
+    Hphysical Hbyte).
 Qed.
 
 Theorem parent_pre_state_authorized_slash_preserves_cost_boundary :
@@ -672,20 +663,10 @@ Qed.
 Theorem redeem_preserves_fee_settlement_inputs :
   forall C R,
     let C' := apply_redeem_system_effect C R in
-    settlement_limit
-      (boundary_settlement (composed_cost_boundary C')) =
-      settlement_limit
-        (boundary_settlement (composed_cost_boundary C)) /\
-    settlement_price
-      (boundary_settlement (composed_cost_boundary C')) =
-      settlement_price
-        (boundary_settlement (composed_cost_boundary C)) /\
-    settlement_token_cost
-      (boundary_settlement (composed_cost_boundary C')) =
-      settlement_token_cost
-        (boundary_settlement (composed_cost_boundary C)).
+    boundary_settlement (composed_cost_boundary C') =
+      boundary_settlement (composed_cost_boundary C).
 Proof.
-  intros C R. repeat split; reflexivity.
+  intros C R. reflexivity.
 Qed.
 
 (* Ledger-level conservation: a system effect (slash or redeem) that is

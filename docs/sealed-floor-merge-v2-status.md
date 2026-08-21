@@ -49,8 +49,9 @@ known under-load failure modes are fixed.
 
 **Determinism / robustness**
 - Deterministic slash-deploy replay (block-derived invalid-blocks map).
-- On-demand mergeable-entry recompute (`ensure_scope_mergeable_present`) to heal a cross-node
-  merge-validity fork for LFS-imported blocks.
+- On-demand local mergeable-entry replay (`ensure_mergeable_entry`) for
+  LFS-imported blocks, with complete execution-identity keys and no trusted peer
+  payload, to prevent both missing-entry and arrival-order merge-validity forks.
 - LMD-GHOST main-parent selection, bonds-equality parent-filter removal, total-order rejection
   tiebreaking, fresh-joiner latest-message placeholders, poison-tolerant shared-LMDB test lock,
   and LFS requester retry/deadline hardening are ported.

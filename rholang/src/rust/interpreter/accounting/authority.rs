@@ -13,9 +13,9 @@ use thiserror::Error;
 
 use super::Sig;
 
-const CERTIFICATE_DOMAIN: &[u8] = b"f1r3node:authority-funding-certificate:v7";
-const WITNESS_DOMAIN: &[u8] = b"f1r3node:authority-cost-witness:v7";
-pub const AUTHORITY_ACCOUNTING_PROTOCOL_VERSION: u32 = 7;
+const CERTIFICATE_DOMAIN: &[u8] = b"f1r3node:authority-funding-certificate:v8";
+const WITNESS_DOMAIN: &[u8] = b"f1r3node:authority-cost-witness:v8";
+pub const AUTHORITY_ACCOUNTING_PROTOCOL_VERSION: u32 = 8;
 const REGION_DOMAIN: &[u8] = b"f1r3node:cost-accounted-rho:region:v1";
 const REGION_OCCURRENCE_DOMAIN: &[u8] = b"f1r3node:cost-accounted-rho:region-occurrence:v1";
 const STACK_TRANSFER_EVENT_DOMAIN: &[u8] = b"f1r3node:cost-accounted-rho:stack-transfer-event:v1";
@@ -357,6 +357,14 @@ pub fn authority_funding_signatures_with_presentations(
     events: &[AuthorityEvent<[u8; 32]>],
     presentations: &[CostSignature],
 ) -> Result<BTreeMap<[u8; 32], CostSignature>, AuthorityError> {
+    authority_funding_signatures_for_events(events, &[], presentations)
+}
+
+pub fn authority_funding_signatures_for_events(
+    events: &[AuthorityEvent<[u8; 32]>],
+    byte_events: &[AuthorityByteEvent],
+    presentations: &[CostSignature],
+) -> Result<BTreeMap<[u8; 32], CostSignature>, AuthorityError> {
     fn insert(
         signatures: &mut BTreeMap<[u8; 32], CostSignature>,
         signature: CostSignature,
@@ -390,6 +398,20 @@ pub fn authority_funding_signatures_with_presentations(
             insert(&mut signatures, signature_from_atoms(&atoms)?)?;
         }
     }
+    for event in byte_events {
+        event.verify_authority()?;
+        for signature in authority_regions(&event.authority)?.into_values() {
+            insert(&mut signatures, signature)?;
+        }
+        let funding_event = event.funding_event()?;
+        let atoms = event_atoms(&funding_event)?;
+        for atom in &atoms {
+            insert(&mut signatures, atom.clone())?;
+        }
+        if !atoms.is_empty() {
+            insert(&mut signatures, signature_from_atoms(&atoms)?)?;
+        }
+    }
     for presentation in presentations {
         insert(&mut signatures, presentation.clone())?;
     }
@@ -407,6 +429,76 @@ pub fn allocate_authority_events(
         })
 }
 
+pub fn allocate_quantitative_debit(
+    funding_event: &AuthorityEvent<[u8; 32]>,
+    amount: u64,
+    available: &ResourceMultiset<[u8; 32]>,
+) -> Result<ResourceMultiset<[u8; 32]>, AuthorityError> {
+    if amount == 0 {
+        return Ok(ResourceMultiset::default());
+    }
+    for option in authority_funding_options(funding_event)? {
+        let scaled = option.0.into_iter().try_fold(
+            ResourceMultiset::default(),
+            |mut allocation, (key, units)| {
+                let debit = units
+                    .checked_mul(amount)
+                    .ok_or(AuthorityError::ArithmeticOverflow)?;
+                if debit > 0 {
+                    allocation.0.insert(key, debit);
+                }
+                Ok::<_, AuthorityError>(allocation)
+            },
+        )?;
+        if available.dominates(&scaled) {
+            return Ok(scaled);
+        }
+    }
+    Err(AuthorityError::InsufficientAuthority)
+}
+
+pub fn allocate_quantitative_events(
+    events: &[AuthorityByteEvent],
+    available: &ResourceMultiset<[u8; 32]>,
+) -> Result<ResourceMultiset<[u8; 32]>, AuthorityError> {
+    let mut events = events.iter().collect::<Vec<_>>();
+    events.sort_by_key(|event| event.canonical_key());
+    let options = events
+        .iter()
+        .map(|event| {
+            event.verify_authority()?;
+            authority_funding_options(&event.funding_event()?)?
+                .into_iter()
+                .map(|option| {
+                    option.0.into_iter().try_fold(
+                        ResourceMultiset::default(),
+                        |mut allocation, (key, units)| {
+                            let debit = units
+                                .checked_mul(event.amount)
+                                .ok_or(AuthorityError::ArithmeticOverflow)?;
+                            if debit > 0 {
+                                allocation.0.insert(key, debit);
+                            }
+                            Ok(allocation)
+                        },
+                    )
+                })
+                .collect::<Result<Vec<_>, AuthorityError>>()
+        })
+        .collect::<Result<Vec<_>, AuthorityError>>()?;
+    let mut failed = BTreeSet::new();
+    allocate_event_options(&options, available, &mut failed)
+        .map(|(_, draws)| {
+            draws
+                .into_iter()
+                .try_fold(ResourceMultiset::default(), |total, draw| {
+                    total.checked_add(&draw)
+                })
+        })
+        .transpose()?
+        .ok_or(AuthorityError::InsufficientAuthority)
+}
+
 pub fn allocate_authority_event_draws(
     events: &[AuthorityEvent<[u8; 32]>],
     available: &ResourceMultiset<[u8; 32]>,
@@ -416,7 +508,7 @@ pub fn allocate_authority_event_draws(
         .map(authority_funding_options)
         .collect::<Result<Vec<_>, _>>()?;
     let mut failed = BTreeSet::new();
-    allocate_event_options(&options, 0, available, &mut failed)
+    allocate_event_options(&options, available, &mut failed)
         .map(|(_, draws)| {
             events
                 .iter()
@@ -433,36 +525,55 @@ pub fn allocate_authority_event_draws(
 
 fn allocate_event_options(
     options: &[Vec<ResourceMultiset<[u8; 32]>>],
-    index: usize,
     available: &ResourceMultiset<[u8; 32]>,
     failed: &mut BTreeSet<(usize, Vec<([u8; 32], u64)>)>,
 ) -> Option<(ResourceMultiset<[u8; 32]>, Vec<ResourceMultiset<[u8; 32]>>)> {
-    if index == options.len() {
-        return Some((available.clone(), Vec::new()));
+    struct Frame {
+        index: usize,
+        next_option: usize,
+        available: ResourceMultiset<[u8; 32]>,
     }
-    let state = (
-        index,
-        available
-            .0
-            .iter()
-            .map(|(key, amount)| (*key, *amount))
-            .collect(),
-    );
-    if failed.contains(&state) {
-        return None;
-    }
-    for draw in &options[index] {
-        let Ok(remaining) = available.checked_sub(draw) else {
+
+    let mut frames = vec![Frame {
+        index: 0,
+        next_option: 0,
+        available: available.clone(),
+    }];
+    let mut draws = Vec::with_capacity(options.len());
+    while let Some(frame) = frames.last_mut() {
+        if frame.index == options.len() {
+            return Some((frame.available.clone(), draws));
+        }
+        let state = (
+            frame.index,
+            frame
+                .available
+                .0
+                .iter()
+                .map(|(key, amount)| (*key, *amount))
+                .collect(),
+        );
+        if failed.contains(&state) || frame.next_option == options[frame.index].len() {
+            failed.insert(state);
+            let had_parent = frame.index != 0;
+            frames.pop();
+            if had_parent {
+                draws.pop();
+            }
             continue;
-        };
-        if let Some((final_remaining, mut rest)) =
-            allocate_event_options(options, index + 1, &remaining, failed)
-        {
-            rest.insert(0, draw.clone());
-            return Some((final_remaining, rest));
+        }
+        let draw = options[frame.index][frame.next_option].clone();
+        let next_index = frame.index + 1;
+        frame.next_option += 1;
+        if let Ok(remaining) = frame.available.checked_sub(&draw) {
+            draws.push(draw);
+            frames.push(Frame {
+                index: next_index,
+                next_option: 0,
+                available: remaining,
+            });
         }
     }
-    failed.insert(state);
     None
 }
 
@@ -1115,6 +1226,10 @@ pub struct FundingCertificate<K: Ord> {
     pub fee_allocation: ResourceMultiset<K>,
     #[serde(default)]
     pub fee_recipient: Vec<u8>,
+    pub byte_cost_schedule_version: u32,
+    pub byte_cost_schedule_digest: [u8; 32],
+    pub byte_cost_bound: u64,
+    pub byte_allocation: ResourceMultiset<K>,
 }
 
 impl<K: CanonicalAuthorityKey + Ord + Clone + Eq> FundingCertificate<K> {
@@ -1177,6 +1292,11 @@ impl<K: CanonicalAuthorityKey + Ord + Clone + Eq> FundingCertificate<K> {
         if self.pre_state_root != pre_state_root {
             return Err(AuthorityError::PreStateMismatch);
         }
+        if self.byte_cost_schedule_version != super::byte_accounting::BYTE_COST_SCHEDULE_VERSION
+            || self.byte_cost_schedule_digest != super::byte_accounting::byte_cost_schedule_digest()
+        {
+            return Err(AuthorityError::ProtocolVersionMismatch);
+        }
         self.verify_stack_reservations()?;
         let reservation = match &self.demand {
             DemandBound::Exact(bound) => bound,
@@ -1194,7 +1314,11 @@ impl<K: CanonicalAuthorityKey + Ord + Clone + Eq> FundingCertificate<K> {
         if !verify_allocation(reservation, &self.allocation) {
             return Err(AuthorityError::AllocationMismatch);
         }
-        if !available.dominates(&self.allocation) {
+        let total_allocation = self
+            .allocation
+            .checked_add(&self.byte_allocation)?
+            .checked_add(&self.fee_allocation)?;
+        if !available.dominates(&total_allocation) {
             return Err(AuthorityError::InsufficientAuthority);
         }
         Ok(())
@@ -1224,6 +1348,10 @@ impl<K: CanonicalAuthorityKey + Ord + Clone + Eq> FundingCertificate<K> {
         self.fee_allocation.write_canonical(&mut bytes);
         bytes.extend_from_slice(&(self.fee_recipient.len() as u64).to_le_bytes());
         bytes.extend_from_slice(&self.fee_recipient);
+        bytes.extend_from_slice(&self.byte_cost_schedule_version.to_le_bytes());
+        bytes.extend_from_slice(&self.byte_cost_schedule_digest);
+        bytes.extend_from_slice(&self.byte_cost_bound.to_le_bytes());
+        self.byte_allocation.write_canonical(&mut bytes);
         Blake2b256::hash(bytes)
             .try_into()
             .expect("Blake2b-256 digest length")
@@ -1235,6 +1363,81 @@ pub struct AuthorityEvent<K: Ord> {
     pub event_id: [u8; 32],
     pub authority: CostAuthority,
     pub debit: ResourceMultiset<K>,
+}
+
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Serialize,
+    Deserialize
+)]
+pub enum AuthorityByteEventKind {
+    ProduceIntroduction,
+    ConsumeIntroduction,
+    Comm,
+}
+
+impl AuthorityByteEventKind {
+    pub fn tag(self) -> u8 {
+        match self {
+            Self::ProduceIntroduction => 0,
+            Self::ConsumeIntroduction => 1,
+            Self::Comm => 2,
+        }
+    }
+
+    pub fn from_tag(tag: u8) -> Result<Self, AuthorityError> {
+        match tag {
+            0 => Ok(Self::ProduceIntroduction),
+            1 => Ok(Self::ConsumeIntroduction),
+            2 => Ok(Self::Comm),
+            _ => Err(AuthorityError::InvalidByteEventKind),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AuthorityByteEvent {
+    pub event_id: [u8; 32],
+    pub kind: AuthorityByteEventKind,
+    pub authority: CostAuthority,
+    pub amount: u64,
+}
+
+impl AuthorityByteEvent {
+    pub fn verify_authority(&self) -> Result<(), AuthorityError> {
+        if self.amount == 0 {
+            return Err(AuthorityError::InvalidByteEventAmount);
+        }
+        if canonical_authority(&self.authority)? != self.authority {
+            return Err(AuthorityError::NonCanonicalAuthority);
+        }
+        Ok(())
+    }
+
+    fn funding_event(&self) -> Result<AuthorityEvent<[u8; 32]>, AuthorityError> {
+        Ok(AuthorityEvent {
+            event_id: self.event_id,
+            authority: self.authority.clone(),
+            debit: authority_demand(&self.authority)?,
+        })
+    }
+
+    pub(super) fn canonical_key(&self) -> Vec<u8> {
+        let mut key = Vec::new();
+        key.extend_from_slice(&self.event_id);
+        key.push(self.kind.tag());
+        let encoded = self.authority.encode_to_vec();
+        key.extend_from_slice(&(encoded.len() as u64).to_le_bytes());
+        key.extend_from_slice(&encoded);
+        key.extend_from_slice(&self.amount.to_le_bytes());
+        key
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1276,6 +1479,11 @@ pub struct AuthorityCostWitness<K: Ord> {
     pub physical_draws: Vec<AuthorityPhysicalEventDraw<K>>,
     #[serde(default)]
     pub born_stacks: Vec<AuthorityBornStack>,
+    pub byte_cost_schedule_version: u32,
+    pub byte_cost_schedule_digest: [u8; 32],
+    pub byte_events: Vec<AuthorityByteEvent>,
+    pub byte_cost: u64,
+    pub byte_settlement: ResourceMultiset<K>,
 }
 
 impl<K: CanonicalAuthorityKey + Ord + Clone + Eq> AuthorityCostWitness<K> {
@@ -1290,6 +1498,40 @@ impl<K: CanonicalAuthorityKey + Ord + Clone + Eq> AuthorityCostWitness<K> {
         }
         if realized != self.realized {
             return Err(AuthorityError::RealizedCostMismatch);
+        }
+        let mut byte_identities = BTreeMap::new();
+        let mut byte_cost = 0_u64;
+        let mut previous_byte_key = None;
+        for event in &self.byte_events {
+            event.verify_authority()?;
+            let key = event.canonical_key();
+            if previous_byte_key
+                .as_ref()
+                .is_some_and(|previous| previous > &key)
+            {
+                return Err(AuthorityError::NonCanonicalEventOrder);
+            }
+            previous_byte_key = Some(key);
+            match byte_identities.get(&event.event_id) {
+                Some(existing)
+                    if existing != &(event.kind, event.authority.clone(), event.amount) =>
+                {
+                    return Err(AuthorityError::EventIdentityConflict);
+                }
+                Some(_) => {}
+                None => {
+                    byte_identities.insert(
+                        event.event_id,
+                        (event.kind, event.authority.clone(), event.amount),
+                    );
+                }
+            }
+            byte_cost = byte_cost
+                .checked_add(event.amount)
+                .ok_or(AuthorityError::ArithmeticOverflow)?;
+        }
+        if byte_cost != self.byte_cost {
+            return Err(AuthorityError::ByteCostMismatch);
         }
         if !self.physical_draws.is_empty()
             && (self.physical_draws.len() != self.events.len()
@@ -1353,6 +1595,13 @@ impl<K: CanonicalAuthorityKey + Ord + Clone + Eq> AuthorityCostWitness<K> {
         if self.protocol_version != certificate.protocol_version {
             return Err(AuthorityError::ProtocolVersionMismatch);
         }
+        if self.byte_cost_schedule_version != certificate.byte_cost_schedule_version
+            || self.byte_cost_schedule_digest != certificate.byte_cost_schedule_digest
+            || self.byte_cost > certificate.byte_cost_bound
+            || !certificate.byte_allocation.dominates(&self.byte_settlement)
+        {
+            return Err(AuthorityError::SettlementMismatch);
+        }
         if self.certificate_id != certificate.certificate_id() {
             return Err(AuthorityError::CertificateMismatch);
         }
@@ -1409,7 +1658,14 @@ impl<K: CanonicalAuthorityKey + Ord + Clone + Eq> AuthorityCostWitness<K> {
         &self,
         certificate: &FundingCertificate<K>,
     ) -> Result<ResourceMultiset<K>, AuthorityError> {
-        certificate.allocation.checked_sub(&self.settlement)
+        certificate
+            .allocation
+            .checked_sub(&self.settlement)?
+            .checked_add(
+                &certificate
+                    .byte_allocation
+                    .checked_sub(&self.byte_settlement)?,
+            )
     }
 
     pub fn witness_id(&self) -> [u8; 32] {
@@ -1453,6 +1709,14 @@ impl<K: CanonicalAuthorityKey + Ord + Clone + Eq> AuthorityCostWitness<K> {
                 bytes.extend_from_slice(&encoded);
             }
         }
+        bytes.extend_from_slice(&self.byte_cost_schedule_version.to_le_bytes());
+        bytes.extend_from_slice(&self.byte_cost_schedule_digest);
+        bytes.extend_from_slice(&(self.byte_events.len() as u64).to_le_bytes());
+        for event in &self.byte_events {
+            bytes.extend_from_slice(&event.canonical_key());
+        }
+        bytes.extend_from_slice(&self.byte_cost.to_le_bytes());
+        self.byte_settlement.write_canonical(&mut bytes);
         Blake2b256::hash(bytes)
             .try_into()
             .expect("Blake2b-256 digest length")
@@ -1463,7 +1727,10 @@ impl AuthorityCostWitness<[u8; 32]> {
     pub fn verify_event_authorities(&self) -> Result<(), AuthorityError> {
         self.events
             .iter()
-            .try_for_each(AuthorityEvent::verify_authority)
+            .try_for_each(AuthorityEvent::verify_authority)?;
+        self.byte_events
+            .iter()
+            .try_for_each(AuthorityByteEvent::verify_authority)
     }
 }
 
@@ -1493,6 +1760,12 @@ pub enum AuthorityError {
     EventSignatureConflict,
     #[error("a COMM debit is not justified by its wrapper authority")]
     EventDebitMismatch,
+    #[error("a byte-accounting event kind is not recognized")]
+    InvalidByteEventKind,
+    #[error("a byte-accounting event amount must be positive")]
+    InvalidByteEventAmount,
+    #[error("the byte-accounting event sum differs from the declared quantitative cost")]
+    ByteCostMismatch,
     #[error("authority arithmetic overflow")]
     ArithmeticOverflow,
     #[error("insufficient authority")]
@@ -1542,10 +1815,17 @@ pub enum AuthorityError {
 #[cfg(test)]
 mod tests {
     use models::rhoapi::cost_signature::Value as CostSignatureValue;
-    use models::rhoapi::{CostAuthority, CostRegion, CostSignature};
+    use models::rhoapi::g_unforgeable::UnfInstance;
+    use models::rhoapi::{CostAuthority, CostRegion, CostSignature, GPrivate, GUnforgeable, Par};
     use proptest::prelude::*;
 
     use super::*;
+
+    fn byte_schedule_version() -> u32 { super::super::byte_accounting::BYTE_COST_SCHEDULE_VERSION }
+
+    fn byte_schedule_digest() -> [u8; 32] {
+        super::super::byte_accounting::byte_cost_schedule_digest()
+    }
 
     fn certificate(allocation: ResourceMultiset<[u8; 32]>) -> FundingCertificate<[u8; 32]> {
         FundingCertificate {
@@ -1558,6 +1838,10 @@ mod tests {
             stack_reservations: BTreeMap::new(),
             fee_allocation: ResourceMultiset::default(),
             fee_recipient: Vec::new(),
+            byte_cost_schedule_version: byte_schedule_version(),
+            byte_cost_schedule_digest: byte_schedule_digest(),
+            byte_cost_bound: 0,
+            byte_allocation: ResourceMultiset::default(),
         }
     }
 
@@ -1573,17 +1857,31 @@ mod tests {
             stack_reservations: BTreeMap::from([([b'k'; 32], 1)]),
             fee_allocation: ResourceMultiset::singleton([b'g'; 32], 1),
             fee_recipient: b"proposer".to_vec(),
+            byte_cost_schedule_version: byte_schedule_version(),
+            byte_cost_schedule_digest: byte_schedule_digest(),
+            byte_cost_bound: 0,
+            byte_allocation: ResourceMultiset::default(),
         };
 
         assert_eq!(
             hex::encode(certificate.certificate_id()),
-            "88ecd40f4d389fa44d6f5464bf4e704cc67f1a487894d1242bd303e0a6d02096"
+            "1a6cbf75519760b1729bf5a5f0c876c6a2af8e7bf492cbffb40f27d5dd060eef"
         );
     }
 
     fn ground(bytes: &[u8]) -> CostSignature {
         CostSignature {
             value: Some(CostSignatureValue::Ground(bytes.to_vec())),
+        }
+    }
+
+    fn private_name(bytes: &[u8]) -> CostSignature {
+        CostSignature {
+            value: Some(CostSignatureValue::Name(Par::default().with_unforgeables(
+                vec![GUnforgeable {
+                    unf_instance: Some(UnfInstance::GPrivateBody(GPrivate { id: bytes.to_vec() })),
+                }],
+            ))),
         }
     }
 
@@ -1602,6 +1900,21 @@ mod tests {
             event_id: [21; 32],
             debit: authority_demand(&authority).unwrap(),
             authority,
+        }
+    }
+
+    fn byte_event(
+        event_id: u8,
+        kind: AuthorityByteEventKind,
+        signatures: &[CostSignature],
+        amount: u64,
+    ) -> AuthorityByteEvent {
+        let event = event(signatures);
+        AuthorityByteEvent {
+            event_id: [event_id; 32],
+            kind,
+            authority: event.authority,
+            amount,
         }
     }
 
@@ -1653,6 +1966,69 @@ mod tests {
     }
 
     #[test]
+    fn serialized_private_name_presentation_cannot_create_event_authority() {
+        let signer = ground(b"signed-event-authority");
+        let exposed_name = private_name(&[7; 32]);
+        let event = event(std::slice::from_ref(&signer));
+        let signatures = authority_funding_signatures_with_presentations(
+            std::slice::from_ref(&event),
+            std::slice::from_ref(&exposed_name),
+        )
+        .unwrap();
+        let exposed_key = cost_signature_to_sig(&exposed_name).unwrap().lane_hash();
+        let inventory = AuthorityPhysicalInventory {
+            balances: ResourceMultiset::singleton(exposed_key, u64::MAX),
+            stacks: BTreeMap::new(),
+            born_stacks: BTreeMap::new(),
+        };
+
+        assert_eq!(
+            allocate_physical_settlement(std::slice::from_ref(&event), &signatures, &inventory,),
+            Err(AuthorityError::InsufficientAuthority)
+        );
+        assert_eq!(
+            allocate_quantitative_debit(&event, 1, &inventory.balances),
+            Err(AuthorityError::InsufficientAuthority)
+        );
+    }
+
+    proptest! {
+        #[test]
+        fn arbitrary_private_name_presentations_cannot_create_event_authority(
+            private_id in any::<[u8; 32]>(),
+            available in 1_u64..u64::MAX,
+        ) {
+            let signer = ground(b"signed-event-authority");
+            let exposed_name = private_name(&private_id);
+            let event = event(std::slice::from_ref(&signer));
+            let signatures = authority_funding_signatures_with_presentations(
+                std::slice::from_ref(&event),
+                std::slice::from_ref(&exposed_name),
+            )
+            .unwrap();
+            let exposed_key = cost_signature_to_sig(&exposed_name).unwrap().lane_hash();
+            let inventory = AuthorityPhysicalInventory {
+                balances: ResourceMultiset::singleton(exposed_key, available),
+                stacks: BTreeMap::new(),
+                born_stacks: BTreeMap::new(),
+            };
+
+            prop_assert_eq!(
+                allocate_physical_settlement(
+                    std::slice::from_ref(&event),
+                    &signatures,
+                    &inventory,
+                ),
+                Err(AuthorityError::InsufficientAuthority)
+            );
+            prop_assert_eq!(
+                allocate_quantitative_debit(&event, 1, &inventory.balances),
+                Err(AuthorityError::InsufficientAuthority)
+            );
+        }
+    }
+
+    #[test]
     fn bound_signatures_cannot_cross_the_runtime_authority_boundary() {
         let signature = CostSignature {
             value: Some(CostSignatureValue::BoundLevel(0)),
@@ -1675,6 +2051,137 @@ mod tests {
         assert_eq!(
             demand.get(&cost_signature_to_sig(&signature).unwrap().lane_hash()),
             1
+        );
+    }
+
+    #[test]
+    fn quantitative_debit_uses_combined_pool_then_balanced_components() {
+        let left = ground(b"quantitative-left");
+        let right = ground(b"quantitative-right");
+        let event = event(&[left.clone(), right.clone()]);
+        let combined = compound_cost_signatures(&left, &right).unwrap();
+        let combined_key = cost_signature_to_sig(&combined).unwrap().lane_hash();
+        let left_key = cost_signature_to_sig(&left).unwrap().lane_hash();
+        let right_key = cost_signature_to_sig(&right).unwrap().lane_hash();
+
+        assert_eq!(
+            allocate_quantitative_debit(&event, 7, &ResourceMultiset::singleton(combined_key, 7),)
+                .unwrap(),
+            ResourceMultiset::singleton(combined_key, 7)
+        );
+
+        let components = ResourceMultiset(BTreeMap::from([(left_key, 7), (right_key, 7)]));
+        assert_eq!(
+            allocate_quantitative_debit(&event, 7, &components).unwrap(),
+            components
+        );
+        assert_eq!(
+            allocate_quantitative_debit(&event, 7, &ResourceMultiset::singleton(left_key, 7),),
+            Err(AuthorityError::InsufficientAuthority)
+        );
+    }
+
+    #[test]
+    fn quantitative_debit_rejects_scaled_overflow() {
+        let signature = ground(b"quantitative-overflow");
+        let key = cost_signature_to_sig(&signature).unwrap().lane_hash();
+        let event = event(&[signature.clone(), signature]);
+
+        assert_eq!(
+            allocate_quantitative_debit(
+                &event,
+                u64::MAX,
+                &ResourceMultiset::singleton(key, u64::MAX),
+            ),
+            Err(AuthorityError::ArithmeticOverflow)
+        );
+    }
+
+    #[test]
+    fn quantitative_events_debit_their_own_located_purses() {
+        let outer = ground(b"outer-purse");
+        let continuation = ground(b"continuation-purse");
+        let outer_key = cost_signature_to_sig(&outer).unwrap().lane_hash();
+        let continuation_key = cost_signature_to_sig(&continuation).unwrap().lane_hash();
+        let events = vec![
+            byte_event(
+                1,
+                AuthorityByteEventKind::Comm,
+                std::slice::from_ref(&outer),
+                5,
+            ),
+            byte_event(
+                2,
+                AuthorityByteEventKind::ProduceIntroduction,
+                std::slice::from_ref(&continuation),
+                7,
+            ),
+        ];
+        let available = ResourceMultiset(BTreeMap::from([(outer_key, 5), (continuation_key, 7)]));
+
+        assert_eq!(
+            allocate_quantitative_events(&events, &available).unwrap(),
+            available
+        );
+        assert_eq!(
+            allocate_quantitative_events(&events, &ResourceMultiset::singleton(outer_key, 12),),
+            Err(AuthorityError::InsufficientAuthority)
+        );
+    }
+
+    #[test]
+    fn quantitative_event_allocation_backtracks_across_compound_choices() {
+        let left = ground(b"byte-left");
+        let right = ground(b"byte-right");
+        let combined = compound_cost_signatures(&left, &right).unwrap();
+        let left_key = cost_signature_to_sig(&left).unwrap().lane_hash();
+        let right_key = cost_signature_to_sig(&right).unwrap().lane_hash();
+        let combined_key = cost_signature_to_sig(&combined).unwrap().lane_hash();
+        let events = vec![
+            byte_event(1, AuthorityByteEventKind::Comm, &[left, right], 1),
+            byte_event(
+                2,
+                AuthorityByteEventKind::ConsumeIntroduction,
+                &[combined],
+                1,
+            ),
+        ];
+        let available = ResourceMultiset(BTreeMap::from([
+            (left_key, 1),
+            (right_key, 1),
+            (combined_key, 1),
+        ]));
+
+        assert_eq!(
+            allocate_quantitative_events(&events, &available).unwrap(),
+            available
+        );
+    }
+
+    #[test]
+    fn quantitative_event_allocation_is_permutation_invariant_and_stack_safe() {
+        let signature = ground(b"byte-trace-payer");
+        let key = cost_signature_to_sig(&signature).unwrap().lane_hash();
+        let count = 4096_u64;
+        let events = (0..count)
+            .map(|index| {
+                let mut event = byte_event(
+                    0,
+                    AuthorityByteEventKind::ProduceIntroduction,
+                    std::slice::from_ref(&signature),
+                    1,
+                );
+                event.event_id[..8].copy_from_slice(&index.to_le_bytes());
+                event
+            })
+            .collect::<Vec<_>>();
+        let mut reversed = events.clone();
+        reversed.reverse();
+        let available = ResourceMultiset::singleton(key, count);
+
+        assert_eq!(
+            allocate_quantitative_events(&events, &available).unwrap(),
+            allocate_quantitative_events(&reversed, &available).unwrap()
         );
     }
 
@@ -1993,6 +2500,10 @@ mod tests {
             stack_reservations: BTreeMap::new(),
             fee_allocation: ResourceMultiset::default(),
             fee_recipient: Vec::new(),
+            byte_cost_schedule_version: byte_schedule_version(),
+            byte_cost_schedule_digest: byte_schedule_digest(),
+            byte_cost_bound: 0,
+            byte_allocation: ResourceMultiset::default(),
         };
         certificate
             .verify_with_allocation(
@@ -2017,6 +2528,11 @@ mod tests {
             events: vec![event],
             realized: demand,
             settlement: settlement.clone(),
+            byte_cost_schedule_version: byte_schedule_version(),
+            byte_cost_schedule_digest: byte_schedule_digest(),
+            byte_events: Vec::new(),
+            byte_cost: 0,
+            byte_settlement: ResourceMultiset::default(),
             physical_draws: Vec::new(),
             born_stacks: Vec::new(),
         };
@@ -2047,6 +2563,11 @@ mod tests {
             }],
             realized: ResourceMultiset::singleton(key, 1),
             settlement: ResourceMultiset::singleton(key, 1),
+            byte_cost_schedule_version: byte_schedule_version(),
+            byte_cost_schedule_digest: byte_schedule_digest(),
+            byte_events: Vec::new(),
+            byte_cost: 0,
+            byte_settlement: ResourceMultiset::default(),
             physical_draws: Vec::new(),
             born_stacks: Vec::new(),
         };
@@ -2059,6 +2580,124 @@ mod tests {
                 .get(&key),
             2
         );
+    }
+
+    #[test]
+    fn witness_refund_includes_unused_authority_and_byte_reservations() {
+        let key = [7; 32];
+        let mut cert = certificate(ResourceMultiset::singleton(key, 5));
+        cert.byte_cost_bound = 7;
+        cert.byte_allocation = ResourceMultiset::singleton(key, 7);
+        let witness = AuthorityCostWitness {
+            protocol_version: AUTHORITY_ACCOUNTING_PROTOCOL_VERSION,
+            certificate_id: cert.certificate_id(),
+            pre_state_root: [2; 32],
+            post_state_root: [4; 32],
+            events: vec![AuthorityEvent {
+                event_id: [5; 32],
+                authority: CostAuthority::default(),
+                debit: ResourceMultiset::singleton(key, 1),
+            }],
+            realized: ResourceMultiset::singleton(key, 1),
+            settlement: ResourceMultiset::singleton(key, 1),
+            byte_cost_schedule_version: byte_schedule_version(),
+            byte_cost_schedule_digest: byte_schedule_digest(),
+            byte_events: vec![AuthorityByteEvent {
+                event_id: [8; 32],
+                kind: AuthorityByteEventKind::Comm,
+                authority: CostAuthority::default(),
+                amount: 3,
+            }],
+            byte_cost: 3,
+            byte_settlement: ResourceMultiset::singleton(key, 3),
+            physical_draws: Vec::new(),
+            born_stacks: Vec::new(),
+        };
+
+        witness.verify(&cert).unwrap();
+        assert_eq!(
+            witness.refund(&cert).unwrap(),
+            ResourceMultiset::singleton(key, 8)
+        );
+    }
+
+    #[test]
+    fn byte_event_witness_rejects_omission_reordering_conflicts_and_zero_amounts() {
+        let base = AuthorityCostWitness::<[u8; 32]> {
+            protocol_version: AUTHORITY_ACCOUNTING_PROTOCOL_VERSION,
+            certificate_id: [1; 32],
+            pre_state_root: [2; 32],
+            post_state_root: [3; 32],
+            events: Vec::new(),
+            realized: ResourceMultiset::default(),
+            settlement: ResourceMultiset::default(),
+            physical_draws: Vec::new(),
+            born_stacks: Vec::new(),
+            byte_cost_schedule_version: byte_schedule_version(),
+            byte_cost_schedule_digest: byte_schedule_digest(),
+            byte_events: vec![
+                AuthorityByteEvent {
+                    event_id: [1; 32],
+                    kind: AuthorityByteEventKind::ProduceIntroduction,
+                    authority: CostAuthority::default(),
+                    amount: 1,
+                },
+                AuthorityByteEvent {
+                    event_id: [2; 32],
+                    kind: AuthorityByteEventKind::Comm,
+                    authority: CostAuthority::default(),
+                    amount: 2,
+                },
+            ],
+            byte_cost: 3,
+            byte_settlement: ResourceMultiset::default(),
+        };
+        base.verify_structure().unwrap();
+
+        let mut omitted = base.clone();
+        omitted.byte_events.pop();
+        assert_eq!(
+            omitted.verify_structure(),
+            Err(AuthorityError::ByteCostMismatch)
+        );
+
+        let mut reordered = base.clone();
+        reordered.byte_events.reverse();
+        assert_eq!(
+            reordered.verify_structure(),
+            Err(AuthorityError::NonCanonicalEventOrder)
+        );
+
+        let mut conflicting = base.clone();
+        conflicting.byte_events = vec![
+            AuthorityByteEvent {
+                event_id: [1; 32],
+                kind: AuthorityByteEventKind::ProduceIntroduction,
+                authority: CostAuthority::default(),
+                amount: 1,
+            },
+            AuthorityByteEvent {
+                event_id: [1; 32],
+                kind: AuthorityByteEventKind::ProduceIntroduction,
+                authority: CostAuthority::default(),
+                amount: 2,
+            },
+        ];
+        assert_eq!(
+            conflicting.verify_structure(),
+            Err(AuthorityError::EventIdentityConflict)
+        );
+
+        let mut zero = base.clone();
+        zero.byte_events[0].amount = 0;
+        assert_eq!(
+            zero.verify_structure(),
+            Err(AuthorityError::InvalidByteEventAmount)
+        );
+
+        let mut changed = base.clone();
+        changed.byte_events[0].kind = AuthorityByteEventKind::ConsumeIntroduction;
+        assert_ne!(base.witness_id(), changed.witness_id());
     }
 
     #[test]
@@ -2246,6 +2885,11 @@ mod tests {
             events: valid_events.clone(),
             realized: ResourceMultiset::singleton(key, 2),
             settlement: ResourceMultiset::singleton(key, 2),
+            byte_cost_schedule_version: byte_schedule_version(),
+            byte_cost_schedule_digest: byte_schedule_digest(),
+            byte_events: Vec::new(),
+            byte_cost: 0,
+            byte_settlement: ResourceMultiset::default(),
             physical_draws: Vec::new(),
             born_stacks: Vec::new(),
         };
@@ -2341,6 +2985,10 @@ mod tests {
             stack_reservations: BTreeMap::new(),
             fee_allocation: ResourceMultiset::default(),
             fee_recipient: Vec::new(),
+            byte_cost_schedule_version: byte_schedule_version(),
+            byte_cost_schedule_digest: byte_schedule_digest(),
+            byte_cost_bound: 0,
+            byte_allocation: ResourceMultiset::default(),
         };
         let base_id = base.certificate_id();
         for reason in [
@@ -2378,6 +3026,11 @@ mod tests {
             }],
             realized: ResourceMultiset::singleton(vec![1, 2, 3], 1),
             settlement: ResourceMultiset::singleton(vec![1, 2, 3], 1),
+            byte_cost_schedule_version: byte_schedule_version(),
+            byte_cost_schedule_digest: byte_schedule_digest(),
+            byte_events: Vec::new(),
+            byte_cost: 0,
+            byte_settlement: ResourceMultiset::default(),
             physical_draws: Vec::new(),
             born_stacks: Vec::new(),
         };
@@ -2532,10 +3185,79 @@ mod tests {
                 }]},
                 realized: ResourceMultiset::singleton(key, realized),
                 settlement: ResourceMultiset::singleton(key, realized),
+                byte_cost_schedule_version: byte_schedule_version(),
+                byte_cost_schedule_digest: byte_schedule_digest(),
+                byte_events: Vec::new(),
+                byte_cost: 0,
+                byte_settlement: ResourceMultiset::default(),
                 physical_draws: Vec::new(),
                 born_stacks: Vec::new(),
             };
             prop_assert_eq!(witness.verify(&cert).is_ok(), realized <= reserved);
+        }
+
+        #[test]
+        fn quantitative_compound_debit_is_balanced_and_exact(
+            amount in 1u64..1_000_000,
+            slack in 0u64..1_000_000,
+        ) {
+            let left = ground(b"quantitative-property-left");
+            let right = ground(b"quantitative-property-right");
+            let event = event(&[left.clone(), right.clone()]);
+            let left_key = cost_signature_to_sig(&left).unwrap().lane_hash();
+            let right_key = cost_signature_to_sig(&right).unwrap().lane_hash();
+            let available = ResourceMultiset(BTreeMap::from([
+                (left_key, amount.checked_add(slack).unwrap()),
+                (right_key, amount.checked_add(slack).unwrap()),
+            ]));
+
+            let debit = allocate_quantitative_debit(&event, amount, &available).unwrap();
+            prop_assert_eq!(debit.get(&left_key), amount);
+            prop_assert_eq!(debit.get(&right_key), amount);
+            prop_assert_eq!(debit.0.len(), 2);
+            prop_assert!(available.dominates(&debit));
+        }
+
+        #[test]
+        fn quantitative_event_permutations_preserve_local_conservation(
+            outer_amount in 1u64..100_000,
+            continuation_amount in 1u64..100_000,
+            outer_slack in 0u64..100_000,
+            continuation_slack in 0u64..100_000,
+        ) {
+            let outer = ground(b"property-outer");
+            let continuation = ground(b"property-continuation");
+            let outer_key = cost_signature_to_sig(&outer).unwrap().lane_hash();
+            let continuation_key = cost_signature_to_sig(&continuation).unwrap().lane_hash();
+            let events = vec![
+                byte_event(
+                    1,
+                    AuthorityByteEventKind::Comm,
+                    std::slice::from_ref(&outer),
+                    outer_amount,
+                ),
+                byte_event(
+                    2,
+                    AuthorityByteEventKind::ConsumeIntroduction,
+                    std::slice::from_ref(&continuation),
+                    continuation_amount,
+                ),
+            ];
+            let available = ResourceMultiset(BTreeMap::from([
+                (outer_key, outer_amount.checked_add(outer_slack).unwrap()),
+                (
+                    continuation_key,
+                    continuation_amount.checked_add(continuation_slack).unwrap(),
+                ),
+            ]));
+            let mut reversed = events.clone();
+            reversed.reverse();
+            let debit = allocate_quantitative_events(&events, &available).unwrap();
+
+            prop_assert_eq!(debit.clone(), allocate_quantitative_events(&reversed, &available).unwrap());
+            prop_assert_eq!(debit.get(&outer_key), outer_amount);
+            prop_assert_eq!(debit.get(&continuation_key), continuation_amount);
+            prop_assert!(available.dominates(&debit));
         }
     }
 }

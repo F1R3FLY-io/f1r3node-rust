@@ -2757,18 +2757,24 @@ mod frontier_determinism_tests {
         prop::collection::vec((any::<bool>(), any::<bool>()), 1..=12)
     }
 
-    fn universal_floor_scenario() -> impl Strategy<Value = (Vec<usize>, Vec<usize>, [usize; 3])> {
+    fn validator_permutation() -> impl Strategy<Value = [usize; 3]> {
+        prop::sample::select(vec![
+            [0usize, 1, 2],
+            [0, 2, 1],
+            [1, 0, 2],
+            [1, 2, 0],
+            [2, 0, 1],
+            [2, 1, 0],
+        ])
+    }
+
+    fn universal_floor_scenario(
+    ) -> impl Strategy<Value = (Vec<usize>, Vec<usize>, [usize; 3], [usize; 3])> {
         (
             prop::collection::vec(1usize..=4, 3),
             prop::collection::vec(0usize..=4, 3),
-            prop::sample::select(vec![
-                [0usize, 1, 2],
-                [0, 2, 1],
-                [1, 0, 2],
-                [1, 2, 0],
-                [2, 0, 1],
-                [2, 1, 0],
-            ]),
+            validator_permutation(),
+            validator_permutation(),
         )
     }
 
@@ -2838,8 +2844,8 @@ mod frontier_determinism_tests {
         }
 
         #[test]
-        fn dual_certified_universal_floor_is_independent_of_branch_shape_and_parent_order(
-            (side_depths, tail_depths, order) in universal_floor_scenario()
+        fn dual_certified_universal_floor_is_independent_of_branch_parent_and_validator_order(
+            (side_depths, tail_depths, parent_order, validator_order) in universal_floor_scenario()
         ) {
             FLOOR_RUNTIME.block_on(async move {
                 let validators = [h(240), h(241), h(242)];
@@ -2963,10 +2969,9 @@ mod frontier_determinism_tests {
                         .cloned()
                         .map(|block| (block, genesis.clone())),
                 );
-                let latest_messages = validators
-                    .iter()
-                    .cloned()
-                    .zip(tips.iter().cloned())
+                let latest_messages = validator_order
+                    .into_iter()
+                    .map(|index| (validators[index].clone(), tips[index].clone()))
                     .collect::<BTreeMap<_, _>>();
                 let threshold = FtThreshold::from_ppm(100_000);
 
@@ -3065,24 +3070,50 @@ mod frontier_determinism_tests {
                         .expect("main ancestry"));
                 }
 
-                let ordered_parents = order.map(|index| tips[index].clone());
-                let inherited = ordered_parents
-                    .iter()
-                    .map(|_| Floor {
-                        hash: genesis.clone(),
-                        block_number: 0,
-                    })
-                    .collect();
-                let (floor, _) = derive_floor(
-                    &dag,
-                    &ordered_parents,
-                    &latest_messages,
-                    threshold,
-                    inherited,
-                )
-                .await
-                .expect("derive floor");
-                prop_assert_eq!(floor.hash, finalized);
+                let parent_orders = [
+                    parent_order,
+                    [parent_order[1], parent_order[2], parent_order[0]],
+                    [parent_order[2], parent_order[0], parent_order[1]],
+                ];
+                let parent_sets = parent_orders.map(|order| {
+                    order.map(|index| tips[index].clone())
+                });
+                let inherited_sets = parent_sets.each_ref().map(|parents| {
+                    parents
+                        .iter()
+                        .map(|_| Floor {
+                            hash: genesis.clone(),
+                            block_number: 0,
+                        })
+                        .collect::<Vec<_>>()
+                });
+                let (first, second, third) = tokio::join!(
+                    derive_floor(
+                        &dag,
+                        &parent_sets[0],
+                        &latest_messages,
+                        threshold,
+                        inherited_sets[0].clone(),
+                    ),
+                    derive_floor(
+                        &dag,
+                        &parent_sets[1],
+                        &latest_messages,
+                        threshold,
+                        inherited_sets[1].clone(),
+                    ),
+                    derive_floor(
+                        &dag,
+                        &parent_sets[2],
+                        &latest_messages,
+                        threshold,
+                        inherited_sets[2].clone(),
+                    ),
+                );
+                for result in [first, second, third] {
+                    let (floor, _) = result.expect("derive floor");
+                    prop_assert_eq!(floor.hash, finalized.clone());
+                }
                 Ok::<(), TestCaseError>(())
             })?;
         }

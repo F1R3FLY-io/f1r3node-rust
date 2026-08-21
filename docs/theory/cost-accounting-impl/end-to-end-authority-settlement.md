@@ -17,8 +17,10 @@ The implemented refinement is:
 | Public-key ownership | The `VaultAddress` derived from a verified deploy signer, with existing SystemVault authentication and multisig support |
 | Available supply $`\Sigma`$ | Canonical SystemVault custody that can be reserved, plus authenticated prepaid located stacks available to that execution |
 | Located purse or funding slot | An ordinary persistent RSpace datum, addressed by its signature or unforgeable slot name, whose stack cells carry prepaid linear authority across deployments |
-| Cost reservation | A certificate-bound maximum allocation realized lexically inside one authenticated `SystemVault.applyCost` transition, plus located-stack pops in the same node checkpoint |
-| Realized cost $`\kappa`$ | The canonical fold of successful atomic RSpace `COMM` events reproduced by replay |
+| Cost reservation | A certificate-bound maximum physical-authority and quantitative-byte allocation realized lexically inside one authenticated `SystemVault.applyCost` transition, plus located-stack pops in the same node checkpoint |
+| Execution cost $`K`$ | One unit per successful atomic RSpace `COMM` plus the canonical introduction, payload-delivery, and committed-trace byte tariff reproduced by replay |
+| Physical authority $`\kappa`$ | The component-wise located and SystemVault authority actually consumed by committed COMMs; one COMM may require multiple authority cells |
+| Quantitative byte cost $`Q`$ | The versioned, checked canonical byte tariff described in [Vault-backed quantitative byte accounting](vault-backed-byte-accounting.md) |
 | Refund | The difference between maximum and realized SystemVault allocation returned before `applyCost` completes; an unconsumed located stack cell remains in RSpace |
 | Protocol mint | `SystemVault.protocolMint`, invoked only through authenticated genesis or PoS system execution |
 | Fee extraction | A direct, conserving transfer from lexically reserved payer custody to the proposer SystemVault during `applyCost` |
@@ -99,14 +101,26 @@ The mapping above is grounded in the papers' own architectural seams:
   unforgeable funding-slot name are that nominal surface.
 - Its §“Resource sufficiency: linear proofs and located purses” establishes the
   per-purse proof decomposition and the exact-versus-conservative treatment of
-  data dependence. The node's per-lane certificate and physical allocator are
-  the executable refinement of that decomposition.
+  data dependence. The node's per-purse certificate, native authority events,
+  and physical allocator are the executable refinement of that decomposition.
 
 The papers intentionally do not restate LMDB history, block protobufs, deploy
 signature verification, SystemVault authentication, PoS MVars, multi-parent DAG
 merge, or replay-cache mechanics. Those are proof obligations of the refinement:
 they must preserve the papers' semantics, and they may not be bypassed or
 duplicated by an apparently simpler paper-literal implementation.
+
+`RuntimeBudget` is not a second purse ledger. It enforces one finite aggregate
+execution-capacity ceiling and canonically reconciles the semantic RSpace event
+trace across parallel reducer workers. The only per-purse accounting path is
+the persisted `CostAuthority`: a successful COMM records one `AuthorityEvent`
+for its complete region multiset, introduction and delivery bytes record
+`AuthorityByteEvent`s over the same regions, admission allocates both against
+authenticated purse inventory, and replay recomputes the exact physical and
+quantitative draws before the atomic SystemVault transition. Maintaining a
+second mutable lane map would create two sources of truth and could either
+double-charge or disagree with replay, so the earlier unused D0 prototype was
+removed.
 
 ## Governing invariants
 
@@ -118,11 +132,12 @@ program is authorized to draw. The effective pre-state supply is:
 \Sigma(a)=V(a)+L(a).
 ```
 
-A completed finite certificate supplies a component-wise upper bound $`B(a)`$.
+A completed finite certificate supplies a component-wise physical-authority upper
+bound $`B_A(a)`$ and a quantitative byte bound $`B_Q(a)`$.
 The deterministic fee allocation is $`F(a)`$. Admission requires:
 
 ```math
-R(a)=B(a)+F(a)\leq\Sigma(a).
+R(a)=B_A(a)+B_Q(a)+F(a)\leq\Sigma(a).
 ```
 
 This inequality is not merely diagnostic. The certificate binds the maximum
@@ -139,11 +154,19 @@ a singleton reservation map creates a false dependency between otherwise
 independent branches. It is not a valid refinement of the papers' local
 sufficiency or of F1R3node's merge algebra.
 
-Execution produces a canonical realized cost multiset $`\kappa`$ satisfying:
+Execution produces a canonical physical authority multiset $`\kappa`$ and byte
+cost $`Q`$ satisfying:
 
 ```math
-0\leq\kappa(a)\leq B(a).
+0\leq\kappa(a)\leq B_A(a),\qquad 0\leq Q\leq B_Q.
 ```
+
+An authorized transaction may top up the payer's unreserved SystemVault balance
+while the process runs. The top-up is a separate conserving transition. It does
+not change $`B_A`$, $`B_Q`$, $`F`$, the certificate identity, or the execution's
+fixed reservation snapshot, and therefore cannot rescue or enlarge an in-flight
+execution. The credited custody is available at a later canonical admission
+boundary.
 
 For SystemVault-funded authority, settlement charges the realized allocation,
 returns unused reservation, and transfers the fee directly to the proposer. For
@@ -231,8 +254,10 @@ checker before it can authorize reservation.
 3. Compute a structural bound or complete an exact state-bound play.
 4. Allocate cost and fee across canonical SystemVault custody and authorized
    located stacks without ambient-purse fallback.
-5. Execute once under the certified finite capacity. An accepted atomic RSpace
-   match records one causal `COMM` event before changing tuple-space state.
+5. Execute once under the certified finite capacity. Every RSpace produce and
+   consume introduction is byte-charged before mutation. An accepted atomic
+   match charges all delivered payload and trace bytes and records one causal
+   `COMM` event before changing tuple-space state.
 6. Compute the exact realized allocation from the retained causal witness and
    atomically pop the corresponding located cells.
 7. Invoke `SystemVault.applyCost` once with the certificate identity, maximum
@@ -259,6 +284,38 @@ An admitted deploy cannot draw candidate-created authority. Born located stacks
 become available only after their producing transition commits and can fund only
 causally subsequent work. Scratch execution cannot leak output, RSpace changes,
 roots, reservations, or stack pops from an exhausted or rejected attempt.
+
+### Failure-atomic stack introduction
+
+A `CostStack` production spans two ledgers: the physical authority ledger moves
+linear cells, while RSpace charges canonical bytes and stores or matches the
+datum. These effects cannot be published independently. Let $`P_o`$ be the cells
+pending for stack-production operation $`o`$. Pending cells count against the
+fixed certified capacity, but they are not realized settlement and do not create
+a born-stack witness.
+
+The evaluator follows this protocol:
+
+```text
+reserve physical cells into P_o
+attempt the byte-charged RSpace produce and its matched continuation
+if the complete operation succeeds:
+    publish the physical events and born-stack witness
+else:
+    restore P_o exactly and publish neither
+```
+
+The reservation owns its abort action. Dropping it on an error, unwind, or
+cancelled future restores only its own cells, so another concurrent operation's
+commit is preserved. Commitment is deliberately after the awaited RSpace call;
+there is no later fallible birth-recording step.
+
+A matched produce may appear inside the enclosing COMM record. Authority-trace
+extraction visits those produces before the COMM and removes each authority
+identity at most once. Therefore every physical stack-transfer debit is ordered
+after its source reservation and at its committed produce, whether the produce
+remains stored or immediately participates in a match. DR-49 and CA-P-196 record
+the model, negative controls, and regression obligations.
 
 ### Stack-safe exact physical allocation
 
@@ -452,6 +509,69 @@ Validation classifies outcomes explicitly:
 Finality traverses full DAG ancestry with a visited set. Parent-array order cannot
 change agreement translation, fault tolerance, or last-finalized-block progress.
 
+### Casper subsystem change inventory
+
+Cost accounting is a state-transition validity rule, so it crosses Casper
+without replacing CBC Casper's validator-support or clique mathematics. The
+following inventory is normative for this refinement.
+
+| Casper surface | Cost-accounting responsibility |
+| --- | --- |
+| deploy ingress and `block_admission` | Decode the complete envelope, reject malformed signature algebra, verify every non-placeholder signer, derive only verified funding identities, and install the authenticated normalizer environment |
+| `RuntimeManager` state-bound certification | Root scratch execution at the authenticated merged pre-state, discover only pre-state-backed wallet and located supply, retain the exact finite execution, and reject exhaustion without candidate effects |
+| `acceptance` fixed point | Canonically order candidates, compute physical, quantitative-byte, and fee allocations, remove underfunded candidates monotonically, and bind the retained partition to certificate and witness evidence |
+| proposal runtime | Execute under the certificate's fixed capacity, observe compute and byte events before mutation, hold pending stack transfers privately, and atomically publish the retained root and evidence |
+| replay runtime | Consume immutable per-deploy supply snapshots, rig the causal RSpace trace, recompute event identities, costs, allocations, settlements, and roots, and reject any mismatch |
+| processed-deploy wire model | Carry terminal admission status, authority protocol v8 certificate, byte-schedule identity, exact physical and byte witness, and adjacent roots in `CasperMessage.proto` |
+| block protocol lifecycle | Require Casper protocol version 4 at fresh genesis, proposal, receipt, approved-state replay, and restart; reject legacy or unknown evidence rather than mixing accounting rules |
+| block creator and merge index | Track exact state-effect identity as `(source block hash, execution index)`, retain causal dependencies, apply durable vault and stack deltas, and deterministically reject aggregate overdraw or conflict |
+| mergeable evidence | Recompute evidence by local replay, key it by complete execution identity, retire it only after full latest-message and finality guards, and ignore unauthenticated peer payloads |
+| validation dispatcher | Separate objective invalidity from missing dependency and local fault; only reproducible objective invalidity can enter invalid-block or slash evidence |
+| parent selection and fork choice | Require honest candidate parents to preserve the committed state floor and materialize their recursive effect provenance before selection |
+| finalizer and finalized floor | Keep the existing support, majority, and clique calculation for certification, but promote state or last-finalized-block only when the certificate's lineage preserves every already certified effect |
+| recovery and deploy status | Recover missing roots or parents locally, keep underfunded admission terminal for that occurrence, and expose finalized, failed, pending, and expired deploy states without resurrecting rejected effects |
+
+The majority/clique result answers whether validators certify a block in the
+message DAG. It does not by itself prove that a locally selected replay state
+contains every effect already committed by the current last-finalized block.
+State promotion therefore requires both certificates:
+
+```math
+\operatorname{Promotable}(b)
+=\operatorname{CBCertified}(b)
+\land\operatorname{StatePreserving}(b,\operatorname{LFB}).
+```
+
+This is an additional state-lineage validity predicate, not a second vote and
+not a change to validator weights. Without it, a causally certified sibling can
+advance the local state floor while omitting an already certified wallet debit,
+located-stack pop, or process effect. That omission makes later supply discovery
+node-local and can cause honest validators to certify or reject the same deploy
+against different balances.
+
+![CBC support selects certified candidates while the state-preserving predicate prevents fork choice and finality from bypassing the current committed state.](../finalized-floor/diagrams/09-state-preserving-fork-choice.svg)
+
+Exact effect provenance closes the same gap during merge. Rejection propagates
+through the transitive dependency graph of exact effects, not through an entire
+source block and not only one dependency hop. Independent effects survive;
+dependent effects cannot outlive the state they consumed. The merge algebra is
+canonical under parent permutation, and the finalized floor carries the complete
+active-effect frontier into replay.
+
+The public block API currently summarizes a processed deploy as `DeployInfo`.
+The consensus block contains the complete certificate and witness, while typed
+client exposure of those fields requires the matching public API schema and
+node/client pin. Applications must not reconstruct exact settlement from the
+scalar `cost` summary in the meantime.
+
+The detailed consensus specifications are:
+
+- [Finalized-floor normative specification](../finalized-floor/finalized-floor-specification.md);
+- [Merge-algebra normative specification](../merge-algebra/merge-algebra-specification.md);
+- [Deploy-occurrence verification](../deploy-occurrence/deploy-occurrence-verification.md);
+- [Mergeable-evidence authentication](mergeable-evidence-authentication.md); and
+- [Evaluation transaction isolation](evaluation-transaction-isolation.md).
+
 ## Formal verification
 
 The formal refinement deliberately spans complementary tools:
@@ -459,11 +579,11 @@ The formal refinement deliberately spans complementary tools:
 | Concern | Primary artifacts |
 | --- | --- |
 | Calculus, linear authority, lollipop, conservation | Rocq `CostAccountedReduction.v`, `LocatedAuthoritySettlement.v`, `TokenConservation.v`, `CanonicalRevRedemption.v` |
-| Native SystemVault mapping | Rocq `WalletNaming.v`, `MintingInjection.v`, `VaultBackedCostLifecycle.v`, `AtomicVaultSettlementRefinement.v`, `WalletFundedLollipop.v`, `BoundedLedger.v`, `EndToEndAuthority.v` |
-| Concurrent protocol and replay | TLA+ `LocatedAuthoritySettlement.tla`, `VaultBackedCostLifecycle.tla`, `AtomicVaultSettlementRefinement.tla`, `WalletFundedLollipop.tla`, `StateBoundAdmission.tla`, `StateBoundValidatorConvergence.tla`, `ReplaySupplySnapshot.tla`, `ReplayRootMaterialization.tla`, `EndToEndCostConsensus.tla` |
+| Native SystemVault mapping | Rocq `WalletNaming.v`, `MintingInjection.v`, `VaultBackedCostLifecycle.v`, `AtomicVaultSettlementRefinement.v`, `WalletFundedLollipop.v`, `VaultBackedByteAccounting.v`, `BoundedLedger.v`, `EndToEndAuthority.v` |
+| Concurrent protocol and replay | TLA+ `LocatedAuthoritySettlement.tla`, `VaultBackedCostLifecycle.tla`, `AtomicVaultSettlementRefinement.tla`, `WalletFundedLollipop.tla`, `VaultBackedByteAccounting.tla`, `StateBoundAdmission.tla`, `StateBoundValidatorConvergence.tla`, `ReplaySupplySnapshot.tla`, `ReplayRootMaterialization.tla`, `EndToEndCostConsensus.tla` |
 | Mint, fee, and scheduling interleavings | TLA+ `EvalScheduling.tla`; Sage `supply_accounting_model.sage` |
 | Slash and quarantine lifecycle | TLA+ `SlashFlow.tla`; Rocq slashing and redemption developments; Sage slashing models |
-| Concrete atomicity | Loom settlement, join, stack-frontier, and concurrent-admission tests |
+| Concrete atomicity | Loom settlement, join, stack-frontier, stack-introduction rejection/cancellation, and concurrent-admission tests |
 | Implementation conformance | Rust unit, property, fuzz, play/replay, genesis, multi-parent, slashing, and integration tests |
 
 Safe TLA+ models have registered negative controls for underfunded execution,
@@ -512,6 +632,7 @@ scripts/check-cost-accounted-rho-tla-invariants.sh --filter AtomicVaultSettlemen
 scripts/check-cost-accounted-rho-tla-invariants.sh --filter LocatedAuthoritySettlement
 scripts/check-cost-accounted-rho-tla-invariants.sh --filter StateBoundAdmission
 scripts/check-cost-accounted-rho-tla-invariants.sh --filter StateBoundValidatorConvergence
+scripts/check-cost-accounted-rho-tla-invariants.sh --filter VaultBackedByteAccounting
 scripts/check-cost-accounted-rho-proofs.sh
 scripts/check-cost-accounted-rho-sage.sh
 scripts/check-cost-accounted-rho-loom.sh

@@ -60,6 +60,7 @@ From FinalizedFloor Require Import StateLineageFinality.
 From FinalizedFloor Require Import CertifiedFloorPromotion.
 From FinalizedFloor Require Import SnapshotFloorMaterialization.
 From FinalizedFloor Require Import HeartbeatFinalityBackpressure.
+From FinalizedFloor Require Import ParallelValidatorConsensus.
 
 Theorem finalized_floor_merge_correct :
   (* T-TERM: the main-parent spine walk always reaches genesis. *)
@@ -926,3 +927,77 @@ Proof.
 Qed.
 
 Print Assumptions finalized_floor_strict_accountable_safety_correct.
+
+Theorem finalized_floor_parallel_validator_consensus_correct :
+  forall
+    (Node Block Root Effect : Type)
+    (node_eq_dec : forall left right : Node, {left = right} + {left <> right})
+    (block_root : Block -> Root)
+    (block_effects : Block -> list Effect)
+    (certified state_certified : Block -> Prop),
+    parallel_validator_contract
+      node_eq_dec block_root block_effects certified state_certified.
+Proof.
+  intros Node Block Root Effect node_eq_dec block_root block_effects
+    certified state_certified.
+  apply parallel_validator_consensus_correct.
+Qed.
+
+Print Assumptions finalized_floor_parallel_validator_consensus_correct.
+
+Theorem finalized_floor_parallel_accountable_promotion_correct :
+  forall
+    (Node Root Effect : Type)
+    (node_eq_dec : forall left right : Node, {left = right} + {left <> right})
+    (block_root : BlockHash -> Root)
+    (block_effects : BlockHash -> list Effect)
+    (state_certified : BlockHash -> Prop)
+    (dag : DAG)
+    (snapshot : Snapshot)
+    (incompatible : BlockHash -> BlockHash -> Prop)
+    (committee : Committee)
+    (faulty : list Validator)
+    (num den : Z),
+    NoDup (map fst committee) ->
+    NoDup faulty ->
+    incl faulty (map fst committee) ->
+    causal_incompatibility_is_accountable
+      dag snapshot incompatible faulty ->
+    (0 < num)%Z ->
+    (0 < den)%Z ->
+    (Z.of_nat
+      (validator_stake (committee_stake committee) faulty) * den <
+      Z.of_nat (cweight committee) * num)%Z ->
+    parallel_validator_contract
+      node_eq_dec
+      block_root
+      block_effects
+      (fun block => Finalized_ft dag committee snapshot block num den)
+      state_certified
+    /\
+    (forall left right,
+      Finalized_ft dag committee snapshot left num den ->
+      Finalized_ft dag committee snapshot right num den ->
+      incompatible left right ->
+      False).
+Proof.
+  intros Node Root Effect node_eq_dec block_root block_effects
+    state_certified dag snapshot incompatible committee faulty num den
+    Hcommittee Hfaulty Hfaulty_in Haccountable Hnum Hden Hbudget.
+  split.
+  - apply parallel_validator_consensus_correct.
+  - intros left right Hleft Hright Hincompatible.
+    eapply exact_clique_certificates_are_accountably_safe.
+    + exact Hcommittee.
+    + exact Hfaulty.
+    + exact Hfaulty_in.
+    + exact Haccountable.
+    + exact Hleft.
+    + exact Hright.
+    + exact Hincompatible.
+    + exact Hnum.
+    + exact Hden.
+    + exact Hbudget.
+Qed.
+
+Print Assumptions finalized_floor_parallel_accountable_promotion_correct.

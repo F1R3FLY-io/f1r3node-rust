@@ -129,9 +129,50 @@ Proof.
   now rewrite Hoverdraw.
 Qed.
 
+Definition complete_branch_debit
+  (application_debit physical_debit byte_debit fee : nat) : nat :=
+  application_debit + physical_debit + byte_debit + fee.
+
+Definition complete_n_branch_funded
+  (balance branch_count application_debit physical_debit byte_debit fee : nat)
+  : bool :=
+  branch_count
+    * complete_branch_debit application_debit physical_debit byte_debit fee
+      <=? balance.
+
+Definition protocol_only_n_branch_funded
+  (balance branch_count physical_debit byte_debit fee : nat) : bool :=
+  branch_count * (physical_debit + byte_debit + fee) <=? balance.
+
+Theorem complete_funding_implies_protocol_only_funding :
+  forall balance branch_count application_debit physical_debit byte_debit fee,
+    complete_n_branch_funded
+      balance branch_count application_debit physical_debit byte_debit fee = true ->
+    protocol_only_n_branch_funded
+      balance branch_count physical_debit byte_debit fee = true.
+Proof.
+  intros balance branch_count application_debit physical_debit byte_debit fee Hfunded.
+  unfold complete_n_branch_funded, protocol_only_n_branch_funded,
+    complete_branch_debit in *.
+  apply Nat.leb_le in Hfunded.
+  apply Nat.leb_le.
+  nia.
+Qed.
+
+Example migrated_recovery_fixture_complete_boundary :
+  complete_n_branch_funded 9000000 2 3900000 292 569755 1 = true /\
+  complete_n_branch_funded 9000000 3 3900000 292 569755 1 = false /\
+  protocol_only_n_branch_funded 9000000 3 292 569755 1 = true.
+Proof.
+  vm_compute.
+  repeat split.
+Qed.
+
 Print Assumptions native_apply_refines_reserve_then_settle.
 Print Assumptions native_apply_success_is_visible_and_conserving.
 Print Assumptions native_apply_insufficient_bound_has_no_result.
 Print Assumptions native_apply_rejects_realized_over_bound.
 Print Assumptions aggregate_native_apply_is_order_independent.
 Print Assumptions aggregate_native_apply_rejects_overdraw.
+Print Assumptions complete_funding_implies_protocol_only_funding.
+Print Assumptions migrated_recovery_fixture_complete_boundary.

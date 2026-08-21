@@ -341,6 +341,10 @@ message CostAuthorityFundingCertificateProto {
   repeated CostAuthorityStackReservationProto stackReservations = 10;
   repeated CostAuthorityResourceProto feeAllocation = 11;
   bytes feeRecipient = 12;
+  uint32 byteCostScheduleVersion = 13;
+  bytes byteCostScheduleDigest = 14;
+  uint64 byteCostBound = 15;
+  repeated CostAuthorityResourceProto byteAllocation = 16;
 }
 
 message CostAuthorityStackReservationProto {
@@ -352,6 +356,19 @@ message CostAuthorityEventProto {
   bytes eventId = 1;
   repeated CostAuthorityResourceProto debit = 2;
   rhoapi.CostAuthority authority = 3;
+}
+
+enum CostAuthorityByteEventKindProto {
+  COST_AUTHORITY_BYTE_EVENT_KIND_PRODUCE_INTRODUCTION = 0;
+  COST_AUTHORITY_BYTE_EVENT_KIND_CONSUME_INTRODUCTION = 1;
+  COST_AUTHORITY_BYTE_EVENT_KIND_COMM = 2;
+}
+
+message CostAuthorityByteEventProto {
+  bytes eventId = 1;
+  CostAuthorityByteEventKindProto kind = 2;
+  rhoapi.CostAuthority authority = 3;
+  uint64 amount = 4;
 }
 
 message CostAuthorityPhysicalEventDrawProto {
@@ -376,6 +393,11 @@ message CostAuthorityWitnessProto {
   repeated CostAuthorityResourceProto settlement = 7;
   repeated CostAuthorityPhysicalEventDrawProto physicalDraws = 8;
   repeated CostAuthorityBornStackProto bornStacks = 9;
+  uint32 byteCostScheduleVersion = 10;
+  bytes byteCostScheduleDigest = 11;
+  uint64 byteCost = 12;
+  repeated CostAuthorityResourceProto byteSettlement = 13;
+  repeated CostAuthorityByteEventProto byteEvents = 14;
 }
 
 message SlashSystemDeployDataProto {
@@ -549,7 +571,7 @@ message MergeableEntryRequestProto {
 message MergeableEntryResponseProto {
   option (scalapb.message).extends = "CasperMessageProto";
   bytes block_hash       = 1;
-  // bincode of Vec<DeployMergeableData>. Empty bytes = peer has the block but
-  // no entry for it.
+  // Deprecated compatibility field. Honest peers send empty bytes and receivers
+  // ignore nonempty bytes because mergeable evidence is not block-authenticated.
   bytes serialized_entry = 2;
 }
