@@ -76,16 +76,16 @@ fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Harness telemetry roots. Subprocess sessions write monitor artifacts and
-# node logs under data/; docker sessions write them under log-archive/ (the
-# provider's host-visible per-session dir — DockerProvider.monitor_output_dir
-# in system-integration). Every search for monitor output, node logs, breach
-# markers or SOAK_METRIC lines must cover both, or docker iterations lose
-# their telemetry: rss_peak_mb and finalization_latency were null on every
-# docker iteration (runs 30880995655, 30906818259) because only data/ was
-# searched. Created up front so multi-root find never ENOENTs.
+# node logs under .subprocess-data/; docker sessions write them under
+# log-archive/ (the provider's host-visible per-session dir —
+# DockerProvider.monitor_output_dir in system-integration). The data/ root
+# remains for harness versions that write logs there. Every search for monitor
+# output, node logs, breach markers or SOAK_METRIC lines must cover all roots.
+# Created up front so multi-root find never ENOENTs.
 HARNESS_TELEMETRY_DIRS=(
 	"$SYSTEM_INTEGRATION_DIR/integration-tests/data"
 	"$SYSTEM_INTEGRATION_DIR/integration-tests/log-archive"
+	"$SYSTEM_INTEGRATION_DIR/integration-tests/.subprocess-data"
 )
 mkdir -p "${HARNESS_TELEMETRY_DIRS[@]}"
 RUN_BENCHMARKS="${SOAK_RUN_BENCHMARKS:-false}"
@@ -446,26 +446,36 @@ dedup_files_by_content() {
 	done
 }
 
-# Propose-timing latency samples (total_ms) from node JSON logs written after
-# the iteration's start marker — the f1r3fly.propose.timing parse target from
-# profile-casper-latency.sh. Emits "p50 p95 p99 count" or nothing.
+# Finalization latency from the test_load.py phase report. Each iteration uses
+# its slowest phase so sustained-load regressions remain visible in the rollup.
+# Emits "p50_ms p95_ms p99_ms phase_count" or nothing.
 iteration_finalization_latency() {
 	local iteration_dir="$1"
-	# `|| true` is load-bearing under pipefail: a failed iteration can leave
-	# zero matching samples, making grep exit 1 and the pipeline nonzero.
-	find "${HARNESS_TELEMETRY_DIRS[@]}" \
-		-name '*.log' -newer "$iteration_dir/.started" 2>/dev/null |
-		dedup_files_by_content |
-		xargs -r grep -h -o 'Propose timing:[^"]*' 2>/dev/null |
-		grep -oE 'total_ms=[0-9]+' | grep -oE '[0-9]+' |
-		sort -n |
-		awk '{ a[NR] = $1 }
-           END { if (NR == 0) exit
-                 p50 = a[int((NR + 1) * 0.5)]; p95 = a[int((NR + 1) * 0.95)]; p99 = a[int((NR + 1) * 0.99)]
-                 if (p50 == "") p50 = a[NR]
-                 if (p95 == "") p95 = a[NR]
-                 if (p99 == "") p99 = a[NR]
-                 print p50, p95, p99, NR }' || true
+	awk -F'|' '
+      function trim(value) {
+        gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
+        return value
+      }
+      {
+        deploys = trim($2)
+        finalization = trim($5)
+        count = split(finalization, values, /[[:space:]]+/)
+        if (deploys !~ /^[0-9]+$/ || count != 3) next
+        if (values[1] !~ /^[0-9]+([.][0-9]+)?$/ ||
+            values[2] !~ /^[0-9]+([.][0-9]+)?$/ ||
+            values[3] !~ /^[0-9]+([.][0-9]+)?$/) next
+        p50 = values[1] + 0
+        p95 = values[2] + 0
+        p99 = values[3] + 0
+        if (phases == 0 || p50 > max_p50) max_p50 = p50
+        if (phases == 0 || p95 > max_p95) max_p95 = p95
+        if (phases == 0 || p99 > max_p99) max_p99 = p99
+        phases++
+      }
+      END {
+        if (phases > 0)
+          printf "%.0f %.0f %.0f %d\n", max_p50 * 1000, max_p95 * 1000, max_p99 * 1000, phases
+      }' "$iteration_dir/pytest.log" 2>/dev/null || true
 }
 
 # Count of proposal rejections logged as too far ahead of the last finalized
