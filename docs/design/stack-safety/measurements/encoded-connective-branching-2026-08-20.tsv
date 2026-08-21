@@ -1,0 +1,35 @@
+shape	arm	depth	metric	ci95_low	estimate	ci95_high	unit	n	instrument	notes
+and_equal	control_decode	128	latency	334776.264	336465.603	338061.110	ns/op	20	Criterion 0.5	complete generated protobuf decode plus resident matcher
+and_equal	treatment_bytes	128	latency	51475.605	51489.635	51505.407	ns/op	20	Criterion 0.5	fully validated canonical scalar Expr byte equality
+and_equal	control_decode	512	latency	1342176.956	1346900.186	1351543.439	ns/op	20	Criterion 0.5	complete generated protobuf decode plus resident matcher
+and_equal	treatment_bytes	512	latency	203906.669	204763.661	205786.973	ns/op	20	Criterion 0.5	fully validated canonical scalar Expr byte equality
+and_equal	control_decode	2048	latency	5416120.114	5440219.638	5467518.245	ns/op	20	Criterion 0.5	complete generated protobuf decode plus resident matcher
+and_equal	treatment_bytes	2048	latency	831005.034	834548.495	837940.928	ns/op	20	Criterion 0.5	fully validated canonical scalar Expr byte equality
+and_equal	control_decode	4096	latency	10630743.334	10640053.551	10649518.561	ns/op	51	Criterion 0.5	pgmcp experiment 302 primary population
+and_equal	treatment_bytes	4096	latency	1592574.697	1596216.546	1600042.485	ns/op	51	Criterion 0.5	pgmcp experiment 302 primary population
+or_late_success	control_decode	128	latency	324334.437	324428.605	324525.496	ns/op	20	Criterion 0.5	every left scalar refuses before the final success
+or_late_success	treatment_bytes	128	latency	57303.235	57601.594	57935.825	ns/op	20	Criterion 0.5	every left scalar refuses before the final success
+or_late_success	control_decode	512	latency	1247167.427	1254054.905	1262793.193	ns/op	20	Criterion 0.5	every left scalar refuses before the final success
+or_late_success	treatment_bytes	512	latency	219520.915	220372.524	221183.245	ns/op	20	Criterion 0.5	every left scalar refuses before the final success
+or_late_success	control_decode	2048	latency	4953032.243	4976668.513	5005625.407	ns/op	20	Criterion 0.5	every left scalar refuses before the final success
+or_late_success	treatment_bytes	2048	latency	857919.818	859262.591	860855.942	ns/op	20	Criterion 0.5	every left scalar refuses before the final success
+or_late_success	control_decode	4096	latency	9643031.430	9689898.219	9743329.656	ns/op	20	Criterion 0.5	every left scalar refuses before the final success
+or_late_success	treatment_bytes	4096	latency	1784751.638	1791981.920	1800866.990	ns/op	20	Criterion 0.5	every left scalar refuses before the final success
+and_equal	control_decode	128	allocation_count	7523	7523	7523	allocations	1	counting allocator	pre-byte-equality diagnostic; fixture construction excluded
+and_equal	treatment_bytes	128	allocation_count	995	995	995	allocations	1	counting allocator	permanent slope gate; fixture construction excluded
+and_equal	control_decode	1024	allocation_count	58610	58610	58610	allocations	1	counting allocator	pre-byte-equality diagnostic; fixture construction excluded
+and_equal	treatment_bytes	1024	allocation_count	6386	6386	6386	allocations	1	counting allocator	permanent slope gate; fixture construction excluded
+and_equal	control_decode	128	allocated_bytes	3357663	3357663	3357663	bytes	1	counting allocator	pre-byte-equality diagnostic; fixture construction excluded
+and_equal	treatment_bytes	128	allocated_bytes	507871	507871	507871	bytes	1	counting allocator	permanent slope gate; fixture construction excluded
+and_equal	control_decode	1024	allocated_bytes	26276436	26276436	26276436	bytes	1	counting allocator	pre-byte-equality diagnostic; fixture construction excluded
+and_equal	treatment_bytes	1024	allocated_bytes	3478100	3478100	3478100	bytes	1	counting allocator	permanent slope gate; fixture construction excluded
+or_late_success	control_decode	128	allocation_count	6739	6739	6739	allocations	1	counting allocator	pre-byte-equality diagnostic; fixture construction excluded
+or_late_success	treatment_bytes	128	allocation_count	1235	1235	1235	allocations	1	counting allocator	permanent slope gate; fixture construction excluded
+or_late_success	control_decode	1024	allocation_count	52450	52450	52450	allocations	1	counting allocator	pre-byte-equality diagnostic; fixture construction excluded
+or_late_success	treatment_bytes	1024	allocation_count	8418	8418	8418	allocations	1	counting allocator	permanent slope gate; fixture construction excluded
+or_late_success	control_decode	128	allocated_bytes	2900902	2900902	2900902	bytes	1	counting allocator	pre-byte-equality diagnostic; fixture construction excluded
+or_late_success	treatment_bytes	128	allocated_bytes	477094	477094	477094	bytes	1	counting allocator	permanent slope gate; fixture construction excluded
+or_late_success	control_decode	1024	allocated_bytes	22651419	22651419	22651419	bytes	1	counting allocator	pre-byte-equality diagnostic; fixture construction excluded
+or_late_success	treatment_bytes	1024	allocated_bytes	3260955	3260955	3260955	bytes	1	counting allocator	permanent slope gate; fixture construction excluded
+and_equal	control_decode	4096	malloc_free_self_samples	0.534	0.534	0.534	seconds	1	AMD uProf 5.3.521.0 TBP	5 s profile; 0.301 s malloc plus 0.233 s free from 4.987 s application CPU samples
+and_equal	treatment_bytes	4096	malloc_free_self_samples	0.249	0.249	0.249	seconds	1	AMD uProf 5.3.521.0 TBP	5 s profile; 0.133 s malloc plus 0.116 s free from 5.010 s application CPU samples despite 6.67x throughput

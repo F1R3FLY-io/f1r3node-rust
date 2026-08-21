@@ -264,7 +264,7 @@ Abbreviations used throughout are ABI (application binary interface), CBR (conse
 | **SS-A12** | this checkpoint | f1r3node | normalization, substitution, and evaluator recursive-result construction $`\rightarrow`$ one transient `ParConstruction` arena with planned score/protobuf graphs and persistent Bag occurrence roots | repeated resident ancestor materialization $`\Theta(d^2) \rightarrow \Theta(d)`$ bytes emitted for a depth-$`d`$ unary term; native stack remains $`O(1)`$; all eight recursive component families reach depth **8,192**, schema planning reaches **16,384**, and planned EPathMap value nesting reaches **4,096**, each on **256 KiB** | **yes**; recursive-oracle protobuf, stable-bincode, metadata, charge, and exact-PathMap-snapshot differentials | [5.28](#528-transient-par-construction-closure-ss-a12) |
 | **SS-A13** | this checkpoint | f1r3node | complete the existing spatial-matcher PDA and its PathMap Bag algebra for the ninth `If` family; replace the artificial `ParCount` top 1,000 with the logical `u64::MAX` top intersected with the finite target | omitted family / cardinality ceiling $`\rightarrow`$ explicit three-child PDA and multiplicity-lazy eight-family partitions; depth **4,096** on **128 KiB** after SS-A14; compressed multiplicity **1,001** for every partitioned family | **no** — semantic and limit completeness on the existing PDA | [5.29](#529-parbag-family-and-count-domain-completeness-ss-a13-ss-a14-ss-y9) |
 | **SS-A14** | this checkpoint | f1r3node | nested `If` matching: repeated decoded suffix materialization $`\rightarrow`$ canonical-protobuf byte cursor over one shared immutable ParBag endpoint buffer | predecessor depth 128 match **4.277937 s** debug $`\rightarrow`$ release **55.002 µs**; treatment depth **4,096** **1.5387 ms**; allocated-byte and allocation-count ladders remain linear in encoded input; **128 KiB** native stack | **no** — heap/time repair inside the existing matcher PDA; exact verdict, complete `FreeMap`, rollback, schema, and unordered-`Par` semantics retained | [5.29](#529-parbag-family-and-count-domain-completeness-ss-a13-ss-a14-ss-y9) |
-| **SS-A15** | this checkpoint | f1r3node | generalize the shared canonical-protobuf matcher cursor through recursive New/Send/Receive/Match/Expr families and feed borrowed ESet/EMap members into the existing unordered Bag/PathMap ListPDA | all **13** named recursive families reach depth **4,096** on **128 KiB**; allocation count and bytes remain subquadratic from depth 128 to 1,024; ESet depth-128 debug diagnostic **3.009 s $`\rightarrow`$ 0.825 ms**, EMap **1.609 s $`\rightarrow`$ 1.099 ms** | **no** — exact matcher verdict, complete `FreeMap`, rollback, unordered backtracking/remainders, canonical bytes, and parallel semantics retained | [5.30](#530-general-recursive-family-byte-cursor-and-unordered-collection-closure-ss-a15-ss-y10) |
+| **SS-A15** | this checkpoint | f1r3node | generalize the shared canonical-protobuf matcher cursor through recursive New/Send/Receive/Match/Expr/Connective families and feed borrowed ESet/EMap members into the existing unordered Bag/PathMap ListPDA | all **15** named recursive families reach depth **4,096** on **128 KiB**; AND/OR additionally reach depth **20,000** on **256 KiB** in debug and release; allocation count and bytes remain subquadratic from depth 128 to 1,024; ESet depth-128 debug diagnostic **3.009 s $`\rightarrow`$ 0.825 ms**, EMap **1.609 s $`\rightarrow`$ 1.099 ms**; exact scalar children are **6.67×** faster than the decoder control at AND depth 4,096 | **no** — exact matcher verdict, complete `FreeMap`, rollback, unordered backtracking/remainders, canonical bytes, and parallel semantics retained | [5.30](#530-general-recursive-family-byte-cursor-and-unordered-collection-closure-ss-a15-ss-y10) |
 | **SS-B1** | `a929a2d6` | f1r3node | expression-evaluator SCC $`\rightarrow`$ `eval_drive` | overflow $`\approx`$ 1.5k $`\rightarrow`$ OK at 50,000 | **yes** | [5.2.1](#521-the-expression-evaluator-trampoline-a929a2d6) |
 | **SS-B2** | `29856679`, `55b97f84`, `a0a50473` | f1r3node | five async join sites detached | 300 s $`\rightarrow`$ **93.7 s CPU** | **yes** (heap chain) | [5.2.2](#522--the-tokio-fire-and-forget-driver--establishing-the-mechanism-not-assuming-it) |
 | **SS-B3** | `9843e4b6` | f1r3node | `StackGrowingFuture` + `stacker` **deleted** | — | dependency removed | [5.2.2](#522--the-tokio-fire-and-forget-driver--establishing-the-mechanism-not-assuming-it) |
@@ -351,7 +351,7 @@ Abbreviations used throughout are ABI (application binary interface), CBR (conse
 | **SS-Y4** | *(pre-existing; PINNED by `6bdd6ad7`, REPAIRED by `HEAD`)* | f1r3node | ⛔★★★ **A live consensus SAFETY FORK** — sibling order is not a total function of the term. `combine_emap` chains only the **key's** score, so distinct canonical terms share a score tree; `sort_vec` is **stable**, so tied siblings keep their input order | seeded: **20/20** split over 40 processes · deterministic: `{3:30} \| {3:90}` $`\neq`$ `{3:90} \| {3:30}` | ★ **repaired** — sibling order is now TOTAL | [5.6.9](#569-ss-y4--sibling-order-is-not-a-total-function-of-the-term) |
 | **SS-Y8** | exposed by the 2026-08-08 source/evidence audit; repaired `50756ec2` | f1r3node | SS-A6's `ESet` / `EMap` printer arms still opened nested drives over owned canonical intermediates; re-canonicalizing each nested suffix also made the canonicalization component quadratic | native stack $`\Theta(d) \rightarrow O(1)`$; canonicalization $`\Theta(d^2) \rightarrow \Theta(d)`$ for a unary collection chain; depth **4,096** on **256 KiB**: set **0.12 s / 28,444 KiB**, map **0.23 s / 42,696 KiB**, zero swap | ✅ **repaired**; 27 recursive-oracle differential cases preserve replay-visible text | [5.1.3a](#513a-ss-y8--owned-canonical-collections-complete-the-printer-pda) |
 | **SS-Y9** | exposed by SS-A13's 2026-08-20 fixed-stack gate; repaired by SS-A14; pgmcp `spatial-matcher-byte-native-nested-if-decoding` | f1r3node | the stack-safe matcher repeatedly decoded the remaining inline protobuf suffix of a nested `If` component instead of advancing one generated byte cursor over the authoritative ParBag endpoint | one-sample predecessor debug match-only ladder: depth 32 **110.005 ms**, 64 **646.553 ms**, 128 **4.277937 s**; treatment release ladder: depth 128 **55.002 µs**, 512 **193.100 µs**, 2,048 **752.600 µs**, 4,096 **1.5387 ms** | ✅ **REPAIRED** — canonical byte ranges, terminal-only decode, linear allocation gate, recursive-oracle and rollback equivalence, depth 4,096 on 128 KiB | [5.29](#529-parbag-family-and-count-domain-completeness-ss-a13-ss-a14-ss-y9) |
-| **SS-Y10** | exposed while generalizing SS-A14; repaired by SS-A15; pgmcp `spatial-matcher-byte-native-nested-if-decoding` | f1r3node | the same repeated-suffix decode remained behind New, Send, Receive, Match, recursive Expr, and the ESet/EMap unordered-list boundary; the latter projected each remaining collection suffix to owned `Par` values before matching | predecessor depth-128 one-sample debug diagnostics: New **~1.936 s**, Send **~1.804 s**, Receive **~2.749 s**, Match **~1.556 s**, ENot **~2.106 s**, ESet **3.009 s**, EMap **1.609 s**; permanent treatment allocation ladders are subquadratic for all 13 families | ✅ **REPAIRED** — borrowed encoded regions, existing Bag/PathMap relation, terminal/remainder-only decode, oracle/rollback/backtracking equivalence, depth 4,096 on 128 KiB | [5.30](#530-general-recursive-family-byte-cursor-and-unordered-collection-closure-ss-a15-ss-y10) |
+| **SS-Y10** | exposed while generalizing SS-A14; repaired by SS-A15; pgmcp `spatial-matcher-byte-native-nested-if-decoding`, `spatial-matcher-flat-candidate-plan`; experiment 302 | f1r3node | the same repeated-suffix decode remained behind New, Send, Receive, Match, recursive Expr/Connective, and the ESet/EMap unordered-list boundary; the latter projected each remaining collection suffix to owned `Par` values before matching | predecessor depth-128 one-sample debug diagnostics: New **~1.936 s**, Send **~1.804 s**, Receive **~2.749 s**, Match **~1.556 s**, ENot **~2.106 s**, ESet **3.009 s**, EMap **1.609 s**; permanent treatment allocation ladders are subquadratic for all 15 families; exact-scalar experiment 302 accepted **10.640 ms $`\rightarrow`$ 1.596 ms** at AND depth 4,096 | ✅ **REPAIRED** — borrowed encoded regions, flat candidate-plan arena, explicit AND/OR/NOT frames, validated scalar-byte equality, existing Bag/PathMap relation, terminal/remainder-only decode, oracle/rollback/backtracking equivalence, depth 4,096 on 128 KiB and branching depth 20,000 on 256 KiB | [5.30](#530-general-recursive-family-byte-cursor-and-unordered-collection-closure-ss-a15-ss-y10) |
 
 ⚠ **`SS-E1` and `SS-Y3` are a second instance of [Appendix F](#appendix-f--the-per-fix-template-fill-this-in-do-not-invent-a-shape)'s rule 4, in the same *revealed-by* form as `SS-G6`/`SS-Y2`**: `SS-E1`'s commits did not create the defect; they **measured** one that was already live and unquantified. `26876b65` discharged SS-Y3 by repair, and the row remains so the defect and its evidence cannot disappear.
 
@@ -8477,6 +8477,33 @@ protobuf decoder. The ParBag importer remains the canonicality authority. Recurs
 only an `Arc` header and changes two offsets; it neither copies a suffix nor creates a resident
 ancestor.
 
+Branching `Connective` values now use the same representation discipline. The candidate compiler
+stores a flat arena of plan nodes addressed by transient `usize` node identifiers; these identifiers
+never cross a wire, hash, persistence, or consensus boundary. AND/OR domains are combined by the
+existing immutable PathMap meet/join operations. The authoritative matcher retains one canonical
+Connective root and suspends an allocation-free child cursor in explicit `EncodedAndBranch`,
+`EncodedOrBranch`, and NOT frames. AND accumulates bindings left to right and restores the whole-fold
+snapshot on failure. Every OR attempt starts from the same snapshot and discards branch bindings on
+both success and failure. These are proof-search rules only; they impose no Rholang execution order.
+
+The encoded route treats a nested singleton `Connective` as logical syntax only when its enclosing
+child `Par` proves `connective_used = true`; a false or unproved summary delegates to concrete
+resident matching. The root direct-match shortcut has a second, independent admission obligation.
+The legacy `ParCount`/`sub_pars` relation projects only the eight concrete families, drops the
+`Connective` family, and clears both root summaries. Bypassing it is therefore proven equivalent
+only when the target has zero Connective occurrences, `connective_used = false`, and empty
+`locally_free`. Those are three O(1) cached `Par`/`ParBag` queries. Every other target enters the
+complete candidate-selecting machine; cursor refusal never becomes a semantic refusal.
+
+An exact terminal route removes the remaining dominant constant factor without widening the byte
+parser's authority. It admits only a `Par` containing one occurrence of one fully validated ground
+scalar `Expr`, no other component family, and `connective_used = false`. Both endpoints must satisfy
+that proof. Equality of their canonical Expr messages is then injective for all nine ground scalar
+variants: Boolean, integer, string, URI, byte array, raw-bit double, big integer, big rational, and
+fixed point. Root `locally_free` is a derived summary and remains ignored exactly as in resident
+`match_pars`; root `connective_used` remains semantic and is checked. Any unproved payload delegates
+to the generated decoder rather than becoming a semantic rejection.
+
 For `ESet` and `EMap`, `MatchValue::EncodedPar` and `EncodedParPair` carry those ranges into the
 existing `ListMachine`. They are **not** a semantic entry projection: no `Par` is decoded to build
 the relation. The same augmenting-path PDA performs unordered search, rollback, multiplicity-aware
@@ -8504,16 +8531,38 @@ All focused commands ran on 2026-08-20 with `MemorySwapMax=0` and a systemd RSS 
 | gate | result | discriminating evidence |
 |---|---:|---|
 | `models --test par_bag` | **29/29** | borrowed ESet/EMap members, key/value boundaries, signed free remainder, wildcard remainder, root metadata, malformed/bound-remainder fast-path refusal, separation of a proven outer `Expr` tag from recursive-child validity, and wrong-wire rejection for every generated `ExprInstance` arm |
-| `models --test protobuf_encoder_differential` | **14/14** | the descriptor-generated outer-tag lookup covers all **36/36** `ExprInstance` arms and agrees with each arm's emitted protobuf key; unknown tags remain unproved |
 | recursive-family cursor target | **6/6** | fixed stack, allocation slope, late-failure rollback, unordered backtracking plus set/map remainder materialization, and same-tag/different-tag malformed-child controls |
 | recursive matcher oracle | **18/18** | production PDA and bounded independent recursive equation agree on verdict and complete `FreeMap`, including legacy set/map and Bag residual cases; the pure router truth table rejects only two proven unequal tags |
+| Connective metadata/domain differential | **1/1 debug + release** | inactive child/root Connectives remain concrete data; target `locally_free` and `connective_used` summaries are projected exactly before free-variable capture; candidate compilation treats only active roots as logical |
 | singleton-`If` regression target | **8/8** | SS-A14 cursor, rollback, layout-sensitive traversal, and allocation slope remain green |
 | absent-required-child reachability | **5/5** | a decoded required-child omission remains an invariant violation rather than becoming a semantic non-match |
 | matcher disposition | **15/15** | all generated optional child slots retain the predecessor assert/no-match partition |
 | FFI absent-required-child boundary | **2/2** | the well-formed control returns and the malformed input retains the predecessor process-abort disposition |
-| formal production/proof/oracle manifest | **6/6** | the encoded-Expr router is bound to its production marker, Rocq refinement theorem, and executable differential |
-| aggregate formal gate | **PASS** | Rocq proves the conditional refinement and detects the prior collapse mutant; TLC independently checks all **478** reachable finite matcher/router states, including invalid-downstream preservation; Verus, Z3, and mCRL2 remain green |
-| fixed native stack | **13 families × depth 4,096 on 128 KiB** | every fixture reaches and captures the terminal; connective NOT additionally proves capture isolation |
+| formal production/proof/oracle manifest | **6/6** | the encoded Expr and Connective routers, metadata/domain gates, and scalar refinement are bound to production markers, Rocq theorems, and executable differentials |
+| aggregate formal gate | **PASS** | Rocq proves the conditional Connective/Expr refinements and snapshot laws; TLC independently explores **627 generated / 495 distinct** finite matcher/router states to depth 6, including child/root metadata, target-domain admission, exact-scalar routing, and detected mutants; Verus, Z3, and mCRL2 remain green |
+| fixed native stack | **15 families × depth 4,096 on 128 KiB** | every fixture reaches and captures the terminal; connective NOT additionally proves capture isolation; AND/OR also pass depth 20,000 on 256 KiB in debug and release |
+
+The family gate now contains **15**, not 13, cases: `Connective::And` and `Connective::Or` join the
+previous 13. Both branching families additionally complete depth 20,000 on a 256 KiB worker stack in
+debug and release. Exact route counters prove that the AND witness compares every scalar child, the
+late-success OR witness rejects every preceding scalar child, and neither silently falls through to
+resident Connective decoding.
+
+The metadata differential was added after independent review falsified the first direct-route
+precondition. The initial byte-native descent interpreted a singleton child as logical from shape
+alone, even when the child summary said it was concrete data; after that repair, the direct root
+route still bypassed the legacy target projection. The retained anti-vacuity witness requires an
+inactive Connective-only target to remain excluded, and two free-variable witnesses compare the
+complete captured `Par` when `locally_free` is nonempty or `connective_used` is true. The corrected
+three-condition admission passes in both debug and optimized release builds. The formal model
+separately detects false/unproved child-summary, summary-only root, and unsafe-domain mutants.
+
+One release-only defect was found by the causal control before profiling. The child cursor consumed
+its protobuf key inside `debug_assert_eq!`; release compilation erases the assertion and therefore
+erased the state transition, causing the key byte to be read as a child length. The repair performs
+the read unconditionally and treats the assertion as a diagnostic only. The exact depth-20,000
+debug **and release** executions are now permanent regression witnesses. A source audit found no
+other matcher/model `debug_assert!` owning a required cursor transition.
 
 The unordered collection test is deliberately not a one-element zip. Its free-variable ESet row can
 first consume the concrete target needed by the next row, so success requires an augmenting-path
@@ -8551,8 +8600,9 @@ rejection is equivalent to two sound, proven, unequal tags and that every same/u
 preserves the authoritative matcher's accepted `FreeMap`, rejection, or invalid outcome. The bridge
 states tag soundness and delegated-authority agreement as explicit hypotheses. An independent finite
 TLA+ router checks those equations over accepted, rejected, and invalid downstream outcomes and
-contains a mutant for the removed deep-parser-failure collapse. The descriptor differential,
-wrong-wire corpus, and subprocess disposition gates discharge the executable boundary. **MEASURED
+contains mutants for the removed deep-parser-failure collapse and the Connective metadata/domain
+shortcuts. The descriptor differential, wrong-wire corpus, and subprocess disposition gates
+discharge the executable boundary. **MEASURED
 (f)** by `scripts/check-stack-safe-pda-proofs.sh` and the formal-equivalence manifest on 2026-08-20.
 
 #### 5.30.4 Resource results and closure of SS-Y10
@@ -8568,23 +8618,60 @@ requested bytes for matching only; construction is outside the measurement closu
 
 | family | depth 128 | depth 1,024 |
 |---|---:|---:|
-| New | 219 / 234,452 B | 231 / 1,304,276 B |
-| Send | 218 / 213,746 B | 230 / 1,138,418 B |
-| Receive | 221 / 300,786 B | 233 / 1,834,738 B |
-| Match | 217 / 192,242 B | 229 / 966,386 B |
-| ENot | 217 / 188,613 B | 229 / 937,669 B |
-| EPlus | 353 / 268,624 B | 1,264 / 1,580,368 B |
-| EList | 730 / 248,818 B | 4,326 / 1,418,994 B |
-| ETuple | 729 / 227,314 B | 4,325 / 1,246,962 B |
-| EMethod | 1,379 / 386,251 B | 9,458 / 2,524,858 B |
-| EMatches | 219 / 235,051 B | 231 / 1,308,459 B |
-| ESet | 992 / 363,847 B | 6,383 / 2,342,215 B |
-| EMap | 1,626 / 351,576 B | 11,497 / 2,247,785 B |
-| Connective NOT | 177 / 117,664 B | 183 / 393,632 B |
+| New | 219 / 234,484 B | 231 / 1,304,308 B |
+| Send | 218 / 213,778 B | 230 / 1,138,450 B |
+| Receive | 221 / 300,818 B | 233 / 1,834,770 B |
+| Match | 217 / 192,274 B | 229 / 966,418 B |
+| ENot | 217 / 188,645 B | 229 / 937,701 B |
+| EPlus | 353 / 272,688 B | 1,264 / 1,613,104 B |
+| EList | 602 / 240,658 B | 3,302 / 1,353,490 B |
+| ETuple | 601 / 219,154 B | 3,301 / 1,181,458 B |
+| EMethod | 1,123 / 378,027 B | 7,410 / 2,459,290 B |
+| EMatches | 219 / 235,083 B | 231 / 1,308,491 B |
+| ESet | 864 / 359,719 B | 5,359 / 2,309,415 B |
+| EMap | 1,370 / 331,064 B | 9,449 / 2,083,913 B |
+| Connective NOT | 177 / 117,696 B | 183 / 393,664 B |
+| Connective AND | 995 / 507,871 B | 6,386 / 3,478,100 B |
+| Connective OR, late success | 1,235 / 477,094 B | 8,418 / 3,260,955 B |
 
 Every count and byte ladder passes the preregistered subquadratic classifier; an explicit quadratic
 control is rejected. Input bytes also remain linear in depth, preventing a compressed-input
-vacuity. The depth-4,096 / 128 KiB gate separately establishes constant native stack.
+vacuity. The depth-4,096 / 128 KiB and depth-20,000 / 256 KiB gates separately establish constant
+native stack.
+
+Pgmcp experiment 302 isolates exact scalar handling with a benchmark-only, compile-time-quarantined
+control that disables only the byte-equality transition. Both arms otherwise execute the same
+production PDA. Fixture construction and CoW root cloning are outside the timed sample. The primary
+population has 51 samples per arm; exploratory cells have 20. Lower is better.
+
+| shape / depth | decoder control | validated bytes | treatment/control |
+|---|---:|---:|---:|
+| AND / 128 | 336.466 µs | 51.490 µs | 0.1530 |
+| AND / 512 | 1.347 ms | 204.764 µs | 0.1520 |
+| AND / 2,048 | 5.440 ms | 834.548 µs | 0.1534 |
+| AND / 4,096 | **10.640 ms** | **1.596 ms** | **0.1500** |
+| late-success OR / 128 | 324.429 µs | 57.602 µs | 0.1775 |
+| late-success OR / 512 | 1.254 ms | 220.373 µs | 0.1757 |
+| late-success OR / 2,048 | 4.977 ms | 859.263 µs | 0.1727 |
+| late-success OR / 4,096 | 9.690 ms | 1.792 ms | 0.1849 |
+
+The preregistered AND/4,096 result is 10,640,053.55 versus 1,596,216.55 ns/op, an **85.0 %**
+mean reduction or **6.67×** throughput. Welch $`p = 6.69 \times 10^{-155}`$ and Cohen's
+$`d = -344.03`$; the non-normal treatment warning is answered by Mann–Whitney $`p = 0`$ at reported
+precision and Cliff's $`\delta = -1`$. All eight cells favor treatment.
+
+AMD uProf 5.3.521.0 supplies mechanistic, not merely timing, evidence. Five-second time-based
+profiles at AND/4,096 put decoded ParBag/PathMap iteration, zipper construction, `RawVec` growth,
+`malloc`, and `free` among the decoder control's ten hottest functions. Allocator self samples are
+0.301 + 0.233 = **0.534 s** of 4.987 s application CPU samples. The treatment runs 6.67 times as
+many matches per unit time yet records only 0.133 + 0.116 = **0.249 s** allocator self samples;
+explicit `drive_job`, branch frames, canonical cursors, and scalar-envelope validation replace the
+decoded traversal in the hotspot list. The separate uProf `assess` runs captured cycles,
+instructions, branches, mispredictions, L1 accesses/refills, and L2 accesses; kernel samples were
+unavailable because `perf_event_paranoid >= 2`, so the report makes no OS-counter claim.
+
+The durable rows, confidence intervals, allocation controls, and uProf attribution are in
+[`measurements/encoded-connective-branching-2026-08-20.tsv`](measurements/encoded-connective-branching-2026-08-20.tsv).
 
 SS-Y10 is therefore repaired for the named families. No `Vec<Par>` collection projection, shadow
 semantic map, element sort, global scheduler, enlarged stack, `stacker`, traversal cap, PathMap

@@ -6,12 +6,14 @@ mod par_corpus;
 use std::collections::{BTreeMap, BTreeSet};
 
 use models::rhoapi::connective::ConnectiveInstance::{
-    ConnAndBody, ConnInt, ConnNotBody, ConnOrBody,
+    ConnAndBody, ConnBool, ConnByteArray, ConnInt, ConnNotBody, ConnOrBody, ConnString, ConnUri,
+    VarRefBody,
 };
 use models::rhoapi::expr::ExprInstance::EPathmapBody;
 use models::rhoapi::{
-    Bundle, Connective, ConnectiveBody, DeployId, DeployerId, EPathMap, ETuple, Expr, GUnforgeable,
-    If, KeyValuePair, Match, New, PCost, Par, Receive, ReceiveBind, Send,
+    Bundle, Connective, ConnectiveBody, DeployId, DeployerId, EPathMap, ETuple, Expr, GBigRational,
+    GFixedPoint, GUnforgeable, If, KeyValuePair, Match, New, PCost, Par, Receive, ReceiveBind,
+    Send, VarRef,
 };
 use models::rust::par_bag::ParBag;
 use models::rust::par_construction::ParConstruction;
@@ -20,7 +22,8 @@ use models::rust::rholang::match_schema::{RhoPathCursor, RhoPathEvent};
 use models::rust::rholang::match_schema_tables::{ParCursor, RHO_MATCH_REGISTRY};
 use models::rust::utils::{
     new_elist_par, new_emap_par, new_eset_par, new_etuple_par, new_freevar_expr, new_freevar_par,
-    new_gint_par, new_gstring_par, new_wildcard_par,
+    new_gbool_par, new_gbytearray_par, new_gint_par, new_gstring_par, new_guri_par,
+    new_wildcard_par,
 };
 use pathmap::PathMap;
 use rspace_plus_plus::rspace::rho_path::{encode_structural_sequence, RhoPathQuery};
@@ -31,9 +34,9 @@ use super::recursive_oracle::spatial_matcher::{
 };
 use super::spatial_matcher::{SpatialMatcher, SpatialMatcherContext};
 use super::spatial_matcher_pda::{
-    encoded_expr_outer_route, if_target_index_shape, match_par_list_with_stats,
-    match_send_list_with_remainder_stats, match_send_list_with_stats, send_target_index_shape,
-    EncodedExprOuterRoute,
+    connective_candidate_positions_with_stats, encoded_expr_outer_route, if_target_index_shape,
+    match_par_list_with_stats, match_par_with_stats, match_send_list_with_remainder_stats,
+    match_send_list_with_stats, send_target_index_shape, EncodedExprOuterRoute,
 };
 
 #[test]
@@ -352,6 +355,12 @@ fn connective(instance: models::rhoapi::connective::ConnectiveInstance) -> Par {
     }
 }
 
+fn inactive_connective(instance: models::rhoapi::connective::ConnectiveInstance) -> Par {
+    Par::default().with_connectives(vec![Connective {
+        connective_instance: Some(instance),
+    }])
+}
+
 #[derive(Clone, Copy)]
 struct NominalFrame {
     pattern: usize,
@@ -613,10 +622,29 @@ fn recursive_oracle_and_pda_agree_on_the_semantic_corpus() {
         })),
     );
     compare(
+        "failed conjunction rolls back every earlier conjunct binding",
+        seven(),
+        connective(ConnAndBody(ConnectiveBody {
+            ps: vec![free(0), two()],
+        })),
+    );
+    compare(
         "disjunction",
         seven(),
         connective(ConnOrBody(ConnectiveBody {
             ps: vec![two(), free(0)],
+        })),
+    );
+    compare(
+        "disjunction isolates a failed binding branch before success",
+        seven(),
+        connective(ConnOrBody(ConnectiveBody {
+            ps: vec![
+                connective(ConnAndBody(ConnectiveBody {
+                    ps: vec![free(0), two()],
+                })),
+                seven(),
+            ],
         })),
     );
     compare("negation success", seven(), connective(ConnNotBody(two())));
@@ -1017,40 +1045,361 @@ fn production_list_pda_connective_candidate_algebra_is_conservative_and_exactly_
 }
 
 #[test]
-fn connective_candidate_plan_compilation_and_matching_are_stack_safe_at_depth_twenty_thousand() {
+fn byte_native_connective_authority_covers_every_terminal_shape() {
+    for payload in [false, true] {
+        compare(
+            "encoded Bool predicate",
+            new_gbool_par(false, Vec::new(), false),
+            connective(ConnBool(payload)),
+        );
+        compare(
+            "encoded Int predicate",
+            new_gint_par(-7, Vec::new(), false),
+            connective(ConnInt(payload)),
+        );
+        compare(
+            "encoded String predicate",
+            new_gstring_par("value".to_owned(), Vec::new(), false),
+            connective(ConnString(payload)),
+        );
+        compare(
+            "encoded Uri predicate",
+            new_guri_par("rho:id:test".to_owned(), Vec::new(), false),
+            connective(ConnUri(payload)),
+        );
+        compare(
+            "encoded ByteArray predicate",
+            new_gbytearray_par(vec![0, 1, 0xff], Vec::new(), false),
+            connective(ConnByteArray(payload)),
+        );
+    }
+
+    compare(
+        "encoded predicate rejects a different scalar family",
+        new_gint_par(1, Vec::new(), false),
+        connective(ConnBool(true)),
+    );
+    compare(
+        "empty encoded AND is true",
+        new_gint_par(1, Vec::new(), false),
+        connective(ConnAndBody(ConnectiveBody { ps: Vec::new() })),
+    );
+    compare(
+        "empty encoded OR is false",
+        new_gint_par(1, Vec::new(), false),
+        connective(ConnOrBody(ConnectiveBody { ps: Vec::new() })),
+    );
+    compare(
+        "encoded VarRef remains unconditional refusal",
+        new_gint_par(1, Vec::new(), false),
+        connective(VarRefBody(VarRef { index: 0, depth: 0 })),
+    );
+    compare(
+        "absent encoded Connective remains unconditional refusal",
+        new_gint_par(1, Vec::new(), false),
+        Par::default().with_connectives(vec![Connective::default()]),
+    );
+}
+
+#[test]
+fn byte_native_connective_respects_child_and_root_dispatch_metadata() {
+    let inactive_predicate = inactive_connective(ConnInt(true));
+    let integer = new_gint_par(7, Vec::new(), false);
+
+    compare(
+        "inactive root Connective remains concrete data",
+        inactive_predicate.clone(),
+        inactive_predicate.clone(),
+    );
+    compare(
+        "inactive root Connective is not an integer predicate",
+        integer.clone(),
+        inactive_predicate.clone(),
+    );
+
+    let unary = connective(ConnAndBody(ConnectiveBody {
+        ps: vec![inactive_predicate.clone()],
+    }));
+    compare(
+        "unary spine stops before an inactive Connective child",
+        integer.clone(),
+        unary.clone(),
+    );
+    let mut context = SpatialMatcherContext::new();
+    let (result, unary_stats) = match_par_with_stats(&mut context, integer.clone(), unary);
+    assert!(result.is_none());
+    assert_eq!(
+        unary_stats.authoritative_connective_evaluations, 0,
+        "the unary normalizer must stop before the inactive child"
+    );
+
+    let branching = connective(ConnAndBody(ConnectiveBody {
+        ps: vec![inactive_predicate.clone(), inactive_predicate.clone()],
+    }));
+    compare(
+        "branching encoded descent delegates inactive Connective children",
+        integer.clone(),
+        branching.clone(),
+    );
+    let mut context = SpatialMatcherContext::new();
+    let (result, branching_stats) =
+        match_par_with_stats(&mut context, integer.clone(), branching.clone());
+    assert!(result.is_none());
+    assert_eq!(
+        branching_stats.authoritative_connective_evaluations, 1,
+        "only the active outer AND may be evaluated as logical syntax"
+    );
+    compare(
+        "direct route preserves legacy exclusion of inactive Connective target",
+        inactive_predicate.clone(),
+        branching.clone(),
+    );
+
+    let metadata_sensitive = connective(ConnAndBody(ConnectiveBody {
+        ps: vec![new_freevar_par(0, Vec::new()), connective(ConnInt(true))],
+    }));
+    compare(
+        "direct route preserves locally-free projection before capture",
+        integer.clone().with_locally_free(vec![0x01]),
+        metadata_sensitive.clone(),
+    );
+    compare(
+        "direct route preserves connective-used projection before capture",
+        integer.clone().with_connective_used(true),
+        metadata_sensitive,
+    );
+
+    for encoded_compiler in [false, true] {
+        let (positions, stats) = connective_candidate_positions_with_stats(
+            vec![inactive_predicate.clone(), integer.clone()],
+            branching.clone(),
+            encoded_compiler,
+        );
+        assert_eq!(
+            positions.as_ref(),
+            &[0],
+            "candidate compilation must retain the concrete inactive-Connective target"
+        );
+        if encoded_compiler {
+            assert!(
+                stats.candidate_terminal_par_decodes >= 2,
+                "both inactive children must delegate to concrete Par compilation: {stats:?}"
+            );
+        } else {
+            assert_eq!(
+                stats.candidate_resident_connective_decodes, 1,
+                "only the active outer AND is a resident logical connective: {stats:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn byte_native_connective_exact_scalar_route_is_complete_and_non_vacuous() {
+    use models::rhoapi::expr::ExprInstance;
+
+    fn scalar(instance: ExprInstance) -> Par {
+        Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(instance),
+        }])
+    }
+    fn binary_and(pattern: Par) -> Par {
+        connective(ConnAndBody(ConnectiveBody {
+            ps: vec![pattern.clone(), pattern],
+        }))
+    }
+
+    let cases = [
+        (
+            scalar(ExprInstance::GBool(false)),
+            scalar(ExprInstance::GBool(true)),
+        ),
+        (
+            scalar(ExprInstance::GInt(i64::MIN)),
+            scalar(ExprInstance::GInt(i64::MAX)),
+        ),
+        (
+            scalar(ExprInstance::GString("λ\0".to_owned())),
+            scalar(ExprInstance::GString(String::new())),
+        ),
+        (
+            scalar(ExprInstance::GUri("rho:id:λ".to_owned())),
+            scalar(ExprInstance::GUri(String::new())),
+        ),
+        (
+            scalar(ExprInstance::GByteArray(vec![0, 1, 0xff])),
+            scalar(ExprInstance::GByteArray(Vec::new())),
+        ),
+        (
+            scalar(ExprInstance::GDouble(0x7ff8_0000_0000_0042)),
+            scalar(ExprInstance::GDouble(0x7ff8_0000_0000_0043)),
+        ),
+        (
+            scalar(ExprInstance::GBigInt(vec![0x80, 0])),
+            scalar(ExprInstance::GBigInt(Vec::new())),
+        ),
+        (
+            scalar(ExprInstance::GBigRat(GBigRational {
+                numerator: vec![1],
+                denominator: vec![2],
+            })),
+            scalar(ExprInstance::GBigRat(GBigRational::default())),
+        ),
+        (
+            scalar(ExprInstance::GFixedPoint(GFixedPoint {
+                unscaled: vec![1],
+                scale: u32::MAX,
+            })),
+            scalar(ExprInstance::GFixedPoint(GFixedPoint::default())),
+        ),
+    ];
+
+    for (equal, unequal) in cases {
+        let mut context = SpatialMatcherContext::new();
+        let (result, stats) = match_par_with_stats(
+            &mut context,
+            equal.clone().with_locally_free(vec![0x01]),
+            binary_and(equal.clone().with_locally_free(vec![0x80, 0x01])),
+        );
+        assert!(
+            result.is_some(),
+            "locally-free summaries do not affect equality"
+        );
+        assert_eq!(
+            stats.authoritative_exact_scalar_attempts, 2,
+            "equal scalar did not take the proven route: {equal:?}; {stats:?}"
+        );
+        assert_eq!(stats.authoritative_exact_scalar_equal, 2);
+        assert_eq!(stats.authoritative_exact_scalar_mismatch, 0);
+        assert_eq!(stats.authoritative_terminal_par_decodes, 0);
+
+        let mut context = SpatialMatcherContext::new();
+        let (result, stats) =
+            match_par_with_stats(&mut context, unequal, binary_and(equal.clone()));
+        assert!(result.is_none());
+        assert_eq!(
+            stats.authoritative_exact_scalar_attempts, 1,
+            "unequal scalar did not take the proven route: {equal:?}; {stats:?}"
+        );
+        assert_eq!(stats.authoritative_exact_scalar_equal, 0);
+        assert_eq!(stats.authoritative_exact_scalar_mismatch, 1);
+        assert_eq!(stats.authoritative_terminal_par_decodes, 0);
+
+        compare(
+            "exact scalar accepted domain",
+            equal.clone(),
+            binary_and(equal),
+        );
+    }
+
+    let mut context = SpatialMatcherContext::new();
+    let (result, stats) = match_par_with_stats(
+        &mut context,
+        new_gint_par(7, Vec::new(), false),
+        binary_and(new_gbool_par(true, Vec::new(), false)),
+    );
+    assert!(result.is_none(), "different scalar tags are unequal");
+    assert_eq!(stats.authoritative_exact_scalar_attempts, 1);
+    assert_eq!(stats.authoritative_exact_scalar_mismatch, 1);
+
+    let delegated = new_gint_par(7, Vec::new(), false).with_connective_used(true);
+    let mut context = SpatialMatcherContext::new();
+    let (_, stats) = match_par_with_stats(
+        &mut context,
+        new_gint_par(7, Vec::new(), false),
+        binary_and(delegated),
+    );
+    assert_eq!(stats.authoritative_exact_scalar_attempts, 0);
+    assert_eq!(stats.authoritative_exact_scalar_unproved, 2);
+    assert_eq!(stats.authoritative_terminal_par_decodes, 2);
+}
+
+fn planned_skewed_connective(depth: usize, conjunction: bool) -> Par {
+    let mut construction = ParConstruction::new();
+    let terminal = new_gint_par(1, Vec::new(), false);
+    let mut nested = construction
+        .import_par(&terminal)
+        .expect("import connective terminal");
+    let sibling = nested;
+    let shell = Connective {
+        connective_instance: Some(if conjunction {
+            ConnAndBody(ConnectiveBody {
+                ps: vec![Par::default(), Par::default()],
+            })
+        } else {
+            ConnOrBody(ConnectiveBody {
+                ps: vec![Par::default(), Par::default()],
+            })
+        }),
+    };
+    for _ in 0..depth {
+        let component = construction
+            .connective_component(&shell, &[nested, sibling])
+            .expect("plan skewed binary connective");
+        nested = construction
+            .singleton_component(component, Vec::new(), true)
+            .expect("plan connective carrier");
+    }
+    construction.finish(nested).expect("finish connective plan")
+}
+
+fn planned_skewed_failing_or(depth: usize) -> Par {
+    let mut construction = ParConstruction::new();
+    let mut nested = construction
+        .import_par(&new_gint_par(1, Vec::new(), false))
+        .expect("import OR success terminal");
+    let failure = construction
+        .import_par(&new_gint_par(0, Vec::new(), false))
+        .expect("import OR refusal terminal");
+    let shell = Connective {
+        connective_instance: Some(ConnOrBody(ConnectiveBody {
+            ps: vec![Par::default(), Par::default()],
+        })),
+    };
+    for _ in 0..depth {
+        let component = construction
+            .connective_component(&shell, &[failure, nested])
+            .expect("plan skewed refusing OR");
+        nested = construction
+            .singleton_component(component, Vec::new(), true)
+            .expect("plan OR carrier");
+    }
+    construction.finish(nested).expect("finish OR plan")
+}
+
+#[test]
+fn byte_native_and_resident_candidate_compilers_emit_identical_domains() {
+    let targets = (0..8)
+        .map(|value| new_gint_par(value, Vec::new(), false))
+        .collect::<Vec<_>>();
+    for depth in [1, 2, 31, 128] {
+        for conjunction in [false, true] {
+            let pattern = planned_skewed_connective(depth, conjunction);
+            let (encoded, encoded_stats) =
+                connective_candidate_positions_with_stats(targets.clone(), pattern.clone(), true);
+            let (resident, resident_stats) =
+                connective_candidate_positions_with_stats(targets.clone(), pattern, false);
+            assert_eq!(encoded, resident);
+            assert_eq!(encoded.as_ref(), &[1]);
+            assert_eq!(encoded_stats.candidate_encoded_connective_nodes, depth);
+            assert_eq!(encoded_stats.candidate_resident_connective_decodes, 0);
+            assert_eq!(encoded_stats.candidate_terminal_par_decodes, depth + 1);
+            assert_eq!(resident_stats.candidate_encoded_connective_nodes, 0);
+            assert_eq!(resident_stats.candidate_resident_connective_decodes, depth);
+        }
+    }
+}
+
+#[test]
+fn skewed_branching_candidate_plan_compile_evaluate_and_drop_are_stack_safe_at_depth_twenty_thousand(
+) {
     const DEPTH: usize = 20_000;
     let handle = std::thread::Builder::new()
         .name("connective-candidate-plan-depth".into())
         .stack_size(256 * 1024)
         .spawn(|| {
             for conjunction in [false, true] {
-                let mut construction = ParConstruction::new();
-                let terminal = new_gint_par(1, Vec::new(), false);
-                let mut nested = construction
-                    .import_par(&terminal)
-                    .expect("import connective terminal");
-                let shell = Connective {
-                    connective_instance: Some(if conjunction {
-                        ConnAndBody(ConnectiveBody {
-                            ps: vec![Par::default()],
-                        })
-                    } else {
-                        ConnOrBody(ConnectiveBody {
-                            ps: vec![Par::default()],
-                        })
-                    }),
-                };
-                for _ in 0..DEPTH {
-                    let component = construction
-                        .connective_component(&shell, &[nested])
-                        .expect("plan unary connective");
-                    nested = construction
-                        .singleton_component(component, Vec::new(), true)
-                        .expect("plan connective carrier");
-                }
-                let nested = construction
-                    .finish(nested)
-                    .expect("finish connective spine");
+                let nested = planned_skewed_connective(DEPTH, conjunction);
                 let mut context = SpatialMatcherContext::new();
                 let (result, stats) = match_par_list_with_stats(
                     &mut context,
@@ -1062,12 +1411,69 @@ fn connective_candidate_plan_compilation_and_matching_are_stack_safe_at_depth_tw
                 );
                 assert!(result.is_some());
                 assert_eq!(stats.edge_evaluations, 2);
+                assert_eq!(stats.candidate_encoded_connective_nodes, DEPTH);
+                assert_eq!(stats.candidate_resident_connective_decodes, 0);
+                assert_eq!(stats.candidate_terminal_par_decodes, DEPTH + 1);
+                assert!(stats.candidate_plan_nodes >= DEPTH * 2 + 1);
+                assert_eq!(stats.authoritative_connective_root_copies, 1);
+                assert!(stats.authoritative_connective_root_bytes > DEPTH);
+                assert_eq!(stats.authoritative_connective_evaluations, DEPTH);
+                assert_eq!(stats.authoritative_encoded_connective_nodes, DEPTH);
+                assert_eq!(stats.authoritative_resident_connective_fallbacks, 0);
+                if conjunction {
+                    assert_eq!(stats.authoritative_terminal_par_decodes, 0);
+                    assert_eq!(stats.authoritative_exact_scalar_attempts, DEPTH + 1);
+                    assert_eq!(stats.authoritative_exact_scalar_equal, DEPTH + 1);
+                    assert_eq!(stats.authoritative_exact_scalar_mismatch, 0);
+                    assert_eq!(stats.authoritative_and_frames, DEPTH);
+                    assert_eq!(stats.authoritative_or_frames, 0);
+                    assert!(stats.authoritative_max_frame_depth >= DEPTH * 2);
+                } else {
+                    assert_eq!(stats.authoritative_terminal_par_decodes, 0);
+                    assert_eq!(stats.authoritative_exact_scalar_attempts, 1);
+                    assert_eq!(stats.authoritative_exact_scalar_equal, 1);
+                    assert_eq!(stats.authoritative_exact_scalar_mismatch, 0);
+                    assert_eq!(stats.authoritative_and_frames, 0);
+                    assert_eq!(stats.authoritative_or_frames, DEPTH);
+                    assert!(stats.authoritative_max_frame_depth >= DEPTH);
+                }
             }
         })
         .expect("the tiny-stack candidate compiler worker starts");
     handle
         .join()
         .expect("the candidate compiler and matcher use constant native stack");
+}
+
+#[test]
+fn encoded_or_refusal_continuations_are_stack_safe_at_depth_twenty_thousand() {
+    const DEPTH: usize = 20_000;
+    let handle = std::thread::Builder::new()
+        .name("encoded-or-refusal-depth".into())
+        .stack_size(256 * 1024)
+        .spawn(|| {
+            let pattern = planned_skewed_failing_or(DEPTH);
+            let mut context = SpatialMatcherContext::new();
+            let (result, stats) =
+                match_par_with_stats(&mut context, new_gint_par(1, Vec::new(), false), pattern);
+            assert!(result.is_some());
+            assert!(context.free_map.is_empty());
+            assert_eq!(stats.authoritative_connective_root_copies, 1);
+            assert_eq!(stats.authoritative_connective_evaluations, DEPTH);
+            assert_eq!(stats.authoritative_encoded_connective_nodes, DEPTH);
+            assert_eq!(stats.authoritative_terminal_par_decodes, 0);
+            assert_eq!(stats.authoritative_resident_connective_fallbacks, 0);
+            assert_eq!(stats.authoritative_exact_scalar_attempts, DEPTH + 1);
+            assert_eq!(stats.authoritative_exact_scalar_equal, 1);
+            assert_eq!(stats.authoritative_exact_scalar_mismatch, DEPTH);
+            assert_eq!(stats.authoritative_and_frames, 0);
+            assert_eq!(stats.authoritative_or_frames, DEPTH * 2);
+            assert!(stats.authoritative_max_frame_depth >= DEPTH);
+        })
+        .expect("the tiny-stack encoded OR worker starts");
+    handle
+        .join()
+        .expect("encoded OR refusal continuations use constant native stack");
 }
 
 #[test]

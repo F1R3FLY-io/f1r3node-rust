@@ -11,6 +11,8 @@ pub mod spatial_matcher;
 mod spatial_matcher_pda;
 pub mod sub_pars;
 
+#[cfg(feature = "spatial-matcher-exact-scalar-differential")]
+pub use spatial_matcher_pda::benchmark_match_par_exact_scalar;
 #[cfg(feature = "spatial-matcher-connective-domain-differential")]
 pub use spatial_matcher_pda::{benchmark_match_par_list, benchmark_match_send_list_with_remainder};
 

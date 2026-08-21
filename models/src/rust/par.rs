@@ -523,7 +523,8 @@ impl Par {
     /// Candidate-plan compilation and spatial matching can therefore consume
     /// the terminal without allocating any intermediate connective or `Par`.
     pub fn canonical_unary_connective_terminal(&self) -> Option<Self> {
-        if self.cardinality() != 1
+        if !self.connective_used()
+            || self.cardinality() != 1
             || self.family_cardinality::<Connective>() != 1
             || !self.all_components_are::<Connective>()
         {
@@ -542,7 +543,8 @@ impl Par {
     /// the parity of NOT nodes; a true value also tells the spatial matcher to
     /// restore the pre-spine binding map after matching the terminal.
     pub fn canonical_unary_connective_spine(&self) -> Option<(Self, bool, bool)> {
-        if self.cardinality() != 1
+        if !self.connective_used()
+            || self.cardinality() != 1
             || self.family_cardinality::<Connective>() != 1
             || !self.all_components_are::<Connective>()
         {

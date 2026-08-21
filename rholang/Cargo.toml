@@ -88,6 +88,9 @@ epathmap-fusion-differential = []
 # library. The default build has neither the toggle nor its branch, preventing
 # a runtime configuration from changing consensus candidate filtering.
 spatial-matcher-connective-domain-differential = []
+# Compiles the BENCHMARK-ONLY validated-scalar decoder control into the
+# matcher. The default build has neither the toggle nor its branch.
+spatial-matcher-exact-scalar-differential = []
 # Pass the Phase 7 measurement-only hooks through to `models` while running the
 # interpreter corpus. Disabled in every production/default build.
 phase7-depth-histograms = ["models/phase7-depth-histograms"]
@@ -113,3 +116,8 @@ required-features = ["spatial-matcher-connective-domain-differential"]
 [[bench]]
 name = "spatial_matcher_if_cursor"
 harness = false
+
+[[bench]]
+name = "spatial_matcher_exact_scalar"
+harness = false
+required-features = ["spatial-matcher-exact-scalar-differential"]

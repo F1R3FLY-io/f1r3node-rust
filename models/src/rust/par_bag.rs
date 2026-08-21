@@ -1066,7 +1066,7 @@ fn canonical_single_varint_field(message: &[u8], expected_key: u64) -> Option<u6
 /// Extract the sole Connective component body from a canonical singleton
 /// connective `Par`. Root locally-free/connective metadata may follow the
 /// component, exactly as emitted by the canonical protobuf encoder.
-fn canonical_single_connective_from_par(message: &[u8]) -> Option<&[u8]> {
+pub fn canonical_single_connective_from_par(message: &[u8]) -> Option<&[u8]> {
     const CONNECTIVE_KEY: u64 = (8 << 3) | 2;
     const LOCALLY_FREE_KEY: u64 = (9 << 3) | 2;
     const CONNECTIVE_USED_KEY: u64 = 10 << 3;
@@ -1096,6 +1096,191 @@ fn canonical_single_connective_from_par(message: &[u8]) -> Option<&[u8]> {
         }
     }
     (at == message.len()).then_some(connective)
+}
+
+/// A validated, allocation-free cursor over the repeated `Par` children of a
+/// canonical [`ConnectiveBody`].
+///
+/// Construction validates the complete body once. Iteration can therefore be
+/// infallible and lend child protobuf regions without decoding or collecting a
+/// `Vec<&[u8]>`. The cursor is deliberately restartable by value so an
+/// explicit PDA can suspend it beside a child obligation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CanonicalConnectiveChildren<'a> {
+    message: &'a [u8],
+    cursor: CanonicalConnectiveChildCursor,
+}
+
+/// Slice-independent continuation for a validated canonical
+/// [`ConnectiveBody`] child sequence.
+///
+/// The byte slice remains with the caller (or with an owned encoded region in
+/// a PDA frame), while this small value records only the next byte offset and
+/// remaining arity. That separation lets borrowed compilation and owned
+/// authoritative matching share one framing implementation without a
+/// self-referential object or a projected `Vec<Par>`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CanonicalConnectiveChildCursor {
+    at: usize,
+    remaining: usize,
+}
+
+impl<'a> CanonicalConnectiveChildren<'a> {
+    fn new(message: &'a [u8]) -> Option<Self> {
+        const CHILD_KEY: u64 = (1 << 3) | 2;
+
+        let mut at = 0usize;
+        let mut remaining = 0usize;
+        while at < message.len() {
+            (read_canonical_varint(message, &mut at)? == CHILD_KEY).then_some(())?;
+            let len = usize::try_from(read_canonical_varint(message, &mut at)?).ok()?;
+            at = at.checked_add(len).filter(|end| *end <= message.len())?;
+            remaining = remaining.checked_add(1)?;
+        }
+        Some(Self {
+            message,
+            cursor: CanonicalConnectiveChildCursor { at: 0, remaining },
+        })
+    }
+
+    pub const fn len(&self) -> usize { self.cursor.len() }
+
+    pub const fn is_empty(&self) -> bool { self.cursor.is_empty() }
+
+    /// Complete validated `ConnectiveBody` bytes driven by this cursor.
+    pub const fn message(&self) -> &'a [u8] { self.message }
+
+    /// Export the slice-independent continuation for an owned PDA frame.
+    pub const fn cursor(&self) -> CanonicalConnectiveChildCursor { self.cursor }
+}
+
+impl CanonicalConnectiveChildCursor {
+    pub const fn len(&self) -> usize { self.remaining }
+
+    pub const fn is_empty(&self) -> bool { self.remaining == 0 }
+
+    /// Lend the next child from the same body that was fully validated when
+    /// this cursor was created.
+    pub fn next_in<'a>(&mut self, message: &'a [u8]) -> Option<&'a [u8]> {
+        const CHILD_KEY: u64 = (1 << 3) | 2;
+
+        if self.remaining == 0 {
+            return None;
+        }
+        // This read is part of the cursor transition, not a diagnostic. Keep
+        // it outside `debug_assert!`: assertions are erased in release builds
+        // and must never own parser state changes.
+        let key = read_canonical_varint(message, &mut self.at)
+            .expect("validated ConnectiveBody child key remains present");
+        assert_eq!(
+            key, CHILD_KEY,
+            "validated ConnectiveBody cursor remains aligned to a child key"
+        );
+        let len = usize::try_from(read_canonical_varint(message, &mut self.at)?)
+            .expect("validated ConnectiveBody child length fits usize");
+        let end = self
+            .at
+            .checked_add(len)
+            .expect("validated ConnectiveBody child end fits usize");
+        let child = message
+            .get(self.at..end)
+            .expect("validated ConnectiveBody child range remains in bounds");
+        self.at = end;
+        self.remaining -= 1;
+        Some(child)
+    }
+}
+
+impl<'a> Iterator for CanonicalConnectiveChildren<'a> {
+    type Item = &'a [u8];
+
+    fn next(&mut self) -> Option<Self::Item> { self.cursor.next_in(self.message) }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.cursor.remaining, Some(self.cursor.remaining))
+    }
+}
+
+impl ExactSizeIterator for CanonicalConnectiveChildren<'_> {}
+
+/// Canonical wire-level connective shape used by byte-native candidate-plan
+/// compilation.
+///
+/// This is a routing proof, not a second semantic authority. `None` from
+/// [`canonical_connective_parts`] means the complete generated decoder must be
+/// used. In particular, no malformed or non-canonical message is interpreted
+/// as `Empty` or `All` merely because its first tag resembles a connective.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CanonicalConnectiveParts<'a> {
+    And(CanonicalConnectiveChildren<'a>),
+    Or(CanonicalConnectiveChildren<'a>),
+    Not(&'a [u8]),
+    VarRef,
+    Predicate { tag: u32, value: bool },
+    Absent,
+}
+
+/// Split one complete canonical `Connective` protobuf message without
+/// materializing its recursive child `Par`s.
+pub fn canonical_connective_parts(message: &[u8]) -> Option<CanonicalConnectiveParts<'_>> {
+    if message.is_empty() {
+        return Some(CanonicalConnectiveParts::Absent);
+    }
+
+    let mut at = 0usize;
+    let key = read_canonical_varint(message, &mut at)?;
+    let tag = u32::try_from(key >> 3).ok()?;
+    let wire = key & 0x07;
+    match tag {
+        1 | 2 | 3 | 4 if wire == 2 => {
+            let len = usize::try_from(read_canonical_varint(message, &mut at)?).ok()?;
+            let end = at.checked_add(len)?;
+            let payload = message.get(at..end)?;
+            (end == message.len()).then_some(())?;
+            match tag {
+                1 => CanonicalConnectiveChildren::new(payload).map(CanonicalConnectiveParts::And),
+                2 => CanonicalConnectiveChildren::new(payload).map(CanonicalConnectiveParts::Or),
+                3 => Some(CanonicalConnectiveParts::Not(payload)),
+                4 => canonical_var_ref_is_canonical(payload)
+                    .then_some(CanonicalConnectiveParts::VarRef),
+                _ => unreachable!("the connective message tag is in 1..=4"),
+            }
+        }
+        5..=9 if wire == 0 => {
+            let value = read_canonical_varint(message, &mut at)?;
+            (at == message.len() && value <= 1).then_some(CanonicalConnectiveParts::Predicate {
+                tag,
+                value: value != 0,
+            })
+        }
+        _ => None,
+    }
+}
+
+fn canonical_var_ref_is_canonical(message: &[u8]) -> bool {
+    const INDEX_KEY: u64 = 1 << 3;
+    const DEPTH_KEY: u64 = 2 << 3;
+
+    let mut at = 0usize;
+    let mut last_key = 0u64;
+    while at < message.len() {
+        let Some(key) = read_canonical_varint(message, &mut at) else {
+            return false;
+        };
+        if !matches!(key, INDEX_KEY | DEPTH_KEY) || key <= last_key {
+            return false;
+        }
+        let Some(encoded) = read_canonical_varint(message, &mut at) else {
+            return false;
+        };
+        // Both fields are sint32. Values outside the zig-zag u32 image cannot
+        // have been emitted by the generated canonical encoder.
+        if u32::try_from(encoded).is_err() {
+            return false;
+        }
+        last_key = key;
+    }
+    true
 }
 
 /// Borrowed child-message regions from one canonical `If` protobuf body.
@@ -1719,6 +1904,146 @@ pub fn canonical_single_expr_from_par(message: &[u8]) -> Option<&[u8]> {
     canonical_single_par_component(message, ParComponentTag::Expr.byte().into())
 }
 
+/// A canonical singleton-Expr `Par` whose expression is a fully validated
+/// ground scalar.
+///
+/// The borrowed Expr message is an injective equality image for the admitted
+/// scalar variants. Root `locally_free` is intentionally absent from this
+/// view because concrete spatial equality ignores that derived summary;
+/// `connective_used` remains explicit because it changes matcher dispatch.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CanonicalExactScalarPar<'a> {
+    expr: &'a [u8],
+    connective_used: bool,
+}
+
+impl<'a> CanonicalExactScalarPar<'a> {
+    pub const fn expr(&self) -> &'a [u8] { self.expr }
+
+    pub const fn connective_used(&self) -> bool { self.connective_used }
+}
+
+/// Prove that a canonical protobuf `Par` has exactly one occurrence of one
+/// fully validated scalar `Expr` and no other component family.
+///
+/// `None` is deliberately only lack of proof. Callers must delegate it to the
+/// complete generated decoder and semantic matcher rather than interpreting
+/// it as inequality.
+pub fn canonical_exact_scalar_par(message: &[u8]) -> Option<CanonicalExactScalarPar<'_>> {
+    let expr = canonical_single_expr_from_par(message)?;
+    canonical_exact_scalar_expr(expr)?;
+    Some(CanonicalExactScalarPar {
+        expr,
+        connective_used: canonical_par_connective_used(message)?,
+    })
+}
+
+/// Prove that a canonical protobuf `Expr` is exactly one fully validated
+/// ground scalar and return its injective equality image.
+///
+/// This is the component-level counterpart of
+/// [`canonical_exact_scalar_par`]. `None` remains lack of proof rather than a
+/// semantic mismatch, so byte-native callers can conservatively delegate to
+/// the complete decoder.
+pub fn canonical_exact_scalar_expr(message: &[u8]) -> Option<&[u8]> {
+    canonical_scalar_expr_is_exact(message).then_some(message)
+}
+
+fn canonical_scalar_expr_is_exact(message: &[u8]) -> bool {
+    let Some(CanonicalExprEnvelope { tag, payload }) = canonical_expr_envelope(message) else {
+        return false;
+    };
+    match tag {
+        // Bool is the only scalar varint whose decoded domain is narrower
+        // than its protobuf carrier. GInt's canonical zig-zag image is every
+        // u64, so the envelope's minimal-varint proof is complete for tag 2.
+        1 => {
+            let mut at = 0usize;
+            matches!(read_canonical_varint(payload, &mut at), Some(value) if value <= 1)
+                && at == payload.len()
+        }
+        2 => {
+            let mut at = 0usize;
+            read_canonical_varint(payload, &mut at).is_some() && at == payload.len()
+        }
+        3 | 4 => std::str::from_utf8(payload).is_ok(),
+        25 | 35 => true,
+        34 => payload.len() == 8,
+        36 => canonical_big_rational_is_exact(payload),
+        37 => canonical_fixed_point_is_exact(payload),
+        _ => false,
+    }
+}
+
+fn canonical_big_rational_is_exact(message: &[u8]) -> bool {
+    let mut at = 0usize;
+    let mut last_key = 0u64;
+    while at < message.len() {
+        let Some(key) = read_canonical_varint(message, &mut at) else {
+            return false;
+        };
+        if !matches!(key, 10 | 18) || key <= last_key {
+            return false;
+        }
+        let Some(len) =
+            read_canonical_varint(message, &mut at).and_then(|len| usize::try_from(len).ok())
+        else {
+            return false;
+        };
+        // Ordinary proto3 bytes fields omit their empty default. The entire
+        // message may still be empty when both fields have default values.
+        if len == 0 {
+            return false;
+        }
+        let Some(end) = at.checked_add(len).filter(|end| *end <= message.len()) else {
+            return false;
+        };
+        at = end;
+        last_key = key;
+    }
+    true
+}
+
+fn canonical_fixed_point_is_exact(message: &[u8]) -> bool {
+    let mut at = 0usize;
+    let mut last_key = 0u64;
+    while at < message.len() {
+        let Some(key) = read_canonical_varint(message, &mut at) else {
+            return false;
+        };
+        if !matches!(key, 10 | 16) || key <= last_key {
+            return false;
+        }
+        match key {
+            10 => {
+                let Some(len) = read_canonical_varint(message, &mut at)
+                    .and_then(|len| usize::try_from(len).ok())
+                else {
+                    return false;
+                };
+                if len == 0 {
+                    return false;
+                }
+                let Some(end) = at.checked_add(len).filter(|end| *end <= message.len()) else {
+                    return false;
+                };
+                at = end;
+            }
+            16 => {
+                let Some(scale) = read_canonical_varint(message, &mut at) else {
+                    return false;
+                };
+                if scale == 0 || u32::try_from(scale).is_err() {
+                    return false;
+                }
+            }
+            _ => unreachable!("the fixed-point key was proved above"),
+        }
+        last_key = key;
+    }
+    true
+}
+
 /// Read `Par.connective_used` from a canonical protobuf message without
 /// decoding any component body.
 ///
@@ -1832,13 +2157,12 @@ fn decode_unary_connective_spine(mut connective: &[u8]) -> Option<(Par, bool, bo
             has_not = true;
             canonical_single_delimited_field(connective, NOT_KEY)?
         };
-        match canonical_single_connective_from_par(child) {
-            Some(next) => connective = next,
-            None => {
-                return crate::rust::rholang::protobuf_decoder::decode_par(child)
-                    .ok()
-                    .map(|terminal| (terminal, negated, has_not));
-            }
+        if canonical_par_connective_used(child) == Some(true) {
+            connective = canonical_single_connective_from_par(child)?;
+        } else {
+            return crate::rust::rholang::protobuf_decoder::decode_par(child)
+                .ok()
+                .map(|terminal| (terminal, negated, has_not));
         }
     }
 }
@@ -4035,8 +4359,8 @@ impl<'de> Deserialize<'de> for ParBag {
 mod fast_key_tests {
     use super::*;
     use crate::rhoapi::{
-        EList, ETuple, GBigRational, GDeployId, GDeployerId, GFixedPoint, GPrivate, GSysAuthToken,
-        Par, Var,
+        Connective, ConnectiveBody, EList, ETuple, GBigRational, GDeployId, GDeployerId,
+        GFixedPoint, GPrivate, GSysAuthToken, Par, Send, Var, VarRef,
     };
 
     fn generic_key<T: ParBagComponent>(value: &T) -> Vec<u8> {
@@ -4507,6 +4831,209 @@ mod fast_key_tests {
         assert_eq!(terminal, terminal_par);
         assert_eq!(&terminal[2..], malformed_nested_expr);
         assert_eq!(canonical_unary_enot(&outer), None);
+    }
+
+    #[test]
+    fn canonical_connective_cursor_lends_every_child_without_projection() {
+        use crate::rhoapi::connective::ConnectiveInstance::{ConnAndBody, ConnOrBody};
+
+        let children = vec![
+            Par::default().with_exprs(vec![Expr {
+                expr_instance: Some(ExprInstance::GInt(1)),
+            }]),
+            Par::default().with_exprs(vec![Expr {
+                expr_instance: Some(ExprInstance::GString("two".to_owned())),
+            }]),
+            Par::default(),
+        ];
+        let expected = children
+            .iter()
+            .map(protobuf_encoder::encode_to_vec)
+            .collect::<Vec<_>>();
+
+        for instance in [
+            ConnAndBody(ConnectiveBody {
+                ps: children.clone(),
+            }),
+            ConnOrBody(ConnectiveBody {
+                ps: children.clone(),
+            }),
+        ] {
+            let bytes = protobuf_encoder::encode_to_vec(&Connective {
+                connective_instance: Some(instance),
+            });
+            let cursor = match canonical_connective_parts(&bytes).expect("canonical connective") {
+                CanonicalConnectiveParts::And(children)
+                | CanonicalConnectiveParts::Or(children) => children,
+                other => panic!("expected AND/OR cursor, got {other:?}"),
+            };
+            assert_eq!(cursor.len(), expected.len());
+            assert_eq!(cursor.collect::<Vec<_>>(), expected);
+        }
+
+        for instance in [
+            ConnAndBody(ConnectiveBody { ps: Vec::new() }),
+            ConnOrBody(ConnectiveBody { ps: Vec::new() }),
+        ] {
+            let bytes = protobuf_encoder::encode_to_vec(&Connective {
+                connective_instance: Some(instance),
+            });
+            let cursor = match canonical_connective_parts(&bytes).expect("empty connective body") {
+                CanonicalConnectiveParts::And(children)
+                | CanonicalConnectiveParts::Or(children) => children,
+                other => panic!("expected empty AND/OR cursor, got {other:?}"),
+            };
+            assert!(cursor.is_empty());
+        }
+    }
+
+    #[test]
+    fn canonical_connective_cursor_covers_nonbranching_arms_and_rejects_bad_frames() {
+        use crate::rhoapi::connective::ConnectiveInstance::{ConnBool, ConnNotBody, VarRefBody};
+
+        let terminal = Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::GInt(7)),
+        }]);
+        let terminal_bytes = protobuf_encoder::encode_to_vec(&terminal);
+        let not = protobuf_encoder::encode_to_vec(&Connective {
+            connective_instance: Some(ConnNotBody(terminal)),
+        });
+        assert_eq!(
+            canonical_connective_parts(&not),
+            Some(CanonicalConnectiveParts::Not(&terminal_bytes))
+        );
+
+        for value in [false, true] {
+            let bytes = protobuf_encoder::encode_to_vec(&Connective {
+                connective_instance: Some(ConnBool(value)),
+            });
+            assert_eq!(
+                canonical_connective_parts(&bytes),
+                Some(CanonicalConnectiveParts::Predicate { tag: 5, value })
+            );
+        }
+
+        let var_ref = protobuf_encoder::encode_to_vec(&Connective {
+            connective_instance: Some(VarRefBody(VarRef {
+                index: -3,
+                depth: 5,
+            })),
+        });
+        assert_eq!(
+            canonical_connective_parts(&var_ref),
+            Some(CanonicalConnectiveParts::VarRef)
+        );
+        assert_eq!(
+            canonical_connective_parts(&[]),
+            Some(CanonicalConnectiveParts::Absent)
+        );
+
+        for malformed in [
+            vec![0x0a, 0x02, 0x0a],
+            vec![0x0a, 0x02, 0x12, 0x00],
+            vec![0x0a, 0x80, 0x00],
+            vec![0x28, 0x02],
+            vec![0x22, 0x02, 0x08],
+            vec![0x28, 0x01, 0x30, 0x01],
+        ] {
+            assert!(
+                canonical_connective_parts(&malformed).is_none(),
+                "malformed connective must delegate: {malformed:02x?}"
+            );
+        }
+    }
+
+    #[test]
+    fn canonical_exact_scalar_cursor_covers_every_ground_scalar_equality_image() {
+        let scalars = [
+            ExprInstance::GBool(false),
+            ExprInstance::GBool(true),
+            ExprInstance::GInt(i64::MIN),
+            ExprInstance::GInt(i64::MAX),
+            ExprInstance::GString(String::new()),
+            ExprInstance::GString("lambda λ\0".to_owned()),
+            ExprInstance::GUri(String::new()),
+            ExprInstance::GUri("rho:id:λ".to_owned()),
+            ExprInstance::GByteArray(Vec::new()),
+            ExprInstance::GByteArray(vec![0, 1, 0xff]),
+            ExprInstance::GDouble(0.0f64.to_bits()),
+            ExprInstance::GDouble((-0.0f64).to_bits()),
+            ExprInstance::GDouble(0x7ff8_0000_0000_0042),
+            ExprInstance::GBigInt(Vec::new()),
+            ExprInstance::GBigInt(vec![0x80, 0, 0xff]),
+            ExprInstance::GBigRat(GBigRational::default()),
+            ExprInstance::GBigRat(GBigRational {
+                numerator: vec![0xff],
+                denominator: vec![0, 2],
+            }),
+            ExprInstance::GFixedPoint(GFixedPoint::default()),
+            ExprInstance::GFixedPoint(GFixedPoint {
+                unscaled: vec![1, 0],
+                scale: u32::MAX,
+            }),
+        ];
+
+        for scalar in scalars {
+            let expr = Expr {
+                expr_instance: Some(scalar),
+            };
+            let expr_bytes = protobuf_encoder::encode_to_vec(&expr);
+            let par = Par::default()
+                .with_exprs(vec![expr])
+                .with_locally_free(vec![0x80, 0x01]);
+            let par_bytes = protobuf_encoder::encode_to_vec(&par);
+            let proven = canonical_exact_scalar_par(&par_bytes).expect("exact scalar Par");
+            assert_eq!(proven.expr(), expr_bytes);
+            assert!(!proven.connective_used());
+            assert_eq!(
+                canonical_exact_scalar_expr(&expr_bytes),
+                Some(expr_bytes.as_slice())
+            );
+
+            let marked = par.with_connective_used(true);
+            let marked_bytes = protobuf_encoder::encode_to_vec(&marked);
+            assert!(canonical_exact_scalar_par(&marked_bytes)
+                .expect("connective-used is an explicit proven root summary")
+                .connective_used());
+        }
+    }
+
+    #[test]
+    fn canonical_exact_scalar_cursor_rejects_non_scalar_shape_and_malformed_payloads() {
+        let scalar = Expr {
+            expr_instance: Some(ExprInstance::GInt(7)),
+        };
+        for rejected in [
+            Par::default(),
+            Par::default().with_exprs(vec![Expr::default()]),
+            Par::default().with_exprs(vec![scalar.clone(), scalar.clone()]),
+            Par::default().with_sends(vec![Send::default()]),
+        ] {
+            assert!(
+                canonical_exact_scalar_par(&protobuf_encoder::encode_to_vec(&rejected)).is_none()
+            );
+        }
+
+        // These are exact outer oneof frames whose scalar payload is either
+        // non-canonical or cannot inhabit the corresponding Rust value.
+        let malformed = [
+            vec![0x08, 0x02],                               // bool outside {0,1}
+            vec![0x08, 0x80, 0x00],                         // overlong bool varint
+            vec![0x1a, 0x01, 0xff],                         // invalid UTF-8 string
+            vec![0x91, 0x02, 0, 0, 0, 0, 0, 0, 0],          // truncated fixed64
+            vec![0xa2, 0x02, 0x02, 0x0a, 0x00],             // empty BigRat bytes field
+            vec![0xa2, 0x02, 0x06, 0x0a, 1, 1, 0x0a, 1, 2], // duplicate BigRat field
+            vec![0xa2, 0x02, 0x06, 0x12, 1, 2, 0x0a, 1, 1], // reordered BigRat fields
+            vec![0xaa, 0x02, 0x02, 0x0a, 0x00],             // empty FixedPoint bytes field
+            vec![0xaa, 0x02, 0x02, 0x10, 0x00],             // explicitly encoded default scale
+            vec![0xaa, 0x02, 0x04, 0x10, 1, 0x10, 2],       // duplicate FixedPoint scale
+        ];
+        for bytes in malformed {
+            assert!(
+                canonical_exact_scalar_expr(&bytes).is_none(),
+                "malformed scalar must delegate: {bytes:02x?}"
+            );
+        }
     }
 
     #[test]

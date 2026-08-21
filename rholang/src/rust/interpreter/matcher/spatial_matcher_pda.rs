@@ -7,7 +7,11 @@
 //! `Job`/`Frame` pushdown automaton. A nested pattern therefore grows heap work
 //! storage, never the native call stack.
 
-#[cfg(any(test, feature = "spatial-matcher-connective-domain-differential"))]
+#[cfg(any(
+    test,
+    feature = "spatial-matcher-connective-domain-differential",
+    feature = "spatial-matcher-exact-scalar-differential"
+))]
 use std::cell::Cell;
 use std::cmp::Ordering;
 use std::num::NonZeroU64;
@@ -19,12 +23,15 @@ use models::rhoapi::If;
 use models::rust::canonical_path::decode_trie_path;
 use models::rust::epathmap_trie_codec::EPathMapMode;
 use models::rust::par_bag::{
-    canonical_collection_remainder, canonical_expr_oneof_tag, canonical_expr_parts,
-    canonical_if_parts, canonical_match_parts, canonical_new_parts, canonical_par_connective_used,
+    canonical_collection_remainder, canonical_connective_parts, canonical_exact_scalar_expr,
+    canonical_exact_scalar_par, canonical_expr_oneof_tag, canonical_expr_parts, canonical_if_parts,
+    canonical_match_parts, canonical_new_parts, canonical_par_connective_used,
     canonical_par_locally_free_is_empty, canonical_receive_parts, canonical_send_parts,
-    canonical_single_expr_from_par, canonical_single_if_from_par, canonical_single_match_from_par,
-    canonical_single_new_from_par, canonical_single_receive_from_par,
-    canonical_single_send_from_par, CanonicalExprParts, ParBagComponent,
+    canonical_single_connective_from_par, canonical_single_expr_from_par,
+    canonical_single_if_from_par, canonical_single_match_from_par, canonical_single_new_from_par,
+    canonical_single_receive_from_par, canonical_single_send_from_par,
+    CanonicalConnectiveChildCursor, CanonicalConnectiveChildren, CanonicalConnectiveParts,
+    CanonicalExprParts, ParBagComponent,
 };
 use models::rust::par_map_type_mapper::ParMapTypeMapper;
 use models::rust::par_set_type_mapper::ParSetTypeMapper;
@@ -96,14 +103,69 @@ thread_local! {
     static FORCE_CONNECTIVE_DOMAIN_ALL: Cell<bool> = const { Cell::new(false) };
 }
 
+#[cfg(feature = "spatial-matcher-exact-scalar-differential")]
+thread_local! {
+    /// Benchmark-only causal control for the validated scalar byte-equality
+    /// route. This branch is compiled out of every default/production build.
+    static FORCE_EXACT_SCALAR_DECODE: Cell<bool> = const { Cell::new(false) };
+}
+
+#[cfg(feature = "spatial-matcher-connective-domain-differential")]
+struct ConnectiveDomainModeGuard<'a> {
+    cell: &'a Cell<bool>,
+    previous: bool,
+}
+
+#[cfg(feature = "spatial-matcher-connective-domain-differential")]
+impl Drop for ConnectiveDomainModeGuard<'_> {
+    fn drop(&mut self) { self.cell.set(self.previous) }
+}
+
 #[cfg(feature = "spatial-matcher-connective-domain-differential")]
 fn with_connective_domain_mode<T>(optimized: bool, body: impl FnOnce() -> T) -> T {
     FORCE_CONNECTIVE_DOMAIN_ALL.with(|force_all| {
         let previous = force_all.replace(!optimized);
-        let result = body();
-        force_all.set(previous);
-        result
+        let _guard = ConnectiveDomainModeGuard {
+            cell: force_all,
+            previous,
+        };
+        body()
     })
+}
+
+#[cfg(feature = "spatial-matcher-exact-scalar-differential")]
+struct ExactScalarModeGuard<'a> {
+    cell: &'a Cell<bool>,
+    previous: bool,
+}
+
+#[cfg(feature = "spatial-matcher-exact-scalar-differential")]
+impl Drop for ExactScalarModeGuard<'_> {
+    fn drop(&mut self) { self.cell.set(self.previous) }
+}
+
+#[cfg(feature = "spatial-matcher-exact-scalar-differential")]
+fn with_exact_scalar_mode<T>(optimized: bool, body: impl FnOnce() -> T) -> T {
+    FORCE_EXACT_SCALAR_DECODE.with(|force_decode| {
+        let previous = force_decode.replace(!optimized);
+        let _guard = ExactScalarModeGuard {
+            cell: force_decode,
+            previous,
+        };
+        body()
+    })
+}
+
+#[inline]
+fn exact_scalar_route_enabled() -> bool {
+    #[cfg(feature = "spatial-matcher-exact-scalar-differential")]
+    {
+        return !FORCE_EXACT_SCALAR_DECODE.with(Cell::get);
+    }
+    #[cfg(not(feature = "spatial-matcher-exact-scalar-differential"))]
+    {
+        true
+    }
 }
 
 /// Benchmark-only production-list entry. Both arms execute the same matcher;
@@ -148,6 +210,16 @@ pub fn benchmark_match_send_list_with_remainder(
     })
 }
 
+/// Benchmark-only direct matcher entry. Both arms execute the production PDA;
+/// the control disables only the validated scalar byte-equality transition.
+#[cfg(feature = "spatial-matcher-exact-scalar-differential")]
+pub fn benchmark_match_par_exact_scalar(target: Par, pattern: Par, optimized: bool) -> Option<()> {
+    with_exact_scalar_mode(optimized, || {
+        let mut context = SpatialMatcherContext::new();
+        drive(&mut context, MatchPair::Par(target, pattern))
+    })
+}
+
 #[cfg(test)]
 fn update_list_relation_stats(update: impl FnOnce(&mut RelationalMatchStats)) {
     LIST_RELATION_STATS.with(|stats| {
@@ -174,6 +246,51 @@ pub(super) fn match_par_list_with_stats(
     let result = drive_job(context, Job::ListInit(request));
     let stats = LIST_RELATION_STATS.with(Cell::get);
     (result, stats)
+}
+
+#[cfg(test)]
+pub(super) fn match_par_with_stats(
+    context: &mut SpatialMatcherContext,
+    target: Par,
+    pattern: Par,
+) -> (Option<()>, RelationalMatchStats) {
+    LIST_RELATION_STATS.with(|stats| stats.set(RelationalMatchStats::default()));
+    let result = drive(context, MatchPair::Par(target, pattern));
+    let stats = LIST_RELATION_STATS.with(Cell::get);
+    (result, stats)
+}
+
+#[cfg(test)]
+pub(super) fn connective_candidate_positions_with_stats(
+    targets: Vec<Par>,
+    pattern: Par,
+    encoded_compiler: bool,
+) -> (Box<[u64]>, RelationalMatchStats) {
+    LIST_RELATION_STATS.with(|stats| stats.set(RelationalMatchStats::default()));
+    let targets = targets.into_iter().map(MatchValue::Par).collect::<Vec<_>>();
+    let index = ListTargetIndex::from_targets(&targets)
+        .expect("candidate-plan differential targets fit the Bag index");
+    let mut captures = PathMap::new();
+    let plan = if encoded_compiler {
+        compile_par_candidate_plan(&pattern, &mut captures)
+    } else {
+        compile_candidate_plan(
+            vec![CandidateCompileWork::EnterResident(pattern)],
+            &mut captures,
+        )
+    };
+    let positions = if plan.is_empty() {
+        Vec::new().into_boxed_slice()
+    } else {
+        index.positions_matching_plan(&plan).unwrap_or_else(|| {
+            (0..targets.len())
+                .map(|position| u64::try_from(position).expect("target position fits u64"))
+                .collect::<Vec<_>>()
+                .into_boxed_slice()
+        })
+    };
+    let stats = LIST_RELATION_STATS.with(Cell::get);
+    (positions, stats)
 }
 
 #[cfg(test)]
@@ -276,6 +393,7 @@ pda_entry!(match_case, MatchCase, MatchCase);
 enum Job {
     Match(Box<MatchPair>),
     EncodedPar(EncodedRegion, EncodedRegion),
+    EncodedConnective(Box<(Par, EncodedRegion)>),
     EncodedIf(EncodedRegion, EncodedRegion),
     EncodedNew(EncodedRegion, EncodedRegion),
     EncodedSend(EncodedRegion, EncodedRegion),
@@ -309,6 +427,17 @@ enum Frame {
         // map together exceed one cache line when the map header is inline.
         // The map already owns heap nodes; boxing its small root header keeps
         // every Frame at <= 64 bytes without changing restore semantics.
+        snapshot: Box<FreeMap>,
+    },
+    EncodedAndBranch {
+        target: Box<Par>,
+        body: EncodedRegion,
+        cursor: CanonicalConnectiveChildCursor,
+    },
+    EncodedOrBranch {
+        target: Option<Box<Par>>,
+        body: EncodedRegion,
+        cursor: CanonicalConnectiveChildCursor,
         snapshot: Box<FreeMap>,
     },
     Not {
@@ -361,6 +490,9 @@ impl FrameStack {
     fn push(&mut self, frame: Frame) { self.0.push(frame); }
 
     fn pop(&mut self) -> Option<Frame> { self.0.pop() }
+
+    #[cfg(test)]
+    fn len(&self) -> usize { self.0.len() }
 }
 
 enum MatchPair {
@@ -446,6 +578,10 @@ fn drive_job(context: &mut SpatialMatcherContext, mut job: Job) -> Option<()> {
         job = match job {
             Job::Match(pair) => evaluate_pair(context, *pair, &mut frames),
             Job::EncodedPar(target, pattern) => evaluate_encoded_par(target, pattern),
+            Job::EncodedConnective(pair) => {
+                let (target, pattern) = *pair;
+                evaluate_encoded_connective(context, target, pattern, &mut frames)
+            }
             Job::EncodedIf(target, pattern) => evaluate_encoded_if(target, pattern, &mut frames),
             Job::EncodedNew(target, pattern) => evaluate_encoded_new(target, pattern),
             Job::EncodedSend(target, pattern) => {
@@ -521,6 +657,33 @@ fn resume(
                 start_or_branch(context, *target, patterns, frames)
             } else {
                 debug_assert!(patterns.len() == 0);
+                Job::Return(false)
+            }
+        }
+        Frame::EncodedAndBranch {
+            target,
+            body,
+            cursor,
+        } => {
+            if result {
+                start_encoded_and_branch(*target, body, cursor, frames)
+            } else {
+                Job::Return(false)
+            }
+        }
+        Frame::EncodedOrBranch {
+            target,
+            body,
+            cursor,
+            snapshot,
+        } => {
+            context.free_map = *snapshot;
+            if result {
+                Job::Return(true)
+            } else if let Some(target) = target {
+                start_encoded_or_branch(context, *target, body, cursor, frames)
+            } else {
+                debug_assert!(cursor.is_empty());
                 Job::Return(false)
             }
         }
@@ -695,6 +858,20 @@ fn singleton_component_region<T: ParBagComponent>(par: &Par) -> Option<EncodedRe
     result
 }
 
+/// Whether the whole target is byte-for-byte equivalent to the sole candidate
+/// that the legacy `sub_pars` projection would expose to a root Connective.
+///
+/// `sub_pars` partitions only the eight concrete component families: it drops
+/// the Connective family and clears both root summaries.  The direct encoded
+/// route may therefore skip that projection only when all three transformations
+/// are already identities.  Each condition is an O(1) cached `Par`/`ParBag`
+/// query; an unproved target falls through to the complete generic machine.
+fn whole_target_is_connective_projection_identity(target: &Par) -> bool {
+    target.family_cardinality::<Connective>() == 0
+        && !target.connective_used()
+        && target.locally_free().is_empty()
+}
+
 struct ConnectivePlan {
     connective: Connective,
     bounds: (ParCount, ParCount),
@@ -861,9 +1038,17 @@ fn evaluate_par(
     // complement is matched against the empty residual pattern. Transitioning
     // directly is therefore equivalent and prevents a depth-d unary
     // connective chain from recomputing bounds over all d suffixes (O(d^2)).
-    if remainder_level.is_none() && !wildcard {
-        if let Some(connective) = single_connective_carrier(&pattern) {
-            return match_job(MatchPair::Connective(target, connective));
+    if remainder_level.is_none()
+        && !wildcard
+        && whole_target_is_connective_projection_identity(&target)
+    {
+        if let Some(connective) = singleton_component_region::<Connective>(&pattern) {
+            #[cfg(test)]
+            update_list_relation_stats(|stats| {
+                stats.authoritative_connective_root_copies += 1;
+                stats.authoritative_connective_root_bytes += connective.as_slice().len();
+            });
+            return Job::EncodedConnective(Box::new((target, connective)));
         }
     }
 
@@ -1649,6 +1834,225 @@ fn evaluate_connective(
     }
 }
 
+#[cfg(test)]
+fn record_authoritative_frame_depth(frames: &FrameStack) {
+    update_list_relation_stats(|stats| {
+        stats.authoritative_max_frame_depth = stats.authoritative_max_frame_depth.max(frames.len());
+    });
+}
+
+/// Match one authoritative canonical Connective endpoint without projecting
+/// its recursive `Par` children. The endpoint is owned once by an
+/// [`EncodedRegion`]; every descendant is a thin Arc/range and every branch
+/// continuation is an explicit PDA frame.
+fn evaluate_encoded_connective(
+    context: &mut SpatialMatcherContext,
+    target: Par,
+    pattern: EncodedRegion,
+    frames: &mut FrameStack,
+) -> Job {
+    #[cfg(test)]
+    update_list_relation_stats(|stats| {
+        stats.authoritative_connective_evaluations += 1;
+        stats.authoritative_encoded_connective_nodes += 1;
+    });
+
+    let Some(parts) = canonical_connective_parts(pattern.as_slice()) else {
+        #[cfg(test)]
+        update_list_relation_stats(|stats| {
+            stats.authoritative_resident_connective_fallbacks += 1;
+        });
+        let pattern = <Connective as prost::Message>::decode(pattern.as_slice())
+            .expect("an authoritative Connective endpoint is canonical");
+        return evaluate_connective(context, target, pattern, frames);
+    };
+
+    match parts {
+        CanonicalConnectiveParts::And(children) => {
+            let cursor = children.cursor();
+            let body = pattern
+                .child(children.message())
+                .expect("canonical AND body is a subrange of its endpoint");
+            let snapshot = context.free_map.clone();
+            frames.push(Frame::RestoreOnFailure { snapshot });
+            #[cfg(test)]
+            record_authoritative_frame_depth(frames);
+            start_encoded_and_branch(target, body, cursor, frames)
+        }
+        CanonicalConnectiveParts::Or(children) => {
+            let cursor = children.cursor();
+            let body = pattern
+                .child(children.message())
+                .expect("canonical OR body is a subrange of its endpoint");
+            start_encoded_or_branch(context, target, body, cursor, frames)
+        }
+        CanonicalConnectiveParts::Not(child) => {
+            let child = pattern
+                .child(child)
+                .expect("canonical NOT child is a subrange of its endpoint");
+            #[cfg(test)]
+            update_list_relation_stats(|stats| stats.authoritative_not_frames += 1);
+            frames.push(Frame::Not {
+                snapshot: context.free_map.clone(),
+            });
+            #[cfg(test)]
+            record_authoritative_frame_depth(frames);
+            encoded_connective_child_job(target, child)
+        }
+        CanonicalConnectiveParts::VarRef | CanonicalConnectiveParts::Absent => Job::Return(false),
+        CanonicalConnectiveParts::Predicate { tag, .. } => {
+            let expected_expr_tag = match tag {
+                5 => 1,
+                6 => 2,
+                7 => 3,
+                8 => 4,
+                9 => 25,
+                _ => unreachable!("canonical predicate Connective tag is in 5..=9"),
+            };
+            Job::Return(single_expr_oneof_tag(&target) == Some(expected_expr_tag))
+        }
+    }
+}
+
+fn single_expr_oneof_tag(target: &Par) -> Option<u32> {
+    if target.family_cardinality::<Expr>() != 1 || !target.all_components_are::<Expr>() {
+        return None;
+    }
+    let mut tag = None;
+    target.visit_encoded::<Expr>(|entry| {
+        if entry.multiplicity().get() == 1 {
+            tag = canonical_expr_oneof_tag(entry.payload());
+        }
+    });
+    tag
+}
+
+fn encoded_connective_child_job(target: Par, pattern: EncodedRegion) -> Job {
+    if canonical_par_connective_used(pattern.as_slice()) == Some(true) {
+        if let Some(connective) = canonical_single_connective_from_par(pattern.as_slice()) {
+            let connective = pattern
+                .child(connective)
+                .expect("canonical child Connective is a subrange of its Par");
+            return Job::EncodedConnective(Box::new((target, connective)));
+        }
+    }
+
+    if exact_scalar_route_enabled() {
+        if let Some(pattern_scalar) = canonical_exact_scalar_par(pattern.as_slice()) {
+            if !pattern_scalar.connective_used() {
+                if let Some(equal) = exact_scalar_par_matches(&target, pattern_scalar.expr()) {
+                    #[cfg(test)]
+                    update_list_relation_stats(|stats| {
+                        stats.authoritative_exact_scalar_attempts += 1;
+                        if equal {
+                            stats.authoritative_exact_scalar_equal += 1;
+                        } else {
+                            stats.authoritative_exact_scalar_mismatch += 1;
+                        }
+                    });
+                    return Job::Return(equal);
+                }
+            }
+        }
+    }
+
+    #[cfg(test)]
+    update_list_relation_stats(|stats| {
+        stats.authoritative_exact_scalar_unproved += 1;
+        stats.authoritative_terminal_par_decodes += 1;
+    });
+    let pattern = models::rust::rholang::protobuf_decoder::decode_par(pattern.as_slice())
+        .unwrap_or_else(|error| {
+            let preview_len = pattern.as_slice().len().min(32);
+            panic!(
+                "an authoritative connective child Par is canonical ({} bytes, first {preview_len}: {:02x?}): {error:?}",
+                pattern.as_slice().len(),
+                &pattern.as_slice()[..preview_len]
+            )
+        });
+    match_job(MatchPair::Par(target, pattern))
+}
+
+/// Return a proven scalar-equality result, or `None` when the target's encoded
+/// Expr is outside the deliberately narrow byte-native proof domain.
+///
+/// Shape differences are conclusive mismatches. An exact singleton Expr whose
+/// variant cannot be validated as a ground scalar delegates to the generated
+/// decoder instead of guessing from a shallow protobuf tag.
+fn exact_scalar_par_matches(target: &Par, pattern_expr: &[u8]) -> Option<bool> {
+    if target.connective_used()
+        || target.family_cardinality::<Expr>() != 1
+        || !target.all_components_are::<Expr>()
+    {
+        return Some(false);
+    }
+
+    let mut equal = None;
+    target.visit_encoded::<Expr>(|entry| {
+        if entry.multiplicity().get() == 1 {
+            equal = canonical_exact_scalar_expr(entry.payload())
+                .map(|target_expr| target_expr == pattern_expr);
+        }
+    });
+    equal
+}
+
+fn start_encoded_and_branch(
+    target: Par,
+    body: EncodedRegion,
+    mut cursor: CanonicalConnectiveChildCursor,
+    frames: &mut FrameStack,
+) -> Job {
+    let Some(pattern) = cursor.next_in(body.as_slice()) else {
+        return Job::Return(true);
+    };
+    let pattern = body
+        .child(pattern)
+        .expect("canonical AND child is a subrange of its body");
+    if cursor.is_empty() {
+        encoded_connective_child_job(target, pattern)
+    } else {
+        #[cfg(test)]
+        update_list_relation_stats(|stats| stats.authoritative_and_frames += 1);
+        frames.push(Frame::EncodedAndBranch {
+            target: Box::new(target.clone()),
+            body,
+            cursor,
+        });
+        #[cfg(test)]
+        record_authoritative_frame_depth(frames);
+        encoded_connective_child_job(target, pattern)
+    }
+}
+
+fn start_encoded_or_branch(
+    context: &mut SpatialMatcherContext,
+    target: Par,
+    body: EncodedRegion,
+    mut cursor: CanonicalConnectiveChildCursor,
+    frames: &mut FrameStack,
+) -> Job {
+    let Some(pattern) = cursor.next_in(body.as_slice()) else {
+        return Job::Return(false);
+    };
+    let pattern = body
+        .child(pattern)
+        .expect("canonical OR child is a subrange of its body");
+    let snapshot = context.free_map.clone();
+    let retained_target = (!cursor.is_empty()).then(|| Box::new(target.clone()));
+    #[cfg(test)]
+    update_list_relation_stats(|stats| stats.authoritative_or_frames += 1);
+    frames.push(Frame::EncodedOrBranch {
+        target: retained_target,
+        body,
+        cursor,
+        snapshot: Box::new(snapshot),
+    });
+    #[cfg(test)]
+    record_authoritative_frame_depth(frames);
+    encoded_connective_child_job(target, pattern)
+}
+
 fn start_and_branch(
     target: Par,
     mut patterns: std::vec::IntoIter<Par>,
@@ -2327,10 +2731,10 @@ impl MatchValue {
     ) -> ListCandidatePlan {
         match self {
             Self::Par(pattern) => compile_par_candidate_plan(pattern, captures),
-            Self::EncodedPar(_) | Self::EncodedParPair(_) => ListCandidatePlan::All,
+            Self::EncodedPar(_) | Self::EncodedParPair(_) => ListCandidatePlan::all(),
             _ => self
                 .rho_path_query(context, captures)
-                .map_or(ListCandidatePlan::All, ListCandidatePlan::Query),
+                .map_or_else(ListCandidatePlan::all, ListCandidatePlan::query),
         }
     }
 
@@ -2464,8 +2868,20 @@ fn decode_encoded_par(value: &EncodedRegion) -> Par {
         .expect("an authoritative encoded collection member is canonical")
 }
 
-enum CandidateCompileWork {
-    Enter(Par),
+#[derive(Clone, Copy)]
+enum CandidateNary {
+    Union,
+    Intersection,
+}
+
+enum CandidateCompileWork<'a> {
+    EnterResident(Par),
+    EnterEncodedPar(&'a [u8]),
+    EnterEncodedConnective(&'a [u8]),
+    EnterEncodedChildren {
+        children: CanonicalConnectiveChildren<'a>,
+        kind: CandidateNary,
+    },
     FinishUnion(usize),
     FinishIntersection(usize),
 }
@@ -2475,60 +2891,136 @@ enum CandidateCompileWork {
 /// `All` is the deliberate conservative fallback and `Empty` is reserved for
 /// connectives whose authoritative matcher always refuses (`VarRef`/absent or
 /// an empty disjunction). Query leaves contain only the already-proved RMP1
-/// compiler output; this layer adds no byte interpretation of its own.
-enum ListCandidatePlan {
+/// compiler output; this layer adds no byte interpretation of its own. Child
+/// edges are arena indices, so inspecting and dropping a deep branching plan
+/// never re-enters Rust's native call stack.
+enum CandidatePlanNodeKind {
     All,
     Empty,
     Query(RhoPathQuery),
-    Union(Vec<ListCandidatePlan>),
-    Intersection(Vec<ListCandidatePlan>),
+    Union(Box<[CandidatePlanNodeId]>),
+    Intersection(Box<[CandidatePlanNodeId]>),
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct CandidatePlanNodeId(usize);
+
+struct CandidatePlanNode {
+    kind: CandidatePlanNodeKind,
+    needs_target_index: bool,
+}
+
+struct CandidatePlanBuilder {
+    nodes: Vec<CandidatePlanNode>,
+}
+
+impl CandidatePlanBuilder {
+    fn new() -> Self { Self { nodes: Vec::new() } }
+
+    fn push(&mut self, kind: CandidatePlanNodeKind) -> CandidatePlanNodeId {
+        let needs_target_index = match &kind {
+            CandidatePlanNodeKind::All | CandidatePlanNodeKind::Empty => false,
+            CandidatePlanNodeKind::Query(query) => query.retained_prefix().len() > 1,
+            CandidatePlanNodeKind::Union(children)
+            | CandidatePlanNodeKind::Intersection(children) => children
+                .iter()
+                .any(|child| self.nodes[child.0].needs_target_index),
+        };
+        let id = CandidatePlanNodeId(self.nodes.len());
+        self.nodes.push(CandidatePlanNode {
+            kind,
+            needs_target_index,
+        });
+        #[cfg(test)]
+        update_list_relation_stats(|stats| stats.candidate_plan_nodes += 1);
+        id
+    }
+
+    fn all(&mut self) -> CandidatePlanNodeId { self.push(CandidatePlanNodeKind::All) }
+
+    fn empty(&mut self) -> CandidatePlanNodeId { self.push(CandidatePlanNodeKind::Empty) }
+
+    fn query(&mut self, query: RhoPathQuery) -> CandidatePlanNodeId {
+        self.push(CandidatePlanNodeKind::Query(query))
+    }
+
+    fn is_all(&self, id: CandidatePlanNodeId) -> bool {
+        matches!(self.nodes[id.0].kind, CandidatePlanNodeKind::All)
+    }
+
+    fn is_empty(&self, id: CandidatePlanNodeId) -> bool {
+        matches!(self.nodes[id.0].kind, CandidatePlanNodeKind::Empty)
+    }
+
+    fn union(&mut self, mut operands: Vec<CandidatePlanNodeId>) -> CandidatePlanNodeId {
+        if operands.iter().copied().any(|operand| self.is_all(operand)) {
+            return self.all();
+        }
+        operands.retain(|operand| !self.is_empty(*operand));
+        match operands.len() {
+            0 => self.empty(),
+            1 => operands.pop().expect("one union operand remains"),
+            _ => self.push(CandidatePlanNodeKind::Union(operands.into_boxed_slice())),
+        }
+    }
+
+    fn intersection(&mut self, mut operands: Vec<CandidatePlanNodeId>) -> CandidatePlanNodeId {
+        if operands
+            .iter()
+            .copied()
+            .any(|operand| self.is_empty(operand))
+        {
+            return self.empty();
+        }
+        operands.retain(|operand| !self.is_all(*operand));
+        match operands.len() {
+            0 => self.all(),
+            1 => operands.pop().expect("one intersection operand remains"),
+            _ => self.push(CandidatePlanNodeKind::Intersection(
+                operands.into_boxed_slice(),
+            )),
+        }
+    }
+
+    fn finish(self, root: CandidatePlanNodeId) -> ListCandidatePlan {
+        ListCandidatePlan {
+            nodes: self.nodes,
+            root,
+        }
+    }
+}
+
+struct ListCandidatePlan {
+    nodes: Vec<CandidatePlanNode>,
+    root: CandidatePlanNodeId,
 }
 
 impl ListCandidatePlan {
-    fn union(mut operands: Vec<Self>) -> Self {
-        if operands.iter().any(|operand| matches!(operand, Self::All)) {
-            return Self::All;
-        }
-        operands.retain(|operand| !matches!(operand, Self::Empty));
-        match operands.len() {
-            0 => Self::Empty,
-            1 => operands.pop().expect("one union operand remains"),
-            _ => Self::Union(operands),
-        }
+    fn singleton(kind: CandidatePlanNodeKind) -> Self {
+        let mut builder = CandidatePlanBuilder::new();
+        let root = builder.push(kind);
+        builder.finish(root)
     }
 
-    fn intersection(mut operands: Vec<Self>) -> Self {
-        if operands
-            .iter()
-            .any(|operand| matches!(operand, Self::Empty))
-        {
-            return Self::Empty;
-        }
-        operands.retain(|operand| !matches!(operand, Self::All));
-        match operands.len() {
-            0 => Self::All,
-            1 => operands.pop().expect("one intersection operand remains"),
-            _ => Self::Intersection(operands),
-        }
-    }
+    fn all() -> Self { Self::singleton(CandidatePlanNodeKind::All) }
 
-    fn needs_target_index(&self) -> bool {
-        match self {
-            Self::All | Self::Empty => false,
-            Self::Query(query) => query.retained_prefix().len() > 1,
-            Self::Union(operands) | Self::Intersection(operands) => {
-                operands.iter().any(Self::needs_target_index)
-            }
-        }
-    }
+    fn query(query: RhoPathQuery) -> Self { Self::singleton(CandidatePlanNodeKind::Query(query)) }
+
+    fn node(&self, id: CandidatePlanNodeId) -> &CandidatePlanNode { &self.nodes[id.0] }
+
+    fn needs_target_index(&self) -> bool { self.node(self.root).needs_target_index }
+
+    fn is_empty(&self) -> bool { matches!(self.node(self.root).kind, CandidatePlanNodeKind::Empty) }
 }
 
-fn is_single_connective_carrier(pattern: &Par) -> bool {
-    pattern.family_cardinality::<Connective>() == 1 && pattern.all_components_are::<Connective>()
+fn is_active_single_connective_carrier(pattern: &Par) -> bool {
+    pattern.connective_used()
+        && pattern.family_cardinality::<Connective>() == 1
+        && pattern.all_components_are::<Connective>()
 }
 
-fn single_connective_carrier(pattern: &Par) -> Option<Connective> {
-    is_single_connective_carrier(pattern).then(|| {
+fn active_single_connective_carrier(pattern: &Par) -> Option<Connective> {
+    is_active_single_connective_carrier(pattern).then(|| {
         pattern
             .first::<Connective>()
             .expect("resident Par Connective endpoints are canonical")
@@ -2539,43 +3031,82 @@ fn single_connective_carrier(pattern: &Par) -> Option<Connective> {
 
 fn compile_par_candidate_plan(root: &Par, captures: &mut PathMap<()>) -> ListCandidatePlan {
     #[cfg(feature = "spatial-matcher-connective-domain-differential")]
-    if is_single_connective_carrier(root) && FORCE_CONNECTIVE_DOMAIN_ALL.with(Cell::get) {
-        return ListCandidatePlan::All;
+    if is_active_single_connective_carrier(root) && FORCE_CONNECTIVE_DOMAIN_ALL.with(Cell::get) {
+        return ListCandidatePlan::all();
     }
 
     if let Some(terminal) = root.canonical_unary_connective_terminal() {
         return rho_path_query_atom(&terminal, captures)
-            .map(|atom| ListCandidatePlan::Query(RhoPathQuery::structural_sequence([atom], false)))
-            .unwrap_or(ListCandidatePlan::All);
+            .map(|atom| ListCandidatePlan::query(RhoPathQuery::structural_sequence([atom], false)))
+            .unwrap_or_else(ListCandidatePlan::all);
     }
 
-    let mut work = vec![CandidateCompileWork::Enter(root.clone())];
-    let mut values = Vec::new();
+    if is_active_single_connective_carrier(root) {
+        let mut encoded = None;
+        root.visit_encoded::<Connective>(|entry| {
+            if entry.multiplicity().get() == 1 {
+                encoded = Some(compile_candidate_plan(
+                    vec![CandidateCompileWork::EnterEncodedConnective(
+                        entry.payload(),
+                    )],
+                    captures,
+                ));
+            }
+        });
+        if let Some(plan) = encoded {
+            return plan;
+        }
+    }
+
+    compile_candidate_plan(
+        vec![CandidateCompileWork::EnterResident(root.clone())],
+        captures,
+    )
+}
+
+fn compile_candidate_plan<'a>(
+    mut work: Vec<CandidateCompileWork<'a>>,
+    captures: &mut PathMap<()>,
+) -> ListCandidatePlan {
+    let mut builder = CandidatePlanBuilder::new();
+    let mut values: Vec<CandidatePlanNodeId> = Vec::new();
 
     while let Some(next) = work.pop() {
+        #[cfg(test)]
+        update_list_relation_stats(|stats| {
+            stats.candidate_max_work = stats.candidate_max_work.max(work.len() + 1);
+            stats.candidate_max_values = stats.candidate_max_values.max(values.len());
+        });
         match next {
-            CandidateCompileWork::Enter(pattern) => {
-                let Some(connective) = single_connective_carrier(&pattern) else {
-                    let plan = rho_path_query_atom(&pattern, captures)
-                        .map(|atom| {
-                            ListCandidatePlan::Query(RhoPathQuery::structural_sequence(
-                                [atom],
-                                false,
-                            ))
-                        })
-                        .unwrap_or(ListCandidatePlan::All);
-                    values.push(plan);
+            CandidateCompileWork::EnterResident(pattern) => {
+                let Some(connective) = active_single_connective_carrier(&pattern) else {
+                    let node = rho_path_query_atom(&pattern, captures)
+                        .map(|atom| builder.query(RhoPathQuery::structural_sequence([atom], false)))
+                        .unwrap_or_else(|| builder.all());
+                    values.push(node);
                     continue;
                 };
+                #[cfg(test)]
+                update_list_relation_stats(|stats| {
+                    stats.candidate_resident_connective_decodes += 1;
+                });
 
                 match connective.connective_instance {
                     Some(ConnOrBody(ConnectiveBody { ps })) => {
                         work.push(CandidateCompileWork::FinishUnion(ps.len()));
-                        work.extend(ps.into_iter().rev().map(CandidateCompileWork::Enter));
+                        work.extend(
+                            ps.into_iter()
+                                .rev()
+                                .map(CandidateCompileWork::EnterResident),
+                        );
                     }
                     Some(ConnAndBody(ConnectiveBody { ps })) => {
                         work.push(CandidateCompileWork::FinishIntersection(ps.len()));
-                        work.extend(ps.into_iter().rev().map(CandidateCompileWork::Enter));
+                        work.extend(
+                            ps.into_iter()
+                                .rev()
+                                .map(CandidateCompileWork::EnterResident),
+                        );
                     }
                     // A conservative child query Q satisfies success ⊆ Q.
                     // Complementing it would reverse that inclusion, so NOT
@@ -2585,11 +3116,73 @@ fn compile_par_candidate_plan(root: &Par, captures: &mut PathMap<()>) -> ListCan
                     | Some(ConnInt(_))
                     | Some(ConnString(_))
                     | Some(ConnUri(_))
-                    | Some(ConnByteArray(_)) => values.push(ListCandidatePlan::All),
+                    | Some(ConnByteArray(_)) => values.push(builder.all()),
                     // These arms are unconditional refusal in
                     // `evaluate_connective`, hence their candidate set really
                     // is empty rather than merely unknown.
-                    Some(VarRefBody(_)) | None => values.push(ListCandidatePlan::Empty),
+                    Some(VarRefBody(_)) | None => values.push(builder.empty()),
+                }
+            }
+            CandidateCompileWork::EnterEncodedPar(pattern) => {
+                let connective = (canonical_par_connective_used(pattern) == Some(true))
+                    .then(|| canonical_single_connective_from_par(pattern))
+                    .flatten();
+                if let Some(connective) = connective {
+                    work.push(CandidateCompileWork::EnterEncodedConnective(connective));
+                } else {
+                    #[cfg(test)]
+                    update_list_relation_stats(|stats| stats.candidate_terminal_par_decodes += 1);
+                    let pattern = models::rust::rholang::protobuf_decoder::decode_par(pattern)
+                        .expect("an authoritative connective child Par is canonical");
+                    let node = rho_path_query_atom(&pattern, captures)
+                        .map(|atom| builder.query(RhoPathQuery::structural_sequence([atom], false)))
+                        .unwrap_or_else(|| builder.all());
+                    values.push(node);
+                }
+            }
+            CandidateCompileWork::EnterEncodedConnective(connective) => {
+                #[cfg(test)]
+                update_list_relation_stats(|stats| {
+                    stats.candidate_encoded_connective_nodes += 1;
+                });
+                let Some(parts) = canonical_connective_parts(connective) else {
+                    // The bytes came from an authoritative ParBag endpoint.
+                    // If a future schema extension is not yet proven by the
+                    // cursor, delegate through the complete resident path.
+                    let decoded = <Connective as prost::Message>::decode(connective)
+                        .expect("an authoritative Connective endpoint is canonical");
+                    let pattern = Par::default()
+                        .with_connectives(vec![decoded])
+                        .with_connective_used(true);
+                    work.push(CandidateCompileWork::EnterResident(pattern));
+                    continue;
+                };
+                match parts {
+                    CanonicalConnectiveParts::Or(children) => {
+                        work.push(CandidateCompileWork::FinishUnion(children.len()));
+                        work.push(CandidateCompileWork::EnterEncodedChildren {
+                            children,
+                            kind: CandidateNary::Union,
+                        });
+                    }
+                    CanonicalConnectiveParts::And(children) => {
+                        work.push(CandidateCompileWork::FinishIntersection(children.len()));
+                        work.push(CandidateCompileWork::EnterEncodedChildren {
+                            children,
+                            kind: CandidateNary::Intersection,
+                        });
+                    }
+                    CanonicalConnectiveParts::Not(_)
+                    | CanonicalConnectiveParts::Predicate { .. } => values.push(builder.all()),
+                    CanonicalConnectiveParts::VarRef | CanonicalConnectiveParts::Absent => {
+                        values.push(builder.empty());
+                    }
+                }
+            }
+            CandidateCompileWork::EnterEncodedChildren { mut children, kind } => {
+                if let Some(child) = children.next() {
+                    work.push(CandidateCompileWork::EnterEncodedChildren { children, kind });
+                    work.push(CandidateCompileWork::EnterEncodedPar(child));
                 }
             }
             CandidateCompileWork::FinishUnion(arity) => {
@@ -2598,7 +3191,8 @@ fn compile_par_candidate_plan(root: &Par, captures: &mut PathMap<()>) -> ListCan
                     .checked_sub(arity)
                     .expect("connective union has one value per child");
                 let operands = values.split_off(split);
-                values.push(ListCandidatePlan::union(operands));
+                let root = builder.union(operands);
+                values.push(root);
             }
             CandidateCompileWork::FinishIntersection(arity) => {
                 let split = values
@@ -2606,15 +3200,17 @@ fn compile_par_candidate_plan(root: &Par, captures: &mut PathMap<()>) -> ListCan
                     .checked_sub(arity)
                     .expect("connective intersection has one value per child");
                 let operands = values.split_off(split);
-                values.push(ListCandidatePlan::intersection(operands));
+                let root = builder.intersection(operands);
+                values.push(root);
             }
         }
     }
 
     debug_assert_eq!(values.len(), 1, "candidate compiler leaves one root value");
-    values
+    let root = values
         .pop()
-        .expect("candidate compiler emits its root value")
+        .expect("candidate compiler emits its root value");
+    builder.finish(root)
 }
 
 fn expr_connective_used(expr: &Expr) -> bool {
@@ -2925,29 +3521,31 @@ impl ListTargetIndex {
     /// `None` denotes the universal domain and remains an algebraic identity
     /// for intersection / annihilator for union.
     fn positions_matching_plan(&self, root: &ListCandidatePlan) -> Option<Box<[u64]>> {
-        enum Work<'a> {
-            Enter(&'a ListCandidatePlan),
+        enum Work {
+            Enter(CandidatePlanNodeId),
             FinishUnion(usize),
             FinishIntersection(usize),
         }
 
-        let mut work = vec![Work::Enter(root)];
+        let mut work = vec![Work::Enter(root.root)];
         let mut values: Vec<Option<PathMap<()>>> = Vec::new();
         while let Some(next) = work.pop() {
             match next {
-                Work::Enter(ListCandidatePlan::All) => values.push(None),
-                Work::Enter(ListCandidatePlan::Empty) => values.push(Some(PathMap::new())),
-                Work::Enter(ListCandidatePlan::Query(query)) => {
-                    values.push(self.position_mask_matching(query));
-                }
-                Work::Enter(ListCandidatePlan::Union(operands)) => {
-                    work.push(Work::FinishUnion(operands.len()));
-                    work.extend(operands.iter().rev().map(Work::Enter));
-                }
-                Work::Enter(ListCandidatePlan::Intersection(operands)) => {
-                    work.push(Work::FinishIntersection(operands.len()));
-                    work.extend(operands.iter().rev().map(Work::Enter));
-                }
+                Work::Enter(id) => match &root.node(id).kind {
+                    CandidatePlanNodeKind::All => values.push(None),
+                    CandidatePlanNodeKind::Empty => values.push(Some(PathMap::new())),
+                    CandidatePlanNodeKind::Query(query) => {
+                        values.push(self.position_mask_matching(query));
+                    }
+                    CandidatePlanNodeKind::Union(operands) => {
+                        work.push(Work::FinishUnion(operands.len()));
+                        work.extend(operands.iter().rev().copied().map(Work::Enter));
+                    }
+                    CandidatePlanNodeKind::Intersection(operands) => {
+                        work.push(Work::FinishIntersection(operands.len()));
+                        work.extend(operands.iter().rev().copied().map(Work::Enter));
+                    }
+                },
                 Work::FinishUnion(arity) => {
                     let split = values
                         .len()
@@ -3215,11 +3813,12 @@ fn init_list(
     let candidate_domains = candidate_plans
         .iter()
         .map(|plan| {
-            match plan {
-                ListCandidatePlan::Empty => Some(Vec::new().into_boxed_slice()),
-                _ => target_index
+            if plan.is_empty() {
+                Some(Vec::new().into_boxed_slice())
+            } else {
+                target_index
                     .as_ref()
-                    .and_then(|index| index.positions_matching_plan(plan)),
+                    .and_then(|index| index.positions_matching_plan(plan))
             }
             .map_or(ListCandidateDomain::All, ListCandidateDomain::Indexed)
         })

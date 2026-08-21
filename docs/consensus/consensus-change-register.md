@@ -4086,7 +4086,7 @@ Quote actual numbers. The RED, the measurement, the acceptance matrix. Tag each 
 
 ### B.1 Retired register entries
 
-The 56 entries retired under the 2026-08-03 inclusion criterion (§3.2). Each keeps its **former
+The 65 entries retired under the 2026-08-03 inclusion criterion (§3.2). Each keeps its **former
 identifier forever** — identifiers are never reused, and a historical citation of any `CBR-*` below
 resolves to this table. Full bodies remain in git history at the pre-refactor revision of this file.
 Reasons are the closed retirement enum of §3.2; the evidence column points at where the discharging
@@ -4142,7 +4142,7 @@ material now lives.
 | `CBR-060` | this checkpoint | Evaluator metadata reconstruction covers `If` and depth-zero connective variable references exactly once per distinct PathMap endpoint | `BUG_FIX_RULED_NONCONSENSUS` | a `u64::MAX` conditional multiplicity plus one `VarRef` endpoint produces the union of both locally-free bitsets without occurrence expansion; a materializable collection child exercises the production rebuild boundary |
 | `CBR-061` | this checkpoint | The pushdown pretty printer renders `If` components instead of dropping them from a `Par` or printing `Nil` | `BUG_FIX_RULED_NONCONSENSUS` | an If-only witness renders condition, true branch, and false branch; a mixed Expr+If witness preserves canonical family presentation. This changes replay-visible diagnostic text where the omitted family was previously printed, but does not impose execution order on parallel processes. |
 | `CBR-062` | this checkpoint | Singleton-`If` spatial matching advances through shared canonical protobuf ranges instead of repeatedly decoding every remaining nested suffix | `OPTIMIZATION_MEASURED_NEUTRAL` | the bounded recursive oracle agrees on verdict and complete `FreeMap`; late-child refusal restores the attempt snapshot; canonical/malformed cursor gates and the 64-byte Job/Frame layout gate pass; depth 4,096 succeeds on a 128 KiB stack; the release ladder is 55.002 µs at depth 128 and 1.5387 ms at 4,096, with linear allocation growth. No value, verdict, binding, byte, hash, COMM, charge, accepted program, PathMap operation, or parallel execution order moves. Stack-safety report §5.29. |
-| `CBR-063` | this checkpoint | Shared canonical-protobuf ranges replace repeated suffix decoding across recursive New/Send/Receive/Match/Expr matching, and borrowed ESet/EMap members enter the existing unordered Bag/PathMap ListPDA | `OPTIMIZATION_MEASURED_NEUTRAL` | the 18/18 bounded recursive-oracle gate agrees on verdict and complete `FreeMap`; unordered augmenting-path reassignment, map key/value rollback, and exact set/map remainders pass; all 13 named families reach depth 4,096 on a 128 KiB stack and have subquadratic allocation ladders. Diagnostic depth-128 ESet/EMap matching falls from 3.009/1.609 s to 0.825/1.099 ms. No value, verdict, binding, byte, hash, COMM, charge, accepted program, PathMap algebra, or parallel execution order moves. Stack-safety report §5.30. |
+| `CBR-063` | this checkpoint; pgmcp experiment 302 | Shared canonical-protobuf ranges replace repeated suffix decoding across recursive New/Send/Receive/Match/Expr/Connective matching, and borrowed ESet/EMap members enter the existing unordered Bag/PathMap ListPDA | `OPTIMIZATION_MEASURED_NEUTRAL` | the bounded recursive-oracle gates agree on verdict and complete `FreeMap`; unordered augmenting-path reassignment, map key/value rollback, exact set/map remainders, AND whole-fold rollback, OR branch isolation, and NOT inversion pass; all 15 named families reach depth 4,096 on a 128 KiB stack and have subquadratic allocation ladders, while AND/OR reach depth 20,000 on 256 KiB in debug and release. Diagnostic depth-128 ESet/EMap matching falls from 3.009/1.609 s to 0.825/1.099 ms; exact scalar children improve AND/4,096 from 10.640 to 1.596 ms/op. No value, verdict, binding, byte, hash, COMM, charge, accepted program, PathMap algebra, or parallel execution order moves. Stack-safety report §5.30. |
 | `CBR-064` | this checkpoint | Exact unary-`ENot` and node `RhoExpr` byte PDAs avoid repeatedly materializing recursively shorter ParBag/PathMap suffixes | `OPTIMIZATION_MEASURED_NEUTRAL` | the guard evaluator's seven-test recursive differential preserves exact values, errors, operand interleaving, compressed multiplicity, and spatial-oracle behavior; the 128,000-level classifier and 131,072-level evaluator gates pass on explicit small stacks. Node conversion agrees with its resident PDA for all 36 Expr variants, incomplete recursive messages, compressed multiplicity, every EPathMap mode, and exact JSON output; its 16,384-level counter gate records zero resident-Par fallback. No normalized value, guard verdict, binding, protobuf/bincode byte, hash, COMM, charge, accepted program, EPathMap mode, PathMap algebra, or parallel execution order moves. Stack-safety report §5.28.5. |
 | `CBR-L01` | `3ff1c98b`, `f586e138` | Equal operator precedence becomes representable; Rholang's ladder corrected | `BUG_FIX_RULED_NONCONSENSUS` | entry body at the pre-refactor revision (git history) |
 | `CBR-L02` | `0f3d298c` | The substrate lane stops answering "false" for a guard it could not decide | `BUG_FIX_RULED_NONCONSENSUS` | entry body at the pre-refactor revision (git history) |
@@ -4302,8 +4302,9 @@ The shallow lookup is generated from the protobuf descriptor and rejects a wrong
 current arm; it is not a handwritten tag range and it does not validate message payloads. The pure
 router is additionally bound by the **6/6** formal-equivalence manifest to a conditional Rocq
 refinement theorem and an executable truth-table differential. The aggregate Rocq/Verus/Z3/TLA+/
-mCRL2 gate passes; the independent TLA+ model exhausts **478** reachable states and includes the
-removed invalid-to-no-match collapse as a detected mutant. These proofs establish only the routing
+mCRL2 gate passes; the independent TLA+ model explores **627 generated / 495 distinct** reachable
+states to depth 6 and includes the removed invalid-to-no-match collapse and unsafe Connective
+metadata/domain shortcuts as detected mutants. These proofs establish only the routing
 refinement under explicit tag-soundness and delegated-authority hypotheses. Executable descriptor,
 malformed-wire, and subprocess gates retain responsibility for the protobuf and invariant boundary.
 
@@ -4314,6 +4315,49 @@ protobuf or bincode byte, hash, COMM multiset, D3 charge, accepted program, EPat
 algebra/lattice operation moves. Under §3.2 this measured-neutral resource repair is retired rather
 than promoted to the active may-change-consensus table. Complete release-workspace validation is a
 separate pending gate and is not implied by the focused evidence.
+
+The continuation also closes branching Connectives without projecting their children to resident
+`Vec<Par>` values. Candidate domains are flat arena nodes whose AND/OR composition uses the existing
+PathMap meet/join operations. The authoritative path retains one shared canonical Connective body
+and suspends a validated child cursor in explicit AND, OR, and NOT frames. AND publishes accumulated
+bindings only when its entire fold succeeds; OR restores the original `FreeMap` on both branch
+success and branch failure; NOT always restores before inverting the verdict. A stale Rocq/TLA
+disjunction model that published a successful branch's bindings was corrected to the recursive
+oracle and production equation before the encoded-machine refinement was extended.
+
+Exact scalar children take a narrower byte-native route only after both endpoint shapes are proven:
+one occurrence of one ground scalar Expr, no other ParBag family, multiplicity one, and
+`connective_used = false`. Canonical Expr bytes are injective for the admitted Rust equality
+domains, including raw floating-point bits and the three extended numeric variants. Derived
+`locally_free` summaries remain ignored exactly as by `match_pars`. Unproved or malformed scalar
+payloads delegate to the complete generated decoder and cannot become a no-match merely because a
+cursor declined to prove them.
+
+Independent review found two additional admission obligations before the checkpoint was committed.
+A nested singleton `Connective` is logical only when its enclosing child `Par` proves
+`connective_used = true`; false or unproved summaries delegate to concrete matching. At the root,
+summary truth is necessary but insufficient: the direct encoded route may bypass the legacy
+`ParCount`/`sub_pars` target projection only when the target has zero Connective occurrences,
+`connective_used = false`, and empty `locally_free`. Otherwise the complete candidate-selecting
+authority runs. Debug and release differentials compare verdict and complete `FreeMap` for inactive
+Connective data and both root-summary fields. The extended Rocq bridge makes target-domain safety
+an explicit premise; TLC checks the corresponding false/unproved-summary and unsafe-domain mutants.
+
+Pgmcp experiment 302 preregistered a 50% latency reduction at AND depth 4,096 and recorded 51
+samples per arm. The decoder control measured 10,640,053.55 ns/op and the byte route 1,596,216.55
+ns/op, ratio 0.1500; Welch $`p = 6.69 \times 10^{-155}`$, Cohen's $`d = -344.03`$, and the robust
+rank test agrees. All eight AND/OR depth cells favor treatment. AMD uProf 5.3 time-based profiles
+attribute the control to decoded ParBag/PathMap traversal, vector growth, and allocator work; the
+treatment shifts samples to the explicit PDA and canonical cursors.
+
+The first release control exposed a release-only cursor defect: consuming the child key inside
+`debug_assert_eq!` erased that state transition when assertions were compiled out. The read is now
+unconditional, and both depth-20,000 branching gates pass in release as well as debug. That repair
+changes no admitted message, decoded value, match equation, byte, hash, COMM, charge, PathMap
+operation, or execution ordering; it makes release execute the same validated cursor already
+exercised in debug. This continuation therefore remains `OPTIMIZATION_MEASURED_NEUTRAL` under
+CBR-063 rather than creating a new active entry. Stack-safety report §5.30 and its durable TSV carry
+the exact resource evidence. Complete release-workspace validation remains a separate pending gate.
 
 **CBR-033 living evidence continuation (2026-08-11; pgmcp #5301).** `7983bf4b` makes the
 read-only hot-store snapshot total over the union of datum and continuation key domains. A datum
@@ -4995,6 +5039,6 @@ is the point: the derivation's surplus is real, and it is small and classifiable
 ---
 
 *The register's identifiers are stable and never reused. The 2026-08-03 re-scope retired 46 entries
-to B.1; subsequent classified findings through CBR-063 and CBR-L22 bring the living appendix to 64. The re-scope also removed
+to B.1; subsequent classified findings through CBR-064 and CBR-L24 bring the living appendix to 65. The re-scope also removed
 the mechanised drift gate with its machine index; the pre-refactor revision, with every then-retired
 body and the gate's specification, remains in git history.*

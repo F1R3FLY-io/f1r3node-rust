@@ -45,10 +45,12 @@ enum Family {
     ESet,
     EMap,
     ConnectiveNot,
+    ConnectiveAnd,
+    ConnectiveOr,
 }
 
 impl Family {
-    const ALL: [Self; 13] = [
+    const ALL: [Self; 15] = [
         Self::New,
         Self::Send,
         Self::Receive,
@@ -62,6 +64,8 @@ impl Family {
         Self::ESet,
         Self::EMap,
         Self::ConnectiveNot,
+        Self::ConnectiveAnd,
+        Self::ConnectiveOr,
     ];
 
     const fn name(self) -> &'static str {
@@ -79,6 +83,8 @@ impl Family {
             Self::ESet => "ESet",
             Self::EMap => "EMap",
             Self::ConnectiveNot => "Connective::Not",
+            Self::ConnectiveAnd => "Connective::And",
+            Self::ConnectiveOr => "Connective::Or",
         }
     }
 }
@@ -114,6 +120,49 @@ fn fixture(family: Family, depth: usize) -> (Par, Par) {
         return (
             construction.finish(target).expect("finish target terminal"),
             construction.finish(pattern).expect("finish NOT spine"),
+        );
+    }
+
+    if matches!(family, Family::ConnectiveAnd | Family::ConnectiveOr) {
+        let success = construction
+            .import_par(&new_gint_par(7, Vec::new(), false))
+            .expect("import AND success terminal");
+        let refusal = construction
+            .import_par(&new_gint_par(8, Vec::new(), false))
+            .expect("import OR refusal terminal");
+        let shell = Connective {
+            connective_instance: Some(match family {
+                Family::ConnectiveAnd => {
+                    ConnectiveInstance::ConnAndBody(models::rhoapi::ConnectiveBody {
+                        ps: vec![Par::default(), Par::default()],
+                    })
+                }
+                Family::ConnectiveOr => {
+                    ConnectiveInstance::ConnOrBody(models::rhoapi::ConnectiveBody {
+                        ps: vec![Par::default(), Par::default()],
+                    })
+                }
+                _ => unreachable!("the branching Connective family was selected"),
+            }),
+        };
+        for _ in 0..depth {
+            let children = match family {
+                Family::ConnectiveAnd => [pattern, success],
+                Family::ConnectiveOr => [refusal, pattern],
+                _ => unreachable!("the branching Connective family was selected"),
+            };
+            let component = construction
+                .connective_component(&shell, &children)
+                .expect("plan branching Connective");
+            pattern = construction
+                .singleton_component(component, Vec::new(), true)
+                .expect("plan branching Connective carrier");
+        }
+        return (
+            construction.finish(target).expect("finish target terminal"),
+            construction
+                .finish(pattern)
+                .expect("finish branching Connective"),
         );
     }
 
@@ -288,7 +337,9 @@ fn fixture(family: Family, depth: usize) -> (Par, Par) {
                 )
             }
             Family::ESet | Family::EMap => unreachable!("collections returned above"),
-            Family::ConnectiveNot => unreachable!("Connective::Not returned above"),
+            Family::ConnectiveNot | Family::ConnectiveAnd | Family::ConnectiveOr => {
+                unreachable!("Connective families returned above")
+            }
         };
         target = construction
             .singleton_component(target_component, Vec::new(), false)
@@ -314,12 +365,12 @@ fn assert_matches_terminal(target: Par, pattern: Par) {
 }
 
 fn assert_family_match(family: Family, target: Par, pattern: Par) {
-    if matches!(family, Family::ConnectiveNot) {
+    if matches!(family, Family::ConnectiveNot | Family::ConnectiveOr) {
         let mut context = SpatialMatcherContext::new();
         assert_eq!(context.spatial_match(target, pattern), Some(()));
         assert!(
             context.free_map.is_empty(),
-            "NOT must isolate the terminal capture even at even parity"
+            "NOT and OR must isolate terminal captures"
         );
     } else {
         assert_matches_terminal(target, pattern);
