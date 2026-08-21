@@ -10,8 +10,8 @@
 #         and engine/multi_parent_casper/{dispatch,validation_dispatcher}.rs
 #         (the former multi_parent_casper_impl.rs was split into engine/ in ab66b87e)
 # Companion docs:
-#   docs/theory/slashing/slashing-specification.md  (normative spec)
-#   docs/theory/slashing/slashing-verification.md   (proofs in math + Rocq pointers)
+#   docs/casper/theory/slashing/slashing-specification.md  (normative spec)
+#   docs/casper/theory/slashing/slashing-verification.md   (proofs in math + Rocq pointers)
 #
 # 27 modules. Zero `Admitted`. No custom `Axiom` or `Parameter`.
 #
@@ -24,13 +24,7 @@
 #   EquivocationRecord     → Validator, Block
 #   DAGState               → Block, EquivocationRecord
 #   EquivocationDetector   → DAGState, InvalidBlock
-#   PoSContract            → Validator   (+ Stage-C two-effect PoSStateC/slashC,
-#                                          §7-§12: quarantine + mintingHalted,
-#                                          ADDITIVE — legacy PoSState/slash kept)
-#   ValidatorRedemption    → Validator, PoSContract  (Stage-C redeemSlashed:
-#                                          vindicated/guilty/burned adjudication
-#                                          + slash→redeem total conservation;
-#                                          INDEPENDENT of MainTheorem.v)
+#   PoSContract            → Validator
 #   SlashDeploy            → Block, PoSContract, InvalidBlock
 #   BlockCreator           → DAGState, SlashDeploy, EquivocationRecord
 #   ForkChoice             → DAGState, PoSContract
@@ -69,7 +63,6 @@ theories/DAGState.v
 theories/EquivocationDetector.v
 theories/DetectorProduct.v
 theories/PoSContract.v
-theories/ValidatorRedemption.v
 theories/SlashDeploy.v
 theories/BlockCreator.v
 theories/ForkChoice.v

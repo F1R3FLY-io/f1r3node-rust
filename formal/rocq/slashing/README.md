@@ -5,7 +5,7 @@ logic. The headline result is `main_slashing_algorithm_correct`: every detected
 admissible/ignorable equivocation leads to bond zeroing, witness recording,
 fork-choice exclusion, and stake transfer to the Coop vault, under all
 documented bug fixes. The companion mathematical exposition lives in
-`docs/theory/slashing/slashing-verification.md`; this README is a quick
+`docs/casper/theory/slashing/slashing-verification.md`; this README is a quick
 operator's guide.
 
 ## Building
@@ -72,7 +72,7 @@ that promotion.
 
 ## Mapping to the verification document
 
-Every theorem stated in `docs/theory/slashing/slashing-verification.md` carries
+Every theorem stated in `docs/casper/theory/slashing/slashing-verification.md` carries
 a `(name, file:line)` anchor pointing into this directory. The reverse mapping
 (from Rocq identifier to verification-doc section) is in §11.2 of the
 verification document.

@@ -317,17 +317,17 @@ Qed.
 
 End Algebra.
 
-Inductive scenario_effect : Type := FundingEffect.
+Inductive scenario_effect : Type := CertifiedEffect.
 
 Definition source_state : @state scenario_effect := fun _ => True.
 Definition empty_state : @state scenario_effect := fun _ => False.
-Definition reject_funding : @state scenario_effect := fun _ => True.
+Definition reject_certified_effect : @state scenario_effect := fun _ => True.
 
 Definition accepted_merge : @state scenario_effect :=
   three_way source_state empty_state empty_state.
 
 Definition rejected_merge : @state scenario_effect :=
-  merge_state no_effects reject_funding
+  merge_state no_effects reject_certified_effect
     [source_state; empty_state; empty_state].
 
 Definition restored_merge : @state scenario_effect :=
@@ -340,11 +340,11 @@ Definition single_base_merge : @state scenario_effect :=
   merge_state no_effects no_effects [empty_state].
 
 Definition state_effect_provenance_contract : Prop :=
-  accepted_merge FundingEffect /\
-  repeated_accepted_merge FundingEffect /\
-  ~ rejected_merge FundingEffect /\
-  restored_merge FundingEffect /\
-  ~ single_base_merge FundingEffect /\
+  accepted_merge CertifiedEffect /\
+  repeated_accepted_merge CertifiedEffect /\
+  ~ rejected_merge CertifiedEffect /\
+  restored_merge CertifiedEffect /\
+  ~ single_base_merge CertifiedEffect /\
   majority_certificate
     source_state
     accepted_merge

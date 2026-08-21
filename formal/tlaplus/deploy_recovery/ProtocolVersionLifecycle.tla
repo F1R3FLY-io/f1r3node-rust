@@ -10,8 +10,8 @@ EXTENDS Naturals, FiniteSets
 \* ReceiverExpectedVersion BlockProcessor::check_if_of_interest
 \* Receive                Validate::version
 \*
-\* Protocol 2 is the fresh-genesis cost-accounted wire protocol. Protocol 1 is
-\* retained as historical encoding metadata but is not runnable by this binary.
+\* The current protocol is the only runnable wire protocol. The legacy protocol
+\* remains historical encoding metadata.
 \* Each Boolean constant disables one production obligation so the associated
 \* unsafe configuration must reproduce its named counterexample.
 

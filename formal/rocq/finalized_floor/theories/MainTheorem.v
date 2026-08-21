@@ -53,7 +53,6 @@ From FinalizedFloor Require Import FtProvenance.
 From FinalizedFloor Require Import FinalizerProgress.
 From FinalizedFloor Require Import BootstrapReplayContext.
 From FinalizedFloor Require Import LocalFaultDeferral.
-From FinalizedFloor Require Import FundingAdmissionLifecycle.
 From FinalizedFloor Require Import EffectCausalClosure.
 From FinalizedFloor Require Import StateEffectProvenance.
 From FinalizedFloor Require Import StateLineageFinality.
@@ -260,7 +259,7 @@ Proof.
           (conj executed_failure_retains_effect_slot
             (conj effect_projection_permutation_length
               (conj aligned_metadata_splits_exactly
-                    funding_rejection_close_block_regression)))).
+                    admission_rejection_close_block_regression)))).
 Qed.
 
 Theorem finalized_floor_rejection_reason_confluence_correct :
@@ -695,32 +694,6 @@ Proof.
 Qed.
 
 Print Assumptions bootstrap_replay_and_local_fault_recovery_correct.
-
-Theorem terminal_funding_admission_lifecycle_correct :
-  (forall supply demand,
-    supply < demand ->
-    recorded_decision (propose supply demand) = Reject /\
-    user_effects (propose supply demand) = 0 /\
-    finalize_record (propose supply demand) = RejectedFinalized)
-  /\
-  (forall record (later_supply : nat),
-    recorded_decision record = Reject ->
-    finalize_record record = RejectedFinalized /\
-    user_effects record = 0)
-  /\
-  (forall supply demand,
-    demand <= supply ->
-    validate_record
-      {| recorded_supply := supply;
-         recorded_demand := demand;
-         recorded_decision := Reject |} = false).
-Proof.
-  exact (conj underfunded_proposal_is_terminal_rejection
-    (conj later_supply_does_not_resurrect_recorded_rejection
-      fundable_deploy_cannot_be_forged_as_rejected)).
-Qed.
-
-Print Assumptions terminal_funding_admission_lifecycle_correct.
 
 Theorem finalized_floor_effect_causal_closure_correct :
   exact_effect_causal_closure_contract.

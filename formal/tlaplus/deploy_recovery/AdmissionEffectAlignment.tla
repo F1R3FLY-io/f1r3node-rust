@@ -8,7 +8,7 @@ CONSTANT
 ASSUME CountStatusRecordsAsEffects \in BOOLEAN
 
 Validators == {"v1", "v2", "v3"}
-BlockRecords == {"funding-rejection", "close-block"}
+BlockRecords == {"admission-rejection", "close-block"}
 EffectRecords == {"close-block"}
 MergeMetadata == {"close-block"}
 ValidatorStates == {"Ready", "Indexed", "Blocked", "Proposed"}
@@ -93,7 +93,7 @@ Inv_EffectMetadataAligned ==
   Cardinality(EffectRecords) = Cardinality(MergeMetadata)
 
 Inv_StatusOnlyRecordHasNoMetadata ==
-  "funding-rejection" \notin MergeMetadata
+  "admission-rejection" \notin MergeMetadata
 
 Inv_IndexedDomainExact ==
   \A validator \in Validators :

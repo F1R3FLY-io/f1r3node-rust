@@ -3,9 +3,9 @@
 This directory contains the explicit-state and symbolic transition models for
 Casper finalized-floor derivation, state preservation, validator recovery, and
 parallel validation. The normative protocol description is
-[`docs/theory/finalized-floor/finalized-floor-specification.md`](../../../docs/theory/finalized-floor/finalized-floor-specification.md),
+[`docs/casper/theory/finalized-floor/finalized-floor-specification.md`](../../../docs/casper/theory/finalized-floor/finalized-floor-specification.md),
 and the proof and execution evidence is cataloged in
-[`docs/theory/finalized-floor/finalized-floor-verification.md`](../../../docs/theory/finalized-floor/finalized-floor-verification.md).
+[`docs/casper/theory/finalized-floor/finalized-floor-verification.md`](../../../docs/casper/theory/finalized-floor/finalized-floor-verification.md).
 
 ## Model families
 

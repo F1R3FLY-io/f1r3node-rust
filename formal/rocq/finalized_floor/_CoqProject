@@ -11,8 +11,8 @@
 #         engine/multi_parent_casper/snapshot,validate}.rs
 #         f1r3node-rust/block-storage/src/rust/dag/block_dag_key_value_storage.rs
 # Companion docs:
-#   docs/theory/finalized-floor/finalized-floor-specification.md   (normative spec)
-#   docs/theory/finalized-floor/finalized-floor-verification.md    (math + Rocq pointers)
+#   docs/casper/theory/finalized-floor/finalized-floor-specification.md
+#   docs/casper/theory/finalized-floor/finalized-floor-verification.md
 #
 # Zero `Admitted`. No custom `Axiom` or `Parameter`.
 #
@@ -54,7 +54,6 @@ theories/FtProvenance.v
 theories/FinalizerProgress.v
 theories/BootstrapReplayContext.v
 theories/LocalFaultDeferral.v
-theories/FundingAdmissionLifecycle.v
 theories/EffectCausalClosure.v
 theories/StateEffectProvenance.v
 theories/StateLineageFinality.v

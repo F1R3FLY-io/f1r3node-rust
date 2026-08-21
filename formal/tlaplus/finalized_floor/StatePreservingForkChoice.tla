@@ -14,10 +14,10 @@ ASSUME /\ ModelNodes \subseteq {"n1", "n2"}
 Nodes == ModelNodes
 Validators == {"v1", "v2", "v3"}
 Blocks == {"G", "F", "P1", "P2", "D"}
-Effects == {"funding", "stale"}
+Effects == {"certified-effect", "stale"}
 
 Active == [block \in Blocks |->
-  CASE block = "F" -> {"funding"}
+  CASE block = "F" -> {"certified-effect"}
     [] block = "D" -> {"stale"}
     [] OTHER -> {}]
 
@@ -206,10 +206,10 @@ Inv_ProposalPreservesSnapshotFloor ==
   \A node \in Nodes :
     hasProposal[node] => Active[proposalFloor[node]] \subseteq proposalState[node]
 
-Inv_FinalizedFundingCannotBeDropped ==
+Inv_CertifiedEffectCannotBeDropped ==
   \A node \in Nodes :
     hasProposal[node] /\ proposalFloor[node] = "F" =>
-      "funding" \in proposalState[node]
+      "certified-effect" \in proposalState[node]
 
 Live_AllNodesPromote == <>(\A node \in Nodes : lfb[node] = "F")
 
