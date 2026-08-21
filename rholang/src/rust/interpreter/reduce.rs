@@ -3113,7 +3113,9 @@ impl DebruijnInterpreter {
                 match single_expr(&p) {
                     Some(expr) => match expr.expr_instance.unwrap() {
                         ExprInstance::GByteArray(bytes) => {
-                            self.outer.cost.charge(valid_utf8_prefix_len_cost(&bytes))?;
+                            self.outer
+                                .metering
+                                .reserve_primitive(valid_utf8_prefix_len_cost(&bytes))?;
                             let prefix = match std::str::from_utf8(&bytes) {
                                 Ok(_) => bytes.len(),
                                 Err(e) => e.valid_up_to(),
@@ -3164,7 +3166,9 @@ impl DebruijnInterpreter {
                 match single_expr(&p) {
                     Some(expr) => match expr.expr_instance.unwrap() {
                         ExprInstance::GByteArray(bytes) => {
-                            self.outer.cost.charge(decode_utf8_cost(&bytes))?;
+                            self.outer
+                                .metering
+                                .reserve_primitive(decode_utf8_cost(&bytes))?;
                             let decoded = String::from_utf8_lossy(&bytes).into_owned();
                             Ok(Par::default().with_exprs(vec![Expr {
                                 expr_instance: Some(ExprInstance::GString(decoded)),
@@ -3228,7 +3232,9 @@ impl DebruijnInterpreter {
                                 }
                             }
                             let total: usize = segments.iter().map(|s| s.len()).sum();
-                            self.outer.cost.charge(concat_bytes_cost(total))?;
+                            self.outer
+                                .metering
+                                .reserve_primitive(concat_bytes_cost(total))?;
                             let mut out = Vec::with_capacity(total);
                             for s in segments {
                                 out.extend_from_slice(&s);

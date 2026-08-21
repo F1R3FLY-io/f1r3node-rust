@@ -218,6 +218,9 @@ fn fs_generator_appears_in_deploy_sequence_after_registry() {
         fault_tolerance_threshold_ppm: 0,
         pos_multi_sig_public_keys: vec![],
         pos_multi_sig_quorum: 1,
+        max_cosigners_per_deploy: 64,
+        initial_phlogiston: 0,
+        epoch_phlogiston: 0,
     };
     let vaults = vec![];
     let deploys =

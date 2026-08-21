@@ -242,7 +242,7 @@ async fn measured_authority_cost(
         .reset(&Blake2b256Hash::from_bytes_prost(state_hash))
         .await
         .unwrap();
-    let (processed, _) = ops.process_deploy_cosigned(deploy.clone()).await.unwrap();
+    let (processed, _, _) = ops.process_deploy_cosigned(deploy.clone()).await.unwrap();
     assert!(!processed.is_failed);
     let witness = processed.authority_cost_witness.as_ref().unwrap();
     let physical = witness

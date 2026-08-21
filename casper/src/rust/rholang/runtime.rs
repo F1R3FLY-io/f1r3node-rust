@@ -347,8 +347,9 @@ impl WalDeployScope {
     ) -> Self {
         // Promoted from debug_assert to assert during step-5 review
         // (2026-08-13) for release-build defense-in-depth: the 3 call
-        // sites (play_deploy_with_cost_accounting, play_system_deploy,
-        // replay_deploy_e) derive via Blake2b256 → non-sentinel by
+        // sites (process_deploy_cosigned_with_budget_and_authority_mode,
+        // play_system_deploy, replay_deploy_e) derive via
+        // Blake2b256 → non-sentinel by
         // construction, but a future refactor that introduces a
         // sentinel-scope path would silently pass in release builds
         // and end up sweeping every stray sentinel-scoped entry in
@@ -913,7 +914,7 @@ impl RuntimeOps {
                     break None;
                 }
                 previous_capacity = Some(capacity);
-                let (processed, user_mergeable, exhausted) = self
+                let (processed, user_mergeable, _fs_wal, exhausted) = self
                     .process_deploy_cosigned_with_budget_and_authority(
                         cosigned.clone(),
                         Cost::create(capacity, "state-bound authority capacity"),
@@ -1397,7 +1398,7 @@ impl RuntimeOps {
             let budget = execution_caps
                 .map(|caps| Cost::create(caps[idx], "authority-derived execution capacity"))
                 .unwrap_or_else(Cost::unsafe_max);
-            let (mut processed, mergeable, did_exhaust) = self
+            let (mut processed, mergeable, _fs_wal, did_exhaust) = self
                 .process_deploy_cosigned_with_budget_and_authority(cosigned, budget, None, true)
                 .await?;
             if did_exhaust {
@@ -1450,15 +1451,19 @@ impl RuntimeOps {
         let mut res = Vec::with_capacity(terms.len());
         // Merged flow: cost-accounted's per-deploy checkpoint chain
         // tracking + fileio's per-block WAL aggregation (H-30-2 slice-
-        // 30b).  play_deploy_with_cost_accounting returns each deploy's
-        // WAL contribution; we accumulate them in block order for the
-        // post-block WAL root computation, while also chaining each
-        // deploy's pre/post state via checkpoints for state-hash
-        // continuity (cost-accounted's addition).
+        // 30b).  `play_ordinary_deploy` returns each deploy's WAL
+        // contribution as the 3rd tuple element; we accumulate them
+        // in block order for the post-block WAL root computation,
+        // while also chaining each deploy's pre/post state via
+        // checkpoints for state-hash continuity (cost-accounted's
+        // addition).  The per-deploy WalDeployScope now lives inside
+        // `process_deploy_cosigned_with_budget_and_authority_mode`,
+        // sharing the same atomic-deploy boundary as the inner
+        // soft-checkpoint.
         let mut current_root = start_hash.clone();
         let mut block_fs_wal: Vec<WalEntry> = Vec::new();
         for deploy in terms {
-            let (mut pd, mc, fs_wal) = self.play_deploy_with_cost_accounting(deploy).await?;
+            let (mut pd, mc, fs_wal) = self.play_ordinary_deploy(deploy).await?;
             if !fs_wal.is_empty() {
                 block_fs_wal.extend(fs_wal);
             }
@@ -1525,7 +1530,7 @@ impl RuntimeOps {
                     );
                 }
             }
-            slices.insert(current_root.clone(), (block_number, block_fs_wal));
+            slices.insert(current_root.to_vec(), (block_number, block_fs_wal));
         }
         Ok((current_root, res))
     }
@@ -1564,7 +1569,7 @@ impl RuntimeOps {
                     "legacy uplift to Cosigned failed in genesis: {error}"
                 ))
             })?;
-            let (mut processed, mergeable, _) = self
+            let (mut processed, mergeable, _fs_wal, _) = self
                 .process_deploy_cosigned_with_budget_and_authority_mode(
                     cosigned,
                     Cost::unsafe_max(),
@@ -1588,258 +1593,6 @@ impl RuntimeOps {
         Ok((current_root, res))
     }
 
-    /**
-     * Evaluates deploy with cost accounting (PoS Pre-charge and Refund calls)
-     *
-     * # Return value (H-30-2 slice-30b fix)
-     *
-     * Returns `(ProcessedDeploy, NumberChannelsEndVal, Vec<WalEntry>)`.
-     * The third element is the per-deploy consensus WAL contribution
-     * drained via `WalDeployScope::take_and_commit`.  Pre-fix, these
-     * entries were populated in `EvalCollector.fs_wal_entries` and
-     * silently dropped on function return — a real observability sink
-     * for any operator running `consensus-static-*` provisioning.  The
-     * block emitter aggregates the per-deploy entries into a
-     * per-block `Vec<WalEntry>` for the cadence loop to snapshot and
-     * (in slice 30c) for the on-chain WAL Merkle root commitment.
-     */
-    pub async fn play_deploy_with_cost_accounting(
-        &mut self,
-        deploy: Signed<DeployData>,
-    ) -> Result<(ProcessedDeploy, NumberChannelsEndVal, Vec<WalEntry>), CasperError> {
-        // Using tracing events for async - Span[F].withMarks("play-deploy") from Scala
-        tracing::debug!(target: "f1r3fly.casper.play_deploy", "play-deploy-started");
-        if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
-            tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "start", rss_kb);
-        }
-        let mut eval_collector_state = EvalCollector::new();
-
-        // Slice 30 (C-30-1 round-2 fix): RAII drain guard for the
-        // per-deploy WAL boundary.  Everything between here and the
-        // `take_and_commit` call at the end of the deploy is the
-        // deploy's WAL contribution — precharge + user deploy +
-        // refund all share the same boundary (they are one atomic
-        // deploy from the consensus-commitment perspective).  On any
-        // `?`-propagated error, `wal_scope`'s Drop drains-and-discards
-        // so entries produced by a failed deploy do not leak into the
-        // next deploy's slice.  Pre-fix, five `?` operators between
-        // begin_deploy and the drain sites could leak entries.
-        // Step 5: derive deploy_scope from the deploy signature so
-        // every lock acquired under this deploy is tagged with a
-        // unique 32-byte identifier.  Blake2b256 output is
-        // consensus-observable through no path other than the sweep
-        // count (which isn't consensus-observable — see Drop
-        // comment).  On drop, the guard sweeps this scope's locks
-        // from the shared LockRegistry.
-        let deploy_scope: DeployScope = {
-            let h = crypto::rust::hash::blake2b256::Blake2b256::hash(deploy.sig.to_vec());
-            let mut arr = [0u8; 32];
-            arr.copy_from_slice(&h);
-            arr
-        };
-        let mut wal_scope = WalDeployScope::new_with_lock_sweep(
-            self.runtime.fs_handles.wal.clone(),
-            self.runtime.fs_handles.lock_registry.clone(),
-            deploy_scope,
-            self.runtime.fs_handles.current_deploy_scope.clone(),
-        );
-
-        let deploy_pk = deploy.pk.bytes.clone();
-        let deploy_pk_hex = hex::encode(&deploy_pk);
-        let deploy_sig_hex = hex::encode(&deploy.sig);
-        let refund_rand = system_deploy_util::generate_refund_deploy_random_seed(&deploy);
-        let pre_charge_rand = system_deploy_util::generate_pre_charge_deploy_random_seed(&deploy);
-
-        // Evaluates Pre-charge system deploy
-        let pre_charge_result = {
-            // Using tracing events for async - Span[F].traceI("precharge") from Scala
-            tracing::debug!(target: "f1r3fly.casper.precharge", "precharge-started");
-            tracing::debug!(
-                "PreCharging {} for {}",
-                deploy_pk_hex.as_str(),
-                deploy.data.total_phlo_charge()
-            );
-            if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
-                tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "before_precharge_internal", rss_kb);
-            }
-            let (event_log, result, mergeable_channels) = self
-                .play_system_deploy_internal(&mut PreChargeDeploy {
-                    charge_amount: deploy.data.total_phlo_charge(),
-                    pk: deploy.pk.clone(),
-                    rand: pre_charge_rand,
-                })
-                .await?;
-            if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
-                tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "after_precharge_internal", rss_kb);
-            }
-            eval_collector_state.add(event_log, mergeable_channels);
-            if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
-                tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "after_precharge_collect", rss_kb);
-            }
-            result
-        };
-        if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
-            tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "after_precharge", rss_kb);
-        }
-
-        match pre_charge_result {
-            Either::Right(_) => {
-                // Evaluates user deploy
-                let pd = {
-                    // Using tracing events for async - Span[F].traceI("user-deploy") from Scala
-                    tracing::debug!(target: "f1r3fly.casper.user_deploy", "user-deploy-started");
-                    tracing::debug!("Processing user deploy {}", deploy_pk_hex.as_str());
-                    // Evaluates user deploy and append event log to local state
-                    {
-                        let (mut pd, mc) = self.process_deploy(deploy).await?;
-                        let deploy_log = mem::take(&mut pd.deploy_log);
-                        eval_collector_state.add(deploy_log, mc);
-                        pd
-                    }
-                };
-                if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
-                    tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "after_user_deploy", rss_kb);
-                }
-
-                // Evaluates Refund system deploy
-                let refund_result = {
-                    // Using tracing events for async - Span[F].traceI("refund") from Scala
-                    tracing::debug!(target: "f1r3fly.casper.refund", "refund-started");
-                    tracing::debug!(
-                        "Refunding {} with {}",
-                        deploy_pk_hex.as_str(),
-                        pd.refund_amount()
-                    );
-                    let (event_log, result, mergeable_channels) = self
-                        .play_system_deploy_internal(&mut RefundDeploy {
-                            refund_amount: pd.refund_amount(),
-                            rand: refund_rand,
-                        })
-                        .await?;
-                    eval_collector_state.add(event_log, mergeable_channels);
-                    result
-                };
-                if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
-                    tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "after_refund", rss_kb);
-                }
-
-                match refund_result {
-                    Either::Right(_) => {
-                        // Get mergeable channels data
-                        let mergeable_channels_data = self
-                            .get_number_channels_data(&eval_collector_state.mergeable_channels)
-                            .await?;
-
-                        let deploy_log = mem::take(&mut eval_collector_state.event_log);
-                        // Slice 30 (C-30-1 round-2 fix): drain via
-                        // RAII scope — success path opts in via
-                        // `take_and_commit`; any `?`-error above
-                        // discards via Drop, closing the pre-fix
-                        // cross-deploy leak.
-                        //
-                        // Slice 30c H-R3 integration: pass the deploy
-                        // log so the drain uses log-order (canonical
-                        // across validators) rather than the
-                        // scheduler-dependent insertion order.
-                        let fs_wal = wal_scope.take_and_commit(&deploy_log);
-                        if !fs_wal.is_empty() {
-                            let wal_root = compute_wal_root(&fs_wal);
-                            tracing::debug!(
-                                target: "f1r3fly.casper.fs_wal",
-                                deploy_sig = deploy_sig_hex.as_str(),
-                                n_entries = fs_wal.len(),
-                                wal_root = %hex::encode(&wal_root[..8]),
-                                "fs-wal per-deploy drain (committed)"
-                            );
-                            eval_collector_state.add_fs_wal_entries(fs_wal);
-                        }
-                        if let Some(rss_kb) =
-                            crate::rust::util::rholang::mem_profiler::read_vm_rss_kb()
-                        {
-                            tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "after_collect_result", rss_kb);
-                        }
-
-                        // H-30-2 slice-30b fix: hand fs_wal_entries
-                        // to the caller (block emitter) instead of
-                        // dropping via EvalCollector.
-                        let fs_wal_entries =
-                            std::mem::take(&mut eval_collector_state.fs_wal_entries);
-                        Ok((
-                            ProcessedDeploy { deploy_log, ..pd },
-                            mergeable_channels_data,
-                            fs_wal_entries,
-                        ))
-                    }
-
-                    Either::Left(error) => {
-                        // If Pre-charge succeeds and Refund fails, it's a platform error.
-                        // Include deploy identifiers so operators can quickly isolate toxic deploys.
-                        let refund_amount = pd.refund_amount();
-                        let failure_context = format!(
-                            "{}, deploy_sig={}, deployer_pk={}, refund_amount={}",
-                            error.error_message,
-                            deploy_sig_hex,
-                            deploy_pk_hex.as_str(),
-                            refund_amount
-                        );
-                        metrics::counter!(
-                            "casper_runtime_refund_failures_total",
-                            "source" => CASPER_METRICS_SOURCE
-                        )
-                        .increment(1);
-                        tracing::warn!("Refund failure '{}'", failure_context);
-                        Err(CasperError::SystemRuntimeError(
-                            SystemDeployPlatformFailure::GasRefundFailure(failure_context),
-                        ))
-                    }
-                }
-            }
-
-            Either::Left(error) => {
-                tracing::error!(error = %error.error_message, "pre-charge evaluation failed");
-
-                // Handle evaluation errors from PreCharge
-                // - assigning 0 cost - replay should reach the same state
-                let mut empty_pd = ProcessedDeploy::empty(deploy);
-                empty_pd.system_deploy_error = Some(error.error_message);
-
-                // Update result with accumulated event logs
-                // Get mergeable channels data
-                let mergeable_channels_data = self
-                    .get_number_channels_data(&eval_collector_state.mergeable_channels)
-                    .await?;
-
-                let deploy_log = mem::take(&mut eval_collector_state.event_log);
-                // Slice 30 (round-2 fix): drain via RAII scope — the
-                // pre-charge-failure path still yields an Ok
-                // ProcessedDeploy, so we commit the scope explicitly.
-                // Pre-charge failures typically leave the WAL empty
-                // (no fs handlers ran) but the drain is free.
-                //
-                // Slice 30c H-R3 integration: log-order drain.
-                let fs_wal = wal_scope.take_and_commit(&deploy_log);
-                if !fs_wal.is_empty() {
-                    tracing::debug!(
-                        target: "f1r3fly.casper.fs_wal",
-                        deploy_sig = deploy_sig_hex.as_str(),
-                        n_entries = fs_wal.len(),
-                        "fs-wal drain on pre-charge failure (committed)"
-                    );
-                    eval_collector_state.add_fs_wal_entries(fs_wal);
-                }
-
-                let fs_wal_entries = std::mem::take(&mut eval_collector_state.fs_wal_entries);
-                Ok((
-                    ProcessedDeploy {
-                        deploy_log,
-                        ..empty_pd
-                    },
-                    mergeable_channels_data,
-                    fs_wal_entries,
-                ))
-            }
-        }
-
     /// Evaluates a legacy single-signature deploy under the canonical
     /// reservation and realized-cost settlement protocol. The adapter preserves
     /// the deploy identifier and cost trace by uplifting to a one-signer
@@ -1847,7 +1600,7 @@ impl RuntimeOps {
     pub async fn play_ordinary_deploy(
         &mut self,
         deploy: Signed<DeployData>,
-    ) -> Result<(ProcessedDeploy, NumberChannelsEndVal), CasperError> {
+    ) -> Result<(ProcessedDeploy, NumberChannelsEndVal, Vec<WalEntry>), CasperError> {
         let cosigned = crypto::rust::signatures::signed::Cosigned::from_single_signer(deploy)
             .map_err(|e| {
                 CasperError::RuntimeError(format!("legacy uplift to Cosigned failed: {e}"))
@@ -1875,21 +1628,22 @@ impl RuntimeOps {
     pub async fn play_ordinary_deploy_cosigned(
         &mut self,
         cosigned: crypto::rust::signatures::signed::Cosigned<DeployData>,
-    ) -> Result<(ProcessedDeploy, NumberChannelsEndVal), CasperError> {
+    ) -> Result<(ProcessedDeploy, NumberChannelsEndVal, Vec<WalEntry>), CasperError> {
         tracing::debug!(target: "f1r3fly.casper.play-deploy", "play-deploy-started");
         let primary_pk_hex = hex::encode(&cosigned.primary().pk.bytes);
 
         // USER DEPLOY (owns its own inner soft-checkpoint for failed-deploy
-        // rollback). The admission gate certified and reserved authority; the
-        // realized debit is checked and applied at block close.
+        // rollback + WalDeployScope for the consensus WAL). The admission
+        // gate certified and reserved authority; the realized debit is
+        // checked and applied at block close.
         tracing::debug!(target: "f1r3fly.casper.user-deploy",
             "user-deploy-started primary_pk={}", primary_pk_hex);
-        let (pd, mc) = self.process_deploy_cosigned(cosigned).await?;
+        let (pd, mc, fs_wal) = self.process_deploy_cosigned(cosigned).await?;
 
         let mut mergeable: HashMap<Par, MergeType> = HashMap::new();
         mergeable.extend(mc);
         let mergeable_channels_data = self.get_number_channels_data(&mergeable).await?;
-        Ok((pd, mergeable_channels_data))
+        Ok((pd, mergeable_channels_data, fs_wal))
     }
 
     /// Legacy single-signature user-deploy execution. Uplifts to
@@ -1898,7 +1652,7 @@ impl RuntimeOps {
     pub async fn process_deploy(
         &mut self,
         deploy: Signed<DeployData>,
-    ) -> Result<(ProcessedDeploy, HashMap<Par, MergeType>), CasperError> {
+    ) -> Result<(ProcessedDeploy, HashMap<Par, MergeType>, Vec<WalEntry>), CasperError> {
         let cosigned = crypto::rust::signatures::signed::Cosigned::from_single_signer(deploy)
             .map_err(|e| {
                 CasperError::RuntimeError(format!(
@@ -1925,18 +1679,26 @@ impl RuntimeOps {
     pub async fn process_deploy_cosigned(
         &mut self,
         cosigned: crypto::rust::signatures::signed::Cosigned<DeployData>,
-    ) -> Result<(ProcessedDeploy, HashMap<Par, MergeType>), CasperError> {
-        let (processed, mergeable, _) = self
+    ) -> Result<(ProcessedDeploy, HashMap<Par, MergeType>, Vec<WalEntry>), CasperError> {
+        let (processed, mergeable, fs_wal, _) = self
             .process_deploy_cosigned_with_budget(cosigned, Cost::unsafe_max())
             .await?;
-        Ok((processed, mergeable))
+        Ok((processed, mergeable, fs_wal))
     }
 
     async fn process_deploy_cosigned_with_budget(
         &mut self,
         cosigned: crypto::rust::signatures::signed::Cosigned<DeployData>,
         budget: Cost,
-    ) -> Result<(ProcessedDeploy, HashMap<Par, MergeType>, bool), CasperError> {
+    ) -> Result<
+        (
+            ProcessedDeploy,
+            HashMap<Par, MergeType>,
+            Vec<WalEntry>,
+            bool,
+        ),
+        CasperError,
+    > {
         self.process_deploy_cosigned_with_budget_and_authority(cosigned, budget, None, true)
             .await
     }
@@ -1947,7 +1709,15 @@ impl RuntimeOps {
         budget: Cost,
         authority_allocation: Option<ResourceMultiset<[u8; 32]>>,
         report_exhaustion: bool,
-    ) -> Result<(ProcessedDeploy, HashMap<Par, MergeType>, bool), CasperError> {
+    ) -> Result<
+        (
+            ProcessedDeploy,
+            HashMap<Par, MergeType>,
+            Vec<WalEntry>,
+            bool,
+        ),
+        CasperError,
+    > {
         self.process_deploy_cosigned_with_budget_and_authority_mode(
             cosigned,
             budget,
@@ -1965,7 +1735,44 @@ impl RuntimeOps {
         authority_allocation: Option<ResourceMultiset<[u8; 32]>>,
         default_authority: DefaultCostAuthority,
         report_exhaustion: bool,
-    ) -> Result<(ProcessedDeploy, HashMap<Par, MergeType>, bool), CasperError> {
+    ) -> Result<
+        (
+            ProcessedDeploy,
+            HashMap<Par, MergeType>,
+            Vec<WalEntry>,
+            bool,
+        ),
+        CasperError,
+    > {
+        // WalDeployScope — opens BEFORE the soft-checkpoint so the
+        // atomic-deploy boundary spans both the RSpace state (owned by
+        // the inner soft-checkpoint) and the per-runtime consensus WAL
+        // + LockRegistry sweep (owned by wal_scope). Any early return
+        // via `?` or explicit `return Err(...)` runs wal_scope's Drop,
+        // which discards WAL entries produced by the failed deploy so
+        // they do not leak into the next deploy's slice, and sweeps
+        // this deploy's range-lock acquires from the shared
+        // LockRegistry. On success, `take_and_commit(&deploy_log)`
+        // drains the deploy's WAL contribution in canonical log-order
+        // (H-R3) for the block emitter to aggregate.
+        //
+        // Step 5: derive deploy_scope from the primary signer's
+        // signature so every lock acquired under this deploy is
+        // tagged with a unique 32-byte identifier.
+        let deploy_scope: DeployScope = {
+            let h =
+                crypto::rust::hash::blake2b256::Blake2b256::hash(cosigned.primary().sig.to_vec());
+            let mut arr = [0u8; 32];
+            arr.copy_from_slice(&h);
+            arr
+        };
+        let mut wal_scope = WalDeployScope::new_with_lock_sweep(
+            self.runtime.fs_handles.wal.clone(),
+            self.runtime.fs_handles.lock_registry.clone(),
+            deploy_scope,
+            self.runtime.fs_handles.current_deploy_scope.clone(),
+        );
+
         // INNER soft-checkpoint — wraps the USER DEPLOY only. On a failed user
         // deploy it reverts that deploy's effects (D3: no pre-charge state).
         let fallback = self.runtime.create_soft_checkpoint().await;
@@ -2047,6 +1854,30 @@ impl RuntimeOps {
             .into_iter()
             .map(event_converter::to_casper_event)
             .collect::<Vec<_>>();
+
+        // Slice 30 (C-30-1 round-2 fix) + H-R3 integration:
+        // drain the deploy's per-runtime WAL contribution in
+        // canonical log-order.  Success only — a failed evaluation
+        // leaves `wal_scope` un-committed so its Drop discards the
+        // entries, mirroring the soft-checkpoint revert on the
+        // RSpace side.
+        let fs_wal = if eval_succeeded {
+            let drained = wal_scope.take_and_commit(&deploy_log);
+            if !drained.is_empty() {
+                let wal_root = compute_wal_root(&drained);
+                tracing::debug!(
+                    target: "f1r3fly.casper.fs_wal",
+                    deploy_sig = hex::encode(&primary_sig).as_str(),
+                    n_entries = drained.len(),
+                    wal_root = %hex::encode(&wal_root[..8]),
+                    "fs-wal per-deploy drain (committed)"
+                );
+            }
+            drained
+        } else {
+            Vec::new()
+        };
+
         let deploy_result = ProcessedDeploy {
             deploy: legacy_signed,
             cost: Cost::to_proto(eval_result.cost),
@@ -2107,7 +1938,7 @@ impl RuntimeOps {
             }
         }
 
-        Ok((deploy_result, eval_result.mergeable, exhausted))
+        Ok((deploy_result, eval_result.mergeable, fs_wal, exhausted))
     }
 
     pub(crate) async fn resolve_authority_stack_births(
@@ -2213,7 +2044,7 @@ impl RuntimeOps {
         &mut self,
         cosigned: crypto::rust::signatures::signed::Cosigned<DeployData>,
     ) -> Result<(ProcessedDeploy, NumberChannelsEndVal), CasperError> {
-        let (pd, merge_chs) = self.process_deploy_cosigned(cosigned).await?;
+        let (pd, merge_chs, _fs_wal) = self.process_deploy_cosigned(cosigned).await?;
         let data = self.get_number_channels_data(&merge_chs).await?;
         Ok((pd, data))
     }
@@ -3770,9 +3601,9 @@ mod tests {
     //   (2) Sentinel-scope construction panic (matches the runtime
     //       assert! promoted from debug_assert in commit 6f537099).
     //   (3) Static-analysis pins on the 3 WalDeployScope call sites
-    //       (play_deploy_with_cost_accounting, play_system_deploy,
-    //       replay_deploy_e) using `new_with_lock_sweep`, not
-    //       legacy `new(wal)`.
+    //       (process_deploy_cosigned_with_budget_and_authority_mode,
+    //       play_system_deploy, replay_deploy_e) using
+    //       `new_with_lock_sweep`, not legacy `new(wal)`.
     // Gap #2 from the review (handler-level current_deploy_scope
     // read pin) lives in rholang/src/rust/interpreter/io/handlers.rs
     // — that's where the handlers being pinned live.
@@ -4127,21 +3958,27 @@ mod tests {
     }
 
     /// **Gap 3a: user-deploy path pin.**  Verify
-    /// `play_deploy_with_cost_accounting` constructs its
-    /// `WalDeployScope` via `new_with_lock_sweep` (not legacy `new`)
-    /// AND threads `lock_registry` + `current_deploy_scope` from
-    /// `fs_handles`.  A regression that reverted to legacy `new(wal)`
-    /// would leave the sweep un-plumbed for the user-deploy path.
+    /// `process_deploy_cosigned_with_budget_and_authority_mode`
+    /// constructs its `WalDeployScope` via `new_with_lock_sweep` (not
+    /// legacy `new`) AND threads `lock_registry` +
+    /// `current_deploy_scope` from `fs_handles`.  A regression that
+    /// reverted to legacy `new(wal)` would leave the sweep un-plumbed
+    /// for the user-deploy path.  Post cost-accounted merge, the
+    /// WalDeployScope moved from the deleted
+    /// `play_deploy_with_cost_accounting` into
+    /// `process_deploy_cosigned_with_budget_and_authority_mode` so it
+    /// shares the atomic-deploy boundary with the inner
+    /// soft-checkpoint.
     #[test]
-    fn play_deploy_with_cost_accounting_uses_new_with_lock_sweep() {
+    fn user_deploy_path_uses_new_with_lock_sweep() {
         let src = include_str!("runtime.rs");
         assert!(
-            src.contains("pub async fn play_deploy_with_cost_accounting"),
-            "runtime.rs missing play_deploy_with_cost_accounting definition"
+            src.contains("async fn process_deploy_cosigned_with_budget_and_authority_mode"),
+            "runtime.rs missing process_deploy_cosigned_with_budget_and_authority_mode definition"
         );
         assert!(
             src.contains("WalDeployScope::new_with_lock_sweep("),
-            "step 5 regression: play_deploy_with_cost_accounting must construct \
+            "step 5 regression: user-deploy path must construct \
              WalDeployScope via new_with_lock_sweep — a revert to legacy `new` \
              would leave the sweep un-plumbed"
         );

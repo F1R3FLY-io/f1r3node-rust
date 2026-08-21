@@ -374,7 +374,8 @@ impl Wal {
     }
 
     /// Redesign: per-deploy boundary marker.  Called at the top of
-    /// `play_deploy_with_cost_accounting` before the deploy runs.
+    /// `process_deploy_cosigned_with_budget_and_authority_mode`
+    /// before the user deploy runs.
     /// Paired with `take_deploy_entries` which returns exactly the
     /// entries this deploy contributed.  The pair lets slice 30
     /// attach a deploy's WAL contributions to its `ProcessedDeploy`

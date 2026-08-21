@@ -122,7 +122,7 @@ new
         )
         .expect("Failed to create initial trie deploy");
 
-        let (initial_trie_pd, _) = runtime_ops
+        let (initial_trie_pd, _, _) = runtime_ops
             .process_deploy(initial_trie_deploy)
             .await
             .expect("Failed to process initial trie deploy");

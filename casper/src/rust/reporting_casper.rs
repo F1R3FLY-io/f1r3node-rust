@@ -224,13 +224,12 @@ impl RhoReporterCasper {
         // `!with_cost_accounting` parameter — cost-accounted removed
         // that param and channels the same signal through block_kind).
         // RAII guard drops on all exit paths including panic unwind.
-        let _filter_exemption = if block_kind
-            == crate::rust::rholang::replay_runtime::ReplayBlockKind::Genesis
-        {
-            Some(runtime.runtime.exempt_fs_native_urn_filter())
-        } else {
-            None
-        };
+        let _filter_exemption =
+            if block_kind == crate::rust::rholang::replay_runtime::ReplayBlockKind::Genesis {
+                Some(runtime.runtime.exempt_fs_native_urn_filter())
+            } else {
+                None
+            };
 
         if block_kind == crate::rust::rholang::replay_runtime::ReplayBlockKind::Ordinary
             && !crate::rust::rholang::replay_runtime::has_exactly_one_successful_terminal_close(

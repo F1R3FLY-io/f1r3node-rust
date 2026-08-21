@@ -478,6 +478,9 @@ mod tests {
                 fault_tolerance_threshold_ppm: 0,
                 pos_multi_sig_public_keys: vec![],
                 pos_multi_sig_quorum: 1,
+                max_cosigners_per_deploy: 64,
+                initial_phlogiston: 0,
+                epoch_phlogiston: 0,
             },
             vaults: vec![],
             supply: 0,
@@ -487,6 +490,7 @@ mod tests {
             native_token_decimals: 8,
             fs_bundle: bundle,
             consensus_fs_snapshot_cadence: None,
+            client_fuel_allocations: vec![],
         }
     }
 

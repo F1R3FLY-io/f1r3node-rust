@@ -262,6 +262,8 @@ async fn block_approver_protocol_should_reject_mismatched_protocol_version() {
         &ctx.protocol.native_token_name,
         &ctx.protocol.native_token_symbol,
         ctx.protocol.native_token_decimals,
+        &ctx.protocol.fs_bundle,
+        ctx.protocol.consensus_fs_snapshot_cadence,
     )
     .await;
 
@@ -307,6 +309,8 @@ async fn block_approver_protocol_should_reject_mismatched_genesis_vault_funding(
         &ctx.protocol.native_token_name,
         &ctx.protocol.native_token_symbol,
         ctx.protocol.native_token_decimals,
+        &ctx.protocol.fs_bundle,
+        ctx.protocol.consensus_fs_snapshot_cadence,
     )
     .await;
 

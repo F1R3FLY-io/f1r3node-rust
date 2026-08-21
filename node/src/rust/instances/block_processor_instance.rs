@@ -28,6 +28,7 @@ const MAX_BLOCKS_IN_PROCESSING_ENV: &str = "F1R3_MAX_BLOCKS_IN_PROCESSING";
 const MAX_PARALLEL_BLOCKS_DEFAULT: usize = 2;
 const MAX_PARALLEL_BLOCKS_ENV: &str = "F1R3_MAX_PARALLEL_BLOCKS";
 const BLOCK_PROCESSING_RESULT_QUEUE_CAPACITY: usize = 128;
+#[allow(dead_code)] // Referenced only from linux-gated callers and tests below.
 const MALLOC_TRIM_EVERY_BLOCKS_DEFAULT: usize = 1;
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
 static BLOCKS_SINCE_ALLOCATOR_TRIM: AtomicUsize = AtomicUsize::new(0);
@@ -36,12 +37,14 @@ static MALLOC_TRIM_EVERY_BLOCKS: OnceLock<usize> = OnceLock::new();
 static MAX_BLOCKS_IN_PROCESSING: OnceLock<usize> = OnceLock::new();
 static TRIGGER_PROPOSE_AFTER_BLOCK_PROCESSING: OnceLock<bool> = OnceLock::new();
 
+#[allow(dead_code)] // Referenced only from linux-gated callers and tests below.
 fn configured_malloc_trim_every_blocks(value: Option<&str>) -> usize {
     value
         .and_then(|v| v.parse::<usize>().ok())
         .unwrap_or(MALLOC_TRIM_EVERY_BLOCKS_DEFAULT)
 }
 
+#[allow(dead_code)] // Referenced only from linux-gated callers and tests below.
 fn next_trim_counter(current: usize, interval: usize) -> (usize, bool) {
     if interval == 0 {
         (current, false)
