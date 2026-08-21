@@ -1,0 +1,152 @@
+{
+  "samples_per_identity": 10000,
+  "depth": 4,
+  "seed": "0xcafef00d",
+  "overall_pass": true,
+  "identities": [
+    {
+      "identity": "tensor_commutative",
+      "expected_holds": true,
+      "samples": 10000,
+      "successes": 10000,
+      "failures": 0,
+      "pass_rate": 1.0,
+      "counterexamples": []
+    },
+    {
+      "identity": "tensor_associative",
+      "expected_holds": true,
+      "samples": 10000,
+      "successes": 10000,
+      "failures": 0,
+      "pass_rate": 1.0,
+      "counterexamples": []
+    },
+    {
+      "identity": "tensor_left_unit",
+      "expected_holds": true,
+      "samples": 10000,
+      "successes": 10000,
+      "failures": 0,
+      "pass_rate": 1.0,
+      "counterexamples": []
+    },
+    {
+      "identity": "tensor_right_unit",
+      "expected_holds": true,
+      "samples": 10000,
+      "successes": 10000,
+      "failures": 0,
+      "pass_rate": 1.0,
+      "counterexamples": []
+    },
+    {
+      "identity": "plus_commutative",
+      "expected_holds": true,
+      "samples": 10000,
+      "successes": 10000,
+      "failures": 0,
+      "pass_rate": 1.0,
+      "counterexamples": []
+    },
+    {
+      "identity": "with_commutative",
+      "expected_holds": true,
+      "samples": 10000,
+      "successes": 10000,
+      "failures": 0,
+      "pass_rate": 1.0,
+      "counterexamples": []
+    },
+    {
+      "identity": "bang_idempotent",
+      "expected_holds": true,
+      "samples": 10000,
+      "successes": 10000,
+      "failures": 0,
+      "pass_rate": 1.0,
+      "counterexamples": []
+    },
+    {
+      "identity": "whynot_idempotent",
+      "expected_holds": true,
+      "samples": 10000,
+      "successes": 10000,
+      "failures": 0,
+      "pass_rate": 1.0,
+      "counterexamples": []
+    },
+    {
+      "identity": "bang_monoidal",
+      "expected_holds": true,
+      "samples": 10000,
+      "successes": 10000,
+      "failures": 0,
+      "pass_rate": 1.0,
+      "counterexamples": []
+    },
+    {
+      "identity": "bang_unit",
+      "expected_holds": true,
+      "samples": 10000,
+      "successes": 10000,
+      "failures": 0,
+      "pass_rate": 1.0,
+      "counterexamples": []
+    },
+    {
+      "identity": "lolly_curry",
+      "expected_holds": true,
+      "samples": 10000,
+      "successes": 10000,
+      "failures": 0,
+      "pass_rate": 1.0,
+      "counterexamples": []
+    },
+    {
+      "identity": "threshold_permutation",
+      "expected_holds": true,
+      "samples": 10000,
+      "successes": 10000,
+      "failures": 0,
+      "pass_rate": 1.0,
+      "counterexamples": []
+    },
+    {
+      "identity": "tensor_associator_pentagon",
+      "expected_holds": true,
+      "samples": 10000,
+      "successes": 10000,
+      "failures": 0,
+      "pass_rate": 1.0,
+      "counterexamples": []
+    },
+    {
+      "identity": "tensor_unitor_triangle",
+      "expected_holds": true,
+      "samples": 10000,
+      "successes": 10000,
+      "failures": 0,
+      "pass_rate": 1.0,
+      "counterexamples": []
+    },
+    {
+      "identity": "anti_contraction (must fail)",
+      "expected_holds": false,
+      "samples": 10000,
+      "successes": 10000,
+      "failures": 0,
+      "pass_rate": 1.0,
+      "counterexamples": []
+    },
+    {
+      "identity": "anti_weakening (must fail)",
+      "expected_holds": false,
+      "samples": 10000,
+      "successes": 10000,
+      "failures": 0,
+      "pass_rate": 1.0,
+      "counterexamples": []
+    }
+  ]
+}

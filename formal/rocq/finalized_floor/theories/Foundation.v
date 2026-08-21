@@ -3,7 +3,7 @@
 
    Models the immutable structural facts of a block that the finalized floor
    is derived from: its block number, its main parent (parents[0]), and its
-   full parent list. The finalized-floor walk (parent_frontier, floor.rs:291)
+   full parent list. The finalized-floor walk (parent_frontier, floor.rs:351)
    descends the main-parent SPINE, so its termination rests on the spine being
    finite - which follows from block numbers strictly decreasing along the
    main parent. That is theorem T-TERM below.
@@ -17,11 +17,11 @@
    blk_num           | num(B)                     | b.body.state.block_number
    blk_main_parent   | main-parent, spine <|      | parents_hash_list[0]
    blk_parents       | parents(B), DAG <=         | b.header.parents_hash_list
-   walk_spine        | parent_frontier main walk  | floor.rs:291-350 (main loop)
+   walk_spine        | parent_frontier main walk  | floor.rs:351-375 (main loop)
    spine_walk_terminates | T-TERM (finite spine)  | floor.rs:60 DEEP_WALK_WARN
    ---------------------------------------------------------------------------
 
-   Companion doc: docs/casper/theory/finalized-floor/finalized-floor-verification.md
+   Companion doc: docs/theory/finalized-floor/finalized-floor-verification.md
    =========================================================================== *)
 
 From Stdlib Require Import Arith.Arith.

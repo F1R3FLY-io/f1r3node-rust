@@ -1,6 +1,6 @@
 //! `slash_lifecycle_trace` — end-to-end fuzz of the slashing lifecycle.
 //!
-//! Reference: docs/casper/theory/slashing/slashing-specification.md §6 (proposing),
+//! Reference: docs/theory/slashing/slashing-specification.md §6 (proposing),
 //! §9.8 (authorization).
 //!
 //! Two phases per iteration:
@@ -93,7 +93,9 @@ fuzz_target!(|input: Input| {
     // harness — the lifecycle test wants snapshots where at least the
     // proposer-side path succeeded. `slash_authorization_paths` covers
     // the candidate-side rejection rules directly.
-    let Ok(candidates) = authorized_slash_candidates(&snapshot) else {
+    let Ok(candidates) =
+        authorized_slash_candidates(&snapshot, &snapshot.on_chain_state.bonds_map)
+    else {
         return;
     };
 
@@ -111,7 +113,12 @@ fuzz_target!(|input: Input| {
     let block =
         support::block_with_system_deploys(input.proposer, proposer.clone(), block_number, deploys);
 
-    assert!(validate_received_slash_deploys(&block, &snapshot).is_ok());
+    assert!(validate_received_slash_deploys(
+        &block,
+        &snapshot,
+        &snapshot.on_chain_state.bonds_map,
+    )
+    .is_ok());
 
     if let Some(candidate) = candidates.first() {
         let duplicate_block = support::block_with_system_deploys(
@@ -131,6 +138,11 @@ fuzz_target!(|input: Input| {
                 ),
             ],
         );
-        assert!(validate_received_slash_deploys(&duplicate_block, &snapshot).is_err());
+        assert!(validate_received_slash_deploys(
+            &duplicate_block,
+            &snapshot,
+            &snapshot.on_chain_state.bonds_map,
+        )
+        .is_err());
     }
 });

@@ -14,7 +14,7 @@
 (* which proves these properties for unbounded validator and DAG sizes.    *)
 (* This TLA+ model exhaustively checks finite instances via TLC.            *)
 (*                                                                          *)
-(* Reference: docs/casper/theory/slashing/slashing-verification.md §4.            *)
+(* Reference: docs/theory/slashing/slashing-verification.md §4.            *)
 (****************************************************************************)
 
 EXTENDS Integers, Sequences, FiniteSets, TLC

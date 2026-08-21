@@ -1,7 +1,7 @@
 //! `equivocation_detector_paths` — fuzz the detector boundary against an
 //! independent three-way oracle.
 //!
-//! Reference: docs/casper/theory/slashing/slashing-specification.md §4
+//! Reference: docs/theory/slashing/slashing-specification.md §4
 //! (detection), §12 UC-01..UC-04.
 //!
 //! Oracle: a block whose creator-justification equals the snapshot's latest
