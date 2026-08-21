@@ -2559,6 +2559,8 @@
    "agreeing": 500,
    "decision": false,
    "era": 0,
+   "expected_decision": false,
+   "expected_max_clique": 300,
    "kind": "fidelity",
    "max_clique": 300,
    "snapshot": {
@@ -2575,6 +2577,8 @@
    "agreeing": 800,
    "decision": false,
    "era": 0,
+   "expected_decision": false,
+   "expected_max_clique": 300,
    "kind": "fidelity",
    "max_clique": 300,
    "snapshot": {
@@ -2591,6 +2595,8 @@
    "agreeing": 800,
    "decision": false,
    "era": 0,
+   "expected_decision": false,
+   "expected_max_clique": 300,
    "kind": "fidelity",
    "max_clique": 300,
    "snapshot": {
@@ -2607,6 +2613,8 @@
    "agreeing": 400,
    "decision": false,
    "era": 1,
+   "expected_decision": true,
+   "expected_max_clique": 400,
    "kind": "fidelity",
    "max_clique": 300,
    "snapshot": {
@@ -2623,6 +2631,8 @@
    "agreeing": 600,
    "decision": false,
    "era": 1,
+   "expected_decision": false,
+   "expected_max_clique": 300,
    "kind": "fidelity",
    "max_clique": 300,
    "snapshot": {
@@ -2639,6 +2649,8 @@
    "agreeing": 600,
    "decision": false,
    "era": 1,
+   "expected_decision": false,
+   "expected_max_clique": 300,
    "kind": "fidelity",
    "max_clique": 300,
    "snapshot": {
@@ -2655,6 +2667,8 @@
    "agreeing": 400,
    "decision": false,
    "era": 1,
+   "expected_decision": true,
+   "expected_max_clique": 400,
    "kind": "refined_red",
    "max_clique": 300,
    "snapshot": {
@@ -2671,6 +2685,8 @@
    "agreeing": 200,
    "decision": false,
    "era": 2,
+   "expected_decision": false,
+   "expected_max_clique": 100,
    "kind": "fidelity",
    "max_clique": 100,
    "snapshot": {
@@ -2687,6 +2703,8 @@
    "agreeing": 200,
    "decision": false,
    "era": 2,
+   "expected_decision": false,
+   "expected_max_clique": 100,
    "kind": "fidelity",
    "max_clique": 100,
    "snapshot": {
@@ -2703,6 +2721,8 @@
    "agreeing": 200,
    "decision": false,
    "era": 2,
+   "expected_decision": false,
+   "expected_max_clique": 100,
    "kind": "fidelity",
    "max_clique": 100,
    "snapshot": {

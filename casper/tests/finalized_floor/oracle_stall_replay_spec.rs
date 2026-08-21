@@ -11,21 +11,23 @@
 //        snapshots still track the departed validators while their stake has
 //        left the bonds map.
 //
-// FIDELITY pins (green): rebuilding each instance's sub-DAG block-for-block
+// REPLAY pins (green): rebuilding each instance's sub-DAG block-for-block
 // (senders, heights, main parents, justification maps, per-era bonds) and
 // evaluating the real oracle at the logged snapshots must reproduce the
-// logged `(agreeing, max_clique_weight, total_stake, decision)` tuples
-// exactly. Any change to agreement, the disagreement walk, or the clique
-// solver that shifts these tuples fails here first.
+// logged `(agreeing, total_stake)` exactly — agreement is walk-independent —
+// and the pinned `(max_clique, decision)` of the two-sided walk. The pinned
+// values equal the CI logs everywhere except the two i5 samples the walk's
+// height rule legitimately moves (recorded as provenance in the fixture);
+// i1's ten pins are byte-identical to its logs. Any change to agreement,
+// the walk, or the clique solver that shifts a tuple fails here first.
 //
-// REFINED-WALK red (i5): 37 of h146's logged false verdicts fail ONLY on
-// below-target ancestor-prefix vetoes — blocks on the target's own main
-// chain, visited in a departed validator's stale window. Ignorance of a
-// target's own ancestry is not disagreement with the target, so these
-// snapshots must certify; today the walk conflates the two and they do not.
-// (i1 carries NO such sample — all 264 of its false verdicts are rival
-// vetoes, which must KEEP vetoing — so the refinement's scope is pinned by
-// both fixtures together.)
+// THE WALK'S SCOPE, pinned by both fixtures together: 37 of i5-h146's
+// logged false verdicts failed ONLY on below-target ancestor-prefix vetoes —
+// blocks on the target's own main chain, visited in a departed validator's
+// stale window. Ignorance of a target's own ancestry is not disagreement
+// with the target, so those snapshots certify under the two-sided rule
+// (the red that drove the fix). i1 carries NO such sample — all 264 of its
+// false verdicts are rival vetoes, which KEEP vetoing.
 //
 // Fixtures: casper/tests/resources/stall_fixtures/{i1,i5}.json, emitted by
 // the system-integration classifier's distiller, which validates that the
@@ -72,10 +74,17 @@ struct FxSample {
     kind: String,
     target: String,
     snapshot: BTreeMap<String, String>,
+    /// Logged CI values. Agreement and total stake are walk-independent and
+    /// asserted as logged; `max_clique`/`decision` are the OLD walk's values,
+    /// kept as provenance so the fixture records exactly which logged
+    /// verdicts the two-sided walk moves (i1: none of 10; i5: 2 of 10).
     agreeing: i64,
     max_clique: i64,
     total: i64,
     decision: bool,
+    /// The correct oracle's tuple on the same snapshot — asserted.
+    expected_max_clique: i64,
+    expected_decision: bool,
     era: usize,
 }
 
@@ -297,16 +306,22 @@ async fn assert_fidelity(fx: &Fixture) {
         let (agreeing, max_clique, total, decision) =
             replay_sample(&rebuilt, fx.ftt_ppm, sample).await;
         assert_eq!(
-            (agreeing, max_clique, total, decision),
-            (
-                sample.agreeing,
-                sample.max_clique,
-                sample.total,
-                sample.decision
-            ),
-            "{}: replay of target {} diverged from the CI-logged verdict",
+            (agreeing, total),
+            (sample.agreeing, sample.total),
+            "{}: replayed agreement on target {} diverged from the CI log \
+             (agreement is walk-independent and must always reproduce)",
             fx.instance,
             sample.target
+        );
+        assert_eq!(
+            (max_clique, decision),
+            (sample.expected_max_clique, sample.expected_decision),
+            "{}: replay of target {} diverged from the pinned oracle verdict \
+             (CI logged clique {}, decision {})",
+            fx.instance,
+            sample.target,
+            sample.max_clique,
+            sample.decision
         );
     }
 }
@@ -323,12 +338,12 @@ async fn i5_replay_reproduces_the_ci_verdicts_exactly() {
     assert_fidelity(&load(include_str!("../resources/stall_fixtures/i5.json"))).await;
 }
 
-/// RED until the disagreement walk separates ancestor-prefix from rival
-/// prefix below the target: in these logged snapshots every missing edge is
-/// vetoed by a block on the TARGET'S OWN main chain — settled ancestry a
-/// departed-era window has not caught up past, not a divergent estimate. The
-/// live committee's agreement meets the threshold the moment those vetoes
-/// stop counting; the shard stalled 851 s on exactly this arithmetic.
+/// The red that drove the walk's height rule (committed red, green since):
+/// in these logged snapshots every missing edge is vetoed by a block on the
+/// TARGET'S OWN main chain — settled ancestry a departed-era window has not
+/// caught up past, not a divergent estimate. The live committee's agreement
+/// meets the threshold the moment those vetoes stop counting; the shard
+/// stalled 851 s on exactly this arithmetic.
 #[tokio::test]
 async fn i5_withdrawn_era_target_certifies_despite_ancestor_prefix_windows() {
     crate::init_logger();
