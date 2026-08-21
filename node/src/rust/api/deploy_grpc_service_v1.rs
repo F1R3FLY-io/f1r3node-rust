@@ -242,27 +242,37 @@ impl DeployService for DeployGrpcServiceV1Impl {
         std::result::Result<BlockInfoResponse, tonic::Status>,
     >;
 
-    /// Deploy a contract
+    /// Deploy a contract.
+    ///
+    /// Multi-sig-aware decode: the wire `DeployDataProto` may carry
+    /// additional cosigners (proto field 14) and a `primary_phlo_share`
+    /// (proto field 15). For legacy single-signature wire deploys
+    /// (`cosigners.is_empty()`), the decode produces a one-element
+    /// `Cosigned<DeployData>` envelope and downstream behavior is
+    /// byte-identical to the pre-multi-sig implementation. For multi-sig
+    /// wire deploys, the full canonical envelope is constructed via
+    /// `Cosigned::from_signed_data` (per-signer signature verification,
+    /// canonical pk-sort, no-duplicate check, Σ phlo_share == phlo_limit
+    /// enforced at construction).
     #[tracing::instrument(level = "info", skip(self, request))]
     async fn do_deploy(
         &self,
         request: tonic::Request<DeployDataProto>,
     ) -> Result<tonic::Response<DeployResponse>, tonic::Status> {
-        // Convert DeployDataProto to Signed<DeployData>
-        let signed_deploy =
-            match models::rust::casper::protocol::casper_message::DeployData::from_proto(
+        let cosigned_deploy =
+            match models::rust::casper::protocol::casper_message::DeployData::from_proto_cosigned(
                 request.into_inner(),
             ) {
-                Ok(signed) => signed,
+                Ok(c) => c,
                 Err(err_msg) => {
                     let error = Self::create_service_error(err_msg);
                     return Self::create_error_deploy_response(error);
                 }
             };
 
-        match BlockAPI::deploy(
+        match BlockAPI::deploy_cosigned(
             &self.engine_cell,
-            signed_deploy,
+            cosigned_deploy,
             &self.trigger_propose_f,
             self.min_phlo_price,
             self.is_node_read_only,
@@ -804,6 +814,7 @@ impl DeployService for DeployGrpcServiceV1Impl {
             block_hash,
             request.use_pre_state_hash,
             self.dev_mode,
+            None,
         )
         .await
         {

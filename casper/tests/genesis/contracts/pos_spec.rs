@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use casper::rust::genesis::contracts::vault::Vault;
 use crypto::rust::public_key::PublicKey;
-use rholang::rust::build::compile_rholang_source::CompiledRholangSource;
+use rholang::rust::build::compile_rholang_source::CompiledRholangTemplate;
 use rholang::rust::interpreter::util::vault_address::VaultAddress;
 
 use crate::helper::rho_spec::RhoSpec;
@@ -58,13 +58,6 @@ fn pos_spec() {
                     crate::util::rholang::test_rho_loader::load_test_rho("PoSTest.rho")
                         .expect("Failed to load PoSTest.rho");
 
-                let compiled = CompiledRholangSource::new(
-                    test_object,
-                    HashMap::new(),
-                    "PoSTest.rho".to_string(),
-                )
-                .expect("Failed to compile PoSTest.rho");
-
                 // Build genesis parameters with additional test vaults
                 let mut genesis_parameters =
                     GenesisBuilder::build_genesis_parameters_with_defaults(None, None);
@@ -80,6 +73,16 @@ fn pos_spec() {
                 // (PoS.rhox) divides evenly and reward math is unchanged.
                 genesis_parameters.2.proof_of_stake.minimum_bond = 2;
                 genesis_parameters.2.proof_of_stake.maximum_bond = 100_000;
+                let initial_phlogiston = genesis_parameters
+                    .2
+                    .proof_of_stake
+                    .initial_phlogiston
+                    .to_string();
+                let compiled =
+                    CompiledRholangTemplate::new("PoSTest.rho", &test_object, HashMap::new(), &[(
+                        "initialPhlogiston",
+                        &initial_phlogiston,
+                    )]);
 
                 let spec = RhoSpec::new_with_genesis_parameters(
                     compiled,

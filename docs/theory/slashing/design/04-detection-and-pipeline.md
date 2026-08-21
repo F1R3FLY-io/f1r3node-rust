@@ -263,16 +263,18 @@ has_slash ← scan b_B.body.system_deploys for SystemDeployData::Slash
 reject ⟺ neglected ∧ ¬has_slash    -- post-fix #9
 ```
 
-For received `SlashDeploy`s, the corresponding positive-bond check is
-bound to the block's actual parent pre-state. This keeps recovery blocks
-valid when the receiver's current snapshot already includes a sibling
-where the same offender has been slashed.
+For both proposed and received `SlashDeploy`s, the positive-bond check is
+bound to the block's exact canonical merged pre-state. The receiver first
+replays the checkpoint, then computes bonds from the verified
+`pre_state_hash`. Local snapshot contents and parent arrival order therefore
+cannot change the authorization verdict.
 
 The post-fix `¬has_slash` clause is the *Rust widening* of bug #9
 (§09): a block that *self-corrects* by attaching its own
 `SlashDeploy` for the neglected justification's validator is
-admitted. Scala rejects it; Rust admits it. This is the only
-deliberate divergence in the bisimilarity claim.
+admitted. Scala rejects it; Rust admits it. This is the one
+deliberate, documented behavioral difference from the Scala
+original (proven correct as T-9.9).
 
 ## 4.7 What the pipeline gives you
 

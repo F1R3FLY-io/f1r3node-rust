@@ -21,7 +21,8 @@ use crypto::rust::signatures::signed::Signed;
 use models::rust::block_implicits::get_random_block;
 use models::rust::casper::protocol::casper_message;
 use models::rust::casper::protocol::casper_message::{
-    BlockMessage, Bond, DeployData, ProcessedDeploy, RejectedDeploy,
+    BlockMessage, Bond, DeployData, ProcessedDeploy, RejectedDeploy, RejectedDeployReason,
+    StateEffectId,
 };
 use prost::bytes::Bytes;
 use rspace_plus_plus::rspace::history::Either;
@@ -943,6 +944,35 @@ async fn repeat_deploy_validation_should_return_valid_for_empty_blocks() {
     .await
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn repeat_deploy_validation_rejects_duplicate_signatures_within_one_block() {
+    with_storage(|mut block_store, mut block_dag_storage| async move {
+        let deploy = construct_deploy::basic_processed_deploy(0, None).unwrap();
+        let block = create_genesis_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            None,
+            None,
+            None,
+            Some(vec![deploy.clone(), deploy]),
+            None,
+            None,
+            None,
+            None,
+        );
+        let dag = block_dag_storage
+            .get_representation()
+            .expect("dag representation");
+        let mut casper_snapshot = mk_casper_snapshot(dag);
+
+        assert_eq!(
+            Validate::repeat_deploy(&block, &mut casper_snapshot, &block_store, 50),
+            Either::Left(BlockError::Invalid(InvalidBlock::InvalidRepeatDeploy))
+        );
+    })
+    .await
+}
+
 //Test 18: "Repeat deploy validation" should "not accept blocks with a repeated deploy"
 // +
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -1081,11 +1111,11 @@ async fn repeat_deploy_validation_allows_recovered_deploy_from_rejected_in_scope
             None,
             None,
         );
-        block_m.body.rejected_deploys = vec![
-            models::rust::casper::protocol::casper_message::RejectedDeploy {
-                sig: deploy_sig.clone(),
-            },
-        ];
+        block_m.body.rejected_deploys = vec![RejectedDeploy::occurrence(
+            deploy_sig.clone(),
+            block_x.block_hash.clone(),
+            RejectedDeployReason::MergeConflict,
+        )];
         block_store
             .put(block_m.block_hash.clone(), &block_m)
             .unwrap();
@@ -2442,7 +2472,10 @@ async fn block_version_validation_should_work() {
         let result = Validate::version(&genesis, -1);
         assert!(!result);
 
-        let result = Validate::version(&genesis, 1);
+        let result = Validate::version(
+            &genesis,
+            casper::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION,
+        );
         assert!(result);
     })
     .await
@@ -3164,9 +3197,10 @@ async fn validate_block_checkpoint_recompute_rejects_pre_state_and_rejected_depl
 
         // ── Phase 3 (rejected-deploy tamper / RED): recorded rejected set ≠ recompute ⇒ InvalidRejectedDeploy ──
         let mut tampered_rej = genesis.clone();
-        tampered_rej.body.rejected_deploys.push(RejectedDeploy {
-            sig: Bytes::from(vec![0xABu8; 64]),
-        });
+        tampered_rej
+            .body
+            .rejected_deploys
+            .push(RejectedDeploy::legacy(Bytes::from(vec![0xABu8; 64])));
 
         let mut snap_rej = mk_casper_snapshot(
             block_dag_storage
@@ -3186,6 +3220,88 @@ async fn validate_block_checkpoint_recompute_rejects_pre_state_and_rejected_depl
             rejected_rej,
             Either::Left(BlockError::Invalid(InvalidBlock::InvalidRejectedDeploy)),
             "a block claiming a rejected-deploy the validator's recompute does not produce must be InvalidRejectedDeploy (:269)"
+        );
+
+        let mut tampered_effect = genesis.clone();
+        tampered_effect
+            .body
+            .rejected_state_effects
+            .push(StateEffectId {
+                source_block_hash: Bytes::from_static(b"bogus-source"),
+                execution_index: 0,
+            });
+        let mut snap_effect = mk_casper_snapshot(
+            block_dag_storage
+                .get_representation()
+                .expect("dag representation"),
+        );
+        let rejected_effect = interpreter_util::validate_block_checkpoint(
+            &tampered_effect,
+            &block_store,
+            &mut snap_effect,
+            &runtime_manager,
+            None,
+        )
+        .await
+        .expect("checkpoint (state-effect tamper)");
+        assert_eq!(
+            rejected_effect,
+            Either::Left(BlockError::Invalid(InvalidBlock::InvalidRejectedDeploy)),
+        );
+
+        let mut noncanonical_effects = genesis.clone();
+        noncanonical_effects.body.rejected_state_effects = vec![
+            StateEffectId {
+                source_block_hash: Bytes::from_static(b"z-source"),
+                execution_index: 0,
+            },
+            StateEffectId {
+                source_block_hash: Bytes::from_static(b"a-source"),
+                execution_index: 0,
+            },
+        ];
+        let mut snap_noncanonical = mk_casper_snapshot(
+            block_dag_storage
+                .get_representation()
+                .expect("dag representation"),
+        );
+        let rejected_noncanonical = interpreter_util::validate_block_checkpoint(
+            &noncanonical_effects,
+            &block_store,
+            &mut snap_noncanonical,
+            &runtime_manager,
+            None,
+        )
+        .await
+        .expect("checkpoint (noncanonical state effects)");
+        assert_eq!(
+            rejected_noncanonical,
+            Either::Left(BlockError::Invalid(InvalidBlock::InvalidRejectedDeploy)),
+        );
+
+        let duplicate = StateEffectId {
+            source_block_hash: Bytes::from_static(b"duplicate-source"),
+            execution_index: 1,
+        };
+        let mut duplicate_effects = genesis.clone();
+        duplicate_effects.body.rejected_state_effects = vec![duplicate.clone(), duplicate];
+        let mut snap_duplicate = mk_casper_snapshot(
+            block_dag_storage
+                .get_representation()
+                .expect("dag representation"),
+        );
+        let rejected_duplicate = interpreter_util::validate_block_checkpoint(
+            &duplicate_effects,
+            &block_store,
+            &mut snap_duplicate,
+            &runtime_manager,
+            None,
+        )
+        .await
+        .expect("checkpoint (duplicate state effects)");
+        assert_eq!(
+            rejected_duplicate,
+            Either::Left(BlockError::Invalid(InvalidBlock::InvalidRejectedDeploy)),
         );
     })
     .await

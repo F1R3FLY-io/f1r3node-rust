@@ -20,6 +20,9 @@ unsafe impl Sync for Matcher {}
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/storage/package.scala - matchListPar
 impl Match<BindPattern, ListParWithRandom, TaggedContinuation> for Matcher {
     fn get(&self, pattern: &BindPattern, data: &ListParWithRandom) -> Option<ListParWithRandom> {
+        if data.cost_stack.is_some() {
+            return None;
+        }
         let mut spatial_matcher = SpatialMatcherContext::new();
 
         // Match against borrowed pattern/data — fold_match clones only the
@@ -58,6 +61,8 @@ impl Match<BindPattern, ListParWithRandom, TaggedContinuation> for Matcher {
                 Some(ListParWithRandom {
                     pars: bound_pars,
                     random_state: data.random_state.clone(),
+                    cost_authority: data.cost_authority.clone(),
+                    cost_stack: None,
                 })
             }
             None => None,
@@ -112,6 +117,8 @@ fn extract_bool(par: &Par) -> Option<bool> {
         || !par.unforgeables.is_empty()
         || !par.connectives.is_empty()
         || !par.conditionals.is_empty()
+        || !par.cost_signed_terms.is_empty()
+        || !par.cost_stacks.is_empty()
         || par.exprs.len() != 1
     {
         return None;

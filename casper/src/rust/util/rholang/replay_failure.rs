@@ -20,6 +20,29 @@ pub enum ReplayFailure {
         replay_cost: u64,
     },
 
+    EffectStateMismatch {
+        effect: String,
+        boundary: String,
+        expected: String,
+        actual: String,
+    },
+
+    /// Cost-Accounted Rho WD-D2 (acceptance gate): the per-signature acceptance
+    /// gate RECOMPUTED on replay (over `block.body.deploys` against the block's
+    /// start state) disagreed with what the block actually committed. A
+    /// divergence here means a proposer admitted a deploy the funding gate would
+    /// reject (a double-spend / oversubscription — TM-CA-153), or the recomputed
+    /// settlement-debit total differs from what the block applied — either of
+    /// which is a CONSENSUS FORK. `detail` carries a human-readable cause; the counts pin the
+    /// admitted/rejected set sizes for diagnosis.
+    ReplayAdmissionMismatch {
+        expected_admitted: usize,
+        replay_admitted: usize,
+        expected_rejected: usize,
+        replay_rejected: usize,
+        detail: String,
+    },
+
     SystemDeployErrorMismatch {
         play_error: String,
         replay_error: String,
@@ -42,6 +65,36 @@ impl ReplayFailure {
         ReplayFailure::ReplayCostMismatch {
             initial_cost,
             replay_cost,
+        }
+    }
+
+    pub fn effect_state_mismatch(
+        effect: String,
+        boundary: String,
+        expected: String,
+        actual: String,
+    ) -> Self {
+        ReplayFailure::EffectStateMismatch {
+            effect,
+            boundary,
+            expected,
+            actual,
+        }
+    }
+
+    pub fn replay_admission_mismatch(
+        expected_admitted: usize,
+        replay_admitted: usize,
+        expected_rejected: usize,
+        replay_rejected: usize,
+        detail: String,
+    ) -> Self {
+        ReplayFailure::ReplayAdmissionMismatch {
+            expected_admitted,
+            replay_admitted,
+            expected_rejected,
+            replay_rejected,
+            detail,
         }
     }
 
@@ -80,6 +133,30 @@ impl std::fmt::Display for ReplayFailure {
                     f,
                     "Replay cost mismatch: initial_cost={}, replay_cost={}",
                     initial_cost, replay_cost
+                )
+            }
+            ReplayFailure::EffectStateMismatch {
+                effect,
+                boundary,
+                expected,
+                actual,
+            } => write!(
+                f,
+                "Effect state mismatch: effect={}, boundary={}, expected={}, actual={}",
+                effect, boundary, expected, actual
+            ),
+            ReplayFailure::ReplayAdmissionMismatch {
+                expected_admitted,
+                replay_admitted,
+                expected_rejected,
+                replay_rejected,
+                detail,
+            } => {
+                write!(
+                    f,
+                    "Replay admission mismatch: expected_admitted={}, replay_admitted={}, \
+                     expected_rejected={}, replay_rejected={}; {}",
+                    expected_admitted, replay_admitted, expected_rejected, replay_rejected, detail
                 )
             }
             ReplayFailure::SystemDeployErrorMismatch {

@@ -4,6 +4,7 @@ pub mod comm;
 pub mod dag_operations_test;
 pub mod genesis_builder;
 pub mod in_memory_key_value_store_spec;
+pub mod mergeable_channels_gc_test;
 pub mod proto_util_test;
 pub mod rholang;
 pub mod rspace_history_horizon_test;

@@ -63,6 +63,13 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
         super::block_admission::admit_deploy(self, deploy)
     }
 
+    fn deploy_cosigned(
+        &self,
+        cosigned: crypto::rust::signatures::signed::Cosigned<DeployData>,
+    ) -> Result<Either<DeployError, DeployId>, CasperError> {
+        super::block_admission::admit_deploy_cosigned(self, cosigned)
+    }
+
     async fn estimator(
         &self,
         dag: &mut KeyValueDagRepresentation,

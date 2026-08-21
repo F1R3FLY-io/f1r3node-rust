@@ -12,6 +12,7 @@ members = [
 	"block-storage",
 	"comm",
 	"graphz",
+	"formal/loom/cost_accounting",
 ]
 
 [workspace.dependencies]
@@ -77,7 +78,7 @@ utoipa = "5"
 validated = "1.0"
 serial_test = "3.1"
 metrics-util = "0.17"
-rholang-parser = { git = "https://github.com/F1R3FLY-io/rholang-rs", rev = "7588a3a" }
+rholang-parser = { git = "https://github.com/F1R3FLY-io/rholang-rs", rev = "02cef80" }
 reqwest = "0.12"
 
 [profile.dev]

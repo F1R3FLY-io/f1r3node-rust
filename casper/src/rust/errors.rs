@@ -14,6 +14,7 @@ pub enum CasperError {
     InterpreterError(InterpreterError),
     KvStoreError(KvStoreError),
     RuntimeError(String),
+    InvalidCostSettlement(String),
     SystemRuntimeError(SystemDeployPlatformFailure),
     SigningError(String),
     ReplayFailure(ReplayFailure),
@@ -26,6 +27,24 @@ pub enum CasperError {
     /// `engine::multi_parent_casper::validation_dispatcher` can `match` on the structured
     /// reason instead of grepping a stringified error.
     SlashAuth(SlashAuthError),
+    /// Legacy wire-compatible error for a per-cosigner funding failure.
+    /// New cost-accounted blocks reject insufficient aggregate authority at
+    /// admission before execution.
+    InsufficientPhloByCosigner {
+        signer_index: usize,
+        pk_hex: String,
+        message: String,
+    },
+    /// Runtime-layer detection of a duplicate cosigner.
+    /// Unreachable if `Cosigned::from_signed_data`'s no-duplicate invariant
+    /// holds (the envelope rejects duplicate `pk`s at construction); surfaced
+    /// here for debuggability if a future code path bypasses that invariant.
+    DuplicateCosignerCharge {
+        pk_hex: String,
+    },
+    UnsupportedProtocolVersion {
+        version: i64,
+    },
     Other(String),
 }
 
@@ -35,6 +54,9 @@ impl fmt::Display for CasperError {
             CasperError::InterpreterError(error) => write!(f, "Interpreter error: {}", error),
             CasperError::KvStoreError(error) => write!(f, "KvStore error: {}", error),
             CasperError::RuntimeError(error) => write!(f, "Runtime error: {}", error),
+            CasperError::InvalidCostSettlement(error) => {
+                write!(f, "Invalid cost settlement: {}", error)
+            }
             CasperError::SystemRuntimeError(error) => write!(f, "System runtime error: {}", error),
             CasperError::SigningError(error) => write!(f, "Signing error: {}", error),
             CasperError::ReplayFailure(error) => write!(f, "Replay failure: {}", error),
@@ -43,6 +65,24 @@ impl fmt::Display for CasperError {
             CasperError::StreamError(error) => write!(f, "Stream error: {}", error),
             CasperError::LockError(error) => write!(f, "Lock error: {}", error),
             CasperError::SlashAuth(error) => write!(f, "Slash authorization error: {}", error),
+            CasperError::InsufficientPhloByCosigner {
+                signer_index,
+                pk_hex,
+                message,
+            } => write!(
+                f,
+                "Insufficient phlo by cosigner at index {} (pk={}): {}",
+                signer_index, pk_hex, message
+            ),
+            CasperError::DuplicateCosignerCharge { pk_hex } => write!(
+                f,
+                "Duplicate cosigner charge attempted for pk={} \
+                 (Cosigned envelope dedup invariant violated)",
+                pk_hex
+            ),
+            CasperError::UnsupportedProtocolVersion { version } => {
+                write!(f, "Unsupported Casper protocol version: {}", version)
+            }
             CasperError::Other(error) => write!(f, "Other error: {}", error),
         }
     }

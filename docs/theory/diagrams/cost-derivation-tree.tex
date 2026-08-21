@@ -1,0 +1,28 @@
+% Structural cost-derivation tree for the authorization ((a⊗b)⊗c)⊗(1⊕d).
+% The recursion bottoms out at 1 (cost 0, greyed and dropped) and atoms (cost 1,
+% green); ⊕ pays only the chosen branch (signer chose RIGHT = d). The total
+% ll_required_units = ((1+1)+1)+1 = 4.
+%
+% Source of truth for the §6.1 derivation in cost-accounting-linear-logic.md.
+% Render:  lualatex --output-format=dvi cost-derivation-tree.tex && dvisvgm ...
+%          (or: ./render.sh cost-derivation-tree.tex)
+\documentclass[border=6pt]{standalone}
+\usepackage{amsmath,amssymb}
+\input{palette.tex}
+\usepackage{forest}
+\usetikzlibrary{arrows.meta}
+\begin{document}
+\begin{forest}
+for tree={draw, rounded corners, font=\sffamily\small, edge={-{Stealth}},
+          l sep=9mm, s sep=7mm, fill=caControl, align=center}
+[{$((a\otimes b)\otimes c)\otimes(1\oplus d)$\\ \textbf{cost = 4}}, fill=caControl
+  [{$(a\otimes b)\otimes c$\\ cost 3}, fill=caSupply
+    [{$a\otimes b$\\ cost 2}, fill=caSupply
+      [{$a$\\ cost 1}, fill=caPool]
+      [{$b$\\ cost 1}, fill=caPool]]
+    [{$c$\\ cost 1}, fill=caPool]]
+  [{$1\oplus d$\\ cost = cost(chosen) = 1}, fill=caSupply, edge label={node[midway,right,font=\sffamily\tiny]{$\oplus$ pays only the chosen branch}}
+    [{$1$\\ cost 0 (dropped)}, fill=caNoteGrey]
+    [{$d$\\ cost 1 (chosen)}, fill=caPool]]]
+\end{forest}
+\end{document}

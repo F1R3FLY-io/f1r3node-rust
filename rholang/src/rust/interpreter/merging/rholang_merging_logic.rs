@@ -259,6 +259,8 @@ impl RholangMergingLogic {
         let par_with_rnd = ListParWithRandom {
             pars: vec![num_par],
             random_state: rnd.to_bytes(),
+            cost_authority: None,
+            cost_stack: None,
         };
 
         // Create hash of the data
@@ -344,6 +346,8 @@ mod tests {
         let lpwr = ListParWithRandom {
             pars: vec![RhoNumber::create_par(n)],
             random_state: vec![0u8; 32],
+            cost_authority: None,
+            cost_stack: None,
         };
         Datum::create(&"chan".to_string(), lpwr, false)
     }
@@ -353,6 +357,8 @@ mod tests {
         let lpwr = ListParWithRandom {
             pars: vec![RhoNumber::create_par(1), RhoNumber::create_par(2)],
             random_state: vec![0u8; 32],
+            cost_authority: None,
+            cost_stack: None,
         };
         Datum::create(&"chan".to_string(), lpwr, false)
     }
@@ -604,6 +610,29 @@ mod tests {
         let mut expected_map0 = BTreeMap::new();
         expected_map0.insert(ch.clone(), (0b0100i64, mt));
         assert_eq!(result, vec![expected_map0]);
+    }
+
+    #[test]
+    fn test_calculate_num_channel_diff_bitmask_round_trips_to_or_merge() {
+        let ch = "X".to_string();
+        let mt = MergeType::BitmaskOr;
+        let previous = 0b0001i64;
+        let current = 0b0100i64;
+        let mut init_values = HashMap::new();
+        init_values.insert(ch.clone(), previous);
+
+        let mut map0 = BTreeMap::new();
+        map0.insert(ch.clone(), (current, mt));
+        let result = RholangMergingLogic::calculate_num_channel_diff(vec![map0], |k: &String| {
+            init_values.get(k).copied()
+        });
+
+        let diff = result[0].get(&ch).copied().unwrap().0;
+        assert_eq!(((previous as u64) | (diff as u64)) as i64, 0b0101);
+        assert_eq!(
+            ((previous as u64) | (diff as u64)) as i64,
+            ((previous as u64) | (current as u64)) as i64
+        );
     }
 
     // ---- Phase-7 W7.1/W7.2: checked apply + checked diff (fail loudly, never

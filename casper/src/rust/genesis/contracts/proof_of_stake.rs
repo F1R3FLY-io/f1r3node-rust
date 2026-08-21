@@ -16,6 +16,21 @@ pub struct ProofOfStake {
     pub fault_tolerance_threshold_ppm: i64,
     pub pos_multi_sig_public_keys: Vec<String>,
     pub pos_multi_sig_quorum: u32,
+    /// Per-deploy hard cap on the number of cosigners in a multi-signature
+    /// deploy. Substituted into the PoS contract at genesis as
+    /// `$$maxCosignersPerDeploy$$`. Default `64`; configurable per shard via
+    /// `casper_conf.rs::max_cosigners_per_deploy`. Defense-in-depth against
+    /// adversarial deploys exhausting block resources via runaway cosigner
+    /// lists.
+    pub max_cosigners_per_deploy: u32,
+    /// Initial validator fuel credited to the validator's canonical SystemVault.
+    /// Genesis validators receive it in the blessed vault generator; a newly
+    /// bonded validator receives it from the PoS-authorized protocol mint at
+    /// the terminal close of the bonding block.
+    pub initial_phlogiston: i64,
+    /// Fuel credited to each eligible active validator's canonical SystemVault
+    /// at every epoch boundary. Validator-handler reservations debit this vault.
+    pub epoch_phlogiston: i64,
 }
 
 impl ProofOfStake {

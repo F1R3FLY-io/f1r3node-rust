@@ -30,19 +30,26 @@ use crate::rust::engine::multi_parent_casper::MultiParentCasperImpl;
 use crate::rust::errors::CasperError;
 use crate::rust::estimator::Estimator;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
+
+pub const LEGACY_CASPER_PROTOCOL_VERSION: i64 = 1;
+pub const STATE_EFFECT_PROVENANCE_PROTOCOL_VERSION: i64 = 3;
+pub const VAULT_BACKED_BYTE_ACCOUNTING_PROTOCOL_VERSION: i64 = 4;
+pub const CURRENT_CASPER_PROTOCOL_VERSION: i64 = VAULT_BACKED_BYTE_ACCOUNTING_PROTOCOL_VERSION;
 use crate::rust::validator_identity::ValidatorIdentity;
 
-/// Default for `CasperShardConf::finalizer_blocking_timeout`. The
-/// finalizer-run timeout was originally hardcoded at two call sites
-/// (`casper.rs::CasperShardConf::new` and
-/// `node/src/rust/runtime/setup.rs`). Centralizing prevents two-way
-/// drift. When `CasperConf` gains a corresponding field, the
-/// constant becomes the documented fallback.
-pub const FINALIZER_BLOCKING_TIMEOUT_DEFAULT: Duration = Duration::from_secs(15);
+pub fn is_supported_casper_protocol_version(version: i64) -> bool {
+    version == CURRENT_CASPER_PROTOCOL_VERSION
+}
+
+pub fn ensure_supported_casper_protocol_version(version: i64) -> Result<(), CasperError> {
+    if is_supported_casper_protocol_version(version) {
+        Ok(())
+    } else {
+        Err(CasperError::UnsupportedProtocolVersion { version })
+    }
+}
 
 /// Default for `CasperShardConf::active_validators_cache_max_entries`.
-/// Mirrors `FINALIZER_BLOCKING_TIMEOUT_DEFAULT`'s rationale — see
-/// commit centralizing Phase 13 hardcoded defaults.
 pub const ACTIVE_VALIDATORS_CACHE_MAX_ENTRIES_DEFAULT: usize = 4096;
 
 /// Wire convention for `CasperShardConf::max_number_of_parents`: `-1`
@@ -105,6 +112,30 @@ pub trait Casper {
         deploy: Signed<DeployData>,
     ) -> Result<Either<DeployError, DeployId>, CasperError>;
 
+    /// Multi-signature aware deploy submission. Default impl rejects
+    /// compound deploys (so legacy/test implementations that haven't
+    /// overridden it fail loudly rather than silently dropping cosigner
+    /// data); production `MultiParentCasperImpl` overrides with the
+    /// Cosigned-aware admission path. For single-signer Cosigned
+    /// envelopes (the legacy uplift case from `Cosigned::from_single_signer`),
+    /// the default delegates to `deploy` for byte-identical observable behavior.
+    fn deploy_cosigned(
+        &self,
+        deploy: crypto::rust::signatures::signed::Cosigned<DeployData>,
+    ) -> Result<Either<DeployError, DeployId>, CasperError> {
+        if deploy.is_compound() {
+            return Err(CasperError::RuntimeError(
+                "deploy_cosigned: implementation does not override the default \
+                 multi-sig path; multi-signature deploys are not supported by this \
+                 Casper implementation. The production MultiParentCasperImpl \
+                 overrides this method."
+                    .to_string(),
+            ));
+        }
+        // Single-signer cosigned: legacy delegate.
+        self.deploy(deploy.into_legacy_signed_unchecked())
+    }
+
     async fn estimator(
         &self,
         dag: &mut KeyValueDagRepresentation,
@@ -118,10 +149,7 @@ pub trait Casper {
         snapshot: &mut CasperSnapshot,
     ) -> Result<Either<BlockError, ValidBlock>, CasperError>;
 
-    /// Validate a self-created block, skipping the expensive checkpoint replay and bonds_cache
-    /// steps since both were already computed during `block_creator::create`.
-    /// All other validation steps (block_summary, neglected_invalid_block, phlo_price,
-    /// equivocation checks, block-index computation) still run.
+    /// Validate a self-created block through the same consensus checks used for a peer block.
     async fn validate_self_created(
         &self,
         block: &BlockMessage,
@@ -209,6 +237,7 @@ pub async fn hash_set_casper<T: TransportLayer + Send + Sync>(
     approved_block: BlockMessage,
     heartbeat_signal_ref: crate::rust::heartbeat_signal::HeartbeatSignalRef,
 ) -> Result<MultiParentCasperImpl<T>, CasperError> {
+    casper_shard_conf.adopt_approved_protocol_version(&approved_block)?;
     // SINGLE ADOPTION POINT for the protocol fault-tolerance threshold.
     //
     // θ is a CONSENSUS value: the finalized-floor oracle runs on it, and the
@@ -253,6 +282,9 @@ pub async fn hash_set_casper<T: TransportLayer + Send + Sync>(
         block_store,
         block_dag_storage,
         deploy_storage: Arc::new(parking_lot::Mutex::new(deploy_storage)),
+        pending_cosigner_metadata: Arc::new(parking_lot::Mutex::new(
+            std::collections::HashMap::new(),
+        )),
         rejected_deploy_buffer,
         casper_buffer_storage,
         validator_id,
@@ -319,6 +351,25 @@ impl CasperSnapshot {
             on_chain_state: OnChainCasperState::new(CasperShardConf::new()),
         }
     }
+
+    /// Returns the canonical, ordered validator committee used for proposal
+    /// leadership in this snapshot. The active set is authoritative when
+    /// present; positive bonds are the bootstrap fallback.
+    pub fn current_proposal_validators(&self) -> Vec<Validator> {
+        let mut validators = if !self.on_chain_state.active_validators.is_empty() {
+            self.on_chain_state.active_validators.clone()
+        } else {
+            self.on_chain_state
+                .bonds_map
+                .iter()
+                .filter(|(_, stake)| **stake > 0)
+                .map(|(validator, _)| validator.clone())
+                .collect()
+        };
+        validators.sort_unstable();
+        validators.dedup();
+        validators
+    }
 }
 
 #[derive(Clone)]
@@ -366,6 +417,9 @@ pub struct CasperShardConf {
     pub epoch_length: i32,
     pub quarantine_length: i32,
     pub min_phlo_price: i64,
+    /// Additional client SystemVault balances incorporated into the canonical
+    /// blessed vault-generator deploys at genesis.
+    pub client_fuel_allocations: Vec<(crypto::rust::public_key::PublicKey, i64)>,
     /// Disable late block filtering in DagMerger (for testing or special configurations)
     pub disable_late_block_filtering: bool,
     /// When `true`, `add_deploy` triggers an immediate heartbeat-signal
@@ -390,18 +444,20 @@ pub struct CasperShardConf {
     pub synchrony_finalized_baseline_enabled: bool,
     pub synchrony_finalized_baseline_max_distance: u64,
     pub max_user_deploys_per_block: u32,
+    /// Per-deploy hard cap on number of cosigners in a multi-signature
+    /// deploy. Substituted into the PoS contract at genesis as
+    /// `$$maxCosignersPerDeploy$$` (per §1.7) and enforced at the
+    /// `admit_deploy_cosigned` ingress boundary (per §1.9.5) before the
+    /// deploy reaches the pool. Sourced from
+    /// `casper_conf::max_cosigners_per_deploy` (default 64). Configurable
+    /// per shard.
+    pub max_cosigners_per_deploy: u32,
     /// Native token metadata baked into the TokenMetadata contract at genesis.
     /// Present on every node (joiner, validator, ceremony master, observer, standalone)
     /// so each path can log the effective values at startup.
     pub native_token_name: String,
     pub native_token_symbol: String,
     pub native_token_decimals: u32,
-    /// Phase 13 (TC-1): blocking timeout for `run_queued_finalizer`'s
-    /// `compute_last_finalized_block` call. Previously a hardcoded
-    /// 15-second constant in `engine/multi_parent_casper/finalization_runner.rs`;
-    /// lifted to configuration so operators can extend the budget for
-    /// deep-DAG finalization sweeps without recompiling.
-    pub finalizer_blocking_timeout: Duration,
     /// Phase 13 (TC-2): maximum entries in the `active_validators_cache`
     /// inside `compute_snapshot`. Previously a hardcoded `usize = 4096`
     /// constant in `engine/multi_parent_casper/types.rs`; lifted to configuration so
@@ -412,6 +468,16 @@ pub struct CasperShardConf {
 }
 
 impl CasperShardConf {
+    pub fn adopt_approved_protocol_version(
+        &mut self,
+        approved_block: &BlockMessage,
+    ) -> Result<(), CasperError> {
+        let version = approved_block.header.version;
+        ensure_supported_casper_protocol_version(version)?;
+        self.casper_version = version;
+        Ok(())
+    }
+
     pub fn new() -> Self {
         Self {
             fault_tolerance_threshold: 0.0,
@@ -424,13 +490,17 @@ impl CasperShardConf {
             synchrony_constraint_threshold: 0.0,
             height_constraint_threshold: 0,
             deploy_lifespan: 0,
-            casper_version: 0,
+            casper_version: CURRENT_CASPER_PROTOCOL_VERSION,
             config_version: 0,
             bond_minimum: 0,
             bond_maximum: 0,
             epoch_length: 0,
             quarantine_length: 0,
             min_phlo_price: 0,
+            // Task #13b: default EMPTY = no genesis client funding-slot seed.
+            // Covers every
+            // `..CasperShardConf::new()`-spread literal (incl. test sites).
+            client_fuel_allocations: Vec::new(),
             disable_late_block_filtering: true,
             deploy_heartbeat_wake_enabled: false,
             disable_validator_progress_check: false,
@@ -443,10 +513,10 @@ impl CasperShardConf {
             synchrony_finalized_baseline_enabled: true,
             synchrony_finalized_baseline_max_distance: 2048,
             max_user_deploys_per_block: 128,
+            max_cosigners_per_deploy: crate::rust::casper_conf::DEFAULT_MAX_COSIGNERS_PER_DEPLOY,
             native_token_name: "F1R3CAP".to_string(),
             native_token_symbol: "F1R3".to_string(),
             native_token_decimals: 8,
-            finalizer_blocking_timeout: FINALIZER_BLOCKING_TIMEOUT_DEFAULT,
             active_validators_cache_max_entries: ACTIVE_VALIDATORS_CACHE_MAX_ENTRIES_DEFAULT,
         }
     }
@@ -528,6 +598,9 @@ pub mod test_helpers {
                 deploy_index: Arc::new(RwLock::new(KeyValueTypedStoreImpl::new(Arc::new(
                     InMemoryKeyValueStore::new(),
                 )))),
+                deploy_occurrence_index: Arc::new(RwLock::new(KeyValueTypedStoreImpl::new(
+                    Arc::new(InMemoryKeyValueStore::new()),
+                ))),
                 floor_index: KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
                 frontier_index: KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
             };
@@ -574,11 +647,7 @@ pub mod test_helpers {
 
         fn buffer_contains(&self, _hash: &BlockHash) -> bool { false }
 
-        fn get_approved_block(&self) -> Result<&BlockMessage, CasperError> {
-            Err(CasperError::RuntimeError(
-                "get_approved_block not implemented for TestCasperWithSnapshot".to_string(),
-            ))
-        }
+        fn get_approved_block(&self) -> Result<&BlockMessage, CasperError> { Ok(&self.lfb) }
 
         fn deploy(
             &self,
@@ -594,7 +663,7 @@ pub mod test_helpers {
             Ok(Vec::new())
         }
 
-        fn get_version(&self) -> i64 { 1 }
+        fn get_version(&self) -> i64 { self.snapshot.on_chain_state.shard_conf.casper_version }
 
         async fn validate(
             &self,
@@ -672,6 +741,85 @@ pub mod test_helpers {
 
         async fn has_pending_deploys_in_storage(&self) -> Result<bool, CasperError> {
             Ok(self.pending_deploy_count > 0)
+        }
+    }
+}
+
+#[cfg(test)]
+mod protocol_version_tests {
+    use models::rust::block_implicits::get_random_block_default;
+    use proptest::prelude::*;
+    use prost::bytes::Bytes;
+
+    use super::*;
+
+    #[test]
+    fn approved_protocol_version_adoption_accepts_current() {
+        let mut block = get_random_block_default();
+        block.header.version = CURRENT_CASPER_PROTOCOL_VERSION;
+        let mut conf = CasperShardConf::new();
+        conf.adopt_approved_protocol_version(&block).unwrap();
+        assert_eq!(conf.casper_version, CURRENT_CASPER_PROTOCOL_VERSION);
+    }
+
+    #[test]
+    fn noncurrent_approved_protocol_versions_fail_without_mutation() {
+        for version in [
+            LEGACY_CASPER_PROTOCOL_VERSION,
+            STATE_EFFECT_PROVENANCE_PROTOCOL_VERSION - 1,
+            CURRENT_CASPER_PROTOCOL_VERSION + 1,
+        ] {
+            let mut block = get_random_block_default();
+            block.header.version = version;
+            let mut conf = CasperShardConf::new();
+            let original = conf.casper_version;
+            assert_eq!(
+                conf.adopt_approved_protocol_version(&block),
+                Err(CasperError::UnsupportedProtocolVersion { version })
+            );
+            assert_eq!(conf.casper_version, original);
+        }
+    }
+
+    #[test]
+    fn proposal_validators_prefer_the_canonical_active_set() {
+        let mut snapshot = test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
+        let first = Bytes::from_static(b"a");
+        let second = Bytes::from_static(b"b");
+        let bonded_only = Bytes::from_static(b"c");
+        snapshot.on_chain_state.active_validators =
+            vec![second.clone(), first.clone(), second.clone()];
+        snapshot.on_chain_state.bonds_map.insert(bonded_only, 100);
+
+        assert_eq!(snapshot.current_proposal_validators(), vec![first, second]);
+    }
+
+    #[test]
+    fn proposal_validators_fall_back_to_distinct_positive_bonds() {
+        let mut snapshot = test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
+        let positive = Bytes::from_static(b"positive");
+        snapshot
+            .on_chain_state
+            .bonds_map
+            .insert(positive.clone(), 1);
+        snapshot
+            .on_chain_state
+            .bonds_map
+            .insert(Bytes::from_static(b"zero"), 0);
+        snapshot
+            .on_chain_state
+            .bonds_map
+            .insert(Bytes::from_static(b"negative"), -1);
+
+        assert_eq!(snapshot.current_proposal_validators(), vec![positive]);
+    }
+
+    proptest! {
+        #[test]
+        fn supported_protocol_versions_are_exactly_the_declared_versions(version in any::<i64>()) {
+            let expected = version == CURRENT_CASPER_PROTOCOL_VERSION;
+            prop_assert_eq!(is_supported_casper_protocol_version(version), expected);
+            prop_assert_eq!(ensure_supported_casper_protocol_version(version).is_ok(), expected);
         }
     }
 }

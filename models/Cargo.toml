@@ -8,6 +8,9 @@ publish = false
 default = []
 schnorr_secp256k1_experimental = ["crypto/schnorr_secp256k1_experimental"]
 
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(kani)"] }
+
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
@@ -28,6 +31,9 @@ prost = { workspace = true }
 tonic-prost = { workspace = true }
 utoipa = { workspace = true }
 tracing = { workspace = true }
+
+[dev-dependencies]
+bincode = { workspace = true }
 
 [[test]]
 name = "models_tests"

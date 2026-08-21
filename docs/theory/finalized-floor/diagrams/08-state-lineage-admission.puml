@@ -1,0 +1,50 @@
+@startuml 08-state-lineage-admission
+!theme plain
+
+skinparam backgroundColor #FFFFFF
+skinparam sequence {
+  ArrowColor #263238
+  LifeLineBorderColor #455A64
+  LifeLineBackgroundColor #ECEFF1
+  ParticipantBorderColor #37474F
+  ParticipantFontColor #102027
+}
+skinparam participant {
+  BackgroundColor<<snapshot>> #BBDEFB
+  BackgroundColor<<vote>> #FFE082
+  BackgroundColor<<lineage>> #C8E6C9
+  BackgroundColor<<commit>> #D1C4E9
+}
+skinparam note {
+  BackgroundColor #FFF8E1
+  BorderColor #F57F17
+}
+skinparam defaultFontName "monospace"
+skinparam defaultFontSize 10
+
+title Dual-certificate state admission preserves causal voting and committed state
+
+participant "Frozen latest-message\nsnapshot" as Snapshot <<snapshot>>
+participant "Causal exact\nclique certificate" as Causal <<vote>>
+participant "State-support exact\nclique certificate" as StateCert <<vote>>
+participant "Current-LFB\nancestry gate" as Lineage <<lineage>>
+participant "Last finalized\nblock" as LFB <<commit>>
+
+Snapshot -[#1565C0]> Causal : rejected-parent candidate P
+Causal -[#2E7D32]> StateCert : causal_certified(P) = true
+StateCert -[#C62828]> StateCert : merge parenthood counts causally\nmerge state rejected P's effect
+StateCert -[#C62828]> Lineage : state_certified(P) = false
+Lineage -[#C62828]> LFB : do not promote P\nLFB remains F
+
+note over Causal, LFB
+P remains causally certified. The second certificate evaluates a distinct
+state-preservation proposition with the same exact threshold and clique rule.
+end note
+
+Snapshot -[#1565C0]> Causal : rebased successor R
+Causal -[#2E7D32]> StateCert : causal_certified(R) = true
+StateCert -[#2E7D32]> Lineage : state_certified(R) = true
+Lineage -[#2E7D32]> Lineage : main_ancestor(F,R) = false\nstate_ancestor(F,R) = true
+Lineage -[#2E7D32]> LFB : promote R\ncommitted lineage preserved
+
+@enduml

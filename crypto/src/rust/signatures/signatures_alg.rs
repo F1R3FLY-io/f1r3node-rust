@@ -36,6 +36,23 @@ pub trait SignaturesAlg: std::fmt::Debug + Send + Sync {
     fn eq(&self, other: &dyn SignaturesAlg) -> bool;
 
     fn box_clone(&self) -> Box<dyn SignaturesAlg>;
+
+    /// Decidable equality on ground signatures `g ∈ G` (DR-2: the per-`G`
+    /// decidable-eq interface of the cost-accounted rho-calculus, realizing
+    /// the `sig_eq_dec` obligation of the Rocq `sig` model on the `SGround`
+    /// axis). Ground signatures are opaque byte sequences, so the default is
+    /// byte equality; algorithms with a non-trivial canonical form (e.g. a
+    /// curve with multiple wire encodings of the same key) may override.
+    fn ground_eq(&self, a: &[u8], b: &[u8]) -> bool { a == b }
+
+    /// Hash a ground signature `g` to its canonical-process encoding `H_g`
+    /// (DR-2; the spec's `Σ⟦g⟧ = quote(H_g)`, eq:app-sig-ground). Default is
+    /// Blake2b256 over the ground bytes, matching the repo-wide content-hash
+    /// used for `#P`-style process hashes; algorithms that pin a different
+    /// canonical hash may override.
+    fn ground_hash(&self, g: &[u8]) -> Vec<u8> {
+        crate::rust::hash::blake2b256::Blake2b256::hash(g.to_vec())
+    }
 }
 
 impl Clone for Box<dyn SignaturesAlg> {
@@ -69,7 +86,7 @@ impl<'de> Deserialize<'de> for Box<dyn SignaturesAlg> {
             where E: de::Error {
                 match value {
                     "secp256k1" => Ok(Box::new(Secp256k1)),
-                    "secp256k1-eth" => Ok(Box::new(Secp256k1Eth)),
+                    Secp256k1Eth::NAME | Secp256k1Eth::LEGACY_NAME => Ok(Box::new(Secp256k1Eth)),
                     #[cfg(feature = "schnorr_secp256k1_experimental")]
                     "schnorr-secp256k1" => Ok(Box::new(SchnorrSecp256k1)),
                     #[cfg(feature = "schnorr_secp256k1_experimental")]
@@ -94,12 +111,29 @@ impl SignaturesAlgFactory {
             // https://rchain.atlassian.net/browse/RCHAIN-3560
             // case Ed25519.name => Some(Ed25519)
             "secp256k1" => Some(Box::new(Secp256k1)),
-            "secp256k1-eth" => Some(Box::new(Secp256k1Eth)),
+            Secp256k1Eth::NAME | Secp256k1Eth::LEGACY_NAME => Some(Box::new(Secp256k1Eth)),
             #[cfg(feature = "schnorr_secp256k1_experimental")]
             "schnorr-secp256k1" => Some(Box::new(SchnorrSecp256k1)),
             #[cfg(feature = "schnorr_secp256k1_experimental")]
             "frost-secp256k1" => Some(Box::new(FrostSecp256k1)),
             _ => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Secp256k1Eth, SignaturesAlgFactory};
+
+    #[test]
+    fn secp256k1_eth_canonical_name_roundtrips_through_factory() {
+        let algorithm = SignaturesAlgFactory::apply(Secp256k1Eth::NAME).unwrap();
+        assert_eq!(algorithm.name(), Secp256k1Eth::NAME);
+    }
+
+    #[test]
+    fn secp256k1_eth_legacy_name_decodes_to_canonical_name() {
+        let algorithm = SignaturesAlgFactory::apply(Secp256k1Eth::LEGACY_NAME).unwrap();
+        assert_eq!(algorithm.name(), Secp256k1Eth::NAME);
     }
 }

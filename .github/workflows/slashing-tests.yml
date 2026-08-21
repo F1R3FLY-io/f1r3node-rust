@@ -23,6 +23,16 @@ name: Slashing test suite
 
 on:
   workflow_dispatch:
+    inputs:
+      run_exhaustive:
+        description: >-
+          Also run the exhaustive TLA+ tier (RUN_EXHAUSTIVE_TLA=1): the
+          unbounded reference configs parked by PR #201. Each exceeds the
+          45m per-config cap by design, so expect distinctly-labeled
+          TIMEOUT reds; their bounded nightly-tier counterparts (EPIC-011)
+          carry the gating coverage.
+        type: boolean
+        default: false
   schedule:
     # Nightly run at 06:30 UTC for the extended-budget jobs.
     - cron: "30 6 * * *"
@@ -198,6 +208,10 @@ jobs:
       - name: Run TLA+ invariant suite
         env:
           TLA_TOOLS_JAR: /home/runner/.tla/tla2tools.jar
+          # Opt-in exhaustive tier: only a manual dispatch with
+          # run_exhaustive=true sets this; schedule and default dispatches
+          # keep gating on the fast tier alone.
+          RUN_EXHAUSTIVE_TLA: ${{ (github.event_name == 'workflow_dispatch' && inputs.run_exhaustive) && '1' || '0' }}
         run: bash scripts/ci/check-tla-invariants.sh
 
   rocq-build:
@@ -233,8 +247,15 @@ jobs:
         # Authoritative axiom-freedom check (kernel-level, cf. the README's
         # "Verifying the trust base"): the kernel reports every axiom, admit,
         # parameter, or imported assumption the capstone theorems transitively
-        # depend on, regardless of where or how it was introduced. Both
-        # capstones must print "Closed under the global context".
+        # depend on, regardless of where or how it was introduced. Every
+        # capstone must print "Closed under the global context".
+        #
+        # The capstone list is GENERATED from MainTheorem.v (every
+        # `Theorem main_*`), mirroring scripts/check-slashing-ALL.sh, so the
+        # gate never drifts from the theorem set. (The previous fixed pair —
+        # main_bisimilarity_theorem/_strong — was retired with the DR-6
+        # bisimilarity removal; the headline is now
+        # main_slashing_algorithm_correct, one of the enumerated capstones.)
         #
         # Implemented as a coqc-compiled check file rather than `coqtop -e`:
         # `coqtop -batch` exits after argument parsing without a reliable -e
@@ -245,11 +266,15 @@ jobs:
         run: |
           eval $(opam env)
           cd formal/rocq/slashing
-          cat > "${RUNNER_TEMP}/CheckAssumptions.v" <<'EOF'
-          From Slashing Require Import MainTheorem.
-          Print Assumptions main_bisimilarity_theorem.
-          Print Assumptions main_bisimilarity_strong.
-          EOF
+          thms=$(grep -oE '^Theorem main_[A-Za-z0-9_]+' theories/MainTheorem.v | sed 's/^Theorem //')
+          n_thm=$(wc -l <<<"$thms")
+          if [ "$n_thm" -lt 1 ]; then
+            echo "FAIL: no 'Theorem main_*' capstones found in theories/MainTheorem.v — the gate would be vacuous."
+            exit 1
+          fi
+          { echo "From Slashing Require Import MainTheorem."
+            while IFS= read -r t; do echo "Print Assumptions $t."; done <<<"$thms"
+          } > "${RUNNER_TEMP}/CheckAssumptions.v"
           set +e
           out=$(coqc -Q theories Slashing "${RUNNER_TEMP}/CheckAssumptions.v" 2>&1)
           status=$?
@@ -260,10 +285,11 @@ jobs:
             exit 1
           fi
           closed=$(grep -c "Closed under the global context" <<<"$out" || true)
-          if [ "$closed" -ne 2 ]; then
-            echo "FAIL: expected 2 closed trust bases, found $closed — capstone depends on axioms/admits listed above."
+          if [ "$closed" -ne "$n_thm" ]; then
+            echo "FAIL: expected $n_thm closed trust bases, found $closed — a capstone depends on axioms/admits listed above."
             exit 1
           fi
+          echo "OK: all $n_thm main_* capstones closed under the global context."
 
   search-horizon-smoke:
     name: Search-horizon smoke tier (10k fuzz runs)
@@ -315,6 +341,14 @@ jobs:
         # use --in-place plus --no-shuffle for reproducibility and
         # rely on the .mutants.toml include-list to scope to the
         # slashing modules only.
+        env:
+          # The 7GB ubuntu-latest VM dies with a runner shutdown signal
+          # 30s-5min into the initial workspace build under cargo-mutants
+          # (nightlies 30992663244, 30895783563) — parallel rustc peak
+          # exceeds memory. Capping build concurrency keeps the peak
+          # inside the VM; the build is slower but the 240-minute job
+          # budget was never the binding constraint.
+          CARGO_BUILD_JOBS: 2
         run: cargo mutants --in-place --no-shuffle --timeout 120 --baseline=skip
 
   nightly-extended-proptest:

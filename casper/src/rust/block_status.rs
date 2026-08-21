@@ -74,6 +74,15 @@ pub enum InvalidBlock {
     LowDeployCost,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ValidationDisposition {
+    Accept,
+    ObjectiveInvalid,
+    MissingDependency,
+    LocalFault,
+    AlreadyProcessed,
+}
+
 impl BlockStatus {
     pub fn valid() -> ValidBlock { ValidBlock::Valid }
 
@@ -178,6 +187,19 @@ impl BlockStatus {
             _ => false,
         }
     }
+
+    pub fn disposition(&self) -> ValidationDisposition {
+        match self {
+            BlockStatus::Valid(_) => ValidationDisposition::Accept,
+            BlockStatus::Error(BlockError::Invalid(_)) => ValidationDisposition::ObjectiveInvalid,
+            BlockStatus::Error(BlockError::MissingBlocks) => {
+                ValidationDisposition::MissingDependency
+            }
+            BlockStatus::Error(BlockError::BlockException(_))
+            | BlockStatus::Error(BlockError::CasperIsBusy) => ValidationDisposition::LocalFault,
+            BlockStatus::Error(BlockError::Processed) => ValidationDisposition::AlreadyProcessed,
+        }
+    }
 }
 
 impl InvalidBlock {
@@ -241,4 +263,36 @@ impl InvalidBlock {
 
 impl From<KvStoreError> for BlockError {
     fn from(error: KvStoreError) -> Self { BlockError::BlockException(CasperError::from(error)) }
+}
+
+#[cfg(test)]
+mod validation_disposition_tests {
+    use super::*;
+
+    #[test]
+    fn local_faults_and_missing_dependencies_are_never_objective_invalidity() {
+        let local = BlockStatus::Error(BlockError::BlockException(CasperError::RuntimeError(
+            "unknown local root".to_string(),
+        )));
+        let missing = BlockStatus::Error(BlockError::MissingBlocks);
+
+        assert_eq!(local.disposition(), ValidationDisposition::LocalFault);
+        assert_eq!(
+            missing.disposition(),
+            ValidationDisposition::MissingDependency
+        );
+        assert!(!local.is_in_dag());
+        assert!(!missing.is_in_dag());
+    }
+
+    #[test]
+    fn only_explicit_invalidity_is_objective() {
+        let invalid = BlockStatus::Error(BlockError::Invalid(InvalidBlock::InvalidTransaction));
+
+        assert_eq!(
+            invalid.disposition(),
+            ValidationDisposition::ObjectiveInvalid
+        );
+        assert!(invalid.is_in_dag());
+    }
 }

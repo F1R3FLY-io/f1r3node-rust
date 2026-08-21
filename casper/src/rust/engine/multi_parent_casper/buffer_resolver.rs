@@ -72,10 +72,14 @@ pub(crate) fn buffer_get_dependency_free_from_buffer<T: TransportLayer + Send + 
     let mut dep_free_keys: Vec<BlockHash> = Vec::with_capacity(blocks_in_store.len());
     for (candidate_hash, block) in &blocks_in_store {
         let all_deps = proto_util::dependencies_hashes_of(block);
+        let slash_evidence_deps = proto_util::slash_evidence_hashes_of(block);
         let all_deps_available = all_deps.into_iter().all(|dep| {
-            admit_dag_contains(this, &dep)
-                || equivocation_hashes.contains(&dep)
-                || invalid_block_hashes.contains(&dep)
+            proto_util::dependency_source_satisfies(
+                slash_evidence_deps.contains(&dep),
+                admit_dag_contains(this, &dep),
+                equivocation_hashes.contains(&dep),
+                invalid_block_hashes.contains(&dep),
+            )
         });
 
         if all_deps_available {

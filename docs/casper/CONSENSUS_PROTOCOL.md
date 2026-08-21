@@ -82,6 +82,35 @@ Genesis creates the first block containing:
 
 **Why this matters**: The synchrony constraint threshold and fault tolerance threshold are on-chain parameters written into the genesis block's state. Changing them requires a new genesis (new network).
 
+### Protocol-Version Authority
+
+The cost-accounted D3 rejected-deploy format begins at Casper protocol version 2.
+Exact per-execution state-effect provenance begins at version 3. Vault-backed
+quantitative byte evidence begins at version 4. This binary's supported running
+set is exactly `{4}`. Versions 1 through 3 remain recognizable as historical
+encoding metadata, but any historical approved genesis is rejected before Casper
+starts; an unknown future version is rejected identically.
+
+The genesis master writes the configured protocol version into the candidate.
+Every genesis validator checks that version before signing. Approved-block
+validation then checks support, and initialization adopts the approved version
+into the authoritative running `CasperShardConf`. Proposers write that running
+version into every block, and peer-interest filtering validates against the same
+running value through `Casper::get_version`.
+
+This single chain of authority prevents a ceremony/configuration split. In the
+pre-fix failure, the ceremony hard-coded version 1 while proposal used configured
+version 2, and receivers compared proposals with the version-1 approved header.
+Honest protocol-2 proposals were discarded before validation. The repaired
+lifecycle has no independent receiver-side version source.
+
+Protocol 4 activates through a fresh protocol-4 genesis. There is no
+block-height activation, node-local accounting switch, A/B mode, or mixed-version
+running interval. The TLA+ and Rocq models are cataloged in
+[`docs/formal-verification.md`](../formal-verification.md); the normative rules
+are in
+[`docs/theory/finalized-floor/finalized-floor-specification.md`](../theory/finalized-floor/finalized-floor-specification.md#52-protocol-version-lifecycle).
+
 ### Key Design Point
 
 The engine uses `Arc<dyn MultiParentCasper>` for dynamic dispatch. The `Running` state holds a trait object, not a concrete type.
@@ -145,7 +174,8 @@ Before building a block, the proposer verifies:
 
 For each selected deploy:
 1. Execute Rholang via `RhoRuntime` (play runtime)
-2. RSpace produce/consume operations with phlogiston cost metering
+2. Reserve canonical produce/consume introduction bytes before mutation and
+   reserve authority plus delivery/trace bytes for each locked atomic COMM
 3. `create_soft_checkpoint()` between deploys (isolates effects)
 
 Then execute system deploys:
@@ -265,30 +295,82 @@ In a multi-parent DAG, different validators may have included different deploys 
 
 ### Algorithm (`dag_merger.rs` + `conflict_set_merger.rs`)
 
-1. **Identify visible blocks**: All blocks between the LCA and the parents (exclusive of LCA, inclusive of parents)
-2. **Collect deploys**: Extract user deploys from all visible blocks
-3. **Detect conflicts**: Branches conflict if they contain the **same user deploy ID** (not content — just the deploy signature)
-4. **Resolve**: `ConflictSetMerger` selects the highest-value subset
+1. **Derive the finalized floor**: From the parents' inherited floors and the
+   highest state-safe clique-certified frontier in the block's frozen
+   justification snapshot.
+2. **Identify visible blocks**: All blocks in the floor-bounded parent closure
+   (exclusive of the floor, inclusive of the parents).
+3. **Collect deploys**: Extract user deploys from all visible blocks
+4. **Detect conflicts**: Branches conflict if they contain the **same user deploy ID** (not content — just the deploy signature)
+5. **Resolve**: `ConflictSetMerger` selects the highest-value subset
    of non-conflicting deploys. Dependents of rejected deploys are
    also rejected. Rejected sigs land in the
    `KeyValueRejectedDeployBuffer` so a subsequent proposer can
    re-include them via `prepare_user_deploys` (see Block Creation
    step 3).
-5. **Merge**: Replay selected deploys via RSpace merger to compute combined post-state
+6. **Merge**: Replay selected deploys via RSpace merger to compute combined post-state
+
+An exact rejected-deploy record is keyed by `(deploy signature, source block)`.
+Its reason is diagnostic rather than authorization: causal descendants can
+legitimately classify the same occurrence differently as their observed merge
+closures grow. Equal evidence is normalized with the fixed precedence
+`duplicate_occurrence > merge_conflict > collateral_chain_drop > unspecified`.
+This max-like join is commutative, associative, and idempotent, so parent arrival
+order cannot change the block body. A direct duplicate dominates a direct merge
+conflict, and either direct cause dominates a merely collateral chain drop.
+
+```text
+canonical_reason(records):
+    result := unspecified
+    for each causal record in any order:
+        result := max_by_protocol_precedence(result, record.reason)
+    return result
+```
 
 ### Determinism Constraint
 
-The merge scope is derived entirely from DAG structure (parent pointers and block heights), not from local finalization state. Two validators with different finalization views must compute the same merge result for identical parent sets. This is why the LCA (not the LFB) bounds the scope.
+The merge scope is derived from the block's parents, their cached structural
+floors, and the block's frozen justifications—not from a node-local live
+finalization view. Two validators compute the same floor and merge for the same
+block. The finalized floor, not a locally observed LFB, bounds the scope.
 
 ### Performance Bounds
 
 - Merge cost: O(visible_blocks^2 x deploys^2) for conflict resolution
-- LCA scoping keeps visible_blocks bounded
-- **Fallback**: If visible_blocks > 512 or LCA distance > 256, falls back to latest parent's post-state (discards non-selected parent deploys — they land in the rejected-deploy buffer and a subsequent proposer re-includes them via `prepare_user_deploys`)
+- The finalized-floor distance is a deterministic work bound.
+- **Backstop**: If the floor distance exceeds the configured cap, proposal parks
+  and validation fails deterministically. The node never substitutes one parent's
+  post-state or silently drops co-parent effects.
 
 ### System Deploys
 
 System deploys (`SlashDeploy`, `CloseBlockDeploy`) are deterministic and non-conflicting. They are not subject to conflict resolution.
+
+### Lifecycle-record and effect-record alignment
+
+`BlockMessage.body.deploys` is a lifecycle-record sequence, not necessarily an
+execution sequence. State-bound funding retains an underfunded deployment as a
+terminal admission-rejected `ProcessedDeploy`, but that record never enters the
+runtime and produces no mergeable-channel map. Multi-parent block indexing
+therefore projects user records by `admissionStatus != Rejected` before checking
+metadata cardinality, traversing adjacent state witnesses, splitting user and
+system metadata, or assigning execution indices.
+
+An ordinary `is_failed` deployment remains in the effect sequence when its
+admission status is `Executed`; it entered runtime and owns a metadata position.
+Only the pre-execution admission rejection is status-only. For user records
+$`U`$, processed system executions $`S`$, and locally reconstructed metadata
+$`M`$:
+
+```math
+|M|=|[u\in U\mid u.\operatorname{admissionStatus}\ne\text{Rejected}]|+|S|.
+```
+
+The exact cardinality still fails closed. This projection does not alter block
+bytes, parent selection, clique voting, fault tolerance, or finality; it ensures
+that an observable zero-effect rejection cannot make a valid parent impossible
+to index for the next proposal. See DR-53 and
+[`admission-effect-alignment.md`](../theory/cost-accounting-impl/admission-effect-alignment.md).
 
 ---
 
@@ -302,14 +384,30 @@ Finalization runs asynchronously after each valid block is added to the DAG. A s
 
 ### Algorithm (`finalizer.rs`)
 
-1. **Scope**: BFS from latest messages down the main-parent chain to the current LFB (Last Finalized Block)
-2. **Candidate filtering**: Only blocks with >50% stake agreement (quick filter before expensive clique computation)
-3. **Clique Oracle** for each candidate:
+1. **Freeze one view**: Snapshot latest messages once. Discovery, ranking, and
+   clique evaluation use that same immutable map.
+2. **Scope**: Traverse the complete main-parent closure from every frozen latest
+   message down to the current LFB height, deduplicating each
+   `(validator, block)` pair at enqueue time.
+3. **Candidate filtering**: Keep only blocks with strictly more than half of the
+   stake agreeing. This is a conservative upper-bound filter before expensive
+   clique computation; it cannot admit or prune a true exact-threshold result at
+   the boundary.
+4. **Clique Oracle** for each candidate in deterministic newest-first order:
    - Build an agreement graph: edge between validators A and B if they "never eventually see disagreement" about the target block
    - Find the maximum weighted clique (largest fully-connected subgraph by stake)
-   - Compute fault tolerance: `FT = (2 * clique_weight - total_stake) / total_stake`
-4. **Finalization**: If `FT > fault_tolerance_threshold`, block is finalized
-5. **LFB advancement**: Update last finalized block, clean up deploy storage, emit `BlockFinalised` event
+   - Decide the strict threshold in exact integer arithmetic, equivalent to
+     `$`\mathrm{FT}=(2q-S)/S > \theta`$`
+5. **Certificate/state separation**: A successful clique decision is retained
+   unchanged. The candidate may replace the LFB only when its replay state derives
+   from the current LFB's state. The current LFB may be a secondary parent of a
+   valid multi-parent rebase; requiring it on the candidate's main-parent spine
+   would stall finality. The state-lineage predicate does not add, remove, or
+   reweight a vote.
+6. **LFB advancement**: Update last finalized block, clean up deploy storage, and
+   emit `BlockFinalised`. A certified stale-state candidate remains a valid
+   speculative block; a later proposal rebases on the certified floor and restores
+   progress.
 
 ### "Never Eventually See Disagreement"
 
@@ -320,9 +418,34 @@ Two validators A and B agree on block T if:
 
 This is a **permanent** agreement — once two validators are in a clique for block T, no future messages can break it.
 
-### Work Budgets
+### Scheduling, not consensus budgets
 
-The finalizer operates under time budgets to avoid blocking the proposer. Cooperative yield: every 8 iterations, yield 1ms to avoid starving other tasks.
+The finalizer has no candidate-count cap, elapsed-time budget, per-candidate
+timeout, or runner cancellation deadline. Such limits made equal frozen DAG views
+produce host-speed-dependent candidate coverage. It yields cooperatively at a
+configured interval to avoid monopolizing the Tokio executor, but the yield changes
+latency only: it never truncates or restarts the frozen scan.
+
+### Why message ancestry is not state ancestry
+
+A multi-parent block may have the current LFB in its main-parent ancestry while
+its post-state was replayed from an older floor to resolve a conflicting parent.
+The block therefore descends from the LFB as a message without deriving from its
+state. Promoting that block would omit an already committed effect even though its
+clique certificate is sound. The node records an explicit state base for this
+reason: a covering parent is the base only when it preserves the floor; otherwise
+the floor is the base. LFB admission follows the reflexive, transitive closure of
+those base edges.
+
+The converse distinction is equally important. Parent selection may promote a
+deploy-carrying branch to main parent while retaining the current LFB as a
+secondary parent. The resulting replay state can derive from the LFB even though
+the candidate's main-parent spine does not. LFB admission therefore checks state
+ancestry directly and does not impose a second main-spine requirement.
+
+The complete normative rules and their TLA+/Apalache, Rocq, and Rust evidence are
+in the [finalized-floor specification](../theory/finalized-floor/finalized-floor-specification.md)
+and [verification dossier](../theory/finalized-floor/finalized-floor-verification.md).
 
 ### Fault Tolerance Values
 
@@ -422,29 +545,29 @@ When the synchrony constraint blocks proposals:
 2. `EquivocationRecord` created and stored persistently
 3. Honest validators emit a `SlashDeploy` from their `invalid_latest_messages` (`prepare_slashing_deploys` in `block_creator.rs`); only validators with non-zero stake who are in `active_validators` can be slashed
 4. `SlashDeploy` executes PoS contract to remove equivocator from bonds
-5. Equivocator loses entire stake; PoS slash is idempotent for already-slashed validators (returns true with no further state change)
+5. Equivocator loses its stake; the system contract remains idempotent as defense in depth, while proposer and receiver authorization reject a new slash when the target's canonical merged-pre-state bond is non-positive
 
-### Multi-Parent Merge & Slash Recovery
+### Multi-Parent Merge and Canonical Slash Reconstruction
 
-A `SlashDeploy` issued in one parent can be **rejected** by cost-optimal merge resolution when the merge proposer combines parents — the slash chain may be the loser of a conflict and dropped from canonical state. PR #488 closes this gap with a recovery loop in `block_creator::create`:
+A `SlashDeploy` issued in one parent can be rejected by cost-optimal merge resolution. The slash effect must remain live without treating a rejected deploy as new authority. The proposer therefore reconstructs authorized slash work from canonical state:
 
-1. Before block assembly, the proposer runs `compute_parents_post_state` on its tip set. The merge engine returns `(pre_state, rejected_user_sigs, rejected_slashes)`.
-2. `merging::rejected_slash::filter_recoverable` deduplicates rejected slashes by `invalid_block_hash` and drops any that the proposer's own `prepare_slashing_deploys` already covers.
-3. The proposer re-issues each surviving `RejectedSlash` under its own validator identity, so the slash effect lands in the merge block regardless of the merge's rejection decision.
-4. Re-issued slashes ride the same code path as own-detected slashes; PoS idempotency makes the re-issue safe even if the equivocator has already been slashed in a parent.
+1. Before block assembly, the proposer runs `compute_parents_post_state` on its selected parents. The merge engine returns the canonical `pre_state` and rejected user-deploy occurrences.
+2. `prepare_slashing_deploys` scans the complete current invalid-block evidence index and authorizes candidates against the bond map computed from that exact `pre_state`.
+3. `authorized_slash_candidates` selects at most one deterministic evidence hash for each `(offender, activation epoch)` target.
+4. If a parent slash lost the merge and the offender remains positively bonded, its persisted invalid evidence causes the canonical scan to reconstruct one authorized candidate. If the slash effect survived and the offender's bond is zero, the scan emits none.
+5. Receive-side validation uses the same parent-derived state and rejects missing evidence, stale epochs, non-positive target bonds, issuer mismatch, and duplicate targets before replay.
+
+Merge-rejection records are diagnostic evidence about conflict resolution, not an authorization source. This distinction prevents two rejected hashes for the same offender from producing two slash deploys in one block.
 
 ### Multi-Slash Blocks
 
-A single block can carry more than one `SlashDeploy`:
-- own + recovered for distinct equivocators, or
-- two own slashes for two equivocators in `invalid_latest_messages`, or
-- recovered slashes for multiple equivocators surfaced by the merge.
+A single block can carry more than one `SlashDeploy`, but only for distinct authorized `(offender, activation epoch)` targets. Multiple invalid hashes for the same target collapse to one canonical candidate.
 
 Each `SlashDeploy`'s RNG is keyed on `(validator, seq_num, invalid_block_hash)` (`util::rholang::system_deploy_util::generate_slash_deploy_random_seed`). Without `invalid_block_hash` in the seed, two slashes in the same block from the same proposer would alias the unforgeable channel names allocated by the slash contract, corrupting tuplespace state and the per-slash return-channel routing.
 
 ### Empty-Block Skip
 
-Heartbeat-disabled proposers (`allow_empty_blocks = false`, the production default) skip block creation when there is no work — but recovered rejected slashes count as work. The skip predicate evaluates `all_deploys.is_empty() && !has_slashing_deploys && recovered_rejected_slashes.is_empty()`, so a proposer that wakes with no user deploys and no own-detected slashes still proposes when the parent merge has produced rejected slashes that need recovery.
+Heartbeat-disabled proposers (`allow_empty_blocks = false`, the production default) skip block creation when there are no user deploys and no canonically authorized slash candidates. A merge-rejected slash causes work only indirectly: persisted evidence plus a positive target bond in the merged pre-state reconstructs an authorized candidate. A rejected hint by itself cannot force an empty proposal or reauthorize a zero-bond target.
 
 ### Two-Level Slashing
 
@@ -522,7 +645,6 @@ See [F1R3FLY-io/f1r3node issues](https://github.com/F1R3FLY-io/f1r3node/issues) 
 |------|------|
 | `casper/src/rust/merging/dag_merger.rs` | Multi-parent state merge |
 | `casper/src/rust/merging/conflict_set_merger.rs` | Deploy conflict resolution |
-| `casper/src/rust/merging/rejected_slash.rs` | `RejectedSlash` type and `filter_recoverable` dedup for slash recovery |
 
 ### Slashing
 | File | Role |
@@ -530,7 +652,8 @@ See [F1R3FLY-io/f1r3node issues](https://github.com/F1R3FLY-io/f1r3node/issues) 
 | `casper/src/rust/equivocation_detector.rs` | Equivocation types and detection |
 | `casper/src/rust/util/rholang/system_deploy_util.rs` | System-deploy RNG seeds (slash seed keyed on `invalid_block_hash`) |
 | `casper/src/rust/util/rholang/costacc/slash_deploy.rs` | `SlashDeploy` system-deploy definition |
-| `casper/src/rust/blocks/proposer/block_creator.rs` | `prepare_slashing_deploys`, `filter_slashable_invalid_messages`, slash recovery loop |
+| `casper/src/rust/slashing_authorization.rs` | Canonical evidence scan, epoch and bond authorization, one-candidate-per-target selection |
+| `casper/src/rust/blocks/proposer/block_creator.rs` | Canonical merged-pre-state computation and `prepare_slashing_deploys` |
 
 ### Liveness
 | File | Role |

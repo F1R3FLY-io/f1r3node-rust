@@ -25,6 +25,14 @@ This branch validates the corrections developed on `fix/merge-recovery-finalizat
 | Integer arithmetic | Merge arithmetic rejects terminal overflow instead of laundering it through wrapping state | Integer-add overflow unit validation |
 | Deploy ordering | Distinct deploy chains never compare equal | Strict-total-order unit validation |
 | Recovery | Merge-rejected deploys remain observable, retryable, and cannot be double-applied | Rejected-buffer and deploy-status lifecycle tests |
+| Recovery authorization | A rejected source authorizes retry only after every visible source occurrence is tombstoned | Exact-source reducer examples, observation-order properties, and TLA⁺ negative control |
+| Recovery expiry | Rejected history never extends the ordinary deploy lifespan; expired records leave both local stores | Exact-boundary unit tests and TLA⁺ expiry-bypass counterexample |
+| Recovery leadership | Exactly one validator packages rejected-buffer work for each committed finalized-height view; concurrent retries across temporarily lagging views remain source-exact and bounded | Leader permutation/rotation tests and TLA⁺ independent-view concurrent-proposer model |
+| Recovery packaging | A retry selected by the exact-source reducer survives self-chain filtering while ordinary self-chain duplicates remain excluded | Unit partition test, D3 vault-conflict end-to-end test, and TLA⁺ packaging negative control |
+| Recovery liveness | Non-leader heartbeats rotate past an unavailable recovery leader | TLA⁺ temporal property and heartbeat system-integration scenario |
+| Approved-state bootstrap | A late node reconstructs every historical root from the immutable consensus context serialized by that block, never from its current approved tip or local shard configuration | `ApprovedStateReplay` safe/unsafe models, axiom-free `BootstrapReplayContext`, exact replay unit regressions, and the late-checkpoint epoch-change integration scenario |
+| Local validation faults | Storage, unavailable-root, and busy failures remain inconclusive local outcomes: the block leaves the ready queue, opens one bounded recovery path, never creates slash evidence, and does not release ordinary descendants | `LocalValidationRecovery` safe/unsafe models, axiom-free `LocalFaultDeferral`, ready-queue/transport-failure/descendant unit regressions, and forbidden-log assertions |
+| Consensus inputs | Missing parent bodies, visible disposition bodies, or finalized metadata stop local proposal processing instead of selecting a fallback disposition | Fail-closed reducer, ancestry, and leader tests |
 | Finalization cleanup | Included and rejected deploys are purged only when terminal; recoverable work remains available | Finalizer cleanup tests |
 | Finalizer effect | A finalized candidate ahead of the persisted LFB still invokes the finalization effect | Finalizer effect regression |
 | Counter deploys | Concurrent counter updates recover and finalization continues | Counter and map-cell integration scenarios |
@@ -54,13 +62,22 @@ marked as expected failures.
 
 ### Daily soak
 
-Monday through Thursday at 22:00 Pacific, Oracle Cloud runs a minimum 24-hour integration soak. A newly scheduled or manually dispatched run cancels the prior soak run.
+Monday through Thursday at 19:30 Pacific, Oracle Cloud runs a 22-hour integration soak. A newly scheduled or manually dispatched run cancels the prior soak run.
+
+The duration is 22 hours rather than 24 deliberately. Soak runs share a concurrency group with `cancel-in-progress`, so a 24-hour soak on a 24-hour cadence is cancelled by the following night's launch shortly *before* it finishes — losing its final iteration and its entire artifact upload. Ending at 22 hours leaves the run time to report before the next one starts.
+
+Two conditions can shorten or skip a daily soak:
+
+- **Nothing new to test.** If no commits landed on the branch under test since the previous window, the run is skipped rather than re-soaking already-soaked code. The check fails *open*: any API error or unparseable response runs the soak, because a silently skipped soak is the failure this workflow exists to prevent.
+- **The branch moved.** A soak pins one SHA at checkout and tests that image for its whole run, so once the branch advances it is measuring history. After a floor of 8 hours, the soak stops at the next iteration boundary when the tip changes, recording `early_exit_reason=target_advanced` in its summary. The floor stops an early merge from reducing a night to a token soak; before it, merges are ignored.
 
 ### Weekend soak
 
-Friday at 22:00 Pacific, Oracle Cloud runs a minimum 72-hour integration soak. The same replacement policy prevents duplicate weekend runs.
+Friday at 19:30 Pacific, Oracle Cloud runs a 60-hour integration soak, finishing at 07:30 Pacific on Monday. The same replacement policy prevents duplicate weekend runs.
 
-The schedule uses paired UTC cron entries and an `America/Los_Angeles` runtime gate so the start time remains 22:00 across daylight-saving transitions.
+Neither shortening condition applies to the weekend run. It always launches, and merge-triggered exit is disabled, because its numbers are the week-over-week benchmark baseline and are only comparable if every run covers the same span.
+
+The schedule uses paired UTC cron entries and an `America/Los_Angeles` runtime gate so the start time remains 19:30 across daylight-saving transitions. The gate matches on hour *and* minute, and 19:30 Pacific falls on the following UTC day, so the cron entries read 02:30 and 03:30 UTC.
 
 ## Overnight workload
 
@@ -69,3 +86,19 @@ The long-running job repeatedly executes the trusted, pinned system-integration 
 ## Exit criteria
 
 A correction is considered validated when its named test changes from red to green without weakening the assertion. The validation branch is complete when every matrix row has an executable assertion, CI invokes the complete suite, and the daily/weekend soak workflows can be manually dispatched and scheduled.
+
+For deploy recovery, completion additionally requires all validators and the
+read-only node to report the same exact source block hash for the deploy. The
+test must also observe continued LFB progress after a recovery leader is paused,
+zero `ContainsExpiredDeploy` proposal failures, bounded occurrence/tombstone
+cardinality for one deploy signature, and no host-protection breach. A timeout,
+an increased RSS ceiling, or agreement on status without agreement on source
+hash is not a passing substitute.
+
+For approved-state bootstrap, completion additionally requires a validator to
+join after the approved checkpoint has advanced beyond the funded epoch
+transition, reconstruct every declared root, enter `Running`, and continue to a
+later finalized block with zero `UnknownRootError`, `InvalidTransaction`,
+invalid-block recording, replay retry, or local-validation-fault entries. A
+recovery request that merely suppresses those logs without reconstructing the
+same roots is not a passing substitute.

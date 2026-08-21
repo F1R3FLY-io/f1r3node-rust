@@ -83,7 +83,8 @@ new out, rl(`rho:registry:lookup`), helloCh in {{
         hex::encode(unforgeable_id_u8)
     }
 
-    // 900_000 phlogiston: enough for registry insert, under 9M vault balance (avoids "Insufficient funds")
+    // The legacy limit remains a helper input; protocol 4 proves and settles
+    // the registry operation's complete debit against authenticated custody.
     let register_deploy = construct_deploy::source_deploy_now_full(
         register_source.to_string(),
         Some(900_000),

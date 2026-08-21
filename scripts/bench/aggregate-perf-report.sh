@@ -9,6 +9,9 @@
 # Outputs (OUT_DIR):
 #   weekly-summary.json   the record appended to the dashboard data history
 #   verdict.json          pass/regress + per-metric deltas (release gate input)
+#   badge.json            shields.io endpoint badge (soak verdict)
+#   badge-stability.json  endpoint badge: iteration success rate
+#   badge-perf.json       endpoint badge: finalization p95 + throughput
 #   perf-report.md        human summary (step summary / artifact)
 #
 # Verdict policy (thresholds file, maintainer-approved EPOCH-010):
@@ -22,7 +25,14 @@
 #   OUT_DIR (required)    report output directory
 #   THRESHOLDS_JSON       gate config (default: sibling soak-gate-thresholds.json)
 #   BASELINE_JSON         previous weekly-summary.json (absent on first run)
+#   SOAK_STATUS           complete (default) | in_progress
 #   RUN_ID, DURATION_SECONDS, DASHBOARD_URL   metadata
+#
+# in_progress is for a mid-run checkpoint. It publishes what has happened so
+# far but computes no verdict: a partial run has fewer iterations, a lower
+# peak RSS and a throughput figure over a shorter window than the baseline it
+# would be compared against, so a regression verdict at that point would be
+# measuring the clock rather than the code.
 
 set -euo pipefail
 
@@ -31,37 +41,94 @@ SOAK_DIR="${SOAK_DIR:?SOAK_DIR is required}"
 OUT_DIR="${OUT_DIR:?OUT_DIR is required}"
 THRESHOLDS_JSON="${THRESHOLDS_JSON:-$SCRIPT_DIR/soak-gate-thresholds.json}"
 BASELINE_JSON="${BASELINE_JSON:-}"
+SOAK_STATUS="${SOAK_STATUS:-complete}"
+case "$SOAK_STATUS" in
+complete | in_progress) ;;
+*)
+	echo "SOAK_STATUS must be 'complete' or 'in_progress'" >&2
+	exit 2
+	;;
+esac
+# Belt and braces: the verdict is overridden for a checkpoint anyway, but
+# dropping the baseline here means none of the comparison branches can fire
+# even if that override is later changed.
+[ "$SOAK_STATUS" = "in_progress" ] && BASELINE_JSON=""
 RUN_ID="${RUN_ID:-unknown}"
+RUN_ATTEMPT="${RUN_ATTEMPT:-1}"
+SOAK_KIND="${SOAK_KIND:-unknown}"
+if ! [[ "$RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]]; then
+	echo "RUN_ATTEMPT must be a positive integer" >&2
+	exit 2
+fi
+case "$SOAK_KIND" in
+daily | weekend | unknown) ;;
+*)
+	echo "SOAK_KIND must be 'daily', 'weekend', or 'unknown'" >&2
+	exit 2
+	;;
+esac
 DURATION_SECONDS="${DURATION_SECONDS:-0}"
+# Restart provenance. A run restarted mid-window covers only part of its
+# series' nominal span; the run object records both spans so the report and
+# dashboard can say "restarted; covered Nh of Mh" instead of presenting a
+# partial weekend as a full one. WINDOW_SECONDS is the series' nominal
+# window (79200 daily / 216000 weekend); 0 means unknown and falls back to
+# the requested duration, which is exact for non-restarted runs.
+RETRY_ATTEMPT="${RETRY_ATTEMPT:-0}"
+if ! [[ "$RETRY_ATTEMPT" =~ ^[0-9]+$ ]]; then
+	echo "RETRY_ATTEMPT must be a non-negative integer" >&2
+	exit 2
+fi
+WINDOW_SECONDS="${WINDOW_SECONDS:-0}"
+if ! [[ "$WINDOW_SECONDS" =~ ^[0-9]+$ ]]; then
+	echo "WINDOW_SECONDS must be a non-negative integer" >&2
+	exit 2
+fi
 DASHBOARD_URL="${DASHBOARD_URL:-https://f1r3fly-io.github.io/f1r3node-rust/}"
 
-command -v jq >/dev/null || { echo "jq not found" >&2; exit 2; }
+command -v jq >/dev/null || {
+	echo "jq not found" >&2
+	exit 2
+}
 mkdir -p "$OUT_DIR"
 
 SEGMENTS_JSON="$OUT_DIR/.segments.json"
-find "$SOAK_DIR" -path '*bench-segment-*/metrics.json' -print0 \
-  | sort -z \
-  | xargs -0 --no-run-if-empty cat \
-  | jq -s 'sort_by(.segment_index)' > "$SEGMENTS_JSON"
-[ -s "$SEGMENTS_JSON" ] || echo '[]' > "$SEGMENTS_JSON"
+find "$SOAK_DIR" -mindepth 2 -maxdepth 2 -type f \
+	-path '*/bench-segment-*/metrics.json' -print0 |
+	sort -z |
+	xargs -0 --no-run-if-empty cat |
+	jq -s 'sort_by(.segment_index)' >"$SEGMENTS_JSON"
+[ -s "$SEGMENTS_JSON" ] || echo '[]' >"$SEGMENTS_JSON"
 
 PASSIVE_ARG='null'
 if [ -s "$SOAK_DIR/summary.json" ]; then
-  PASSIVE_ARG="$(cat "$SOAK_DIR/summary.json")"
+	PASSIVE_ARG="$(cat "$SOAK_DIR/summary.json")"
 fi
 
 BASELINE_ARG='null'
 if [ -n "$BASELINE_JSON" ] && [ -s "$BASELINE_JSON" ]; then
-  BASELINE_ARG="$(cat "$BASELINE_JSON")"
+	BASELINE_ARG="$(cat "$BASELINE_JSON")"
+fi
+
+PROTECTION_BREACH=false
+if [ -s "$SOAK_DIR/host-guardian-breach.txt" ] ||
+	grep -q '^host_protection_breach:' "$SOAK_DIR/early-exit.txt" 2>/dev/null; then
+	PROTECTION_BREACH=true
 fi
 
 jq -n \
-  --slurpfile segments "$SEGMENTS_JSON" \
-  --argjson passive "$PASSIVE_ARG" \
-  --arg run_id "$RUN_ID" \
-  --argjson duration "$DURATION_SECONDS" \
-  --arg date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-'
+	--slurpfile segments "$SEGMENTS_JSON" \
+	--argjson passive "$PASSIVE_ARG" \
+	--arg run_id "$RUN_ID" \
+	--argjson run_attempt "$RUN_ATTEMPT" \
+	--arg kind "$SOAK_KIND" \
+	--argjson duration "$DURATION_SECONDS" \
+	--argjson retry_attempt "$RETRY_ATTEMPT" \
+	--argjson window "$WINDOW_SECONDS" \
+	--argjson protection_breach "$PROTECTION_BREACH" \
+	--arg date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+	--arg status "$SOAK_STATUS" \
+	'
   def median: sort | if length == 0 then null else .[(length - 1) / 2 | floor] end;
   ($segments[0]) as $segs
   | ($segs | map(select(.ok == true))) as $ok
@@ -69,9 +136,33 @@ jq -n \
       run: {
         date: $date,
         run_id: $run_id,
+        run_attempt: $run_attempt,
+        kind: $kind,
         target_ref: ($passive.target_ref // "unknown"),
         target_sha: ($passive.target_sha // "unknown"),
-        duration_seconds: $duration
+        # Optional by construction: soaks that ran before the soak script began
+        # emitting it, and any run where the node checkout was unreadable, have
+        # no version. History entries are never backfilled, so the dashboard
+        # must tolerate the field being absent on older rows.
+        version: ($passive.version // "unknown"),
+        started_at: ($passive.started_at // null),
+        finished_at: ($passive.finished_at // null),
+        duration_seconds: $duration,
+        # The series nominal span vs this run budget: equal for a normal
+        # run, window > duration for one restarted mid-window.
+        window_seconds: (if $window > 0 then $window else $duration end),
+        restarted: ($retry_attempt > 0),
+        retry_attempt: $retry_attempt,
+        status: $status,
+        protection_breach: $protection_breach,
+        # Seconds actually soaked so far, against the run
+        # budget — lets the dashboard show progress on a checkpoint.
+        elapsed_seconds: ($passive.elapsed_seconds // null),
+        # Shard uptime (summed wall-clock of iterations that completed their
+        # full cycle; see write-soak-summary.sh). Optional by construction:
+        # runs that predate the field carry null and the dashboard uptime
+        # bar collapses rather than rendering a bar with no data.
+        shard_up_seconds: ($passive.shard_up_seconds // null)
       },
       passive: (if $passive == null then null else {
         iterations: $passive.iterations,
@@ -79,8 +170,13 @@ jq -n \
         failure_rate: $passive.failure_rate,
         iterations_per_hour: $passive.iterations_per_hour,
         rss_peak_mb: $passive.rss_peak_mb,
+        cpu_peak_pct: $passive.cpu_peak_pct,
+        finalization_p50_ms: $passive.finalization_p50_ms,
         finalization_p95_ms: $passive.finalization_p95_ms,
-        providers: $passive.providers
+        finalization_p99_ms: $passive.finalization_p99_ms,
+        too_far_ahead_errors: $passive.too_far_ahead_errors,
+        providers: $passive.providers,
+        tracked_metrics: ($passive.tracked_metrics // {})
       } end),
       active: {
         segments_total: ($segs | length),
@@ -93,13 +189,15 @@ jq -n \
         segments: $segs
       }
     }
-' > "$OUT_DIR/weekly-summary.json"
+' >"$OUT_DIR/weekly-summary.json"
 
 jq -n \
-  --argjson current "$(cat "$OUT_DIR/weekly-summary.json")" \
-  --argjson baseline "$BASELINE_ARG" \
-  --argjson thresholds "$(cat "$THRESHOLDS_JSON")" \
-'
+	--argjson current "$(cat "$OUT_DIR/weekly-summary.json")" \
+	--argjson baseline "$BASELINE_ARG" \
+	--argjson thresholds "$(cat "$THRESHOLDS_JSON")" \
+	--argjson protection_breach "$PROTECTION_BREACH" \
+	--arg status "$SOAK_STATUS" \
+	'
   def pct_over(cur; base; pct):
     (cur != null and base != null and base > 0 and cur > (base * (1 + pct)));
   def pct_under(cur; base; pct):
@@ -113,6 +211,10 @@ jq -n \
       []
       | if $p == null
           then . + ["no passive soak summary was produced (no data)"] else . end
+      | if $p != null and (($p.failures // 0) > 0)
+          then . + ["\($p.failures) passive soak iteration(s) failed"] else . end
+      | if $protection_breach
+          then . + ["host protection breach aborted the soak"] else . end
       | if $bp != null and $p != null and $p.failure_rate != null and $bp.failure_rate != null
            and $p.failure_rate > ($bp.failure_rate + $thresholds.failure_rate_max_increase_pts)
           then . + ["failure rate \($p.failure_rate) exceeds baseline \($bp.failure_rate) by more than \($thresholds.failure_rate_max_increase_pts * 100)pts"] else . end
@@ -133,29 +235,139 @@ jq -n \
           then . + ["active-segment throughput \($a.throughput)/s < baseline \($ba.throughput)/s -\($thresholds.active_throughput_warn_decrease_pct * 100)%"] else . end
     ) as $warnings
   | {
-      verdict: (if ($failures | length) > 0 then "regress" else "pass" end),
-      bootstrap: ($baseline == null),
-      failures: $failures,
-      warnings: $warnings,
+      # A checkpoint reports progress, never a judgement. Failures and
+      # warnings are dropped rather than shown, because the only ones that
+      # could fire mid-run are "no data yet" artefacts of an incomplete run,
+      # and surfacing those would put a red strip on a healthy soak.
+      verdict: (if $status == "in_progress" then "in_progress"
+                elif ($failures | length) > 0 then "regress" else "pass" end),
+      status: $status,
+      bootstrap: ($status != "in_progress" and $baseline == null),
+      failures: (if $status == "in_progress" then [] else $failures end),
+      warnings: (if $status == "in_progress" then [] else $warnings end),
       thresholds: $thresholds,
       run: $current.run,
       baseline_run: ($baseline.run // null)
     }
-' > "$OUT_DIR/verdict.json"
+' >"$OUT_DIR/verdict.json"
+
+# Shields.io endpoint badge for the README, derived from verdict.json rather
+# than recomputed from the inputs: a badge that can disagree with the dashboard
+# is worse than no badge at all.
+#
+# The endpoint schema is used, not shields' dynamic/json, because dynamic/json
+# cannot vary colour by value — it would render "regress" in the same colour as
+# "pass", which is the exact failure the static badges this replaces already had.
+jq \
+	'
+  def branch_label:
+    # Prefer the branch actually soaked, so the badge self-corrects if the
+    # weekend/daily targeting ever changes. Fall back to the series name when
+    # the ref is a sha or anything else that would not read as a branch — a
+    # manual dispatch can pass either.
+    (.run.target_ref // "") as $r
+    | if ($r | test("^[A-Za-z0-9._/-]{1,24}$")) and (($r | test("^[0-9a-f]{7,40}$")) | not)
+      then $r else (.run.kind // "soak") end;
+  def hours: if . == null then null else (. / 3600 * 10 | floor / 10) end;
+  {
+    schemaVersion: 1,
+    label: "soak · \(branch_label)",
+    # A checkpoint shows progress rather than a verdict, matching the
+    # in_progress handling above; "pass · no baseline" keeps a bootstrap run
+    # from claiming a comparison it never made.
+    message:
+      (if .verdict == "in_progress"
+         then ((.run.elapsed_seconds | hours) as $e
+               | (.run.duration_seconds | hours) as $t
+               | if $e == null or $t == null then "in progress"
+                 else "\($e)h/\($t)h" end)
+       elif .verdict == "regress" then "regress"
+       elif .bootstrap then "pass · no baseline"
+       else "pass" end),
+    color:
+      (if .verdict == "in_progress" then "lightgrey"
+       elif .verdict == "regress" then "red"
+       elif .bootstrap then "yellowgreen"
+       else "brightgreen" end)
+  }
+' "$OUT_DIR/verdict.json" >"$OUT_DIR/badge.json"
+
+# Stability readout: how often a full bring-up -> load -> finalize iteration
+# succeeded. Deliberately NOT called uptime — the soak builds a fresh shard per
+# iteration rather than watching a standing one, so this is a success rate, not
+# an availability measurement, and labelling it uptime would claim monitoring
+# this repo does not have.
+#
+# The colour bands are advisory and absolute; the release gate is relative
+# (week-over-week deltas) and stays with the verdict badge. A run can be
+# brightgreen here and `regress` there, which is correct: perfect iterations
+# that got slower are still a regression.
+jq \
+	--argjson verdict "$(cat "$OUT_DIR/verdict.json")" \
+	'
+  (.passive // null) as $p
+  | ($verdict.verdict == "in_progress") as $partial
+  | if $p == null or (($p.iterations // 0) == 0)
+    then {schemaVersion: 1, label: "stability", message: "no data", color: "lightgrey"}
+    else (((1 - ($p.failure_rate // 0)) * 1000 | round) / 10) as $pct
+      | {schemaVersion: 1,
+         label: "stability",
+         message: "\($pct)% · \($p.iterations) iters",
+         color: (if $partial then "lightgrey"
+                 elif $pct >= 100 then "brightgreen"
+                 elif $pct >= 99 then "green"
+                 elif $pct >= 95 then "yellow"
+                 else "orange" end)}
+    end
+' "$OUT_DIR/weekly-summary.json" >"$OUT_DIR/badge-stability.json"
+
+# Performance readout: the two headline numbers, finalization p95 and iteration
+# throughput. Always blue — a readout, not a judgement. Performance has no
+# absolute threshold here (the gate is week-over-week), so colouring it green or
+# red would invent a standard that does not exist; the verdict badge carries the
+# pass/regress call.
+jq \
+	--argjson verdict "$(cat "$OUT_DIR/verdict.json")" \
+	'
+  # One decimal, always, including the .0. jq drops a trailing zero — 2966.9ms
+  # would render "p95 3s", which reads like a suspiciously round number rather
+  # than a measurement — so the tenths digit is assembled by hand.
+  def one_dp: (. * 10 | round) as $t | "\($t / 10 | floor).\($t % 10)";
+  def ms_short: if . == null then null
+                elif . >= 1000 then "\((. / 1000) | one_dp)s"
+                else "\(. | round)ms" end;
+  (.passive // null) as $p
+  | ($verdict.verdict == "in_progress") as $partial
+  | if $p == null then {schemaVersion: 1, label: "perf", message: "no data", color: "lightgrey"}
+    else [($p.finalization_p95_ms | ms_short | if . == null then null else "p95 \(.)" end),
+          (if $p.iterations_per_hour == null then null
+           else "\($p.iterations_per_hour | one_dp)/h" end)]
+         | map(select(. != null))
+      | {schemaVersion: 1,
+         label: "perf",
+         # Grey whenever there is nothing to report, matching the stability
+         # badge — a blue "no data" reads as a healthy reading.
+         message: (if length == 0 then "no data" else join(" · ") end),
+         color: (if length == 0 or $partial then "lightgrey" else "blue" end)}
+    end
+' "$OUT_DIR/weekly-summary.json" >"$OUT_DIR/badge-perf.json"
 
 jq -r \
-  --argjson verdict "$(cat "$OUT_DIR/verdict.json")" \
-  --argjson baseline "$BASELINE_ARG" \
-  --arg dashboard "$DASHBOARD_URL" \
-'
+	--argjson verdict "$(cat "$OUT_DIR/verdict.json")" \
+	--argjson baseline "$BASELINE_ARG" \
+	--arg dashboard "$DASHBOARD_URL" \
+	'
   def fmt: if . == null then "-" else tostring end;
   ($baseline.passive // {}) as $bp
   | ($baseline.active // {}) as $ba
-  | "# Weekend Soak Benchmark Report",
+  | "# \(if .run.kind == "daily" then "Daily" elif .run.kind == "weekend" then "Weekend" else "Soak" end) Soak Benchmark Report",
   "",
   "- **Date:** \(.run.date)",
   "- **Target:** `\(.run.target_ref)` @ `\(.run.target_sha[0:12])`",
-  "- **Run:** \(.run.run_id), \(.run.duration_seconds)s soak",
+  ("- **Run:** \(.run.run_id), \(.run.duration_seconds)s soak"
+    + (if .run.restarted
+       then " — restarted; covered \((.run.elapsed_seconds // 0) / 3600 | floor)h of the \(.run.window_seconds / 3600 | floor)h window"
+       else "" end)),
   "- **Baseline:** \($verdict.baseline_run.date // "none (bootstrap)")",
   "- **Dashboard:** \($dashboard)",
   "",
@@ -172,7 +384,11 @@ jq -r \
   "| failure rate | \(.passive.failure_rate // null | fmt) | \($bp.failure_rate | fmt) |",
   "| iterations/hour | \(.passive.iterations_per_hour // null | fmt) | \($bp.iterations_per_hour | fmt) |",
   "| peak RSS (MB) | \(.passive.rss_peak_mb // null | fmt) | \($bp.rss_peak_mb | fmt) |",
+  "| peak CPU (%) | \(.passive.cpu_peak_pct // null | fmt) | \($bp.cpu_peak_pct | fmt) |",
+  "| finalization p50 (ms) | \(.passive.finalization_p50_ms // null | fmt) | \($bp.finalization_p50_ms | fmt) |",
   "| finalization p95 (ms) | \(.passive.finalization_p95_ms // null | fmt) | \($bp.finalization_p95_ms | fmt) |",
+  "| finalization p99 (ms) | \(.passive.finalization_p99_ms // null | fmt) | \($bp.finalization_p99_ms | fmt) |",
+  "| too-far-ahead errors | \(.passive.too_far_ahead_errors // null | fmt) | \($bp.too_far_ahead_errors | fmt) |",
   "",
   "## Active benchmark segments (controlled-rate, medians)",
   "",
@@ -191,9 +407,9 @@ jq -r \
   "|---|---|---|---|---|---|---|---|",
   (.active.segments[] |
     "| \(.segment_index) | \((.offset_seconds / 3600 * 10 | floor) / 10) | \(.latency.p50_ms // null | fmt) | \(.latency.p95_ms // null | fmt) | \(.observed_throughput // null | fmt) | \(.finalized // 0)/\(.submitted // 0) | \(.rss_peak_mb | fmt) | \(.ok) |")
-' "$OUT_DIR/weekly-summary.json" > "$OUT_DIR/perf-report.md"
+' "$OUT_DIR/weekly-summary.json" >"$OUT_DIR/perf-report.md"
 
 rm -f "$SEGMENTS_JSON"
-echo "wrote weekly-summary.json, verdict.json, perf-report.md to $OUT_DIR" >&2
+echo "wrote weekly-summary.json, verdict.json, badge.json, badge-stability.json, badge-perf.json, perf-report.md to $OUT_DIR" >&2
 jq -r '"verdict: \(.verdict)" + (if .failures | length > 0 then " — " + (.failures | join("; ")) else "" end)' \
-  "$OUT_DIR/verdict.json" >&2
+	"$OUT_DIR/verdict.json" >&2

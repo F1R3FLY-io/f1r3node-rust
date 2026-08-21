@@ -6,7 +6,7 @@ use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use casper::rust::engine::engine::transition_to_initializing;
+use casper::rust::engine::engine::{transition_to_initializing, Engine};
 use casper::rust::engine::engine_cell::EngineCell;
 use casper::rust::engine::initializing::Initializing;
 use casper::rust::engine::lfs_tuple_space_requester;
@@ -20,7 +20,7 @@ use models::casper::Signature;
 use models::routing::protocol::Message as ProtocolMessage;
 use models::rust::casper::protocol::casper_message::{
     ApprovedBlock, ApprovedBlockRequest, BlockMessage, BlockRequest, CasperMessage,
-    StoreItemsMessage, StoreItemsMessageRequest,
+    MergeableEntryResponse, StoreItemsMessage, StoreItemsMessageRequest,
 };
 use prost::bytes::Bytes;
 use prost::Message;
@@ -28,6 +28,7 @@ use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::state::exporters::rspace_exporter_items::RSpaceExporterItems;
 use rspace_plus_plus::rspace::state::instances::rspace_exporter_store::RSpaceExporterStore;
 use rspace_plus_plus::rspace::state::rspace_exporter::RSpaceExporter;
+use shared::rust::store::key_value_typed_store::KeyValueTypedStore;
 use shared::rust::ByteVector;
 use tokio::sync::mpsc;
 
@@ -208,20 +209,8 @@ impl InitializingSpec {
             .as_ref()
             .unwrap()
             .clone();
-        // Tests must feed a MergeableEntryResponse for every block they enqueue;
-        // otherwise the stream's per-block mergeable_pending state never clears
-        // and is_finished() never returns true.
-        let mergeable_message_tx = initializing_engine
-            .mergeable_message_tx
-            .lock()
-            .unwrap()
-            .as_ref()
-            .unwrap()
-            .clone();
-
         let store_msgs_clone = store_response_messages.clone();
         let genesis_clone = genesis.clone();
-        let genesis_hash_for_mergeable = genesis.block_hash.clone();
 
         let enqueue_responses = async move {
             // Write directly to tuple space channel (equivalent to stateResponseQueue.enqueue1)
@@ -236,24 +225,6 @@ impl InitializingSpec {
                 .send(genesis_clone)
                 .await
                 .expect("Failed to enqueue block response");
-            // Brief yield so the LFS stream processes the genesis BlockMessage
-            // (running save_block → mergeable_pending(genesis)) before the
-            // mergeable response below is delivered. Without this, the select
-            // loop may consume the response first and reject it as unsolicited
-            // (was_pending=false), leaving mergeable_d non-empty forever and
-            // the stream blocked waiting for a response that already arrived.
-            tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-            // Empty serialized_entry signals "peer has no entry"; this test
-            // doesn't exercise actual entry import, just the done-on-response gate.
-            mergeable_message_tx
-                .send(
-                    models::rust::casper::protocol::casper_message::MergeableEntryResponse {
-                        block_hash: genesis_hash_for_mergeable,
-                        serialized_entry: prost::bytes::Bytes::new(),
-                    },
-                )
-                .await
-                .expect("Failed to enqueue mergeable response");
         };
 
         let local_for_expected = fixture.local.clone();
@@ -277,16 +248,6 @@ impl InitializingSpec {
             &fixture.network_id,
             models::casper::ForkChoiceTipRequestProto::default(),
         ));
-        // After the genesis BlockMessage lands and is saved, the joiner fires
-        // a MergeableEntryRequest for the same hash.
-        expected_requests.push(packet_with_content(
-            &local_for_expected,
-            &fixture.network_id,
-            models::casper::MergeableEntryRequestProto {
-                block_hash: genesis.block_hash.clone(),
-            },
-        ));
-
         let test = async {
             engine_cell.set(initializing_engine.clone()).await;
 
@@ -418,9 +379,6 @@ async fn create_initializing_engine(
     // Create engine-specific channels (each Initializing instance needs its own)
     let (block_tx, block_rx) = mpsc::channel::<BlockMessage>(50);
     let (tuple_tx, tuple_rx) = mpsc::channel::<StoreItemsMessage>(50);
-    // Mergeable-channels sync channel.
-    let (mergeable_tx, mergeable_rx) =
-        mpsc::channel::<models::rust::casper::protocol::casper_message::MergeableEntryResponse>(50);
     let (block_processing_queue_tx, _block_processing_queue_rx) = mpsc::channel(1024);
 
     // Use all stores and managers from fixture (matching Scala's Setup pattern)
@@ -444,8 +402,6 @@ async fn create_initializing_engine(
         block_rx,
         tuple_tx,
         tuple_rx,
-        mergeable_tx,
-        mergeable_rx,
         true,
         false,
         fixture.event_publisher.clone(),
@@ -469,7 +425,6 @@ async fn make_transition_to_running_once_approved_block_received() {
 /// and dropped while the node was still in GenesisValidator state).
 #[tokio::test]
 async fn proactively_request_approved_block_on_init() {
-    use casper::rust::engine::engine::Engine;
     use models::casper::ApprovedBlockRequestProto;
     use models::routing::protocol::Message as ProtocolMessage;
     use prost::Message;
@@ -530,6 +485,43 @@ async fn proactively_request_approved_block_on_init() {
     );
 
     InitializingSpec::after_each(&fixture);
+}
+
+#[tokio::test]
+async fn initialization_ignores_unauthenticated_mergeable_evidence() {
+    let fixture = TestFixture::new().await;
+    let the_init = Arc::new(|| {
+        Box::pin(async { Ok(()) }) as Pin<Box<dyn Future<Output = Result<(), CasperError>> + Send>>
+    });
+    let engine_cell = Arc::new(EngineCell::init());
+    let initializing_engine = create_initializing_engine(&fixture, the_init, engine_cell)
+        .await
+        .expect("Failed to create Initializing engine");
+    let mut before = fixture
+        .runtime_manager
+        .mergeable_store
+        .collect(|(key, value)| Some((key.clone(), bincode::serialize(value).unwrap())))
+        .expect("mergeable store snapshot");
+    before.sort();
+
+    initializing_engine
+        .handle(
+            fixture.local.clone(),
+            CasperMessage::MergeableEntryResponse(MergeableEntryResponse {
+                block_hash: vec![9; 32].into(),
+                serialized_entry: vec![7; 256].into(),
+            }),
+        )
+        .await
+        .expect("unauthenticated response must be handled fail-closed");
+
+    let mut after = fixture
+        .runtime_manager
+        .mergeable_store
+        .collect(|(key, value)| Some((key.clone(), bincode::serialize(value).unwrap())))
+        .expect("mergeable store snapshot");
+    after.sort();
+    assert_eq!(before, after);
 }
 
 #[test]

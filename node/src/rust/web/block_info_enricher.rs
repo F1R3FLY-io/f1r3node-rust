@@ -9,10 +9,6 @@ use super::transaction::helpers;
 ///
 /// Scans each deploy's execution report for COMM events on the `transfer_unforgeable`
 /// channel, then extracts from/to/amount/success from the produce data.
-///
-/// Only extracts user deploy transfers (not PreCharge/Refund/System deploys).
-/// For user deploys: first report batch is precharge (skip), subsequent batches
-/// where sender == deployer are user transfers.
 pub fn extract_transfers_from_report(
     report: &BlockEventInfo,
     transfer_unforgeable: &Par,
@@ -30,28 +26,11 @@ pub fn extract_transfers_from_report(
             continue;
         }
 
-        // First report batch is precharge — extract deployer address from it
-        let first_batch_transactions =
-            find_transfers_in_report(&deploy.report[0], transfer_unforgeable);
-        let deployer_addr = first_batch_transactions
-            .first()
-            .map(|t| t.from_addr.clone());
-
-        // Subsequent batches: transactions where sender == deployer are user transfers
-        let mut user_transfers = Vec::new();
-        for single_report in deploy.report.iter().skip(1) {
-            let transfers = find_transfers_in_report(single_report, transfer_unforgeable);
-            for transfer in transfers {
-                match deployer_addr.as_ref() {
-                    Some(addr) if transfer.from_addr == *addr => {
-                        user_transfers.push(transfer);
-                    }
-                    _ => {
-                        // Refund or system side-effect — not a user transfer
-                    }
-                }
-            }
-        }
+        let user_transfers = deploy
+            .report
+            .iter()
+            .flat_map(|single_report| find_transfers_in_report(single_report, transfer_unforgeable))
+            .collect();
 
         transfers_by_deploy.insert(deploy_sig, user_transfers);
     }
@@ -186,6 +165,7 @@ mod tests {
                 ret_unforg,
             ],
             random_state: vec![],
+            ..Default::default()
         };
 
         let comm = ReportCommProto {
@@ -200,14 +180,6 @@ mod tests {
             }],
         };
 
-        // First report = precharge (transfer from deployer)
-        let precharge_report = SingleReport {
-            events: vec![ReportProto {
-                report: Some(report_proto::Report::Comm(comm.clone())),
-            }],
-        };
-
-        // Second report = user transfer (same from_addr as precharge = user deploy)
         let user_report = SingleReport {
             events: vec![ReportProto {
                 report: Some(report_proto::Report::Comm(comm)),
@@ -221,7 +193,7 @@ mod tests {
                     sig: deploy_sig.to_string(),
                     ..Default::default()
                 }),
-                report: vec![precharge_report, user_report],
+                report: vec![user_report],
             }],
             system_deploys: vec![],
             post_state_hash: vec![].into(),

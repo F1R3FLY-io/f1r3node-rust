@@ -35,11 +35,7 @@ pub async fn collect_garbage(
             // Get block to access its state hash
             if let Some(block) = block_store.get(&block_hash)? {
                 let deleted = runtime_manager
-                    .delete_mergeable_channels(
-                        &block.body.state.post_state_hash,
-                        block.sender.clone(),
-                        block.seq_num,
-                    )
+                    .delete_mergeable_channels(&block)
                     .map_err(|e| KvStoreError::IoError(e.to_string()))?;
 
                 if deleted {
@@ -79,8 +75,8 @@ fn is_safe_to_delete(
 
     // 2. Check depth constraint
     let block_meta = dag.lookup_unsafe(block_hash)?;
-    let max_block_number = dag.latest_block_number();
-    let depth_from_tip = max_block_number - block_meta.block_number;
+    let parent_depth_boundary = dag.latest_block_number();
+    let depth_from_tip = parent_depth_boundary - block_meta.block_number;
     let max_allowed_depth = (casper_shard_conf.max_parent_depth as i64)
         + (casper_shard_conf.mergeable_channels_gc_depth_buffer as i64);
 
@@ -99,18 +95,20 @@ fn is_safe_to_delete(
     }
 
     let latest_message_hashes = dag.latest_message_hashes();
+    if latest_message_hashes.is_empty() {
+        return Ok(false);
+    }
 
-    // For each validator's latest message, check if it's a descendant of any child (via main chain)
+    // For each validator's latest message, check if it's a DAG descendant of any child
     for (_, latest_msg_hash) in latest_message_hashes.iter() {
         if latest_msg_hash == block_hash {
             // Validator's latest is still this block
             return Ok(false);
         }
 
-        // Check if latest message is descendant of any child (via main chain)
         let mut found_in_child_chain = false;
         for child_hash_ref in children.iter() {
-            if dag.is_in_main_chain(child_hash_ref, latest_msg_hash)? {
+            if dag.is_dag_ancestor(child_hash_ref, latest_msg_hash)? {
                 found_in_child_chain = true;
                 break;
             }
@@ -141,5 +139,210 @@ fn get_finalized_blocks(dag: &KeyValueDagRepresentation) -> Result<Vec<BlockHash
 
 #[cfg(test)]
 mod tests {
-    // Tests would go here
+    use std::collections::HashSet;
+
+    use block_storage::rust::dag::block_dag_key_value_storage::{
+        BlockDagKeyValueStorage, InsertMode,
+    };
+    use models::rust::block_implicits::get_random_block;
+    use models::rust::casper::protocol::casper_message::{BlockMessage, Bond};
+    use models::rust::validator::Validator;
+    use prost::bytes::Bytes;
+    use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
+
+    use super::{get_finalized_blocks, is_safe_to_delete};
+    use crate::rust::casper::CasperShardConf;
+
+    fn block(
+        block_number: i64,
+        sequence_number: i32,
+        validator: Validator,
+        parent: Option<&BlockMessage>,
+    ) -> BlockMessage {
+        block_with_parents(
+            block_number,
+            sequence_number,
+            validator,
+            parent
+                .map(|block| vec![block.block_hash.clone()])
+                .unwrap_or_default(),
+        )
+    }
+
+    fn block_with_parents(
+        block_number: i64,
+        sequence_number: i32,
+        validator: Validator,
+        parents: Vec<Bytes>,
+    ) -> BlockMessage {
+        get_random_block(
+            Some(block_number),
+            Some(sequence_number),
+            None,
+            None,
+            Some(validator.clone()),
+            None,
+            None,
+            Some(parents),
+            None,
+            None,
+            None,
+            Some(vec![Bond {
+                validator,
+                stake: 100,
+            }]),
+            Some("root".to_string()),
+            None,
+        )
+    }
+
+    async fn finalized_linear_dag() -> (
+        block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation,
+        Vec<BlockMessage>,
+        Validator,
+    ) {
+        let validator = Bytes::from(vec![7; models::rust::validator::LENGTH]);
+        let genesis = block(0, 0, validator.clone(), None);
+        let one = block(1, 1, validator.clone(), Some(&genesis));
+        let two = block(2, 2, validator.clone(), Some(&one));
+        let three = block(3, 3, validator.clone(), Some(&two));
+        let four = block(4, 4, validator.clone(), Some(&three));
+        let blocks = vec![genesis, one, two, three, four];
+
+        let mut manager = InMemoryStoreManager::new();
+        let storage = BlockDagKeyValueStorage::new(&mut manager).await.unwrap();
+        for (index, block) in blocks.iter().enumerate() {
+            let mode = if index == 0 {
+                InsertMode::Approved
+            } else {
+                InsertMode::Normal
+            };
+            storage.insert(block, mode).unwrap();
+        }
+        storage
+            .record_directly_finalized(blocks[1].block_hash.clone(), 1.0, |_| async { Ok(()) })
+            .await
+            .unwrap();
+
+        (storage.get_representation().unwrap(), blocks, validator)
+    }
+
+    #[tokio::test]
+    async fn finalized_enumeration_excludes_non_finalized_blocks() {
+        let (dag, blocks, _) = finalized_linear_dag().await;
+        let finalized = get_finalized_blocks(&dag)
+            .unwrap()
+            .into_iter()
+            .collect::<HashSet<_>>();
+
+        assert_eq!(
+            finalized,
+            HashSet::from([blocks[0].block_hash.clone(), blocks[1].block_hash.clone()])
+        );
+    }
+
+    #[tokio::test]
+    async fn deletion_safety_requires_every_finality_depth_and_reachability_guard() {
+        let (dag, blocks, validator) = finalized_linear_dag().await;
+        let target = blocks[1].block_hash.clone();
+        let mut conf = CasperShardConf::new();
+        conf.max_parent_depth = 1;
+        conf.mergeable_channels_gc_depth_buffer = 1;
+
+        assert_eq!(dag.latest_block_number(), 5);
+        assert_eq!(dag.lookup_unsafe(&target).unwrap().block_number, 1);
+        assert!(dag.is_finalized(&target));
+        let children = dag.children(&target).unwrap();
+        assert!(!children.is_empty());
+        let latest_messages = dag.latest_message_hashes();
+        assert!(!latest_messages.is_empty());
+        for latest_message in latest_messages.values() {
+            assert_ne!(latest_message, &target);
+            assert!(children
+                .iter()
+                .any(|child| dag.is_in_main_chain(child, latest_message).unwrap()));
+        }
+        assert!(is_safe_to_delete(&dag, &target, &conf).unwrap());
+        assert!(!is_safe_to_delete(&dag, &blocks[2].block_hash, &conf).unwrap());
+
+        let mut within_horizon = conf.clone();
+        within_horizon.max_parent_depth = 3;
+        assert!(!is_safe_to_delete(&dag, &target, &within_horizon).unwrap());
+
+        let mut missing_children = dag.clone();
+        missing_children.child_map.remove(&target);
+        assert!(!is_safe_to_delete(&missing_children, &target, &conf).unwrap());
+
+        let mut empty_children = dag.clone();
+        empty_children
+            .child_map
+            .insert(target.clone(), Default::default());
+        assert!(!is_safe_to_delete(&empty_children, &target, &conf).unwrap());
+
+        let mut latest_at_target = dag.clone();
+        latest_at_target
+            .latest_messages_map
+            .insert(validator.clone(), target.clone());
+        assert!(!is_safe_to_delete(&latest_at_target, &target, &conf).unwrap());
+
+        let mut no_latest_witness = dag.clone();
+        no_latest_witness.latest_messages_map.clear();
+        assert!(!is_safe_to_delete(&no_latest_witness, &target, &conf).unwrap());
+
+        let mut latest_outside_child_chain = dag.clone();
+        latest_outside_child_chain
+            .latest_messages_map
+            .insert(validator.clone(), blocks[0].block_hash.clone());
+        assert!(!is_safe_to_delete(&latest_outside_child_chain, &target, &conf).unwrap());
+
+        let mut missing_latest = dag;
+        missing_latest
+            .latest_messages_map
+            .insert(validator, Bytes::from(vec![0xff; 32]));
+        assert!(is_safe_to_delete(&missing_latest, &target, &conf).is_err());
+    }
+
+    #[tokio::test]
+    async fn secondary_parent_advancement_is_sufficient_for_retirement() {
+        let validator = Bytes::from(vec![9; models::rust::validator::LENGTH]);
+        let genesis = block(0, 0, validator.clone(), None);
+        let target = block(1, 1, validator.clone(), Some(&genesis));
+        let target_child = block(2, 2, validator.clone(), Some(&target));
+        let main_sibling = block(2, 3, validator.clone(), Some(&genesis));
+        let merged = block_with_parents(3, 4, validator, vec![
+            main_sibling.block_hash.clone(),
+            target_child.block_hash.clone(),
+        ]);
+
+        let mut manager = InMemoryStoreManager::new();
+        let storage = BlockDagKeyValueStorage::new(&mut manager).await.unwrap();
+        for (index, block) in [&genesis, &target, &target_child, &main_sibling, &merged]
+            .into_iter()
+            .enumerate()
+        {
+            let mode = if index == 0 {
+                InsertMode::Approved
+            } else {
+                InsertMode::Normal
+            };
+            storage.insert(block, mode).unwrap();
+        }
+        storage
+            .record_directly_finalized(target.block_hash.clone(), 1.0, |_| async { Ok(()) })
+            .await
+            .unwrap();
+
+        let dag = storage.get_representation().unwrap();
+        let mut conf = CasperShardConf::new();
+        conf.max_parent_depth = 1;
+        conf.mergeable_channels_gc_depth_buffer = 1;
+
+        assert!(!dag
+            .is_in_main_chain(&target_child.block_hash, &merged.block_hash)
+            .unwrap());
+        assert!(dag
+            .is_dag_ancestor(&target_child.block_hash, &merged.block_hash)
+            .unwrap());
+        assert!(is_safe_to_delete(&dag, &target.block_hash, &conf).unwrap());
+    }
 }

@@ -122,6 +122,7 @@ impl TestNode {
             None, // dummy_deploy_opt
             self.deploy_storage.clone(),
             self.rejected_deploy_buffer.clone(),
+            std::sync::Arc::new(parking_lot::Mutex::new(std::collections::HashMap::new())),
             &self.runtime_manager.clone(),
             &mut self.block_store.clone(),
             self.allow_empty_blocks,
@@ -1003,6 +1004,7 @@ impl TestNode {
                 block_store.clone(),
                 deploy_storage.clone(),
                 rejected_deploy_buffer.clone(),
+                std::sync::Arc::new(parking_lot::Mutex::new(std::collections::HashMap::new())),
                 block_retriever.clone(),
                 tle.clone(),
                 connections_cell.clone(),
@@ -1060,7 +1062,7 @@ impl TestNode {
             // Validators will try to put deploy in a block only for next `deployLifespan` blocks.
             // Required to enable protection from re-submitting duplicate deploys
             deploy_lifespan: 50,
-            casper_version: 1,
+            casper_version: casper::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION,
             config_version: 1,
             bond_minimum: 0,
             bond_maximum: i64::MAX,
@@ -1083,6 +1085,9 @@ impl TestNode {
             block_store: block_store.clone(),
             block_dag_storage: block_dag_storage.clone(),
             deploy_storage: deploy_storage.clone(),
+            pending_cosigner_metadata: std::sync::Arc::new(parking_lot::Mutex::new(
+                std::collections::HashMap::new(),
+            )),
             rejected_deploy_buffer: rejected_deploy_buffer.clone(),
             casper_buffer_storage: casper_buffer_storage.clone(),
             validator_id: validator_id_opt.clone(),

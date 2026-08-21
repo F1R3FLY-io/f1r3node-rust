@@ -14,7 +14,6 @@ use std::time::Instant;
 pub static LOCK_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 use async_trait::async_trait;
-use rand::seq::SliceRandom;
 use serde::{Deserialize, Serialize};
 use shared::rust::store::key_value_store::KeyValueStore;
 
@@ -32,10 +31,13 @@ use super::metrics_constants::{
 };
 use super::replay_rspace::ReplayRSpace;
 use super::rspace_interface::{
-    ContResult, ISpace, MaybeConsumeResult, MaybeProduceCandidate, MaybeProduceResult, RSpaceResult,
+    ContResult, ISpace, MaybeConsumeResult, MaybeProduceCandidate, MaybeProduceResult,
+    RSpaceAccountingObserver, RSpaceResult,
 };
+use super::striped_locks::{self, ChannelLockGuard};
 use super::trace::Log;
-use super::trace::event::{COMM, Consume, Event, IOEvent, Produce};
+use super::trace::event::{COMM, Consume, Event, IOEvent, Produce, recorded_removal};
+use super::util::unpack_option;
 use crate::rspace::checkpoint::Checkpoint;
 use crate::rspace::history::history_repository::{HistoryRepository, HistoryRepositoryInstances};
 use crate::rspace::hot_store::{HotStore, HotStoreInstances};
@@ -59,8 +61,10 @@ pub struct RSpace<C, P, A, K> {
     event_log: Arc<std::sync::Mutex<Log>>,
     produce_counter: Arc<std::sync::Mutex<BTreeMap<Produce, i32>>>,
     matcher: Arc<Box<dyn Match<P, A, K>>>,
+    accounting_observer:
+        Arc<std::sync::RwLock<Option<Arc<dyn RSpaceAccountingObserver<C, P, A, K>>>>>,
     // Fixed-size striped locks replace the growing DashMap<u64, Mutex>.
-    // 256 pre-allocated mutexes, channel hash % 256 → stripe index.
+    // See striped_locks.rs for the stripe count and hashing/lock scheme.
     // No DashMap entry() → no parking_lot shard contention per produce/consume.
     phase_a_locks: Arc<Vec<Arc<tokio::sync::Mutex<()>>>>,
     phase_b_locks: Arc<Vec<Arc<tokio::sync::Mutex<()>>>>,
@@ -77,60 +81,28 @@ where
         self.store.read().expect("store read lock").clone()
     }
 
-    fn channel_hash(channel: &C) -> u64 {
-        use std::hash::Hasher;
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        channel.hash(&mut hasher);
-        hasher.finish()
-    }
-
-    async fn acquire_locks(
-        stripes: &[Arc<tokio::sync::Mutex<()>>],
-        keys: &[u64],
-    ) -> ChannelLockGuard {
-        // Map channel hashes to stripe indices, sort to prevent deadlocks,
-        // dedup so two channels in the same stripe are only locked once.
-        let mut indices: Vec<usize> = keys.iter().map(|k| (*k as usize) % stripes.len()).collect();
-        indices.sort();
-        indices.dedup();
-
-        let mut held: Vec<HeldLock> = Vec::with_capacity(indices.len());
-        for idx in indices {
-            let guard = stripes[idx].clone().lock_owned().await;
-            held.push(HeldLock { _guard: guard });
-        }
-
-        ChannelLockGuard { _held: held }
-    }
-
     async fn consume_lock(&self, channel_hashes: &[u64]) -> (ChannelLockGuard, ChannelLockGuard) {
-        let phase_a = Self::acquire_locks(&self.phase_a_locks, channel_hashes).await;
-        let phase_b = Self::acquire_locks(&self.phase_b_locks, channel_hashes).await;
-        (phase_a, phase_b)
+        striped_locks::consume_lock(&self.phase_a_locks, &self.phase_b_locks, channel_hashes).await
     }
 
     async fn produce_lock(&self, channel: &C) -> (ChannelLockGuard, ChannelLockGuard) {
-        let channel_hash = Self::channel_hash(channel);
-        let phase_a = Self::acquire_locks(&self.phase_a_locks, &[channel_hash]).await;
+        let channel_hash = striped_locks::channel_hash(channel);
+        let phase_a = striped_locks::acquire_locks(&self.phase_a_locks, &[channel_hash]).await;
 
         let store = self.get_store();
         let join_hashes: Vec<u64> = store
             .get_joins(channel)
             .into_iter()
             .flatten()
-            .map(|ch| Self::channel_hash(&ch))
+            .map(|ch| striped_locks::channel_hash(&ch))
             .collect();
 
-        let phase_b = Self::acquire_locks(&self.phase_b_locks, &join_hashes).await;
+        let phase_b = striped_locks::acquire_locks(&self.phase_b_locks, &join_hashes).await;
         (phase_a, phase_b)
     }
 
     fn new_striped_locks() -> Arc<Vec<Arc<tokio::sync::Mutex<()>>>> {
-        Arc::new(
-            (0..256)
-                .map(|_| Arc::new(tokio::sync::Mutex::new(())))
-                .collect(),
-        )
+        striped_locks::new_striped_locks()
     }
 
     pub fn get_history_repository(
@@ -143,12 +115,10 @@ where
     }
 }
 
-struct HeldLock {
-    _guard: tokio::sync::OwnedMutexGuard<()>,
-}
-
-struct ChannelLockGuard {
-    _held: Vec<HeldLock>,
+fn deterministic_candidate_hash<D>(candidate: &D) -> Blake2b256Hash
+where D: Serialize {
+    let bytes = bincode::serialize(candidate).unwrap_or_default();
+    Blake2b256Hash::new(&bytes)
 }
 
 impl<C, P, A, K> SpaceMatcher<C, P, A, K> for RSpace<C, P, A, K>
@@ -168,6 +138,16 @@ where
     A: Clone + Debug + Default + Serialize + 'static + Sync + Send,
     K: Clone + Debug + Default + Serialize + 'static + Sync + Send,
 {
+    fn set_accounting_observer(
+        &self,
+        observer: Option<Arc<dyn RSpaceAccountingObserver<C, P, A, K>>>,
+    ) {
+        *self
+            .accounting_observer
+            .write()
+            .expect("accounting observer write lock") = observer;
+    }
+
     async fn create_checkpoint(&self) -> Result<Checkpoint, RSpaceError> {
         // Span[F].withMarks("create-checkpoint") from Scala - works because this is NOT
         // async
@@ -228,10 +208,13 @@ where
 
     async fn consume_result(
         &self,
-        _channel: Vec<C>,
-        _pattern: Vec<P>,
+        channel: Vec<C>,
+        pattern: Vec<P>,
     ) -> Result<Option<(K, Vec<A>)>, RSpaceError> {
-        panic!("\nERROR: RSpace consume_result should not be called here");
+        let consume_res = self
+            .consume(channel, pattern, K::default(), false, BTreeSet::new())
+            .await?;
+        Ok(unpack_option(&consume_res))
     }
 
     async fn get_data(&self, channel: &C) -> Vec<Datum<A>> { self.get_store().get_data(channel) }
@@ -241,6 +224,52 @@ where
     }
 
     async fn get_joins(&self, channel: C) -> Vec<Vec<C>> { self.get_store().get_joins(&channel) }
+
+    async fn remove_all_data(&self, channel: &C) -> Result<(), RSpaceError> {
+        let len = self.get_store().get_data(channel).len();
+        for index in (0..len).rev() {
+            self.get_store().remove_datum(channel, index as i32)?;
+        }
+        Ok(())
+    }
+
+    async fn remove_data_at(&self, channel: &C, index: i32) -> Result<(), RSpaceError> {
+        self.get_store().remove_datum(channel, index)
+    }
+
+    async fn remove_data_at_recorded(
+        &self,
+        channel: &C,
+        index: i32,
+        operation_id: &[u8],
+    ) -> Result<(), RSpaceError> {
+        let channel_lock = striped_locks::channel_hash(channel);
+        let _guard = self.consume_lock(&[channel_lock]).await;
+        let datum = usize::try_from(index)
+            .ok()
+            .and_then(|index| self.get_store().get_data(channel).get(index).cloned())
+            .ok_or_else(|| {
+                RSpaceError::BugFoundError(
+                    "recorded removal references a missing datum".to_string(),
+                )
+            })?;
+        let (consume, comm) = recorded_removal(channel, &datum.source, operation_id);
+        self.get_store().remove_datum(channel, index)?;
+        let mut event_log = self.event_log.lock().expect("event log lock");
+        event_log.push(Event::IoEvent(IOEvent::Consume(consume)));
+        event_log.push(Event::Comm(comm));
+        Ok(())
+    }
+
+    async fn remove_all_continuations(&self, channels: Vec<C>) -> Result<(), RSpaceError> {
+        let len = self.get_store().get_continuations(&channels).len();
+        for index in (0..len).rev() {
+            let _ = self
+                .get_store()
+                .remove_continuation(&channels, index as i32);
+        }
+        Ok(())
+    }
 
     async fn clear(&self) -> Result<(), RSpaceError> {
         self.reset(&RadixHistory::empty_root_node_hash()).await
@@ -305,8 +334,10 @@ where
             let consume_ref = Consume::create(&channels, &patterns, &continuation, persist);
 
             let lock_start = Instant::now();
-            let channel_hashes: Vec<u64> =
-                channels.iter().map(|ch| Self::channel_hash(ch)).collect();
+            let channel_hashes: Vec<u64> = channels
+                .iter()
+                .map(|ch| striped_locks::channel_hash(ch))
+                .collect();
             let _lock_guard = self.consume_lock(&channel_hashes).await;
             let seq = LOCK_SEQUENCE.fetch_add(1, AtomicOrdering::SeqCst);
             tracing::trace!(target: "f1r3fly.rspace.lock_order", seq = seq, op = "consume", hashes = ?channel_hashes, "lock acquired");
@@ -342,7 +373,7 @@ where
         let lock_start = Instant::now();
         let _lock_guard = self.produce_lock(&channel).await;
         let seq = LOCK_SEQUENCE.fetch_add(1, AtomicOrdering::SeqCst);
-        tracing::trace!(target: "f1r3fly.rspace.lock_order", seq = seq, op = "produce", hash = Self::channel_hash(&channel), "lock acquired");
+        tracing::trace!(target: "f1r3fly.rspace.lock_order", seq = seq, op = "produce", hash = striped_locks::channel_hash(&channel), "lock acquired");
         metrics::counter!("rspace.produce.lock_acquire_ns", "source" => RSPACE_METRICS_SOURCE)
             .increment(lock_start.elapsed().as_nanos() as u64);
 
@@ -462,6 +493,7 @@ where
             history_repository: Arc::new(std::sync::RwLock::new(history_repository)),
             store: Arc::new(std::sync::RwLock::new(Arc::new(store))),
             matcher,
+            accounting_observer: Arc::new(std::sync::RwLock::new(None)),
             installs: Arc::new(std::sync::Mutex::new(HashMap::new())),
             event_log: Arc::new(std::sync::Mutex::new(Vec::new())),
             produce_counter: Arc::new(std::sync::Mutex::new(BTreeMap::new())),
@@ -601,10 +633,7 @@ where
         let _span = tracing::info_span!(target: "f1r3fly.rspace", LOCKED_CONSUME_SPAN).entered();
         tracing::trace!(target: "f1r3fly.rspace.ops", mark = "started-locked-consume", "locked_consume");
 
-        let t0 = Instant::now();
-        self.log_consume(consume_ref, channels, patterns, continuation, persist, peeks);
-        metrics::counter!("rspace.consume.log_ns", "source" => RSPACE_METRICS_SOURCE)
-            .increment(t0.elapsed().as_nanos() as u64);
+        self.observe_consume(consume_ref, channels, patterns, continuation, persist, peeks)?;
 
         let t1 = Instant::now();
         let mut channel_to_indexed_data = self.fetch_channel_to_index_data(channels);
@@ -650,17 +679,19 @@ where
                 let produce_counters_closure =
                     |produces: &[Produce]| self.produce_counters(produces);
 
-                self.log_comm(
-                    channels,
-                    &wk,
-                    COMM::new(
-                        &data_candidates,
-                        consume_ref.clone(),
-                        peeks.clone(),
-                        produce_counters_closure,
-                    ),
-                    "comm.consume",
+                let comm = COMM::new(
+                    &data_candidates,
+                    consume_ref.clone(),
+                    peeks.clone(),
+                    produce_counters_closure,
                 );
+                self.observe_comm(&comm, continuation, persist, &data_candidates)?;
+
+                let t0 = Instant::now();
+                self.log_consume(consume_ref, channels, patterns, continuation, persist, peeks);
+                metrics::counter!("rspace.consume.log_ns", "source" => RSPACE_METRICS_SOURCE)
+                    .increment(t0.elapsed().as_nanos() as u64);
+                self.log_comm(channels, &wk, comm, "comm.consume");
                 self.store_persistent_data(&data_candidates, peeks);
                 metrics::counter!("rspace.consume.process_match_ns", "source" => RSPACE_METRICS_SOURCE)
                     .increment(t3.elapsed().as_nanos() as u64);
@@ -669,6 +700,10 @@ where
             }
             _ => {
                 let t3 = Instant::now();
+                let t0 = Instant::now();
+                self.log_consume(consume_ref, channels, patterns, continuation, persist, peeks);
+                metrics::counter!("rspace.consume.log_ns", "source" => RSPACE_METRICS_SOURCE)
+                    .increment(t0.elapsed().as_nanos() as u64);
                 self.store_waiting_continuation(channels.to_vec(), wk);
                 metrics::counter!("rspace.consume.store_continuation_ns", "source" => RSPACE_METRICS_SOURCE)
                     .increment(t3.elapsed().as_nanos() as u64);
@@ -708,12 +743,14 @@ where
         let _span = tracing::info_span!(target: "f1r3fly.rspace", LOCKED_PRODUCE_SPAN).entered();
         tracing::trace!(target: "f1r3fly.rspace.ops", mark = "started-locked-produce", "locked_produce");
 
+        self.observe_produce(produce_ref, &channel, &data, persist)?;
+
         let t0 = Instant::now();
         let grouped_channels = self.get_store().get_joins(&channel);
         metrics::counter!("rspace.produce.get_joins_ns", "source" => RSPACE_METRICS_SOURCE)
             .increment(t0.elapsed().as_nanos() as u64);
 
-        self.log_produce(produce_ref, &channel, &data, persist);
+        self.increment_produce_counter(produce_ref, persist);
 
         let t1 = Instant::now();
         let extracted = self.extract_produce_candidate(grouped_channels, channel.clone(), Datum {
@@ -727,12 +764,16 @@ where
         match extracted {
             Some(produce_candidate) => {
                 let t2 = Instant::now();
-                let result =
-                    Ok(self
-                        .process_match_found(produce_candidate)
-                        .map(|consume_result| {
+                let result = self
+                    .process_match_found(produce_candidate, &channel, &data, persist, produce_ref)
+                    .map(|matched| {
+                        matched.map(|consume_result| {
                             (consume_result.0, consume_result.1, produce_ref.clone())
-                        }));
+                        })
+                    });
+                if result.is_err() {
+                    self.rollback_produce_counter(produce_ref, persist);
+                }
                 metrics::counter!("rspace.produce.process_match_ns", "source" => RSPACE_METRICS_SOURCE)
                     .increment(t2.elapsed().as_nanos() as u64);
                 tracing::trace!(target: "f1r3fly.rspace.ops", mark = "finished-locked-produce", "locked_produce");
@@ -740,6 +781,7 @@ where
             }
             None => {
                 let t2 = Instant::now();
+                self.log_produce(produce_ref, &channel, &data, persist);
                 let result = Ok(self.store_data(channel, data, persist, produce_ref.clone()));
                 metrics::counter!("rspace.produce.store_data_ns", "source" => RSPACE_METRICS_SOURCE)
                     .increment(t2.elapsed().as_nanos() as u64);
@@ -800,7 +842,11 @@ where
     fn process_match_found(
         &self,
         pc: ProduceCandidate<C, P, A, K>,
-    ) -> MaybeConsumeResult<C, P, A, K> {
+        channel: &C,
+        data: &A,
+        produced_persistently: bool,
+        produce_ref: &Produce,
+    ) -> Result<MaybeConsumeResult<C, P, A, K>, RSpaceError> {
         let ProduceCandidate {
             channels,
             continuation,
@@ -817,17 +863,15 @@ where
         } = &continuation;
 
         let produce_counters_closure = |produces: &[Produce]| self.produce_counters(produces);
-        self.log_comm(
-            &channels,
-            &continuation,
-            COMM::new(
-                &data_candidates,
-                consume_ref.clone(),
-                peeks.clone(),
-                produce_counters_closure,
-            ),
-            "comm.produce",
+        let comm = COMM::new(
+            &data_candidates,
+            consume_ref.clone(),
+            peeks.clone(),
+            produce_counters_closure,
         );
+        self.observe_comm(&comm, _cont, *persist, &data_candidates)?;
+        self.log_produce(produce_ref, channel, data, produced_persistently);
+        self.log_comm(&channels, &continuation, comm, "comm.produce");
 
         if !persist {
             self.get_store()
@@ -836,7 +880,76 @@ where
 
         self.remove_matched_datum_and_join(&channels, &data_candidates);
 
-        self.wrap_result(&channels, &continuation, consume_ref, &data_candidates)
+        Ok(self.wrap_result(&channels, &continuation, consume_ref, &data_candidates))
+    }
+
+    fn observe_comm(
+        &self,
+        comm: &COMM,
+        continuation: &K,
+        continuation_persistent: bool,
+        data_candidates: &[ConsumeCandidate<C, A>],
+    ) -> Result<(), RSpaceError> {
+        let observer = self
+            .accounting_observer
+            .read()
+            .expect("accounting observer read lock")
+            .clone();
+        match observer {
+            Some(observer) => {
+                let data = data_candidates
+                    .iter()
+                    .map(|candidate| (&candidate.datum.a, candidate.datum.persist))
+                    .collect::<Vec<_>>();
+                observer.observe_comm(comm, continuation, continuation_persistent, &data)
+            }
+            None => Ok(()),
+        }
+    }
+
+    fn observe_produce(
+        &self,
+        source: &Produce,
+        channel: &C,
+        data: &A,
+        persistent: bool,
+    ) -> Result<(), RSpaceError> {
+        let observer = self
+            .accounting_observer
+            .read()
+            .expect("accounting observer read lock")
+            .clone();
+        match observer {
+            Some(observer) => observer.observe_produce(source, channel, data, persistent),
+            None => Ok(()),
+        }
+    }
+
+    fn observe_consume(
+        &self,
+        source: &Consume,
+        channels: &[C],
+        patterns: &[P],
+        continuation: &K,
+        persistent: bool,
+        peeks: &BTreeSet<i32>,
+    ) -> Result<(), RSpaceError> {
+        let observer = self
+            .accounting_observer
+            .read()
+            .expect("accounting observer read lock")
+            .clone();
+        match observer {
+            Some(observer) => observer.observe_consume(
+                source,
+                channels,
+                patterns,
+                continuation,
+                persistent,
+                peeks,
+            ),
+            None => Ok(()),
+        }
     }
 
     fn log_comm(&self, _channels: &[C], _wk: &WaitingContinuation<P, K>, comm: COMM, label: &str) {
@@ -880,15 +993,33 @@ where
             .push(Event::IoEvent(IOEvent::Consume(consume_ref.clone())));
     }
 
-    fn log_produce(&self, produce_ref: &Produce, _channel: &C, _data: &A, persist: bool) {
+    fn log_produce(&self, produce_ref: &Produce, _channel: &C, _data: &A, _persist: bool) {
         self.event_log
             .lock()
             .expect("event log lock")
             .push(Event::IoEvent(IOEvent::Produce(produce_ref.clone())));
+    }
+
+    fn increment_produce_counter(&self, produce_ref: &Produce, persist: bool) {
         if !persist {
             let mut counter = self.produce_counter.lock().expect("produce counter lock");
             let current = counter.get(produce_ref).copied().unwrap_or(0);
             counter.insert(produce_ref.clone(), current + 1);
+        }
+    }
+
+    fn rollback_produce_counter(&self, produce_ref: &Produce, persist: bool) {
+        if !persist {
+            let mut counter = self.produce_counter.lock().expect("produce counter lock");
+            match counter.get(produce_ref).copied().unwrap_or(0) {
+                0 => {}
+                1 => {
+                    counter.remove(produce_ref);
+                }
+                count => {
+                    counter.insert(produce_ref.clone(), count - 1);
+                }
+            }
         }
     }
 
@@ -1171,14 +1302,25 @@ where
         }
     }
 
-    fn shuffle_with_index<D>(&self, t: Vec<D>) -> Vec<(D, i32)> {
-        let mut rng = rand::rng();
+    fn shuffle_with_index<D>(&self, t: Vec<D>) -> Vec<(D, i32)>
+    where D: Serialize {
         let mut indexed_vec = t
             .into_iter()
             .enumerate()
             .map(|(i, d)| (d, i as i32))
             .collect::<Vec<_>>();
-        indexed_vec.shuffle(&mut rng);
+
+        // Candidate ordering participates in replay-visible COMM selection.
+        // A random shuffle can make equally valid matches diverge across
+        // validators, so order by a stable hash of the serialized candidate
+        // and use the original index only as a deterministic tie breaker.
+        indexed_vec.sort_by(|(left, left_index), (right, right_index)| {
+            let left_hash = deterministic_candidate_hash(left);
+            let right_hash = deterministic_candidate_hash(right);
+            left_hash
+                .cmp(&right_hash)
+                .then_with(|| left_index.cmp(right_index))
+        });
         indexed_vec
     }
 }

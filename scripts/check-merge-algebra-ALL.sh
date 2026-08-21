@@ -10,13 +10,14 @@
 #      are axiom-free ("Closed under the global context"), then re-checks them
 #      with the TRUSTED kernel (coqchk). Any failure here fails the gate.
 #      SKIPPED only while no theories/*.v exist yet (scaffold phase).
-#   2. Z3    (fail-soft) — keep_one_total_order (the 5-key strict total order +
+#   2. Z3    (fail-soft) — keep_one_total_order (the composite-key strict total order +
 #      argmax uniqueness + the "without key 5, distinct chains tie" fork probe)
-#      and channel_netting_monoid (max-union commutes but is NON-associative =
-#      Finding A; the sum-union FIX is associative). SKIPPED if no python3 z3.
+#      and channel_netting_monoid (exact causal deduplication plus additive
+#      multiset projection, with max-union and replicated whole-block deltas as
+#      negative models). SKIPPED if no python3 z3.
 #   3. Rust  (fail-soft) — the modality companions: rspace_plus_plus merger tests
-#      (GAP-1 combine commutativity + the Finding-A non-associativity pin +
-#      the sum-union order-independence; GAP-3 removed-predicate subsumption +
+#      (GAP-1 additive composition, causal multiplicity, and the legacy negative
+#      model; GAP-3 removed-predicate subsumption +
 #      the §3c produce-only over-fill ESCAPE of the retained detector;
 #      P2 split-hides-no-conflict), the casper merging P3 proptest
 #      (cmp is a strict total order whose Equal-class is the injective key), and
@@ -42,6 +43,8 @@ ROCQ_DIR="$REPO_ROOT/formal/rocq/merge_algebra"
 Z3_DIR="$REPO_ROOT/formal/z3/merge_algebra"
 DIAG_DIR="$REPO_ROOT/docs/theory/merge-algebra/diagrams"
 ROCQ_MEMMAX="${ROCQ_MEMMAX:-16G}"
+LOG_DIR="$REPO_ROOT/target/verification/merge-algebra"
+mkdir -p "$LOG_DIR"
 
 rc=0
 pass() { printf '  \033[32mPASS\033[0m %s\n' "$1"; }
@@ -64,9 +67,9 @@ elif command -v coqc >/dev/null 2>&1 || [[ -x "$HOME/.opam/default/bin/coqc" ]];
   # shellcheck disable=SC1090
   eval "$(opam env 2>/dev/null)" 2>/dev/null || true
   ( cd "$ROCQ_DIR" && coq_makefile -f _CoqProject -o Makefile ) >/dev/null 2>&1
-  if capped make -C "$ROCQ_DIR" -j1 >/tmp/ma_rocq_build.log 2>&1; then
+  if capped make -C "$ROCQ_DIR" -j1 >"$LOG_DIR/ma_rocq_build.log" 2>&1; then
     pass "Rocq build (KeepOneOrder, ChannelNetting, ConflictSoundness, EventLogSplit, MainTheorem)"
-    tmpd=$(mktemp -d)
+    tmpd=$(mktemp -d "$LOG_DIR/gate-check.XXXXXX")
     chk="$tmpd/GateCheck.v"
     # The 4 capstones must all be axiom-free (Closed under the global context).
     cat > "$chk" <<'EOF'
@@ -82,18 +85,18 @@ EOF
     if [[ "$n_closed" == "4" ]]; then
       pass "all 4 capstones axiom-free (keeporder, netting, conflict, split)"
     else
-      fail "capstones NOT all axiom-free ($n_closed/4 Closed):"; echo "$out" | sed 's/^/      /'
+      fail "capstones NOT all axiom-free ($n_closed/4 Closed):"; printf '      %s\n' "${out//$'\n'/$'\n      '}"
     fi
     # Independent kernel re-check (coqchk) — the TRUSTED kernel re-verifies every
     # capstone + dependency `.vo`, not just the elaborator's Print Assumptions.
     if capped coqchk -Q "$ROCQ_DIR/theories" MergeAlgebra MergeAlgebra.MainTheorem \
-         >/tmp/ma_coqchk.log 2>&1 && grep -q "Modules were successfully checked" /tmp/ma_coqchk.log; then
+         >"$LOG_DIR/ma_coqchk.log" 2>&1 && grep -q "Modules were successfully checked" "$LOG_DIR/ma_coqchk.log"; then
       pass "coqchk kernel re-check (MainTheorem + all deps)"
     else
-      fail "coqchk kernel re-check FAILED (see /tmp/ma_coqchk.log)"; tail -10 /tmp/ma_coqchk.log | sed 's/^/      /'
+      fail "coqchk kernel re-check FAILED (see $LOG_DIR/ma_coqchk.log)"; tail -10 "$LOG_DIR/ma_coqchk.log" | sed 's/^/      /'
     fi
   else
-    fail "Rocq build failed (see /tmp/ma_rocq_build.log)"; tail -20 /tmp/ma_rocq_build.log | sed 's/^/      /'
+    fail "Rocq build failed (see $LOG_DIR/ma_rocq_build.log)"; tail -20 "$LOG_DIR/ma_rocq_build.log" | sed 's/^/      /'
   fi
 else
   fail "coqc not found — Rocq is authoritative, cannot skip"
@@ -103,15 +106,15 @@ echo "== [2/4] Z3 cross-witness (fail-soft) =="
 if ! ls "$Z3_DIR"/*.py >/dev/null 2>&1; then
   skip "no Z3 scripts yet"
 elif command -v python3 >/dev/null 2>&1 && python3 -c 'import z3' >/dev/null 2>&1; then
-  if python3 "$Z3_DIR/keep_one_total_order.py" >/tmp/ma_z3_ko.log 2>&1; then
+  if python3 "$Z3_DIR/keep_one_total_order.py" >"$LOG_DIR/ma_z3_ko.log" 2>&1; then
     pass "Z3 keep-one 5-key total order + argmax uniqueness (no fork; key-5 probe)"
   else
-    fail "Z3 keep_one_total_order.py failed (see /tmp/ma_z3_ko.log)"
+    fail "Z3 keep_one_total_order.py failed (see $LOG_DIR/ma_z3_ko.log)"
   fi
-  if python3 "$Z3_DIR/channel_netting_monoid.py" >/tmp/ma_z3_cn.log 2>&1; then
-    pass "Z3 channel-netting monoid (max-union NON-assoc / sum-union assoc)"
+  if python3 "$Z3_DIR/channel_netting_monoid.py" >"$LOG_DIR/ma_z3_cn.log" 2>&1; then
+    pass "Z3 exact causal channel netting (dedup by identity, additive multiset projection)"
   else
-    fail "Z3 channel_netting_monoid.py failed (see /tmp/ma_z3_cn.log)"
+    fail "Z3 channel_netting_monoid.py failed (see $LOG_DIR/ma_z3_cn.log)"
   fi
 else
   skip "no python3 z3 module"
@@ -119,36 +122,36 @@ fi
 
 echo "== [3/4] Rust modality companions (fail-soft) =="
 if command -v cargo >/dev/null 2>&1; then
-  if cargo test -p rspace_plus_plus --lib merger:: >/tmp/ma_rust_rspace.log 2>&1; then
-    pass "Rust rspace_plus_plus merger:: (GAP-1 combine, Finding-A pin ignored, GAP-3 subsumption + §3c produce-only escape, P2)"
+  if cargo test -p rspace_plus_plus --lib merger:: >"$LOG_DIR/ma_rust_rspace.log" 2>&1; then
+    pass "Rust rspace_plus_plus merger:: (GAP-1 additive composition and causal multiplicity, GAP-3 subsumption + §3c produce-only escape, P2)"
   else
-    fail "Rust rspace_plus_plus merger:: tests failed (see /tmp/ma_rust_rspace.log)"; tail -20 /tmp/ma_rust_rspace.log | sed 's/^/      /'
+    fail "Rust rspace_plus_plus merger:: tests failed (see $LOG_DIR/ma_rust_rspace.log)"; tail -20 "$LOG_DIR/ma_rust_rspace.log" | sed 's/^/      /'
   fi
-  if cargo test -p casper --lib merging:: >/tmp/ma_rust_casper.log 2>&1; then
-    pass "Rust casper merging:: (P3 cmp strict-total-order, Equal-class = injective key)"
+  if cargo test -p casper --lib merging:: >"$LOG_DIR/ma_rust_casper.log" 2>&1; then
+    pass "Rust casper merging:: (P3 strict-total-order plus exact causal-effect deduplication)"
   else
-    fail "Rust casper merging:: tests failed (see /tmp/ma_rust_casper.log)"; tail -20 /tmp/ma_rust_casper.log | sed 's/^/      /'
+    fail "Rust casper merging:: tests failed (see $LOG_DIR/ma_rust_casper.log)"; tail -20 "$LOG_DIR/ma_rust_casper.log" | sed 's/^/      /'
   fi
   # §3c single-value-cell guard (RCA-asi-devnet-finality-halt): the Rocq
   # ConflictSoundness.v Section Overfill companion —
   # check_single_value_cell_not_overfilled rejects a merge IFF the post-merge
   # single-value NUMBER cell would hold > 1 value (produce-only over-fill), plus
   # Kevin's §3c unit witnesses (produce-only reject / RMW allow / registry exempt).
-  if cargo test -p rholang --lib merging::rholang_merging_logic >/tmp/ma_rust_rholang.log 2>&1; then
+  if cargo test -p rholang --lib merging::rholang_merging_logic >"$LOG_DIR/ma_rust_rholang.log" 2>&1; then
     pass "Rust rholang merging::rholang_merging_logic (§3c guard: produce-only over-fill rejected IFF result_len>1)"
   else
-    fail "Rust rholang merging::rholang_merging_logic tests failed (see /tmp/ma_rust_rholang.log)"; tail -20 /tmp/ma_rust_rholang.log | sed 's/^/      /'
+    fail "Rust rholang merging::rholang_merging_logic tests failed (see $LOG_DIR/ma_rust_rholang.log)"; tail -20 "$LOG_DIR/ma_rust_rholang.log" | sed 's/^/      /'
   fi
   # T-RECOMPUTE — the enforcement seam that makes merge-determinism consequential:
   # validate_block_checkpoint recomputes the parents' post-state and REJECTS a block
   # whose recorded pre-state hash (:259 -> Right(None), no replay) or rejected-deploy set
   # (:269 -> InvalidRejectedDeploy) disagrees with the recompute. Integration test in the
   # `mod` binary (casper/tests/batch2/validate_test.rs).
-  if cargo test -p casper --test mod -- batch2::validate_test::validate_block_checkpoint_recompute >/tmp/ma_rust_recompute.log 2>&1 \
-       && grep -qE "test result: ok\. [1-9][0-9]* passed" /tmp/ma_rust_recompute.log; then
+  if cargo test -p casper --test mod -- batch2::validate_test::validate_block_checkpoint_recompute >"$LOG_DIR/ma_rust_recompute.log" 2>&1 \
+       && grep -qE "test result: ok\. [1-9][0-9]* passed" "$LOG_DIR/ma_rust_recompute.log"; then
     pass "Rust casper T-RECOMPUTE (recompute-vs-recorded reject seam: pre-state + rejected-deploy)"
   else
-    fail "Rust casper T-RECOMPUTE test failed (see /tmp/ma_rust_recompute.log)"; tail -20 /tmp/ma_rust_recompute.log | sed 's/^/      /'
+    fail "Rust casper T-RECOMPUTE test failed (see $LOG_DIR/ma_rust_recompute.log)"; tail -20 "$LOG_DIR/ma_rust_recompute.log" | sed 's/^/      /'
   fi
 else
   skip "no cargo on PATH"
@@ -161,10 +164,10 @@ if command -v plantuml >/dev/null 2>&1; then
     diag_ok=1
     for puml in "$DIAG_DIR"/*.puml; do
       svg="${puml%.puml}.svg"
-      derr=$(plantuml -tsvg "$puml" 2>&1)
+      derr=$(env -u DISPLAY plantuml -tsvg "$puml" 2>&1)
       if [[ -n "$derr" ]] || [[ ! -s "$svg" ]] || ! grep -q "</svg>" "$svg" 2>/dev/null; then
         fail "diagram $(basename "$puml") did not render clean"
-        [[ -n "$derr" ]] && echo "$derr" | sed 's/^/      /'
+        [[ -n "$derr" ]] && printf '      %s\n' "${derr//$'\n'/$'\n      '}"
         diag_ok=0
       fi
     done

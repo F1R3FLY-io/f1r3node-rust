@@ -11,7 +11,6 @@ use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use casper::rust::blocks::proposer::block_creator;
 use casper::rust::casper::{CasperShardConf, CasperSnapshot, OnChainCasperState};
-use casper::rust::util::rholang::runtime_manager::RuntimeManager;
 use casper::rust::validator_identity::ValidatorIdentity;
 use crypto::rust::private_key::PrivateKey;
 use crypto::rust::signatures::secp256k1::Secp256k1;
@@ -21,8 +20,8 @@ use models::rust::casper::protocol::casper_message::DeployData;
 use models::ByteString;
 use prost::bytes::Bytes;
 use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
-use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 
+use crate::helper::block_generator::build_block;
 use crate::util::genesis_builder::DEFAULT_VALIDATOR_SKS;
 use crate::util::rholang::resources;
 
@@ -40,11 +39,10 @@ fn create_deploy(
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_millis() as i64)
             .unwrap_or(0),
-        phlo_price: 1,
-        phlo_limit: 1000,
         valid_after_block_number,
         shard_id: "test-shard".to_string(),
         expiration_timestamp,
+        authority_presentations: Vec::new(),
     };
 
     Signed::create(deploy_data, Box::new(Secp256k1), validator_sk.clone())
@@ -53,7 +51,11 @@ fn create_deploy(
 
 /// Creates a CasperSnapshot for testing with the given parameters.
 /// Uses an in-memory DAG representation (matching Scala's TestBlockDagRepresentation).
-fn create_snapshot(max_block_num: i64, validator_id: Bytes) -> CasperSnapshot {
+fn create_snapshot(
+    max_block_num: i64,
+    validator_id: Bytes,
+    block_store: &KeyValueBlockStore,
+) -> CasperSnapshot {
     let shard_conf = CasperShardConf {
         fault_tolerance_threshold: 0.0,
         shard_name: "test-shard".to_string(),
@@ -64,7 +66,7 @@ fn create_snapshot(max_block_num: i64, validator_id: Bytes) -> CasperSnapshot {
         synchrony_constraint_threshold: 0.0,
         height_constraint_threshold: 0,
         deploy_lifespan: DEPLOY_LIFESPAN,
-        casper_version: 1,
+        casper_version: casper::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION,
         config_version: 1,
         bond_minimum: 0,
         bond_maximum: i64::MAX,
@@ -94,7 +96,7 @@ fn create_snapshot(max_block_num: i64, validator_id: Bytes) -> CasperSnapshot {
     // Use in-memory DAG representation (like Scala's TestBlockDagRepresentation)
     let dag = resources::new_key_value_dag_representation();
 
-    CasperSnapshot {
+    let mut snapshot = CasperSnapshot {
         dag,
         last_finalized_block: Bytes::new(),
         lca: Bytes::new(),
@@ -107,7 +109,28 @@ fn create_snapshot(max_block_num: i64, validator_id: Bytes) -> CasperSnapshot {
         max_block_num,
         max_seq_nums,
         on_chain_state,
-    }
+    };
+    seed_finalized_boundary(&mut snapshot, block_store);
+    snapshot
+}
+
+fn seed_finalized_boundary(snapshot: &mut CasperSnapshot, block_store: &KeyValueBlockStore) {
+    let block = build_block(
+        Vec::new(),
+        None,
+        0,
+        None,
+        None,
+        None,
+        None,
+        Some("test-shard".to_string()),
+        None,
+        None,
+    );
+    block_store
+        .put_block_message(&block)
+        .expect("store finalized boundary");
+    snapshot.last_finalized_block = block.block_hash;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -131,7 +154,7 @@ async fn seen_deploys_wait_for_finalized_recovery_buffer() {
     let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
         .await
         .expect("block store");
-    let mut snapshot = create_snapshot(20, validator_id);
+    let mut snapshot = create_snapshot(20, validator_id, &block_store);
     snapshot.on_chain_state.shard_conf.deploy_lifespan = 10_000;
     let deploy = create_deploy(1, None, &validator_sk);
 
@@ -244,7 +267,7 @@ async fn ordinary_deploys_are_ignored_when_user_deploy_leadership_is_disabled() 
     let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
         .await
         .expect("block store");
-    let mut snapshot = create_snapshot(20, validator_id);
+    let mut snapshot = create_snapshot(20, validator_id, &block_store);
     snapshot.on_chain_state.shard_conf.deploy_lifespan = 10_000;
     let deploy = create_deploy(1, None, &validator_sk);
 
@@ -317,7 +340,7 @@ async fn unrelated_ordinary_deploys_remain_selectable_while_scope_has_user_work(
     let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
         .await
         .expect("block store");
-    let mut snapshot = create_snapshot(20, validator_id);
+    let mut snapshot = create_snapshot(20, validator_id, &block_store);
     snapshot.on_chain_state.shard_conf.deploy_lifespan = 10_000;
     let in_scope = create_deploy(1, None, &validator_sk);
     let pending = create_deploy(2, None, &validator_sk);
@@ -366,7 +389,7 @@ async fn ordinary_deploy_selection_uses_config_cap() {
     let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
         .await
         .expect("block store");
-    let mut snapshot = create_snapshot(20, validator_id);
+    let mut snapshot = create_snapshot(20, validator_id, &block_store);
     snapshot
         .on_chain_state
         .shard_conf
@@ -406,8 +429,10 @@ async fn ordinary_deploy_selection_is_bounded_when_config_is_huge() {
     crate::init_logger();
 
     let validator_sk = DEFAULT_VALIDATOR_SKS[0].clone();
-    let validator_identity = ValidatorIdentity::new(&validator_sk);
-    let validator_id: Bytes = validator_identity.public_key.bytes.clone();
+    let validator_id: Bytes = ValidatorIdentity::new(&validator_sk)
+        .public_key
+        .bytes
+        .clone();
     let mut kvm = InMemoryStoreManager::new();
     let deploy_storage = Arc::new(parking_lot::Mutex::new(
         KeyValueDeployStorage::new(&mut kvm)
@@ -422,7 +447,7 @@ async fn ordinary_deploy_selection_is_bounded_when_config_is_huge() {
     let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
         .await
         .expect("block store");
-    let mut snapshot = create_snapshot(20, validator_id);
+    let mut snapshot = create_snapshot(20, validator_id, &block_store);
     snapshot
         .on_chain_state
         .shard_conf
@@ -479,7 +504,7 @@ async fn recovered_deploy_selection_uses_normal_retry_window() {
     let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
         .await
         .expect("block store");
-    let mut snapshot = create_snapshot(20, validator_id);
+    let mut snapshot = create_snapshot(20, validator_id, &block_store);
     snapshot
         .on_chain_state
         .shard_conf
@@ -546,7 +571,7 @@ async fn rejected_in_scope_ordinary_deploy_waits_for_recovery_buffer() {
     let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
         .await
         .expect("block store");
-    let mut snapshot = create_snapshot(20, validator_id);
+    let mut snapshot = create_snapshot(20, validator_id, &block_store);
     snapshot
         .on_chain_state
         .shard_conf
@@ -606,7 +631,7 @@ async fn block_expired_deploy_in_unresolved_scope_is_removed_from_storage() {
     let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
         .await
         .expect("block store");
-    let snapshot = create_snapshot(100, validator_id);
+    let snapshot = create_snapshot(100, validator_id, &block_store);
     let deploy = create_deploy(0, None, &validator_sk);
     snapshot.deploys_in_scope.insert(deploy.sig.clone());
     deploy_storage
@@ -636,7 +661,7 @@ async fn block_expired_deploy_in_unresolved_scope_is_removed_from_storage() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn block_expired_rejected_deploy_retries_after_source_leaves_scope() {
+async fn block_expired_rejected_deploy_is_terminal_even_with_visible_rejection() {
     crate::init_logger();
 
     let validator_sk = DEFAULT_VALIDATOR_SKS[0].clone();
@@ -656,7 +681,7 @@ async fn block_expired_rejected_deploy_retries_after_source_leaves_scope() {
     let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
         .await
         .expect("block store");
-    let snapshot = create_snapshot(100, validator_id);
+    let snapshot = create_snapshot(100, validator_id, &block_store);
     let deploy = create_deploy(0, None, &validator_sk);
     snapshot.rejected_in_scope.insert(deploy.sig.clone());
     deploy_storage
@@ -677,8 +702,12 @@ async fn block_expired_rejected_deploy_retries_after_source_leaves_scope() {
     .await
     .expect("prepare deploys");
 
-    assert_eq!(prepared.deploys.len(), 1);
-    assert!(prepared.deploys.contains(&deploy));
+    assert!(prepared.deploys.is_empty());
+    assert!(!deploy_storage
+        .lock()
+        .read_all()
+        .expect("read deploy storage")
+        .contains(&deploy));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -702,7 +731,7 @@ async fn recovered_deploys_are_ignored_when_recovery_leadership_is_disabled() {
     let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
         .await
         .expect("block store");
-    let snapshot = create_snapshot(20, validator_id);
+    let snapshot = create_snapshot(20, validator_id, &block_store);
     let deploy = create_deploy(1, None, &validator_sk);
 
     rejected_deploy_buffer
@@ -804,21 +833,6 @@ async fn should_remove_block_expired_deploys_while_keeping_valid_ones() {
         .await
         .expect("Failed to create block store");
 
-    let rspace_store = kvm
-        .r_space_stores()
-        .await
-        .expect("Failed to get rspace store");
-    let mergeable_store = resources::mergeable_store_from_dyn(&mut kvm)
-        .await
-        .expect("Failed to create mergeable store");
-
-    let (runtime_manager, _) = RuntimeManager::create_with_history(
-        rspace_store,
-        mergeable_store,
-        std::sync::Arc::new(casper::rust::genesis::genesis::Genesis::default_mergeable_tags()),
-        rholang::rust::interpreter::external_services::ExternalServices::noop(),
-    );
-
     // Create deploys:
     // - Expired deploy: validAfterBlockNumber = 0 (<= 51, expired)
     // - Valid deploy: validAfterBlockNumber = 60 (> 51 and < 101, valid)
@@ -837,22 +851,20 @@ async fn should_remove_block_expired_deploys_while_keeping_valid_ones() {
     }
 
     // Create snapshot with maxBlockNum = 100
-    let snapshot = create_snapshot(100, validator_id);
+    let snapshot = create_snapshot(100, validator_id, &block_store);
 
-    // Call BlockCreator.create
-    // The cleanup happens in prepareUserDeploys before block creation
-    // Block creation may fail due to empty parents, but that's after cleanup
-    let _ = block_creator::create(
+    block_creator::prepare_user_deploys(
         &snapshot,
-        &validator_identity,
-        None,
+        101,
+        i64::MAX,
         deploy_storage.clone(),
         rejected_deploy_buffer.clone(),
-        &runtime_manager,
-        &mut block_store.clone(),
+        &block_store,
         false,
+        true,
     )
-    .await;
+    .await
+    .expect("prepare deploys");
 
     // Verify: expired deploy removed, valid deploy kept
     {
@@ -882,8 +894,10 @@ async fn should_remove_both_block_expired_and_time_expired_deploys() {
     crate::init_logger();
 
     let validator_sk = DEFAULT_VALIDATOR_SKS[0].clone();
-    let validator_identity = ValidatorIdentity::new(&validator_sk);
-    let validator_id: Bytes = validator_identity.public_key.bytes.clone();
+    let validator_id: Bytes = ValidatorIdentity::new(&validator_sk)
+        .public_key
+        .bytes
+        .clone();
 
     // Create all stores from a single InMemoryStoreManager (like Scala's kvm pattern)
     let mut kvm = InMemoryStoreManager::new();
@@ -902,21 +916,6 @@ async fn should_remove_both_block_expired_and_time_expired_deploys() {
     let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
         .await
         .expect("Failed to create block store");
-
-    let rspace_store = kvm
-        .r_space_stores()
-        .await
-        .expect("Failed to get rspace store");
-    let mergeable_store = resources::mergeable_store_from_dyn(&mut kvm)
-        .await
-        .expect("Failed to create mergeable store");
-
-    let (runtime_manager, _) = RuntimeManager::create_with_history(
-        rspace_store,
-        mergeable_store,
-        std::sync::Arc::new(casper::rust::genesis::genesis::Genesis::default_mergeable_tags()),
-        rholang::rust::interpreter::external_services::ExternalServices::noop(),
-    );
 
     // 1 minute ago (past timestamp for time-expired deploy)
     let past_timestamp = SystemTime::now()
@@ -949,20 +948,20 @@ async fn should_remove_both_block_expired_and_time_expired_deploys() {
     }
 
     // Create snapshot with maxBlockNum = 100
-    let snapshot = create_snapshot(100, validator_id);
+    let snapshot = create_snapshot(100, validator_id, &block_store);
 
-    // Call BlockCreator.create
-    let _ = block_creator::create(
+    block_creator::prepare_user_deploys(
         &snapshot,
-        &validator_identity,
-        None,
+        101,
+        i64::MAX,
         deploy_storage.clone(),
         rejected_deploy_buffer.clone(),
-        &runtime_manager,
-        &mut block_store.clone(),
+        &block_store,
         false,
+        true,
     )
-    .await;
+    .await
+    .expect("prepare deploys");
 
     // Verify: both expired deploys removed, valid deploy kept
     {
@@ -987,8 +986,10 @@ async fn should_remove_expired_deploys_from_rejected_deploy_buffer() {
     crate::init_logger();
 
     let validator_sk = DEFAULT_VALIDATOR_SKS[0].clone();
-    let validator_identity = ValidatorIdentity::new(&validator_sk);
-    let validator_id: Bytes = validator_identity.public_key.bytes.clone();
+    let validator_id: Bytes = ValidatorIdentity::new(&validator_sk)
+        .public_key
+        .bytes
+        .clone();
 
     let mut kvm = InMemoryStoreManager::new();
 
@@ -1006,21 +1007,6 @@ async fn should_remove_expired_deploys_from_rejected_deploy_buffer() {
     let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
         .await
         .expect("Failed to create block store");
-
-    let rspace_store = kvm
-        .r_space_stores()
-        .await
-        .expect("Failed to get rspace store");
-    let mergeable_store = resources::mergeable_store_from_dyn(&mut kvm)
-        .await
-        .expect("Failed to create mergeable store");
-
-    let (runtime_manager, _) = RuntimeManager::create_with_history(
-        rspace_store,
-        mergeable_store,
-        std::sync::Arc::new(casper::rust::genesis::genesis::Genesis::default_mergeable_tags()),
-        rholang::rust::interpreter::external_services::ExternalServices::noop(),
-    );
 
     let past_timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -1048,26 +1034,27 @@ async fn should_remove_expired_deploys_from_rejected_deploy_buffer() {
         );
     }
 
-    let snapshot = create_snapshot(100, validator_id);
+    let snapshot = create_snapshot(100, validator_id, &block_store);
 
-    let _ = block_creator::create(
+    block_creator::prepare_user_deploys(
         &snapshot,
-        &validator_identity,
-        None,
+        101,
+        i64::MAX,
         deploy_storage.clone(),
         rejected_deploy_buffer.clone(),
-        &runtime_manager,
-        &mut block_store.clone(),
-        false,
+        &block_store,
+        true,
+        true,
     )
-    .await;
+    .await
+    .expect("prepare rejected deploys");
 
     {
         let buf = rejected_deploy_buffer.lock().unwrap();
         assert!(
-            buf.contains_sig(&block_expired_deploy.sig)
+            !buf.contains_sig(&block_expired_deploy.sig)
                 .expect("Failed to query buffer for block-expired sig"),
-            "Block-expired recovered sig must remain in the rejected-deploy buffer"
+            "Block-expired recovered sig must NOT remain in the rejected-deploy buffer"
         );
         assert!(
             !buf.contains_sig(&time_expired_deploy.sig)

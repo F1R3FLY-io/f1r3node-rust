@@ -162,10 +162,10 @@ pub struct ApiServer {
     pub keep_alive_time: Duration,
     #[serde(rename = "keep-alive-timeout", deserialize_with = "de_duration")]
     pub keep_alive_timeout: Duration,
-    #[serde(rename = "permit-keep-alive-time", deserialize_with = "de_duration")]
-    pub permit_keep_alive_time: Duration,
-    #[serde(rename = "max-connection-idle", deserialize_with = "de_duration")]
-    pub max_connection_idle: Duration,
+    #[serde(rename = "tcp-keepalive-time", deserialize_with = "de_duration")]
+    pub tcp_keepalive_time: Duration,
+    #[serde(rename = "request-timeout", deserialize_with = "de_duration")]
+    pub request_timeout: Duration,
     #[serde(rename = "max-connection-age", deserialize_with = "de_duration")]
     pub max_connection_age: Duration,
     #[serde(rename = "max-connection-age-grace", deserialize_with = "de_duration")]

@@ -5,6 +5,7 @@ pub mod internal;
 pub mod logging;
 pub mod rspace;
 mod space_matcher;
+mod striped_locks;
 pub mod checkpoint;
 pub mod hot_store_action;
 pub mod shared;

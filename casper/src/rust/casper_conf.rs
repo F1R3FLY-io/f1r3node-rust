@@ -148,6 +148,21 @@ fn default_max_user_deploys_per_block() -> u32 { 128 }
 
 fn default_disable_late_block_filtering() -> bool { true }
 
+/// Default for `client_fuel_allocations`: no additional client fuel at genesis.
+fn default_client_fuel_allocations() -> Vec<ClientFuelAllocation> { Vec::new() }
+
+/// Additional fuel credited to a client's canonical SystemVault at genesis.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClientFuelAllocation {
+    /// Hex-encoded client public key used to derive its native vault address.
+    #[serde(rename = "public-key")]
+    pub public_key: String,
+    /// Phlogiston added to the client's SystemVault balance at genesis.
+    /// Must be `>= 0` (a negative seed is a config error; validated at wiring).
+    #[serde(rename = "amount")]
+    pub amount: i64,
+}
+
 fn default_enable_mergeable_channel_gc() -> bool { false }
 
 fn default_mergeable_channels_gc_interval() -> Duration {
@@ -155,6 +170,25 @@ fn default_mergeable_channels_gc_interval() -> Duration {
 }
 
 fn default_mergeable_channels_gc_depth_buffer() -> i32 { 10 }
+
+/// Default value for `max_cosigners_per_deploy`. 64 is generous
+/// defense-in-depth — real-world multi-sig wallets rarely exceed 10–15
+/// cosigners. The PoS contract enforces this cap inside `chargeDeploy`.
+/// Test fixtures and other defaulting paths MUST reference this constant
+/// rather than hardcoding `64` so the default has a single source of truth.
+pub const DEFAULT_MAX_COSIGNERS_PER_DEPLOY: u32 = 64;
+
+fn default_max_cosigners_per_deploy() -> u32 { DEFAULT_MAX_COSIGNERS_PER_DEPLOY }
+
+/// Default fuel credited to a validator's SystemVault when it joins the validator set.
+pub const DEFAULT_INITIAL_PHLOGISTON: i64 = 1_000_000;
+
+fn default_initial_phlogiston() -> i64 { DEFAULT_INITIAL_PHLOGISTON }
+
+/// Default fuel credited to each eligible active validator at an epoch boundary.
+pub const DEFAULT_EPOCH_PHLOGISTON: i64 = 1_000_000;
+
+fn default_epoch_phlogiston() -> i64 { DEFAULT_EPOCH_PHLOGISTON }
 
 /// Round robin dispatcher configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -202,6 +236,36 @@ pub struct GenesisBlockData {
     #[serde(rename = "pos-multi-sig-quorum")]
     pub pos_multi_sig_quorum: u32,
 
+    /// Per-deploy hard cap on the number of cosigners in a multi-signature
+    /// deploy. Substituted into the PoS contract at genesis as
+    /// `$$maxCosignersPerDeploy$$`; `chargeDeploy` rejects when the
+    /// in-flight cosigner Map reaches this size. Defense-in-depth against
+    /// adversarial deploys with thousands of cosigners exhausting block
+    /// resources. Default `64` (generous — real-world multi-sig wallets
+    /// rarely exceed 10–15). Must be `>= 1`.
+    #[serde(
+        rename = "max-cosigners-per-deploy",
+        default = "default_max_cosigners_per_deploy"
+    )]
+    pub max_cosigners_per_deploy: u32,
+
+    /// Fuel credited to a validator's canonical SystemVault when it first bonds.
+    #[serde(rename = "initial-phlogiston", default = "default_initial_phlogiston")]
+    pub initial_phlogiston: i64,
+
+    /// Fuel credited to each eligible active validator at an epoch boundary.
+    #[serde(rename = "epoch-phlogiston", default = "default_epoch_phlogiston")]
+    pub epoch_phlogiston: i64,
+
+    /// Additional genesis balances for client SystemVaults. Each entry is
+    /// coalesced with any native-token vault balance for the same address before
+    /// the blessed vault-generator deploys are constructed.
+    #[serde(
+        rename = "client-fuel-allocations",
+        default = "default_client_fuel_allocations"
+    )]
+    pub client_fuel_allocations: Vec<ClientFuelAllocation>,
+
     /// Full display name of the native token. Substituted into the
     /// TokenMetadata Rholang contract at genesis and registered at
     /// `rho:system:tokenMetadata`. Immutable after genesis.
@@ -228,6 +292,81 @@ pub struct GenesisBlockData {
 pub const MAX_NATIVE_TOKEN_DECIMALS: u32 = 18;
 
 impl GenesisBlockData {
+    /// Lower the serde-parsed task #13b client funding-slot allocations
+    /// (`[(hex public-key, amount)]`) to `[(crypto::PublicKey, amount)]`,
+    /// hex-decoding each key ONCE at startup so a malformed key or a negative
+    /// amount fails fast (loudly at launch) rather than being baked into genesis
+    /// or silently producing a degenerate `Σ⟦c⟧` seed. Empty in, empty out
+    /// (existing shards). The lowered list is wired into `CasperShardConf` and
+    /// then into the canonical genesis supply commitment.
+    pub fn lowered_client_fuel_allocations(
+        &self,
+    ) -> Result<Vec<(crypto::rust::public_key::PublicKey, i64)>, String> {
+        let mut out = Vec::with_capacity(self.client_fuel_allocations.len());
+        for alloc in &self.client_fuel_allocations {
+            if alloc.amount < 0 {
+                return Err(format!(
+                    "client-fuel-allocations: amount must be >= 0 for public-key {}; got {}",
+                    alloc.public_key, alloc.amount
+                ));
+            }
+            let bytes = hex::decode(&alloc.public_key).map_err(|e| {
+                format!(
+                    "client-fuel-allocations: public-key {:?} is not valid hex: {}",
+                    alloc.public_key, e
+                )
+            })?;
+            if bytes.is_empty() {
+                return Err(
+                    "client-fuel-allocations: public-key must decode to non-empty bytes"
+                        .to_string(),
+                );
+            }
+            out.push((
+                crypto::rust::public_key::PublicKey::from_bytes(&bytes),
+                alloc.amount,
+            ));
+        }
+        Ok(out)
+    }
+
+    pub fn validate_cost_accounting_parameters(&self) -> Result<(), String> {
+        if self.epoch_length <= 0 {
+            return Err(format!(
+                "epoch-length must be positive; got {}",
+                self.epoch_length
+            ));
+        }
+        if self.max_cosigners_per_deploy == 0 {
+            return Err("max-cosigners-per-deploy must be at least 1".to_string());
+        }
+        if self.initial_phlogiston < 0 {
+            return Err(format!(
+                "initial-phlogiston must be non-negative; got {}",
+                self.initial_phlogiston
+            ));
+        }
+        if self.epoch_phlogiston < 0 {
+            return Err(format!(
+                "epoch-phlogiston must be non-negative; got {}",
+                self.epoch_phlogiston
+            ));
+        }
+
+        let allocations = self.lowered_client_fuel_allocations()?;
+        let mut totals = std::collections::BTreeMap::<Vec<u8>, i64>::new();
+        for (public_key, amount) in allocations {
+            let entry = totals.entry(public_key.bytes.to_vec()).or_default();
+            *entry = entry.checked_add(amount).ok_or_else(|| {
+                format!(
+                    "client-fuel-allocations overflow for public-key {}",
+                    hex::encode(&public_key.bytes)
+                )
+            })?;
+        }
+        Ok(())
+    }
+
     /// Validates native-token-* fields. Called during config load so a
     /// misconfigured node fails startup loudly rather than baking bad
     /// values into genesis or serving misleading metadata via `/api/status`.
@@ -291,18 +430,16 @@ pub struct HeartbeatConf {
         default = "default_self_propose_cooldown"
     )]
     pub self_propose_cooldown: Duration,
-    /// Minimum age of LFB/frontier before stale-recovery, leader-recovery,
-    /// and pending-deploy backstop are allowed to fire. Debounces empty-block
-    /// churn when the cluster is healthy.
+    /// Minimum age of this validator's latest proposal before the pending-deploy
+    /// recovery backstop is allowed to fire.
     #[serde(
         rename = "stale-recovery-min-interval",
         deserialize_with = "de_duration",
         default = "default_stale_recovery_min_interval"
     )]
     pub stale_recovery_min_interval: Duration,
-    /// When pending deploys land, opens a grace window during which lag caps
-    /// relax to `advanced.deploy_recovery_max_lag` and self-propose-cooldown
-    /// is bypassable. Burst-tolerance budget.
+    /// When pending deploys land, opens a grace window during which the lag cap
+    /// relaxes to `advanced.deploy_recovery_max_lag`.
     #[serde(
         rename = "deploy-finalization-grace",
         deserialize_with = "de_duration",
@@ -319,7 +456,7 @@ impl Default for HeartbeatConf {
         Self {
             enabled: false,
             check_interval: Duration::from_secs(5),
-            max_lfb_age: Duration::from_secs(5),
+            max_lfb_age: Duration::from_secs(15),
             self_propose_cooldown: default_self_propose_cooldown(),
             stale_recovery_min_interval: default_stale_recovery_min_interval(),
             deploy_finalization_grace: default_deploy_finalization_grace(),
@@ -339,23 +476,13 @@ fn default_deploy_finalization_grace() -> Duration { Duration::from_secs(25) }
 /// These thresholds bound DAG width relative to replay cost in lieu of
 /// adaptive backpressure. Treat as unstable API; field names may change.
 ///
-/// All three fields must be non-negative; HOCON values < 0 are rejected
+/// All fields must be non-negative; HOCON values < 0 are rejected
 /// at deserialization time. The proposer treats these as caps on a
 /// non-negative lag count (`lfb_lag_blocks`), so a negative value would
 /// silently disable the corresponding code path (e.g. `lag <= cap` where
 /// `cap < 0` is never true, leaving pending deploys unproposed).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct HeartbeatAdvancedConf {
-    /// When this validator is already ahead of LFB, how many blocks of lag
-    /// tolerate before "frontier-follow" proposing is throttled. `0` =
-    /// never frontier-chase while ahead unless deploy recovery is active
-    /// (which raises this dynamically).
-    #[serde(
-        rename = "frontier-chase-max-lag",
-        deserialize_with = "de_non_negative_i64",
-        default = "default_frontier_chase_max_lag"
-    )]
-    pub frontier_chase_max_lag: i64,
     /// If the validator has pending deploys but is already > N blocks
     /// ahead of LFB, suppress pending-deploy proposing. Prevents lag
     /// amplification: more deploys → more blocks → wider DAG → slower
@@ -393,15 +520,12 @@ pub struct HeartbeatAdvancedConf {
 impl Default for HeartbeatAdvancedConf {
     fn default() -> Self {
         Self {
-            frontier_chase_max_lag: default_frontier_chase_max_lag(),
             pending_deploy_max_lag: default_pending_deploy_max_lag(),
             deploy_recovery_max_lag: default_deploy_recovery_max_lag(),
             empty_frontier_max_unfinalized_blocks: default_empty_frontier_max_unfinalized_blocks(),
         }
     }
 }
-
-fn default_frontier_chase_max_lag() -> i64 { 0 }
 
 fn default_pending_deploy_max_lag() -> i64 { 20 }
 
@@ -412,49 +536,31 @@ fn default_empty_frontier_max_unfinalized_blocks() -> i64 { 64 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FinalizerConf {
     #[serde(
-        rename = "work-budget",
+        rename = "yield-interval",
         deserialize_with = "de_duration",
-        default = "default_finalizer_work_budget"
+        default = "default_finalizer_yield_interval"
     )]
-    pub work_budget: Duration,
+    pub yield_interval: Duration,
     #[serde(
-        rename = "step-timeout",
+        rename = "catchup-yield-interval",
         deserialize_with = "de_duration",
-        default = "default_finalizer_step_timeout"
+        default = "default_finalizer_catchup_yield_interval"
     )]
-    pub step_timeout: Duration,
-    #[serde(
-        rename = "catchup-work-budget",
-        deserialize_with = "de_duration",
-        default = "default_finalizer_catchup_work_budget"
-    )]
-    pub catchup_work_budget: Duration,
-    #[serde(
-        rename = "catchup-step-timeout",
-        deserialize_with = "de_duration",
-        default = "default_finalizer_catchup_step_timeout"
-    )]
-    pub catchup_step_timeout: Duration,
+    pub catchup_yield_interval: Duration,
 }
 
 impl Default for FinalizerConf {
     fn default() -> Self {
         Self {
-            work_budget: default_finalizer_work_budget(),
-            step_timeout: default_finalizer_step_timeout(),
-            catchup_work_budget: default_finalizer_catchup_work_budget(),
-            catchup_step_timeout: default_finalizer_catchup_step_timeout(),
+            yield_interval: default_finalizer_yield_interval(),
+            catchup_yield_interval: default_finalizer_catchup_yield_interval(),
         }
     }
 }
 
-fn default_finalizer_work_budget() -> Duration { Duration::from_secs(8) }
+fn default_finalizer_yield_interval() -> Duration { Duration::from_millis(1) }
 
-fn default_finalizer_step_timeout() -> Duration { Duration::from_secs(1) }
-
-fn default_finalizer_catchup_work_budget() -> Duration { Duration::from_secs(8) }
-
-fn default_finalizer_catchup_step_timeout() -> Duration { Duration::from_secs(1) }
+fn default_finalizer_catchup_yield_interval() -> Duration { Duration::from_millis(1) }
 
 pub fn de_duration<'de, D>(deserializer: D) -> Result<Duration, D::Error>
 where D: serde::Deserializer<'de> {
@@ -506,13 +612,17 @@ mod native_token_validation_tests {
             wallets_file: String::new(),
             bond_minimum: 0,
             bond_maximum: 0,
-            epoch_length: 0,
+            epoch_length: 1,
             quarantine_length: 0,
             number_of_active_validators: 0,
             deploy_timestamp: None,
             genesis_block_number: 0,
             pos_multi_sig_public_keys: Vec::new(),
             pos_multi_sig_quorum: 0,
+            max_cosigners_per_deploy: DEFAULT_MAX_COSIGNERS_PER_DEPLOY,
+            initial_phlogiston: DEFAULT_INITIAL_PHLOGISTON,
+            epoch_phlogiston: DEFAULT_EPOCH_PHLOGISTON,
+            client_fuel_allocations: Vec::new(),
             native_token_name: "F1R3FLY".into(),
             native_token_symbol: "F1R3".into(),
             native_token_decimals: 8,
@@ -582,5 +692,65 @@ mod native_token_validation_tests {
         let mut g = valid_genesis();
         g.native_token_decimals = MAX_NATIVE_TOKEN_DECIMALS;
         g.validate_native_token().unwrap();
+    }
+
+    #[test]
+    fn accepts_valid_cost_accounting_parameters() {
+        valid_genesis()
+            .validate_cost_accounting_parameters()
+            .unwrap();
+    }
+
+    #[test]
+    fn rejects_invalid_cost_accounting_parameters() {
+        let mut invalid_epoch_length = valid_genesis();
+        invalid_epoch_length.epoch_length = 0;
+        assert!(invalid_epoch_length
+            .validate_cost_accounting_parameters()
+            .is_err());
+
+        let mut invalid_cosigner_limit = valid_genesis();
+        invalid_cosigner_limit.max_cosigners_per_deploy = 0;
+        assert!(invalid_cosigner_limit
+            .validate_cost_accounting_parameters()
+            .is_err());
+
+        let mut invalid_initial_phlogiston = valid_genesis();
+        invalid_initial_phlogiston.initial_phlogiston = -1;
+        assert!(invalid_initial_phlogiston
+            .validate_cost_accounting_parameters()
+            .is_err());
+
+        let mut invalid_epoch_phlogiston = valid_genesis();
+        invalid_epoch_phlogiston.epoch_phlogiston = -1;
+        assert!(invalid_epoch_phlogiston
+            .validate_cost_accounting_parameters()
+            .is_err());
+
+        let mut empty_client_key = valid_genesis();
+        empty_client_key
+            .client_fuel_allocations
+            .push(ClientFuelAllocation {
+                public_key: String::new(),
+                amount: 1,
+            });
+        assert!(empty_client_key
+            .validate_cost_accounting_parameters()
+            .is_err());
+
+        let mut overflowing_clients = valid_genesis();
+        overflowing_clients.client_fuel_allocations = vec![
+            ClientFuelAllocation {
+                public_key: "01".to_string(),
+                amount: i64::MAX,
+            },
+            ClientFuelAllocation {
+                public_key: "01".to_string(),
+                amount: 1,
+            },
+        ];
+        assert!(overflowing_clients
+            .validate_cost_accounting_parameters()
+            .is_err());
     }
 }

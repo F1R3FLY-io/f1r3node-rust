@@ -1,199 +1,189 @@
-# Deployment Workflow
+# Deployment workflow
 
-How to deploy Rholang contracts to the F1R3FLY Rust shard.
+This guide covers submission, proposal, replay, finalization, and result
+inspection for a wallet-funded Rholang deployment. For the preceding custody
+steps—creating a wallet purse, depositing REV, funding a persistent process
+purse, refilling it, and delegating a lollipop capability—start with
+[Wallet-funded process lifecycle](20-wallet-funded-processes.md).
 
-## Deploy Lifecycle
+## Before submitting
 
-1. **Write** -- create a `.rho` file
-2. **Deploy** -- submit the contract with phlogiston limit and deployer key
-3. **Propose** -- validator includes the deploy in a block
-4. **Finalize** -- block reaches finality through consensus
-5. **Query** -- read results via exploratory deploy or data-at-name
+A deploy does not carry a client-selected phlogiston limit, phlogiston price,
+or escrow. Its verified signer and any authenticated located capabilities name
+the payer lanes. Validators derive a finite compute, quantitative-byte, and fee
+bound from the merged pre-state. The relevant wallet or process purses must
+therefore contain sufficient unreserved REV before the deploy's admission
+boundary.
 
-## CLI Commands
+Keep private keys outside source files, shell history, logs, and API payloads.
+The node accepts a private key only in the local CLI so that it can construct
+and sign the canonical deploy. A remote HTTP client must submit the public key
+and signature, never the private key.
 
-### Deploy a Contract
+## Lifecycle
 
-```bash
-cargo run --bin rholang-cli -- deploy \
-  -f contract.rho \
-  --private-key $PRIVATE_KEY \
-  --phlo-limit 100000 \
-  --phlo-price 1
-```
+1. Write and locally review the Rholang source.
+2. Fund the wallet or persistent process purse that will pay.
+3. Canonically serialize and sign the deploy envelope.
+4. Submit it to a validator's pending-deploy pool.
+5. Let a validator assemble a state-bound, fully funded candidate set.
+6. Include the retained deploy, authority certificate, execution witness, and
+   state roots in a proposed block.
+7. Let every validator independently replay the same causal evidence and exact
+   settlement.
+8. Wait for the deploy effect—not merely an arbitrary containing block—to
+   become canonical and finalized.
+9. Query the result, resulting application state, and remaining purse balance.
 
-Parameters:
-- `-f` / `--file`: path to `.rho` file
-- `--private-key`: deployer's private key (hex)
-- `--phlo-limit`: maximum phlogiston to spend (default varies)
-- `--phlo-price`: price per phlogiston unit (typically 1)
+## Node CLI
 
-### Propose a Block
-
-Validators include pending deploys into a new block:
-
-```bash
-cargo run --bin rholang-cli -- propose \
-  --private-key $VALIDATOR_KEY
-```
-
-In auto-propose mode (default for single-validator networks), blocks are proposed automatically.
-
-### Check Finalization
-
-```bash
-cargo run --bin rholang-cli -- is-finalized -b $BLOCK_HASH
-```
-
-Returns `true` once the block has been finalized by the consensus protocol.
-
-### Exploratory Deploy
-
-Execute a read-only contract without creating a block. Useful for querying state.
+Generate a password-encrypted secp256k1 key pair into a controlled directory.
+The command creates `rnode.key`, `rnode.pub.pem`, and `rnode.pub.hex` there:
 
 ```bash
-cargo run --bin rholang-cli -- exploratory-deploy \
-  -f query.rho
+cargo run -p node -- keygen ./keys
 ```
 
-The result includes the phlogiston cost and any data sent to `rho:io:stdout`.
-
-## HTTP API
-
-The node exposes an HTTP API (default port 40403).
-
-### Deploy
+Submit a contract through a node's gRPC endpoint:
 
 ```bash
-curl -X POST http://localhost:40403/api/deploy \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "term": "new stdout(`rho:io:stdout`) in { stdout!(\"hello\") }",
-    "phloLimit": 100000,
-    "phloPrice": 1,
-    "validAfterBlockNumber": -1
-  }'
+cargo run -p node -- \
+  --grpc-host localhost \
+  --grpc-port 40401 \
+  deploy \
+  10 \
+  "$PRIVATE_KEY" \
+  contract.rho \
+  root
 ```
 
-### Get Deploy Status
+The deploy subcommand deliberately has no `--phlo-limit` or `--phlo-price`
+flags. Use the wallet and process-purse funding workflow to change available
+capacity.
+
+Force a proposal when the target network does not auto-propose:
 
 ```bash
-curl http://localhost:40403/api/deploy/$DEPLOY_ID
-curl http://localhost:40403/api/deploy/$DEPLOY_ID?view=summary
+cargo run -p node -- --grpc-host localhost --grpc-port 40401 propose
 ```
 
-**Views:**
-- **`full`** (default): all fields — `deployId`, `blockHash`, `blockNumber`, `timestamp`, `cost`, `errored`, `isFinalized`, `deployer`, `term`, `systemDeployError`, `phloPrice`, `phloLimit`, `sigAlgorithm`, `validAfterBlockNumber`, `transfers`
-- **`summary`**: core fields only — `deployId`, `blockHash`, `blockNumber`, `timestamp`, `cost`, `errored`, `isFinalized`. For lightweight polling.
+Find the containing block and inspect finality:
 
-**Transfers:** The `transfers` field is `null` on validator nodes (block replay unavailable) and a populated array on readonly nodes. `null` means transfers can't be extracted on this node type — query a readonly node for transfer details.
+```bash
+cargo run -p node -- --grpc-host localhost --grpc-port 40401 \
+  find-deploy "$DEPLOY_ID"
 
-### Exploratory Deploy
+cargo run -p node -- --grpc-host localhost --grpc-port 40401 \
+  is-finalized "$BLOCK_HASH"
+```
+
+## HTTP submission
+
+`POST /api/deploy` accepts an already signed envelope on a validator. The
+signature must cover the node's canonical deploy preimage; hand-assembling a
+JSON object and signing the displayed text is incorrect. Use `pyf1r3fly` or an
+equivalent protocol-aware client.
+
+The request shape is:
+
+```json
+{
+  "data": {
+    "term": "new stdout(`rho:io:stdout`) in { stdout!(42) }",
+    "timestamp": 1700000000000,
+    "validAfterBlockNumber": 10,
+    "shardId": "root",
+    "authorityPresentations": []
+  },
+  "deployer": "04...",
+  "signature": "3044...",
+  "sigAlgorithm": "secp256k1",
+  "cosigners": []
+}
+```
+
+For a multi-signature envelope, all signers authenticate the same canonical
+message. Signers are ordered by raw public-key bytes, duplicate keys are
+rejected, and empty threshold placeholders never become payer identities.
+
+## Querying deploy status
+
+Use the deploy-specific finalization endpoint for canonical effect status:
+
+```bash
+curl "http://localhost:40403/api/deploy-finalization-status/$DEPLOY_ID"
+```
+
+Use the deploy lookup endpoint for execution details:
+
+```bash
+curl "http://localhost:40403/api/deploy/$DEPLOY_ID"
+curl "http://localhost:40403/api/deploy/$DEPLOY_ID?view=summary"
+```
+
+The summary response contains the deploy and block identifiers, block number,
+timestamp, scalar `cost`, error flag, canonical finalization state, and
+rejection count. The full view additionally exposes the deployer, term,
+signature algorithm, valid-after height, system error, and extracted transfers
+when available. It does not contain retired `phloPrice` or `phloLimit` fields.
+
+`cost` is:
+
+```math
+\text{committed COMM count}+\text{canonical RSpace byte cost}.
+```
+
+It is not the physical REV debit. Compound and located authority can consume a
+different number of physical cells, and proposer fees are separate. The gRPC
+`DeployInfo` carries the protocol-v8 authority certificate and witness,
+adjacent roots, and admission status; the HTTP deploy response is only the
+scalar projection. See [Cost-accounted Rholang](13-cost-model.md).
+
+## Querying resulting state
+
+An exploratory deploy reads state without creating a block:
 
 ```bash
 curl -X POST http://localhost:40403/api/explore-deploy \
   -H 'Content-Type: application/json' \
-  -d '{"term": "new ret(`rho:io:stdout`) in { ret!(42) }"}'
+  -d '{"term":"new ret(`rho:io:stdout`) in { ret!(42) }"}'
 ```
 
-Response includes the phlogiston cost.
+An exploratory result is not consensus evidence and does not spend a user
+purse. For a historical query, use `/api/explore-deploy-by-block-hash` or the
+gRPC data-at-name service against a specific block state.
 
-### Get Data at Name by Block Hash
+## Refilling and reusing custody
 
-```bash
-curl -X POST http://localhost:40403/api/data-at-name-by-block-hash \
-  -H 'Content-Type: application/json' \
-  -d '{"par": {"unforgeables": [{"g_private_body": {"id": "..."}}]}, "blockHash": "abc123...", "usePreStateHash": false}'
-```
+Wallets and process purses persist across deploys. An authorized transfer can
+credit the same public deposit address while other processes execute. That
+credit cannot expand a certificate already frozen against an earlier pre-state;
+it becomes available to the next canonical admission that observes it.
 
-## gRPC API
+Unused certified maximum remains in the purse after exact settlement. There is
+no separately minted refund. A later deploy can reuse the remaining balance,
+top it up, transfer it under the appropriate draw capability, or fund another
+process slot. See [Vaults and Tokens](12-vaults-and-tokens.md) for the contract
+API and [Wallet-funded process lifecycle](20-wallet-funded-processes.md) for the
+complete custody flow.
 
-The node exposes gRPC services for programmatic access:
+## Failure interpretation
 
-- `DeployService.doDeploy` -- submit a deploy
-- `DeployService.getBlock` -- get block by hash
-- `DeployService.findDeploy` -- find deploy by ID
-- `ProposeService.propose` -- propose a block
-- `DeployService.getDataAtName` -- query data on a channel
+| Observation | Meaning |
+| --- | --- |
+| Signature or envelope rejection | Authentication failed before user execution; no cost evidence or settlement may publish |
+| Insufficient authority | The authenticated pre-state cannot fund the complete physical, byte, and fee bound |
+| Out of authority or bytes during candidate execution | The candidate is rejected and its speculative state cannot enter block evidence |
+| Replay evidence mismatch | The proposed block is objectively invalid |
+| Local unknown root or unavailable storage | Local validation/recovery failure; never evidence for slashing a peer |
+| Containing block finalized but deploy effect rejected | Query the deploy-specific finalization state; block finality alone is not effect finality |
 
-Python client (`pyf1r3fly`) wraps these for integration testing.
+## Related interfaces
 
-## WebSocket Events
+- `DeployService.doDeploy` submits a signed deploy.
+- `DeployService.findDeploy` locates it.
+- `ProposeService.propose` requests a proposal.
+- `DeployService.getDataAtName` queries canonical state.
+- `/ws/events` streams block-created, block-added, and block-finalized events.
 
-The node streams block lifecycle events via WebSocket:
-
-```
-ws://localhost:40403/ws/events
-```
-
-Event types:
-- `block-created` -- new block proposed
-- `block-added` -- block added to DAG
-- `block-finalised` -- block reached finality
-- Genesis ceremony events
-- Node lifecycle events
-
-Events published during startup are buffered and replayed when clients connect.
-
-## Deploy Result
-
-After a deploy is included in a finalized block, the result contains:
-
-| Field | Description |
-|-------|-------------|
-| `cost` | Phlogiston consumed |
-| `errored` | Whether the deploy produced an error |
-| `systemDeployError` | System-level error message (if any) |
-| `blockNumber` | Block containing the deploy |
-
-## Common Patterns
-
-### Deploy and Wait for Result
-
-```bash
-# 1. Deploy
-DEPLOY_ID=$(cargo run --bin rholang-cli -- deploy -f contract.rho --private-key $KEY)
-
-# 2. Wait for block (if not auto-propose)
-cargo run --bin rholang-cli -- propose --private-key $VALIDATOR_KEY
-
-# 3. Check result
-curl http://localhost:40403/api/deploy/$DEPLOY_ID?view=detail
-```
-
-### Query State After Deploy
-
-Use exploratory deploy to read state without creating a new block:
-
-```rho
-// query.rho -- read the registry entry set by a previous deploy
-new lookup(`rho:registry:lookup`), stdout(`rho:io:stdout`) in {
-  new ret in {
-    lookup!(`rho:id:my_service_uri`, *ret) |
-    for (service <- ret) {
-      new result in {
-        service!({"action": "status"}, *result) |
-        for (@status <- result) {
-          stdout!(status)
-        }
-      }
-    }
-  }
-}
-```
-
-### Generate Keys
-
-```bash
-cargo run --bin rholang-cli -- generate-key-pair --save
-```
-
-This creates a keypair file that can be used for deploys.
-
-## Phlogiston Tips
-
-- Start with `--phlo-limit 100000` for simple contracts
-- Use `1000000` for complex contracts (registry operations, vault transfers)
-- Check the deploy result's `cost` field to see actual consumption
-- If you get `OutOfPhlogistonsError`, increase the limit
-- See [Cost Model](13-cost-model.md) for detailed cost tables
+For endpoint schemas and status codes, see the [Node API reference](../node/api-reference.md).

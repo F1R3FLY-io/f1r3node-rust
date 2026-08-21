@@ -9,15 +9,30 @@ use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use block_storage::rust::test::indexed_block_dag_storage::IndexedBlockDagStorage;
 use casper::rust::casper_conf::FinalizerConf;
 use casper::rust::finality::finalizer::Finalizer;
-use casper::rust::safety::clique_oracle::FtThreshold;
+use casper::rust::safety::clique_oracle::{CliqueOracle, FtThreshold};
 use models::rust::block_hash::BlockHash;
-use models::rust::casper::protocol::casper_message::{BlockMessage, Bond};
+use models::rust::casper::protocol::casper_message::{BlockMessage, Bond, StateEffectId};
 use models::rust::validator::Validator;
 use shared::rust::store::key_value_store::KvStoreError;
 
 use crate::helper::block_dag_storage_fixture::with_storage;
 use crate::helper::block_generator::{create_block, create_genesis_block};
 use crate::helper::block_util::generate_validator;
+
+fn set_state_effect_provenance(
+    dag: &block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation,
+    block_hash: &BlockHash,
+    successful_indices: &[u32],
+    rejected_effects: &[StateEffectId],
+) {
+    let mut metadata = dag.lookup_unsafe(block_hash).expect("block metadata");
+    metadata.successful_state_effect_indices = successful_indices.iter().copied().collect();
+    metadata.rejected_state_effects = rejected_effects.iter().cloned().collect();
+    dag.block_metadata_index
+        .write()
+        .add(metadata)
+        .expect("replace block state-effect provenance");
+}
 
 fn create_block_creator<'a>(
     bonds: &'a [Bond],
@@ -90,12 +105,12 @@ fn cannot_be_orphaned_should_return_false_on_stake_sum_overflow() {
 }
 
 //   *  *            b8 b9
-//   *               b7         <- should not be LFB
+//   *               b7         <- should not yet be LFB
 //   *  *  *  *  *   b2 b3 b4 b5 b6
 //   *               b1         <- should be LFB
 //   v1 v2 v3 v4 v5
 #[tokio::test]
-async fn test_not_advance_finalization_if_no_new_lfb_found_advance_otherwise_invoke_all_effects() {
+async fn finalizer_advances_only_to_highest_eligible_main_chain_descendant_and_invokes_effects() {
     with_storage(|mut store, mut dag_store| async move {
         let validators = [
             generate_validator(Some("Validator 1")),
@@ -193,6 +208,7 @@ async fn test_not_advance_finalization_if_no_new_lfb_found_advance_otherwise_inv
             Finalizer::run(
                 &dag,
                 FtThreshold::from_f32_lossy(-1.0),
+                &genesis.block_hash,
                 0,
                 move |(m, _ft)| {
                     let lfb_store = lfb_store.clone();
@@ -228,7 +244,7 @@ async fn test_not_advance_finalization_if_no_new_lfb_found_advance_otherwise_inv
             ]),
         );
 
-        // add 2 children, this is not sufficient for finalization to advance
+        // add 2 children, this is not sufficient to finalize b7
         creator1(
             &mut store,
             &mut dag_store,
@@ -260,6 +276,7 @@ async fn test_not_advance_finalization_if_no_new_lfb_found_advance_otherwise_inv
             Finalizer::run(
                 &dag,
                 FtThreshold::from_f32_lossy(-1.0),
+                &b1.block_hash,
                 finalized_height,
                 move |(_m, _ft)| {
                     let lfb_effect_invoked = lfb_effect_invoked.clone();
@@ -274,9 +291,7 @@ async fn test_not_advance_finalization_if_no_new_lfb_found_advance_otherwise_inv
             .unwrap()
         };
 
-        // check output
         assert_eq!(lfb, None);
-        // check if new LFB effect is invoked
         assert!(!(*lfb_effect_invoked.borrow()));
 
         // add more 3 children - finalization should advance
@@ -324,7 +339,8 @@ async fn test_not_advance_finalization_if_no_new_lfb_found_advance_otherwise_inv
             Finalizer::run(
                 &dag,
                 FtThreshold::from_f32_lossy(-1.0),
-                0,
+                &b1.block_hash,
+                finalized_height,
                 move |(m, _ft)| {
                     let lfb_store = lfb_store.clone();
                     let finalised_store = finalised_store.clone();
@@ -421,6 +437,7 @@ async fn finalizer_invokes_effect_for_finalized_candidate_ahead_of_lfb() {
             Finalizer::run(
                 &dag,
                 FtThreshold::from_f32_lossy(-1.0),
+                &genesis.block_hash,
                 0,
                 move |(hash, _)| {
                     let effect_invoked = effect_invoked.clone();
@@ -443,6 +460,807 @@ async fn finalizer_invokes_effect_for_finalized_candidate_ahead_of_lfb() {
         );
         assert_eq!(*selected.borrow(), candidate.block_hash);
         assert!(*effect_invoked.borrow());
+
+        Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
+    })
+    .await
+    .expect("validation fixture");
+}
+
+#[tokio::test]
+async fn finalizer_never_moves_to_a_sibling_of_the_exact_lfb() {
+    with_storage(|mut store, mut dag_store| async move {
+        let validators = [
+            generate_validator(Some("Exact LFB Validator 1")),
+            generate_validator(Some("Exact LFB Validator 2")),
+            generate_validator(Some("Exact LFB Validator 3")),
+            generate_validator(Some("Exact LFB Validator 4")),
+            generate_validator(Some("Exact LFB Validator 5")),
+        ];
+        let bonds: Vec<Bond> = validators
+            .iter()
+            .map(|validator| Bond {
+                validator: validator.clone(),
+                stake: 3,
+            })
+            .collect();
+        let genesis = create_genesis_block(
+            &mut store,
+            &mut dag_store,
+            None,
+            Some(bonds.clone()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        let creators = [
+            create_block_creator(&bonds, &genesis, &validators[0]),
+            create_block_creator(&bonds, &genesis, &validators[1]),
+            create_block_creator(&bonds, &genesis, &validators[2]),
+            create_block_creator(&bonds, &genesis, &validators[3]),
+            create_block_creator(&bonds, &genesis, &validators[4]),
+        ];
+        let genesis_justifications = HashMap::from([
+            (&validators[0], &genesis),
+            (&validators[1], &genesis),
+            (&validators[2], &genesis),
+            (&validators[3], &genesis),
+            (&validators[4], &genesis),
+        ]);
+        let current_lfb = creators[0](
+            &mut store,
+            &mut dag_store,
+            vec![&genesis],
+            &genesis_justifications,
+        );
+        let sibling = creators[1](
+            &mut store,
+            &mut dag_store,
+            vec![&genesis],
+            &genesis_justifications,
+        );
+        let sibling_justifications = HashMap::from([
+            (&validators[0], &sibling),
+            (&validators[1], &sibling),
+            (&validators[2], &sibling),
+            (&validators[3], &sibling),
+            (&validators[4], &sibling),
+        ]);
+        for creator in &creators {
+            creator(
+                &mut store,
+                &mut dag_store,
+                vec![&sibling],
+                &sibling_justifications,
+            );
+        }
+
+        let dag = dag_store.get_representation().expect("dag representation");
+        let effect_invoked = Rc::new(RefCell::new(false));
+        let result = {
+            let effect_invoked = effect_invoked.clone();
+            Finalizer::run(
+                &dag,
+                FtThreshold::from_f32_lossy(-1.0),
+                &current_lfb.block_hash,
+                current_lfb.body.state.block_number,
+                move |_| {
+                    let effect_invoked = effect_invoked.clone();
+                    async move {
+                        *effect_invoked.borrow_mut() = true;
+                        Ok(())
+                    }
+                },
+                &FinalizerConf::default(),
+            )
+            .await
+            .expect("finalizer run")
+        };
+
+        assert!(result.is_none());
+        assert!(!*effect_invoked.borrow());
+
+        Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
+    })
+    .await
+    .expect("validation fixture");
+}
+
+#[tokio::test]
+async fn finalizer_advances_to_state_descendant_when_lfb_is_a_secondary_parent() {
+    with_storage(|mut store, mut dag_store| async move {
+        let validators = [
+            generate_validator(Some("Asymmetric Validator 1")),
+            generate_validator(Some("Asymmetric Validator 2")),
+            generate_validator(Some("Asymmetric Validator 3")),
+        ];
+        let bonds = vec![
+            Bond {
+                validator: validators[0].clone(),
+                stake: 60,
+            },
+            Bond {
+                validator: validators[1].clone(),
+                stake: 20,
+            },
+            Bond {
+                validator: validators[2].clone(),
+                stake: 15,
+            },
+        ];
+        let genesis = create_genesis_block(
+            &mut store,
+            &mut dag_store,
+            None,
+            Some(bonds.clone()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        let creators: Vec<_> = validators
+            .iter()
+            .map(|validator| create_block_creator(&bonds, &genesis, validator))
+            .collect();
+        let genesis_justifications: HashMap<&Validator, &BlockMessage> = validators
+            .iter()
+            .map(|validator| (validator, &genesis))
+            .collect();
+        let current_lfb = creators[0](
+            &mut store,
+            &mut dag_store,
+            vec![&genesis],
+            &genesis_justifications,
+        );
+        let sibling = creators[1](
+            &mut store,
+            &mut dag_store,
+            vec![&genesis],
+            &genesis_justifications,
+        );
+        dag_store
+            .record_directly_finalized(current_lfb.block_hash.clone(), 1.0, |_| async { Ok(()) })
+            .await
+            .expect("record current LFB");
+
+        let merge_justifications = HashMap::from([
+            (&validators[0], &current_lfb),
+            (&validators[1], &sibling),
+            (&validators[2], &sibling),
+        ]);
+        let merge = creators[0](
+            &mut store,
+            &mut dag_store,
+            vec![&sibling, &current_lfb],
+            &merge_justifications,
+        );
+        let support_justifications: HashMap<&Validator, &BlockMessage> = validators
+            .iter()
+            .map(|validator| (validator, &merge))
+            .collect();
+        let supports: Vec<BlockMessage> = creators
+            .iter()
+            .map(|creator| {
+                creator(
+                    &mut store,
+                    &mut dag_store,
+                    vec![&merge],
+                    &support_justifications,
+                )
+            })
+            .collect();
+
+        let dag = dag_store.get_representation().expect("dag representation");
+        dag.put_cached_floor(genesis.block_hash.clone(), genesis.block_hash.clone())
+            .expect("genesis floor");
+        dag.put_cached_floor(current_lfb.block_hash.clone(), genesis.block_hash.clone())
+            .expect("current LFB floor");
+        dag.put_cached_floor(sibling.block_hash.clone(), genesis.block_hash.clone())
+            .expect("sibling floor");
+        dag.put_cached_floor(merge.block_hash.clone(), current_lfb.block_hash.clone())
+            .expect("merge floor");
+        for support in &supports {
+            dag.put_cached_floor(support.block_hash.clone(), merge.block_hash.clone())
+                .expect("support floor");
+        }
+        set_state_effect_provenance(&dag, &current_lfb.block_hash, &[0], &[]);
+
+        assert!(dag
+            .is_dag_ancestor(&current_lfb.block_hash, &merge.block_hash)
+            .expect("DAG ancestry"));
+        assert!(!dag
+            .is_in_main_chain(&current_lfb.block_hash, &merge.block_hash)
+            .expect("main-chain ancestry"));
+        assert!(casper::rust::finality::floor::is_state_preserved(
+            &dag,
+            &current_lfb.block_hash,
+            &merge.block_hash,
+        )
+        .expect("state ancestry"));
+
+        let result = Finalizer::run(
+            &dag,
+            FtThreshold::from_f32_lossy(0.1),
+            &current_lfb.block_hash,
+            current_lfb.body.state.block_number,
+            |(_m, _ft)| async { Ok::<(), KvStoreError>(()) },
+            &FinalizerConf::default(),
+        )
+        .await
+        .expect("finalizer run");
+
+        let (selected, _) = result.expect("state-preserving off-main merge must advance");
+        assert!(casper::rust::finality::floor::is_state_preserved(
+            &dag,
+            &current_lfb.block_hash,
+            &selected,
+        )
+        .expect("selected state ancestry"));
+        assert!(!dag
+            .is_in_main_chain(&current_lfb.block_hash, &selected)
+            .expect("selected main-chain ancestry"));
+
+        Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
+    })
+    .await
+    .expect("validation fixture");
+}
+
+#[tokio::test]
+async fn finalizer_rejects_dag_descendant_without_state_lineage() {
+    with_storage(|mut store, mut dag_store| async move {
+        let validators = [
+            generate_validator(Some("DAG Finality Validator 1")),
+            generate_validator(Some("DAG Finality Validator 2")),
+            generate_validator(Some("DAG Finality Validator 3")),
+            generate_validator(Some("DAG Finality Validator 4")),
+            generate_validator(Some("DAG Finality Validator 5")),
+        ];
+        let bonds: Vec<Bond> = validators
+            .iter()
+            .map(|validator| Bond {
+                validator: validator.clone(),
+                stake: 3,
+            })
+            .collect();
+        let genesis = create_genesis_block(
+            &mut store,
+            &mut dag_store,
+            None,
+            Some(bonds.clone()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        let creators: Vec<_> = validators
+            .iter()
+            .map(|validator| create_block_creator(&bonds, &genesis, validator))
+            .collect();
+        let genesis_justifications: HashMap<&Validator, &BlockMessage> = validators
+            .iter()
+            .map(|validator| (validator, &genesis))
+            .collect();
+        let current_lfb = creators[0](
+            &mut store,
+            &mut dag_store,
+            vec![&genesis],
+            &genesis_justifications,
+        );
+        let sibling = creators[1](
+            &mut store,
+            &mut dag_store,
+            vec![&genesis],
+            &genesis_justifications,
+        );
+        let merge_justifications = HashMap::from([
+            (&validators[0], &current_lfb),
+            (&validators[1], &sibling),
+            (&validators[2], &genesis),
+            (&validators[3], &genesis),
+            (&validators[4], &genesis),
+        ]);
+        let merge = creators[2](
+            &mut store,
+            &mut dag_store,
+            vec![&current_lfb, &sibling],
+            &merge_justifications,
+        );
+        let merge_justifications: HashMap<&Validator, &BlockMessage> = validators
+            .iter()
+            .map(|validator| (validator, &merge))
+            .collect();
+        for creator in &creators {
+            creator(
+                &mut store,
+                &mut dag_store,
+                vec![&merge],
+                &merge_justifications,
+            );
+        }
+
+        let dag = dag_store.get_representation().expect("dag representation");
+        assert!(dag
+            .is_dag_ancestor(&current_lfb.block_hash, &merge.block_hash)
+            .expect("DAG ancestry"));
+        assert!(dag
+            .is_in_main_chain(&current_lfb.block_hash, &merge.block_hash)
+            .expect("main-chain ancestry"));
+
+        let latest_messages = dag
+            .latest_message_hashes()
+            .into_iter()
+            .collect::<std::collections::BTreeMap<_, _>>();
+        let current_lfb_effect = StateEffectId {
+            source_block_hash: current_lfb.block_hash.clone(),
+            execution_index: 0,
+        };
+        set_state_effect_provenance(&dag, &current_lfb.block_hash, &[0], &[]);
+        set_state_effect_provenance(
+            &dag,
+            &merge.block_hash,
+            &[],
+            std::slice::from_ref(&current_lfb_effect),
+        );
+        for latest in latest_messages.values() {
+            casper::rust::finality::floor::floor_of_block(
+                &dag,
+                latest,
+                FtThreshold::from_f32_lossy(-1.0),
+            )
+            .await
+            .expect("latest-message state lineage");
+        }
+        assert!(CliqueOracle::ft_witnessed_exact(
+            &merge.block_hash,
+            &dag,
+            &latest_messages,
+            FtThreshold::from_f32_lossy(-1.0),
+            true,
+        )
+        .await
+        .expect("exact clique decision"));
+        assert!(casper::rust::finality::floor::state_witnessed_exact(
+            &dag,
+            &merge.block_hash,
+            &latest_messages,
+            FtThreshold::from_f32_lossy(-1.0),
+            true,
+        )
+        .await
+        .expect("state certificate"));
+
+        let result = Finalizer::run(
+            &dag,
+            FtThreshold::from_f32_lossy(-1.0),
+            &current_lfb.block_hash,
+            current_lfb.body.state.block_number,
+            |(_m, _ft)| async { Ok::<(), KvStoreError>(()) },
+            &FinalizerConf::default(),
+        )
+        .await
+        .expect("finalizer run");
+
+        assert!(result.is_none());
+
+        Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
+    })
+    .await
+    .expect("validation fixture");
+}
+
+#[tokio::test]
+async fn finalizer_rejects_causal_certificate_without_state_support() {
+    with_storage(|mut store, mut dag_store| async move {
+        let validators = [
+            generate_validator(Some("State Support Heavy Validator")),
+            generate_validator(Some("State Support Source Validator")),
+            generate_validator(Some("State Support Other Validator 1")),
+            generate_validator(Some("State Support Other Validator 2")),
+        ];
+        let bonds = vec![
+            Bond {
+                validator: validators[0].clone(),
+                stake: 7,
+            },
+            Bond {
+                validator: validators[1].clone(),
+                stake: 3,
+            },
+            Bond {
+                validator: validators[2].clone(),
+                stake: 3,
+            },
+            Bond {
+                validator: validators[3].clone(),
+                stake: 3,
+            },
+        ];
+        let genesis = create_genesis_block(
+            &mut store,
+            &mut dag_store,
+            None,
+            Some(bonds.clone()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        let creators: Vec<_> = validators
+            .iter()
+            .map(|validator| create_block_creator(&bonds, &genesis, validator))
+            .collect();
+        let genesis_justifications: HashMap<&Validator, &BlockMessage> = validators
+            .iter()
+            .map(|validator| (validator, &genesis))
+            .collect();
+        let rejected_parent = creators[1](
+            &mut store,
+            &mut dag_store,
+            vec![&genesis],
+            &genesis_justifications,
+        );
+        let sibling = creators[2](
+            &mut store,
+            &mut dag_store,
+            vec![&genesis],
+            &genesis_justifications,
+        );
+        let merge_justifications = HashMap::from([
+            (&validators[0], &genesis),
+            (&validators[1], &rejected_parent),
+            (&validators[2], &sibling),
+            (&validators[3], &genesis),
+        ]);
+        let merge = creators[0](
+            &mut store,
+            &mut dag_store,
+            vec![&rejected_parent, &sibling],
+            &merge_justifications,
+        );
+        let sibling_justifications = HashMap::from([
+            (&validators[0], &merge),
+            (&validators[1], &rejected_parent),
+            (&validators[2], &sibling),
+            (&validators[3], &sibling),
+        ]);
+        let sibling_support = creators[3](
+            &mut store,
+            &mut dag_store,
+            vec![&sibling],
+            &sibling_justifications,
+        );
+
+        let dag = dag_store.get_representation().expect("dag representation");
+        for (block, floor) in [
+            (&genesis, &genesis),
+            (&rejected_parent, &genesis),
+            (&sibling, &genesis),
+            (&merge, &genesis),
+            (&sibling_support, &genesis),
+        ] {
+            dag.put_cached_floor(block.block_hash.clone(), floor.block_hash.clone())
+                .expect("state floor");
+        }
+        let rejected_effect = StateEffectId {
+            source_block_hash: rejected_parent.block_hash.clone(),
+            execution_index: 0,
+        };
+        set_state_effect_provenance(&dag, &rejected_parent.block_hash, &[0], &[]);
+        set_state_effect_provenance(
+            &dag,
+            &merge.block_hash,
+            &[],
+            std::slice::from_ref(&rejected_effect),
+        );
+
+        let latest_messages = dag
+            .latest_message_hashes()
+            .into_iter()
+            .collect::<std::collections::BTreeMap<_, _>>();
+        let threshold = FtThreshold::from_f32_lossy(0.1);
+        assert!(CliqueOracle::ft_witnessed_exact(
+            &rejected_parent.block_hash,
+            &dag,
+            &latest_messages,
+            threshold,
+            true,
+        )
+        .await
+        .expect("causal certificate"));
+        assert!(!casper::rust::finality::floor::state_witnessed_exact(
+            &dag,
+            &rejected_parent.block_hash,
+            &latest_messages,
+            threshold,
+            true,
+        )
+        .await
+        .expect("state certificate"));
+
+        let promoted = Rc::new(RefCell::new(Vec::new()));
+        let result = {
+            let promoted = promoted.clone();
+            Finalizer::run(
+                &dag,
+                threshold,
+                &genesis.block_hash,
+                genesis.body.state.block_number,
+                move |(hash, _ft)| {
+                    promoted.borrow_mut().push(hash);
+                    async { Ok::<(), KvStoreError>(()) }
+                },
+                &FinalizerConf::default(),
+            )
+            .await
+            .expect("finalizer run")
+        };
+
+        assert_ne!(
+            result.map(|(hash, _)| hash),
+            Some(rejected_parent.block_hash.clone())
+        );
+        assert!(!promoted.borrow().contains(&rejected_parent.block_hash));
+
+        Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
+    })
+    .await
+    .expect("validation fixture");
+}
+
+#[tokio::test]
+async fn finalizer_examines_a_complete_frozen_candidate_set_beyond_the_old_prefix() {
+    with_storage(|mut store, mut dag_store| async move {
+        let validators = [
+            generate_validator(Some("Complete Scan Validator 1")),
+            generate_validator(Some("Complete Scan Validator 2")),
+            generate_validator(Some("Complete Scan Validator 3")),
+            generate_validator(Some("Complete Scan Validator 4")),
+            generate_validator(Some("Complete Scan Validator 5")),
+        ];
+        let bonds: Vec<Bond> = validators
+            .iter()
+            .map(|validator| Bond {
+                validator: validator.clone(),
+                stake: 3,
+            })
+            .collect();
+        let genesis = create_genesis_block(
+            &mut store,
+            &mut dag_store,
+            None,
+            Some(bonds.clone()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        let creators: Vec<_> = validators
+            .iter()
+            .map(|validator| create_block_creator(&bonds, &genesis, validator))
+            .collect();
+        let genesis_justifications: HashMap<&Validator, &BlockMessage> = validators
+            .iter()
+            .map(|validator| (validator, &genesis))
+            .collect();
+        let finalizable = creators[0](
+            &mut store,
+            &mut dag_store,
+            vec![&genesis],
+            &genesis_justifications,
+        );
+        let mut chain_tip = finalizable.clone();
+        for _ in 0..132 {
+            chain_tip = creators[0](
+                &mut store,
+                &mut dag_store,
+                vec![&chain_tip],
+                &genesis_justifications,
+            );
+        }
+
+        let validator1_tip = creators[1](
+            &mut store,
+            &mut dag_store,
+            vec![&chain_tip],
+            &genesis_justifications,
+        );
+        let validator2_tip = creators[2](
+            &mut store,
+            &mut dag_store,
+            vec![&chain_tip],
+            &genesis_justifications,
+        );
+        let validator3_tip = creators[3](
+            &mut store,
+            &mut dag_store,
+            vec![&finalizable],
+            &genesis_justifications,
+        );
+        let validator4_tip = creators[4](
+            &mut store,
+            &mut dag_store,
+            vec![&finalizable],
+            &genesis_justifications,
+        );
+        let mut latest = [
+            chain_tip,
+            validator1_tip,
+            validator2_tip,
+            validator3_tip,
+            validator4_tip,
+        ];
+
+        for _ in 0..2 {
+            for creator_index in 0..validators.len() {
+                let parent = latest[creator_index].clone();
+                let next = {
+                    let justifications: HashMap<&Validator, &BlockMessage> =
+                        validators.iter().zip(latest.iter()).collect();
+                    creators[creator_index](
+                        &mut store,
+                        &mut dag_store,
+                        vec![&parent],
+                        &justifications,
+                    )
+                };
+                latest[creator_index] = next;
+            }
+        }
+
+        let dag = dag_store.get_representation().expect("dag representation");
+        let selected = Finalizer::run(
+            &dag,
+            FtThreshold::from_ppm(300_000),
+            &genesis.block_hash,
+            0,
+            |(_hash, _ft)| async { Ok::<(), KvStoreError>(()) },
+            &FinalizerConf::default(),
+        )
+        .await
+        .expect("complete finalizer run")
+        .expect("older candidate should finalize");
+
+        assert_eq!(selected.0, finalizable.block_hash);
+
+        Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
+    })
+    .await
+    .expect("validation fixture");
+}
+
+#[tokio::test]
+async fn finalizer_requires_main_parent_convergence_in_a_reconvergent_dag() {
+    with_storage(|mut store, mut dag_store| async move {
+        let validators = [
+            generate_validator(Some("Reconvergent Validator 1")),
+            generate_validator(Some("Reconvergent Validator 2")),
+            generate_validator(Some("Reconvergent Validator 3")),
+        ];
+        let bonds: Vec<Bond> = validators
+            .iter()
+            .map(|validator| Bond {
+                validator: validator.clone(),
+                stake: 10,
+            })
+            .collect();
+        let genesis = create_genesis_block(
+            &mut store,
+            &mut dag_store,
+            None,
+            Some(bonds.clone()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        let creators: Vec<_> = validators
+            .iter()
+            .map(|validator| create_block_creator(&bonds, &genesis, validator))
+            .collect();
+        let genesis_justifications: HashMap<&Validator, &BlockMessage> = validators
+            .iter()
+            .map(|validator| (validator, &genesis))
+            .collect();
+        let mut left = creators[0](
+            &mut store,
+            &mut dag_store,
+            vec![&genesis],
+            &genesis_justifications,
+        );
+        let mut right = creators[1](
+            &mut store,
+            &mut dag_store,
+            vec![&genesis],
+            &genesis_justifications,
+        );
+
+        for _ in 0..24 {
+            let justifications = HashMap::from([
+                (&validators[0], &left),
+                (&validators[1], &right),
+                (&validators[2], &genesis),
+            ]);
+            let next_left = creators[0](
+                &mut store,
+                &mut dag_store,
+                vec![&left, &right],
+                &justifications,
+            );
+            let next_right = creators[1](
+                &mut store,
+                &mut dag_store,
+                vec![&right, &left],
+                &justifications,
+            );
+            left = next_left;
+            right = next_right;
+        }
+
+        let dag = dag_store.get_representation().expect("dag representation");
+        let split_result = Finalizer::run(
+            &dag,
+            FtThreshold::from_f32_lossy(-1.0),
+            &genesis.block_hash,
+            0,
+            |(_hash, _ft)| async { Ok::<(), KvStoreError>(()) },
+            &FinalizerConf::default(),
+        )
+        .await
+        .expect("split finalizer run");
+        assert!(split_result.is_none());
+
+        let split_justifications = HashMap::from([
+            (&validators[0], &left),
+            (&validators[1], &right),
+            (&validators[2], &genesis),
+        ]);
+        let converged = creators[2](
+            &mut store,
+            &mut dag_store,
+            vec![&left, &right],
+            &split_justifications,
+        );
+        let converged_justifications: HashMap<&Validator, &BlockMessage> = validators
+            .iter()
+            .map(|validator| (validator, &converged))
+            .collect();
+        for creator in &creators {
+            creator(
+                &mut store,
+                &mut dag_store,
+                vec![&converged],
+                &converged_justifications,
+            );
+        }
+
+        let dag = dag_store.get_representation().expect("dag representation");
+        let selected = Finalizer::run(
+            &dag,
+            FtThreshold::from_f32_lossy(-1.0),
+            &genesis.block_hash,
+            0,
+            |(_hash, _ft)| async { Ok::<(), KvStoreError>(()) },
+            &FinalizerConf::default(),
+        )
+        .await
+        .expect("converged finalizer run")
+        .expect("shared main-parent vote should finalize");
+
+        assert_eq!(selected.0, converged.block_hash);
 
         Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
     })
@@ -516,6 +1334,7 @@ async fn finalizer_growth_feedback_loop_stale_justification_chain() {
                 let _ = Finalizer::run(
                     &dag,
                     FtThreshold::from_f32_lossy(-1.0),
+                    &genesis.block_hash,
                     0,
                     |(_m, _ft)| async { Ok::<(), KvStoreError>(()) },
                     &FinalizerConf::default(),

@@ -5,6 +5,13 @@
 - Implements concurrent smart contract execution with Byzantine Fault Tolerant consensus
 - If the user does not provide enough information with their prompts, ask the user to clarify before executing the task
 
+**Glossary:** Project terminology lives in [docs/Glossary.md](docs/Glossary.md).
+This glossary is load-bearing: documentation, ADRs, and code reviews cite
+its anchors. See `**Preferred usage.**` subsections for canonical vs. avoided
+phrasings. Mathematical notation and theorem naming remain in
+`docs/theory/slashing/design/02-glossary-and-notation.md` pending unification
+(BACKLOG-DOC-001).
+
 ## Architecture Overview
 
 # F1R3node Rust — Pure Rust Blockchain Node
@@ -180,9 +187,11 @@ Both settings take effect at the next session start.
 - Keep commit messages clean and professional
 
 ### Branch Strategy
-- `main` — stable releases
-- `master` — current working branch
-- Feature branches for development
+- `master` — default branch and release line; maintainers promote `dev` → `master`
+- `dev` — integration branch; feature and fix PRs target this
+- Feature branches (`feature/`, `fix/`, `docs/`, `perf/`, `chore/`) branch from and target `dev`
+- `hotfix/` branches from and target `master`, then `master` is merged back into `dev`
+- There is no `main` branch, and `staging` is deprecated (fully contained in `dev`)
 
 ## Relationship to f1r3node
 This repo was extracted from `F1R3FLY-io/f1r3fly` (`rust/dev` branch). Key differences:

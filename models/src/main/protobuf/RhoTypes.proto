@@ -45,6 +45,41 @@ message Par {
       [(scalapb.field).type =
            "coop.rchain.models.AlwaysEqual[scala.collection.immutable.BitSet]"];
   bool connective_used = 10;
+  repeated CostSignedTerm cost_signed_terms = 13;
+  repeated CostStack cost_stacks = 14;
+}
+
+message CostSignature {
+  oneof value {
+    bytes ground = 1;
+    sint32 bound_level = 2;
+    Par quote = 3;
+    CostSignatureCompound compound = 4;
+    Par name = 5;
+    bool unit = 6;
+  }
+}
+
+message CostSignatureCompound {
+  repeated CostSignature elements = 1;
+}
+
+message CostSignedTerm {
+  Par body = 1;
+  CostSignature signature = 2;
+}
+
+message CostRegion {
+  bytes instance_id = 1;
+  CostSignature signature = 2;
+}
+
+message CostAuthority {
+  repeated CostRegion regions = 1;
+}
+
+message CostStack {
+  repeated CostSignature cells = 1;
 }
 
 /**
@@ -61,6 +96,7 @@ message TaggedContinuation {
   // every spatial pattern has matched, so cross-channel guards see every
   // bound variable. Empty Par = no guard. See plan §7.12.
   Par guard = 3;
+  CostAuthority cost_authority = 4;
 }
 
 /**
@@ -84,6 +120,8 @@ message ListParWithRandom {
   repeated Par pars = 1;
   bytes randomState = 2
       [(scalapb.field).type = "coop.rchain.crypto.hash.Blake2b512Random"];
+  CostAuthority cost_authority = 3;
+  CostStack cost_stack = 4;
 }
 
 // While we use vars in both positions, when producing the normalized
@@ -131,6 +169,7 @@ message ReceiveBind {
   Par source = 2 [(scalapb.field).no_box = true];
   Var remainder = 3;
   int32 freeCount = 4;
+  CostSignature cost_signature = 5;
 }
 
 message BindPattern {
@@ -335,14 +374,14 @@ message EPathMap {
 message EZipper {
   // The underlying PathMap being navigated
   EPathMap pathmap = 1;
-  
+
   // Current path position in the zipper (list of path segments as bytes)
   // Each segment is encoded as bytes representing a Par value
   repeated bytes current_path = 2;
-  
+
   // Whether this is a write zipper (true) or read zipper (false)
   bool is_write_zipper = 3;
-  
+
   // Metadata from the PathMap
   bytes locallyFree = 4
       [(scalapb.field).type =

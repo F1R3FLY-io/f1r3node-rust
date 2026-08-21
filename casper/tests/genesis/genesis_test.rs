@@ -27,6 +27,7 @@ use casper::rust::genesis::contracts::proof_of_stake::ProofOfStake;
 use casper::rust::genesis::contracts::validator::Validator;
 use casper::rust::genesis::genesis::Genesis;
 use casper::rust::util::bonds_parser::BondsParser;
+use casper::rust::util::rholang::costacc::vault_payer::balance_query_source;
 use casper::rust::util::rholang::interpreter_util;
 use casper::rust::util::rholang::runtime_manager::RuntimeManager;
 use casper::rust::util::rholang::tools::Tools;
@@ -38,6 +39,8 @@ use crypto::rust::signatures::signatures_alg::SignaturesAlg;
 use models::rust::casper::protocol::casper_message::{BlockMessage, Bond};
 use models::rust::string_ops::StringOps;
 use prost::bytes::Bytes;
+use rholang::rust::interpreter::accounting::Sig;
+use rholang::rust::interpreter::rho_type::RhoNumber;
 use rspace_plus_plus::rspace::history::Either;
 use tempfile::TempDir;
 
@@ -122,14 +125,8 @@ fn mk_casper_snapshot(dag: KeyValueDagRepresentation) -> CasperSnapshot {
 
 fn validators() -> Vec<(String, usize)> {
     vec![
-        (
-            "299670c52849f1aa82e8dfe5be872c16b600bf09cc8983e04b903411358f2de6".to_string(),
-            0,
-        ),
-        (
-            "6bf1b2753501d02d386789506a6d93681d2299c6edfd4455f596b97bc5725968".to_string(),
-            1,
-        ),
+        (hex::encode(&construct_deploy::DEFAULT_PUB.bytes), 0),
+        (hex::encode(&construct_deploy::DEFAULT_PUB2.bytes), 1),
     ]
 }
 
@@ -240,11 +237,15 @@ async fn from_input_files(
             validators,
             pos_multi_sig_public_keys: DEFAULT_POS_MULTI_SIG_PUBLIC_KEYS.to_vec(),
             pos_multi_sig_quorum: DEFAULT_POS_MULTI_SIG_PUBLIC_KEYS.len() as u32 - 1,
+            max_cosigners_per_deploy: casper::rust::casper_conf::DEFAULT_MAX_COSIGNERS_PER_DEPLOY,
+            initial_phlogiston: casper::rust::casper_conf::DEFAULT_INITIAL_PHLOGISTON,
+            epoch_phlogiston: casper::rust::casper_conf::DEFAULT_EPOCH_PHLOGISTON,
         },
         vaults,
+        client_fuel_allocations: Vec::new(),
         supply: i64::MAX,
         block_number: params.block_number,
-        version: 1,
+        version: casper::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION,
         native_token_name: "F1R3CAP".to_string(),
         native_token_symbol: "F1R3".to_string(),
         native_token_decimals: 8,
@@ -255,6 +256,142 @@ async fn from_input_files(
     let genesis_block = Genesis::create_genesis_block(runtime_manager, &genesis).await?;
 
     Ok(genesis_block)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn genesis_system_vault_funding_is_committed_and_replay_deterministic() {
+    with_gen_resources(|runtime_manager, _genesis_path, _log, _time| async move {
+        let (_, _, genesis) = GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(3));
+        let expected = Genesis::vaults_with_protocol_funding(
+            &genesis.proof_of_stake,
+            &genesis.vaults,
+            &genesis.client_fuel_allocations,
+        )
+        .unwrap();
+        let genesis_block = Genesis::create_genesis_block(&runtime_manager, &genesis)
+            .await
+            .unwrap();
+        let mut authority_regions = 0;
+        for processed in &genesis_block.body.deploys {
+            let witness = processed
+                .authority_cost_witness
+                .as_ref()
+                .expect("genesis deploy must carry authority evidence");
+            for event in &witness.events {
+                let authority = event
+                    .authority
+                    .as_ref()
+                    .expect("genesis authority event must carry regions");
+                for region in &authority.regions {
+                    authority_regions += 1;
+                    assert_eq!(
+                        rholang::rust::interpreter::accounting::authority::cost_signature_to_sig(
+                            region
+                                .signature
+                                .as_ref()
+                                .expect("genesis authority region must carry a signature"),
+                        )
+                        .unwrap(),
+                        Sig::Unit
+                    );
+                }
+            }
+        }
+        assert!(authority_regions > 0);
+        for vault in &expected {
+            let (values, _) = runtime_manager
+                .play_exploratory_deploy(
+                    balance_query_source(&vault.vault_address),
+                    &genesis_block.body.state.post_state_hash,
+                    None,
+                )
+                .await
+                .unwrap();
+            assert_eq!(values.len(), 1);
+            assert_eq!(
+                RhoNumber::unapply(&values[0]).unwrap(),
+                i64::try_from(vault.initial_balance).unwrap()
+            );
+        }
+
+        let replayed_from_consensus = runtime_manager
+            .replay_block_from_consensus_data(
+                &genesis_block.body.state.pre_state_hash,
+                &genesis_block,
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            replayed_from_consensus,
+            genesis_block.body.state.post_state_hash
+        );
+    })
+    .await
+}
+
+#[test]
+fn genesis_protocol_funding_rejects_invalid_economic_parameters() {
+    let (_, _, baseline) = GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(3));
+
+    let mut invalid_epoch_length = baseline.clone();
+    invalid_epoch_length.proof_of_stake.epoch_length = 0;
+    assert!(Genesis::vaults_with_protocol_funding(
+        &invalid_epoch_length.proof_of_stake,
+        &invalid_epoch_length.vaults,
+        &invalid_epoch_length.client_fuel_allocations,
+    )
+    .is_err());
+
+    let mut invalid_cosigner_limit = baseline.clone();
+    invalid_cosigner_limit
+        .proof_of_stake
+        .max_cosigners_per_deploy = 0;
+    assert!(Genesis::vaults_with_protocol_funding(
+        &invalid_cosigner_limit.proof_of_stake,
+        &invalid_cosigner_limit.vaults,
+        &invalid_cosigner_limit.client_fuel_allocations,
+    )
+    .is_err());
+
+    let mut invalid_initial_phlogiston = baseline.clone();
+    invalid_initial_phlogiston.proof_of_stake.initial_phlogiston = -1;
+    assert!(Genesis::vaults_with_protocol_funding(
+        &invalid_initial_phlogiston.proof_of_stake,
+        &invalid_initial_phlogiston.vaults,
+        &invalid_initial_phlogiston.client_fuel_allocations,
+    )
+    .is_err());
+
+    let mut invalid_epoch_phlogiston = baseline.clone();
+    invalid_epoch_phlogiston.proof_of_stake.epoch_phlogiston = -1;
+    assert!(Genesis::vaults_with_protocol_funding(
+        &invalid_epoch_phlogiston.proof_of_stake,
+        &invalid_epoch_phlogiston.vaults,
+        &invalid_epoch_phlogiston.client_fuel_allocations,
+    )
+    .is_err());
+
+    let mut empty_validator_key = baseline.clone();
+    empty_validator_key.proof_of_stake.validators[0].pk =
+        crypto::rust::public_key::PublicKey::from_bytes(&[]);
+    assert!(Genesis::vaults_with_protocol_funding(
+        &empty_validator_key.proof_of_stake,
+        &empty_validator_key.vaults,
+        &empty_validator_key.client_fuel_allocations,
+    )
+    .is_err());
+
+    let mut empty_client_key = baseline;
+    empty_client_key
+        .client_fuel_allocations
+        .push((crypto::rust::public_key::PublicKey::from_bytes(&[]), 1));
+    assert!(Genesis::vaults_with_protocol_funding(
+        &empty_client_key.proof_of_stake,
+        &empty_client_key.vaults,
+        &empty_client_key.client_fuel_allocations,
+    )
+    .is_err());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -352,9 +489,8 @@ async fn genesis_from_input_files_should_create_a_genesis_block_with_the_right_b
                 })
                 .await;
 
-            assert!(result.is_ok(), "Genesis creation should succeed");
-
-            let genesis_block = result.unwrap();
+            let genesis_block =
+                result.unwrap_or_else(|error| panic!("Genesis creation should succeed: {error}"));
             let bonds = proto_util::bonds(&genesis_block);
 
             let expected_bonds: Vec<Bond> = validators()
@@ -454,9 +590,8 @@ async fn genesis_from_input_files_should_detect_an_existing_bonds_file_in_the_de
             )
             .await;
 
-            assert!(result.is_ok(), "Genesis creation should succeed");
-
-            let genesis_block = result.unwrap();
+            let genesis_block =
+                result.unwrap_or_else(|error| panic!("Genesis creation should succeed: {error}"));
             let bonds = proto_util::bonds(&genesis_block);
 
             let expected_bonds: Vec<Bond> = validators()

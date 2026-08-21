@@ -90,6 +90,8 @@ The Cargo workspace contains 10 crates:
 |----------|-------------|
 | [Rholang Evaluator](../rholang/README.md) | Language overview, CLI usage, known issues |
 | [Rholang Module Docs](./rholang/) | Interpreter internals, reducer, system processes |
+| [End-to-End Cost Accounting](./rholang/20-wallet-funded-processes.md) | Wallet and purse deposits, process funding, refill, cryptographic authority, settlement, replay, and finality |
+| [Cost Model](./rholang/13-cost-model.md) | Integrated compute-authority and quantitative-byte accounting |
 | [Rholang Tutorial](./rholang/rholangtut.md) | Language tutorial |
 | [Pattern Matching](./rholang/rholangmatchingtut.md) | Pattern matching guide |
 | [Ollama Integration](./rholang/ollama.md) | Local LLM integration via Ollama |
@@ -102,6 +104,16 @@ The Cargo workspace contains 10 crates:
 | [Crypto Module](./crypto/) | Hashing, signing, certificates |
 | [Schnorr/FROST Design](./schnorr-frost-secp256k1-design.md) | Schnorr and FROST signature scheme design |
 | [Schnorr/FROST Status](./schnorr-frost-secp256k1-status.md) | Implementation status |
+
+### Cost Accounting and Formal Verification
+
+| Document | Description |
+|----------|-------------|
+| [Implementation Guide](./theory/cost-accounting-impl/) | Reading paths and subsystem ownership from wallet ingress through Casper finality |
+| [Parallel Runtime and Shard Isolation](./theory/cost-accounting-impl/parallel-runtime-and-shard-isolation.md) | Node-local root authority, independent validator transitions, and arbitrary-shard resource frames |
+| [Formal Verification Catalog](./theory/cost-accounted-rho-verification.md) | Rocq, TLA+, Apalache, Sage, Verus, Loom, property, and integration evidence |
+| [Conformance Properties](./theory/cost-accounting-conformance-properties.md) | Publication-to-implementation obligation ledger |
+| [Threat Model](./theory/cost-accounting-threat-model.md) | Consensus, replay, custody, resource, and cryptographic failure analysis |
 
 ### Architecture & Design
 

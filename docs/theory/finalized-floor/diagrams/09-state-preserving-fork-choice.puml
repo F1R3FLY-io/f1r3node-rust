@@ -1,0 +1,53 @@
+@startuml 09-state-preserving-fork-choice
+!theme plain
+
+skinparam backgroundColor #FFFFFF
+skinparam sequence {
+  ArrowColor #263238
+  LifeLineBorderColor #455A64
+  LifeLineBackgroundColor #ECEFF1
+  ParticipantBorderColor #37474F
+  ParticipantFontColor #102027
+}
+skinparam participant {
+  BackgroundColor<<commit>> #D1C4E9
+  BackgroundColor<<latest>> #BBDEFB
+  BackgroundColor<<choice>> #FFE082
+  BackgroundColor<<closure>> #C8E6C9
+  BackgroundColor<<replay>> #B2DFDB
+  BackgroundColor<<block>> #FFECB3
+}
+skinparam note {
+  BackgroundColor #FFF8E1
+  BorderColor #F57F17
+}
+skinparam defaultFontName "monospace"
+skinparam defaultFontSize 10
+
+title Causal parent retention with certified-floor replay
+
+participant "Captured LFB\nF" as LFB <<commit>>
+participant "Valid latest messages\n{P1, P2, D}" as Latest <<latest>>
+participant "Estimator and\ndirect parents" as Choice <<choice>>
+participant "Parent causal\nclosure" as Closure <<closure>>
+participant "Deterministic\nmerge replay" as Replay <<replay>>
+participant "Proposed block" as Block <<block>>
+
+Latest -[#1565C0]> Choice : retain every valid tip\nas fork-choice evidence
+Choice -[#2E7D32]> Closure : direct parents are reachability-maximal\nevery valid tip is covered
+Closure -[#2E7D32]> Replay : all above-floor causal inputs
+LFB -[#1565C0]> Replay : protected floor state
+Replay -[#2E7D32]> Block : floor state + accepted deltas\nexactly reject conflicting deltas
+Choice -[#2E7D32]> Block : declare compact direct parents
+
+note over Latest, Block
+Stale or effect-dropping tips remain causal evidence. Replay decides their
+above-floor effects deterministically; no such rejection may erase an effect
+already represented by the certified floor.
+end note
+
+Latest -[#546E7A]> Choice : alternate snapshot has no valid tip
+LFB -[#F57C00]> Choice : exact fallback parent = F
+Choice -[#2E7D32]> Block : declare {F}
+
+@enduml

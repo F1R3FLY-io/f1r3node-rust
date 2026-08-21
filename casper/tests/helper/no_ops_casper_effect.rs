@@ -219,7 +219,7 @@ impl Casper for NoOpsCasperEffect {
         Ok(self.estimator_func.clone())
     }
 
-    fn get_version(&self) -> i64 { 1 }
+    fn get_version(&self) -> i64 { self.shard_conf.casper_version }
 
     fn get_all_from_buffer(&self) -> Result<Vec<BlockMessage>, CasperError> { Ok(Vec::new()) }
 

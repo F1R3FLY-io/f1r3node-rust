@@ -14,7 +14,7 @@ use models::rust::block_metadata::BlockMetadata;
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{
     BlockMessage, Body, Bond, DeployData, Header, Justification, ProcessedDeploy,
-    ProcessedSystemDeploy,
+    ProcessedSystemDeploy, SystemDeployData,
 };
 use models::rust::validator::Validator;
 use rholang::rust::interpreter::deploy_parameters::DeployParameters;
@@ -358,10 +358,7 @@ pub fn to_latest_message(
 
 pub fn block_header(parent_hashes: Vec<ByteString>, version: i64, timestamp: i64) -> Header {
     Header {
-        parents_hash_list: parent_hashes
-            .into_iter()
-            .map(|bytes| bytes.into())
-            .collect(),
+        parents_hash_list: parent_hashes.into_iter().map(Into::into).collect(),
         timestamp,
         version,
         extra_bytes: prost::bytes::Bytes::new(),
@@ -441,16 +438,43 @@ pub fn get_rholang_deploy_params(dd: &Signed<DeployData>) -> DeployParameters {
 }
 
 pub fn dependencies_hashes_of(b: &BlockMessage) -> Vec<BlockHash> {
-    let missing_parents: HashSet<BlockHash> = parent_hashes(b).into_iter().collect();
-    let missing_justifications: HashSet<BlockHash> = b
-        .justifications
-        .iter()
-        .map(|j| j.latest_block_hash.clone())
-        .collect();
-
-    (missing_parents.union(&missing_justifications))
-        .cloned()
+    parent_hashes(b)
+        .into_iter()
+        .chain(
+            b.justifications
+                .iter()
+                .map(|justification| justification.latest_block_hash.clone()),
+        )
+        .chain(slash_evidence_hashes_of(b))
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
         .collect()
+}
+
+pub fn slash_evidence_hashes_of(b: &BlockMessage) -> HashSet<BlockHash> {
+    b.body
+        .system_deploys
+        .iter()
+        .filter_map(|deploy| match deploy {
+            ProcessedSystemDeploy::Succeeded {
+                system_deploy:
+                    SystemDeployData::Slash {
+                        invalid_block_hash, ..
+                    },
+                ..
+            } => Some(invalid_block_hash.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+pub fn dependency_source_satisfies(
+    is_slash_evidence: bool,
+    in_dag: bool,
+    in_equivocation_tracker: bool,
+    in_invalid_index: bool,
+) -> bool {
+    in_dag || in_invalid_index || (in_equivocation_tracker && !is_slash_evidence)
 }
 
 // Return hashes of all blocks that are yet to be seen by the passed in block
@@ -610,6 +634,7 @@ mod fork_choice_b1_repro_tests {
     use std::sync::Arc;
 
     use block_storage::rust::dag::block_metadata_store::BlockMetadataStore;
+    use models::rust::casper::protocol::casper_message::{F1r3flyState, StateEffectId};
     use parking_lot::RwLock as PlRwLock;
     use proptest::prelude::*;
     use prost::bytes::Bytes;
@@ -619,6 +644,48 @@ mod fork_choice_b1_repro_tests {
     use super::*;
 
     fn h(n: u8) -> Bytes { Bytes::from(vec![n; 32]) }
+
+    #[test]
+    fn rejected_state_effect_identity_and_order_are_committed_by_block_hash() {
+        let body = Body {
+            state: F1r3flyState {
+                pre_state_hash: h(1),
+                post_state_hash: h(2),
+                bonds: Vec::new(),
+                block_number: 1,
+            },
+            deploys: Vec::new(),
+            rejected_deploys: Vec::new(),
+            rejected_state_effects: Vec::new(),
+            system_deploys: Vec::new(),
+            extra_bytes: Bytes::new(),
+        };
+        let block = unsigned_block_proto(
+            body,
+            block_header(vec![h(0).to_vec()], 2, 1),
+            Vec::new(),
+            "root".to_string(),
+            None,
+        );
+        let original_hash = hash_block(&block);
+
+        let mut with_effects = block.clone();
+        with_effects.body.rejected_state_effects = vec![
+            StateEffectId {
+                source_block_hash: h(3),
+                execution_index: 1,
+            },
+            StateEffectId {
+                source_block_hash: h(4),
+                execution_index: 2,
+            },
+        ];
+        let effect_hash = hash_block(&with_effects);
+        assert_ne!(original_hash, effect_hash);
+
+        with_effects.body.rejected_state_effects.swap(0, 1);
+        assert_ne!(effect_hash, hash_block(&with_effects));
+    }
 
     fn md(hash: Bytes, parents: Vec<Bytes>, num: i64, v: &Bytes) -> BlockMetadata {
         let mut wm = BTreeMap::new();
@@ -635,6 +702,9 @@ mod fork_choice_b1_repro_tests {
             directly_finalized: false,
             finalized: false,
             fault_tolerance_value: 0.0,
+            successful_state_effect_indices: Default::default(),
+            rejected_state_effects: Default::default(),
+            protocol_version: crate::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION,
         }
     }
 
@@ -669,6 +739,9 @@ mod fork_choice_b1_repro_tests {
             deploy_index: Arc::new(PlRwLock::new(KeyValueTypedStoreImpl::new(Arc::new(
                 InMemoryKeyValueStore::new(),
             )))),
+            deploy_occurrence_index: Arc::new(PlRwLock::new(KeyValueTypedStoreImpl::new(
+                Arc::new(InMemoryKeyValueStore::new()),
+            ))),
             floor_index: KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
             frontier_index: KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
         }

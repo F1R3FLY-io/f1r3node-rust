@@ -1,5 +1,3 @@
-// See casper/src/main/scala/coop/rchain/casper/util/rholang/costacc/CloseBlockDeploy.scala
-
 use std::collections::HashMap;
 
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
@@ -11,10 +9,13 @@ use crate::rust::errors::CasperError;
 use crate::rust::util::rholang::system_deploy::SystemDeployTrait;
 use crate::rust::util::rholang::system_deploy_user_error::SystemDeployUserError;
 
-// Currently we use parentHash as initial random seed
 #[derive(Clone)]
 pub struct CloseBlockDeploy {
     pub initial_rand: Blake2b512Random,
+}
+
+impl CloseBlockDeploy {
+    pub fn new(initial_rand: Blake2b512Random) -> Self { Self { initial_rand } }
 }
 
 impl SystemDeployTrait for CloseBlockDeploy {
@@ -49,22 +50,18 @@ impl SystemDeployTrait for CloseBlockDeploy {
 
     fn env(&mut self) -> HashMap<String, Par> {
         let mut env = HashMap::new();
-
         let (sys_key, sys_value) = self.mk_sys_auth_token();
         env.insert(sys_key, sys_value);
-
         let (ret_key, ret_value) = self.mk_return_channel();
         env.insert(ret_key, ret_value);
-
         env
     }
 
     fn return_channel(&mut self) -> Result<Par, CasperError> {
-        match self.env().get("sys:casper:return") {
-            Some(par) => Ok(par.clone()),
-            None => Err(CasperError::RuntimeError(
+        self.env().get("sys:casper:return").cloned().ok_or_else(|| {
+            CasperError::RuntimeError(
                 "Return channel not found. This is a compile time error.".to_string(),
-            )),
-        }
+            )
+        })
     }
 }

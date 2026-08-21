@@ -748,6 +748,13 @@ async fn multi_parent_casper_should_prepare_to_slash_a_block_that_includes_an_in
             deploy_log: vec![],
             is_failed: false,
             system_deploy_error: None,
+            cosigners: Vec::new(),
+            cosigner_threshold: 0,
+            pre_state_hash: Vec::<u8>::new().into(),
+            post_state_hash: Vec::<u8>::new().into(),
+            authority_funding_certificate: None,
+            authority_cost_witness: None,
+            admission_status: Default::default(),
         })
         .collect();
 
@@ -1126,6 +1133,7 @@ async fn build_block_with_invalid_justification(
         state: post_state,
         deploys: deploys.to_vec(),
         rejected_deploys: vec![],
+        rejected_state_effects: vec![],
         system_deploys: vec![],
         extra_bytes: Bytes::new(),
     };

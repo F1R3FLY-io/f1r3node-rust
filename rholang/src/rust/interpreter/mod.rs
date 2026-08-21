@@ -17,6 +17,7 @@ pub mod grpc_client_service;
 pub mod interpreter;
 pub mod io;
 pub mod matcher;
+pub mod metering;
 pub mod merging;
 pub mod metrics_constants;
 pub mod ollama_service;

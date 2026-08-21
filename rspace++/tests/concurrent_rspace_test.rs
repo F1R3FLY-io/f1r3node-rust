@@ -8,12 +8,15 @@
 use std::sync::Arc;
 use std::time::Instant;
 
+use proptest::prelude::*;
 use rspace_plus_plus::rspace::r#match::Match;
+use rspace_plus_plus::rspace::replay_rspace::ReplayRSpace;
 use rspace_plus_plus::rspace::rspace::RSpace;
 use rspace_plus_plus::rspace::rspace_interface::ISpace;
 use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 use serde::{Deserialize, Serialize};
+use tokio::runtime::Builder;
 
 #[derive(Clone, Debug, Serialize, Deserialize, Default, PartialEq)]
 struct WildcardPattern;
@@ -28,11 +31,201 @@ impl Match<WildcardPattern, String, StringCont> for AlwaysMatch {
 }
 
 type TestSpace = RSpace<String, WildcardPattern, String, StringCont>;
+type TestReplaySpace = ReplayRSpace<String, WildcardPattern, String, StringCont>;
 
 async fn make_rspace() -> TestSpace {
     let mut kvm = InMemoryStoreManager::new();
     let store = kvm.r_space_stores().await.unwrap();
     RSpace::create(store, Arc::new(Box::new(AlwaysMatch))).unwrap()
+}
+
+async fn make_rspace_with_replay() -> (TestSpace, TestReplaySpace) {
+    let mut kvm = InMemoryStoreManager::new();
+    let store = kvm.r_space_stores().await.unwrap();
+    RSpace::create_with_replay(store, Arc::new(Box::new(AlwaysMatch))).unwrap()
+}
+
+async fn create_isolated_branch_roots(
+    base: &TestSpace,
+) -> [rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash; 3] {
+    let first = base.spawn().unwrap();
+    let second = base.spawn().unwrap();
+    let third = base.spawn().unwrap();
+    let (first, second, third) = tokio::join!(
+        async {
+            first
+                .produce("branch-0".to_string(), "value-0".to_string(), false)
+                .await
+                .unwrap();
+            first.create_checkpoint().await.unwrap().root
+        },
+        async {
+            second
+                .produce("branch-1".to_string(), "value-1".to_string(), false)
+                .await
+                .unwrap();
+            second.create_checkpoint().await.unwrap().root
+        },
+        async {
+            third
+                .produce("branch-2".to_string(), "value-2".to_string(), false)
+                .await
+                .unwrap();
+            third.create_checkpoint().await.unwrap().root
+        }
+    );
+    [first, second, third]
+}
+
+async fn assert_replay_branch(
+    reader: &TestReplaySpace,
+    root: &rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash,
+    branch: usize,
+) {
+    assert_eq!(reader.get_root().await, *root);
+    for candidate in 0..3 {
+        let values = reader
+            .get_data(&format!("branch-{candidate}"))
+            .await
+            .into_iter()
+            .map(|datum| datum.a)
+            .collect::<Vec<_>>();
+        if candidate == branch {
+            assert_eq!(values, vec![format!("value-{candidate}")]);
+        } else {
+            assert!(values.is_empty());
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn spawned_checkpoints_remain_recorded_and_state_isolated() {
+    let base = make_rspace().await;
+    let base_root = base.create_checkpoint().await.unwrap().root;
+    let left = base.spawn().unwrap();
+    let right = base.spawn().unwrap();
+
+    let (left_checkpoint, right_checkpoint) = tokio::join!(
+        async {
+            left.produce("left".to_string(), "left-value".to_string(), false)
+                .await
+                .unwrap();
+            left.create_checkpoint().await.unwrap()
+        },
+        async {
+            right
+                .produce("right".to_string(), "right-value".to_string(), false)
+                .await
+                .unwrap();
+            right.create_checkpoint().await.unwrap()
+        }
+    );
+
+    assert_ne!(left_checkpoint.root, base_root);
+    assert_ne!(right_checkpoint.root, base_root);
+    assert_ne!(left_checkpoint.root, right_checkpoint.root);
+    let roots = base.get_history_repository();
+    assert!(roots.contains_root(&left_checkpoint.root).unwrap());
+    assert!(roots.contains_root(&right_checkpoint.root).unwrap());
+
+    let left_reader = base.spawn().unwrap();
+    let right_reader = base.spawn().unwrap();
+    let (left_reset, right_reset) = tokio::join!(
+        left_reader.reset(&left_checkpoint.root),
+        right_reader.reset(&right_checkpoint.root)
+    );
+    left_reset.unwrap();
+    right_reset.unwrap();
+
+    assert_eq!(
+        left_reader
+            .get_data(&"left".to_string())
+            .await
+            .into_iter()
+            .map(|datum| datum.a)
+            .collect::<Vec<_>>(),
+        vec!["left-value".to_string()]
+    );
+    assert!(left_reader.get_data(&"right".to_string()).await.is_empty());
+    assert_eq!(
+        right_reader
+            .get_data(&"right".to_string())
+            .await
+            .into_iter()
+            .map(|datum| datum.a)
+            .collect::<Vec<_>>(),
+        vec!["right-value".to_string()]
+    );
+    assert!(right_reader.get_data(&"left".to_string()).await.is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn replay_spawns_keep_explicit_roots_during_concurrent_resets() {
+    let (base, replay) = make_rspace_with_replay().await;
+    let roots = create_isolated_branch_roots(&base).await;
+    let first = replay.spawn().unwrap();
+    let second = replay.spawn().unwrap();
+    let third = replay.spawn().unwrap();
+
+    let (first_reset, second_reset, third_reset) =
+        tokio::join!(first.reset(&roots[2]), second.reset(&roots[0]), third.reset(&roots[1]));
+    first_reset.unwrap();
+    second_reset.unwrap();
+    third_reset.unwrap();
+
+    let (_, _, _) = tokio::join!(
+        assert_replay_branch(&first, &roots[2], 2),
+        assert_replay_branch(&second, &roots[0], 0),
+        assert_replay_branch(&third, &roots[1], 1)
+    );
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig {
+        cases: 32,
+        ..ProptestConfig::default()
+    })]
+
+    #[test]
+    fn arbitrary_concurrent_replay_resets_preserve_each_local_root(
+        schedule in proptest::collection::vec(0usize..3, 1..25)
+    ) {
+        Builder::new_multi_thread()
+            .worker_threads(4)
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(async move {
+                let (base, replay) = make_rspace_with_replay().await;
+                let roots = create_isolated_branch_roots(&base).await;
+                let readers = [
+                    replay.spawn().unwrap(),
+                    replay.spawn().unwrap(),
+                    replay.spawn().unwrap(),
+                ];
+
+                for offset in 0..schedule.len() {
+                    let selected = [
+                        schedule[offset],
+                        schedule[(offset + 1) % schedule.len()],
+                        schedule[(offset + 2) % schedule.len()],
+                    ];
+                    let (first, second, third) = tokio::join!(
+                        readers[0].reset(&roots[selected[0]]),
+                        readers[1].reset(&roots[selected[1]]),
+                        readers[2].reset(&roots[selected[2]])
+                    );
+                    first.unwrap();
+                    second.unwrap();
+                    third.unwrap();
+                    let (_, _, _) = tokio::join!(
+                        assert_replay_branch(&readers[0], &roots[selected[0]], selected[0]),
+                        assert_replay_branch(&readers[1], &roots[selected[1]], selected[1]),
+                        assert_replay_branch(&readers[2], &roots[selected[2]], selected[2])
+                    );
+                }
+            });
+    }
 }
 
 async fn timed_produces(space: &TestSpace, ops: usize) -> std::time::Duration {
@@ -147,5 +340,94 @@ async fn event_log_insert_complexity_is_not_quadratic() {
         "event_log O(n^2) regression: {LARGE} ops took {ratio:.1}x longer than {SMALL} ops \
          (expected <25x for O(n) growth). Fix: use push() instead of Vec::insert(0,..) in \
          log_produce, log_consume, log_comm.",
+    );
+}
+
+// Regression guard for f1r3node-rust#43 / issue-43.
+//
+// Originally found the bug: real replay data (mntd EVAL ms / PAR x columns)
+// showed a single deploy's evaluate() cost growing with the number of
+// *other* deploys already replayed in the same block (57ms at cap=1 ->
+// 372ms at cap=100 per deploy, identical per-deploy work). PR #72's own
+// fixes and the COMM_CON/COMM_PRO histograms (sub-ms even at cap=100) ruled
+// out rspace++ commit/lock work as the cause. Root cause:
+// `create_soft_checkpoint()`, which `replay_runtime.rs::run_user_deploy` calls
+// unconditionally at the start of *every* user deploy (for failure rollback)
+// and which measured EVAL time includes, called `HotStore::snapshot()`, which
+// used to full-clone all five DashMaps into plain HashMaps -- O(total store
+// size), not O(1) or O(per-deploy work). See git history for pre-fix
+// baseline measurements.
+//
+// Fix: HotStore's five state maps are now backed by NUM_SHARDS (256)
+// independent `imbl::HashMap` shards (`hot_store.rs`, `ShardedMap`).
+// `snapshot()` clones each shard's current persistent-map value directly
+// (an O(1) refcount bump per shard) instead of rebuilding a flat map by
+// visiting every entry -- O(NUM_SHARDS), not O(store size). This test now
+// guards the fix: time growth from a 100x larger store should stay small
+// and bounded, not track the store-size growth.
+//
+// Methodology note: the first `create_soft_checkpoint()` call against a
+// freshly built store pays one-off heap first-touch cost unrelated to
+// store size (measured: ~50us vs. a steady-state ~18us, regardless of
+// prefill size). Each `avg_checkpoint_us` run below discards that first
+// sample before averaging so the measured ratio reflects snapshot cost,
+// not allocator warm-up -- without the discard this test's ratio isn't a
+// reliable signal and can fail on correct code at block-realistic sizes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn soft_checkpoint_cost_does_not_scale_with_accumulated_store_size() {
+    const SMALL_PREFILL: usize = 100;
+    const LARGE_PREFILL: usize = 10_000;
+    const SAMPLES: usize = 50;
+
+    async fn avg_checkpoint_us(prefill: usize, samples: usize) -> f64 {
+        let space = make_rspace().await;
+        // Simulate `prefill` earlier deploys' worth of accumulated HotStore
+        // state -- distinct channels, one produce each, matching how
+        // TransferTerm deploys each touch their own vault/registry channels.
+        for i in 0..prefill {
+            space
+                .produce(format!("prefill_ch_{i}"), "datum".to_string(), false)
+                .await
+                .unwrap();
+        }
+
+        // Discard the first call -- pays one-off heap first-touch cost, not
+        // snapshot cost (see methodology note above).
+        let _ = space.create_soft_checkpoint().await;
+
+        // Time create_soft_checkpoint() in isolation -- this is exactly what
+        // run_user_deploy() pays once per deploy, before evaluate() even
+        // starts, purely for failure-rollback support.
+        let t0 = Instant::now();
+        for _ in 0..samples {
+            let _ = space.create_soft_checkpoint().await;
+        }
+        t0.elapsed().as_micros() as f64 / samples as f64
+    }
+
+    let small_us = avg_checkpoint_us(SMALL_PREFILL, SAMPLES).await;
+    let large_us = avg_checkpoint_us(LARGE_PREFILL, SAMPLES).await;
+    let ratio = large_us / small_us.max(1e-9);
+    let store_size_ratio = LARGE_PREFILL as f64 / SMALL_PREFILL as f64;
+
+    eprintln!(
+        "soft_checkpoint_cost: store_size={SMALL_PREFILL} -> {small_us:.1}us/call   \
+         store_size={LARGE_PREFILL} -> {large_us:.1}us/call   time_ratio={ratio:.1}x   \
+         store_size_ratio={store_size_ratio:.1}x"
+    );
+
+    // Post-fix (sharded persistent maps), with warm-up discarded: driven by
+    // shard-lock/allocation overhead, not store size. O(store-size) (the
+    // pre-fix behavior) would put this near store_size_ratio (100x); a
+    // regression back to that pattern should fail this bound well before
+    // reaching it. Some margin above the steady-state ratio is kept for
+    // CI timing variance.
+    const MAX_RATIO: f64 = 8.0;
+    assert!(
+        ratio < MAX_RATIO,
+        "create_soft_checkpoint() scaled with accumulated store size ({ratio:.1}x for a \
+         {store_size_ratio:.1}x larger store, expected <{MAX_RATIO:.0}x) -- regression back to an \
+         O(store-size) HotStore::snapshot(), the issue-43 root cause. See ShardedMap in \
+         hot_store.rs.",
     );
 }

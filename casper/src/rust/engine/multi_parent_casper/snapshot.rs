@@ -16,7 +16,6 @@ use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use comm::rust::transport::transport_layer::TransportLayer;
 use crypto::rust::signatures::signed::Signed;
 use models::rust::block_hash::BlockHash;
-use models::rust::block_metadata::BlockMetadata;
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{BlockMessage, DeployData, Justification};
 use models::rust::validator::Validator;
@@ -79,10 +78,7 @@ fn branch_unfinalized_user_deploy_score(
     root_hash: &BlockHash,
     last_finalized_block: &BlockHash,
 ) -> Result<Option<DeployBranchScore>, CasperError> {
-    let last_finalized_number = dag
-        .lookup(last_finalized_block)?
-        .map(|meta| meta.block_number)
-        .unwrap_or(-1);
+    let last_finalized_number = dag.lookup_unsafe(last_finalized_block)?.block_number;
     let root_meta = dag.lookup_unsafe(root_hash)?;
     let mut stack = vec![root_hash.clone()];
     let mut seen: HashSet<BlockHash> = HashSet::new();
@@ -102,16 +98,20 @@ fn branch_unfinalized_user_deploy_score(
             continue;
         }
 
-        if let Some(sigs) = block_store.deploy_sigs(&block_hash)? {
-            if !sigs.is_empty() {
-                latest_deploy_block_number = Some(
-                    latest_deploy_block_number
-                        .map(|current| current.max(block_meta.block_number))
-                        .unwrap_or(block_meta.block_number),
-                );
-                for sig in sigs {
-                    deploy_sigs.insert(sig.into());
-                }
+        let sigs = block_store.deploy_sigs(&block_hash)?.ok_or_else(|| {
+            CasperError::RuntimeError(format!(
+                "Missing block {} while scoring deploy-support branches",
+                PrettyPrinter::build_string_bytes(&block_hash)
+            ))
+        })?;
+        if !sigs.is_empty() {
+            latest_deploy_block_number = Some(
+                latest_deploy_block_number
+                    .map(|current| current.max(block_meta.block_number))
+                    .unwrap_or(block_meta.block_number),
+            );
+            for sig in sigs {
+                deploy_sigs.insert(sig.into());
             }
         }
 
@@ -229,34 +229,6 @@ fn prune_dag_covered_parents(
     Ok(parents)
 }
 
-fn candidate_scope_has_rejected_deploys(
-    dag: &KeyValueDagRepresentation,
-    block_store: &KeyValueBlockStore,
-    parent_metas: Vec<BlockMetadata>,
-    current_block_number: i64,
-    deploy_lifespan: i64,
-) -> Result<bool, CasperError> {
-    let earliest_block_number = current_block_number - deploy_lifespan;
-    let neighbor_fn = |block_metadata: &BlockMetadata| {
-        proto_util::get_parent_metadatas_above_block_number(
-            block_metadata,
-            earliest_block_number,
-            dag,
-        )
-    };
-    let traversal_result = dag_ops::try_bf_traverse(parent_metas, neighbor_fn)?;
-    for block_metadata in traversal_result {
-        if block_store
-            .rejected_deploy_sigs(&block_metadata.block_hash)?
-            .map(|sigs| !sigs.is_empty())
-            .unwrap_or(false)
-        {
-            return Ok(true);
-        }
-    }
-    Ok(false)
-}
-
 /// Snapshot-time approximation of buffer recoverability, used only to decide
 /// whether `compute_snapshot` enters a recovery context (which narrows parent
 /// selection). Runs BEFORE the snapshot's `deploys_in_scope` /
@@ -272,10 +244,12 @@ fn candidate_scope_has_rejected_deploys(
 fn local_rejected_buffer_has_recoverable_deploys(
     block_store: &KeyValueBlockStore,
     rejected_deploy_buffer: &Arc<Mutex<KeyValueRejectedDeployBuffer>>,
+    finalized_floor: &BlockHash,
     parent_hashes: &[BlockHash],
     current_block_number: i64,
     current_time_millis: i64,
     deploy_lifespan: i64,
+    protocol_version: i64,
 ) -> Result<bool, CasperError> {
     let buffered_deploys: HashSet<Signed<DeployData>> = {
         let buffer_guard = rejected_deploy_buffer
@@ -308,8 +282,13 @@ fn local_rejected_buffer_has_recoverable_deploys(
         .min()
         .map(|height| height.min(earliest_block_number))
         .unwrap_or(earliest_block_number);
-    let canonical_won =
-        interpreter_util::canonical_won_sigs(block_store, parent_hashes, scan_floor)?;
+    let canonical_won = interpreter_util::canonical_won_sigs_at_floor(
+        block_store,
+        finalized_floor,
+        parent_hashes,
+        scan_floor,
+        protocol_version,
+    )?;
 
     Ok(candidates
         .iter()
@@ -327,6 +306,23 @@ fn deploy_scope_cache_key_matches(
     cached_generation == current_generation
         && cached_lfb == current_lfb
         && cached_parents == current_parents
+}
+
+fn fallback_to_finalized_parent(
+    block_store: &KeyValueBlockStore,
+    parents: Vec<BlockMessage>,
+    last_finalized_block: &BlockHash,
+) -> Result<Vec<BlockMessage>, CasperError> {
+    if !parents.is_empty() {
+        return Ok(parents);
+    }
+    let finalized = block_store.get(last_finalized_block)?.ok_or_else(|| {
+        shared::rust::store::key_value_store::KvStoreError::KeyNotFound(format!(
+            "last finalized block missing from block store: {}",
+            hex::encode(last_finalized_block)
+        ))
+    })?;
+    Ok(vec![finalized])
 }
 
 pub(crate) fn record_dag_cardinality_metrics(dag: &KeyValueDagRepresentation) {
@@ -374,6 +370,7 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
         }
         valid_latest_msgs.insert(validator.clone(), hash.clone());
     }
+    let snapshot_lfb_hash = dag.last_finalized_block();
     // Storage errors during snapshot construction must propagate: a
     // silent empty `valid_latest_metas` would feed wrong fork-choice on
     // the consensus hot path. Bug #17 / T-9.20 hardened this contract
@@ -437,32 +434,27 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
         &dag,
         &this.block_store,
         sorted_parents_list,
-        &dag.last_finalized_block(),
+        &snapshot_lfb_hash,
     )?;
 
-    let (rejected_deploys_in_candidate_scope, recovery_backlog) = if sorted_parents_list.is_empty()
-    {
-        (false, false)
+    let recovery_backlog = if sorted_parents_list.is_empty() {
+        false
     } else {
         let sorted_parent_hashes: Vec<BlockHash> = sorted_parents_list
             .iter()
             .map(|block| block.block_hash.clone())
             .collect();
-        let sorted_parent_metas = dag.lookups_unsafe(sorted_parent_hashes.clone())?;
-        let candidate_block_number = proto_util::max_block_number_metadata(&sorted_parent_metas)
+        let candidate_block_number = sorted_parents_list
+            .iter()
+            .map(|block| block.body.state.block_number)
+            .max()
+            .unwrap_or(0)
             .checked_add(1)
             .ok_or_else(|| {
                 CasperError::RuntimeError(
                     "candidate max_block_num overflow while checking recovery context".to_string(),
                 )
             })?;
-        let rejected_deploys_in_candidate_scope = candidate_scope_has_rejected_deploys(
-            &dag,
-            &this.block_store,
-            sorted_parent_metas,
-            candidate_block_number,
-            this.casper_shard_conf.deploy_lifespan,
-        )?;
         let now_u128 = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
             .map_err(CasperError::from)?
@@ -473,32 +465,28 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
                 now_u128
             ))
         })?;
-        let recovery_backlog = local_rejected_buffer_has_recoverable_deploys(
+        local_rejected_buffer_has_recoverable_deploys(
             &this.block_store,
             &this.rejected_deploy_buffer,
+            &snapshot_lfb_hash,
             &sorted_parent_hashes,
             candidate_block_number,
             now_millis,
             this.casper_shard_conf.deploy_lifespan,
-        )?;
-        (rejected_deploys_in_candidate_scope, recovery_backlog)
+            this.casper_shard_conf.casper_version,
+        )?
     };
-    let recovery_context = recovery_backlog || rejected_deploys_in_candidate_scope;
 
-    let unfiltered_parents = if sorted_parents_list.is_empty() {
-        vec![this.approved_block.clone()]
-    } else if recovery_context && sorted_parents_list.len() > 1 {
+    let unfiltered_parents = if recovery_backlog && sorted_parents_list.len() > 1 {
         tracing::info!(
             target: "f1r3fly.casper.recovery",
-            "Parent selection narrowed for deploy recovery: original_parents={}, selected_main={}, local_buffer={}, rejected_in_scope={}",
+            "Parent selection narrowed for selectable deploy recovery: original_parents={}, selected_main={}",
             sorted_parents_list.len(),
-            PrettyPrinter::build_string_bytes(&sorted_parents_list[0].block_hash),
-            recovery_backlog,
-            rejected_deploys_in_candidate_scope
+            PrettyPrinter::build_string_bytes(&sorted_parents_list[0].block_hash)
         );
         vec![sorted_parents_list[0].clone()]
     } else {
-        sorted_parents_list
+        fallback_to_finalized_parent(&this.block_store, sorted_parents_list, &snapshot_lfb_hash)?
     };
 
     let unfiltered_parents_count = unfiltered_parents.len();
@@ -625,8 +613,6 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
 
     let (deploys_in_scope, rejected_in_scope) = {
         let current_dag_generation = this.block_dag_storage.current_generation();
-        let snapshot_lfb_hash = dag.last_finalized_block();
-
         let cached: Option<(Arc<dashmap::DashSet<Bytes>>, Arc<dashmap::DashSet<Bytes>>)> = {
             // C16: `deploys_in_scope_cache` is a `parking_lot::Mutex` —
             // no poison propagation, `.lock()` returns the guard
@@ -688,7 +674,6 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
             let traversal_result = dag_ops::try_bf_traverse(parent_metas, neighbor_fn)?;
 
             let all_deploys = Arc::new(dashmap::DashSet::new());
-            let all_rejected = Arc::new(dashmap::DashSet::new());
             for block_metadata in traversal_result {
                 let block_deploy_sigs = this
                     .block_store
@@ -702,26 +687,23 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
                 for deploy_sig in block_deploy_sigs {
                     all_deploys.insert(deploy_sig.into());
                 }
-                // Merge of dev: a deploy that was executed in this block
-                // and rejected by a descendant merge contributes to the
-                // rejected_in_scope set. The block creator and validator
-                // intersect this with deploys_in_scope to decide
-                // re-inclusion eligibility for merge-rejected deploys.
-                if let Some(rejected_sigs) = this
-                    .block_store
-                    .rejected_deploy_sigs(&block_metadata.block_hash)?
-                {
-                    for sig in rejected_sigs {
-                        all_rejected.insert(sig.into());
-                    }
-                }
             }
+
+            let (_, canonical_rejected) = interpreter_util::canonical_disposition_sets_at_floor(
+                &this.block_store,
+                &snapshot_lfb_hash,
+                &parent_hashes,
+                earliest_block_number,
+                this.casper_shard_conf.casper_version,
+            )?;
+            let all_rejected: Arc<dashmap::DashSet<Bytes>> =
+                Arc::new(canonical_rejected.into_iter().collect());
 
             // C16: parking_lot::Mutex — no poison propagation.
             let mut cache_guard = this.deploys_in_scope_cache.lock();
             *cache_guard = Some((
                 current_dag_generation,
-                snapshot_lfb_hash,
+                snapshot_lfb_hash.clone(),
                 parent_hashes.clone(),
                 all_deploys.clone(),
                 all_rejected.clone(),
@@ -741,7 +723,7 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
     .set(deploys_in_scope_sig_bytes_estimate);
 
     let invalid_blocks = dag.invalid_blocks_map()?;
-    let last_finalized_block = dag.last_finalized_block();
+    let last_finalized_block = snapshot_lfb_hash;
     record_dag_cardinality_metrics(&dag);
 
     Ok(CasperSnapshot {
@@ -857,7 +839,7 @@ mod tests {
     use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
 
     use super::{
-        candidate_scope_has_rejected_deploys, deploy_scope_cache_key_matches,
+        deploy_scope_cache_key_matches, fallback_to_finalized_parent,
         local_rejected_buffer_has_recoverable_deploys, prefer_deploy_support_main_parent,
         prune_dag_covered_parents,
     };
@@ -892,6 +874,124 @@ mod tests {
             &lfb,
             &[parent_b, parent_a]
         ));
+    }
+
+    #[tokio::test]
+    async fn empty_valid_parent_set_falls_back_to_last_finalized_block() {
+        let mut kvm = InMemoryStoreManager::new();
+        let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
+            .await
+            .expect("block store");
+        let finalized = block_implicits::get_random_block(
+            Some(7),
+            Some(3),
+            None,
+            None,
+            None,
+            Some(crate::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION),
+            Some(7),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            None,
+            Some("test".to_string()),
+            None,
+        );
+        block_store
+            .put_block_message(&finalized)
+            .expect("store finalized block");
+
+        let selected =
+            fallback_to_finalized_parent(&block_store, Vec::new(), &finalized.block_hash)
+                .expect("finalized fallback");
+        assert_eq!(selected, vec![finalized.clone()]);
+
+        let declared = vec![finalized.clone()];
+        assert_eq!(
+            fallback_to_finalized_parent(&block_store, declared.clone(), &finalized.block_hash)
+                .expect("declared parents"),
+            declared
+        );
+        assert!(fallback_to_finalized_parent(
+            &block_store,
+            Vec::new(),
+            &prost::bytes::Bytes::from_static(b"missing"),
+        )
+        .is_err());
+    }
+
+    #[tokio::test]
+    async fn deploy_support_scoring_fails_closed_on_missing_committed_inputs() {
+        let mut kvm = InMemoryStoreManager::new();
+        let dag_storage = BlockDagKeyValueStorage::new(&mut kvm)
+            .await
+            .expect("dag storage");
+        let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
+            .await
+            .expect("block store");
+        let genesis = block_implicits::get_random_block(
+            Some(0),
+            Some(0),
+            None,
+            None,
+            None,
+            None,
+            Some(0),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            None,
+            Some("test".to_string()),
+            None,
+        );
+        let child = block_implicits::get_random_block(
+            Some(1),
+            Some(1),
+            None,
+            None,
+            None,
+            None,
+            Some(1),
+            Some(vec![genesis.block_hash.clone()]),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            None,
+            Some("test".to_string()),
+            None,
+        );
+        dag_storage
+            .insert(&genesis, InsertMode::Approved)
+            .expect("insert genesis");
+        dag_storage
+            .insert(&child, InsertMode::Normal)
+            .expect("insert child");
+        block_store
+            .put_block_message(&genesis)
+            .expect("store genesis");
+        let dag = dag_storage.get_representation().expect("dag");
+
+        let body_error = branch_unfinalized_user_deploy_score(
+            &dag,
+            &block_store,
+            &child.block_hash,
+            &genesis.block_hash,
+        )
+        .expect_err("missing child body");
+        assert!(body_error
+            .to_string()
+            .contains("scoring deploy-support branches"));
+
+        let missing_lfb = prost::bytes::Bytes::from_static(b"missing-lfb");
+        assert!(branch_unfinalized_user_deploy_score(
+            &dag,
+            &block_store,
+            &child.block_hash,
+            &missing_lfb,
+        )
+        .is_err());
     }
 
     #[tokio::test]
@@ -1043,6 +1143,23 @@ mod tests {
                 .await
                 .expect("rejected deploy buffer"),
         ));
+        let floor = block_implicits::get_random_block(
+            Some(0),
+            Some(0),
+            None,
+            None,
+            None,
+            Some(crate::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION),
+            Some(0),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            None,
+            Some("test".to_string()),
+            None,
+        );
+        block_store.put_block_message(&floor).expect("store floor");
         let now = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
             .expect("time")
@@ -1078,10 +1195,12 @@ mod tests {
         assert!(!local_rejected_buffer_has_recoverable_deploys(
             &block_store,
             &rejected_deploy_buffer,
+            &floor.block_hash,
             &[],
             20,
             now,
-            50
+            50,
+            crate::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION,
         )
         .expect("check unselectable backlog"));
 
@@ -1101,10 +1220,12 @@ mod tests {
         assert!(local_rejected_buffer_has_recoverable_deploys(
             &block_store,
             &rejected_deploy_buffer,
+            &floor.block_hash,
             &[],
             20,
             now,
-            50
+            50,
+            crate::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION,
         )
         .expect("check selectable backlog"));
     }
@@ -1159,23 +1280,27 @@ mod tests {
         assert!(!local_rejected_buffer_has_recoverable_deploys(
             &block_store,
             &rejected_deploy_buffer,
+            &parent.block_hash,
             std::slice::from_ref(&parent.block_hash),
             20,
             now,
-            50
+            50,
+            crate::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION,
         )
         .expect("check canonical backlog"));
     }
 
     #[tokio::test]
-    async fn candidate_scope_detects_rejected_deploys_without_local_buffer() {
+    async fn historical_rejection_without_local_backlog_does_not_trigger_recovery() {
         let mut kvm = InMemoryStoreManager::new();
         let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
             .await
             .expect("block store");
-        let dag_storage = BlockDagKeyValueStorage::new(&mut kvm)
-            .await
-            .expect("dag storage");
+        let rejected_deploy_buffer = Arc::new(Mutex::new(
+            KeyValueRejectedDeployBuffer::new(&mut kvm)
+                .await
+                .expect("rejected deploy buffer"),
+        ));
 
         let genesis = block_implicits::get_random_block(
             Some(0),
@@ -1209,33 +1334,25 @@ mod tests {
             Some("test".to_string()),
             None,
         );
-        rejected.body.rejected_deploys = vec![RejectedDeploy {
-            sig: prost::bytes::Bytes::from_static(b"sig"),
-        }];
+        rejected.body.rejected_deploys = vec![RejectedDeploy::legacy(
+            prost::bytes::Bytes::from_static(b"sig"),
+        )];
 
-        block_store
-            .put_block_message(&genesis)
-            .expect("store genesis");
         block_store
             .put_block_message(&rejected)
             .expect("store rejected");
-        dag_storage
-            .insert(&genesis, InsertMode::Approved)
-            .expect("insert genesis");
-        dag_storage
-            .insert(&rejected, InsertMode::Normal)
-            .expect("insert rejected");
 
-        let dag = dag_storage.get_representation().expect("dag");
-        let parent_meta = dag
-            .lookup(&rejected.block_hash)
-            .expect("lookup rejected")
-            .expect("rejected metadata");
-
-        assert!(
-            candidate_scope_has_rejected_deploys(&dag, &block_store, vec![parent_meta], 2, 50)
-                .expect("candidate scope")
-        );
+        assert!(!local_rejected_buffer_has_recoverable_deploys(
+            &block_store,
+            &rejected_deploy_buffer,
+            &rejected.block_hash,
+            std::slice::from_ref(&rejected.block_hash),
+            2,
+            i64::MAX,
+            50,
+            1,
+        )
+        .expect("empty backlog"));
     }
 
     #[tokio::test]

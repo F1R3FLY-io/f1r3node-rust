@@ -110,26 +110,23 @@ from the bonded path). This is a state-migration operation applied
 identically on every node at the same height — it is **not** consensus
 logic and is **not** needed on a fresh genesis (where no pollution exists).
 
-### 12.2.1b BlockException → InvalidTransaction coercion (attribution caveat — FV audit #4)
+### 12.2.1b Objective invalidity and local validation faults
 
-**Status: reachable; soundness depends on determinism.** `block_processor.rs`
-(`:357-376`) coerces a receiver-local `BlockException` (a runtime error raised
-while the *receiver* validates a block) into the slashable variant
-`InvalidTransaction`, dispatched against the *sender* via the same
-record-creation path as a genuine invalid block. The coercion is now modelled in
-Rocq (`BugFixDispatcher.v §4`: `coerce_block_outcome`,
-`block_exception_coerces_to_slashable`, re-exported
-`main_T9_3_block_exception_coerces_to_slashable`), so the taxonomy FV explicitly
-covers this control-flow edge and confirms the coerced variant is slashable
-(hence T-9.3 dispatch completeness fires a record).
+**Status: separated and verified.** `block_processor.rs` dispatches only an
+explicit `BlockError::Invalid` through invalid-DAG recording and slash-evidence
+creation. `BlockException` represents a receiver-local inability to complete
+validation, remains outside the DAG, and enters bounded dependency recovery.
+Deterministic replay mismatches and invalid cost certificates are converted to
+the explicit `InvalidTransaction` path before reaching the processor.
 
-**Caveat (not proven).** Attributing a *receiver-local* exception to the
-*sender* is sound only if `BlockException` is **deterministic** across nodes. A
-transient/local exception (storage error, non-deterministic replay) on one node
-but not another would let the nodes disagree on the sender's slashability — the
-same divergence family as §12.2.1a. The dispatch-completeness theorem does not
-establish determinism; if a non-deterministic `BlockException` path is
-reachable, the coercion needs a determinism guard (design separately).
+Rocq models the boundary in `BugFixDispatcher.v §4`:
+`block_exception_is_not_objective_invalidity` proves that an exception has no
+invalid-block classification, while `explicit_slashable_invalidity_dispatches`
+retains T-9.3 completeness for every explicitly classified slashable variant.
+The top-level export is `main_T9_3_block_exception_is_local_fault`. The TLA+
+end-to-end cost/consensus model independently checks that a recoverable local
+fault never creates slash evidence and includes an expected-refutation control
+which fails when that mapping is reintroduced.
 
 ### 12.2.2 Storage layer
 

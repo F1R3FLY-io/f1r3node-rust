@@ -33,12 +33,15 @@ use crate::rust::metrics_constants::{
     BLOCK_VALIDATION_STEP_CHECKPOINT_TIME_METRIC,
     BLOCK_VALIDATION_STEP_NEGLECTED_EQUIVOCATION_TIME_METRIC,
     BLOCK_VALIDATION_STEP_NEGLECTED_INVALID_BLOCK_TIME_METRIC,
-    BLOCK_VALIDATION_STEP_PHLO_PRICE_TIME_METRIC,
-    BLOCK_VALIDATION_STEP_SIMPLE_EQUIVOCATION_TIME_METRIC, CASPER_METRICS_SOURCE,
+    BLOCK_VALIDATION_STEP_PRE_STATE_TIME_METRIC,
+    BLOCK_VALIDATION_STEP_SIMPLE_EQUIVOCATION_TIME_METRIC,
+    BLOCK_VALIDATION_STEP_SLASH_AUTHORIZATION_TIME_METRIC, CASPER_METRICS_SOURCE,
 };
 use crate::rust::slashing_authorization::checked_base_seq;
 use crate::rust::util::proto_util;
-use crate::rust::util::rholang::interpreter_util::validate_block_checkpoint;
+use crate::rust::util::rholang::interpreter_util::{
+    replay_validated_block_checkpoint, validate_block_pre_state,
+};
 use crate::rust::validate::Validate;
 
 async fn timed_step<A, Fut>(
@@ -60,21 +63,12 @@ where
     Ok((result, elapsed_str))
 }
 
-/// Runs the validator chain that's shared between `dispatch_validate` and
-/// `dispatch_validate_self_created`. The two callers differ only in
-/// whether they run `validate_block_checkpoint` + `bonds_cache` (the
-/// proposer just computed these for self-created blocks; re-running on
-/// the same snapshot is a deterministic NOOP and would only be needed
-/// if we suspected the proposer of being Byzantine against itself —
-/// which is precluded by the validator-identity check upstream).
-///
 /// Returns the outcome of `check_equivocations`. A `Left` from any
 /// intermediate validator short-circuits and is returned directly.
 async fn run_validation_steps<T: TransportLayer + Send + Sync>(
     this: &MultiParentCasperImpl<T>,
     block: &BlockMessage,
     snapshot: &mut CasperSnapshot,
-    skip_checkpoint_and_bonds: bool,
 ) -> Result<Either<BlockError, ValidBlock>, CasperError> {
     let (block_summary_result, t1) = timed_step(
         "block-summary",
@@ -101,56 +95,102 @@ async fn run_validation_steps<T: TransportLayer + Send + Sync>(
         return Ok(Either::Left(block_error));
     }
 
-    let (t2_opt, t3_opt) = if !skip_checkpoint_and_bonds {
-        let (validate_block_checkpoint_result, t2) = timed_step(
-            "checkpoint",
-            BLOCK_VALIDATION_STEP_CHECKPOINT_TIME_METRIC,
-            validate_block_checkpoint(
+    let (validate_pre_state_result, t_pre_state) = timed_step(
+        "pre-state",
+        BLOCK_VALIDATION_STEP_PRE_STATE_TIME_METRIC,
+        validate_block_pre_state(
+            block,
+            &this.block_store,
+            snapshot,
+            &this.runtime_manager,
+            Some(&this.rejected_deploy_buffer),
+        ),
+    )
+    .await?;
+    let pre_state_hash = match validate_pre_state_result {
+        Either::Left(block_error) => return Ok(Either::Left(block_error)),
+        Either::Right(None) => {
+            return Ok(Either::Left(BlockError::Invalid(
+                InvalidBlock::InvalidTransaction,
+            )))
+        }
+        Either::Right(Some(pre_state_hash)) => pre_state_hash,
+    };
+
+    let (slash_authorization_result, t_slash) = timed_step(
+        "slash-authorization",
+        BLOCK_VALIDATION_STEP_SLASH_AUTHORIZATION_TIME_METRIC,
+        async {
+            let has_slash = block.body.system_deploys.iter().any(|system_deploy| {
+                matches!(
+                    system_deploy,
+                    models::rust::casper::protocol::casper_message::ProcessedSystemDeploy::Succeeded {
+                        system_deploy: models::rust::casper::protocol::casper_message::SystemDeployData::Slash { .. },
+                        ..
+                    }
+                )
+            });
+            let bonds_map = if has_slash {
+                match this
+                    .runtime_manager
+                    .compute_bonds(&pre_state_hash)
+                    .await
+                {
+                    Ok(bonds) => bonds
+                        .into_iter()
+                        .map(|bond| (bond.validator, bond.stake))
+                        .collect(),
+                    Err(error) => {
+                        return Ok(Either::Left(BlockError::BlockException(error)));
+                    }
+                }
+            } else {
+                std::collections::HashMap::new()
+            };
+            Ok(Validate::slash_deploy_authorization(
+                block, snapshot, &bonds_map,
+            ))
+        },
+    )
+    .await?;
+    if let Either::Left(block_error) = slash_authorization_result {
+        return Ok(Either::Left(block_error));
+    }
+
+    let (validate_block_checkpoint_result, t2) = timed_step(
+        "checkpoint-replay",
+        BLOCK_VALIDATION_STEP_CHECKPOINT_TIME_METRIC,
+        replay_validated_block_checkpoint(block, snapshot, &this.runtime_manager, pre_state_hash),
+    )
+    .await?;
+    tracing::debug!(target: "f1r3fly.casper", "transactions-validated");
+    if let Either::Left(block_error) = validate_block_checkpoint_result {
+        return Ok(Either::Left(block_error));
+    }
+    if let Either::Right(None) = validate_block_checkpoint_result {
+        return Ok(Either::Left(BlockError::Invalid(
+            InvalidBlock::InvalidTransaction,
+        )));
+    }
+
+    let (bonds_cache_result, t3) = timed_step(
+        "bonds-cache",
+        BLOCK_VALIDATION_STEP_BONDS_CACHE_TIME_METRIC,
+        async {
+            Ok(Validate::bonds_cache_from_floor(
                 block,
                 &this.block_store,
                 snapshot,
                 &this.runtime_manager,
-                Some(&this.rejected_deploy_buffer),
-            ),
-        )
-        .await?;
-        tracing::debug!(target: "f1r3fly.casper", "transactions-validated");
-        if let Either::Left(block_error) = validate_block_checkpoint_result {
-            return Ok(Either::Left(block_error));
-        }
-        // Right(None) → InvalidTransaction is safe and shares its dispatcher
-        // landing site with the BlockException arm at block_processor.rs:358 —
-        // both flow through dispatch_handle_invalid_block's is_slashable()
-        // catch-all, which mints an EquivocationRecord per T-9.3. See
-        // docs/theory/slashing/design/09-bug-fixes-and-rationale.md §9.4.
-        if let Either::Right(None) = validate_block_checkpoint_result {
-            return Ok(Either::Left(BlockError::Invalid(
-                InvalidBlock::InvalidTransaction,
-            )));
-        }
-
-        let (bonds_cache_result, t3) = timed_step(
-            "bonds-cache",
-            BLOCK_VALIDATION_STEP_BONDS_CACHE_TIME_METRIC,
-            async {
-                Ok(Validate::bonds_cache_from_floor(
-                    block,
-                    &this.block_store,
-                    snapshot,
-                    &this.runtime_manager,
-                )
-                .await)
-            },
-        )
-        .await?;
-        tracing::debug!(target: "f1r3fly.casper", "bonds-cache-validated");
-        if let Either::Left(block_error) = bonds_cache_result {
-            return Ok(Either::Left(block_error));
-        }
-        (Some(t2), Some(t3))
-    } else {
-        (None, None)
-    };
+            )
+            .await)
+        },
+    )
+    .await?;
+    tracing::debug!(target: "f1r3fly.casper", "bonds-cache-validated");
+    if let Either::Left(block_error) = bonds_cache_result {
+        return Ok(Either::Left(block_error));
+    }
 
     let (neglected_invalid_block_result, t4) = timed_step(
         "neglected-invalid-block",
@@ -184,24 +224,11 @@ async fn run_validation_steps<T: TransportLayer + Send + Sync>(
         return Ok(Either::Left(block_error));
     }
 
-    let (phlo_price_result, t6) = timed_step(
-        "phlo-price",
-        BLOCK_VALIDATION_STEP_PHLO_PRICE_TIME_METRIC,
-        async {
-            Ok(Validate::phlo_price(
-                block,
-                this.casper_shard_conf.min_phlo_price,
-            ))
-        },
-    )
-    .await?;
-    tracing::debug!(target: "f1r3fly.casper", "phlogiston-price-validated");
-    if let Either::Left(_) = phlo_price_result {
-        tracing::warn!(
-            "One or more deploys has phloPrice lower than {}",
-            this.casper_shard_conf.min_phlo_price
-        );
-    }
+    // D3 (DR-9, D.5): the per-block `phlo-price` validation step is REMOVED —
+    // deploys carry no phlo price/limit. Per-signature funding is settled at
+    // block assembly by the acceptance gate (against Σ⟦s⟧); replay re-derives
+    // the same settlement debits, and an over-admitting proposer underflows the
+    // pool (a detectable invalid block) — no separate price rule is needed.
 
     let requested_as_dependency = this
         .casper_buffer_storage
@@ -219,41 +246,25 @@ async fn run_validation_steps<T: TransportLayer + Send + Sync>(
     .await?;
     tracing::debug!(target: "f1r3fly.casper", "equivocation-validated");
 
-    let timing_breakdown = match (t2_opt, t3_opt) {
-        (Some(t2), Some(t3)) => format!(
-            "summary={}, checkpoint={}, bonds={}, neglected-invalid={}, \
-             neglected-equiv={}, phlo={}, simple-equiv={}",
-            t1, t2, t3, t4, t5, t6, t7
-        ),
-        _ => format!(
-            "summary={}, neglected-invalid={}, neglected-equiv={}, phlo={}, \
-             simple-equiv={} (checkpoint and bonds-cache skipped — self-created)",
-            t1, t4, t5, t6, t7
-        ),
-    };
+    let timing_breakdown = format!(
+        "summary={}, pre-state={}, slash-authorization={}, checkpoint-replay={}, bonds={}, neglected-invalid={}, \
+         neglected-equiv={}, simple-equiv={}",
+        t1, t_pre_state, t_slash, t2, t3, t4, t5, t7
+    );
     tracing::debug!(target: "f1r3fly.casper", "Validation timing breakdown: {}", timing_breakdown);
 
     Ok(equivocation_result)
 }
 
-/// Post-validation mergeable-channel-cache update. Shared between
-/// `dispatch_validate` and `dispatch_validate_self_created`. The
-/// `log_label` distinguishes "block" vs "self-created block" in the
-/// warn-on-error messages for operator clarity.
 async fn update_mergeable_cache_after_validation<T: TransportLayer + Send + Sync>(
     this: &MultiParentCasperImpl<T>,
     block: &BlockMessage,
-    log_label: &str,
 ) {
     if this.casper_shard_conf.max_number_of_parents <= 1 {
         return;
     }
 
-    let maybe_mergeable = this.runtime_manager.load_mergeable_channels(
-        &block.body.state.post_state_hash,
-        block.sender.clone(),
-        block.seq_num,
-    );
+    let maybe_mergeable = this.runtime_manager.load_mergeable_channels(block);
 
     match maybe_mergeable {
         Ok(mergeable_chs) => {
@@ -268,7 +279,7 @@ async fn update_mergeable_cache_after_validation<T: TransportLayer + Send + Sync
             ) {
                 tracing::warn!(
                     "Skipping block index cache update for {} {}: {}",
-                    log_label,
+                    "block",
                     PrettyPrinter::build_string_bytes(&block.block_hash),
                     err
                 );
@@ -277,7 +288,7 @@ async fn update_mergeable_cache_after_validation<T: TransportLayer + Send + Sync
         Err(err) => {
             tracing::warn!(
                 "Skipping mergeable/index cache update for {} {}: {}",
-                log_label,
+                "block",
                 PrettyPrinter::build_string_bytes(&block.block_hash),
                 err
             );
@@ -296,10 +307,7 @@ pub(crate) async fn dispatch_validate<T: TransportLayer + Send + Sync>(
     );
 
     let start = std::time::Instant::now();
-    let val_result = run_validation_steps(
-        this, block, snapshot, /* skip_checkpoint_and_bonds */ false,
-    )
-    .await?;
+    let val_result = run_validation_steps(this, block, snapshot).await?;
     let elapsed = start.elapsed();
 
     if let Either::Right(ref status) = val_result {
@@ -312,7 +320,7 @@ pub(crate) async fn dispatch_validate<T: TransportLayer + Send + Sync>(
             status,
             elapsed
         );
-        update_mergeable_cache_after_validation(this, block, "block").await;
+        update_mergeable_cache_after_validation(this, block).await;
     }
 
     Ok(val_result)
@@ -366,38 +374,7 @@ pub(crate) async fn dispatch_validate_self_created<T: TransportLayer + Send + Sy
         )));
     }
 
-    // SKIP validate_block_checkpoint and bonds_cache for self-created blocks.
-    // Rationale: the proposer's own block_creator just computed both
-    // (pre/post state hash and bond set) against the same snapshot we're
-    // validating against. Re-running these two validators would be a
-    // deterministic NOOP — the proposer cannot disagree with itself on the
-    // post-state of its own block. The validator-identity check upstream
-    // (`block_sender_has_weight` + signature verification in the receiving
-    // path) prevents any third party from passing a "self-created" block
-    // through this dispatch, so skipping checkpoint+bonds here closes no
-    // security hole. Remaining validators (block_summary, neglected-invalid,
-    // neglected-equivocation, phlo-price, simple-equivocation) all run.
-    let start = std::time::Instant::now();
-    let val_result = run_validation_steps(
-        this, block, snapshot, /* skip_checkpoint_and_bonds */ true,
-    )
-    .await?;
-    let elapsed = start.elapsed();
-
-    if let Either::Right(ref status) = val_result {
-        let block_info = PrettyPrinter::build_string_block_message(block, true);
-        let deploy_count = block.body.deploys.len();
-        tracing::info!(
-            "Self-created block validated: {} ({}d) ({:?}) [{:?}]",
-            block_info,
-            deploy_count,
-            status,
-            elapsed
-        );
-        update_mergeable_cache_after_validation(this, block, "self-created block").await;
-    }
-
-    Ok(val_result)
+    dispatch_validate(this, block, snapshot).await
 }
 
 pub(crate) fn dispatch_handle_invalid_block<T: TransportLayer + Send + Sync>(

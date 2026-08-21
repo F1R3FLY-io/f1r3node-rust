@@ -1,0 +1,115 @@
+' Proof Layers — the seven-layer stack of the cost-accounted-rho
+' formalization, with per-module line and theorem counts.
+'
+' Source of truth for Figure 7.1 in docs/theory/cost-accounted-rho-verification.md.
+' Each layer is a UML package containing its principal modules as components.
+' Inter-layer edges show the monotone dependency direction (downward only).
+' Line/theorem counts are the kernel-checked (Qed.+Defined.) totals of §11.1.
+'
+' Properties preserved:
+'   * Layers 1–3 are the original consensus-critical stack.
+'   * Layers 4–5 add weak-observation + replication-encoding support and do
+'     not propagate down into Layers 1–3.
+'   * Layers 6–7 add runtime-budget refinement and use-case adequacy.
+'   * The colour ramp encodes layer DEPTH (cool L1 → warm L7); it matches the
+'     depth ramp of the §1.7 module-dependency graph.
+'
+' Render:  plantuml -tsvg docs/theory/diagrams/proof-layers.puml
+'          (or: ./render.sh proof-layers.puml)
+
+@startuml proof-layers
+!theme plain
+
+skinparam defaultFontName "sans-serif"
+skinparam componentStyle rectangle
+skinparam shadowing false
+skinparam package {
+  BackgroundColor<<L1>> #EEF2FF
+  BackgroundColor<<L2>> #E3F2FD
+  BackgroundColor<<L3>> #FFF8E1
+  BackgroundColor<<L4>> #FCE4EC
+  BackgroundColor<<L5>> #FCE4EC
+  BackgroundColor<<L6>> #F3E5F5
+  BackgroundColor<<L7>> #F3E5F5
+  BorderColor #444444
+}
+skinparam component {
+  BackgroundColor #FFFFFF
+  BorderColor     #333333
+}
+title Proof architecture — seven monotone layers (kernel-checked counts; §7.1 / §11.1)
+
+package "Layer 1 — Syntactic Foundation" <<L1>> {
+  component "RhoSyntax\n855 lines · 31 thms\nsubst_lift_zero, head_count_se"                                  as RhoSyntax
+  component "StructEquivInversion\n253 lines · 7 thms\nhead_count, count_* functions"                         as SEI
+  component "StructEquivHeads\n1,470 lines · 45 thms\nheads, perm_equiv, se_P*_inj,\nonly_replicate (§8.7)"    as SEH
+  component "RhoReduction\n442 lines · 17 thms\nrho_step, barb + input/output_barb (§3.6)"                    as RhoRed
+}
+
+package "Layer 2 — Cost-Accounting, Translation & Settlement" <<L2>> {
+  component "CostAccountedSyntax\n231 lines · 4 thms\nsig, token, system"                                      as CAS
+  component "CostAccountedReduction\n283 lines · 5 thms\nca_step (5 rules), ca_reachable"                      as CAR
+  component "Translation\n580 lines · 12 thms\nN_tr, T_tr, P_tr, S_tr, Split, Join"                           as Trans
+  component "TokenConservation\n234 lines · 9 thms\ntoken_monotone_step / _reachable"                         as TokCon
+  component "Settlement\n140 lines · 8 thms\nescrow/refund; no mid-eval refund"                               as Settle
+  component "SlashingComposition\n570 lines · 30 thms\nslash effects preserve user fuel\n+ settlement arith"   as Slash
+  component "MergeableChannelAccounting\n347 lines · 16 thms\nWidened IntegerAdd / BitmaskOr"                 as MCA
+}
+
+package "Layer 3 — Faithfulness & Strong Bisimulation" <<L3>> {
+  component "TranslationFaithfulness\n4,183 lines · 84 thms\ncontextual reachability, per-step reverse,\nphased + recursive reflection" as TF
+  component "FuelGateSafety\n357 lines · 6 thms\nno_send_on, capability security"                              as FGS
+  component "Bisimulation\n1,248 lines · 36 thms\nbisim (coind.), post_gate_bisim,\nmulti_stuck_residue_bisim"  as Bisim
+}
+
+package "Layer 4 — Weak Barbed Observables" <<L4>> {
+  component "WeakBarbedEquiv\n259 lines · 17 thms\nweak_barb_input/output,\nweak_barbed_equiv_except x (§6.6)"  as WBE
+}
+
+package "Layer 5 — Replication Encoding Support (leaf)" <<L5>> {
+  component "Replication\n2,071 lines · 56 thms\nbang_encoding, D_encoding, unfold,\nstep-inversion (§8.7),\nreplication_encoding_forward_barb_sound (§6.6)" as Rep
+}
+
+package "Layer 6 — Runtime Budget Refinement" <<L6>> {
+  component "RuntimeBudgetRefinement\n2,084 lines · 86 thms\nconsumed+remaining==initial,\nout-of-phlo boundary, reset-from-token,\nblock/cache authentication" as RBR
+}
+
+package "Layer 7 — Use-Case Adequacy" <<L7>> {
+  component "UseCaseAdequacy\n1,985 lines · 88 thms\nproof-backed UC-CA anchors over\nconservation, settlement, slashing,\nrefinement, replay equivalence" as UCA
+}
+
+' Monotone dependency: layers depend only downward.
+RhoSyntax -down-> CAS
+RhoRed    -down-> Trans
+CAR       -down-> TokCon
+TokCon    -down-> Settle
+Settle    -down-> Slash
+Settle    -down-> MCA
+Trans     -down-> TF
+TokCon    -down-> TF
+Trans     -down-> FGS
+TF        -down-> Bisim
+RhoRed    -down-> WBE
+Bisim     -down-> Rep
+WBE       -down-> Rep
+Settle    -down-> RBR
+RBR       -down-> UCA
+TF        -down-> UCA
+Slash     -down-> UCA
+
+note right of Rep #FCE4EC
+  Layers 4–5 are leaves of the
+  consensus-critical core: nothing
+  in Layers 1–3 imports them.
+end note
+
+legend bottom
+  |= colour |= layer depth |
+  |<#EEF2FF>| L1 — syntactic foundation |
+  |<#E3F2FD>| L2 — cost-accounting / translation / settlement |
+  |<#FFF8E1>| L3 — faithfulness & bisimulation |
+  |<#FCE4EC>| L4–L5 — weak barbs & replication (leaves) |
+  |<#F3E5F5>| L6–L7 — runtime budget & use-case adequacy |
+endlegend
+
+@enduml

@@ -38,11 +38,15 @@ lazy_static! {
     };
 }
 
+// D3 (DR-9, refined by DR-31 and DR-47): `phlo_limit` / `phlo_price` are
+// retained as ignored parameters for test-caller signature stability. A deploy
+// no longer carries a client-selected escrow limit or price; protocol-4 cost is
+// measured under the finite capacity derived from authenticated authority.
 pub fn source_deploy(
     source: String,
     timestamp: i64,
-    phlo_limit: Option<i64>,
-    phlo_price: Option<i64>,
+    _phlo_limit: Option<i64>,
+    _phlo_price: Option<i64>,
     sec: Option<PrivateKey>,
     valid_after_block_number: Option<i64>,
     shard_id: Option<String>,
@@ -51,19 +55,16 @@ pub fn source_deploy(
     let sec = sec.unwrap_or_else(|| DEFAULT_SEC.clone());
     #[cfg(not(any(test, feature = "test-utils")))]
     let sec = sec.expect("ConstructDeploy: private key is required");
-    let phlo_limit = phlo_limit.unwrap_or(90000);
-    let phlo_price = phlo_price.unwrap_or(1);
     let valid_after_block_number = valid_after_block_number.unwrap_or(0);
     let shard_id = shard_id.unwrap_or_default();
 
     let data = DeployData {
         term: source,
         time_stamp: timestamp,
-        phlo_price,
-        phlo_limit,
         valid_after_block_number,
         shard_id,
         expiration_timestamp: None,
+        authority_presentations: Vec::new(),
     };
 
     Signed::create(data, Box::new(Secp256k1), sec).map_err(|e| CasperError::SigningError(e))
@@ -96,13 +97,12 @@ pub fn source_deploy_now_full(
     valid_after_block_number: Option<i64>,
     shard_id: Option<String>,
 ) -> Result<Signed<DeployData>, CasperError> {
-    let phlo_limit = phlo_limit.unwrap_or(1000000);
     let timestamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis() as i64;
 
     source_deploy(
         source,
         timestamp,
-        Some(phlo_limit),
+        phlo_limit,
         phlo_price,
         sec,
         valid_after_block_number,
@@ -128,5 +128,12 @@ pub fn basic_processed_deploy(
         deploy_log: Vec::new(),
         is_failed: false,
         system_deploy_error: None,
+        cosigners: Vec::new(),
+        cosigner_threshold: 0,
+        pre_state_hash: prost::bytes::Bytes::new(),
+        post_state_hash: prost::bytes::Bytes::new(),
+        authority_funding_certificate: None,
+        authority_cost_witness: None,
+        admission_status: Default::default(),
     })
 }

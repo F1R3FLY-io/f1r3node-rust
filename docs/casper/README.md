@@ -196,6 +196,24 @@ When the conflict-set merger inspects a shared channel, it looks up the channel'
 
 To diagnose a suspected merge rejection, run with `RUST_LOG=f1r3fly.merge.tag_check=trace` to see which channels match a `MergeType` and which do not.
 
+#### Derived evidence authentication
+
+The per-deployment mergeable-difference vector is derived evidence, not a block
+field. Each node therefore obtains it only from its own successful execution or
+replay. The cache key binds the block's pre-state, post-state, creator, sequence
+number, and canonical executed-payload digest. This prevents equivocations that
+share the old post-state/creator/sequence tuple from overwriting one another.
+Replay publishes the vector only after effect validation and exact final-state
+equality; rejection publishes no entry.
+
+Last-finalized-state synchronization transfers blocks and authenticated RSpace
+trie data but does not import peer-supplied merge vectors. The legacy request and
+response message types remain wire-decodable during rolling migration: a node
+with the requested block sends an empty response, and a synchronizing node
+ignores every response payload. A missing entry is reconstructed through local
+replay before merge. See [mergeable evidence
+authentication](../theory/cost-accounting-impl/mergeable-evidence-authentication.md).
+
 #### Pitfalls when authoring contracts that use mergeable-tagged channels
 
 Mergeable-tagged channels rely on a contract-maintained singleton-Datum invariant: at any observation point the channel holds zero or one Datum. Registry.rho upholds this with the lock pattern `for (@val <- @chan) { @chan!(newVal) }` — the consume removes the existing Datum, the contract publishes a fresh one. Two situations break the invariant and silently corrupt the contract's own state without breaking consensus:

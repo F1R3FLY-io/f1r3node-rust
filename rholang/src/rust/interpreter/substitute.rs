@@ -1,11 +1,12 @@
 use models::rhoapi::connective::ConnectiveInstance;
+use models::rhoapi::cost_signature::Value as CostSignatureValue;
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::var::VarInstance;
 use models::rhoapi::{
-    Bundle, Connective, ConnectiveBody, EAnd, EDiv, EEq, EGt, EGte, EList, ELt, ELte, EMatches,
-    EMethod, EMinus, EMinusMinus, EMod, EMult, ENeg, ENeq, ENot, EOr, EPercentPercent, EPlus,
-    EPlusPlus, ETuple, EVar, Expr, If, Match, MatchCase, New, Par, Receive, ReceiveBind, Send, Var,
-    VarRef,
+    Bundle, Connective, ConnectiveBody, CostSignature, CostSignatureCompound, CostSignedTerm,
+    CostStack, EAnd, EDiv, EEq, EGt, EGte, EList, ELt, ELte, EMatches, EMethod, EMinus,
+    EMinusMinus, EMod, EMult, ENeg, ENeq, ENot, EOr, EPercentPercent, EPlus, EPlusPlus, ETuple,
+    EVar, Expr, If, Match, MatchCase, New, Par, Receive, ReceiveBind, Send, Var, VarRef,
 };
 use models::rust::bundle_ops::BundleOps;
 use models::rust::par_map::ParMap;
@@ -13,6 +14,7 @@ use models::rust::par_map_type_mapper::ParMapTypeMapper;
 use models::rust::par_set::ParSet;
 use models::rust::par_set_type_mapper::ParSetTypeMapper;
 use models::rust::rholang::implicits::{concatenate_pars, single_bundle};
+use models::rust::rholang::sorter::cost_accounting_sorter::sort_signature;
 use models::rust::rholang::sorter::if_sort_matcher::IfSortMatcher;
 use models::rust::rholang::sorter::match_sort_matcher::MatchSortMatcher;
 use models::rust::rholang::sorter::new_sort_matcher::NewSortMatcher;
@@ -24,10 +26,10 @@ use models::rust::sorted_par_hash_set::SortedParHashSet;
 use models::rust::sorted_par_map::SortedParMap;
 use rspace_plus_plus::rspace::history::Either;
 
-use super::accounting::_cost;
 use super::accounting::costs::Cost;
 use super::env::Env;
 use super::errors::InterpreterError;
+use super::metering::MeteredMachine;
 use super::unwrap_option_safe;
 use super::util::{prepend_connective, prepend_expr};
 
@@ -45,7 +47,7 @@ pub trait SubstituteTrait<A> {
 
 #[derive(Clone)]
 pub struct Substitute {
-    pub cost: _cost,
+    pub metering: MeteredMachine,
 }
 
 impl Substitute {
@@ -62,15 +64,17 @@ impl Substitute {
         // scala 'charge' function built in here
         match self.substitute(term.clone(), depth, env) {
             Ok(subst_term) => {
-                self.cost.charge(Cost::create(
-                    subst_term.encoded_len() as i64,
+                self.metering.reserve_substitution(Cost::create(
+                    (subst_term.encoded_len() as i64).max(1),
                     "substitution",
                 ))?;
                 Ok(subst_term)
             }
             Err(th) => {
-                self.cost
-                    .charge(Cost::create(term.encoded_len() as i64, ""))?;
+                self.metering.reserve_substitution(Cost::create(
+                    (term.encoded_len() as i64).max(1),
+                    "substitution",
+                ))?;
                 Err(th)
             }
         }
@@ -89,15 +93,17 @@ impl Substitute {
         // scala 'charge' function built in here
         match self.substitute_no_sort(term.clone(), depth, env) {
             Ok(subst_term) => {
-                self.cost.charge(Cost::create(
-                    subst_term.encoded_len() as i64,
+                self.metering.reserve_substitution(Cost::create(
+                    (subst_term.encoded_len() as i64).max(1),
                     "substitution",
                 ))?;
                 Ok(subst_term)
             }
             Err(th) => {
-                self.cost
-                    .charge(Cost::create(term.encoded_len() as i64, ""))?;
+                self.metering.reserve_substitution(Cost::create(
+                    (term.encoded_len() as i64).max(1),
+                    "substitution",
+                ))?;
                 Err(th)
             }
         }
@@ -152,6 +158,76 @@ impl Substitute {
                 None => Ok(Either::Left(term)),
             }
         }
+    }
+
+    pub(crate) fn substitute_cost_signature(
+        &self,
+        signature: CostSignature,
+        depth: i32,
+        env: &Env<Par>,
+    ) -> Result<CostSignature, InterpreterError> {
+        let value = match signature.value {
+            Some(CostSignatureValue::Unit(value)) => CostSignatureValue::Unit(value),
+            Some(CostSignatureValue::Ground(bytes)) => CostSignatureValue::Ground(bytes),
+            Some(CostSignatureValue::BoundLevel(index)) if depth == 0 => match env.get(&index) {
+                Some(name) => CostSignatureValue::Name(ParSortMatcher::sort_match(&name).term),
+                None => CostSignatureValue::BoundLevel(index),
+            },
+            Some(CostSignatureValue::BoundLevel(index)) => CostSignatureValue::BoundLevel(index),
+            Some(CostSignatureValue::Quote(par)) => CostSignatureValue::Quote(
+                self.substitute_no_sort(par, depth, env)
+                    .map(|par| ParSortMatcher::sort_match(&par).term)?,
+            ),
+            Some(CostSignatureValue::Compound(compound)) => {
+                let elements = compound
+                    .elements
+                    .into_iter()
+                    .map(|element| self.substitute_cost_signature(element, depth, env))
+                    .collect::<Result<Vec<_>, _>>()?;
+                CostSignatureValue::Compound(CostSignatureCompound { elements })
+            }
+            Some(CostSignatureValue::Name(par)) => CostSignatureValue::Name(
+                self.substitute_no_sort(par, depth, env)
+                    .map(|par| ParSortMatcher::sort_match(&par).term)?,
+            ),
+            None => {
+                return Err(InterpreterError::UndefinedRequiredProtobufFieldError(
+                    "CostSignature.value".to_string(),
+                ))
+            }
+        };
+        Ok(sort_signature(&CostSignature { value: Some(value) }).term)
+    }
+
+    fn substitute_cost_signed_term(
+        &self,
+        term: CostSignedTerm,
+        depth: i32,
+        env: &Env<Par>,
+    ) -> Result<CostSignedTerm, InterpreterError> {
+        Ok(CostSignedTerm {
+            body: Some(self.substitute_no_sort(unwrap_option_safe(term.body)?, depth, env)?),
+            signature: Some(self.substitute_cost_signature(
+                unwrap_option_safe(term.signature)?,
+                depth,
+                env,
+            )?),
+        })
+    }
+
+    fn substitute_cost_stack(
+        &self,
+        stack: CostStack,
+        depth: i32,
+        env: &Env<Par>,
+    ) -> Result<CostStack, InterpreterError> {
+        Ok(CostStack {
+            cells: stack
+                .cells
+                .into_iter()
+                .map(|cell| self.substitute_cost_signature(cell, depth, env))
+                .collect::<Result<Vec<_>, _>>()?,
+        })
     }
 }
 
@@ -371,6 +447,18 @@ impl SubstituteTrait<Par> for Substitute {
             .map(|i| self.substitute_no_sort(i.clone(), depth, env))
             .collect::<Result<Vec<If>, InterpreterError>>()?;
 
+        let cost_signed_terms = term
+            .cost_signed_terms
+            .into_iter()
+            .map(|signed| self.substitute_cost_signed_term(signed, depth, env))
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let cost_stacks = term
+            .cost_stacks
+            .into_iter()
+            .map(|stack| self.substitute_cost_stack(stack, depth, env))
+            .collect::<Result<Vec<_>, _>>()?;
+
         Ok(concatenate_pars(
             exprs,
             concatenate_pars(connectives, Par {
@@ -385,6 +473,8 @@ impl SubstituteTrait<Par> for Substitute {
                 conditionals,
                 locally_free: set_bits_until(term.locally_free, env.shift),
                 connective_used: term.connective_used,
+                cost_signed_terms,
+                cost_stacks,
             }),
         ))
     }
@@ -444,6 +534,7 @@ impl SubstituteTrait<Receive> for Substitute {
                      source,
                      remainder,
                      free_count,
+                     cost_signature,
                  }| {
                     let sub_channel =
                         self.substitute_no_sort(unwrap_option_safe(source)?, depth, env)?;
@@ -457,6 +548,9 @@ impl SubstituteTrait<Receive> for Substitute {
                         source: Some(sub_channel),
                         remainder,
                         free_count,
+                        cost_signature: cost_signature
+                            .map(|signature| self.substitute_cost_signature(signature, depth, env))
+                            .transpose()?,
                     })
                 },
             )

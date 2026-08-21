@@ -253,11 +253,13 @@ The principled architecture is verified against the constraints:
   the §14.2.4 tier-model summary.
 * [§09 Bug Fixes and Rationale](./09-bug-fixes-and-rationale.md)
   — the 16 documented bug fixes the tests are pinning.
-* [§10 Bisimilarity](./10-bisimilarity.md) — the formal
-  bisimulation theorem the triple-bisim tests are runtime-
-  checking.
-* `formal/rocq/slashing/theories/Bisimulation.v` — the Rocq
-  mechanization.
+* §10 Bisimilarity — **removed (2026-05-29, DR-6)** together with its
+  Rocq mechanization (`Bisimulation.v`) and the triple-bisim runtime
+  tests: the cost-accounted-rho migration made the Rust and Scala
+  slashing implementations structurally incomparable, so the tier
+  model's closure now rests on the direct headline
+  `main_slashing_algorithm_correct` instead. See the removal notice in
+  [slashing-verification.md](../slashing-verification.md).
 
 ---
 

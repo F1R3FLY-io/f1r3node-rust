@@ -6,7 +6,9 @@ use std::time::Instant;
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
 use models::rhoapi::expr::ExprInstance::{EMapBody, GByteArray};
 use models::rhoapi::tagged_continuation::TaggedCont;
-use models::rhoapi::{BindPattern, Bundle, Expr, ListParWithRandom, Par, TaggedContinuation, Var};
+use models::rhoapi::{
+    BindPattern, Bundle, CostAuthority, Expr, ListParWithRandom, Par, TaggedContinuation, Var,
+};
 use models::rust::block_hash::BlockHash;
 use models::rust::par_map::ParMap;
 use models::rust::par_map_type_mapper::ParMapTypeMapper;
@@ -14,6 +16,7 @@ use models::rust::sorted_par_map::SortedParMap;
 use models::rust::utils::new_freevar_par;
 use models::rust::validator::Validator;
 use rspace_plus_plus::rspace::checkpoint::{Checkpoint, SoftCheckpoint};
+use rspace_plus_plus::rspace::errors::RSpaceError;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::history::history_repository::HistoryRepository;
 use rspace_plus_plus::rspace::internal::{Datum, Row, WaitingContinuation};
@@ -21,21 +24,22 @@ use rspace_plus_plus::rspace::merger::merging_logic::MergeType;
 use rspace_plus_plus::rspace::r#match::Match;
 use rspace_plus_plus::rspace::replay_rspace_interface::IReplayRSpace;
 use rspace_plus_plus::rspace::rspace::{RSpace, RSpaceStore};
-use rspace_plus_plus::rspace::rspace_interface::ISpace;
+use rspace_plus_plus::rspace::rspace_interface::{ISpace, RSpaceAccountingObserver};
+use rspace_plus_plus::rspace::trace::event::{Consume, Produce, COMM};
 use rspace_plus_plus::rspace::trace::Log;
 use rspace_plus_plus::rspace::tuplespace_interface::Tuplespace;
 
-use super::accounting::_cost;
+use super::accounting::authority::ResourceMultiset;
 use super::accounting::cost_accounting::CostAccounting;
 use super::accounting::costs::Cost;
 use super::accounting::has_cost::HasCost;
+use super::accounting::{BillableTokenEvent, RuntimeBudget};
 use super::dispatch::{RhoDispatch, RholangAndScalaDispatcher};
 use super::env::Env;
 use super::errors::InterpreterError;
 use super::interpreter::{EvaluateResult, Interpreter, InterpreterImpl};
 use super::reduce::DebruijnInterpreter;
 use super::registry::registry_bootstrap::ast;
-use super::storage::charging_rspace::ChargingRSpace;
 use super::substitute::Substitute;
 use super::system_processes::{
     Arity, BlockData, BodyRef, Definition, DeployData, InvalidBlocks, Name, ProcessContext,
@@ -131,17 +135,12 @@ pub trait RhoRuntime: HasCost {
     }
 
     /**
-     * The function would execute the par regardless setting cost which would possibly cause
-     * [[coop.rchain.rholang.interpreter.errors.OutOfPhlogistonsError]]. Because of that, use this
-     * function in some situation which is not cost sensitive.
+     * Inject an already-normalized process into the current runtime state.
      *
-     * This function would change the state in the runtime.
-     *
-     * Ideally, this function should be removed or hack the runtime without cost accounting in the future .
-     * @param par [[coop.rchain.models.Par]] for the execution
-     * @param env additional env for execution
-     * @param rand random seed for rholang execution
-     * @return
+     * Ordinary user deploys must enter through `evaluate`, which constructs the
+     * signed metered process and initializes the token budget. This lower-level
+     * entry point is kept for tests, bootstrap, and system paths that have
+     * already selected their budget mode explicitly.
      */
     async fn inj(
         &self,
@@ -253,7 +252,7 @@ pub trait RhoRuntime: HasCost {
 #[derive(Clone)]
 pub struct RhoRuntimeImpl {
     pub reducer: Arc<DebruijnInterpreter>,
-    pub cost: _cost,
+    pub cost: RuntimeBudget,
     pub block_data_ref: Arc<tokio::sync::RwLock<BlockData>>,
     pub invalid_blocks_param: InvalidBlocks,
     pub deploy_data_ref: Arc<tokio::sync::RwLock<DeployData>>,
@@ -323,7 +322,7 @@ impl RhoRuntimeImpl {
     #[allow(clippy::too_many_arguments)]
     fn new(
         reducer: Arc<DebruijnInterpreter>,
-        cost: _cost,
+        cost: RuntimeBudget,
         block_data_ref: Arc<tokio::sync::RwLock<BlockData>>,
         invalid_blocks_param: InvalidBlocks,
         deploy_data_ref: Arc<tokio::sync::RwLock<DeployData>>,
@@ -398,7 +397,36 @@ impl RhoRuntimeImpl {
 
     pub fn get_cost_log(&self) -> Vec<Cost> { self.cost.get_log() }
 
+    pub fn get_cost_event_log(&self) -> Vec<BillableTokenEvent> { self.cost.get_event_log() }
+
     pub fn clear_cost_log(&self) { self.cost.clear_log() }
+
+    pub fn clear_cost_event_log(&self) { self.cost.clear_event_log() }
+
+    pub async fn evaluate_with_authority(
+        &self,
+        term: &str,
+        initial_phlo: Cost,
+        normalizer_env: HashMap<String, Par>,
+        rand: Blake2b512Random,
+        authority_allocation: Option<ResourceMultiset<[u8; 32]>>,
+    ) -> Result<EvaluateResult, InterpreterError> {
+        let start = Instant::now();
+        let interpreter = InterpreterImpl::new(self.cost.clone(), self.merge_chs.clone());
+        let result = interpreter
+            .inj_attempt(
+                &self.reducer,
+                term,
+                initial_phlo,
+                normalizer_env,
+                rand,
+                authority_allocation,
+            )
+            .await;
+        metrics::histogram!(EVALUATE_TIME_METRIC, "source" => RUNTIME_METRICS_SOURCE)
+            .record(start.elapsed().as_secs_f64());
+        result
+    }
 
     /// Slice 31: enable the rho:io:fs:native:* URN filter.  Every
     /// subsequent `new x(rho:io:fs:native:.../*)` inside a deploy
@@ -424,22 +452,8 @@ impl RhoRuntimeImpl {
     /// H-P7-5 review fix (Phase 7 whole-review round): RAII exemption
     /// guard for the `rho:io:fs:native:*` URN filter.  Disables the
     /// filter on construction and re-enables on Drop — including
-    /// panics and tokio-task cancellation.
-    ///
-    /// Pre-fix, `play_deploys_for_genesis` and `replay_deploys` toggled
-    /// the filter via bare atomic stores wrapped in async-block +
-    /// unwrap dance.  A panic or task cancellation between disable
-    /// and re-enable would leave the filter OFF, exposing raw
-    /// `fs:native:*` URNs to every subsequent user deploy on the
-    /// same runtime.  With this guard, the re-enable runs on all
-    /// exit paths (including panic unwinding, unless the runtime is
-    /// compiled with `-C panic=abort`).
-    ///
-    /// The guard holds an `Arc<AtomicBool>` clone of the filter flag
-    /// rather than a borrow of the runtime, so the caller retains
-    /// full `&mut self` access to the runtime for the duration of
-    /// the exemption (needed by `process_deploy_with_mergeable_data`
-    /// etc.).
+    /// panics and tokio-task cancellation.  See FsNativeUrnFilterExemption
+    /// below for the guard's lifetime contract.
     pub fn exempt_fs_native_urn_filter(&self) -> FsNativeUrnFilterExemption {
         self.disable_fs_native_urn_filter();
         FsNativeUrnFilterExemption {
@@ -459,16 +473,9 @@ impl RhoRuntimeImpl {
 /// `rho:io:fs:native:*` URN-filter exemption granted by
 /// `RhoRuntimeImpl::exempt_fs_native_urn_filter`.  Drop re-enables
 /// the filter on all exit paths (normal return, `?`-error, panic
-/// unwind).  Callers should hold this guard for the exact
-/// dynamic scope where fs-native URN binding is permitted (the
-/// genesis composition batch); the guard's Drop closes the window
-/// as soon as the guard goes out of scope.
-///
-/// Holds an `Arc<AtomicBool>` clone of the filter flag (not a
-/// borrow of the runtime) so the caller can still exercise `&mut
-/// self` on the runtime during the exemption — the guard and
-/// mutable-runtime access are independent borrows of disjoint
-/// data.
+/// unwind).  Holds an `Arc<AtomicBool>` clone of the filter flag
+/// (not a borrow of the runtime) so the caller can still exercise
+/// `&mut self` on the runtime during the exemption.
 #[must_use = "the exemption ends when the guard is dropped; letting it drop \
               immediately after construction re-enables the filter and \
               the enclosed code sees the filter ON"]
@@ -488,15 +495,8 @@ impl RhoRuntime for RhoRuntimeImpl {
         normalizer_env: HashMap<String, Par>,
         rand: Blake2b512Random,
     ) -> Result<EvaluateResult, InterpreterError> {
-        let start = Instant::now();
-        let i = InterpreterImpl::new(self.cost.clone(), self.merge_chs.clone());
-        let reducer = &self.reducer;
-        let res = i
-            .inj_attempt(reducer, term, initial_phlo, normalizer_env, rand)
-            .await;
-        metrics::histogram!(EVALUATE_TIME_METRIC, "source" => RUNTIME_METRICS_SOURCE)
-            .record(start.elapsed().as_secs_f64());
-        res
+        self.evaluate_with_authority(term, initial_phlo, normalizer_env, rand, None)
+            .await
     }
 
     async fn inj(
@@ -732,7 +732,7 @@ impl RhoRuntime for RhoRuntimeImpl {
 }
 
 impl HasCost for RhoRuntimeImpl {
-    fn cost(&self) -> &_cost { &self.cost }
+    fn cost(&self) -> &RuntimeBudget { &self.cost }
 }
 
 pub type RhoTuplespace =
@@ -756,6 +756,140 @@ pub type RhoHistoryRepository = Arc<
 
 pub type ISpaceAndReplay = (RhoISpace, RhoReplayISpace);
 
+struct RhoCommObserver {
+    budget: RuntimeBudget,
+}
+
+impl RSpaceAccountingObserver<Par, BindPattern, ListParWithRandom, TaggedContinuation>
+    for RhoCommObserver
+{
+    fn observe_produce(
+        &self,
+        source: &Produce,
+        channel: &Par,
+        data: &ListParWithRandom,
+        persistent: bool,
+    ) -> Result<(), RSpaceError> {
+        if !self.budget.has_comm_accounting_scope() || self.budget.is_unmetered() {
+            return Ok(());
+        }
+        let identity = super::accounting::byte_accounting::produce_introduction_identity(source);
+        let authority = self
+            .budget
+            .introduction_authority(
+                identity,
+                super::accounting::authority::AuthorityByteEventKind::ProduceIntroduction,
+            )
+            .map_err(interpreter_error_to_rspace)?;
+        let charge = super::accounting::byte_accounting::produce_introduction_charge(channel, data)
+            .and_then(|charge| {
+                charge.cost(super::accounting::byte_accounting::BYTE_COST_SCHEDULE_V1)
+            })
+            .map_err(|error| RSpaceError::InterpreterError(error.to_string()))?;
+        self.budget
+            .reserve_produce_introduction_identity(identity, &authority, charge, persistent)
+            .map_err(interpreter_error_to_rspace)
+    }
+
+    fn observe_consume(
+        &self,
+        source: &Consume,
+        channels: &[Par],
+        patterns: &[BindPattern],
+        continuation: &TaggedContinuation,
+        persistent: bool,
+        _peeks: &std::collections::BTreeSet<i32>,
+    ) -> Result<(), RSpaceError> {
+        if !self.budget.has_comm_accounting_scope() || self.budget.is_unmetered() {
+            return Ok(());
+        }
+        let identity = super::accounting::byte_accounting::consume_introduction_identity(source);
+        let authority = self
+            .budget
+            .introduction_authority(
+                identity,
+                super::accounting::authority::AuthorityByteEventKind::ConsumeIntroduction,
+            )
+            .map_err(interpreter_error_to_rspace)?;
+        let charge = super::accounting::byte_accounting::consume_introduction_charge(
+            channels,
+            patterns,
+            continuation,
+        )
+        .and_then(|charge| charge.cost(super::accounting::byte_accounting::BYTE_COST_SCHEDULE_V1))
+        .map_err(|error| RSpaceError::InterpreterError(error.to_string()))?;
+        self.budget
+            .reserve_consume_introduction_identity(identity, &authority, charge, persistent)
+            .map_err(interpreter_error_to_rspace)
+    }
+
+    fn observe_comm(
+        &self,
+        comm: &COMM,
+        continuation: &TaggedContinuation,
+        continuation_persistent: bool,
+        data: &[(&ListParWithRandom, bool)],
+    ) -> Result<(), RSpaceError> {
+        if !self.budget.has_comm_accounting_scope() || self.budget.is_unmetered() {
+            return Ok(());
+        }
+        let bytes = comm.cost_identity().bytes();
+        let identity: [u8; 32] = bytes
+            .try_into()
+            .map_err(|_| RSpaceError::BugFoundError("invalid COMM identity length".to_string()))?;
+        let mut authorities = Vec::<&CostAuthority>::new();
+        let mut persistent_regions = std::collections::BTreeSet::new();
+        if let Some(authority) = continuation.cost_authority.as_ref() {
+            authorities.push(authority);
+            if continuation_persistent {
+                for region in super::accounting::authority::authority_regions(authority)
+                    .map_err(|error| RSpaceError::InterpreterError(error.to_string()))?
+                    .into_keys()
+                {
+                    persistent_regions.insert(region);
+                }
+            }
+        }
+        for (datum, persistent) in data {
+            if let Some(authority) = datum.cost_authority.as_ref() {
+                authorities.push(authority);
+                if *persistent {
+                    for region in super::accounting::authority::authority_regions(authority)
+                        .map_err(|error| RSpaceError::InterpreterError(error.to_string()))?
+                        .into_keys()
+                    {
+                        persistent_regions.insert(region);
+                    }
+                }
+            }
+        }
+        let authority = super::accounting::authority::merge_authorities(authorities)
+            .map_err(|error| RSpaceError::InterpreterError(error.to_string()))?;
+        let authority = super::accounting::authority::instantiate_persistent_regions(
+            &authority,
+            &persistent_regions,
+            identity,
+        )
+        .map_err(|error| RSpaceError::InterpreterError(error.to_string()))?;
+        let byte_cost = super::accounting::byte_accounting::comm_charge(comm, data)
+            .and_then(|charge| {
+                charge.cost(super::accounting::byte_accounting::BYTE_COST_SCHEDULE_V1)
+            })
+            .map_err(|error| RSpaceError::InterpreterError(error.to_string()))?;
+        self.budget
+            .reserve_comm_authority_identity_with_byte_cost(identity, &authority, byte_cost)
+            .map_err(interpreter_error_to_rspace)?;
+        Ok(())
+    }
+}
+
+fn interpreter_error_to_rspace(error: InterpreterError) -> RSpaceError {
+    match error {
+        InterpreterError::OutOfPhlogistonsError => RSpaceError::OutOfPhlogistons,
+        other => RSpaceError::InterpreterError(other.to_string()),
+    }
+}
+
 async fn introduce_system_process<T>(
     mut spaces: Vec<&mut T>,
     processes: Vec<(Name, Arity, Remainder, BodyRef)>,
@@ -776,6 +910,7 @@ where
         let continuation = TaggedContinuation {
             tagged_cont: Some(TaggedCont::ScalaBodyRef(body_ref)),
             guard: None,
+            cost_authority: None,
         };
 
         for space in &mut spaces {
@@ -1672,7 +1807,7 @@ fn basic_processes() -> HashMap<String, Par> {
 
 #[allow(clippy::too_many_arguments)]
 async fn setup_reducer(
-    charging_rspace: RhoISpace,
+    rspace: RhoISpace,
     block_data_ref: Arc<tokio::sync::RwLock<BlockData>>,
     invalid_blocks: InvalidBlocks,
     deploy_data_ref: Arc<tokio::sync::RwLock<DeployData>>,
@@ -1686,8 +1821,11 @@ async fn setup_reducer(
     chromadb_service: SharedChromaDBService,
     fs_handles: super::io::handle_table::FileHandleTable,
     fs_mode: super::io::ConsensusMode,
-    cost: _cost,
+    cost: RuntimeBudget,
 ) -> Arc<DebruijnInterpreter> {
+    rspace.set_accounting_observer(Some(Arc::new(RhoCommObserver {
+        budget: cost.clone(),
+    })));
     let reducer_cell = Arc::new(std::sync::OnceLock::new());
 
     let temp_dispatcher = Arc::new(RholangAndScalaDispatcher {
@@ -1702,7 +1840,7 @@ async fn setup_reducer(
     let urn_map = Arc::new(urn_map);
 
     let replay_dispatch_table = dispatch_table_creator(
-        charging_rspace.clone(),
+        rspace.clone(),
         temp_dispatcher.clone(),
         block_data_ref,
         invalid_blocks,
@@ -1722,14 +1860,15 @@ async fn setup_reducer(
         reducer: reducer_cell.clone(),
     });
 
+    let metering = super::metering::MeteredMachine::new(cost.clone());
     let reducer = Arc::new(DebruijnInterpreter {
-        space: charging_rspace.clone(),
+        space: rspace.clone(),
         dispatcher: dispatcher.clone(),
         urn_map,
         merge_chs,
         mergeable_tags,
-        cost: cost.clone(),
-        substitute: Substitute { cost: cost.clone() },
+        metering: metering.clone(),
+        substitute: Substitute { metering },
         // Slice 31: default ON — genesis path toggles off per-batch.
         filter_fs_native_urns: Arc::new(std::sync::atomic::AtomicBool::new(true)),
     });
@@ -1803,7 +1942,7 @@ pub async fn create_rho_env<T>(
     merge_chs: Arc<tokio::sync::RwLock<HashMap<Par, MergeType>>>,
     mergeable_tags: Arc<HashMap<Par, MergeType>>,
     extra_system_processes: &mut Vec<Definition>,
-    cost: _cost,
+    cost: RuntimeBudget,
     external_services: ExternalServices,
 ) -> (
     Arc<DebruijnInterpreter>,
@@ -1846,10 +1985,7 @@ where
     let res = introduce_system_process(vec![&mut rspace], proc_defs).await;
     assert!(res.iter().all(|s| s.is_none()));
 
-    let charging_rspace: RhoISpace = Arc::new(Box::new(ChargingRSpace::charging_rspace(
-        rspace,
-        cost.clone(),
-    )));
+    let raw_rspace: RhoISpace = Arc::new(Box::new(rspace));
 
     // Use services from ExternalServices
     let openai_service = external_services.openai.clone();
@@ -1872,7 +2008,7 @@ where
     let fs_mode = super::io::ConsensusMode::default();
 
     let reducer = setup_reducer(
-        charging_rspace,
+        raw_rspace,
         block_data_ref.clone(),
         invalid_blocks.clone(),
         deploy_data_ref.clone(),

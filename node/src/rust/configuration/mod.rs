@@ -152,6 +152,11 @@ pub mod builder {
             .genesis_block_data
             .validate_native_token()
             .map_err(|e| eyre::eyre!("native token config invalid: {}", e))?;
+        node_conf
+            .casper
+            .genesis_block_data
+            .validate_cost_accounting_parameters()
+            .map_err(|e| eyre::eyre!("cost-accounting genesis config invalid: {}", e))?;
 
         // The proposer computes its recovery cap as
         // `max(pending_deploy_max_lag, deploy_recovery_max_lag)`. When
@@ -273,7 +278,6 @@ mod heartbeat_conf_hocon_tests {
             stale-recovery-min-interval = 11 seconds
             deploy-finalization-grace = 22 seconds
             advanced {
-              frontier-chase-max-lag = 1
               pending-deploy-max-lag = 33
               deploy-recovery-max-lag = 99
               empty-frontier-max-unfinalized-blocks = 44
@@ -287,7 +291,6 @@ mod heartbeat_conf_hocon_tests {
         assert_eq!(cfg.self_propose_cooldown, Duration::from_secs(9));
         assert_eq!(cfg.stale_recovery_min_interval, Duration::from_secs(11));
         assert_eq!(cfg.deploy_finalization_grace, Duration::from_secs(22));
-        assert_eq!(cfg.advanced.frontier_chase_max_lag, 1);
         assert_eq!(cfg.advanced.pending_deploy_max_lag, 33);
         assert_eq!(cfg.advanced.deploy_recovery_max_lag, 99);
         assert_eq!(cfg.advanced.empty_frontier_max_unfinalized_blocks, 44);
@@ -326,7 +329,6 @@ mod heartbeat_conf_hocon_tests {
             "#,
         );
 
-        assert_eq!(cfg.advanced.frontier_chase_max_lag, 0);
         assert_eq!(cfg.advanced.pending_deploy_max_lag, 7);
         assert_eq!(cfg.advanced.deploy_recovery_max_lag, 64);
         assert_eq!(cfg.advanced.empty_frontier_max_unfinalized_blocks, 64);
@@ -339,7 +341,6 @@ mod heartbeat_conf_hocon_tests {
         // never true). Each advanced field rejects at
         // deserialization time.
         for field in &[
-            "frontier-chase-max-lag",
             "pending-deploy-max-lag",
             "deploy-recovery-max-lag",
             "empty-frontier-max-unfinalized-blocks",

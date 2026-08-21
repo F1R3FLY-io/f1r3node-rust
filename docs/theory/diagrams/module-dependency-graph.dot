@@ -1,0 +1,124 @@
+// ============================================================================
+// Module Dependency Graph — the foundational 32 Rocq modules of the cost-accounted-rho
+// formalization (formal/rocq/cost_accounted_rho/theories), organized into
+// seven dependency tiers. Supersedes the stale 18-module PlantUML trio
+// (module-dependency-graph{,-c4,-package}), which predated Layers 6–7 and the
+// economic / linear-logic / structural modules.
+//
+// Edges are the ACTUAL inter-module `Require Import` dependencies extracted
+// from the .v sources (A -> B reads "B imports A"); `tred` removes the
+// transitively-redundant edges before layout, so what remains is the minimal
+// dependency skeleton. Every edge points strictly downward across tiers
+// (monotone layering; no upward references).
+//
+// Source of truth for Figure 1.7 in cost-accounted-rho-verification.md §1.7.
+// Tier fills follow a cool-to-warm 7-stop ramp; consensus-critical modules
+// never import the leaf tier (WeakBarbedEquiv / Replication).
+//
+// Render:  tred docs/theory/diagrams/module-dependency-graph.dot \
+//            | dot -Tsvg -o docs/theory/diagrams/module-dependency-graph.svg
+//          (or: ./render.sh module-dependency-graph.dot)
+// ============================================================================
+digraph module_dependency_graph {
+  rankdir=TB;
+  bgcolor="transparent";
+  nodesep=0.28;
+  ranksep=0.55;
+  fontname="sans-serif";
+  labelloc="t";
+  label=<<b>Cost-Accounted Rho — foundational 32-module dependency graph (tred-reduced)</b>>;
+  node [shape=box, style="rounded,filled", fontname="sans-serif", fontsize=11,
+        penwidth=1.1, color="#333333", margin="0.12,0.06"];
+  edge [color="#7A7A7A", arrowsize=0.7, penwidth=0.9];
+
+  // ── Tier 1 — Syntactic Foundation (#EEF2FF) ──────────────────────────────
+  RhoSyntax            [fillcolor="#EEF2FF"];
+  StructEquivInversion [fillcolor="#EEF2FF"];
+  StructEquivHeads     [fillcolor="#EEF2FF"];
+  RhoReduction         [fillcolor="#EEF2FF"];
+
+  // ── Tier 2 — Cost-Accounting, Translation & Algebra (#E3F2FD) ────────────
+  CostAccountedSyntax    [fillcolor="#E3F2FD"];
+  CostAccountedReduction [fillcolor="#E3F2FD"];
+  Translation            [fillcolor="#E3F2FD"];
+  ChannelSeparation      [fillcolor="#E3F2FD"];
+  SystemStructEquiv      [fillcolor="#E3F2FD"];
+  SyntacticSugar         [fillcolor="#E3F2FD"];
+  WalletNaming           [fillcolor="#E3F2FD"];
+  LinearLogicResources   [fillcolor="#E3F2FD"];
+  LLIdentities           [fillcolor="#E3F2FD"];
+
+  // ── Tier 3 — Conservation & Determinism (#E8F5E9) ────────────────────────
+  TokenConservation      [fillcolor="#E8F5E9"];
+  FuelEventDecomposition [fillcolor="#E8F5E9"];
+  StrongNormalization    [fillcolor="#E8F5E9"];
+  Confluence             [fillcolor="#E8F5E9"];
+  StepDeterminism        [fillcolor="#E8F5E9"];
+
+  // ── Tier 4 — Faithfulness & Bisimulation (#FFF8E1) ───────────────────────
+  TranslationFaithfulness [fillcolor="#FFF8E1"];
+  FuelGateSafety          [fillcolor="#FFF8E1"];
+  Bisimulation            [fillcolor="#FFF8E1"];
+
+  // ── Tier 5 — Settlement, Minting & Economic (#FFF3E0) ────────────────────
+  Settlement                 [fillcolor="#FFF3E0"];
+  SlashingComposition        [fillcolor="#FFF3E0"];
+  MergeableChannelAccounting [fillcolor="#FFF3E0"];
+  MintingInjection           [fillcolor="#FFF3E0"];
+  MintingHalt                [fillcolor="#FFF3E0"];
+  Exchange                   [fillcolor="#FFF3E0"];
+
+  // ── Tier 6 — Weak Barbs & Replication (leaf) (#FCE4EC) ───────────────────
+  WeakBarbedEquiv [fillcolor="#FCE4EC"];
+  Replication     [fillcolor="#FCE4EC"];
+
+  // ── Tier 7 — Runtime Budget & Use-Case Adequacy (#F3E5F5) ────────────────
+  RuntimeBudgetRefinement [fillcolor="#F3E5F5"];
+  MultiSignerRefinement   [fillcolor="#F3E5F5"];
+  UseCaseAdequacy         [fillcolor="#F3E5F5"];
+
+  // ── Edges: actual Require Import dependencies (dependency -> dependent) ───
+  RhoSyntax -> StructEquivInversion;
+  RhoSyntax -> StructEquivHeads;            StructEquivInversion -> StructEquivHeads;
+  RhoSyntax -> RhoReduction;                StructEquivInversion -> RhoReduction;
+  RhoSyntax -> CostAccountedSyntax;
+  CostAccountedSyntax -> CostAccountedReduction; RhoReduction -> CostAccountedReduction; RhoSyntax -> CostAccountedReduction;
+  CostAccountedSyntax -> Translation;       RhoReduction -> Translation; RhoSyntax -> Translation;
+  CostAccountedSyntax -> ChannelSeparation; RhoSyntax -> ChannelSeparation;
+  CostAccountedReduction -> TokenConservation; CostAccountedSyntax -> TokenConservation; RhoSyntax -> TokenConservation;
+  CostAccountedReduction -> Settlement; CostAccountedSyntax -> Settlement; TokenConservation -> Settlement;
+  CostAccountedReduction -> SlashingComposition; CostAccountedSyntax -> SlashingComposition; Settlement -> SlashingComposition;
+  CostAccountedSyntax -> MergeableChannelAccounting; Settlement -> MergeableChannelAccounting;
+  CostAccountedSyntax -> RuntimeBudgetRefinement; Settlement -> RuntimeBudgetRefinement;
+  CostAccountedReduction -> FuelEventDecomposition; CostAccountedSyntax -> FuelEventDecomposition; RhoSyntax -> FuelEventDecomposition;
+  CostAccountedReduction -> StrongNormalization; CostAccountedSyntax -> StrongNormalization; TokenConservation -> StrongNormalization;
+  CostAccountedReduction -> Confluence; CostAccountedSyntax -> Confluence; RhoSyntax -> Confluence; StrongNormalization -> Confluence; TokenConservation -> Confluence;
+  Confluence -> StepDeterminism; CostAccountedReduction -> StepDeterminism; CostAccountedSyntax -> StepDeterminism; RhoSyntax -> StepDeterminism; StrongNormalization -> StepDeterminism; TokenConservation -> StepDeterminism;
+  CostAccountedReduction -> TranslationFaithfulness; CostAccountedSyntax -> TranslationFaithfulness; RhoReduction -> TranslationFaithfulness; RhoSyntax -> TranslationFaithfulness; StructEquivHeads -> TranslationFaithfulness; StructEquivInversion -> TranslationFaithfulness; TokenConservation -> TranslationFaithfulness; Translation -> TranslationFaithfulness;
+  CostAccountedSyntax -> FuelGateSafety; RhoReduction -> FuelGateSafety; RhoSyntax -> FuelGateSafety; StructEquivInversion -> FuelGateSafety; Translation -> FuelGateSafety;
+  CostAccountedReduction -> Bisimulation; CostAccountedSyntax -> Bisimulation; RhoReduction -> Bisimulation; RhoSyntax -> Bisimulation; StructEquivHeads -> Bisimulation; StructEquivInversion -> Bisimulation; Translation -> Bisimulation; TranslationFaithfulness -> Bisimulation;
+  RhoReduction -> WeakBarbedEquiv; RhoSyntax -> WeakBarbedEquiv; StructEquivInversion -> WeakBarbedEquiv;
+  Bisimulation -> Replication; RhoReduction -> Replication; RhoSyntax -> Replication; StructEquivHeads -> Replication; StructEquivInversion -> Replication; WeakBarbedEquiv -> Replication;
+  CostAccountedReduction -> MintingInjection; CostAccountedSyntax -> MintingInjection; RhoSyntax -> MintingInjection; TokenConservation -> MintingInjection; WalletNaming -> MintingInjection;
+  MintingInjection -> MintingHalt; WalletNaming -> MintingHalt;
+  CostAccountedReduction -> Exchange; CostAccountedSyntax -> Exchange; MintingInjection -> Exchange; RhoSyntax -> Exchange; TokenConservation -> Exchange;
+  CostAccountedSyntax -> SystemStructEquiv; RhoSyntax -> SystemStructEquiv;
+  CostAccountedSyntax -> SyntacticSugar; RhoReduction -> SyntacticSugar; RhoSyntax -> SyntacticSugar; Translation -> SyntacticSugar;
+  RhoSyntax -> WalletNaming;
+  CostAccountedSyntax -> MultiSignerRefinement; RuntimeBudgetRefinement -> MultiSignerRefinement;
+  CostAccountedSyntax -> LinearLogicResources;
+  CostAccountedSyntax -> LLIdentities;
+  ChannelSeparation -> UseCaseAdequacy; Confluence -> UseCaseAdequacy; CostAccountedReduction -> UseCaseAdequacy; CostAccountedSyntax -> UseCaseAdequacy; FuelEventDecomposition -> UseCaseAdequacy; MergeableChannelAccounting -> UseCaseAdequacy; RhoReduction -> UseCaseAdequacy; RhoSyntax -> UseCaseAdequacy; RuntimeBudgetRefinement -> UseCaseAdequacy; Settlement -> UseCaseAdequacy; SlashingComposition -> UseCaseAdequacy; StepDeterminism -> UseCaseAdequacy; TokenConservation -> UseCaseAdequacy; TranslationFaithfulness -> UseCaseAdequacy;
+
+  // ── Tier legend (cool→warm; matches node fills) ──────────────────────────
+  legend [shape=plaintext, fillcolor="transparent", margin=0, label=<
+    <table border="0" cellborder="1" cellspacing="0" cellpadding="4">
+      <tr><td bgcolor="#EEF2FF">T1 Syntactic Foundation</td></tr>
+      <tr><td bgcolor="#E3F2FD">T2 Cost-Accounting, Translation &amp; Algebra</td></tr>
+      <tr><td bgcolor="#E8F5E9">T3 Conservation &amp; Determinism</td></tr>
+      <tr><td bgcolor="#FFF8E1">T4 Faithfulness &amp; Bisimulation</td></tr>
+      <tr><td bgcolor="#FFF3E0">T5 Settlement, Minting &amp; Economic</td></tr>
+      <tr><td bgcolor="#FCE4EC">T6 Weak Barbs &amp; Replication (leaf)</td></tr>
+      <tr><td bgcolor="#F3E5F5">T7 Runtime Budget &amp; Use-Case Adequacy</td></tr>
+    </table>>];
+}

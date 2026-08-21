@@ -1,8 +1,6 @@
-#![allow(clippy::derived_hash_with_manual_eq)]
-
 // See casper/src/main/scala/coop/rchain/casper/merging/DeployChainIndex.scala
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::sync::Arc;
 
 use models::rust::block_hash::BlockHash;
@@ -11,6 +9,7 @@ use rspace_plus_plus::rspace::errors::HistoryError;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::history::history_repository::HistoryRepository;
 use rspace_plus_plus::rspace::merger::event_log_index::EventLogIndex;
+use rspace_plus_plus::rspace::merger::merging_logic::NumberChannelsDiff;
 use rspace_plus_plus::rspace::merger::state_change::StateChange;
 use shared::rust::hashable_set::HashableSet;
 
@@ -32,6 +31,9 @@ pub struct DeployChainIndex {
     pub system_event_log_index: EventLogIndex,
     pub event_log_index: EventLogIndex,
     pub state_changes: StateChange,
+    pub effect_indices: BTreeSet<u32>,
+    pub has_exact_state_witness: bool,
+    pub exact_effect_changes: BTreeMap<u32, (StateChange, NumberChannelsDiff)>,
     // Source block identity. Allows the merge algorithm to identify chains
     // whose diffs were computed against a block that was subsequently rejected.
     pub source_block_hash: BlockHash,
@@ -39,6 +41,121 @@ pub struct DeployChainIndex {
 }
 
 impl DeployChainIndex {
+    pub fn validate_exact_projection(&self) -> Result<(), HistoryError> {
+        if !self.has_exact_state_witness {
+            return Err(HistoryError::MergeError(
+                "deploy chain is missing exact state witnesses".to_string(),
+            ));
+        }
+        let exact_indices: BTreeSet<u32> = self.exact_effect_changes.keys().copied().collect();
+        if exact_indices != self.effect_indices {
+            return Err(HistoryError::MergeError(
+                "deploy chain effect indices do not match exact-effect identities".to_string(),
+            ));
+        }
+        if self.effect_indices.len() != self.deploys_with_cost.0.len() {
+            return Err(HistoryError::MergeError(
+                "deploy chain does not bind exactly one effect identity per deploy".to_string(),
+            ));
+        }
+
+        let projected_state = self
+            .exact_effect_changes
+            .values()
+            .try_fold(StateChange::empty(), |acc, (change, _)| {
+                acc.additive_join(change.clone())
+            })?
+            .normalized();
+        if projected_state != self.state_changes.clone().normalized() {
+            return Err(HistoryError::MergeError(
+                "per-effect ordinary projection does not match the chain state change".to_string(),
+            ));
+        }
+
+        let mut projected_mergeable = NumberChannelsDiff::new();
+        for (change, mergeable) in self.exact_effect_changes.values() {
+            for entry in change.datums_changes.iter() {
+                let changed = !entry.value().added.is_empty() || !entry.value().removed.is_empty();
+                if changed
+                    && self
+                        .event_log_index
+                        .number_channels_data
+                        .contains_key(entry.key())
+                    && !mergeable.contains_key(entry.key())
+                {
+                    return Err(HistoryError::MergeError(format!(
+                        "exact effect changes mergeable channel {:?} without a typed contribution",
+                        entry.key(),
+                    )));
+                }
+            }
+            for (channel, (incoming_diff, incoming_type)) in mergeable {
+                match projected_mergeable.get_mut(channel) {
+                    Some((existing_diff, existing_type)) => {
+                        if existing_type != incoming_type {
+                            return Err(HistoryError::MergeError(format!(
+                                "exact effects disagree on merge type for channel {:?}",
+                                channel,
+                            )));
+                        }
+                        *existing_diff = rspace_plus_plus::rspace::merger::merging_logic::combine_mergeable_value(
+                            *existing_diff,
+                            *incoming_diff,
+                            *incoming_type,
+                        )
+                        .ok_or_else(|| {
+                            HistoryError::MergeError(format!(
+                                "exact mergeable contributions overflow on channel {:?}",
+                                channel,
+                            ))
+                        })?;
+                    }
+                    None => {
+                        projected_mergeable
+                            .insert(channel.clone(), (*incoming_diff, *incoming_type));
+                    }
+                }
+            }
+        }
+        if projected_mergeable != self.event_log_index.number_channels_data {
+            return Err(HistoryError::MergeError(
+                "per-effect mergeable projection does not match the chain event log".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn retained_bytes(&self) -> usize {
+        let deploy_bytes = self
+            .deploys_with_cost
+            .0
+            .iter()
+            .fold(0usize, |total, deploy| {
+                total
+                    .saturating_add(std::mem::size_of::<DeployIdWithCost>())
+                    .saturating_add(deploy.deploy_id.len())
+            });
+        let exact_bytes =
+            self.exact_effect_changes
+                .values()
+                .fold(0usize, |total, (change, channels)| {
+                    total
+                        .saturating_add(change.retained_bytes())
+                        .saturating_add(
+                            channels
+                                .len()
+                                .saturating_mul(std::mem::size_of::<(Blake2b256Hash, i64)>()),
+                        )
+                });
+        std::mem::size_of::<Self>()
+            .saturating_add(deploy_bytes)
+            .saturating_add(self.user_event_log_index.retained_bytes())
+            .saturating_add(self.system_event_log_index.retained_bytes())
+            .saturating_add(self.event_log_index.retained_bytes())
+            .saturating_add(self.state_changes.retained_bytes())
+            .saturating_add(exact_bytes)
+    }
+
     pub fn new<C, P, A, K>(
         deploys: &HashableSet<DeployIndex>,
         pre_state_hash: &Blake2b256Hash,
@@ -87,22 +204,83 @@ impl DeployChainIndex {
         let event_log_index =
             EventLogIndex::combine(&user_event_log_index, &system_event_log_index)?;
 
-        let pre_history_reader = history_repository.get_history_reader_struct(pre_state_hash)?;
-        let post_history_reader = history_repository.get_history_reader_struct(post_state_hash)?;
+        let effect_indices = deploys
+            .0
+            .iter()
+            .map(|deploy| deploy.execution_index)
+            .collect::<BTreeSet<_>>();
+        let has_exact_state_witness = deploys
+            .0
+            .iter()
+            .all(|deploy| deploy.state_changes.is_some());
+        let exact_effect_changes = if has_exact_state_witness {
+            let changes = deploys
+                .0
+                .iter()
+                .map(|deploy| {
+                    (
+                        deploy.execution_index,
+                        (
+                            deploy
+                                .state_changes
+                                .clone()
+                                .expect("exact state witness checked above")
+                                .normalized(),
+                            deploy.event_log_index.number_channels_data.clone(),
+                        ),
+                    )
+                })
+                .collect::<BTreeMap<_, _>>();
+            if changes.len() != deploys.0.len() {
+                return Err(HistoryError::MergeError(
+                    "duplicate execution index in deploy chain".to_string(),
+                ));
+            }
+            changes
+        } else {
+            BTreeMap::new()
+        };
+        let state_changes = if has_exact_state_witness {
+            exact_effect_changes
+                .values()
+                .try_fold(StateChange::empty(), |acc, (change, _)| {
+                    acc.additive_join(change.clone())
+                })?
+                .normalized()
+        } else {
+            if deploys
+                .0
+                .iter()
+                .any(|deploy| deploy.state_changes.is_some())
+            {
+                return Err(HistoryError::MergeError(
+                    "deploy chain mixes exact and legacy state changes".to_string(),
+                ));
+            }
+            let pre_history_reader =
+                history_repository.get_history_reader_struct(pre_state_hash)?;
+            let post_history_reader =
+                history_repository.get_history_reader_struct(post_state_hash)?;
+            StateChange::new(pre_history_reader, post_history_reader, &event_log_index)?
+        };
 
-        let state_changes =
-            StateChange::new(pre_history_reader, post_history_reader, &event_log_index)?;
-
-        Ok(Self {
+        let index = Self {
             deploys_with_cost: HashableSet(deploys_with_cost),
             post_state_hash: post_state_hash.clone(),
             user_event_log_index,
             system_event_log_index,
             event_log_index,
             state_changes,
+            effect_indices,
+            has_exact_state_witness,
+            exact_effect_changes,
             source_block_hash,
             source_block_number,
-        })
+        };
+        if index.has_exact_state_witness {
+            index.validate_exact_projection()?;
+        }
+        Ok(index)
     }
 
     /// Construct a DeployChainIndex directly from its parts (for testing).
@@ -126,6 +304,9 @@ impl DeployChainIndex {
             system_event_log_index,
             event_log_index,
             state_changes,
+            effect_indices: BTreeSet::new(),
+            has_exact_state_witness: false,
+            exact_effect_changes: BTreeMap::new(),
             source_block_hash,
             source_block_number,
         }
@@ -133,13 +314,23 @@ impl DeployChainIndex {
 }
 
 impl PartialEq for DeployChainIndex {
-    fn eq(&self, other: &Self) -> bool { self.deploys_with_cost == other.deploys_with_cost }
+    fn eq(&self, other: &Self) -> bool {
+        self.deploys_with_cost == other.deploys_with_cost
+            && self.post_state_hash == other.post_state_hash
+            && self.source_block_hash == other.source_block_hash
+            && self.effect_indices == other.effect_indices
+            && self.has_exact_state_witness == other.has_exact_state_witness
+    }
 }
 
-// Hash is hand-rolled to match PartialEq (the derived Hash would cover all
-// fields and violate the k1 == k2 => hash(k1) == hash(k2) contract).
 impl std::hash::Hash for DeployChainIndex {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) { self.deploys_with_cost.hash(state); }
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.deploys_with_cost.hash(state);
+        self.post_state_hash.hash(state);
+        self.source_block_hash.hash(state);
+        self.effect_indices.hash(state);
+        self.has_exact_state_witness.hash(state);
+    }
 }
 
 impl Eq for DeployChainIndex {}
@@ -152,8 +343,18 @@ impl Ord for DeployChainIndex {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         // 1. PRIMARY: Highest total cost first (economic incentive)
         //    Higher-paying transactions get priority in conflict resolution
-        let self_total_cost: u64 = self.deploys_with_cost.0.iter().map(|d| d.cost).sum();
-        let other_total_cost: u64 = other.deploys_with_cost.0.iter().map(|d| d.cost).sum();
+        let self_total_cost: u128 = self
+            .deploys_with_cost
+            .0
+            .iter()
+            .map(|d| u128::from(d.cost))
+            .sum();
+        let other_total_cost: u128 = other
+            .deploys_with_cost
+            .0
+            .iter()
+            .map(|d| u128::from(d.cost))
+            .sum();
 
         let cost_cmp = self_total_cost.cmp(&other_total_cost).reverse(); // Higher cost first
         if cost_cmp != std::cmp::Ordering::Equal {
@@ -218,24 +419,36 @@ impl Ord for DeployChainIndex {
             return post_state_cmp;
         }
 
-        // 5. QUINARY (injective, total, no cryptographic assumption): the Eq/Hash
-        //    key itself — the canonical shortlex order of the deploy set via
-        //    `HashableSet<DeployIdWithCost>: Ord` (sorts elements, so it is
-        //    deterministic regardless of HashSet iteration order). Because Eq is
-        //    defined by `deploys_with_cost` equality, `cmp == Equal` now implies
-        //    the two chains are Eq, so no two DISTINCT chains ever tie. That makes
-        //    the `min_by`/`sort` winner NODE-IDENTICAL — the property the validator
-        //    (which recomputes the merge) needs to agree with the proposer.
-        self.deploys_with_cost.cmp(&other.deploys_with_cost)
+        let deploy_set_cmp = self.deploys_with_cost.cmp(&other.deploys_with_cost);
+        if deploy_set_cmp != std::cmp::Ordering::Equal {
+            return deploy_set_cmp;
+        }
+
+        let source_cmp = self.source_block_hash.cmp(&other.source_block_hash);
+        if source_cmp != std::cmp::Ordering::Equal {
+            return source_cmp;
+        }
+
+        let effect_cmp = self.effect_indices.cmp(&other.effect_indices);
+        if effect_cmp != std::cmp::Ordering::Equal {
+            return effect_cmp;
+        }
+
+        self.has_exact_state_witness
+            .cmp(&other.has_exact_state_witness)
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashSet;
+    use std::collections::hash_map::DefaultHasher;
+    use std::collections::{HashMap, HashSet};
+    use std::hash::{Hash, Hasher};
 
     use proptest::prelude::*;
     use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+    use rspace_plus_plus::rspace::merger::channel_change::ChannelChange;
+    use rspace_plus_plus::rspace::merger::merging_logic::MergeType;
 
     use super::*;
 
@@ -255,9 +468,197 @@ mod tests {
             system_event_log_index: EventLogIndex::empty(),
             event_log_index: EventLogIndex::empty(),
             state_changes: StateChange::empty(),
+            effect_indices: BTreeSet::new(),
+            has_exact_state_witness: false,
+            exact_effect_changes: BTreeMap::new(),
             source_block_hash: Bytes::from(vec![post_state_seed; 32]),
             source_block_number: 0,
         }
+    }
+
+    fn hash(index: &DeployChainIndex) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        index.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    fn exact_index(
+        deploys: &[(u8, u64)],
+        effect_indices: BTreeSet<u32>,
+        state_changes: StateChange,
+        event_log_index: EventLogIndex,
+        exact_effect_changes: BTreeMap<u32, (StateChange, NumberChannelsDiff)>,
+    ) -> DeployChainIndex {
+        let mut index = mk_index(deploys, 1);
+        index.user_event_log_index = event_log_index.clone();
+        index.event_log_index = event_log_index;
+        index.state_changes = state_changes;
+        index.effect_indices = effect_indices;
+        index.has_exact_state_witness = true;
+        index.exact_effect_changes = exact_effect_changes;
+        index
+    }
+
+    #[test]
+    fn exact_projection_requires_exact_witness() {
+        let index = mk_index(&[(1, 1)], 1);
+        let error = index
+            .validate_exact_projection()
+            .expect_err("legacy chain must not satisfy exact projection");
+        assert!(error.to_string().contains("missing exact state witnesses"));
+    }
+
+    #[test]
+    fn exact_projection_requires_matching_effect_keys() {
+        let index = exact_index(
+            &[(1, 1)],
+            BTreeSet::from([0]),
+            StateChange::empty(),
+            EventLogIndex::empty(),
+            BTreeMap::from([(1, (StateChange::empty(), NumberChannelsDiff::new()))]),
+        );
+        let error = index
+            .validate_exact_projection()
+            .expect_err("mismatched effect keys must fail");
+        assert!(error.to_string().contains("effect indices do not match"));
+    }
+
+    #[test]
+    fn exact_projection_requires_one_effect_identity_per_deploy() {
+        let index = exact_index(
+            &[(1, 1), (2, 1)],
+            BTreeSet::from([0]),
+            StateChange::empty(),
+            EventLogIndex::empty(),
+            BTreeMap::from([(0, (StateChange::empty(), NumberChannelsDiff::new()))]),
+        );
+        let error = index
+            .validate_exact_projection()
+            .expect_err("effect cardinality mismatch must fail");
+        assert!(error
+            .to_string()
+            .contains("exactly one effect identity per deploy"));
+    }
+
+    #[test]
+    fn exact_projection_requires_ordinary_effect_coherence() {
+        let channel = Blake2b256Hash::from_bytes(vec![1; 32]);
+        let change = StateChange::from_parts(
+            HashMap::from([(channel, ChannelChange {
+                added: vec![vec![1]],
+                removed: Vec::new(),
+            })]),
+            HashMap::new(),
+            HashMap::new(),
+        );
+        let index = exact_index(
+            &[(1, 1)],
+            BTreeSet::from([0]),
+            StateChange::empty(),
+            EventLogIndex::empty(),
+            BTreeMap::from([(0, (change, NumberChannelsDiff::new()))]),
+        );
+        let error = index
+            .validate_exact_projection()
+            .expect_err("ordinary projection mismatch must fail");
+        assert!(error.to_string().contains("ordinary projection"));
+    }
+
+    #[test]
+    fn exact_projection_requires_typed_mergeable_contribution() {
+        let channel = Blake2b256Hash::from_bytes(vec![2; 32]);
+        let change = StateChange::from_parts(
+            HashMap::from([(channel.clone(), ChannelChange {
+                added: vec![vec![2]],
+                removed: Vec::new(),
+            })]),
+            HashMap::new(),
+            HashMap::new(),
+        );
+        let mut event_log = EventLogIndex::empty();
+        event_log
+            .number_channels_data
+            .insert(channel, (1, MergeType::IntegerAdd));
+        let index = exact_index(
+            &[(1, 1)],
+            BTreeSet::from([0]),
+            change.clone(),
+            event_log,
+            BTreeMap::from([(0, (change, NumberChannelsDiff::new()))]),
+        );
+        let error = index
+            .validate_exact_projection()
+            .expect_err("untyped mergeable effect must fail");
+        assert!(error.to_string().contains("without a typed contribution"));
+    }
+
+    #[test]
+    fn exact_projection_requires_mergeable_aggregate_coherence() {
+        let channel = Blake2b256Hash::from_bytes(vec![3; 32]);
+        let mut event_log = EventLogIndex::empty();
+        event_log
+            .number_channels_data
+            .insert(channel.clone(), (1, MergeType::IntegerAdd));
+        let exact_diff = NumberChannelsDiff::from([(channel, (2, MergeType::IntegerAdd))]);
+        let index = exact_index(
+            &[(1, 1)],
+            BTreeSet::from([0]),
+            StateChange::empty(),
+            event_log,
+            BTreeMap::from([(0, (StateChange::empty(), exact_diff))]),
+        );
+        let error = index
+            .validate_exact_projection()
+            .expect_err("mergeable aggregate mismatch must fail");
+        assert!(error.to_string().contains("mergeable projection"));
+    }
+
+    #[test]
+    fn exact_projection_accepts_effect_without_mergeable_touch() {
+        let index = exact_index(
+            &[(1, 1)],
+            BTreeSet::from([0]),
+            StateChange::empty(),
+            EventLogIndex::empty(),
+            BTreeMap::from([(0, (StateChange::empty(), NumberChannelsDiff::new()))]),
+        );
+        index
+            .validate_exact_projection()
+            .expect("non-mergeable effect projection");
+    }
+
+    #[test]
+    fn exact_projection_combines_all_effect_contributions() {
+        let channel = Blake2b256Hash::from_bytes(vec![4; 32]);
+        let mut event_log = EventLogIndex::empty();
+        event_log
+            .number_channels_data
+            .insert(channel.clone(), (3, MergeType::IntegerAdd));
+        let index = exact_index(
+            &[(1, 1), (2, 1)],
+            BTreeSet::from([0, 1]),
+            StateChange::empty(),
+            event_log,
+            BTreeMap::from([
+                (
+                    0,
+                    (
+                        StateChange::empty(),
+                        NumberChannelsDiff::from([(channel.clone(), (1, MergeType::IntegerAdd))]),
+                    ),
+                ),
+                (
+                    1,
+                    (
+                        StateChange::empty(),
+                        NumberChannelsDiff::from([(channel, (2, MergeType::IntegerAdd))]),
+                    ),
+                ),
+            ]),
+        );
+        index
+            .validate_exact_projection()
+            .expect("complete effect projection");
     }
 
     #[test]
@@ -289,6 +690,25 @@ mod tests {
 
         assert_eq!(a.cmp(&b), std::cmp::Ordering::Less);
         assert_eq!(b.cmp(&a), std::cmp::Ordering::Greater);
+    }
+
+    #[test]
+    fn source_distinguishes_identical_deploy_occurrences() {
+        let a = mk_index(&[(1, 5)], 0x01);
+        let mut b = a.clone();
+        b.source_block_hash = Bytes::from(vec![0x02; 32]);
+
+        assert_ne!(a, b);
+        assert_ne!(a.cmp(&b), std::cmp::Ordering::Equal);
+        assert_ne!(hash(&a), hash(&b));
+    }
+
+    #[test]
+    fn total_cost_comparison_does_not_overflow() {
+        let larger = mk_index(&[(1, u64::MAX), (2, u64::MAX)], 0x01);
+        let smaller = mk_index(&[(1, u64::MAX), (2, 1)], 0x02);
+
+        assert_eq!(larger.cmp(&smaller), std::cmp::Ordering::Less);
     }
 
     // Determinism regression (Finding B): two DISTINCT chains that tie on ALL FOUR

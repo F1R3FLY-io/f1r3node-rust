@@ -48,10 +48,10 @@ impl TestContext {
 }
 
 /// Distinct, genesis-funded deployer keys (one per validator) so the only conflict is
-/// the single-value-cell keep-one, not a shared-vault precharge. Supports up to 3.
+/// the single-value-cell keep-one, not a shared-purse aggregate debit. Supports up to 3.
 /// All three MUST be genesis-funded: 0/1 are DEFAULT_SEC/SEC2; 2 is the first EXTRA
 /// genesis vault key (funded 9M Rev for the default 4-validator genesis). An UNFUNDED
-/// key here fails precharge and never writes — which silently breaks the test.
+/// key cannot certify its complete protocol debit and never writes.
 fn signer_key(v: usize) -> PrivateKey {
     match v {
         0 => construct_deploy::DEFAULT_SEC.clone(),
@@ -97,7 +97,7 @@ async fn present_keys(
         );
         if let Ok((res, _)) = node
             .runtime_manager
-            .play_exploratory_deploy(term, state_hash)
+            .play_exploratory_deploy(term, state_hash, None)
             .await
         {
             if res.first().and_then(par_to_i64) != Some(-999) {
@@ -400,6 +400,7 @@ async fn create_allow_empty(node: &mut TestNode) -> BlockCreatorResult {
         None,
         node.deploy_storage.clone(),
         node.rejected_deploy_buffer.clone(),
+        std::sync::Arc::new(parking_lot::Mutex::new(std::collections::HashMap::new())),
         &node.runtime_manager,
         &mut node.block_store,
         true,

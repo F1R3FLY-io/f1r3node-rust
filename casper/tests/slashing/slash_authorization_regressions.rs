@@ -113,6 +113,8 @@ fn slash_deploy(
             issuer_public_key: PublicKey::from_bytes(&issuer),
             target_activation_epoch,
         },
+        pre_state_hash: Vec::<u8>::new().into(),
+        post_state_hash: Vec::<u8>::new().into(),
     }
 }
 
@@ -149,7 +151,8 @@ async fn stale_invalid_evidence_is_not_an_authorized_slash_candidate() {
     put_block(&fixture, &invalid, true);
 
     let snapshot = snapshot_from_fixture(&fixture, 10, 10, vec![offender]);
-    let candidates = authorized_slash_candidates(&snapshot).expect("candidates");
+    let candidates = authorized_slash_candidates(&snapshot, &snapshot.on_chain_state.bonds_map)
+        .expect("candidates");
 
     assert!(
         candidates.is_empty(),
@@ -168,7 +171,8 @@ async fn current_epoch_invalid_evidence_is_authorized_once_per_offender() {
     }
 
     let snapshot = snapshot_from_fixture(&fixture, 11, 10, vec![offender.clone()]);
-    let candidates = authorized_slash_candidates(&snapshot).expect("candidates");
+    let candidates = authorized_slash_candidates(&snapshot, &snapshot.on_chain_state.bonds_map)
+        .expect("candidates");
 
     assert_eq!(candidates.len(), 1);
     assert_eq!(candidates[0].offender, offender);
@@ -206,7 +210,12 @@ async fn received_stale_slash_deploy_is_rejected_before_replay() {
     slash_block.body.state.block_number = 11;
     slash_block.body.system_deploys = vec![slash_deploy(invalid.block_hash.clone(), proposer, 0)];
 
-    let err = validate_received_slash_deploys(&slash_block, &snapshot).expect_err("reject stale");
+    let err = validate_received_slash_deploys(
+        &slash_block,
+        &snapshot,
+        &snapshot.on_chain_state.bonds_map,
+    )
+    .expect_err("reject stale");
     // Per-variant pattern match (regression hardening: prior `.contains()`
     // assertion would silently pass any error whose Display includes
     // "non-current epoch", masking a wrong-variant rerouting).
@@ -244,7 +253,66 @@ async fn current_epoch_received_slash_deploy_is_accepted() {
         fixture.validators.clone(),
     );
 
-    validate_received_slash_deploys(&slash_block, &snapshot).expect("current slash deploy");
+    validate_received_slash_deploys(&slash_block, &snapshot, &snapshot.on_chain_state.bonds_map)
+        .expect("current slash deploy");
+}
+
+#[tokio::test]
+async fn canonical_pre_state_zero_overrides_positive_snapshot_bond() {
+    let fixture = DetectorFixture::new().await;
+    let offender = fixture.validators[0].clone();
+    let proposer = fixture.validators[1].clone();
+    let invalid = block(47, offender.clone(), 11, vec![], fixture.validators.clone());
+    put_block(&fixture, &invalid, true);
+
+    let snapshot =
+        snapshot_from_fixture(&fixture, 11, 10, vec![offender.clone(), proposer.clone()]);
+    let canonical_bonds = HashMap::from([(proposer.clone(), 100)]);
+    let candidates = authorized_slash_candidates(&snapshot, &canonical_bonds).expect("candidates");
+    assert!(candidates.is_empty());
+
+    let slash_block = slash_block(
+        48,
+        proposer.clone(),
+        11,
+        invalid.block_hash,
+        proposer,
+        1,
+        fixture.validators.clone(),
+    );
+    let err = validate_received_slash_deploys(&slash_block, &snapshot, &canonical_bonds)
+        .expect_err("canonical zero bond must reject slash");
+    assert!(matches!(
+        err,
+        CasperError::SlashAuth(SlashAuthError::TargetNotBonded { .. })
+    ));
+}
+
+#[tokio::test]
+async fn canonical_pre_state_positive_overrides_zero_snapshot_bond() {
+    let fixture = DetectorFixture::new().await;
+    let offender = fixture.validators[0].clone();
+    let proposer = fixture.validators[1].clone();
+    let invalid = block(49, offender.clone(), 11, vec![], fixture.validators.clone());
+    put_block(&fixture, &invalid, true);
+
+    let snapshot = snapshot_from_fixture(&fixture, 11, 10, vec![proposer.clone()]);
+    let canonical_bonds = HashMap::from([(offender.clone(), 100), (proposer.clone(), 100)]);
+    let candidates = authorized_slash_candidates(&snapshot, &canonical_bonds).expect("candidates");
+    assert_eq!(candidates.len(), 1);
+    assert_eq!(candidates[0].offender, offender);
+
+    let slash_block = slash_block(
+        50,
+        proposer.clone(),
+        11,
+        invalid.block_hash,
+        proposer,
+        1,
+        fixture.validators.clone(),
+    );
+    validate_received_slash_deploys(&slash_block, &snapshot, &canonical_bonds)
+        .expect("canonical positive bond must authorize slash");
 }
 
 #[tokio::test]
@@ -267,7 +335,12 @@ async fn received_slash_deploy_rejects_issuer_mismatch() {
         fixture.validators.clone(),
     );
 
-    let err = validate_received_slash_deploys(&slash_block, &snapshot).expect_err("reject issuer");
+    let err = validate_received_slash_deploys(
+        &slash_block,
+        &snapshot,
+        &snapshot.on_chain_state.bonds_map,
+    )
+    .expect_err("reject issuer");
     assert!(
         matches!(
             err,
@@ -294,7 +367,12 @@ async fn received_slash_deploy_rejects_unknown_invalid_hash() {
         fixture.validators.clone(),
     );
 
-    let err = validate_received_slash_deploys(&slash_block, &snapshot).expect_err("reject unknown");
+    let err = validate_received_slash_deploys(
+        &slash_block,
+        &snapshot,
+        &snapshot.on_chain_state.bonds_map,
+    )
+    .expect_err("reject unknown");
     assert!(
         matches!(
             err,
@@ -324,7 +402,12 @@ async fn received_slash_deploy_rejects_valid_block_reference() {
         fixture.validators.clone(),
     );
 
-    let err = validate_received_slash_deploys(&slash_block, &snapshot).expect_err("reject valid");
+    let err = validate_received_slash_deploys(
+        &slash_block,
+        &snapshot,
+        &snapshot.on_chain_state.bonds_map,
+    )
+    .expect_err("reject valid");
     assert!(
         matches!(
             err,
@@ -354,8 +437,12 @@ async fn received_slash_deploy_rejects_unbonded_target() {
         fixture.validators.clone(),
     );
 
-    let err =
-        validate_received_slash_deploys(&slash_block, &snapshot).expect_err("reject unbonded");
+    let err = validate_received_slash_deploys(
+        &slash_block,
+        &snapshot,
+        &snapshot.on_chain_state.bonds_map,
+    )
+    .expect_err("reject unbonded");
     assert!(
         matches!(
             err,
@@ -389,8 +476,12 @@ async fn received_slash_deploy_rejects_duplicate_target_in_one_block() {
         .system_deploys
         .push(slash_deploy(invalid.block_hash.clone(), proposer, 1));
 
-    let err =
-        validate_received_slash_deploys(&slash_block, &snapshot).expect_err("reject duplicate");
+    let err = validate_received_slash_deploys(
+        &slash_block,
+        &snapshot,
+        &snapshot.on_chain_state.bonds_map,
+    )
+    .expect_err("reject duplicate");
     assert!(
         matches!(
             err,

@@ -639,7 +639,6 @@ impl NodeRuntime {
                     Arc::new(block_processor),
                     block_processor_state,
                     trigger_propose_opt,
-                    100, // max_parallel_blocks - match Scala parallelism
                 );
 
                 // BlockProcessorInstance::create spawns the processing task and returns a result receiver

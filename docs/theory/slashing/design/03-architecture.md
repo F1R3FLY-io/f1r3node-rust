@@ -83,8 +83,8 @@ the next block's `SlashDeploy`s.
 
 **Intuition.** When the next proposer's turn arrives, that proposer
 asks: *"Is there anyone bonded I should slash?"* `BlockCreator`
-answers by reading the on-chain `bonds_map` from the
-`CasperSnapshot` and intersecting it with the DAG's invalid-block
+answers after parent merge by computing the PoS bond map from the exact
+canonical merged pre-state and intersecting it with the DAG's invalid-block
 evidence whose evidence epoch equals the block's target activation
 epoch. For each still-bonded offender, it constructs a `SlashDeploy`
 and attaches it to the block. The proposer's signature on the block
@@ -93,12 +93,14 @@ required; the system auth-token and the received-deploy authorization
 gate guard it instead, see §06).
 
 When a multi-parent merge rejects a branch that carried a valid slash,
-the merge surfaces a `RejectedSlash` recovery record. The proposer
-reissues at most one recovered slash per `invalid_block_hash`, unless
-its own normal slashing pass already covers that hash. Received-block
-authorization checks the target's positive bond in the block's actual
-parent pre-state; it does not require a separate `activeValidators`
-membership predicate.
+the proposer does not grant authority to the rejected deploy. Instead,
+the normal slashing pass scans the complete persisted invalid-evidence
+index against the canonical merged `pre_state_hash`. It emits exactly one
+canonical candidate per `(offender, activation epoch)` when that target's
+bond remains positive. A surviving slash makes the canonical bond zero and
+therefore suppresses another candidate. Received-block authorization derives
+the same predicate from the block's committed parent pre-state; it never uses
+a maximum-over-parents or ambient snapshot approximation.
 
 ### 3.2.4 Effect layer — *"what changes when a slash fires?"*
 

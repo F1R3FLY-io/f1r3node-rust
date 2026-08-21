@@ -255,6 +255,14 @@ impl Score {
     pub const BUNDLE_WRITE: i32 = 307;
     pub const BUNDLE_READ_WRITE: i32 = 308;
     pub const IF: i32 = 309;
+    pub const COST_SIG_GROUND: i32 = 310;
+    pub const COST_SIG_BOUND: i32 = 311;
+    pub const COST_SIG_QUOTE: i32 = 312;
+    pub const COST_SIG_COMPOUND: i32 = 313;
+    pub const COST_SIGNED_TERM: i32 = 314;
+    pub const COST_STACK: i32 = 315;
+    pub const COST_SIG_NAME: i32 = 316;
+    pub const COST_SIG_UNIT: i32 = 317;
 
     pub const CONNECTIVE_NOT: i32 = 400;
     pub const CONNECTIVE_AND: i32 = 401;

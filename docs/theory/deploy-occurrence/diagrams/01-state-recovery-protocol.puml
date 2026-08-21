@@ -1,0 +1,42 @@
+@startuml
+skinparam backgroundColor #F7FAFC
+skinparam shadowing false
+skinparam ArrowColor #334155
+skinparam ArrowThickness 2
+skinparam state {
+  BackgroundColor #E2E8F0
+  BorderColor #334155
+  FontColor #0F172A
+}
+
+state "Buffered\nlocal recovery record" as Buffered #FEF3C7
+state "Suppressed\nactive source exists" as Suppressed #DBEAFE
+state "Eligible\nno active source; in lifespan" as Eligible #DCFCE7
+state "Leader unavailable\nheartbeat rotation continues" as Rotate #EDE9FE
+state "Retry proposed\nby leader for local finalized view" as Proposed #CCFBF1
+state "Active occurrence" as Active #BAE6FD
+state "Finalized effect" as Finalized #BBF7D0
+state "Expired\npurged from both local stores" as Expired #FECACA
+
+[*] --> Buffered
+Buffered --> Suppressed : canonical projection is non-empty
+Suppressed --> Buffered : exact tombstone removes final active source
+Buffered --> Expired : next block reaches lifespan boundary
+Buffered --> Eligible : canonical projection is empty
+Eligible --> Proposed : view-elected leader is online
+Eligible --> Rotate : elected leader is unavailable
+Rotate --> Eligible : non-leader heartbeat advances finalized height
+Proposed --> Active : retry block is admitted
+Active --> Finalized : occurrence becomes canonical
+Active --> Buffered : exact source tombstone is committed
+Finalized --> [*]
+Expired --> [*]
+
+legend right
+  |= Color |= Protocol meaning |
+  |<#DBEAFE> | Safety suppression |
+  |<#DCFCE7> | Retry eligibility |
+  |<#EDE9FE> | Liveness rotation |
+  |<#FECACA> | Terminal expiry |
+endlegend
+@enduml

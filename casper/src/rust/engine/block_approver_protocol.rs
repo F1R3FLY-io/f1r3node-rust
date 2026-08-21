@@ -7,8 +7,9 @@ use comm::rust::peer_node::PeerNode;
 use comm::rust::rp::rp_conf::RPConf;
 use comm::rust::transport::transport_layer::{Blob, TransportLayer};
 use crypto::rust::hash::blake2b256::Blake2b256;
+use crypto::rust::public_key::PublicKey;
 use models::rust::casper::protocol::casper_message::{
-    ApprovedBlockCandidate, BlockApproval, ProcessedDeploy, ProcessedSystemDeploy, UnapprovedBlock,
+    ApprovedBlockCandidate, BlockApproval, ProcessedDeploy, UnapprovedBlock,
 };
 use models::rust::casper::protocol::packet_type_tag::ToPacket;
 use prost::bytes::Bytes;
@@ -19,6 +20,7 @@ use crate::rust::errors::CasperError;
 use crate::rust::genesis::contracts::proof_of_stake::ProofOfStake;
 use crate::rust::genesis::contracts::validator::Validator;
 use crate::rust::genesis::contracts::vault::Vault;
+use crate::rust::genesis::genesis::Genesis;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 use crate::rust::validator_identity::ValidatorIdentity;
 
@@ -40,6 +42,11 @@ pub struct BlockApproverProtocol<T: TransportLayer + Send + Sync + 'static> {
     pub required_sigs: i32,
     pub pos_multi_sig_public_keys: Vec<String>,
     pub pos_multi_sig_quorum: u32,
+    pub max_cosigners_per_deploy: u32,
+    pub initial_phlogiston: i64,
+    pub epoch_phlogiston: i64,
+    pub protocol_version: i64,
+    pub client_fuel_allocations: Vec<(PublicKey, i64)>,
     pub native_token_name: String,
     pub native_token_symbol: String,
     pub native_token_decimals: u32,
@@ -83,6 +90,11 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
         required_sigs: i32,
         pos_multi_sig_public_keys: Vec<String>,
         pos_multi_sig_quorum: u32,
+        max_cosigners_per_deploy: u32,
+        initial_phlogiston: i64,
+        epoch_phlogiston: i64,
+        protocol_version: i64,
+        client_fuel_allocations: Vec<(PublicKey, i64)>,
         native_token_name: String,
         native_token_symbol: String,
         native_token_decimals: u32,
@@ -91,6 +103,8 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
         transport: Arc<T>,
         conf: Arc<RPConf>,
     ) -> Result<Self, CasperError> {
+        crate::rust::casper::ensure_supported_casper_protocol_version(protocol_version)?;
+
         tracing::info!(
             required_sigs = required_sigs,
             "Validator configured required_sigs"
@@ -123,6 +137,11 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
             required_sigs,
             pos_multi_sig_public_keys,
             pos_multi_sig_quorum,
+            max_cosigners_per_deploy,
+            initial_phlogiston,
+            epoch_phlogiston,
+            protocol_version,
+            client_fuel_allocations,
             native_token_name,
             native_token_symbol,
             native_token_decimals,
@@ -180,6 +199,11 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
         shard_id: &str,
         pos_multi_sig_public_keys: &[String],
         pos_multi_sig_quorum: u32,
+        max_cosigners_per_deploy: u32,
+        initial_phlogiston: i64,
+        epoch_phlogiston: i64,
+        protocol_version: i64,
+        client_fuel_allocations: &[(PublicKey, i64)],
         native_token_name: &str,
         native_token_symbol: &str,
         native_token_decimals: u32,
@@ -202,6 +226,12 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
         }
 
         let block = &candidate.block;
+        if block.header.version != protocol_version {
+            return Err(format!(
+                "Candidate protocol version mismatch: expected {}, got {}",
+                protocol_version, block.header.version
+            ));
+        }
         if !block.body.system_deploys.is_empty() {
             return Err("Candidate must not contain system deploys.".to_string());
         }
@@ -241,7 +271,13 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
             fault_tolerance_threshold_ppm,
             pos_multi_sig_public_keys: pos_multi_sig_public_keys.to_vec(),
             pos_multi_sig_quorum,
+            max_cosigners_per_deploy,
+            initial_phlogiston,
+            epoch_phlogiston,
         };
+        let funded_vaults =
+            Genesis::vaults_with_protocol_funding(&pos_params, vaults, client_fuel_allocations)
+                .map_err(|error| error.to_string())?;
 
         tracing::info!(
             shard_id = %shard_id,
@@ -261,10 +297,15 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
         // `self.fs_bundle` which was set at BlockApproverProtocol
         // construction — same config source as
         // `ApproveBlockProtocolFactory::create`.
+        //
+        // Cost-accounted merge: use `&funded_vaults` (vaults after
+        // protocol-funding transform) rather than raw `vaults`, per
+        // cost-accounted-rho's vault-backed parallel execution
+        // semantics.
         let genesis_blessed_contracts =
             crate::rust::genesis::genesis::Genesis::default_blessed_terms(
                 &pos_params,
-                vaults,
+                &funded_vaults,
                 i64::MAX,
                 shard_id,
                 native_token_name,
@@ -307,14 +348,7 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
         // State hash checks
         let empty_state_hash = RuntimeManager::empty_state_hash_fixed();
         let state_hash = runtime_manager
-            .replay_compute_state(
-                &empty_state_hash,
-                block_deploys.clone(),
-                Vec::<ProcessedSystemDeploy>::new(),
-                &rholang::rust::interpreter::system_processes::BlockData::from_block(block),
-                None,
-                true,
-            )
+            .replay_block_from_consensus_data(&empty_state_hash, block, None)
             .await
             .map_err(|e| format!("Failed status during replay: {:?}.", e))?;
 
@@ -365,6 +399,11 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
             shard_id,
             &self.pos_multi_sig_public_keys,
             self.pos_multi_sig_quorum,
+            self.max_cosigners_per_deploy,
+            self.initial_phlogiston,
+            self.epoch_phlogiston,
+            self.protocol_version,
+            &self.client_fuel_allocations,
             &self.native_token_name,
             &self.native_token_symbol,
             self.native_token_decimals,

@@ -9,35 +9,6 @@
 //!     `self.update_last_finalized_block` (inherent method here)
 //!   * background task spawned by `update_last_finalized_block` →
 //!     `run_queued_finalizer` → `compute_last_finalized_block`
-//!
-//! ── DO NOT re-add a finalization-time rejected-deploy-buffer purge ──────────
-//!
-//! There is deliberately NO `purge_finalized_deploys_from_buffer` here, and no
-//! `rejected_deploy_buffer` handle in `FinalizationContext`. This looks like the
-//! well-known "the casper_engine split dropped the DL-1 finalization purge"
-//! regression. It is NOT. It was re-derived and MEASURED during the 2026-07-15
-//! dev merge, and the purge is actively harmful against the current recovery
-//! design:
-//!
-//!   run `casper::mod batch2::map_cell_convergence_spec::three_writers_converge_under_load`
-//!     - purge present  ⇒ FAILS, deterministically, same keys every run:
-//!                        "MISSING 2 of 9 keys: [(\"v1_0\", 1), (\"v2_0\", 2)]"
-//!     - purge absent   ⇒ PASSES (308s)
-//!
-//! Why: `v1_0`/`v2_0` are the round-0 keep-one LOSERS. Their writes are supposed
-//! to be re-proposed out of the per-node rejected-deploy buffer (record-driven
-//! recovery). A finalization-time purge of `block.body.rejected_deploys` evicts
-//! exactly those entries, so the losers can never be recovered and their writes
-//! are lost permanently — silently, since the merge itself is still "valid".
-//!
-//! The double-apply hazard the purge originally guarded against is handled
-//! ELSEWHERE now: `block_creator` drops already-canonical sigs at ADMISSION
-//! (`remove_by_sig` + `canonical_won_sigs` + the `rejected_in_scope` exemption),
-//! which is a strictly better place for it — a deploy stops being re-proposable
-//! when it lands canonically, not when some later block finalizes.
-//!
-//! If you are here because a static diff told you a fix went missing: it didn't.
-//! Re-run the test above before restoring anything.
 
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -62,11 +33,8 @@ use super::events::finalised_event;
 use super::types::MultiParentCasperImpl;
 use crate::rust::errors::CasperError;
 use crate::rust::finality::finalizer::Finalizer;
+use crate::rust::safety::clique_oracle::FtThreshold;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
-
-// Phase 13 (TC-1): the previous `FINALIZER_BLOCKING_TIMEOUT = 15s`
-// constant is now `CasperShardConf::finalizer_blocking_timeout`,
-// passed in via `FinalizationContext::finalizer_blocking_timeout`.
 
 /// RAII guard that ensures the finalization flag is reset on drop.
 /// This prevents the flag from being stuck in `true` state if the async block
@@ -88,17 +56,26 @@ pub(crate) struct FinalizationContext {
     pub(crate) block_dag_storage: BlockDagKeyValueStorage,
     pub(crate) block_store: KeyValueBlockStore,
     pub(crate) deploy_storage: Arc<Mutex<KeyValueDeployStorage>>,
+    /// Cosigner-metadata sidecar (keyed by primary signature). Drained in
+    /// lockstep with `deploy_storage` when a block's deploys are finalized, so
+    /// compound-deploy metadata stays bounded after canonical inclusion. Under
+    /// sealed-floor, deploys are retained through accept and purged only at
+    /// finalization, so this drain was relocated here from block admission.
+    pub(crate) pending_cosigner_metadata: Arc<
+        Mutex<
+            std::collections::HashMap<prost::bytes::Bytes, super::types::PendingCosignerMetadata>,
+        >,
+    >,
     pub(crate) runtime_manager: Arc<RuntimeManager>,
     pub(crate) event_publisher: F1r3flyEvents,
     pub(crate) finalization_in_progress: Arc<AtomicBool>,
     pub(crate) enable_mergeable_channel_gc: bool,
-    pub(crate) ftt: crate::rust::safety::clique_oracle::FtThreshold,
+    pub(crate) ftt: FtThreshold,
     pub(crate) finalizer_conf: crate::rust::casper_conf::FinalizerConf,
-    pub(crate) finalizer_blocking_timeout: std::time::Duration,
 }
 
 /// Build a `FinalizationContext` from a `MultiParentCasperImpl`. Single
-/// source of truth for the 10-field clone — previously duplicated at
+/// source of truth for the context clone — previously duplicated at
 /// `traits::last_finalized_block` and the trigger site in
 /// `finalization_runner::run_finalization`. Replaces both literal
 /// constructions so adding/renaming a context field is one edit.
@@ -111,16 +88,14 @@ pub(crate) fn build_finalization_context<
         block_dag_storage: this.block_dag_storage.clone(),
         block_store: this.block_store.clone(),
         deploy_storage: this.deploy_storage.clone(),
+        pending_cosigner_metadata: this.pending_cosigner_metadata.clone(),
         runtime_manager: this.runtime_manager.clone(),
         event_publisher: this.event_publisher.clone(),
         finalization_in_progress: this.finalization_in_progress.clone(),
         enable_mergeable_channel_gc: this.casper_shard_conf.enable_mergeable_channel_gc,
         // Exact ppm from the shard conf — the source of truth for the DECISION.
-        ftt: crate::rust::safety::clique_oracle::FtThreshold::from_ppm(
-            this.casper_shard_conf.fault_tolerance_threshold_ppm,
-        ),
+        ftt: FtThreshold::from_ppm(this.casper_shard_conf.fault_tolerance_threshold_ppm),
         finalizer_conf: this.casper_shard_conf.finalizer_conf.clone(),
-        finalizer_blocking_timeout: this.casper_shard_conf.finalizer_blocking_timeout,
     }
 }
 
@@ -133,23 +108,11 @@ pub(crate) async fn run_queued_finalizer(
     let _task_guard = FinalizationGuard(finalizer_task_in_progress.as_ref());
     tracing::info!(target: "f1r3fly.casper", "finalizer-run-started");
 
-    let finalizer_blocking_timeout = ctx.finalizer_blocking_timeout;
     loop {
-        match tokio::time::timeout(
-            finalizer_blocking_timeout,
-            compute_last_finalized_block(ctx.clone()),
-        )
-        .await
-        {
-            Ok(Ok(_)) => {}
-            Ok(Err(err)) => {
+        match compute_last_finalized_block(ctx.clone()).await {
+            Ok(_) => {}
+            Err(err) => {
                 tracing::warn!("finalizer-run failed: {:?}", err);
-            }
-            Err(_) => {
-                tracing::warn!(
-                    "finalizer-run timed out after {:?}; skipping this cycle to avoid blocking propose",
-                    finalizer_blocking_timeout
-                );
             }
         }
 
@@ -170,13 +133,13 @@ pub(crate) async fn compute_last_finalized_block(
         block_dag_storage,
         block_store,
         deploy_storage,
+        pending_cosigner_metadata,
         runtime_manager,
         event_publisher,
         finalization_in_progress,
         enable_mergeable_channel_gc,
         ftt,
         finalizer_conf,
-        finalizer_blocking_timeout: _,
     } = ctx;
     let finalizer_conf = &finalizer_conf;
     let lfb_lookup_started = std::time::Instant::now();
@@ -189,6 +152,7 @@ pub(crate) async fn compute_last_finalized_block(
     let block_dag_storage_for_effect = block_dag_storage.clone();
     let block_store_for_effect = block_store.clone();
     let deploy_storage_for_effect = deploy_storage.clone();
+    let pending_cosigner_metadata_for_effect = pending_cosigner_metadata.clone();
     let runtime_manager_for_effect = runtime_manager.clone();
     let event_publisher_for_effect = event_publisher.clone();
     let finalization_in_progress_for_effect = finalization_in_progress.clone();
@@ -198,6 +162,7 @@ pub(crate) async fn compute_last_finalized_block(
         let block_dag_storage = block_dag_storage_for_effect.clone();
         let block_store = block_store_for_effect.clone();
         let deploy_storage = deploy_storage_for_effect.clone();
+        let pending_cosigner_metadata = pending_cosigner_metadata_for_effect.clone();
         let runtime_manager = runtime_manager_for_effect.clone();
         let event_publisher = event_publisher_for_effect.clone();
         let finalization_in_progress = finalization_in_progress_for_effect.clone();
@@ -208,6 +173,7 @@ pub(crate) async fn compute_last_finalized_block(
                     let finalized_set = finalized_set.clone();
                     let block_store = block_store.clone();
                     let deploy_storage = deploy_storage.clone();
+                    let pending_cosigner_metadata = pending_cosigner_metadata.clone();
                     let runtime_manager = runtime_manager.clone();
                     let event_publisher = event_publisher.clone();
                     let finalization_in_progress = finalization_in_progress.clone();
@@ -239,7 +205,24 @@ pub(crate) async fn compute_last_finalized_block(
                             // Remove block deploys from persistent store.
                             // Phase 9 (A-3): parking_lot::Mutex — no poison.
                             let deploys_count = deploys.len();
+                            let deploy_sigs_for_buffer: Vec<Vec<u8>> =
+                                deploys.iter().map(|d| d.sig.to_vec()).collect();
                             deploy_storage.lock().remove(deploys)?;
+
+                            // Drain the cosigner-metadata sidecar in lockstep
+                            // with `deploy_storage` (both keyed by primary
+                            // signature). Relocated here from the acceptance-time
+                            // purge so the sidecar stays bounded under sealed-floor
+                            // record-driven recovery: deploys are retained through
+                            // accept and removed only once finalized, so their
+                            // compound-deploy metadata must be released here too.
+                            {
+                                let mut sidecar = pending_cosigner_metadata.lock();
+                                for sig in &deploy_sigs_for_buffer {
+                                    sidecar.remove(&prost::bytes::Bytes::from(sig.clone()));
+                                }
+                            }
+
                             let finalized_set_str = PrettyPrinter::build_string_hashes(
                                 &finalized_set.iter().map(|h| h.to_vec()).collect::<Vec<_>>(),
                             );
@@ -390,12 +373,12 @@ pub(crate) async fn compute_last_finalized_block(
     let new_finalized_hash_opt = Finalizer::run(
         &dag,
         ftt,
+        &last_finalized_block_hash,
         last_finalized_block_height,
         new_lfb_found_effect,
         finalizer_conf,
     )
-    .await
-    .map_err(CasperError::KvStoreError)?;
+    .await?;
     let finalizer_ms = finalizer_started.elapsed().as_millis();
     let new_lfb_found = new_finalized_hash_opt.is_some();
 

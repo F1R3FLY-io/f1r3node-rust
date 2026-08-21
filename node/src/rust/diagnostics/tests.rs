@@ -54,6 +54,12 @@ mod tests {
                 genesis_block_number: 0,
                 pos_multi_sig_public_keys: vec![],
                 pos_multi_sig_quorum: 0,
+                max_cosigners_per_deploy:
+                    casper::rust::casper_conf::DEFAULT_MAX_COSIGNERS_PER_DEPLOY,
+                initial_phlogiston: casper::rust::casper_conf::DEFAULT_INITIAL_PHLOGISTON,
+                epoch_phlogiston: casper::rust::casper_conf::DEFAULT_EPOCH_PHLOGISTON,
+                // Task #13b: default EMPTY genesis client funding-slot list.
+                client_fuel_allocations: Vec::new(),
                 native_token_name: "F1R3CAP".to_string(),
                 native_token_symbol: "F1R3".to_string(),
                 native_token_decimals: 8,
@@ -134,8 +140,8 @@ mod tests {
                 enable_reporting: true,
                 keep_alive_time: Duration::from_secs(60),
                 keep_alive_timeout: Duration::from_secs(20),
-                permit_keep_alive_time: Duration::from_secs(10),
-                max_connection_idle: Duration::from_secs(60),
+                tcp_keepalive_time: Duration::from_secs(10),
+                request_timeout: Duration::from_secs(60),
                 max_connection_age: Duration::from_secs(60),
                 max_connection_age_grace: Duration::from_secs(60),
             },

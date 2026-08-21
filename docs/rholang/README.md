@@ -24,14 +24,15 @@ Verified against the f1r3node-rust implementation (Rust shard).
 11. [System Channels](10-system-channels.md) -- All `rho:*` URIs: I/O, crypto, registry, vaults, AI
 12. [Registry](11-registry.md) -- Registry operations, TreeHashMap, URI generation
 13. [Vaults and Tokens](12-vaults-and-tokens.md) -- SystemVault, MakeMint, transfers, auth keys
-14. [Cost Model](13-cost-model.md) -- Phlogiston accounting, cost functions, gas scaling
+14. [Cost Model](13-cost-model.md) -- Compute authority, storage bytes, REV bounds, settlement, replay
+15. [Wallet-Funded Processes](20-wallet-funded-processes.md) -- Wallet refill, process purses, lollipop grants, cryptography, finalization
 
 ### Patterns and Practice
-15. [Design Patterns](14-design-patterns.md) -- Security, capabilities, common idioms
-16. [Rhox Macros](16-rhox-macros.md) -- `.rhox` template format
-17. [Testing with RhoSpec](17-testing-with-rhospec.md) -- Test framework, writing contract tests
-18. [Deployment Workflow](18-deployment-workflow.md) -- Deploy, propose, finalize, exploratory deploy
-19. [Real-World Applications](19-real-world-applications.md) -- Embers template system, production patterns
+16. [Design Patterns](14-design-patterns.md) -- Security, capabilities, common idioms
+17. [Rhox Macros](16-rhox-macros.md) -- `.rhox` template format
+18. [Testing with RhoSpec](17-testing-with-rhospec.md) -- Test framework, writing contract tests
+19. [Deployment Workflow](18-deployment-workflow.md) -- Deploy, propose, finalize, exploratory deploy
+20. [Real-World Applications](19-real-world-applications.md) -- Embers template system, production patterns
 
 ### Internal Reference
 - [Crate Overview](crate-overview.md) -- Interpreter crate architecture, compilation pipeline, system processes

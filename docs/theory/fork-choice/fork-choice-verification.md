@@ -351,9 +351,9 @@ now stale: `snapshot.rs` builds the parent list in **two** stages.
 
 | Stage | Code | What it does |
 |---|---|---|
-| 1a | `snapshot.rs:317-323` | `ghost_main_parent = estimator.tips_with_latest_messages(..).tips.into_iter().next()` — the GHOST head |
-| 1b | `snapshot.rs:325-331` | `sort_by` on `(is_main DESC, hash ASC)` — **this is the sort the model cited**, now at `:325-331`, not `:136-142` |
-| 2 | `snapshot.rs:332` → `:124-185` | `prefer_deploy_support_main_parent` scores each parent **branch** by unfinalized user-deploy support and, if a best exists, `remove(best_idx)` + `insert(0, _)` (`:173-174`) — **promoting it over the ghost head** |
+| 1a | `snapshot.rs:392-398` | `ghost_main_parent = estimator.tips_with_latest_messages(..).tips.into_iter().next()` — the GHOST head |
+| 1b | `snapshot.rs:400-406` | `sort_by` on `(is_main DESC, hash ASC)` — **this is the sort the model cited**, now at `:400-406`, not `:136-142` |
+| 2 | `snapshot.rs:407-412` → `:127-188` | `prefer_deploy_support_main_parent` scores each parent **branch** by unfinalized user-deploy support and, if a best exists, `remove(best_idx)` + `insert(0, _)` (`:176-177`) — **promoting it over the ghost head** |
 
 So *"the block's main parent = the GHOST argmax"* is **false for the proposer**. This is
 not an opinion: `GuardBridge.pipeline_head_may_differ_from_ghost` **refutes it by

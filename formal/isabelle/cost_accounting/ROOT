@@ -1,0 +1,4 @@
+session CostAccounting = "HOL-Library" +
+  description "Cost-Accounted Rho join-conservation cross-witness (Isabelle/HOL)"
+  theories
+    JoinConservation

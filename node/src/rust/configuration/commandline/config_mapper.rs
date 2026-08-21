@@ -135,12 +135,12 @@ impl ConfigMapper<Options> for NodeConf {
                 run.api_keep_alive_timeout,
             );
             Self::try_override_value(
-                &mut self.api_server.permit_keep_alive_time,
-                run.api_permit_keep_alive_time,
+                &mut self.api_server.tcp_keepalive_time,
+                run.api_tcp_keepalive_time,
             );
             Self::try_override_value(
-                &mut self.api_server.max_connection_idle,
-                run.api_max_connection_idle,
+                &mut self.api_server.request_timeout,
+                run.api_request_timeout,
             );
             Self::try_override_value(
                 &mut self.api_server.max_connection_age,
@@ -363,10 +363,6 @@ impl ConfigMapper<Options> for NodeConf {
                 run.heartbeat_deploy_finalization_grace,
             );
             Self::try_override_value(
-                &mut self.casper.heartbeat_conf.advanced.frontier_chase_max_lag,
-                run.heartbeat_advanced_frontier_chase_max_lag,
-            );
-            Self::try_override_value(
                 &mut self.casper.heartbeat_conf.advanced.pending_deploy_max_lag,
                 run.heartbeat_advanced_pending_deploy_max_lag,
             );
@@ -454,8 +450,8 @@ mod tests {
         "--api-enable-reporting",
         "--api-keep-alive-time=111111seconds",
         "--api-keep-alive-timeout=111111seconds",
-        "--api-permit-keep-alive-time=111111seconds",
-        "--api-max-connection-idle=111111seconds",
+        "--api-tcp-keepalive-time=111111seconds",
+        "--api-request-timeout=111111seconds",
         "--api-max-connection-age=111111seconds",
         "--api-max-connection-age-grace=111111seconds",
         "--data-dir=/var/lib/rnode",
@@ -503,7 +499,6 @@ mod tests {
         "--heartbeat-self-propose-cooldown=555555seconds",
         "--heartbeat-stale-recovery-min-interval=333333seconds",
         "--heartbeat-deploy-finalization-grace=444444seconds",
-        "--heartbeat-advanced-frontier-chase-max-lag=111",
         "--heartbeat-advanced-pending-deploy-max-lag=222",
         "--heartbeat-advanced-deploy-recovery-max-lag=333",
         "--heartbeat-advanced-empty-frontier-max-unfinalized-blocks=444",
@@ -556,7 +551,6 @@ mod tests {
         // rejects negative integers; a negative cap would silently
         // disable the corresponding code path in the proposer.
         for flag in &[
-            "--heartbeat-advanced-frontier-chase-max-lag",
             "--heartbeat-advanced-pending-deploy-max-lag",
             "--heartbeat-advanced-deploy-recovery-max-lag",
             "--heartbeat-advanced-empty-frontier-max-unfinalized-blocks",
@@ -626,8 +620,8 @@ mod tests {
                 api_enable_reporting: true,
                 api_keep_alive_time: Some(Duration::from_secs(111111)),
                 api_keep_alive_timeout: Some(Duration::from_secs(111111)),
-                api_permit_keep_alive_time: Some(Duration::from_secs(111111)),
-                api_max_connection_idle: Some(Duration::from_secs(111111)),
+                api_tcp_keepalive_time: Some(Duration::from_secs(111111)),
+                api_request_timeout: Some(Duration::from_secs(111111)),
                 api_max_connection_age: Some(Duration::from_secs(111111)),
                 api_max_connection_age_grace: Some(Duration::from_secs(111111)),
                 data_dir: Some(PathBuf::from("/var/lib/rnode")),
@@ -683,7 +677,6 @@ mod tests {
                 heartbeat_self_propose_cooldown: Some(Duration::from_secs(555555)),
                 heartbeat_stale_recovery_min_interval: Some(Duration::from_secs(333333)),
                 heartbeat_deploy_finalization_grace: Some(Duration::from_secs(444444)),
-                heartbeat_advanced_frontier_chase_max_lag: Some(111),
                 heartbeat_advanced_pending_deploy_max_lag: Some(222),
                 heartbeat_advanced_deploy_recovery_max_lag: Some(333),
                 heartbeat_advanced_empty_frontier_max_unfinalized_blocks: Some(444),
@@ -742,8 +735,8 @@ mod tests {
                 enable_reporting: false,
                 keep_alive_time: Duration::from_secs(2),
                 keep_alive_timeout: Duration::from_secs(20),
-                permit_keep_alive_time: Duration::from_secs(5),
-                max_connection_idle: Duration::from_secs(300),
+                tcp_keepalive_time: Duration::from_secs(5),
+                request_timeout: Duration::from_secs(300),
                 max_connection_age: Duration::from_secs(3600),
                 max_connection_age_grace: Duration::from_secs(5),
             },
@@ -802,6 +795,13 @@ mod tests {
                     genesis_block_number: 0,
                     pos_multi_sig_public_keys: vec![],
                     pos_multi_sig_quorum: 0,
+                    max_cosigners_per_deploy:
+                        casper::rust::casper_conf::DEFAULT_MAX_COSIGNERS_PER_DEPLOY,
+                    initial_phlogiston: casper::rust::casper_conf::DEFAULT_INITIAL_PHLOGISTON,
+                    epoch_phlogiston: casper::rust::casper_conf::DEFAULT_EPOCH_PHLOGISTON,
+                    // Task #13b: default EMPTY genesis client funding-slot list
+                    // (back-compat — no client `Σ⟦c⟧` seed unless configured).
+                    client_fuel_allocations: Vec::new(),
                     deploy_timestamp: None,
                     native_token_name: "F1R3CAP".to_string(),
                     native_token_symbol: "F1R3".to_string(),
@@ -938,11 +938,11 @@ mod tests {
             Duration::from_secs(111111)
         );
         assert_eq!(
-            default_config.api_server.permit_keep_alive_time,
+            default_config.api_server.tcp_keepalive_time,
             Duration::from_secs(111111)
         );
         assert_eq!(
-            default_config.api_server.max_connection_idle,
+            default_config.api_server.request_timeout,
             Duration::from_secs(111111)
         );
         assert_eq!(
@@ -1060,14 +1060,6 @@ mod tests {
                 .heartbeat_conf
                 .deploy_finalization_grace,
             Duration::from_secs(444444)
-        );
-        assert_eq!(
-            default_config
-                .casper
-                .heartbeat_conf
-                .advanced
-                .frontier_chase_max_lag,
-            111
         );
         assert_eq!(
             default_config

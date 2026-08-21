@@ -127,7 +127,7 @@ literal byte `1` in the `splitByte` call.
 
 > **Verified (T-Slash seed-wiring).** That the seed derives from the
 > offender's `invalidBlockHash` — not some other hash — is
-> `main_TSlash_deploy_seed_uses_invalid_block_hash` (`MainTheorem.v:393`):
+> `main_TSlash_deploy_seed_uses_invalid_block_hash` (`MainTheorem.v:386`):
 > every deploy `prepare_slashing_deploys` emits satisfies
 > `sd_seed = seed_fn(proposer, seqNum, sd_target_hash)`. In Rust both
 > proposer slash paths (the freshly-detected pass and the merge-rejected
@@ -167,8 +167,9 @@ The activity flow:
      under Bug #12 / T-9.13.
 6. **Read the offender's bond:** `valBond ← state.allBonds[validator]`.
 7. **Zero-bond branch:** if `valBond ≤ 0`, return `(true, Nil)` with no
-   state mutation. This is the idempotent recovery path used by
-   merge-rejected slash reissue.
+   state mutation. This remains a contract-level idempotence safeguard;
+   canonical proposer selection and received-block authorization do not
+   admit a new slash deploy for a non-positive target bond.
 8. **Transfer** positive `valBond` to the Coop vault via
    `@posVault!("transfer", coopMultiVaultAddr, valBond, posAuthKey,
    *transferDoneCh)`.
@@ -334,13 +335,12 @@ reason. The asymmetry between user and system deploys is
 intentional: user deploys are crash-recovery state; system deploys
 are deterministically replayable from the persisted DAG.
 
-Merge-rejected slashes are the one extra input to this reconstruction:
-they are not stored as user deploys, but the parent merge records
-`RejectedSlash { invalid_block_hash, issuer_public_key, source_block_hash }`.
-The next proposer reissues one recovered slash per uncovered
-`invalid_block_hash`. If the proposer's own slashing pass already emits
-that hash, the recovered record is treated as covered and is not emitted
-again.
+Merge-rejected slash records are not inputs to authorization. The complete
+invalid-evidence index is the durable source: if a merge rejected the slash
+effect and the canonical merged pre-state still has a positive target bond,
+the normal scan reconstructs one candidate for that `(offender, epoch)`.
+If the effect survived, the zero bond excludes the target. Canonicalization
+across all evidence hashes prevents duplicate system deploys for one target.
 
 ## 6.9 Why a separate Coop vault contract?
 

@@ -12,6 +12,7 @@ use casper::rust::engine::block_retriever::BlockRetriever;
 use casper::rust::engine::casper_launch::CasperLaunch;
 use casper::rust::errors::CasperError;
 use casper::rust::metrics_constants::{
+    BLOCK_PROCESSING_QUEUE_PENDING_METRIC, BLOCK_PROCESSOR_METRICS_SOURCE,
     PROPOSER_QUEUE_PENDING_METRIC, PROPOSER_QUEUE_REJECTED_TOTAL_METRIC, VALIDATOR_METRICS_SOURCE,
 };
 use casper::rust::state::instances::ProposerState;
@@ -457,6 +458,33 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
             block_processor_queue_max_pending,
         );
 
+    // Queue depth is where memory pressure moves when parallel drain is
+    // bounded, so it must be observable alongside block-processing.active.
+    // Sampled from the channel's own permit accounting via a WeakSender so
+    // the sampler can never hold the queue open past the last real producer.
+    metrics::gauge!(
+        BLOCK_PROCESSING_QUEUE_PENDING_METRIC,
+        "source" => BLOCK_PROCESSOR_METRICS_SOURCE
+    )
+    .set(0.0);
+    let block_processor_queue_watch = block_processor_queue_tx.downgrade();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            interval.tick().await;
+            let Some(queue_tx) = block_processor_queue_watch.upgrade() else {
+                break;
+            };
+            let pending = queue_tx.max_capacity().saturating_sub(queue_tx.capacity());
+            metrics::gauge!(
+                BLOCK_PROCESSING_QUEUE_PENDING_METRIC,
+                "source" => BLOCK_PROCESSOR_METRICS_SOURCE
+            )
+            .set(pending as f64);
+        }
+    });
+
     // Block processing state - set of items currently in processing
     let block_processor_state_ref = Arc::new(dashmap::DashSet::<BlockHash>::new());
 
@@ -510,6 +538,13 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
             block_store.clone(),
             deploy_storage_arc.clone(),
             rejected_deploy_buffer_arc.clone(),
+            // Multi-sig cosigner-metadata sidecar (§1.9.5). The casper
+            // instance owns the canonical sidecar; the proposer holds a
+            // shared Arc clone. In production, setup.rs constructs the
+            // casper-side sidecar first and threads it through both sides;
+            // this entry point creates the sidecar fresh for the proposer
+            // and the casper engine receives the same Arc.
+            std::sync::Arc::new(parking_lot::Mutex::new(std::collections::HashMap::new())),
             block_retriever.clone(),
             transport_layer.clone(),
             rp_connections.clone(),
@@ -1040,13 +1075,18 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
             synchrony_constraint_threshold: conf.casper.synchrony_constraint_threshold,
             height_constraint_threshold: conf.casper.height_constraint_threshold,
             deploy_lifespan: 50,
-            casper_version: 1,
+            casper_version: casper::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION,
             config_version: 1,
             bond_minimum: conf.casper.genesis_block_data.bond_minimum,
             bond_maximum: conf.casper.genesis_block_data.bond_maximum,
             epoch_length: conf.casper.genesis_block_data.epoch_length,
             quarantine_length: conf.casper.genesis_block_data.quarantine_length,
             min_phlo_price: conf.casper.min_phlo_price,
+            // Task #13b: this GC-path shard conf drives mergeable-channel GC
+            // sizing, NOT block creation, so the genesis client funding-slot list
+            // is inert here — default EMPTY (the authoritative wiring is in
+            // `casper_launch.rs`, which the block proposer/validator read).
+            client_fuel_allocations: Vec::new(),
             disable_late_block_filtering: conf.casper.disable_late_block_filtering,
             deploy_heartbeat_wake_enabled: false,
             disable_validator_progress_check: conf.standalone,
@@ -1060,15 +1100,11 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
             synchrony_finalized_baseline_max_distance: conf
                 .casper
                 .synchrony_finalized_baseline_max_distance,
+            max_cosigners_per_deploy: casper::rust::casper_conf::DEFAULT_MAX_COSIGNERS_PER_DEPLOY,
             max_user_deploys_per_block: conf.casper.max_user_deploys_per_block,
             native_token_name: conf.casper.genesis_block_data.native_token_name.clone(),
             native_token_symbol: conf.casper.genesis_block_data.native_token_symbol.clone(),
             native_token_decimals: conf.casper.genesis_block_data.native_token_decimals,
-            // Phase 13 defaults centralized as named consts in
-            // `casper::rust::casper`. When `CasperConf` gains corresponding
-            // fields, plumb them through here; the consts are then the
-            // documented fallback.
-            finalizer_blocking_timeout: casper::rust::casper::FINALIZER_BLOCKING_TIMEOUT_DEFAULT,
             active_validators_cache_max_entries:
                 casper::rust::casper::ACTIVE_VALIDATORS_CACHE_MAX_ENTRIES_DEFAULT,
         };

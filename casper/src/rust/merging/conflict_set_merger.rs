@@ -1,6 +1,6 @@
 // See casper/src/main/scala/coop/rchain/casper/merging/ConflictSetMerger.scala
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 use models::rhoapi::ListParWithRandom;
@@ -9,14 +9,18 @@ use rspace_plus_plus::rspace::errors::HistoryError;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::hot_store_trie_action::HotStoreTrieAction;
 use rspace_plus_plus::rspace::internal::Datum;
-use rspace_plus_plus::rspace::merger::merging_logic::{
-    combine_mergeable_value, MergeType, NumberChannelsDiff,
-};
+use rspace_plus_plus::rspace::merger::merging_logic::{MergeType, NumberChannelsDiff};
 use rspace_plus_plus::rspace::merger::state_change::StateChange;
 use shared::rust::hashable_set::HashableSet;
 use tracing::{debug, info};
 
 type Branch<R> = HashableSet<R>;
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct CausalEffectId {
+    pub source_block_hash: Vec<u8>,
+    pub execution_index: u32,
+}
 
 // Utility for timing operations
 fn measure_time<T, F: FnOnce() -> T>(f: F) -> (T, Duration) {
@@ -136,15 +140,25 @@ pub fn resolve_conflicts<R: Clone + Eq + std::hash::Hash + PartialOrd + Ord>(
     // Split the actual_set into branches without cross dependencies
     let (rejected_as_dependents, merge_set): (HashableSet<R>, HashableSet<R>) = {
         let mut rejected = HashableSet(HashSet::new());
-        let mut to_merge = HashableSet(HashSet::new());
-
-        for item in &actual_set {
-            if late_set.iter().any(|late_item| depends(item, late_item)) {
-                rejected.0.insert(item.clone());
-            } else {
-                to_merge.0.insert(item.clone());
+        loop {
+            let rejected_before = rejected.0.len();
+            for item in &actual_set {
+                if rejected.0.contains(item) {
+                    continue;
+                }
+                if late_set
+                    .iter()
+                    .chain(rejected.0.iter())
+                    .any(|rejected_source| depends(item, rejected_source))
+                {
+                    rejected.0.insert(item.clone());
+                }
+            }
+            if rejected.0.len() == rejected_before {
+                break;
             }
         }
+        let to_merge = HashableSet(actual_set.difference(&rejected.0).cloned().collect());
 
         (rejected, to_merge)
     };
@@ -354,65 +368,14 @@ pub fn resolve_conflicts<R: Clone + Eq + std::hash::Hash + PartialOrd + Ord>(
     })
 }
 
-/// Finding-A runtime guard (docs/theory/merge-algebra/merge-algebra-verification.md §6).
-/// The shipped merge operator `ChannelChange::combine` (max-union) is
-/// non-associative, yet the merged root is node-identical because survivors are
-/// folded in canonical sorted order AND no order-dependent survivor pair reaches
-/// apply. This accumulator enforces that second premise at runtime: it trips iff
-/// some datum value is contributed to `added` (or `removed`) by >= 2 DISTINCT
-/// survivors on the same NON-mergeable channel — the exact precondition under which
-/// the max-union fold differs from the order-independent sum-union fold
-/// (`ChannelNetting.v` `combine_max_eq_combine_sum_under_no_dup`). It reads only the
-/// survivor set and changes no post-state; a trip means the invariant the proofs
-/// assume was violated (e.g. a conflict-check regression let such a pair through).
-#[derive(Default)]
-struct OrderDependenceGuard {
-    added: HashMap<Blake2b256Hash, HashMap<Vec<u8>, u32>>,
-    removed: HashMap<Blake2b256Hash, HashMap<Vec<u8>, u32>>,
-}
-
-impl OrderDependenceGuard {
-    /// Record one survivor's per-channel datum contributions. Distinct datums per
-    /// channel per survivor are counted once — within-survivor multiplicity is
-    /// irrelevant to the CROSS-survivor order dependence this detects.
-    fn observe(&mut self, changes: &StateChange) {
-        for entry in changes.datums_changes.iter() {
-            let channel = entry.key();
-            let change = entry.value();
-            let per_channel_added = self.added.entry(channel.clone()).or_default();
-            for datum in change.added.iter().collect::<HashSet<_>>() {
-                *per_channel_added.entry(datum.clone()).or_insert(0) += 1;
-            }
-            let per_channel_removed = self.removed.entry(channel.clone()).or_default();
-            for datum in change.removed.iter().collect::<HashSet<_>>() {
-                *per_channel_removed.entry(datum.clone()).or_insert(0) += 1;
-            }
-        }
-    }
-
-    /// The lowest (by hash bytes, so node-identically) NON-mergeable channel on
-    /// which some datum was contributed by >= 2 distinct survivors, or `None` when
-    /// the fold is genuinely order-independent (max-fold == sum-fold). Mergeable /
-    /// number channels are skipped: they merge through the commutative-group
-    /// `combine_mergeable_value`, not max-union, so multiple producers are safe.
-    fn first_offender(&self, mergeable_keys: &HashSet<Blake2b256Hash>) -> Option<Blake2b256Hash> {
-        self.added
-            .iter()
-            .chain(self.removed.iter())
-            .filter(|(channel, counts)| {
-                !mergeable_keys.contains(*channel) && counts.values().any(|&c| c >= 2)
-            })
-            .map(|(channel, _)| channel.clone())
-            .min_by(|a, b| a.0.cmp(&b.0))
-    }
-}
-
 /// Combine the surviving chains' diffs into trie actions and apply them to
 /// the merged base state. Reads `resolved.to_merge` and returns the new state
 /// root; `resolved.rejected` is not read or modified.
 pub fn compute_merged_state<R, C, P, A, K>(
     resolved: &ResolvedConflicts<R>,
     state_changes: &impl Fn(&R) -> Result<StateChange, HistoryError>,
+    has_exact_state_witness: &impl Fn(&R) -> bool,
+    exact_effect_changes: &impl Fn(&R) -> Vec<(CausalEffectId, StateChange, NumberChannelsDiff)>,
     mergeable_channels: &impl Fn(&R) -> NumberChannelsDiff,
     compute_trie_actions: &impl Fn(
         StateChange,
@@ -444,17 +407,66 @@ where
         branch_items.sort();
         to_merge_items.extend(branch_items);
     }
+    to_merge_items.sort();
+    to_merge_items.dedup();
+
+    let exact_modes = to_merge_items
+        .iter()
+        .map(|item| has_exact_state_witness(item))
+        .collect::<BTreeSet<_>>();
+    if exact_modes.len() > 1 {
+        return Err(HistoryError::MergeError(
+            "cannot merge exact-witness and legacy state changes in one merge epoch".to_string(),
+        ));
+    }
+    let exact_mode = exact_modes.first().copied().unwrap_or(false);
+    let mut unique_exact_effects = BTreeMap::new();
+    if exact_mode {
+        for item in &to_merge_items {
+            let effects = exact_effect_changes(item);
+            if effects.is_empty() {
+                return Err(HistoryError::MergeError(
+                    "exact state change has no causal effect identity".to_string(),
+                ));
+            }
+            for (id, state_change, mergeable) in effects {
+                let canonical_change = state_change.normalized();
+                match unique_exact_effects.entry(id.clone()) {
+                    std::collections::btree_map::Entry::Occupied(entry) => {
+                        if entry.get() != &(canonical_change, mergeable) {
+                            return Err(HistoryError::MergeError(format!(
+                                "causal effect identity has inconsistent contributions: {:?}",
+                                id
+                            )));
+                        }
+                    }
+                    std::collections::btree_map::Entry::Vacant(entry) => {
+                        entry.insert((canonical_change, mergeable));
+                    }
+                }
+            }
+        }
+    }
 
     tracing::debug!(target: "f1r3fly.merge.step", step = "compute_merged_state.items_sorted",
         n_items = to_merge_items.len());
 
     // Combine state changes from all items to be merged with timing
-    let mut order_guard = OrderDependenceGuard::default();
     let (all_changes, combine_all_changes_time) =
         measure_result_time(|| -> Result<StateChange, HistoryError> {
             let mut combined = StateChange::empty();
-            for (idx, item) in to_merge_items.iter().enumerate() {
-                let item_changes = state_changes(item)?;
+            let changes = if exact_mode {
+                unique_exact_effects
+                    .values()
+                    .map(|(change, _)| change.clone())
+                    .collect::<Vec<_>>()
+            } else {
+                to_merge_items
+                    .iter()
+                    .map(|item| state_changes(item))
+                    .collect::<Result<Vec<_>, _>>()?
+            };
+            for (idx, item_changes) in changes.into_iter().enumerate() {
                 if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
                     for entry in item_changes.datums_changes.iter() {
                         let ch = entry.key();
@@ -477,10 +489,11 @@ where
                         conts = item_changes.cont_changes.len(),
                         joins = item_changes.consume_channels_to_join_serialized_map.len());
                 }
-                // Finding-A guard: record this survivor's datum contributions
-                // before `combine` consumes it (detection only, post-state unchanged).
-                order_guard.observe(&item_changes);
-                combined = combined.combine(item_changes);
+                combined = if exact_mode {
+                    combined.additive_join(item_changes)?
+                } else {
+                    combined.join(item_changes)
+                };
                 if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
                     for entry in combined.datums_changes.iter() {
                         let ch = entry.key();
@@ -498,7 +511,7 @@ where
                     }
                 }
             }
-            Ok(combined)
+            Ok(combined.normalized())
         })?;
 
     metrics::histogram!(
@@ -516,43 +529,40 @@ where
         conts = combined_conts_count,
         joins = combined_joins_count);
 
-    // Combine all mergeable channels (in sorted order). Per-channel `MergeType`
-    // determines how diffs combine: integer-add uses wrapping addition; bitmask-OR
-    // uses bitwise OR through u64. Branches must agree on merge_type for a given
-    // channel; disagreement yields a tagged error so callers reject the merge
-    // rather than crashing the validator.
+    let mergeable_contributions = if exact_mode {
+        unique_exact_effects
+            .values()
+            .map(|(_, mergeable)| mergeable.clone())
+            .collect::<Vec<_>>()
+    } else {
+        to_merge_items
+            .iter()
+            .map(|item| mergeable_channels(item))
+            .collect::<Vec<_>>()
+    };
+    let (integer_diffs, bitmap_diffs) = aggregate_mergeable_contributions(mergeable_contributions)
+        .ok_or_else(|| {
+            HistoryError::MergeError(
+                "mergeable channel contributions disagree on type or exceed i128".to_string(),
+            )
+        })?;
     let mut all_mergeable_channels = NumberChannelsDiff::new();
-    for item in &to_merge_items {
-        let item_channels = mergeable_channels(item);
-        for (key, value) in item_channels.iter() {
-            let (incoming_diff, incoming_mt) = *value;
-            match all_mergeable_channels.get_mut(key) {
-                Some(existing) => {
-                    if existing.1 != incoming_mt {
-                        return Err(HistoryError::MergeError(format!(
-                            "MergeType mismatch on channel {:?}: {:?} vs {:?}",
-                            key, existing.1, incoming_mt,
-                        )));
-                    }
-                    existing.0 =
-                        match combine_mergeable_value(existing.0, incoming_diff, incoming_mt) {
-                            Some(v) => v,
-                            // Survivors already passed the per-branch overflow gate, so
-                            // this should be unreachable; error rather than write a
-                            // wrapped value if it ever is.
-                            None => {
-                                return Err(HistoryError::MergeError(format!(
-                                    "IntegerAdd overflow combining mergeable channel {:?}",
-                                    key,
-                                )))
-                            }
-                        };
-                }
-                None => {
-                    all_mergeable_channels.insert(key.clone(), (incoming_diff, incoming_mt));
-                }
-            }
-        }
+    for (channel, diff) in integer_diffs {
+        all_mergeable_channels.insert(
+            channel.clone(),
+            (
+                i64::try_from(diff).map_err(|_| {
+                    HistoryError::MergeError(format!(
+                        "IntegerAdd total exceeds i64 on mergeable channel {:?}",
+                        channel
+                    ))
+                })?,
+                MergeType::IntegerAdd,
+            ),
+        );
+    }
+    for (channel, diff) in bitmap_diffs {
+        all_mergeable_channels.insert(channel, (diff as i64, MergeType::BitmaskOr));
     }
 
     if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
@@ -563,35 +573,6 @@ where
         tracing::debug!(target: "f1r3fly.merge.step", step = "compute_merged_state.mergeable_channels",
             n_channels = all_mergeable_channels.len(),
             channels = ?merged_channels);
-    }
-
-    // Finding-A guard check (merge-algebra-verification.md §6): trip iff an
-    // order-dependent survivor pair reached apply — a datum contributed by >= 2
-    // distinct survivors on the same NON-mergeable channel, the precondition under
-    // which the non-associative max-union fold differs from the order-independent
-    // sum-union fold. Mergeable/number channels merge via the commutative-group
-    // operator and are excluded. Detection only: post-state, trie actions, and the
-    // merged root are byte-identical whether or not this fires (ChannelNetting.v §5
-    // + `combine_max_eq_combine_sum_under_no_dup`).
-    let mergeable_keys: HashSet<Blake2b256Hash> = all_mergeable_channels.keys().cloned().collect();
-    if let Some(channel) = order_guard.first_offender(&mergeable_keys) {
-        debug_assert!(
-            false,
-            "order-dependent survivor pair reached apply on channel {} — the \
-             max-union merge fold is not order-independent here (Finding A; \
-             docs/theory/merge-algebra/merge-algebra-verification.md §6)",
-            hex::encode(channel.bytes())
-        );
-        tracing::error!(target: "f1r3fly.merge.step",
-            step = "apply.order_dependent_survivor_pair",
-            channel = %hex::encode(channel.bytes()),
-            "order-dependent survivor pair reached apply; merged post-state may be \
-             association-dependent (Finding-A guard, non-fatal)");
-        metrics::counter!(
-            "dag.merge.order-dependent-survivor-pair",
-            "source" => crate::rust::metrics_constants::MERGING_METRICS_SOURCE
-        )
-        .increment(1);
     }
 
     tracing::debug!(target: "f1r3fly.merge.step", step = "compute_merged_state.compute_trie_actions.ENTER",
@@ -667,6 +648,8 @@ pub fn merge<
     depends: impl Fn(&R, &R) -> bool,
     cost: impl Fn(&R) -> u64,
     state_changes: impl Fn(&R) -> Result<StateChange, HistoryError>,
+    has_exact_state_witness: impl Fn(&R) -> bool,
+    exact_effect_changes: impl Fn(&R) -> Vec<(CausalEffectId, StateChange, NumberChannelsDiff)>,
     mergeable_channels: impl Fn(&R) -> NumberChannelsDiff,
     compute_trie_actions: impl Fn(
         StateChange,
@@ -701,6 +684,8 @@ pub fn merge<
     let new_state = compute_merged_state(
         &resolved,
         &state_changes,
+        &has_exact_state_witness,
+        &exact_effect_changes,
         &mergeable_channels,
         &compute_trie_actions,
         &apply_trie_actions,
@@ -820,89 +805,70 @@ fn cal_merged_result<R: Clone + Eq + std::hash::Hash>(
         n_branch_items = branch.0.len(),
         n_origin_channels = origin_result.len());
 
-    // Combine all channel diffs from the branch using per-channel merge strategy.
-    // IntegerAdd overflow HERE means the branch's per-channel diffs sum out of
-    // i64 range: reject the branch (fail loudly, return None) rather than fold a
-    // silently-wrapped value that could then pass the apply-time
-    // `checked_add >= 0` gate below with a wrong result (the overflow-launder;
-    // see IntegerAdd.v). BitmaskOr never overflows.
-    let mut diff = NumberChannelsDiff::new();
-    for r in branch.0.iter() {
-        for (k, v) in mergeable_channels(r) {
+    cal_merged_result_for_items(branch.0.iter(), origin_result, mergeable_channels)
+}
+
+fn cal_merged_result_for_items<'a, R: 'a>(
+    items: impl IntoIterator<Item = &'a R>,
+    origin_result: HashMap<Blake2b256Hash, i64>,
+    mergeable_channels: impl Fn(&R) -> NumberChannelsDiff,
+) -> Option<HashMap<Blake2b256Hash, i64>> {
+    let (integer_diffs, bitmap_diffs) =
+        aggregate_mergeable_contributions(items.into_iter().map(mergeable_channels))?;
+
+    let mut out = origin_result;
+    for (channel, diff) in integer_diffs {
+        let current = i128::from(*out.get(&channel).unwrap_or(&0));
+        let result = current.checked_add(diff)?;
+        if !(0..=i128::from(i64::MAX)).contains(&result) {
+            return None;
+        }
+        out.insert(channel, i64::try_from(result).ok()?);
+    }
+    for (channel, diff) in bitmap_diffs {
+        let current = *out.get(&channel).unwrap_or(&0) as u64;
+        out.insert(channel, (current | diff) as i64);
+    }
+
+    if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
+        tracing::debug!(target: "f1r3fly.merge.step", step = "cal_merged_result.EXIT",
+            accepted = true,
+            n_result_channels = out.len());
+    }
+
+    Some(out)
+}
+
+fn aggregate_mergeable_contributions(
+    contributions: impl IntoIterator<Item = NumberChannelsDiff>,
+) -> Option<(
+    BTreeMap<Blake2b256Hash, i128>,
+    BTreeMap<Blake2b256Hash, u64>,
+)> {
+    let mut integer_diffs = BTreeMap::<Blake2b256Hash, i128>::new();
+    let mut bitmap_diffs = BTreeMap::<Blake2b256Hash, u64>::new();
+    for contribution in contributions {
+        for (k, v) in contribution {
             let (incoming_diff, incoming_mt) = v;
-            match diff.get_mut(&k) {
-                Some(existing) => {
-                    match combine_mergeable_value(existing.0, incoming_diff, incoming_mt) {
-                        Some(combined) => existing.0 = combined,
-                        None => {
-                            tracing::debug!(target: "f1r3fly.merge.step",
-                                step = "cal_merged_result.COMBINE_OVERFLOW",
-                                channel = %hex::encode(k.clone().bytes()),
-                                existing = existing.0,
-                                incoming = incoming_diff);
-                            return None;
-                        }
+            match incoming_mt {
+                MergeType::IntegerAdd => {
+                    if bitmap_diffs.contains_key(&k) {
+                        return None;
                     }
+                    let total = integer_diffs.entry(k).or_default();
+                    *total = total.checked_add(i128::from(incoming_diff))?;
                 }
-                None => {
-                    diff.insert(k, (incoming_diff, incoming_mt));
+                MergeType::BitmaskOr => {
+                    if integer_diffs.contains_key(&k) {
+                        return None;
+                    }
+                    let total = bitmap_diffs.entry(k).or_default();
+                    *total |= incoming_diff as u64;
                 }
             }
         }
     }
-
-    if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
-        let diff_channels: Vec<(String, i64)> = diff
-            .iter()
-            .map(|(k, v)| (hex::encode(k.clone().bytes()), v.0))
-            .collect();
-        tracing::debug!(target: "f1r3fly.merge.step", step = "cal_merged_result.diff",
-            n_channels = diff.len(),
-            channels = ?diff_channels);
-    }
-
-    // Start with Some(origin_result) and fold over the diffs
-    let out = diff
-        .iter()
-        .fold(Some(origin_result), |ba_opt, (channel, value)| {
-            ba_opt.and_then(|mut ba| {
-                let (diff_val, merge_type) = *value;
-                let current = *ba.get(channel).unwrap_or(&0);
-                match merge_type {
-                    MergeType::IntegerAdd => {
-                        // Vault balance: overflow or negative result rejects the branch
-                        match current.checked_add(diff_val) {
-                            Some(result) if result >= 0 => {
-                                ba.insert(channel.clone(), result);
-                                Some(ba)
-                            }
-                            _ => {
-                                tracing::debug!(target: "f1r3fly.merge.step",
-                                    step = "cal_merged_result.REJECT",
-                                    channel = %hex::encode(channel.clone().bytes()),
-                                    current = current,
-                                    diff = diff_val);
-                                None
-                            }
-                        }
-                    }
-                    MergeType::BitmaskOr => {
-                        // Bitmap: OR the new bits in; no overflow concern
-                        let result = ((current as u64) | (diff_val as u64)) as i64;
-                        ba.insert(channel.clone(), result);
-                        Some(ba)
-                    }
-                }
-            })
-        });
-
-    if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
-        tracing::debug!(target: "f1r3fly.merge.step", step = "cal_merged_result.EXIT",
-            accepted = out.is_some(),
-            n_result_channels = out.as_ref().map(|m| m.len()).unwrap_or(0));
-    }
-
-    out
+    Some((integer_diffs, bitmap_diffs))
 }
 
 /// Evaluate branches and return the set of branches that should be rejected.
@@ -915,6 +881,15 @@ fn fold_rejection<R: Clone + Eq + std::hash::Hash + Ord>(
     tracing::debug!(target: "f1r3fly.merge.step", step = "fold_rejection.ENTER",
         n_branches = branches.0.len(),
         n_base_channels = base_balance.len());
+
+    let aggregate = cal_merged_result_for_items(
+        branches.0.iter().flat_map(|branch| branch.0.iter()),
+        base_balance.clone(),
+        &mergeable_channels,
+    );
+    if aggregate.is_some() {
+        return HashableSet(HashSet::new());
+    }
 
     // Sort branches to ensure deterministic processing order
     let mut sorted_branches: Vec<&Branch<R>> = branches.0.iter().collect();
@@ -1033,6 +1008,8 @@ fn get_merged_result_rejection<R: Clone + Eq + std::hash::Hash + Ord>(
 mod tests {
     use std::collections::{BTreeMap, HashSet};
 
+    use proptest::prelude::*;
+
     use super::*;
 
     fn branch(items: &[i32]) -> Branch<i32> {
@@ -1087,66 +1064,132 @@ mod tests {
         }
     }
 
+    fn resolve_linear_late_dependency(depth: i32) -> ResolvedConflicts<i32> {
+        let actual_seq = (1..=depth).chain(std::iter::once(depth + 2)).collect();
+        resolve_conflicts(
+            actual_seq,
+            vec![0],
+            &|target, source| *target == *source + 1,
+            &|_| 1,
+            &|_| NumberChannelsDiff::new(),
+            &|_| Ok(Vec::new()),
+            &|merge_set| {
+                HashableSet(
+                    merge_set
+                        .0
+                        .iter()
+                        .map(|item| HashableSet(HashSet::from([*item])))
+                        .collect(),
+                )
+            },
+            &|branches| {
+                Ok(branches
+                    .0
+                    .iter()
+                    .map(|branch| (branch.clone(), HashableSet(HashSet::new())))
+                    .collect())
+            },
+        )
+        .expect("linear dependency resolution")
+    }
+
+    #[test]
+    fn late_dependency_rejection_is_transitively_closed() {
+        let resolved = resolve_linear_late_dependency(3);
+
+        for rejected in 0..=3 {
+            assert!(resolved.rejected.0.contains(&rejected));
+        }
+        assert_eq!(resolved.rejected_as_dependents_count, 3);
+        assert!(resolved.to_merge.iter().any(|branch| branch.0.contains(&5)));
+    }
+
     #[test]
     fn merge_rejects_negative_channel_balance() {
         let actual_seq = vec![1, 2];
         let late_seq = Vec::<i32>::new();
         let base_channel = Blake2b256Hash::from_bytes(vec![7u8; 32]);
 
-        let result = merge(
-            actual_seq,
-            late_seq,
-            |_a, _b| false, // depends
-            |_r| 1,         // cost
-            |_r| Ok(StateChange::empty()),
-            |r| {
-                let mut diff = BTreeMap::new();
-                // item 1 decrements channel, item 2 increments channel
-                let delta = if *r == 1 { -1 } else { 1 };
-                diff.insert(base_channel.clone(), (delta, MergeType::IntegerAdd));
-                diff
-            },
-            |_state_change, _channels| Ok(Vec::<HotStoreTrieAction<i32, i32, i32, i32>>::new()),
-            |_actions: Vec<HotStoreTrieAction<i32, i32, i32, i32>>| {
-                Ok(Blake2b256Hash::from_bytes(vec![9u8; 32]))
-            },
-            |_hash| Ok(Vec::new()),
-            // Each item is its own singleton branch.
-            |merge_set: &HashableSet<i32>| {
-                HashableSet(
-                    merge_set
-                        .0
-                        .iter()
-                        .map(|i| {
-                            let mut s = HashSet::new();
-                            s.insert(*i);
-                            HashableSet(s)
-                        })
-                        .collect(),
-                )
-            },
-            // Empty conflict map — every branch as a key with no conflicts.
-            // This test exercises only the rejection-via-mergeable-overflow
-            // path; the conflict-detection path is covered elsewhere.
-            |branches: &HashableSet<HashableSet<i32>>| {
-                Ok(branches
+        let depends = |_a: &i32, _b: &i32| false;
+        let cost = |_r: &i32| 1u64;
+        let state_changes =
+            |_r: &i32| -> Result<StateChange, HistoryError> { Ok(StateChange::empty()) };
+        let mergeable_channels = |r: &i32| -> NumberChannelsDiff {
+            let mut diff = BTreeMap::new();
+            // The aggregate change is negative regardless of iteration order.
+            let delta = if *r == 1 { -2 } else { 1 };
+            diff.insert(base_channel.clone(), (delta, MergeType::IntegerAdd));
+            diff
+        };
+        let compute_trie_actions = |_state_change: StateChange,
+                                    _channels: NumberChannelsDiff|
+         -> Result<
+            Vec<HotStoreTrieAction<i32, i32, i32, i32>>,
+            HistoryError,
+        > { Ok(Vec::new()) };
+        let apply_trie_actions = |_actions: Vec<HotStoreTrieAction<i32, i32, i32, i32>>| {
+            Ok(Blake2b256Hash::from_bytes(vec![9u8; 32]))
+        };
+        let get_data =
+            |_hash: Blake2b256Hash| -> Result<Vec<Datum<ListParWithRandom>>, HistoryError> {
+                Ok(Vec::new())
+            };
+        // Each item is its own singleton branch.
+        let compute_branches = |merge_set: &HashableSet<i32>| {
+            HashableSet(
+                merge_set
                     .0
                     .iter()
-                    .map(|b| (b.clone(), HashableSet(HashSet::new())))
-                    .collect())
-            },
-        );
+                    .map(|i| {
+                        let mut s = HashSet::new();
+                        s.insert(*i);
+                        HashableSet(s)
+                    })
+                    .collect(),
+            )
+        };
+        // Empty conflict map — every branch as a key with no conflicts.
+        // This test exercises only the rejection-via-mergeable-overflow
+        // path; the conflict-detection path is covered elsewhere.
+        let compute_conflict_map = |branches: &HashableSet<HashableSet<i32>>| {
+            Ok(branches
+                .0
+                .iter()
+                .map(|b| (b.clone(), HashableSet(HashSet::new())))
+                .collect())
+        };
 
-        assert!(result.is_ok());
-        let (_new_state, rejected) = result.unwrap();
-        assert!(!rejected.0.is_empty());
+        // Re-pointed from the removed `merge` convenience wrapper to the two
+        // primitives it composed: resolve_conflicts then compute_merged_state.
+        let resolved = resolve_conflicts(
+            actual_seq,
+            late_seq,
+            &depends,
+            &cost,
+            &mergeable_channels,
+            &get_data,
+            &compute_branches,
+            &compute_conflict_map,
+        )
+        .expect("resolve_conflicts should succeed");
+        let _new_state = compute_merged_state(
+            &resolved,
+            &state_changes,
+            &|_| false,
+            &|_| Vec::new(),
+            &mergeable_channels,
+            &compute_trie_actions,
+            &apply_trie_actions,
+        )
+        .expect("compute_merged_state should succeed");
+
+        assert!(!resolved.rejected.0.is_empty());
     }
 
     // ---- IntegerAdd overflow-launder regression (Phase 6 W3/W4) --------------
     // Two chains in the SAME branch contribute IntegerAdd diffs to one channel
-    // whose sum overflows i64. The intra-branch combine must REJECT the branch
-    // (return None) — "fail loudly" — rather than wrap the value and let it pass
-    // the apply-time checked_add >= 0 gate with a wrong result (the launder).
+    // whose mathematical sum lies outside i64. The widened intra-branch sum
+    // must reject it rather than wrap it into an apparently valid value.
 
     #[test]
     fn cal_merged_result_rejects_integer_add_overflow_launder() {
@@ -1168,11 +1211,8 @@ mod tests {
     #[test]
     fn cal_merged_result_rejects_integer_add_true_launder_wraps_nonnegative() {
         // A DISCRIMINATING launder witness: three IntegerAdd diffs whose sum is 2^64,
-        // which wraps to 0 — a NON-NEGATIVE value that would sail through the apply-time
-        // `checked_add >= 0` gate if the combine used wrapping. Only the checked_add in
-        // the combine fold (which overflows on MAX + MAX) rejects it. Contrast the
-        // [MAX, 1] case above, whose wrap to i64::MIN is caught by the `>= 0` gate anyway
-        // and so does NOT isolate the overflow check.
+        // which wraps to 0 — a NON-NEGATIVE value that would sail through a
+        // wrapped i64 implementation. The widened mathematical sum rejects it.
         let ch = Blake2b256Hash::from_bytes(vec![7u8; 32]);
         let br = branch(&[1, 2, 3]); // three chains in ONE branch
         let mergeable = |r: &i32| {
@@ -1188,9 +1228,141 @@ mod tests {
         assert_eq!(
             cal_merged_result(&br, HashMap::new(), mergeable),
             None,
-            "a sum that wraps to a NON-NEGATIVE value must still be rejected by checked_add \
-             in the combine (the >= 0 gate alone would not catch it)"
+            "a sum that wraps to a non-negative value must still be rejected"
         );
+    }
+
+    #[test]
+    fn cal_merged_result_accepts_widened_cancellation_without_prefix_overflow() {
+        let ch = Blake2b256Hash::from_bytes(vec![8u8; 32]);
+        let br = branch(&[1, 2, 3]);
+        let mergeable = |r: &i32| {
+            let mut d = NumberChannelsDiff::new();
+            let v = match *r {
+                1 => i64::MAX - 1,
+                2 => 1,
+                _ => -1,
+            };
+            d.insert(ch.clone(), (v, MergeType::IntegerAdd));
+            d
+        };
+        assert_eq!(
+            cal_merged_result(&br, HashMap::from([(ch.clone(), 1)]), mergeable),
+            Some(HashMap::from([(ch, i64::MAX)]))
+        );
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(512))]
+
+        #[test]
+        fn late_dependency_rejection_closes_over_arbitrary_chain_depth(depth in 1i32..64) {
+            let resolved = resolve_linear_late_dependency(depth);
+
+            for rejected in 0..=depth {
+                prop_assert!(resolved.rejected.0.contains(&rejected));
+            }
+            prop_assert_eq!(resolved.rejected_as_dependents_count, depth as usize);
+            prop_assert!(resolved
+                .to_merge
+                .iter()
+                .any(|branch| branch.0.contains(&(depth + 2))));
+        }
+
+        #[test]
+        fn integer_merge_acceptance_and_result_are_permutation_invariant(
+            base in 0i64..=i64::MAX,
+            diffs in proptest::collection::vec(any::<i64>(), 0..64),
+        ) {
+            let channel = Blake2b256Hash::from_bytes(vec![12u8; 32]);
+            let contribution = |diff: &i64| {
+                BTreeMap::from([(channel.clone(), (*diff, MergeType::IntegerAdd))])
+            };
+            let initial = HashMap::from([(channel.clone(), base)]);
+            let forward = cal_merged_result_for_items(
+                diffs.iter(),
+                initial.clone(),
+                contribution,
+            );
+            let reverse = cal_merged_result_for_items(
+                diffs.iter().rev(),
+                initial,
+                contribution,
+            );
+            let mathematical = i128::from(base)
+                + diffs.iter().map(|diff| i128::from(*diff)).sum::<i128>();
+            let expected = if (0..=i128::from(i64::MAX)).contains(&mathematical) {
+                Some(HashMap::from([(
+                    channel,
+                    i64::try_from(mathematical).unwrap(),
+                )]))
+            } else {
+                None
+            };
+
+            prop_assert_eq!(&forward, &reverse);
+            prop_assert_eq!(forward, expected);
+        }
+
+        #[test]
+        fn complete_application_and_protocol_debit_rejects_exactly_one_of_three(
+            application_debit in 1i64..100_000,
+            physical_debit in 0i64..100_000,
+            byte_debit in 0i64..100_000,
+            fee in 0i64..100_000,
+            slack_seed in 0u64..400_000,
+        ) {
+            let channel = Blake2b256Hash::from_bytes(vec![13u8; 32]);
+            let complete_debit = application_debit + physical_debit + byte_debit + fee;
+            let slack = i64::try_from(slack_seed % u64::try_from(complete_debit).unwrap()).unwrap();
+            let base = 2 * complete_debit + slack;
+            let branches = HashableSet(HashSet::from([
+                branch(&[1]),
+                branch(&[2]),
+                branch(&[3]),
+            ]));
+            let contribution = |_: &i32| {
+                BTreeMap::from([(
+                    channel.clone(),
+                    (-complete_debit, MergeType::IntegerAdd),
+                )])
+            };
+
+            let rejected = fold_rejection(
+                HashMap::from([(channel.clone(), base)]),
+                &branches,
+                contribution,
+            );
+            let all = cal_merged_result_for_items(
+                [1, 2, 3].iter(),
+                HashMap::from([(channel.clone(), base)]),
+                contribution,
+            );
+            let first_two = cal_merged_result_for_items(
+                [1, 2].iter(),
+                HashMap::from([(channel.clone(), base)]),
+                contribution,
+            );
+
+            prop_assert_eq!(rejected.0.len(), 1);
+            prop_assert!(all.is_none());
+            prop_assert!(first_two.is_some());
+        }
+    }
+
+    #[test]
+    fn fold_rejection_accepts_a_valid_total_despite_an_invalid_canonical_prefix() {
+        let ch = Blake2b256Hash::from_bytes(vec![9u8; 32]);
+        let branches = HashableSet(HashSet::from([branch(&[1]), branch(&[2])]));
+        let rejected = fold_rejection(HashMap::new(), &branches, |r: &i32| {
+            let mut d = NumberChannelsDiff::new();
+            d.insert(
+                ch.clone(),
+                (if *r == 1 { -5 } else { 10 }, MergeType::IntegerAdd),
+            );
+            d
+        });
+        assert!(rejected.0.is_empty());
     }
 
     #[test]
@@ -1224,86 +1396,211 @@ mod tests {
         assert_eq!(out, Some(HashMap::from([(ch, i64::MAX)])));
     }
 
-    // ---- Finding-A order-dependence guard (merge-algebra-verification.md §6) ----
+    // ---- IntegerAdd overflow-launder regression (Phase 6 W3/W4) --------------
+    // Two chains in the SAME branch contribute IntegerAdd diffs to one channel
+    // whose mathematical sum overflows i64. The widened sum must reject it.
 
     fn datum_state_change(channel: &[u8], added: &[&[u8]], removed: &[&[u8]]) -> StateChange {
         use rspace_plus_plus::rspace::merger::channel_change::ChannelChange;
-        let sc = StateChange::empty();
-        sc.datums_changes
-            .insert(Blake2b256Hash(channel.to_vec()), ChannelChange {
+        StateChange::from_parts(
+            HashMap::from([(Blake2b256Hash(channel.to_vec()), ChannelChange {
                 added: added.iter().map(|d| d.to_vec()).collect(),
                 removed: removed.iter().map(|d| d.to_vec()).collect(),
-            });
-        sc
+            })]),
+            HashMap::new(),
+            HashMap::new(),
+        )
+    }
+
+    fn resolved_without_rejections(items: &[i32]) -> ResolvedConflicts<i32> {
+        ResolvedConflicts {
+            to_merge: vec![branch(items)],
+            rejected: HashableSet(HashSet::new()),
+            late_set_size: 0,
+            actual_set_size: items.len(),
+            branches_count: 1,
+            rejected_as_dependents_count: 0,
+            optimal_rejection_count: 0,
+            conflict_map_conflicts_count: 0,
+            rejection_options_count: 0,
+            branches_time: Duration::ZERO,
+            conflicts_map_time: Duration::ZERO,
+            rejection_options_time: Duration::ZERO,
+        }
     }
 
     #[test]
-    fn order_guard_silent_when_survivors_add_distinct_datums() {
-        // Two survivors add DIFFERENT datums to one channel: max-fold == sum-fold.
-        let mut guard = OrderDependenceGuard::default();
-        guard.observe(&datum_state_change(b"chan", &[b"x"], &[]));
-        guard.observe(&datum_state_change(b"chan", &[b"y"], &[]));
-        assert_eq!(guard.first_offender(&HashSet::new()), None);
-    }
+    fn compute_merged_state_uses_the_same_widened_sum_as_rejection() {
+        use std::sync::{Arc, Mutex};
 
-    #[test]
-    fn order_guard_silent_on_single_add_single_remove_netting() {
-        // One survivor produces x, another consumes the base x on the same channel.
-        // `cancel_common` nets them symmetrically — associative-safe, must NOT trip
-        // (the guard checks distinct-survivor duplication, not "did cancel fire").
-        let mut guard = OrderDependenceGuard::default();
-        guard.observe(&datum_state_change(b"chan", &[b"x"], &[]));
-        guard.observe(&datum_state_change(b"chan", &[], &[b"x"]));
-        assert_eq!(guard.first_offender(&HashSet::new()), None);
-    }
+        let channel = Blake2b256Hash::from_bytes(vec![11u8; 32]);
+        let captured = Arc::new(Mutex::new(None));
+        let capture = Arc::clone(&captured);
+        let result = compute_merged_state(
+            &resolved_without_rejections(&[1, 2, 3]),
+            &|_| Ok(StateChange::empty()),
+            &|_| false,
+            &|_| Vec::new(),
+            &|item| {
+                let diff = match *item {
+                    1 => i64::MAX,
+                    2 => 1,
+                    _ => -1,
+                };
+                BTreeMap::from([(channel.clone(), (diff, MergeType::IntegerAdd))])
+            },
+            &move |_, mergeable| {
+                *capture.lock().unwrap() = Some(mergeable);
+                Ok(Vec::<HotStoreTrieAction<i32, i32, i32, i32>>::new())
+            },
+            &|_| Ok(Blake2b256Hash(vec![9; 32])),
+        );
 
-    #[test]
-    fn order_guard_trips_when_two_survivors_add_same_datum() {
-        // The same datum contributed to `added` by two distinct survivors — the
-        // precondition under which the max-union fold != the sum-union fold.
-        let mut guard = OrderDependenceGuard::default();
-        guard.observe(&datum_state_change(b"chan", &[b"x"], &[]));
-        guard.observe(&datum_state_change(b"chan", &[b"x"], &[]));
+        assert!(result.is_ok());
         assert_eq!(
-            guard.first_offender(&HashSet::new()),
-            Some(Blake2b256Hash(b"chan".to_vec()))
+            captured.lock().unwrap().as_ref().unwrap().get(&channel),
+            Some(&(i64::MAX, MergeType::IntegerAdd))
         );
     }
 
     #[test]
-    fn order_guard_skips_mergeable_channels() {
-        // Two producers on a NUMBER channel are safe: mergeable channels merge via
-        // the commutative-group operator, not max-union. Must be excluded.
-        let channel = Blake2b256Hash(b"num".to_vec());
-        let mut guard = OrderDependenceGuard::default();
-        guard.observe(&datum_state_change(b"num", &[b"x"], &[]));
-        guard.observe(&datum_state_change(b"num", &[b"x"], &[]));
-        let mergeable: HashSet<Blake2b256Hash> = HashSet::from([channel]);
-        assert_eq!(guard.first_offender(&mergeable), None);
+    fn exact_effect_identity_deduplicates_equal_content_and_rejects_mismatch() {
+        use std::sync::{Arc, Mutex};
+
+        let resolved = resolved_without_rejections(&[1, 2]);
+        let channel = Blake2b256Hash(b"chan".to_vec());
+        let captured = Arc::new(Mutex::new(None));
+        let capture = Arc::clone(&captured);
+        let apply =
+            |_actions: Vec<HotStoreTrieAction<i32, i32, i32, i32>>| Ok(Blake2b256Hash(vec![9; 32]));
+        let compute = move |change: StateChange, _mergeable: NumberChannelsDiff| {
+            *capture.lock().unwrap() = Some(change);
+            Ok(Vec::<HotStoreTrieAction<i32, i32, i32, i32>>::new())
+        };
+        let effect_id = CausalEffectId {
+            source_block_hash: vec![7; 32],
+            execution_index: 3,
+        };
+        compute_merged_state(
+            &resolved,
+            &|_| Ok(StateChange::empty()),
+            &|_| true,
+            &|_| {
+                vec![(
+                    effect_id.clone(),
+                    datum_state_change(b"chan", &[b"x"], &[]),
+                    NumberChannelsDiff::new(),
+                )]
+            },
+            &|_| NumberChannelsDiff::new(),
+            &compute,
+            &apply,
+        )
+        .unwrap();
+        let captured = captured.lock().unwrap();
+        let change = captured
+            .as_ref()
+            .unwrap()
+            .datums_changes
+            .get(&channel)
+            .unwrap();
+        assert_eq!(change.added, vec![b"x".to_vec()]);
+        drop(captured);
+
+        let captured_distinct = Arc::new(Mutex::new(None));
+        let capture_distinct = Arc::clone(&captured_distinct);
+        compute_merged_state(
+            &resolved,
+            &|_| Ok(StateChange::empty()),
+            &|_| true,
+            &|item| {
+                vec![(
+                    CausalEffectId {
+                        source_block_hash: vec![*item as u8; 32],
+                        execution_index: 3,
+                    },
+                    datum_state_change(b"chan", &[b"x"], &[]),
+                    NumberChannelsDiff::new(),
+                )]
+            },
+            &|_| NumberChannelsDiff::new(),
+            &move |change, _| {
+                *capture_distinct.lock().unwrap() = Some(change);
+                Ok(Vec::<HotStoreTrieAction<i32, i32, i32, i32>>::new())
+            },
+            &apply,
+        )
+        .unwrap();
+        let captured_distinct = captured_distinct.lock().unwrap();
+        let distinct_change = captured_distinct
+            .as_ref()
+            .unwrap()
+            .datums_changes
+            .get(&channel)
+            .unwrap();
+        assert_eq!(distinct_change.added, vec![b"x".to_vec(), b"x".to_vec()]);
+        drop(captured_distinct);
+
+        let mismatch = compute_merged_state(
+            &resolved,
+            &|_| Ok(StateChange::empty()),
+            &|_| true,
+            &|item| {
+                let datum = if *item == 1 { b"x" } else { b"y" };
+                vec![(
+                    effect_id.clone(),
+                    datum_state_change(b"chan", &[datum], &[]),
+                    NumberChannelsDiff::new(),
+                )]
+            },
+            &|_| NumberChannelsDiff::new(),
+            &|_, _| Ok(Vec::<HotStoreTrieAction<i32, i32, i32, i32>>::new()),
+            &apply,
+        )
+        .unwrap_err();
+        assert!(mismatch
+            .to_string()
+            .contains("causal effect identity has inconsistent contributions"));
+
+        let mixed = compute_merged_state(
+            &resolved,
+            &|_| Ok(StateChange::empty()),
+            &|item| *item == 1,
+            &|_| Vec::new(),
+            &|_| NumberChannelsDiff::new(),
+            &|_, _| Ok(Vec::<HotStoreTrieAction<i32, i32, i32, i32>>::new()),
+            &apply,
+        )
+        .unwrap_err();
+        assert!(mixed
+            .to_string()
+            .contains("cannot merge exact-witness and legacy state changes"));
     }
 
     #[test]
-    fn order_guard_is_permutation_invariant() {
-        // The trip decision is a pure function of the survivor SET, independent of
-        // observation order (locks guard (c): canonical fold order).
+    fn additive_composition_preserves_independent_duplicate_outputs() {
         let a = datum_state_change(b"chan", &[b"x"], &[]);
         let b = datum_state_change(b"chan", &[b"x"], &[]);
-        let c = datum_state_change(b"other", &[b"z"], &[]);
-        let mut forward = OrderDependenceGuard::default();
-        forward.observe(&a);
-        forward.observe(&b);
-        forward.observe(&c);
-        let mut reverse = OrderDependenceGuard::default();
-        reverse.observe(&c);
-        reverse.observe(&b);
-        reverse.observe(&a);
-        assert_eq!(
-            forward.first_offender(&HashSet::new()),
-            reverse.first_offender(&HashSet::new())
-        );
-        assert_eq!(
-            forward.first_offender(&HashSet::new()),
-            Some(Blake2b256Hash(b"chan".to_vec()))
-        );
+        let c = datum_state_change(b"chan", &[], &[b"x"]);
+
+        let left = a
+            .clone()
+            .additive_join(b.clone())
+            .unwrap()
+            .additive_join(c.clone())
+            .unwrap()
+            .normalized();
+        let right = a
+            .additive_join(b.additive_join(c).unwrap())
+            .unwrap()
+            .normalized();
+
+        assert_eq!(left, right);
+        let change = left
+            .datums_changes
+            .get(&Blake2b256Hash(b"chan".to_vec()))
+            .unwrap();
+        assert_eq!(change.added, vec![b"x".to_vec()]);
+        assert!(change.removed.is_empty());
     }
 }

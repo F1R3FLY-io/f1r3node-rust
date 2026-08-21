@@ -117,6 +117,7 @@ impl GenesisBuilder {
             state,
             deploys: vec![],
             rejected_deploys: vec![],
+            rejected_state_effects: vec![],
             system_deploys: vec![],
             extra_bytes: bytes::Bytes::new(),
         };
@@ -124,7 +125,7 @@ impl GenesisBuilder {
         let header = Header {
             parents_hash_list: vec![],
             timestamp: 0, // Using 0 like in GenesisBuilder
-            version: 1,
+            version: crate::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION,
             extra_bytes: bytes::Bytes::new(),
         };
 
@@ -230,6 +231,7 @@ impl GenesisBuilder {
                     .expect("GenesisBuilder: Failed to create rev address")
             }))
             .collect();
+        let client_fuel_allocations = Vec::new();
 
         (validator_key_pairs, genesis_vaults, Genesis {
             shard_id: "root".to_string(),
@@ -253,11 +255,16 @@ impl GenesisBuilder {
                     .collect(),
                 pos_multi_sig_public_keys: DEFAULT_POS_MULTI_SIG_PUBLIC_KEYS.to_vec(),
                 pos_multi_sig_quorum: DEFAULT_POS_MULTI_SIG_PUBLIC_KEYS.len() as u32 - 1,
+                max_cosigners_per_deploy:
+                    crate::rust::casper_conf::DEFAULT_MAX_COSIGNERS_PER_DEPLOY,
+                initial_phlogiston: crate::rust::casper_conf::DEFAULT_INITIAL_PHLOGISTON,
+                epoch_phlogiston: crate::rust::casper_conf::DEFAULT_EPOCH_PHLOGISTON,
             },
             vaults,
+            client_fuel_allocations,
             supply: i64::MAX,
             block_number: 0,
-            version: 1,
+            version: crate::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION,
             native_token_name: "F1R3CAP".to_string(),
             native_token_symbol: "F1R3".to_string(),
             native_token_decimals: 8,

@@ -1,141 +1,276 @@
-# Cost Model
+# Cost-accounted Rholang
 
-Every Rholang operation consumes phlogiston (gas). Deploys specify a `phlo_limit` and `phlo_price`. The runtime charges costs as it executes. If the limit is exhausted, execution halts with `OutOfPhlogistonsError`.
+F1R3node meters Rholang with two related but distinct cost dimensions:
 
-## Charging Mechanism
+1. **Compute-based authority accounting** charges successful atomic RSpace
+   communications and preserves the linear ownership semantics of signed and
+   located processes.
+2. **Storage-based quantitative accounting** charges the canonical bytes
+   introduced to RSpace, delivered by a communication, and committed in its
+   replay trace.
 
-```
-Total Phlo Charge = phlo_limit * phlo_price
-Refund = (phlo_limit - cost_used) * phlo_price
-```
+Both dimensions draw existing REV custody from the same authenticated
+`SystemVault`, also called the **RevVault** in the cost-accounting papers. They
+share one certificate, one execution witness, one failure-atomic settlement,
+and one replay-validity decision. There is no client-selected
+`phlo_limit × phlo_price` gas market, second fuel currency, or runtime A/B
+switch.
 
-The deployer pays for the full limit upfront. Unused phlogiston is refunded after execution.
+The design refines the five gated communication rules and join-cost schema in
+[*Cost-Accounted Rho Calculus*](../../../publications/cost-accounting/cost-accounted-rho.tex)
+and the cost endofunctor over continued interactive generalized structured
+labelled transition systems (GSLTs) in
+[*Continued Interactive GSLTs and the Cost Endofunctor*](../../../publications/cost-accounting-as-monad/continued-gslt-cost-v2.tex).
+The byte tariff is a native safety refinement: the papers require finite,
+authority-backed work but deliberately do not prescribe a protobuf byte
+schedule.
 
-Default limits (from `construct_deploy.rs`):
-- Standard deploy: 90,000
-- Full deploy: 1,000,000
+![End-to-end byte and authority lifecycle: a top-up changes only unreserved custody, admission freezes authority, byte, and fee allocations, RSpace charges before mutation, settlement burns exact cost and transfers the fee, and replay recomputes the same evidence.](../theory/diagrams/vault-backed-byte-accounting.svg)
 
-## Cost Table: Arithmetic
+## Terms, units, and ledgers
 
-| Operation | Cost | Notes |
-|-----------|------|-------|
-| Addition (`+`) | 3 | Int, String |
-| Subtraction (`-`) | 3 | Int |
-| Multiplication (`*`) | 9 | Int |
-| Division (`/`) | 9 | Int |
-| Modulo (`%`) | 9 | Int |
-| Boolean AND | 2 | |
-| Boolean OR | 2 | |
-| Comparison (`<`, `>`, etc.) | 3 | |
+| Term | Meaning |
+| --- | --- |
+| `COMM` | One successful atomic RSpace synchronization between a waiting continuation and all required data |
+| Authority signature | Canonical identity of a wallet, located purse, or compound linear authority permitted to pay |
+| Supply $`\Sigma(a)`$ | REV custody and authenticated prepaid stack cells available to authority lane $`a`$ in the certified pre-state |
+| Compute bound $`B_A(a)`$ | Maximum physical authority allocated to successful communication events in lane $`a`$ |
+| Byte bound $`B_Q(a)`$ | Maximum quantitative byte debit allocated to lane $`a`$ |
+| Fee allocation $`F(a)`$ | Deterministic transfer from payer custody to the proposer, separate from burned execution cost |
+| Realized authority $`\kappa(a)`$ | Physical authority consumed by successful committed communication events |
+| Realized byte cost $`Q(a)`$ | Canonical introduction, delivery, and trace bytes charged to lane $`a`$ |
+| Certificate | Domain-separated commitment to the protocol, program, pre-state, bounds, allocations, fee, and reservation identity |
+| Witness | Exact causal events, physical draws, byte events, settlements, and adjacent state roots produced by execution |
 
-## Cost Table: BigInt (Size-Proportional)
+Let $`C(E)`$ be the number of committed `COMM` events in execution $`E`$.
+Let $`Q(E)`$ be its quantitative byte cost. `ProcessedDeploy.cost` reports:
 
-Costs scale with operand byte length. `a_len` and `b_len` are the byte lengths of the two operands.
-
-| Operation | Formula | Minimum |
-|-----------|---------|---------|
-| Addition | `max(a_len, b_len) + 1` | 3 |
-| Subtraction | `max(a_len, b_len) + 1` | 3 |
-| Multiplication | `a_len * b_len` | 9 |
-| Division | `a_len * b_len` | 9 |
-| Modulo | `a_len * b_len` | 9 |
-| Negation | `len` | 1 |
-| Comparison | `max(a_len, b_len)` | 3 |
-
-This means multiplying two 100-byte BigInts costs 10,000 phlogiston. Gas is the rate limiter for large operands.
-
-## Cost Table: BigRat (Rational)
-
-Costs account for cross-multiplication and GCD normalization. `na`, `da`, `nb`, `db` are byte lengths of numerator/denominator pairs.
-
-| Operation | Formula | Minimum |
-|-----------|---------|---------|
-| Addition | `4 * max_len^2 + max_len` | 3 |
-| Subtraction | `4 * max_len^2 + max_len` | 3 |
-| Multiplication | `na*nb + da*db + max_len` | 9 |
-| Division | `na*db + da*nb + max_len` | 9 |
-| Negation | `num_len` | 1 |
-| Comparison | `max(na*db, nb*da)` | 3 |
-
-Where `max_len = max(na, da, nb, db)`.
-
-## Cost Table: Collections
-
-| Operation | Cost |
-|-----------|------|
-| Map/Set lookup (`get`, `contains`) | 3 |
-| Map/Set add | 3 |
-| Map/Set remove | 3 |
-| Set/Map diff | 3 * num_elements |
-| Set/Map union | 3 * num_elements |
-
-## Cost Table: String and Bytes
-
-| Operation | Cost |
-|-----------|------|
-| String concatenation (`++`) | `len(a) + len(b)` |
-| ByteArray append | `log10(len(left))` |
-| List append (`++`) | `len(right)` |
-| String interpolation (`%%`) | `str_len * map_size` |
-| Slice | `to` index value |
-| Take | `to` count value |
-| hexToBytes | `len(hex_string)` |
-| bytesToHex | `len(byte_array)` |
-| toList | collection size |
-| Parsing | `len(source)` in bytes |
-| toByteArray | protobuf encoded size |
-
-## Cost Table: Evaluation
-
-| Operation | Cost |
-|-----------|------|
-| Method call | 10 |
-| Operator call | 10 |
-| Variable evaluation | 10 |
-| `nth` | 10 |
-| `keys` | 10 |
-| `length` | 10 |
-| `size` | collection size |
-| Send evaluation | 11 |
-| Receive evaluation | 11 |
-| Channel evaluation | 11 |
-| `new` binding | 2 per binding + 10 base |
-| Match evaluation | 12 |
-
-## Cost Table: Storage (RSpace)
-
-Storage costs are proportional to protobuf-encoded sizes.
-
-| Operation | Formula |
-|-----------|---------|
-| Produce (send) | `encoded_size(channel) + encoded_size(data)` |
-| Consume (receive) | `sum(encoded_size(channels)) + sum(encoded_size(patterns)) + encoded_size(continuation)` |
-| Event storage | `32 + (channels * 32)` bytes |
-| Comm event | `event_storage(channels) + event_storage(1) * channels` |
-
-## Equality Cost
-
-```
-equality_check_cost(x, y) = min(encoded_len(x), encoded_len(y))
+```math
+K(E)=C(E)+Q(E).
 ```
 
-Equality is bounded by the smaller operand since the comparison can short-circuit.
+The reported scalar is not the physical REV debit. A single `COMM` can require
+several linear authority components, while one compound component can select a
+particular physical funding option. If $`A(E)`$ is the exact physical authority
+draw and $`F(E)`$ the fee, the native custody change is:
 
-## Cost Optimization Tips
+```math
+\operatorname{VaultDebit}(E)=A(E)+Q(E)+F(E).
+```
 
-1. **Avoid large BigInt multiplication** -- cost is quadratic: `a_len * b_len`
-2. **Use `fastUnsafeGet` for TreeHashMap** when you know the key exists -- avoids the existence check
-3. **Minimize string interpolation on large maps** -- cost is `str_len * map_size`
-4. **Prefer peek (`<<-`) over consume+resend** for read-only access -- saves storage costs
-5. **Keep deploys focused** -- unused phlogiston is refunded, but overly broad deploys waste resources
-6. **Use smaller phlo limits** when testing -- start with 90,000 and increase as needed
+Keeping $`C`$, $`A`$, and $`Q`$ distinct is load-bearing. Collapsing them would
+either weaken compound authority, lose the one-interaction grade of the papers,
+or leave storage work outside the hard REV ceiling.
 
-## Phlogiston Errors
+## Compute-based authority accounting
 
-When phlogiston is exhausted:
-- Execution halts immediately
-- All state changes from the current deploy are rolled back
-- The `OutOfPhlogistonsError` is recorded in the deploy result
-- The deployer is charged for the full `phlo_limit * phlo_price`
+A send that waits and a receive that waits perform no successful communication,
+so each contributes zero to $`C(E)`$. When a complete match fires, the runtime
+records one causal `COMM` and charges it once. An $`N`$-channel join is one
+atomic communication, not $`N`$ partially committed events.
 
-To diagnose: check the deploy result's `cost` field to see how much was consumed before the error.
+Authority is nevertheless component-wise. A whole redex inside one signed
+region can draw one authority cell. Separately located or compound participants
+can require several cells for the same `COMM`. Tensor requires all components;
+additive choice reserves the point-wise maximum of alternatives; lollipop
+transfers authority from its source obligation to its continuation; and a
+located term draws from its named purse instead of falling back to the deploy
+signer.
+
+The physical allocator searches canonical wallet balances and located stacks,
+records the exact draw per event, and re-verifies that presentation before it
+can enter block evidence. Candidate-created authority cannot fund the same
+admission: only authenticated pre-state custody and causally available prepaid
+stacks count.
+
+## Storage-based quantitative byte accounting
+
+Storage-based accounting covers three finite resource surfaces:
+
+- a stable `produce` or `consume` **introduction** before any RSpace counter,
+  store, lookup, or trace mutation;
+- every payload delivered by a successful `COMM`; and
+- the canonical consume/produce trace committed for replay.
+
+For schedule $`S=(r_i,r_d,r_t)`$, the charge for event $`e`$ is:
+
+```math
+Q_S(e)=r_iI(e)+r_dD(e)+r_tT(e),
+```
+
+where $`I`$ is introduction footprint, $`D`$ is delivered payload, and $`T`$
+is committed trace footprint. Schedule version 1 uses unit rates. The schedule
+version and Blake2b-256 digest are consensus evidence, so a validator cannot
+silently use different rates or encodings.
+
+Both sides are charged as introductions regardless of arrival order. Charging
+only the side retained in RSpace would make cost depend on Tokio scheduling.
+Persistent operations reuse one stable introduction identity across internal
+fixed-point retries, while distinct non-persistent operations preserve their
+multiplicity. Peek restoration, persistence, and removal never create negative
+byte credits.
+
+Every addition, multiplication, and integer conversion is checked. Overflow or
+insufficient capacity rejects before the affected mutation. See
+[Vault-backed quantitative byte accounting](../theory/cost-accounting-impl/vault-backed-byte-accounting.md)
+for the exact canonical footprints and concurrency protocol.
+
+## Unified admission and settlement
+
+For every authority lane $`a`$, admission requires:
+
+```math
+B_A(a)+B_Q(a)+F(a)\leq\Sigma(a).
+```
+
+The certificate freezes all three allocations against one authenticated
+pre-state. A later wallet top-up can fund a later execution, but it cannot
+change an in-flight bound, rescue an exhausted execution, or alter the
+certificate identifier.
+
+The production algorithm is:
+
+```text
+verify and canonically order the complete cosigned envelope
+normalize with the authenticated deployer and cosigner environment
+derive candidate authority from the merged pre-state
+execute in scratch state under finite authority and byte capacity
+discard exhausted candidates and repeat until the retained set is stable
+derive exact physical draws, byte settlement, fee, and adjacent roots
+apply all vault debits, stack pops, fee credit, and state changes atomically
+publish the certificate and witness only for the committed result
+```
+
+`SystemVault.applyCost` realizes the paper's reserve, exact debit, fee transfer,
+and refund phases inside one lexical transaction. Unused maximum allocation
+never becomes a durable debit. Unused located stack cells remain in RSpace.
+Failure restores the enclosing node checkpoint, so user state, stack pops,
+vault changes, and evidence commit together or not at all.
+
+After successful settlement:
+
+```math
+\Sigma'(a)=\Sigma(a)-\kappa(a)-Q(a)-F(a).
+```
+
+Transfers and fee credits conserve ownership. Only authenticated genesis or
+proof-of-stake system execution may call `SystemVault.protocolMint` to increase
+total REV supply.
+
+## Atomic RSpace ordering
+
+The observer order is part of consensus:
+
+```text
+before a produce mutation: reserve its canonical introduction bytes
+before a consume mutation: reserve its canonical introduction bytes
+after selecting a complete match but before mutation:
+    reserve one COMM unit
+    reserve every delivered payload and trace byte
+    record physical and quantitative event identities
+commit the RSpace match and resume the continuation
+```
+
+If any reservation fails, the triggering operation is not recorded and the
+affected datum or continuation is not removed. A located-stack production uses
+a pending physical reservation that becomes visible only after its complete
+byte-charged RSpace operation succeeds; cancellation or error restores exactly
+those pending cells.
+
+## Replay and consensus
+
+The exact RSpace log is a causal replay witness, not proposer telemetry.
+Independent validators:
+
+1. reconstruct and verify the complete cosigned envelope;
+2. normalize with the same authenticated environment;
+3. verify the authority protocol and byte-schedule identities;
+4. replay the causal events from the certified pre-state;
+5. recompute compute cost, byte cost, physical draws, fee, and settlement; and
+6. require exact post-state-root equality.
+
+A cost, schedule, event, allocation, status, or root mismatch makes the block
+invalid. Missing local history and temporarily unavailable state are local
+validation failures and must not be converted into slash evidence.
+
+Multi-parent merge operates on durable effects, not proof-local reservations.
+Accepted effects retain exact source-block and execution-index provenance.
+Finality and fork choice may advance only through state lineage that preserves
+already certified effects. Mergeable evidence is replayed locally and keyed by
+complete execution identity; unauthenticated peer-provided merge data cannot
+authorize a state transition.
+
+## Examples
+
+An unmatched output has no compute charge but does have an introduction-byte
+charge:
+
+```rholang
+@"requests"!(42)
+```
+
+For this execution, $`C(E)=0`$ and $`Q(E)>0`$.
+
+A matched pair contributes two introductions, one delivered payload and trace,
+and one compute event:
+
+```rholang
+@"requests"!(42) |
+for (value <- @"requests") { Nil }
+```
+
+Reversing arrival order leaves both $`C(E)`$ and $`Q(E)`$ unchanged.
+
+A two-channel join is still one compute event, but its byte charge includes all
+introductions, both delivered payloads, and the complete join trace:
+
+```rholang
+@"left"!(1) |
+@"right"!(2) |
+for (x <- @"left"; y <- @"right") { Nil }
+```
+
+No input is partially consumed when either the authority proof or byte
+reservation is insufficient.
+
+## Failure semantics
+
+- Parser or signature failure occurs before user execution and publishes no
+  cost certificate or witness.
+- Insufficient authenticated supply rejects admission without committed user
+  state or vault debit.
+- Introduction, payload, trace, or arithmetic failure rejects before the
+  affected RSpace mutation.
+- Runtime exhaustion cannot certify itself and cannot commit its speculative
+  root.
+- Replay mismatch is objective block invalidity.
+- Local storage unavailability is retried or recovered and never becomes
+  consensus evidence against a peer.
+
+## Implementation and verification map
+
+| Obligation | Implementation | Verification |
+| --- | --- | --- |
+| One compute event per successful atomic match | `rspace_interface::CommObserver`; locked RSpace match path | `AtomicCommAccounting.v`; `AtomicCommAccounting.tla`; trigger-order and join tests |
+| Canonical introduction, delivery, and trace bytes | `accounting/byte_accounting.rs`; proposal and replay RSpace observers | `VaultBackedByteAccounting.v`; `VaultBackedByteAccounting.tla`; RSpace unit/property tests |
+| One hard REV ceiling across compute, bytes, and fee | `FundingCertificate`; `RuntimeBudget`; `SystemVault.applyCost` | `EndToEndAuthority.v`; `AtomicVaultSettlementRefinement.v`; admission and settlement tests |
+| Located purse and lollipop isolation | authority regions, funding slots, stack reservations, canonical physical allocator | `WalletFundedLollipop.v`; `WalletFundedLollipop.tla`; cross-deploy wallet-funded tests |
+| Failure-atomic stack introduction | pending stack reservation plus node checkpoint | `StackIntroductionAtomicity.v`; TLA+ unsafe controls; Loom and rollback tests |
+| Independent proposal/replay equality | certificate and witness validation in Casper runtime and replay runtime | `StateBoundValidatorConvergence.tla`; replay and independent-runtime regressions |
+| State-preserving finality and merge | exact state-effect provenance, finalized floor, deterministic merge algebra | finalized-floor, deploy-recovery, and merge-algebra TLA+/Rocq suites plus Casper integration tests |
+
+Read [Wallet-funded process lifecycle](20-wallet-funded-processes.md) for the
+end-to-end user and operator workflow, including wallet refill and cryptographic
+ownership. Read
+[End-to-end cost authority and native RevVault settlement](../theory/cost-accounting-impl/end-to-end-authority-settlement.md)
+for the implementation contract and
+[Formal Verification of Cost-Accounted Rho](../theory/cost-accounted-rho-verification.md)
+for the proof catalog.
+
+## References
+
+1. J.-Y. Girard, “Linear Logic,” *Theoretical Computer Science* 50 (1987),
+   1–101. [doi:10.1016/0304-3975(87)90045-4](https://doi.org/10.1016/0304-3975(87)90045-4).
+2. L. G. Meredith and M. Radestock, “A Reflective Higher-order Calculus,”
+   *Electronic Notes in Theoretical Computer Science* 141(5) (2005), 49–67.
+   [doi:10.1016/j.entcs.2005.05.016](https://doi.org/10.1016/j.entcs.2005.05.016).

@@ -164,13 +164,18 @@ impl TestNode {
             CasperError::RuntimeError("No validator identity available".to_string())
         })?;
 
-        // Create block using block_creator
+        // Create block using block_creator. Pending-cosigner-metadata
+        // sidecar is empty here because this is a test-helper entry path
+        // that doesn't admit multi-sig deploys through admit_deploy_cosigned.
+        let empty_cosigner_metadata =
+            std::sync::Arc::new(parking_lot::Mutex::new(std::collections::HashMap::new()));
         block_creator::create(
             &snapshot,
             &validator,
             None, // dummy_deploy_opt
             self.deploy_storage.clone(),
             self.rejected_deploy_buffer.clone(),
+            empty_cosigner_metadata,
             &self.runtime_manager.clone(),
             &mut self.block_store.clone(),
             false,
@@ -299,17 +304,33 @@ impl TestNode {
     where
         F: FnOnce(&ValidBlockProcessing) -> bool,
     {
-        // Create block
-        let result = self.create_block(deploy_datums).await?;
-
-        // Extract block
-        let block = match result {
-            BlockCreatorResult::Created(b, ..) => b,
-            other => {
-                return Err(CasperError::RuntimeError(format!(
-                    "Expected Created block, got: {:?}",
-                    other
-                )))
+        // Create block. Under suite-parallel timing the just-added deploys can
+        // momentarily be absent from the proposer's view (deploys are added
+        // synchronously, but block_creator filters against the newly-synced
+        // multi-parent post-state / self-chain dedup), so a propose can
+        // transiently return NoNewDeploys. Callers of this helper always supply
+        // deploys and expect a Created block, so retry a bounded number of times
+        // with a short backoff before treating a non-Created result as an error.
+        let mut attempts: u32 = 0;
+        let block = loop {
+            match self.create_block(deploy_datums).await? {
+                BlockCreatorResult::Created(b, ..) => break b,
+                other => {
+                    if attempts < 20 {
+                        attempts += 1;
+                        tracing::debug!(
+                            "create_block returned {:?}; retry {}/20 after backoff",
+                            other,
+                            attempts
+                        );
+                        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                        continue;
+                    }
+                    return Err(CasperError::RuntimeError(format!(
+                        "Expected Created block after {} retries, got: {:?}",
+                        attempts, other
+                    )));
+                }
             }
         };
 
@@ -1068,6 +1089,12 @@ impl TestNode {
 
         let _ = test_network.add_peer(&current_peer_node);
 
+        // Multi-sig cosigner-metadata sidecar (§1.9.5). Shared `Arc` between
+        // the MultiParentCasperImpl and the proposer's ProductionBlockCreator
+        // so admission-time writes are visible at proposal-time reads.
+        let pending_cosigner_metadata =
+            Arc::new(parking_lot::Mutex::new(std::collections::HashMap::new()));
+
         // Proposer
         let validator_id_opt = if is_read_only {
             None
@@ -1083,6 +1110,7 @@ impl TestNode {
                 block_store.clone(),
                 deploy_storage.clone(),
                 rejected_deploy_buffer.clone(),
+                pending_cosigner_metadata.clone(),
                 block_retriever.clone(),
                 tle.clone(),
                 connections_cell.clone(),
@@ -1140,7 +1168,7 @@ impl TestNode {
             // Validators will try to put deploy in a block only for next `deployLifespan` blocks.
             // Required to enable protection from re-submitting duplicate deploys
             deploy_lifespan: 50,
-            casper_version: 1,
+            casper_version: crate::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION,
             config_version: 1,
             bond_minimum: 0,
             bond_maximum: i64::MAX,
@@ -1163,6 +1191,7 @@ impl TestNode {
             block_store: block_store.clone(),
             block_dag_storage: block_dag_storage.clone(),
             deploy_storage: deploy_storage.clone(),
+            pending_cosigner_metadata: pending_cosigner_metadata.clone(),
             rejected_deploy_buffer: rejected_deploy_buffer.clone(),
             casper_buffer_storage: casper_buffer_storage.clone(),
             validator_id: validator_id_opt.clone(),
@@ -1201,6 +1230,7 @@ impl TestNode {
                 block_store: casper_guard.block_store.clone(),
                 block_dag_storage: casper_guard.block_dag_storage.clone(),
                 deploy_storage: casper_guard.deploy_storage.clone(),
+                pending_cosigner_metadata: casper_guard.pending_cosigner_metadata.clone(),
                 rejected_deploy_buffer: casper_guard.rejected_deploy_buffer.clone(),
                 casper_buffer_storage: casper_guard.casper_buffer_storage.clone(),
                 validator_id: casper_guard.validator_id.clone(),

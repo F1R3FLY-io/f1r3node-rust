@@ -1,0 +1,80 @@
+' Reflection, admission, and cost pipeline.
+'
+' Source of truth for Figure 1 in docs/theory/cost-accounting-linear-logic.md.
+' Palette:  Rust=salmon · Rocq-syntax=blue · Rocq-LL=mint · sinks(ℕ / list ℕ)=amber
+'   arrows: reflection/models=blue #1565C0 · cost=purple #6A1B9A
+'           consumed=green #2E7D32 · Rust-mirror=red-dashed #C62828
+' Render:  plantuml -tsvg docs/theory/diagrams/ll-reflection-pipeline.puml
+
+@startuml ll-reflection-pipeline
+!theme plain
+skinparam componentStyle rectangle
+skinparam shadowing false
+skinparam ArrowFontSize 11
+skinparam package {
+  BackgroundColor<<rust>> #F8C3B8
+  BackgroundColor<<syn>>  #BBDEFB
+  BackgroundColor<<ll>>   #C8E6C9
+  BorderColor #444444
+}
+skinparam component {
+  BackgroundColor<<rust>> #FAD7CE
+  BackgroundColor<<syn>>  #D7E3FC
+  BackgroundColor<<ll>>   #DCEDC8
+  BackgroundColor<<sink>> #FFECB3
+  BorderColor #333333
+}
+
+package "Wire / Rust runtime" <<rust>> {
+  component "DeployDataProto.sig_algebra\nSigCompound" <<rust>> as SIG
+  component "analyze_funding_algebra\nall-required Atom/Tensor\nor top-level atomic Threshold" <<rust>> as ANALYZE
+  component "Cosigned\nN-of-N or scalar k-of-N" <<rust>> as COSIGNED
+}
+package "Rocq · CostAccountedSyntax.v" <<syn>> {
+  component "sig_algebra\n(9 constructors)" <<syn>> as SA
+  component "admission_sig_algebra_valid" <<syn>> as ADMIT
+}
+package "Rocq · LinearLogicResources.v" <<ll>> {
+  component "ll_formula\n(LLUnit … LLLolly)" <<ll>> as LLF
+}
+component "ℕ\nfuel cost" <<sink>> as COST
+component "list ℕ\nwitnesses spent" <<sink>> as SPENT
+
+note bottom of ANALYZE #FFF8E1
+Plus / With / Bang / WhyNot / Lolly are rejected.
+Threshold is admission-only and its direct members are atomic.
+Funding is re-derived from verified Ground atoms folded by And.
+end note
+
+SIG -[#1565C0]-> ANALYZE : single structural traversal
+ANALYZE -[#1565C0]-> COSIGNED : all_required / min_required
+SIG -[#1565C0]-> SA   : models
+SA -[#1565C0]-> ADMIT : executable subset predicate
+ADMIT .[#C62828].> ANALYZE : implementation refinement
+SA  -[#1565C0]-> LLF  : <b>ll_of_sig_algebra</b>\nreflection
+SA  -[#6A1B9A]-> COST  : sig_algebra_min_required
+LLF -[#6A1B9A]-> COST  : ll_required_units
+SA  -[#2E7D32]-> SPENT : sig_algebra_presented_atoms
+LLF -[#2E7D32]-> SPENT : ll_consumed_atoms
+
+note bottom of COST
+  <b>ll_sig_algebra_required_complete</b>
+  ll_required_units (ll_of_sig_algebra s)
+  = sig_algebra_min_required s
+end note
+note bottom of SPENT
+  <b>ll_sig_algebra_consumed_matches_presented</b>
+  ll_consumed_atoms (ll_of_sig_algebra s)
+  = sig_algebra_presented_atoms s
+end note
+note right of SA
+  <b>admission_sig_algebra_valid_sound</b>
+  admitted ⟹ broad-algebra valid
+
+  <b>admission_sig_algebra_scalar_policy_sound</b>
+  admitted ⟹ all-required tree ∨ top-level threshold
+
+  <b>admission_sig_algebra_quorum_sound</b>
+  admitted ⟹ 1 ≤ min_required ≤ atom_count
+end note
+@enduml
