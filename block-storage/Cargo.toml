@@ -33,7 +33,7 @@ default = []
 # Production builds MUST NOT enable this feature. Test crates that
 # need the helpers enable `test-internals` via their dev-dependency on
 # `block-storage`. See
-# `docs/theory/slashing/slashing-verification.md` §9.2 (Bug #2).
+# `docs/casper/theory/slashing/slashing-verification.md` §9.2 (Bug #2).
 test-internals = []
 
 [dev-dependencies]

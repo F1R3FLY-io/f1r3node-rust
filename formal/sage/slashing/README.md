@@ -172,7 +172,7 @@ DOT_SAGE=/tmp/codex-sage sage formal/sage/slashing/hypothesis_search/hypothesis_
 Tracked findings and formalization follow-ups are maintained in `FINDINGS.md`.
 Cross-layer search expansion, including fuzzing, Kani, Miri, symbolic TLA+,
 and system-level adversarial testing, is documented in
-`docs/theory/slashing/slashing-search-horizon.md`.
+`docs/casper/theory/slashing/slashing-search-horizon.md`.
 
 Get the documented two-level closure counterexample:
 

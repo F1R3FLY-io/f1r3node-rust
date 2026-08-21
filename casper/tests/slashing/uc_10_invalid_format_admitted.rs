@@ -1,7 +1,7 @@
 // UC-10 — InvalidFormat is non-slashable; dispatcher returns the
 // block to the catch-all `_` arm without minting a record.
 //
-// Maps to: docs/theory/slashing/slashing-specification.md §12 UC-10.
+// Maps to: docs/casper/theory/slashing/slashing-specification.md §12 UC-10.
 // Theorem: T-3 (taxonomy correctness — 8 non-slashable variants
 // stay non-slashable).
 //

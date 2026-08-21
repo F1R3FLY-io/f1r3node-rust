@@ -1,7 +1,7 @@
 // SlashingProductionAdapter — Tier 1 implementation of
 // SlashingObserver over a real `TestNode`.
 //
-// Reference: docs/theory/slashing/design/14-test-plan.md §14.2.4
+// Reference: docs/casper/theory/slashing/design/14-test-plan.md §14.2.4
 // (tier model). The adapter projects the observable surface of
 // the production types — `BlockDagKeyValueStorage::
 // access_equivocations_tracker`, `RuntimeManager::compute_bonds`,

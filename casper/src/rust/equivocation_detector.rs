@@ -20,7 +20,7 @@
 //! that's the PoS contract's job. It records `EquivocationRecord`s
 //! that the proposer layer later turns into `SlashDeploy`s.
 //!
-//! See `docs/theory/slashing/slashing-verification.md` §6 for the
+//! See `docs/casper/theory/slashing/slashing-verification.md` §6 for the
 //! detector's role in the full slashing protocol.
 
 use std::collections::{BTreeMap, HashMap, HashSet};

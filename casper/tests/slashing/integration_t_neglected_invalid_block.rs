@@ -2,7 +2,7 @@
 // `NeglectedInvalidBlock` arm of
 // `MultiParentCasperImpl::handle_invalid_block`.
 //
-// Reference: docs/theory/slashing/design/14-test-plan.md §14.3.5,
+// Reference: docs/casper/theory/slashing/design/14-test-plan.md §14.3.5,
 // design/08-two-level-and-collusion.md.
 //
 // Why NeglectedInvalidBlock and not NeglectedEquivocation:

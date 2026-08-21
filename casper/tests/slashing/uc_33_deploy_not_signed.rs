@@ -1,7 +1,7 @@
 // UC-33 — DeployNotSigned variant flows through the post-fix
 // dispatcher to a recorded slashable status.
 //
-// Maps to: docs/theory/slashing/slashing-specification.md §12 UC-33.
+// Maps to: docs/casper/theory/slashing/slashing-specification.md §12 UC-33.
 // This is one of the 14 non-equivocation slashable variants the
 // post-fix dispatcher (bug fix #3) records uniformly. The harness
 // uses `dispatch_with_status` to simulate the upstream validator's

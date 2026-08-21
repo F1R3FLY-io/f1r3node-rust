@@ -1,7 +1,7 @@
 // Pre-fix regression backstop for bug #5 (stake-0 silent
 // classification — fix is in PoS bond contract).
 //
-// Reference: docs/theory/slashing/design/09-bug-fixes-and-rationale.md §9.6.
+// Reference: docs/casper/theory/slashing/design/09-bug-fixes-and-rationale.md §9.6.
 // Out-of-band approach: this asserts the post-fix #5 invariant on
 // the bond contract — `amount <= 0` is rejected with a deterministic
 // error. The Rust detector branch at
