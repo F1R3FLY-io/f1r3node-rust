@@ -60,8 +60,8 @@ Propose timing: total_ms=3525
 LOG
 cp "$FAKE_DATA_DIR/session/validator1.log" "$FAKE_ARCHIVE_DIR/session/validator1.log"
 printf 'fake pytest started\n'
-printf 'low      |      30 |    1.0 |    1.9    5.9    5.9 |    7.8   12.4   15.6 |   45.4\n'
-printf 'sustained |    1200 |    4.0 |   18.3   87.6  106.6 |   85.1  120.6  133.3 |  -20.2\n'
+printf 'low      |      30 |    1.0 |    1.9    5.9    5.9 |   90.0  100.0  101.0 |   45.4\r\n'
+printf 'sustained |    1200 |    4.0 |   18.3   87.6  106.6 |   85.1  120.6  133.3 |  -20.2\r\n'
 printf 'All-node LFBs at drain: {validator1: 12, validator2: 9} (spread 3 blocks)\n'
 if [ "${FAKE_EMIT_SOAK_METRIC:-false}" = "true" ]; then
 	printf 'SOAK_METRIC name=lfb_spread value=4 phase=drain\n'

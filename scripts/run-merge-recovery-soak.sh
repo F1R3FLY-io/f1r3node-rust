@@ -447,12 +447,13 @@ dedup_files_by_content() {
 }
 
 # Finalization latency from the test_load.py phase report. Each iteration uses
-# its slowest phase so sustained-load regressions remain visible in the rollup.
-# Emits "p50_ms p95_ms p99_ms phase_count" or nothing.
+# the phase with the highest p95. A p99 comparison resolves equal p95 values.
+# Emits that phase's "p50_ms p95_ms p99_ms phase_count" or nothing.
 iteration_finalization_latency() {
 	local iteration_dir="$1"
 	awk -F'|' '
       function trim(value) {
+        gsub(/\r/, "", value)
         gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
         return value
       }
@@ -467,14 +468,17 @@ iteration_finalization_latency() {
         p50 = values[1] + 0
         p95 = values[2] + 0
         p99 = values[3] + 0
-        if (phases == 0 || p50 > max_p50) max_p50 = p50
-        if (phases == 0 || p95 > max_p95) max_p95 = p95
-        if (phases == 0 || p99 > max_p99) max_p99 = p99
+        if (phases == 0 || p95 > selected_p95 ||
+            (p95 == selected_p95 && p99 > selected_p99)) {
+          selected_p50 = p50
+          selected_p95 = p95
+          selected_p99 = p99
+        }
         phases++
       }
       END {
         if (phases > 0)
-          printf "%.0f %.0f %.0f %d\n", max_p50 * 1000, max_p95 * 1000, max_p99 * 1000, phases
+          printf "%.0f %.0f %.0f %d\n", selected_p50 * 1000, selected_p95 * 1000, selected_p99 * 1000, phases
       }' "$iteration_dir/pytest.log" 2>/dev/null || true
 }
 
