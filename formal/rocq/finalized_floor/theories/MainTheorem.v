@@ -35,12 +35,14 @@ Import ListNotations.
 
 From FinalizedFloor Require Import Foundation.
 From FinalizedFloor Require Import CliqueOracle.
+From FinalizedFloor Require Import AccountableSafety.
 From FinalizedFloor Require Import Floor.
 From FinalizedFloor Require Import Merge.
 From FinalizedFloor Require Import OccurrenceDisposition.
 From FinalizedFloor Require Import FinalizedOccurrenceStatus.
 From FinalizedFloor Require Import Recovery.
 From FinalizedFloor Require Import MergeRecoveryCoherence.
+From FinalizedFloor Require Import AdmissionEffectAlignment.
 From FinalizedFloor Require Import RejectionReasonConfluence.
 From FinalizedFloor Require Import ProtocolVersionLifecycle.
 From FinalizedFloor Require Import ProtocolActivationCoherence.
@@ -57,6 +59,7 @@ From FinalizedFloor Require Import StateEffectProvenance.
 From FinalizedFloor Require Import StateLineageFinality.
 From FinalizedFloor Require Import CertifiedFloorPromotion.
 From FinalizedFloor Require Import SnapshotFloorMaterialization.
+From FinalizedFloor Require Import HeartbeatFinalityBackpressure.
 
 Theorem finalized_floor_merge_correct :
   (* T-TERM: the main-parent spine walk always reaches genesis. *)
@@ -217,6 +220,46 @@ Proof.
                 (conj base_committed_blocks_retry
                   (conj materialized_number_is_singleton
                         materialized_number_permutation)))))).
+Qed.
+
+Theorem finalized_floor_admission_effect_alignment_correct :
+  (forall left right record_id,
+    user_effect_records
+      (left ++ {| user_record_id := record_id;
+                  user_record_disposition := AdmissionRejected |} :: right) =
+    user_effect_records (left ++ right))
+  /\
+  (forall record_id,
+    length
+      (user_effect_records
+        [{| user_record_id := record_id;
+            user_record_disposition := ExecutionFailed |}]) = 1)
+  /\
+  (forall left right,
+    Permutation left right ->
+    length (user_effect_records left) = length (user_effect_records right))
+  /\
+  (forall records system_effect_count metadata,
+    metadata_aligned records system_effect_count metadata ->
+    exists user_metadata system_metadata,
+      metadata = user_metadata ++ system_metadata /\
+      length user_metadata = length (user_effect_records records) /\
+      length system_metadata = system_effect_count)
+  /\
+  (forall record_id,
+    required_merge_metadata
+      [{| user_record_id := record_id;
+          user_record_disposition := AdmissionRejected |}]
+      1 = 1 /\
+    length
+      [{| user_record_id := record_id;
+          user_record_disposition := AdmissionRejected |}] + 1 = 2).
+Proof.
+  exact (conj admission_rejected_has_no_effect_slot
+          (conj executed_failure_retains_effect_slot
+            (conj effect_projection_permutation_length
+              (conj aligned_metadata_splits_exactly
+                    funding_rejection_close_block_regression)))).
 Qed.
 
 Theorem finalized_floor_rejection_reason_confluence_correct :
@@ -818,3 +861,68 @@ Proof.
 Qed.
 
 Print Assumptions finalized_floor_snapshot_materialization_correct.
+
+Theorem finalized_floor_heartbeat_backpressure_correct :
+  heartbeat_backpressure_contract.
+Proof.
+  exact heartbeat_backpressure_end_to_end.
+Qed.
+
+Print Assumptions finalized_floor_heartbeat_backpressure_correct.
+
+Theorem finalized_floor_accountable_safety_correct :
+  forall
+    (dag : DAG)
+    (snapshot : Snapshot)
+    (incompatible : BlockHash -> BlockHash -> Prop)
+    (committee : Committee)
+    (faulty : list Validator)
+    (num den : Z)
+    (left right : BlockHash),
+    NoDup (map fst committee) ->
+    NoDup faulty ->
+    incl faulty (map fst committee) ->
+    causal_incompatibility_is_accountable
+      dag snapshot incompatible faulty ->
+    Finalized_ft dag committee snapshot left num den ->
+    Finalized_ft dag committee snapshot right num den ->
+    incompatible left right ->
+    (0 < num)%Z ->
+    (0 < den)%Z ->
+    (Z.of_nat
+      (validator_stake (committee_stake committee) faulty) * den <
+      Z.of_nat (cweight committee) * num)%Z ->
+    False.
+Proof.
+  exact exact_clique_certificates_are_accountably_safe.
+Qed.
+
+Print Assumptions finalized_floor_accountable_safety_correct.
+
+Theorem finalized_floor_strict_accountable_safety_correct :
+  forall
+    (dag : DAG)
+    (snapshot : Snapshot)
+    (incompatible : BlockHash -> BlockHash -> Prop)
+    (committee : Committee)
+    (faulty : list Validator)
+    (num den : Z)
+    (left right : BlockHash),
+    NoDup (map fst committee) ->
+    NoDup faulty ->
+    incl faulty (map fst committee) ->
+    causal_incompatibility_is_accountable
+      dag snapshot incompatible faulty ->
+    Finalized_ft_gt dag committee snapshot left num den ->
+    Finalized_ft_gt dag committee snapshot right num den ->
+    incompatible left right ->
+    (0 < den)%Z ->
+    (Z.of_nat
+      (validator_stake (committee_stake committee) faulty) * den <=
+      Z.of_nat (cweight committee) * num)%Z ->
+    False.
+Proof.
+  exact strict_exact_clique_certificates_are_accountably_safe.
+Qed.
+
+Print Assumptions finalized_floor_strict_accountable_safety_correct.
