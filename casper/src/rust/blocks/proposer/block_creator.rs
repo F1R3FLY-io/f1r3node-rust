@@ -921,24 +921,47 @@ async fn prepare_user_deploys_with_policy(
             gated_pool_retries
         );
     }
-    let mut retry_frontier_merged = false;
-    'parents: for parent in &casper_snapshot.parents {
-        for justification in &casper_snapshot.justifications {
-            if !casper_snapshot
-                .invalid_blocks
-                .contains_key(&justification.latest_block_hash)
-                && !casper_snapshot
-                    .dag
-                    .is_dag_ancestor(&justification.latest_block_hash, &parent.block_hash)?
-            {
-                continue 'parents;
+    if !retry_candidates.is_empty() {
+        let mut retry_frontier_merged = false;
+        'parents: for parent in &casper_snapshot.parents {
+            for justification in &casper_snapshot.justifications {
+                if !casper_snapshot
+                    .invalid_blocks
+                    .contains_key(&justification.latest_block_hash)
+                    && !casper_snapshot
+                        .dag
+                        .is_dag_ancestor(&justification.latest_block_hash, &parent.block_hash)?
+                {
+                    continue 'parents;
+                }
             }
+            retry_frontier_merged = true;
+            break;
         }
-        retry_frontier_merged = true;
-        break;
-    }
-    if !retry_frontier_merged {
-        retry_candidates.clear();
+        if !retry_frontier_merged {
+            let latest_message_count = casper_snapshot
+                .justifications
+                .iter()
+                .filter(|justification| {
+                    !casper_snapshot
+                        .invalid_blocks
+                        .contains_key(&justification.latest_block_hash)
+                })
+                .count();
+            for deploy in &retry_candidates {
+                tracing::info!(
+                    target: "f1r3fly.casper.deploy_lifecycle",
+                    event = "retry_frontier_deferred",
+                    deploy_sig = %hex::encode(&deploy.sig),
+                    reason = "no_covering_parent",
+                    next_block = block_number,
+                    selected_parent_count = casper_snapshot.parents.len(),
+                    latest_message_count,
+                    "deploy lifecycle"
+                );
+            }
+            retry_candidates.clear();
+        }
     }
     let ordinary_candidates: HashSet<Signed<DeployData>> = valid_unique
         .iter()
@@ -6129,7 +6152,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn retry_waits_until_visible_parent_frontier_is_merged() {
+    async fn retry_frontier_defers_without_and_accepts_with_redundant_covering_parent() {
         use block_storage::rust::dag::block_dag_key_value_storage::{
             BlockDagKeyValueStorage, InsertMode,
         };
@@ -6222,7 +6245,7 @@ mod tests {
         ]
         .into_iter()
         .collect();
-        snapshot.parents = vec![left, right];
+        snapshot.parents = vec![left.clone(), right.clone()];
 
         deploy_storage
             .lock()
@@ -6231,12 +6254,46 @@ mod tests {
         rejected_deploy_buffer
             .lock()
             .expect("rejected buffer lock")
-            .add(vec![retry])
+            .add(vec![retry.clone()])
             .expect("seed rejected buffer");
 
         let prepared = prepare_user_deploys(
             &snapshot,
             61,
+            10_000,
+            deploy_storage.clone(),
+            rejected_deploy_buffer.clone(),
+            &block_store,
+            true,
+            true,
+        )
+        .await
+        .expect("prepare deploys without covering parent");
+
+        assert!(
+            prepared.deploys.is_empty(),
+            "merged-frontier retry packaging must defer a retry over visible sibling parents"
+        );
+
+        let covering = test_block(
+            invalid_block_hash(0xB3),
+            validator(1),
+            vec![left.block_hash.clone(), right.block_hash.clone()],
+            61,
+            Vec::new(),
+        );
+        block_store
+            .put_block_message(&covering)
+            .expect("store covering parent");
+        dag_storage
+            .insert(&covering, InsertMode::Normal)
+            .expect("insert covering parent");
+        snapshot.dag = dag_storage.get_representation().expect("updated dag");
+        snapshot.parents = vec![covering, left];
+
+        let prepared = prepare_user_deploys(
+            &snapshot,
+            62,
             10_000,
             deploy_storage,
             rejected_deploy_buffer,
@@ -6245,11 +6302,14 @@ mod tests {
             true,
         )
         .await
-        .expect("prepare deploys");
+        .expect("prepare deploys with covering parent");
 
         assert!(
-            prepared.deploys.is_empty(),
-            "merged-frontier retry packaging must defer a retry over visible sibling parents"
+            prepared
+                .deploys
+                .iter()
+                .any(|deploy| deploy.sig == retry.sig),
+            "a covering parent must admit the retry when another selected parent is redundant"
         );
     }
 }

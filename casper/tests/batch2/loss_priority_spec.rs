@@ -355,6 +355,7 @@ async fn rotating_merge_proposers_land_repeatedly_rejected_deploy_before_expiry(
     );
 
     let max_rounds = 16;
+    let mut first_eligible_round = None;
     let mut landed_round = None;
     for round in 4..=max_rounds {
         let contender = costly_write(
@@ -382,6 +383,14 @@ async fn rotating_merge_proposers_land_repeatedly_rejected_deploy_before_expiry(
                 .await
                 .expect("validators accept owner block");
         }
+        if owner_block
+            .body
+            .deploys
+            .iter()
+            .any(|processed| processed.deploy.sig == starved_sig)
+        {
+            first_eligible_round.get_or_insert(round);
+        }
         if key_landed(
             &nodes[0],
             &owner_block.body.state.post_state_hash,
@@ -395,8 +404,12 @@ async fn rotating_merge_proposers_land_repeatedly_rejected_deploy_before_expiry(
     }
 
     assert!(
-        landed_round.is_some(),
-        "rotating merge proposers did not land the rejected deploy within {} rounds",
+        first_eligible_round.is_some(),
+        "the rejected deploy was not eligible within {} rotating-proposer rounds",
         max_rounds
+    );
+    assert_eq!(
+        landed_round, first_eligible_round,
+        "the rejected deploy must land on its first eligible covered-frontier round"
     );
 }

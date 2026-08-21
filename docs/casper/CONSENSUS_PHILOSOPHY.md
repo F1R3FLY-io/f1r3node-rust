@@ -109,7 +109,7 @@ This option biases fork-choice scoring by starved-retry priority.
 ### Comparison
 
 | Option | Fairness guarantee | Peer-rejection risk | Upgrade coordination | Finalization-health risk | Adversarial surface | Cost |
-|---|---|---|---|---|---|---|
+| --- | --- | --- | --- | --- | --- | --- |
 | A rotation + test | probabilistic, weak | none | none | none | none | trivial |
 | B1 merged-frontier packaging | strong in practice | none | none | none | none | small |
 | B2 per-key serialization | deterministic ordering | none | none | none | low | medium |
@@ -121,7 +121,7 @@ This option biases fork-choice scoring by starved-retry priority.
 
 ```mermaid
 flowchart TD
-    P1[Phase 1 - shipped:\nloss-aware adjudication\nat all three merge sites] --> B1[Phase 2 - implemented:\nB1 merged-frontier retry packaging\n+ A rotating-proposer test shape]
+    P1[Phase 1 - implemented:\nloss-aware adjudication\nat all three merge sites] --> B1[Phase 2 - implemented:\nB1 merged-frontier retry packaging\n+ A rotating-proposer test shape]
     B1 -->|soak or SI evidence\nshows residual expiries| C1[Escalation:\nC1 loss-aware main-parent declaration\nbehind soak evidence]
     C1 -->|still insufficient| C2[Reserve:\nC2 loss-aware base fallback\nlockstep consensus change]
     C2 -.-> C3[C3 fork-choice weights:\nrejected - griefing vector]
@@ -159,7 +159,7 @@ These four properties belong to the F1R3FLY Casper specialization: concurrent Rh
 This position also organizes the table below. The rows align where this implementation inherits the CBC core. The divergences live exactly in the added merge layer, which is where the new principles (P1, P6) operate.
 
 | Aspect | CBC Casper position | This philosophy | Relation |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | Safety guarantee | Asynchronous BFT safety holds while equivocating weight stays below a threshold | P6: per-merge safety is non-negotiable | Strong alignment. "Local safety composes into global starvation" is a concrete instance of the safety-versus-liveness tension that CBC deliberately accepts. |
 | Liveness | Not guaranteed under pure asynchrony. Progress relies on practical mechanisms under partial synchrony | The remedy ladder treats liveness as a risk gradient, escalated on evidence (P5) | Compatible. The ladder is an engineering elaboration of the same priority order. |
 | Estimator purity | The estimator is a pure function of validator messages and protocol state | P4: fork choice stays deploy-content-blind | Direct operationalization. Application data never enters the estimator. |
@@ -176,12 +176,12 @@ The method of this document also follows the CBC spirit. CBC derives protocols s
 ## 8. Decision record
 
 | Date | Decision | Status |
-|---|---|---|
-| 2026-08-20 | Phase 1: loss-aware adjudication at keep-one, rejection-option selection, and the unavailable-split claim order (commit `f6a00549d`) | Shipped, unit-proven |
-| 2026-08-20 | Phase 2 direction (A/B/C ladder above) | Pending maintainer decision |
+| --- | --- | --- |
+| 2026-08-20 | Phase 1: loss-aware adjudication at keep-one, rejection-option selection, and the unavailable-split claim order | Implemented and unit-tested |
+| 2026-08-21 | Phase 2: B1 merged-frontier retry packaging with proposer-rotation evidence | Implemented and integration-tested |
+| 2026-08-21 | Escalate to C1 only if soak evidence shows residual expiry. Keep C2 in reserve and reject C3. | Ratified |
 
 The phase-2 working record lives in the TDD plan
-[`docs/tdd-plans/key-contention-starvation-2026-08-20T04-52-46Z.md`](../tdd-plans/key-contention-starvation-2026-08-20T04-52-46Z.md)
-(blocked behavior B4). The end-to-end racing-shape test
-`casper/tests/batch2/loss_priority_spec.rs` stays `#[ignore]`d until the
-phase-2 decision lands.
+[`docs/tdd-plans/key-contention-starvation-2026-08-20T04-52-46Z.md`](../tdd-plans/key-contention-starvation-2026-08-20T04-52-46Z.md).
+The active rotating-proposer test provides B1 landing evidence. The ignored
+fixed-proposer test records residual base bias as the C1 escalation sentinel.

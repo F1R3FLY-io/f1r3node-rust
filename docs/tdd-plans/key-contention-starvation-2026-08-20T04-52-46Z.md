@@ -65,7 +65,7 @@ behaviors:
     cycle_log:
       - test: "batch2::loss_priority_spec::rotating_merge_proposers_land_repeatedly_rejected_deploy_before_expiry"
         red: "The first harness mixed agreement with fixed-proposer liveness. Its liveness assertion stayed RED although each peer accepted the rejection sets."
-        green: "The B7 harness proves agreement. Both validators accept the repeated rejection decisions and the final landing block."
+        green: "The B7 harness provides agreement evidence. Both validators accept the repeated rejection decisions and the final landing block."
         mixed_behavior: |
           The first harness tested two different claims. Cross-node block
           acceptance tests proposer-validator agreement. The final landing
@@ -78,7 +78,7 @@ behaviors:
           - casper/src/rust/merging/conflict_set_merger.rs
           - casper/src/rust/util/rholang/interpreter_util.rs
           - casper/tests/batch2/loss_priority_spec.rs
-        suite: "Focused B6 and B7 tests passed. cargo test -p casper --lib: 300 passed."
+        suite: "Focused B6 and B7 tests passed. cargo test -p casper --lib: 310 passed."
         design_decision: |
           Phase 2 uses B1 merged-frontier retry packaging with proposer
           rotation as test evidence. C1 needs residual-expiry soak evidence.
@@ -94,12 +94,12 @@ behaviors:
     notes:
       - "Phase 2, option B1 (merged-frontier retry packaging) from docs/casper/CONSENSUS_PHILOSOPHY.md Section 5. Node-local packaging policy in prepare_user_deploys_with_policy; peer-safe by Ground Truth 2 (deferral is always legal). RED shape: in the racing harness, assert the owner block never packages the retry as a sibling of an unmerged contender."
     cycle_log:
-      - test: "rust::blocks::proposer::block_creator::tests::retry_waits_until_visible_parent_frontier_is_merged"
+      - test: "rust::blocks::proposer::block_creator::tests::retry_frontier_defers_without_and_accepts_with_redundant_covering_parent"
         red: "The open retry gate selected the buffered retry over two visible sibling parents."
-        green: "Retry selection now requires one selected parent that covers every non-invalid latest-message justification."
+        green: "Retry selection requires one selected parent that covers every non-invalid latest-message justification. The test also accepts a covering parent when another selected parent is redundant."
         files:
           - casper/src/rust/blocks/proposer/block_creator.rs
-        suite: "cargo test -p casper --lib: 300 passed"
+        suite: "cargo test -p casper --lib: 310 passed"
         discovered:
           - "The policy uses the authenticated parent and justification frontier. It does not predict Rholang keys from deploy source."
   - id: B7
@@ -113,11 +113,11 @@ behaviors:
     cycle_log:
       - test: "batch2::loss_priority_spec::rotating_merge_proposers_land_repeatedly_rejected_deploy_before_expiry"
         red: "The rotating schedule failed for 16 rounds because B6 required the selected-parent set to contain exactly one block."
-        green: "The retry gate now accepts any selected parent that covers every non-invalid latest-message justification. The twice-rejected deploy lands before round 16."
+        green: "The retry gate accepts any selected parent that covers every non-invalid latest-message justification. The twice-rejected deploy lands on its first eligible covered-frontier round."
         files:
           - casper/src/rust/blocks/proposer/block_creator.rs
           - casper/tests/batch2/loss_priority_spec.rs
-        suite: "Focused B6 and B7 tests passed. cargo test -p casper --lib: 300 passed."
+        suite: "Focused B6 and B7 tests passed. cargo test -p casper --lib: 310 passed."
         expected_control: "The ignored fixed-proposer test still rejects the retry for all 16 rounds."
         discovered:
           - "A selected-parent set can contain redundant parents. One parent can still cover the complete latest-message frontier."
@@ -185,9 +185,9 @@ Ratified phase-2 path:
 
 - **B6** — merged-frontier retry packaging (ladder option B1): node-local
   packaging policy, peer-safe, small diff.
-- **B7** — rotating-proposer harness claim (ladder option A): the
-  provable GREEN reshape of `loss_priority_spec`; the adversarial shape
-  stays `#[ignore]`d as the C1 escalation sentinel.
+- **B7** — rotating-proposer test evidence (ladder option A): the active
+  GREEN scenario in `loss_priority_spec`; the adversarial shape stays
+  `#[ignore]`d as the C1 escalation sentinel.
 
 Escalation: C1 (loss-aware main-parent declaration) only behind soak
 evidence of residual expiries; C2 in reserve; C3 rejected (Principle P4:
