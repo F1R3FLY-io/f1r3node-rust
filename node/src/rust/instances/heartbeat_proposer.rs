@@ -597,7 +597,6 @@ async fn check_lfb_and_propose(
         can_propose_pending_deploys_while_ahead,
         can_chase_frontier_while_ahead,
         can_follow_frontier_without_pending_deploys,
-        allow_cooldown_override_for_deploy_recovery,
         allow_frontier_follow_while_ahead_for_deploy_parent,
     } = decide_lanes(&lane_inputs);
 
@@ -623,12 +622,11 @@ async fn check_lfb_and_propose(
             "pending user deploys in storage".to_string()
         } else if frontier_follow_due {
             format!(
-                "new parents observed (lag={}, self_recently_proposed={}, cooldown_active={}, cooldown_ms={}, cooldown_override_for_deploy_recovery={}, frontier_chase_cap={}, user_deploy_parent={}, deploy_grace_active={}, stale_recovery_interval_ms={}); proposing to keep frontier moving",
+                "new parents observed (lag={}, self_recently_proposed={}, cooldown_active={}, cooldown_ms={}, frontier_chase_cap={}, user_deploy_parent={}, deploy_grace_active={}, stale_recovery_interval_ms={}); proposing to keep frontier moving",
                 lfb_lag_blocks,
                 self_recently_proposed,
                 self_proposed_too_recently,
                 config.self_propose_cooldown.as_millis(),
-                allow_cooldown_override_for_deploy_recovery,
                 effective_frontier_chase_cap,
                 has_new_parent_with_user_deploys,
                 deploy_grace_active,
@@ -742,10 +740,9 @@ async fn check_lfb_and_propose(
                 )
             } else if has_new_parents && self_recently_proposed && !can_chase_frontier_while_ahead {
                 format!(
-                    "frontier-follow throttled: lag {}, cooldown_active={}, cooldown_override_for_deploy_recovery={}, deploy_parent_override={}, cap {} while already ahead",
+                    "frontier-follow throttled: lag {}, cooldown_active={}, deploy_parent_override={}, cap {} while already ahead",
                     lfb_lag_blocks,
                     self_proposed_too_recently,
-                    allow_cooldown_override_for_deploy_recovery,
                     allow_frontier_follow_while_ahead_for_deploy_parent,
                     effective_frontier_chase_cap
                 )
@@ -945,7 +942,6 @@ struct LaneDecision {
     can_propose_pending_deploys_while_ahead: bool,
     can_chase_frontier_while_ahead: bool,
     can_follow_frontier_without_pending_deploys: bool,
-    allow_cooldown_override_for_deploy_recovery: bool,
     allow_frontier_follow_while_ahead_for_deploy_parent: bool,
 }
 
@@ -968,32 +964,41 @@ fn decide_lanes(i: &LaneInputs) -> LaneDecision {
     } else {
         i.lfb_lag_blocks <= i.pending_deploy_max_lag
     };
+    // The self-propose cooldown gates every ROUTINE lane unconditionally —
+    // the deploy-grace window widens lag caps but never bypasses the
+    // cooldown (dev PR #308's amplification bound, adopted): a validator
+    // that just minted adds nothing by minting again this tick. The
+    // stale-recovery lane below is deliberately NOT cooldown-gated: it
+    // paces on the stale-recovery interval, which subsumes the cooldown at
+    // shipped values, and recovery must never be hostage to a knob tuned
+    // for routine churn.
     let pending_deploys_due = i.has_pending_deploys
+        && !i.self_proposed_too_recently
         && (!i.self_recently_proposed || can_propose_pending_deploys_while_ahead);
     // Backstop: even when high lag throttles pending-deploy proposals, force a bounded
     // retry based on local self-proposal cadence so deploys cannot starve indefinitely.
+    // Open to EVERY validator: under a pinned floor the backstop firing on
+    // all validators is what keeps witnessing rounds alive around user work.
     let pending_deploy_backstop_due = i.has_pending_deploys
         && i.self_recently_proposed
         && !can_propose_pending_deploys_while_ahead
         && i.self_idle_for_recovery_interval
-        && (!i.self_proposed_too_recently || i.deploy_grace_active);
+        && !i.self_proposed_too_recently;
     let can_follow_frontier_without_pending_deploys =
         deploy_recovery_hint || i.stale_recovery_interval_elapsed;
-    // Cooldown protects idle clusters from empty-block churn, but during deploy-driven
-    // recovery/finalization we should not wait out the full cooldown before advancing finality.
-    let allow_cooldown_override_for_deploy_recovery =
-        i.has_pending_deploys || i.has_new_parent_with_user_deploys;
     // When a peer parent with user deploys is observed, allow one frontier-follow step
     // while ahead (bounded by pending-deploy lag threshold) to unblock synchrony progress.
-    let allow_frontier_follow_while_ahead_for_deploy_parent =
-        i.has_new_parent_with_user_deploys && i.lfb_lag_blocks <= i.deploy_recovery_max_lag;
+    let allow_frontier_follow_while_ahead_for_deploy_parent = i.has_new_parent_with_user_deploys
+        && i.lfb_lag_blocks <= i.deploy_recovery_max_lag
+        && !i.self_proposed_too_recently;
     let can_chase_frontier_while_ahead = i.lfb_lag_blocks <= i.effective_frontier_chase_cap
         && i.has_new_parents
         && !i.empty_frontier_backpressure
-        && (!i.self_proposed_too_recently || allow_cooldown_override_for_deploy_recovery);
+        && !i.self_proposed_too_recently;
     let frontier_follow_due = !i.has_pending_deploys
         && i.has_new_parents
         && !i.empty_frontier_backpressure
+        && !i.self_proposed_too_recently
         && can_follow_frontier_without_pending_deploys
         && (!i.self_recently_proposed
             || can_chase_frontier_while_ahead
@@ -1037,7 +1042,6 @@ fn decide_lanes(i: &LaneInputs) -> LaneDecision {
         can_propose_pending_deploys_while_ahead,
         can_chase_frontier_while_ahead,
         can_follow_frontier_without_pending_deploys,
-        allow_cooldown_override_for_deploy_recovery,
         allow_frontier_follow_while_ahead_for_deploy_parent,
     }
 }
@@ -2123,6 +2127,184 @@ mod tests {
             );
         }
 
+        /// Re-specced from dev's `high_lag_pending_deploy_backstop_is_leader_only`
+        /// (PR #308): the backstop is deliberately NOT leader-only. Under a
+        /// pinned floor with pending deploys, the backstop firing on every
+        /// validator is what heals the stall (each validator's deploy lanes
+        /// keep witnessing rounds alive); gating user work behind a single
+        /// proposer recreates the one-proposer regime that froze the CI
+        /// stalls. Amplification stays bounded by the temporal key: one
+        /// backstop proposal per validator per stale-recovery interval.
+        #[tokio::test]
+        async fn high_lag_pending_deploy_backstop_fires_for_non_leaders_too() {
+            let validator = create_test_validator_identity();
+            let validator_id = validator.public_key.bytes.clone();
+            let (mut snapshot, lfb) = wide_unfinalized_snapshot(validator_id);
+            casper::rust::casper::test_helpers::TestCasperWithSnapshot::bond_validator_in_snapshot(
+                &mut snapshot,
+                Validator::from(vec![0]),
+            );
+
+            let casper: Arc<dyn MultiParentCasper + Send + Sync> = Arc::new(
+                casper::rust::casper::test_helpers::TestCasperWithSnapshot::new_with_pending_deploys(
+                    snapshot, lfb, 1,
+                ),
+            );
+            let (propose_count, propose_func) = create_counting_propose_function();
+            let mut config = empty_frontier_backpressure_config();
+            config.advanced.pending_deploy_max_lag = 1;
+            config.advanced.deploy_recovery_max_lag = 1;
+            let mut finality_progress = FinalityProgress::new(Instant::now());
+
+            let result = do_heartbeat_check(
+                casper,
+                &*propose_func,
+                &validator,
+                &config,
+                false,
+                false,
+                &mut finality_progress,
+            )
+            .await;
+
+            assert!(result.is_ok(), "do_heartbeat_check should succeed");
+            assert_eq!(
+                propose_count.load(Ordering::SeqCst),
+                1,
+                "a non-leader with pending deploys over the lag cap must get \
+                 its backstop proposal"
+            );
+        }
+
+        #[tokio::test]
+        async fn high_lag_pending_deploy_backstop_allows_leader() {
+            let validator = create_test_validator_identity();
+            let validator_id = validator.public_key.bytes.clone();
+            let (snapshot, lfb) = wide_unfinalized_snapshot(validator_id);
+
+            let casper: Arc<dyn MultiParentCasper + Send + Sync> = Arc::new(
+                casper::rust::casper::test_helpers::TestCasperWithSnapshot::new_with_pending_deploys(
+                    snapshot, lfb, 1,
+                ),
+            );
+            let (propose_count, propose_func) = create_counting_propose_function();
+            let mut config = empty_frontier_backpressure_config();
+            config.advanced.pending_deploy_max_lag = 1;
+            config.advanced.deploy_recovery_max_lag = 1;
+            let mut finality_progress = FinalityProgress::new(Instant::now());
+
+            let result = do_heartbeat_check(
+                casper,
+                &*propose_func,
+                &validator,
+                &config,
+                false,
+                false,
+                &mut finality_progress,
+            )
+            .await;
+
+            assert!(result.is_ok(), "do_heartbeat_check should succeed");
+            assert_eq!(propose_count.load(Ordering::SeqCst), 1);
+        }
+
+        /// Re-specced from dev's `high_lag_stale_recovery_is_leader_only`
+        /// (PR #308): leader-only stale recovery is the mechanism behind
+        /// every measured CI stall (non-leaders stood down 81/114/288/289
+        /// times across instances while one proposer, who cannot rebuild
+        /// mutual justification alone, proposed into the void). Every bonded
+        /// validator gets its recovery proposal, paced by the stale-recovery
+        /// interval; amplification is bounded by cadence and the
+        /// empty-frontier width cap, never by silencing proposers.
+        #[tokio::test]
+        async fn high_lag_stale_recovery_fires_for_every_validator() {
+            let validator = create_test_validator_identity();
+            let validator_id = validator.public_key.bytes.clone();
+            let (mut snapshot, lfb) = wide_unfinalized_snapshot(validator_id);
+            casper::rust::casper::test_helpers::TestCasperWithSnapshot::bond_validator_in_snapshot(
+                &mut snapshot,
+                Validator::from(vec![0]),
+            );
+
+            let casper: Arc<dyn MultiParentCasper + Send + Sync> = Arc::new(
+                casper::rust::casper::test_helpers::TestCasperWithSnapshot::new(snapshot, lfb),
+            );
+            let (propose_count, propose_func) = create_counting_propose_function();
+            let mut config = empty_frontier_backpressure_config();
+            config.advanced.frontier_chase_max_lag = 1;
+            config.advanced.pending_deploy_max_lag = 1;
+            config.advanced.deploy_recovery_max_lag = 1;
+            config.advanced.empty_frontier_max_unfinalized_blocks = 100;
+            let mut finality_progress = FinalityProgress::new(Instant::now());
+
+            let result = do_heartbeat_check(
+                casper,
+                &*propose_func,
+                &validator,
+                &config,
+                false,
+                false,
+                &mut finality_progress,
+            )
+            .await;
+
+            assert!(result.is_ok(), "do_heartbeat_check should succeed");
+            assert_eq!(
+                propose_count.load(Ordering::SeqCst),
+                1,
+                "a stalled non-leader whose recovery interval has elapsed \
+                 must propose — certification needs mutual witnessing"
+            );
+        }
+
+        /// From dev's PR #308, kept: the deploy-grace window must not bypass
+        /// the self-propose cooldown on the ROUTINE lanes. A validator that
+        /// minted milliseconds ago proposes nothing this tick, grace or not;
+        /// the recovery lane is untouched (it paces on the stale-recovery
+        /// interval, which subsumes the cooldown at shipped values).
+        #[tokio::test]
+        async fn deploy_grace_does_not_bypass_self_propose_cooldown() {
+            let validator = create_test_validator_identity();
+            let validator_id = validator.public_key.bytes.clone();
+            let (snapshot, lfb) = wide_unfinalized_snapshot(validator_id);
+            let casper_impl =
+                casper::rust::casper::test_helpers::TestCasperWithSnapshot::new_with_pending_deploys(
+                    snapshot, lfb, 1,
+                );
+            let mut self_tip = models::rust::block_implicits::get_random_block_default();
+            self_tip.block_hash = test_hash(0x18);
+            self_tip.header.timestamp = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_millis() as i64;
+            casper_impl.insert_block(&self_tip);
+            let casper: Arc<dyn MultiParentCasper + Send + Sync> = Arc::new(casper_impl);
+            let (propose_count, propose_func) = create_counting_propose_function();
+            let mut config = empty_frontier_backpressure_config();
+            config.advanced.pending_deploy_max_lag = 1;
+            config.advanced.deploy_recovery_max_lag = 1;
+            // A real recovery interval: the just-minted tip closes the
+            // recovery lane through its own pacing, so the 0 below asserts
+            // the ROUTINE lanes' cooldown — the claim under test — rather
+            // than a degenerate always-open recovery lane.
+            config.stale_recovery_min_interval = Duration::from_secs(15);
+            let mut finality_progress = FinalityProgress::new(Instant::now());
+
+            let result = do_heartbeat_check(
+                casper,
+                &*propose_func,
+                &validator,
+                &config,
+                false,
+                true,
+                &mut finality_progress,
+            )
+            .await;
+
+            assert!(result.is_ok(), "do_heartbeat_check should succeed");
+            assert_eq!(propose_count.load(Ordering::SeqCst), 0);
+        }
+
         /// The terminal ucc-stall state (session 3cd723b6): finalization
         /// stalled long enough that unfinalized width exceeded the cap, and
         /// every validator's latest block sits above the frozen LFB — so a
@@ -2354,6 +2536,48 @@ mod tests {
                 ..baseline()
             });
             assert!(d.convergence_recovery_selected && d.should_propose);
+        }
+
+        /// The reconciled amplification bound (dev PR #308, adopted in
+        /// part): the self-propose cooldown gates every ROUTINE lane, grace
+        /// included — but never the stale-recovery lane, which paces on the
+        /// stale-recovery interval. A hot validator adds nothing by minting
+        /// again; a stalled one must still get its recovery proposal.
+        #[test]
+        fn a_cooldown_hot_validator_defers_routine_lanes_but_never_recovery() {
+            let hot_pending = LaneInputs {
+                has_pending_deploys: true,
+                self_proposed_too_recently: true,
+                deploy_grace_active: true,
+                ..baseline()
+            };
+            let d = decide_lanes(&hot_pending);
+            assert!(
+                !d.should_propose,
+                "grace must not bypass the cooldown on the deploy lane"
+            );
+            let d = decide_lanes(&LaneInputs {
+                has_pending_deploys: true,
+                self_recently_proposed: true,
+                lfb_lag_blocks: 30,
+                self_proposed_too_recently: true,
+                ..baseline()
+            });
+            assert!(
+                !d.pending_deploy_backstop_due,
+                "the backstop respects the cooldown"
+            );
+            let d = decide_lanes(&LaneInputs {
+                lfb_is_stale: true,
+                stale_recovery_interval_elapsed: true,
+                self_proposed_too_recently: true,
+                lfb_lag_blocks: 30,
+                ..baseline()
+            });
+            assert!(
+                d.stale_lfb_recovery_due && d.should_propose,
+                "recovery paces on the interval, never on the cooldown"
+            );
         }
     }
 }
