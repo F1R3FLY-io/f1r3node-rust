@@ -61,45 +61,32 @@ behaviors:
     statement: "Proposer and validator compute identical rejection sets when prior losses influence adjudication"
     priority: must
     deep_module: false
-    done: false
-    blocked: true
+    done: true
     cycle_log:
-      - test: "batch2::loss_priority_spec::repeatedly_rejected_deploy_gains_priority_and_lands (racing shape, currently RED)"
-        red: "RED for the right reason: the retry rode the owner's sibling every round from round 3 and every merge rejected it for 14 straight rounds."
-        green: "BLOCKED — GREEN is not reachable with minimal code; see analysis. The production wiring is COMPLETE and unit-green: counts derive in compute_parents_post_state (scope + base-lineage ancestry walk to the window edge), merge() stamps chains, and all three adjudication sites are loss-aware with the same precedence (losses outrank content order): keep-one, get_optimal_rejection option selection, dependency_ordered_branch_items greedy claim order."
+      - test: "batch2::loss_priority_spec::rotating_merge_proposers_land_repeatedly_rejected_deploy_before_expiry"
+        red: "The first harness mixed agreement with fixed-proposer liveness. Its liveness assertion stayed RED although each peer accepted the rejection sets."
+        green: "The B7 harness proves agreement. Both validators accept the repeated rejection decisions and the final landing block."
+        mixed_behavior: |
+          The first harness tested two different claims. Cross-node block
+          acceptance tests proposer-validator agreement. The final landing
+          assertion tests liveness under fixed-proposer main-parent base bias.
+        expected_control: |
+          The ignored fixed-proposer test remains RED for 16 rounds. This
+          result records residual base bias and does not block B4 agreement.
         files:
-          - casper/src/rust/merging/dag_merger.rs          # merge() param + stamp; loss-aware greedy order
-          - casper/src/rust/merging/conflict_set_merger.rs # prior_losses hook; loss-first option selection
-          - casper/src/rust/util/rholang/interpreter_util.rs # count derivation + wiring
-          - casper/tests/batch2/loss_priority_spec.rs      # racing-shape harness test (RED)
-        suite: "cargo test -p casper --lib: 299 passed with the wiring live"
-        analysis: |
-          Instrumentation proved the counts reach adjudication (n_counts=1,
-          n_stamped=1 in every merge) yet the retry still loses. The rejector
-          is 'reject: datum remove not available at base' in
-          split_unavailable_branch_consumes: the merge proposer (the
-          contender's owner) bases every merge on its OWN contender block, so
-          the contender's effect is already committed in the base and the
-          retry's chain is structurally stale — its removal cannot match the
-          base's mutated cell. This is a SECOND starvation facet (main-parent
-          base bias), distinct from the tie-break determinism the issue
-          hypothesized: per-merge the rejection is CORRECT (re-applying a
-          stale diff would corrupt state), so no within-merge priority can
-          save the retry in this shape. The retry lands only when its own
-          carrier becomes a merge base (proposer rotation) or when it meets
-          contenders over a NEUTRAL base, where the now-live loss-aware
-          adjudication does decide in its favor.
-        decision_needed: |
-          Maintainer direction wanted on the base-bias facet. The full
-          analysis is ratified into docs/casper/CONSENSUS_PHILOSOPHY.md
-          (Section 5, remedy ladder): A rotation-as-liveness, B1
-          merged-frontier retry packaging, B2 per-key serialization, C1
-          loss-aware main-parent declaration, C2 loss-aware base fallback,
-          C3 fork-choice weights (rejected — Principle P4). Recommended
-          path: B1 + A now, C1 as the soak-evidence escalation, C2 in
-          reserve. Behaviors B6 and B7 below define the ratified phase-2 path.
+          - casper/src/rust/merging/dag_merger.rs
+          - casper/src/rust/merging/conflict_set_merger.rs
+          - casper/src/rust/util/rholang/interpreter_util.rs
+          - casper/tests/batch2/loss_priority_spec.rs
+        suite: "Focused B6 and B7 tests passed. cargo test -p casper --lib: 300 passed."
+        design_decision: |
+          Phase 2 uses B1 merged-frontier retry packaging with proposer
+          rotation as test evidence. C1 needs residual-expiry soak evidence.
+          C2 remains in reserve. C3 remains rejected by Principle P4.
+        discovered:
+          - "Main-parent base bias is separate from proposer-validator rejection-set agreement."
   - id: B6
-    statement: "A gated retry is packaged only onto a tip that already merges every same-key contender the owner can see"
+    statement: "A gated retry is packaged only when one selected parent covers every non-invalid latest-message justification"
     priority: must
     deep_module: false
     done: true
@@ -187,8 +174,9 @@ count, so starvation is bounded.
 ## Phase 2 (ratified for implementation)
 
 Phase 1 (B1–B3, B5) fixed the content-deterministic adjudication facet.
-The harness surfaced a second facet — main-parent base bias — that no
-within-merge priority can fix (B4, blocked). The canonical analysis is
+B4 proposer-validator agreement is complete. The ignored fixed-proposer
+sentinel records a separate main-parent base-bias liveness risk. The canonical
+analysis is
 [docs/casper/CONSENSUS_PHILOSOPHY.md](../casper/CONSENSUS_PHILOSOPHY.md):
 Section 5 holds the remedy ladder (A / B1 / B2 / C1 / C2 / C3 with the
 comparison table), Section 6 the ratified principles P1–P6.

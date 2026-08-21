@@ -92,10 +92,9 @@ async fn key_landed(node: &TestNode, state_hash: &prost::bytes::Bytes, key: &str
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[serial]
-#[ignore = "issue #294 phase 2: RED by design pending the base-bias decision — the merge \
-            proposer bases on its own contender block, so the retry's chain is structurally \
-            stale and no within-merge priority can win this shape. See the blocked B4 entry \
-            in docs/tdd-plans/key-contention-starvation-2026-08-20T04-52-46Z.md."]
+#[ignore = "issue #294 expected RED base-bias sentinel: a fixed contender-owner proposer \
+            keeps the retry structurally stale. Start C1 only if soak evidence shows \
+            residual expiry."]
 async fn repeatedly_rejected_deploy_gains_priority_and_lands() {
     let ctx = build_genesis(2).await;
     let shard_id = ctx.genesis_block.shard_id.clone();
