@@ -1,3 +1,6 @@
+#[cfg(test)]
+use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::var::VarInstance;
 use models::rhoapi::{
@@ -7,8 +10,11 @@ use models::rhoapi::{
 #[cfg(test)]
 use models::rust::par_bag::ParBagVisitError;
 use models::rust::par_bag::ParComponentItem;
+#[cfg(test)]
+use models::rust::par_construction::ParConstruction;
 use models::rust::rholang::drive::{drive, Outcome, Step, Traversal};
 
+use crate::decidable::{decode_encoded_enot_terminal, EncodedEnotTerminal};
 use crate::env::Env;
 use crate::error::EvalError;
 use crate::oracle::{NoSpatialMatch, SpatialMatch};
@@ -297,6 +303,48 @@ fn par_with_bool(b: bool) -> Par {
     par_with_expr(Expr {
         expr_instance: Some(ExprInstance::GBool(b)),
     })
+}
+
+#[cfg(test)]
+pub(crate) fn planned_nots(depth: usize, terminal: &Par) -> Par {
+    let mut arena = ParConstruction::new();
+    let mut current = arena.import_par(terminal).expect("import ENot terminal");
+    let shell = Expr {
+        expr_instance: Some(ExprInstance::ENotBody(ENot {
+            p: Some(Par::default()),
+        })),
+    };
+    for _ in 0..depth {
+        let component = arena
+            .expr_component(&shell, &[current], false)
+            .expect("plan ENot");
+        current = arena
+            .singleton_component(component, Vec::new(), false)
+            .expect("plan singleton ENot");
+    }
+    arena.finish(current).expect("finish ENot spine")
+}
+
+#[cfg(test)]
+pub(crate) fn assert_planned_nots(par: &Par, depth: usize, terminal: &Par) {
+    assert!(par.locally_free().is_empty());
+    assert!(!par.connective_used());
+    assert_eq!(par.cardinality(), 1);
+    assert_eq!(par.family_cardinality::<Expr>(), 1);
+    let terminal = terminal
+        .protobuf_bytes()
+        .expect("terminal protobuf encoding must succeed");
+    let mut visits = 0usize;
+    par.visit_encoded::<Expr>(|entry| {
+        visits += 1;
+        assert_eq!(entry.multiplicity().get(), 1);
+        let (observed_depth, observed_terminal) = entry
+            .canonical_unary_enot_parts()
+            .expect("exact unary ENot spine");
+        assert_eq!(observed_depth, depth);
+        assert_eq!(observed_terminal, terminal);
+    });
+    assert_eq!(visits, 1);
 }
 
 fn par_with_int(i: i64) -> Par {
@@ -670,9 +718,11 @@ enum EvNode<'t> {
         par: &'t Par,
         extract: bool,
     },
-    /// `eval_expr_to_par(expr)`.
-    Expr(&'t Expr),
     OwnedExpr(Box<Expr>),
+    OwnedPar {
+        owner: Box<Par>,
+        extract: bool,
+    },
 }
 
 /// Post-order continuation. Carries the borrowed shell and the operator, never
@@ -687,7 +737,9 @@ enum EvKont<'t> {
     },
     Scale(u64),
     KeepOwnedExpr(Box<Expr>),
+    KeepOwnedPar(Box<Par>),
     Not,
+    NotSpine(usize),
     Neg,
     BoolK {
         op: &'static str,
@@ -729,6 +781,49 @@ enum EvKont<'t> {
 struct EvalTraversal<'e> {
     env: &'e Env<Par>,
     matcher: &'e dyn SpatialMatch,
+}
+
+#[cfg(test)]
+static ENOT_SPINE_PREPARATIONS: AtomicUsize = AtomicUsize::new(0);
+#[cfg(test)]
+static ENOT_SPINE_TERMINAL_DECODES: AtomicUsize = AtomicUsize::new(0);
+#[cfg(test)]
+static ENOT_SPINE_COMBINES: AtomicUsize = AtomicUsize::new(0);
+#[cfg(test)]
+static ENOT_SPINE_LEVELS: AtomicUsize = AtomicUsize::new(0);
+
+#[cfg(test)]
+fn record_enot_spine_preparation(depth: usize) {
+    ENOT_SPINE_PREPARATIONS.fetch_add(1, AtomicOrdering::Relaxed);
+    ENOT_SPINE_TERMINAL_DECODES.fetch_add(1, AtomicOrdering::Relaxed);
+    ENOT_SPINE_LEVELS.fetch_add(depth, AtomicOrdering::Relaxed);
+}
+
+#[cfg(not(test))]
+fn record_enot_spine_preparation(_depth: usize) {}
+
+#[cfg(test)]
+fn record_enot_spine_combine() { ENOT_SPINE_COMBINES.fetch_add(1, AtomicOrdering::Relaxed); }
+
+#[cfg(not(test))]
+fn record_enot_spine_combine() {}
+
+#[cfg(test)]
+fn reset_enot_spine_counters() {
+    ENOT_SPINE_PREPARATIONS.store(0, AtomicOrdering::Relaxed);
+    ENOT_SPINE_TERMINAL_DECODES.store(0, AtomicOrdering::Relaxed);
+    ENOT_SPINE_COMBINES.store(0, AtomicOrdering::Relaxed);
+    ENOT_SPINE_LEVELS.store(0, AtomicOrdering::Relaxed);
+}
+
+#[cfg(test)]
+fn enot_spine_counters() -> (usize, usize, usize, usize) {
+    (
+        ENOT_SPINE_PREPARATIONS.load(AtomicOrdering::Relaxed),
+        ENOT_SPINE_TERMINAL_DECODES.load(AtomicOrdering::Relaxed),
+        ENOT_SPINE_COMBINES.load(AtomicOrdering::Relaxed),
+        ENOT_SPINE_LEVELS.load(AtomicOrdering::Relaxed),
+    )
 }
 
 impl<'e> Traversal for EvalTraversal<'e> {
@@ -775,17 +870,33 @@ impl<'e> Traversal for EvalTraversal<'e> {
             // two continuations, and the narrower rule rejected it.
             EvNode::Eval { par, extract } => {
                 let mut expressions = Vec::with_capacity(par.family_distinct_len::<Expr>());
-                par.try_visit_components::<Expr, std::convert::Infallible>(|expr, multiplicity| {
-                    expressions.push((
-                        match expr {
-                            ParComponentItem::Borrowed(expr) => EvNode::Expr(expr),
-                            ParComponentItem::Owned(expr) => EvNode::OwnedExpr(Box::new(expr)),
-                        },
-                        multiplicity.get(),
-                    ));
-                    Ok(())
-                })
-                .expect("Par invariant: expression endpoints are canonical");
+                par.visit_encoded::<Expr>(|entry| {
+                    let multiplicity = entry.multiplicity().get();
+                    let prepared = match decode_encoded_enot_terminal(&entry) {
+                        EncodedEnotTerminal::Decoded { depth, terminal } => {
+                            record_enot_spine_preparation(depth);
+                            (
+                                EvNode::OwnedPar {
+                                    owner: Box::new(terminal),
+                                    extract: true,
+                                },
+                                Some(depth),
+                            )
+                        }
+                        EncodedEnotTerminal::Invalid => {
+                            panic!("Par invariant: ENot terminal is canonical")
+                        }
+                        EncodedEnotTerminal::NotEnot => (
+                            EvNode::OwnedExpr(Box::new(
+                                entry
+                                    .decode()
+                                    .expect("Par invariant: expression endpoint is canonical"),
+                            )),
+                            None,
+                        ),
+                    };
+                    expressions.push((prepared.0, multiplicity, prepared.1));
+                });
                 if extract {
                     work.push(Step::Combine(EvKont::Extract));
                 }
@@ -793,15 +904,17 @@ impl<'e> Traversal for EvalTraversal<'e> {
                     par,
                     n: expressions.len(),
                 }));
-                for (expr, multiplicity) in expressions.into_iter().rev() {
+                for (expr, multiplicity, enot_depth) in expressions.into_iter().rev() {
                     if multiplicity != 1 {
                         work.push(Step::Combine(EvKont::Scale(multiplicity)));
+                    }
+                    if let Some(depth) = enot_depth {
+                        work.push(Step::Combine(EvKont::NotSpine(depth)));
                     }
                     work.push(Step::Descend(expr));
                 }
                 Ok(())
             }
-            EvNode::Expr(expr) => descend_ev_expr(expr, self.env, self.matcher, work, vals),
             EvNode::OwnedExpr(expr) => {
                 let stable = expr.as_ref() as *const Expr;
                 let work_floor = work.len();
@@ -824,6 +937,16 @@ impl<'e> Traversal for EvalTraversal<'e> {
                     debug_assert_eq!(vals.len(), value_floor);
                     work.insert(work_floor, Step::Combine(EvKont::KeepOwnedExpr(expr)));
                 }
+                Ok(())
+            }
+            EvNode::OwnedPar { owner, extract } => {
+                let stable = owner.as_ref() as *const Par;
+                let stable: &'t Par = unsafe { &*stable };
+                work.push(Step::Combine(EvKont::KeepOwnedPar(owner)));
+                work.push(Step::Descend(EvNode::Eval {
+                    par: stable,
+                    extract,
+                }));
                 Ok(())
             }
         }
@@ -851,8 +974,8 @@ impl<'e> Traversal for EvalTraversal<'e> {
     fn arity(kont: &EvKont<'_>) -> usize {
         match kont {
             EvKont::ParK { n, .. } => *n,
-            EvKont::Scale(_) | EvKont::KeepOwnedExpr(_) => 1,
-            EvKont::Not | EvKont::Neg => 1,
+            EvKont::Scale(_) | EvKont::KeepOwnedExpr(_) | EvKont::KeepOwnedPar(_) => 1,
+            EvKont::Not | EvKont::NotSpine(_) | EvKont::Neg => 1,
             EvKont::BoolK { .. } => 2,
             EvKont::EqK { .. } => 2,
             EvKont::CmpK { .. } => 2,
@@ -899,6 +1022,17 @@ fn push_binary<'t, 'e>(
 fn combine_not(v: ExprInstance) -> Result<Par, EvalError> {
     match v {
         ExprInstance::GBool(b) => Ok(par_with_bool(!b)),
+        other => Err(operator_mismatch_unary("!", &other)),
+    }
+}
+
+fn combine_not_spine(depth: usize, v: ExprInstance) -> Result<Par, EvalError> {
+    match v {
+        ExprInstance::GBool(value) => Ok(par_with_bool(if depth.is_multiple_of(2) {
+            value
+        } else {
+            !value
+        })),
         other => Err(operator_mismatch_unary("!", &other)),
     }
 }
@@ -1254,7 +1388,12 @@ fn run_ev_combine(
                 .map_err(EvalError::from)
         }
         EvKont::KeepOwnedExpr(_owner) => Ok(pop(vals)),
+        EvKont::KeepOwnedPar(_owner) => Ok(pop(vals)),
         EvKont::Not => combine_not(pop(vals).into_inst()).map(EvVal::Par),
+        EvKont::NotSpine(depth) => {
+            record_enot_spine_combine();
+            combine_not_spine(depth, pop(vals).into_inst()).map(EvVal::Par)
+        }
         EvKont::Neg => combine_neg(pop(vals).into_inst()).map(EvVal::Par),
         EvKont::BoolK { op, f } => {
             let v2 = pop(vals).into_inst();
@@ -1336,7 +1475,7 @@ mod differential_eval_with {
     //! vacuity mode the gate subjects and the `eval_par_split` trace were
     //! hardened against.
 
-    use models::rhoapi::{EDiv, EMod};
+    use models::rhoapi::{EDiv, EMethod, EMod, Send};
 
     use super::*;
 
@@ -1567,6 +1706,16 @@ mod differential_eval_with {
         p
     }
 
+    fn method(name: &str) -> Par {
+        wrap(ExprInstance::EMethodBody(EMethod {
+            method_name: name.to_owned(),
+            target: Some(Par::default()),
+            arguments: Vec::new(),
+            locally_free: Vec::new(),
+            connective_used: false,
+        }))
+    }
+
     /// `(((leaf - arg) - arg) - arg)` — the chain hangs off `p1`.
     ///
     /// ★ The LEFT spine is the one that matters for the interleaving the
@@ -1714,6 +1863,78 @@ mod differential_eval_with {
         for (i, term) in corpus().iter().enumerate() {
             agree_on(i, term, &NoSpatialMatch, "NoSpatialMatch");
         }
+    }
+
+    #[test]
+    fn compressed_enot_spines_match_the_recursive_oracle_at_semantic_edges() {
+        let terminals = [
+            gbool(true),
+            gbool(false),
+            gint(7),
+            Par::default(),
+            models::par_from_default! {
+                exprs: vec![
+                    Expr { expr_instance: Some(ExprInstance::GInt(1)) },
+                    Expr { expr_instance: Some(ExprInstance::GInt(2)) },
+                ],
+                ..Par::default()
+            },
+            method("unsupported"),
+            eplus(gint(1), gbool(true)),
+        ];
+        let mut index = 0usize;
+        for depth in [1, 2, 3, 32] {
+            for terminal in &terminals {
+                agree_on(
+                    index,
+                    &deep_nots(depth, terminal.clone()),
+                    &NoSpatialMatch,
+                    "compressed ENot edge",
+                );
+                index += 1;
+            }
+        }
+
+        let single = deep_nots(4, gbool(true));
+        let expr = single.first::<Expr>().unwrap().unwrap().0;
+        let mut duplicate = Par::default().with_exprs(vec![expr.clone(), expr]);
+        duplicate.replace_sends(vec![Send::default()]);
+        agree_on(
+            index,
+            &duplicate,
+            &NoSpatialMatch,
+            "compressed ENot multiplicity",
+        );
+        index += 1;
+        agree_on(
+            index,
+            &enot(duplicate),
+            &NoSpatialMatch,
+            "compressed ENot extraction",
+        );
+    }
+
+    #[test]
+    fn not_spine_continuation_preserves_type_checks_and_parity() {
+        assert_eq!(
+            <EvalTraversal<'_> as Traversal>::arity(&EvKont::NotSpine(2)),
+            1
+        );
+        assert_eq!(
+            combine_not_spine(2, ExprInstance::GBool(true)).unwrap(),
+            gbool(true)
+        );
+        assert_eq!(
+            combine_not_spine(3, ExprInstance::GBool(true)).unwrap(),
+            gbool(false)
+        );
+        assert_eq!(
+            format!(
+                "{:?}",
+                combine_not_spine(2, ExprInstance::GInt(7)).unwrap_err()
+            ),
+            format!("{:?}", combine_not(ExprInstance::GInt(7)).unwrap_err())
+        );
     }
 
     /// ★ The same corpus with an **available** oracle, which is the only
@@ -1873,8 +2094,8 @@ mod depth_gate {
     //!
     //! ## Why it is a child process and not an assertion
     //!
-    //! A stack overflow is a `SIGSEGV`, not a catchable error: there is no
-    //! `Result` to inspect and `catch_unwind` does not see it. And this
+    //! A native stack overflow terminates the process rather than producing a
+    //! catchable `Result`; `catch_unwind` does not see it. And this
     //! workspace forbids a test that *expects a panic* outright, because a
     //! panic that fails to unwind aborts printing nothing. So the subject runs
     //! in a **child process**, on a thread with an **explicit `stack_size`**,
@@ -1893,9 +2114,12 @@ mod depth_gate {
     //! that failed for a reason unrelated to depth (a missing binary, a bad
     //! argument, a panic in the term builder) fails the gate immediately and
     //! cannot be mistaken for the property. Only then does the gate require the
-    //! recursive arm to fail at [`DEEP`] and the driver to survive it. That
-    //! middle assertion is RED on purpose, permanently: a driver that silently
-    //! reverted to recursion would make it green and the gate would fail.
+    //! recursive arm to report the Rust runtime's stack-overflow signature at
+    //! [`RECURSIVE_DEEP`] and the driver to survive it. A timeout, OOM kill or
+    //! unrelated panic is a distinct failing outcome, never evidence for the
+    //! property. That middle assertion is RED on purpose, permanently: a
+    //! driver that silently reverted to recursion would make it green and the
+    //! gate would fail.
     //!
     //! ## ★★ The production composition is exercised directly
     //!
@@ -1911,9 +2135,11 @@ mod depth_gate {
     //! | claim | rung | verdict |
     //! |---|---|---|
     //! | `eval_with` plus ordinary `Par::drop` is O(1) in nesting depth | `driver` @ [`DEEP_DROP`] | survives 1 MiB |
-    //! | the recursive twin's is not | `recursive` @ [`DEEP`] | aborts 1 MiB |
+    //! | the recursive twin's is not | `recursive` @ [`RECURSIVE_DEEP`] | reports native stack overflow on 1 MiB |
 
+    use std::io::Read;
     use std::process::{Command, Stdio};
+    use std::time::{Duration, Instant};
 
     use super::*;
 
@@ -1928,20 +2154,28 @@ mod depth_gate {
     const CHILD: &str = "eval::depth_gate::gate_child";
 
     /// 1 MiB. Large enough for the harness, the term builder and the driver's
-    /// own frame; far too small for `DEEP` levels of recursion in EITHER
-    /// profile (the oracle measures 21,584 B/level debug and 3,359 release, so
-    /// `DEEP` needs ~84 MiB / ~13 MiB).
+    /// own frame; smaller than the recursive slope-only demand at the
+    /// profile-specific [`RECURSIVE_DEEP`] rung.
     const GATE_STACK: usize = 1024 * 1024;
 
     /// The rung at which both arms must work — the gate's own control.
     const SHALLOW: usize = 4;
 
-    /// The rung at which the recursive arm must fail and the driver must not.
+    /// The rung at which the recursive arm must overflow and the driver must
+    /// survive, derived from the measured profile-specific native-stack slope.
     ///
-    /// Chosen so the recursive requirement holds with more than an order of
-    /// magnitude to spare in the CHEAPER (release) profile, which is the
-    /// binding one: 4,096 x 3,359 B is ~13.1 MiB against a 1 MiB stack.
-    const DEEP: usize = 4_096;
+    /// Debug measured 21,584 B/level, so 96 levels demand 2,072,064 B before
+    /// the positive harness intercept. Release measured 3,359 B/level, so 512
+    /// levels demand 1,719,808 B. Both exceed the explicit 1 MiB stack while
+    /// avoiding the repeated-suffix PathMap work of the obsolete 4,096 rung.
+    #[cfg(debug_assertions)]
+    const RECURSIVE_DEEP: usize = 96;
+    #[cfg(not(debug_assertions))]
+    const RECURSIVE_DEEP: usize = 512;
+
+    /// A harness safety ceiling, not a performance assertion. Timing out is a
+    /// failing outcome and can therefore never prove stack unsafety.
+    const CHILD_TIMEOUT: Duration = Duration::from_secs(60);
 
     /// The production-composition rung. At 131,072 levels it is far beyond the
     /// recursive oracle's ceiling on this 1 MiB stack and strictly stronger
@@ -1949,25 +2183,29 @@ mod depth_gate {
     const DEEP_DROP: usize = 131_072;
 
     fn nots(depth: usize) -> Par {
-        let mut p = par_with_bool(true);
-        for _ in 0..depth {
-            p = par_with_expr(Expr {
-                expr_instance: Some(ExprInstance::ENotBody(ENot { p: Some(p) })),
-            });
-        }
-        p
+        let terminal = par_with_bool(true);
+        let result = planned_nots(depth, &terminal);
+        assert_planned_nots(&result, depth, &terminal);
+        result
     }
 
     /// Run one arm at one depth, on whatever stack the caller set up.
     fn run_arm(arm: &str, depth: usize) {
         let deep = nots(depth);
         let env: Env<Par> = Env::new();
+        reset_enot_spine_counters();
         let out = match arm {
             "recursive" => eval_with_recursive(&deep, &env, &NoSpatialMatch),
             "driver" => eval_with(&deep, &env, &NoSpatialMatch),
             other => panic!("depth_gate: unknown {GATE_ARM}={other:?}"),
         }
         .expect("depth_gate: the chain evaluates");
+        let counters = enot_spine_counters();
+        match arm {
+            "driver" => assert_eq!(counters, (1, 1, 1, depth)),
+            "recursive" => assert_eq!(counters, (0, 0, 0, 0)),
+            _ => unreachable!("the arm was validated above"),
+        }
         assert_eq!(
             single_expr_instance(&out).expect("depth_gate: a single value"),
             // An even number of negations of `true` is `true`.
@@ -2013,61 +2251,123 @@ mod depth_gate {
             .expect("depth_gate: the subject panicked");
     }
 
-    /// Run one probe point in a child process. `true` iff it survived.
-    fn runs_within(arm: &str, depth: usize, stack: usize) -> bool {
+    #[derive(Debug, PartialEq, Eq)]
+    enum ChildOutcome {
+        Success,
+        StackOverflow,
+        TimedOut,
+        Failed { status: String, stderr: String },
+    }
+
+    /// Run one probe point in a child process and classify its exact outcome.
+    /// In particular, an arbitrary non-zero exit is never accepted as proof
+    /// that the recursive arm exhausted its native stack.
+    fn child_outcome(arm: &str, depth: usize, stack: usize) -> ChildOutcome {
         let exe = std::env::current_exe().expect("depth_gate: current_exe");
-        Command::new(exe)
+        let mut child = Command::new(exe)
             .args(["--ignored", "--exact", CHILD])
             .env(GATE_ARM, arm)
             .env(GATE_DEPTH, depth.to_string())
             .env(GATE_STACK_VAR, stack.to_string())
+            .env("RUST_BACKTRACE", "0")
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .expect("depth_gate: failed to run the child")
-            .success()
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("depth_gate: failed to run the child");
+        let deadline = Instant::now() + CHILD_TIMEOUT;
+
+        loop {
+            if let Some(status) = child
+                .try_wait()
+                .expect("depth_gate: failed to poll the child")
+            {
+                let mut bytes = Vec::new();
+                child
+                    .stderr
+                    .take()
+                    .expect("depth_gate: piped child stderr disappeared")
+                    .read_to_end(&mut bytes)
+                    .expect("depth_gate: failed to read child stderr");
+                let stderr = String::from_utf8_lossy(&bytes).into_owned();
+                if status.success() {
+                    return ChildOutcome::Success;
+                }
+                if stderr.contains("has overflowed its stack")
+                    && stderr.contains("fatal runtime error: stack overflow")
+                {
+                    return ChildOutcome::StackOverflow;
+                }
+                return ChildOutcome::Failed {
+                    status: status.to_string(),
+                    stderr,
+                };
+            }
+
+            if Instant::now() >= deadline {
+                child
+                    .kill()
+                    .expect("depth_gate: failed to kill timed-out child");
+                child
+                    .wait()
+                    .expect("depth_gate: failed to reap timed-out child");
+                return ChildOutcome::TimedOut;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
     }
 
     #[test]
     fn the_driver_survives_a_depth_that_overflows_the_recursive_oracle() {
         // ---- the control: at a shallow depth, the harness works for BOTH ----
-        assert!(
-            runs_within("recursive", SHALLOW, GATE_STACK),
+        assert_eq!(
+            child_outcome("recursive", SHALLOW, GATE_STACK),
+            ChildOutcome::Success,
             "CONTROL FAILED: the recursive arm did not survive {SHALLOW} levels on a \
              {GATE_STACK}-byte stack. Nothing below this line means anything until it \
              does — the child is failing for a reason that is not depth."
         );
-        assert!(
-            runs_within("driver", SHALLOW, GATE_STACK),
+        assert_eq!(
+            child_outcome("driver", SHALLOW, GATE_STACK),
+            ChildOutcome::Success,
             "CONTROL FAILED: the driver arm did not survive {SHALLOW} levels on a \
              {GATE_STACK}-byte stack."
         );
 
         // ---- the RED half: the oracle must NOT survive ----
-        assert!(
-            !runs_within("recursive", DEEP, GATE_STACK),
-            "THE GUARD HAS GONE VACUOUS: the recursive oracle survived {DEEP} levels on a \
-             {GATE_STACK}-byte stack, so this gate is no longer distinguishing a \
-             heap-bounded machine from a stack-bounded one. Either the per-level cost \
-             collapsed (check `rholang/tests/stack_depth_gate.rs`'s measured constants) or \
-             the child stopped running the arm it was asked for."
+        assert_eq!(
+            child_outcome("recursive", RECURSIVE_DEEP, GATE_STACK),
+            ChildOutcome::StackOverflow,
+            "THE GUARD HAS GONE VACUOUS: the recursive oracle did not report native stack \
+             overflow at {RECURSIVE_DEEP} levels on a {GATE_STACK}-byte stack. A success \
+             means the measured slope changed; a timeout, kill or unrelated panic is a \
+             harness failure, not proof of stack unsafety."
         );
 
         // ---- the property ----
-        assert!(
-            runs_within("driver", DEEP, GATE_STACK),
-            "REGRESSION: `eval_with` did not survive {DEEP} levels on a {GATE_STACK}-byte \
+        assert_eq!(
+            child_outcome("driver", RECURSIVE_DEEP, GATE_STACK),
+            ChildOutcome::Success,
+            "REGRESSION: `eval_with` did not survive {RECURSIVE_DEEP} levels on a {GATE_STACK}-byte \
              stack. Its native stack must be O(1) in nesting depth — the recursion belongs \
              in `drive`'s heap work stack. Something has re-introduced a native \
              re-entry: check `descend_ev_expr`'s `EVarBody` arm (the one deliberate nested \
              drive, bounded by the ENVIRONMENT rather than by the term) and any new arm \
              that calls `eval_with` directly."
         );
-        assert!(
-            runs_within("driver", DEEP_DROP, GATE_STACK),
+        assert_eq!(
+            child_outcome("driver", DEEP_DROP, GATE_STACK),
+            ChildOutcome::Success,
             "REGRESSION: `eval_with` did not survive {DEEP_DROP} levels on a \
              {GATE_STACK}-byte stack. This rung is {DEEP_DROP} deep specifically so the \
              claim is not one a fixture could have manufactured — see the module docs."
         );
+    }
+
+    #[test]
+    fn an_unrelated_child_panic_is_not_stack_overflow_evidence() {
+        assert!(matches!(
+            child_outcome("unknown-arm", SHALLOW, GATE_STACK),
+            ChildOutcome::Failed { .. }
+        ));
     }
 }

@@ -2011,6 +2011,30 @@ fn canonical_unary_etuple(payload: &[u8]) -> Option<(usize, i64)> {
     canonical_unary_ordered_expr(payload, CanonicalUnaryOrderedKind::ETuple)
 }
 
+fn canonical_enot_child(payload: &[u8]) -> Option<&[u8]> {
+    let CanonicalExprParts::Unary { tag: 5, child } = canonical_expr_parts(payload)? else {
+        return None;
+    };
+    Some(child)
+}
+
+fn canonical_unary_enot_parts(payload: &[u8]) -> Option<(usize, &[u8])> {
+    const PAR_EXPR_KEY: u64 = (5 << 3) | 2;
+
+    let mut terminal = canonical_enot_child(payload)?;
+    let mut depth = 1usize;
+    loop {
+        let Some(next_expr) = canonical_single_delimited_field(terminal, PAR_EXPR_KEY) else {
+            return Some((depth, terminal));
+        };
+        let Some(next_child) = canonical_enot_child(next_expr) else {
+            return Some((depth, terminal));
+        };
+        terminal = next_child;
+        depth = depth.checked_add(1)?;
+    }
+}
+
 /// Recognize an exact canonical `ENot(Par(ENot(...)))` spine ending in the
 /// empty `Par`, directly in the protobuf body of its outer `Expr`.
 ///
@@ -2019,21 +2043,8 @@ fn canonical_unary_etuple(payload: &[u8]) -> Option<(usize, i64)> {
 /// the complete outer Expr as one endpoint, and need not construct, hash, and
 /// dismantle every recursively nested suffix merely to reach that state.
 fn canonical_unary_enot(payload: &[u8]) -> Option<usize> {
-    const EXPR_ENOT_KEY: u64 = (5 << 3) | 2;
-    const ENOT_PAR_KEY: u64 = (1 << 3) | 2;
-    const PAR_EXPR_KEY: u64 = (5 << 3) | 2;
-
-    let mut current = payload;
-    let mut depth = 0usize;
-    loop {
-        let enot = canonical_single_delimited_field(current, EXPR_ENOT_KEY)?;
-        let child_par = canonical_single_delimited_field(enot, ENOT_PAR_KEY)?;
-        depth = depth.checked_add(1)?;
-        if child_par.is_empty() {
-            return Some(depth);
-        }
-        current = canonical_single_delimited_field(child_par, PAR_EXPR_KEY)?;
-    }
+    let (depth, terminal) = canonical_unary_enot_parts(payload)?;
+    terminal.is_empty().then_some(depth)
 }
 
 /// Adopt one already-proved canonical unary `EList` expression as the sole
@@ -2712,7 +2723,17 @@ impl EncodedParComponent<'_, Bundle> {
     }
 }
 
-impl EncodedParComponent<'_, Expr> {
+impl<'a> EncodedParComponent<'a, Expr> {
+    /// Return the depth and borrowed terminal `Par` protobuf body of an exact
+    /// non-empty canonical unary `ENot` spine.
+    ///
+    /// Intermediate `Par`s must be metadata-free singleton expressions. The
+    /// terminal itself may have any shape and remains borrowed from the
+    /// authoritative component key.
+    pub fn canonical_unary_enot_parts(&self) -> Option<(usize, &'a [u8])> {
+        canonical_unary_enot_parts(self.payload)
+    }
+
     /// Return the depth of an exact canonical
     /// `ENot(Par(ENot(.. Par::default() ..)))` component.
     ///
@@ -4249,9 +4270,9 @@ mod fast_key_tests {
             .expect("the outer Par contains exactly one Expr")
     }
 
-    fn unary_enot_expr(depth: usize) -> Expr {
+    fn unary_enot_expr_with_terminal(depth: usize, terminal: Par) -> Expr {
         assert_ne!(depth, 0, "a unary ENot spine contains at least one arm");
-        let mut current = Par::default();
+        let mut current = terminal;
         for _ in 0..depth {
             current = Par::default().with_exprs(vec![Expr {
                 expr_instance: Some(ExprInstance::ENotBody(crate::rhoapi::ENot {
@@ -4264,6 +4285,10 @@ mod fast_key_tests {
             .into_iter()
             .next()
             .expect("the outer Par contains exactly one Expr")
+    }
+
+    fn unary_enot_expr(depth: usize) -> Expr {
+        unary_enot_expr_with_terminal(depth, Par::default())
     }
 
     #[test]
@@ -4404,6 +4429,84 @@ mod fast_key_tests {
                 Some(false)
             );
         }
+    }
+
+    #[test]
+    fn byte_native_unary_enot_parts_preserve_arbitrary_terminals() {
+        use crate::rhoapi::EMethod;
+
+        let terminals = [
+            Par::default(),
+            Par::default().with_exprs(vec![Expr {
+                expr_instance: Some(ExprInstance::GBool(true)),
+            }]),
+            Par::default().with_exprs(vec![Expr {
+                expr_instance: Some(ExprInstance::GInt(7)),
+            }]),
+            Par::default().with_exprs(vec![Expr {
+                expr_instance: Some(ExprInstance::EMethodBody(EMethod {
+                    method_name: "nth".to_owned(),
+                    target: Some(Par::default()),
+                    arguments: Vec::new(),
+                    locally_free: Vec::new(),
+                    connective_used: false,
+                })),
+            }]),
+            Par::default().with_exprs(vec![
+                Expr {
+                    expr_instance: Some(ExprInstance::GInt(1)),
+                },
+                Expr {
+                    expr_instance: Some(ExprInstance::GString("two".to_owned())),
+                },
+            ]),
+        ];
+
+        for depth in [1, 2, 32] {
+            for terminal in &terminals {
+                let value = unary_enot_expr_with_terminal(depth, terminal.clone());
+                let terminal_bytes = protobuf_encoder::encode_to_vec(terminal);
+                with_component_key(&value, |key| {
+                    let (tag, _score, payload) = split_key_parts(key).expect("canonical ENot key");
+                    assert_eq!(tag, ParComponentTag::Expr);
+                    let (observed_depth, observed_terminal) =
+                        canonical_unary_enot_parts(payload).expect("exact ENot spine");
+                    assert_eq!(observed_depth, depth);
+                    assert_eq!(observed_terminal, terminal_bytes);
+                    assert_eq!(
+                        canonical_unary_enot(payload),
+                        terminal.is_empty().then_some(depth)
+                    );
+                });
+            }
+        }
+    }
+
+    #[test]
+    fn byte_native_unary_enot_parts_reject_malformed_outer_frames() {
+        for malformed in [
+            vec![0x10, 0x02],
+            vec![0x2a, 0x00],
+            vec![0x28, 0x00],
+            vec![0x2a, 0x02, 0x0a],
+            vec![0xaa, 0x00, 0x00],
+            vec![0x2a, 0x80, 0x00],
+            vec![0x2a, 0x02, 0x0a, 0x00, 0x2a, 0x00],
+        ] {
+            assert!(canonical_unary_enot_parts(&malformed).is_none());
+        }
+    }
+
+    #[test]
+    fn byte_native_unary_enot_parts_stop_before_a_malformed_nested_enot() {
+        let malformed_nested_expr = [0x2a, 0x00];
+        let terminal_par = [0x2a, 0x02, 0x2a, 0x00];
+        let outer = [0x2a, 0x06, 0x0a, 0x04, 0x2a, 0x02, 0x2a, 0x00];
+        let (depth, terminal) = canonical_unary_enot_parts(&outer).expect("valid outer ENot");
+        assert_eq!(depth, 1);
+        assert_eq!(terminal, terminal_par);
+        assert_eq!(&terminal[2..], malformed_nested_expr);
+        assert_eq!(canonical_unary_enot(&outer), None);
     }
 
     #[test]

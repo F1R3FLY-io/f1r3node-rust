@@ -3500,9 +3500,9 @@ mod tests {
                 planned = planned_enot(&mut arena, planned).expect("planned ENot");
             }
 
-            let mut expected = Par::default().with_exprs(vec![Expr {
-                expr_instance: Some(ExprInstance::GInt(7)),
-            }]);
+            let terminal = resident_gint(7);
+            let terminal_bytes = terminal.protobuf_bytes().unwrap();
+            let mut expected = terminal;
             for _ in 0..depth {
                 expected = Par::default().with_exprs(vec![Expr {
                     expr_instance: Some(ExprInstance::ENotBody(ENot { p: Some(expected) })),
@@ -3521,6 +3521,15 @@ mod tests {
                 with_component_key(&actual_expr, <[u8]>::to_vec),
                 with_component_key(&expected_expr, <[u8]>::to_vec)
             );
+            if depth != 0 {
+                actual.visit_encoded::<Expr>(|entry| {
+                    let (observed_depth, observed_terminal) = entry
+                        .canonical_unary_enot_parts()
+                        .expect("planned ENot spine");
+                    assert_eq!(observed_depth, depth);
+                    assert_eq!(observed_terminal, terminal_bytes);
+                });
+            }
         }
     }
 

@@ -8211,14 +8211,67 @@ changed.
 |---|---:|---:|---|
 | `par_read_stack_safety_registry` | about **1,974 s** before interruption | **4/4 in 0.694 s**; depth-4,096 generated-reader leg **0.010 s** | repeated resident construction and suffix decoding removed |
 | `event_hash_leg_depth_probe` | about **1,215 s** at depth 65,536 | **3/3 in 0.213 s** across all six legs | one exact unary-list root feeds the unchanged event-hash encoders |
+| `rho-pure-eval` decidability at 128,000 unary `ENot`s | more than **24 min** before interruption | **1/1 in 1.35 s**, **260,884 KiB** peak RSS | one byte cursor peels the complete exact spine and decodes only its arbitrary terminal |
+| node `RhoExpr` conversion at 16,384 alternating `ENeg` / `EMap` levels | more than **2 min** before interruption | **1/1 in 0.26 s**, **56,748 KiB** peak RSS | recursive families remain borrowed ranges inside one authoritative Expr endpoint; scalar leaves use one-way resident fallback |
+| `rho-pure-eval` stack-safety composition gate | more than **318 s** in the obsolete depth-4,096 recursive control before interruption | **1/1 in 1.90 s** debug; **1/1 in 5.66 s** release | the real recursive oracle remains unchanged, but measured-slope rungs and typed child outcomes make the red control fast and non-vacuous |
 
 Both successor runs used the release profile, `MemorySwapMax=0`, and hard RSS caps on 2026-08-20.
 The elapsed values are **diagnostic**, not paired benchmark populations: they establish removal of
 the multi-minute/hour fixture mechanism but do not support a population effect size. Controlled
 construction work, allocation, hardware-counter, and RSS ladders remain required; AMD uProf, the
 counting allocator, heaptrack/Massif, and process/cgroup high-water measurements are selected for
-that protocol. Other final-root-only deep fixtures remain under the same reviewed migration, so
-this paragraph does not claim complete release-workspace closure. **MEASURED (f).**
+that protocol.
+
+**AMD uProf diagnosis and the repaired mechanisms.** AMD uProf 5.3.521.0 sampled both interrupted
+debug subjects for 10 seconds on the 32-core AMD Family 0x19 Model 0x8 host. In the decidability
+subject, `decode_order_key` consumed **0.81 s** of sampled CPU, PathMap `asv_mask` **0.58 s**, the read
+zipper's `to_next_get_val` **0.31 s**, and `encode_order_key` **0.21 s**. In the node conversion,
+PathMap `asv_mask` consumed **1.37 s**, `to_next_get_val` **0.75 s**, and slim-node unpacking **0.52
+s**. The profiles identify repeated construction and traversal of recursively shorter resident
+PathMap suffixes; they do not identify native-stack recursion.
+
+The classifier now recognizes an exact nonempty `ENot` spine inside the stored canonical Expr key,
+returns its depth plus a borrowed terminal-Par protobuf range, and decodes that terminal exactly
+once. This is justified by the structural equation
+
+```math
+U(\operatorname{Not}^{d}(t), s) = U(t, s), \qquad d > 0,
+```
+
+where $`U`$ is the undecidable-node classifier and $`s`$ is spatial-oracle availability. Bounded
+differentials compare the byte route with the complete decoded walk over arbitrary, multi-Expr,
+unsupported-method, inert-collection, and spatial-match terminals in both spatial modes. The guard
+evaluator reuses the cursor but retains evaluation semantics: it evaluates the decoded terminal
+once and applies a `NotSpine(d)` continuation. That continuation still requires a Boolean result at
+even depth, so `!!7` remains a type error rather than being incorrectly simplified away. The seven
+evaluator differential tests compare exact values and exact errors with the retained recursive
+oracle.
+
+The node boundary uses a separate borrowed-byte PDA. Root Expr endpoints are visited directly from
+the ParBag PathMap; proven unary, binary, sequence, map, method, and match children remain borrowed
+protobuf ranges inside the same endpoint. Scalar or unproved shapes decode once into the complete
+resident PDA, whose transition graph cannot re-enter the byte route. At depth 16,384, test-scoped
+counters record **1** root endpoint, **16,384** recursive cursor frames, **24,576** child-Par frames,
+**24,577** Expr frames, **8,193** bounded scalar-leaf fallbacks, and **0** resident-Par fallbacks. The
+complete ten-test module covers all 36 Expr variants, compressed multiplicity, incomplete recursive
+messages, all three EPathMap modes, Par-family boundaries, exact JSON shapes, and stack-safe Clone,
+Debug, serialization, and Drop.
+
+The evaluator's destructive red control formerly accepted every nonzero child exit as a recursive
+failure. It now accepts only the Rust runtime's two-part native-stack-overflow signature. Timeout,
+OOM kill, unknown-arm panic, or another failure is typed separately and fails the gate. The actual
+recursive oracle remains verbatim. Its measured slopes select depth **96** in debug
+($`96 \times 21{,}584 = 2{,}072{,}064`$ B) and **512** in release
+($`512 \times 3{,}359 = 1{,}719{,}808`$ B), both above the explicit 1 MiB stack; the production PDA
+must additionally survive depth **131,072** on that same stack. A permanent anti-vacuity test proves
+that an unrelated child panic is classified as failure, not stack overflow.
+
+The direct-binary RSS figures above used `/usr/bin/time -v`, `MemorySwapMax=0`, and a 2 GiB hard cap;
+the debug/release Cargo gates used 12 GiB caps and zero swap. They are single diagnostic executions,
+not benchmark populations. The original uProf reports remain the mechanistic profiles. Controlled
+allocation and hardware-counter ladders remain required before claiming population speedup or a
+general effect size. Other final-root-only deep fixtures remain under the same reviewed migration,
+so this paragraph does not claim complete release-workspace closure. **MEASURED (f).**
 
 ---
 

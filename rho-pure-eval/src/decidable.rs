@@ -73,8 +73,9 @@ use models::rhoapi::{
     EAnd, EEq, EGt, EGte, ELt, ELte, EMatches, EMinus, EMult, ENeg, ENeq, ENot, EOr, EPlus, Expr,
     Par,
 };
-use models::rust::par_bag::ParComponentItem;
+use models::rust::par_bag::{EncodedParComponent, ParComponentItem};
 use models::rust::par_construction::{ParConstruction, PlannedExprShape, PlannedPar};
+use models::rust::rholang::protobuf_decoder;
 
 /// Whether the caller can supply a [`SpatialMatch`][crate::SpatialMatch]
 /// oracle, which is what decides `EMatchesBody`.
@@ -238,11 +239,25 @@ fn detail_of(instance: &ExprInstance) -> Option<String> {
 /// contiguous slots only while they remain on that frontier; there is no
 /// per-endpoint box and no depth-sized retained arena.
 pub fn undecidable_nodes(guard: &Par, spatial: SpatialSupport) -> Vec<UndecidableNode> {
+    undecidable_nodes_with_enot_spine(guard, spatial, true)
+}
+
+fn undecidable_nodes_with_enot_spine(
+    guard: &Par,
+    spatial: SpatialSupport,
+    peel_enot_spine: bool,
+) -> Vec<UndecidableNode> {
     let mut work = Vec::with_capacity(guard.family_distinct_len::<Expr>().max(1));
     let mut owned_pars = OwnedSlots::<Par>::default();
     let mut owned_exprs = OwnedSlots::<Expr>::default();
     work.push(GuardWork::BorrowedPar(guard));
-    drive_guard_work(spatial, &mut work, &mut owned_pars, &mut owned_exprs)
+    drive_guard_work(
+        spatial,
+        peel_enot_spine,
+        &mut work,
+        &mut owned_pars,
+        &mut owned_exprs,
+    )
 }
 
 /// Planned-arena equivalent of [`undecidable_nodes`].
@@ -315,6 +330,7 @@ pub fn undecidable_planned_nodes(
 
 fn drive_guard_work<'g>(
     spatial: SpatialSupport,
+    peel_enot_spine: bool,
     work: &mut Vec<GuardWork<'g>>,
     owned_pars: &mut OwnedSlots<Par>,
     owned_exprs: &mut OwnedSlots<Expr>,
@@ -323,6 +339,12 @@ fn drive_guard_work<'g>(
     while let Some(node) = work.pop() {
         match node {
             GuardWork::BorrowedPar(par) => {
+                if peel_enot_spine {
+                    if let Some((_depth, terminal)) = decode_unary_enot_expr_family(par) {
+                        work.push(GuardWork::OwnedPar(owned_pars.insert(terminal)));
+                        continue;
+                    }
+                }
                 let mut family = Vec::with_capacity(par.family_distinct_len::<Expr>());
                 par.try_visit_components::<Expr, std::convert::Infallible>(
                     |expr, _multiplicity| {
@@ -342,6 +364,12 @@ fn drive_guard_work<'g>(
             }
             GuardWork::OwnedPar(index) => {
                 let par = owned_pars.take(index);
+                if peel_enot_spine {
+                    if let Some((_depth, terminal)) = decode_unary_enot_expr_family(&par) {
+                        work.push(GuardWork::OwnedPar(owned_pars.insert(terminal)));
+                        continue;
+                    }
+                }
                 let mut family = Vec::with_capacity(par.family_distinct_len::<Expr>());
                 par.try_into_components::<Expr, std::convert::Infallible>(|expr, _multiplicity| {
                     family.push(GuardWork::OwnedExpr(owned_exprs.insert(expr)));
@@ -366,6 +394,39 @@ fn drive_guard_work<'g>(
     }
 
     found
+}
+
+fn decode_unary_enot_expr_family(par: &Par) -> Option<(usize, Par)> {
+    if par.family_distinct_len::<Expr>() != 1 {
+        return None;
+    }
+    let mut result = None;
+    par.visit_encoded::<Expr>(|entry| {
+        if let EncodedEnotTerminal::Decoded { depth, terminal } =
+            decode_encoded_enot_terminal(&entry)
+        {
+            result = Some((depth, terminal));
+        }
+    });
+    result
+}
+
+pub(crate) enum EncodedEnotTerminal {
+    NotEnot,
+    Decoded { depth: usize, terminal: Par },
+    Invalid,
+}
+
+pub(crate) fn decode_encoded_enot_terminal(
+    entry: &EncodedParComponent<'_, Expr>,
+) -> EncodedEnotTerminal {
+    let Some((depth, terminal)) = entry.canonical_unary_enot_parts() else {
+        return EncodedEnotTerminal::NotEnot;
+    };
+    match protobuf_decoder::decode_par(terminal) {
+        Ok(terminal) => EncodedEnotTerminal::Decoded { depth, terminal },
+        Err(_) => EncodedEnotTerminal::Invalid,
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -634,7 +695,7 @@ fn push_owned_operands<'g>(
 
 #[cfg(test)]
 mod owned_endpoint_tests {
-    use models::rhoapi::{EEq, EMethod};
+    use models::rhoapi::{EEq, EList, EMatches, EMethod, ENot, Send};
 
     use super::*;
 
@@ -668,6 +729,7 @@ mod owned_endpoint_tests {
 
         let found = drive_guard_work(
             SpatialSupport::Available,
+            true,
             &mut work,
             &mut owned_pars,
             &mut owned_exprs,
@@ -686,5 +748,95 @@ mod owned_endpoint_tests {
         assert!(work.is_empty());
         assert_eq!(owned_pars.free.len(), owned_pars.values.len());
         assert_eq!(owned_exprs.free.len(), owned_exprs.values.len());
+    }
+
+    fn nots(depth: usize, terminal: Par) -> Par {
+        let mut current = terminal;
+        for _ in 0..depth {
+            current = Par::default().with_exprs(vec![Expr {
+                expr_instance: Some(ExprInstance::ENotBody(ENot { p: Some(current) })),
+            }]);
+        }
+        current
+    }
+
+    fn decoded_only(guard: &Par, spatial: SpatialSupport) -> Vec<UndecidableNode> {
+        undecidable_nodes_with_enot_spine(guard, spatial, false)
+    }
+
+    #[test]
+    fn encoded_enot_spine_matches_the_complete_decoded_walk() {
+        let terminals = [
+            Par::default(),
+            Par::default().with_exprs(vec![Expr {
+                expr_instance: Some(ExprInstance::GBool(true)),
+            }]),
+            method("terminal"),
+            Par::default().with_exprs(vec![Expr {
+                expr_instance: Some(ExprInstance::EAndBody(models::rhoapi::EAnd {
+                    p1: Some(method("left")),
+                    p2: Some(method("right")),
+                })),
+            }]),
+            Par::default().with_exprs(vec![Expr {
+                expr_instance: Some(ExprInstance::EListBody(EList {
+                    ps: vec![method("inert")],
+                    ..EList::default()
+                })),
+            }]),
+            Par::default().with_exprs(vec![Expr {
+                expr_instance: Some(ExprInstance::EMatchesBody(EMatches {
+                    target: Some(method("target")),
+                    pattern: Some(Par::default()),
+                })),
+            }]),
+        ];
+
+        for depth in [1, 2, 31, 32] {
+            for terminal in &terminals {
+                let guard = nots(depth, terminal.clone());
+                let (observed_depth, observed_terminal) =
+                    decode_unary_enot_expr_family(&guard).expect("exact ENot family");
+                assert_eq!(observed_depth, depth);
+                assert_eq!(observed_terminal, *terminal);
+                for spatial in [SpatialSupport::Available, SpatialSupport::Absent] {
+                    assert_eq!(
+                        undecidable_nodes(&guard, spatial),
+                        decoded_only(&guard, spatial),
+                        "depth {depth}, spatial {spatial:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn encoded_enot_spine_preserves_multiplicity_and_inert_root_content() {
+        let single = nots(4, method("terminal"));
+        let expr = single.first::<Expr>().unwrap().unwrap().0;
+        let mut guard = Par::default().with_exprs(vec![expr.clone(), expr]);
+        guard.replace_sends(vec![Send::default()]);
+        guard.replace_locally_free(vec![0x81]);
+        guard.replace_connective_used(true);
+
+        let (depth, terminal) = decode_unary_enot_expr_family(&guard).expect("one distinct ENot");
+        assert_eq!(depth, 4);
+        assert_eq!(terminal, method("terminal"));
+        assert_eq!(
+            undecidable_nodes(&guard, SpatialSupport::Available),
+            decoded_only(&guard, SpatialSupport::Available)
+        );
+    }
+
+    #[test]
+    fn multiple_distinct_expr_endpoints_use_the_complete_walk() {
+        let left = nots(2, method("left")).first::<Expr>().unwrap().unwrap().0;
+        let right = nots(3, method("right")).first::<Expr>().unwrap().unwrap().0;
+        let guard = Par::default().with_exprs(vec![left, right]);
+        assert!(decode_unary_enot_expr_family(&guard).is_none());
+        assert_eq!(
+            undecidable_nodes(&guard, SpatialSupport::Available),
+            decoded_only(&guard, SpatialSupport::Available)
+        );
     }
 }

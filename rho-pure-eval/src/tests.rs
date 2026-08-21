@@ -7,7 +7,7 @@ use models::rhoapi::{
 
 use crate::env::Env;
 use crate::error::EvalError;
-use crate::eval::eval;
+use crate::eval::{assert_planned_nots, eval, planned_nots};
 
 fn par_of(instance: ExprInstance) -> Par {
     models::par_from_default! {
@@ -1343,10 +1343,9 @@ fn the_gate_is_stack_safe_on_a_deeply_nested_guard() {
     // ordinary scoped value is reclaimed at the same 128,000-level rung; no
     // fixture leak or enlarged native stack masks either half of the claim.
     const DEPTH: usize = 128_000;
-    let mut guard = method("nth", evar(0));
-    for _ in 0..DEPTH {
-        guard = par_of(ExprInstance::ENotBody(ENot { p: Some(guard) }));
-    }
+    let terminal = method("nth", evar(0));
+    let guard = planned_nots(DEPTH, &terminal);
+    assert_planned_nots(&guard, DEPTH, &terminal);
     assert_eq!(
         undecidable_nodes(&guard, SpatialSupport::Available)
             .iter()

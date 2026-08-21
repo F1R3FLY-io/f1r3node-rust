@@ -1,9 +1,12 @@
 //! Differential and depth gates for the production RhoExpr PDA.
 
+use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::{EMap, ENeg, EPathMap, Expr, KeyValuePair, Par};
+use models::rust::par_construction::ParConstruction;
 
 use super::{
     rho_expr_conversion_oracle as oracle, rho_expr_pda, RhoExpr, RhoPathMap, RhoPathMapBinding,
@@ -47,6 +50,86 @@ fn conversion_pda_matches_recursive_oracle_for_every_expr_variant() {
             (None, None) => {}
             _ => panic!("recursive/PDA optionality mismatch for {name}"),
         }
+    }
+}
+
+#[test]
+fn encoded_root_conversion_matches_the_resident_pda_for_every_expr_variant() {
+    let corpus = par_corpus::every_expr_instance();
+    assert_eq!(corpus.len(), 36, "corpus must cover every ExprInstance arm");
+
+    for (name, instance) in corpus {
+        let input = par_of(instance);
+        let expected = rho_expr_pda::from_par_resident(input.clone());
+        let actual = rho_expr_pda::from_par(input);
+        assert_eq!(
+            actual
+                .as_ref()
+                .map(|value| serde_json::to_value(value).expect("encoded result serializes")),
+            expected
+                .as_ref()
+                .map(|value| serde_json::to_value(value).expect("resident result serializes")),
+            "encoded/resident mismatch for {name}",
+        );
+    }
+}
+
+#[test]
+fn encoded_root_expands_one_compressed_endpoint_without_redecoding_it() {
+    let expr = Expr {
+        expr_instance: Some(ExprInstance::GInt(7)),
+    };
+    let input = Par::default().with_exprs(vec![expr.clone(), expr]);
+    rho_expr_pda::reset_encoded_drive_counters();
+    let actual = rho_expr_pda::from_par(input).expect("duplicate scalar converts");
+    assert_eq!(
+        json(&actual),
+        json(&RhoExpr::ExprPar {
+            data: vec![int(7), int(7)],
+        })
+    );
+    let counters = rho_expr_pda::encoded_drive_counters();
+    assert_eq!(counters.root_endpoints, 1);
+    assert_eq!(counters.expr_frames, 1);
+    assert_eq!(counters.expr_fallbacks, 1);
+    assert_eq!(counters.recursive_cursor_hits, 0);
+}
+
+#[test]
+fn incomplete_recursive_messages_fall_back_to_the_complete_resident_pda() {
+    let fixtures = [
+        ExprInstance::ENegBody(ENeg { p: None }),
+        ExprInstance::EMapBody(EMap {
+            kvs: vec![KeyValuePair {
+                key: Some(par_of(ExprInstance::GString("key".to_owned()))),
+                value: None,
+            }],
+            ..Default::default()
+        }),
+        ExprInstance::EMethodBody(models::rhoapi::EMethod {
+            method_name: "method".to_owned(),
+            target: None,
+            arguments: vec![par_of(ExprInstance::GInt(1))],
+            locally_free: Vec::new(),
+            connective_used: false,
+        }),
+    ];
+
+    for (index, instance) in fixtures.into_iter().enumerate() {
+        let input = par_of(instance);
+        rho_expr_pda::reset_encoded_drive_counters();
+        let expected = rho_expr_pda::from_par_resident(input.clone());
+        let actual = rho_expr_pda::from_par(input);
+        assert_eq!(
+            actual.as_ref().map(json),
+            expected.as_ref().map(json),
+            "fallback mismatch at fixture {index}",
+        );
+        assert_eq!(
+            rho_expr_pda::encoded_drive_counters().expr_fallbacks,
+            1,
+            "fixture {index} must exercise the one-way Expr fallback"
+        );
     }
 }
 
@@ -341,6 +424,107 @@ fn legacy_map_clone_preserves_json_iteration_order() {
     assert_eq!(json(&expr.clone()), json(&expr));
 }
 
+fn legacy_alternating_expr(depth: usize) -> Par {
+    let mut input = par_of(ExprInstance::GInt(7));
+    for level in 0..depth {
+        input = if level % 2 == 0 {
+            par_of(ExprInstance::ENegBody(ENeg { p: Some(input) }))
+        } else {
+            par_of(ExprInstance::EMapBody(EMap {
+                kvs: vec![KeyValuePair {
+                    key: Some(par_of(ExprInstance::GString("key".to_owned()))),
+                    value: Some(input),
+                }],
+                ..Default::default()
+            }))
+        };
+    }
+    input
+}
+
+fn planned_alternating_expr(depth: usize) -> Par {
+    let mut arena = ParConstruction::new();
+    let terminal = par_of(ExprInstance::GInt(7));
+    let key = par_of(ExprInstance::GString("key".to_owned()));
+    let mut current = arena.import_par(&terminal).expect("import terminal");
+    let key = arena.import_par(&key).expect("import map key");
+    let neg_shell = Expr {
+        expr_instance: Some(ExprInstance::ENegBody(ENeg {
+            p: Some(Par::default()),
+        })),
+    };
+    let map_shell = Expr {
+        expr_instance: Some(ExprInstance::EMapBody(EMap {
+            kvs: vec![KeyValuePair::default()],
+            ..Default::default()
+        })),
+    };
+
+    for level in 0..depth {
+        let component = if level % 2 == 0 {
+            arena
+                .expr_component(&neg_shell, &[current], false)
+                .expect("plan ENeg")
+        } else {
+            arena
+                .expr_component(&map_shell, &[key, current], false)
+                .expect("plan EMap")
+        };
+        current = arena
+            .singleton_component(component, Vec::new(), false)
+            .expect("plan singleton Expr");
+    }
+
+    arena
+        .finish(current)
+        .expect("finish alternating expression")
+}
+
+fn par_hash(par: &Par) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    par.hash(&mut hasher);
+    hasher.finish()
+}
+
+fn assert_alternating_shape(value: &RhoExpr, depth: usize) {
+    let mut current = value;
+    for level in (0..depth).rev() {
+        current = if level % 2 == 0 {
+            let RhoExpr::ExprNeg { data } = current else {
+                panic!("expected ENeg at level {level}")
+            };
+            data
+        } else {
+            let RhoExpr::ExprMap { data } = current else {
+                panic!("expected EMap at level {level}")
+            };
+            assert_eq!(data.len(), 1, "EMap at level {level} must be singleton");
+            data.get("key").expect("EMap retains the canonical key")
+        };
+    }
+    assert!(matches!(current, RhoExpr::ExprInt { data: 7 }));
+}
+
+#[test]
+fn planned_alternating_expr_matches_the_resident_builder() {
+    for depth in [0, 1, 2, 15, 32] {
+        let expected = legacy_alternating_expr(depth);
+        let actual = planned_alternating_expr(depth);
+        assert_eq!(actual, expected, "Par mismatch at depth {depth}");
+        assert_eq!(actual.cmp(&expected), std::cmp::Ordering::Equal);
+        assert_eq!(
+            actual.protobuf_bytes().expect("planned protobuf bytes"),
+            expected.protobuf_bytes().expect("resident protobuf bytes")
+        );
+        assert_eq!(actual.compact_snapshot(), expected.compact_snapshot());
+        assert_eq!(par_hash(&actual), par_hash(&expected));
+        let actual = rho_expr_pda::from_par(actual).expect("planned expression converts");
+        let expected = rho_expr_pda::from_par(expected).expect("resident expression converts");
+        assert_eq!(json(&actual), json(&expected));
+        assert_alternating_shape(&actual, depth);
+    }
+}
+
 #[test]
 fn deep_conversion_clone_json_debug_and_drop_fit_small_stack() {
     const DEPTH: usize = 16_384;
@@ -350,22 +534,20 @@ fn deep_conversion_clone_json_debug_and_drop_fit_small_stack() {
         .name("rho-expr-small-stack".to_owned())
         .stack_size(STACK_BYTES)
         .spawn(|| {
-            let mut input = par_of(ExprInstance::GInt(7));
-            for depth in 0..DEPTH {
-                input = if depth % 2 == 0 {
-                    par_of(ExprInstance::ENegBody(ENeg { p: Some(input) }))
-                } else {
-                    par_of(ExprInstance::EMapBody(EMap {
-                        kvs: vec![KeyValuePair {
-                            key: Some(par_of(ExprInstance::GString("key".to_owned()))),
-                            value: Some(input),
-                        }],
-                        ..Default::default()
-                    }))
-                };
-            }
+            let input = planned_alternating_expr(DEPTH);
 
+            rho_expr_pda::reset_encoded_drive_counters();
             let value = rho_expr_pda::from_par(input).expect("nested expression must convert");
+            assert_alternating_shape(&value, DEPTH);
+            let counters = rho_expr_pda::encoded_drive_counters();
+            let map_levels = DEPTH / 2;
+            let neg_levels = DEPTH - map_levels;
+            assert_eq!(counters.root_endpoints, 1);
+            assert_eq!(counters.recursive_cursor_hits, DEPTH);
+            assert_eq!(counters.par_frames, neg_levels + 2 * map_levels);
+            assert_eq!(counters.expr_frames, 1 + counters.par_frames);
+            assert_eq!(counters.expr_fallbacks, map_levels + 1);
+            assert_eq!(counters.resident_par_fallbacks, 0);
             let cloned = value.clone();
             let encoded = json(&cloned);
             let debug = format!("{value:?}");

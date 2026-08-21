@@ -1,3 +1,5 @@
+#[cfg(test)]
+use std::cell::Cell;
 use std::collections::hash_map::RandomState;
 use std::collections::HashMap;
 
@@ -6,6 +8,10 @@ use models::rhoapi::{
     Bundle, Connective, EPathMap, Expr, GUnforgeable, Match, New, Par, Receive, Send,
 };
 use models::rust::epathmap_trie_codec::EPathMapMode;
+use models::rust::par_bag::{
+    canonical_expr_parts, canonical_single_expr_from_par, CanonicalExprParts,
+};
+use models::rust::rholang::protobuf_decoder;
 use num_bigint::BigInt;
 
 use super::{extract_key_from_expr, unforg_from_proto, RhoExpr, RhoPathMap, RhoPathMapBinding};
@@ -84,6 +90,63 @@ enum Work {
     },
 }
 
+enum EncodedWork<'a> {
+    Par(&'a [u8]),
+    ParOrNil(&'a [u8]),
+    Expr(&'a [u8]),
+    FinishNil,
+    FinishSequence { kind: SequenceKind, arity: usize },
+    FinishLegacyMap { arity: usize },
+    FinishUnary(UnaryKind),
+    FinishBinary(BinaryKind),
+    FinishMethod { name: String, argument_count: usize },
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) struct EncodedDriveCounters {
+    pub root_endpoints: usize,
+    pub expr_frames: usize,
+    pub par_frames: usize,
+    pub recursive_cursor_hits: usize,
+    pub expr_fallbacks: usize,
+    pub resident_par_fallbacks: usize,
+}
+
+#[cfg(test)]
+thread_local! {
+    static ENCODED_DRIVE_COUNTERS: Cell<EncodedDriveCounters> =
+        Cell::new(EncodedDriveCounters {
+            root_endpoints: 0,
+            expr_frames: 0,
+            par_frames: 0,
+            recursive_cursor_hits: 0,
+            expr_fallbacks: 0,
+            resident_par_fallbacks: 0,
+        });
+}
+
+#[cfg(test)]
+fn update_encoded_drive_counters(f: impl FnOnce(&mut EncodedDriveCounters)) {
+    ENCODED_DRIVE_COUNTERS.with(|cell| {
+        let mut counters = cell.get();
+        f(&mut counters);
+        cell.set(counters);
+    });
+}
+
+#[cfg(not(test))]
+fn update_encoded_drive_counters(_f: impl FnOnce(&mut EncodedDriveCounters)) {}
+
+#[cfg(test)]
+pub(super) fn reset_encoded_drive_counters() {
+    ENCODED_DRIVE_COUNTERS.with(|cell| cell.set(EncodedDriveCounters::default()));
+}
+
+#[cfg(test)]
+pub(super) fn encoded_drive_counters() -> EncodedDriveCounters {
+    ENCODED_DRIVE_COUNTERS.with(Cell::get)
+}
+
 fn nil_expr() -> RhoExpr {
     RhoExpr::ExprUnknown {
         type_name: "Nil".to_owned(),
@@ -106,7 +169,7 @@ fn push_pars(work: &mut Vec<Work>, pars: Vec<Par>) {
     work.extend(pars.into_iter().rev().map(Work::Par));
 }
 
-fn drive(root: Work) -> Option<RhoExpr> {
+fn drive_resident(root: Work) -> Option<RhoExpr> {
     let mut work = Vec::with_capacity(64);
     let mut values = Vec::with_capacity(64);
     work.push(root);
@@ -481,6 +544,210 @@ fn drive(root: Work) -> Option<RhoExpr> {
     values.pop().expect("RhoExpr PDA final value disappeared")
 }
 
+fn unary_kind(tag: u32) -> UnaryKind {
+    match tag {
+        5 => UnaryKind::Not,
+        6 => UnaryKind::Neg,
+        _ => unreachable!("canonical unary Expr tag {tag}"),
+    }
+}
+
+fn binary_kind(tag: u32) -> BinaryKind {
+    match tag {
+        7 => BinaryKind::Mult,
+        8 => BinaryKind::Div,
+        9 => BinaryKind::Plus,
+        10 => BinaryKind::Minus,
+        11 => BinaryKind::Lt,
+        12 => BinaryKind::Lte,
+        13 => BinaryKind::Gt,
+        14 => BinaryKind::Gte,
+        15 => BinaryKind::Eq,
+        16 => BinaryKind::Neq,
+        17 => BinaryKind::And,
+        18 => BinaryKind::Or,
+        28 => BinaryKind::Interpolate,
+        29 => BinaryKind::Concat,
+        30 => BinaryKind::Diff,
+        31 => BinaryKind::Mod,
+        _ => unreachable!("canonical binary Expr tag {tag}"),
+    }
+}
+
+fn sequence_kind(tag: u32) -> SequenceKind {
+    match tag {
+        20 => SequenceKind::List,
+        21 => SequenceKind::Tuple,
+        22 => SequenceKind::Set,
+        _ => unreachable!("canonical sequence Expr tag {tag}"),
+    }
+}
+
+/// Convert one authoritative Expr endpoint while its PathMap zipper callback
+/// keeps the borrowed canonical bytes alive. Recursive child Pars remain byte
+/// slices into that one endpoint. A shape the cursor cannot prove is decoded
+/// once and handed to the complete resident PDA; that PDA never re-enters this
+/// function, so fallback direction is structurally one-way.
+fn drive_encoded_expr(payload: &[u8]) -> Option<RhoExpr> {
+    let mut work = Vec::with_capacity(64);
+    let mut values = Vec::with_capacity(64);
+    work.push(EncodedWork::Expr(payload));
+
+    while let Some(step) = work.pop() {
+        match step {
+            EncodedWork::Par(bytes) => {
+                update_encoded_drive_counters(|c| c.par_frames += 1);
+                if let Some(expr) = canonical_single_expr_from_par(bytes) {
+                    work.push(EncodedWork::Expr(expr));
+                } else {
+                    update_encoded_drive_counters(|c| c.resident_par_fallbacks += 1);
+                    let par = protobuf_decoder::decode_par(bytes)
+                        .expect("authoritative canonical child Par must decode");
+                    values.push(drive_resident(Work::Par(par)));
+                }
+            }
+            EncodedWork::ParOrNil(bytes) => {
+                work.push(EncodedWork::FinishNil);
+                work.push(EncodedWork::Par(bytes));
+            }
+            EncodedWork::Expr(bytes) => {
+                update_encoded_drive_counters(|c| c.expr_frames += 1);
+                let Some(parts) = canonical_expr_parts(bytes) else {
+                    update_encoded_drive_counters(|c| c.expr_fallbacks += 1);
+                    let expr = protobuf_decoder::decode_expr(bytes)
+                        .expect("authoritative canonical Expr endpoint must decode");
+                    values.push(drive_resident(Work::Expr(expr)));
+                    continue;
+                };
+                update_encoded_drive_counters(|c| c.recursive_cursor_hits += 1);
+                match parts {
+                    CanonicalExprParts::Unary { tag, child } => {
+                        work.push(EncodedWork::FinishUnary(unary_kind(tag)));
+                        work.push(EncodedWork::ParOrNil(child));
+                    }
+                    CanonicalExprParts::Binary { tag, left, right } => {
+                        work.push(EncodedWork::FinishBinary(binary_kind(tag)));
+                        work.push(EncodedWork::ParOrNil(right));
+                        work.push(EncodedWork::ParOrNil(left));
+                    }
+                    CanonicalExprParts::Sequence { tag, children, .. } => {
+                        let arity = children.len();
+                        work.push(EncodedWork::FinishSequence {
+                            kind: sequence_kind(tag),
+                            arity,
+                        });
+                        work.extend(children.into_iter().rev().map(EncodedWork::Par));
+                    }
+                    CanonicalExprParts::Map { entries, .. } => {
+                        let arity = entries.len();
+                        work.push(EncodedWork::FinishLegacyMap { arity });
+                        for (key, value) in entries.into_iter().rev() {
+                            work.push(EncodedWork::Par(value));
+                            work.push(EncodedWork::Par(key));
+                        }
+                    }
+                    CanonicalExprParts::Method {
+                        method_name,
+                        children,
+                    } => {
+                        let name = std::str::from_utf8(method_name)
+                            .expect("canonical method cursor proved UTF-8")
+                            .to_owned();
+                        let (target, arguments) = children
+                            .split_first()
+                            .expect("canonical method cursor requires a target");
+                        work.push(EncodedWork::FinishMethod {
+                            name,
+                            argument_count: arguments.len(),
+                        });
+                        work.extend(arguments.iter().rev().copied().map(EncodedWork::Par));
+                        work.push(EncodedWork::ParOrNil(target));
+                    }
+                    CanonicalExprParts::Matches { target, pattern } => {
+                        work.push(EncodedWork::FinishBinary(BinaryKind::Matches));
+                        work.push(EncodedWork::ParOrNil(pattern));
+                        work.push(EncodedWork::ParOrNil(target));
+                    }
+                }
+            }
+            EncodedWork::FinishNil => {
+                let value = values
+                    .pop()
+                    .expect("encoded RhoExpr Nil continuation has no child");
+                values.push(Some(value.unwrap_or_else(nil_expr)));
+            }
+            EncodedWork::FinishSequence { kind, arity } => {
+                let data = take_values(&mut values, arity)
+                    .into_iter()
+                    .flatten()
+                    .collect();
+                let value = match kind {
+                    SequenceKind::Tuple => RhoExpr::ExprTuple { data },
+                    SequenceKind::List => RhoExpr::ExprList { data },
+                    SequenceKind::Set => RhoExpr::ExprSet { data },
+                };
+                values.push(Some(value));
+            }
+            EncodedWork::FinishLegacyMap { arity } => {
+                let mut produced = take_values(&mut values, arity * 2).into_iter();
+                let mut data = HashMap::with_capacity(arity);
+                while let Some(key) = produced.next() {
+                    let value = produced
+                        .next()
+                        .expect("encoded RhoExpr map key is missing its value");
+                    if let (Some(key), Some(value)) = (key, value) {
+                        data.insert(extract_key_from_expr(&key), value);
+                    }
+                }
+                values.push(Some(RhoExpr::ExprMap { data }));
+            }
+            EncodedWork::FinishUnary(kind) => {
+                let data = Box::new(required(
+                    values
+                        .pop()
+                        .expect("encoded RhoExpr unary continuation has no child"),
+                ));
+                values.push(Some(match kind {
+                    UnaryKind::Not => RhoExpr::ExprNot { data },
+                    UnaryKind::Neg => RhoExpr::ExprNeg { data },
+                }));
+            }
+            EncodedWork::FinishBinary(kind) => {
+                let mut pair = take_values(&mut values, 2).into_iter();
+                let left = Box::new(required(
+                    pair.next().expect("encoded binary left child is missing"),
+                ));
+                let right = Box::new(required(
+                    pair.next().expect("encoded binary right child is missing"),
+                ));
+                values.push(Some(build_binary(kind, left, right)));
+            }
+            EncodedWork::FinishMethod {
+                name,
+                argument_count,
+            } => {
+                let mut produced = take_values(&mut values, argument_count + 1).into_iter();
+                let target = Box::new(required(
+                    produced
+                        .next()
+                        .expect("encoded RhoExpr method target is missing"),
+                ));
+                let args = produced.flatten().collect();
+                values.push(Some(RhoExpr::ExprMethod { target, name, args }));
+            }
+        }
+    }
+
+    assert_eq!(
+        values.len(),
+        1,
+        "encoded RhoExpr PDA must terminate with one value"
+    );
+    values
+        .pop()
+        .expect("encoded RhoExpr PDA final value disappeared")
+}
+
 fn push_binary(work: &mut Vec<Work>, kind: BinaryKind, left: Option<Par>, right: Option<Par>) {
     work.push(Work::FinishBinary(kind));
     work.push(Work::ParOrNil(right));
@@ -512,13 +779,67 @@ fn build_binary(kind: BinaryKind, left: Box<RhoExpr>, right: Box<RhoExpr>) -> Rh
     }
 }
 
-pub(super) fn from_par(par: Par) -> Option<RhoExpr> { drive(Work::Par(par)) }
+fn append_multiplicity(data: &mut Vec<RhoExpr>, value: RhoExpr, multiplicity: u64) {
+    debug_assert_ne!(multiplicity, 0);
+    for _ in 1..multiplicity {
+        data.push(value.clone());
+    }
+    data.push(value);
+}
+
+fn finish_par_data(mut data: Vec<RhoExpr>, has_process_fields: bool) -> Option<RhoExpr> {
+    match data.len() {
+        0 if has_process_fields => Some(RhoExpr::ExprUnknown {
+            type_name: "Process".to_owned(),
+        }),
+        0 => None,
+        1 => data.pop(),
+        _ => Some(RhoExpr::ExprPar { data }),
+    }
+}
+
+pub(super) fn from_par(par: Par) -> Option<RhoExpr> {
+    let has_process_fields = par.family_cardinality::<Send>() != 0
+        || par.family_cardinality::<Receive>() != 0
+        || par.family_cardinality::<New>() != 0
+        || par.family_cardinality::<Match>() != 0
+        || par.family_cardinality::<Connective>() != 0;
+    let mut data = Vec::new();
+
+    par.visit_encoded::<Expr>(|entry| {
+        update_encoded_drive_counters(|c| c.root_endpoints += 1);
+        if let Some(value) = drive_encoded_expr(entry.payload()) {
+            append_multiplicity(&mut data, value, entry.multiplicity().get());
+        }
+    });
+    par.try_visit_decoded::<GUnforgeable, std::convert::Infallible>(|unforgeable, multiplicity| {
+        if let Some(value) = unforg_from_proto(unforgeable) {
+            append_multiplicity(&mut data, value, multiplicity.get());
+        }
+        Ok(())
+    })
+    .expect("authoritative GUnforgeable endpoints decode");
+    par.try_visit_decoded::<Bundle, std::convert::Infallible>(|bundle, multiplicity| {
+        if let Some(value) = drive_resident(Work::Bundle(bundle)) {
+            append_multiplicity(&mut data, value, multiplicity.get());
+        }
+        Ok(())
+    })
+    .expect("authoritative Bundle endpoints decode");
+
+    finish_par_data(data, has_process_fields)
+}
 
 #[cfg(test)]
-pub(super) fn from_expr(expr: Expr) -> Option<RhoExpr> { drive(Work::Expr(expr)) }
+pub(super) fn from_par_resident(par: Par) -> Option<RhoExpr> { drive_resident(Work::Par(par)) }
 
 #[cfg(test)]
-pub(super) fn from_bundle(bundle: Bundle) -> Option<RhoExpr> { drive(Work::Bundle(bundle)) }
+pub(super) fn from_expr(expr: Expr) -> Option<RhoExpr> { drive_resident(Work::Expr(expr)) }
+
+#[cfg(test)]
+pub(super) fn from_bundle(bundle: Bundle) -> Option<RhoExpr> {
+    drive_resident(Work::Bundle(bundle))
+}
 
 enum CloneSequenceKind {
     Par,
