@@ -62,18 +62,22 @@ The options are ordered by guarantee strength and by risk. The axes are fairness
 
 ### Option A — proposer rotation as the liveness mechanism
 
-The fork-choice tie-break is the stake score, then the ascending block hash. The tie-break gives each side of a contention an even chance to become the base in each round. Over many rounds, the carrier of the starved deploy becomes the base, and the deploy lands.
+Fork choice orders parents by stake score and then ascending block hash. Equal-stake siblings can alternate through hash order. Unequal stake does not provide equal chances.
 
-- **Pros:** This option needs no code change. It adds no new risk surface.
-- **Cons:** Liveness becomes probabilistic. The retry gate paces re-proposals on floor settlement, so a deploy gets two or three attempts inside its 50-block window. The observed failure had exactly two rejections. An even chance per attempt leaves an expiry probability that is too high for a liveness claim.
-- **Verdict:** This option is necessary as the test-evidence component. It is not sufficient alone.
+Proposer rotation becomes useful with B1. A retry owner can build on a parent that covers the visible frontier and package the retry sequentially.
 
-### Option B1 — merged-frontier retry packaging (recommended next step)
+- **Pros:** This option needs no consensus change. It adds no new validation risk.
+- **Cons:** Rotation alone gives only probabilistic liveness. Unequal stake or limited retry attempts can keep the expiry probability too high.
+- **Verdict:** Use this option with B1 as test evidence. Do not use rotation alone as a liveness guarantee.
 
-The owner packages a gated retry only when its own tip already merges every same-key contender that the owner can see. The retry then executes fresh and sequentially on top of the settled contention. It does not race as a sibling. When an unseen contender still races in, loss-aware adjudication covers the adjudicable subset.
+### Option B1 — merged-frontier retry packaging
 
-- **Pros:** The policy is node-local. It needs no consensus change, no wire change, and no upgrade coordination. The diff in `prepare_user_deploys_with_policy` is small. Ground Truth 2 makes the deferral safe from peer rejection.
-- **Cons:** The policy is a heuristic, not a guarantee. Under saturated contention, a merged frontier without contenders never occurs. Each deferral spends validity window to increase the success probability. The policy does not influence merges that other validators build.
+The owner packages a gated retry only when one selected parent covers every non-invalid latest-message justification. This authenticated frontier is a conservative visibility proxy.
+
+The retry executes fresh and sequentially on the covered frontier. When an unseen contender races, loss-aware adjudication covers the adjudicable subset.
+
+- **Pros:** The policy is node-local. It needs no consensus change, wire change, or upgrade coordination. Ground Truth 2 makes the deferral safe.
+- **Cons:** The policy is a heuristic, not a guarantee. A missing covering parent causes deferral. Each deferral spends part of the validity window.
 
 ### Option B2 — per-key contender serialization
 
@@ -117,7 +121,7 @@ This option biases fork-choice scoring by starved-retry priority.
 
 ```mermaid
 flowchart TD
-    P1[Phase 1 - shipped:\nloss-aware adjudication\nat all three merge sites] --> B1[Phase 2 - proposed:\nB1 merged-frontier retry packaging\n+ A rotating-proposer test shape]
+    P1[Phase 1 - shipped:\nloss-aware adjudication\nat all three merge sites] --> B1[Phase 2 - implemented:\nB1 merged-frontier retry packaging\n+ A rotating-proposer test shape]
     B1 -->|soak or SI evidence\nshows residual expiries| C1[Escalation:\nC1 loss-aware main-parent declaration\nbehind soak evidence]
     C1 -->|still insufficient| C2[Reserve:\nC2 loss-aware base fallback\nlockstep consensus change]
     C2 -.-> C3[C3 fork-choice weights:\nrejected - griefing vector]

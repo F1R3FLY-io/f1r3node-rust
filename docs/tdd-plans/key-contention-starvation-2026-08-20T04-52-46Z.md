@@ -6,7 +6,7 @@ produced_at: 2026-08-20T04:52:46Z
 source_issue: https://github.com/F1R3FLY-io/f1r3node-rust/issues/294
 glossary: docs/Glossary.md
 test_runner: cargo-test
-branch: fix/key-contention-starvation
+branch: feat/key-contention-phase2
 system_boundaries:
   - test-harness-storage   # real in-memory/LMDB test stores via test_node/block_generator; no internal mocks
   - determinism            # fixed keys, sigs, and timestamps; no wall clock, no randomness
@@ -119,11 +119,22 @@ behaviors:
     statement: "Under rotating merge proposers, a repeatedly rejected deploy lands before its validity window closes"
     priority: must
     deep_module: false
-    done: false
+    done: true
     pending_ratification: false
     notes:
       - "Phase 2, option A (rotation as the liveness mechanism): reshape loss_priority_spec so merge proposers alternate. With B6 plus loss-aware adjudication this must go deterministically GREEN. The adversarial always-contender-merges shape stays as an #[ignore]d sentinel documenting the residual base-bias facet (C1 escalation trigger)."
-    cycle_log: []
+    cycle_log:
+      - test: "batch2::loss_priority_spec::rotating_merge_proposers_land_repeatedly_rejected_deploy_before_expiry"
+        red: "The rotating schedule failed for 16 rounds because B6 required the selected-parent set to contain exactly one block."
+        green: "The retry gate now accepts any selected parent that covers every non-invalid latest-message justification. The twice-rejected deploy lands before round 16."
+        files:
+          - casper/src/rust/blocks/proposer/block_creator.rs
+          - casper/tests/batch2/loss_priority_spec.rs
+        suite: "Focused B6 and B7 tests passed. cargo test -p casper --lib: 300 passed."
+        expected_control: "The ignored fixed-proposer test still rejects the retry for all 16 rounds."
+        discovered:
+          - "A selected-parent set can contain redundant parents. One parent can still cover the complete latest-message frontier."
+        refactor_deferred: "The integration tests duplicate one fixture. Extract a schedule helper only if another contention schedule needs the fixture."
   - id: B5
     statement: "Prior-rejection counts derive only from kept (non-duplicate) records visible in the merge scope"
     priority: should

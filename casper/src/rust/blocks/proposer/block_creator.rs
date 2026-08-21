@@ -921,8 +921,8 @@ async fn prepare_user_deploys_with_policy(
             gated_pool_retries
         );
     }
-    let retry_frontier_merged = if let [parent] = casper_snapshot.parents.as_slice() {
-        let mut merged = true;
+    let mut retry_frontier_merged = false;
+    'parents: for parent in &casper_snapshot.parents {
         for justification in &casper_snapshot.justifications {
             if !casper_snapshot
                 .invalid_blocks
@@ -931,14 +931,12 @@ async fn prepare_user_deploys_with_policy(
                     .dag
                     .is_dag_ancestor(&justification.latest_block_hash, &parent.block_hash)?
             {
-                merged = false;
-                break;
+                continue 'parents;
             }
         }
-        merged
-    } else {
-        false
-    };
+        retry_frontier_merged = true;
+        break;
+    }
     if !retry_frontier_merged {
         retry_candidates.clear();
     }
@@ -6212,6 +6210,18 @@ mod tests {
             .insert(&right, InsertMode::Normal)
             .expect("insert right parent");
         snapshot.dag = dag_storage.get_representation().expect("dag");
+        snapshot.justifications = [
+            Justification {
+                validator: validator(1),
+                latest_block_hash: left.block_hash.clone(),
+            },
+            Justification {
+                validator: validator(2),
+                latest_block_hash: right.block_hash.clone(),
+            },
+        ]
+        .into_iter()
+        .collect();
         snapshot.parents = vec![left, right];
 
         deploy_storage
