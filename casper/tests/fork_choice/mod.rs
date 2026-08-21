@@ -36,7 +36,16 @@
 //   build: every fixture in this directory is single-parent, and on a
 //   single-parent DAG "score every DAG ancestor" and "score every main-parent
 //   ancestor" coincide. This one separates them.
+//
+//   heaviest_subtree_descent — the DEPTH-2 case the proptests above never
+//   build: at depth 1 a tip's own score IS its subtree weight, so ranking
+//   tips by score and descending the heaviest subtree coincide. At depth 2
+//   they separate: the head must come from the majority-weight BRANCH, not
+//   from whichever tip hash-sorts first. Pinned to CI instance ucc-i6
+//   (run 32404488936), where the hash-ordered head reverted a 200-of-300
+//   finality certificate with zero equivocations.
 
+mod heaviest_subtree_descent;
 mod merged_sibling_scores;
 mod prop_bound;
 mod prop_estimator_determinism;
