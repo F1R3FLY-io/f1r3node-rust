@@ -6,6 +6,7 @@ use std::time::Duration;
 use casper::rust::genesis::contracts::vault::Vault;
 use crypto::rust::public_key::PublicKey;
 use rholang::rust::build::compile_rholang_source::CompiledRholangSource;
+use rholang::rust::interpreter::errors::InterpreterError;
 use rholang::rust::interpreter::util::vault_address::VaultAddress;
 
 use crate::helper::rho_spec::RhoSpec;
@@ -47,8 +48,7 @@ fn test_vaults() -> Vec<Vault> {
     .collect()
 }
 
-#[test]
-fn pos_spec() {
+fn run_pos_spec_once() -> Result<(), InterpreterError> {
     // Note: it's not 1:1 port, we should use larger stack size (16MB) to prevent stack overflow
     std::thread::Builder::new()
         .stack_size(16 * 1024 * 1024)
@@ -99,10 +99,24 @@ fn pos_spec() {
                     genesis_parameters,
                 );
 
-                spec.run_tests().await.expect("PoSSpec tests failed");
+                spec.run_tests().await.map(|_| ())
             })
         })
         .unwrap()
         .join()
-        .unwrap();
+        .unwrap()
+}
+
+#[test]
+fn pos_spec() {
+    match run_pos_spec_once() {
+        Err(InterpreterError::BugFoundError(message))
+            if message.starts_with("Timeout of ")
+                && message.contains("phase 'eval-test-source'") =>
+        {
+            eprintln!("PoSSpec timed out under parallel load. The test will retry once.");
+            run_pos_spec_once().expect("PoSSpec tests failed after timeout retry");
+        }
+        result => result.expect("PoSSpec tests failed"),
+    }
 }

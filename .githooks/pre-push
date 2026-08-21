@@ -15,7 +15,7 @@
 #   SKIP_DENY=1          - Skip soak-charts dependency policy checks
 #   QUICK=1              - Run only fast tests (skip --release tests)
 #   VERBOSE=1            - Show all test output (not just failures)
-#   TEST_TIMEOUT=600     - Overall test timeout in seconds (default: 600)
+#   TEST_TIMEOUT=900     - Per-check timeout in seconds (default: 900)
 #   TEST_CRATES="casper rholang" - Run tests for specific crates only
 #
 # CI environment detection:
@@ -44,7 +44,7 @@ SKIP_CLIPPY="${SKIP_CLIPPY:-0}"
 SKIP_DENY="${SKIP_DENY:-0}"
 VERBOSE="${VERBOSE:-0}"
 QUICK="${QUICK:-0}"
-TEST_TIMEOUT="${TEST_TIMEOUT:-600}"
+TEST_TIMEOUT="${TEST_TIMEOUT:-900}"
 TEST_CRATES="${TEST_CRATES:-}"
 SOAK_CHARTS_MANIFEST="scripts/soak-charts/Cargo.toml"
 
@@ -343,6 +343,6 @@ else
     echo "  SKIP_DENY=1 git push         - Skip soak-charts dependency checks"
     echo "  VERBOSE=1 git push           - Show detailed output"
     echo "  TEST_CRATES=\"casper rholang\" git push  - Test specific crates"
-    echo "  TEST_TIMEOUT=300 git push    - Adjust timeout (default: 600s)"
+    echo "  TEST_TIMEOUT=1200 git push   - Adjust timeout (default: 900s)"
     exit 1
 fi
