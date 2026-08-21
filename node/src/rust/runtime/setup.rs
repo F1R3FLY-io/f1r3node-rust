@@ -885,7 +885,7 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
         // path below holds the guard across the `collect_garbage().await`, and
         // only a Send guard can cross an await point in this boxed future.
         let gc_state = Arc::new(tokio::sync::Mutex::new(
-            casper::rust::util::mergeable_channels_gc::GcState::new(),
+            casper::rust::util::mergeable_channels_gc::GcSweep::new(),
         ));
         let gc_interval = conf.casper.mergeable_channels_gc_interval;
         let gc_casper_shard_conf = CasperShardConf {
@@ -966,11 +966,11 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
                                 let mut gc_state = gc_state.blocking_lock();
                                 rt_handle
                                     .block_on(mergeable_channels_gc::collect_garbage(
+                                        &mut gc_state,
                                         &dag,
                                         &gc_block_store,
                                         &gc_runtime_manager,
                                         &gc_casper_shard_conf,
-                                        &mut gc_state,
                                     ))
                                     .map_err(|e| CasperError::RuntimeError(e.to_string()))
                             })?;
@@ -981,11 +981,11 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
                                 .map_err(|e| CasperError::RuntimeError(e.to_string()))?;
                             let mut gc_state = gc_state.lock().await;
                             mergeable_channels_gc::collect_garbage(
+                                &mut gc_state,
                                 &dag,
                                 &gc_block_store,
                                 &gc_runtime_manager,
                                 &gc_casper_shard_conf,
-                                &mut gc_state,
                             )
                             .await
                             .map_err(|e| CasperError::RuntimeError(e.to_string()))?;
