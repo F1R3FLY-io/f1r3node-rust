@@ -98,9 +98,6 @@ Makefile.coq.conf
 Makefile.coq.local
 Makefile.verify.*
 .Makefile.verify.*.d
-formal/rocq/*/Makefile
-formal/rocq/*/Makefile.conf
-formal/rocq/*/.Makefile.d
 
 # TLA+ / TLC
 ##############
