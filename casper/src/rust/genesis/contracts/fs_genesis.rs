@@ -1175,7 +1175,11 @@ mod tests {
         // wiring preserved).  All bodies deliberately duplicate their
         // arity-N counterparts; only the acquire dispatch differs.
         // Same hard-fork discipline.
-        const EXPECTED: &str = "c243b4db253b7cb5fa9088f5aa3d71d805fc49a9cb54a13f7ad50fc8e0c7373b";
+        // Anchor rolled forward again for the cost-accounted-rho merge
+        // (2026-08-21): merged composition adopts cost-accounted's
+        // vault-funding transform + fileio's URN filter + fileio's
+        // fs_bundle plumbing, all under the same hard-fork discipline.
+        const EXPECTED: &str = "5f41dafe99af8e4378b36e6ea78639249c2960aea1f526b885764a2fce9502bc";
         assert_eq!(
             hex, EXPECTED,
             "M-12: compose_fs_genesis_source() hash changed.  If intentional \

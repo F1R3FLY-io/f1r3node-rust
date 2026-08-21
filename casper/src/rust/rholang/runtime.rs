@@ -3188,13 +3188,18 @@ mod tests {
         let src = include_str!("runtime.rs");
         // Locate the `pub async fn play_deploys_for_state` body by
         // string scan.  Look between the `pub async fn` header and
-        // the matching function-closing `Ok((final_root, res))`
-        // return (the terminal expression of this function — see
-        // line ~499 of this file).
+        // the matching function-closing `Ok((current_root, res))`
+        // return (the terminal expression of this function).
+        //
+        // Marker updated post cost-accounted merge: the aggregation
+        // loop chains checkpoints and rebinds the root each iteration
+        // as `current_root`, so the terminal return is
+        // `Ok((current_root, res))` — the previous `final_root`
+        // binding was replaced by the per-deploy chain.
         let start_idx = src
             .find("pub async fn play_deploys_for_state")
             .expect("play_deploys_for_state must exist in this file");
-        let end_marker = "Ok((final_root, res))";
+        let end_marker = "Ok((current_root, res))";
         let body_end = src[start_idx..]
             .find(end_marker)
             .expect("terminal return must exist inside play_deploys_for_state");
