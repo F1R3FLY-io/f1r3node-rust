@@ -1312,9 +1312,17 @@ impl BlockDagKeyValueStorage {
                     )));
                 }
 
+                // Held, unfinalized ancestry only. A parent edge can reach
+                // BELOW a restored node's truncation horizon — referenced but
+                // not held — and such an ancestor is settled by the restore
+                // contract (everything under the shipped window is finalized
+                // ancestry). Descending into it errored the whole finalizer
+                // run on the first sub-horizon parent, permanently: the same
+                // ancestry re-walks every run, so a restored node's LFB froze
+                // at its restore-era floor while the shard finalized on.
                 let indirectly_finalized = dag
                     .ancestors(directly_finalized_hash.clone(), |hash| {
-                        !dag.is_finalized(hash)
+                        dag.contains(hash) && !dag.is_finalized(hash)
                     })?;
 
                 let mut all_finalized = indirectly_finalized.clone();

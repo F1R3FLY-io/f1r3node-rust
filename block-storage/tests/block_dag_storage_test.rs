@@ -871,6 +871,116 @@ async fn recording_of_new_directly_finalized_block_should_record_finalized_all_n
     assert_eq!(*finalized_effects, expected_effects);
 }
 
+/// A restored (truncated) DAG holds blocks whose parent edges reach BELOW the
+/// restore horizon: the parent hash is referenced but the block is not held.
+/// Such an ancestor is settled by the restore contract — everything under the
+/// shipped window is finalized ancestry — so the finalization sweep must mark
+/// the HELD unfinalized ancestry and never descend into unheld blocks. The
+/// unguarded walk erred with MissingBlock on the first sub-horizon parent and
+/// failed the entire finalizer run, permanently: the same ancestry re-walks
+/// every run, so a restored node's LFB froze at its restore-era floor while
+/// the shard finalized on (CI lifecycle joiner3, 366 identical failures).
+#[tokio::test]
+async fn finalization_sweep_treats_unheld_parents_as_settled_ancestry() {
+    let genesis = genesis_block();
+    let dag_storage = create_dag_storage(&genesis).await;
+    dag_storage
+        .insert(
+            &genesis,
+            block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Approved,
+        )
+        .unwrap();
+
+    let b1 = get_random_block(
+        Some(1),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        Some(vec![genesis.block_hash.clone()]),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    );
+    dag_storage
+        .insert(
+            &b1,
+            block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Normal,
+        )
+        .unwrap();
+
+    // b2's second parent is a merge edge to a block below the restore
+    // horizon: referenced, never held.
+    let sub_horizon_parent = BlockHash::from(vec![0x5b; 32]);
+    let b2 = get_random_block(
+        Some(2),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        Some(vec![b1.block_hash.clone(), sub_horizon_parent.clone()]),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    );
+    dag_storage
+        .insert(
+            &b2,
+            block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Normal,
+        )
+        .unwrap();
+
+    let b3 = get_random_block(
+        Some(3),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        Some(vec![b2.block_hash.clone()]),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    );
+    dag_storage
+        .insert(
+            &b3,
+            block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Normal,
+        )
+        .unwrap();
+
+    dag_storage
+        .record_directly_finalized(b3.block_hash.clone(), 1.0, |_| async { Ok(()) })
+        .await
+        .expect("the sweep must not descend into unheld sub-horizon ancestry");
+
+    let dag = dag_storage
+        .get_representation()
+        .expect("dag representation");
+    assert_eq!(dag.last_finalized_block(), b3.block_hash);
+    assert!(dag.is_finalized(&b1.block_hash));
+    assert!(dag.is_finalized(&b2.block_hash));
+    assert!(dag.is_finalized(&b3.block_hash));
+    assert!(
+        !dag.contains(&sub_horizon_parent),
+        "staging: the sub-horizon parent must not be held"
+    );
+}
+
 #[test]
 fn find_returns_some_for_valid_even_length_truncated_hash() {
     let rt = Runtime::new().unwrap();
