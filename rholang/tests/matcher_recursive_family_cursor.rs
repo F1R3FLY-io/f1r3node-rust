@@ -90,9 +90,17 @@ impl Family {
 }
 
 fn fixture(family: Family, depth: usize) -> (Par, Par) {
+    fixture_with_pattern_terminal(family, depth, new_freevar_par(0, Vec::new()))
+}
+
+fn fixture_with_pattern_terminal(
+    family: Family,
+    depth: usize,
+    pattern_terminal: Par,
+) -> (Par, Par) {
     match family {
-        Family::ESet => return unordered_collection_fixture(false, depth),
-        Family::EMap => return unordered_collection_fixture(true, depth),
+        Family::ESet => return unordered_collection_fixture(false, depth, pattern_terminal),
+        Family::EMap => return unordered_collection_fixture(true, depth, pattern_terminal),
         _ => {}
     }
 
@@ -101,7 +109,7 @@ fn fixture(family: Family, depth: usize) -> (Par, Par) {
         .import_par(&new_gint_par(7, Vec::new(), false))
         .expect("import target terminal");
     let mut pattern = construction
-        .import_par(&new_freevar_par(0, Vec::new()))
+        .import_par(&pattern_terminal)
         .expect("import pattern terminal");
     let empty = construction.empty_par().expect("plan empty Par");
 
@@ -712,6 +720,41 @@ fn late_recursive_family_failure_rolls_back_earlier_bindings() {
             "{label} leaked a capture from an earlier proof obligation"
         );
     }
+
+    let failing_terminal = Par::default()
+        .with_connectives(vec![Connective {
+            connective_instance: Some(ConnectiveInstance::ConnAndBody(
+                models::rhoapi::ConnectiveBody {
+                    ps: vec![hole(), integer(8)],
+                },
+            )),
+        }])
+        .with_connective_used(true);
+    for family in Family::ALL {
+        let depth = if matches!(family, Family::ConnectiveNot) {
+            2
+        } else {
+            3
+        };
+        let (target, pattern) =
+            fixture_with_pattern_terminal(family, depth, failing_terminal.clone());
+        let baseline_value = integer(41);
+        let mut context = SpatialMatcherContext::new();
+        context.free_map.insert(41, baseline_value);
+        let baseline = context.free_map.clone();
+        assert_eq!(
+            context.spatial_match(target, pattern),
+            None,
+            "{} late terminal failure",
+            family.name()
+        );
+        assert_eq!(
+            context.free_map,
+            baseline,
+            "{} leaked a deepest-terminal capture",
+            family.name()
+        );
+    }
 }
 
 #[test]
@@ -802,13 +845,13 @@ fn encoded_unordered_collections_preserve_backtracking_and_remainders() {
     assert_eq!(context.free_map.get(&2), Some(&expected_map_remainder));
 }
 
-fn unordered_collection_fixture(map: bool, depth: usize) -> (Par, Par) {
+fn unordered_collection_fixture(map: bool, depth: usize, pattern_terminal: Par) -> (Par, Par) {
     let mut construction = ParConstruction::new();
     let mut target = construction
         .import_par(&new_gint_par(7, Vec::new(), false))
         .expect("import collection target terminal");
     let mut pattern = construction
-        .import_par(&new_freevar_par(0, Vec::new()))
+        .import_par(&pattern_terminal)
         .expect("import collection pattern terminal");
     let key = construction
         .import_par(&new_gint_par(1, Vec::new(), false))

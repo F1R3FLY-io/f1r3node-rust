@@ -1573,7 +1573,7 @@ impl ParConstruction {
                 }
             }
             EPathMapMode::Map => {
-                if children.len() % 2 != 0 {
+                if !children.len().is_multiple_of(2) {
                     return Err(ParConstructionError::ChildArity {
                         context: "map EPathMap",
                         expected: children.len().saturating_add(1),
@@ -3268,7 +3268,7 @@ impl ParConstruction {
                             target,
                         });
                     }
-                    for (key, _placeholder) in map {
+                    for key in map.keys() {
                         let par = *par_children.get(child_cursor).ok_or(
                             ParConstructionError::MissingParSlot {
                                 expected_at_least: child_cursor + 1,

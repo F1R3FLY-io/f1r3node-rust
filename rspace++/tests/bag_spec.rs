@@ -326,6 +326,38 @@ fn prefix_queries_remain_in_trie_order() {
 }
 
 #[test]
+fn relative_prefix_queries_borrow_suffixes_and_include_the_prefix_endpoint() {
+    let value = bag(&[
+        (b"prefix", 1),
+        (b"prefix/a", 2),
+        (b"prefix/a/deeper", 3),
+        (b"prefix/b", 4),
+        (b"unrelated", 5),
+    ]);
+    let mut relative = Vec::new();
+    value.visit_relative_prefix(b"prefix", |suffix, multiplicity| {
+        relative.push((suffix.to_vec(), multiplicity));
+    });
+    assert_eq!(relative, vec![
+        (Vec::new(), Multiplicity::ONE),
+        (b"/a".to_vec(), Multiplicity::new(2).unwrap()),
+        (b"/a/deeper".to_vec(), Multiplicity::new(3).unwrap()),
+        (b"/b".to_vec(), Multiplicity::new(4).unwrap()),
+    ]);
+
+    value.visit_relative_prefix(b"missing", |_suffix, _multiplicity| {
+        panic!("a nonexistent prefix must not escape to an adjacent trie branch");
+    });
+
+    let adjacent = bag(&[(&[140], 1), (&[141], 1), (&[], 1)]);
+    let mut selected = Vec::new();
+    adjacent.visit_relative_prefix(&[140], |suffix, multiplicity| {
+        selected.push((suffix.to_vec(), multiplicity));
+    });
+    assert_eq!(selected, vec![(Vec::new(), Multiplicity::ONE)]);
+}
+
+#[test]
 fn prefix_removal_detaches_only_the_selected_subtrie_and_updates_metadata() {
     let mut value =
         bag(&[(b"prefix/a", 2), (b"prefix/a/deeper", 3), (b"prefix/b", 4), (b"other", 5)]);

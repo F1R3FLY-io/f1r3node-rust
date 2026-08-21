@@ -33,6 +33,7 @@ pub struct RelationalMatchStats {
     pub authoritative_exact_scalar_equal: usize,
     pub authoritative_exact_scalar_mismatch: usize,
     pub authoritative_exact_scalar_unproved: usize,
+    pub authoritative_exact_free_var_captures: usize,
     pub target_index_builds: usize,
     pub target_key_encodes: usize,
     pub edge_evaluations: usize,

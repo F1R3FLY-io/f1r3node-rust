@@ -6,7 +6,7 @@ use pathmap::PathMap;
 use pathmap::arena_compact::ArenaCompactTree;
 use pathmap::merkleization::MerkleizeResult;
 use pathmap::ring::{AlgebraicResult, COUNTER_IDENT, DistributiveLattice, Lattice, SELF_IDENT};
-use pathmap::zipper::{Zipper, ZipperMoving, ZipperValues, ZipperWriting};
+use pathmap::zipper::{Zipper, ZipperMoving, ZipperReadOnlyIteration, ZipperValues, ZipperWriting};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use super::pathmap_codec::{CompactTrie, CompactTrieError};
@@ -404,20 +404,60 @@ impl Bag {
         }
     }
 
+    /// Visit the suffix of every endpoint below `prefix` without rebuilding
+    /// its absolute trie key.
+    ///
+    /// PathMap's borrowed-prefix zipper already exposes paths relative to the
+    /// requested root. Consumers that know the prefix from their schema can
+    /// parse that suffix directly and avoid one temporary allocation per
+    /// visited endpoint. The callback must not retain the borrowed suffix.
+    pub fn visit_relative_prefix(
+        &self,
+        prefix: &[u8],
+        mut visitor: impl FnMut(&[u8], Multiplicity),
+    ) {
+        let result = self.try_visit_relative_prefix(prefix, |relative, multiplicity| {
+            visitor(relative, multiplicity);
+            Ok::<(), std::convert::Infallible>(())
+        });
+        match result {
+            Ok(()) => {}
+            Err(error) => match error {},
+        }
+    }
+
+    /// Fallible counterpart to [`Self::visit_relative_prefix`].
+    pub fn try_visit_relative_prefix<E>(
+        &self,
+        prefix: &[u8],
+        mut visitor: impl FnMut(&[u8], Multiplicity) -> Result<(), E>,
+    ) -> Result<(), E> {
+        let mut cursor = self.entries.read_zipper_at_borrowed_path(prefix);
+        if !cursor.path_exists() {
+            return Ok(());
+        }
+        if let Some(multiplicity) = cursor.val().copied() {
+            visitor(cursor.path(), multiplicity)?;
+        }
+        while let Some(multiplicity) = cursor.to_next_get_val().copied() {
+            visitor(cursor.path(), multiplicity)?;
+        }
+        Ok(())
+    }
+
     pub fn try_visit_prefix<E>(
         &self,
         prefix: &[u8],
         mut visitor: impl FnMut(&[u8], Multiplicity) -> Result<(), E>,
     ) -> Result<(), E> {
         let mut absolute = Vec::new();
-        for (relative, multiplicity) in self.entries.read_zipper_at_borrowed_path(prefix) {
+        self.try_visit_relative_prefix(prefix, |relative, multiplicity| {
             absolute.clear();
             absolute.reserve(prefix.len() + relative.len());
             absolute.extend_from_slice(prefix);
-            absolute.extend_from_slice(&relative);
-            visitor(&absolute, *multiplicity)?;
-        }
-        Ok(())
+            absolute.extend_from_slice(relative);
+            visitor(&absolute, multiplicity)
+        })
     }
 
     pub fn sum(&self, other: &Self) -> Result<Self, BagError> {

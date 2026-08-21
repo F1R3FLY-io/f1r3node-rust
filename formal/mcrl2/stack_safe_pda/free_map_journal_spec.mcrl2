@@ -1,0 +1,15 @@
+act
+  start_and, start_or,
+  accept, reject, finish, abort,
+  publish_binding, publish_baseline,
+  or_binding_leak, partial_apply;
+
+proc Spec =
+    start_and .
+      (tau . accept . finish . publish_binding . delta
+      +tau . reject . abort . publish_baseline . delta)
+  + start_or .
+      (tau . accept . finish . publish_baseline . delta
+      +tau . reject . abort . publish_baseline . delta);
+
+init Spec;

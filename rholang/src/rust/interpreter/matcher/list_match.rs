@@ -426,8 +426,12 @@ pub fn first_duplicate_added_var(current_free_map: &FreeMap, free_maps: &[FreeMa
 /// `rholang/tests/matcher_negation_isolation.rs`, and
 /// `rholang/tests/matcher_negation_reduction_witness.rs` carries it out to the
 /// reduction above.
-pub fn aggregate_updates(current_free_map: FreeMap, free_maps: Vec<FreeMap>) -> Option<FreeMap> {
-    if let Some(level) = first_duplicate_added_var(&current_free_map, &free_maps) {
+/// Validate the legacy ordered-delta aggregation contract without cloning or
+/// replacing the caller's current map. The production PDA uses this boundary
+/// before journaled in-place application; the compatibility matcher continues
+/// to call [`aggregate_updates`].
+pub fn validate_update_deltas(current_free_map: &FreeMap, free_maps: &[FreeMap]) -> Option<()> {
+    if let Some(level) = first_duplicate_added_var(current_free_map, free_maps) {
         // Observability, not consensus — there is no cost accounting anywhere in
         // this module, so a counter here cannot move metering.
         metrics::counter!(
@@ -458,6 +462,12 @@ pub fn aggregate_updates(current_free_map: FreeMap, free_maps: Vec<FreeMap>) -> 
 
         return None;
     }
+
+    Some(())
+}
+
+pub fn aggregate_updates(current_free_map: FreeMap, free_maps: Vec<FreeMap>) -> Option<FreeMap> {
+    validate_update_deltas(&current_free_map, &free_maps)?;
 
     // `updatedFreeMap = freeMaps.fold(currentFreeMap)(_ ++ _)`. The fold order is
     // the caller's `matches` BTreeMap order and is deliberately NOT changed.

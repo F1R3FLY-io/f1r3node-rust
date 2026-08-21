@@ -1,0 +1,1 @@
+[ true* . (or_binding_leak + partial_apply) ] false

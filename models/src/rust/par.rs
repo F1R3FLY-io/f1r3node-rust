@@ -181,6 +181,12 @@ impl Par {
         self.components.visit_encoded(visitor);
     }
 
+    /// Cached, byte-native proof that every concrete component endpoint has an
+    /// empty locally-free fold. See [`ParBag::concrete_components_locally_free_are_empty`].
+    pub fn concrete_components_locally_free_are_empty(&self) -> Option<bool> {
+        self.components.concrete_components_locally_free_are_empty()
+    }
+
     pub fn try_visit_decoded<T, E>(
         &self,
         visitor: impl FnMut(T, Multiplicity) -> Result<(), E>,

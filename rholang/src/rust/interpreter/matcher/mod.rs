@@ -1,4 +1,5 @@
 pub mod exports;
+mod free_map_transaction;
 pub mod fold_match;
 pub mod has_locally_free;
 mod lazy_relation;

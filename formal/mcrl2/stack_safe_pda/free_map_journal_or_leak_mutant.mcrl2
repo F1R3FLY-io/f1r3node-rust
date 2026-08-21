@@ -1,0 +1,15 @@
+act
+  start_and, start_or,
+  accept, reject, finish, abort,
+  publish_binding, publish_baseline,
+  or_binding_leak, partial_apply;
+
+proc Mutant =
+    start_and .
+      (tau . tau . accept . finish . publish_binding . delta
+      +tau . tau . reject . abort . publish_baseline . delta)
+  + start_or .
+      (tau . tau . tau . accept . finish . or_binding_leak . publish_binding . delta
+      +tau . tau . tau . reject . abort . publish_baseline . delta);
+
+init Mutant;

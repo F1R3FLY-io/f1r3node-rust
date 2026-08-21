@@ -23,7 +23,8 @@ use models::rhoapi::If;
 use models::rust::canonical_path::decode_trie_path;
 use models::rust::epathmap_trie_codec::EPathMapMode;
 use models::rust::par_bag::{
-    canonical_collection_remainder, canonical_connective_parts, canonical_exact_scalar_expr,
+    canonical_collection_remainder, canonical_connective_parts,
+    canonical_exact_free_var_expr_level, canonical_exact_free_var_par, canonical_exact_scalar_expr,
     canonical_exact_scalar_par, canonical_expr_oneof_tag, canonical_expr_parts, canonical_if_parts,
     canonical_match_parts, canonical_new_parts, canonical_par_connective_used,
     canonical_par_locally_free_is_empty, canonical_receive_parts, canonical_send_parts,
@@ -37,7 +38,7 @@ use models::rust::par_map_type_mapper::ParMapTypeMapper;
 use models::rust::par_set_type_mapper::ParSetTypeMapper;
 use models::rust::rhoapi_ext::{EntryTrie, OwnedEPathMapEntry};
 use models::rust::rholang::bincode_encoder;
-use models::rust::rholang::implicits::{single_expr, vector_par};
+use models::rust::rholang::implicits::vector_par;
 use models::rust::rholang::match_path::{
     encode_match_path, encode_par_match_atom, shares_cow_bincode_identity,
 };
@@ -48,11 +49,17 @@ use rspace_plus_plus::rspace::bag::Bag;
 use rspace_plus_plus::rspace::rho_path::{RhoPathQuery, RhoPathV1, StructuralSequenceEncoder};
 
 use super::exports::*;
+#[cfg(test)]
+use super::free_map_transaction::{
+    reset_stats as reset_free_map_transaction_stats, stats as free_map_transaction_stats,
+    FreeMapTransactionStats,
+};
+use super::free_map_transaction::{BindingDelta, FreeMapCheckpoint, FreeMapTransaction};
 use super::has_locally_free::HasLocallyFree;
 #[cfg(test)]
 use super::lazy_relation::RelationalMatchStats;
 use super::lazy_relation::{EdgeResult, LazyRelation, RelationCursor};
-use super::list_match::aggregate_updates;
+use super::list_match::validate_update_deltas;
 use super::match_pars::match_pars;
 use super::par_count::ParCount;
 use super::r#match::{rho_path_query_atom, rho_path_query_cursor_atom};
@@ -261,6 +268,17 @@ pub(super) fn match_par_with_stats(
 }
 
 #[cfg(test)]
+pub(super) fn match_par_with_transaction_stats(
+    context: &mut SpatialMatcherContext,
+    target: Par,
+    pattern: Par,
+) -> (Option<()>, FreeMapTransactionStats) {
+    reset_free_map_transaction_stats();
+    let result = drive(context, MatchPair::Par(target, pattern));
+    (result, free_map_transaction_stats())
+}
+
+#[cfg(test)]
 pub(super) fn connective_candidate_positions_with_stats(
     targets: Vec<Par>,
     pattern: Par,
@@ -390,10 +408,20 @@ pda_entry!(match_if, If, If);
 pda_entry!(match_receive_bind, ReceiveBind, ReceiveBind);
 pda_entry!(match_case, MatchCase, MatchCase);
 
+/// One target owner shared by a synchronous encoded-connective PDA spine.
+///
+/// The matcher machine is already thread-local (`ListMachine` uses `Rc`), so
+/// an `Arc<Par>` would add atomic traffic without enabling a cross-thread
+/// boundary. `ParBag` and PathMap retain their own thread-safe CoW ownership.
+type EncodedTarget = Rc<Par>;
+
 enum Job {
     Match(Box<MatchPair>),
     EncodedPar(EncodedRegion, EncodedRegion),
-    EncodedConnective(Box<(Par, EncodedRegion)>),
+    EncodedConnective {
+        target: EncodedTarget,
+        pattern: EncodedRegion,
+    },
     EncodedIf(EncodedRegion, EncodedRegion),
     EncodedNew(EncodedRegion, EncodedRegion),
     EncodedSend(EncodedRegion, EncodedRegion),
@@ -414,7 +442,7 @@ enum Frame {
         remaining: Vec<Job>,
     },
     RestoreOnFailure {
-        snapshot: FreeMap,
+        checkpoint: FreeMapCheckpoint,
     },
     AndBranch {
         target: Box<Par>,
@@ -423,28 +451,24 @@ enum Frame {
     OrBranch {
         target: Option<Box<Par>>,
         patterns: std::vec::IntoIter<Par>,
-        // This is the only branch state whose iterator, retained target, and
-        // map together exceed one cache line when the map header is inline.
-        // The map already owns heap nodes; boxing its small root header keeps
-        // every Frame at <= 64 bytes without changing restore semantics.
-        snapshot: Box<FreeMap>,
+        checkpoint: FreeMapCheckpoint,
     },
     EncodedAndBranch {
-        target: Box<Par>,
+        target: EncodedTarget,
         body: EncodedRegion,
         cursor: CanonicalConnectiveChildCursor,
     },
     EncodedOrBranch {
-        target: Option<Box<Par>>,
+        target: Option<EncodedTarget>,
         body: EncodedRegion,
         cursor: CanonicalConnectiveChildCursor,
-        snapshot: Box<FreeMap>,
+        checkpoint: FreeMapCheckpoint,
     },
     Not {
-        snapshot: FreeMap,
+        checkpoint: FreeMapCheckpoint,
     },
     NotSpine {
-        snapshot: FreeMap,
+        checkpoint: FreeMapCheckpoint,
         negated: bool,
     },
     EncodedIf {
@@ -459,19 +483,19 @@ enum Frame {
     },
     ConnectiveCandidate {
         state: Box<ConnectiveCandidates>,
-        snapshot: Option<FreeMap>,
+        checkpoint: Option<FreeMapCheckpoint>,
         remainder: Box<Par>,
     },
     ListEdge {
         machine: Box<ListMachine>,
         target_index: usize,
         candidate_was_seen: bool,
-        snapshot: FreeMap,
+        checkpoint: FreeMapCheckpoint,
     },
     PathEdge {
         machine: Box<PathMachine>,
         target_key: Vec<u8>,
-        snapshot: FreeMap,
+        checkpoint: FreeMapCheckpoint,
     },
 }
 
@@ -572,15 +596,15 @@ fn drive(context: &mut SpatialMatcherContext, root: MatchPair) -> Option<()> {
 }
 
 fn drive_job(context: &mut SpatialMatcherContext, mut job: Job) -> Option<()> {
+    let mut transaction = FreeMapTransaction::new(context);
     let mut frames = FrameStack::new();
 
     loop {
         job = match job {
-            Job::Match(pair) => evaluate_pair(context, *pair, &mut frames),
+            Job::Match(pair) => evaluate_pair(&mut transaction, *pair, &mut frames),
             Job::EncodedPar(target, pattern) => evaluate_encoded_par(target, pattern),
-            Job::EncodedConnective(pair) => {
-                let (target, pattern) = *pair;
-                evaluate_encoded_connective(context, target, pattern, &mut frames)
+            Job::EncodedConnective { target, pattern } => {
+                evaluate_encoded_connective(&mut transaction, target, pattern, &mut frames)
             }
             Job::EncodedIf(target, pattern) => evaluate_encoded_if(target, pattern, &mut frames),
             Job::EncodedNew(target, pattern) => evaluate_encoded_new(target, pattern),
@@ -598,25 +622,25 @@ fn drive_job(context: &mut SpatialMatcherContext, mut job: Job) -> Option<()> {
             }
             Job::ParConnectives(state) => step_par_connectives(*state, &mut frames),
             Job::ConnectiveCandidates(state) => {
-                step_connective_candidates(context, *state, &mut frames)
+                step_connective_candidates(&mut transaction, *state, &mut frames)
             }
-            Job::ListInit(request) => init_list(context, request, &mut frames),
-            Job::List(machine) => step_list(context, *machine, &mut frames),
+            Job::ListInit(request) => init_list(&mut transaction, request, &mut frames),
+            Job::List(machine) => step_list(&mut transaction, *machine, &mut frames),
             Job::PathInit(pair) => {
                 let (target, pattern) = *pair;
-                init_path(context, target, pattern, &mut frames)
+                init_path(&mut transaction, target, pattern, &mut frames)
             }
-            Job::Path(machine) => step_path(context, *machine, &mut frames),
+            Job::Path(machine) => step_path(&mut transaction, *machine, &mut frames),
             Job::Return(result) => match frames.pop() {
-                Some(frame) => resume(context, frame, result, &mut frames),
-                None => return result.then_some(()),
+                Some(frame) => resume(&mut transaction, frame, result, &mut frames),
+                None => return transaction.finish(result),
             },
         };
     }
 }
 
 fn resume(
-    context: &mut SpatialMatcherContext,
+    context: &mut FreeMapTransaction<'_>,
     frame: Frame,
     result: bool,
     frames: &mut FrameStack,
@@ -632,9 +656,9 @@ fn resume(
                 Job::Return(true)
             }
         }
-        Frame::RestoreOnFailure { snapshot } => {
+        Frame::RestoreOnFailure { checkpoint } => {
             if !result {
-                context.free_map = snapshot;
+                context.rollback(checkpoint);
             }
             Job::Return(result)
         }
@@ -648,9 +672,9 @@ fn resume(
         Frame::OrBranch {
             target,
             patterns,
-            snapshot,
+            checkpoint,
         } => {
-            context.free_map = *snapshot;
+            context.rollback(checkpoint);
             if result {
                 Job::Return(true)
             } else if let Some(target) = target {
@@ -666,7 +690,7 @@ fn resume(
             cursor,
         } => {
             if result {
-                start_encoded_and_branch(*target, body, cursor, frames)
+                start_encoded_and_branch(context, target, body, cursor, frames)
             } else {
                 Job::Return(false)
             }
@@ -675,24 +699,27 @@ fn resume(
             target,
             body,
             cursor,
-            snapshot,
+            checkpoint,
         } => {
-            context.free_map = *snapshot;
+            context.rollback(checkpoint);
             if result {
                 Job::Return(true)
             } else if let Some(target) = target {
-                start_encoded_or_branch(context, *target, body, cursor, frames)
+                start_encoded_or_branch(context, target, body, cursor, frames)
             } else {
                 debug_assert!(cursor.is_empty());
                 Job::Return(false)
             }
         }
-        Frame::Not { snapshot } => {
-            context.free_map = snapshot;
+        Frame::Not { checkpoint } => {
+            context.rollback(checkpoint);
             Job::Return(!result)
         }
-        Frame::NotSpine { snapshot, negated } => {
-            context.free_map = snapshot;
+        Frame::NotSpine {
+            checkpoint,
+            negated,
+        } => {
+            context.rollback(checkpoint);
             Job::Return(if negated { !result } else { result })
         }
         Frame::EncodedIf { mut branches } => {
@@ -716,18 +743,18 @@ fn resume(
         }
         Frame::BindOnSuccess { level, value } => {
             if result {
-                context.free_map.insert(level, *value);
+                context.write(level, *value);
             }
             Job::Return(result)
         }
         Frame::ConnectiveCandidate {
             state,
-            snapshot,
+            checkpoint,
             remainder,
         } => {
-            if let Some(snapshot) = snapshot {
+            if let Some(checkpoint) = checkpoint {
                 if !result {
-                    context.free_map = snapshot;
+                    context.rollback(checkpoint);
                 }
             }
             if result {
@@ -742,10 +769,10 @@ fn resume(
             mut machine,
             target_index,
             candidate_was_seen,
-            snapshot,
+            checkpoint,
         } => {
-            let mut produced = std::mem::replace(&mut context.free_map, snapshot);
             if result {
+                let produced = context.take_delta_and_rollback(checkpoint);
                 #[cfg(test)]
                 update_list_relation_stats(|stats| {
                     stats.successful_edge_evaluations += 1;
@@ -761,10 +788,6 @@ fn resume(
                         unreachable!("a remainder edge never suspends in the spatial matcher")
                     }
                 };
-                // The final fold already owns the attempt baseline. Retain
-                // only writes that differ from it instead of duplicating the
-                // complete FreeMap once per successful relation edge.
-                produced.retain(|level, value| context.free_map.get(level) != Some(value));
                 let produced = if produced.is_empty() {
                     machine.relation.record_shared_success(
                         pattern_index,
@@ -782,18 +805,20 @@ fn resume(
                     (*machine).accept_term_edge(target_index, EdgeResult::Shared(produced))
                 }
             } else {
+                context.rollback(checkpoint);
                 Job::List(machine)
             }
         }
         Frame::PathEdge {
             machine,
             target_key,
-            snapshot,
+            checkpoint,
         } => {
-            let produced = std::mem::replace(&mut context.free_map, snapshot);
             if result {
+                let produced = context.take_delta_and_rollback(checkpoint);
                 (*machine).accept_edge(target_key, produced)
             } else {
+                context.rollback(checkpoint);
                 Job::Path(machine)
             }
         }
@@ -819,7 +844,7 @@ fn pair_jobs(pairs: impl IntoIterator<Item = MatchPair>) -> Vec<Job> {
 }
 
 fn evaluate_pair(
-    context: &mut SpatialMatcherContext,
+    context: &mut FreeMapTransaction<'_>,
     pair: MatchPair,
     frames: &mut FrameStack,
 ) -> Job {
@@ -872,6 +897,38 @@ fn whole_target_is_connective_projection_identity(target: &Par) -> bool {
         && target.locally_free().is_empty()
 }
 
+fn sole_free_var_level(pattern: &Par) -> Option<i32> {
+    if pattern.family_cardinality::<Expr>() != 1 || !pattern.all_components_are::<Expr>() {
+        return None;
+    }
+    let mut level = None;
+    pattern.visit_encoded::<Expr>(|entry| {
+        if entry.multiplicity().get() == 1 {
+            level = canonical_exact_free_var_expr_level(entry.payload());
+        }
+    });
+    level
+}
+
+fn concrete_target_components_are_locally_closed(target: &Par) -> bool {
+    target.concrete_components_locally_free_are_empty() == Some(true)
+}
+
+fn sole_free_var_capture_is_admissible(
+    context: &FreeMapTransaction<'_>,
+    target: &Par,
+    level: i32,
+) -> bool {
+    let prior_is_projection_identity = context
+        .free_map()
+        .get(&level)
+        .map(whole_target_is_connective_projection_identity)
+        .unwrap_or(true);
+    prior_is_projection_identity
+        && whole_target_is_connective_projection_identity(target)
+        && concrete_target_components_are_locally_closed(target)
+}
+
 struct ConnectivePlan {
     connective: Connective,
     bounds: (ParCount, ParCount),
@@ -894,13 +951,20 @@ struct ConnectiveCandidates {
 }
 
 fn evaluate_par(
-    context: &SpatialMatcherContext,
+    context: &mut FreeMapTransaction<'_>,
     target: Par,
     mut pattern: Par,
     frames: &mut FrameStack,
 ) -> Job {
     if !pattern.connective_used() {
         return Job::Return(match_pars(&target, &pattern));
+    }
+
+    if let Some(level) = sole_free_var_level(&pattern) {
+        if sole_free_var_capture_is_admissible(context, &target, level) {
+            context.write(level, target);
+            return Job::Return(true);
+        }
     }
 
     // An exact singleton `If` carrier has no AC choice to enumerate. Retain
@@ -912,7 +976,7 @@ fn evaluate_par(
         return match singleton_component_region::<If>(&target) {
             Some(target_if) => {
                 frames.push(Frame::RestoreOnFailure {
-                    snapshot: context.free_map.clone(),
+                    checkpoint: context.checkpoint(),
                 });
                 Job::EncodedIf(target_if, pattern_if)
             }
@@ -923,7 +987,7 @@ fn evaluate_par(
         return match singleton_component_region::<New>(&target) {
             Some(target_new) => {
                 frames.push(Frame::RestoreOnFailure {
-                    snapshot: context.free_map.clone(),
+                    checkpoint: context.checkpoint(),
                 });
                 Job::EncodedNew(target_new, pattern_new)
             }
@@ -934,7 +998,7 @@ fn evaluate_par(
         return match singleton_component_region::<Send>(&target) {
             Some(target_send) => {
                 frames.push(Frame::RestoreOnFailure {
-                    snapshot: context.free_map.clone(),
+                    checkpoint: context.checkpoint(),
                 });
                 Job::EncodedSend(target_send, pattern_send)
             }
@@ -945,7 +1009,7 @@ fn evaluate_par(
         return match singleton_component_region::<Receive>(&target) {
             Some(target_receive) => {
                 frames.push(Frame::RestoreOnFailure {
-                    snapshot: context.free_map.clone(),
+                    checkpoint: context.checkpoint(),
                 });
                 Job::EncodedReceive(target_receive, pattern_receive)
             }
@@ -956,7 +1020,7 @@ fn evaluate_par(
         return match singleton_component_region::<Match>(&target) {
             Some(target_match) => {
                 frames.push(Frame::RestoreOnFailure {
-                    snapshot: context.free_map.clone(),
+                    checkpoint: context.checkpoint(),
                 });
                 Job::EncodedMatch(target_match, pattern_match)
             }
@@ -974,7 +1038,7 @@ fn evaluate_par(
                     EncodedExprOuterRoute::RejectProvenDifferent => Job::Return(false),
                     EncodedExprOuterRoute::Delegate => {
                         frames.push(Frame::RestoreOnFailure {
-                            snapshot: context.free_map.clone(),
+                            checkpoint: context.checkpoint(),
                         });
                         Job::EncodedExpr(target_expr, pattern_expr)
                     }
@@ -991,7 +1055,7 @@ fn evaluate_par(
     if let Some((terminal, negated, has_not)) = pattern.canonical_unary_connective_spine() {
         if has_not {
             frames.push(Frame::NotSpine {
-                snapshot: context.free_map.clone(),
+                checkpoint: context.checkpoint(),
                 negated,
             });
         }
@@ -1048,7 +1112,10 @@ fn evaluate_par(
                 stats.authoritative_connective_root_copies += 1;
                 stats.authoritative_connective_root_bytes += connective.as_slice().len();
             });
-            return Job::EncodedConnective(Box::new((target, connective)));
+            return Job::EncodedConnective {
+                target: Rc::new(target),
+                pattern: connective,
+            };
         }
     }
 
@@ -1619,14 +1686,14 @@ fn step_par_connectives(mut state: ParConnectiveState, frames: &mut FrameStack) 
 }
 
 fn step_connective_candidates(
-    context: &mut SpatialMatcherContext,
+    context: &mut FreeMapTransaction<'_>,
     mut state: ConnectiveCandidates,
     frames: &mut FrameStack,
 ) -> Job {
     let Some((candidate, remainder)) = state.candidates.next() else {
         return Job::Return(false);
     };
-    let snapshot = (!state.free_map_is_unreachable).then(|| context.free_map.clone());
+    let checkpoint = (!state.free_map_is_unreachable).then(|| context.checkpoint());
     // Every candidate except the last needs a reusable connective. Move the
     // final one so singleton candidate searches never clone a recursively
     // nested connective merely to satisfy continuation ownership.
@@ -1644,7 +1711,7 @@ fn step_connective_candidates(
     };
     frames.push(Frame::ConnectiveCandidate {
         state: Box::new(state),
-        snapshot,
+        checkpoint,
         remainder: Box::new(remainder),
     });
     match_job(MatchPair::Connective(candidate, connective))
@@ -1781,56 +1848,31 @@ fn start_par_fields(state: ParConnectiveState, frames: &mut FrameStack) -> Job {
 }
 
 fn evaluate_connective(
-    context: &mut SpatialMatcherContext,
+    context: &mut FreeMapTransaction<'_>,
     target: Par,
     pattern: Connective,
     frames: &mut FrameStack,
 ) -> Job {
     match pattern.connective_instance {
         Some(ConnAndBody(ConnectiveBody { ps })) => {
-            let snapshot = context.free_map.clone();
-            frames.push(Frame::RestoreOnFailure { snapshot });
+            let checkpoint = context.checkpoint();
+            frames.push(Frame::RestoreOnFailure { checkpoint });
             start_and_branch(target, ps.into_iter(), frames)
         }
         Some(ConnOrBody(ConnectiveBody { ps })) => {
             start_or_branch(context, target, ps.into_iter(), frames)
         }
         Some(ConnNotBody(pattern)) => {
-            let snapshot = context.free_map.clone();
-            frames.push(Frame::Not { snapshot });
+            let checkpoint = context.checkpoint();
+            frames.push(Frame::Not { checkpoint });
             match_job(MatchPair::Par(target, pattern))
         }
         Some(VarRefBody(_)) | None => Job::Return(false),
-        Some(ConnBool(_)) => Job::Return(matches!(
-            single_expr(&target),
-            Some(Expr {
-                expr_instance: Some(GBool(_)),
-            })
-        )),
-        Some(ConnInt(_)) => Job::Return(matches!(
-            single_expr(&target),
-            Some(Expr {
-                expr_instance: Some(GInt(_)),
-            })
-        )),
-        Some(ConnString(_)) => Job::Return(matches!(
-            single_expr(&target),
-            Some(Expr {
-                expr_instance: Some(GString(_)),
-            })
-        )),
-        Some(ConnUri(_)) => Job::Return(matches!(
-            single_expr(&target),
-            Some(Expr {
-                expr_instance: Some(GUri(_)),
-            })
-        )),
-        Some(ConnByteArray(_)) => Job::Return(matches!(
-            single_expr(&target),
-            Some(Expr {
-                expr_instance: Some(GByteArray(_)),
-            })
-        )),
+        Some(ConnBool(_)) => Job::Return(single_expr_oneof_tag(&target) == Some(1)),
+        Some(ConnInt(_)) => Job::Return(single_expr_oneof_tag(&target) == Some(2)),
+        Some(ConnString(_)) => Job::Return(single_expr_oneof_tag(&target) == Some(3)),
+        Some(ConnUri(_)) => Job::Return(single_expr_oneof_tag(&target) == Some(4)),
+        Some(ConnByteArray(_)) => Job::Return(single_expr_oneof_tag(&target) == Some(25)),
     }
 }
 
@@ -1846,8 +1888,8 @@ fn record_authoritative_frame_depth(frames: &FrameStack) {
 /// [`EncodedRegion`]; every descendant is a thin Arc/range and every branch
 /// continuation is an explicit PDA frame.
 fn evaluate_encoded_connective(
-    context: &mut SpatialMatcherContext,
-    target: Par,
+    context: &mut FreeMapTransaction<'_>,
+    target: EncodedTarget,
     pattern: EncodedRegion,
     frames: &mut FrameStack,
 ) -> Job {
@@ -1864,7 +1906,7 @@ fn evaluate_encoded_connective(
         });
         let pattern = <Connective as prost::Message>::decode(pattern.as_slice())
             .expect("an authoritative Connective endpoint is canonical");
-        return evaluate_connective(context, target, pattern, frames);
+        return evaluate_connective(context, into_owned_encoded_target(target), pattern, frames);
     };
 
     match parts {
@@ -1873,11 +1915,11 @@ fn evaluate_encoded_connective(
             let body = pattern
                 .child(children.message())
                 .expect("canonical AND body is a subrange of its endpoint");
-            let snapshot = context.free_map.clone();
-            frames.push(Frame::RestoreOnFailure { snapshot });
+            let checkpoint = context.checkpoint();
+            frames.push(Frame::RestoreOnFailure { checkpoint });
             #[cfg(test)]
             record_authoritative_frame_depth(frames);
-            start_encoded_and_branch(target, body, cursor, frames)
+            start_encoded_and_branch(context, target, body, cursor, frames)
         }
         CanonicalConnectiveParts::Or(children) => {
             let cursor = children.cursor();
@@ -1893,11 +1935,11 @@ fn evaluate_encoded_connective(
             #[cfg(test)]
             update_list_relation_stats(|stats| stats.authoritative_not_frames += 1);
             frames.push(Frame::Not {
-                snapshot: context.free_map.clone(),
+                checkpoint: context.checkpoint(),
             });
             #[cfg(test)]
             record_authoritative_frame_depth(frames);
-            encoded_connective_child_job(target, child)
+            encoded_connective_child_job(context, target, child)
         }
         CanonicalConnectiveParts::VarRef | CanonicalConnectiveParts::Absent => Job::Return(false),
         CanonicalConnectiveParts::Predicate { tag, .. } => {
@@ -1909,7 +1951,7 @@ fn evaluate_encoded_connective(
                 9 => 25,
                 _ => unreachable!("canonical predicate Connective tag is in 5..=9"),
             };
-            Job::Return(single_expr_oneof_tag(&target) == Some(expected_expr_tag))
+            Job::Return(single_expr_oneof_tag(target.as_ref()) == Some(expected_expr_tag))
         }
     }
 }
@@ -1927,20 +1969,42 @@ fn single_expr_oneof_tag(target: &Par) -> Option<u32> {
     tag
 }
 
-fn encoded_connective_child_job(target: Par, pattern: EncodedRegion) -> Job {
+fn encoded_connective_child_job(
+    context: &mut FreeMapTransaction<'_>,
+    target: EncodedTarget,
+    pattern: EncodedRegion,
+) -> Job {
+    if let Some(free_var) = canonical_exact_free_var_par(pattern.as_slice()) {
+        if free_var.connective_used()
+            && sole_free_var_capture_is_admissible(context, target.as_ref(), free_var.level())
+        {
+            #[cfg(test)]
+            update_list_relation_stats(|stats| {
+                stats.authoritative_exact_free_var_captures += 1;
+            });
+            context.write(free_var.level(), into_owned_encoded_target(target));
+            return Job::Return(true);
+        }
+    }
+
     if canonical_par_connective_used(pattern.as_slice()) == Some(true) {
         if let Some(connective) = canonical_single_connective_from_par(pattern.as_slice()) {
             let connective = pattern
                 .child(connective)
                 .expect("canonical child Connective is a subrange of its Par");
-            return Job::EncodedConnective(Box::new((target, connective)));
+            return Job::EncodedConnective {
+                target,
+                pattern: connective,
+            };
         }
     }
 
     if exact_scalar_route_enabled() {
         if let Some(pattern_scalar) = canonical_exact_scalar_par(pattern.as_slice()) {
             if !pattern_scalar.connective_used() {
-                if let Some(equal) = exact_scalar_par_matches(&target, pattern_scalar.expr()) {
+                if let Some(equal) =
+                    exact_scalar_par_matches(target.as_ref(), pattern_scalar.expr())
+                {
                     #[cfg(test)]
                     update_list_relation_stats(|stats| {
                         stats.authoritative_exact_scalar_attempts += 1;
@@ -1970,7 +2034,11 @@ fn encoded_connective_child_job(target: Par, pattern: EncodedRegion) -> Job {
                 &pattern.as_slice()[..preview_len]
             )
         });
-    match_job(MatchPair::Par(target, pattern))
+    match_job(MatchPair::Par(into_owned_encoded_target(target), pattern))
+}
+
+fn into_owned_encoded_target(target: EncodedTarget) -> Par {
+    Rc::try_unwrap(target).unwrap_or_else(|shared| shared.as_ref().clone())
 }
 
 /// Return a proven scalar-equality result, or `None` when the target's encoded
@@ -1998,7 +2066,8 @@ fn exact_scalar_par_matches(target: &Par, pattern_expr: &[u8]) -> Option<bool> {
 }
 
 fn start_encoded_and_branch(
-    target: Par,
+    context: &mut FreeMapTransaction<'_>,
+    target: EncodedTarget,
     body: EncodedRegion,
     mut cursor: CanonicalConnectiveChildCursor,
     frames: &mut FrameStack,
@@ -2010,24 +2079,24 @@ fn start_encoded_and_branch(
         .child(pattern)
         .expect("canonical AND child is a subrange of its body");
     if cursor.is_empty() {
-        encoded_connective_child_job(target, pattern)
+        encoded_connective_child_job(context, target, pattern)
     } else {
         #[cfg(test)]
         update_list_relation_stats(|stats| stats.authoritative_and_frames += 1);
         frames.push(Frame::EncodedAndBranch {
-            target: Box::new(target.clone()),
+            target: Rc::clone(&target),
             body,
             cursor,
         });
         #[cfg(test)]
         record_authoritative_frame_depth(frames);
-        encoded_connective_child_job(target, pattern)
+        encoded_connective_child_job(context, target, pattern)
     }
 }
 
 fn start_encoded_or_branch(
-    context: &mut SpatialMatcherContext,
-    target: Par,
+    context: &mut FreeMapTransaction<'_>,
+    target: EncodedTarget,
     body: EncodedRegion,
     mut cursor: CanonicalConnectiveChildCursor,
     frames: &mut FrameStack,
@@ -2038,19 +2107,19 @@ fn start_encoded_or_branch(
     let pattern = body
         .child(pattern)
         .expect("canonical OR child is a subrange of its body");
-    let snapshot = context.free_map.clone();
-    let retained_target = (!cursor.is_empty()).then(|| Box::new(target.clone()));
+    let checkpoint = context.checkpoint();
+    let retained_target = (!cursor.is_empty()).then(|| Rc::clone(&target));
     #[cfg(test)]
     update_list_relation_stats(|stats| stats.authoritative_or_frames += 1);
     frames.push(Frame::EncodedOrBranch {
         target: retained_target,
         body,
         cursor,
-        snapshot: Box::new(snapshot),
+        checkpoint,
     });
     #[cfg(test)]
     record_authoritative_frame_depth(frames);
-    encoded_connective_child_job(target, pattern)
+    encoded_connective_child_job(context, target, pattern)
 }
 
 fn start_and_branch(
@@ -2075,7 +2144,7 @@ fn start_and_branch(
 }
 
 fn start_or_branch(
-    context: &mut SpatialMatcherContext,
+    context: &mut FreeMapTransaction<'_>,
     target: Par,
     mut patterns: std::vec::IntoIter<Par>,
     frames: &mut FrameStack,
@@ -2087,12 +2156,12 @@ fn start_or_branch(
     let Some(pattern) = patterns.next() else {
         return Job::Return(false);
     };
-    let snapshot = context.free_map.clone();
+    let checkpoint = context.checkpoint();
     let retained_target = (patterns.len() != 0).then(|| Box::new(target.clone()));
     frames.push(Frame::OrBranch {
         target: retained_target,
         patterns,
-        snapshot: Box::new(snapshot),
+        checkpoint,
     });
     match_job(MatchPair::Par(target, pattern))
 }
@@ -3603,7 +3672,7 @@ impl ListTargetIndex {
 enum ListAssignment {
     Term {
         pattern_index: usize,
-        free_map: EdgeResult<FreeMap>,
+        free_map: EdgeResult<BindingDelta>,
     },
     Remainder,
 }
@@ -3726,15 +3795,15 @@ struct ListMachine {
     root_pattern: usize,
     seen_targets: ListSeenTargets,
     search: Vec<ListSearchFrame>,
-    relation: LazyRelation<FreeMap>,
-    empty_delta: Rc<FreeMap>,
+    relation: LazyRelation<BindingDelta>,
+    empty_delta: Rc<BindingDelta>,
     merger: Merger,
     remainder: Option<i32>,
     wildcard: bool,
 }
 
 fn init_list(
-    context: &mut SpatialMatcherContext,
+    context: &mut FreeMapTransaction<'_>,
     mut request: ListRequest,
     frames: &mut FrameStack,
 ) -> Job {
@@ -3750,11 +3819,11 @@ fn init_list(
             .patterns
             .pop()
             .expect("the singleton pattern exists");
-        if !pattern.connective_used(context) {
+        if !pattern.connective_used(context.context()) {
             return Job::Return(target.semantic_eq(&pattern));
         }
         frames.push(Frame::RestoreOnFailure {
-            snapshot: context.free_map.clone(),
+            checkpoint: context.checkpoint(),
         });
         return target
             .into_job(pattern, frames)
@@ -3768,18 +3837,16 @@ fn init_list(
             if !request
                 .targets
                 .iter()
-                .all(|value| value.locally_free_is_empty(context))
+                .all(|value| value.locally_free_is_empty(context.context()))
             {
                 return Job::Return(false);
             }
             let prior = context
-                .free_map
+                .free_map()
                 .get(&level)
                 .cloned()
                 .unwrap_or_else(|| vector_par(Vec::new(), false));
-            context
-                .free_map
-                .insert(level, request.merger.merge(prior, request.targets));
+            context.write(level, request.merger.merge(prior, request.targets));
             return Job::Return(true);
         }
     }
@@ -3797,7 +3864,7 @@ fn init_list(
     let mut captures = PathMap::new();
     let candidate_plans = patterns
         .iter()
-        .map(|pattern| pattern.rho_path_candidate_plan(context, &mut captures))
+        .map(|pattern| pattern.rho_path_candidate_plan(context.context(), &mut captures))
         .collect::<Box<[_]>>();
     let needs_target_index = request.remainder.is_some()
         || candidate_plans
@@ -3843,7 +3910,7 @@ fn init_list(
             if remaining == 0 {
                 break;
             }
-            if target.locally_free_is_empty(context) {
+            if target.locally_free_is_empty(context.context()) {
                 *assignment = Some(ListAssignment::Remainder);
                 remaining -= 1;
             }
@@ -3862,7 +3929,7 @@ fn init_list(
         seen_targets,
         search: Vec::new(),
         relation,
-        empty_delta: Rc::new(new_free_map()),
+        empty_delta: Rc::new(BindingDelta::empty()),
         merger: request.merger,
         remainder: request.remainder,
         wildcard: request.wildcard,
@@ -3902,7 +3969,7 @@ impl ListMachine {
         }
     }
 
-    fn accept_term_edge(self, target_index: usize, free_map: EdgeResult<FreeMap>) -> Job {
+    fn accept_term_edge(self, target_index: usize, free_map: EdgeResult<BindingDelta>) -> Job {
         let ListSearchPattern::Term(pattern_index) = self
             .search
             .last()
@@ -3960,7 +4027,7 @@ impl ListMachine {
 }
 
 fn step_list(
-    context: &mut SpatialMatcherContext,
+    context: &mut FreeMapTransaction<'_>,
     mut machine: ListMachine,
     frames: &mut FrameStack,
 ) -> Job {
@@ -4002,7 +4069,7 @@ fn step_list(
                 }
                 #[cfg(test)]
                 update_list_relation_stats(|stats| stats.edge_evaluations += 1);
-                if machine.targets[target_index].locally_free_is_empty(context) {
+                if machine.targets[target_index].locally_free_is_empty(context.context()) {
                     #[cfg(test)]
                     update_list_relation_stats(|stats| {
                         stats.successful_edge_evaluations += 1;
@@ -4078,7 +4145,7 @@ fn step_list(
         #[cfg(test)]
         update_list_relation_stats(|stats| stats.edge_evaluations += 1);
         let pattern = &machine.patterns[pattern_index];
-        if !pattern.connective_used(context) {
+        if !pattern.connective_used(context.context()) {
             if machine.targets[target_index].semantic_eq(pattern) {
                 #[cfg(test)]
                 update_list_relation_stats(|stats| {
@@ -4096,12 +4163,12 @@ fn step_list(
         } else {
             let target = machine.targets[target_index].clone();
             let pattern = pattern.clone();
-            let snapshot = context.free_map.clone();
+            let checkpoint = context.checkpoint();
             frames.push(Frame::ListEdge {
                 machine: Box::new(machine),
                 target_index,
                 candidate_was_seen,
-                snapshot,
+                checkpoint,
             });
             return target
                 .into_job(pattern, frames)
@@ -4110,7 +4177,27 @@ fn step_list(
     }
 }
 
-fn finish_list(context: &mut SpatialMatcherContext, machine: ListMachine) -> Job {
+pub(super) fn apply_update_deltas(
+    context: &mut FreeMapTransaction<'_>,
+    maps: Vec<BindingDelta>,
+) -> bool {
+    let maps = maps
+        .into_iter()
+        .map(BindingDelta::into_map)
+        .collect::<Vec<_>>();
+    if validate_update_deltas(context.free_map(), &maps).is_none() {
+        return false;
+    }
+    // Preserve the predecessor's ordered `BTreeMap::extend` fold exactly, but
+    // route every write through the active undo journal so an enclosing AND,
+    // OR, NOT, list edge, or PathMap edge can still restore its checkpoint.
+    for map in maps {
+        context.extend(map);
+    }
+    true
+}
+
+fn finish_list(context: &mut FreeMapTransaction<'_>, machine: ListMachine) -> Job {
     let ListMachine {
         targets,
         target_index,
@@ -4174,7 +4261,7 @@ fn finish_list(context: &mut SpatialMatcherContext, machine: ListMachine) -> Job
     if remainder.is_some()
         && !remainder_sorted
             .iter()
-            .all(|target| target.locally_free_is_empty(context))
+            .all(|target| target.locally_free_is_empty(context.context()))
     {
         return Job::Return(false);
     }
@@ -4204,23 +4291,20 @@ fn finish_list(context: &mut SpatialMatcherContext, machine: ListMachine) -> Job
         .into_iter()
         .map(|(_, free_map)| free_map.into_owned())
         .collect::<Vec<_>>();
-    let Some(updated) = aggregate_updates(context.free_map.clone(), maps) else {
+    if !apply_update_deltas(context, maps) {
         return Job::Return(false);
-    };
-    context.free_map = updated;
+    }
 
     match remainder {
         None if wildcard || remainder_sorted.is_empty() => Job::Return(true),
         None => Job::Return(false),
         Some(level) => {
             let prior = context
-                .free_map
+                .free_map()
                 .get(&level)
                 .cloned()
                 .unwrap_or_else(|| vector_par(Vec::new(), false));
-            context
-                .free_map
-                .insert(level, merger.merge(prior, remainder_sorted));
+            context.write(level, merger.merge(prior, remainder_sorted));
             Job::Return(true)
         }
     }
@@ -4244,13 +4328,13 @@ enum PathPattern {
 #[derive(Clone)]
 struct PathAssignment {
     pattern: PathPattern,
-    free_map: FreeMap,
+    free_map: BindingDelta,
 }
 
 struct PathSearchFrame {
     pattern: PathPattern,
     next_target: Vec<u8>,
-    pending: Option<(Vec<u8>, FreeMap)>,
+    pending: Option<(Vec<u8>, BindingDelta)>,
 }
 
 #[derive(Clone, Copy)]
@@ -4272,7 +4356,7 @@ struct PathMachine {
 }
 
 fn init_path(
-    context: &mut SpatialMatcherContext,
+    context: &mut FreeMapTransaction<'_>,
     target: EPathMap,
     pattern: EPathMap,
     frames: &mut FrameStack,
@@ -4345,7 +4429,7 @@ fn take_single_path_entry(map: EPathMap) -> Option<OwnedEPathMapEntry> {
 }
 
 fn init_single_path(
-    context: &mut SpatialMatcherContext,
+    context: &mut FreeMapTransaction<'_>,
     target: EPathMap,
     pattern: EPathMap,
     frames: &mut FrameStack,
@@ -4412,7 +4496,7 @@ fn init_single_path(
         _ => return Job::Return(false),
     };
     frames.push(Frame::RestoreOnFailure {
-        snapshot: context.free_map.clone(),
+        checkpoint: context.checkpoint(),
     });
     match_job(pair)
 }
@@ -4440,7 +4524,7 @@ impl PathMachine {
         }
     }
 
-    fn accept_edge(mut self, target_key: Vec<u8>, free_map: FreeMap) -> Job {
+    fn accept_edge(mut self, target_key: Vec<u8>, free_map: BindingDelta) -> Job {
         self.seen.insert(&target_key, ());
         let frame = self
             .search
@@ -4484,7 +4568,7 @@ impl PathMachine {
 }
 
 fn step_path(
-    context: &mut SpatialMatcherContext,
+    context: &mut FreeMapTransaction<'_>,
     mut machine: PathMachine,
     frames: &mut FrameStack,
 ) -> Job {
@@ -4512,18 +4596,17 @@ fn step_path(
         match frame.pattern.clone() {
             PathPattern::Remainder => {
                 if path_target_is_concrete(&machine.target, &target_key) {
-                    let produced = context.free_map.clone();
-                    return machine.accept_edge(target_key, produced);
+                    return machine.accept_edge(target_key, BindingDelta::empty());
                 }
             }
             PathPattern::Set(pattern) => {
                 let target = decode_trie_path(&target_key)
                     .expect("set-mode EPathMap keys are canonical Par paths");
-                let snapshot = context.free_map.clone();
+                let checkpoint = context.checkpoint();
                 frames.push(Frame::PathEdge {
                     machine: Box::new(machine),
                     target_key,
-                    snapshot,
+                    checkpoint,
                 });
                 return match_job(MatchPair::Par(target, pattern.as_ref().clone()));
             }
@@ -4541,11 +4624,11 @@ fn step_path(
                     .expect("PathMap target mode was checked")
                     .expect("a PathMap candidate key names a value")
                     .clone();
-                let snapshot = context.free_map.clone();
+                let checkpoint = context.checkpoint();
                 frames.push(Frame::PathEdge {
                     machine: Box::new(machine),
                     target_key,
-                    snapshot,
+                    checkpoint,
                 });
                 return match_job(MatchPair::Par(target_value, pattern_value.as_ref().clone()));
             }
@@ -4559,11 +4642,11 @@ fn step_path(
                     .expect("PathMap target mode was checked")
                     .expect("a PathMap candidate key names a value")
                     .clone();
-                let snapshot = context.free_map.clone();
+                let checkpoint = context.checkpoint();
                 frames.push(Frame::PathEdge {
                     machine: Box::new(machine),
                     target_key,
-                    snapshot,
+                    checkpoint,
                 });
                 return match_job(MatchPair::ParPair((key, value), pattern.as_ref().clone()));
             }
@@ -4588,7 +4671,7 @@ fn path_target_is_concrete(target: &EPathMap, key: &[u8]) -> bool {
     }
 }
 
-fn finish_path(context: &mut SpatialMatcherContext, machine: PathMachine) -> Job {
+fn finish_path(context: &mut FreeMapTransaction<'_>, machine: PathMachine) -> Job {
     let mut remainder_keys =
         matches!(machine.remainder, PathRemainder::Free(_)).then(pathmap::PathMap::new);
     let mut maps = Vec::with_capacity(machine.assignments.val_count());
@@ -4601,10 +4684,9 @@ fn finish_path(context: &mut SpatialMatcherContext, machine: PathMachine) -> Job
         maps.push(assignment.free_map);
     }
 
-    let Some(updated) = aggregate_updates(context.free_map.clone(), maps) else {
+    if !apply_update_deltas(context, maps) {
         return Job::Return(false);
-    };
-    context.free_map = updated;
+    }
     if let PathRemainder::Free(level) = machine.remainder {
         let entries = machine
             .target
@@ -4612,14 +4694,14 @@ fn finish_path(context: &mut SpatialMatcherContext, machine: PathMachine) -> Job
             .select_encoded_keys(&remainder_keys.expect("free remainder collected a key mask"));
         let remainder_map = EPathMap::new(entries, Vec::new(), false, None);
         let bound = context
-            .free_map
+            .free_map()
             .get(&level)
             .cloned()
             .unwrap_or_default()
             .with_exprs(vec![Expr {
                 expr_instance: Some(EPathmapBody(remainder_map)),
             }]);
-        context.free_map.insert(level, bound);
+        context.write(level, bound);
     }
     Job::Return(true)
 }

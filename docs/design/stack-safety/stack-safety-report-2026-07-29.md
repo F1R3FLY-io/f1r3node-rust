@@ -12,10 +12,11 @@
 
 **Repository** `f1r3node-rust-mettail`, branch `feature/mettail`
 **Companion repository** `mettail-rust`, branch `feature/rho-native-set-automata` (§5.6)
-**Report date** 2026-07-29, revised through 2026-08-20
+**Report date** 2026-07-29, revised through 2026-08-21
 **Measurement anchor** `f1r3node-rust-mettail@e67a6aaa` · `mettail-rust@b0aa4e09` (original measurement tree `8853f839`)
-**Living closure head** this checkpoint, based on `f1r3node-rust-mettail@1ee329be4`
-(complete transient `ParConstruction` planning across normalization, substitution, and evaluation,
+**Living closure head** this checkpoint, based on `f1r3node-rust-mettail@d06006e07`
+(drive-local `FreeMap` journaling and byte-native exact FreeVar capture following complete byte-native
+recursive matcher-family coverage, and complete transient `ParConstruction` planning across normalization, substitution, and evaluation,
 following canonical-protobuf `ParBag` keys with prepared typed lookup, direct trie-to-protobuf
 emission, canonical ACT import validation, and byte-native exact-key EPathMap
 subtraction/selection with one moving map write zipper, following adaptive exact-key/moving-zipper
@@ -265,6 +266,7 @@ Abbreviations used throughout are ABI (application binary interface), CBR (conse
 | **SS-A13** | this checkpoint | f1r3node | complete the existing spatial-matcher PDA and its PathMap Bag algebra for the ninth `If` family; replace the artificial `ParCount` top 1,000 with the logical `u64::MAX` top intersected with the finite target | omitted family / cardinality ceiling $`\rightarrow`$ explicit three-child PDA and multiplicity-lazy eight-family partitions; depth **4,096** on **128 KiB** after SS-A14; compressed multiplicity **1,001** for every partitioned family | **no** — semantic and limit completeness on the existing PDA | [5.29](#529-parbag-family-and-count-domain-completeness-ss-a13-ss-a14-ss-y9) |
 | **SS-A14** | this checkpoint | f1r3node | nested `If` matching: repeated decoded suffix materialization $`\rightarrow`$ canonical-protobuf byte cursor over one shared immutable ParBag endpoint buffer | predecessor depth 128 match **4.277937 s** debug $`\rightarrow`$ release **55.002 µs**; treatment depth **4,096** **1.5387 ms**; allocated-byte and allocation-count ladders remain linear in encoded input; **128 KiB** native stack | **no** — heap/time repair inside the existing matcher PDA; exact verdict, complete `FreeMap`, rollback, schema, and unordered-`Par` semantics retained | [5.29](#529-parbag-family-and-count-domain-completeness-ss-a13-ss-a14-ss-y9) |
 | **SS-A15** | this checkpoint | f1r3node | generalize the shared canonical-protobuf matcher cursor through recursive New/Send/Receive/Match/Expr/Connective families and feed borrowed ESet/EMap members into the existing unordered Bag/PathMap ListPDA | all **15** named recursive families reach depth **4,096** on **128 KiB**; AND/OR additionally reach depth **20,000** on **256 KiB** in debug and release; allocation count and bytes remain subquadratic from depth 128 to 1,024; ESet depth-128 debug diagnostic **3.009 s $`\rightarrow`$ 0.825 ms**, EMap **1.609 s $`\rightarrow`$ 1.099 ms**; exact scalar children are **6.67×** faster than the decoder control at AND depth 4,096 | **no** — exact matcher verdict, complete `FreeMap`, rollback, unordered backtracking/remainders, canonical bytes, and parallel semantics retained | [5.30](#530-general-recursive-family-byte-cursor-and-unordered-collection-closure-ss-a15-ss-y10) |
+| **SS-A16** | this checkpoint | f1r3node | whole-`FreeMap` backtracking snapshots $`\rightarrow`$ one drive-local undo journal; sole-FreeVar eight-family reconstruction $`\rightarrow`$ one exact write; repeated target ownership in encoded Connective frames $`\rightarrow`$ one thread-local `Rc<Par>` | retained rollback state $`\Theta(d^2) \rightarrow \Theta(d)`$ on the depth-$`d`$ binding spine; depth **20,000** succeeds and deepest refusal restores the root on **256 KiB** with exactly one journal write per level; depth-1,024 allocations **168,188 $`\rightarrow`$ 240** and requested bytes **83,963,573 $`\rightarrow`$ 2,022,886** | **no** — the journal refines snapshots and the target owner is matcher-local only; CBR-065 records atomic root refusal as a corrective nonconsensus ruling | [5.31](#531-drive-local-freemap-undo-journal-and-exact-freevar-capture-compression-ss-a16) |
 | **SS-B1** | `a929a2d6` | f1r3node | expression-evaluator SCC $`\rightarrow`$ `eval_drive` | overflow $`\approx`$ 1.5k $`\rightarrow`$ OK at 50,000 | **yes** | [5.2.1](#521-the-expression-evaluator-trampoline-a929a2d6) |
 | **SS-B2** | `29856679`, `55b97f84`, `a0a50473` | f1r3node | five async join sites detached | 300 s $`\rightarrow`$ **93.7 s CPU** | **yes** (heap chain) | [5.2.2](#522--the-tokio-fire-and-forget-driver--establishing-the-mechanism-not-assuming-it) |
 | **SS-B3** | `9843e4b6` | f1r3node | `StackGrowingFuture` + `stacker` **deleted** | — | dependency removed | [5.2.2](#522--the-tokio-fire-and-forget-driver--establishing-the-mechanism-not-assuming-it) |
@@ -8618,21 +8620,21 @@ requested bytes for matching only; construction is outside the measurement closu
 
 | family | depth 128 | depth 1,024 |
 |---|---:|---:|
-| New | 219 / 234,484 B | 231 / 1,304,308 B |
-| Send | 218 / 213,778 B | 230 / 1,138,450 B |
-| Receive | 221 / 300,818 B | 233 / 1,834,770 B |
-| Match | 217 / 192,274 B | 229 / 966,418 B |
-| ENot | 217 / 188,645 B | 229 / 937,701 B |
-| EPlus | 353 / 272,688 B | 1,264 / 1,613,104 B |
-| EList | 602 / 240,658 B | 3,302 / 1,353,490 B |
-| ETuple | 601 / 219,154 B | 3,301 / 1,181,458 B |
-| EMethod | 1,123 / 378,027 B | 7,410 / 2,459,290 B |
-| EMatches | 219 / 235,083 B | 231 / 1,308,491 B |
-| ESet | 864 / 359,719 B | 5,359 / 2,309,415 B |
-| EMap | 1,370 / 331,064 B | 9,449 / 2,083,913 B |
-| Connective NOT | 177 / 117,696 B | 183 / 393,664 B |
-| Connective AND | 995 / 507,871 B | 6,386 / 3,478,100 B |
-| Connective OR, late success | 1,235 / 477,094 B | 8,418 / 3,260,955 B |
+| New | 86 / 149,334 B | 98 / 964,694 B |
+| Send | 85 / 133,216 B | 97 / 835,680 B |
+| Receive | 88 / 198,752 B | 100 / 1,359,968 B |
+| Match | 84 / 116,832 B | 96 / 704,608 B |
+| ENot | 97 / 157,457 B | 115 / 1,035,537 B |
+| EPlus | 234 / 245,546 B | 1,151 / 1,743,658 B |
+| EList | 483 / 215,072 B | 3,189 / 1,496,352 B |
+| ETuple | 481 / 182,304 B | 3,187 / 1,234,208 B |
+| EMethod | 1,005 / 360,531 B | 7,298 / 2,664,696 B |
+| EMatches | 100 / 207,411 B | 118 / 1,434,931 B |
+| ESet | 745 / 333,607 B | 5,246 / 2,448,167 B |
+| EMap | 1,248 / 290,882 B | 9,333 / 2,108,061 B |
+| Connective NOT | 38 / 76,006 B | 53 / 599,270 B |
+| Connective AND | 312 / 309,166 B | 2,119 / 2,446,303 B |
+| Connective OR, late success | 300 / 290,165 B | 2,107 / 2,312,614 B |
 
 Every count and byte ladder passes the preregistered subquadratic classifier; an explicit quadratic
 control is rejected. Input bytes also remain linear in depth, preventing a compressed-input
@@ -8679,6 +8681,222 @@ fork, or alternate recursive fallback was introduced. A future protobuf-to-RMP1 
 encoded collection candidate domains further; the present universal domain is a conservative
 performance opportunity, not a correctness or stack-safety deferral. Complete release-workspace
 validation remains a separate gate and is not implied by these focused results.
+
+### 5.31 Drive-local `FreeMap` undo journal and exact FreeVar capture compression [SS-A16]
+
+#### 5.31.1 Defect and hypothesis
+
+The matcher PDA was stack-safe, but each speculative AND, OR, NOT, unordered-list, and EPathMap edge
+still cloned the complete `FreeMap` before descent. A depth-$`d`$ binding spine therefore retained
+maps of sizes zero through $`d - 1`$: stack usage was constant, while rollback storage and copy work
+could sum to $`\Theta(d^2)`$. A static inventory found 23 whole-map clone sites feeding eight frame
+variants, plus list/path edge snapshots and their delta aggregation. **DERIVED** from the predecessor
+source at the SS-A15 checkpoint.
+
+The hypothesis was that the snapshots were an implementation of a transaction, not part of the
+matching relation. Recording only each completed write's previous value should reproduce every
+snapshot restore while retaining $`\Theta(w)`$ undo entries for $`w`$ completed uncommitted writes.
+The depth corollary requires a separate bound on writes per level; it is not claimed for arbitrary
+width or retry schedules.
+
+#### 5.31.2 Architecture and literate algorithm
+
+`FreeMapTransaction` exists only for one `drive_job` invocation and owns the mutable borrow of the
+public `SpatialMatcherContext`. A checkpoint is an index into an undo vector. `write` reserves the
+undo slot before mutating the `BTreeMap`, inserts the value, and records the prior value. Rollback
+walks entries in reverse and either restores the prior value or removes a newly introduced level.
+The transaction's `Drop` performs root rollback during unwinding; successful root completion clears
+history without changing the committed map.
+
+List and EPathMap edges no longer return full maps. `take_delta_and_rollback` reserves an observation
+slot for every post-checkpoint write before mutation, restores occupied entries in place, removes
+new entries, and truncates the journal before allocating the deduplicated `BindingDelta`. A panic
+before restoration therefore leaves the complete undo segment for `Drop`; a panic after restoration
+finds the public map already at its checkpoint. The delta retains only final values and omits values
+equal to the checkpoint baseline. All deltas are validated for duplicate newly-bound levels before
+the first journaled application, so refusal cannot publish a prefix. The public matcher context,
+`FreeMap` type, list ordering witness, PathMap membership authority, and rollback equations remain
+unchanged.
+
+```pseudocode
+ALGORITHM JournalledAttempt(checkpoint, operation)
+  result := operation()
+  IF result is success THEN
+    delta := final values written since checkpoint
+    ROLLBACK entries after checkpoint in reverse order
+    RETURN delta
+  ELSE
+    ROLLBACK entries after checkpoint in reverse order
+    RETURN refusal
+  END IF
+END ALGORITHM
+
+ALGORITHM CommitDeltas(deltas)
+  VALIDATE every newly introduced level across all deltas
+  IF validation refuses THEN RETURN refusal END IF
+  FOR EACH delta IN canonical relation order DO
+    FOR EACH binding IN delta key order DO JournalledWrite(binding) END FOR
+  END FOR
+  RETURN success
+END ALGORITHM
+```
+
+The sole-FreeVar case removes a second constant factor. The predecessor reconstructed the captured
+`Par` through all eight concrete-family mergers and journaled each intermediate. Directly writing
+the target is equivalent only when (1) the pattern contains exactly one occurrence of one FreeVar,
+(2) target and prior binding contain no Connective family and have identity root summaries, and
+(3) every concrete target endpoint is locally closed. The first proof reads the sole Expr endpoint's
+canonical EVar/Var framing directly; it does not call `single_expr`, whose decoded route would
+reconstruct the complete suffix of an unrelated recursive Expr at every enclosing level. The third
+proof scans distinct prefix-compressed ParBag endpoints, never expands multiplicity, and skips
+recursive child messages by their canonical protobuf lengths. Its derived result is stored beside
+the ParBag root and shared by CoW clones; mutation invalidates it with the other derived byte
+projections. Any unproved condition enters the complete eight-family machine. This admits the empty
+`Par`, scalar values, mixed families, compressed multiplicities, and already-deep target values only
+when the captured value is exactly the legacy projection.
+
+The selected implementation reaches those endpoints through the Bag's relative-prefix PathMap
+zipper. The family prefix is positioned once; the zipper then yields borrowed suffixes and
+multiplicities without rebuilding absolute keys, expanding duplicate occurrences, or constructing a
+parallel index. A proven exact canonical FreeVar child writes the already-authoritative target
+directly through `FreeMapTransaction::write`. PathMap remains the component and multiplicity
+authority, and its persistent copy-on-write root and mutation semantics are unchanged.
+
+Encoded Connective descent also retains one target owner for the complete synchronous drive.
+Explicit child frames carry `Rc<Par>` clones rather than cloning the target `Par` and its PathMap
+root at every branch. This `Rc` is deliberately confined to the thread-local matcher machine: no
+`Rc` value enters `Par`, PathMap, RSpace, a serializer, a hash, or a cross-thread interface. An
+atomic `Arc` would therefore add synchronization traffic without adding a valid ownership
+capability. The underlying `ParBag` continues to use its existing PathMap/auxiliary CoW ownership;
+only the ephemeral PDA's references to the same immutable target are non-atomically
+counted.
+
+#### 5.31.3 Correctness, formal refinement, and anti-vacuity
+
+The executable short-trace oracle exhausts all $`9^4 = 6{,}561`$ four-operation traces over two
+levels, three values, checkpoint, rollback, and delta extraction, under both successful and refused
+root completion. After every valid operation it compares the journal map with an independent
+snapshot model; extraction additionally replays the returned delta and reconstructs the exact
+pre-rollback map. Nested rollback, repeated overwrite, baseline-equal omission, successful commit,
+root refusal, matcher-drive unwinding, and failpoints before reservation, after reservation, after
+checkpoint restoration, during delta construction, and after delta construction have dedicated
+witnesses.
+
+The matcher differential passes **30/30** cases against the frozen recursive equation, including
+AND/OR/NOT isolation, list/path reassignment, EPathMap remainders, eligible and ineligible prior
+bindings, root metadata, inactive Connectives, the one-write route before singleton-Expr dispatch,
+and shared-target ownership across accepting and refusing encoded branches. A deliberately
+inconsistent target whose empty root summary hides a locally-free `If`
+endpoint proves the closure gate is non-vacuous: it enters the complete machine and refuses. The
+recursive oracle leaves an intermediate empty capture on that failed root; the transaction restores
+the entry map. CBR-065 records why atomic failure is the corrected contract rather than claiming
+byte-for-byte agreement with that leak.
+
+A source-structure control confines the direct classifier and rejects either decoded
+`single_expr` classification or `try_visit_decoded` closure inspection. Canonical-byte unit tests
+cover the complete signed FreeVar level domain, reject BoundVar, Wildcard, truncated, and malformed
+frames, distinguish component-local metadata from an inconsistent root summary, and exercise CoW
+cache sharing plus mutation invalidation. The recursive-family allocation gate is the end-to-end
+control: before the byte-native classifier, nested ENot patterns consumed **34,073 / 1,695,990**
+allocations at depths 128 / 1,024; the isolated selected-classifier treatment consumed **123 / 141**,
+the panic-atomic pre-sharing checkpoint consumed **125 / 143**, and the selected relative-zipper plus
+shared-target implementation consumes **97 / 115**. These historical causal rows remain in the
+durable TSV rather than being overwritten by the final result. The complete 15-family slope matrix
+passes, so the repair is not accepted on the terminal microcase alone.
+
+Rocq refines journal write, nested rollback, delta extraction/replay, validate-before-apply,
+AND/OR/NOT control, root refusal, and abort to the existing snapshot equations without axioms or
+admitted goals. Verus checks the executable one-key projection with `--no-cheating`; TLA+ checks a
+finite lockstep state machine and action witnesses; mCRL2 checks branching bisimulation with the
+atomic snapshot contract. Forward rollback, truncated outer history, first-write delta, partial
+application, OR binding leakage, missing Drop rollback, and checkpoint-boundary mutations are
+explicit controls that the corresponding model must reject. Concrete `Par` equality, `BTreeMap`
+internals, allocation failure, and protobuf canonicality remain executable-boundary obligations and
+are not overstated as theorem-kernel results.
+
+The capped aggregate run on 2026-08-21 passes all five backends. Rocq compiles the journal theory
+and both capstones are closed under the global context. Verus reports **15 verified, 0 errors** for
+the journal file with `--no-cheating`. TLC exhaustively generates **2,497,772** states and finds
+**936,053 distinct** states to depth 8 for the journal model. The mCRL2 implementation and atomic
+specification are branching-bisimilar; both the OR-leak and partial-apply mutants are not, and each
+violates the no-leak property. Every tool runs under a 1 GiB zero-swap inner ceiling inside the 6 GiB
+aggregate scope. **MEASURED (f)** by `scripts/check-stack-safe-pda-proofs.sh`.
+
+#### 5.31.4 Resource results
+
+The fixed-stack gate constructs 20,000 nested binding conjunctions. Success performs exactly 20,000
+journal writes, commits 20,000 bindings, and performs no rollback. Deepest-terminal refusal performs
+exactly 20,000 writes and 20,000 reverse restorations, leaving the initial map empty. Both complete
+on a 256 KiB native stack. Retained journal entries therefore equal depth for this measured family;
+the universal theorem remains the more precise bound in completed uncommitted writes.
+
+The counting allocator excludes target/pattern construction and measures matching only. The control
+already uses the new journal but reconstructs each sole-FreeVar capture through eight family
+passes. The selected treatment combines the three-condition byte-native one-write rule, relative
+PathMap zipper visitation, the CoW-shared component-closure proof, and one thread-local `Rc<Par>`
+target across the encoded Connective frames. Input size is 3,128 bytes at depth 128 and 26,632 bytes
+at depth 1,024. Accept and deepest-refusal rows are identical.
+
+| metric | depth 128 control | depth 128 treatment | depth 1,024 control | depth 1,024 treatment |
+|---|---:|---:|---:|---:|
+| allocations | 21,076 | 72 (**-99.66%**) | 168,188 | 240 (**-99.86%**) |
+| requested bytes | 10,495,146 | 252,311 (**-97.60%**) | 83,963,573 | 2,022,886 (**-97.59%**) |
+
+The final treatment remains linear across the eightfold depth increase, and the permanent classifier
+rejects a synthetic quadratic control. No allocator sample is claimed for the pre-journal whole-map
+snapshot implementation: its class change is established by the closed source inventory, the
+universal refinement/size theorem, the exhaustive trace oracle, and the exact journal counters. The
+eight-family control, both intermediate one-write checkpoints, and selected treatment are preserved in
+[`measurements/spatial-matcher-freemap-journal-2026-08-21.tsv`](measurements/spatial-matcher-freemap-journal-2026-08-21.tsv).
+
+The converse shape captures a recursively nested ENot target under one root FreeVar. At depths 128
+and 1,024, encoded input grows 1,105 $`\rightarrow`$ 9,169 bytes while matching grows only 18
+$`\rightarrow`$ 24 allocations; requested bytes grow 43,184 $`\rightarrow`$ 329,904. The immediately
+preceding treatment's 38 / 44 allocations and 60,894 / 424,670 requested bytes remain as historical
+rows. This gate would reconstruct the complete suffix if either the pattern classifier or
+target-closure proof returned to decoded endpoints. **MEASURED (f)** in the same debug binary and counting
+allocator; the durable TSV records the final log digest.
+
+A headless Heaptrack execution supplies an independent whole-process allocation profile at depth
+1,024. The control records **2,473,704** allocation calls, **274,929** temporary allocations,
+**4.21 M** peak heap, and **17.36 M** peak resident set size (RSS), including profiler overhead. The
+selected implementation records **203,742** calls (**-91.76%**), **12,785** temporary allocations
+(**-95.35%**), the same **4.21 M** peak heap, and **17.15 M** peak RSS. Peak heap therefore does not
+move at the profiler's displayed precision even though allocation churn falls 12.14-fold; this is
+not presented as a peak-memory improvement. The control and final compressed profiles have SHA-256
+digests `17bdd308a85a94d8811904b2ea701e152cda23b5d02cb9158cd580b4be399740` and
+`df57fb230edea8f3b4dc0a72eaf3a2879aace2740a867f6ebc569a8ab1959b20`, respectively. **MEASURED
+(f).**
+
+Callgrind measures the final whole-process instruction ladder at depths 128 / 256 / 512 / 1,024 as
+**95,500,018 / 189,949,341 / 379,388,348 / 761,358,689 `Ir`**. The endpoint exponent is
+**0.998334**, consistent with linear work; the depth-1,024 endpoint is **25.928%** below the prior
+1,027,863,166-`Ir` checkpoint. The four raw digests are recorded beside their rows in the durable
+TSV. This is deterministic work evidence for one binary, not a portable cycle or wall-clock claim.
+
+Massif's final whole-process peak is **550,624 B** at depth 128 and **4,338,152 B** at depth 1,024.
+Fixture construction dominates these peaks, and they remain near the prior values; the result does
+not establish a matcher-only peak-heap reduction. The depth-20,000 fixed-stack run completes in
+**2.70 s** with **77,988 KiB** peak RSS and zero swap, while retaining the 256 KiB native worker
+stack and exact success/refusal journal counters.
+
+The final AMD uProf 5.3 headless report records **0.410 s** of application CPU samples. Its leading
+symbols have moved to varint/canonical iteration, PathMap `to_next_get_val`, and `BTreeMap` FreeMap
+search; the removed per-level `Box` and `Par` clone roots are absent. This is causal attribution for
+the profiled depth-1,024 run, not proof that those remaining symbols dominate every RSpace workload.
+The report digest is `93d221e6c2f6eddeca305a89d4a5b571fe3f613e74c1422cccc4c444278bf2a0`.
+**MEASURED (f).**
+
+#### 5.31.5 Residuals and scope
+
+No site in the production heterogeneous matcher PDA directly clones, assigns, inserts into, or
+replaces the complete `FreeMap`; a structural gate pins that closed inventory in
+`spatial_matcher_pda.rs`. The separate compatibility matcher remains outside this conversion and
+outside this claim. No native recursion, stack-size increase,
+`stacker`, traversal cap, decoded `Vec<Par>` PathMap shadow, element sort, or PathMap fork is
+introduced. This section closes rollback retention and the exact FreeVar constant factor. Candidate
+mask retention, exact-scalar replicated matching, and cursor/body pairing remain separately named
+children of the campaign rather than being hidden inside this result.
 
 ---
 
@@ -9491,6 +9709,8 @@ done
 | [`measurements/epathmap-set-subtract-into-2026-08-17.tsv`](measurements/epathmap-set-subtract-into-2026-08-17.tsv) | experiment 256's whole-map/destructive-root set subtraction, all 480 paired raw timings across eight cells, exact EntryTrie/EPM1 and operand non-mutation guards, resources, finalized run digests, robust rejection, and retained production disposition (§5.16.7.11) |
 | [`measurements/parbag-exact-membership-2026-08-17.tsv`](measurements/parbag-exact-membership-2026-08-17.tsv) | experiment 257's legacy repeated-vector/typed `ParBag` exact-membership comparison, all 1,312 raw observations across eight cardinality/topology cells, crossover diagnostics, resource envelope, log digest, and accepted primary decision (§5.16.5.10) |
 | [`measurements/parbag-prepared-key-membership-2026-08-17.tsv`](measurements/parbag-prepared-key-membership-2026-08-17.tsv) | experiment 258's dynamic-RPB2/prepared-key comparison, all 1,312 raw observations and eight summaries, accepted aggregate decision, failed every-cell 0.50 auxiliary target, resource envelope, log digest, and finalized run digests (§5.27) |
+| [`measurements/encoded-connective-branching-2026-08-20.tsv`](measurements/encoded-connective-branching-2026-08-20.tsv) | SS-A15/experiment 302's decoded control and exact canonical-byte treatment, Criterion populations, allocation ladders, and AMD uProf attribution (§5.30) |
+| [`measurements/spatial-matcher-freemap-journal-2026-08-21.tsv`](measurements/spatial-matcher-freemap-journal-2026-08-21.tsv) | SS-A16's journal controls, intermediate and final exact-FreeVar treatments, deep-target capture, Heaptrack allocation/RSS, Callgrind instruction, Massif peak, and AMD uProf hotspot evidence (§5.31) |
 | [`../pathmap/measurements/epm1-fixed-scale-2026-08-03.tsv`](../pathmap/measurements/epm1-fixed-scale-2026-08-03.tsv) | the EPM1 fixed-scale benchmark (PathMap report §5.4) |
 
 **Volatile (`/tmp`) run logs** — these do not survive a reboot; the regeneration commands of

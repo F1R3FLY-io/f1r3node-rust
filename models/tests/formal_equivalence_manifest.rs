@@ -107,6 +107,7 @@ fn every_repository_boundary_pda_has_one_production_proof_and_oracle_binding() {
         "node::RhoExpr::Drop",
         "rholang::SpatialMatcher heterogeneous PDA",
         "rholang::SpatialMatcher state isolation",
+        "rholang::FreeMap drive-local transaction",
         "rholang::Encoded Connective authoritative PDA",
         "rholang::Encoded Connective child metadata dispatch",
         "rholang::Encoded Connective root direct-match admission",
@@ -197,8 +198,10 @@ fn rocq_kernel_contains_no_unproved_declarations() {
     for relative in [
         "formal/rocq/stack_safe_pda/theories/StackSafePDA.v",
         "formal/rocq/stack_safe_pda/theories/EPathMap.v",
+        "formal/rocq/stack_safe_pda/theories/Bag.v",
         "formal/rocq/stack_safe_pda/theories/EPM1.v",
         "formal/rocq/stack_safe_pda/theories/SpatialMatcher.v",
+        "formal/rocq/stack_safe_pda/theories/FreeMapJournal.v",
     ] {
         let source = read_repository_file(relative);
         for forbidden in ["Admitted.", "admit.", "Axiom "] {
@@ -228,4 +231,129 @@ fn verus_range_and_worklist_proof_is_non_vacuous_and_runs_without_cheating() {
     let runner = read_repository_file("scripts/check-stack-safe-pda-proofs.sh");
     assert!(runner.contains("--no-cheating --num-threads 1"));
     assert!(runner.contains("formal/verus/epathmap_canonical_worklist.rs"));
+}
+
+#[test]
+fn verus_freemap_journal_proof_is_non_vacuous_and_runs_without_cheating() {
+    let proof = read_repository_file("formal/verus/free_map_transaction.rs");
+    for marker in [
+        "pub fn exec_write_refines_spec(",
+        "pub fn exec_rollback_refines_spec(",
+        "pub fn exec_take_delta_and_rollback_refines_spec(",
+        "pub fn exec_finish_refines_spec(",
+        "pub fn abort_guard_restores_root_spec(",
+        "proof fn undo_len_tracks_completed_writes(",
+        "proof fn delta_len_is_bounded_by_segment_writes(",
+    ] {
+        assert!(proof.contains(marker), "Verus proof is missing `{marker}`");
+    }
+    for forbidden in ["assume(", "admit(", "external_body"] {
+        assert!(
+            !proof.contains(forbidden),
+            "Verus proof contains forbidden escape `{forbidden}`"
+        );
+    }
+    let runner = read_repository_file("scripts/check-stack-safe-pda-proofs.sh");
+    let proof_path = "formal/verus/free_map_transaction.rs";
+    let proof_path_at = runner
+        .find(proof_path)
+        .expect("the runner invokes the FreeMap Verus proof");
+    let invocation_start = runner[..proof_path_at]
+        .rfind("tlc_bounded")
+        .expect("the FreeMap Verus proof is resource bounded");
+    let invocation = &runner[invocation_start..proof_path_at + proof_path.len()];
+    assert!(invocation.contains("--no-cheating --num-threads 1"));
+}
+
+#[test]
+fn freemap_journal_four_backend_bundle_and_mutants_are_manifested() {
+    let runner = read_repository_file("scripts/check-stack-safe-pda-proofs.sh");
+
+    let rocq = read_repository_file("formal/rocq/stack_safe_pda/theories/FreeMapJournal.v");
+    for marker in [
+        "Theorem journal_connective_control_refines_snapshot_semantics",
+        "Theorem journal_transaction_refines_snapshot_transaction",
+        "Print Assumptions journal_connective_control_refines_snapshot_semantics.",
+        "Print Assumptions journal_transaction_refines_snapshot_transaction.",
+    ] {
+        assert!(
+            rocq.contains(marker),
+            "FreeMap Rocq proof is missing `{marker}`"
+        );
+    }
+    let coq_project = read_repository_file("formal/rocq/stack_safe_pda/_CoqProject");
+    assert!(coq_project.contains("theories/FreeMapJournal.v"));
+    for marker in [
+        "theories/FreeMapJournal.v",
+        "grep -c '^Closed under the global context$'",
+        "expected both FreeMap Rocq capstones to be closed",
+    ] {
+        assert!(
+            runner.contains(marker),
+            "FreeMap Rocq runner is missing `{marker}`"
+        );
+    }
+
+    let tla = read_repository_file("formal/tlaplus/stack_safe_pda/FreeMapJournal.tla");
+    for marker in [
+        "SnapshotJournalLockstep ==",
+        "CheckpointSnapshotsAgree ==",
+        "ValidationIsAtomic ==",
+        "ActionWitnessesAreNonVacuous ==",
+        "ReverseUndoMutationIsDetected ==",
+        "RollbackAllFrameMutationIsDetected ==",
+        "ApplyBeforeValidationMutationIsDetected ==",
+        "DropWithoutUndoMutationIsDetected ==",
+    ] {
+        assert!(
+            tla.contains(marker),
+            "FreeMap TLA+ model is missing `{marker}`"
+        );
+    }
+    let tla_config = read_repository_file("formal/tlaplus/stack_safe_pda/FreeMapJournal.cfg");
+    for invariant in [
+        "INVARIANT SnapshotJournalLockstep",
+        "INVARIANT CheckpointSnapshotsAgree",
+        "INVARIANT ValidationIsAtomic",
+        "INVARIANT ActionWitnessesAreNonVacuous",
+        "INVARIANT ReverseUndoMutationIsDetected",
+        "INVARIANT RollbackAllFrameMutationIsDetected",
+        "INVARIANT ApplyBeforeValidationMutationIsDetected",
+        "INVARIANT DropWithoutUndoMutationIsDetected",
+    ] {
+        assert!(
+            tla_config.contains(invariant),
+            "FreeMap TLC configuration is missing `{invariant}`"
+        );
+    }
+    assert!(runner.contains("tlc_run \"$tla_metadir\" FreeMapJournal.cfg FreeMapJournal.tla"));
+
+    let implementation =
+        read_repository_file("formal/mcrl2/stack_safe_pda/free_map_journal_impl.mcrl2");
+    let specification =
+        read_repository_file("formal/mcrl2/stack_safe_pda/free_map_journal_spec.mcrl2");
+    let no_leak = read_repository_file("formal/mcrl2/stack_safe_pda/free_map_journal_no_leak.mcf");
+    let or_leak =
+        read_repository_file("formal/mcrl2/stack_safe_pda/free_map_journal_or_leak_mutant.mcrl2");
+    let partial_apply = read_repository_file(
+        "formal/mcrl2/stack_safe_pda/free_map_journal_partial_apply_mutant.mcrl2",
+    );
+    assert!(implementation.contains("proc Impl ="));
+    assert!(specification.contains("proc Spec ="));
+    assert!(no_leak.contains("(or_binding_leak + partial_apply)"));
+    assert!(or_leak.contains("or_binding_leak . publish_binding"));
+    assert!(partial_apply.contains("partial_apply . tau . reject"));
+    for marker in [
+        "free_map_journal_impl.mcrl2",
+        "free_map_journal_spec.mcrl2",
+        "free_map_journal_no_leak.mcf",
+        "for mutant in or_leak partial_apply; do",
+        "expected FreeMap ${mutant} mutant to break bisimulation",
+        "expected FreeMap ${mutant} mutant leak witness",
+    ] {
+        assert!(
+            runner.contains(marker),
+            "FreeMap mCRL2 runner is missing `{marker}`"
+        );
+    }
 }

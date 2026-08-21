@@ -12,8 +12,8 @@ use models::rhoapi::connective::ConnectiveInstance::{
 use models::rhoapi::expr::ExprInstance::EPathmapBody;
 use models::rhoapi::{
     Bundle, Connective, ConnectiveBody, DeployId, DeployerId, EPathMap, ETuple, Expr, GBigRational,
-    GFixedPoint, GUnforgeable, If, KeyValuePair, Match, New, PCost, Par, Receive, ReceiveBind,
-    Send, VarRef,
+    GDeployId, GFixedPoint, GUnforgeable, If, KeyValuePair, Match, New, PCost, Par, Receive,
+    ReceiveBind, Send, VarRef,
 };
 use models::rust::par_bag::ParBag;
 use models::rust::par_construction::ParConstruction;
@@ -28,14 +28,16 @@ use models::rust::utils::{
 use pathmap::PathMap;
 use rspace_plus_plus::rspace::rho_path::{encode_structural_sequence, RhoPathQuery};
 
+use super::free_map_transaction::{panic_after_writes_for_test, BindingDelta, FreeMapTransaction};
 use super::r#match::{rho_path_query_atom, rho_path_query_cursor_atom};
 use super::recursive_oracle::spatial_matcher::{
     SpatialMatcher as RecursiveSpatialMatcher, SpatialMatcherContext as RecursiveContext,
 };
 use super::spatial_matcher::{SpatialMatcher, SpatialMatcherContext};
 use super::spatial_matcher_pda::{
-    connective_candidate_positions_with_stats, encoded_expr_outer_route, if_target_index_shape,
-    match_par_list_with_stats, match_par_with_stats, match_send_list_with_remainder_stats,
+    apply_update_deltas, connective_candidate_positions_with_stats, encoded_expr_outer_route,
+    if_target_index_shape, match_par_list_with_stats, match_par_with_stats,
+    match_par_with_transaction_stats, match_send_list_with_remainder_stats,
     match_send_list_with_stats, send_target_index_shape, EncodedExprOuterRoute,
 };
 
@@ -813,6 +815,38 @@ fn production_list_pda_preserves_the_attempt_baseline_when_committing_deltas() {
 }
 
 #[test]
+fn apply_update_deltas_refuses_before_any_write() {
+    let baseline_value = new_gstring_par("baseline".into(), Vec::new(), false);
+    let mut context = SpatialMatcherContext::new();
+    context.free_map.insert(41, baseline_value);
+    let baseline = context.free_map.clone();
+
+    let first = BTreeMap::from([(0, new_gint_par(11, Vec::new(), false))]);
+    let conflicting = BTreeMap::from([(0, new_gint_par(29, Vec::new(), false))]);
+    let second = BTreeMap::from([(1, new_gint_par(29, Vec::new(), false))]);
+    let expected =
+        super::list_match::aggregate_updates(baseline.clone(), vec![first.clone(), second.clone()])
+            .expect("disjoint deltas aggregate");
+
+    let mut transaction = FreeMapTransaction::new(&mut context);
+    let before = transaction.journal_len();
+    assert!(!apply_update_deltas(&mut transaction, vec![
+        BindingDelta::from_map(first.clone()),
+        BindingDelta::from_map(conflicting),
+    ],));
+    assert_eq!(transaction.journal_len(), before);
+    assert_eq!(transaction.free_map(), &baseline);
+
+    assert!(apply_update_deltas(&mut transaction, vec![
+        BindingDelta::from_map(first),
+        BindingDelta::from_map(second),
+    ],));
+    assert_eq!(transaction.free_map(), &expected);
+    assert!(transaction.finish(true).is_some());
+    assert_eq!(context.free_map, expected);
+}
+
+#[test]
 fn production_list_pda_matches_the_oracle_across_orderings_duplicates_and_nonlinearity() {
     const PERMUTATIONS: [[usize; 3]; 6] =
         [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [
@@ -1195,6 +1229,40 @@ fn byte_native_connective_respects_child_and_root_dispatch_metadata() {
 }
 
 #[test]
+fn exact_free_var_capture_is_byte_native_in_every_and_child_position() {
+    let target = new_gint_par(7, Vec::new(), false);
+    let predicate = connective(ConnInt(true));
+    for (position, children) in [
+        ("first", vec![
+            new_freevar_par(0, Vec::new()),
+            predicate.clone(),
+        ]),
+        ("middle", vec![
+            predicate.clone(),
+            new_freevar_par(0, Vec::new()),
+            predicate.clone(),
+        ]),
+        ("final", vec![
+            predicate.clone(),
+            new_freevar_par(0, Vec::new()),
+        ]),
+    ] {
+        let pattern = connective(ConnAndBody(ConnectiveBody { ps: children }));
+        compare(
+            &format!("exact FreeVar capture in {position} AND position"),
+            target.clone(),
+            pattern.clone(),
+        );
+        let mut context = SpatialMatcherContext::new();
+        let (result, stats) = match_par_with_stats(&mut context, target.clone(), pattern);
+        assert!(result.is_some(), "{position} capture must match");
+        assert_eq!(context.free_map.get(&0), Some(&target));
+        assert_eq!(stats.authoritative_exact_free_var_captures, 1);
+        assert_eq!(stats.authoritative_terminal_par_decodes, 0);
+    }
+}
+
+#[test]
 fn byte_native_connective_exact_scalar_route_is_complete_and_non_vacuous() {
     use models::rhoapi::expr::ExprInstance;
 
@@ -1255,15 +1323,20 @@ fn byte_native_connective_exact_scalar_route_is_complete_and_non_vacuous() {
     ];
 
     for (equal, unequal) in cases {
+        compare(
+            "exact scalar locally-free metadata equality",
+            equal.clone().with_locally_free(vec![0x01]),
+            binary_and(equal.clone().with_locally_free(vec![0x80, 0x01])),
+        );
         let mut context = SpatialMatcherContext::new();
         let (result, stats) = match_par_with_stats(
             &mut context,
-            equal.clone().with_locally_free(vec![0x01]),
+            equal.clone(),
             binary_and(equal.clone().with_locally_free(vec![0x80, 0x01])),
         );
         assert!(
             result.is_some(),
-            "locally-free summaries do not affect equality"
+            "child locally-free summaries do not affect equality"
         );
         assert_eq!(
             stats.authoritative_exact_scalar_attempts, 2,
@@ -1365,6 +1438,186 @@ fn planned_skewed_failing_or(depth: usize) -> Par {
             .expect("plan OR carrier");
     }
     construction.finish(nested).expect("finish OR plan")
+}
+
+fn planned_binding_conjunction(depth: usize, terminal: i64) -> Par {
+    let mut construction = ParConstruction::new();
+    let mut nested = construction
+        .import_par(&new_gint_par(terminal, Vec::new(), false))
+        .expect("import binding-journal terminal");
+    let shell = Connective {
+        connective_instance: Some(ConnAndBody(ConnectiveBody {
+            ps: vec![Par::default(), Par::default()],
+        })),
+    };
+    for level in (0..depth).rev() {
+        let level = i32::try_from(level).expect("binding-journal depth fits i32");
+        let binding = construction
+            .import_par(&new_freevar_par(level, Vec::new()))
+            .expect("import binding-journal variable");
+        let component = construction
+            .connective_component(&shell, &[binding, nested])
+            .expect("plan binding-journal conjunction");
+        nested = construction
+            .singleton_component(component, Vec::new(), true)
+            .expect("plan binding-journal carrier");
+    }
+    construction
+        .finish(nested)
+        .expect("finish binding-journal plan")
+}
+
+#[test]
+fn nested_binding_journal_is_linear_and_stack_safe_on_success_and_deep_refusal() {
+    const DEPTH: usize = 20_000;
+    std::thread::Builder::new()
+        .name("spatial-matcher-binding-journal-depth".into())
+        .stack_size(256 * 1024)
+        .spawn(|| {
+            for (terminal, matched) in [(1, true), (0, false)] {
+                let pattern = planned_binding_conjunction(DEPTH, terminal);
+                let mut context = SpatialMatcherContext::new();
+                let (result, stats) = match_par_with_transaction_stats(
+                    &mut context,
+                    new_gint_par(1, Vec::new(), false),
+                    pattern,
+                );
+                assert_eq!(result.is_some(), matched);
+                assert_eq!(stats.writes, DEPTH);
+                assert_eq!(stats.peak_entries, stats.writes);
+                assert!(stats.checkpoints >= DEPTH);
+                assert_eq!(stats.delta_entries, 0);
+                if matched {
+                    assert_eq!(stats.rollback_entries, 0);
+                    assert_eq!(context.free_map.len(), DEPTH);
+                } else {
+                    assert_eq!(stats.rollback_entries, stats.writes);
+                    assert!(context.free_map.is_empty());
+                }
+            }
+        })
+        .expect("the fixed-stack binding-journal worker starts")
+        .join()
+        .expect("the binding journal uses constant native stack");
+}
+
+#[test]
+fn nested_binding_journal_captures_exact_free_vars_without_terminal_par_decodes() {
+    const DEPTH: usize = 64;
+    let pattern = planned_binding_conjunction(DEPTH, 1);
+    let mut context = SpatialMatcherContext::new();
+    let (result, stats) =
+        match_par_with_stats(&mut context, new_gint_par(1, Vec::new(), false), pattern);
+    assert!(result.is_some());
+    assert_eq!(context.free_map.len(), DEPTH);
+    assert_eq!(stats.authoritative_exact_free_var_captures, DEPTH);
+    assert_eq!(stats.authoritative_terminal_par_decodes, 0);
+}
+
+#[test]
+fn matcher_drive_unwind_after_a_completed_binding_restores_the_entry_map() {
+    let baseline_value = new_gstring_par("entry baseline".into(), Vec::new(), false);
+    let mut context = SpatialMatcherContext::new();
+    context.free_map.insert(41, baseline_value);
+    let baseline = context.free_map.clone();
+    let pattern = planned_binding_conjunction(8, 1);
+
+    panic_after_writes_for_test(4);
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _ = context.spatial_match(new_gint_par(1, Vec::new(), false), pattern);
+    }));
+    assert!(result.is_err());
+    assert_eq!(context.free_map, baseline);
+}
+
+#[test]
+fn sole_freevar_binding_collapses_only_projection_equivalent_family_merges() {
+    let pattern = new_freevar_par(0, Vec::new());
+    let scalar = new_gint_par(7, Vec::new(), false);
+
+    let mixed = scalar.clone().with_unforgeables(vec![GUnforgeable {
+        unf_instance: Some(models::rhoapi::g_unforgeable::UnfInstance::GDeployIdBody(
+            GDeployId { sig: vec![0x2a] },
+        )),
+    }]);
+    let multiplicity = scalar
+        .clone()
+        .scale_occurrences(16)
+        .expect("finite multiplicity scales");
+    for target in [Par::default(), scalar.clone(), mixed, multiplicity] {
+        let mut recursive = RecursiveContext::new();
+        let recursive_result = recursive
+            .spatial_match(target.clone(), pattern.clone())
+            .is_some();
+        let mut context = SpatialMatcherContext::new();
+        let (result, stats) =
+            match_par_with_transaction_stats(&mut context, target.clone(), pattern.clone());
+        assert_eq!(result.is_some(), recursive_result);
+        assert_eq!(context.free_map, recursive.free_map);
+        assert!(result.is_some());
+        assert_eq!(stats.writes, 1);
+        assert_eq!(context.free_map.get(&0), Some(&target));
+    }
+
+    for target in [
+        scalar.clone().with_locally_free(vec![0x01]),
+        scalar.clone().with_connective_used(true),
+    ] {
+        let mut recursive = RecursiveContext::new();
+        let recursive_result = recursive
+            .spatial_match(target.clone(), pattern.clone())
+            .is_some();
+        let mut pda = SpatialMatcherContext::new();
+        let (pda_result, stats) =
+            match_par_with_transaction_stats(&mut pda, target, pattern.clone());
+        assert_eq!(pda_result.is_some(), recursive_result);
+        assert_eq!(pda.free_map, recursive.free_map);
+        assert!(stats.writes > 1);
+    }
+
+    let prior = new_gint_par(3, Vec::new(), false);
+    let mut recursive = RecursiveContext::new();
+    recursive.free_map.insert(0, prior.clone());
+    let recursive_result = recursive
+        .spatial_match(scalar.clone(), pattern.clone())
+        .is_some();
+    let mut pda = SpatialMatcherContext::new();
+    pda.free_map.insert(0, prior);
+    let (pda_result, stats) =
+        match_par_with_transaction_stats(&mut pda, scalar.clone(), pattern.clone());
+    assert_eq!(pda_result.is_some(), recursive_result);
+    assert_eq!(pda.free_map, recursive.free_map);
+    assert_eq!(stats.writes, 1);
+
+    let retained_connective = inactive_connective(ConnInt(true));
+    let mut recursive = RecursiveContext::new();
+    recursive.free_map.insert(0, retained_connective.clone());
+    let recursive_result = recursive
+        .spatial_match(scalar.clone(), pattern.clone())
+        .is_some();
+    let mut pda = SpatialMatcherContext::new();
+    pda.free_map.insert(0, retained_connective);
+    let (pda_result, stats) = match_par_with_transaction_stats(&mut pda, scalar, pattern.clone());
+    assert_eq!(pda_result.is_some(), recursive_result);
+    assert_eq!(pda.free_map, recursive.free_map);
+    assert!(stats.writes > 1);
+
+    let inconsistent_target = Par::default().with_conditionals(vec![If {
+        locally_free: vec![0x01],
+        ..Default::default()
+    }]);
+    let mut recursive = RecursiveContext::new();
+    let recursive_result = recursive
+        .spatial_match(inconsistent_target.clone(), pattern.clone())
+        .is_some();
+    let mut pda = SpatialMatcherContext::new();
+    let (pda_result, stats) =
+        match_par_with_transaction_stats(&mut pda, inconsistent_target, pattern);
+    assert_eq!(pda_result.is_some(), recursive_result);
+    assert!(pda_result.is_none());
+    assert_eq!(recursive.free_map.get(&0), Some(&Par::default()));
+    assert!(pda.free_map.is_empty());
+    assert!(stats.writes > 1);
 }
 
 #[test]
@@ -1791,4 +2044,60 @@ fn oracle_provenance_is_test_only_and_distinct() {
     assert!(production.contains("enum Job"));
     assert!(!production.contains("fn match_connective_with_bounds"));
     assert_ne!(recursive.as_bytes(), production.as_bytes());
+}
+
+#[test]
+fn production_pda_has_no_whole_freemap_snapshot_or_unjournaled_write() {
+    let production = include_str!("../../src/rust/interpreter/matcher/spatial_matcher_pda.rs");
+    for forbidden in [
+        "context.free_map.clone()",
+        "context.free_map =",
+        "context.free_map.insert",
+        "mem::replace(&mut context.free_map",
+        "snapshot: FreeMap",
+        "single_expr(",
+    ] {
+        assert!(
+            !production.contains(forbidden),
+            "production matcher PDA contains forbidden FreeMap operation `{forbidden}`"
+        );
+    }
+    for required in [
+        "FreeMapTransaction::new",
+        "context.checkpoint()",
+        "context.take_delta_and_rollback",
+        "context.write(",
+        "context.extend(",
+        "canonical_exact_free_var_par",
+        "sole_free_var_capture_is_admissible",
+    ] {
+        assert!(
+            production.contains(required),
+            "production matcher PDA lost journal operation `{required}`"
+        );
+    }
+
+    let classifier_start = production
+        .find("fn sole_free_var_level")
+        .expect("the exact sole-FreeVar classifier remains in production");
+    let classifier_end = production[classifier_start..]
+        .find("struct ConnectivePlan")
+        .map(|offset| classifier_start + offset)
+        .expect("the classifier region has a stable following declaration");
+    let classifier = &production[classifier_start..classifier_end];
+    for forbidden in ["single_expr(", "try_visit_decoded"] {
+        assert!(
+            !classifier.contains(forbidden),
+            "sole-FreeVar classification reintroduced recursive endpoint decoding via `{forbidden}`"
+        );
+    }
+    for required in [
+        "canonical_exact_free_var_expr_level",
+        "concrete_components_locally_free_are_empty",
+    ] {
+        assert!(
+            classifier.contains(required),
+            "sole-FreeVar classification lost byte-native proof `{required}`"
+        );
+    }
 }

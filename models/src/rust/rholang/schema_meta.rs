@@ -239,11 +239,20 @@ pub static BOUNDARY_PDA_EQUIVALENCE_EVIDENCE: &[BoundaryEquivalenceEvidence] = &
     BoundaryEquivalenceEvidence {
         surface: "rholang::SpatialMatcher state isolation",
         production_file: "rholang/src/rust/interpreter/matcher/spatial_matcher_pda.rs",
-        production_marker: "Frame::RestoreOnFailure { snapshot }",
-        proof_file: "formal/rocq/stack_safe_pda/theories/SpatialMatcher.v",
-        theorem: "disjunction_never_publishes_branch_bindings",
+        production_marker: "Frame::RestoreOnFailure { checkpoint }",
+        proof_file: "formal/rocq/stack_safe_pda/theories/FreeMapJournal.v",
+        theorem: "journal_connective_control_refines_snapshot_semantics",
         executable_file: "rholang/tests/support/spatial_matcher_pda_equivalence.rs",
         executable_marker: "recursive_oracle_and_pda_agree_on_the_semantic_corpus",
+    },
+    BoundaryEquivalenceEvidence {
+        surface: "rholang::FreeMap drive-local transaction",
+        production_file: "rholang/src/rust/interpreter/matcher/free_map_transaction.rs",
+        production_marker: "pub(super) struct FreeMapTransaction<'a>",
+        proof_file: "formal/rocq/stack_safe_pda/theories/FreeMapJournal.v",
+        theorem: "journal_transaction_refines_snapshot_transaction",
+        executable_file: "rholang/src/rust/interpreter/matcher/free_map_transaction.rs",
+        executable_marker: "free_map_transaction_trace_refines_snapshot_oracle",
     },
     BoundaryEquivalenceEvidence {
         surface: "rholang::Encoded Connective authoritative PDA",

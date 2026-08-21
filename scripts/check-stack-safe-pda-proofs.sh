@@ -23,6 +23,17 @@ tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/EPathMap.v
 tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/Bag.v
 tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/EPM1.v
 tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/SpatialMatcher.v
+free_map_rocq_output="$(
+  tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/FreeMapJournal.v 2>&1
+)"
+printf '%s\n' "$free_map_rocq_output"
+free_map_closed_capstones="$({
+  printf '%s\n' "$free_map_rocq_output" | grep -c '^Closed under the global context$'
+} || true)"
+if [[ "$free_map_closed_capstones" != "2" ]]; then
+  echo "stack-safe-pda: expected both FreeMap Rocq capstones to be closed; got $free_map_closed_capstones" >&2
+  exit 1
+fi
 popd >/dev/null
 
 verus_bin="${VERUS:-$(command -v verus || true)}"
@@ -34,6 +45,8 @@ tlc_bounded "$verus_bin" --no-cheating --num-threads 1 \
   "$repo_root/formal/verus/epathmap_canonical_worklist.rs"
 tlc_bounded "$verus_bin" --no-cheating --num-threads 1 \
   "$repo_root/formal/verus/bag_checked_delta.rs"
+tlc_bounded "$verus_bin" --no-cheating --num-threads 1 \
+  "$repo_root/formal/verus/free_map_transaction.rs"
 
 z3_output="$(tlc_bounded z3 "$repo_root/formal/smt/stack_safe_pda_modes.smt2")"
 if [[ "$z3_output" != "unsat" ]]; then
@@ -47,6 +60,7 @@ pushd "$tla_root" >/dev/null
 tlc_run "$tla_metadir" PDAEquivalence.cfg PDAEquivalence.tla -cleanup
 tlc_run "$tla_metadir" SpatialMatcherEquivalence.cfg SpatialMatcherEquivalence.tla -cleanup
 tlc_run "$tla_metadir" RSpaceBagCommit.cfg RSpaceBagCommit.tla -cleanup
+tlc_run "$tla_metadir" FreeMapJournal.cfg FreeMapJournal.tla -cleanup
 popd >/dev/null
 
 mcrl2_root="$repo_root/formal/mcrl2/stack_safe_pda"
@@ -87,5 +101,56 @@ if [[ "$no_partial" != "true" ]]; then
   echo "stack-safe-pda: expected no partial RSpace Bag publication; got: $no_partial" >&2
   exit 1
 fi
+
+tlc_bounded mcrl22lps \
+  "$mcrl2_root/free_map_journal_impl.mcrl2" "$mcrl2_tmp/free-map-impl.lps"
+tlc_bounded mcrl22lps \
+  "$mcrl2_root/free_map_journal_spec.mcrl2" "$mcrl2_tmp/free-map-spec.lps"
+tlc_bounded lps2lts "$mcrl2_tmp/free-map-impl.lps" "$mcrl2_tmp/free-map-impl.lts"
+tlc_bounded lps2lts "$mcrl2_tmp/free-map-spec.lps" "$mcrl2_tmp/free-map-spec.lts"
+
+free_map_bisimulation="$(
+  tlc_bounded ltscompare --equivalence=branching-bisim \
+    "$mcrl2_tmp/free-map-impl.lts" "$mcrl2_tmp/free-map-spec.lts" 2>&1 | tail -n 1
+)"
+if [[ "$free_map_bisimulation" != "true" ]]; then
+  echo "stack-safe-pda: expected FreeMap journal branching bisimulation; got: $free_map_bisimulation" >&2
+  exit 1
+fi
+
+tlc_bounded lps2pbes -f "$mcrl2_root/free_map_journal_no_leak.mcf" \
+  "$mcrl2_tmp/free-map-impl.lps" "$mcrl2_tmp/free-map-no-leak.pbes"
+free_map_no_leak="$(
+  tlc_bounded pbes2bool "$mcrl2_tmp/free-map-no-leak.pbes" 2>&1 | tail -n 1
+)"
+if [[ "$free_map_no_leak" != "true" ]]; then
+  echo "stack-safe-pda: expected no FreeMap journal binding leak; got: $free_map_no_leak" >&2
+  exit 1
+fi
+
+for mutant in or_leak partial_apply; do
+  tlc_bounded mcrl22lps \
+    "$mcrl2_root/free_map_journal_${mutant}_mutant.mcrl2" \
+    "$mcrl2_tmp/free-map-${mutant}.lps"
+  tlc_bounded lps2lts \
+    "$mcrl2_tmp/free-map-${mutant}.lps" "$mcrl2_tmp/free-map-${mutant}.lts"
+  mutant_bisimulation="$(
+    tlc_bounded ltscompare --equivalence=branching-bisim \
+      "$mcrl2_tmp/free-map-${mutant}.lts" "$mcrl2_tmp/free-map-spec.lts" 2>&1 | tail -n 1
+  )"
+  if [[ "$mutant_bisimulation" != "false" ]]; then
+    echo "stack-safe-pda: expected FreeMap ${mutant} mutant to break bisimulation; got: $mutant_bisimulation" >&2
+    exit 1
+  fi
+  tlc_bounded lps2pbes -f "$mcrl2_root/free_map_journal_no_leak.mcf" \
+    "$mcrl2_tmp/free-map-${mutant}.lps" "$mcrl2_tmp/free-map-${mutant}-leak.pbes"
+  mutant_no_leak="$(
+    tlc_bounded pbes2bool "$mcrl2_tmp/free-map-${mutant}-leak.pbes" 2>&1 | tail -n 1
+  )"
+  if [[ "$mutant_no_leak" != "false" ]]; then
+    echo "stack-safe-pda: expected FreeMap ${mutant} mutant leak witness; got: $mutant_no_leak" >&2
+    exit 1
+  fi
+done
 
 echo "stack-safe-pda: Rocq, Verus, Z3, TLC, and mCRL2 verification passed"

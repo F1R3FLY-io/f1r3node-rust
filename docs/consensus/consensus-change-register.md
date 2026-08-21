@@ -10,7 +10,7 @@
 | **Companion surface** | `mettail-rust`, branch `feature/rho-native-set-automata`. |
 | **Companion reports** | the [stack-safety report](../design/stack-safety/stack-safety-report-2026-07-29.md) and the [PathMap report](../design/pathmap/pathmap-report-2026-08-03.md), which carry the equivalence evidence this register's retirements cite. |
 | **Audience** | F1r3node consensus reviewers deciding whether to accept the fork risk of a coordinated protocol-version bump. |
-| **Date** | 2026-07-29, re-scoped to the final criterion 2026-08-03, revised through 2026-08-20 |
+| **Date** | 2026-07-29, re-scoped to the final criterion 2026-08-03, revised through 2026-08-21 |
 | **Maintenance** | [§7](#7-maintenance). Adding an entry is filling the form in [Appendix A](#appendix-a--the-entry-template). |
 
 ---
@@ -101,8 +101,8 @@ the Surface-L acceptance set (L07, L08 in flight, L10, L11, L14, L15), binder-sh
 route (L24). **The metering axis was re-derived
 under the D3 token model** (consensus cost = evaluated `Send`/`Receive` prefix events; per-op prices
 are diagnostics): **CBR-L20, CBR-L23, and CBR-L24 move that prefix-event schedule**; the
-register's one historical `UNVERIFIED` cell resolved in the same derivation. **64 further changes
-were examined and retired** with typed reasons — 49 bug fixes, 6
+register's one historical `UNVERIFIED` cell resolved in the same derivation. **66 further changes
+were examined and retired** with typed reasons — 50 bug fixes, 7
 measured-neutral optimizations, 5 equivalence-proven conversions, 3 dormant additions or removals, and the
 formerly-open wire-asymmetry hazard, closed against CBR-044 — each a one-line row in
 [Appendix B.1](#b1-retired-register-entries) whose full historical body remains in git history.
@@ -4086,7 +4086,7 @@ Quote actual numbers. The RED, the measurement, the acceptance matrix. Tag each 
 
 ### B.1 Retired register entries
 
-The 65 entries retired under the 2026-08-03 inclusion criterion (§3.2). Each keeps its **former
+The 66 entries retired under the 2026-08-03 inclusion criterion (§3.2). Each keeps its **former
 identifier forever** — identifiers are never reused, and a historical citation of any `CBR-*` below
 resolves to this table. Full bodies remain in git history at the pre-refactor revision of this file.
 Reasons are the closed retirement enum of §3.2; the evidence column points at where the discharging
@@ -4144,6 +4144,7 @@ material now lives.
 | `CBR-062` | this checkpoint | Singleton-`If` spatial matching advances through shared canonical protobuf ranges instead of repeatedly decoding every remaining nested suffix | `OPTIMIZATION_MEASURED_NEUTRAL` | the bounded recursive oracle agrees on verdict and complete `FreeMap`; late-child refusal restores the attempt snapshot; canonical/malformed cursor gates and the 64-byte Job/Frame layout gate pass; depth 4,096 succeeds on a 128 KiB stack; the release ladder is 55.002 µs at depth 128 and 1.5387 ms at 4,096, with linear allocation growth. No value, verdict, binding, byte, hash, COMM, charge, accepted program, PathMap operation, or parallel execution order moves. Stack-safety report §5.29. |
 | `CBR-063` | this checkpoint; pgmcp experiment 302 | Shared canonical-protobuf ranges replace repeated suffix decoding across recursive New/Send/Receive/Match/Expr/Connective matching, and borrowed ESet/EMap members enter the existing unordered Bag/PathMap ListPDA | `OPTIMIZATION_MEASURED_NEUTRAL` | the bounded recursive-oracle gates agree on verdict and complete `FreeMap`; unordered augmenting-path reassignment, map key/value rollback, exact set/map remainders, AND whole-fold rollback, OR branch isolation, and NOT inversion pass; all 15 named families reach depth 4,096 on a 128 KiB stack and have subquadratic allocation ladders, while AND/OR reach depth 20,000 on 256 KiB in debug and release. Diagnostic depth-128 ESet/EMap matching falls from 3.009/1.609 s to 0.825/1.099 ms; exact scalar children improve AND/4,096 from 10.640 to 1.596 ms/op. No value, verdict, binding, byte, hash, COMM, charge, accepted program, PathMap algebra, or parallel execution order moves. Stack-safety report §5.30. |
 | `CBR-064` | this checkpoint | Exact unary-`ENot` and node `RhoExpr` byte PDAs avoid repeatedly materializing recursively shorter ParBag/PathMap suffixes | `OPTIMIZATION_MEASURED_NEUTRAL` | the guard evaluator's seven-test recursive differential preserves exact values, errors, operand interleaving, compressed multiplicity, and spatial-oracle behavior; the 128,000-level classifier and 131,072-level evaluator gates pass on explicit small stacks. Node conversion agrees with its resident PDA for all 36 Expr variants, incomplete recursive messages, compressed multiplicity, every EPathMap mode, and exact JSON output; its 16,384-level counter gate records zero resident-Par fallback. No normalized value, guard verdict, binding, protobuf/bincode byte, hash, COMM, charge, accepted program, EPathMap mode, PathMap algebra, or parallel execution order moves. Stack-safety report §5.28.5. |
+| `CBR-065` | this checkpoint; pgmcp `spatial-matcher-freemap-checkpoint-journal` | Matcher attempts use one drive-local previous-value journal instead of whole-`FreeMap` snapshots; failed roots restore their entry map atomically, an exact sole-FreeVar capture collapses eight family writes to one, and encoded Connective frames share one thread-local target owner | `BUG_FIX_RULED_NONCONSENSUS` | the **30-case** frozen recursive differential preserves verdict and complete `FreeMap` for canonical matcher values; the only intentional oracle divergence is a malformed/internally inconsistent target whose failed recursive path leaked an empty intermediate capture, while the transaction restores the entry map. An exhaustive 13,122-run short-trace snapshot oracle, Rocq journal-to-snapshot refinement, Verus `--no-cheating`, bounded TLA+, mCRL2 branching bisimulation/mutants, validate-before-write conflict witness, panic rollback, and depth-20,000 / 256 KiB success/refusal gates pin atomicity. The selected path uses relative-prefix PathMap zipper visitation, requires exact FreeVar shape, target/prior projection identity, and closure of every distinct concrete endpoint, then writes the authoritative target directly through the transaction. Its `Rc<Par>` is confined to the synchronous thread-local matcher; PathMap's authoritative trie, persistent CoW ownership, and mutation algebra do not change. At depth 1,024, matching-only allocation count falls **168,188 $`\rightarrow`$ 240** and requested bytes **83,963,573 $`\rightarrow`$ 2,022,886**; headless Heaptrack records **2,473,704 $`\rightarrow`$ 203,742** whole-process allocation calls while peak heap remains **4.21 M** at displayed precision. These are representation and implementation changes only: no accepted canonical program, successful binding, value, protobuf/bincode/EPM1 byte, hash, COMM schedule, charge, EPathMap mode, PathMap operation, or parallel execution order moves. Stack-safety report §5.31. |
 | `CBR-L01` | `3ff1c98b`, `f586e138` | Equal operator precedence becomes representable; Rholang's ladder corrected | `BUG_FIX_RULED_NONCONSENSUS` | entry body at the pre-refactor revision (git history) |
 | `CBR-L02` | `0f3d298c` | The substrate lane stops answering "false" for a guard it could not decide | `BUG_FIX_RULED_NONCONSENSUS` | entry body at the pre-refactor revision (git history) |
 | `CBR-L03` | `69c66cd1` | A residual binder rests the COMM, whatever the formula collapsed to | `BUG_FIX_RULED_NONCONSENSUS` | entry body at the pre-refactor revision (git history) |
@@ -5039,6 +5040,6 @@ is the point: the derivation's surplus is real, and it is small and classifiable
 ---
 
 *The register's identifiers are stable and never reused. The 2026-08-03 re-scope retired 46 entries
-to B.1; subsequent classified findings through CBR-064 and CBR-L24 bring the living appendix to 65. The re-scope also removed
+to B.1; subsequent classified findings through CBR-065 and CBR-L24 bring the living appendix to 66. The re-scope also removed
 the mechanised drift gate with its machine index; the pre-refactor revision, with every then-retired
 body and the gate's specification, remains in git history.*

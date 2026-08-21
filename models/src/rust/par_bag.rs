@@ -937,23 +937,33 @@ fn split_key_parts(path: &[u8]) -> Result<(ParComponentTag, &[u8], &[u8]), ParBa
     }
     let tag_byte = path[PAR_BAG_KEY_DOMAIN.len()];
     let tag = ParComponentTag::from_byte(tag_byte).ok_or(ParBagCodecError::InvalidTag(tag_byte))?;
-    let payload_end = path.len() - PAR_BAG_SCORE_LEN_BYTES;
+    let (score, payload) = split_key_suffix(tag, &path[PAR_BAG_KEY_HEADER_LEN..])?;
+    Ok((tag, score, payload))
+}
+
+/// Split the schema-known suffix of one RPB3 key without materializing its
+/// domain-and-family prefix.
+fn split_key_suffix(
+    tag: ParComponentTag,
+    suffix: &[u8],
+) -> Result<(&[u8], &[u8]), ParBagCodecError> {
+    if suffix.len() < PAR_BAG_SCORE_LEN_BYTES {
+        return Err(ParBagCodecError::KeyTooShort {
+            length: PAR_BAG_KEY_HEADER_LEN + suffix.len(),
+        });
+    }
+    let payload_end = suffix.len() - PAR_BAG_SCORE_LEN_BYTES;
     let declared = u64::from_be_bytes(
-        path[payload_end..]
+        suffix[payload_end..]
             .try_into()
             .expect("the checked key trailer contains one u64 score length"),
     );
     let score_len =
         usize::try_from(declared).map_err(|_| ParBagCodecError::InvalidOrderKey { tag })?;
-    let score_end = PAR_BAG_KEY_HEADER_LEN
-        .checked_add(score_len)
-        .filter(|&end| end <= payload_end)
+    let score_end = (score_len <= payload_end)
+        .then_some(score_len)
         .ok_or(ParBagCodecError::InvalidOrderKey { tag })?;
-    Ok((
-        tag,
-        &path[PAR_BAG_KEY_HEADER_LEN..score_end],
-        &path[score_end..payload_end],
-    ))
+    Ok((&suffix[..score_end], &suffix[score_end..payload_end]))
 }
 
 fn split_key(path: &[u8]) -> Result<(ParComponentTag, &[u8]), ParBagCodecError> {
@@ -1036,6 +1046,41 @@ fn canonical_expr_envelope(message: &[u8]) -> Option<CanonicalExprEnvelope<'_>> 
 /// must never be interpreted as a semantic negative by a matcher.
 pub fn canonical_expr_oneof_tag(message: &[u8]) -> Option<u32> {
     canonical_expr_envelope(message).map(|envelope| envelope.tag)
+}
+
+/// Extract the level from an exact canonical `Expr(EVar(FreeVar(level)))`
+/// without decoding any recursively nested expression alternative.
+///
+/// This cursor is intentionally exact: every enclosing message must contain
+/// only its required oneof field, and the `sint32` payload must fit the schema
+/// domain. `None` is lack of proof, so callers must delegate to their complete
+/// semantic path rather than treating an unproved message as a different
+/// expression.
+pub fn canonical_exact_free_var_expr_level(message: &[u8]) -> Option<i32> {
+    const EVAR_TAG: u32 = 19;
+    const EVAR_VAR_KEY: u64 = (1 << 3) | 2;
+    const FREE_VAR_KEY: u64 = 2 << 3;
+
+    let envelope = canonical_expr_envelope(message)?;
+    (envelope.tag == EVAR_TAG).then_some(())?;
+    let variable = canonical_single_delimited_field(envelope.payload, EVAR_VAR_KEY)?;
+    let zigzag = u32::try_from(canonical_single_varint_field(variable, FREE_VAR_KEY)?).ok()?;
+    Some(((zigzag >> 1) as i32) ^ -((zigzag & 1) as i32))
+}
+
+/// A canonical singleton-Expr `Par` whose expression is exactly one free
+/// variable. Root matcher metadata is retained because `connective_used`
+/// controls whether the variable denotes a capture or ordinary data.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CanonicalExactFreeVarPar {
+    level: i32,
+    connective_used: bool,
+}
+
+impl CanonicalExactFreeVarPar {
+    pub const fn level(self) -> i32 { self.level }
+
+    pub const fn connective_used(self) -> bool { self.connective_used }
 }
 
 /// Match a canonical message containing exactly one length-delimited field and
@@ -1232,7 +1277,7 @@ pub fn canonical_connective_parts(message: &[u8]) -> Option<CanonicalConnectiveP
     let tag = u32::try_from(key >> 3).ok()?;
     let wire = key & 0x07;
     match tag {
-        1 | 2 | 3 | 4 if wire == 2 => {
+        1..=4 if wire == 2 => {
             let len = usize::try_from(read_canonical_varint(message, &mut at)?).ok()?;
             let end = at.checked_add(len)?;
             let payload = message.get(at..end)?;
@@ -1904,6 +1949,19 @@ pub fn canonical_single_expr_from_par(message: &[u8]) -> Option<&[u8]> {
     canonical_single_par_component(message, ParComponentTag::Expr.byte().into())
 }
 
+/// Prove that a canonical protobuf `Par` contains exactly one
+/// `Expr(EVar(FreeVar(level)))` occurrence and no other component family.
+///
+/// `None` is lack of proof, never a mismatch: callers must retain their full
+/// generated-decoder path for any byte shape this exact recognizer rejects.
+pub fn canonical_exact_free_var_par(message: &[u8]) -> Option<CanonicalExactFreeVarPar> {
+    let expr = canonical_single_expr_from_par(message)?;
+    Some(CanonicalExactFreeVarPar {
+        level: canonical_exact_free_var_expr_level(expr)?,
+        connective_used: canonical_par_connective_used(message)?,
+    })
+}
+
 /// A canonical singleton-Expr `Par` whose expression is a fully validated
 /// ground scalar.
 ///
@@ -2107,6 +2165,125 @@ pub fn canonical_par_locally_free_is_empty(message: &[u8]) -> Option<bool> {
         }
     }
     Some(!saw_locally_free)
+}
+
+/// Borrow one singular length-delimited field from a canonical protobuf
+/// message while skipping every other field by its wire extent.
+///
+/// This is a shallow cursor: nested messages are never decoded or scanned.
+/// The resident ParBag key validator is the authority for the surrounding
+/// message language; this helper additionally rejects reordered fields, a
+/// duplicate sought field, unsupported wire types, truncation, and non-minimal
+/// framing before returning a proof used by a derived cache. Equal adjacent
+/// field numbers remain valid for schema-declared repeated fields.
+fn canonical_singular_delimited_field(message: &[u8], sought_field: u64) -> Option<Option<&[u8]>> {
+    let mut at = 0usize;
+    let mut last_field = 0u64;
+    let mut result = None;
+    while at < message.len() {
+        let key = read_canonical_varint(message, &mut at)?;
+        let field = key >> 3;
+        let wire = key & 0x07;
+        (field != 0 && field >= last_field).then_some(())?;
+        last_field = field;
+        let body = match wire {
+            0 => {
+                let _ = read_canonical_varint(message, &mut at)?;
+                None
+            }
+            1 => {
+                at = at.checked_add(8).filter(|end| *end <= message.len())?;
+                None
+            }
+            2 => {
+                let len = usize::try_from(read_canonical_varint(message, &mut at)?).ok()?;
+                let end = at.checked_add(len)?;
+                let body = message.get(at..end)?;
+                at = end;
+                Some(body)
+            }
+            5 => {
+                at = at.checked_add(4).filter(|end| *end <= message.len())?;
+                None
+            }
+            _ => return None,
+        };
+        if field == sought_field {
+            (wire == 2 && result.is_none()).then_some(())?;
+            result = body;
+        }
+    }
+    Some(result)
+}
+
+fn canonical_expr_locally_free_is_empty(message: &[u8]) -> Option<bool> {
+    if message.is_empty() {
+        return Some(true);
+    }
+    let envelope = canonical_expr_envelope(message)?;
+    let par_is_closed = |par: &[u8]| canonical_par_locally_free_is_empty(par) == Some(true);
+    match envelope.tag {
+        // Ground scalar alternatives carry no locally-free summary.
+        1..=4 | 25 | 34..=37 => canonical_exact_scalar_expr(message).map(|_| true),
+        5 | 6 => {
+            let child = canonical_single_delimited_field(envelope.payload, (1 << 3) | 2)?;
+            Some(par_is_closed(child))
+        }
+        7..=18 | 28..=31 => {
+            let (left, right) = canonical_binary_par_parts(envelope.payload)?;
+            Some(par_is_closed(left) && par_is_closed(right))
+        }
+        19 => {
+            const EVAR_VAR_KEY: u64 = (1 << 3) | 2;
+            const BOUND_VAR_KEY: u64 = 1 << 3;
+            const FREE_VAR_KEY: u64 = 2 << 3;
+            const WILDCARD_KEY: u64 = (3 << 3) | 2;
+
+            let variable = canonical_single_delimited_field(envelope.payload, EVAR_VAR_KEY)?;
+            if canonical_single_varint_field(variable, BOUND_VAR_KEY).is_some() {
+                Some(false)
+            } else if canonical_single_varint_field(variable, FREE_VAR_KEY).is_some() {
+                Some(true)
+            } else {
+                canonical_single_delimited_field(variable, WILDCARD_KEY)
+                    .filter(|body| body.is_empty())
+                    .map(|_| true)
+            }
+        }
+        // Collection and method bodies carry the exact cached fold directly.
+        20..=23 | 32 => canonical_singular_delimited_field(envelope.payload, 3)
+            .map(|field| field.is_none_or(<[u8]>::is_empty)),
+        24 => canonical_singular_delimited_field(envelope.payload, 5)
+            .map(|field| field.is_none_or(<[u8]>::is_empty)),
+        27 => {
+            let (target, pattern) = canonical_binary_par_parts(envelope.payload)?;
+            Some(par_is_closed(target) && par_is_closed(pattern))
+        }
+        33 => canonical_singular_delimited_field(envelope.payload, 4)
+            .map(|field| field.is_none_or(<[u8]>::is_empty)),
+        _ => None,
+    }
+}
+
+fn canonical_component_locally_free_is_empty(tag: ParComponentTag, message: &[u8]) -> Option<bool> {
+    match tag {
+        ParComponentTag::Send | ParComponentTag::New => {
+            canonical_singular_delimited_field(message, 5)
+                .map(|field| field.is_none_or(<[u8]>::is_empty))
+        }
+        ParComponentTag::Receive => canonical_singular_delimited_field(message, 6)
+            .map(|field| field.is_none_or(<[u8]>::is_empty)),
+        ParComponentTag::Expr => canonical_expr_locally_free_is_empty(message),
+        ParComponentTag::Match | ParComponentTag::If => {
+            canonical_singular_delimited_field(message, 4)
+                .map(|field| field.is_none_or(<[u8]>::is_empty))
+        }
+        ParComponentTag::Bundle => {
+            let body = canonical_singular_delimited_field(message, 1)??;
+            canonical_par_locally_free_is_empty(body)
+        }
+        ParComponentTag::GUnforgeable | ParComponentTag::Connective => Some(true),
+    }
 }
 
 /// Interpret the only two collection-remainder forms accepted by the spatial
@@ -3212,6 +3389,10 @@ struct ParBagAux {
     /// Multi-component and empty bags are known unstable without consulting
     /// this cell. The cell is shared by CoW clones and invalidated on mutation.
     canonical_path_singleton_stable: OnceLock<bool>,
+    /// Exact locally-free fold over concrete component endpoints. The fold is
+    /// derived from shallow canonical protobuf metadata, never from decoded
+    /// recursive values, and is shared by CoW clones.
+    concrete_components_locally_free_empty: OnceLock<Option<bool>>,
 }
 
 impl ParBagAux {
@@ -3223,6 +3404,7 @@ impl ParBagAux {
             protobuf_before_root: OnceLock::new(),
             protobuf_after_root: OnceLock::new(),
             canonical_path_singleton_stable: OnceLock::new(),
+            concrete_components_locally_free_empty: OnceLock::new(),
         }
     }
 }
@@ -3372,22 +3554,22 @@ impl Iterator for FamilyPartitions {
     type Item = (ParBag, ParBag);
 
     fn next(&mut self) -> Option<Self::Item> {
-        while !self.exhausted {
-            if self.started {
-                if !self.advance_to_feasible() {
-                    self.exhausted = true;
-                    return None;
-                }
-            } else {
-                self.started = true;
-                if !self.initialize() {
-                    self.exhausted = true;
-                    return None;
-                }
-            }
-            return Some(self.current_partition());
+        if self.exhausted {
+            return None;
         }
-        None
+        if self.started {
+            if !self.advance_to_feasible() {
+                self.exhausted = true;
+                return None;
+            }
+        } else {
+            self.started = true;
+            if !self.initialize() {
+                self.exhausted = true;
+                return None;
+            }
+        }
+        Some(self.current_partition())
     }
 }
 
@@ -3479,6 +3661,7 @@ impl ParBag {
         let _ = aux.protobuf_before_root.take();
         let _ = aux.protobuf_after_root.take();
         let _ = aux.canonical_path_singleton_stable.take();
+        let _ = aux.concrete_components_locally_free_empty.take();
         aux
     }
 
@@ -3719,6 +3902,29 @@ impl ParBag {
         }
     }
 
+    /// Prove that every concrete component's own locally-free fold is empty.
+    ///
+    /// The first call walks each distinct prefix-compressed endpoint once and
+    /// only scans its top-level canonical framing. Recursive child bodies are
+    /// skipped by length, so a unary depth ladder remains linear across all
+    /// enclosing Pars. Later calls and CoW clones reuse the derived result in
+    /// O(1). `None` is a conservative lack of proof for an unrecognized
+    /// canonical shape and must make a caller use its complete semantic path.
+    pub fn concrete_components_locally_free_are_empty(&self) -> Option<bool> {
+        *self
+            .aux
+            .concrete_components_locally_free_empty
+            .get_or_init(|| {
+                let mut result = Some(true);
+                self.visit_canonical_key_parts(|tag, _score, protobuf, _multiplicity| {
+                    if result == Some(true) {
+                        result = canonical_component_locally_free_is_empty(tag, protobuf);
+                    }
+                });
+                result
+            })
+    }
+
     pub fn contains<T: ParBagComponent>(&self, value: &T) -> bool {
         with_component_key(value, |key| self.components.contains(key))
     }
@@ -3905,10 +4111,9 @@ impl ParBag {
         mut visitor: impl FnMut(EncodedParComponent<'_, T>),
     ) {
         self.components
-            .visit_prefix(&component_prefix(T::TAG), |path, multiplicity| {
-                let (tag, payload) = split_key(path)
+            .visit_relative_prefix(&component_prefix(T::TAG), |suffix, multiplicity| {
+                let (_score, payload) = split_key_suffix(T::TAG, suffix)
                     .expect("ParBag invariant: every stored component key was validated");
-                debug_assert_eq!(tag, T::TAG);
                 visitor(EncodedParComponent {
                     payload,
                     multiplicity,
@@ -3938,13 +4143,14 @@ impl ParBag {
             ParComponentTag::Bundle,
             ParComponentTag::If,
         ] {
-            self.components
-                .visit_prefix(&component_prefix(tag), |path, multiplicity| {
-                    let (actual_tag, score, protobuf) = split_key_parts(path)
+            self.components.visit_relative_prefix(
+                &component_prefix(tag),
+                |suffix, multiplicity| {
+                    let (score, protobuf) = split_key_suffix(tag, suffix)
                         .expect("ParBag invariant: every component has a valid RPB3 key");
-                    debug_assert_eq!(actual_tag, tag);
                     visitor(tag, score, protobuf, multiplicity);
-                });
+                },
+            );
         }
     }
 
@@ -3956,10 +4162,9 @@ impl ParBag {
     /// decoded score tree.
     pub(crate) fn append_family_scores<T: ParBagComponent>(&self, out: &mut Vec<Tree<ScoreAtom>>) {
         self.components
-            .visit_prefix(&component_prefix(T::TAG), |path, multiplicity| {
-                let (tag, score_bytes, _payload) = split_key_parts(path)
+            .visit_relative_prefix(&component_prefix(T::TAG), |suffix, multiplicity| {
+                let (score_bytes, _payload) = split_key_suffix(T::TAG, suffix)
                     .expect("ParBag invariant: every component has a valid key header");
-                debug_assert_eq!(tag, T::TAG);
                 let (score, extent) = decode_order_key(score_bytes)
                     .expect("ParBag invariant: every component has a canonical score prefix");
                 debug_assert_eq!(
@@ -3979,10 +4184,9 @@ impl ParBag {
     /// but no component protobuf body is decoded and no score tree is built.
     fn append_family_score_keys<T: ParBagComponent>(&self, out: &mut Vec<u8>) {
         self.components
-            .visit_prefix(&component_prefix(T::TAG), |path, multiplicity| {
-                let (tag, score, _payload) = split_key_parts(path)
+            .visit_relative_prefix(&component_prefix(T::TAG), |suffix, multiplicity| {
+                let (score, _payload) = split_key_suffix(T::TAG, suffix)
                     .expect("ParBag invariant: every component has a valid key header");
-                debug_assert_eq!(tag, T::TAG);
                 for _ in 0..multiplicity.get() {
                     out.extend_from_slice(score);
                 }
@@ -4027,13 +4231,15 @@ impl ParBag {
     where
         T: ParBagComponent,
     {
-        self.components
-            .try_visit_prefix(&component_prefix(T::TAG), |path, multiplicity| {
-                let (tag, payload) = split_key(path).map_err(ParBagVisitError::Codec)?;
-                debug_assert_eq!(tag, T::TAG);
+        self.components.try_visit_relative_prefix(
+            &component_prefix(T::TAG),
+            |suffix, multiplicity| {
+                let (_score, payload) =
+                    split_key_suffix(T::TAG, suffix).map_err(ParBagVisitError::Codec)?;
                 let value = decode_exact::<T>(payload).map_err(ParBagVisitError::Codec)?;
                 visitor(value, multiplicity).map_err(ParBagVisitError::Visitor)
-            })
+            },
+        )
     }
 
     /// Visit every semantic occurrence in one constructor family without
@@ -4064,15 +4270,15 @@ impl ParBag {
         }
 
         let mut first = None;
-        let result =
-            self.components
-                .try_visit_prefix(&component_prefix(T::TAG), |path, multiplicity| {
-                    let (tag, payload) = split_key(path).map_err(Stop::Codec)?;
-                    debug_assert_eq!(tag, T::TAG);
-                    let value = decode_exact::<T>(payload).map_err(Stop::Codec)?;
-                    first = Some((value, multiplicity));
-                    Err(Stop::Found)
-                });
+        let result = self.components.try_visit_relative_prefix(
+            &component_prefix(T::TAG),
+            |suffix, multiplicity| {
+                let (_score, payload) = split_key_suffix(T::TAG, suffix).map_err(Stop::Codec)?;
+                let value = decode_exact::<T>(payload).map_err(Stop::Codec)?;
+                first = Some((value, multiplicity));
+                Err(Stop::Found)
+            },
+        );
         match result {
             Ok(()) | Err(Stop::Found) => Ok(first),
             Err(Stop::Codec(error)) => Err(error),
@@ -4359,8 +4565,11 @@ impl<'de> Deserialize<'de> for ParBag {
 mod fast_key_tests {
     use super::*;
     use crate::rhoapi::{
-        Connective, ConnectiveBody, EList, ETuple, GBigRational, GDeployId, GDeployerId,
-        GFixedPoint, GPrivate, GSysAuthToken, Par, Send, Var, VarRef,
+        Bundle, Connective, ConnectiveBody, EAnd, EDiv, EEq, EGt, EGte, EList, ELt, ELte, EMap,
+        EMatches, EMethod, EMinus, EMinusMinus, EMod, EMult, ENeg, ENeq, ENot, EOr, EPathMap,
+        EPercentPercent, EPlus, EPlusPlus, ESet, ETuple, EVar, EZipper, GBigRational, GDeployId,
+        GDeployerId, GFixedPoint, GPrivate, GSysAuthToken, If, Match, New, Par, Receive, Send, Var,
+        VarRef,
     };
 
     fn generic_key<T: ParBagComponent>(value: &T) -> Vec<u8> {
@@ -5034,6 +5243,598 @@ mod fast_key_tests {
                 "malformed scalar must delegate: {bytes:02x?}"
             );
         }
+    }
+
+    #[test]
+    fn canonical_free_var_cursor_is_exact_and_constant_depth() {
+        use crate::rhoapi::var::VarInstance;
+
+        for level in [i32::MIN, -17, 0, 23, i32::MAX] {
+            let expr = Expr {
+                expr_instance: Some(ExprInstance::EVarBody(crate::rhoapi::EVar {
+                    v: Some(Var {
+                        var_instance: Some(VarInstance::FreeVar(level)),
+                    }),
+                })),
+            };
+            assert_eq!(
+                canonical_exact_free_var_expr_level(&protobuf_encoder::encode_to_vec(&expr)),
+                Some(level)
+            );
+            let data = Par::default().with_exprs(vec![expr.clone()]);
+            let data_proof = canonical_exact_free_var_par(&protobuf_encoder::encode_to_vec(&data))
+                .expect("a singleton free-variable Par is exact");
+            assert_eq!(data_proof.level(), level);
+            assert!(!data_proof.connective_used());
+
+            let capture = data.with_connective_used(true);
+            let capture_proof =
+                canonical_exact_free_var_par(&protobuf_encoder::encode_to_vec(&capture))
+                    .expect("connective-used is retained by the exact Par proof");
+            assert_eq!(capture_proof.level(), level);
+            assert!(capture_proof.connective_used());
+        }
+
+        for rejected in [
+            VarInstance::BoundVar(7),
+            VarInstance::Wildcard(crate::rhoapi::var::WildcardMsg {}),
+        ] {
+            let expr = Expr {
+                expr_instance: Some(ExprInstance::EVarBody(crate::rhoapi::EVar {
+                    v: Some(Var {
+                        var_instance: Some(rejected),
+                    }),
+                })),
+            };
+            assert_eq!(
+                canonical_exact_free_var_expr_level(&protobuf_encoder::encode_to_vec(&expr)),
+                None
+            );
+            assert_eq!(
+                canonical_exact_free_var_par(&protobuf_encoder::encode_to_vec(
+                    &Par::default().with_exprs(vec![expr])
+                )),
+                None
+            );
+        }
+
+        let free = Expr {
+            expr_instance: Some(ExprInstance::EVarBody(crate::rhoapi::EVar {
+                v: Some(Var {
+                    var_instance: Some(VarInstance::FreeVar(7)),
+                }),
+            })),
+        };
+        for rejected in [
+            Par::default(),
+            Par::default().with_exprs(vec![free.clone(), free.clone()]),
+            Par::default()
+                .with_exprs(vec![free])
+                .with_sends(vec![Send::default()]),
+        ] {
+            assert_eq!(
+                canonical_exact_free_var_par(&protobuf_encoder::encode_to_vec(&rejected)),
+                None
+            );
+        }
+
+        for malformed in [
+            vec![],
+            vec![0x9a, 0x01, 0x00],
+            vec![0x9a, 0x01, 0x02, 0x0a],
+            vec![0x9a, 0x01, 0x04, 0x0a, 0x02, 0x10, 0x80],
+        ] {
+            assert_eq!(canonical_exact_free_var_expr_level(&malformed), None);
+        }
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::test_runner::Config::with_cases(4_096))]
+
+        #[test]
+        fn every_byte_string_accepted_by_the_free_var_cursor_is_its_exact_canonical_message(
+            bytes in proptest::collection::vec(proptest::arbitrary::any::<u8>(), 0..64),
+        ) {
+            use crate::rhoapi::var::VarInstance;
+
+            if let Some(level) = canonical_exact_free_var_expr_level(&bytes) {
+                let expected = protobuf_encoder::encode_to_vec(&Expr {
+                    expr_instance: Some(ExprInstance::EVarBody(EVar {
+                        v: Some(Var {
+                            var_instance: Some(VarInstance::FreeVar(level)),
+                        }),
+                    })),
+                });
+                proptest::prop_assert_eq!(bytes, expected);
+            }
+        }
+    }
+
+    #[test]
+    fn concrete_locally_free_byte_proof_covers_every_expr_schema_arm() {
+        use crate::rhoapi::var::{VarInstance, WildcardMsg};
+
+        let proof = |expr_instance| {
+            Par::default()
+                .with_exprs(vec![Expr {
+                    expr_instance: Some(expr_instance),
+                }])
+                .concrete_components_locally_free_are_empty()
+        };
+        let closed = Par::default();
+        let open = closed.clone().with_locally_free(vec![1]);
+
+        for scalar in [
+            ExprInstance::GBool(true),
+            ExprInstance::GInt(7),
+            ExprInstance::GString("value".into()),
+            ExprInstance::GUri("rho:test".into()),
+            ExprInstance::GByteArray(vec![1, 2, 3]),
+            ExprInstance::GDouble(7),
+            ExprInstance::GBigInt(vec![1]),
+            ExprInstance::GBigRat(GBigRational::default()),
+            ExprInstance::GFixedPoint(GFixedPoint::default()),
+        ] {
+            assert_eq!(proof(scalar), Some(true));
+        }
+
+        for unary in [
+            ExprInstance::ENotBody(ENot {
+                p: Some(closed.clone()),
+            }),
+            ExprInstance::ENegBody(ENeg {
+                p: Some(closed.clone()),
+            }),
+        ] {
+            assert_eq!(proof(unary), Some(true));
+        }
+        for unary in [
+            ExprInstance::ENotBody(ENot {
+                p: Some(open.clone()),
+            }),
+            ExprInstance::ENegBody(ENeg {
+                p: Some(open.clone()),
+            }),
+        ] {
+            assert_eq!(proof(unary), Some(false));
+        }
+
+        let closed_binary = |instance| assert_eq!(proof(instance), Some(true));
+        closed_binary(ExprInstance::EMultBody(EMult {
+            p1: Some(closed.clone()),
+            p2: Some(closed.clone()),
+        }));
+        closed_binary(ExprInstance::EDivBody(EDiv {
+            p1: Some(closed.clone()),
+            p2: Some(closed.clone()),
+        }));
+        closed_binary(ExprInstance::EPlusBody(EPlus {
+            p1: Some(closed.clone()),
+            p2: Some(closed.clone()),
+        }));
+        closed_binary(ExprInstance::EMinusBody(EMinus {
+            p1: Some(closed.clone()),
+            p2: Some(closed.clone()),
+        }));
+        closed_binary(ExprInstance::ELtBody(ELt {
+            p1: Some(closed.clone()),
+            p2: Some(closed.clone()),
+        }));
+        closed_binary(ExprInstance::ELteBody(ELte {
+            p1: Some(closed.clone()),
+            p2: Some(closed.clone()),
+        }));
+        closed_binary(ExprInstance::EGtBody(EGt {
+            p1: Some(closed.clone()),
+            p2: Some(closed.clone()),
+        }));
+        closed_binary(ExprInstance::EGteBody(EGte {
+            p1: Some(closed.clone()),
+            p2: Some(closed.clone()),
+        }));
+        closed_binary(ExprInstance::EEqBody(EEq {
+            p1: Some(closed.clone()),
+            p2: Some(closed.clone()),
+        }));
+        closed_binary(ExprInstance::ENeqBody(ENeq {
+            p1: Some(closed.clone()),
+            p2: Some(closed.clone()),
+        }));
+        closed_binary(ExprInstance::EAndBody(EAnd {
+            p1: Some(closed.clone()),
+            p2: Some(closed.clone()),
+        }));
+        closed_binary(ExprInstance::EOrBody(EOr {
+            p1: Some(closed.clone()),
+            p2: Some(closed.clone()),
+        }));
+        closed_binary(ExprInstance::EPercentPercentBody(EPercentPercent {
+            p1: Some(closed.clone()),
+            p2: Some(closed.clone()),
+        }));
+        closed_binary(ExprInstance::EPlusPlusBody(EPlusPlus {
+            p1: Some(closed.clone()),
+            p2: Some(closed.clone()),
+        }));
+        closed_binary(ExprInstance::EMinusMinusBody(EMinusMinus {
+            p1: Some(closed.clone()),
+            p2: Some(closed.clone()),
+        }));
+        closed_binary(ExprInstance::EModBody(EMod {
+            p1: Some(closed.clone()),
+            p2: Some(closed.clone()),
+        }));
+
+        for binary in [
+            ExprInstance::EMultBody(EMult {
+                p1: Some(open.clone()),
+                p2: Some(closed.clone()),
+            }),
+            ExprInstance::EDivBody(EDiv {
+                p1: Some(open.clone()),
+                p2: Some(closed.clone()),
+            }),
+            ExprInstance::EPlusBody(EPlus {
+                p1: Some(open.clone()),
+                p2: Some(closed.clone()),
+            }),
+            ExprInstance::EMinusBody(EMinus {
+                p1: Some(open.clone()),
+                p2: Some(closed.clone()),
+            }),
+            ExprInstance::ELtBody(ELt {
+                p1: Some(open.clone()),
+                p2: Some(closed.clone()),
+            }),
+            ExprInstance::ELteBody(ELte {
+                p1: Some(open.clone()),
+                p2: Some(closed.clone()),
+            }),
+            ExprInstance::EGtBody(EGt {
+                p1: Some(open.clone()),
+                p2: Some(closed.clone()),
+            }),
+            ExprInstance::EGteBody(EGte {
+                p1: Some(open.clone()),
+                p2: Some(closed.clone()),
+            }),
+            ExprInstance::EEqBody(EEq {
+                p1: Some(open.clone()),
+                p2: Some(closed.clone()),
+            }),
+            ExprInstance::ENeqBody(ENeq {
+                p1: Some(open.clone()),
+                p2: Some(closed.clone()),
+            }),
+            ExprInstance::EAndBody(EAnd {
+                p1: Some(open.clone()),
+                p2: Some(closed.clone()),
+            }),
+            ExprInstance::EOrBody(EOr {
+                p1: Some(open.clone()),
+                p2: Some(closed.clone()),
+            }),
+            ExprInstance::EPercentPercentBody(EPercentPercent {
+                p1: Some(open.clone()),
+                p2: Some(closed.clone()),
+            }),
+            ExprInstance::EPlusPlusBody(EPlusPlus {
+                p1: Some(open.clone()),
+                p2: Some(closed.clone()),
+            }),
+            ExprInstance::EMinusMinusBody(EMinusMinus {
+                p1: Some(open.clone()),
+                p2: Some(closed.clone()),
+            }),
+            ExprInstance::EModBody(EMod {
+                p1: Some(open.clone()),
+                p2: Some(closed.clone()),
+            }),
+        ] {
+            assert_eq!(proof(binary), Some(false));
+        }
+
+        assert_eq!(
+            proof(ExprInstance::EVarBody(EVar {
+                v: Some(Var {
+                    var_instance: Some(VarInstance::BoundVar(0)),
+                }),
+            })),
+            Some(false)
+        );
+        assert_eq!(
+            proof(ExprInstance::EVarBody(EVar {
+                v: Some(Var {
+                    var_instance: Some(VarInstance::FreeVar(0)),
+                }),
+            })),
+            Some(true)
+        );
+        assert_eq!(
+            proof(ExprInstance::EVarBody(EVar {
+                v: Some(Var {
+                    var_instance: Some(VarInstance::Wildcard(WildcardMsg {})),
+                }),
+            })),
+            Some(true)
+        );
+        assert_eq!(proof(ExprInstance::EVarBody(EVar::default())), None);
+
+        let mut pathmap = EPathMap::default();
+        pathmap.locally_free = vec![1];
+        for collection in [
+            ExprInstance::EListBody(EList {
+                locally_free: vec![1],
+                ..EList::default()
+            }),
+            ExprInstance::ETupleBody(ETuple {
+                locally_free: vec![1],
+                ..ETuple::default()
+            }),
+            ExprInstance::ESetBody(ESet {
+                locally_free: vec![1],
+                ..ESet::default()
+            }),
+            ExprInstance::EMapBody(EMap {
+                locally_free: vec![1],
+                ..EMap::default()
+            }),
+            ExprInstance::EPathmapBody(pathmap),
+            ExprInstance::EMethodBody(EMethod {
+                locally_free: vec![1],
+                ..EMethod::default()
+            }),
+            ExprInstance::EZipperBody(EZipper {
+                locally_free: vec![1],
+                ..EZipper::default()
+            }),
+        ] {
+            assert_eq!(proof(collection), Some(false));
+        }
+        assert_eq!(proof(ExprInstance::EListBody(EList::default())), Some(true));
+        assert_eq!(
+            proof(ExprInstance::ETupleBody(ETuple::default())),
+            Some(true)
+        );
+        assert_eq!(proof(ExprInstance::ESetBody(ESet::default())), Some(true));
+        assert_eq!(proof(ExprInstance::EMapBody(EMap::default())), Some(true));
+        assert_eq!(
+            proof(ExprInstance::EPathmapBody(EPathMap::default())),
+            Some(true)
+        );
+        assert_eq!(
+            proof(ExprInstance::EMethodBody(EMethod::default())),
+            Some(true)
+        );
+        assert_eq!(
+            proof(ExprInstance::EZipperBody(EZipper::default())),
+            Some(true)
+        );
+        assert_eq!(
+            proof(ExprInstance::EMatchesBody(EMatches {
+                target: Some(closed.clone()),
+                pattern: Some(closed.clone()),
+            })),
+            Some(true)
+        );
+        assert_eq!(
+            proof(ExprInstance::EMatchesBody(EMatches {
+                target: Some(open),
+                pattern: Some(closed),
+            })),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn concrete_locally_free_cache_uses_component_metadata_and_cow_invalidation() {
+        use crate::rhoapi::var::VarInstance;
+
+        let scalar = Expr {
+            expr_instance: Some(ExprInstance::GInt(7)),
+        };
+        let closed = Par::default().with_exprs(vec![scalar.clone()]);
+        assert_eq!(
+            closed.concrete_components_locally_free_are_empty(),
+            Some(true)
+        );
+        let closed_clone = closed.clone();
+        assert!(
+            closed
+                .components()
+                .shares_storage_with(closed_clone.components()),
+            "the derived proof cache is shared by CoW clones"
+        );
+        assert_eq!(
+            closed_clone.concrete_components_locally_free_are_empty(),
+            Some(true)
+        );
+
+        let free = Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::EVarBody(crate::rhoapi::EVar {
+                v: Some(Var {
+                    var_instance: Some(VarInstance::FreeVar(3)),
+                }),
+            })),
+        }]);
+        let bound = Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::EVarBody(crate::rhoapi::EVar {
+                v: Some(Var {
+                    var_instance: Some(VarInstance::BoundVar(3)),
+                }),
+            })),
+        }]);
+        assert_eq!(
+            free.concrete_components_locally_free_are_empty(),
+            Some(true)
+        );
+        assert_eq!(
+            bound.concrete_components_locally_free_are_empty(),
+            Some(false)
+        );
+
+        let open_child = closed.clone().with_locally_free(vec![1]);
+        let closed_enot = Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::ENotBody(ENot {
+                p: Some(closed.clone()),
+            })),
+        }]);
+        let open_enot = Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::ENotBody(ENot {
+                p: Some(open_child.clone()),
+            })),
+        }]);
+        assert_eq!(
+            closed_enot.concrete_components_locally_free_are_empty(),
+            Some(true)
+        );
+        assert_eq!(
+            open_enot.concrete_components_locally_free_are_empty(),
+            Some(false)
+        );
+
+        for open_component in [
+            Par::default().with_sends(vec![Send {
+                locally_free: vec![1],
+                ..Send::default()
+            }]),
+            Par::default().with_receives(vec![Receive {
+                locally_free: vec![1],
+                ..Receive::default()
+            }]),
+            Par::default().with_news(vec![New {
+                locally_free: vec![1],
+                ..New::default()
+            }]),
+            Par::default().with_matches(vec![Match {
+                locally_free: vec![1],
+                ..Match::default()
+            }]),
+            Par::default().with_bundles(vec![Bundle {
+                body: Some(open_child.clone()),
+                ..Bundle::default()
+            }]),
+            Par::default().with_conditionals(vec![If {
+                locally_free: vec![1],
+                ..If::default()
+            }]),
+        ] {
+            assert_eq!(
+                open_component.concrete_components_locally_free_are_empty(),
+                Some(false)
+            );
+        }
+
+        let mut detached = closed.into_components();
+        assert_eq!(
+            detached.concrete_components_locally_free_are_empty(),
+            Some(true)
+        );
+        detached
+            .insert(&If {
+                locally_free: vec![1],
+                ..If::default()
+            })
+            .expect("insert invalidates the cached concrete fold");
+        assert_eq!(
+            detached.concrete_components_locally_free_are_empty(),
+            Some(false)
+        );
+
+        let open_if = If {
+            locally_free: vec![1],
+            ..If::default()
+        };
+        let mut removed = Par::default()
+            .with_conditionals(vec![open_if.clone()])
+            .into_components();
+        assert_eq!(
+            removed.concrete_components_locally_free_are_empty(),
+            Some(false)
+        );
+        assert!(removed.remove(&open_if).is_none());
+        assert_eq!(
+            removed.concrete_components_locally_free_are_empty(),
+            Some(true)
+        );
+
+        let mut family_removed = Par::default()
+            .with_conditionals(vec![open_if])
+            .into_components();
+        assert_eq!(
+            family_removed.concrete_components_locally_free_are_empty(),
+            Some(false)
+        );
+        assert_eq!(family_removed.remove_family::<If>(), (1, 1));
+        assert_eq!(
+            family_removed.concrete_components_locally_free_are_empty(),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn concrete_locally_free_cache_is_concurrent_cow_shared_and_observationally_neutral() {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+
+        let value = Par::default()
+            .with_exprs(vec![Expr {
+                expr_instance: Some(ExprInstance::GInt(7)),
+            }])
+            .with_sends(vec![Send::default()]);
+        let protobuf_before = protobuf_encoder::encode_to_vec(&value);
+        let bincode_before = bincode::serialize(&value).expect("serialize uncached Par");
+        let compact_before = value.components().compact_snapshot().to_vec();
+        let mut hash_before = DefaultHasher::new();
+        value.hash(&mut hash_before);
+        let hash_before = hash_before.finish();
+        let equal = value.clone();
+
+        let shared = Arc::new(value.clone());
+        let workers = (0..16)
+            .map(|_| {
+                let shared = Arc::clone(&shared);
+                std::thread::spawn(move || {
+                    assert_eq!(
+                        shared.concrete_components_locally_free_are_empty(),
+                        Some(true)
+                    );
+                })
+            })
+            .collect::<Vec<_>>();
+        for worker in workers {
+            worker.join().expect("concurrent cache reader completes");
+        }
+
+        assert_eq!(
+            protobuf_encoder::encode_to_vec(shared.as_ref()),
+            protobuf_before
+        );
+        assert_eq!(
+            bincode::serialize(shared.as_ref()).expect("serialize cached Par"),
+            bincode_before
+        );
+        assert_eq!(shared.components().compact_snapshot(), compact_before);
+        assert_eq!(shared.as_ref(), &equal);
+        assert_eq!(shared.as_ref().cmp(&equal), Ordering::Equal);
+        let mut hash_after = DefaultHasher::new();
+        shared.as_ref().hash(&mut hash_after);
+        assert_eq!(hash_after.finish(), hash_before);
+
+        let detached = shared.as_ref().clone().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::EListBody(EList {
+                locally_free: vec![1],
+                ..EList::default()
+            })),
+        }]);
+        assert_eq!(
+            detached.concrete_components_locally_free_are_empty(),
+            Some(false)
+        );
+        assert_eq!(
+            shared.concrete_components_locally_free_are_empty(),
+            Some(true)
+        );
     }
 
     #[test]
