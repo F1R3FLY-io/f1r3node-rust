@@ -97,23 +97,30 @@ behaviors:
           loss-aware main-parent declaration, C2 loss-aware base fallback,
           C3 fork-choice weights (rejected — Principle P4). Recommended
           path: B1 + A now, C1 as the soak-evidence escalation, C2 in
-          reserve. Behaviors B6 and B7 below pre-stage the recommended
-          path and await ratification.
+          reserve. Behaviors B6 and B7 below define the ratified phase-2 path.
   - id: B6
     statement: "A gated retry is packaged only onto a tip that already merges every same-key contender the owner can see"
     priority: must
     deep_module: false
-    done: false
-    pending_ratification: true
+    done: true
+    pending_ratification: false
     notes:
       - "Phase 2, option B1 (merged-frontier retry packaging) from docs/casper/CONSENSUS_PHILOSOPHY.md Section 5. Node-local packaging policy in prepare_user_deploys_with_policy; peer-safe by Ground Truth 2 (deferral is always legal). RED shape: in the racing harness, assert the owner block never packages the retry as a sibling of an unmerged contender."
-    cycle_log: []
+    cycle_log:
+      - test: "rust::blocks::proposer::block_creator::tests::retry_waits_until_visible_parent_frontier_is_merged"
+        red: "The open retry gate selected the buffered retry over two visible sibling parents."
+        green: "Retry selection now requires one selected parent that covers every non-invalid latest-message justification."
+        files:
+          - casper/src/rust/blocks/proposer/block_creator.rs
+        suite: "cargo test -p casper --lib: 300 passed"
+        discovered:
+          - "The policy uses the authenticated parent and justification frontier. It does not predict Rholang keys from deploy source."
   - id: B7
     statement: "Under rotating merge proposers, a repeatedly rejected deploy lands before its validity window closes"
     priority: must
     deep_module: false
     done: false
-    pending_ratification: true
+    pending_ratification: false
     notes:
       - "Phase 2, option A (rotation as the liveness mechanism): reshape loss_priority_spec so merge proposers alternate. With B6 plus loss-aware adjudication this must go deterministically GREEN. The adversarial always-contender-merges shape stays as an #[ignore]d sentinel documenting the residual base-bias facet (C1 escalation trigger)."
     cycle_log: []
@@ -166,7 +173,7 @@ higher counts first in conflict adjudication, falling back to the
 existing content ordering on ties. Each loss raises the loser's on-chain
 count, so starvation is bounded.
 
-## Phase 2 (pending maintainer decision)
+## Phase 2 (ratified for implementation)
 
 Phase 1 (B1–B3, B5) fixed the content-deterministic adjudication facet.
 The harness surfaced a second facet — main-parent base bias — that no
@@ -175,7 +182,7 @@ within-merge priority can fix (B4, blocked). The canonical analysis is
 Section 5 holds the remedy ladder (A / B1 / B2 / C1 / C2 / C3 with the
 comparison table), Section 6 the ratified principles P1–P6.
 
-Recommended path, pre-staged here as behaviors awaiting ratification:
+Ratified phase-2 path:
 
 - **B6** — merged-frontier retry packaging (ladder option B1): node-local
   packaging policy, peer-safe, small diff.

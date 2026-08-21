@@ -921,6 +921,27 @@ async fn prepare_user_deploys_with_policy(
             gated_pool_retries
         );
     }
+    let retry_frontier_merged = if let [parent] = casper_snapshot.parents.as_slice() {
+        let mut merged = true;
+        for justification in &casper_snapshot.justifications {
+            if !casper_snapshot
+                .invalid_blocks
+                .contains_key(&justification.latest_block_hash)
+                && !casper_snapshot
+                    .dag
+                    .is_dag_ancestor(&justification.latest_block_hash, &parent.block_hash)?
+            {
+                merged = false;
+                break;
+            }
+        }
+        merged
+    } else {
+        false
+    };
+    if !retry_frontier_merged {
+        retry_candidates.clear();
+    }
     let ordinary_candidates: HashSet<Signed<DeployData>> = valid_unique
         .iter()
         .filter(|deploy| !is_retry_candidate(deploy))
@@ -6106,6 +6127,119 @@ mod tests {
             prepared.deploys.iter().any(|d| d.sig == retry.sig),
             "retry admission is floor-clock: a tip-expired floor-live \
              rejected deploy stays selectable"
+        );
+    }
+
+    #[tokio::test]
+    async fn retry_waits_until_visible_parent_frontier_is_merged() {
+        use block_storage::rust::dag::block_dag_key_value_storage::{
+            BlockDagKeyValueStorage, InsertMode,
+        };
+
+        let mut kvm = InMemoryStoreManager::new();
+        let deploy_storage = Arc::new(parking_lot::Mutex::new(
+            KeyValueDeployStorage::new(&mut kvm)
+                .await
+                .expect("deploy storage"),
+        ));
+        let rejected_deploy_buffer = Arc::new(Mutex::new(
+            KeyValueRejectedDeployBuffer::new(&mut kvm)
+                .await
+                .expect("rejected deploy buffer"),
+        ));
+        let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
+            .await
+            .expect("block store");
+        let dag_storage = BlockDagKeyValueStorage::new(&mut kvm)
+            .await
+            .expect("dag storage");
+        let mut snapshot =
+            crate::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
+        snapshot
+            .on_chain_state
+            .shard_conf
+            .max_user_deploys_per_block = 10;
+        snapshot.on_chain_state.shard_conf.deploy_lifespan = 50;
+
+        let retry = construct_deploy::source_deploy(
+            "@71!(71)".to_string(),
+            1_000,
+            None,
+            None,
+            None,
+            Some(20),
+            Some("test".to_string()),
+        )
+        .expect("retry deploy");
+        let mut floor = test_block(
+            invalid_block_hash(0xB0),
+            validator(1),
+            Vec::new(),
+            55,
+            Vec::new(),
+        );
+        floor.body.rejected_deploys = vec![
+            models::rust::casper::protocol::casper_message::RejectedDeploy {
+                sig: retry.sig.clone(),
+                duplicate: false,
+                carrier: floor.block_hash.clone(),
+            },
+        ];
+        let left = test_block(
+            invalid_block_hash(0xB1),
+            validator(1),
+            vec![floor.block_hash.clone()],
+            60,
+            Vec::new(),
+        );
+        let right = test_block(
+            invalid_block_hash(0xB2),
+            validator(2),
+            vec![floor.block_hash.clone()],
+            60,
+            Vec::new(),
+        );
+        for block in [&floor, &left, &right] {
+            block_store.put_block_message(block).expect("store block");
+        }
+        dag_storage
+            .insert(&floor, InsertMode::Approved)
+            .expect("insert floor");
+        dag_storage
+            .insert(&left, InsertMode::Normal)
+            .expect("insert left parent");
+        dag_storage
+            .insert(&right, InsertMode::Normal)
+            .expect("insert right parent");
+        snapshot.dag = dag_storage.get_representation().expect("dag");
+        snapshot.parents = vec![left, right];
+
+        deploy_storage
+            .lock()
+            .add(vec![retry.clone()])
+            .expect("seed deploy storage");
+        rejected_deploy_buffer
+            .lock()
+            .expect("rejected buffer lock")
+            .add(vec![retry])
+            .expect("seed rejected buffer");
+
+        let prepared = prepare_user_deploys(
+            &snapshot,
+            61,
+            10_000,
+            deploy_storage,
+            rejected_deploy_buffer,
+            &block_store,
+            true,
+            true,
+        )
+        .await
+        .expect("prepare deploys");
+
+        assert!(
+            prepared.deploys.is_empty(),
+            "merged-frontier retry packaging must defer a retry over visible sibling parents"
         );
     }
 }
