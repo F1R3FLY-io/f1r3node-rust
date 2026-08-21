@@ -17,6 +17,7 @@ async fn evaluate_petta_term(term: &str) -> EvaluateResult {
     let mut kvm = InMemoryStoreManager::new();
     let store = kvm.r_space_stores().await.unwrap();
 
+    #[allow(clippy::type_complexity)]
     let (runtime, _, _): (
         RhoRuntimeImpl,
         RhoRuntimeImpl,
