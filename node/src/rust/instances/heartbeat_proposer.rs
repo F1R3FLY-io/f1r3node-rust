@@ -567,93 +567,46 @@ async fn check_lfb_and_propose(
         self_latest_block_timestamp_ms.map(|timestamp_ms| now.saturating_sub(timestamp_ms)),
         stale_recovery_min_interval_ms,
     );
-    let stale_recovery_window_open = stale_recovery_interval_elapsed || deploy_recovery_hint;
 
-    // Proposal logic:
-    // - Prioritize pending deploys, but avoid lag-amplification loops:
-    //   - when this validator is already ahead of finalized and lag is above cap,
-    //     temporarily stop heartbeat-driven pending-deploy proposes.
-    // - Keep frontier moving on peer progress:
-    //   - when new parents are observed, allow follow-up propose even before LFB turns stale;
-    //   - when already ahead, guard this with the frontier chase lag cap.
-    // - For stale-LFB recovery:
-    //   - if we are not ahead of finalized, propose;
-    //   - if we are ahead and lag is still small, allow frontier-chasing on new parents;
-    //   - if frontier-chasing is throttled, allow a deterministic leader-only fallback when
-    //     LFB is stale and lag is non-zero so low-lag dead zones do not stall progress;
-    //   - if lag is already high, keep explicit leader recovery.
-    let can_propose_pending_deploys_while_ahead = if deploy_grace_active {
-        lfb_lag_blocks <= deploy_recovery_max_lag
-    } else {
-        lfb_lag_blocks <= pending_deploy_max_lag
-    };
-    let pending_deploys_due =
-        has_pending_deploys && (!self_recently_proposed || can_propose_pending_deploys_while_ahead);
-    // Backstop: even when high lag throttles pending-deploy proposals, force a bounded
-    // retry based on local self-proposal cadence so deploys cannot starve indefinitely.
-    let pending_deploy_backstop_due = has_pending_deploys
-        && self_recently_proposed
-        && !can_propose_pending_deploys_while_ahead
-        && self_latest_block_timestamp_ms
+    let lane_inputs = LaneInputs {
+        lfb_is_stale,
+        frontier_is_stale,
+        lfb_lag_blocks,
+        has_pending_deploys,
+        has_new_parents,
+        has_new_parent_with_user_deploys,
+        deploy_grace_active,
+        self_recently_proposed,
+        self_proposed_too_recently,
+        self_idle_for_recovery_interval: self_latest_block_timestamp_ms
             .map(|timestamp_ms| now.saturating_sub(timestamp_ms) >= stale_recovery_min_interval_ms)
-            .unwrap_or(true)
-        && (!self_proposed_too_recently || deploy_grace_active);
-    let can_follow_frontier_without_pending_deploys =
-        deploy_recovery_hint || stale_recovery_interval_elapsed;
-    // Cooldown protects idle clusters from empty-block churn, but during deploy-driven
-    // recovery/finalization we should not wait out the full cooldown before advancing finality.
-    let allow_cooldown_override_for_deploy_recovery =
-        has_pending_deploys || has_new_parent_with_user_deploys;
-    // When a peer parent with user deploys is observed, allow one frontier-follow step
-    // while ahead (bounded by pending-deploy lag threshold) to unblock synchrony progress.
-    let allow_frontier_follow_while_ahead_for_deploy_parent =
-        has_new_parent_with_user_deploys && lfb_lag_blocks <= deploy_recovery_max_lag;
-    let can_chase_frontier_while_ahead = lfb_lag_blocks <= effective_frontier_chase_cap
-        && has_new_parents
-        && !empty_frontier_backpressure
-        && (!self_proposed_too_recently || allow_cooldown_override_for_deploy_recovery);
-    let frontier_follow_due = !has_pending_deploys
-        && has_new_parents
-        && !empty_frontier_backpressure
-        && can_follow_frontier_without_pending_deploys
-        && (!self_recently_proposed
-            || can_chase_frontier_while_ahead
-            || allow_frontier_follow_while_ahead_for_deploy_parent);
-    let stale_lfb_recovery_due = lfb_is_stale
-        && stale_recovery_window_open
-        && !empty_frontier_backpressure
-        && (!self_recently_proposed || can_chase_frontier_while_ahead || deploy_grace_active);
-    let lag_recovery_threshold = pending_deploy_max_lag;
-    let moderate_lag_recovery_threshold = std::cmp::max(1, lag_recovery_threshold / 2);
-    let stale_lfb_leader_recovery_due = lfb_is_stale
-        && (frontier_is_stale || lfb_lag_blocks > moderate_lag_recovery_threshold)
-        && !has_pending_deploys
-        && lfb_lag_blocks > 0
-        && lag_recovery_leader
-        && stale_recovery_window_open
-        && !empty_frontier_backpressure
-        && (!self_proposed_too_recently || deploy_grace_active)
-        && !stale_lfb_recovery_due;
-    let high_lag_recovery_due = !has_pending_deploys
-        && lfb_lag_blocks > lag_recovery_threshold
-        && lag_recovery_leader
-        && stale_recovery_window_open
-        && !empty_frontier_backpressure
-        && (!self_proposed_too_recently || deploy_grace_active);
-    // Convergence recovery: when the LFB is stale and we have unjustified peer blocks,
-    // propose a convergence block that references all known tips. This breaks the deadlock
-    // where validators diverge into independent forks and normal throttling prevents any
-    // validator from proposing a multi-parent convergence block.
-    let convergence_recovery_due =
-        idle_recovery_window_open && lag_recovery_leader && !empty_frontier_backpressure;
-    let routine_proposal_due = pending_deploys_due
-        || pending_deploy_backstop_due
-        || frontier_follow_due
-        || stale_lfb_recovery_due
-        || stale_lfb_leader_recovery_due
-        || high_lag_recovery_due;
-    let convergence_recovery_selected = convergence_recovery_due && !routine_proposal_due;
-    let should_propose = routine_proposal_due || convergence_recovery_selected;
+            .unwrap_or(true),
+        stale_recovery_interval_elapsed,
+        idle_recovery_window_open,
+        lag_recovery_leader,
+        empty_frontier_backpressure,
+        pending_deploy_max_lag,
+        deploy_recovery_max_lag,
+        effective_frontier_chase_cap,
+    };
+    let LaneDecision {
+        pending_deploys_due,
+        pending_deploy_backstop_due,
+        frontier_follow_due,
+        stale_lfb_recovery_due,
+        stale_lfb_leader_recovery_due,
+        high_lag_recovery_due,
+        convergence_recovery_selected,
+        should_propose,
+        can_propose_pending_deploys_while_ahead,
+        can_chase_frontier_while_ahead,
+        can_follow_frontier_without_pending_deploys,
+        allow_cooldown_override_for_deploy_recovery,
+        allow_frontier_follow_while_ahead_for_deploy_parent,
+        stale_recovery_window_open,
+        lag_recovery_threshold,
+        moderate_lag_recovery_threshold,
+    } = decide_lanes(&lane_inputs);
 
     if should_propose {
         let reason = if pending_deploy_backstop_due {
@@ -1015,6 +968,163 @@ fn inspect_parent_updates(
 /// age keeps a stale shard from re-firing every heartbeat tick (at most
 /// one attempt per interval per validator — the same cadence pacing the
 /// pending-deploy backstop uses).
+/// Everything the heartbeat's per-tick lane decision reads, as plain data.
+/// One row of this struct is one observable proposer state — extracted so the
+/// lane predicates are a pure function that CI-harvested rows can pin
+/// directly (see the `lane_decision_rows` tests).
+struct LaneInputs {
+    lfb_is_stale: bool,
+    frontier_is_stale: bool,
+    lfb_lag_blocks: i64,
+    has_pending_deploys: bool,
+    has_new_parents: bool,
+    has_new_parent_with_user_deploys: bool,
+    deploy_grace_active: bool,
+    /// The HEIGHT key: this validator's latest message sits above the LFB.
+    /// During a finality stall this is permanently true for every validator.
+    self_recently_proposed: bool,
+    /// The cooldown key: this validator minted within `self-propose-cooldown`.
+    self_proposed_too_recently: bool,
+    /// The temporal backstop key: this validator has not minted for a full
+    /// `stale-recovery-min-interval` (true when it has never minted).
+    self_idle_for_recovery_interval: bool,
+    /// `stale_recovery_window_is_open`: LFB age AND own-proposal age both
+    /// reached `stale-recovery-min-interval`.
+    stale_recovery_interval_elapsed: bool,
+    idle_recovery_window_open: bool,
+    lag_recovery_leader: bool,
+    empty_frontier_backpressure: bool,
+    pending_deploy_max_lag: i64,
+    deploy_recovery_max_lag: i64,
+    effective_frontier_chase_cap: i64,
+}
+
+/// The lane verdicts plus every intermediate the reason ladders report.
+struct LaneDecision {
+    pending_deploys_due: bool,
+    pending_deploy_backstop_due: bool,
+    frontier_follow_due: bool,
+    stale_lfb_recovery_due: bool,
+    stale_lfb_leader_recovery_due: bool,
+    high_lag_recovery_due: bool,
+    convergence_recovery_selected: bool,
+    should_propose: bool,
+    can_propose_pending_deploys_while_ahead: bool,
+    can_chase_frontier_while_ahead: bool,
+    can_follow_frontier_without_pending_deploys: bool,
+    allow_cooldown_override_for_deploy_recovery: bool,
+    allow_frontier_follow_while_ahead_for_deploy_parent: bool,
+    stale_recovery_window_open: bool,
+    lag_recovery_threshold: i64,
+    moderate_lag_recovery_threshold: i64,
+}
+
+/// Proposal logic:
+/// - Prioritize pending deploys, but avoid lag-amplification loops:
+///   - when this validator is already ahead of finalized and lag is above cap,
+///     temporarily stop heartbeat-driven pending-deploy proposes.
+/// - Keep frontier moving on peer progress:
+///   - when new parents are observed, allow follow-up propose even before LFB turns stale;
+///   - when already ahead, guard this with the frontier chase lag cap.
+/// - For stale-LFB recovery:
+///   - if we are not ahead of finalized, propose;
+///   - if we are ahead and lag is still small, allow frontier-chasing on new parents;
+///   - if frontier-chasing is throttled, allow a deterministic leader-only fallback when
+///     LFB is stale and lag is non-zero so low-lag dead zones do not stall progress;
+///   - if lag is already high, keep explicit leader recovery.
+fn decide_lanes(i: &LaneInputs) -> LaneDecision {
+    let deploy_recovery_hint = i.has_pending_deploys || i.has_new_parent_with_user_deploys;
+    let stale_recovery_window_open = i.stale_recovery_interval_elapsed || deploy_recovery_hint;
+    let can_propose_pending_deploys_while_ahead = if i.deploy_grace_active {
+        i.lfb_lag_blocks <= i.deploy_recovery_max_lag
+    } else {
+        i.lfb_lag_blocks <= i.pending_deploy_max_lag
+    };
+    let pending_deploys_due = i.has_pending_deploys
+        && (!i.self_recently_proposed || can_propose_pending_deploys_while_ahead);
+    // Backstop: even when high lag throttles pending-deploy proposals, force a bounded
+    // retry based on local self-proposal cadence so deploys cannot starve indefinitely.
+    let pending_deploy_backstop_due = i.has_pending_deploys
+        && i.self_recently_proposed
+        && !can_propose_pending_deploys_while_ahead
+        && i.self_idle_for_recovery_interval
+        && (!i.self_proposed_too_recently || i.deploy_grace_active);
+    let can_follow_frontier_without_pending_deploys =
+        deploy_recovery_hint || i.stale_recovery_interval_elapsed;
+    // Cooldown protects idle clusters from empty-block churn, but during deploy-driven
+    // recovery/finalization we should not wait out the full cooldown before advancing finality.
+    let allow_cooldown_override_for_deploy_recovery =
+        i.has_pending_deploys || i.has_new_parent_with_user_deploys;
+    // When a peer parent with user deploys is observed, allow one frontier-follow step
+    // while ahead (bounded by pending-deploy lag threshold) to unblock synchrony progress.
+    let allow_frontier_follow_while_ahead_for_deploy_parent =
+        i.has_new_parent_with_user_deploys && i.lfb_lag_blocks <= i.deploy_recovery_max_lag;
+    let can_chase_frontier_while_ahead = i.lfb_lag_blocks <= i.effective_frontier_chase_cap
+        && i.has_new_parents
+        && !i.empty_frontier_backpressure
+        && (!i.self_proposed_too_recently || allow_cooldown_override_for_deploy_recovery);
+    let frontier_follow_due = !i.has_pending_deploys
+        && i.has_new_parents
+        && !i.empty_frontier_backpressure
+        && can_follow_frontier_without_pending_deploys
+        && (!i.self_recently_proposed
+            || can_chase_frontier_while_ahead
+            || allow_frontier_follow_while_ahead_for_deploy_parent);
+    let stale_lfb_recovery_due = i.lfb_is_stale
+        && stale_recovery_window_open
+        && !i.empty_frontier_backpressure
+        && (!i.self_recently_proposed || can_chase_frontier_while_ahead || i.deploy_grace_active);
+    let lag_recovery_threshold = i.pending_deploy_max_lag;
+    let moderate_lag_recovery_threshold = std::cmp::max(1, lag_recovery_threshold / 2);
+    let stale_lfb_leader_recovery_due = i.lfb_is_stale
+        && (i.frontier_is_stale || i.lfb_lag_blocks > moderate_lag_recovery_threshold)
+        && !i.has_pending_deploys
+        && i.lfb_lag_blocks > 0
+        && i.lag_recovery_leader
+        && stale_recovery_window_open
+        && !i.empty_frontier_backpressure
+        && (!i.self_proposed_too_recently || i.deploy_grace_active)
+        && !stale_lfb_recovery_due;
+    let high_lag_recovery_due = !i.has_pending_deploys
+        && i.lfb_lag_blocks > lag_recovery_threshold
+        && i.lag_recovery_leader
+        && stale_recovery_window_open
+        && !i.empty_frontier_backpressure
+        && (!i.self_proposed_too_recently || i.deploy_grace_active);
+    // Convergence recovery: when the LFB is stale and we have unjustified peer blocks,
+    // propose a convergence block that references all known tips. This breaks the deadlock
+    // where validators diverge into independent forks and normal throttling prevents any
+    // validator from proposing a multi-parent convergence block.
+    let convergence_recovery_due =
+        i.idle_recovery_window_open && i.lag_recovery_leader && !i.empty_frontier_backpressure;
+    let routine_proposal_due = pending_deploys_due
+        || pending_deploy_backstop_due
+        || frontier_follow_due
+        || stale_lfb_recovery_due
+        || stale_lfb_leader_recovery_due
+        || high_lag_recovery_due;
+    let convergence_recovery_selected = convergence_recovery_due && !routine_proposal_due;
+    let should_propose = routine_proposal_due || convergence_recovery_selected;
+    LaneDecision {
+        pending_deploys_due,
+        pending_deploy_backstop_due,
+        frontier_follow_due,
+        stale_lfb_recovery_due,
+        stale_lfb_leader_recovery_due,
+        high_lag_recovery_due,
+        convergence_recovery_selected,
+        should_propose,
+        can_propose_pending_deploys_while_ahead,
+        can_chase_frontier_while_ahead,
+        can_follow_frontier_without_pending_deploys,
+        allow_cooldown_override_for_deploy_recovery,
+        allow_frontier_follow_while_ahead_for_deploy_parent,
+        stale_recovery_window_open,
+        lag_recovery_threshold,
+        moderate_lag_recovery_threshold,
+    }
+}
+
 fn stale_recovery_window_is_open(
     time_since_lfb_ms: u128,
     self_latest_block_age_ms: Option<u128>,
@@ -2149,6 +2259,186 @@ mod tests {
                  stale-recovery proposal through the unfinalized cap — a cap \
                  that silences every validator forever is a consensus deadlock"
             );
+        }
+    }
+
+    /// Table pins for the pure lane decision, one row per observable
+    /// proposer state. The green rows pin behavior harvested from healthy
+    /// CI shards; the red row is the silence measured in every CI stall:
+    /// non-leaders logged "waiting for selected recovery leader" 81/114
+    /// times in instance i1 (run 32284324989), 288/289 times in i5
+    /// (run 32397055615), and 464 times on the ucc-i6 wedged node — each
+    /// a tick where a stalled, temporally idle validator proposed nothing.
+    mod lane_decision_rows {
+        use super::super::{decide_lanes, LaneInputs};
+
+        /// A healthy idle shard: fresh LFB, no work, nothing due.
+        fn baseline() -> LaneInputs {
+            LaneInputs {
+                lfb_is_stale: false,
+                frontier_is_stale: false,
+                lfb_lag_blocks: 0,
+                has_pending_deploys: false,
+                has_new_parents: false,
+                has_new_parent_with_user_deploys: false,
+                deploy_grace_active: false,
+                self_recently_proposed: false,
+                self_proposed_too_recently: false,
+                self_idle_for_recovery_interval: true,
+                stale_recovery_interval_elapsed: false,
+                idle_recovery_window_open: false,
+                lag_recovery_leader: false,
+                empty_frontier_backpressure: false,
+                pending_deploy_max_lag: 20,
+                deploy_recovery_max_lag: 64,
+                effective_frontier_chase_cap: 20,
+            }
+        }
+
+        #[test]
+        fn a_healthy_idle_shard_proposes_nothing() {
+            let d = decide_lanes(&baseline());
+            assert!(!d.should_propose);
+        }
+
+        #[test]
+        fn pending_deploys_fire_the_deploy_lane() {
+            let d = decide_lanes(&LaneInputs {
+                has_pending_deploys: true,
+                ..baseline()
+            });
+            assert!(d.pending_deploys_due && d.should_propose);
+        }
+
+        #[test]
+        fn the_pending_backstop_forces_one_propose_over_the_lag_cap() {
+            let over_cap_idle = LaneInputs {
+                has_pending_deploys: true,
+                self_recently_proposed: true,
+                lfb_lag_blocks: 30,
+                ..baseline()
+            };
+            let d = decide_lanes(&over_cap_idle);
+            assert!(
+                !d.pending_deploys_due && d.pending_deploy_backstop_due && d.should_propose,
+                "an idle validator over the cap gets exactly the backstop lane"
+            );
+            let d = decide_lanes(&LaneInputs {
+                self_idle_for_recovery_interval: false,
+                ..over_cap_idle
+            });
+            assert!(
+                !d.should_propose,
+                "before the recovery interval elapses the backstop stays shut"
+            );
+        }
+
+        #[test]
+        fn new_parents_drive_frontier_follow_inside_the_chase_cap() {
+            let d = decide_lanes(&LaneInputs {
+                has_new_parents: true,
+                self_recently_proposed: true,
+                lfb_lag_blocks: 5,
+                stale_recovery_interval_elapsed: true,
+                ..baseline()
+            });
+            assert!(d.frontier_follow_due && d.should_propose);
+        }
+
+        #[test]
+        fn backpressure_stops_empty_lanes_but_never_the_deploy_lane() {
+            let d = decide_lanes(&LaneInputs {
+                empty_frontier_backpressure: true,
+                lfb_is_stale: true,
+                stale_recovery_interval_elapsed: true,
+                ..baseline()
+            });
+            assert!(!d.should_propose, "empty recovery yields to backpressure");
+            let d = decide_lanes(&LaneInputs {
+                empty_frontier_backpressure: true,
+                has_pending_deploys: true,
+                ..baseline()
+            });
+            assert!(
+                d.pending_deploys_due && d.should_propose,
+                "user work is never held behind the empty-block cap"
+            );
+        }
+
+        #[test]
+        fn a_not_yet_proposed_validator_gets_the_stale_recovery_lane() {
+            let d = decide_lanes(&LaneInputs {
+                lfb_is_stale: true,
+                stale_recovery_interval_elapsed: true,
+                lfb_lag_blocks: 30,
+                ..baseline()
+            });
+            assert!(d.stale_lfb_recovery_due && d.should_propose);
+        }
+
+        #[test]
+        fn grace_reopens_the_stale_recovery_lane_while_ahead() {
+            let d = decide_lanes(&LaneInputs {
+                lfb_is_stale: true,
+                stale_recovery_interval_elapsed: true,
+                self_recently_proposed: true,
+                deploy_grace_active: true,
+                lfb_lag_blocks: 30,
+                ..baseline()
+            });
+            assert!(d.stale_lfb_recovery_due && d.should_propose);
+        }
+
+        /// THE CI STALL ROW. Every stalled shard converges to exactly this
+        /// state on every non-leader: the LFB is stale, the temporal window
+        /// is open (this validator has been silent for a full recovery
+        /// interval), the deploy pools are empty, no new parents arrive
+        /// because every peer is equally silenced — and the height key
+        /// (`self_recently_proposed`: its old block sits above the frozen
+        /// LFB) is permanently true, so the general stale lane never fires.
+        /// A validator in this state MUST propose: the recovery interval is
+        /// the pacing, and mutual witnessing is the only way the clique can
+        /// re-form. This is the silence behind every "waiting for selected
+        /// recovery leader" line in the CI stalls.
+        #[test]
+        fn a_stalled_idle_non_leader_must_get_its_recovery_proposal() {
+            let d = decide_lanes(&LaneInputs {
+                lfb_is_stale: true,
+                stale_recovery_interval_elapsed: true,
+                self_recently_proposed: true,
+                lfb_lag_blocks: 30,
+                ..baseline()
+            });
+            assert!(
+                d.should_propose,
+                "a stalled, temporally idle validator proposed nothing: the \
+                 height key suppresses the one lane whose pacing (the \
+                 stale-recovery interval) already permits it to speak"
+            );
+        }
+
+        #[test]
+        fn the_stalled_leader_still_proposes() {
+            let d = decide_lanes(&LaneInputs {
+                lfb_is_stale: true,
+                frontier_is_stale: true,
+                stale_recovery_interval_elapsed: true,
+                self_recently_proposed: true,
+                lag_recovery_leader: true,
+                lfb_lag_blocks: 30,
+                ..baseline()
+            });
+            assert!(d.should_propose);
+        }
+
+        #[test]
+        fn convergence_fires_for_the_leader_when_nothing_routine_is_due() {
+            let d = decide_lanes(&LaneInputs {
+                idle_recovery_window_open: true,
+                lag_recovery_leader: true,
+                ..baseline()
+            });
+            assert!(d.convergence_recovery_selected && d.should_propose);
         }
     }
 }
