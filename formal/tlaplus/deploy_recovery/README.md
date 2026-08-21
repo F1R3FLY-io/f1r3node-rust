@@ -48,7 +48,7 @@ receipt.
 
 | Configuration | Expected result | Defect isolated |
 | --- | --- | --- |
-| `MC_MergeRecoveryCoherence.cfg` | pass | finalized-base precedence, exact tombstone filtering, base/scope deduplication, state-record coherence, and numeric single-datum settlement |
+| `MC_MergeRecoveryCoherence.cfg` | pass | finalized-base precedence, exact tombstone filtering, base/scope deduplication, state-record coherence, and numeric single-datum composition |
 | `MC_MergeRecoveryCoherence_base_precedence_unsafe.cfg` | violate `Inv_AtMostOneEffectPerSignature` | a sibling tombstone masks an effect already materialized in the finalized base and authorizes a duplicate retry |
 | `MC_MergeRecoveryCoherence_tombstone_filter_unsafe.cfg` | violate `Inv_TombstonedScopeNotApplied` | an exact above-floor tombstone is recorded after the source chain has already entered state application |
 | `MC_MergeRecoveryCoherence_base_duplicate_unsafe.cfg` | violate `Inv_AtMostOneEffectPerSignature` | deduplication compares only above-floor candidates and misses a same-signature effect in the finalized base |
@@ -135,8 +135,8 @@ adoption, proposal, and peer reception. The configured current version is 3;
 the supported active set is exactly `{3}`. A current ceremony therefore reaches
 running consensus with every node using one adopted version, while recovery from
 a protocol-1, protocol-2, or otherwise unsupported approved block fails closed before any
-proposal can be made. There is no accounting enable/disable flag and no
-block-height transition between two charging engines.
+proposal can be made. There is no feature flag or block-height transition
+between two consensus protocols.
 
 The original disagreement is retained as an executable negative control. A
 protocol-1 approved genesis combined with a locally configured current-protocol
