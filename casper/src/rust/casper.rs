@@ -243,6 +243,9 @@ pub async fn hash_set_casper<T: TransportLayer + Send + Sync>(
     casper_shard_conf.fault_tolerance_threshold = (onchain_ppm as f64 / 1_000_000.0) as f32;
 
     Ok(MultiParentCasperImpl {
+        divergence_monitor: std::sync::Arc::new(
+            crate::rust::engine::multi_parent_casper::finalization_runner::DivergenceMonitor::default(),
+        ),
         block_retriever,
         event_publisher,
         runtime_manager,

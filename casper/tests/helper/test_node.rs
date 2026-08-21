@@ -1112,6 +1112,9 @@ impl TestNode {
         };
 
         let casper_impl = MultiParentCasperImpl {
+            divergence_monitor: std::sync::Arc::new(
+                casper::rust::engine::multi_parent_casper::DivergenceMonitor::default(),
+            ),
             block_retriever: block_retriever.clone(),
             event_publisher: event_publisher.clone(),
             runtime_manager: Arc::new(runtime_manager.clone()),

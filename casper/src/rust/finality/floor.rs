@@ -296,20 +296,49 @@ fn trace_containment(cand: &Floor, x: &Floor, verdict: &str, missing: usize) {
     );
 }
 
+/// The outcome of one LFB decision over the live view.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FloorOfView {
+    /// A strictly higher floor whose state contains the current LFB's
+    /// settled effects — adopt it.
+    Advance(Floor),
+    /// Nothing to do: empty view, or no strictly higher floor derived.
+    NoAdvance,
+    /// A strictly higher floor was derived and REFUSED: its state is
+    /// missing effects settled under the current LFB. One refusal is not a
+    /// diagnosis — a rejected-then-recovered deploy legitimately fails
+    /// containment until its re-homed carrier finalizes — but a streak of
+    /// refusals with RISING derived floors is the shard finalizing without
+    /// this node: a finality divergence. The finalization runner's
+    /// `DivergenceMonitor` tracks exactly that.
+    ContainmentHold { derived: Floor },
+}
+
+impl FloorOfView {
+    /// The adopted floor, if any — for callers that only care whether the
+    /// LFB advanced (the API read path, tests). The runner matches all
+    /// three arms so containment holds reach the `DivergenceMonitor`.
+    pub fn advanced(self) -> Option<Floor> {
+        match self {
+            FloorOfView::Advance(floor) => Some(floor),
+            FloorOfView::NoAdvance | FloorOfView::ContainmentHold { .. } => None,
+        }
+    }
+}
+
 /// The LFB decision over the LIVE view — the one finality clock: derive the
 /// floor of the current frontier (the deduped latest-message blocks, over
 /// the live snapshot) and advance only onto a strictly higher floor whose
 /// state CONTAINS the current LFB's settled effects — the same containment
 /// check the per-block derivation runs, so the read surface can never
-/// designate a state missing settled content. `None` = hold (empty view,
-/// no advance, or a non-containing derivation, which is logged). Both the
-/// finalization runner and the API path consume exactly this.
+/// designate a state missing settled content. Both the finalization runner
+/// and the API path consume exactly this.
 pub async fn floor_of_view(
     dag: &KeyValueDagRepresentation,
     block_store: &KeyValueBlockStore,
     current: &Floor,
     ftt: FtThreshold,
-) -> Result<Option<Floor>, CasperError> {
+) -> Result<FloorOfView, CasperError> {
     let mut tips: Vec<BlockHash> = dag
         .latest_message_hashes()
         .into_iter()
@@ -318,17 +347,17 @@ pub async fn floor_of_view(
     tips.sort();
     tips.dedup();
     if tips.is_empty() {
-        return Ok(None);
+        return Ok(FloorOfView::NoAdvance);
     }
     let live_snapshot: BTreeMap<Validator, BlockHash> =
         dag.latest_message_hashes().into_iter().collect();
     let derived = finalized_floor(dag, block_store, &tips, &live_snapshot, ftt).await?;
     if derived.hash == current.hash || derived.block_number <= current.block_number {
-        return Ok(None);
+        return Ok(FloorOfView::NoAdvance);
     }
     let mut memo = IntroducedSigsMemo::new();
     if state_contains(dag, block_store, &derived, current, &mut memo)? {
-        Ok(Some(derived))
+        Ok(FloorOfView::Advance(derived))
     } else {
         tracing::warn!(
             target: "f1r3fly.finalizer",
@@ -337,7 +366,7 @@ pub async fn floor_of_view(
             current = %PrettyPrinter::build_string_bytes(&current.hash),
             "floor-of-view does not capture the current LFB; holding"
         );
-        Ok(None)
+        Ok(FloorOfView::ContainmentHold { derived })
     }
 }
 

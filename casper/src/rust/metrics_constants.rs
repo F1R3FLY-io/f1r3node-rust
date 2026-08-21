@@ -305,6 +305,12 @@ pub const FLOOR_FRONTIER_CACHE_MISS_METRIC: &str = "finality.floor.frontier.cach
 pub const FLOOR_INCREMENTAL_GUARD_FALLBACK_METRIC: &str =
     "finality.floor.frontier.incremental-guard-fallback";
 
+// Counter: the containment gate refused a streak of strictly rising derived
+// floors against one pinned LFB — the shard is finalizing state this node
+// settled differently: a finality DIVERGENCE. The most severe event the
+// finalizer can observe; alert on any nonzero value.
+pub const FINALITY_DIVERGENCE_DETECTED_METRIC: &str = "finality.divergence.detected";
+
 // `BlockDagKeyValueStorage::insert`.
 pub const DAG_INSERT_TIME_METRIC: &str = "dag.insert.time";
 

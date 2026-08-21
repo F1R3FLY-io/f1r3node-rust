@@ -640,27 +640,16 @@ async fn check_lfb_and_propose(
                 finality_progress.stalled_for.as_millis(),
                 lfb_lag_blocks
             )
-        } else if self_recently_proposed && has_new_parents && !can_chase_frontier_while_ahead {
+        } else if stale_lfb_recovery_due {
             format!(
-                "LFB is stale but frontier-follow is throttled (lag={}, cooldown_active={}, frontier_chase_cap={})",
-                lfb_lag_blocks,
-                self_proposed_too_recently,
-                effective_frontier_chase_cap
-            )
-        } else if self_recently_proposed && !has_new_parents {
-            "LFB is stale but validator is already ahead of finalized height (cooling down stale-LFB recovery)".to_string()
-        } else if !standalone && !has_new_parents {
-            format!(
-                "LFB is stale ({}ms old, threshold: {}ms) and no new parents (recovery heartbeat)",
+                "LFB is stale ({}ms old, threshold: {}ms); stale-recovery proposal at lag={} (one per {}ms per validator until the clique re-forms)",
                 time_since_lfb,
-                config.max_lfb_age.as_millis()
+                config.max_lfb_age.as_millis(),
+                lfb_lag_blocks,
+                stale_recovery_min_interval_ms
             )
         } else {
-            format!(
-                "LFB is stale ({}ms old, threshold: {}ms) and new parents exist",
-                time_since_lfb,
-                config.max_lfb_age.as_millis()
-            )
+            "unreachable: should_propose without a firing lane".to_string()
         };
 
         tracing::info!("Heartbeat: Proposing block - reason: {}", reason);
