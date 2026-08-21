@@ -1,6 +1,6 @@
 // UC-43 — Pre-fix off-by-one seq-density regression (audit-tier alias).
 //
-// Maps to: docs/theory/slashing/slashing-specification.md §12 UC-43.
+// Maps to: docs/casper/theory/slashing/slashing-specification.md §12 UC-43.
 // Theorem: T-9.7 (negative).
 //
 // §14.3.2 audit-blocker alias for `pre_fix_bug_7.rs`.

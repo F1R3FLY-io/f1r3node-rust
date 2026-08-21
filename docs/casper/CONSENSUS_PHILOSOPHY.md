@@ -2,7 +2,7 @@
 
 **Status:** Draft — pending maintainer ratification
 **Started:** 2026-08-20, from the issue [#294](https://github.com/F1R3FLY-io/f1r3node-rust/issues/294) remediation analysis
-**Related:** [Consensus Protocol](./CONSENSUS_PROTOCOL.md), [Fork-Choice dossier](../theory/fork-choice/fork-choice-specification.md), [Glossary](../Glossary.md)
+**Related:** [Consensus Protocol](./CONSENSUS_PROTOCOL.md), [Fork-Choice dossier](./theory/fork-choice/fork-choice-specification.md), [Glossary](../Glossary.md)
 
 ## 1. Purpose and scope
 
@@ -138,6 +138,21 @@ The principles below generalize from this case. Later consensus decisions must c
 ## 7. Relation to CBC Casper
 
 The principles in Section 6 are not new inventions. They extend the correct-by-construction (CBC) Casper tradition that this implementation inherits. The table below maps each aspect of that tradition to this philosophy. The divergences are extensions for deploy-level fairness, not contradictions of the CBC core.
+
+### Historical position: the F1R3FLY specialization
+
+CBC Casper is abstract. The same safety theorem applies to binary consensus, to a linear chain, and to a high-dimensional DAG. The Ethereum-oriented instantiation — Casper the Friendly GHOST (CTFG) — chose a chain of blocks with LMD-GHOST as the estimator. A block names one parent. Extra references thicken the message DAG for fork-choice scoring, in the manner of uncles or attestations. They are not concurrent state merges.
+
+That original design already carries the classical CBC tension: safety holds under asynchrony, liveness needs synchrony, and a sticky fork choice needs a justified switch. The original design does **not** have:
+
+- concurrent deploys that race on the same key,
+- content-ordered or cost-ordered merge of conflicting state diffs,
+- a main-parent merge base that can structurally starve a retry,
+- per-merge adjudication of a stale chain against an already-committed effect.
+
+These four properties belong to the F1R3FLY Casper specialization: concurrent Rholang execution over the tuple space, plus multi-parent block and state merge. The starvation case in Section 2 is therefore a property of this specialization: the composition of locally safe merges. It is not a defect of the original CBC papers or the CTFG specification. The CBC research line did explore richer structures, such as sharded consensus values and the concurrent protocol examples in the cbc-casper simulations. The costing-and-merging contention this document analyzes is the later F1R3FLY addition.
+
+This position also organizes the table below. The rows align where this implementation inherits the CBC core. The divergences live exactly in the added merge layer, which is where the new principles (P1, P6) operate.
 
 | Aspect | CBC Casper position | This philosophy | Relation |
 |---|---|---|---|

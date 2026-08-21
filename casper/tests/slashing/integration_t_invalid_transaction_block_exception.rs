@@ -1,6 +1,6 @@
 // References below to `formal/{rocq,tlaplus,sage}/slashing/`,
 // `FINDINGS.md`, `slashing-search-horizon.{md,sh}`, `slashing-traceability.md`,
-// `docs/theory/slashing/methodology/`, and `.mutants.toml` point at
+// `docs/casper/theory/slashing/methodology/`, and `.mutants.toml` point at
 // audit-corpus artifacts preserved on the `analysis/slashing` branch.
 //
 // Integration test — Tier 1 production-path verification of the
@@ -9,7 +9,7 @@
 //
 // Theorem citation: T-9.3 (catch-all dispatcher), Rocq
 // formal/rocq/slashing/theories/BugFixDispatcher.v `t_9_3_dispatch_complete`.
-// Spec reference: docs/theory/slashing/design/09-bug-fixes-and-rationale.md §9.4.
+// Spec reference: docs/casper/theory/slashing/design/09-bug-fixes-and-rationale.md §9.4.
 //
 // What this pins (and UC-34 does not):
 //   - block_processor.rs:358-371 — the BlockException catch-all. UC-34
