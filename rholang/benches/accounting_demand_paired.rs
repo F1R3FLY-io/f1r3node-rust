@@ -39,6 +39,7 @@ const CALLBACK_INITIAL_STATE: u64 = 0xcbf2_9ce4_8422_2325;
 enum Mode {
     Locked,
     Preflight,
+    Profile,
     Smoke,
 }
 
@@ -47,6 +48,7 @@ impl Mode {
         match self {
             Self::Locked => "locked",
             Self::Preflight => "preflight",
+            Self::Profile => "profile",
             Self::Smoke => "smoke",
         }
     }
@@ -63,6 +65,7 @@ impl Mode {
                 warmup_pairs: 0,
                 retained_pairs: 1,
             },
+            Self::Profile => panic!("profile mode supplies an explicit protocol"),
             Self::Smoke => Protocol {
                 depth: 16,
                 warmup_pairs: 1,
@@ -85,11 +88,26 @@ struct Config {
     output: PathBuf,
     treatment_ref: String,
     expected_cpu: Option<usize>,
+    profile: Option<ProfileConfig>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ProfileConfig {
+    arm: Arm,
+    depth: usize,
+    iterations: usize,
 }
 
 fn usage() -> ! {
     eprintln!(
-        "usage: accounting_demand_paired \\\n+         --mode locked|preflight|smoke \\\n+         --output PATH --treatment-ref GIT_REF [--cpu LOGICAL_CPU]"
+        "{}",
+        concat!(
+            "usage: accounting_demand_paired --mode locked|preflight|smoke ",
+            "--output PATH --treatment-ref GIT_REF [--cpu LOGICAL_CPU]\n",
+            "profiling: --mode profile --profile-arm control|treatment ",
+            "--profile-depth N --profile-iterations N --output PATH ",
+            "--treatment-ref GIT_REF --cpu LOGICAL_CPU"
+        )
     );
     std::process::exit(2);
 }
@@ -100,18 +118,45 @@ fn parse_config() -> Config {
     let mut output = None;
     let mut treatment_ref = None;
     let mut expected_cpu = None;
+    let mut profile_arm = None;
+    let mut profile_depth = None;
+    let mut profile_iterations = None;
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--mode" => {
                 mode = Some(match args.next().as_deref() {
                     Some("locked") => Mode::Locked,
                     Some("preflight") => Mode::Preflight,
+                    Some("profile") => Mode::Profile,
                     Some("smoke") => Mode::Smoke,
                     _ => usage(),
                 });
             }
             "--output" => output = args.next().map(PathBuf::from),
             "--treatment-ref" => treatment_ref = args.next(),
+            "--profile-arm" => {
+                profile_arm = Some(match args.next().as_deref() {
+                    Some("control") => Arm::Control,
+                    Some("treatment") => Arm::Treatment,
+                    _ => usage(),
+                });
+            }
+            "--profile-depth" => {
+                profile_depth = Some(
+                    args.next()
+                        .and_then(|raw| raw.parse::<usize>().ok())
+                        .filter(|&value| value != 0)
+                        .unwrap_or_else(|| usage()),
+                );
+            }
+            "--profile-iterations" => {
+                profile_iterations = Some(
+                    args.next()
+                        .and_then(|raw| raw.parse::<usize>().ok())
+                        .filter(|&value| value != 0)
+                        .unwrap_or_else(|| usage()),
+                );
+            }
             "--cpu" => {
                 expected_cpu = Some(
                     args.next()
@@ -125,14 +170,27 @@ fn parse_config() -> Config {
         }
     }
 
+    let mode = mode.unwrap_or_else(|| usage());
+    let profile = match mode {
+        Mode::Profile => Some(ProfileConfig {
+            arm: profile_arm.unwrap_or_else(|| usage()),
+            depth: profile_depth.unwrap_or_else(|| usage()),
+            iterations: profile_iterations.unwrap_or_else(|| usage()),
+        }),
+        _ if profile_arm.is_none() && profile_depth.is_none() && profile_iterations.is_none() => {
+            None
+        }
+        _ => usage(),
+    };
     let config = Config {
-        mode: mode.unwrap_or_else(|| usage()),
+        mode,
         output: output.unwrap_or_else(|| usage()),
         treatment_ref: treatment_ref.unwrap_or_else(|| usage()),
         expected_cpu,
+        profile,
     };
-    if config.mode == Mode::Locked && config.expected_cpu.is_none() {
-        eprintln!("locked mode requires --cpu and a one-CPU affinity mask");
+    if matches!(config.mode, Mode::Locked | Mode::Profile) && config.expected_cpu.is_none() {
+        eprintln!("locked and profile modes require --cpu and a one-CPU affinity mask");
         std::process::exit(2);
     }
     config
@@ -416,6 +474,24 @@ fn run_arm(arm: Arm, fixture: &Par, first_channel: &[u8], second_channel: &[u8])
     }
 }
 
+/// Stable Callgrind toggle boundary for deterministic instruction profiles.
+/// Fixture construction and result serialization stay outside the wrapper;
+/// launch-mode Massif and uProf still observe the whole process.
+#[inline(never)]
+fn profile_control(fixture: &Par, first_channel: &[u8], second_channel: &[u8]) -> Outcome {
+    let outcome = run_arm(Arm::Control, fixture, first_channel, second_channel);
+    black_box(&outcome);
+    outcome
+}
+
+/// Tail-call-resistant Callgrind boundary for the current production treatment.
+#[inline(never)]
+fn profile_treatment(fixture: &Par, first_channel: &[u8], second_channel: &[u8]) -> Outcome {
+    let outcome = run_arm(Arm::Treatment, fixture, first_channel, second_channel);
+    black_box(&outcome);
+    outcome
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Arm {
     Control,
@@ -540,6 +616,10 @@ fn write_metadata(
     writeln!(output, "# frozen_source_sha256={FROZEN_SOURCE_SHA256}")?;
     writeln!(output, "# affinity_cpus={affinity:?}")?;
     writeln!(output, "# started_unix_seconds={started}")?;
+    if let Some(profile) = config.profile {
+        writeln!(output, "# profile_arm={}", profile.arm.label())?;
+        writeln!(output, "# profile_iterations={}", profile.iterations)?;
+    }
     writeln!(
         output,
         "phase\tpair\torder\tarm\telapsed_ns\tdepth\tseed\twitness\tcallback_count\tcallback_state\tcpu_before\tcpu_after\ttreatment_ref\tfrozen_control_git"
@@ -620,16 +700,86 @@ fn run_pair(
     pair_started.elapsed()
 }
 
+fn run_profile(
+    output: &mut BufWriter<File>,
+    config: &Config,
+    profile: ProfileConfig,
+    fixture: &Par,
+    first_channel: &[u8],
+    second_channel: &[u8],
+) {
+    let expected_cpu = config.expected_cpu.expect("profile CPU");
+    let cpu_before = current_cpu();
+    assert_eq!(
+        cpu_before, expected_cpu,
+        "profile began on the wrong logical CPU"
+    );
+    let started = Instant::now();
+    let mut last_outcome = None;
+    for _ in 0..profile.iterations {
+        let outcome = match profile.arm {
+            Arm::Control => profile_control(fixture, first_channel, second_channel),
+            Arm::Treatment => profile_treatment(fixture, first_channel, second_channel),
+        };
+        validate_outcome(&outcome);
+        if let Some(previous) = last_outcome.as_ref() {
+            assert_eq!(previous, &outcome, "profile repetitions diverged");
+        }
+        last_outcome = Some(black_box(outcome));
+    }
+    let elapsed = started.elapsed();
+    let cpu_after = current_cpu();
+    assert_eq!(
+        cpu_after, expected_cpu,
+        "profile ended on the wrong logical CPU"
+    );
+    let measurement = Measurement {
+        arm: profile.arm,
+        elapsed,
+        outcome: last_outcome.expect("positive profile iteration count"),
+        cpu_before,
+        cpu_after,
+    };
+    write_measurement(
+        output,
+        RowContext {
+            phase: "profile",
+            pair: 0,
+            order: "single",
+            depth: profile.depth,
+            treatment_ref: &config.treatment_ref,
+        },
+        &measurement,
+    )
+    .expect("flush profile row");
+    eprintln!(
+        "profile {} depth {} x{} completed in {:.6}s",
+        profile.arm.label(),
+        profile.depth,
+        profile.iterations,
+        elapsed.as_secs_f64()
+    );
+}
+
 fn main() {
     let config = parse_config();
-    let protocol = config.mode.protocol();
+    let protocol = config.profile.map_or_else(
+        || config.mode.protocol(),
+        |profile| Protocol {
+            depth: profile.depth,
+            warmup_pairs: 0,
+            retained_pairs: 0,
+        },
+    );
     let affinity = affinity_cpus();
-    if config.mode == Mode::Locked {
+    if matches!(config.mode, Mode::Locked | Mode::Profile) {
         assert_eq!(
             affinity,
-            vec![config.expected_cpu.expect("locked CPU")],
-            "locked run requires an exact one-CPU affinity mask"
+            vec![config.expected_cpu.expect("exclusive CPU")],
+            "locked and profile runs require an exact one-CPU affinity mask"
         );
+    }
+    if config.mode == Mode::Locked {
         eprintln!(
             "experiment 303 locked forecast: about 70–75 minutes; raw rows flush after every arm"
         );
@@ -653,6 +803,18 @@ fn main() {
         protocol.depth
     );
     let (fixture, first_channel, second_channel) = deep_new_chain(protocol.depth);
+
+    if let Some(profile) = config.profile {
+        run_profile(
+            &mut output,
+            &config,
+            profile,
+            &fixture,
+            &first_channel,
+            &second_channel,
+        );
+        return;
+    }
 
     let run_started = Instant::now();
     for pair in 0..protocol.warmup_pairs {

@@ -9036,9 +9036,11 @@ log digest `ec4835b6768355d2c735f2362da41679e186976551b6523f69127ea87d0c87f5`.
 
 #### 5.32.3 Time, allocation, and headless heap results
 
-All release timings are Criterion means over 30 samples under a **12 GiB `MemoryMax`**, zero-swap
-user scope. The machine had 32 physical cores (one hardware thread per core) and 45.19% aggregate idle immediately before the
-profiling phase. The exact control retains both pre-repair mechanisms and is benchmark-only.
+The exploratory scaling timings are Criterion means over 30 samples under a **12 GiB
+`MemoryMax`**, zero-swap user scope. The machine had 32 physical cores (one hardware thread per
+core) and 45.19% aggregate idle immediately before that profiling phase. The exact control retains
+both pre-repair mechanisms and is benchmark-only. The locked paired adjudication below is a
+separate, fixed-sample experiment rather than a Criterion estimate.
 
 | depth | exact suffix control | byte-region PDA | control / treatment |
 |---:|---:|---:|---:|
@@ -9054,6 +9056,34 @@ at depth 512 to **54 / 3,671,360 B** at depth 4,096: an eightfold input-depth in
 1.286× allocation-count increase and 7.980× requested-byte increase. The depth-20,000 treatment
 also completes on a **128 KiB** native stack; no `RUST_MIN_STACK`, `stacker`, recursion limit, or
 traversal cap is present.
+
+##### Locked paired adjudication
+
+Experiment 303 timed the exact historical `demand` followed by the exact historical
+`demand_by_sig` against the two current source-compatible public entry points at depth 1,024. The
+fixture was built once outside the timed regions. The process was pinned to logical CPU 6 in a
+**4 GiB `MemoryMax`**, zero-swap scope after a five-second sample found **81.40%** aggregate idle
+and **99.00%** idle on CPU 6. The preregistered protocol ran three unretained warm-up pairs and 30
+retained pairs in alternating AB/BA order, hence 15 retained pairs of each order. Every arm produced
+witness `0f20f52fcef3aaca`, invoked the stateful callback twice, ended in callback state
+`e07385157d37dab8`, and began and ended on CPU 6.
+
+| statistic | exact control | byte-region treatment | treatment / control |
+|---|---:|---:|---:|
+| retained observations | 30 | 30 | — |
+| median | 118.977181 s | 232.7855 µs | **$`1.95656 \times 10^{-6}`$** |
+| mean | 119.339278 s | 230.7116 µs | — |
+| AB median | 118.971060 s | 251.316 µs | $`2.11241 \times 10^{-6}`$ |
+| BA median | 118.996876 s | 212.633 µs | $`1.78688 \times 10^{-6}`$ |
+
+The ratio of medians is a **511,102×** improvement. The one-sided Welch statistic is
+**$`-738.458`$** with $`p = 7.74417 \times 10^{-64}`$; conventional pooled Cohen's $`d`$ is
+**$`-190.669`$**. A 200,000-replicate paired bootstrap, seeded with `0x4131D35909`, places its one-sided
+99% upper ratio at **$`2.09138 \times 10^{-6}`$**. All four locked timing gates pass. The AB and BA
+subsets differ in treatment timing but agree by more than five orders of magnitude on the decision;
+there is no order inversion. The immutable raw TSV digest is
+`540c975cad8a252021c398ee6c467ac834ae0dee5ca5b23d0a3c0d4f462a2229`; the independently validated
+JSON analysis digest is `7b4dc40ef27a280d6a3f853e4f86761f5bcceca54ab23952f138732f8dc2a623`.
 
 The wider experiments pin the intended PathMap/Bag behavior. Scalar accounting of one compressed
 endpoint measures **0.729 µs** at multiplicity 1, **0.750 µs** at 1,024, and **0.728 µs** at
@@ -9071,6 +9101,40 @@ allocation calls, **1.73 M** peak heap, and **12.43 M** profiler RSS. Whole-proc
 the one selected fixture and Criterion; they are causal profiles, not per-operation allocation
 counts. Raw digests and all confidence intervals are in
 [`measurements/accounting-demand-byte-region-2026-08-21.tsv`](measurements/accounting-demand-byte-region-2026-08-21.tsv).
+
+##### Deterministic instruction, live-heap, and hardware-sampling attribution
+
+Callgrind collection was disabled during fixture construction and toggled only inside confirmed,
+non-inlined `profile_control` or `profile_treatment` symbols. The profiling binary was an optimized,
+unstripped bench artifact with debug information; its SHA-256 digest is
+`4686782e4e35ff2ca623274c1907ae24e1b6d54510872b017d75b4fbc947bc8e`.
+
+| arm | depth ladder | Callgrind `Ir` endpoints | log-log exponent |
+|---|---|---:|---:|
+| exact control | 16, 32, 64, 128 | 15,854,840 $`\rightarrow`$ 3,514,387,628 | **2.59983** |
+| treatment | 128, 512, 2,048, 4,096 | 392,016 $`\rightarrow`$ 12,434,902 | **0.988959** |
+
+`Ir` is Callgrind's deterministic dynamic instruction-reference count, not a hardware retired-
+instruction counter. It therefore supplies the preregistered mechanism/scaling discriminator
+without inheriting wall-clock scheduling noise. The treatment passes the $`\le 1.20`$ exponent
+gate, while the frozen control exceeds its $`\ge 1.70`$ calibration floor.
+
+Matched depth-128 Massif processes include fixture construction because launch-mode Massif cannot
+honor the Rust wrapper toggle. Even on that conservative whole-process basis, treatment peak heap
+is **361,687 B** and control peak heap is **1,745,920 B**. The treatment peak occurs in fixture
+construction. At the control peak, **943,040 B** is reached through
+`legacy_walk_demand_events` $`\rightarrow`$ `take_occurrences` $`\rightarrow`$ protobuf decode
+$`\rightarrow`$ ParBag `insert_many`, directly identifying the retained suffix-reconstruction
+frontier rather than attributing it to the shared fixture.
+
+Finally, a 20.574-second headless AMD uProf 5.3.521 Hotspots run repeated the depth-20,000 treatment
+5,000 times. PathMap read-zipper `to_next_get_val` accounts for **30.19%** of sampled CPU time,
+`CanonicalFieldCursor::next_field` for **23.98%**, the scalar and lane
+`trace_demand_endpoint` closures for another **24.53%**, canonical varint decoding for **6.11%**,
+and canonical process indexing for **5.10%**. The historical suffix-decode/materialization path is
+absent from treatment hotspots; the only sampled generic protobuf-decoder attachment is **0.05%**
+and belongs to fixture/result support outside the repeated accounting driver. The report digest is
+`4754f9e1ee3628bd04b068bc1d81114bcc155b172c4fb6fe212781f7214608d7`.
 
 #### 5.32.4 Closure and boundaries
 
@@ -9902,7 +9966,9 @@ done
 | [`measurements/parbag-prepared-key-membership-2026-08-17.tsv`](measurements/parbag-prepared-key-membership-2026-08-17.tsv) | experiment 258's dynamic-RPB2/prepared-key comparison, all 1,312 raw observations and eight summaries, accepted aggregate decision, failed every-cell 0.50 auxiliary target, resource envelope, log digest, and finalized run digests (§5.27) |
 | [`measurements/encoded-connective-branching-2026-08-20.tsv`](measurements/encoded-connective-branching-2026-08-20.tsv) | SS-A15/experiment 302's decoded control and exact canonical-byte treatment, Criterion populations, allocation ladders, and AMD uProf attribution (§5.30) |
 | [`measurements/spatial-matcher-freemap-journal-2026-08-21.tsv`](measurements/spatial-matcher-freemap-journal-2026-08-21.tsv) | SS-A16's journal controls, intermediate and final exact-FreeVar treatments, deep-target capture, Heaptrack allocation/RSS, Callgrind instruction, Massif peak, and AMD uProf hotspot evidence (§5.31) |
-| [`measurements/accounting-demand-byte-region-2026-08-21.tsv`](measurements/accounting-demand-byte-region-2026-08-21.tsv) | SS-A17/SS-Y11 exact suffix control and byte-PDA Criterion populations, allocation slope, byte-native lane and compressed-multiplicity experiments, and corrected headless Heaptrack evidence (§5.32) |
+| [`measurements/accounting-demand-byte-region-2026-08-21.tsv`](measurements/accounting-demand-byte-region-2026-08-21.tsv) | SS-A17/SS-Y11 exploratory Criterion populations, allocation slope, corrected headless Heaptrack, locked paired decision summary, Callgrind instruction slopes, Massif peak attribution, and AMD uProf hotspots (§5.32) |
+| [`measurements/accounting-demand-experiment-303-paired-2026-08-21.tsv`](measurements/accounting-demand-experiment-303-paired-2026-08-21.tsv) | experiment 303's exact 3-warm-up plus 30-retained-pair AB/BA raw observations, per-arm witnesses, callback states, CPU identities, and pinned revisions (§5.32) |
+| [`measurements/accounting-demand-experiment-303-analysis-2026-08-21.json`](measurements/accounting-demand-experiment-303-analysis-2026-08-21.json) | protocol-validated locked timing summaries, Welch test, Cohen effect, order diagnostics, and 200,000-replicate paired bootstrap decision (§5.32) |
 | [`../pathmap/measurements/epm1-fixed-scale-2026-08-03.tsv`](../pathmap/measurements/epm1-fixed-scale-2026-08-03.tsv) | the EPM1 fixed-scale benchmark (PathMap report §5.4) |
 
 **Volatile (`/tmp`) run logs** — these do not survive a reboot; the regeneration commands of

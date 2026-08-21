@@ -1,0 +1,85 @@
+{
+  "acceptance_gates": {
+    "cohens_d_magnitude_gte_1": true,
+    "median_treatment_control_lte_0_25": true,
+    "one_sided_welch_p_lt_0_01": true,
+    "paired_bootstrap_99_upper_lt_0_50": true
+  },
+  "all_locked_timing_gates_pass": true,
+  "bootstrap_replicates": 200000,
+  "bootstrap_seed": "0x4131d35909",
+  "cohens_d_treatment_minus_control": -190.6689087868038,
+  "control_elapsed_ns": {
+    "max": 120924471865.0,
+    "mean": 119339277519.56667,
+    "median": 118977181104.5,
+    "min": 118225791267.0,
+    "n": 30,
+    "sample_stddev": 885151646.0900745
+  },
+  "experiment_id": 303,
+  "input": "docs/design/stack-safety/measurements/accounting-demand-experiment-303-paired-2026-08-21.tsv",
+  "input_sha256": "540c975cad8a252021c398ee6c467ac834ae0dee5ca5b23d0a3c0d4f462a2229",
+  "locked_tsv_protocol_valid": true,
+  "median_treatment_control_ratio": 1.9565558524667003e-06,
+  "metadata": {
+    "affinity_cpus": "[6]",
+    "depth": "1024",
+    "experiment_id": "303",
+    "frozen_control_git": "c847838127231fcfcd9a547a3591c86313a1626c",
+    "frozen_source_sha256": "7c4d4bf64e4705d27b55e3d1484464d13ce2b2ccc52e37242bde6be54f13aacf",
+    "mode": "locked",
+    "retained_pairs": "30",
+    "seed": "0x4131d35909",
+    "started_unix_seconds": "1787349019",
+    "treatment_ref": "3582f8a72813cb9ee2d07d5b7d9e9cb16d64cfb5",
+    "warmup_pairs": "3"
+  },
+  "one_sided_welch": {
+    "alternative": "treatment less than control",
+    "pvalue": 7.744170660715472e-64,
+    "statistic": -738.457508370832
+  },
+  "order_effect": {
+    "AB": {
+      "control_median_ns": 118971059655.0,
+      "median_pair_ratio": 2.0900647822530312e-06,
+      "n_pairs": 15,
+      "ratio_of_medians": 2.1124128904019386e-06,
+      "treatment_median_ns": 251316.0
+    },
+    "BA": {
+      "control_median_ns": 118996875678.0,
+      "median_pair_ratio": 1.7645194743600004e-06,
+      "n_pairs": 15,
+      "ratio_of_medians": 1.7868788469318723e-06,
+      "treatment_median_ns": 212633.0
+    }
+  },
+  "paired_bootstrap_ratio": {
+    "lower_0_5_percent": 1.7859515124073464e-06,
+    "median": 1.956343605836484e-06,
+    "upper_99_percent": 2.0913825882224045e-06
+  },
+  "scipy_version": "1.18.0",
+  "treatment_elapsed_ns": {
+    "max": 256186.0,
+    "mean": 230711.6,
+    "median": 232785.5,
+    "min": 203145.0,
+    "n": 30,
+    "sample_stddev": 20591.23091663218
+  },
+  "warmup_elapsed_ns": {
+    "control": [
+      118274346824,
+      118423376197,
+      118389999921
+    ],
+    "treatment": [
+      252158,
+      210309,
+      244564
+    ]
+  }
+}

@@ -4407,6 +4407,17 @@ models establish semantic neutrality. The additive byte-native Rust API is not R
 wire/storage format. Therefore the change is retired as `OPTIMIZATION_MEASURED_NEUTRAL`, rather than
 added to the active may-change-consensus register.
 
+The locked experiment-303 adjudication subsequently ran the exact historical and current combined
+`demand` plus source-compatible `demand_by_sig` operations in 30 alternating retained pairs. All 60
+retained arms produced the same scalar/lane witness, callback count and callback state. Their medians
+are 118.977181 s and 232.7855 µs, a treatment/control ratio of
+$`1.95656 \times 10^{-6}`$; its 200,000-replicate paired-bootstrap 99% upper bound is
+$`2.09138 \times 10^{-6}`$. Callgrind independently measures control and treatment instruction-
+reference exponents of 2.59983 and 0.988959. Massif identifies the control peak's dominant retained
+branch under the historical suffix decoder/ParBag reconstruction, while headless AMD uProf finds the
+current treatment dominated by PathMap read-zipper and canonical-field cursor advancement. These
+results strengthen the measured-optimization evidence and do not alter the neutrality classification.
+
 **CBR-033 living evidence continuation (2026-08-11; pgmcp #5301).** `7983bf4b` makes the
 read-only hot-store snapshot total over the union of datum and continuation key domains. A datum
 keeps its one-channel key, while an ordinary or installed joined continuation keeps its complete
