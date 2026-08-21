@@ -927,6 +927,13 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
                 casper::rust::casper::ACTIVE_VALIDATORS_CACHE_MAX_ENTRIES_DEFAULT,
         };
 
+        // Owned outside the closure, which is re-invoked per interval: the sweep
+        // is what lets a pass enumerate only the heights that newly came into
+        // range and retry what it could not delete last time.
+        let gc_sweep = Arc::new(tokio::sync::Mutex::new(
+            casper::rust::util::mergeable_channels_gc::GcSweep::new(),
+        ));
+
         Some(Arc::new(
             move || -> Pin<Box<dyn Future<Output = Result<(), CasperError>> + Send>> {
                 use casper::rust::util::mergeable_channels_gc;
@@ -936,6 +943,7 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
                 let gc_runtime_manager = gc_runtime_manager.clone();
                 let gc_casper_shard_conf = gc_casper_shard_conf.clone();
                 let gc_interval = gc_interval;
+                let gc_sweep = gc_sweep.clone();
 
                 Box::pin(async move {
                     // Sleep for the configured interval
@@ -945,7 +953,9 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
                     let dag = gc_block_dag_storage
                         .get_representation()
                         .map_err(|e| CasperError::RuntimeError(e.to_string()))?;
+                    let mut sweep = gc_sweep.lock().await;
                     mergeable_channels_gc::collect_garbage(
+                        &mut sweep,
                         &dag,
                         &gc_block_store,
                         &gc_runtime_manager,
