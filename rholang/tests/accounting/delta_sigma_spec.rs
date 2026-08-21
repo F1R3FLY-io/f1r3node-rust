@@ -26,17 +26,33 @@
 //! (`p_send_sync_normalizer.rs`), so the `Par` is in the desugared form `demand`
 //! requires (no re-desugaring in the analyzer — see `desugar_for_funding`).
 
+#[path = "../support/accounting_demand_oracle.rs"]
+mod accounting_demand_oracle;
+
+use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 
+use accounting_demand_oracle::{trace as oracle_trace, DemandOracleEvent};
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::var::VarInstance;
-use models::rhoapi::{Bundle, Expr, If, Match, New, Par, Receive, Send};
+use models::rhoapi::{
+    Bundle, EVar, Expr, If, Match, MatchCase, New, Par, Receive, ReceiveBind, Send, Var,
+};
+use models::rust::rholang::protobuf_schema::{ProtobufField, ProtobufKind, ProtobufWireType};
+use models::rust::rholang::protobuf_schema_tables::{
+    BUNDLE_PROTOBUF_PROGRAM, EVAR_PROTOBUF_PROGRAM, EXPR_INSTANCE_PROTOBUF_VARIANTS,
+    EXPR_PROTOBUF_PROGRAM, IF_PROTOBUF_PROGRAM, MATCHCASE_PROTOBUF_PROGRAM, MATCH_PROTOBUF_PROGRAM,
+    NEW_PROTOBUF_PROGRAM, RECEIVEBIND_PROTOBUF_PROGRAM, RECEIVE_PROTOBUF_PROGRAM,
+    SEND_PROTOBUF_PROGRAM, VAR_INSTANCE_PROTOBUF_VARIANTS, VAR_PROTOBUF_PROGRAM,
+};
 use models::rust::utils::new_send;
+use proptest::prelude::*;
 use prost::Message;
 use rholang::rust::interpreter::accounting::costs::Cost;
 use rholang::rust::interpreter::accounting::delta_sigma::{
-    demand, demand_by_sig, desugar_for_funding, effective_supply, effective_supply_with, is_funded,
-    match_channel_to_lane, sig_key, Decomposition, DemandEntry,
+    demand, demand_by_sig, demand_by_sig_encoded, desugar_for_funding, effective_supply,
+    effective_supply_with, is_funded, match_channel_to_lane, match_encoded_channel_to_lane,
+    sig_key, Decomposition, DemandEntry,
 };
 use rholang::rust::interpreter::accounting::{
     envelope_sig_compound, BillableKind, RuntimeBudget, Sig,
@@ -45,6 +61,7 @@ use rholang::rust::interpreter::compiler::compiler::Compiler;
 use rholang::rust::interpreter::metering::MeteredMachine;
 use rholang::rust::interpreter::rho_runtime::{RhoRuntime, RhoRuntimeImpl};
 use rholang::rust::interpreter::test_utils::resources::create_runtimes;
+use rspace_plus_plus::rspace::bag::Multiplicity;
 use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 
@@ -88,65 +105,46 @@ fn normalized_par(contract: &str) -> Par {
     Compiler::source_to_adt(contract).expect("contract must parse + normalize")
 }
 
-/// Recursively count token-consuming COMM nodes (sends + receives) ONLY,
+/// Independently count token-consuming COMM nodes (sends + receives) ONLY,
 /// excluding `new`/`match`/`if`. This is the cost-accounting paper's Def-17 §7.4
 /// SEMANTIC count (the number of for-comprehensions/sends after `?!`
 /// desugaring). Used to demonstrate the "8 not 6" property independently of the
 /// runtime's additional metering of `new` nodes.
 fn comm_node_count(par: &Par) -> usize {
     let mut n = 0;
-    for send in par.decode_occurrences::<Send>() {
-        n += 1;
-        if let Some(chan) = &send.chan {
-            n += comm_node_count(chan);
-        }
-        for datum in &send.data {
-            n += comm_node_count(datum);
-        }
-    }
-    for receive in par.decode_occurrences::<Receive>() {
-        n += 1;
-        for bind in &receive.binds {
-            if let Some(source) = &bind.source {
-                n += comm_node_count(source);
-            }
-            for pattern in &bind.patterns {
-                n += comm_node_count(pattern);
+    let mut work = vec![par.clone()];
+    while let Some(current) = work.pop() {
+        n += current.decode_occurrences::<Send>().len();
+        for receive in current.decode_occurrences::<Receive>() {
+            n += 1;
+            if let Some(body) = receive.body {
+                work.push(body);
             }
         }
-        if let Some(body) = &receive.body {
-            n += comm_node_count(body);
-        }
-    }
-    for new in par.decode_occurrences::<New>() {
-        if let Some(body) = &new.p {
-            n += comm_node_count(body);
-        }
-    }
-    for mat in par.decode_occurrences::<Match>() {
-        if let Some(target) = &mat.target {
-            n += comm_node_count(target);
-        }
-        for case in &mat.cases {
-            if let Some(source) = &case.source {
-                n += comm_node_count(source);
+        for new in current.decode_occurrences::<New>() {
+            if let Some(body) = new.p {
+                work.push(body);
             }
         }
-    }
-    for conditional in par.decode_occurrences::<If>() {
-        if let Some(condition) = &conditional.condition {
-            n += comm_node_count(condition);
+        for mat in current.decode_occurrences::<Match>() {
+            for case in mat.cases {
+                if let Some(source) = case.source {
+                    work.push(source);
+                }
+            }
         }
-        if let Some(if_true) = &conditional.if_true {
-            n += comm_node_count(if_true);
+        for conditional in current.decode_occurrences::<If>() {
+            if let Some(if_false) = conditional.if_false {
+                work.push(if_false);
+            }
+            if let Some(if_true) = conditional.if_true {
+                work.push(if_true);
+            }
         }
-        if let Some(if_false) = &conditional.if_false {
-            n += comm_node_count(if_false);
-        }
-    }
-    for bundle in par.decode_occurrences::<Bundle>() {
-        if let Some(body) = &bundle.body {
-            n += comm_node_count(body);
+        for bundle in current.decode_occurrences::<Bundle>() {
+            if let Some(body) = bundle.body {
+                work.push(body);
+            }
         }
     }
     n
@@ -786,5 +784,577 @@ fn multi_lane_demand_entries_satisfy_oslf_funding_laws_per_lane() {
                 }
             }
         }
+    }
+}
+
+#[derive(Clone, Debug)]
+enum GeneratedProcess {
+    Nil,
+    Send(Option<u8>),
+    Receive {
+        channel: Option<u8>,
+        body: Option<Box<GeneratedProcess>>,
+    },
+    New(Option<Box<GeneratedProcess>>),
+    Match(Vec<Option<GeneratedProcess>>),
+    If {
+        if_true: Option<Box<GeneratedProcess>>,
+        if_false: Option<Box<GeneratedProcess>>,
+    },
+    Bundle(Option<Box<GeneratedProcess>>),
+    Variable(u8),
+    Literal(bool),
+    Parallel(Vec<GeneratedProcess>),
+}
+
+fn generated_process() -> impl Strategy<Value = GeneratedProcess> {
+    let leaf = prop_oneof![
+        Just(GeneratedProcess::Nil),
+        prop::option::of(any::<u8>()).prop_map(GeneratedProcess::Send),
+        any::<u8>().prop_map(GeneratedProcess::Variable),
+        any::<bool>().prop_map(GeneratedProcess::Literal),
+    ];
+
+    leaf.prop_recursive(6, 128, 5, |inner| {
+        prop_oneof![
+            (
+                prop::option::of(any::<u8>()),
+                prop::option::of(inner.clone())
+            )
+                .prop_map(|(channel, body)| GeneratedProcess::Receive {
+                    channel,
+                    body: body.map(Box::new),
+                }),
+            prop::option::of(inner.clone())
+                .prop_map(|body| GeneratedProcess::New(body.map(Box::new))),
+            prop::collection::vec(prop::option::of(inner.clone()), 0..=5)
+                .prop_map(GeneratedProcess::Match),
+            (
+                prop::option::of(inner.clone()),
+                prop::option::of(inner.clone())
+            )
+                .prop_map(|(if_true, if_false)| GeneratedProcess::If {
+                    if_true: if_true.map(Box::new),
+                    if_false: if_false.map(Box::new),
+                }),
+            prop::option::of(inner.clone())
+                .prop_map(|body| GeneratedProcess::Bundle(body.map(Box::new))),
+            prop::collection::vec(inner, 0..=5).prop_map(GeneratedProcess::Parallel),
+        ]
+    })
+}
+
+fn generated_channel(id: u8) -> Par {
+    Par::default().with_exprs(vec![Expr {
+        expr_instance: Some(ExprInstance::GInt(i64::from(id))),
+    }])
+}
+
+fn generated_to_par(process: &GeneratedProcess) -> Par {
+    match process {
+        GeneratedProcess::Nil => Par::default(),
+        GeneratedProcess::Send(channel) => Par::default().with_sends(vec![Send {
+            chan: channel.map(generated_channel),
+            data: Vec::new(),
+            persistent: false,
+            locally_free: Vec::new(),
+            connective_used: false,
+        }]),
+        GeneratedProcess::Receive { channel, body } => {
+            Par::default().with_receives(vec![Receive {
+                binds: vec![ReceiveBind {
+                    patterns: Vec::new(),
+                    source: channel.map(generated_channel),
+                    remainder: None,
+                    free_count: 0,
+                }],
+                body: body.as_deref().map(generated_to_par),
+                persistent: false,
+                peek: false,
+                bind_count: 0,
+                locally_free: Vec::new(),
+                connective_used: false,
+                condition: None,
+            }])
+        }
+        GeneratedProcess::New(body) => Par::default().with_news(vec![New {
+            bind_count: 0,
+            p: body.as_deref().map(generated_to_par),
+            uri: Vec::new(),
+            injections: BTreeMap::new(),
+            locally_free: Vec::new(),
+        }]),
+        GeneratedProcess::Match(cases) => Par::default().with_matches(vec![Match {
+            target: None,
+            cases: cases
+                .iter()
+                .map(|source| MatchCase {
+                    pattern: None,
+                    source: source.as_ref().map(generated_to_par),
+                    free_count: 0,
+                    guard: None,
+                })
+                .collect(),
+            locally_free: Vec::new(),
+            connective_used: false,
+        }]),
+        GeneratedProcess::If { if_true, if_false } => Par::default().with_conditionals(vec![If {
+            condition: None,
+            if_true: if_true.as_deref().map(generated_to_par),
+            if_false: if_false.as_deref().map(generated_to_par),
+            locally_free: Vec::new(),
+            connective_used: false,
+        }]),
+        GeneratedProcess::Bundle(body) => Par::default().with_bundles(vec![Bundle {
+            body: body.as_deref().map(generated_to_par),
+            write_flag: false,
+            read_flag: false,
+        }]),
+        GeneratedProcess::Variable(kind) => {
+            let var_instance = match kind % 3 {
+                0 => VarInstance::BoundVar(i32::from(*kind)),
+                1 => VarInstance::FreeVar(i32::from(*kind)),
+                _ => VarInstance::Wildcard(models::rhoapi::var::WildcardMsg {}),
+            };
+            Par::default().with_exprs(vec![Expr {
+                expr_instance: Some(ExprInstance::EVarBody(EVar {
+                    v: Some(Var {
+                        var_instance: Some(var_instance),
+                    }),
+                })),
+            }])
+        }
+        GeneratedProcess::Literal(value) => Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::GBool(*value)),
+        }]),
+        GeneratedProcess::Parallel(children) => {
+            children.iter().fold(Par::default(), |par, child| {
+                par.append(generated_to_par(child))
+            })
+        }
+    }
+}
+
+fn test_lane(call_index: usize, channel_bytes: &[u8]) -> [u8; 32] {
+    let mut lane = [0u8; 32];
+    let byte_fold = channel_bytes
+        .iter()
+        .fold(0usize, |sum, byte| sum.wrapping_add(usize::from(*byte)));
+    lane[0] = 1 + ((call_index.wrapping_add(byte_fold)) % 251) as u8;
+    lane[1..9].copy_from_slice(&(call_index as u64).to_le_bytes());
+    lane
+}
+
+fn oracle_lane_result(
+    events: &[DemandOracleEvent],
+    envelope_key: [u8; 32],
+) -> (BTreeMap<[u8; 32], DemandEntry>, Vec<Vec<u8>>) {
+    let mut lanes = BTreeMap::new();
+    let mut calls = Vec::new();
+    let mut callback_index = 0usize;
+    for event in events {
+        match event {
+            DemandOracleEvent::Comm(channel) => {
+                let lane = if let Some(channel) = channel {
+                    let bytes = channel.encode_to_vec();
+                    let lane = test_lane(callback_index, &bytes);
+                    callback_index += 1;
+                    calls.push(bytes);
+                    lane
+                } else {
+                    envelope_key
+                };
+                let entry = lanes.entry(lane).or_insert(DemandEntry::ZERO);
+                entry.known_lower_bound = entry.known_lower_bound.saturating_add(1);
+            }
+            DemandOracleEvent::Unknown => {
+                lanes
+                    .entry(envelope_key)
+                    .or_insert(DemandEntry::ZERO)
+                    .unknown = true;
+            }
+        }
+    }
+    (lanes, calls)
+}
+
+fn assert_matches_frozen_oracle(par: &Par) {
+    let events = oracle_trace(par);
+    let expected = DemandEntry {
+        known_lower_bound: events
+            .iter()
+            .filter(|event| matches!(event, DemandOracleEvent::Comm(_)))
+            .count() as i64,
+        unknown: events
+            .iter()
+            .any(|event| matches!(event, DemandOracleEvent::Unknown)),
+    };
+    assert_eq!(demand(par, &envelope_sig()), expected);
+
+    let envelope_key = [0xfe; 32];
+    let (expected_lanes, expected_calls) = oracle_lane_result(&events, envelope_key);
+    let calls = RefCell::new(Vec::new());
+    let callback_index = Cell::new(0usize);
+    let actual_lanes = demand_by_sig(par, envelope_key, &|channel| {
+        let bytes = channel.encode_to_vec();
+        let index = callback_index.get();
+        callback_index.set(index + 1);
+        let lane = test_lane(index, &bytes);
+        calls.borrow_mut().push(bytes);
+        Some(lane)
+    });
+    assert_eq!(actual_lanes, expected_lanes);
+    assert_eq!(*calls.borrow(), expected_calls);
+
+    let encoded_calls = RefCell::new(Vec::new());
+    let encoded_callback_index = Cell::new(0usize);
+    let encoded_lanes = demand_by_sig_encoded(par, envelope_key, &|bytes| {
+        let index = encoded_callback_index.get();
+        encoded_callback_index.set(index + 1);
+        let lane = test_lane(index, bytes);
+        encoded_calls.borrow_mut().push(bytes.to_vec());
+        Some(lane)
+    });
+    assert_eq!(encoded_lanes, expected_lanes);
+    assert_eq!(*encoded_calls.borrow(), expected_calls);
+}
+
+#[test]
+fn byte_pda_preserves_whole_endpoint_replay_and_inert_positions() {
+    let nested_a = GeneratedProcess::Send(Some(10));
+    let nested_b = GeneratedProcess::Send(Some(20));
+    let body = GeneratedProcess::Parallel(vec![nested_a, nested_b]);
+    let receive = Receive {
+        binds: vec![ReceiveBind {
+            patterns: Vec::new(),
+            source: Some(generated_channel(7)),
+            remainder: None,
+            free_count: 0,
+        }],
+        body: Some(generated_to_par(&body)),
+        persistent: false,
+        peek: false,
+        bind_count: 0,
+        locally_free: Vec::new(),
+        connective_used: false,
+        condition: None,
+    };
+    let mut repeated = Par::default();
+    repeated
+        .insert_component_many(&receive, Multiplicity::new(3).unwrap(), Vec::new(), false)
+        .unwrap();
+    assert_matches_frozen_oracle(&repeated);
+
+    // Literal mutation calibration independent of the recursive oracle: one
+    // endpoint traces [receive-channel, body-A, body-B], and compressed
+    // multiplicity replays the whole endpoint in occurrence-major order.
+    let literal_calls = RefCell::new(Vec::new());
+    let envelope_key = [0xee; 32];
+    let lanes = demand_by_sig_encoded(&repeated, envelope_key, &|bytes| {
+        literal_calls.borrow_mut().push(bytes.to_vec());
+        None
+    });
+    let one_trace = [7u8, 10, 20]
+        .into_iter()
+        .map(|id| generated_channel(id).encode_to_vec())
+        .collect::<Vec<_>>();
+    let expected_calls = one_trace
+        .iter()
+        .cycle()
+        .take(one_trace.len() * 3)
+        .cloned()
+        .collect::<Vec<_>>();
+    assert_eq!(*literal_calls.borrow(), expected_calls);
+    assert_eq!(lanes.get(&envelope_key).unwrap().known_lower_bound, 9);
+
+    let signer_channels = vec![(one_trace[0].clone(), [0x71; 32])];
+    assert_eq!(
+        match_encoded_channel_to_lane(&one_trace[0], &signer_channels),
+        Some([0x71; 32])
+    );
+    assert_eq!(
+        match_channel_to_lane(&generated_channel(7), &signer_channels),
+        Some([0x71; 32])
+    );
+
+    let inert_unknown = generated_to_par(&GeneratedProcess::Variable(0));
+    let inert_send = generated_to_par(&GeneratedProcess::Send(Some(99)));
+    let outer = Par::default().with_sends(vec![Send {
+        chan: Some(inert_send),
+        data: vec![inert_unknown],
+        persistent: false,
+        locally_free: Vec::new(),
+        connective_used: false,
+    }]);
+    let result = demand(&outer, &envelope_sig());
+    assert_eq!(result.known_lower_bound, 1);
+    assert!(!result.unknown);
+    assert_matches_frozen_oracle(&outer);
+}
+
+#[test]
+fn byte_pda_pins_first_receive_source_and_every_inert_schema_slot() {
+    let inert_send = generated_to_par(&GeneratedProcess::Send(Some(99)));
+    let inert_unknown = generated_to_par(&GeneratedProcess::Variable(0));
+    let wildcard = Var {
+        var_instance: Some(VarInstance::Wildcard(models::rhoapi::var::WildcardMsg {})),
+    };
+
+    let receive = Receive {
+        binds: vec![
+            ReceiveBind {
+                patterns: vec![inert_send.clone(), inert_unknown.clone()],
+                source: Some(generated_channel(1)),
+                remainder: Some(wildcard.clone()),
+                free_count: 1,
+            },
+            ReceiveBind {
+                patterns: vec![inert_send.clone()],
+                source: Some(generated_channel(2)),
+                remainder: Some(wildcard),
+                free_count: 2,
+            },
+        ],
+        body: Some(generated_to_par(&GeneratedProcess::Send(Some(3)))),
+        persistent: true,
+        peek: true,
+        bind_count: 2,
+        locally_free: vec![0x01],
+        connective_used: true,
+        condition: Some(inert_send.clone()),
+    };
+    let new = New {
+        bind_count: 1,
+        p: Some(generated_to_par(&GeneratedProcess::Send(Some(7)))),
+        uri: vec!["rho:test:ignored".to_owned()],
+        injections: [("ignored".to_owned(), inert_send.clone())]
+            .into_iter()
+            .collect(),
+        locally_free: vec![0x01],
+    };
+    let mat = Match {
+        target: Some(inert_send.clone()),
+        cases: vec![
+            MatchCase {
+                pattern: Some(inert_unknown),
+                source: Some(generated_to_par(&GeneratedProcess::Send(Some(4)))),
+                free_count: 1,
+                guard: Some(inert_send.clone()),
+            },
+            // A present empty message must remain distinct from absence on the
+            // protobuf wire and must still be accepted as an empty process.
+            MatchCase {
+                pattern: None,
+                source: Some(Par::default()),
+                free_count: 0,
+                guard: None,
+            },
+        ],
+        locally_free: vec![0x01],
+        connective_used: true,
+    };
+    let conditional = If {
+        condition: Some(inert_send),
+        if_true: Some(generated_to_par(&GeneratedProcess::Send(Some(5)))),
+        if_false: Some(generated_to_par(&GeneratedProcess::Send(Some(6)))),
+        locally_free: vec![0x01],
+        connective_used: true,
+    };
+    let bundle = Bundle {
+        body: Some(generated_to_par(&GeneratedProcess::Send(Some(8)))),
+        write_flag: true,
+        read_flag: true,
+    };
+    let par = Par::default()
+        .with_receives(vec![receive])
+        .with_news(vec![new])
+        .with_matches(vec![mat])
+        .with_conditionals(vec![conditional])
+        .with_bundles(vec![bundle]);
+
+    assert_matches_frozen_oracle(&par);
+    assert_eq!(demand(&par, &envelope_sig()), DemandEntry {
+        known_lower_bound: 7,
+        unknown: false,
+    });
+
+    let calls = RefCell::new(Vec::new());
+    let _ = demand_by_sig_encoded(&par, [0xaa; 32], &|bytes| {
+        calls.borrow_mut().push(bytes.to_vec());
+        None
+    });
+    let expected = [1u8, 3, 7, 4, 5, 6, 8]
+        .into_iter()
+        .map(|id| generated_channel(id).encode_to_vec())
+        .collect::<Vec<_>>();
+    assert_eq!(*calls.borrow(), expected);
+}
+
+#[test]
+fn byte_pda_tag_contract_matches_the_generated_protobuf_schema() {
+    fn assert_program(actual: &[ProtobufField], expected: &[(u32, ProtobufKind, &str)]) {
+        let actual = actual
+            .iter()
+            .map(|field| (field.tag, field.kind, field.name))
+            .collect::<Vec<_>>();
+        assert_eq!(actual, expected);
+    }
+
+    assert_program(SEND_PROTOBUF_PROGRAM, &[
+        (1, ProtobufKind::Message, "chan"),
+        (2, ProtobufKind::RepeatedMessage, "data"),
+        (3, ProtobufKind::Bool, "persistent"),
+        (5, ProtobufKind::Bytes, "locally_free"),
+        (6, ProtobufKind::Bool, "connective_used"),
+    ]);
+    assert_program(RECEIVEBIND_PROTOBUF_PROGRAM, &[
+        (1, ProtobufKind::RepeatedMessage, "patterns"),
+        (2, ProtobufKind::Message, "source"),
+        (3, ProtobufKind::Message, "remainder"),
+        (4, ProtobufKind::Int32, "free_count"),
+    ]);
+    assert_program(RECEIVE_PROTOBUF_PROGRAM, &[
+        (1, ProtobufKind::RepeatedMessage, "binds"),
+        (2, ProtobufKind::Message, "body"),
+        (3, ProtobufKind::Bool, "persistent"),
+        (4, ProtobufKind::Bool, "peek"),
+        (5, ProtobufKind::Int32, "bind_count"),
+        (6, ProtobufKind::Bytes, "locally_free"),
+        (7, ProtobufKind::Bool, "connective_used"),
+        (8, ProtobufKind::Message, "condition"),
+    ]);
+    assert_program(NEW_PROTOBUF_PROGRAM, &[
+        (1, ProtobufKind::Sint32, "bind_count"),
+        (2, ProtobufKind::Message, "p"),
+        (3, ProtobufKind::RepeatedString, "uri"),
+        (4, ProtobufKind::MapStringMessage, "injections"),
+        (5, ProtobufKind::Bytes, "locally_free"),
+    ]);
+    assert_program(MATCHCASE_PROTOBUF_PROGRAM, &[
+        (1, ProtobufKind::Message, "pattern"),
+        (2, ProtobufKind::Message, "source"),
+        (3, ProtobufKind::Int32, "free_count"),
+        (4, ProtobufKind::Message, "guard"),
+    ]);
+    assert_program(MATCH_PROTOBUF_PROGRAM, &[
+        (1, ProtobufKind::Message, "target"),
+        (2, ProtobufKind::RepeatedMessage, "cases"),
+        (4, ProtobufKind::Bytes, "locally_free"),
+        (5, ProtobufKind::Bool, "connective_used"),
+    ]);
+    assert_program(IF_PROTOBUF_PROGRAM, &[
+        (1, ProtobufKind::Message, "condition"),
+        (2, ProtobufKind::Message, "if_true"),
+        (3, ProtobufKind::Message, "if_false"),
+        (4, ProtobufKind::Bytes, "locally_free"),
+        (5, ProtobufKind::Bool, "connective_used"),
+    ]);
+    assert_program(BUNDLE_PROTOBUF_PROGRAM, &[
+        (1, ProtobufKind::Message, "body"),
+        (2, ProtobufKind::Bool, "write_flag"),
+        (3, ProtobufKind::Bool, "read_flag"),
+    ]);
+    assert_program(EXPR_PROTOBUF_PROGRAM, &[(
+        1,
+        ProtobufKind::Oneof,
+        "expr_instance",
+    )]);
+    assert_program(EVAR_PROTOBUF_PROGRAM, &[(1, ProtobufKind::Message, "v")]);
+    assert_program(VAR_PROTOBUF_PROGRAM, &[(
+        1,
+        ProtobufKind::Oneof,
+        "var_instance",
+    )]);
+
+    let expr_arms = EXPR_INSTANCE_PROTOBUF_VARIANTS
+        .iter()
+        .map(|field| (field.tag, field.kind.wire_type()))
+        .collect::<Vec<_>>();
+    let ld = Some(ProtobufWireType::LengthDelimited);
+    assert_eq!(expr_arms, vec![
+        (1, Some(ProtobufWireType::Varint)),
+        (2, Some(ProtobufWireType::Varint)),
+        (3, ld),
+        (4, ld),
+        (25, ld),
+        (5, ld),
+        (6, ld),
+        (7, ld),
+        (8, ld),
+        (9, ld),
+        (10, ld),
+        (11, ld),
+        (12, ld),
+        (13, ld),
+        (14, ld),
+        (15, ld),
+        (16, ld),
+        (17, ld),
+        (18, ld),
+        (19, ld),
+        (20, ld),
+        (21, ld),
+        (22, ld),
+        (23, ld),
+        (24, ld),
+        (32, ld),
+        (33, ld),
+        (27, ld),
+        (28, ld),
+        (29, ld),
+        (30, ld),
+        (31, ld),
+        (34, Some(ProtobufWireType::Fixed64)),
+        (35, ld),
+        (36, ld),
+        (37, ld),
+    ]);
+    assert_eq!(
+        VAR_INSTANCE_PROTOBUF_VARIANTS
+            .iter()
+            .map(|field| (field.tag, field.kind.wire_type()))
+            .collect::<Vec<_>>(),
+        vec![
+            (1, Some(ProtobufWireType::Varint)),
+            (2, Some(ProtobufWireType::Varint)),
+            (3, ld),
+        ]
+    );
+}
+
+#[test]
+fn scalar_demand_collapses_compressed_multiplicity_with_saturation() {
+    let send = Send {
+        chan: None,
+        data: Vec::new(),
+        persistent: false,
+        locally_free: Vec::new(),
+        connective_used: false,
+    };
+    let mut par = Par::default();
+    par.insert_component_many(
+        &send,
+        Multiplicity::new(u64::MAX).unwrap(),
+        Vec::new(),
+        false,
+    )
+    .unwrap();
+    assert_eq!(demand(&par, &envelope_sig()), DemandEntry {
+        known_lower_bound: i64::MAX,
+        unknown: false,
+    });
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig {
+        cases: 1_024,
+        max_shrink_iters: 20_000,
+        ..ProptestConfig::default()
+    })]
+
+    #[test]
+    fn byte_pda_is_trace_equivalent_to_frozen_recursive_semantics(process in generated_process()) {
+        let par = generated_to_par(&process);
+        assert_matches_frozen_oracle(&par);
     }
 }

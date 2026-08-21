@@ -69,6 +69,7 @@ use std::collections::BTreeMap;
 
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::{EList, EPathMap, Expr, New, Par, Receive, ReceiveBind, Send};
+use models::rust::par_construction::ParConstruction;
 use models::rust::rholang::par_children::{dismantle, dismantle_all};
 use models::rust::rholang::sorter::par_sort_matcher::ParSortMatcher;
 use models::rust::rholang::sorter::score_tree::{ScoreAtom, ScoredTerm, Tree};
@@ -87,6 +88,50 @@ use rholang::rust::interpreter::metering::MeteredMachine;
 use rholang::rust::interpreter::pretty_printer::PrettyPrinter;
 use rholang::rust::interpreter::substitute::{Substitute, SubstituteTrait};
 use rspace_plus_plus::rspace::serializers::cold_store_decode::ColdStoreDecode;
+
+#[path = "support/counting_alloc.rs"]
+mod counting_alloc;
+
+#[global_allocator]
+static ALLOCATOR: counting_alloc::Counting = counting_alloc::Counting;
+
+fn planned_accounting_new_chain(depth: usize) -> Par {
+    // Build the complete recursive value once through the same transient
+    // planned-score/protobuf graph used by normalization. Repeatedly finishing
+    // each ancestor into a resident PathMap would copy every already-complete
+    // suffix and make the fixture quadratic before the analyzer is reached.
+    let mut construction = ParConstruction::new();
+    let empty = construction.empty_par().expect("planned empty Par");
+    let send_shell = Send {
+        chan: Some(Par::default()),
+        data: Vec::new(),
+        persistent: false,
+        locally_free: Vec::new(),
+        connective_used: false,
+    };
+    let send = construction
+        .send_component(&send_shell, &[empty])
+        .expect("planned terminal Send");
+    let mut planned = construction
+        .singleton_component(send, Vec::new(), false)
+        .expect("planned terminal Par");
+    let new_shell = New {
+        bind_count: 1,
+        p: Some(Par::default()),
+        uri: Vec::new(),
+        injections: BTreeMap::new(),
+        locally_free: Vec::new(),
+    };
+    for _ in 0..depth {
+        let new = construction
+            .new_component(&new_shell, &[planned])
+            .expect("planned New");
+        planned = construction
+            .singleton_component(new, Vec::new(), false)
+            .expect("planned New Par");
+    }
+    construction.finish(planned).expect("finish planned Par")
+}
 
 #[test]
 fn signature_algebra_operations_are_stack_safe_at_depth_twenty_thousand() {
@@ -138,25 +183,7 @@ fn accounting_demand_and_decomposition_are_stack_safe() {
         .stack_size(SMALL_STACK)
         .name("accounting-demand-depth-gate".to_string())
         .spawn(|| {
-            let mut par = Par::default().with_sends(vec![Send {
-                chan: Some(Par::default()),
-                data: Vec::new(),
-                persistent: false,
-                locally_free: Vec::new(),
-                connective_used: false,
-            }]);
-            for _ in 0..PAR_DEPTH {
-                par = models::par_from_default! {
-                    news: vec![New {
-                        bind_count: 1,
-                        p: Some(par),
-                        uri: Vec::new(),
-                        injections: BTreeMap::new(),
-                        locally_free: Vec::new(),
-                    }],
-                    ..Default::default()
-                };
-            }
+            let par = planned_accounting_new_chain(PAR_DEPTH);
 
             let envelope = Sig::Ground(vec![9, 8, 7, 6]);
             let demand_entry = demand(&par, &envelope);
@@ -179,6 +206,54 @@ fn accounting_demand_and_decomposition_are_stack_safe() {
         .expect("failed to spawn the accounting demand depth gate")
         .join()
         .expect("accounting demand or decomposition exhausted the 128 KiB native stack");
+}
+
+#[test]
+fn accounting_demand_allocations_are_linear_in_encoded_depth() {
+    const LOW_DEPTH: usize = 512;
+    const HIGH_DEPTH: usize = 4_096;
+
+    let envelope = Sig::Ground(vec![9, 8, 7, 6]);
+    let envelope_key = sig_key(&envelope);
+    let measure = |depth| {
+        let par = planned_accounting_new_chain(depth);
+        // Warm all one-time TLS and allocator paths outside the measurement.
+        assert_eq!(demand(&par, &envelope).known_lower_bound, 1);
+        assert_eq!(demand_by_sig(&par, envelope_key, &|_| None).len(), 1);
+        let ((scalar, lanes), allocations, bytes) = counting_alloc::measure(|| {
+            (
+                demand(&par, &envelope),
+                demand_by_sig(&par, envelope_key, &|_| None),
+            )
+        });
+        assert_eq!(scalar.known_lower_bound, 1);
+        assert_eq!(lanes[&envelope_key], scalar);
+        (allocations, bytes)
+    };
+
+    let low = measure(LOW_DEPTH);
+    let high = measure(HIGH_DEPTH);
+    eprintln!(
+        "accounting demand allocation ladder: depth {LOW_DEPTH} = {} allocations / {} B; \
+         depth {HIGH_DEPTH} = {} allocations / {} B",
+        low.0, low.1, high.0, high.1
+    );
+    counting_alloc::assert_subquadratic(
+        "accounting-demand allocation count",
+        LOW_DEPTH,
+        low.0,
+        HIGH_DEPTH,
+        high.0,
+    )
+    .unwrap();
+    counting_alloc::assert_subquadratic(
+        "accounting-demand requested bytes",
+        LOW_DEPTH,
+        low.1,
+        HIGH_DEPTH,
+        high.1,
+    )
+    .unwrap();
 }
 
 #[test]

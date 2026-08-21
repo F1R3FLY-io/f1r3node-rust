@@ -6,6 +6,7 @@ pub mod match_path;
 pub mod match_path_cursor;
 pub mod par_children;
 pub mod pooled_stack;
+pub mod protobuf_cursor;
 pub mod bincode_decoder;
 pub mod protobuf_encoder;
 pub mod protobuf_schema;

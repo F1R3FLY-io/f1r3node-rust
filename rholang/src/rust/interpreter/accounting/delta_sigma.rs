@@ -65,10 +65,15 @@
 
 use std::collections::BTreeMap;
 
-use models::rhoapi::expr::ExprInstance;
-use models::rhoapi::var::VarInstance;
 use models::rhoapi::{Bundle, Expr, If, Match, New, Par, Receive, Send};
+use models::rust::par_bag::ParBagComponent;
+use models::rust::rholang::protobuf_cursor::{
+    CanonicalDelimitedCursor, CanonicalDelimitedRun, CanonicalField, CanonicalFieldCursor,
+    CanonicalFieldValue, CanonicalParProcessIndex, CanonicalProtobufError, CanonicalWireType,
+};
 use prost::Message;
+use rspace_plus_plus::rspace::bag::Multiplicity;
+use smallvec::SmallVec;
 
 use super::Sig;
 
@@ -103,9 +108,20 @@ pub fn match_channel_to_lane(
     signer_channels: &[(Vec<u8>, SigKey)],
 ) -> Option<SigKey> {
     let encoded = channel.encode_to_vec();
+    match_encoded_channel_to_lane(&encoded, signer_channels)
+}
+
+/// Byte-native form of [`match_channel_to_lane`]. Static analyses that already
+/// hold the canonical protobuf region use this route to avoid a redundant
+/// decode followed immediately by re-encoding the same channel.
+#[inline]
+pub fn match_encoded_channel_to_lane(
+    encoded: &[u8],
+    signer_channels: &[(Vec<u8>, SigKey)],
+) -> Option<SigKey> {
     signer_channels
         .iter()
-        .find(|(chan_bytes, _)| chan_bytes.as_slice() == encoded.as_slice())
+        .find(|(chan_bytes, _)| chan_bytes.as_slice() == encoded)
         .map(|(_, lane)| *lane)
 }
 
@@ -181,9 +197,9 @@ impl DemandEntry {
 /// (DR-9, OD-3): `New`, `Match`, `If` are DIAGNOSTIC `Reduction`s — they are
 /// RECURSED (their process-position bodies fire COMMs) but do NOT themselves
 /// contribute a counted node. An `EMethodBody` expression is NOT a COMM (the
-/// runtime charges it as a `Primitive`) but its receiver/arguments may contain
-/// nested processes, so it is recursed without contributing a node. An
-/// `EVarBody` in process position that is a `bound_var` / `free_var` is an
+/// runtime charges it as a `Primitive`), and its receiver/arguments are value
+/// positions rather than processes, so they are not recursed. An `EVarBody` in
+/// process position that is a `bound_var` / `free_var` is an
 /// un-inlined `*name` dequotation — the over-approximation trigger.
 ///
 /// Note on the s₀ collapse and the `deploy_sig` parameter: because the
@@ -228,88 +244,613 @@ pub fn demand(desugared: &Par, deploy_sig: &Sig) -> DemandEntry {
 /// channel `Par`) must NOT trigger the `unknown` over-approximation: it is a name
 /// reference, not a process dequotation. Only an `EVar(bound_var|free_var)`
 /// appearing as a top-level PROCESS member is a `*x` drop.
-enum DemandWalkEvent {
-    Comm(Option<Par>),
-    Unknown,
+#[derive(Clone, Copy, Debug)]
+enum DemandComponentKind {
+    Send,
+    Receive,
+    New,
+    Match,
+    If,
+    Bundle,
+    Expr,
 }
 
-enum DemandWalkTask {
-    Visit(Par),
-    Comm(Option<Par>),
-    ScanUnknown(Par),
+#[derive(Clone, Copy, Debug)]
+enum DemandByteTask<'a> {
+    Par(&'a [u8]),
+    Family {
+        kind: DemandComponentKind,
+        cursor: CanonicalDelimitedCursor<'a>,
+    },
+    MatchCases(CanonicalDelimitedCursor<'a>),
+    Component {
+        kind: DemandComponentKind,
+        payload: &'a [u8],
+    },
 }
 
-fn walk_demand_events(root: &Par, mut visit: impl FnMut(DemandWalkEvent)) {
-    let mut tasks = vec![DemandWalkTask::Visit(root.clone())];
-    while let Some(task) = tasks.pop() {
-        match task {
-            DemandWalkTask::Comm(channel) => visit(DemandWalkEvent::Comm(channel)),
-            DemandWalkTask::ScanUnknown(par) => {
-                for expr in par.decode_occurrences::<Expr>() {
-                    if let Some(ExprInstance::EVarBody(evar)) = &expr.expr_instance {
-                        if let Some(var) = &evar.v {
-                            if matches!(
-                                &var.var_instance,
-                                Some(VarInstance::BoundVar(_)) | Some(VarInstance::FreeVar(_))
-                            ) {
-                                visit(DemandWalkEvent::Unknown);
-                            }
-                        }
-                    }
-                }
-            }
-            DemandWalkTask::Visit(mut par) => {
-                tasks.push(DemandWalkTask::ScanUnknown(par.clone()));
+#[derive(Clone, Copy, Debug, Default)]
+struct ReceiveProcessParts<'a> {
+    channel: Option<&'a [u8]>,
+    body: Option<&'a [u8]>,
+}
 
-                for bundle in par.take_occurrences::<Bundle>().into_iter().rev() {
-                    if let Some(body) = bundle.body {
-                        tasks.push(DemandWalkTask::Visit(body));
-                    }
-                }
-                for conditional in par.take_occurrences::<If>().into_iter().rev() {
-                    if let Some(if_false) = conditional.if_false {
-                        tasks.push(DemandWalkTask::Visit(if_false));
-                    }
-                    if let Some(if_true) = conditional.if_true {
-                        tasks.push(DemandWalkTask::Visit(if_true));
-                    }
-                }
-                for mat in par.take_occurrences::<Match>().into_iter().rev() {
-                    for case in mat.cases.into_iter().rev() {
-                        if let Some(source) = case.source {
-                            tasks.push(DemandWalkTask::Visit(source));
-                        }
-                    }
-                }
-                for new in par.take_occurrences::<New>().into_iter().rev() {
-                    if let Some(body) = new.p {
-                        tasks.push(DemandWalkTask::Visit(body));
-                    }
-                }
-                for receive in par.take_occurrences::<Receive>().into_iter().rev() {
-                    if let Some(body) = receive.body {
-                        tasks.push(DemandWalkTask::Visit(body));
-                    }
-                    let channel = receive
-                        .binds
-                        .into_iter()
-                        .next()
-                        .and_then(|bind| bind.source);
-                    tasks.push(DemandWalkTask::Comm(channel));
-                }
-                for send in par.take_occurrences::<Send>().into_iter().rev() {
-                    tasks.push(DemandWalkTask::Comm(send.chan));
-                }
+#[derive(Clone, Copy, Debug, Default)]
+struct IfProcessParts<'a> {
+    if_true: Option<&'a [u8]>,
+    if_false: Option<&'a [u8]>,
+}
+
+fn duplicate(field: CanonicalField<'_>) -> CanonicalProtobufError {
+    CanonicalProtobufError::DuplicateSingularField {
+        offset: field.encoded_range.start,
+        field: field.number,
+    }
+}
+
+fn unexpected(field: CanonicalField<'_>) -> CanonicalProtobufError {
+    CanonicalProtobufError::UnexpectedField {
+        offset: field.encoded_range.start,
+        field: field.number,
+    }
+}
+
+fn expect_canonical_bool(field: CanonicalField<'_>) -> Result<(), CanonicalProtobufError> {
+    if field.expect_varint()? == 1 {
+        Ok(())
+    } else {
+        Err(CanonicalProtobufError::NonCanonicalDefault {
+            offset: field.encoded_range.start,
+            field: field.number,
+        })
+    }
+}
+
+fn expect_nonzero_varint(field: CanonicalField<'_>) -> Result<(), CanonicalProtobufError> {
+    if field.expect_varint()? != 0 {
+        Ok(())
+    } else {
+        Err(CanonicalProtobufError::NonCanonicalDefault {
+            offset: field.encoded_range.start,
+            field: field.number,
+        })
+    }
+}
+
+fn expect_nonempty_bytes(field: CanonicalField<'_>) -> Result<(), CanonicalProtobufError> {
+    if !field.expect_length_delimited()?.is_empty() {
+        Ok(())
+    } else {
+        Err(CanonicalProtobufError::NonCanonicalDefault {
+            offset: field.encoded_range.start,
+            field: field.number,
+        })
+    }
+}
+
+fn send_channel(message: &[u8]) -> Result<Option<&[u8]>, CanonicalProtobufError> {
+    let mut channel = None;
+    let mut saw_persistent = false;
+    let mut saw_locally_free = false;
+    let mut saw_connective_used = false;
+    let mut fields = CanonicalFieldCursor::new(message);
+    while let Some(field) = fields.next_field()? {
+        match field.number {
+            1 if channel.is_none() => channel = Some(field.expect_length_delimited()?),
+            1 => return Err(duplicate(field)),
+            2 => {
+                field.expect_length_delimited()?;
             }
+            3 if !saw_persistent => {
+                expect_canonical_bool(field)?;
+                saw_persistent = true;
+            }
+            3 => return Err(duplicate(field)),
+            5 if !saw_locally_free => {
+                expect_nonempty_bytes(field)?;
+                saw_locally_free = true;
+            }
+            5 => return Err(duplicate(field)),
+            6 if !saw_connective_used => {
+                expect_canonical_bool(field)?;
+                saw_connective_used = true;
+            }
+            6 => return Err(duplicate(field)),
+            _ => return Err(unexpected(field)),
         }
     }
+    Ok(channel)
+}
+
+fn receive_bind_source(message: &[u8]) -> Result<Option<&[u8]>, CanonicalProtobufError> {
+    let mut source = None;
+    let mut saw_remainder = false;
+    let mut saw_free_count = false;
+    let mut fields = CanonicalFieldCursor::new(message);
+    while let Some(field) = fields.next_field()? {
+        match field.number {
+            1 => {
+                field.expect_length_delimited()?;
+            }
+            2 if source.is_none() => source = Some(field.expect_length_delimited()?),
+            2 => return Err(duplicate(field)),
+            3 if !saw_remainder => {
+                field.expect_length_delimited()?;
+                saw_remainder = true;
+            }
+            3 => return Err(duplicate(field)),
+            4 if !saw_free_count => {
+                expect_nonzero_varint(field)?;
+                saw_free_count = true;
+            }
+            4 => return Err(duplicate(field)),
+            _ => return Err(unexpected(field)),
+        }
+    }
+    Ok(source)
+}
+
+fn receive_process_parts(
+    message: &[u8],
+) -> Result<ReceiveProcessParts<'_>, CanonicalProtobufError> {
+    let mut parts = ReceiveProcessParts::default();
+    let mut saw_first_bind = false;
+    let mut saw_persistent = false;
+    let mut saw_peek = false;
+    let mut saw_bind_count = false;
+    let mut saw_locally_free = false;
+    let mut saw_connective_used = false;
+    let mut saw_condition = false;
+    let mut fields = CanonicalFieldCursor::new(message);
+    while let Some(field) = fields.next_field()? {
+        match field.number {
+            1 => {
+                let bind = field.expect_length_delimited()?;
+                if !saw_first_bind {
+                    parts.channel = receive_bind_source(bind)?;
+                    saw_first_bind = true;
+                }
+            }
+            2 if parts.body.is_none() => parts.body = Some(field.expect_length_delimited()?),
+            2 => return Err(duplicate(field)),
+            3 if !saw_persistent => {
+                expect_canonical_bool(field)?;
+                saw_persistent = true;
+            }
+            3 => return Err(duplicate(field)),
+            4 if !saw_peek => {
+                expect_canonical_bool(field)?;
+                saw_peek = true;
+            }
+            4 => return Err(duplicate(field)),
+            5 if !saw_bind_count => {
+                expect_nonzero_varint(field)?;
+                saw_bind_count = true;
+            }
+            5 => return Err(duplicate(field)),
+            6 if !saw_locally_free => {
+                expect_nonempty_bytes(field)?;
+                saw_locally_free = true;
+            }
+            6 => return Err(duplicate(field)),
+            7 if !saw_connective_used => {
+                expect_canonical_bool(field)?;
+                saw_connective_used = true;
+            }
+            7 => return Err(duplicate(field)),
+            8 if !saw_condition => {
+                field.expect_length_delimited()?;
+                saw_condition = true;
+            }
+            8 => return Err(duplicate(field)),
+            _ => return Err(unexpected(field)),
+        }
+    }
+    Ok(parts)
+}
+
+fn new_body(message: &[u8]) -> Result<Option<&[u8]>, CanonicalProtobufError> {
+    let mut body = None;
+    let mut saw_bind_count = false;
+    let mut saw_locally_free = false;
+    let mut fields = CanonicalFieldCursor::new(message);
+    while let Some(field) = fields.next_field()? {
+        match field.number {
+            1 if !saw_bind_count => {
+                expect_nonzero_varint(field)?;
+                saw_bind_count = true;
+            }
+            1 => return Err(duplicate(field)),
+            2 if body.is_none() => body = Some(field.expect_length_delimited()?),
+            2 => return Err(duplicate(field)),
+            3 | 4 => {
+                field.expect_length_delimited()?;
+            }
+            5 if !saw_locally_free => {
+                expect_nonempty_bytes(field)?;
+                saw_locally_free = true;
+            }
+            5 => return Err(duplicate(field)),
+            _ => return Err(unexpected(field)),
+        }
+    }
+    Ok(body)
+}
+
+fn match_cases(
+    message: &[u8],
+) -> Result<Option<CanonicalDelimitedRun<'_>>, CanonicalProtobufError> {
+    let mut cases_start = None;
+    let mut cases_end = 0usize;
+    let mut saw_target = false;
+    let mut saw_locally_free = false;
+    let mut saw_connective_used = false;
+    let mut fields = CanonicalFieldCursor::new(message);
+    while let Some(field) = fields.next_field()? {
+        match field.number {
+            1 if !saw_target => {
+                field.expect_length_delimited()?;
+                saw_target = true;
+            }
+            1 => return Err(duplicate(field)),
+            2 => {
+                field.expect_length_delimited()?;
+                cases_start.get_or_insert(field.encoded_range.start);
+                cases_end = field.encoded_range.end;
+            }
+            4 if !saw_locally_free => {
+                expect_nonempty_bytes(field)?;
+                saw_locally_free = true;
+            }
+            4 => return Err(duplicate(field)),
+            5 if !saw_connective_used => {
+                expect_canonical_bool(field)?;
+                saw_connective_used = true;
+            }
+            5 => return Err(duplicate(field)),
+            _ => return Err(unexpected(field)),
+        }
+    }
+    Ok(cases_start.map(|start| CanonicalDelimitedRun::new(&message[start..cases_end], 2)))
+}
+
+fn match_case_source(message: &[u8]) -> Result<Option<&[u8]>, CanonicalProtobufError> {
+    let mut source = None;
+    let mut saw_pattern = false;
+    let mut saw_free_count = false;
+    let mut saw_guard = false;
+    let mut fields = CanonicalFieldCursor::new(message);
+    while let Some(field) = fields.next_field()? {
+        match field.number {
+            1 if !saw_pattern => {
+                field.expect_length_delimited()?;
+                saw_pattern = true;
+            }
+            1 => return Err(duplicate(field)),
+            2 if source.is_none() => source = Some(field.expect_length_delimited()?),
+            2 => return Err(duplicate(field)),
+            3 if !saw_free_count => {
+                expect_nonzero_varint(field)?;
+                saw_free_count = true;
+            }
+            3 => return Err(duplicate(field)),
+            4 if !saw_guard => {
+                field.expect_length_delimited()?;
+                saw_guard = true;
+            }
+            4 => return Err(duplicate(field)),
+            _ => return Err(unexpected(field)),
+        }
+    }
+    Ok(source)
+}
+
+fn if_process_parts(message: &[u8]) -> Result<IfProcessParts<'_>, CanonicalProtobufError> {
+    let mut parts = IfProcessParts::default();
+    let mut saw_condition = false;
+    let mut saw_locally_free = false;
+    let mut saw_connective_used = false;
+    let mut fields = CanonicalFieldCursor::new(message);
+    while let Some(field) = fields.next_field()? {
+        match field.number {
+            1 if !saw_condition => {
+                field.expect_length_delimited()?;
+                saw_condition = true;
+            }
+            1 => return Err(duplicate(field)),
+            2 if parts.if_true.is_none() => {
+                parts.if_true = Some(field.expect_length_delimited()?);
+            }
+            2 => return Err(duplicate(field)),
+            3 if parts.if_false.is_none() => {
+                parts.if_false = Some(field.expect_length_delimited()?);
+            }
+            3 => return Err(duplicate(field)),
+            4 if !saw_locally_free => {
+                expect_nonempty_bytes(field)?;
+                saw_locally_free = true;
+            }
+            4 => return Err(duplicate(field)),
+            5 if !saw_connective_used => {
+                expect_canonical_bool(field)?;
+                saw_connective_used = true;
+            }
+            5 => return Err(duplicate(field)),
+            _ => return Err(unexpected(field)),
+        }
+    }
+    Ok(parts)
+}
+
+fn bundle_body(message: &[u8]) -> Result<Option<&[u8]>, CanonicalProtobufError> {
+    let mut body = None;
+    let mut saw_write = false;
+    let mut saw_read = false;
+    let mut fields = CanonicalFieldCursor::new(message);
+    while let Some(field) = fields.next_field()? {
+        match field.number {
+            1 if body.is_none() => body = Some(field.expect_length_delimited()?),
+            1 => return Err(duplicate(field)),
+            2 if !saw_write => {
+                expect_canonical_bool(field)?;
+                saw_write = true;
+            }
+            2 => return Err(duplicate(field)),
+            3 if !saw_read => {
+                expect_canonical_bool(field)?;
+                saw_read = true;
+            }
+            3 => return Err(duplicate(field)),
+            _ => return Err(unexpected(field)),
+        }
+    }
+    Ok(body)
+}
+
+fn wildcard_message_is_empty(message: &[u8]) -> Result<(), CanonicalProtobufError> {
+    let mut fields = CanonicalFieldCursor::new(message);
+    if let Some(field) = fields.next_field()? {
+        Err(unexpected(field))
+    } else {
+        Ok(())
+    }
+}
+
+fn var_is_unresolved(message: &[u8]) -> Result<bool, CanonicalProtobufError> {
+    let mut fields = CanonicalFieldCursor::new(message);
+    let Some(field) = fields.next_field()? else {
+        return Ok(false);
+    };
+    if let Some(repeated) = fields.next_field()? {
+        return Err(duplicate(repeated));
+    }
+    match field.number {
+        1 | 2 => {
+            field.expect_varint()?;
+            Ok(true)
+        }
+        3 => {
+            wildcard_message_is_empty(field.expect_length_delimited()?)?;
+            Ok(false)
+        }
+        _ => Err(unexpected(field)),
+    }
+}
+
+fn evar_is_unresolved(message: &[u8]) -> Result<bool, CanonicalProtobufError> {
+    let mut fields = CanonicalFieldCursor::new(message);
+    let Some(field) = fields.next_field()? else {
+        return Ok(false);
+    };
+    if field.number != 1 {
+        return Err(unexpected(field));
+    }
+    let unresolved = var_is_unresolved(field.expect_length_delimited()?)?;
+    if let Some(repeated) = fields.next_field()? {
+        return Err(duplicate(repeated));
+    }
+    Ok(unresolved)
+}
+
+fn expr_is_unresolved(message: &[u8]) -> Result<bool, CanonicalProtobufError> {
+    let mut fields = CanonicalFieldCursor::new(message);
+    let Some(field) = fields.next_field()? else {
+        return Ok(false);
+    };
+    if let Some(repeated) = fields.next_field()? {
+        return Err(duplicate(repeated));
+    }
+
+    match field.number {
+        1 => match field.value {
+            CanonicalFieldValue::Varint(0 | 1) => Ok(false),
+            CanonicalFieldValue::Varint(_) => Err(CanonicalProtobufError::NonCanonicalDefault {
+                offset: field.encoded_range.start,
+                field: 1,
+            }),
+            _ => Err(CanonicalProtobufError::UnexpectedWireType {
+                offset: field.encoded_range.start,
+                field: 1,
+                expected: CanonicalWireType::Varint,
+                actual: field.wire_type,
+            }),
+        },
+        2 => {
+            field.expect_varint()?;
+            Ok(false)
+        }
+        3 | 4 | 25 | 35 => {
+            field.expect_length_delimited()?;
+            Ok(false)
+        }
+        5..=18 | 20..=24 | 27..=33 | 36 | 37 => {
+            field.expect_length_delimited()?;
+            Ok(false)
+        }
+        19 => evar_is_unresolved(field.expect_length_delimited()?),
+        34 => match field.value {
+            CanonicalFieldValue::Fixed64(_) => Ok(false),
+            _ => Err(CanonicalProtobufError::UnexpectedWireType {
+                offset: field.encoded_range.start,
+                field: 34,
+                expected: CanonicalWireType::Fixed64,
+                actual: field.wire_type,
+            }),
+        },
+        _ => Err(unexpected(field)),
+    }
+}
+
+fn push_family<'a>(
+    tasks: &mut Vec<DemandByteTask<'a>>,
+    kind: DemandComponentKind,
+    run: Option<CanonicalDelimitedRun<'a>>,
+) {
+    if let Some(run) = run {
+        tasks.push(DemandByteTask::Family {
+            kind,
+            cursor: run.cursor(),
+        });
+    }
+}
+
+/// Scan one distinct authoritative ParBag endpoint in historical semantic
+/// order. Each COMM channel region borrows the endpoint's canonical protobuf
+/// body; no resident subtree or recursively shorter suffix is materialised.
+/// Callers choose whether to count, consume immediately, or retain the small
+/// borrowed trace for multiplicity replay.
+fn trace_demand_endpoint<'a>(
+    kind: DemandComponentKind,
+    payload: &'a [u8],
+    mut on_comm: impl FnMut(Option<&'a [u8]>),
+) -> Result<bool, CanonicalProtobufError> {
+    let mut unknown = false;
+    let mut tasks = vec![DemandByteTask::Component { kind, payload }];
+    while let Some(task) = tasks.pop() {
+        match task {
+            DemandByteTask::Par(message) => {
+                let index = CanonicalParProcessIndex::parse(message)?;
+                // Reverse push order; the reducer's semantic visit order is
+                // Send, Receive, New, Match, If, Bundle, then direct Expr.
+                push_family(&mut tasks, DemandComponentKind::Expr, index.exprs);
+                push_family(&mut tasks, DemandComponentKind::Bundle, index.bundles);
+                push_family(&mut tasks, DemandComponentKind::If, index.conditionals);
+                push_family(&mut tasks, DemandComponentKind::Match, index.matches);
+                push_family(&mut tasks, DemandComponentKind::New, index.news);
+                push_family(&mut tasks, DemandComponentKind::Receive, index.receives);
+                push_family(&mut tasks, DemandComponentKind::Send, index.sends);
+            }
+            DemandByteTask::Family { kind, mut cursor } => {
+                let Some(payload) = cursor.next_payload()? else {
+                    continue;
+                };
+                if !cursor.is_empty() {
+                    tasks.push(DemandByteTask::Family { kind, cursor });
+                }
+                tasks.push(DemandByteTask::Component { kind, payload });
+            }
+            DemandByteTask::MatchCases(mut cursor) => {
+                let Some(case) = cursor.next_payload()? else {
+                    continue;
+                };
+                if !cursor.is_empty() {
+                    tasks.push(DemandByteTask::MatchCases(cursor));
+                }
+                if let Some(source) = match_case_source(case)? {
+                    tasks.push(DemandByteTask::Par(source));
+                }
+            }
+            DemandByteTask::Component { kind, payload } => match kind {
+                DemandComponentKind::Send => on_comm(send_channel(payload)?),
+                DemandComponentKind::Receive => {
+                    let parts = receive_process_parts(payload)?;
+                    on_comm(parts.channel);
+                    if let Some(body) = parts.body {
+                        tasks.push(DemandByteTask::Par(body));
+                    }
+                }
+                DemandComponentKind::New => {
+                    if let Some(body) = new_body(payload)? {
+                        tasks.push(DemandByteTask::Par(body));
+                    }
+                }
+                DemandComponentKind::Match => {
+                    if let Some(cases) = match_cases(payload)? {
+                        tasks.push(DemandByteTask::MatchCases(cases.cursor()));
+                    }
+                }
+                DemandComponentKind::If => {
+                    let parts = if_process_parts(payload)?;
+                    if let Some(if_false) = parts.if_false {
+                        tasks.push(DemandByteTask::Par(if_false));
+                    }
+                    if let Some(if_true) = parts.if_true {
+                        tasks.push(DemandByteTask::Par(if_true));
+                    }
+                }
+                DemandComponentKind::Bundle => {
+                    if let Some(body) = bundle_body(payload)? {
+                        tasks.push(DemandByteTask::Par(body));
+                    }
+                }
+                DemandComponentKind::Expr => unknown |= expr_is_unresolved(payload)?,
+            },
+        }
+    }
+    Ok(unknown)
+}
+
+fn visit_family_endpoints<T: ParBagComponent>(
+    root: &Par,
+    kind: DemandComponentKind,
+    consume: &mut impl for<'a> FnMut(DemandComponentKind, &'a [u8], Multiplicity),
+) {
+    root.visit_encoded::<T>(|entry| {
+        consume(kind, entry.payload(), entry.multiplicity());
+    });
+}
+
+fn visit_demand_endpoints(
+    root: &Par,
+    mut consume: impl for<'a> FnMut(DemandComponentKind, &'a [u8], Multiplicity),
+) {
+    visit_family_endpoints::<Send>(root, DemandComponentKind::Send, &mut consume);
+    visit_family_endpoints::<Receive>(root, DemandComponentKind::Receive, &mut consume);
+    visit_family_endpoints::<New>(root, DemandComponentKind::New, &mut consume);
+    visit_family_endpoints::<Match>(root, DemandComponentKind::Match, &mut consume);
+    visit_family_endpoints::<If>(root, DemandComponentKind::If, &mut consume);
+    visit_family_endpoints::<Bundle>(root, DemandComponentKind::Bundle, &mut consume);
+    visit_family_endpoints::<Expr>(root, DemandComponentKind::Expr, &mut consume);
+}
+
+#[cold]
+#[track_caller]
+fn invalid_demand_endpoint(kind: DemandComponentKind, error: CanonicalProtobufError) -> ! {
+    panic!(
+        "accounting demand invariant: admitted {:?} endpoint has invalid canonical protobuf: {error}",
+        kind
+    )
+}
+
+#[inline]
+fn saturating_add_scaled_comms(current: i64, per_endpoint: usize, multiplicity: u64) -> i64 {
+    let per_endpoint = u64::try_from(per_endpoint).unwrap_or(u64::MAX);
+    let scaled = per_endpoint.saturating_mul(multiplicity);
+    let scaled = scaled.min(i64::MAX as u64) as i64;
+    current.saturating_add(scaled)
 }
 
 fn demand_par(par: &Par) -> DemandEntry {
     let mut acc = DemandEntry::ZERO;
-    walk_demand_events(par, |event| match event {
-        DemandWalkEvent::Comm(_) => acc = acc.plus_one(),
-        DemandWalkEvent::Unknown => acc.unknown = true,
+    visit_demand_endpoints(par, |kind, payload, multiplicity| {
+        let mut comm_count = 0usize;
+        let unknown = trace_demand_endpoint(kind, payload, |_| {
+            comm_count = comm_count.saturating_add(1);
+        })
+        .unwrap_or_else(|error| invalid_demand_endpoint(kind, error));
+        acc.known_lower_bound =
+            saturating_add_scaled_comms(acc.known_lower_bound, comm_count, multiplicity.get());
+        acc.unknown |= unknown;
     });
     acc
 }
@@ -334,8 +875,25 @@ pub fn demand_by_sig(
     envelope_key: SigKey,
     region_sig: &dyn Fn(&Par) -> Option<SigKey>,
 ) -> BTreeMap<SigKey, DemandEntry> {
+    demand_by_sig_encoded(desugared, envelope_key, &|encoded| {
+        let channel = models::rust::rholang::protobuf_decoder::decode_par(encoded)
+            .expect("accounting demand invariant: admitted channel protobuf must decode");
+        region_sig(&channel)
+    })
+}
+
+/// Byte-native per-lane demand. This is the preferred route when the lane
+/// classifier already owns canonical channel encodings (for example the
+/// installed signer-channel table): it avoids decoding a channel merely to
+/// compare its canonical bytes. Missing channels still count against the
+/// envelope lane and do not invoke `region_sig`.
+pub fn demand_by_sig_encoded(
+    desugared: &Par,
+    envelope_key: SigKey,
+    region_sig: &dyn Fn(&[u8]) -> Option<SigKey>,
+) -> BTreeMap<SigKey, DemandEntry> {
     let mut acc: BTreeMap<SigKey, DemandEntry> = BTreeMap::new();
-    demand_by_sig_into(desugared, envelope_key, region_sig, &mut acc);
+    demand_by_sig_encoded_into(desugared, envelope_key, region_sig, &mut acc);
     acc
 }
 
@@ -348,24 +906,51 @@ fn bump_lane(acc: &mut BTreeMap<SigKey, DemandEntry>, lane: SigKey, entry: Deman
 /// The per-lane walk. Mirrors [`demand_par`] node-for-node (identical RECURSED vs
 /// NOT-recursed discipline) so summing the lanes reproduces [`demand`]'s count;
 /// the ONLY addition is the per-COMM lane attribution via `region_sig`.
-fn demand_by_sig_into(
+fn bump_encoded_comm(
+    acc: &mut BTreeMap<SigKey, DemandEntry>,
+    envelope_key: SigKey,
+    encoded: Option<&[u8]>,
+    region_sig: &dyn Fn(&[u8]) -> Option<SigKey>,
+) {
+    let lane = encoded.and_then(region_sig).unwrap_or(envelope_key);
+    bump_lane(acc, lane, DemandEntry::ZERO.plus_one());
+}
+
+fn demand_by_sig_encoded_into(
     par: &Par,
     envelope_key: SigKey,
-    region_sig: &dyn Fn(&Par) -> Option<SigKey>,
+    region_sig: &dyn Fn(&[u8]) -> Option<SigKey>,
     acc: &mut BTreeMap<SigKey, DemandEntry>,
 ) {
-    walk_demand_events(par, |event| match event {
-        DemandWalkEvent::Comm(channel) => {
-            let lane = channel
-                .as_ref()
-                .and_then(region_sig)
-                .unwrap_or(envelope_key);
-            bump_lane(acc, lane, DemandEntry::ZERO.plus_one());
+    visit_demand_endpoints(par, |kind, payload, multiplicity| {
+        let repeats = multiplicity.get();
+        let unknown = if repeats == 1 {
+            // The overwhelmingly common case streams directly: no trace buffer
+            // and at most one compatibility `Par` exists at any instant.
+            trace_demand_endpoint(kind, payload, |encoded| {
+                bump_encoded_comm(acc, envelope_key, encoded, region_sig);
+            })
+            .unwrap_or_else(|error| invalid_demand_endpoint(kind, error))
+        } else {
+            // A stateful callback makes occurrence order observable. Retain only
+            // borrowed channel slices, then replay the endpoint's WHOLE trace:
+            // [A,B]×2 is [A,B,A,B], never grouped [A,A,B,B].
+            let mut trace: SmallVec<[Option<&[u8]>; 8]> = SmallVec::new();
+            let unknown = trace_demand_endpoint(kind, payload, |encoded| trace.push(encoded))
+                .unwrap_or_else(|error| invalid_demand_endpoint(kind, error));
+            for _ in 0..repeats {
+                for encoded in &trace {
+                    bump_encoded_comm(acc, envelope_key, *encoded, region_sig);
+                }
+            }
+            unknown
+        };
+        if unknown {
+            bump_lane(acc, envelope_key, DemandEntry {
+                known_lower_bound: 0,
+                unknown: true,
+            });
         }
-        DemandWalkEvent::Unknown => bump_lane(acc, envelope_key, DemandEntry {
-            known_lower_bound: 0,
-            unknown: true,
-        }),
     });
 }
 

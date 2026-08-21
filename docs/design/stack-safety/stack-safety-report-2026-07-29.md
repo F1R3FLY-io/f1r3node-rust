@@ -267,6 +267,7 @@ Abbreviations used throughout are ABI (application binary interface), CBR (conse
 | **SS-A14** | this checkpoint | f1r3node | nested `If` matching: repeated decoded suffix materialization $`\rightarrow`$ canonical-protobuf byte cursor over one shared immutable ParBag endpoint buffer | predecessor depth 128 match **4.277937 s** debug $`\rightarrow`$ release **55.002 µs**; treatment depth **4,096** **1.5387 ms**; allocated-byte and allocation-count ladders remain linear in encoded input; **128 KiB** native stack | **no** — heap/time repair inside the existing matcher PDA; exact verdict, complete `FreeMap`, rollback, schema, and unordered-`Par` semantics retained | [5.29](#529-parbag-family-and-count-domain-completeness-ss-a13-ss-a14-ss-y9) |
 | **SS-A15** | this checkpoint | f1r3node | generalize the shared canonical-protobuf matcher cursor through recursive New/Send/Receive/Match/Expr/Connective families and feed borrowed ESet/EMap members into the existing unordered Bag/PathMap ListPDA | all **15** named recursive families reach depth **4,096** on **128 KiB**; AND/OR additionally reach depth **20,000** on **256 KiB** in debug and release; allocation count and bytes remain subquadratic from depth 128 to 1,024; ESet depth-128 debug diagnostic **3.009 s $`\rightarrow`$ 0.825 ms**, EMap **1.609 s $`\rightarrow`$ 1.099 ms**; exact scalar children are **6.67×** faster than the decoder control at AND depth 4,096 | **no** — exact matcher verdict, complete `FreeMap`, rollback, unordered backtracking/remainders, canonical bytes, and parallel semantics retained | [5.30](#530-general-recursive-family-byte-cursor-and-unordered-collection-closure-ss-a15-ss-y10) |
 | **SS-A16** | this checkpoint | f1r3node | whole-`FreeMap` backtracking snapshots $`\rightarrow`$ one drive-local undo journal; sole-FreeVar eight-family reconstruction $`\rightarrow`$ one exact write; repeated target ownership in encoded Connective frames $`\rightarrow`$ one thread-local `Rc<Par>` | retained rollback state $`\Theta(d^2) \rightarrow \Theta(d)`$ on the depth-$`d`$ binding spine; depth **20,000** succeeds and deepest refusal restores the root on **256 KiB** with exactly one journal write per level; depth-1,024 allocations **168,188 $`\rightarrow`$ 240** and requested bytes **83,963,573 $`\rightarrow`$ 2,022,886** | **no** — the journal refines snapshots and the target owner is matcher-local only; CBR-065 records atomic root refusal as a corrective nonconsensus ruling | [5.31](#531-drive-local-freemap-undo-journal-and-exact-freevar-capture-compression-ss-a16) |
+| **SS-A17** | this checkpoint; pgmcp `accounting-demand-local-occurrence-linear-walk`; experiment 303 | f1r3node | accounting-demand traversal over resident `Par` suffixes $`\rightarrow`$ one borrowed canonical-protobuf-region PDA fed directly by the authoritative ParBag/PathMap endpoint visitor | exact suffix control **145.317 ms $`\rightarrow`$ 12.683 µs** at depth 128 and **8.210 s $`\rightarrow`$ 49.497 µs** at depth 512; treatment endpoint exponent **1.015** through depth 20,000; **20,000** levels on **128 KiB**; compressed scalar multiplicity 1 through $`2^{32}-1`$ remains **0.728–0.750 µs** | **no** — exact recursive trace, callback order, saturation, unknown propagation, schema, and lane differentials; Rocq/Verus/TLA+ closure; CBR-066 | [5.32](#532-accounting-demand-canonical-protobuf-region-pda-ss-a17-ss-y11) |
 | **SS-B1** | `a929a2d6` | f1r3node | expression-evaluator SCC $`\rightarrow`$ `eval_drive` | overflow $`\approx`$ 1.5k $`\rightarrow`$ OK at 50,000 | **yes** | [5.2.1](#521-the-expression-evaluator-trampoline-a929a2d6) |
 | **SS-B2** | `29856679`, `55b97f84`, `a0a50473` | f1r3node | five async join sites detached | 300 s $`\rightarrow`$ **93.7 s CPU** | **yes** (heap chain) | [5.2.2](#522--the-tokio-fire-and-forget-driver--establishing-the-mechanism-not-assuming-it) |
 | **SS-B3** | `9843e4b6` | f1r3node | `StackGrowingFuture` + `stacker` **deleted** | — | dependency removed | [5.2.2](#522--the-tokio-fire-and-forget-driver--establishing-the-mechanism-not-assuming-it) |
@@ -354,6 +355,7 @@ Abbreviations used throughout are ABI (application binary interface), CBR (conse
 | **SS-Y8** | exposed by the 2026-08-08 source/evidence audit; repaired `50756ec2` | f1r3node | SS-A6's `ESet` / `EMap` printer arms still opened nested drives over owned canonical intermediates; re-canonicalizing each nested suffix also made the canonicalization component quadratic | native stack $`\Theta(d) \rightarrow O(1)`$; canonicalization $`\Theta(d^2) \rightarrow \Theta(d)`$ for a unary collection chain; depth **4,096** on **256 KiB**: set **0.12 s / 28,444 KiB**, map **0.23 s / 42,696 KiB**, zero swap | ✅ **repaired**; 27 recursive-oracle differential cases preserve replay-visible text | [5.1.3a](#513a-ss-y8--owned-canonical-collections-complete-the-printer-pda) |
 | **SS-Y9** | exposed by SS-A13's 2026-08-20 fixed-stack gate; repaired by SS-A14; pgmcp `spatial-matcher-byte-native-nested-if-decoding` | f1r3node | the stack-safe matcher repeatedly decoded the remaining inline protobuf suffix of a nested `If` component instead of advancing one generated byte cursor over the authoritative ParBag endpoint | one-sample predecessor debug match-only ladder: depth 32 **110.005 ms**, 64 **646.553 ms**, 128 **4.277937 s**; treatment release ladder: depth 128 **55.002 µs**, 512 **193.100 µs**, 2,048 **752.600 µs**, 4,096 **1.5387 ms** | ✅ **REPAIRED** — canonical byte ranges, terminal-only decode, linear allocation gate, recursive-oracle and rollback equivalence, depth 4,096 on 128 KiB | [5.29](#529-parbag-family-and-count-domain-completeness-ss-a13-ss-a14-ss-y9) |
 | **SS-Y10** | exposed while generalizing SS-A14; repaired by SS-A15; pgmcp `spatial-matcher-byte-native-nested-if-decoding`, `spatial-matcher-flat-candidate-plan`; experiment 302 | f1r3node | the same repeated-suffix decode remained behind New, Send, Receive, Match, recursive Expr/Connective, and the ESet/EMap unordered-list boundary; the latter projected each remaining collection suffix to owned `Par` values before matching | predecessor depth-128 one-sample debug diagnostics: New **~1.936 s**, Send **~1.804 s**, Receive **~2.749 s**, Match **~1.556 s**, ENot **~2.106 s**, ESet **3.009 s**, EMap **1.609 s**; permanent treatment allocation ladders are subquadratic for all 15 families; exact-scalar experiment 302 accepted **10.640 ms $`\rightarrow`$ 1.596 ms** at AND depth 4,096 | ✅ **REPAIRED** — borrowed encoded regions, flat candidate-plan arena, explicit AND/OR/NOT frames, validated scalar-byte equality, existing Bag/PathMap relation, terminal/remainder-only decode, oracle/rollback/backtracking equivalence, depth 4,096 on 128 KiB and branching depth 20,000 on 256 KiB | [5.30](#530-general-recursive-family-byte-cursor-and-unordered-collection-closure-ss-a15-ss-y10) |
+| **SS-Y11** | exposed by the SS-A16 release-policy rerun; repaired by SS-A17; pgmcp `accounting-demand-local-occurrence-linear-walk`; experiment 303 | f1r3node | the nominally stack-safe accounting worklist retained a complete remaining `Par` clone for local `EVar` inspection and repeatedly decoded/materialized every nested suffix instead of advancing borrowed canonical byte regions | the interrupted depth-20,000 release gate consumed one core for **1,905.63 s** without completing; exact release control grows **20.718 ms, 145.317 ms, 1.062 s, 8.210 s** over depths 64–512, empirical exponent **2.877**; treatment reaches depth 20,000 in **2.138 ms** mean with exponent **1.015** | ✅ **REPAIRED** — no suffix clone or decode/materialize loop; 42 $`\rightarrow`$ 54 allocations and 460,096 $`\rightarrow`$ 3,671,360 requested bytes for depth 512 $`\rightarrow`$ 4,096; focused Heaptrack attributes only two allocation calls to the treatment PDA | [5.32](#532-accounting-demand-canonical-protobuf-region-pda-ss-a17-ss-y11) |
 
 ⚠ **`SS-E1` and `SS-Y3` are a second instance of [Appendix F](#appendix-f--the-per-fix-template-fill-this-in-do-not-invent-a-shape)'s rule 4, in the same *revealed-by* form as `SS-G6`/`SS-Y2`**: `SS-E1`'s commits did not create the defect; they **measured** one that was already live and unquantified. `26876b65` discharged SS-Y3 by repair, and the row remains so the defect and its evidence cannot disappear.
 
@@ -493,6 +495,11 @@ register rows (SS-C5…SS-C14, SS-Y6) and the stack-safety consequences.
   - [5.25 Positional AC remainder reconstruction and co-install progress closure [SS-G48]](#525-positional-ac-remainder-reconstruction-and-co-install-progress-closure-ss-g48)
   - [5.26 Retained FLT candidate-matcher integration [SS-G49]](#526-retained-flt-candidate-matcher-integration-ss-g49)
   - [5.27 Canonical-protobuf-key `ParBag` and prepared-key closure [SS-C14]](#527-canonical-protobuf-key-parbag-and-prepared-key-closure-ss-c14)
+  - [5.28 Transient `ParConstruction` closure [SS-A12]](#528-transient-par-construction-closure-ss-a12)
+  - [5.29 ParBag family and count-domain completeness [SS-A13, SS-A14, SS-Y9]](#529-parbag-family-and-count-domain-completeness-ss-a13-ss-a14-ss-y9)
+  - [5.30 General recursive-family byte cursor and unordered-collection closure [SS-A15, SS-Y10]](#530-general-recursive-family-byte-cursor-and-unordered-collection-closure-ss-a15-ss-y10)
+  - [5.31 Drive-local `FreeMap` undo journal and exact FreeVar capture compression [SS-A16]](#531-drive-local-freemap-undo-journal-and-exact-freevar-capture-compression-ss-a16)
+  - [5.32 Accounting-demand canonical protobuf-region PDA [SS-A17, SS-Y11]](#532-accounting-demand-canonical-protobuf-region-pda-ss-a17-ss-y11)
 - [6. Discussion](#6-discussion)
   - [6.1 Why the explicit-worklist shape, and why it is *smaller* than what it replaces](#61-why-the-explicit-worklist-shape-and-why-it-is-smaller-than-what-it-replaces)
   - [6.2 Why the SCC is the unit of conversion](#62-why-the-scc-is-the-unit-of-conversion)
@@ -8941,19 +8948,146 @@ no target-worktree core artifact; its log digest is
 `b749c44f0460c415a82928d1a6d2feace7c7f1dafeba926be6a0cb5783fe1539`.
 
 The subsequent four-gate release run was intentionally stopped after **1,905.63 s** with all four
-tests still active. It revealed a production complexity defect rather than a collector stall:
-`walk_demand_events` clones the complete remaining nested `Par` into `ScanUnknown` at every visited
-level even though that state reads only local Expr occurrences. A depth-$`d`$ chain therefore
-performs suffix work proportional to $`d + (d-1) + \cdots + 1 = \Theta(d^2)`$; the depth-20,000
-accounting gate consumed one full core for more than 31 minutes. Pgmcp child
-`accounting-demand-local-occurrence-linear-walk` records the source-level repair and linearity gates.
-No depth cap is lowered and this interrupted run is not presented as validation evidence. Its log
-digest is `63455043becf0301face7e91efdbb65041f70e92eb9df44d66c46bc306996cd8`.
+tests still active. It revealed a production complexity defect rather than a collector stall. The
+nominally stack-safe accounting worklist (1) cloned the complete remaining nested `Par` into
+`ScanUnknown` at every visited level even though that state reads only local Expr occurrences, and
+(2) decoded and materialized the recursively shorter suffix again at every level. The clone alone
+gives a lower bound proportional to $`d + (d-1) + \cdots + 1 = \Theta(d^2)`$ for depth $`d`$; the
+combined exact control later measured an empirical exponent of **2.877** over depths 64–512. The
+depth-20,000 accounting gate consumed one full core for more than 31 minutes. Pgmcp child
+`accounting-demand-local-occurrence-linear-walk` records the repair and experiment 303 records its
+linearity evidence. No depth cap was lowered and this interrupted run is not presented as validation
+evidence. Its log digest is `63455043becf0301face7e91efdbb65041f70e92eb9df44d66c46bc306996cd8`.
 
 All controls above are test-harness or traversal-complexity observations. Core suppression and
 subprocess assertion mechanics cannot move a Rholang value, match, hash, COMM, charge, byte stream,
-PathMap operation, or execution order. The accounting repair remains open and must receive its own
-semantic classification and measured result before the complete release-workspace gate is rerun.
+PathMap operation, or execution order. The accounting defect is repaired and classified separately
+in [§5.32](#532-accounting-demand-canonical-protobuf-region-pda-ss-a17-ss-y11) and CBR-066; this
+diagnostic subsection remains the provenance of the negative result that exposed it.
+
+### 5.32 Accounting-demand canonical protobuf-region PDA [SS-A17, SS-Y11]
+
+#### 5.32.1 Contract and repair hypothesis
+
+Accounting demand is a structural analysis over the process positions of a normalized Rholang
+`Par`. Its observable is not merely a final integer: the compatibility entry point accepts a
+possibly stateful channel-to-signature callback, so the complete ordered COMM-channel trace is part
+of the contract. For one endpoint occurrence the historical order is root families Send, Receive,
+New, Match, If, Bundle, Expr; a Receive reports its first bind source before descending into its
+body; Match cases retain their stored order; an If visits its true branch before its false branch;
+and name, value, pattern, condition, guard, URI, injection, and metadata positions remain inert.
+Absent channels still contribute one COMM but do not invoke the callback. A direct bound/free
+`EVar` in process position makes `unknown` sticky.
+
+The repair hypothesis was that the exact trace could be generated in one pass over the canonical
+protobuf bytes already stored in each authoritative ParBag endpoint. The ParBag is a
+`PathMap<Multiplicity>`; `Multiplicity` is its nonzero `u64` occurrence count. Its
+`visit_encoded` zipper traversal supplies a borrowed endpoint and multiplicity without projecting
+the trie to `Vec<Par>`, sorting elements, cloning a PathMap root, or decoding a recursively shorter
+resident suffix.
+
+The literate driver is:
+
+```text
+for each authoritative ParBag endpoint (encoded, multiplicity):
+    validate and index encoded as one canonical Par process
+    push its nonempty families in reverse historical order
+    while a frame remains:
+        advance exactly one canonical protobuf field or delimited child
+        emit a COMM channel at the historical point, if present
+        push only process-position child byte regions
+        inspect only the current Expr region for a direct bound/free EVar
+    scale the scalar COMM count by multiplicity with saturation
+    if a callback is required, replay the whole endpoint trace multiplicity times
+```
+
+The reversal in the second line is the ordinary last-in/first-out encoding of the historical
+left-to-right traversal; it does not reorder the Rholang parallel term. `demand` takes the scalar
+path and therefore stores no channel trace. `demand_by_sig_encoded` compares the borrowed canonical
+channel bytes directly with the pre-encoded signer table. The source-compatible `demand_by_sig`
+adapter decodes at most one channel at a time; multiplicity one streams it immediately, while a
+compressed endpoint retains only borrowed channel slices so it can reproduce occurrence-major
+callback order such as `A, B, A, B`, rather than the invalid grouped mutant `A, A, B, B`.
+
+#### 5.32.2 Semantic and formal verification
+
+The frozen recursive oracle is test-only. A 1,024-case property differential compares scalar
+demand, `unknown`, the exact stateful callback byte sequence, the per-signature lane map, and the
+byte-native lane entry point. A deterministic schema fixture covers multiple receive binds (first
+source only), inert patterns/remainder/flags/conditions, New URI/injections, inert Match
+target/pattern/guard, present-empty `Par`, If branch order, Bundle flags, and every root family. A
+generated-schema conformance gate pins the field number and wire type of every field read by the
+cursor. Arbitrary bytes, truncated fixed-width values, invalid tags/wire types, present-empty
+messages, and length overflow are total error cases rather than panics.
+
+Three independent formal layers close different obligations:
+
+| model | discharged obligation | anti-vacuity condition |
+|---|---|---|
+| Rocq `AccountingDemand.v` | explicit-frame trace refinement, exact decreasing work measure and termination, saturating count scaling, sticky unknown, whole-trace multiplicity, arbitrary stateful callback preservation | four `Print Assumptions` contexts are closed |
+| Verus `accounting_demand.rs` | strict bounded cursor advance, safe `u128` intermediate multiplication with exact `i64` saturation, and whole-trace replay | `--no-cheating`: **6 verified, 0 errors** |
+| TLA+ `AccountingDemand.tla` | completion/liveness plus trace, order, missing-channel, all-bind-source, and unknown invariants | **105 states**, depth 34; grouped-replay and order mutants are rejected |
+
+These proofs model the generated byte-region transition contract and its arithmetic. They do not
+claim that an arbitrary Rust protobuf parser has been proved correct; the generated-schema gate,
+malformed-byte tests, and recursive differential cover that implementation boundary. The complete
+formal driver, including its pre-existing Rocq, Verus, Z3, TLA+, and mCRL2 obligations, passes with
+log digest `ec4835b6768355d2c735f2362da41679e186976551b6523f69127ea87d0c87f5`.
+
+#### 5.32.3 Time, allocation, and headless heap results
+
+All release timings are Criterion means over 30 samples under a **12 GiB `MemoryMax`**, zero-swap
+user scope. The machine had 32 physical cores (one hardware thread per core) and 45.19% aggregate idle immediately before the
+profiling phase. The exact control retains both pre-repair mechanisms and is benchmark-only.
+
+| depth | exact suffix control | byte-region PDA | control / treatment |
+|---:|---:|---:|---:|
+| 128 | 145.317 ms | 12.683 µs | **11,457.6×** |
+| 512 | 8.210 s | 49.497 µs | **165,875×** |
+| 20,000 | not attempted after the 1,905.63 s negative gate | 2.138 ms | — |
+
+The treatment endpoint exponent is **1.015** from depth 128 through 20,000; the exact control's
+empirical exponent is **2.877** from depth 64 through 512. This describes the measured fixture and
+does not promote the control exponent to an implementation-independent asymptotic proof. The
+combined scalar plus compatibility-lane allocation gate grows from **42 allocations / 460,096 B**
+at depth 512 to **54 / 3,671,360 B** at depth 4,096: an eightfold input-depth increase produces a
+1.286× allocation-count increase and 7.980× requested-byte increase. The depth-20,000 treatment
+also completes on a **128 KiB** native stack; no `RUST_MIN_STACK`, `stacker`, recursion limit, or
+traversal cap is present.
+
+The wider experiments pin the intended PathMap/Bag behavior. Scalar accounting of one compressed
+endpoint measures **0.729 µs** at multiplicity 1, **0.750 µs** at 1,024, and **0.728 µs** at
+$`2^{32}-1`$: multiplicity is scaled algebraically rather than expanded. For 4 KiB channels, direct
+byte-native lane classification is **4.651×** faster than the compatibility `Par` adapter at width
+16 and **4.730×** faster at width 64. Wide scalar and sticky-unknown ladders remain linear.
+
+Heaptrack was run strictly headlessly with `heaptrack --record-only`; `heaptrack_print` performed
+the analysis. A first recording was rejected because Criterion filtered execution only after the
+benchmark closure had eagerly constructed every unselected fixture. The harness now applies the
+filter before construction. In the corrected depth-128 recordings, the byte-PDA process records
+**5,043** allocation calls, **423.83 K** peak heap, and **9.94 M** profiler RSS; only **two** calls
+have `trace_demand_endpoint` on their backtrace. The exact suffix control records **4,113,844**
+allocation calls, **1.73 M** peak heap, and **12.43 M** profiler RSS. Whole-process totals include
+the one selected fixture and Criterion; they are causal profiles, not per-operation allocation
+counts. Raw digests and all confidence intervals are in
+[`measurements/accounting-demand-byte-region-2026-08-21.tsv`](measurements/accounting-demand-byte-region-2026-08-21.tsv).
+
+#### 5.32.4 Closure and boundaries
+
+SS-Y11 is repaired. Production accounting contains no resident-suffix clone, recursive descent,
+repeated suffix decoder, element sort, `Vec<Par>` projection, shadow map/set, or PathMap fork. The
+canonical byte cursor is shared from `models`; scalar, byte-native lane, and compatibility-lane
+paths share the same trace driver. Compressed multiplicity preserves whole-trace order when the
+callback is stateful and uses constant-time arithmetic when it is absent. CBR-066 records why this
+is an implementation and representation optimization with no movement in demand, lane attribution,
+callback sequence, protobuf/bincode/EPM1 bytes, hash, COMM schedule, charge, accepted program,
+PathMap algebra, or Rholang parallel execution order.
+
+The final affected release matrix passes **7/7** cursor tests, **9/9** formal-manifest tests,
+**19/19** accounting-demand tests, **2/2** accounting depth/allocation gates, and **9/9** independent
+reduction-rule tests. The matrix and rule-suite log digests are respectively
+`919bfd027debb3623813827542624bfe9ae9d8eb97fad5b2d37a894a52a054fe` and
+`3edad2b44996a837e0173755e12c7fef8b167b03c1b336882c572bcc85f5a30b`.
 
 ---
 
@@ -9768,6 +9902,7 @@ done
 | [`measurements/parbag-prepared-key-membership-2026-08-17.tsv`](measurements/parbag-prepared-key-membership-2026-08-17.tsv) | experiment 258's dynamic-RPB2/prepared-key comparison, all 1,312 raw observations and eight summaries, accepted aggregate decision, failed every-cell 0.50 auxiliary target, resource envelope, log digest, and finalized run digests (§5.27) |
 | [`measurements/encoded-connective-branching-2026-08-20.tsv`](measurements/encoded-connective-branching-2026-08-20.tsv) | SS-A15/experiment 302's decoded control and exact canonical-byte treatment, Criterion populations, allocation ladders, and AMD uProf attribution (§5.30) |
 | [`measurements/spatial-matcher-freemap-journal-2026-08-21.tsv`](measurements/spatial-matcher-freemap-journal-2026-08-21.tsv) | SS-A16's journal controls, intermediate and final exact-FreeVar treatments, deep-target capture, Heaptrack allocation/RSS, Callgrind instruction, Massif peak, and AMD uProf hotspot evidence (§5.31) |
+| [`measurements/accounting-demand-byte-region-2026-08-21.tsv`](measurements/accounting-demand-byte-region-2026-08-21.tsv) | SS-A17/SS-Y11 exact suffix control and byte-PDA Criterion populations, allocation slope, byte-native lane and compressed-multiplicity experiments, and corrected headless Heaptrack evidence (§5.32) |
 | [`../pathmap/measurements/epm1-fixed-scale-2026-08-03.tsv`](../pathmap/measurements/epm1-fixed-scale-2026-08-03.tsv) | the EPM1 fixed-scale benchmark (PathMap report §5.4) |
 
 **Volatile (`/tmp`) run logs** — these do not survive a reboot; the regeneration commands of

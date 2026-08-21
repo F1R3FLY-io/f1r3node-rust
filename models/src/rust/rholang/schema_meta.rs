@@ -336,6 +336,15 @@ pub static BOUNDARY_PDA_EQUIVALENCE_EVIDENCE: &[BoundaryEquivalenceEvidence] = &
         executable_marker:
             "compiled_rho_path_query_is_a_superset_of_every_recursive_oracle_success",
     },
+    BoundaryEquivalenceEvidence {
+        surface: "rholang::Accounting demand byte-region PDA",
+        production_file: "rholang/src/rust/interpreter/accounting/delta_sigma.rs",
+        production_marker: "fn trace_demand_endpoint<'a>(",
+        proof_file: "formal/rocq/stack_safe_pda/theories/AccountingDemand.v",
+        theorem: "accounting_pda_refines_recursive_trace",
+        executable_file: "rholang/tests/accounting/delta_sigma_spec.rs",
+        executable_marker: "byte_pda_is_trace_equivalent_to_frozen_recursive_semantics",
+    },
 ];
 
 /// A concrete EPathMap law proved in Rocq and exercised against the PathMap

@@ -34,6 +34,17 @@ if [[ "$free_map_closed_capstones" != "2" ]]; then
   echo "stack-safe-pda: expected both FreeMap Rocq capstones to be closed; got $free_map_closed_capstones" >&2
   exit 1
 fi
+accounting_demand_rocq_output="$(
+  tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/AccountingDemand.v 2>&1
+)"
+printf '%s\n' "$accounting_demand_rocq_output"
+accounting_demand_closed_capstones="$({
+  printf '%s\n' "$accounting_demand_rocq_output" | grep -c '^Closed under the global context$'
+} || true)"
+if [[ "$accounting_demand_closed_capstones" != "4" ]]; then
+  echo "stack-safe-pda: expected all four accounting-demand Rocq capstones to be closed; got $accounting_demand_closed_capstones" >&2
+  exit 1
+fi
 popd >/dev/null
 
 verus_bin="${VERUS:-$(command -v verus || true)}"
@@ -47,6 +58,8 @@ tlc_bounded "$verus_bin" --no-cheating --num-threads 1 \
   "$repo_root/formal/verus/bag_checked_delta.rs"
 tlc_bounded "$verus_bin" --no-cheating --num-threads 1 \
   "$repo_root/formal/verus/free_map_transaction.rs"
+tlc_bounded "$verus_bin" --no-cheating --num-threads 1 \
+  "$repo_root/formal/verus/accounting_demand.rs"
 
 z3_output="$(tlc_bounded z3 "$repo_root/formal/smt/stack_safe_pda_modes.smt2")"
 if [[ "$z3_output" != "unsat" ]]; then
@@ -61,6 +74,7 @@ tlc_run "$tla_metadir" PDAEquivalence.cfg PDAEquivalence.tla -cleanup
 tlc_run "$tla_metadir" SpatialMatcherEquivalence.cfg SpatialMatcherEquivalence.tla -cleanup
 tlc_run "$tla_metadir" RSpaceBagCommit.cfg RSpaceBagCommit.tla -cleanup
 tlc_run "$tla_metadir" FreeMapJournal.cfg FreeMapJournal.tla -cleanup
+tlc_run "$tla_metadir" AccountingDemand.cfg AccountingDemand.tla -cleanup
 popd >/dev/null
 
 mcrl2_root="$repo_root/formal/mcrl2/stack_safe_pda"

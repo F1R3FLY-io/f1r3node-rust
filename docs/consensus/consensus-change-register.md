@@ -147,7 +147,7 @@ with typed reasons so the account stays checkable.
 3. A **derived** register (§3, §4): 24 entries, each with all six axes answered, a stated blast
    radius, a direction, an evidence grade, and — where one exists — the owner ruling that authorised
    it, quoted verbatim with its date.
-4. The **negative results**: 65 retired entries with typed reasons (Appendix B.1) and 21 commit-level
+4. The **negative results**: 67 retired entries with typed reasons (Appendix B.1) and 21 commit-level
    exemptions (Appendix B.2), which are what make the inclusion criterion checkable rather than
    merely asserted.
 
@@ -461,7 +461,7 @@ conversions proven equivalent to their recursive counterparts definitely do not 
 while **data-model, wire-format, and deliberate semantic changes** (the EPathMap representation and
 EPM1 being the named exemplar) are what this register exists to carry. Every entry was re-classified
 under that criterion; the 46 that no longer qualified at re-scope—and later classified findings
-through CBR-063—are retired to typed rows in
+through CBR-066—are retired to typed rows in
 [Appendix B.1](#b1-retired-register-entries), and their full bodies remain in git history at the
 pre-refactor revision.
 
@@ -610,8 +610,8 @@ is a *future* fork, not a present one).
 MECHANISM-ONLY (**CBR-013**), 1 LATENT (**CBR-L14**), and 1 UNVERIFIED (**CBR-053**). By direction:
 **15 CORRECTIVE, 4 PERMISSIVE, 4 REGRESSIVE, 1 UNVERIFIED**. Axis cells reading `UNVERIFIED`: **2** —
 CBR-053's verdict and post-state axes. The register's historical CBR-L07 metering `?` remains
-resolved under the token model (§3.3). The 65 retired entries are
-[Appendix B.1](#b1-retired-register-entries); 24 + 65 = 89 historical identifiers, none reused.
+resolved under the token model (§3.3). The 67 retired entries are
+[Appendix B.1](#b1-retired-register-entries); 24 + 67 = 91 historical identifiers, none reused.
 
 ### 4.2 Entry template
 
@@ -4086,7 +4086,7 @@ Quote actual numbers. The RED, the measurement, the acceptance matrix. Tag each 
 
 ### B.1 Retired register entries
 
-The 66 entries retired under the 2026-08-03 inclusion criterion (§3.2). Each keeps its **former
+The 67 entries retired under the 2026-08-03 inclusion criterion (§3.2). Each keeps its **former
 identifier forever** — identifiers are never reused, and a historical citation of any `CBR-*` below
 resolves to this table. Full bodies remain in git history at the pre-refactor revision of this file.
 Reasons are the closed retirement enum of §3.2; the evidence column points at where the discharging
@@ -4145,6 +4145,7 @@ material now lives.
 | `CBR-063` | this checkpoint; pgmcp experiment 302 | Shared canonical-protobuf ranges replace repeated suffix decoding across recursive New/Send/Receive/Match/Expr/Connective matching, and borrowed ESet/EMap members enter the existing unordered Bag/PathMap ListPDA | `OPTIMIZATION_MEASURED_NEUTRAL` | the bounded recursive-oracle gates agree on verdict and complete `FreeMap`; unordered augmenting-path reassignment, map key/value rollback, exact set/map remainders, AND whole-fold rollback, OR branch isolation, and NOT inversion pass; all 15 named families reach depth 4,096 on a 128 KiB stack and have subquadratic allocation ladders, while AND/OR reach depth 20,000 on 256 KiB in debug and release. Diagnostic depth-128 ESet/EMap matching falls from 3.009/1.609 s to 0.825/1.099 ms; exact scalar children improve AND/4,096 from 10.640 to 1.596 ms/op. No value, verdict, binding, byte, hash, COMM, charge, accepted program, PathMap algebra, or parallel execution order moves. Stack-safety report §5.30. |
 | `CBR-064` | this checkpoint | Exact unary-`ENot` and node `RhoExpr` byte PDAs avoid repeatedly materializing recursively shorter ParBag/PathMap suffixes | `OPTIMIZATION_MEASURED_NEUTRAL` | the guard evaluator's seven-test recursive differential preserves exact values, errors, operand interleaving, compressed multiplicity, and spatial-oracle behavior; the 128,000-level classifier and 131,072-level evaluator gates pass on explicit small stacks. Node conversion agrees with its resident PDA for all 36 Expr variants, incomplete recursive messages, compressed multiplicity, every EPathMap mode, and exact JSON output; its 16,384-level counter gate records zero resident-Par fallback. No normalized value, guard verdict, binding, protobuf/bincode byte, hash, COMM, charge, accepted program, EPathMap mode, PathMap algebra, or parallel execution order moves. Stack-safety report §5.28.5. |
 | `CBR-065` | this checkpoint; pgmcp `spatial-matcher-freemap-checkpoint-journal` | Matcher attempts use one drive-local previous-value journal instead of whole-`FreeMap` snapshots; failed roots restore their entry map atomically, an exact sole-FreeVar capture collapses eight family writes to one, and encoded Connective frames share one thread-local target owner | `BUG_FIX_RULED_NONCONSENSUS` | the **30-case** frozen recursive differential preserves verdict and complete `FreeMap` for canonical matcher values; the only intentional oracle divergence is a malformed/internally inconsistent target whose failed recursive path leaked an empty intermediate capture, while the transaction restores the entry map. An exhaustive 13,122-run short-trace snapshot oracle, Rocq journal-to-snapshot refinement, Verus `--no-cheating`, bounded TLA+, mCRL2 branching bisimulation/mutants, validate-before-write conflict witness, panic rollback, and depth-20,000 / 256 KiB success/refusal gates pin atomicity. The selected path uses relative-prefix PathMap zipper visitation, requires exact FreeVar shape, target/prior projection identity, and closure of every distinct concrete endpoint, then writes the authoritative target directly through the transaction. Its `Rc<Par>` is confined to the synchronous thread-local matcher; PathMap's authoritative trie, persistent CoW ownership, and mutation algebra do not change. At depth 1,024, matching-only allocation count falls **168,188 $`\rightarrow`$ 240** and requested bytes **83,963,573 $`\rightarrow`$ 2,022,886**; headless Heaptrack records **2,473,704 $`\rightarrow`$ 203,742** whole-process allocation calls while peak heap remains **4.21 M** at displayed precision. These are representation and implementation changes only: no accepted canonical program, successful binding, value, protobuf/bincode/EPM1 byte, hash, COMM schedule, charge, EPathMap mode, PathMap operation, or parallel execution order moves. Stack-safety report §5.31. |
+| `CBR-066` | this checkpoint; pgmcp `accounting-demand-local-occurrence-linear-walk`; experiment 303 | Static accounting demand advances one borrowed canonical-protobuf-region PDA over authoritative ParBag/PathMap endpoints instead of cloning and repeatedly decoding every recursively shorter resident `Par` suffix | `OPTIMIZATION_MEASURED_NEUTRAL` | a 1,024-case frozen recursive differential preserves the scalar result, sticky `unknown`, exact stateful callback bytes/order, per-signature lane map, missing-channel behavior, and compressed occurrence-major replay; a generated-schema gate covers every field/tag/wire consumed by the cursor. Rocq proves trace refinement, termination, saturation, and arbitrary callback preservation; Verus verifies six arithmetic/cursor/replay obligations without cheating; bounded TLA+ completes 105 states and rejects grouping/order/missing-COMM mutants. Depth 20,000 succeeds on 128 KiB. Exact release controls improve from 145.317 ms to 12.683 µs at depth 128 and from 8.210 s to 49.497 µs at depth 512; the byte-native lane is 4.65–4.73× faster than the source-compatible `Par` adapter for 4 KiB channels. `demand` and `demand_by_sig` retain their interfaces; `demand_by_sig_encoded` is additive and internal to the Rust accounting surface. No demand, lane attribution, callback sequence, normalized value, protobuf/bincode/EPM1 byte, hash, COMM schedule, charge, accepted Rholang program, EPathMap mode, PathMap algebra, or parallel execution order moves. Stack-safety report §5.32. |
 | `CBR-L01` | `3ff1c98b`, `f586e138` | Equal operator precedence becomes representable; Rholang's ladder corrected | `BUG_FIX_RULED_NONCONSENSUS` | entry body at the pre-refactor revision (git history) |
 | `CBR-L02` | `0f3d298c` | The substrate lane stops answering "false" for a guard it could not decide | `BUG_FIX_RULED_NONCONSENSUS` | entry body at the pre-refactor revision (git history) |
 | `CBR-L03` | `69c66cd1` | A residual binder rests the COMM, whatever the formula collapsed to | `BUG_FIX_RULED_NONCONSENSUS` | entry body at the pre-refactor revision (git history) |
@@ -4381,14 +4382,30 @@ failure is non-fatal, and an explicit environment override restores core generat
 test-harness resource correction only and cannot change admitted terms, values, matches, hashes,
 protobuf/bincode/EPM1 bytes, COMMs, charges, PathMap state, or parallel order.
 
-The corrected high-cap run then exposed a separate production complexity defect:
-`walk_demand_events` clones the complete remaining `Par` suffix once per nesting level merely to scan
-local Expr occurrences. That $`\Theta(d^2)`$ accounting walk is tracked under reachable pgmcp child
-`accounting-demand-local-occurrence-linear-walk`; the 1,905.63 s run was interrupted and is not
-claimed as passing evidence. Any repair must preserve exact demand, lane attribution, and `unknown`
-semantics and will receive its own consensus ruling. These findings do not alter CBR-065's
-`BUG_FIX_RULED_NONCONSENSUS` classification. Stack-safety report §5.31.6 contains the controls,
+The corrected high-cap run then exposed a separate production complexity defect: the nominally
+stack-safe accounting worklist cloned the complete remaining `Par` suffix for local Expr inspection
+and repeatedly decoded/materialized every recursively shorter suffix. The 1,905.63 s run was
+interrupted and is not claimed as passing evidence. Reachable pgmcp child
+`accounting-demand-local-occurrence-linear-walk` and experiment 303 now carry the completed repair.
+These findings do not alter CBR-065's `BUG_FIX_RULED_NONCONSENSUS` classification; CBR-066 records
+the separate accounting optimization. Stack-safety report §§5.31.6 and 5.32 contain the controls,
 limitations, and artifact digests.
+
+**CBR-066 classification continuation (2026-08-21).** The authoritative ParBag remains its existing
+`PathMap<Multiplicity>`; the repair consumes each trie endpoint's borrowed canonical protobuf body
+through `visit_encoded` and does not project, sort, duplicate, or replace the trie. Scalar accounting
+counts one endpoint trace and scales it by its nonzero `u64` multiplicity with saturating arithmetic.
+The byte-native lane entry point compares canonical channel slices directly. The source-compatible
+adapter decodes at most one channel at a time and, for compressed multiplicity, retains borrowed
+slices only so a stateful callback observes the exact historical whole-trace order.
+
+The exact pre-repair control measures an empirical depth exponent of 2.877 over 64–512, whereas the
+treatment exponent is 1.015 through depth 20,000. A focused headless Heaptrack run attributes only
+two allocation calls to the treatment PDA; the exact control records 4,113,844 whole-process calls
+at depth 128. Those figures establish mechanism removal, while the recursive differential and formal
+models establish semantic neutrality. The additive byte-native Rust API is not Rholang syntax or a
+wire/storage format. Therefore the change is retired as `OPTIMIZATION_MEASURED_NEUTRAL`, rather than
+added to the active may-change-consensus register.
 
 **CBR-033 living evidence continuation (2026-08-11; pgmcp #5301).** `7983bf4b` makes the
 read-only hot-store snapshot total over the union of datum and continuation key domains. A datum
@@ -5070,6 +5087,6 @@ is the point: the derivation's surplus is real, and it is small and classifiable
 ---
 
 *The register's identifiers are stable and never reused. The 2026-08-03 re-scope retired 46 entries
-to B.1; subsequent classified findings through CBR-065 and CBR-L24 bring the living appendix to 66. The re-scope also removed
+to B.1; subsequent classified findings through CBR-066 and CBR-L24 bring the living appendix to 67. The re-scope also removed
 the mechanised drift gate with its machine index; the pre-refactor revision, with every then-retired
 body and the gate's specification, remains in git history.*

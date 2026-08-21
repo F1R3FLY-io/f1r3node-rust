@@ -117,6 +117,7 @@ fn every_repository_boundary_pda_has_one_production_proof_and_oracle_binding() {
         "rholang::EPathMap singleton owned-zipper matching",
         "models::RMP1 generated cursor encoder",
         "rholang::RMP1 ordered query compiler",
+        "rholang::Accounting demand byte-region PDA",
     ];
 
     let mut evidence = BTreeMap::<&str, &BoundaryEquivalenceEvidence>::new();
@@ -202,6 +203,7 @@ fn rocq_kernel_contains_no_unproved_declarations() {
         "formal/rocq/stack_safe_pda/theories/EPM1.v",
         "formal/rocq/stack_safe_pda/theories/SpatialMatcher.v",
         "formal/rocq/stack_safe_pda/theories/FreeMapJournal.v",
+        "formal/rocq/stack_safe_pda/theories/AccountingDemand.v",
     ] {
         let source = read_repository_file(relative);
         for forbidden in ["Admitted.", "admit.", "Axiom "] {
@@ -231,6 +233,104 @@ fn verus_range_and_worklist_proof_is_non_vacuous_and_runs_without_cheating() {
     let runner = read_repository_file("scripts/check-stack-safe-pda-proofs.sh");
     assert!(runner.contains("--no-cheating --num-threads 1"));
     assert!(runner.contains("formal/verus/epathmap_canonical_worklist.rs"));
+}
+
+#[test]
+fn accounting_demand_four_layer_proof_and_mutants_are_manifested() {
+    let rocq = read_repository_file("formal/rocq/stack_safe_pda/theories/AccountingDemand.v");
+    for marker in [
+        "Theorem accounting_pda_refines_recursive_trace",
+        "Theorem accounting_pda_terminates",
+        "Corollary compressed_multiplicity_saturates_after_scaling",
+        "Theorem accounting_pda_preserves_stateful_callback",
+        "Print Assumptions accounting_pda_refines_recursive_trace.",
+        "Print Assumptions accounting_pda_terminates.",
+        "Print Assumptions compressed_multiplicity_saturates_after_scaling.",
+        "Print Assumptions accounting_pda_preserves_stateful_callback.",
+    ] {
+        assert!(
+            rocq.contains(marker),
+            "accounting Rocq proof is missing `{marker}`"
+        );
+    }
+
+    let verus = read_repository_file("formal/verus/accounting_demand.rs");
+    for marker in [
+        "pub fn checked_cursor_advance(",
+        "pub fn saturating_scaled_comms(",
+        "proof fn whole_trace_replay_successor(",
+        "proof fn grouped_replay_mutant_is_detected()",
+    ] {
+        assert!(
+            verus.contains(marker),
+            "accounting Verus proof is missing `{marker}`"
+        );
+    }
+    for forbidden in ["assume(", "admit(", "external_body"] {
+        assert!(
+            !verus.contains(forbidden),
+            "accounting Verus proof contains forbidden escape `{forbidden}`"
+        );
+    }
+
+    let tla = read_repository_file("formal/tlaplus/stack_safe_pda/AccountingDemand.tla");
+    for marker in [
+        "TracePrefixRefinement ==",
+        "CallbackPrefixRefinement ==",
+        "SummaryRefinement ==",
+        "CompletedTraceEquivalent ==",
+        "ActionWitnessesAreNonVacuous ==",
+        "GroupedMultiplicityMutationIsDetected ==",
+        "FamilyOrderMutationIsDetected ==",
+        "BranchOrderMutationIsDetected ==",
+        "DroppedMissingCommMutationIsDetected ==",
+        "MissingChannelCallbackMutationIsDetected ==",
+        "AllReceiveSourcesMutationIsDetected ==",
+        "DroppedUnknownMutationIsDetected ==",
+        "EventuallyComplete ==",
+    ] {
+        assert!(
+            tla.contains(marker),
+            "accounting TLA+ model is missing `{marker}`"
+        );
+    }
+    let tla_config = read_repository_file("formal/tlaplus/stack_safe_pda/AccountingDemand.cfg");
+    for marker in [
+        "INVARIANT TracePrefixRefinement",
+        "INVARIANT CallbackPrefixRefinement",
+        "INVARIANT SummaryRefinement",
+        "INVARIANT CompletedTraceEquivalent",
+        "INVARIANT ActionWitnessesAreNonVacuous",
+        "INVARIANT GroupedMultiplicityMutationIsDetected",
+        "INVARIANT FamilyOrderMutationIsDetected",
+        "INVARIANT BranchOrderMutationIsDetected",
+        "INVARIANT DroppedMissingCommMutationIsDetected",
+        "INVARIANT MissingChannelCallbackMutationIsDetected",
+        "INVARIANT AllReceiveSourcesMutationIsDetected",
+        "INVARIANT DroppedUnknownMutationIsDetected",
+        "PROPERTY EventuallyComplete",
+    ] {
+        assert!(
+            tla_config.contains(marker),
+            "accounting TLC configuration is missing `{marker}`"
+        );
+    }
+
+    let coq_project = read_repository_file("formal/rocq/stack_safe_pda/_CoqProject");
+    assert!(coq_project.contains("theories/AccountingDemand.v"));
+    let runner = read_repository_file("scripts/check-stack-safe-pda-proofs.sh");
+    for marker in [
+        "theories/AccountingDemand.v",
+        "accounting_demand_closed_capstones",
+        "expected all four accounting-demand Rocq capstones to be closed",
+        "formal/verus/accounting_demand.rs",
+        "tlc_run \"$tla_metadir\" AccountingDemand.cfg AccountingDemand.tla",
+    ] {
+        assert!(
+            runner.contains(marker),
+            "formal runner is missing `{marker}`"
+        );
+    }
 }
 
 #[test]

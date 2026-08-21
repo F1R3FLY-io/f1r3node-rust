@@ -212,6 +212,10 @@ name = "protobuf_encoder_differential"
 path = "tests/protobuf_encoder_differential.rs"
 
 [[test]]
+name = "protobuf_cursor"
+path = "tests/protobuf_cursor.rs"
+
+[[test]]
 name = "rspace_path_spec"
 path = "tests/rspace_path_spec.rs"
 

@@ -50,7 +50,11 @@
 //! is consumed once". J1 = 1 regardless of arity is asserted directly on the
 //! live runtime.
 
-use models::rhoapi::{Match, New, Par, Receive, Send};
+#[path = "../support/accounting_demand_oracle.rs"]
+mod accounting_demand_oracle;
+
+use accounting_demand_oracle::{trace as oracle_trace, DemandOracleEvent};
+use models::rhoapi::{New, Par, Receive};
 use proptest::prelude::*;
 use proptest::test_runner::{Config as ProptestConfig, TestRunner};
 use rholang::rust::interpreter::accounting::costs::Cost;
@@ -92,52 +96,14 @@ async fn runtime_comm_count(contract: &str) -> usize {
         .count()
 }
 
-/// Recursively count token-consuming COMM nodes (sends + receives) reachable in
-/// `par`, excluding the diagnostic `new`/`match`/`if` reductions — the static
-/// image of the runtime COMM tally. (Same shape as the `comm_node_count` helper
-/// in `delta_sigma_spec.rs`; duplicated here to keep this rule-shape file
-/// self-contained.)
+/// Count token-consuming COMM nodes with the shared, frozen historical oracle.
+/// The oracle is deliberately recursive but test-only and bounded by these
+/// small rule fixtures; production and depth gates use the byte-region PDA.
 fn comm_node_count(par: &Par) -> usize {
-    let mut n = 0;
-    for send in par.decode_occurrences::<Send>() {
-        n += 1;
-        if let Some(chan) = &send.chan {
-            n += comm_node_count(chan);
-        }
-        for datum in &send.data {
-            n += comm_node_count(datum);
-        }
-    }
-    for receive in par.decode_occurrences::<Receive>() {
-        n += 1;
-        for bind in &receive.binds {
-            if let Some(source) = &bind.source {
-                n += comm_node_count(source);
-            }
-            for pattern in &bind.patterns {
-                n += comm_node_count(pattern);
-            }
-        }
-        if let Some(body) = &receive.body {
-            n += comm_node_count(body);
-        }
-    }
-    for new in par.decode_occurrences::<New>() {
-        if let Some(body) = &new.p {
-            n += comm_node_count(body);
-        }
-    }
-    for mat in par.decode_occurrences::<Match>() {
-        if let Some(target) = &mat.target {
-            n += comm_node_count(target);
-        }
-        for case in &mat.cases {
-            if let Some(source) = &case.source {
-                n += comm_node_count(source);
-            }
-        }
-    }
-    n
+    oracle_trace(par)
+        .into_iter()
+        .filter(|event| matches!(event, DemandOracleEvent::Comm(_)))
+        .count()
 }
 
 fn normalized_par(contract: &str) -> Par {
@@ -297,22 +263,21 @@ fn single_token_drop_differs_from_pair_token_drop() {
 // join itself, regardless of arity — the combined join token is consumed once.
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Recursively locate the single multi-bind join receive and return its bind
-/// (clause) count. The join body lives under the top-level `new` that allocates
-/// its channels, so we descend `news`. Returns the bind count of the first
-/// receive with ≥ 1 bind found in pre-order.
+/// Locate the single multi-bind join receive with an explicit scope worklist.
+/// The join body lives under the top-level `new` that allocates its channels.
 fn join_bind_count(par: &Par) -> Option<usize> {
-    if let Some(recv) = par
-        .decode_occurrences::<Receive>()
-        .into_iter()
-        .find(|r| !r.binds.is_empty())
-    {
-        return Some(recv.binds.len());
-    }
-    for new in par.decode_occurrences::<New>() {
-        if let Some(body) = &new.p {
-            if let Some(n) = join_bind_count(body) {
-                return Some(n);
+    let mut work = vec![par.clone()];
+    while let Some(current) = work.pop() {
+        if let Some(recv) = current
+            .decode_occurrences::<Receive>()
+            .into_iter()
+            .find(|receive| !receive.binds.is_empty())
+        {
+            return Some(recv.binds.len());
+        }
+        for new in current.decode_occurrences::<New>().into_iter().rev() {
+            if let Some(body) = new.p {
+                work.push(body);
             }
         }
     }
@@ -322,14 +287,20 @@ fn join_bind_count(par: &Par) -> Option<usize> {
 /// Count the receive NODES (not binds) reachable, descending `news`. An N-ary
 /// join is ONE node regardless of arity.
 fn receive_node_count(par: &Par) -> usize {
-    let mut n = usize::try_from(par.family_cardinality::<Receive>())
-        .expect("resident receive cardinality fits usize");
-    for new in par.decode_occurrences::<New>() {
-        if let Some(body) = &new.p {
-            n += receive_node_count(body);
+    let mut count = 0usize;
+    let mut work = vec![par.clone()];
+    while let Some(current) = work.pop() {
+        count = count.saturating_add(
+            usize::try_from(current.family_cardinality::<Receive>())
+                .expect("resident receive cardinality fits usize"),
+        );
+        for new in current.decode_occurrences::<New>() {
+            if let Some(body) = new.p {
+                work.push(body);
+            }
         }
     }
-    n
+    count
 }
 
 /// A 2-clause join fires and bills exactly ONE receive COMM for the join (plus
