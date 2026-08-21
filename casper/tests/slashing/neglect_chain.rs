@@ -1,6 +1,6 @@
 // Three-level neglect chain: only level-1 neglecters are slashable.
 //
-// Maps to: docs/theory/slashing/slashing-specification.md §14, T-6
+// Maps to: docs/casper/theory/slashing/slashing-specification.md §14, T-6
 // (neglect detection bounded to one hop).
 // Reference: design/08-two-level-and-collusion.md.
 //

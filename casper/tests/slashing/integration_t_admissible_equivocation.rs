@@ -2,7 +2,7 @@
 // `AdmissibleEquivocation` arm of
 // `MultiParentCasperImpl::handle_invalid_block`.
 //
-// Reference: docs/theory/slashing/design/14-test-plan.md §14.3.5,
+// Reference: docs/casper/theory/slashing/design/14-test-plan.md §14.3.5,
 // design/09-bug-fixes-and-rationale.md §9.1.
 // Plan-agent designed Track 2 / equivocation-construction recipe.
 //

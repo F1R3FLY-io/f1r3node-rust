@@ -1,6 +1,6 @@
 // References below to `formal/{rocq,tlaplus,sage}/slashing/`,
 // `FINDINGS.md`, `slashing-search-horizon.{md,sh}`, `slashing-traceability.md`,
-// `docs/theory/slashing/methodology/`, and `.mutants.toml` point at
+// `docs/casper/theory/slashing/methodology/`, and `.mutants.toml` point at
 // audit-corpus artifacts preserved on the `analysis/slashing` branch.
 //
 // Property-based test for T-15 (bisimilarity) under randomized
@@ -8,7 +8,7 @@
 //
 // Theorem: T-15 (`bisimulation`,
 // formal/rocq/slashing/theories/Bisimulation.v).
-// Reference: docs/theory/slashing/slashing-specification.md §10
+// Reference: docs/casper/theory/slashing/slashing-specification.md §10
 // (Theorem 10.1), design/10-bisimilarity.md.
 //
 // Property: for *any* sequence of harness operations, the harness's

@@ -1,6 +1,6 @@
 //! `slash_lifecycle_trace` — end-to-end fuzz of the slashing lifecycle.
 //!
-//! Reference: docs/theory/slashing/slashing-specification.md §6 (proposing),
+//! Reference: docs/casper/theory/slashing/slashing-specification.md §6 (proposing),
 //! §9.8 (authorization).
 //!
 //! Two phases per iteration:

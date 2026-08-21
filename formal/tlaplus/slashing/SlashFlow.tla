@@ -11,7 +11,7 @@
 (*   - offender's latest message is filtered from fork-choice               *)
 (*   - eventually slash fires given a fair proposer schedule                *)
 (*                                                                          *)
-(* Reference: docs/theory/slashing/slashing-verification.md §6, §7.         *)
+(* Reference: docs/casper/theory/slashing/slashing-verification.md §6, §7.         *)
 (****************************************************************************)
 
 EXTENDS Integers, Sequences, FiniteSets, TLC

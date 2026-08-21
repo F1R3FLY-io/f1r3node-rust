@@ -1,13 +1,13 @@
 // References below to `formal/{rocq,tlaplus,sage}/slashing/`,
 // `FINDINGS.md`, `slashing-search-horizon.{md,sh}`, `slashing-traceability.md`,
-// `docs/theory/slashing/methodology/`, and `.mutants.toml` point at
+// `docs/casper/theory/slashing/methodology/`, and `.mutants.toml` point at
 // audit-corpus artifacts preserved on the `analysis/slashing` branch.
 //
 // Property-based test for T-9.1 (Ignorable equivocation safety).
 //
 // Theorem: T-9.1 (`t_9_1_ignorable_recorded`,
 // formal/rocq/slashing/theories/BugFixIgnorable.v).
-// Reference: docs/theory/slashing/design/09-bug-fixes-and-rationale.md §9.1.
+// Reference: docs/casper/theory/slashing/design/09-bug-fixes-and-rationale.md §9.1.
 //
 // Property: every equivocation classified as Ignorable produces
 // an EquivocationRecord post-fix #1. This is the closure of the

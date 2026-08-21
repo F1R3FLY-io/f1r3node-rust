@@ -1,6 +1,6 @@
 // UC-54 — Combined record-store invariants (T-4 + T-5 example).
 //
-// Maps to: docs/theory/slashing/slashing-specification.md §12 UC-54.
+// Maps to: docs/casper/theory/slashing/slashing-specification.md §12 UC-54.
 // Theorems: T-4 (record uniqueness), T-5 (witness monotonicity).
 // Reference: design/05-storage-and-records.md.
 //

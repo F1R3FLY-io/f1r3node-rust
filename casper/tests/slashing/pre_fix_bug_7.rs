@@ -1,12 +1,12 @@
 // References below to `formal/{rocq,tlaplus,sage}/slashing/`,
 // `FINDINGS.md`, `slashing-search-horizon.{md,sh}`, `slashing-traceability.md`,
-// `docs/theory/slashing/methodology/`, and `.mutants.toml` point at
+// `docs/casper/theory/slashing/methodology/`, and `.mutants.toml` point at
 // audit-corpus artifacts preserved on the `analysis/slashing` branch.
 //
 // Pre-fix regression backstop for bug #7 (off-by-one seq-number
 // density assumption).
 //
-// Reference: docs/theory/slashing/design/09-bug-fixes-and-rationale.md §9.8.
+// Reference: docs/casper/theory/slashing/design/09-bug-fixes-and-rationale.md §9.8.
 // Out-of-band approach: this asserts the post-fix invariant — an
 // equivocation by a validator who has *skipped* a sequence number
 // is still detected. Pre-fix, `add_equivocation_child` used

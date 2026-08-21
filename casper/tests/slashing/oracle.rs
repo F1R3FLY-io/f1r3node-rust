@@ -1,11 +1,11 @@
 // References below to `formal/{rocq,tlaplus,sage}/slashing/`,
 // `FINDINGS.md`, `slashing-search-horizon.{md,sh}`, `slashing-traceability.md`,
-// `docs/theory/slashing/methodology/`, and `.mutants.toml` point at
+// `docs/casper/theory/slashing/methodology/`, and `.mutants.toml` point at
 // audit-corpus artifacts preserved on the `analysis/slashing` branch.
 //
 // Hand-translated Rust mirror of the Rocq slashing semantics.
 //
-// Reference: docs/theory/slashing/design/14-test-plan.md §14.2.3.
+// Reference: docs/casper/theory/slashing/design/14-test-plan.md §14.2.3.
 // Source theories:
 //   • formal/rocq/slashing/theories/EquivocationDetector.v
 //   • formal/rocq/slashing/theories/PoSContract.v
