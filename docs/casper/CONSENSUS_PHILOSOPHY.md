@@ -40,6 +40,22 @@ Four facts about the implementation shape every remedy. Function names are the s
 3. **The merge base has a deterministic fallback rule.** The base is the main parent. When the state of the main parent does not hold the settled content of the floor, the base falls back to the floor (`compute_parents_post_state`). Validators recompute the choice from the recorded justifications of the block.
 4. **Per-scope inclusion leadership exists.** `deploy_inclusion_progress` elects a deterministic leader with a lease-based liveness escape. The mechanism runs only on the proposer side. The recovery path deliberately dropped leader election in favor of owner-scoped buffers plus the floor-paced retry gate.
 
+### 4.1 Adversarial surface of the phase-1 mechanism
+
+Phase 1 ranks a chain by its prior on-DAG losses. The user history that produces those losses is user-influenceable, so the mechanism needs its own adversarial analysis. Principle P4 is untouched: fork choice does not read the count. The count reaches only the three merge adjudication sites.
+
+**Cost of a manufactured loss.** A rejection record exists only when a merge rejects a deploy that conflicts with a winner on the same key. One loss therefore needs one charged winner on that key. The merge drops the execution of the rejected deploy, and drops its phlo charge with it. The attacker pays for the winner, not for the loser. The cheapest attack is one user who sends two conflicting deploys to two proposers, which produce sibling blocks. Each such round costs the attacker one charged deploy and yields one recorded loss.
+
+**Bound on the delay a lead buys.** Ranks compare the count, and the loser of every merge gains one loss. A victim with no history that meets an attacker with a lead of N loses at most N rounds on the count, plus the one tie round that the content ordering can already cost it. After that the victim has the higher count and wins. The attacker can extend the delay only with fresh losses, at one charged winner each. The lead is consumed one merge at a time, never amplified. The unit test `manufactured_loss_lead_delays_victim_by_exactly_lead_rounds` proves this bound.
+
+**Window bound.** A merge counts only the kept records that the scope and the base-lineage window hold, down to the validity-window edge. Records that are older than `deploy_lifespan` do not count. An attacker cannot bank losses ahead of time and spend them later.
+
+**Same-key scope.** The count is a tie-break among chains that conflict. A lead on one key gives no priority on any other key, and no priority against a non-conflicting chain.
+
+**Determinism requirement.** The count is consensus input, because it shapes the rejection set that peers validate with `InvalidRejectedDeploy`. Every validator must derive the count from the identical block set. A block that the node does not hold is a `BlockNotHeld` deferral, never an empty history. The unit test `scope_counts_fail_on_missing_visible_block` proves the refusal.
+
+**Residual exposure and escalation.** A well-funded attacker can delay every honest retry on one key by a constant number of merges at a linear cost in charged deploys. This is a bounded griefing surface, not a starvation surface, and it is cheaper to observe than to exploit. If soak evidence shows sustained lead farming, the ladder escalates in this order: saturate the effective lead at a small constant, then count only records from distinct proposers. Both changes are validation rules and need a lockstep upgrade (Principle P5).
+
 ## 5. The remedy ladder for base-bias starvation
 
 The options are ordered by guarantee strength and by risk. The axes are fairness strength, consensus-layer stability, and coordination cost. Coordination cost separates node-local policy from a lockstep upgrade.

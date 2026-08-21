@@ -558,12 +558,19 @@ pub fn prior_rejection_counts<'a>(
     records: impl IntoIterator<Item = &'a RejectedDeploy>,
 ) -> HashMap<Bytes, u64> {
     let mut counts: HashMap<Bytes, u64> = HashMap::new();
+    count_kept_records(&mut counts, records.into_iter().cloned());
+    counts
+}
+
+fn count_kept_records(
+    counts: &mut HashMap<Bytes, u64>,
+    records: impl IntoIterator<Item = RejectedDeploy>,
+) {
     for record in records {
         if !record.duplicate {
-            *counts.entry(record.sig.clone()).or_insert(0) += 1;
+            *counts.entry(record.sig).or_insert(0) += 1;
         }
     }
-    counts
 }
 
 /// Derive the per-sig prior-rejection counts a merge may use: the kept
@@ -572,15 +579,21 @@ pub fn prior_rejection_counts<'a>(
 /// window the scope builds on. The base-lineage half is load-bearing: the
 /// retry gate opens only after a rejection settles below the floor, so at
 /// retry time the record lives on the base's lineage, not in the scope.
+///
+/// Records are counted as each block's records load, so the whole window's
+/// record set is never held at once. A block the caller cannot supply is an
+/// error, never an empty history: the counts feed the rejection set that
+/// peers validate (`InvalidRejectedDeploy`), so every validator must derive
+/// them from the identical block set or refuse to derive them at all.
 pub fn scope_prior_rejection_counts(
     visible_blocks: impl IntoIterator<Item = BlockHash>,
     records_of: impl Fn(&BlockHash) -> Result<Vec<RejectedDeploy>, CasperError>,
 ) -> Result<HashMap<Bytes, u64>, CasperError> {
-    let mut all_records: Vec<RejectedDeploy> = Vec::new();
+    let mut counts: HashMap<Bytes, u64> = HashMap::new();
     for block in visible_blocks {
-        all_records.extend(records_of(&block)?);
+        count_kept_records(&mut counts, records_of(&block)?);
     }
-    Ok(prior_rejection_counts(all_records.iter()))
+    Ok(counts)
 }
 
 /// Stamp each chain with the sum of its deploys' prior-rejection counts.
@@ -941,7 +954,12 @@ pub fn merge(
             n_actual_chains = actual_set_vec.len(), n_late_chains = late_set_vec.len());
     }
 
+    // Both sets are stamped: `resolve_conflicts` rejects every late chain
+    // outright today, but it receives both sequences and ranks on
+    // `prior_rejections`, so a late chain must never reach a loss-aware
+    // comparison carrying the constructor's zero instead of its record.
     stamp_prior_rejections(&mut actual_set_vec, prior_rejection_counts);
+    stamp_prior_rejections(&mut late_set_vec, prior_rejection_counts);
 
     // Accumulator for deploys that lose their chain via dedup but have no
     // fresher copy elsewhere. These are treated the same as conflict-rejected
@@ -2634,6 +2652,140 @@ mod tests {
             counts.get(&sig).copied(),
             Some(2),
             "one kept record per visible block must count; the duplicate must not"
+        );
+    }
+
+    /// Issue #294 (B6): a visible block this node cannot supply must fail
+    /// the derivation, not count as an empty history. The counts shape the
+    /// rejection set peers validate, so a node that silently derived them
+    /// from fewer blocks would propose (or reject) a different rejection
+    /// set than every peer holding the full window.
+    #[test]
+    fn scope_counts_fail_on_missing_visible_block() {
+        let held: BlockHash = Bytes::from(vec![1u8; 32]);
+        let missing: BlockHash = Bytes::from(vec![2u8; 32]);
+        let records_of = |hash: &BlockHash| -> Result<Vec<RejectedDeploy>, CasperError> {
+            if *hash == held {
+                Ok(Vec::new())
+            } else {
+                Err(CasperError::BlockNotHeld(hash.clone()))
+            }
+        };
+
+        let result = scope_prior_rejection_counts(vec![held.clone(), missing.clone()], records_of);
+
+        match result {
+            Err(CasperError::BlockNotHeld(hash)) => assert_eq!(hash, missing),
+            other => panic!(
+                "a missing visible block must surface as BlockNotHeld, got {:?}",
+                other.map(|c| c.len())
+            ),
+        }
+    }
+
+    /// Issue #294 (B7): the adversarial bound of phase 1. A contender that
+    /// arrives with a manufactured lead of N prior losses outranks a fresh
+    /// victim on the same key — but only for N rounds. Every round the
+    /// victim loses it gains one loss of its own, so the lead is consumed
+    /// one merge at a time. With the content ordering also against the
+    /// victim (the worst case, and the one round a lead-less rival already
+    /// costs it), the victim lands at round N + 2: the lead buys exactly N
+    /// extra merges of delay. The attacker cannot extend the delay without
+    /// manufacturing fresh losses, each of which costs a charged winner on
+    /// the same key.
+    #[test]
+    fn manufactured_loss_lead_delays_victim_by_exactly_lead_rounds() {
+        let channel = Blake2b256Hash::from_bytes(vec![0x1b; 32]);
+        // Lex-smaller id: the content ordering favors the attacker in a tie.
+        let attacker_id: u8 = 0x01;
+        let victim_id: u8 = 0x02;
+        let lead: u64 = 3;
+        let mut scope_records: Vec<RejectedDeploy> = (0..lead)
+            .map(|i| RejectedDeploy {
+                sig: Bytes::from(vec![attacker_id]),
+                duplicate: false,
+                carrier: Bytes::from(vec![0x80 + i as u8; 32]),
+            })
+            .collect();
+        let mut victim_landed_round: Option<u64> = None;
+
+        for round in 1..=(lead + 2) {
+            let mut contenders = [
+                chain(
+                    attacker_id,
+                    10,
+                    1,
+                    datum_change(channel.clone(), Vec::new(), vec![encoded_number(
+                        &channel, 0,
+                    )]),
+                ),
+                chain(
+                    victim_id,
+                    10,
+                    1,
+                    datum_change(channel.clone(), Vec::new(), vec![encoded_number(
+                        &channel, 0,
+                    )]),
+                ),
+            ];
+            let counts = prior_rejection_counts(scope_records.iter());
+            stamp_prior_rejections(&mut contenders, &counts);
+            let [attacker, victim] = contenders;
+
+            let mut resolved = conflict_set_merger::ResolvedConflicts {
+                to_merge: vec![
+                    HashableSet(HashSet::from([attacker.clone()])),
+                    HashableSet(HashSet::from([victim.clone()])),
+                ],
+                rejected: HashableSet(HashSet::new()),
+                late_set_size: 0,
+                actual_set_size: 2,
+                branches_count: 2,
+                rejected_as_dependents_count: 0,
+                optimal_rejection_count: 0,
+                conflict_map_conflicts_count: 0,
+                rejection_options_count: 0,
+                branches_time: std::time::Duration::ZERO,
+                conflicts_map_time: std::time::Duration::ZERO,
+                rejection_options_time: std::time::Duration::ZERO,
+            };
+            let rejected = split_overfilled_single_value_cells(
+                &mut resolved,
+                &|_, _| false,
+                &|_| BTreeMap::new(),
+                &|_| Ok(Vec::new()),
+                &|_| Ok(Vec::new()),
+                &HashSet::new(),
+            )
+            .expect("split overfilled cells");
+
+            if !rejected.0.contains(&victim) {
+                victim_landed_round = Some(round);
+                break;
+            }
+            assert!(
+                round <= lead + 1,
+                "the victim must lose no more than {} rounds against a lead of {}",
+                lead + 1,
+                lead
+            );
+            // The attacker's win is charged and lands; only the victim's loss
+            // is recorded. The attacker re-enters the next round with its
+            // original lead (a fresh deploy on the same key, same sig
+            // history).
+            scope_records.push(RejectedDeploy {
+                sig: Bytes::from(vec![victim_id]),
+                duplicate: false,
+                carrier: Bytes::from(vec![round as u8; 32]),
+            });
+        }
+
+        assert_eq!(
+            victim_landed_round,
+            Some(lead + 2),
+            "a lead of {} must buy exactly {} extra merges of delay over the one tie round",
+            lead,
+            lead
         );
     }
 

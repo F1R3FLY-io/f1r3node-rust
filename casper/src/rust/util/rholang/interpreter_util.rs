@@ -1678,31 +1678,37 @@ pub async fn compute_parents_post_state(
             // that must raise the retry's priority is no longer in the scope.
             // The walk bound is the same window edge the settled-sig probe
             // uses: records for window-closed deploys cannot matter.
+            //
+            // The counts are consensus input: they shape the rejection set
+            // peers check with `InvalidRejectedDeploy`. A block this node
+            // does not hold is therefore `BlockNotHeld` (deferral), never a
+            // silently shorter walk or an empty record list — two nodes with
+            // different block availability must not derive different counts
+            // from the same parents. The walk reads DAG metadata only; block
+            // bodies load once, inside `records_of`.
             let prior_rejection_counts = {
                 let mut count_visible: HashSet<BlockHash> = visible_blocks
                     .iter()
                     .chain(base_lineage_blocks.iter())
                     .cloned()
                     .collect();
-                let mut cursor = scope_anchor_hash.clone();
-                loop {
-                    let Some(block) = block_store.get(&cursor)? else {
-                        break;
-                    };
-                    if crate::rust::util::proto_util::block_number(&block) < settled_walk_bound {
+                let mut cursor = Some(scope_anchor_hash.clone());
+                while let Some(hash) = cursor {
+                    let number = s
+                        .dag
+                        .block_number_unsafe(&hash)
+                        .map_err(CasperError::from)?;
+                    if number < settled_walk_bound {
                         break;
                     }
-                    count_visible.insert(cursor.clone());
-                    match crate::rust::util::proto_util::parent_hashes(&block).first() {
-                        Some(parent) => cursor = parent.clone(),
-                        None => break,
-                    }
+                    cursor = s.dag.main_parent(&hash);
+                    count_visible.insert(hash);
                 }
                 dag_merger::scope_prior_rejection_counts(count_visible, |hash: &BlockHash| {
-                    Ok(block_store
+                    block_store
                         .get(hash)?
                         .map(|b| b.body.rejected_deploys)
-                        .unwrap_or_default())
+                        .ok_or_else(|| CasperError::BlockNotHeld(hash.clone()))
                 })?
             };
             let merger_result = dag_merger::merge(
