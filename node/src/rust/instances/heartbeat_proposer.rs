@@ -477,7 +477,6 @@ async fn check_lfb_and_propose(
         .max()
         .unwrap_or(lfb_timestamp_ms);
     let frontier_age_ms = now.saturating_sub(frontier_latest_timestamp_ms);
-    let frontier_is_stale = frontier_age_ms > config.max_lfb_age.as_millis();
     let last_finalized_block_number = snapshot
         .dag
         .lookup(&snapshot.last_finalized_block)?
@@ -570,7 +569,6 @@ async fn check_lfb_and_propose(
 
     let lane_inputs = LaneInputs {
         lfb_is_stale,
-        frontier_is_stale,
         lfb_lag_blocks,
         has_pending_deploys,
         has_new_parents,
@@ -594,8 +592,6 @@ async fn check_lfb_and_propose(
         pending_deploy_backstop_due,
         frontier_follow_due,
         stale_lfb_recovery_due,
-        stale_lfb_leader_recovery_due,
-        high_lag_recovery_due,
         convergence_recovery_selected,
         should_propose,
         can_propose_pending_deploys_while_ahead,
@@ -603,9 +599,6 @@ async fn check_lfb_and_propose(
         can_follow_frontier_without_pending_deploys,
         allow_cooldown_override_for_deploy_recovery,
         allow_frontier_follow_while_ahead_for_deploy_parent,
-        stale_recovery_window_open,
-        lag_recovery_threshold,
-        moderate_lag_recovery_threshold,
     } = decide_lanes(&lane_inputs);
 
     if should_propose {
@@ -641,29 +634,11 @@ async fn check_lfb_and_propose(
                 deploy_grace_active,
                 stale_recovery_min_interval_ms
             )
-        } else if stale_lfb_leader_recovery_due {
-            format!(
-                "LFB is stale ({}ms) with lag={}; regular stale recovery is throttled, selected recovery leader proposing (frontier_stale={}, moderate_lag_threshold={}, deploy_grace_active={}, stale_recovery_interval_ms={})",
-                time_since_lfb,
-                lfb_lag_blocks,
-                frontier_is_stale,
-                moderate_lag_recovery_threshold,
-                deploy_grace_active,
-                stale_recovery_min_interval_ms
-            )
         } else if convergence_recovery_selected {
             format!(
                 "convergence recovery: finality stalled for {}ms at lag={}; selected recovery leader proposing one multi-parent convergence block",
                 finality_progress.stalled_for.as_millis(),
                 lfb_lag_blocks
-            )
-        } else if high_lag_recovery_due {
-            format!(
-                "Finality lag recovery: lag={} exceeds threshold={} and this validator is selected recovery leader (deploy_grace_active={}, stale_recovery_interval_ms={})",
-                lfb_lag_blocks,
-                lag_recovery_threshold,
-                deploy_grace_active,
-                stale_recovery_min_interval_ms
             )
         } else if self_recently_proposed && has_new_parents && !can_chase_frontier_while_ahead {
             format!(
@@ -800,41 +775,13 @@ async fn check_lfb_and_propose(
                     config.max_lfb_age.as_millis()
                 )
             }
-        } else if lfb_is_stale
-            && !has_pending_deploys
-            && lfb_lag_blocks > 0
-            && !lag_recovery_leader
-            && !stale_lfb_recovery_due
-        {
+        } else if lfb_is_stale && !stale_recovery_interval_elapsed {
             format!(
-                "LFB is stale with lag {}, regular stale recovery is throttled, waiting for selected recovery leader",
-                lfb_lag_blocks
-            )
-        } else if lfb_is_stale
-            && !has_pending_deploys
-            && !frontier_is_stale
-            && lfb_lag_blocks <= moderate_lag_recovery_threshold
-            && !stale_lfb_recovery_due
-        {
-            format!(
-                "LFB is stale ({}ms) but frontier is active ({}ms old) and lag={} <= moderate threshold {}; skipping leader recovery",
-                time_since_lfb, frontier_age_ms, lfb_lag_blocks, moderate_lag_recovery_threshold
-            )
-        } else if lfb_is_stale && !stale_recovery_window_open {
-            format!(
-                "LFB is stale but stale-recovery cadence gate is active: frontier_age_ms={}, min_interval_ms={}, user_deploy_parent={}, deploy_grace_active={}",
-                frontier_age_ms,
+                "LFB is stale but the stale-recovery interval has not elapsed (own-proposal or LFB age below min_interval_ms={}): frontier_age_ms={}, user_deploy_parent={}, deploy_grace_active={}",
                 stale_recovery_min_interval_ms,
+                frontier_age_ms,
                 has_new_parent_with_user_deploys,
                 deploy_grace_active
-            )
-        } else if !has_pending_deploys
-            && lfb_lag_blocks > lag_recovery_threshold
-            && !lag_recovery_leader
-        {
-            format!(
-                "finality lag {} exceeds threshold {}, waiting for selected recovery leader",
-                lfb_lag_blocks, lag_recovery_threshold
             )
         } else if self_recently_proposed && has_new_parents && !can_chase_frontier_while_ahead {
             format!(
@@ -974,7 +921,6 @@ fn inspect_parent_updates(
 /// directly (see the `lane_decision_rows` tests).
 struct LaneInputs {
     lfb_is_stale: bool,
-    frontier_is_stale: bool,
     lfb_lag_blocks: i64,
     has_pending_deploys: bool,
     has_new_parents: bool,
@@ -1005,8 +951,6 @@ struct LaneDecision {
     pending_deploy_backstop_due: bool,
     frontier_follow_due: bool,
     stale_lfb_recovery_due: bool,
-    stale_lfb_leader_recovery_due: bool,
-    high_lag_recovery_due: bool,
     convergence_recovery_selected: bool,
     should_propose: bool,
     can_propose_pending_deploys_while_ahead: bool,
@@ -1014,9 +958,6 @@ struct LaneDecision {
     can_follow_frontier_without_pending_deploys: bool,
     allow_cooldown_override_for_deploy_recovery: bool,
     allow_frontier_follow_while_ahead_for_deploy_parent: bool,
-    stale_recovery_window_open: bool,
-    lag_recovery_threshold: i64,
-    moderate_lag_recovery_threshold: i64,
 }
 
 /// Proposal logic:
@@ -1026,15 +967,13 @@ struct LaneDecision {
 /// - Keep frontier moving on peer progress:
 ///   - when new parents are observed, allow follow-up propose even before LFB turns stale;
 ///   - when already ahead, guard this with the frontier chase lag cap.
-/// - For stale-LFB recovery:
-///   - if we are not ahead of finalized, propose;
-///   - if we are ahead and lag is still small, allow frontier-chasing on new parents;
-///   - if frontier-chasing is throttled, allow a deterministic leader-only fallback when
-///     LFB is stale and lag is non-zero so low-lag dead zones do not stall progress;
-///   - if lag is already high, keep explicit leader recovery.
+/// - For stale-LFB recovery: EVERY bonded validator proposes, paced only by
+///   the temporal window (`stale-recovery-min-interval` on the LFB's age and
+///   its own silence) — certification needs mutual witnessing, so recovery
+///   is never gated on a leader or on height relations.
+/// - The convergence one-shot stays leader-only and once per finalized block.
 fn decide_lanes(i: &LaneInputs) -> LaneDecision {
     let deploy_recovery_hint = i.has_pending_deploys || i.has_new_parent_with_user_deploys;
-    let stale_recovery_window_open = i.stale_recovery_interval_elapsed || deploy_recovery_hint;
     let can_propose_pending_deploys_while_ahead = if i.deploy_grace_active {
         i.lfb_lag_blocks <= i.deploy_recovery_max_lag
     } else {
@@ -1070,27 +1009,23 @@ fn decide_lanes(i: &LaneInputs) -> LaneDecision {
         && (!i.self_recently_proposed
             || can_chase_frontier_while_ahead
             || allow_frontier_follow_while_ahead_for_deploy_parent);
-    let stale_lfb_recovery_due = i.lfb_is_stale
-        && stale_recovery_window_open
-        && !i.empty_frontier_backpressure
-        && (!i.self_recently_proposed || can_chase_frontier_while_ahead || i.deploy_grace_active);
-    let lag_recovery_threshold = i.pending_deploy_max_lag;
-    let moderate_lag_recovery_threshold = std::cmp::max(1, lag_recovery_threshold / 2);
-    let stale_lfb_leader_recovery_due = i.lfb_is_stale
-        && (i.frontier_is_stale || i.lfb_lag_blocks > moderate_lag_recovery_threshold)
-        && !i.has_pending_deploys
-        && i.lfb_lag_blocks > 0
-        && i.lag_recovery_leader
-        && stale_recovery_window_open
-        && !i.empty_frontier_backpressure
-        && (!i.self_proposed_too_recently || i.deploy_grace_active)
-        && !stale_lfb_recovery_due;
-    let high_lag_recovery_due = !i.has_pending_deploys
-        && i.lfb_lag_blocks > lag_recovery_threshold
-        && i.lag_recovery_leader
-        && stale_recovery_window_open
-        && !i.empty_frontier_backpressure
-        && (!i.self_proposed_too_recently || i.deploy_grace_active);
+    // The stale-recovery lane is open to EVERY bonded validator, paced
+    // solely by the temporal window (`stale-recovery-min-interval` on both
+    // the LFB's age and this validator's own silence). There is no height
+    // condition here: "my latest block is above the LFB" is permanently
+    // true for every validator during a finality stall, so a height-keyed
+    // exemption silences the whole committee exactly when mutual witnessing
+    // is the only way the certification clique can re-form — the
+    // "waiting for selected recovery leader" silence in every CI stall.
+    // (The same trap is documented for the backpressure exemption above.)
+    // Deploy-driven states do not need this lane's hint escape either: the
+    // pending and frontier-follow lanes own those, so empty recovery blocks
+    // key on the interval alone. The former leader-only stale/high-lag
+    // lanes are gone with it: with the general lane open on the temporal
+    // window, their conditions were a strict subset and could never fire.
+    // Leader selection remains for the convergence one-shot only.
+    let stale_lfb_recovery_due =
+        i.lfb_is_stale && i.stale_recovery_interval_elapsed && !i.empty_frontier_backpressure;
     // Convergence recovery: when the LFB is stale and we have unjustified peer blocks,
     // propose a convergence block that references all known tips. This breaks the deadlock
     // where validators diverge into independent forks and normal throttling prevents any
@@ -1100,9 +1035,7 @@ fn decide_lanes(i: &LaneInputs) -> LaneDecision {
     let routine_proposal_due = pending_deploys_due
         || pending_deploy_backstop_due
         || frontier_follow_due
-        || stale_lfb_recovery_due
-        || stale_lfb_leader_recovery_due
-        || high_lag_recovery_due;
+        || stale_lfb_recovery_due;
     let convergence_recovery_selected = convergence_recovery_due && !routine_proposal_due;
     let should_propose = routine_proposal_due || convergence_recovery_selected;
     LaneDecision {
@@ -1110,8 +1043,6 @@ fn decide_lanes(i: &LaneInputs) -> LaneDecision {
         pending_deploy_backstop_due,
         frontier_follow_due,
         stale_lfb_recovery_due,
-        stale_lfb_leader_recovery_due,
-        high_lag_recovery_due,
         convergence_recovery_selected,
         should_propose,
         can_propose_pending_deploys_while_ahead,
@@ -1119,9 +1050,6 @@ fn decide_lanes(i: &LaneInputs) -> LaneDecision {
         can_follow_frontier_without_pending_deploys,
         allow_cooldown_override_for_deploy_recovery,
         allow_frontier_follow_while_ahead_for_deploy_parent,
-        stale_recovery_window_open,
-        lag_recovery_threshold,
-        moderate_lag_recovery_threshold,
     }
 }
 
@@ -2276,7 +2204,6 @@ mod tests {
         fn baseline() -> LaneInputs {
             LaneInputs {
                 lfb_is_stale: false,
-                frontier_is_stale: false,
                 lfb_lag_blocks: 0,
                 has_pending_deploys: false,
                 has_new_parents: false,
@@ -2421,7 +2348,6 @@ mod tests {
         fn the_stalled_leader_still_proposes() {
             let d = decide_lanes(&LaneInputs {
                 lfb_is_stale: true,
-                frontier_is_stale: true,
                 stale_recovery_interval_elapsed: true,
                 self_recently_proposed: true,
                 lag_recovery_leader: true,

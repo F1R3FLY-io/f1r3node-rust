@@ -303,8 +303,8 @@ mod heartbeat_conf_hocon_tests {
             "#,
         );
 
-        assert_eq!(cfg.self_propose_cooldown, Duration::from_secs(15));
-        assert_eq!(cfg.stale_recovery_min_interval, Duration::from_secs(12));
+        assert_eq!(cfg.self_propose_cooldown, Duration::from_secs(3));
+        assert_eq!(cfg.stale_recovery_min_interval, Duration::from_secs(3));
         assert_eq!(cfg.deploy_finalization_grace, Duration::from_secs(25));
         assert_eq!(cfg.advanced, HeartbeatAdvancedConf::default());
     }
@@ -324,7 +324,7 @@ mod heartbeat_conf_hocon_tests {
             "#,
         );
 
-        assert_eq!(cfg.advanced.frontier_chase_max_lag, 0);
+        assert_eq!(cfg.advanced.frontier_chase_max_lag, 20);
         assert_eq!(cfg.advanced.pending_deploy_max_lag, 7);
         assert_eq!(cfg.advanced.deploy_recovery_max_lag, 64);
         assert_eq!(cfg.advanced.empty_frontier_max_unfinalized_blocks, 64);
@@ -397,5 +397,61 @@ mod embedded_defaults_tests {
             cfg.api_server.exploratory_deploy_execution_timeout,
             Duration::from_secs(15)
         );
+    }
+
+    /// The full heartbeat block, pinned twice over: the SHIPPED defaults.conf
+    /// values, and the serde fallbacks a sparse operator conf (omitting every
+    /// optional heartbeat key) lands on. The two must be identical — a
+    /// deployment that copies less of the file must not get different
+    /// behavior than every tested one (self-propose-cooldown once shipped 3 s
+    /// while the code fallback was 15 s, and frontier-chase-max-lag shipped
+    /// 20 against a fallback of 0, the configuration the file itself warns
+    /// stops validators contributing under load).
+    #[test]
+    fn the_heartbeat_block_ships_pinned_values_and_matching_fallbacks() {
+        let cfg: NodeConf = hocon::HoconLoader::new()
+            .load_str(EMBEDDED_DEFAULTS)
+            .expect("load defaults.conf")
+            .resolve()
+            .expect("deserialize NodeConf");
+        let shipped = &cfg.casper.heartbeat_conf;
+
+        assert!(shipped.enabled);
+        assert_eq!(shipped.check_interval, Duration::from_secs(5));
+        assert_eq!(shipped.max_lfb_age, Duration::from_secs(5));
+        assert_eq!(shipped.self_propose_cooldown, Duration::from_secs(3));
+        assert_eq!(shipped.stale_recovery_min_interval, Duration::from_secs(3));
+        assert_eq!(shipped.finality_progress_timeout, Duration::from_secs(30));
+        assert_eq!(shipped.deploy_finalization_grace, Duration::from_secs(25));
+        assert_eq!(shipped.advanced.frontier_chase_max_lag, 20);
+        assert_eq!(shipped.advanced.pending_deploy_max_lag, 20);
+        assert_eq!(shipped.advanced.deploy_recovery_max_lag, 64);
+        assert_eq!(shipped.advanced.empty_frontier_max_unfinalized_blocks, 64);
+
+        let sparse: casper::rust::casper_conf::HeartbeatConf = hocon::HoconLoader::new()
+            .load_str(
+                r#"
+                enabled = true
+                check-interval = 5 seconds
+                max-lfb-age = 5 seconds
+                "#,
+            )
+            .expect("load sparse heartbeat conf")
+            .resolve()
+            .expect("deserialize HeartbeatConf");
+        assert_eq!(sparse.self_propose_cooldown, shipped.self_propose_cooldown);
+        assert_eq!(
+            sparse.stale_recovery_min_interval,
+            shipped.stale_recovery_min_interval
+        );
+        assert_eq!(
+            sparse.finality_progress_timeout,
+            shipped.finality_progress_timeout
+        );
+        assert_eq!(
+            sparse.deploy_finalization_grace,
+            shipped.deploy_finalization_grace
+        );
+        assert_eq!(sparse.advanced, shipped.advanced);
     }
 }
