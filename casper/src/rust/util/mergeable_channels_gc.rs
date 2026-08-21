@@ -116,8 +116,11 @@ pub async fn collect_garbage(
     }
 
     for block_hash in collected {
-        sweep.pending.remove(&block_hash);
-
+        // Removed from `pending` only after storage confirms the attempt —
+        // not before. `sweep` is the caller's own persistent state, not a
+        // local copy: an early return from a `?` below would otherwise leave
+        // this entry evicted from `pending` with its deletion status
+        // unknown, and nothing ever retries it again.
         if let Some(block) = block_store.get(&block_hash)? {
             let deleted = runtime_manager
                 .delete_mergeable_channels(
@@ -135,6 +138,7 @@ pub async fn collect_garbage(
                 );
             }
         }
+        sweep.pending.remove(&block_hash);
     }
 
     if deleted_count > 0 {
