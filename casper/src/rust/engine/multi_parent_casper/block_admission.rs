@@ -331,6 +331,37 @@ pub(crate) async fn admit_has_pending_deploys_in_storage_for_snapshot<
         .map_err(|e| CasperError::RuntimeError(format!("Failed to scan deploy storage: {:?}", e)))
 }
 
+/// C15 / Arch-3: extracted from `Casper::list_pending_deploys` in
+/// `dispatch.rs`. The dispatch module hosts only thin trait delegates; the
+/// read-and-pair body lives with the other deploy-pool helpers here.
+///
+/// Returns a bulk snapshot of pending deploys from both `deploy_storage`
+/// (fresh, not yet proposed) and `rejected_deploy_buffer` (recovering
+/// after a merge conflict). Each entry is paired with an `is_rejected`
+/// flag: `false` for fresh, `true` for the recovery backlog.
+pub(crate) fn admit_list_pending_deploys<T: TransportLayer + Send + Sync>(
+    this: &MultiParentCasperImpl<T>,
+) -> Result<Vec<(Signed<DeployData>, bool)>, CasperError> {
+    let mut out: Vec<(Signed<DeployData>, bool)> = Vec::new();
+
+    let fresh = this.deploy_storage.lock().read_all().map_err(|e| {
+        CasperError::RuntimeError(format!("Failed to read deploy storage: {:?}", e))
+    })?;
+    out.extend(fresh.into_iter().map(|d| (d, false)));
+
+    let rejected = this
+        .rejected_deploy_buffer
+        .lock()
+        .map_err(|e| CasperError::LockError(e.to_string()))?
+        .read_all()
+        .map_err(|e| {
+            CasperError::RuntimeError(format!("Failed to read rejected deploy buffer: {:?}", e))
+        })?;
+    out.extend(rejected.into_iter().map(|d| (d, true)));
+
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::stored_deploy_is_pending_for_snapshot;
