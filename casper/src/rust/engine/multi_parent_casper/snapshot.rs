@@ -615,9 +615,7 @@ mod tests {
     use block_storage::rust::dag::block_dag_key_value_storage::{
         BlockDagKeyValueStorage, InsertMode,
     };
-    use block_storage::rust::key_value_block_store::KeyValueBlockStore;
     use models::rust::block_implicits;
-    use models::rust::casper::protocol::casper_message::ProcessedDeploy;
     use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
 
     use super::{deploy_scope_cache_key_matches, prune_dag_covered_parents};

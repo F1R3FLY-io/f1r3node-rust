@@ -178,9 +178,9 @@ async fn is_finalized_should_return_true_for_ancestors_of_last_finalized_block()
  *
  *           b5
  *             \
- *              b4
+ *              b4 <- last finalized block
  *             /
- *        b7 b3 <- last finalized block
+ *        b7 b3
  *        |    \
  *        b6    b2
  *          \  /
@@ -188,6 +188,10 @@ async fn is_finalized_should_return_true_for_ancestors_of_last_finalized_block()
  *       [n3 n1 n2]
  *           |
  *         genesis
+ *
+ * (The two-sided disagreement walk finalizes one round earlier than the
+ * prior pin at b3: the round's below-target ancestor visits no longer
+ * veto. b5 is the LFB's child; b6/b7 stay non-ancestor rivals.)
  */
 // TODO: Multi-parent merging changes finalization semantics.
 // Scala ignored this in PR #288.
@@ -223,7 +227,7 @@ async fn should_return_false_for_children_uncles_and_cousins_of_last_finalized_b
         .await
         .unwrap();
 
-    let b3 = TestNode::propagate_block_to_one(&mut nodes, 0, 1, &[produce_deploys[2].clone()])
+    let _b3 = TestNode::propagate_block_to_one(&mut nodes, 0, 1, &[produce_deploys[2].clone()])
         .await
         .unwrap();
 
@@ -231,7 +235,7 @@ async fn should_return_false_for_children_uncles_and_cousins_of_last_finalized_b
         .await
         .unwrap();
 
-    let _b5 = TestNode::propagate_block_to_one(&mut nodes, 0, 1, &[produce_deploys[4].clone()])
+    let b5 = TestNode::propagate_block_to_one(&mut nodes, 0, 1, &[produce_deploys[4].clone()])
         .await
         .unwrap();
 
@@ -247,27 +251,27 @@ async fn should_return_false_for_children_uncles_and_cousins_of_last_finalized_b
 
     let last_finalized_block = nodes[0].casper.last_finalized_block().await.unwrap();
 
-    let b3_block_hash = proto_util::hash_string(&b3);
+    let b4_block_hash = proto_util::hash_string(&b4);
     assert_eq!(
         proto_util::hash_string(&last_finalized_block),
-        b3_block_hash,
-        "Expected last finalized block to be b3"
+        b4_block_hash,
+        "Expected last finalized block to be b4"
     );
 
     let engine_cell = create_engine_cell(&nodes[0]).await;
 
     assert!(
-        !is_finalized(&b4, &engine_cell).await,
-        "b4 (child of b3) should not be finalized"
+        !is_finalized(&b5, &engine_cell).await,
+        "b5 (child of b4) should not be finalized"
     );
 
     assert!(
         !is_finalized(&b6, &engine_cell).await,
-        "b6 (uncle of b3) should not be finalized"
+        "b6 (uncle of b4) should not be finalized"
     );
 
     assert!(
         !is_finalized(&b7, &engine_cell).await,
-        "b7 (cousin of b3) should not be finalized"
+        "b7 (cousin of b4) should not be finalized"
     );
 }
