@@ -20,10 +20,18 @@ use crate::rust::transport::f1r3fly_tls_transport::{
     F1r3flyServerTlsTransport, F1r3flyTlsTransportError,
 };
 
-/// Timeout for the server-side TLS handshake after accepting a TCP connection.
-/// Without this, a peer that stalls or goes silent mid-handshake leaks the
-/// accepted socket (and its task) for the lifetime of the process. Mirrors
-/// `DEFAULT_CONNECT_TIMEOUT` in `f1r3fly_connector.rs` on the client side.
+/// Fallback timeout for the server-side TLS handshake after accepting a TCP
+/// connection, used only when a caller does not set `handshake_timeout` on
+/// the builder. Without a timeout at all, a peer that stalls or goes silent
+/// mid-handshake leaks the accepted socket (and its task) for the lifetime
+/// of the process.
+///
+/// `DEFAULT_CONNECT_TIMEOUT` in `f1r3fly_connector.rs` is not what a running
+/// client actually waits — `GrpcTransportClient` connects with the configured
+/// `RPConf::default_timeout` via `new_with_timeout`. Callers should pass that
+/// same value here (`.handshake_timeout(rp_config.default_timeout)`), or the
+/// server can hold a stalled handshake for longer than the peer that opened
+/// it is still waiting.
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Timeout for handing a completed handshake off to the connection channel.
@@ -56,6 +64,7 @@ pub struct F1r3flyServer {
     tcp_nodelay: bool,
     http2_keepalive_interval: Option<Duration>,
     http2_keepalive_timeout: Option<Duration>,
+    handshake_timeout: Duration,
 }
 
 /// Error types for F1r3flyServer
@@ -96,7 +105,20 @@ impl F1r3flyServer {
             tcp_nodelay: true,
             http2_keepalive_interval: Some(Duration::from_secs(30)),
             http2_keepalive_timeout: Some(Duration::from_secs(5)),
+            // Falls back to the constant below; callers with an `RPConf` should
+            // pass `rp_config.default_timeout` so a stalled handshake does not
+            // outlive the timeout the peer that opened it is actually using.
+            handshake_timeout: HANDSHAKE_TIMEOUT,
         })
+    }
+
+    /// Configure how long an in-flight TLS handshake may run before this
+    /// server abandons it. Should match the peer's own connect timeout
+    /// (`RPConf::default_timeout`) — a mismatch means one side gives up on a
+    /// connection the other side is still holding open.
+    pub fn handshake_timeout(mut self, timeout: Duration) -> Self {
+        self.handshake_timeout = timeout;
+        self
     }
 
     /// Configure TCP keepalive settings
@@ -142,6 +164,7 @@ impl F1r3flyServer {
         let acceptor = self.acceptor;
         let tcp_keepalive = self.tcp_keepalive;
         let tcp_nodelay = self.tcp_nodelay;
+        let handshake_timeout = self.handshake_timeout;
 
         // Spawn background task to handle incoming connections
         let listener_task = tokio::spawn(async move {
@@ -172,7 +195,7 @@ impl F1r3flyServer {
 
                         tokio::spawn(async move {
                             let result = match tokio::time::timeout(
-                                HANDSHAKE_TIMEOUT,
+                                handshake_timeout,
                                 acceptor_clone.accept(tcp_stream),
                             )
                             .await
@@ -196,13 +219,13 @@ impl F1r3flyServer {
                                     tracing::warn!(
                                         "F1r3fly TLS handshake timed out for {} after {:?}",
                                         peer_addr,
-                                        HANDSHAKE_TIMEOUT
+                                        handshake_timeout
                                     );
                                     Err(F1r3flyServerError::Io(io::Error::new(
                                         io::ErrorKind::TimedOut,
                                         format!(
                                             "TLS handshake timed out after {:?}",
-                                            HANDSHAKE_TIMEOUT
+                                            handshake_timeout
                                         ),
                                     )))
                                 }
