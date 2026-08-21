@@ -25,12 +25,16 @@
 //   `tips[0]` is deterministic + heaviest (GuardBridge.v
 //   `ghost_sort_first_deterministic`, snapshot.rs:317-331).
 //
-//   NOTE: `tips[0]` is the GHOST head, NOT necessarily the block's MAIN PARENT —
-//   snapshot.rs:332 then runs `prefer_deploy_support_main_parent` (:124-185), which
-//   can PROMOTE a deploy-carrying branch over it (GuardBridge.v seam (3),
-//   `pipeline_head_may_differ_from_ghost`). That second stage is a private fn, so its
-//   proptests live in-module in snapshot.rs's `mod tests` (`deploy_support_*`), not
-//   here. See docs/theory/fork-choice/fork-choice-verification.md §6.2.
+//   NOTE: `tips[0]` (the GHOST head) takes the main-parent slot directly —
+//   snapshot.rs's parent ordering sorts it first and no later stage reorders it.
+//   The former stage-2 promotions (deploy-support, then certification-following
+//   at score ties) are DELETED: under heaviest-subtree descent a certified
+//   branch holds a strict weight majority, so no rival child can tie it and a
+//   tie-break stage has nothing left to decide. The only post-ordering
+//   transform is `prune_dag_covered_parents`, which collapses to a deploy-free
+//   ancestor-covering parent and cannot change which branch leads.
+//   (GuardBridge.v still models the retired stage 2; its re-derivation is
+//   pending — see docs/theory/fork-choice/fork-choice-verification.md §6.2.)
 
 //   merged_sibling_scores — the MULTI-PARENT case the proptests above never
 //   build: every fixture in this directory is single-parent, and on a
