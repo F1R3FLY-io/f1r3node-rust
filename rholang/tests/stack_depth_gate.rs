@@ -68,7 +68,7 @@
 use std::collections::BTreeMap;
 
 use models::rhoapi::expr::ExprInstance;
-use models::rhoapi::{EList, EPathMap, Expr, New, Par, Receive, ReceiveBind, Send};
+use models::rhoapi::{EList, EPathMap, Expr, New, Par, Send};
 use models::rust::par_construction::ParConstruction;
 use models::rust::rholang::par_children::{dismantle, dismantle_all};
 use models::rust::rholang::sorter::par_sort_matcher::ParSortMatcher;
@@ -91,6 +91,8 @@ use rspace_plus_plus::rspace::serializers::cold_store_decode::ColdStoreDecode;
 
 #[path = "support/counting_alloc.rs"]
 mod counting_alloc;
+#[path = "support/planned_deep_fixture.rs"]
+mod planned_deep_fixture;
 
 #[global_allocator]
 static ALLOCATOR: counting_alloc::Counting = counting_alloc::Counting;
@@ -325,24 +327,7 @@ fn nested_list(depth: usize) -> Par { nested_list_leaf(depth, 0) }
 
 /// The non-vacuous spatial pattern: a free leaf and a true cached
 /// `connective_used` bit at every enclosing list.
-fn nested_list_pattern(depth: usize) -> Par {
-    let mut p = new_freevar_par(0, Vec::new());
-    for _ in 0..depth {
-        p = models::par_from_default! {
-            exprs: vec![Expr {
-                expr_instance: Some(ExprInstance::EListBody(EList {
-                    ps: vec![p],
-                    locally_free: Vec::new(),
-                    connective_used: true,
-                    remainder: None,
-                })),
-            }],
-            connective_used: true,
-            ..Default::default()
-        };
-    }
-    p
-}
+fn nested_list_pattern(depth: usize) -> Par { planned_deep_fixture::nested_list_pattern(depth) }
 
 fn epathmap_par(map: EPathMap, connective_used: bool) -> Par {
     models::par_from_default! {
@@ -358,15 +343,7 @@ fn epathmap_par(map: EPathMap, connective_used: bool) -> Par {
 /// enclosing map is therefore dynamic and traverses the PathMap-native matcher
 /// rather than taking the exact-key subtraction shortcut all the way down.
 fn nested_pathmap_match_pattern(depth: usize) -> Par {
-    let mut value = new_freevar_par(0, Vec::new());
-    for level in 0..depth {
-        let key = new_gint_par(level as i64, Vec::new(), false);
-        value = epathmap_par(
-            EPathMap::new_map([(key, value)], Vec::new(), true, None),
-            true,
-        );
-    }
-    value
+    planned_deep_fixture::nested_pathmap_match_pattern(depth)
 }
 
 /// Set-mode PathMap pair with `width - 1` exact members and one dynamic member.
@@ -463,40 +440,7 @@ fn wide_list_expr(width: usize) -> Expr {
 /// `new x in { for (_ <- @0) { … } }` nested `depth` times: the shape that
 /// makes `substitute` construct a shifted `Env` at every level. A pure `EList`
 /// chain never does, so it cannot see `Env::shift`'s `..(*self).clone()`.
-fn nested_binders(depth: usize) -> Par {
-    let mut p = new_gint_par(0, vec![], false);
-    for _ in 0..depth {
-        let receive = Receive {
-            binds: vec![ReceiveBind {
-                patterns: vec![Par::default()],
-                source: Some(new_gint_par(0, vec![], false)),
-                remainder: None,
-                free_count: 0,
-            }],
-            body: Some(p),
-            persistent: false,
-            peek: false,
-            bind_count: 1,
-            locally_free: vec![],
-            connective_used: false,
-            condition: None,
-        };
-        p = models::par_from_default! {
-            news: vec![New {
-                bind_count: 1,
-                p: Some(models::par_from_default! {
-                    receives: vec![receive],
-                    ..Default::default()
-                }),
-                uri: vec![],
-                injections: BTreeMap::new(),
-                locally_free: vec![],
-            }],
-            ..Default::default()
-        };
-    }
-    p
-}
+fn nested_binders(depth: usize) -> Par { planned_deep_fixture::nested_binders(depth) }
 
 /// `{{{…{0}…}}}` — `depth` nested `ESet`s.
 ///
@@ -511,44 +455,11 @@ fn nested_sets(depth: usize) -> Par { nested_sets_leaf(depth, 0) }
 /// [`nested_sets`] with a selectable deepest value, for full-descent trait
 /// probes whose verdict must depend on the leaf.
 fn nested_sets_leaf(depth: usize, leaf: i64) -> Par {
-    let mut p = new_gint_par(leaf, vec![], false);
-    for _ in 0..depth {
-        p = models::par_from_default! {
-            exprs: vec![Expr {
-                expr_instance: Some(ExprInstance::ESetBody(models::rhoapi::ESet {
-                    ps: vec![p],
-                    locally_free: vec![],
-                    connective_used: false,
-                    remainder: None,
-                })),
-            }],
-            ..Default::default()
-        };
-    }
-    p
+    planned_deep_fixture::nested_sets_leaf(depth, leaf)
 }
 
 /// The `EMap` counterpart of [`nested_sets`], for the same reason.
-fn nested_maps(depth: usize) -> Par {
-    let mut p = new_gint_par(0, vec![], false);
-    for _ in 0..depth {
-        p = models::par_from_default! {
-            exprs: vec![Expr {
-                expr_instance: Some(ExprInstance::EMapBody(models::rhoapi::EMap {
-                    kvs: vec![models::rhoapi::KeyValuePair {
-                        key: Some(p),
-                        value: Some(new_gint_par(1, vec![], false)),
-                    }],
-                    locally_free: vec![],
-                    connective_used: false,
-                    remainder: None,
-                })),
-            }],
-            ..Default::default()
-        };
-    }
-    p
-}
+fn nested_maps(depth: usize) -> Par { planned_deep_fixture::nested_maps(depth) }
 
 fn substitute_instance() -> Substitute {
     Substitute {
@@ -2814,45 +2725,14 @@ fn pathmap_chain_drop_body(depth: usize) {
 }
 
 /// `Par { sends: [Send { chan: <inner> }] }`, nested `depth` times.
-fn nested_send_chain(depth: usize) -> Par {
-    let mut p = new_gint_par(0, vec![], false);
-    for level in 0..depth {
-        p = models::par_from_default! {
-            sends: vec![models::rhoapi::Send {
-                chan: Some(p),
-                data: vec![],
-                persistent: false,
-                locally_free: vec![(level % 251) as u8],
-                connective_used: false,
-            }],
-            ..Default::default()
-        };
-    }
-    p
-}
+fn nested_send_chain(depth: usize) -> Par { planned_deep_fixture::nested_send_chain(depth) }
 
 /// The measured nesting of a [`nested_send_chain`] term.
 ///
 /// ⚠ Iterative, like [`par_depth`]: a recursive depth probe would consume the
 /// very stack the subject is measuring and the reading would be `max(subject,
 /// probe)`.
-fn send_chain_depth(p: &Par) -> usize {
-    let mut n = 0usize;
-    let mut cur = p.clone();
-    loop {
-        match cur
-            .first::<Send>()
-            .expect("resident send decodes")
-            .and_then(|(send, _)| send.chan)
-        {
-            Some(inner) => {
-                n += 1;
-                cur = inner;
-            }
-            None => return n,
-        }
-    }
-}
+fn send_chain_depth(p: &Par) -> usize { planned_deep_fixture::send_chain_depth(p) }
 
 /// `Par { exprs: [EPathmapBody({| key: <inner> |})] }`, nested `depth` times.
 ///
@@ -2863,49 +2743,11 @@ fn nested_pathmap_chain(depth: usize) -> Par { nested_pathmap_chain_leaf(depth, 
 
 /// [`nested_pathmap_chain`] with a selectable deepest map value.
 fn nested_pathmap_chain_leaf(depth: usize, leaf: i64) -> Par {
-    let mut p = new_gint_par(leaf, vec![], false);
-    for level in 0..depth {
-        let key = new_gint_par(level as i64, vec![], false);
-        p = models::par_from_default! {
-            exprs: vec![models::rhoapi::Expr {
-                expr_instance: Some(ExprInstance::EPathmapBody(
-                    models::rust::rhoapi_ext::EPathMap::new_map(
-                        [(key, p)],
-                        vec![(level % 251) as u8],
-                        false,
-                        None,
-                    ),
-                )),
-            }],
-            ..Default::default()
-        };
-    }
-    p
+    planned_deep_fixture::nested_pathmap_chain_leaf(depth, leaf)
 }
 
 /// The measured nesting of a [`nested_pathmap_chain`] term.
-fn pathmap_chain_depth(p: &Par) -> usize {
-    let mut n = 0usize;
-    let mut cur = p.clone();
-    loop {
-        let next = match cur
-            .first::<Expr>()
-            .expect("resident expression decodes")
-            .and_then(|(expr, _)| expr.expr_instance)
-        {
-            Some(ExprInstance::EPathmapBody(pm)) if !pm.is_empty() => pm
-                .entry_trie()
-                .map_trie()
-                .and_then(|map| map.iter().next().map(|(_, value)| value.clone())),
-            _ => None,
-        };
-        let Some(next) = next else {
-            return n;
-        };
-        n += 1;
-        cur = next;
-    }
-}
+fn pathmap_chain_depth(p: &Par) -> usize { planned_deep_fixture::pathmap_chain_depth(p) }
 
 /// `drop_in_place::<Par>` — `prost`'s DERIVED recursive destructor.
 ///
@@ -3272,93 +3114,16 @@ fn par_width(p: &Par) -> usize {
 }
 
 /// Count `!(!(…))` nesting levels ITERATIVELY.
-fn enot_depth(p: &Par) -> usize {
-    let mut n = 0usize;
-    let mut cur = p.clone();
-    loop {
-        match cur
-            .first::<Expr>()
-            .expect("resident expression decodes")
-            .and_then(|(expr, _)| expr.expr_instance)
-        {
-            Some(ExprInstance::ENotBody(not)) => match not.p {
-                Some(inner) => {
-                    n += 1;
-                    cur = inner;
-                }
-                None => return n,
-            },
-            _ => return n,
-        }
-    }
-}
+fn enot_depth(p: &Par) -> usize { planned_deep_fixture::enot_depth(p) }
 
 /// Count `{{…{x}…}}` nesting levels (the `ESet` shape) ITERATIVELY.
-fn eset_depth(p: &Par) -> usize {
-    let mut n = 0usize;
-    let mut cur = p.clone();
-    loop {
-        match cur
-            .first::<Expr>()
-            .expect("resident expression decodes")
-            .and_then(|(expr, _)| expr.expr_instance)
-        {
-            Some(ExprInstance::ESetBody(set)) if !set.ps.is_empty() => {
-                n += 1;
-                cur = set.ps.into_iter().next().expect("non-empty set");
-            }
-            _ => return n,
-        }
-    }
-}
+fn eset_depth(p: &Par) -> usize { planned_deep_fixture::eset_depth(p) }
 
 /// Count nested `EMap` levels ITERATIVELY, following the KEY.
-fn emap_depth(p: &Par) -> usize {
-    let mut n = 0usize;
-    let mut cur = p.clone();
-    loop {
-        match cur
-            .first::<Expr>()
-            .expect("resident expression decodes")
-            .and_then(|(expr, _)| expr.expr_instance)
-        {
-            Some(ExprInstance::EMapBody(map)) if !map.kvs.is_empty() => {
-                match map.kvs.into_iter().next().and_then(|pair| pair.key) {
-                    Some(k) => {
-                        n += 1;
-                        cur = k;
-                    }
-                    None => return n,
-                }
-            }
-            _ => return n,
-        }
-    }
-}
+fn emap_depth(p: &Par) -> usize { planned_deep_fixture::emap_depth(p) }
 
 /// Count `new … in { for (…) { … } }` binder scopes ITERATIVELY.
-fn binder_depth(p: &Par) -> usize {
-    let mut n = 0usize;
-    let mut cur = p.clone();
-    loop {
-        let Some((new, _)) = cur.first::<New>().expect("resident new decodes") else {
-            return n;
-        };
-        let Some(inner) = new.p else {
-            return n;
-        };
-        let Some((recv, _)) = inner.first::<Receive>().expect("resident receive decodes") else {
-            return n;
-        };
-        match recv.body {
-            Some(body) => {
-                n += 1;
-                cur = body;
-            }
-            None => return n,
-        }
-    }
-}
+fn binder_depth(p: &Par) -> usize { planned_deep_fixture::binder_depth(p) }
 
 /// Nesting depth of a score tree, following the LAST child (the shape
 /// [`deep_score`] builds), ITERATIVELY.
@@ -3490,7 +3255,11 @@ fn spatial_binding_body(depth: usize) {
     let target = nested_list(depth);
     let pattern = nested_list_pattern(depth);
     assert_carries("the spatial target's nesting", par_depth(&target), depth);
-    assert_carries("the spatial pattern's nesting", par_depth(&pattern), depth);
+    assert_carries(
+        "the spatial pattern's nesting",
+        planned_deep_fixture::list_pattern_depth(&pattern),
+        depth,
+    );
     let mut context = SpatialMatcherContext::new();
     let matched = context.spatial_match_result(target, pattern);
     assert!(matched.is_some(), "the binding matcher refused its witness");
@@ -3630,23 +3399,7 @@ fn spatial_epathmap_map_wide_body(width: usize) {
 /// without descending. On that shape the probe measures `<Par as Clone>::clone`
 /// and nothing else. `!(!(…(!true)…))` is the shape that actually recurses;
 /// measured 21,584 B/level debug / 3,359 release before the conversion.
-fn nested_nots(depth: usize) -> Par {
-    let mut p = models::par_from_default! {
-        exprs: vec![Expr {
-            expr_instance: Some(ExprInstance::GBool(true)),
-        }],
-        ..Default::default()
-    };
-    for _ in 0..depth {
-        p = models::par_from_default! {
-            exprs: vec![Expr {
-                expr_instance: Some(ExprInstance::ENotBody(models::rhoapi::ENot { p: Some(p) })),
-            }],
-            ..Default::default()
-        };
-    }
-    p
-}
+fn nested_nots(depth: usize) -> Par { planned_deep_fixture::nested_nots(depth) }
 
 fn eval_with_nots_body(depth: usize) {
     use rho_pure_eval::{eval_with, NoSpatialMatch};

@@ -1886,15 +1886,25 @@ pub fn canonical_expr_parts(message: &[u8]) -> Option<CanonicalExprParts<'_>> {
     }
 }
 
-fn canonical_single_par_component(message: &[u8], expected_field: u64) -> Option<&[u8]> {
+#[derive(Clone, Copy)]
+struct CanonicalSingletonParComponent<'a> {
+    body: &'a [u8],
+    locally_free: &'a [u8],
+    connective_used: bool,
+}
+
+fn canonical_single_par_component_parts(
+    message: &[u8],
+    expected_field: u64,
+) -> Option<CanonicalSingletonParComponent<'_>> {
     const LOCALLY_FREE_FIELD: u64 = 9;
     const CONNECTIVE_USED_FIELD: u64 = 10;
 
     let mut at = 0usize;
     let mut body = None;
+    let mut locally_free = None;
     let mut last_field = 0u64;
-    let mut saw_locally_free = false;
-    let mut saw_connective_used = false;
+    let mut connective_used = false;
     while at < message.len() {
         let key = read_canonical_varint(message, &mut at)?;
         let field = key >> 3;
@@ -1908,20 +1918,29 @@ fn canonical_single_par_component(message: &[u8], expected_field: u64) -> Option
                 body = Some(message.get(at..end)?);
                 at = end;
             }
-            (LOCALLY_FREE_FIELD, 2) if !saw_locally_free => {
+            (LOCALLY_FREE_FIELD, 2) if locally_free.is_none() => {
                 let len = usize::try_from(read_canonical_varint(message, &mut at)?).ok()?;
                 (len != 0).then_some(())?;
-                at = at.checked_add(len).filter(|end| *end <= message.len())?;
-                saw_locally_free = true;
+                let end = at.checked_add(len)?;
+                locally_free = Some(message.get(at..end)?);
+                at = end;
             }
-            (CONNECTIVE_USED_FIELD, 0) if !saw_connective_used => {
+            (CONNECTIVE_USED_FIELD, 0) if !connective_used => {
                 (read_canonical_varint(message, &mut at)? == 1).then_some(())?;
-                saw_connective_used = true;
+                connective_used = true;
             }
             _ => return None,
         }
     }
-    body
+    Some(CanonicalSingletonParComponent {
+        body: body?,
+        locally_free: locally_free.unwrap_or_default(),
+        connective_used,
+    })
+}
+
+fn canonical_single_par_component(message: &[u8], expected_field: u64) -> Option<&[u8]> {
+    canonical_single_par_component_parts(message, expected_field).map(|parts| parts.body)
 }
 
 /// Extract the sole `New` component body from a canonical singleton carrier.
@@ -2981,17 +3000,95 @@ pub(crate) fn is_canonical_singleton_eset_unary_elist_par(protobuf: &[u8]) -> bo
         .is_some()
 }
 
-fn canonical_singleton_epathmap_parts(protobuf: &[u8]) -> Option<(&[u8], &[u8])> {
-    // Par.exprs = 5, Expr.e_pathmap_body = 32,
-    // EPathMap.trie_snapshot = 9.
-    const PAR_EXPR_KEY: u64 = (5 << 3) | 2;
-    const EXPR_EPATHMAP_KEY: u64 = (32 << 3) | 2;
-    const EPATHMAP_SNAPSHOT_KEY: u64 = (9 << 3) | 2;
+#[derive(Clone, Copy)]
+struct CanonicalSingletonEPathMapParts<'a> {
+    expr_body: &'a [u8],
+    snapshot: &'a [u8],
+    epathmap_connective_used: bool,
+    locally_free: &'a [u8],
+    connective_used: bool,
+}
 
-    let expr_body = canonical_single_delimited_field(protobuf, PAR_EXPR_KEY)?;
-    let pathmap_body = canonical_single_delimited_field(expr_body, EXPR_EPATHMAP_KEY)?;
-    let snapshot = canonical_single_delimited_field(pathmap_body, EPATHMAP_SNAPSHOT_KEY)?;
-    Some((expr_body, snapshot))
+fn canonical_singleton_epathmap_parts(
+    protobuf: &[u8],
+) -> Option<CanonicalSingletonEPathMapParts<'_>> {
+    // The carrier cursor admits canonical root metadata while still requiring
+    // exactly one Expr occurrence. The Expr/EPathMap cursor below likewise
+    // admits canonical EPathMap metadata before trie_snapshot = 9.
+    let carrier =
+        canonical_single_par_component_parts(protobuf, ParComponentTag::Expr.byte().into())?;
+    let epathmap = canonical_epathmap_parts_from_expr(carrier.body)?;
+    Some(CanonicalSingletonEPathMapParts {
+        expr_body: carrier.body,
+        snapshot: epathmap.snapshot,
+        epathmap_connective_used: epathmap.connective_used,
+        locally_free: carrier.locally_free,
+        connective_used: carrier.connective_used,
+    })
+}
+
+#[derive(Clone, Copy)]
+struct CanonicalEPathMapEnvelope<'a> {
+    snapshot: &'a [u8],
+    connective_used: bool,
+}
+
+/// Borrow field 9 from one canonical EPathMap Expr without decoding its trie,
+/// metadata, or recursively nested map values.
+fn canonical_epathmap_parts_from_expr(expr: &[u8]) -> Option<CanonicalEPathMapEnvelope<'_>> {
+    let CanonicalExprEnvelope {
+        tag: 32,
+        payload: pathmap,
+    } = canonical_expr_envelope(expr)?
+    else {
+        return None;
+    };
+
+    let mut at = 0usize;
+    let mut last_field = 0u64;
+    let mut saw_locally_free = false;
+    let mut saw_connective = false;
+    let mut saw_remainder = false;
+    let mut snapshot = None;
+    while at < pathmap.len() {
+        let key = read_canonical_varint(pathmap, &mut at)?;
+        let field = key >> 3;
+        let wire = key & 0x07;
+        (field >= last_field).then_some(())?;
+        last_field = field;
+        match (field, wire) {
+            (3, 2) if !saw_locally_free => {
+                let len = usize::try_from(read_canonical_varint(pathmap, &mut at)?).ok()?;
+                (len != 0).then_some(())?;
+                at = at.checked_add(len).filter(|end| *end <= pathmap.len())?;
+                saw_locally_free = true;
+            }
+            (4, 0) if !saw_connective => {
+                (read_canonical_varint(pathmap, &mut at)? == 1).then_some(())?;
+                saw_connective = true;
+            }
+            (5, 2) if !saw_remainder => {
+                let len = usize::try_from(read_canonical_varint(pathmap, &mut at)?).ok()?;
+                at = at.checked_add(len).filter(|end| *end <= pathmap.len())?;
+                saw_remainder = true;
+            }
+            (9, 2) if snapshot.is_none() => {
+                let len = usize::try_from(read_canonical_varint(pathmap, &mut at)?).ok()?;
+                let end = at.checked_add(len)?;
+                snapshot = Some(pathmap.get(at..end)?);
+                at = end;
+            }
+            _ => return None,
+        }
+    }
+    Some(CanonicalEPathMapEnvelope {
+        snapshot: snapshot?,
+        connective_used: saw_connective,
+    })
+}
+
+fn canonical_epathmap_snapshot_from_expr(expr: &[u8]) -> Option<&[u8]> {
+    canonical_epathmap_parts_from_expr(expr).map(|parts| parts.snapshot)
 }
 
 fn canonical_singleton_gint_par(protobuf: &[u8]) -> bool {
@@ -3007,20 +3104,18 @@ fn canonical_singleton_gint_par(protobuf: &[u8]) -> bool {
 /// image. Every loop iteration consumes one strictly smaller value body, so
 /// work and auxiliary state are linear in the final byte string rather than in
 /// the sum of all decoded suffix graphs.
-fn canonical_singleton_epathmap_chain_is_stable(mut snapshot: &[u8]) -> bool {
+fn canonical_singleton_epathmap_chain_parts(mut snapshot: &[u8]) -> Option<(usize, &[u8])> {
     use crate::rust::epathmap_trie_codec::{CanonicalSnapshotKey, EPathMapMode};
 
+    let mut depth = 0usize;
     loop {
-        let Ok(inspection) =
-            crate::rust::epathmap_trie_codec::inspect_canonical_map_snapshot(snapshot)
-        else {
-            return false;
-        };
+        let inspection =
+            crate::rust::epathmap_trie_codec::inspect_canonical_map_snapshot(snapshot).ok()?;
         if inspection.mode != EPathMapMode::Map
             || inspection.keys.len() != 1
             || inspection.value_bodies.len() != 1
         {
-            return false;
+            return None;
         }
 
         let key_is_stable = match &inspection.keys[0] {
@@ -3034,54 +3129,60 @@ fn canonical_singleton_epathmap_chain_is_stable(mut snapshot: &[u8]) -> bool {
             }
         };
         if !key_is_stable {
-            return false;
+            return None;
         }
 
-        let Some(value_body) = snapshot.get(inspection.value_bodies[0].clone()) else {
-            return false;
+        let value_body = snapshot.get(inspection.value_bodies[0].clone())?;
+        depth = depth.checked_add(1)?;
+        let Some(nested_parts) = canonical_singleton_epathmap_parts(value_body) else {
+            return Some((depth, value_body));
         };
-        if canonical_singleton_gint_par(value_body) {
-            return true;
-        }
-        let Some((_expr_body, nested)) = canonical_singleton_epathmap_parts(value_body) else {
-            return false;
-        };
+        let nested = nested_parts.snapshot;
         if nested.len() >= snapshot.len() {
-            return false;
+            return None;
         }
         snapshot = nested;
     }
+}
+
+fn canonical_singleton_epathmap_chain_is_stable(snapshot: &[u8]) -> bool {
+    canonical_singleton_epathmap_chain_parts(snapshot)
+        .is_some_and(|(_depth, terminal)| canonical_singleton_gint_par(terminal))
 }
 
 /// Import a canonical, stable singleton EPathMap chain as one raw Expr
 /// endpoint. The nested maps remain in their prefix-compressed EPM1 image until
 /// a semantic consumer actually asks to decode that Expr.
 fn import_canonical_singleton_epathmap_par(protobuf: &[u8]) -> Option<Par> {
-    let (expr_body, snapshot) = canonical_singleton_epathmap_parts(protobuf)?;
-    canonical_singleton_epathmap_chain_is_stable(snapshot).then_some(())?;
+    let parts = canonical_singleton_epathmap_parts(protobuf)?;
+    canonical_singleton_epathmap_chain_is_stable(parts.snapshot).then_some(())?;
 
     let mut key = Vec::with_capacity(
         PAR_BAG_KEY_HEADER_LEN
-            .checked_add(snapshot.len().checked_mul(2)?)?
-            .checked_add(expr_body.len())?
+            .checked_add(parts.snapshot.len().checked_mul(2)?)?
+            .checked_add(parts.expr_body.len())?
             .checked_add(64)?,
     );
     key.extend_from_slice(&component_prefix(ParComponentTag::Expr));
     let score_start = key.len();
     begin_score_node(&mut key, Score::EPATHMAP);
-    append_bytes_score_atom(&mut key, snapshot);
-    append_int_score_atom(&mut key, 0);
+    append_bytes_score_atom(&mut key, parts.snapshot);
+    append_int_score_atom(&mut key, i64::from(parts.epathmap_connective_used));
     end_score_node(&mut key);
     let score_len = u64::try_from(key.len().checked_sub(score_start)?)
         .expect("one allocated canonical score length fits in u64");
-    key.extend_from_slice(expr_body);
+    key.extend_from_slice(parts.expr_body);
     key.extend_from_slice(&score_len.to_be_bytes());
 
     let mut components = ParBag::new();
     components
         .insert_bytes(ParComponentTag::Expr, &key, Multiplicity::ONE, Some(true))
         .expect("one validated singleton component cannot overflow multiplicity");
-    Some(Par::from_parts(components, Vec::new(), false))
+    Some(Par::from_parts(
+        components,
+        parts.locally_free.to_vec(),
+        parts.connective_used,
+    ))
 }
 
 /// Exact, non-consuming fast imports available to both top-level and nested
@@ -3225,6 +3326,19 @@ impl EncodedParComponent<'_, Bundle> {
 }
 
 impl<'a> EncodedParComponent<'a, Expr> {
+    /// Borrow the depth and terminal `Par` body of an exact one-entry
+    /// `PathMap<Par>` value chain.
+    ///
+    /// Each step inspects the stored EPM1 snapshot in place. Keys are required
+    /// to be valid stable canonical paths, map mode and singleton arity are
+    /// proved at every level, and the terminal remains a borrowed protobuf
+    /// region. No `EPathMap`, nested `Par`, entry vector, or trie shadow is
+    /// materialized.
+    pub fn canonical_singleton_epathmap_map_parts(&self) -> Option<(usize, &'a [u8])> {
+        let snapshot = canonical_epathmap_snapshot_from_expr(self.payload)?;
+        canonical_singleton_epathmap_chain_parts(snapshot)
+    }
+
     /// Return the depth and borrowed terminal `Par` protobuf body of an exact
     /// non-empty canonical unary `ENot` spine.
     ///
@@ -5914,5 +6028,95 @@ mod fast_key_tests {
             imported.components().cached_canonical_path_stability(),
             Some(true)
         );
+    }
+
+    #[test]
+    fn direct_singleton_epathmap_chain_import_preserves_root_and_map_metadata() {
+        use crate::rhoapi::{EPathMap, Var};
+
+        let key = || {
+            Par::default().with_exprs(vec![Expr {
+                expr_instance: Some(ExprInstance::GString("key".to_owned())),
+            }])
+        };
+        let mut expected = Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::GInt(7)),
+        }]);
+        for level in 0..8u8 {
+            expected = Par::default()
+                .with_exprs(vec![Expr {
+                    expr_instance: Some(ExprInstance::EPathmapBody(EPathMap::new_map(
+                        [(key(), expected)],
+                        vec![level + 1],
+                        true,
+                        Some(Var::default()),
+                    ))),
+                }])
+                .with_locally_free(vec![level + 17])
+                .with_connective_used(true);
+        }
+
+        let protobuf = protobuf_encoder::encode_to_vec(&expected);
+        let imported = import_canonical_parbag_fast_path(&protobuf)
+            .expect("the metadata-bearing stable EPathMap chain is imported");
+        assert_eq!(imported, expected);
+        assert_eq!(protobuf_encoder::encode_to_vec(&imported), protobuf);
+        assert_eq!(imported.locally_free(), expected.locally_free());
+        assert_eq!(imported.connective_used(), expected.connective_used());
+
+        let mut measured = None;
+        imported.visit_encoded::<Expr>(|entry| {
+            measured = entry
+                .canonical_singleton_epathmap_map_parts()
+                .map(|(depth, terminal)| (depth, terminal.to_vec()));
+        });
+        let (depth, terminal) = measured.expect("the borrowed chain cursor accepts metadata");
+        assert_eq!(depth, 8);
+        assert_eq!(
+            canonical_exact_scalar_par(&terminal)
+                .and_then(|scalar| canonical_expr_oneof_tag(scalar.expr())),
+            Some(2)
+        );
+    }
+
+    #[test]
+    fn singleton_epathmap_cursors_reject_duplicate_fields_and_malformed_snapshots() {
+        use crate::rhoapi::EPathMap;
+
+        let key = Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::GString("key".to_owned())),
+        }]);
+        let value = Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::GInt(7)),
+        }]);
+        let expr = Expr {
+            expr_instance: Some(ExprInstance::EPathmapBody(EPathMap::new_map(
+                [(key, value)],
+                vec![1],
+                true,
+                None,
+            ))),
+        };
+        let canonical_expr = protobuf_encoder::encode_to_vec(&expr);
+        let snapshot = canonical_epathmap_snapshot_from_expr(&canonical_expr)
+            .expect("canonical EPathMap snapshot")
+            .to_vec();
+
+        let envelope = canonical_expr_envelope(&canonical_expr).expect("canonical Expr envelope");
+        let mut duplicate_snapshot_body = envelope.payload.to_vec();
+        duplicate_snapshot_body.push(0x4a); // EPathMap.trie_snapshot = 9, length-delimited.
+        prost::encoding::encode_varint(snapshot.len() as u64, &mut duplicate_snapshot_body);
+        duplicate_snapshot_body.extend_from_slice(&snapshot);
+        let mut duplicate_snapshot_expr = vec![0x82, 0x02]; // Expr.e_pathmap_body = 32.
+        prost::encoding::encode_varint(
+            duplicate_snapshot_body.len() as u64,
+            &mut duplicate_snapshot_expr,
+        );
+        duplicate_snapshot_expr.extend_from_slice(&duplicate_snapshot_body);
+        assert!(canonical_epathmap_snapshot_from_expr(&duplicate_snapshot_expr).is_none());
+
+        let mut malformed_snapshot = snapshot;
+        malformed_snapshot[0] ^= 0xff;
+        assert!(canonical_singleton_epathmap_chain_parts(&malformed_snapshot).is_none());
     }
 }
