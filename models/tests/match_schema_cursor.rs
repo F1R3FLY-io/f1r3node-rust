@@ -14,7 +14,84 @@ use models::rust::rholang::match_schema::{
     RhoMatchFieldKind, RhoMatchPayloadKind, RhoPathCursor, RhoPathEvent,
 };
 use models::rust::rholang::match_schema_tables::{ParCursor, RHO_MATCH_REGISTRY};
+use models::rust::rholang::protobuf_schema::ProtobufKind;
 use models::rust::rholang::schema_meta_tables::SCHEMA_CHILDREN;
+
+fn field_kind_agrees_with_protobuf(
+    match_kind: RhoMatchFieldKind,
+    protobuf_kind: ProtobufKind,
+) -> bool {
+    matches!(
+        (match_kind, protobuf_kind),
+        (RhoMatchFieldKind::Bool, ProtobufKind::Bool)
+            | (
+                RhoMatchFieldKind::I32,
+                ProtobufKind::Int32 | ProtobufKind::Sint32 | ProtobufKind::Sfixed32
+            )
+            | (
+                RhoMatchFieldKind::U32,
+                ProtobufKind::Uint32 | ProtobufKind::Fixed32
+            )
+            | (
+                RhoMatchFieldKind::I64,
+                ProtobufKind::Int64 | ProtobufKind::Sint64 | ProtobufKind::Sfixed64
+            )
+            | (
+                RhoMatchFieldKind::U64,
+                ProtobufKind::Uint64 | ProtobufKind::Fixed64
+            )
+            | (RhoMatchFieldKind::Bytes, ProtobufKind::Bytes)
+            | (RhoMatchFieldKind::String, ProtobufKind::String)
+            | (
+                RhoMatchFieldKind::StringSequence,
+                ProtobufKind::RepeatedString
+            )
+            | (
+                RhoMatchFieldKind::BytesSequence,
+                ProtobufKind::RepeatedBytes
+            )
+            | (RhoMatchFieldKind::OptionalMessage(_), ProtobufKind::Message)
+            | (
+                RhoMatchFieldKind::MessageSequence(_),
+                ProtobufKind::RepeatedMessage
+            )
+            | (
+                RhoMatchFieldKind::StringMessageMap(_),
+                ProtobufKind::MapStringMessage
+            )
+            | (RhoMatchFieldKind::Oneof(_), ProtobufKind::Oneof)
+            | (RhoMatchFieldKind::PathMap, ProtobufKind::EPathMapSnapshot)
+    )
+}
+
+fn payload_kind_agrees_with_protobuf(
+    match_kind: RhoMatchPayloadKind,
+    protobuf_kind: ProtobufKind,
+) -> bool {
+    matches!(
+        (match_kind, protobuf_kind),
+        (RhoMatchPayloadKind::Bool, ProtobufKind::Bool)
+            | (
+                RhoMatchPayloadKind::I32,
+                ProtobufKind::Int32 | ProtobufKind::Sint32 | ProtobufKind::Sfixed32
+            )
+            | (
+                RhoMatchPayloadKind::U32,
+                ProtobufKind::Uint32 | ProtobufKind::Fixed32
+            )
+            | (
+                RhoMatchPayloadKind::I64,
+                ProtobufKind::Int64 | ProtobufKind::Sint64 | ProtobufKind::Sfixed64
+            )
+            | (
+                RhoMatchPayloadKind::U64,
+                ProtobufKind::Uint64 | ProtobufKind::Fixed64
+            )
+            | (RhoMatchPayloadKind::Bytes, ProtobufKind::Bytes)
+            | (RhoMatchPayloadKind::String, ProtobufKind::String)
+            | (RhoMatchPayloadKind::Message(_), ProtobufKind::Message)
+    )
+}
 
 fn record(
     cursor: ParCursor<'_>,
@@ -105,6 +182,59 @@ fn generated_program_registry_covers_the_descriptor_closure() {
         .map(|(name, _)| *name)
         .collect::<BTreeSet<_>>();
     assert_eq!(registry, descriptor);
+}
+
+#[test]
+fn generated_match_programs_share_the_protobuf_wire_schema() {
+    for (name, program) in RHO_MATCH_REGISTRY {
+        if *name == "Par" {
+            assert!(
+                program.protobuf_fields.is_empty(),
+                "resident PathMap-backed Par must remain an opaque protobuf encoder cutover"
+            );
+            continue;
+        }
+
+        assert_eq!(
+            program.fields.len(),
+            program.protobuf_fields.len(),
+            "{name}: structural and protobuf programs drifted"
+        );
+        for (match_field, protobuf_field) in program.fields.iter().zip(program.protobuf_fields) {
+            assert_eq!(match_field.tag, protobuf_field.tag, "{name}: tag drift");
+            if *name != "EPathMap" || match_field.tag != 9 {
+                assert_eq!(match_field.name, protobuf_field.name, "{name}: name drift");
+            } else {
+                assert_eq!(match_field.name, "entries");
+                assert_eq!(protobuf_field.name, "trie_snapshot");
+            }
+            assert!(
+                field_kind_agrees_with_protobuf(match_field.kind, protobuf_field.kind),
+                "{name}.{}: structural kind {:?} disagrees with protobuf kind {:?}",
+                match_field.name,
+                match_field.kind,
+                protobuf_field.kind
+            );
+            if let RhoMatchFieldKind::Oneof(variants) = match_field.kind {
+                let mut tags = BTreeSet::new();
+                for variant in variants {
+                    assert!(tags.insert(variant.tag), "{name}: duplicate oneof tag");
+                    assert!(
+                        payload_kind_agrees_with_protobuf(variant.payload, variant.protobuf_kind),
+                        "{name}.{}: oneof payload {:?} disagrees with protobuf kind {:?}",
+                        variant.name,
+                        variant.payload,
+                        variant.protobuf_kind
+                    );
+                    assert!(
+                        variant.protobuf_kind.wire_type().is_some(),
+                        "{name}.{}: concrete oneof arm must have a wire type",
+                        variant.name
+                    );
+                }
+            }
+        }
+    }
 }
 
 #[test]

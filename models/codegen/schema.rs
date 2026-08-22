@@ -8768,6 +8768,10 @@ fn emit_match_schema_source(
              RhoMatchOneofVariant, RhoMatchPayloadKind, RhoOneofCursor,\n\
              RhoOneofPayload, RhoScalarRef,\n\
          };\n\
+         use crate::rust::rholang::protobuf_schema::{\n\
+             EPATHMAP_PROTOBUF_PROGRAM, PAR_PROTOBUF_PROGRAM, ProtobufKind,\n\
+         };\n\
+         use crate::rust::rholang::protobuf_schema_tables::*;\n\
          \n",
     );
 
@@ -8819,6 +8823,7 @@ fn emit_match_schema_source(
                          \x20   type_id: {type_id},\n\
                          \x20   type_name: \"EPathMap\",\n\
                          \x20   fields: {fields_ident},\n\
+                         \x20   protobuf_fields: EPATHMAP_PROTOBUF_PROGRAM,\n\
                          }};\n"
                     )
                     .expect("write external EPathMap match program");
@@ -8835,6 +8840,7 @@ fn emit_match_schema_source(
                          \x20   type_id: {type_id},\n\
                          \x20   type_name: \"Par\",\n\
                          \x20   fields: {fields_ident},\n\
+                         \x20   protobuf_fields: PAR_PROTOBUF_PROGRAM,\n\
                          }};\n"
                     )
                     .expect("write external Par match program");
@@ -8865,9 +8871,10 @@ fn emit_match_schema_source(
             .expect("write");
             for variant in &oneof.variants {
                 let payload = match_payload_kind_expr(variant, &type_ids);
+                let protobuf_kind = protobuf_oneof_variant_kind(variant);
                 writeln!(
                     src,
-                    "    RhoMatchOneofVariant {{ tag: {}, name: \"{}\", payload: {payload} }},",
+                    "    RhoMatchOneofVariant {{ tag: {}, name: \"{}\", payload: {payload}, protobuf_kind: {protobuf_kind} }},",
                     variant.tag, variant.rust_ident
                 )
                 .expect("write");
@@ -8893,8 +8900,10 @@ fn emit_match_schema_source(
              \x20   type_id: {type_id},\n\
              \x20   type_name: \"{}\",\n\
              \x20   fields: {fields_ident},\n\
+             \x20   protobuf_fields: {},\n\
              }};\n",
-            rust_type_name(leaf)
+            rust_type_name(leaf),
+            message.protobuf_program_ident()
         )
         .expect("write");
     }

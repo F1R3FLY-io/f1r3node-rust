@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 
 use super::match_schema_tables::{ParCursor, ParSequenceCursor};
+use super::protobuf_schema::{ProtobufField, ProtobufKind};
 use crate::rhoapi::Par;
 use crate::rust::par_bag::ParBag;
 use crate::rust::rhoapi_ext::EPathMap;
@@ -41,6 +42,7 @@ pub struct RhoMatchOneofVariant {
     pub tag: u32,
     pub name: &'static str,
     pub payload: RhoMatchPayloadKind,
+    pub protobuf_kind: ProtobufKind,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -55,6 +57,7 @@ pub struct RhoMatchProgram {
     pub type_id: u16,
     pub type_name: &'static str,
     pub fields: &'static [RhoMatchField],
+    pub protobuf_fields: &'static [ProtobufField],
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
