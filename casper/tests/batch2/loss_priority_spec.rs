@@ -12,7 +12,9 @@
 // (`InvalidRejectedDeploy`), so cross-node acceptance proves the proposer and
 // validators computed identical rejection sets from the same on-DAG data.
 
-use casper::rust::casper::Casper;
+use casper::rust::casper::{Casper, MultiParentCasper};
+use casper::rust::finality::floor::floor_of_block;
+use casper::rust::safety::clique_oracle::FtThreshold;
 use casper::rust::util::construct_deploy;
 use crypto::rust::private_key::PrivateKey;
 use crypto::rust::signatures::signed::Signed;
@@ -21,6 +23,7 @@ use models::rhoapi::Par;
 use models::rust::casper::protocol::casper_message::DeployData;
 use serial_test::serial;
 
+use super::staging::mint_on_parents;
 use crate::helper::test_node::TestNode;
 use crate::util::genesis_builder::{GenesisBuilder, GenesisContext};
 
@@ -88,6 +91,203 @@ async fn key_landed(node: &TestNode, state_hash: &prost::bytes::Bytes, key: &str
         Ok((res, _)) => res.first().and_then(par_to_i64) != Some(-999),
         Err(_) => false,
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[serial]
+async fn three_validator_neutral_base_applies_prior_loss_priority() {
+    let ctx = build_genesis(3).await;
+    let shard_id = ctx.genesis_block.shard_id.clone();
+    let mut nodes = TestNode::create_network(ctx, 3, None, None, None, None)
+        .await
+        .expect("create_network");
+    for node in nodes.iter_mut() {
+        node.allow_empty_blocks = true;
+    }
+
+    let starved_sec = construct_deploy::DEFAULT_SEC.clone();
+    let contender_sec = construct_deploy::DEFAULT_SEC2.clone();
+    let init = construct_deploy::source_deploy_now_full(
+        r#"@"m"!({})"#.to_string(),
+        None,
+        None,
+        Some(starved_sec.clone()),
+        None,
+        Some(shard_id.clone()),
+    )
+    .expect("build init");
+    nodes[0].casper.deploy(init).expect("init deploy");
+    let init_block = nodes[0].create_block_unsafe(&[]).await.expect("init block");
+    for node in nodes.iter_mut() {
+        node.process_block(init_block.clone())
+            .await
+            .expect("process init");
+    }
+
+    let starved = cheap_write("starved", &starved_sec, &shard_id);
+    let starved_sig = starved.sig.clone();
+    nodes[0].casper.deploy(starved).expect("starved deploy");
+    let starved_sibling =
+        mint_on_parents(&mut nodes[0], vec![init_block.clone()], "starved sibling").await;
+
+    let first_contender = costly_write("first", 1, &contender_sec, &shard_id);
+    nodes[1]
+        .casper
+        .deploy(first_contender)
+        .expect("first contender deploy");
+    let contender_sibling =
+        mint_on_parents(&mut nodes[1], vec![init_block.clone()], "contender sibling").await;
+    let neutral_sibling = mint_on_parents(&mut nodes[2], vec![init_block], "neutral sibling").await;
+
+    for (owner, block) in [
+        (0usize, &starved_sibling),
+        (1usize, &contender_sibling),
+        (2usize, &neutral_sibling),
+    ] {
+        for (index, node) in nodes.iter_mut().enumerate() {
+            if index != owner {
+                node.process_block(block.clone())
+                    .await
+                    .expect("deliver first siblings");
+            }
+        }
+    }
+
+    let first_merge = mint_on_parents(
+        &mut nodes[2],
+        vec![neutral_sibling.clone(), starved_sibling, contender_sibling],
+        "first neutral-base merge",
+    )
+    .await;
+    for node in nodes.iter_mut().take(2) {
+        node.process_block(first_merge.clone())
+            .await
+            .expect("deliver first merge");
+    }
+    assert_eq!(
+        first_merge.header.parents_hash_list.first(),
+        Some(&neutral_sibling.block_hash)
+    );
+    assert!(first_merge
+        .body
+        .rejected_deploys
+        .iter()
+        .any(|record| record.sig == starved_sig));
+
+    let first_merge_height = first_merge.body.state.block_number;
+    let mut gate_tip = None;
+    for round in 0..30i32 {
+        let marker = construct_deploy::basic_deploy_data(
+            100 + round,
+            Some(construct_deploy::DEFAULT_SEC2.clone()),
+            Some(shard_id.clone()),
+        )
+        .expect("settle marker");
+        let block = nodes[2]
+            .add_block_from_deploys(std::slice::from_ref(&marker))
+            .await
+            .expect("settle round");
+        for node in nodes.iter_mut().take(2) {
+            node.process_block(block.clone())
+                .await
+                .expect("deliver settle round");
+        }
+        let dag = nodes[0].casper.block_dag().await.expect("dag");
+        let floor = floor_of_block(
+            &dag,
+            &nodes[0].block_store,
+            &block.block_hash,
+            FtThreshold::from_f32_lossy(0.0),
+        )
+        .await
+        .expect("floor_of_block");
+        let covered = floor.hash == first_merge.block_hash
+            || (floor.block_number >= first_merge_height
+                && dag
+                    .is_dag_ancestor(&first_merge.block_hash, &floor.hash)
+                    .expect("ancestor query"));
+        if covered {
+            gate_tip = Some(block);
+            break;
+        }
+    }
+    let gate_tip = gate_tip.expect("the floor must cover the first rejection");
+
+    let retry_sibling =
+        mint_on_parents(&mut nodes[0], vec![gate_tip.clone()], "retry sibling").await;
+    assert!(retry_sibling
+        .body
+        .deploys
+        .iter()
+        .any(|processed| processed.deploy.sig == starved_sig));
+
+    let second_contender = costly_write("second", 2, &contender_sec, &shard_id);
+    let second_contender_sig = second_contender.sig.clone();
+    nodes[1]
+        .casper
+        .deploy(second_contender)
+        .expect("second contender deploy");
+    let second_contender_sibling = mint_on_parents(
+        &mut nodes[1],
+        vec![gate_tip.clone()],
+        "second contender sibling",
+    )
+    .await;
+    let second_neutral_sibling =
+        mint_on_parents(&mut nodes[2], vec![gate_tip], "second neutral sibling").await;
+
+    for (owner, block) in [
+        (0usize, &retry_sibling),
+        (1usize, &second_contender_sibling),
+        (2usize, &second_neutral_sibling),
+    ] {
+        for (index, node) in nodes.iter_mut().enumerate() {
+            if index != owner {
+                node.process_block(block.clone())
+                    .await
+                    .expect("deliver second siblings");
+            }
+        }
+    }
+
+    let second_merge = mint_on_parents(
+        &mut nodes[2],
+        vec![
+            second_neutral_sibling.clone(),
+            retry_sibling,
+            second_contender_sibling,
+        ],
+        "second neutral-base merge",
+    )
+    .await;
+    for node in nodes.iter_mut().take(2) {
+        node.process_block(second_merge.clone())
+            .await
+            .expect("deliver second merge");
+    }
+
+    assert_eq!(
+        second_merge.header.parents_hash_list.first(),
+        Some(&second_neutral_sibling.block_hash)
+    );
+    assert!(!second_merge
+        .body
+        .rejected_deploys
+        .iter()
+        .any(|record| record.sig == starved_sig));
+    assert!(second_merge
+        .body
+        .rejected_deploys
+        .iter()
+        .any(|record| record.sig == second_contender_sig));
+    assert!(
+        key_landed(
+            &nodes[2],
+            &second_merge.body.state.post_state_hash,
+            "starved"
+        )
+        .await
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
