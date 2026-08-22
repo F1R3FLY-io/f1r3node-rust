@@ -90,6 +90,66 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     cp ./build/${TARGET_TRIPLE}/release/node /build/node_binary && \
     chmod +x /build/node_binary
 
+# Fetch PeTTa (MeTTa interpreter, required at runtime for the `rho:petta:execute`
+# system service).
+#
+# PeTTa is pure Prolog and is not needed to compile the node, so cloning after
+# the cargo build keeps the build cache intact.
+# 
+# Bump PETTA_REF to upgrade the bundled interpreter.
+ARG PETTA_REPO=https://github.com/trueagi-io/PeTTa.git
+ARG PETTA_REF=52e85c6d02d016a4734559a64b2a69e8fdc385fc
+RUN git clone "${PETTA_REPO}" /build/PeTTa && \
+    git -C /build/PeTTa checkout --detach "${PETTA_REF}" && \
+    rm -rf /build/PeTTa/.git
+
+# ============================================================================
+# Stage: swipl-extract - Upstream SWI-Prolog with the janus (Python) bridge
+# ============================================================================
+# PeTTa's `src/metta.pl` requires `library(janus)` and the full JSON libraries.
+# Debian bookworm only ships SWI-Prolog 9.0.4, which predates janus and omits
+# those libraries, so `rho:petta:execute` fails on the packaged interpreter.
+# The official `swipl` image ships a recent build (>= 9.3.x, currently 10.x) with
+# janus included; we copy its interpreter and library into the images that need
+# to actually execute MeTTa (the runtime image and the petta-test stage).
+FROM swipl:stable AS swipl-extract
+
+# ============================================================================
+# Optional stage: petta-test - Run the PeTTa/MeTTa test suite in-container
+# ============================================================================
+# NOT part of the default build (the runtime stage below stays the default
+# target). It reuses the Rust toolchain, the workspace source, and the pinned
+# PeTTa already present in the builder; only `swipl` is added on top. Build and
+# run it explicitly:
+#   docker build --target petta-test -t f1r3fly-petta-test -f node/Dockerfile .
+#   docker run --rm f1r3fly-petta-test
+# Add `-v petta-cargo:/usr/local/cargo/registry -v petta-target:/build/target`
+# to the run to cache crates and compiled artifacts across repeated runs.
+FROM builder AS petta-test
+
+# The Debian swi-prolog package pulls in the shared libraries the interpreter
+# needs; python3/libpython3.11 back the janus bridge. The interpreter itself is
+# then overlaid with the janus-capable build below.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    swi-prolog \
+    python3 \
+    libpython3.11 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Overlay the packaged 9.0.4 with the upstream janus-capable SWI-Prolog so the
+# tests exercise the same interpreter the runtime image ships.
+COPY --from=swipl-extract /usr/lib/swipl /usr/lib/swipl
+COPY --from=swipl-extract /usr/bin/swipl /usr/bin/swipl
+
+# The test script defaults PETTA_PATH to <repo-root>/PeTTa (i.e. /build/PeTTa),
+# which is exactly where the builder cloned it; set it explicitly anyway.
+ENV PETTA_PATH=/build/PeTTa
+WORKDIR /build
+
+# gxhash (via the PathMap crate) needs AES CPU features to compile, matching the
+# release build above. +sse2 is x86-only; on aarch64 only +aes is valid.
+ENTRYPOINT ["bash", "-c", "case \"$(uname -m)\" in aarch64) export RUSTFLAGS='-C target-feature=+aes' ;; *) export RUSTFLAGS='-C target-feature=+aes,+sse2' ;; esac; exec rholang/tests/RUN_PETTA_TESTS.sh"]
+
 # ============================================================================
 # Stage 2: Runtime base - Install runtime dependencies (cached independently)
 # ============================================================================
@@ -102,12 +162,19 @@ ARG PROFILING_BUILD=0
 
 # Install runtime dependencies
 # Note: grpcurl and jq for healthcheck (matching build.sbt healthcheck)
+# Note: swi-prolog is required for PeTTa/MeTTa contract execution. The Debian
+#       package provides the interpreter's shared-library dependencies; the
+#       interpreter binary/library are overlaid with the janus-capable upstream
+#       build in the final stage. python3/libpython3.11 back the janus bridge.
 RUN apt-get update && apt-get install -y \
     ca-certificates \
     libssl3 \
     libc6 \
     libjemalloc2 \
     curl \
+    python3 \
+    libpython3.11 \
+    swi-prolog \
     && if [ "${PROFILING_BUILD}" = "1" ]; then apt-get install -y linux-perf procps binutils; fi \
     && rm -rf /var/lib/apt/lists/*
 
@@ -156,6 +223,21 @@ RUN mkdir -p /opt/docker/bin
 
 COPY --from=builder --chmod=755 /build/node_binary /opt/docker/bin/node
 
+# Copy PeTTa (cloned in the builder stage) for MeTTa contract execution at runtime
+COPY --from=builder /build/PeTTa ./PeTTa
+
+# Overlay the packaged SWI-Prolog with the upstream janus-capable build so that
+# PeTTa's `use_module(library(janus))` (and the JSON libraries) resolve. The
+# Debian swi-prolog installed in runtime-base still supplies the required shared
+# libraries; here we only replace the interpreter binary and its library home.
+COPY --from=swipl-extract /usr/lib/swipl /usr/lib/swipl
+COPY --from=swipl-extract /usr/bin/swipl /usr/bin/swipl
+
+# Build-time self-test: fail the build if janus or the JSON libraries are missing.
+RUN /usr/bin/swipl -g "use_module(library(janus)), py_call(builtins:int('5'), X), X == 5, halt." -t "halt(1)" && \
+    /usr/bin/swipl -g "use_module(library(http/json)), halt." -t "halt(1)" && \
+    echo "=== SWI-Prolog/janus self-test PASSED ==="
+
 # Create entrypoint script for Rust (adapted from docker-entrypoint.sh)
 # Copy the Rust-specific entrypoint script from node directory
 # Note: This Dockerfile should be built from workspace root
@@ -185,6 +267,9 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
 ARG VERSION=unknown
 LABEL maintainer="F1r3fly.io LCA https://f1r3fly.io/"
 LABEL version="0.4.45"
+
+# Set PETTA_PATH environment variable for MeTTa contract execution
+ENV PETTA_PATH=/opt/docker/PeTTa
 
 # Switch to daemon user (matching build.sbt: daemonUser in Docker := "daemon")
 USER daemon

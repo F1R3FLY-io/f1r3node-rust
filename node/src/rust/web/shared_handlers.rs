@@ -413,6 +413,7 @@ fn classify_interpreter_error(ie: &InterpreterError) -> (StatusCode, &'static st
         OpenAIError(_)
         | OllamaError(_)
         | ChromaDBError(_)
+        | SwiplError(_)
         | NonDeterministicProcessFailure { .. }
         | ProduceFailureWithOutput { .. } => {
             (S::BAD_GATEWAY, "external_service_error", ie.to_string())
