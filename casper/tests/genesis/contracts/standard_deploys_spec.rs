@@ -22,9 +22,14 @@ fn should_print_public_keys_used_for_signing_standard_blessed_contracts() {
     // invariant — an accidental removal or duplication of a key would
     // silently shift genesis state.  Bump this on purpose when adding a
     // new blessed contract.
+    //
+    // Bumped 14 -> 16 in the cost-accounted-rho merge (2026-08-21):
+    // the merge added `CAPABILITIES_REGISTRY_PUB_KEY` and
+    // `EXCHANGE_PUB_KEY` from cost-accounted to fileio's existing
+    // blessed-key set (FS_GENERATOR_PUB_KEY was already present).
     assert_eq!(
         standard_deploys::system_public_keys().len(),
-        14,
+        16,
         "blessed-key count changed unexpectedly"
     );
 }
@@ -245,11 +250,16 @@ fn fs_generator_appears_in_deploy_sequence_after_registry() {
     );
     // Count invariant: with empty vault set the sequence is exactly:
     // registry, versioned_registry, list_ops, either, non_negative_number,
-    // make_mint, auth_key, system_vault, multi_sig_system_vault, stack,
-    // token_metadata, fs_generator, pos_generator = 13.  Bump on purpose.
+    // make_mint, exchange, auth_key, system_vault, multi_sig_system_vault,
+    // stack, token_metadata, fs_generator, pos_generator,
+    // capabilities_registry = 15.  Bump on purpose.
+    //
+    // Bumped 13 -> 15 in the cost-accounted-rho merge (2026-08-21):
+    // the merge added `exchange` (rho:lang:exchange) and
+    // `capabilities_registry` from cost-accounted to the sequence.
     assert_eq!(
         deploys.len(),
-        13,
+        15,
         "unexpected deploy count with empty vaults; someone changed the sequence"
     );
 }
