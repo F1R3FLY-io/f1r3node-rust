@@ -101,7 +101,8 @@ tasks:
   - id: TASK-013-3
     title: "Phase 2: canary publication (canary-publish.yml)"
     status: in_progress
-    branch: feature/release-process-implementation
+    branch: feature/release-phase2-canary-publication
+    blocked_by: []
     notes:
       - "Implemented as canary-publish.yml: workflow_run on CI completion publishes the immutable canary tag, prerelease, and Docker Hub images by digest from the run's own artifacts; ineligible runs skip cleanly. Evidence upgrades to publication_mode: canary via release-evidence.sh record-images. OCIR canary deferred to Phase 3 (registry location is secret material). Remains in_progress until the first live master run proves it."
     acceptance:
@@ -109,20 +110,34 @@ tasks:
   - id: TASK-013-4
     title: "Phase 3: artifact-based validation (candidate digest modes)"
     status: pending
+    branch: feature/release-phase3-candidate-digest-validation
+    blocked_by: [TASK-013-3]
     acceptance:
       - "merge-recovery-soak.yml and oci-validation.yml consume the candidate image digest without rebuilding"
   - id: TASK-013-5
     title: "Phase 4: stable promotion controller"
     status: pending
+    branch: feature/release-phase4-promotion-controller
+    blocked_by: [TASK-013-4]
     acceptance:
       - "release.yml performs exact-candidate promotion via release-gates.sh and promote-release.sh"
       - "A regress verdict publishes an OCI Notifications alert to the soak-report list and holds promotion for documented maintainer review"
   - id: TASK-013-6
     title: "Phase 5: Deployment Trains"
     status: pending
+    branch: feature/release-phase5-deployment-trains
+    blocked_by: [TASK-013-5]
+    notes:
+      - "2026-08-22: release-process.md Section 13.1.1 adds schema_version 2 stack manifests. A stack train binds the top-of-stack head as its one candidate; members merge bottom-up with true merge commits. Setup steps 3a to 3c and the validator depend on no earlier phase; canary, digest-bound gates, and promotion depend on Phases 2 to 4."
+      - "ci.yml runs pull-request CI only for bases dev, master, staging, trying, and feature/**. Stacked members that target another member's branch get no CI; train setup dispatches ci.yml on head_sha instead (Section 13.2)."
+      - "Rehearsal candidate for the stack-train step: the key-contention stack PR #299 -> #312 -> #319 -> #311 (EPIC-016), non-publishing, no version reservation."
     acceptance:
       - "deployment-train.yml validates manifests under .github/deployment-trains/ and starts trains"
-      - "One non-publishing rehearsal completes, then the cost-accounting train (PR #216) publishes first"
+      - "The validator accepts schema_version 1 and 2, and rejects a stack member with a foreign base, broken head ancestry, or a squash or rebase merge"
+      - "Setup dispatches ci.yml on head_sha when no successful run exists for that SHA and records the run identifier as CI evidence"
+      - "One non-publishing single-train rehearsal completes"
+      - "One non-publishing stack-train rehearsal completes on a stacked pull-request set"
+      - "The cost-accounting train (PR #216) publishes first"
   - id: TASK-013-7
     title: "Phase 6: Shard soak-in scheduling"
     status: in_progress
