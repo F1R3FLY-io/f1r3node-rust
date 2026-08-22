@@ -24,13 +24,50 @@ release_trigger = trigger(release)
 evidence_trigger = trigger(evidence)
 soakin_trigger = trigger(soakin)
 canary_trigger = trigger(canary)
-fail_if(release_trigger.keys != ["workflow_dispatch"], "release promotion must be manual only")
 fail_if(evidence_trigger.keys != ["workflow_dispatch"], "release evidence must be manual only")
-fail_if(release["permissions"] != {}, "release promotion must have no permissions")
 fail_if(evidence.dig("permissions", "actions") != "read", "release evidence must have read-only actions permission")
 fail_if(evidence.dig("permissions", "contents") != "read", "release evidence must have read-only contents permission")
-fail_if(release.fetch("jobs").keys != ["held"], "release promotion must contain only the held-state job")
-fail_if(release.dig("jobs", "held", "permissions"), "held release job cannot add permissions")
+
+# Promotion controller (Phase 4): manual start plus automatic resume from the
+# gate workflows, a read-only gates job, and a promote job that runs only on
+# a promotable verdict under the protected release-credentials environment.
+fail_if(release_trigger.keys.sort != ["workflow_dispatch", "workflow_run"], "release promotion must trigger on dispatch and gate workflow_run only")
+fail_if(release_trigger.dig("workflow_run", "types") != ["completed"], "release promotion must resume on completed gate runs")
+resume_from = release_trigger.dig("workflow_run", "workflows").to_a.sort
+fail_if(resume_from != ["Full OCI Validation", "Merge Recovery Soak", "Slashing test suite"], "release promotion must resume from exactly the three gate workflows")
+fail_if(release_trigger.dig("workflow_dispatch", "inputs", "candidate_tag", "required") != true, "release promotion dispatch must require candidate_tag")
+fail_if(release["permissions"] != {}, "release promotion must default to no permissions")
+fail_if(release.fetch("jobs").keys != ["gates", "promote"], "release promotion must contain the gates and promote jobs only")
+gates = release.dig("jobs", "gates")
+promote = release.dig("jobs", "promote")
+fail_if(gates["permissions"] != {"actions" => "read", "contents" => "read"}, "gates job must be read-only")
+fail_if(gates.key?("environment"), "gates job cannot use a protected environment")
+fail_if(promote["environment"] != "release-credentials", "promote job must use the release-credentials environment")
+fail_if(promote["needs"] != "gates", "promote job must depend on the gates job")
+fail_if(promote["if"].to_s != "needs.gates.outputs.promotable == 'true'", "promote job must run only on a promotable verdict")
+fail_if(promote.dig("permissions", "contents") != "write", "promote job needs contents: write at the job level")
+fail_if(promote.dig("permissions", "pull-requests") != "write", "promote job needs pull-requests: write for the next-version pull request")
+fail_if(promote.dig("permissions", "actions"), "promote job must not read Actions; the gates job supplies the evaluation")
+[gates, promote].each do |job|
+  checkout = job.fetch("steps").first
+  fail_if(checkout["uses"].to_s !~ /\Aactions\/checkout@[0-9a-f]{40}\z/, "release jobs must start with a pinned checkout")
+  fail_if(checkout.dig("with", "ref") != "${{ github.event.repository.default_branch }}", "release jobs must check out trusted controls from the default branch")
+  fail_if(checkout.dig("with", "persist-credentials") != false, "release checkouts must not persist credentials")
+  uses = job.fetch("steps").map { |step| step["uses"] }.compact.reject { |value| value.start_with?("./") }
+  fail_if(uses.any? { |value| !value.match?(/@[0-9a-f]{40}$/) }, "release promotion actions must use full commit SHAs")
+end
+release_text = File.read(release_path)
+fail_if(release_text.match?(/docker\s+build\b|cargo\s+build\b|buildx\s+build\b|docker\s+push\b/), "release promotion must never rebuild or push layers")
+fail_if(release_text.match?(/--force|-f\s+ref=refs\/tags.*--method\s+PATCH|git\s+push\s+.*(--force|-f\b)/), "release promotion must never move a tag")
+fail_if(!release_text.include?("imagetools create"), "release promotion must copy the candidate image by digest")
+fail_if(!release_text.include?("--verify-tag"), "release promotion must create the release on the verified tag")
+fail_if(release_text.include?("--prerelease"), "release promotion must create a stable release, not a prerelease")
+fail_if(!release_text.include?("release-gates.sh evaluate"), "release promotion must evaluate gates with release-gates.sh")
+fail_if(!release_text.include?("promote-release.sh plan"), "release promotion must execute a promote-release.sh plan")
+fail_if(!release_text.include?("promote-release.sh verify-binaries"), "release promotion must verify candidate binaries before publishing")
+gates_text = release_text[/  gates:.*?\n  promote:/m].to_s
+fail_if(gates_text.match?(/secrets\.(?!GITHUB_TOKEN)/), "gates job may use only the GITHUB_TOKEN")
+fail_if(gates_text.match?(/docker login|gh release create|git push|refs\/tags.*-f sha/), "gates job must not publish")
 generate = evidence.dig("jobs", "generate")
 fail_if(!generate.is_a?(Hash), "release evidence generate job is missing")
 expected_condition = "github.ref_name == github.event.repository.default_branch"
@@ -86,12 +123,13 @@ forbidden = [
   /release-action@/,
   /secrets\./,
 ]
-[release_path, evidence_path, soakin_path].each do |path|
+[evidence_path, soakin_path].each do |path|
   text = File.read(path)
   forbidden.each do |pattern|
     fail_if(text.match?(pattern), "#{path} contains publishing or credential access: #{pattern.source}")
   end
 end
 fail_if(File.read(canary_path).match?(/create-github-app-token|release-action@/), "canary publish must not mint tokens or use release actions")
+fail_if(release_text.match?(/create-github-app-token|release-action@/), "release promotion must not mint tokens or use release actions")
 puts "release workflow tests passed"
 RUBY

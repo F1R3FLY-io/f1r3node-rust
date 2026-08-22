@@ -1,26 +1,414 @@
 name: Release Promotion
 
+# Stable promotion controller (docs/release-process.md sections 8, 11, 15,
+# and 16). The `gates` job is read-only: it collects exact-SHA evidence for
+# one candidate and evaluates every stable gate. The `promote` job runs only
+# when every gate passes, under the protected release-credentials
+# environment, and executes the promotion plan without a rebuild.
+#
+# Resume: a completed gate workflow (OCI validation, slashing suite, or the
+# soak) re-enters this controller. The gate workflow publishes its evidence
+# as an asset on the candidate prerelease and names the candidate tag in a
+# `release-candidate` artifact. A gate run without that artifact is not a
+# candidate run and exits cleanly.
+
 on:
   workflow_dispatch:
+    inputs:
+      candidate_tag:
+        description: Candidate tag to promote (vMAJOR.MINOR.PATCH-canary.RUN)
+        required: true
+        type: string
+  workflow_run:
+    workflows:
+      - Full OCI Validation
+      - Slashing test suite
+      - Merge Recovery Soak
+    types: [completed]
 
 permissions: {}
 
+concurrency:
+  group: release-promotion
+  cancel-in-progress: false
+
+env:
+  DOCKER_IMAGE_NAME: f1r3flyindustries/f1r3fly-rust
+
 jobs:
-  held:
-    name: Stable Publication Disabled
+  gates:
+    name: Evaluate Promotion Gates
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 20
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      candidate_tag: ${{ steps.candidate.outputs.candidate_tag }}
+      promotable: ${{ steps.evaluate.outputs.promotable }}
     steps:
-      - name: Report migration state
+      - name: Checkout trusted release controls
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          path: ci-control
+          persist-credentials: false
+
+      - name: Resolve candidate tag
+        id: candidate
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          INPUT_TAG: ${{ inputs.candidate_tag }}
+          TRIGGER_RUN_ID: ${{ github.event.workflow_run.id }}
+          TRIGGER_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
         shell: bash -euo pipefail {0}
         run: |
+          tag="$INPUT_TAG"
+          if [ -z "$tag" ]; then
+            if [ "$TRIGGER_CONCLUSION" != "success" ]; then
+              echo "Gate workflow run ${TRIGGER_RUN_ID} did not succeed; nothing to resume."
+              echo "candidate_tag=" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            artifact_id="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${TRIGGER_RUN_ID}/artifacts?per_page=100" \
+              --jq '[.artifacts[] | select(.name == "release-candidate" and .expired == false)] | first | .id // empty')"
+            if [ -z "$artifact_id" ]; then
+              echo "Gate workflow run ${TRIGGER_RUN_ID} carries no release-candidate artifact; not a candidate run."
+              echo "candidate_tag=" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${artifact_id}/zip" > "$RUNNER_TEMP/release-candidate.zip"
+            unzip -q -o "$RUNNER_TEMP/release-candidate.zip" -d "$RUNNER_TEMP/release-candidate"
+            tag="$(jq -r '.candidate_tag' "$RUNNER_TEMP/release-candidate/release-candidate.json")"
+          fi
+          if ! [[ "$tag" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-canary\.[1-9][0-9]*$ ]]; then
+            echo "::error::candidate tag '$tag' is not a standard canary tag"
+            exit 1
+          fi
+          echo "candidate_tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Collect candidate evidence
+        if: steps.candidate.outputs.candidate_tag != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CANDIDATE_TAG: ${{ steps.candidate.outputs.candidate_tag }}
+        shell: bash -euo pipefail {0}
+        run: |
+          gates="$RUNNER_TEMP/gates"
+          mkdir -p "$gates"
+          # Every gate document lives on the candidate prerelease. The tag
+          # binds the documents to one source SHA; the evaluator rejects any
+          # document that names a different source or image.
+          gh release download "$CANDIDATE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --pattern 'release-evidence.json' \
+            --pattern 'release-evidence.json.sha256' \
+            --pattern 'oci-validation-evidence.json' \
+            --pattern 'soak-evidence.json' \
+            --pattern 'verdict.json' \
+            --pattern 'maintainer-review.json' \
+            --dir "$gates" || true
+          [ -f "$gates/release-evidence.json" ] || {
+            echo "::error::candidate ${CANDIDATE_TAG} has no release-evidence.json asset"
+            exit 1
+          }
+          (cd "$gates" && awk '{print $1 "  release-evidence.json"}' release-evidence.json.sha256 | sha256sum -c -) || {
+            echo "::error::release-evidence.json checksum does not match its published checksum"
+            exit 1
+          }
+          ci-control/.github/scripts/release-evidence.sh validate "$gates/release-evidence.json"
+          source_sha="$(jq -r '.source_sha' "$gates/release-evidence.json")"
+          ref_json="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${CANDIDATE_TAG}")"
+          tag_sha="$(jq -r '.object.sha' <<<"$ref_json")"
+          if [ "$(jq -r '.object.type' <<<"$ref_json")" = tag ]; then
+            tag_sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${tag_sha}" --jq '.object.sha')"
+          fi
+          [ "$tag_sha" = "$source_sha" ] || {
+            echo "::error::tag ${CANDIDATE_TAG} resolves to ${tag_sha}, not the evidence source ${source_sha}"
+            exit 1
+          }
+          ci_run_id="$(jq -r '.ci.run_id' "$gates/release-evidence.json")"
+          ci_attempt="$(jq -r '.ci.run_attempt' "$gates/release-evidence.json")"
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${ci_run_id}" > "$gates/ci-run.json"
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${ci_run_id}/attempts/${ci_attempt}/jobs?per_page=100" \
+            --paginate --jq '.jobs[]' | jq -s '{jobs: .}' > "$gates/ci-jobs.json"
+          # The slashing gate is the newest successful push run of the
+          # slashing workflow for the exact source SHA.
+          slashing_run_id="$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/slashing-tests.yml/runs?head_sha=${source_sha}&event=push&status=success&per_page=10" \
+            | jq -r --arg sha "$source_sha" '[.workflow_runs[] | select(.head_sha == $sha)] | sort_by(.run_number) | last | .id // empty')"
+          if [ -n "$slashing_run_id" ]; then
+            gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${slashing_run_id}" > "$gates/slashing-run.json"
+            slashing_attempt="$(jq -r '.run_attempt' "$gates/slashing-run.json")"
+            gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${slashing_run_id}/attempts/${slashing_attempt}/jobs?per_page=100" \
+              --paginate --jq '.jobs[]' | jq -s '{jobs: .}' > "$gates/slashing-jobs.json"
+          fi
+          ls -1 "$gates"
+
+      - name: Evaluate gates
+        id: evaluate
+        if: steps.candidate.outputs.candidate_tag != ''
+        env:
+          CANDIDATE_TAG: ${{ steps.candidate.outputs.candidate_tag }}
+        shell: bash -euo pipefail {0}
+        run: |
+          gates="$RUNNER_TEMP/gates"
+          report="$RUNNER_TEMP/gate-report.json"
+          status=0
+          ci-control/.github/scripts/release-gates.sh evaluate "$gates" "$GITHUB_REPOSITORY" "$report" || status=$?
+          ci-control/.github/scripts/release-gates.sh summarize "$report" >> "$GITHUB_STEP_SUMMARY"
+          case "$status" in
+            0) echo "promotable=true" >> "$GITHUB_OUTPUT" ;;
+            10) echo "promotable=false" >> "$GITHUB_OUTPUT" ;;
+            20)
+              echo "promotable=false" >> "$GITHUB_OUTPUT"
+              echo "::error::a promotion gate failed for ${CANDIDATE_TAG}; exact-SHA evidence cannot be overridden"
+              exit 1
+              ;;
+            *) exit "$status" ;;
+          esac
+
+      - name: Upload gate evaluation
+        if: steps.candidate.outputs.candidate_tag != ''
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: gate-evaluation
+          path: |
+            ${{ runner.temp }}/gates
+            ${{ runner.temp }}/gate-report.json
+          retention-days: 90
+          if-no-files-found: error
+
+  promote:
+    name: Promote Stable Release
+    needs: gates
+    if: needs.gates.outputs.promotable == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      pull-requests: write
+    environment: release-credentials
+    steps:
+      - name: Checkout trusted release controls
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          path: ci-control
+          persist-credentials: false
+
+      - name: Download gate evaluation
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: gate-evaluation
+          path: ${{ runner.temp }}/evaluation
+
+      - name: Observe stable state
+        id: state
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CANDIDATE_TAG: ${{ needs.gates.outputs.candidate_tag }}
+        shell: bash -euo pipefail {0}
+        run: |
+          evidence="$RUNNER_TEMP/evaluation/gates/release-evidence.json"
+          stable_tag="v$(jq -r '.target_version' "$evidence")"
+          echo "stable_tag=$stable_tag" >> "$GITHUB_OUTPUT"
+          stable_tags="$(gh api "repos/${GITHUB_REPOSITORY}/git/matching-refs/tags/v" --paginate --jq '.[].ref' \
+            | sed 's#^refs/tags/##' | jq -R . | jq -s '[.[] | select(test("^v(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$"))]')"
+          tag_json=null
+          if ref_json="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${stable_tag}" 2>/dev/null)"; then
+            object_sha="$(jq -r '.object.sha' <<<"$ref_json")"
+            if [ "$(jq -r '.object.type' <<<"$ref_json")" = tag ]; then
+              object_sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${object_sha}" --jq '.object.sha')"
+            fi
+            tag_json="$(jq -n --arg sha "$object_sha" '{sha: $sha}')"
+          fi
+          release_json=null
+          if rel="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${stable_tag}" 2>/dev/null)"; then
+            release_json="$(jq '{prerelease: .prerelease, assets: [.assets[].name]}' <<<"$rel")"
+          fi
+          registry_digest() {
+            local out
+            if out="$(docker buildx imagetools inspect "docker.io/${DOCKER_IMAGE_NAME}:$1" --format '{{json .Manifest.Digest}}' 2>&1)"; then
+              jq -r . <<<"$out"
+              return 0
+            fi
+            grep -qiE 'not found|manifest unknown|no such manifest|404' <<<"$out" && { echo null; return 0; }
+            echo "::error::registry inspection for ${DOCKER_IMAGE_NAME}:$1 failed: $out" >&2
+            return 1
+          }
+          stable_digest="$(registry_digest "$stable_tag")"
+          latest_digest="$(registry_digest latest)"
+          jq -n \
+            --argjson stable_tags "$stable_tags" \
+            --argjson stable_tag "$tag_json" \
+            --argjson stable_release "$release_json" \
+            --arg stable_digest "$stable_digest" \
+            --arg latest_digest "$latest_digest" '{
+              stable_tags: $stable_tags,
+              stable_tag: $stable_tag,
+              stable_release: $stable_release,
+              registry: {
+                stable_tag_digest: (if $stable_digest == "null" then null else $stable_digest end),
+                latest_digest: (if $latest_digest == "null" then null else $latest_digest end)
+              }
+            }' > "$RUNNER_TEMP/stable-state.json"
+          cat "$RUNNER_TEMP/stable-state.json"
+
+      - name: Plan promotion
+        id: plan
+        shell: bash -euo pipefail {0}
+        run: |
+          ci-control/.github/scripts/promote-release.sh plan \
+            "$RUNNER_TEMP/evaluation/gates/release-evidence.json" \
+            "$RUNNER_TEMP/evaluation/gate-report.json" \
+            "$RUNNER_TEMP/stable-state.json" \
+            "$RUNNER_TEMP/promotion-plan.json"
+          for key in create_tag create_release copy_image move_latest; do
+            echo "$key=$(jq -r ".actions.$key" "$RUNNER_TEMP/promotion-plan.json")" >> "$GITHUB_OUTPUT"
+          done
+          echo "next_version=$(jq -r '.next_version' "$RUNNER_TEMP/promotion-plan.json")" >> "$GITHUB_OUTPUT"
+          jq . "$RUNNER_TEMP/promotion-plan.json"
+
+      - name: Download candidate binaries
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CANDIDATE_TAG: ${{ needs.gates.outputs.candidate_tag }}
+        shell: bash -euo pipefail {0}
+        run: |
+          mkdir -p "$RUNNER_TEMP/binaries"
+          gh release download "$CANDIDATE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --pattern 'f1r3node-linux-*' \
+            --dir "$RUNNER_TEMP/binaries"
+          ci-control/.github/scripts/promote-release.sh verify-binaries \
+            "$RUNNER_TEMP/promotion-plan.json" "$RUNNER_TEMP/binaries"
+
+      - name: Create immutable stable tag
+        if: steps.plan.outputs.create_tag == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash -euo pipefail {0}
+        run: |
+          # The planner proved the tag absent; a concurrent creation between
+          # the plan and this step still fails closed here.
+          gh api "repos/${GITHUB_REPOSITORY}/git/refs" \
+            -f ref="refs/tags/$(jq -r '.stable_tag' "$RUNNER_TEMP/promotion-plan.json")" \
+            -f sha="$(jq -r '.source_sha' "$RUNNER_TEMP/promotion-plan.json")" >/dev/null
+
+      - name: Log in to Docker Hub
+        if: steps.plan.outputs.copy_image == 'true' || steps.plan.outputs.move_latest == 'true'
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        shell: bash -euo pipefail {0}
+        run: |
+          printf '%s' "$DOCKERHUB_TOKEN" | docker login --username "$DOCKERHUB_USERNAME" --password-stdin
+
+      - name: Copy candidate image to the stable tag
+        id: image
+        shell: bash -euo pipefail {0}
+        run: |
+          plan="$RUNNER_TEMP/promotion-plan.json"
+          candidate="$(jq -r '.image.candidate_index' "$plan")"
+          stable_ref="$(jq -r '.image.stable_reference' "$plan")"
+          expected="$(jq -r '.image.index_digest' "$plan")"
+          if [ "$(jq -r '.actions.copy_image' "$plan")" = true ]; then
+            # imagetools create re-points a tag at an existing index by
+            # digest. No layer is rebuilt or re-pushed.
+            docker buildx imagetools create --tag "$stable_ref" "$candidate"
+          fi
+          actual="$(docker buildx imagetools inspect "$stable_ref" --format '{{json .Manifest.Digest}}' | jq -r .)"
+          [ "$actual" = "$expected" ] || {
+            echo "::error::stable image ${stable_ref} resolves to ${actual}, not the candidate index ${expected}"
+            exit 1
+          }
+          echo "stable_digest=$actual" >> "$GITHUB_OUTPUT"
+
+      - name: Publish stable evidence and release
+        if: steps.plan.outputs.create_release == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          STABLE_DIGEST: ${{ steps.image.outputs.stable_digest }}
+        shell: bash -euo pipefail {0}
+        run: |
+          plan="$RUNNER_TEMP/promotion-plan.json"
+          stable_tag="$(jq -r '.stable_tag' "$plan")"
+          assets="$RUNNER_TEMP/stable-assets"
+          mkdir -p "$assets"
+          cp "$RUNNER_TEMP/binaries/"f1r3node-linux-* "$assets/"
+          (cd "$assets" && sha256sum f1r3node-linux-amd64 f1r3node-linux-arm64 > checksums.txt)
+          ci-control/.github/scripts/promote-release.sh stable-evidence \
+            "$plan" "$STABLE_DIGEST" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            "$assets/stable-release-evidence.json"
+          cp "$RUNNER_TEMP/evaluation/gates/release-evidence.json" "$assets/release-evidence.json"
+          cp "$RUNNER_TEMP/evaluation/gate-report.json" "$assets/gate-report.json"
+          (cd "$assets" && sha256sum stable-release-evidence.json > stable-release-evidence.json.sha256)
+          gh release create "$stable_tag" \
+            --repo "$GITHUB_REPOSITORY" \
+            --verify-tag \
+            --latest \
+            --title "$stable_tag" \
+            --notes "Stable release promoted from candidate $(jq -r '.candidate_tag' "$plan") at source $(jq -r '.source_sha' "$plan"). See stable-release-evidence.json and gate-report.json for the exact-SHA gate record." \
+            "$assets/f1r3node-linux-amd64" \
+            "$assets/f1r3node-linux-arm64" \
+            "$assets/checksums.txt" \
+            "$assets/release-evidence.json" \
+            "$assets/gate-report.json" \
+            "$assets/stable-release-evidence.json" \
+            "$assets/stable-release-evidence.json.sha256"
+
+      - name: Move the latest alias
+        if: steps.plan.outputs.move_latest == 'true'
+        shell: bash -euo pipefail {0}
+        run: |
+          # Aliases move only after the stable tag, image, and release exist.
+          plan="$RUNNER_TEMP/promotion-plan.json"
+          docker buildx imagetools create \
+            --tag "$(jq -r '.image.latest_reference' "$plan")" \
+            "$(jq -r '.image.candidate_index' "$plan")"
+
+      - name: Log out of Docker Hub
+        if: always()
+        shell: bash -euo pipefail {0}
+        run: docker logout || true
+
+      - name: Open the next-version pull request
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NEXT_VERSION: ${{ steps.plan.outputs.next_version }}
+          STABLE_TAG: ${{ steps.state.outputs.stable_tag }}
+        shell: bash -euo pipefail {0}
+        run: |
+          branch="chore/release-next-version-${NEXT_VERSION}"
+          if gh pr list --repo "$GITHUB_REPOSITORY" --head "$branch" --state open --json number --jq 'length' | grep -qx 1; then
+            echo "Next-version pull request for ${NEXT_VERSION} already exists."
+            exit 0
+          fi
+          git clone --quiet --depth 1 --branch dev \
+            "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "$RUNNER_TEMP/next"
+          ci-control/.github/scripts/promote-release.sh bump-next-version "$RUNNER_TEMP/next" "$NEXT_VERSION"
+          cd "$RUNNER_TEMP/next"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -q -b "$branch"
+          git commit -q -am "chore(release): prepare v${NEXT_VERSION} source version"
+          git push -q origin "$branch"
+          gh pr create --repo "$GITHUB_REPOSITORY" --base dev --head "$branch" \
+            --title "chore(release): prepare v${NEXT_VERSION} source version" \
+            --body "Opened by the promotion controller after ${STABLE_TAG} was published. Bumps node/Cargo.toml, node/Dockerfile, and Cargo.lock to ${NEXT_VERSION} so the next master run is release-eligible (docs/release-process.md section 5)."
+
+      - name: Report promotion
+        shell: bash -euo pipefail {0}
+        run: |
+          plan="$RUNNER_TEMP/promotion-plan.json"
           {
-            echo "### Stable publication is disabled"
+            echo "### Stable release promoted"
             echo
-            echo "The release process is in its evidence-only migration phase."
-            echo "This workflow did not create a commit, tag, release, package, or image."
+            printf -- '- Stable tag: `%s`\n' "$(jq -r '.stable_tag' "$plan")"
+            printf -- '- Candidate: `%s`\n' "$(jq -r '.candidate_tag' "$plan")"
+            printf -- '- Source SHA: `%s`\n' "$(jq -r '.source_sha' "$plan")"
+            printf -- '- Image: `%s`\n' "$(jq -r '.image.repository + "@" + .image.index_digest' "$plan")"
+            printf -- '- Next version: `%s`\n' "$(jq -r '.next_version' "$plan")"
             echo
-            echo "After stable promotion is enabled, each stable release enters the"
-            echo "Shard soak-in phase before its nodes gain the Anchor role."
-            echo "docs/release-process.md section 12 defines the Shard soak-in phase."
+            echo "The release now enters the Shard soak-in phase (docs/release-process.md section 12)."
           } >> "$GITHUB_STEP_SUMMARY"
