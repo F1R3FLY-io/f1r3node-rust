@@ -206,6 +206,7 @@ The method of this document also follows the CBC spirit. CBC derives protocols s
 | 2026-08-20 | Phase 2: B1 merged-frontier packaging with rotating-proposer evidence | Implemented in PR #312. Liveness guarantee pending ratification. |
 | 2026-08-22 | Prior rejection strictly outranks cost, and cost decides equal-count cases | Ratified for phase 1. |
 | 2026-08-22 | Each signature owns its count, and dependency-chain priority uses the maximum member count | Ratified for phase 1. |
+| 2026-08-22 | Rejection-option selection ranks options by their highest member count first, then by the count total, then by cost. A coalition of low-count chains cannot outweigh one chain with a higher count. | Implemented in PR #299 after multi-agent review. Pending ratification. |
 | 2026-08-22 | User Contract Concurrency is waived as a PR #299 merge gate | Ratified with a separate enablement and assertion follow-up. |
 | 2026-08-22 | Four production artifacts form the mandatory Correct by Construction scope | Ratified. Formal discharge remains in PR #311. |
 | 2026-08-22 | The scan benchmark uses the 256-block floor limit, 512 visible blocks, and a 10-percent regression limit | Ratified. Measurement remains a merge gate. |
