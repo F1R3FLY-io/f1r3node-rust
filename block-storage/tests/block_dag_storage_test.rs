@@ -1432,3 +1432,206 @@ async fn a_lower_finalization_round_does_not_block_a_later_raise() {
         "the highest value still stands"
     );
 }
+
+/// A restored (truncated) DAG holds a window of blocks whose deepest
+/// parent references point below the truncation boundary, and LFS
+/// populate marks only the ANCHOR finalized — the window itself, the
+/// anchor's own ancestry included, carries no finality marks. Adopting a
+/// new LFB above the anchor must therefore walk unmarked window branches,
+/// and that walk must treat an unheld parent as the horizon (everything
+/// below the boundary is below the anchor's floor, i.e. settled), never
+/// as an error: erroring aborts the adoption and wedges the finalizer
+/// forever while the chain grows past it.
+#[test]
+fn truncated_window_finalization_walk_terminates_at_the_horizon() {
+    init_logger();
+    let rt = Runtime::new().unwrap();
+    rt.block_on(async {
+        let mut kvm = InMemoryStoreManager::new();
+        let dag_storage = BlockDagKeyValueStorage::new(&mut kvm).await.unwrap();
+
+        // Never inserted: the parent reference below the truncation boundary.
+        let below_boundary = get_random_block(
+            Some(2),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(vec![]),
+            None,
+            None,
+            None,
+            Some(vec![]),
+            None,
+            None,
+        );
+
+        let make = |number: i64, parents: Vec<BlockHash>| {
+            get_random_block(
+                Some(number),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                Some(parents),
+                None,
+                None,
+                None,
+                Some(vec![]),
+                None,
+                None,
+            )
+        };
+        let b3 = make(3, vec![below_boundary.block_hash.clone()]);
+        let b4 = make(4, vec![b3.block_hash.clone()]);
+        let anchor = make(5, vec![b4.block_hash.clone()]);
+        // Multi-parent: the finalized anchor plus an unmarked window block,
+        // so the marking walk cannot stop at the anchor alone.
+        let b6 = make(6, vec![anchor.block_hash.clone(), b4.block_hash.clone()]);
+
+        // LFS populate order: anchor (Approved — the only finality mark),
+        // then the window, newest to oldest, then post-restore admission.
+        let mode_approved =
+            block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Approved;
+        let mode_normal = block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Normal;
+        dag_storage.insert(&anchor, mode_approved).unwrap();
+        dag_storage.insert(&b4, mode_normal).unwrap();
+        dag_storage.insert(&b3, mode_normal).unwrap();
+        dag_storage.insert(&b6, mode_normal).unwrap();
+
+        let result = dag_storage
+            .record_directly_finalized(b6.block_hash.clone(), 1.0, |_| async { Ok(()) })
+            .await;
+        assert!(
+            result.is_ok(),
+            "adopting an LFB above a truncated window must terminate the \
+             finalized-ancestry marking walk at the horizon, not abort on the \
+             unheld parent: {:?}",
+            result.err()
+        );
+
+        let dag = dag_storage.get_representation().unwrap();
+        assert_eq!(
+            dag.last_finalized_block(),
+            b6.block_hash,
+            "the adoption must land: the LFB pointer moves to the new block"
+        );
+        for (name, hash) in [
+            ("b6", &b6.block_hash),
+            ("b4", &b4.block_hash),
+            ("b3", &b3.block_hash),
+        ] {
+            assert!(
+                dag.is_finalized(hash),
+                "{name} is held ancestry of the adopted LFB and must be marked finalized"
+            );
+        }
+        assert!(
+            !dag.contains(&below_boundary.block_hash),
+            "the below-boundary reference stays unheld: the walk terminates \
+             there without inventing an entry for it"
+        );
+    });
+}
+
+/// The newly-bonded latest-message placeholder must be network-uniform:
+/// every node seeds the same slot with the same value, or the joiner's
+/// first self-justifying proposal reads as an equivocation on whichever
+/// side seeded differently. Ceremony nodes derive genesis from their
+/// height-0 block; a truncated node holds no height-0 block and must use
+/// the LEARNED genesis hash — never the block that happens to be inserted
+/// at seeding time, which is right on no node.
+#[test]
+fn newly_bonded_placeholder_is_the_learned_genesis_on_a_truncated_dag() {
+    init_logger();
+    let rt = Runtime::new().unwrap();
+    rt.block_on(async {
+        let mut kvm = InMemoryStoreManager::new();
+        let dag_storage = BlockDagKeyValueStorage::new(&mut kvm).await.unwrap();
+
+        let make = |number: i64, parents: Vec<BlockHash>| {
+            get_random_block(
+                Some(number),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                Some(parents),
+                None,
+                None,
+                None,
+                Some(vec![]),
+                None,
+                None,
+            )
+        };
+
+        // Truncated window: the anchor's own parent is never inserted, and
+        // no height-0 block exists anywhere in this DAG.
+        let below_boundary = make(4, vec![]);
+        let anchor = make(5, vec![below_boundary.block_hash.clone()]);
+        dag_storage
+            .insert(
+                &anchor,
+                block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Approved,
+            )
+            .unwrap();
+
+        // The genesis hash this node learned during restore.
+        let genesis = make(0, vec![]);
+        dag_storage
+            .record_genesis_hash(genesis.block_hash.clone())
+            .unwrap();
+
+        // A bonding block: its bonds name a validator that has no latest
+        // message and appears in no justification — the newly-bonded case.
+        let new_validator = Validator::from(vec![7u8; 65]);
+        let bonding_block = get_random_block(
+            Some(6),
+            None,
+            None,
+            None,
+            Some(Validator::from(vec![9u8; 65])),
+            None,
+            None,
+            Some(vec![anchor.block_hash.clone()]),
+            Some(vec![]),
+            None,
+            None,
+            Some(vec![models::rust::casper::protocol::casper_message::Bond {
+                validator: new_validator.clone(),
+                stake: 100,
+            }]),
+            None,
+            None,
+        );
+        assert_ne!(
+            bonding_block.sender, new_validator,
+            "fixture: the joiner must not be the inserting block's sender"
+        );
+        dag_storage
+            .insert(
+                &bonding_block,
+                block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Normal,
+            )
+            .unwrap();
+
+        let dag = dag_storage.get_representation().unwrap();
+        assert_eq!(
+            dag.latest_message_hash(&new_validator),
+            Some(genesis.block_hash.clone()),
+            "the newly-bonded slot on a truncated node must be seeded with the \
+             learned genesis hash, not with whatever block was being inserted \
+             (got {:?}, inserting block was {})",
+            dag.latest_message_hash(&new_validator)
+                .map(|h| hex::encode(&h)),
+            hex::encode(&bonding_block.block_hash),
+        );
+    });
+}

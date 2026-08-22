@@ -1824,6 +1824,65 @@ mod tests {
             assert!(!result.bug_failure);
         }
 
+        /// A `MissingBlock` propose failure is availability (the proposer
+        /// requested the named block; the gap heals): it must retry on the
+        /// normal heartbeat cadence, never enter the bug-failure backoff
+        /// escalation that turned run 18's gap crawl into a shard freeze.
+        #[tokio::test]
+        async fn do_heartbeat_check_treats_missing_block_propose_failure_as_non_bug() {
+            use casper::rust::blocks::proposer::propose_result::{ProposeFailure, ProposeStatus};
+            use casper::rust::blocks::proposer::proposer::ProposerResult;
+
+            let validator = create_test_validator_identity();
+            let validator_id = validator.public_key.bytes.clone();
+            let mut snapshot =
+                casper::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
+            casper::rust::casper::test_helpers::TestCasperWithSnapshot::bond_validator_in_snapshot(
+                &mut snapshot,
+                validator_id.into(),
+            );
+            let lfb = create_lfb_with_age(60000);
+            let casper: Arc<dyn MultiParentCasper + Send + Sync> = Arc::new(
+                casper::rust::casper::test_helpers::TestCasperWithSnapshot::new(snapshot, lfb),
+            );
+            let propose_func: Arc<ProposeFunction> = Arc::new(move |_casper, _is_async| {
+                Box::pin(async {
+                    Ok(ProposerResult::Failure(
+                        ProposeStatus::Failure(ProposeFailure::MissingBlock(
+                            prost::bytes::Bytes::from(vec![0x5a; 32]),
+                        )),
+                        3,
+                    ))
+                })
+            });
+            let config = HeartbeatConf {
+                enabled: true,
+                check_interval: Duration::from_secs(1),
+                max_lfb_age: Duration::from_secs(1),
+                self_propose_cooldown: Duration::from_secs(15),
+                finality_progress_timeout: Duration::from_secs(30),
+                ..HeartbeatConf::default()
+            };
+            let mut finality_progress = FinalityProgress::new(Instant::now());
+
+            let result = do_heartbeat_check(
+                casper,
+                &*propose_func,
+                &validator,
+                &config,
+                false,
+                false,
+                &mut finality_progress,
+            )
+            .await
+            .expect("heartbeat check");
+
+            assert!(
+                !result.bug_failure,
+                "MissingBlock must not escalate the heartbeat backoff"
+            );
+        }
+
         #[tokio::test]
         async fn failed_convergence_propose_does_not_consume_recovery_budget() {
             let validator = create_test_validator_identity();

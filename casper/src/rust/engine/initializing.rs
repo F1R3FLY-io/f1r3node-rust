@@ -154,6 +154,52 @@ fn apply_floor_cache_entries(
     Ok(written)
 }
 
+/// Land the shipped genesis block on a truncated node: verified against the
+/// learned register (claimed hash equals the register AND the content
+/// re-hashes to it), then stored and inserted finalized. Holding genesis
+/// makes this node's latest-message structures identical to a ceremony
+/// node's — the newly-bonded sentinel points at it and the propose snapshot
+/// dereferences every slot. Refusal is not an error: the restore proceeds on
+/// the hash-only register (slot seeding stays network-uniform); only this
+/// node's ability to propose as a fresh validator degrades, loudly, until a
+/// peer ships a verifiable copy.
+fn receive_shipped_genesis(
+    block_dag_storage: &BlockDagKeyValueStorage,
+    block_store: &KeyValueBlockStore,
+    learned_genesis_hash: &BlockHash,
+    genesis_block: BlockMessage,
+) -> Result<bool, CasperError> {
+    if genesis_block.block_hash != *learned_genesis_hash {
+        tracing::warn!(
+            claimed = %PrettyPrinter::build_string_bytes(&genesis_block.block_hash),
+            learned = %PrettyPrinter::build_string_bytes(learned_genesis_hash),
+            "shipped genesis claims a different hash than the learned register; refusing"
+        );
+        return Ok(false);
+    }
+    let computed = proto_util::hash_block(&genesis_block);
+    if computed != *learned_genesis_hash {
+        tracing::warn!(
+            computed = %PrettyPrinter::build_string_bytes(&computed),
+            learned = %PrettyPrinter::build_string_bytes(learned_genesis_hash),
+            "shipped genesis content does not re-hash to the learned register; refusing"
+        );
+        return Ok(false);
+    }
+    if block_dag_storage
+        .get_representation()?
+        .contains(&genesis_block.block_hash)
+    {
+        return Ok(true);
+    }
+    block_store.put_block_message(&genesis_block)?;
+    block_dag_storage.insert(
+        &genesis_block,
+        block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Approved,
+    )?;
+    Ok(true)
+}
+
 impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
     /// Scala equivalent: Constructor for `Initializing` class
     #[allow(clippy::too_many_arguments)]
@@ -1039,11 +1085,35 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
                     .await?;
                 match tokio::time::timeout(RESPONSE_TIMEOUT, rx.recv()).await {
                     Ok(Some(response)) => {
+                        // The genesis hash rides the same trusted exchange:
+                        // a truncated node holds no height-0 block, and the
+                        // newly-bonded latest-message placeholder must be
+                        // this network-uniform value on every node. The block
+                        // body lands too (verified against the hash) so this
+                        // node's latest-message structures stay identical to
+                        // a ceremony node's.
+                        if !response.genesis_hash.is_empty() {
+                            self.block_dag_storage
+                                .record_genesis_hash(response.genesis_hash.clone())?;
+                        }
+                        let genesis_landed = match response.genesis_block {
+                            Some(block) if !response.genesis_hash.is_empty() => {
+                                receive_shipped_genesis(
+                                    &self.block_dag_storage,
+                                    &self.block_store,
+                                    &response.genesis_hash,
+                                    block,
+                                )?
+                            }
+                            _ => false,
+                        };
                         let written =
                             apply_floor_cache_entries(&dag, &solicited, response.entries)?;
                         tracing::info!(
                             written,
                             requested = hashes.len(),
+                            genesis_learned = !response.genesis_hash.is_empty(),
+                            genesis_landed,
                             "Floor cache received: restored blocks carry their finality"
                         );
                         return Ok(());
@@ -1909,5 +1979,123 @@ mod tests {
             "highest height first: inserting descending keeps each sender's latest \
              message at its highest sequence number"
         );
+    }
+
+    /// The shipped genesis must land only when it verifies against the
+    /// learned register: claimed hash equals the register AND the content
+    /// re-hashes to it. A verified copy is stored and inserted finalized
+    /// without moving the LFB off the anchor; anything else is refused and
+    /// leaves no trace.
+    #[test]
+    fn shipped_genesis_lands_verified_and_finalized_without_moving_the_lfb() {
+        use block_storage::rust::dag::block_dag_key_value_storage::{
+            BlockDagKeyValueStorage, InsertMode,
+        };
+        use models::rust::block_implicits::get_random_block;
+        use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let mut kvm = InMemoryStoreManager::new();
+            let dag_storage = BlockDagKeyValueStorage::new(&mut kvm).await.unwrap();
+            let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm).await.unwrap();
+
+            let anchor = get_random_block(
+                Some(5),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                Some(vec![BlockHash::from(vec![0xaa; 32])]),
+                None,
+                None,
+                None,
+                Some(vec![]),
+                None,
+                None,
+            );
+            dag_storage.insert(&anchor, InsertMode::Approved).unwrap();
+
+            let mut genesis = get_random_block(
+                Some(0),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                Some(vec![]),
+                Some(vec![]),
+                None,
+                None,
+                Some(vec![]),
+                None,
+                None,
+            );
+            genesis.block_hash = crate::rust::util::proto_util::hash_block(&genesis);
+            dag_storage
+                .record_genesis_hash(genesis.block_hash.clone())
+                .unwrap();
+
+            let landed = receive_shipped_genesis(
+                &dag_storage,
+                &block_store,
+                &genesis.block_hash.clone(),
+                genesis.clone(),
+            )
+            .expect("receive_shipped_genesis");
+            assert!(landed, "a verified genesis copy must land");
+
+            let dag = dag_storage.get_representation().unwrap();
+            assert!(dag.contains(&genesis.block_hash), "genesis enters the DAG");
+            assert!(
+                dag.is_finalized(&genesis.block_hash),
+                "genesis is finalized by definition"
+            );
+            assert_eq!(
+                dag.last_finalized_block(),
+                anchor.block_hash,
+                "landing genesis must not move the LFB off the anchor"
+            );
+            assert!(
+                block_store.get(&genesis.block_hash).unwrap().is_some(),
+                "the block body is stored"
+            );
+
+            // A copy whose CONTENT does not re-hash to the register is refused
+            // even though its claimed hash matches: the claimed field is what
+            // a lying peer controls.
+            let mut kvm2 = InMemoryStoreManager::new();
+            let dag_storage2 = BlockDagKeyValueStorage::new(&mut kvm2).await.unwrap();
+            let block_store2 = KeyValueBlockStore::create_from_kvm(&mut kvm2)
+                .await
+                .unwrap();
+            dag_storage2.insert(&anchor, InsertMode::Approved).unwrap();
+            dag_storage2
+                .record_genesis_hash(genesis.block_hash.clone())
+                .unwrap();
+            let mut forged = genesis.clone();
+            forged.shard_id = "forged".to_string();
+            forged.block_hash = genesis.block_hash.clone();
+            let landed = receive_shipped_genesis(
+                &dag_storage2,
+                &block_store2,
+                &genesis.block_hash.clone(),
+                forged,
+            )
+            .expect("refusal is not an error");
+            assert!(!landed, "a forged copy must be refused");
+            let dag2 = dag_storage2.get_representation().unwrap();
+            assert!(
+                !dag2.contains(&genesis.block_hash),
+                "a refused copy leaves no trace in the DAG"
+            );
+            assert!(
+                block_store2.get(&genesis.block_hash).unwrap().is_none(),
+                "a refused copy leaves no trace in the block store"
+            );
+        });
     }
 }

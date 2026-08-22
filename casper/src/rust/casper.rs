@@ -89,6 +89,11 @@ impl Display for DeployError {
 pub trait Casper {
     async fn get_snapshot(&self) -> Result<CasperSnapshot, CasperError>;
 
+    /// Ask peers for one named block, honoring `BlockNotHeld`'s contract
+    /// ("naming the missing block lets the caller fetch it and retry").
+    /// Defaulted to a no-op so effect mocks need no retriever wiring.
+    async fn request_block_from_peers(&self, _hash: BlockHash) -> Result<(), CasperError> { Ok(()) }
+
     fn contains(&self, hash: &BlockHash) -> bool;
 
     fn dag_contains(&self, hash: &BlockHash) -> bool;
@@ -162,6 +167,10 @@ pub trait MultiParentCasper: Casper + Send + Sync {
     async fn block_dag(&self) -> Result<KeyValueDagRepresentation, CasperError>;
 
     fn block_store(&self) -> &KeyValueBlockStore;
+
+    /// The shard's genesis block hash when this node holds or has learned it.
+    /// Defaulted to `None` so effect mocks need no genesis wiring.
+    fn genesis_block_hash(&self) -> Result<Option<BlockHash>, CasperError> { Ok(None) }
 
     /// Read-only access to the shard configuration. Used by APIs that need
     /// shard-scoped parameters such as `deploy_lifespan` to compute deploy
