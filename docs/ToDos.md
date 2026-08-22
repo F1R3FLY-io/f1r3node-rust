@@ -1279,6 +1279,8 @@ tasks:
     notes:
       - "_deploy_and_wait in test_web_api.py deploys @{2000+i}!(i) from one key in 16 tests. Only the second write to each channel is hazardous, so the failing test moves with xdist ordering."
       - "Cross-repo change. Commit in a system-integration session, then bump SYSTEM_INTEGRATION_REF at all three sites here."
+      - "Handed off 2026-08-22 as SI-TASK-016-2 in system-integration docs/ToDos.md: branch fix/shared-shard-fresh-deploy-channels off dev, PR title fix(shared): deploy onto a fresh channel per _deploy_and_wait call. The system-integration agent owns branch, commit, and PR; it posts the merged SHA back in that entry."
+      - "2026-08-22: system-integration PR #127 merged to dev (5e6dbfbb) and promoted to main via PR #128. SYSTEM_INTEGRATION_REF repinned at all three sites (.github/oci-validation.env, _integration-pipeline.yml, merge-recovery-soak.yml) from 56884ab to main 3e5b5eb89, which also carries the PR #129 shard-port reservation fixes. Three-run gate not yet run."
       - "This fixture fix hides the trigger. It does not repair the lineage-dependent semantics; TASK-016-1 and TASK-016-3 do."
     acceptance:
       - "Each _deploy_and_wait call produces onto a channel no other test in the shared shard writes"
