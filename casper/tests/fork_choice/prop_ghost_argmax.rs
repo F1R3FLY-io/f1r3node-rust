@@ -39,7 +39,7 @@
 //     "main parent = ghost head" bridge by computation). Stage 2 is a private fn, so its
 //     proptests live in-module in snapshot.rs's `mod tests` (`deploy_support_*`). The
 //     ESTIMATOR results asserted here are unaffected — see
-//     docs/theory/fork-choice/fork-choice-verification.md §6.2.
+//     docs/casper/theory/fork-choice/fork-choice-verification.md §6.2.
 //
 // LOCAL-ONLY verification (not consensus code). Run under `cargo test -p casper` and
 // gated by scripts/check-fork-choice-ALL.sh via the `fork_choice::` filter.

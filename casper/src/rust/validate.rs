@@ -1,6 +1,6 @@
 // References below to `formal/{rocq,tlaplus,sage}/slashing/`,
 // `FINDINGS.md`, `slashing-search-horizon.{md,sh}`, `slashing-traceability.md`,
-// `docs/theory/slashing/methodology/`, and `.mutants.toml` point at
+// `docs/casper/theory/slashing/methodology/`, and `.mutants.toml` point at
 // audit-corpus artifacts preserved on the `analysis/slashing` branch.
 //
 // See casper/src/main/scala/coop/rchain/casper/Validate.scala
@@ -291,7 +291,7 @@ impl Validate {
 
     // Validator ordering inside `block_summary` is consensus-critical and
     // has been audited as of `feature/slashing`. The order encoded below
-    // matches the spec in docs/theory/slashing/slashing-specification.md
+    // matches the spec in docs/casper/theory/slashing/slashing-specification.md
     // and is the same ordering proven correct in the corresponding Rocq
     // theorems for the `T-9.x` family.
     pub async fn block_summary(
@@ -1397,7 +1397,7 @@ impl Validate {
     ///   author's behavior. Propagate as `BlockError::from_validation_error(e)`;
     ///   do NOT slash the block sender for a fault attributable to local
     ///   infrastructure. Bug-fix rationale: see
-    ///   docs/theory/slashing/design/09-bug-fixes-and-rationale.md §9.14.
+    ///   docs/casper/theory/slashing/design/09-bug-fixes-and-rationale.md §9.14.
     pub fn slash_deploy_authorization(
         block: &BlockMessage,
         s: &CasperSnapshot,
@@ -1411,7 +1411,7 @@ impl Validate {
     /// errors — can be unit-tested from integration tests.
     ///
     /// See `slash_deploy_authorization` for the full rationale and
-    /// docs/theory/slashing/design/09-bug-fixes-and-rationale.md §9.14
+    /// docs/casper/theory/slashing/design/09-bug-fixes-and-rationale.md §9.14
     /// ("Error routing") for the design contract this helper enforces.
     pub fn route_slash_validation_outcome(
         block: &BlockMessage,
@@ -1460,7 +1460,7 @@ impl Validate {
     /// Proven sound by `t_9_6_self_regression_detected`,
     /// `t_9_6_self_regression_complete`, and `t_9_6_self_regression_in_dag` in
     /// `formal/rocq/slashing/theories/BugFixSelfRegression.v`. See also
-    /// `docs/theory/slashing/design/09-bug-fixes-and-rationale.md` §9.6.
+    /// `docs/casper/theory/slashing/design/09-bug-fixes-and-rationale.md` §9.6.
     pub fn justification_regressions(
         b: &BlockMessage,
         s: &mut CasperSnapshot,
@@ -1484,7 +1484,7 @@ impl Validate {
                 // Self-regression is checked here too: include the sender's
                 // self-justification so a block that points back to its own
                 // earlier sequence number is detected as JustificationRegression.
-                // See docs/theory/slashing/design/09-bug-fixes-and-rationale.md §9.6.
+                // See docs/casper/theory/slashing/design/09-bug-fixes-and-rationale.md §9.6.
 
                 let log_warn =
                     |current_hash: &BlockHash, regressive_hash: &BlockHash, sender: &Validator| {

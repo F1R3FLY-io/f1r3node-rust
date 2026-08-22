@@ -1,6 +1,6 @@
 // References below to `formal/{rocq,tlaplus,sage}/slashing/`,
 // `FINDINGS.md`, `slashing-search-horizon.{md,sh}`, `slashing-traceability.md`,
-// `docs/theory/slashing/methodology/`, and `.mutants.toml` point at
+// `docs/casper/theory/slashing/methodology/`, and `.mutants.toml` point at
 // audit-corpus artifacts preserved on the `analysis/slashing` branch.
 //
 // Property-based test for T-9.8 (unbonded proposer emits empty
@@ -8,7 +8,7 @@
 //
 // Theorem: T-9.8 (`t_9_8_unbonded_proposer_no_slash`,
 // formal/rocq/slashing/theories/BugFixUnbondedProposer.v).
-// Reference: docs/theory/slashing/design/09-bug-fixes-and-rationale.md §9.9.
+// Reference: docs/casper/theory/slashing/design/09-bug-fixes-and-rationale.md §9.9.
 //
 // Property: for every proposer with bond ≤ 0,
 // `simulate_slash_proposal(proposer)` returns an empty list,

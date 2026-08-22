@@ -2,7 +2,7 @@
 # scripts/ci/check-tla-invariants.sh — run TLC against the bounded
 # post-fix MC configs under formal/tlaplus/ and assert clean.
 #
-# Reference: docs/theory/slashing/design/14-test-plan.md §14.6 / §14.9.
+# Reference: docs/casper/theory/slashing/design/14-test-plan.md §14.6 / §14.9.
 # Invokes the TLA+ model checker (TLC) against each MC instance:
 #   • slashing/MC_EquivocationDetector_liveness{,_2v}.tla / .cfg
 #   • slashing/MC_EquivocationDetectorEager{,_3v2s}.tla / .cfg

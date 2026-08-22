@@ -3859,9 +3859,11 @@ async fn gc_collects_mergeable_data_that_the_recompute_cannot_rebuild() {
 
     // Production GC: the block sits 15 below the live floor, past the 4-block
     // allowance, so its data is released.
-    let deleted = mergeable_channels_gc::collect_garbage(&dag, &block_store, &rm, &conf)
-        .await
-        .expect("collect_garbage");
+    let mut gc_sweep = mergeable_channels_gc::GcSweep::new();
+    let deleted =
+        mergeable_channels_gc::collect_garbage(&mut gc_sweep, &dag, &block_store, &rm, &conf)
+            .await
+            .expect("collect_garbage");
     assert_eq!(
         deleted,
         1,

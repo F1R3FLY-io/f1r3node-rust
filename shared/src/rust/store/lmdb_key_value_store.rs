@@ -21,95 +21,118 @@ pub struct LmdbKeyValueStore {
     pub db: Database<SerdeBincode<ByteBuffer>, SerdeBincode<ByteBuffer>>,
 }
 
+fn in_blocking<T>(f: impl FnOnce() -> T) -> T {
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle) if handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread => {
+            tokio::task::block_in_place(f)
+        }
+        _ => f(),
+    }
+}
+
 impl KeyValueStore for LmdbKeyValueStore {
     fn as_any(&self) -> &dyn std::any::Any { self }
 
     fn get(&self, keys: &Vec<ByteBuffer>) -> Result<Vec<Option<ByteBuffer>>, KvStoreError> {
-        let reader = self.env.read_txn()?;
-        let results = keys
-            .iter()
-            .map(|key| self.db.get(&reader, key).map_err(|e| e.into()))
-            .collect();
-        drop(reader);
-        results
+        in_blocking(|| {
+            let reader = self.env.read_txn()?;
+            let results = keys
+                .iter()
+                .map(|key| self.db.get(&reader, key).map_err(|e| e.into()))
+                .collect();
+            drop(reader);
+            results
+        })
     }
 
     fn put(&self, kv_pairs: Vec<(ByteBuffer, ByteBuffer)>) -> Result<(), KvStoreError> {
-        let mut writer = self.env.write_txn()?;
-        for (key, value) in kv_pairs {
-            self.db.put(&mut writer, &key, &value)?;
-        }
-        writer.commit()?;
+        in_blocking(|| {
+            let mut writer = self.env.write_txn()?;
+            for (key, value) in kv_pairs {
+                self.db.put(&mut writer, &key, &value)?;
+            }
+            writer.commit()?;
 
-        Ok(())
+            Ok(())
+        })
     }
 
     fn put_one_if_absent(&self, key: ByteBuffer, value: ByteBuffer) -> Result<bool, KvStoreError> {
-        let mut writer = self.env.write_txn()?;
-        match self
-            .db
-            .put_with_flags(&mut writer, PutFlags::NO_OVERWRITE, &key, &value)
-        {
-            Ok(()) => {
-                writer.commit()?;
-                Ok(true)
+        in_blocking(|| {
+            let mut writer = self.env.write_txn()?;
+            match self
+                .db
+                .put_with_flags(&mut writer, PutFlags::NO_OVERWRITE, &key, &value)
+            {
+                Ok(()) => {
+                    writer.commit()?;
+                    Ok(true)
+                }
+                Err(HeedError::Mdb(MdbError::KeyExist)) => Ok(false),
+                Err(error) => Err(error.into()),
             }
-            Err(HeedError::Mdb(MdbError::KeyExist)) => Ok(false),
-            Err(error) => Err(error.into()),
-        }
+        })
     }
 
     fn delete(&self, keys: Vec<ByteBuffer>) -> Result<usize, KvStoreError> {
-        let mut writer = self.env.write_txn()?;
-        let mut delete_count = 0;
-        for key in &keys {
-            if self.db.delete(&mut writer, key)? {
-                delete_count += 1;
+        in_blocking(|| {
+            let mut writer = self.env.write_txn()?;
+            let mut delete_count = 0;
+            for key in &keys {
+                if self.db.delete(&mut writer, key)? {
+                    delete_count += 1;
+                }
             }
-        }
-        writer.commit()?;
-        Ok(delete_count)
+            writer.commit()?;
+            Ok(delete_count)
+        })
     }
 
     fn iterate(&self, f: fn(ByteBuffer, ByteBuffer)) -> Result<(), KvStoreError> {
-        let reader = self.env.read_txn()?;
-        let iter = self.db.iter(&reader)?;
-        for result in iter {
-            let (key, value) = result?;
-            f(key.to_vec(), value);
-        }
-        drop(reader);
-        Ok(())
+        in_blocking(|| {
+            let reader = self.env.read_txn()?;
+            let iter = self.db.iter(&reader)?;
+            for result in iter {
+                let (key, value) = result?;
+                f(key.to_vec(), value);
+            }
+            drop(reader);
+            Ok(())
+        })
     }
 
     fn iterate_while(
         &self,
         f: &mut dyn FnMut(ByteBuffer, ByteBuffer) -> Result<bool, KvStoreError>,
     ) -> Result<(), KvStoreError> {
-        let reader = self.env.read_txn()?;
-        let iter = self.db.iter(&reader)?;
-        for result in iter {
-            let (key, value) = result?;
-            if !f(key.to_vec(), value)? {
-                break;
+        in_blocking(|| {
+            let reader = self.env.read_txn()?;
+            let iter = self.db.iter(&reader)?;
+            for result in iter {
+                let (key, value) = result?;
+                if !f(key.to_vec(), value)? {
+                    break;
+                }
             }
-        }
-        drop(reader);
-        Ok(())
+            drop(reader);
+            Ok(())
+        })
     }
 
     fn clone_box(&self) -> Box<dyn KeyValueStore> { Box::new(self.clone()) }
 
     fn to_map(&self) -> Result<BTreeMap<ByteBuffer, ByteBuffer>, KvStoreError> {
-        let reader = self.env.read_txn()?;
-        let iter = self.db.iter(&reader)?;
-        let mut map = BTreeMap::new();
-        for result in iter {
-            let (key, value) = result?;
-            map.insert(key.to_vec(), value);
-        }
-        drop(reader);
-        Ok(map)
+        in_blocking(|| {
+            let reader = self.env.read_txn()?;
+            let iter = self.db.iter(&reader)?;
+            let mut map = BTreeMap::new();
+            for result in iter {
+                let (key, value) = result?;
+                map.insert(key.to_vec(), value);
+            }
+            drop(reader);
+            Ok(map)
+        })
     }
 
     // This is only needed for testing purposes

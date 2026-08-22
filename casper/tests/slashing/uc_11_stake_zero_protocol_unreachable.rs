@@ -1,6 +1,6 @@
 // UC-11 — Stake-0 bonded validator is unreachable post-fix #5.
 //
-// Maps to: docs/theory/slashing/slashing-specification.md §12 UC-11.
+// Maps to: docs/casper/theory/slashing/slashing-specification.md §12 UC-11.
 // Theorem: T-9.5 (active_implies_bonded preserved).
 // Reference: design/09-bug-fixes-and-rationale.md §9.6.
 //

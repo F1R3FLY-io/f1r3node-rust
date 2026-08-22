@@ -30,7 +30,7 @@
 //   can PROMOTE a deploy-carrying branch over it (GuardBridge.v seam (3),
 //   `pipeline_head_may_differ_from_ghost`). That second stage is a private fn, so its
 //   proptests live in-module in snapshot.rs's `mod tests` (`deploy_support_*`), not
-//   here. See docs/theory/fork-choice/fork-choice-verification.md §6.2.
+//   here. See docs/casper/theory/fork-choice/fork-choice-verification.md §6.2.
 
 //   merged_sibling_scores — the MULTI-PARENT case the proptests above never
 //   build: every fixture in this directory is single-parent, and on a

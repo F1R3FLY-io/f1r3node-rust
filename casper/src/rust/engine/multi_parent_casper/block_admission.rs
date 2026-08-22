@@ -149,7 +149,7 @@ pub(crate) async fn admit_handle_valid_block<T: TransportLayer + Send + Sync>(
 ) -> Result<KeyValueDagRepresentation, CasperError> {
     // Bug #17 / T-9.20: atomic (DAG insert, casper-buffer remove) pair
     // via the helper. See
-    // docs/theory/slashing/design/09-bug-fixes-and-rationale.md §9.20.
+    // docs/casper/theory/slashing/design/09-bug-fixes-and-rationale.md §9.20.
     //
     // Sealed-floor (record-driven recovery): user deploys are intentionally
     // NOT purged from pending storage on mere DAG acceptance. They are

@@ -1,11 +1,11 @@
 // References below to `formal/{rocq,tlaplus,sage}/slashing/`,
 // `FINDINGS.md`, `slashing-search-horizon.{md,sh}`, `slashing-traceability.md`,
-// `docs/theory/slashing/methodology/`, and `.mutants.toml` point at
+// `docs/casper/theory/slashing/methodology/`, and `.mutants.toml` point at
 // audit-corpus artifacts preserved on the `analysis/slashing` branch.
 //
 // Slash-authorization regression suite.
 //
-// Maps to: docs/theory/slashing/slashing-specification.md §9 + §10.
+// Maps to: docs/casper/theory/slashing/slashing-specification.md §9 + §10.
 // Theorems: T-9.8 (authorization predicate), T-9.7 (seq-num density).
 // Rocq: formal/rocq/slashing/theories/BugFixSlashAuthorization.v,
 // BugFixSeqArithmetic.v, BugFixSeqNumDensity.v.

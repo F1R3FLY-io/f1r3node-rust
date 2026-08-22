@@ -68,8 +68,8 @@ and reused by every verified area:
   documented in the area README with the property they violate.
 - `formal/<tool>/<area>/README.md` — model↔code table and config table only.
 - Deep treatments (threat models, proofs of the design, test plans) go under
-  `docs/theory/<area>/` — the slashing series
-  ([`docs/theory/slashing/design/`](theory/slashing/design)) is the template.
+  `docs/casper/theory/<area>/` — the slashing series
+  ([`docs/casper/casper/theory/slashing/design/`](casper/theory/slashing/design)) is the template.
 
 ## Verified areas
 
