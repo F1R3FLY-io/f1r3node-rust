@@ -28,6 +28,11 @@ on:
 
 permissions: {}
 
+# One promotion at a time. A GitHub concurrency group with
+# cancel-in-progress false runs a single workflow from the group and queues
+# the next; a queued run starts only after the running one finishes and
+# re-observes tag, release, and registry state in its own gates and plan
+# steps. That is the cross-run mutual exclusion the planner relies on.
 concurrency:
   group: release-promotion
   cancel-in-progress: false
@@ -61,6 +66,7 @@ jobs:
           INPUT_TAG: ${{ inputs.candidate_tag }}
           TRIGGER_RUN_ID: ${{ github.event.workflow_run.id }}
           TRIGGER_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         shell: bash -euo pipefail {0}
         run: |
           tag="$INPUT_TAG"
@@ -79,7 +85,29 @@ jobs:
             fi
             gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${artifact_id}/zip" > "$RUNNER_TEMP/release-candidate.zip"
             unzip -q -o "$RUNNER_TEMP/release-candidate.zip" -d "$RUNNER_TEMP/release-candidate"
-            tag="$(jq -r '.candidate_tag' "$RUNNER_TEMP/release-candidate/release-candidate.json")"
+            marker="$RUNNER_TEMP/release-candidate/release-candidate.json"
+            tag="$(jq -r '.candidate_tag' "$marker")"
+            # Bind the resume to the triggering run: it must be a
+            # workflow_dispatch of one of the gate workflows from the default
+            # branch in this repository. A pull-request run of a gate
+            # workflow can never resume a promotion.
+            gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${TRIGGER_RUN_ID}" > "$RUNNER_TEMP/trigger-run.json"
+            jq -e --arg repository "$GITHUB_REPOSITORY" --arg default "$DEFAULT_BRANCH" '
+              .event == "workflow_dispatch"
+              and .head_branch == $default
+              and .repository.full_name == $repository
+              and .conclusion == "success"
+              and (.path | IN(".github/workflows/oci-validation.yml", ".github/workflows/merge-recovery-soak.yml", ".github/workflows/slashing-tests.yml"))' \
+              "$RUNNER_TEMP/trigger-run.json" >/dev/null || {
+              echo "Gate workflow run ${TRIGGER_RUN_ID} is not a default-branch dispatch of a gate workflow; not a candidate run."
+              echo "candidate_tag=" >> "$GITHUB_OUTPUT"
+              exit 0
+            }
+            [[ "$(jq -r '.source_sha' "$marker")" =~ ^[0-9a-f]{40}$ ]] || {
+              echo "::error::release-candidate marker carries no source SHA"
+              exit 1
+            }
+            cp "$marker" "$RUNNER_TEMP/resume-marker.json"
           fi
           if ! [[ "$tag" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-canary\.[1-9][0-9]*$ ]]; then
             echo "::error::candidate tag '$tag' is not a standard canary tag"
@@ -127,6 +155,31 @@ jobs:
             echo "::error::tag ${CANDIDATE_TAG} resolves to ${tag_sha}, not the evidence source ${source_sha}"
             exit 1
           }
+          if [ -f "$RUNNER_TEMP/resume-marker.json" ]; then
+            [ "$(jq -r '.source_sha' "$RUNNER_TEMP/resume-marker.json")" = "$source_sha" ] || {
+              echo "::error::release-candidate marker names source $(jq -r '.source_sha' "$RUNNER_TEMP/resume-marker.json"), not the evidence source ${source_sha}"
+              exit 1
+            }
+          fi
+          # Release assets are mutable. Fetch the run each gate document
+          # names so the evaluator can verify identity through the API.
+          fetch_named_run() {
+            local doc="$1" out="$2" run_id
+            [ -f "$doc" ] || return 0
+            run_id="$(jq -r '.workflow_run.id // empty' "$doc" 2>/dev/null || true)"
+            [[ "$run_id" =~ ^[1-9][0-9]*$ ]] || return 0
+            gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}" > "$out" || rm -f "$out"
+          }
+          fetch_named_run "$gates/oci-validation-evidence.json" "$gates/oci-validation-run.json"
+          fetch_named_run "$gates/soak-evidence.json" "$gates/soak-run.json"
+          if [ -f "$gates/maintainer-review.json" ]; then
+            reviewer="$(jq -r '.reviewer // empty' "$gates/maintainer-review.json" 2>/dev/null || true)"
+            if [[ "$reviewer" =~ ^[A-Za-z0-9-]+$ ]]; then
+              gh api "repos/${GITHUB_REPOSITORY}/collaborators/${reviewer}/permission" \
+                --jq '{login: .user.login, permission: .permission}' > "$gates/maintainer-review-permission.json" \
+                || rm -f "$gates/maintainer-review-permission.json"
+            fi
+          fi
           ci_run_id="$(jq -r '.ci.run_id' "$gates/release-evidence.json")"
           ci_attempt="$(jq -r '.ci.run_attempt' "$gates/release-evidence.json")"
           gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${ci_run_id}" > "$gates/ci-run.json"
@@ -363,9 +416,14 @@ jobs:
         run: |
           # Aliases move only after the stable tag, image, and release exist.
           plan="$RUNNER_TEMP/promotion-plan.json"
-          docker buildx imagetools create \
-            --tag "$(jq -r '.image.latest_reference' "$plan")" \
-            "$(jq -r '.image.candidate_index' "$plan")"
+          latest_ref="$(jq -r '.image.latest_reference' "$plan")"
+          expected="$(jq -r '.image.index_digest' "$plan")"
+          docker buildx imagetools create --tag "$latest_ref" "$(jq -r '.image.candidate_index' "$plan")"
+          actual="$(docker buildx imagetools inspect "$latest_ref" --format '{{json .Manifest.Digest}}' | jq -r .)"
+          [ "$actual" = "$expected" ] || {
+            echo "::error::latest resolves to ${actual}, not the candidate index ${expected}"
+            exit 1
+          }
 
       - name: Log out of Docker Hub
         if: always()
@@ -379,15 +437,33 @@ jobs:
           STABLE_TAG: ${{ steps.state.outputs.stable_tag }}
         shell: bash -euo pipefail {0}
         run: |
+          # Idempotent on every resume: done when dev already carries the
+          # next version, reuses an open pull request, and reuses an
+          # existing branch whose pull request was closed without merge.
+          # The token never enters a remote URL; gh configures a credential
+          # helper for the clone and the push.
           branch="chore/release-next-version-${NEXT_VERSION}"
           if gh pr list --repo "$GITHUB_REPOSITORY" --head "$branch" --state open --json number --jq 'length' | grep -qx 1; then
             echo "Next-version pull request for ${NEXT_VERSION} already exists."
             exit 0
           fi
-          git clone --quiet --depth 1 --branch dev \
-            "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "$RUNNER_TEMP/next"
-          ci-control/.github/scripts/promote-release.sh bump-next-version "$RUNNER_TEMP/next" "$NEXT_VERSION"
+          gh auth setup-git
+          git clone --quiet --depth 1 --branch dev "https://github.com/${GITHUB_REPOSITORY}.git" "$RUNNER_TEMP/next"
+          tool="$GITHUB_WORKSPACE/ci-control/.github/scripts"
+          current="$("$tool/release-evidence.sh" inspect-source "$RUNNER_TEMP/next" | jq -r '.target_version')"
+          if [ "$(printf '%s\n%s\n' "$current" "$NEXT_VERSION" | sort -V | tail -1)" = "$current" ]; then
+            echo "dev already carries version ${current} (>= ${NEXT_VERSION}); no next-version pull request needed."
+            exit 0
+          fi
           cd "$RUNNER_TEMP/next"
+          if git ls-remote --exit-code --heads origin "$branch" >/dev/null 2>&1; then
+            echo "Branch ${branch} already exists on origin; opening the pull request from it."
+            gh pr create --repo "$GITHUB_REPOSITORY" --base dev --head "$branch" \
+              --title "chore(release): prepare v${NEXT_VERSION} source version" \
+              --body "Opened by the promotion controller after ${STABLE_TAG} was published. Bumps node/Cargo.toml, node/Dockerfile, and Cargo.lock to ${NEXT_VERSION} so the next master run is release-eligible (docs/release-process.md section 5)."
+            exit 0
+          fi
+          "$tool/promote-release.sh" bump-next-version . "$NEXT_VERSION"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git checkout -q -b "$branch"

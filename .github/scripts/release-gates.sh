@@ -15,9 +15,19 @@ set -euo pipefail
 #   slashing-run.json           GET actions/runs/{id} for the slashing run
 #   slashing-jobs.json          GET .../attempts/{n}/jobs for the slashing run
 #   oci-validation-evidence.json  published by the OCI validation workflow
+#   oci-validation-run.json     GET actions/runs/{id} for that document's run
 #   soak-evidence.json          published by the 60h stability soak
+#   soak-run.json               GET actions/runs/{id} for that document's run
 #   verdict.json                soak regression verdict
 #   maintainer-review.json      optional, accepts a regress verdict
+#   maintainer-review-permission.json  GET collaborators/{reviewer}/permission
+#
+# Release assets are mutable by anyone with contents: write, so a gate
+# document alone proves nothing about the run it names. The workflow fetches
+# the named run from the GitHub API into the *-run.json files, and the
+# evaluator requires that API document to agree with the asset on
+# repository, workflow path, attempt, and conclusion. A document whose run
+# is absent holds; a document whose run disagrees fails.
 #
 # Each gate resolves to pass, hold, or fail. A hold means the evidence is
 # absent or incomplete and promotion waits. A fail means the evidence exists
@@ -169,11 +179,37 @@ candidate_binding_reason() {
 		end' "$doc"
 }
 
+# The API document for the run a gate asset names. Prints "hold:<reason>"
+# when the run document is absent, "fail:<reason>" when it contradicts the
+# asset, and nothing when the asset is verified.
+run_identity_reason() {
+	local doc="$1" run_json="$2" workflow_path="$3" repository="$4" reason
+	[ -f "$run_json" ] || { printf 'hold:the workflow run named by the document has not been verified through the API'; return; }
+	reason="$(jq -r --slurpfile run "$run_json" --arg path "$workflow_path" --arg repository "$repository" '
+		$run[0] as $r
+		| if ($r | type) != "object" then "run document is not an object"
+		elif $r.id != .workflow_run.id then "API run id " + ($r.id | tostring) + " differs from the document run id"
+		elif $r.run_attempt != .workflow_run.attempt then "API run attempt " + ($r.run_attempt | tostring) + " differs from the document attempt"
+		elif $r.path != $path then "API run uses workflow " + ($r.path // "null")
+		elif $r.repository.full_name != $repository then "API run belongs to repository " + ($r.repository.full_name // "null")
+		elif $r.event != "workflow_dispatch" then "API run event is " + ($r.event // "null") + ", not workflow_dispatch"
+		elif $r.status != "completed" then "API run status is " + ($r.status // "null")
+		elif $r.conclusion != "success" then "API run conclusion is " + ($r.conclusion // "null")
+		else ""
+		end' "$doc")"
+	[ -z "$reason" ] || printf 'fail:%s' "$reason"
+}
+
 gate_oci_validation() {
-	local dir="$1" evidence="$2" doc="$dir/oci-validation-evidence.json" reason
+	local dir="$1" evidence="$2" repository="$3" doc="$dir/oci-validation-evidence.json" reason
 	[ -f "$doc" ] || { gate_result oci_validation hold "oci-validation-evidence.json is absent"; return; }
 	reason="$(candidate_binding_reason "$doc" "$evidence" oci_validation)"
 	[ -z "$reason" ] || { gate_result oci_validation fail "$reason"; return; }
+	reason="$(run_identity_reason "$doc" "$dir/oci-validation-run.json" .github/workflows/oci-validation.yml "$repository")"
+	case "$reason" in
+	hold:*) gate_result oci_validation hold "${reason#hold:}"; return ;;
+	fail:*) gate_result oci_validation fail "${reason#fail:}"; return ;;
+	esac
 	jq -e --slurpfile ev "$evidence" '
 		.workflow_run.path == ".github/workflows/oci-validation.yml"
 		and .mode == "candidate"
@@ -195,10 +231,15 @@ gate_soak_preflight() {
 }
 
 gate_stability_soak() {
-	local dir="$1" evidence="$2" doc="$dir/soak-evidence.json" reason
+	local dir="$1" evidence="$2" repository="$3" doc="$dir/soak-evidence.json" reason
 	[ -f "$doc" ] || { gate_result stability_soak hold "soak-evidence.json is absent"; return; }
 	reason="$(candidate_binding_reason "$doc" "$evidence" stability_soak)"
 	[ -z "$reason" ] || { gate_result stability_soak fail "$reason"; return; }
+	reason="$(run_identity_reason "$doc" "$dir/soak-run.json" .github/workflows/merge-recovery-soak.yml "$repository")"
+	case "$reason" in
+	hold:*) gate_result stability_soak hold "${reason#hold:}"; return ;;
+	fail:*) gate_result stability_soak fail "${reason#fail:}"; return ;;
+	esac
 	reason="$(jq -r --argjson duration "$SOAK_DURATION_SECONDS" '
 		if .workflow_run.path != ".github/workflows/merge-recovery-soak.yml" then "soak ran from workflow " + (.workflow_run.path // "null")
 		elif .soak_kind != "weekend" then "soak kind is " + (.soak_kind // "null")
@@ -237,6 +278,15 @@ gate_regression_verdict() {
 			and (.reference | type == "string" and length > 0)
 			and (.reviewed_at | type == "string" and endswith("Z"))' "$review" >/dev/null ||
 			{ gate_result regression_verdict fail "maintainer review does not accept the regress verdict for this candidate"; return; }
+		# The review asset is writable by anyone with contents: write. The
+		# workflow resolves the named reviewer's repository permission
+		# through the API; only maintain or admin can accept a regress.
+		[ -f "$dir/maintainer-review-permission.json" ] ||
+			{ gate_result regression_verdict hold "the reviewer's repository permission has not been verified through the API"; return; }
+		jq -e --slurpfile review "$review" '
+			.login == $review[0].reviewer
+			and (.permission == "admin" or .permission == "maintain")' "$dir/maintainer-review-permission.json" >/dev/null ||
+			{ gate_result regression_verdict fail "reviewer $(jq -r '.reviewer' "$review") does not hold maintain or admin permission"; return; }
 		gate_result regression_verdict pass "regress verdict accepted by maintainer review $(jq -r '.reference' "$review")"
 		;;
 	*)
@@ -262,15 +312,34 @@ evaluate() {
 	"$EVIDENCE_TOOL" validate "$evidence"
 	[ "$(jq -r '.publication_mode' "$evidence")" = canary ] ||
 		fail "promotion requires canary evidence with published images"
-	gates="$(jq -s '.' \
-		<(gate_full_ci "$dir" "$evidence" "$repository") \
-		<(gate_heavy_integration "$dir" "$evidence") \
-		<(gate_slashing "$dir" "$evidence" "$repository") \
-		<(gate_oci_validation "$dir" "$evidence") \
-		<(gate_soak_preflight "$dir" "$evidence") \
-		<(gate_stability_soak "$dir" "$evidence") \
-		<(gate_regression_verdict "$dir" "$evidence") \
-		<(gate_train_gates "$evidence"))"
+	# Each gate runs in its own subshell with its output captured. A gate
+	# function that dies (malformed JSON, a type error, a missing field) must
+	# become a fail result, never an absent one: an absent gate would shrink
+	# the array and a seven-gate report could read as promotable.
+	local results_file gate_id status
+	results_file="$(mktemp)"
+	: >"$results_file"
+	run_gate() {
+		local id="$1" out rc=0
+		shift
+		out="$("$@" 2>/dev/null)" || rc=$?
+		if [ "$rc" -ne 0 ] || ! jq -e --arg id "$id" 'type == "object" and .id == $id and (.status | IN("pass", "hold", "fail"))' <<<"$out" >/dev/null 2>&1; then
+			out="$(gate_result "$id" fail "gate evaluation did not complete; the evidence document is malformed")"
+		fi
+		printf '%s\n' "$out" >>"$results_file"
+	}
+	run_gate full_ci gate_full_ci "$dir" "$evidence" "$repository"
+	run_gate heavy_integration gate_heavy_integration "$dir" "$evidence"
+	run_gate slashing gate_slashing "$dir" "$evidence" "$repository"
+	run_gate oci_validation gate_oci_validation "$dir" "$evidence" "$repository"
+	run_gate soak_preflight gate_soak_preflight "$dir" "$evidence"
+	run_gate stability_soak gate_stability_soak "$dir" "$evidence" "$repository"
+	run_gate regression_verdict gate_regression_verdict "$dir" "$evidence"
+	run_gate train_gates gate_train_gates "$evidence"
+	gates="$(jq -s '.' "$results_file")"
+	rm -f "$results_file"
+	jq -e '[.[].id] == ["full_ci", "heavy_integration", "slashing", "oci_validation", "soak_preflight", "stability_soak", "regression_verdict", "train_gates"]' <<<"$gates" >/dev/null ||
+		fail "gate set is incomplete or out of order"
 	mkdir -p "$(dirname "$output")"
 	jq -n \
 		--arg candidate_tag "$(jq -r '.candidate_tag' "$evidence")" \

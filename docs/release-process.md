@@ -231,7 +231,11 @@ The promotion controller validates workflow identity through the GitHub API. A c
 
 ### 8.1 Gate evidence contract
 
-The promotion controller reads every gate document from the candidate prerelease. A gate workflow that runs in candidate mode uploads its document as a release asset on the candidate tag and uploads a `release-candidate` workflow artifact that names the candidate tag. The controller resumes from that artifact.
+Each gate produces one JSON document that names the candidate and the run that produced it. This section defines those documents, where they live, and how the controller verifies them.
+
+The promotion controller reads every gate document from the candidate prerelease. Release assets are mutable by anyone with `contents: write`, so a document alone proves nothing about the run it names. The controller fetches the named run through the GitHub API and requires the API record to agree with the document on repository, workflow path, attempt, event (`workflow_dispatch` from the default branch), and conclusion. A document whose run is absent holds. A document whose run disagrees fails. A document that does not parse fails its gate; a gate can never be absent from the report.
+
+A `maintainer-review.json` asset is accepted only when the controller confirms through the API that the named reviewer holds `maintain` or `admin` permission on the repository. A gate workflow that runs in candidate mode uploads its document as a release asset on the candidate tag and uploads a `release-candidate` workflow artifact that names the candidate tag. The controller resumes from that artifact.
 
 Each document binds to the candidate with these fields:
 
@@ -326,6 +330,16 @@ The controller performs these actions:
 Promotion must not run `cargo build` or `docker build`.
 
 The stable release remains valid when `master` advances during the soak. Evidence follows the candidate SHA, not the branch tip.
+
+### 11.1 Prerequisites and serialization
+
+A live promotion needs these conditions:
+
+- The `release-credentials` environment exists with required reviewers. The promote job runs only under that environment.
+- The Docker Hub and OCIR credentials are repository secrets, readable by the promote job.
+- Every Section 8 gate can pass. Until the gate workflows publish Section 8.1 documents, the OCI validation, soak, and verdict gates hold and no candidate is promotable end to end.
+
+Promotions run one at a time. `release.yml` uses one concurrency group without cancellation, so a second run queues and starts only after the first finishes. Each run observes tag, release, and registry state in its own gates and plan steps, so a queued run sees the result of the run before it. A resumed promotion verifies every object that already exists: the tag target, the release assets, and the registry digests. A partial release stops promotion for investigation. A resume after a newer stable version exists stops, because the aliases must never move backward.
 
 ## 12. Shard soak-in
 

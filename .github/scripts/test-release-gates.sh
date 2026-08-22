@@ -81,6 +81,10 @@ binding stability_soak .github/workflows/merge-recovery-soak.yml 888 | jq '. + {
 	soak_kind: "weekend", requested_duration_seconds: 216000, completed: true, artifact_mode: "candidate",
 	retry_attempt: 0, coverage_preserved: true, preflight: {status: "success"}}' >"$GATES/soak-evidence.json"
 jq -n --arg sha "$SOURCE_SHA" '{schema_version: 1, source_sha: $sha, verdict: "pass"}' >"$GATES/verdict.json"
+# API run documents for the asset-named runs (release assets are mutable;
+# the evaluator trusts the API, not the asset).
+run_doc .github/workflows/oci-validation.yml 777 1 "$SOURCE_SHA" workflow_dispatch master >"$GATES/oci-validation-run.json"
+run_doc .github/workflows/merge-recovery-soak.yml 888 1 "$SOURCE_SHA" workflow_dispatch master >"$GATES/soak-run.json"
 
 expect_exit() {
 	local expected="$1" label="$2"
@@ -124,6 +128,10 @@ jq -e '[.gates[] | select(.id == "regression_verdict")][0].status == "hold"' "$T
 jq -n --arg sha "$SOURCE_SHA" --arg tag "$CANDIDATE_TAG" '{
 	source_sha: $sha, candidate_tag: $tag, verdict_accepted: true, reviewer: "maintainer",
 	reference: "https://example.com/review/1", reviewed_at: "2026-08-16T01:00:00Z"}' >"$REGRESS/maintainer-review.json"
+expect_exit 10 'accepted review without verified permission' "$TOOL" evaluate "$REGRESS" "$REPOSITORY" "$TMP/regress-unverified.json"
+jq -n '{login: "maintainer", permission: "write"}' >"$REGRESS/maintainer-review-permission.json"
+expect_exit 20 'accepted review by a write-only collaborator' "$TOOL" evaluate "$REGRESS" "$REPOSITORY" "$TMP/regress-write.json"
+jq -n '{login: "maintainer", permission: "maintain"}' >"$REGRESS/maintainer-review-permission.json"
 expect_exit 0 'regress verdict with accepted review' "$TOOL" evaluate "$REGRESS" "$REPOSITORY" "$TMP/regress-ok.json"
 jq '.verdict_accepted = false' "$REGRESS/maintainer-review.json" >"$TMP/rejected.json"
 mv "$TMP/rejected.json" "$REGRESS/maintainer-review.json"
@@ -159,6 +167,35 @@ fail_case 'soak restart without full coverage' soak-evidence.json '.retry_attemp
 fail_case 'soak in source mode' soak-evidence.json '.artifact_mode = "source"' stability_soak
 fail_case 'preflight failed' soak-evidence.json '.preflight.status = "failure"' soak_preflight
 fail_case 'verdict for another commit' verdict.json ".source_sha = \"$OTHER_SHA\"" regression_verdict
+fail_case 'OCI run id differs from the API' oci-validation-run.json '.id = 778' oci_validation
+fail_case 'OCI run attempt differs from the API' oci-validation-run.json '.run_attempt = 2' oci_validation
+fail_case 'OCI run from a pull request event' oci-validation-run.json '.event = "pull_request"' oci_validation
+fail_case 'OCI run from another repository' oci-validation-run.json '.repository.full_name = "other/repo"' oci_validation
+fail_case 'soak run failed per the API' soak-run.json '.conclusion = "failure"' stability_soak
+
+# --- Fail closed: malformed or type-confused documents never drop a gate ----
+malformed_case() {
+	local label="$1" file="$2" content="$3" gate="$4"
+	local dir="$TMP/malformed-$RANDOM"
+	cp -R "$GATES" "$dir"
+	printf '%s' "$content" >"$dir/$file"
+	expect_exit 20 "$label" "$TOOL" evaluate "$dir" "$REPOSITORY" "$dir/report.json"
+	jq -e --arg gate "$gate" '(.gates | length) == 8 and ([.gates[] | select(.id == $gate)][0].status == "fail") and .promotable == false' "$dir/report.json" >/dev/null ||
+		{ printf 'malformed %s did not fail closed for %s\n' "$file" "$label" >&2; exit 1; }
+}
+malformed_case 'truncated OCI document' oci-validation-evidence.json '{"schema_version": 1, "gate": "oci_validation"' oci_validation
+malformed_case 'OCI document that is an array' oci-validation-evidence.json '[]' oci_validation
+malformed_case 'soak document with string run id' soak-evidence.json '{"schema_version":1,"gate":"stability_soak","workflow_run":{"id":"888"}}' stability_soak
+malformed_case 'empty verdict document' verdict.json '' regression_verdict
+malformed_case 'CI jobs document that is not JSON' ci-jobs.json 'not json' heavy_integration
+malformed_case 'slashing run document with null fields' slashing-run.json 'null' slashing
+
+# --- Holds: run identity not yet verified -------------------------------------
+UNVERIFIED="$TMP/unverified"
+cp -R "$GATES" "$UNVERIFIED"
+rm "$UNVERIFIED/oci-validation-run.json" "$UNVERIFIED/soak-run.json"
+expect_exit 10 'gate documents without API run verification' "$TOOL" evaluate "$UNVERIFIED" "$REPOSITORY" "$TMP/unverified-report.json"
+jq -e '([.gates[] | select(.status == "hold") | .id] | sort) == ["oci_validation", "stability_soak"]' "$TMP/unverified-report.json" >/dev/null
 
 # --- Evidence-only candidates cannot be promoted -----------------------------
 NOIMG="$TMP/noimg"

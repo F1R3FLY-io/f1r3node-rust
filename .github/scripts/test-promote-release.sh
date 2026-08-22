@@ -68,6 +68,8 @@ binding oci_validation .github/workflows/oci-validation.yml | jq --arg pin "$PIN
 binding stability_soak .github/workflows/merge-recovery-soak.yml | jq '. + {soak_kind: "weekend", requested_duration_seconds: 216000,
 	completed: true, artifact_mode: "candidate", retry_attempt: 0, coverage_preserved: true, preflight: {status: "success"}}' >"$GATES/soak-evidence.json"
 jq -n --arg sha "$SOURCE_SHA" '{schema_version: 1, source_sha: $sha, verdict: "pass"}' >"$GATES/verdict.json"
+jq '.path = ".github/workflows/oci-validation.yml" | .id = 7 | .event = "workflow_dispatch"' "$TMP/ci-run.json" >"$GATES/oci-validation-run.json"
+jq '.path = ".github/workflows/merge-recovery-soak.yml" | .id = 7 | .event = "workflow_dispatch"' "$TMP/ci-run.json" >"$GATES/soak-run.json"
 REPORT="$TMP/gate-report.json"
 "$GATES_TOOL" evaluate "$GATES" "$REPOSITORY" "$REPORT" 2>/dev/null
 
@@ -99,7 +101,7 @@ jq -e --arg sha "$SOURCE_SHA" --arg digest "$INDEX_DIGEST" --arg tag "$CANDIDATE
 cmp "$PLAN" "$TMP/plan-repeat.json"
 
 # --- Resume: existing objects that match are skipped -----------------------
-state "{stable_tags: [\"v0.4.45\", \"v0.4.46\"], stable_tag: {sha: \"$SOURCE_SHA\"}, stable_release: {prerelease: false, assets: []},
+state "{stable_tags: [\"v0.4.45\", \"v0.4.46\"], stable_tag: {sha: \"$SOURCE_SHA\"}, stable_release: {prerelease: false, assets: [\"f1r3node-linux-amd64\", \"f1r3node-linux-arm64\", \"checksums.txt\", \"release-evidence.json\", \"gate-report.json\", \"stable-release-evidence.json\", \"stable-release-evidence.json.sha256\"]},
 	registry: {stable_tag_digest: \"$INDEX_DIGEST\", latest_digest: \"$INDEX_DIGEST\"}}" >"$TMP/resume.json"
 "$TOOL" plan "$EVIDENCE" "$REPORT" "$TMP/resume.json" "$TMP/resume-plan.json" 2>/dev/null
 jq -e '.actions == {create_tag: false, create_release: false, copy_image: false, move_latest: false, open_next_version_pr: true}' "$TMP/resume-plan.json" >/dev/null
@@ -118,6 +120,10 @@ state '{stable_tags: ["v0.4.45", "v0.4.47"], stable_tag: null, stable_release: n
 expect_failure 'higher stable version published first' "$TOOL" plan "$EVIDENCE" "$REPORT" "$TMP/overtaken.json" "$TMP/x.json"
 state "{stable_tags: [\"v0.4.45\"], stable_tag: null, stable_release: {prerelease: true, assets: []}, registry: {stable_tag_digest: null, latest_digest: null}}" >"$TMP/release-no-tag.json"
 expect_failure 'release without tag' "$TOOL" plan "$EVIDENCE" "$REPORT" "$TMP/release-no-tag.json" "$TMP/x.json"
+state "{stable_tags: [\"v0.4.45\", \"v0.4.46\"], stable_tag: {sha: \"$SOURCE_SHA\"}, stable_release: {prerelease: false, assets: [\"f1r3node-linux-amd64\"]}, registry: {stable_tag_digest: null, latest_digest: null}}" >"$TMP/partial-release.json"
+expect_failure 'existing release with missing assets' "$TOOL" plan "$EVIDENCE" "$REPORT" "$TMP/partial-release.json" "$TMP/x.json"
+state "{stable_tags: [\"v0.4.45\", \"v0.4.46\", \"v0.4.47\"], stable_tag: {sha: \"$SOURCE_SHA\"}, stable_release: null, registry: {stable_tag_digest: null, latest_digest: null}}" >"$TMP/resume-overtaken.json"
+expect_failure 'resume after a newer stable release exists' "$TOOL" plan "$EVIDENCE" "$REPORT" "$TMP/resume-overtaken.json" "$TMP/x.json"
 jq '.promotable = false | .held = true' "$REPORT" >"$TMP/held-report.json"
 expect_failure 'held gate report' "$TOOL" plan "$EVIDENCE" "$TMP/held-report.json" "$TMP/fresh.json" "$TMP/x.json"
 jq '.candidate_evidence_sha256 = "0000000000000000000000000000000000000000000000000000000000000000"' "$REPORT" >"$TMP/other-report.json"

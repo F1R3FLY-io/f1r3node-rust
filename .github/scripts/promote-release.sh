@@ -81,14 +81,21 @@ plan() {
 	jq -e '.stable_tags | type == "array"' "$state" >/dev/null || fail "stable state has no stable_tags array"
 	highest="$(jq -r '[.stable_tags[] | select(test("^v(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$")) | ltrimstr("v")] | sort_by(split(".") | map(tonumber)) | last // "0.0.0"' "$state")"
 	tag_sha="$(jq -r '.stable_tag.sha // empty' "$state")"
+	# Ordering holds on every path, fresh or resumed: the target must be the
+	# highest stable version, or equal to it only when this run resumes the
+	# promotion that created that very tag on the candidate source. A resume
+	# after a newer stable release exists must stop, or it would move the
+	# aliases backward (section 2 invariant 15).
+	[ "$(printf '%s\n%s\n' "$target_version" "$highest" | sort -V | tail -1)" = "$target_version" ] ||
+		fail "target version $target_version is lower than the highest stable version $highest"
 	if [ -n "$tag_sha" ]; then
 		[ "$tag_sha" = "$source_sha" ] ||
 			fail "stable tag $stable_tag exists and resolves to $tag_sha, not the candidate source $source_sha"
 	else
 		! jq -e --arg tag "$stable_tag" '.stable_tags | index($tag)' "$state" >/dev/null ||
 			fail "stable tag $stable_tag is listed but its target is unknown"
-		[ "$(printf '%s\n%s\n' "$target_version" "$highest" | sort -V | tail -1)" = "$target_version" ] && [ "$target_version" != "$highest" ] ||
-			fail "target version $target_version is not greater than the highest stable version $highest"
+		[ "$target_version" != "$highest" ] ||
+			fail "target version $target_version is already the highest stable version but its tag is absent"
 	fi
 
 	release_json="$(jq -c '.stable_release' "$state")"
@@ -96,6 +103,14 @@ plan() {
 		[ -n "$tag_sha" ] || fail "stable release $stable_tag exists without its tag"
 		jq -e '.stable_release.prerelease == false' "$state" >/dev/null ||
 			fail "release $stable_tag exists as a prerelease"
+		# An existing stable release is skipped only when every required
+		# asset is present (section 15: resume verifies every existing
+		# object). A partial release stops promotion for investigation.
+		jq -e '.stable_release.assets as $a
+			| ["f1r3node-linux-amd64", "f1r3node-linux-arm64", "checksums.txt", "release-evidence.json",
+			   "gate-report.json", "stable-release-evidence.json", "stable-release-evidence.json.sha256"]
+			| all(. as $n | $a | index($n) != null)' "$state" >/dev/null ||
+			fail "stable release $stable_tag exists but is missing required assets; investigate before rerunning"
 	fi
 
 	registry_digest="$(jq -r '.registry.stable_tag_digest // empty' "$state")"
