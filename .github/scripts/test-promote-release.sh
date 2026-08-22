@@ -58,10 +58,11 @@ cp "$TMP/ci-run.json" "$TMP/ci-jobs.json" "$GATES/"
 jq '.path = ".github/workflows/slashing-tests.yml" | .id = 555' "$TMP/ci-run.json" >"$GATES/slashing-run.json"
 jq -n '{jobs: ([{name: "Example-based UC tests"}, {name: "Property-based theorem tests"}, {name: "Loom exhaustive interleaving (T-9.2)"},
 	{name: "Pre-fix regression backstops (1)"}] | map(. + {status: "completed", conclusion: "success"}))}' >"$GATES/slashing-jobs.json"
+EVIDENCE_SHA256="$(sha256sum "$GATES/release-evidence.json" | awk '{print $1}')"
 binding() {
-	jq -n --arg gate "$1" --arg sha "$SOURCE_SHA" --arg tag "$CANDIDATE_TAG" --arg digest "$INDEX_DIGEST" --arg path "$2" '{
+	jq -n --arg gate "$1" --arg sha "$SOURCE_SHA" --arg tag "$CANDIDATE_TAG" --arg digest "$INDEX_DIGEST" --arg esha "$EVIDENCE_SHA256" --arg path "$2" '{
 		schema_version: 1, gate: $gate, source_sha: $sha, candidate_tag: $tag, image_index_digest: $digest,
-		workflow_run: {id: 7, attempt: 1, path: $path, conclusion: "success"}}'
+		candidate_evidence_sha256: $esha, workflow_run: {id: 7, attempt: 1, path: $path, conclusion: "success"}}'
 }
 binding oci_validation .github/workflows/oci-validation.yml | jq --arg pin "$PIN" '. + {mode: "candidate", system_integration_sha: $pin,
 	required_jobs: [{name: "OCI validation", conclusion: "success"}]}' >"$GATES/oci-validation-evidence.json"

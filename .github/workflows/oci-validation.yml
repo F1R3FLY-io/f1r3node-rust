@@ -118,6 +118,15 @@ jobs:
             echo "candidate_arm64_digest=$(jq -r '.images.linux_arm64_digest' "$evidence")"
           } >> "$GITHUB_OUTPUT"
 
+      - name: Keep the verified candidate evidence for this run
+        if: github.event.inputs.candidate_tag != ''
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: candidate-evidence
+          path: ${{ runner.temp }}/candidate/release-evidence.json
+          retention-days: 30
+          if-no-files-found: error
+
       - name: Validate pull request
         id: pr
         if: github.event.inputs.candidate_tag == ''
@@ -354,17 +363,28 @@ jobs:
           path: ci-control
           persist-credentials: false
 
+      - name: Download the evidence this run validated
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: candidate-evidence
+          path: ${{ runner.temp }}/gate
+
       - name: Write and publish the OCI validation gate document
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CANDIDATE_TAG: ${{ needs.validate_pr.outputs.candidate_tag }}
+          EXPECTED_SOURCE_SHA: ${{ needs.validate_pr.outputs.head_sha }}
         shell: bash -euo pipefail {0}
         run: |
+          # The evidence comes from this run's own artifact, written by the
+          # validate job before any test ran. A release asset replaced after
+          # resolution cannot change what this document binds to.
           work="$RUNNER_TEMP/gate"
-          mkdir -p "$work"
-          gh release download "$CANDIDATE_TAG" --repo "$GITHUB_REPOSITORY" \
-            --pattern release-evidence.json --pattern release-evidence.json.sha256 --dir "$work"
-          (cd "$work" && awk '{print $1 "  release-evidence.json"}' release-evidence.json.sha256 | sha256sum -c -)
+          ci-control/.github/scripts/release-evidence.sh validate "$work/release-evidence.json"
+          [ "$(jq -r '.source_sha' "$work/release-evidence.json")" = "$EXPECTED_SOURCE_SHA" ] || {
+            echo "::error::carried evidence names a different source than the validated head"
+            exit 1
+          }
           gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" > "$work/run.json"
           gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/attempts/${GITHUB_RUN_ATTEMPT}/jobs?per_page=100" \
             --paginate --jq '.jobs[]' | jq -s '{jobs: .}' > "$work/jobs.json"

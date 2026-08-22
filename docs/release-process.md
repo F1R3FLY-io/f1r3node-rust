@@ -248,9 +248,12 @@ Each document binds to the candidate with these fields:
   "source_sha": "0123456789abcdef0123456789abcdef01234567",
   "candidate_tag": "v0.4.46-canary.812",
   "image_index_digest": "sha256:index-digest",
+  "candidate_evidence_sha256": "sha256-of-the-evidence-file-the-run-resolved",
   "workflow_run": {"id": 123456789, "attempt": 1, "path": ".github/workflows/oci-validation.yml", "conclusion": "success"}
 }
 ```
+
+`candidate_evidence_sha256` binds the document to the exact evidence file the gate run resolved before it tested anything. The gate workflow keeps that file as a run artifact and writes the document from the artifact, never from a fresh download of the release asset. The controller requires the digest to equal the evidence it evaluates, so a release asset replaced after the run resolved it cannot be credited with that run's result.
 
 | Asset | Gate | Extra fields |
 |---|---|---|
@@ -293,7 +296,9 @@ The release dispatch supplies these immutable values:
 - Candidate image index digest
 - Candidate evidence checksum
 
-The maintainer dispatches `merge-recovery-soak.yml` with `candidate_tag` and `duration: weekend-60h`. The soak job downloads the candidate evidence, verifies the tag target, pulls the linux/amd64 image from OCIR by its recorded digest, and extracts the subprocess binary from the same image. An in-window restart carries `candidate_tag` forward.
+The maintainer dispatches `merge-recovery-soak.yml` with `candidate_tag` and `duration: weekend-60h`. The soak job downloads the candidate evidence, verifies the tag target, pulls the linux/amd64 image from OCIR by its recorded digest, and extracts the subprocess binary from the same image. The schedule gate records the soak window (candidate, kind, attempt, end epoch) as a run artifact.
+
+An in-window restart carries `candidate_tag` and `restart_of_run_id` forward. The schedule gate accepts a candidate restart only after it reads the original run's window artifact and confirms the same candidate, `retry_attempt` 0, the weekend kind, and an end epoch equal to `window_end_epoch`. The published document reports `coverage_preserved` true only for a verified restart; an unverified restart is published as false and fails the gate.
 
 Normal scheduled soak runs continue to build a source target. A release-eligible run uses candidate artifact mode.
 

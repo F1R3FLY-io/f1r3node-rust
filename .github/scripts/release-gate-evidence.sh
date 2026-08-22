@@ -38,11 +38,17 @@ envelope() {
 		fail "gate run does not use workflow $workflow_path"
 	require_positive_integer "$(jq -r '.id' "$run_json")" "gate run id"
 	require_positive_integer "$(jq -r '.run_attempt' "$run_json")" "gate run attempt"
+	# The document records the SHA-256 of the exact evidence file the run
+	# resolved before testing. The publishing job must pass that same file
+	# (carried from the test job as a run artifact), never a fresh download
+	# of the mutable release asset, and the promotion controller requires
+	# this digest to equal the evidence it evaluates.
 	jq -n \
 		--arg gate "$gate" \
 		--arg source_sha "$(jq -r '.source_sha' "$evidence")" \
 		--arg candidate_tag "$(jq -r '.candidate_tag' "$evidence")" \
 		--arg image_index_digest "$(jq -r '.images.ocir_index_digest' "$evidence")" \
+		--arg evidence_sha256 "$(sha256sum "$evidence" | awk '{print $1}')" \
 		--argjson run_id "$(jq -r '.id' "$run_json")" \
 		--argjson run_attempt "$(jq -r '.run_attempt' "$run_json")" \
 		--arg workflow_path "$workflow_path" '
@@ -52,6 +58,7 @@ envelope() {
 			source_sha: $source_sha,
 			candidate_tag: $candidate_tag,
 			image_index_digest: $image_index_digest,
+			candidate_evidence_sha256: $evidence_sha256,
 			workflow_run: {
 				id: $run_id,
 				attempt: $run_attempt,

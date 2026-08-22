@@ -109,8 +109,22 @@ expect_failure 'unknown verdict' "$TOOL" verdict "$EVIDENCE" maybe "$TMP/x.json"
 jq -e --arg sha "$SOURCE_SHA" '.candidate_tag == "v0.4.46-canary.789" and .source_sha == $sha' "$TMP/release-candidate.json" >/dev/null
 
 # --- The evaluator accepts everything the writer produced ----------------------
+# The workflow fetches the run each document names; here the run fixtures
+# are the same documents the writer consumed.
+cp "$TMP/oci-run.json" "$GATES/oci-validation-run.json"
+cp "$TMP/soak-run.json" "$GATES/soak-run.json"
+jq -e --arg esha "$(sha256sum "$EVIDENCE" | awk '{print $1}')" '.candidate_evidence_sha256 == $esha' "$GATES/oci-validation-evidence.json" >/dev/null
 "$GATES_TOOL" evaluate "$GATES" "$REPOSITORY" "$TMP/gate-report.json" 2>/dev/null
 jq -e '.promotable == true' "$TMP/gate-report.json" >/dev/null
+
+# A document built from different evidence is refused by the evaluator even
+# though every other field matches: the run must carry its verified file.
+TAMPERED="$TMP/tampered-evidence"
+cp -R "$GATES" "$TAMPERED"
+jq '.created_at = "2026-08-16T00:00:01Z"' "$EVIDENCE" >"$TAMPERED/release-evidence.json"
+status=0
+"$GATES_TOOL" evaluate "$TAMPERED" "$REPOSITORY" "$TMP/tampered-report.json" 2>/dev/null || status=$?
+[ "$status" -eq 20 ] || { printf 'evidence substitution should fail, got exit %s\n' "$status" >&2; exit 1; }
 
 # A regress verdict from the writer holds promotion until review.
 "$TOOL" verdict "$EVIDENCE" regress "$GATES/verdict.json"

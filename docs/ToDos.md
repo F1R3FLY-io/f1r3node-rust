@@ -117,6 +117,7 @@ tasks:
       - "Both gate workflows publish Section 8.1 documents with release-gate-evidence.sh from a publish_candidate_evidence job under release-credentials, plus the release-candidate marker that resumes release.yml. test-release-gate-evidence.sh proves the writer against release-gates.sh."
       - "promote-release.sh and release.yml copy the stable tag and latest into OCIR as well as Docker Hub."
       - "The regress alert reuses the soak's existing ONS verdict email; promotion holds until maintainer-review.json is uploaded."
+      - "2026-08-22 multi-agent review of PR #325: gate documents carry candidate_evidence_sha256 and are written from the evidence file the run kept as a same-run artifact, never a re-downloaded release asset; release-gates.sh requires that digest to equal the evidence under evaluation. A candidate soak restart must name restart_of_run_id and match the original run's soak-window artifact (candidate, attempt 0, weekend, end epoch); coverage_preserved is true only for a verified restart."
     acceptance:
       - "merge-recovery-soak.yml and oci-validation.yml consume the candidate image digest without rebuilding"
       - "The canary publisher publishes the same index digest to OCIR and Docker Hub, and evidence records the OCIR digest"

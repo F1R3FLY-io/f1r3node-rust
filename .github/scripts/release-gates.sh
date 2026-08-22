@@ -163,8 +163,9 @@ gate_slashing() {
 
 # Shared checks for a gate document that must bind to the candidate.
 candidate_binding_reason() {
-	local doc="$1" evidence="$2" gate="$3"
-	jq -r --slurpfile ev "$evidence" --arg gate "$gate" '
+	local doc="$1" evidence="$2" gate="$3" evidence_sha
+	evidence_sha="$(sha256sum "$evidence" | awk '{print $1}')"
+	jq -r --slurpfile ev "$evidence" --arg gate "$gate" --arg evidence_sha "$evidence_sha" '
 		$ev[0] as $e
 		| if type != "object" then "document is not an object"
 		elif .schema_version != 1 then "schema_version is " + ((.schema_version // "null") | tostring)
@@ -172,6 +173,7 @@ candidate_binding_reason() {
 		elif .source_sha != $e.source_sha then "document source " + (.source_sha // "null") + " is not the candidate source"
 		elif .candidate_tag != $e.candidate_tag then "document candidate tag is " + (.candidate_tag // "null")
 		elif .image_index_digest != ($e.images.docker_hub | split("@")[1]) then "document image digest " + (.image_index_digest // "null") + " is not the candidate image"
+		elif .candidate_evidence_sha256 != $evidence_sha then "document was built from evidence " + (.candidate_evidence_sha256 // "null")[0:12] + ", not the evidence under evaluation"
 		elif (.workflow_run.id | type != "number") then "document has no workflow run id"
 		elif (.workflow_run.attempt | type != "number") then "document has no workflow run attempt"
 		elif .workflow_run.conclusion != "success" then "document workflow conclusion is " + (.workflow_run.conclusion // "null")
