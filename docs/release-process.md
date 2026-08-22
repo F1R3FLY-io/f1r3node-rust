@@ -445,29 +445,23 @@ Rules for the `stack` block:
 
 A maintainer dispatches train setup with the manifest path.
 
-The setup workflow performs these actions:
+The setup workflow performs these actions. Steps marked *stack* apply only to a stack manifest and are no-ops for a single-train manifest.
 
 1. Load the manifest from the default branch.
 2. Validate the schema and train identifier.
-3. Verify the pull request and exact head SHA.
-4. Verify the source version against `target_version`.
-5. Verify that the version has no active reservation.
-6. Verify a successful full CI run for the exact head SHA.
-7. Create the train canary from that CI run.
-8. Start standard gates for the candidate.
-9. Start each mandatory feature-specific gate.
-10. Start the on-demand `weekend-60h` soak.
+3. Verify the pull request and exact head SHA. For a stack, `pull_request` and `head_sha` are the top member.
+4. *Stack:* verify the member chain. Members are listed bottom to top. The bottom member must target `integration_branch`. Every later member must target the branch of the member immediately before it in the list. Each member must be open or merged. Reject any other base or state.
+5. *Stack:* verify the head ancestry. The head of each member must be an ancestor of the head of the member immediately after it in the list, and `head_sha` must equal the head of the top member. Record every member head in the train record. This step proves that the top branch contains the whole stack at setup time.
+6. *Stack:* verify merged members. A member that has already merged must have a true merge commit on `integration_branch` whose second parent is the recorded member head. Setup cannot know how an open member *will* merge. That condition is enforced later: Section 13.3 re-validates the chain after every member merge and the promotion controller verifies every recorded member head at promotion time.
+7. Verify the source version against `target_version`.
+8. Verify that the version has no active reservation. Skip this step when `publishing` is `false`.
+9. Verify a successful full CI run for the exact head SHA. `ci.yml` runs pull-request CI for bases `dev`, `master`, `staging`, `trying`, and `feature/**`. A member whose base is outside that set (for example a `fix/**` or `formal/**` branch) gets no pull-request run. Setup therefore requires one successful `ci.yml` run for `head_sha` from any event. When none exists, setup dispatches `ci.yml` on `head_sha`, waits, and records that run identifier as the train's CI evidence.
+10. Create the train canary from that CI run.
+11. Start standard gates for the candidate.
+12. Start each mandatory feature-specific gate.
+13. Start the on-demand `weekend-60h` soak.
 
 Multiple trains can run at the same time. Workflow concurrency keys include the train identifier and target version.
-
-For a stack manifest, setup adds these checks between steps 3 and 6:
-
-- 3a. Verify that each member pull request is open or merged, and that its base is the branch of the next member or `integration_branch`. Reject any other base.
-- 3b. Verify that the head of each member is an ancestor of the head of the next member, and that `head_sha` equals the head of the top member. This check proves that the top branch contains the whole stack.
-- 3c. Verify that no member has merged, or will merge, by squash or rebase. A member that has already merged must have a merge commit on `integration_branch`.
-- 5a. Skip the version reservation when `publishing` is `false`.
-
-`ci.yml` runs on pull requests that target `dev`, `master`, or a `feature/**` branch. A stacked member that targets another member's branch gets no pull-request CI run. For step 6, setup therefore dispatches `ci.yml` on `head_sha` when no successful run exists for that SHA, and waits for the result. The dispatched run identifier is the train's CI evidence.
 
 ### 13.3 Merge requirement
 
@@ -481,7 +475,9 @@ The stable tag still points to the exact soaked commit. The merge proves that th
 
 For a stack train, the members merge bottom-up into `integration_branch` with true merge commits, and `integration_branch` then merges into `base_branch` with a true merge commit. The top head stays reachable from `base_branch`, so the promotion controller applies the same check without change.
 
-A member that merges by squash or rebase, or that is re-based after setup, changes the stack head. The controller rejects the old evidence and requires a new candidate from the merged stack head. A member that closes without a merge cancels the train.
+The chain is re-validated, not trusted from setup. After each member merges, the train workflow re-runs the Section 13.2 steps 4 to 6 against the live branches and the recorded member heads. At promotion, the controller verifies that every recorded member head, not only `head_sha`, is reachable from `base_branch`. A member that is force-pushed or re-based after setup merges a different commit, so its recorded head is not reachable, and the candidate is cancelled under the Section 15 rule "train head changes". That closes the window between setup and merge.
+
+A member that merges by squash or rebase changes the stack head. The controller rejects the old evidence and requires a new candidate from the merged stack head. A member that closes without a merge cancels the train.
 
 ### 13.4 Version reservations
 
@@ -522,8 +518,9 @@ The first planned use is the cost-accounting train from pull request #216.
 | `master` advances | Continue with the immutable candidate |
 | Train head changes | Cancel the candidate and run setup again |
 | Train uses squash or rebase | Create a new candidate from the merged SHA |
-| Stack member base is not the next member or the integration branch | Reject setup |
-| Stack member head is not an ancestor of the next member head | Reject setup |
+| Stack member base is not the preceding member or the integration branch | Reject setup |
+| Stack member head is not an ancestor of the following member head | Reject setup |
+| Recorded member head is not reachable from the base branch at promotion | Cancel the candidate and run setup again |
 | Stack member merges by squash or rebase | Create a new candidate from the merged stack head |
 | Stack member closes without a merge | Cancel the train |
 | Integration branch advances past the stack head before the `master` merge | Continue with the immutable candidate; the head stays reachable |
@@ -657,7 +654,7 @@ The controller (`release.yml`, `release-gates.sh`, `promote-release.sh`) can lan
 4. Run the cost-accounting train as the first publishing train.
 5. Document the completed train evidence.
 
-The manifest validator and the stack ancestry checks (Section 13.2 steps 3a to 3c) depend on no earlier phase. The canary, digest-bound gates, and promotion steps depend on Phases 2 to 4.
+The manifest validator and the stack checks (Section 13.2 steps 4 to 6) depend on no earlier phase. The canary, digest-bound gates, and promotion steps depend on Phases 2 to 4.
 
 ### Phase 6: Shard soak-in on the test net
 
