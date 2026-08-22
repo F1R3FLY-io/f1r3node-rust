@@ -496,9 +496,8 @@ fn split_overfilled_single_value_cells(
                 // provenance — so it can drop the writer whose effect the MAIN
                 // PARENT already committed, leaving this block's state missing
                 // content its own spine ancestor holds. Order pinned producers
-                // first. `sort_by_key` is stable, so this only moves pinned
-                // chains ahead of unpinned ones and leaves the existing
-                // deterministic order intact within each group. It is a
+                // first. `DeployChainIndex` ordering breaks all remaining
+                // ties after pinning and rejection history. It is a
                 // preference inside an existing keep-one, never a veto: if
                 // every producer is pinned, one still loses and the merge
                 // stays live.
@@ -506,13 +505,11 @@ fn split_overfilled_single_value_cells(
                 // Pinned first, then the chain with the most prior on-DAG
                 // rejections (issue #294: a chain the content ordering keeps
                 // losing must gain priority with each loss, or it starves to
-                // expiry). Stable, so the existing deterministic order breaks
-                // remaining ties.
-                ordered.sort_by_key(|chain| {
-                    (
-                        !pinned.contains(*chain),
-                        std::cmp::Reverse(chain.prior_rejections),
-                    )
+                // expiry). The chain's total order breaks remaining ties.
+                ordered.sort_by(|a, b| {
+                    (!pinned.contains(*a), std::cmp::Reverse(a.prior_rejections))
+                        .cmp(&(!pinned.contains(*b), std::cmp::Reverse(b.prior_rejections)))
+                        .then_with(|| a.cmp(b))
                 });
                 for loser in ordered.iter().skip(1) {
                     rejected_seed.insert((*loser).clone());
@@ -590,13 +587,16 @@ pub fn scope_prior_rejection_counts(
     records_of: impl Fn(&BlockHash) -> Result<Vec<RejectedDeploy>, CasperError>,
 ) -> Result<HashMap<Bytes, u64>, CasperError> {
     let mut counts: HashMap<Bytes, u64> = HashMap::new();
+    let mut seen = HashSet::new();
     for block in visible_blocks {
-        count_kept_records(&mut counts, records_of(&block)?);
+        if seen.insert(block.clone()) {
+            count_kept_records(&mut counts, records_of(&block)?);
+        }
     }
     Ok(counts)
 }
 
-/// Stamp each chain with the sum of its deploys' prior-rejection counts.
+/// Stamp each chain with the maximum prior-rejection count of its deploys.
 /// Chains whose deploys carry no records keep the default of zero, so
 /// adjudication is unchanged where no losses are on record.
 pub fn stamp_prior_rejections(chains: &mut [DeployChainIndex], counts: &HashMap<Bytes, u64>) {
@@ -606,7 +606,8 @@ pub fn stamp_prior_rejections(chains: &mut [DeployChainIndex], counts: &HashMap<
             .0
             .iter()
             .map(|d| counts.get(&d.deploy_id).copied().unwrap_or(0))
-            .sum();
+            .max()
+            .unwrap_or(0);
     }
 }
 
@@ -2660,6 +2661,38 @@ mod tests {
     /// rejection set peers validate, so a node that silently derived them
     /// from fewer blocks would propose (or reject) a different rejection
     /// set than every peer holding the full window.
+    #[test]
+    fn scope_counts_deduplicate_block_identifiers() {
+        let sig = Bytes::from(vec![0x2a]);
+        let block: BlockHash = Bytes::from(vec![1u8; 32]);
+        let counts = scope_prior_rejection_counts(vec![block.clone(), block], |_hash| {
+            Ok(vec![RejectedDeploy {
+                sig: sig.clone(),
+                duplicate: false,
+                carrier: Bytes::from(vec![2u8; 32]),
+            }])
+        })
+        .expect("derive scope counts");
+
+        assert_eq!(counts.get(&sig).copied(), Some(1));
+    }
+
+    #[test]
+    fn chain_priority_uses_maximum_member_loss() {
+        let first = Bytes::from(vec![1u8]);
+        let second = Bytes::from(vec![2u8]);
+        let mut contender = chain(1, 1, 1, StateChange::empty());
+        contender.deploys_with_cost.0.insert(DeployIdWithCost {
+            deploy_id: second.clone(),
+            cost: 1,
+        });
+        let counts = HashMap::from([(first, 3), (second, 5)]);
+
+        stamp_prior_rejections(std::slice::from_mut(&mut contender), &counts);
+
+        assert_eq!(contender.prior_rejections, 5);
+    }
+
     #[test]
     fn scope_counts_fail_on_missing_visible_block() {
         let held: BlockHash = Bytes::from(vec![1u8; 32]);
