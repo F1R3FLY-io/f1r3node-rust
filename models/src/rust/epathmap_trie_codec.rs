@@ -156,6 +156,28 @@ pub(crate) struct CanonicalSnapshotInspection {
     pub(crate) value_bodies: Vec<Range<usize>>,
 }
 
+/// Canonical EPM1 framing needed by byte-native consumers that retain the
+/// compact trie unchanged and descend only into map values.
+///
+/// `prefix` contains the magic, version, mode, ACTree03 arena, and declared
+/// value count. Replacing every following value record with an empty protobuf
+/// body therefore yields a valid shallow shell without materializing a key or
+/// a `PathMap<Par>`.
+pub(crate) struct CanonicalSnapshotValueRegions {
+    pub(crate) mode: EPathMapMode,
+    pub(crate) prefix: Range<usize>,
+    pub(crate) value_bodies: Vec<Range<usize>>,
+}
+
+struct CanonicalSnapshotFraming<'a> {
+    mode: EPathMapMode,
+    arena_start: usize,
+    arena: &'a [u8],
+    value_count: usize,
+    value_table_start: usize,
+    value_bodies: Vec<Range<usize>>,
+}
+
 /// The PathMap-native, value-independent prefix of an `EPM1` snapshot.
 ///
 /// It contains the mode, compact ACTree03 arena, and value count. Map values
@@ -567,58 +589,68 @@ fn collect_canonical_keys(
     mode: EPathMapMode,
     value_count: usize,
 ) -> Result<Vec<CanonicalSnapshotKey>, TrieCodecError> {
+    let mut keys = Vec::with_capacity(value_count);
+    visit_canonical_value_paths(trie, mode, value_count, |path| {
+        keys.push(match path {
+            CompactPath::Relative(range) => {
+                CanonicalSnapshotKey::Relative(arena_start + range.start..arena_start + range.end)
+            }
+            CompactPath::Owned(path) => CanonicalSnapshotKey::Owned(path),
+        });
+        Ok(())
+    })?;
+    Ok(keys)
+}
+
+fn visit_canonical_value_paths(
+    trie: &CompactTrie<'_>,
+    mode: EPathMapMode,
+    value_count: usize,
+    mut visit_map_path: impl FnMut(CompactPath) -> Result<(), TrieCodecError>,
+) -> Result<(), TrieCodecError> {
     if trie.is_empty() {
         return Err(TrieCodecError::new(
             "typed EPathMap mode has empty ACTree topology; use neutral empty mode",
         ));
     }
-
-    let mut keys = Vec::with_capacity(value_count);
+    let mut referenced_values = 0usize;
     trie.visit_compact(|path, ordinal| {
-        if let Some(ordinal) = ordinal {
-            match mode {
-                EPathMapMode::Set => {
-                    if ordinal != 0 {
-                        return Err(TrieCodecError::new("set ACTree value ordinal is not zero"));
-                    }
+        let Some(ordinal) = ordinal else {
+            return Ok(());
+        };
+        match mode {
+            EPathMapMode::Set => {
+                if ordinal != 0 {
+                    return Err(TrieCodecError::new("set ACTree value ordinal is not zero"));
                 }
-                EPathMapMode::Map => {
-                    if ordinal != keys.len() as u64 {
-                        return Err(TrieCodecError::new(format!(
-                            "map ACTree value ordinal {ordinal} is not canonical ordinal {}",
-                            keys.len()
-                        )));
-                    }
-                    keys.push(match path {
-                        CompactPath::Relative(range) => CanonicalSnapshotKey::Relative(
-                            arena_start + range.start..arena_start + range.end,
-                        ),
-                        CompactPath::Owned(path) => CanonicalSnapshotKey::Owned(path),
-                    });
-                }
-                EPathMapMode::Empty => unreachable!("empty mode has no ACT arena"),
             }
+            EPathMapMode::Map => {
+                if ordinal != referenced_values as u64 {
+                    return Err(TrieCodecError::new(format!(
+                        "map ACTree value ordinal {ordinal} is not canonical ordinal {referenced_values}"
+                    )));
+                }
+                referenced_values += 1;
+                visit_map_path(path)?;
+            }
+            EPathMapMode::Empty => unreachable!("empty mode has no ACT arena"),
         }
         Ok(())
     })?;
-
-    if mode == EPathMapMode::Map && keys.len() != value_count {
+    if mode == EPathMapMode::Map && referenced_values != value_count {
         return Err(TrieCodecError::new(format!(
-            "map ACTree references {} values but EPM1 declares {value_count}",
-            keys.len()
+            "map ACTree references {referenced_values} values but EPM1 declares {value_count}"
         )));
     }
     if mode == EPathMapMode::Set && value_count != 0 {
         return Err(TrieCodecError::new("set EPathMap carries map values"));
     }
-    Ok(keys)
+    Ok(())
 }
 
-/// Inspect canonical EPM1 framing and ACT topology without constructing a
-/// temporary PathMap or decoding its canonical byte keys.
-pub(crate) fn inspect_canonical_snapshot(
+fn parse_canonical_snapshot_framing(
     bytes: &[u8],
-) -> Result<CanonicalSnapshotInspection, TrieCodecError> {
+) -> Result<CanonicalSnapshotFraming<'_>, TrieCodecError> {
     let mut cursor = 0usize;
     if take(bytes, &mut cursor, EPM_MAGIC.len(), "EPM1 magic")? != EPM_MAGIC {
         return Err(TrieCodecError::new("invalid EPM1 magic"));
@@ -634,6 +666,7 @@ pub(crate) fn inspect_canonical_snapshot(
     let arena_start = cursor;
     let arena = take(bytes, &mut cursor, arena_len, "ACTree03 payload")?;
     let value_count = read_len(bytes, &mut cursor, "map value count")?;
+    let value_table_start = cursor;
     let remaining = bytes.len() - cursor;
     if value_count > remaining {
         return Err(TrieCodecError::new(format!(
@@ -651,9 +684,47 @@ pub(crate) fn inspect_canonical_snapshot(
         return Err(TrieCodecError::new("trailing bytes after EPM1 payload"));
     }
 
-    let keys = match mode {
+    Ok(CanonicalSnapshotFraming {
+        mode,
+        arena_start,
+        arena,
+        value_count,
+        value_table_start,
+        value_bodies,
+    })
+}
+
+fn validate_canonical_snapshot_topology(
+    mode: EPathMapMode,
+    arena: &[u8],
+    value_count: usize,
+) -> Result<(), TrieCodecError> {
+    match mode {
         EPathMapMode::Empty => {
             if !arena.is_empty() || value_count != 0 {
+                return Err(TrieCodecError::new(
+                    "neutral empty EPathMap carries trie or values",
+                ));
+            }
+        }
+        EPathMapMode::Set | EPathMapMode::Map => {
+            let trie = CompactTrie::parse_canonical(arena)?;
+            visit_canonical_value_paths(&trie, mode, value_count, |_path| Ok(()))?;
+        }
+    }
+    Ok(())
+}
+
+/// Inspect canonical EPM1 framing and ACT topology without constructing a
+/// temporary PathMap or decoding its canonical byte keys.
+pub(crate) fn inspect_canonical_snapshot(
+    bytes: &[u8],
+) -> Result<CanonicalSnapshotInspection, TrieCodecError> {
+    let framing = parse_canonical_snapshot_framing(bytes)?;
+
+    let keys = match framing.mode {
+        EPathMapMode::Empty => {
+            if !framing.arena.is_empty() || framing.value_count != 0 {
                 return Err(TrieCodecError::new(
                     "neutral empty EPathMap carries trie or values",
                 ));
@@ -661,15 +732,36 @@ pub(crate) fn inspect_canonical_snapshot(
             Vec::new()
         }
         EPathMapMode::Set | EPathMapMode::Map => {
-            let trie = CompactTrie::parse_canonical(arena)?;
-            collect_canonical_keys(arena_start, &trie, mode, value_count)?
+            let trie = CompactTrie::parse_canonical(framing.arena)?;
+            collect_canonical_keys(
+                framing.arena_start,
+                &trie,
+                framing.mode,
+                framing.value_count,
+            )?
         }
     };
 
     Ok(CanonicalSnapshotInspection {
-        mode,
+        mode: framing.mode,
         keys,
-        value_bodies,
+        value_bodies: framing.value_bodies,
+    })
+}
+
+/// Inspect canonical EPM1 topology and value bodies without materializing its
+/// keys. This is the region-cursor counterpart of `inspect_canonical_snapshot`:
+/// callers preserve the original compact arena and need only the ordered map
+/// value bodies supplied by its canonical ordinals.
+pub(crate) fn inspect_canonical_snapshot_value_regions(
+    bytes: &[u8],
+) -> Result<CanonicalSnapshotValueRegions, TrieCodecError> {
+    let framing = parse_canonical_snapshot_framing(bytes)?;
+    validate_canonical_snapshot_topology(framing.mode, framing.arena, framing.value_count)?;
+    Ok(CanonicalSnapshotValueRegions {
+        mode: framing.mode,
+        prefix: 0..framing.value_table_start,
+        value_bodies: framing.value_bodies,
     })
 }
 

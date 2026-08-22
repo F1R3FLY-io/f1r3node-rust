@@ -9,6 +9,7 @@ pub mod pooled_stack;
 pub mod protobuf_cursor;
 pub mod bincode_decoder;
 pub mod protobuf_encoder;
+pub mod protobuf_region;
 pub mod protobuf_schema;
 pub mod schema_meta;
 pub mod sorter;
