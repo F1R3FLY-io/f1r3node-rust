@@ -18,6 +18,9 @@ use std::ops::Range;
 
 use prost::bytes::Bytes;
 
+use super::match_schema_tables::PAR_PROTOBUF_REGION_PROGRAM;
+use super::protobuf_schema::{ProtobufField, ProtobufWireType};
+
 /// A half-open range inside the message passed to a cursor.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct CanonicalByteRange {
@@ -238,6 +241,45 @@ impl fmt::Display for CanonicalProtobufError {
 }
 
 impl std::error::Error for CanonicalProtobufError {}
+
+#[inline]
+const fn canonical_wire_type(wire: ProtobufWireType) -> CanonicalWireType {
+    match wire {
+        ProtobufWireType::Varint => CanonicalWireType::Varint,
+        ProtobufWireType::Fixed64 => CanonicalWireType::Fixed64,
+        ProtobufWireType::LengthDelimited => CanonicalWireType::LengthDelimited,
+        ProtobufWireType::Fixed32 => CanonicalWireType::Fixed32,
+    }
+}
+
+fn par_protobuf_field(
+    number: u32,
+    actual: CanonicalWireType,
+    offset: usize,
+) -> Result<&'static ProtobufField, CanonicalProtobufError> {
+    let field = PAR_PROTOBUF_REGION_PROGRAM
+        .protobuf_fields
+        .iter()
+        .find(|field| field.tag == number)
+        .ok_or(CanonicalProtobufError::UnexpectedField {
+            offset,
+            field: number,
+        })?;
+    let expected = field
+        .kind
+        .wire_type()
+        .map(canonical_wire_type)
+        .expect("the generated raw Par program contains no oneof field");
+    if actual != expected {
+        return Err(CanonicalProtobufError::UnexpectedWireType {
+            offset,
+            field: number,
+            expected,
+            actual,
+        });
+    }
+    Ok(field)
+}
 
 /// The borrowed value portion of one framed field.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -727,54 +769,51 @@ impl<'a> CanonicalParProcessIndex<'a> {
         let mut saw_locally_free = false;
         let mut saw_connective_used = false;
         while let Some(field) = fields.next_field()? {
-            match field.number {
-                1 => extend_run(message, &mut index.sends, field)?,
-                2 => extend_run(message, &mut index.receives, field)?,
-                4 => extend_run(message, &mut index.news, field)?,
-                5 => extend_run(message, &mut index.exprs, field)?,
-                6 => extend_run(message, &mut index.matches, field)?,
-                7 | 8 => {
+            let schema =
+                par_protobuf_field(field.number, field.wire_type, field.encoded_range.start)?;
+            match schema.name {
+                "sends" => extend_run(message, &mut index.sends, field)?,
+                "receives" => extend_run(message, &mut index.receives, field)?,
+                "news" => extend_run(message, &mut index.news, field)?,
+                "exprs" => extend_run(message, &mut index.exprs, field)?,
+                "matches" => extend_run(message, &mut index.matches, field)?,
+                "unforgeables" | "connectives" => {
                     field.expect_length_delimited()?;
                 }
-                9 if !saw_locally_free => {
+                "locally_free" if !saw_locally_free => {
                     let payload = field.expect_length_delimited()?;
                     if payload.is_empty() {
                         return Err(CanonicalProtobufError::NonCanonicalDefault {
                             offset: field.encoded_range.start,
-                            field: 9,
+                            field: field.number,
                         });
                     }
                     saw_locally_free = true;
                 }
-                9 => {
+                "locally_free" => {
                     return Err(CanonicalProtobufError::DuplicateSingularField {
                         offset: field.encoded_range.start,
-                        field: 9,
+                        field: field.number,
                     });
                 }
-                10 if !saw_connective_used => {
+                "connective_used" if !saw_connective_used => {
                     if field.expect_varint()? != 1 {
                         return Err(CanonicalProtobufError::NonCanonicalDefault {
                             offset: field.encoded_range.start,
-                            field: 10,
+                            field: field.number,
                         });
                     }
                     saw_connective_used = true;
                 }
-                10 => {
+                "connective_used" => {
                     return Err(CanonicalProtobufError::DuplicateSingularField {
                         offset: field.encoded_range.start,
-                        field: 10,
+                        field: field.number,
                     });
                 }
-                11 => extend_run(message, &mut index.bundles, field)?,
-                12 => extend_run(message, &mut index.conditionals, field)?,
-                number => {
-                    return Err(CanonicalProtobufError::UnexpectedField {
-                        offset: field.encoded_range.start,
-                        field: number,
-                    });
-                }
+                "bundles" => extend_run(message, &mut index.bundles, field)?,
+                "conditionals" => extend_run(message, &mut index.conditionals, field)?,
+                other => unreachable!("generated raw Par field `{other}` is not indexed"),
             }
         }
         Ok(index)
@@ -829,54 +868,52 @@ impl CanonicalParRegionIndex {
         let mut index = Self::default();
         let mut fields = CanonicalRegionFieldCursor::new(message.clone());
         while let Some(field) = fields.next_field()? {
-            match field.number {
-                1 => extend_region_run(&message, &mut index.sends, &field)?,
-                2 => extend_region_run(&message, &mut index.receives, &field)?,
-                4 => extend_region_run(&message, &mut index.news, &field)?,
-                5 => extend_region_run(&message, &mut index.exprs, &field)?,
-                6 => extend_region_run(&message, &mut index.matches, &field)?,
-                7 => extend_region_run(&message, &mut index.unforgeables, &field)?,
-                8 => extend_region_run(&message, &mut index.connectives, &field)?,
-                9 if index.locally_free.is_none() => {
+            let schema =
+                par_protobuf_field(field.number, field.wire_type, field.encoded_range.start)?;
+            match schema.name {
+                "sends" => extend_region_run(&message, &mut index.sends, &field)?,
+                "receives" => extend_region_run(&message, &mut index.receives, &field)?,
+                "news" => extend_region_run(&message, &mut index.news, &field)?,
+                "exprs" => extend_region_run(&message, &mut index.exprs, &field)?,
+                "matches" => extend_region_run(&message, &mut index.matches, &field)?,
+                "unforgeables" => extend_region_run(&message, &mut index.unforgeables, &field)?,
+                "connectives" => extend_region_run(&message, &mut index.connectives, &field)?,
+                "locally_free" if index.locally_free.is_none() => {
                     let offset = field.encoded_range.start;
+                    let number = field.number;
                     let payload = field.into_length_delimited()?;
                     if payload.is_empty() {
                         return Err(CanonicalProtobufError::NonCanonicalDefault {
                             offset,
-                            field: 9,
+                            field: number,
                         });
                     }
                     index.locally_free = Some(payload);
                 }
-                9 => {
+                "locally_free" => {
                     return Err(CanonicalProtobufError::DuplicateSingularField {
                         offset: field.encoded_range.start,
-                        field: 9,
+                        field: field.number,
                     });
                 }
-                10 if !index.connective_used => {
+                "connective_used" if !index.connective_used => {
                     if field.expect_varint()? != 1 {
                         return Err(CanonicalProtobufError::NonCanonicalDefault {
                             offset: field.encoded_range.start,
-                            field: 10,
+                            field: field.number,
                         });
                     }
                     index.connective_used = true;
                 }
-                10 => {
+                "connective_used" => {
                     return Err(CanonicalProtobufError::DuplicateSingularField {
                         offset: field.encoded_range.start,
-                        field: 10,
+                        field: field.number,
                     });
                 }
-                11 => extend_region_run(&message, &mut index.bundles, &field)?,
-                12 => extend_region_run(&message, &mut index.conditionals, &field)?,
-                number => {
-                    return Err(CanonicalProtobufError::UnexpectedField {
-                        offset: field.encoded_range.start,
-                        field: number,
-                    });
-                }
+                "bundles" => extend_region_run(&message, &mut index.bundles, &field)?,
+                "conditionals" => extend_region_run(&message, &mut index.conditionals, &field)?,
+                other => unreachable!("generated raw Par field `{other}` is not indexed"),
             }
         }
         Ok(index)
