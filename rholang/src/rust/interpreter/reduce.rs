@@ -7898,3 +7898,75 @@ fn describe_par_type(par: &Par) -> String {
         "non-boolean process".to_string()
     }
 }
+
+#[cfg(test)]
+mod byte_length_cost_pins {
+    /// Post cost-accounted merge regression pin: the three
+    /// byte-length-parameterized cost sites in this file MUST use
+    /// `reserve_incremental_primitive` (which permits zero-cost
+    /// early-return) rather than `reserve_primitive` (which rejects
+    /// zero with `BugFoundError("Billable metering cost must be
+    /// positive")`).
+    ///
+    /// Costs pinned:
+    /// * `valid_utf8_prefix_len_cost(&bytes)` — linear in byte length
+    /// * `decode_utf8_cost(&bytes)` — linear in byte length
+    /// * `concat_bytes_cost(total)` — linear in total byte length
+    ///
+    /// Each of these is legitimately zero for empty input.  A revert
+    /// to `reserve_primitive` would fail Rholang paths that reach
+    /// these primitives with empty byte arrays — e.g.
+    /// foldConcurrent/mapReduce over an empty stream reduces to
+    /// `concat_bytes([])` and would trip the primitive-must-be-positive
+    /// gate.  The end-to-end regression surface is
+    /// `casper --test mod genesis::contracts::fileio_stream_argvalidation`
+    /// (30+ min); this source-scan pin catches the revert locally.
+    #[test]
+    fn byte_length_costs_use_reserve_incremental_primitive() {
+        let raw = include_str!("reduce.rs");
+        // Normalize consecutive whitespace to a single space so that
+        // cargo fmt can rewrap `reserve_incremental_primitive(...)`
+        // across multiple lines without breaking the substring
+        // match.  Comments and identifiers are preserved verbatim.
+        let normalized: String = {
+            let mut out = String::with_capacity(raw.len());
+            let mut prev_ws = false;
+            for c in raw.chars() {
+                if c.is_whitespace() {
+                    if !prev_ws {
+                        out.push(' ');
+                    }
+                    prev_ws = true;
+                } else {
+                    out.push(c);
+                    prev_ws = false;
+                }
+            }
+            out
+        };
+        for cost_name in &[
+            "valid_utf8_prefix_len_cost(",
+            "decode_utf8_cost(",
+            "concat_bytes_cost(",
+        ] {
+            let bad = format!("reserve_primitive({cost_name}");
+            assert!(
+                !normalized.contains(&bad),
+                "byte-length cost regression: {cost_name} must be charged via \
+                 metering.reserve_incremental_primitive (allows zero-cost \
+                 early-return), NOT metering.reserve_primitive (rejects zero \
+                 with BugFoundError).  A revert would break empty-byte-array \
+                 paths — e.g. foldConcurrent/mapReduce over empty streams."
+            );
+            let good = format!("reserve_incremental_primitive( {cost_name}");
+            let good_no_space = format!("reserve_incremental_primitive({cost_name}");
+            assert!(
+                normalized.contains(&good) || normalized.contains(&good_no_space),
+                "byte-length cost regression: expected \
+                 `metering.reserve_incremental_primitive({cost_name}...)` call \
+                 site to exist in reduce.rs — either the cost helper was \
+                 renamed or the site was removed."
+            );
+        }
+    }
+}

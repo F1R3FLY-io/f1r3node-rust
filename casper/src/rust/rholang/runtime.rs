@@ -4001,6 +4001,108 @@ mod tests {
         );
     }
 
+    /// **Post-merge boundary-ordering pin.**  The `WalDeployScope`
+    /// construction in
+    /// `process_deploy_cosigned_with_budget_and_authority_mode` MUST
+    /// happen BEFORE the `create_soft_checkpoint()` call.  This
+    /// ordering is load-bearing for the RAII discard-on-error
+    /// contract:
+    ///
+    /// * Rust drops locals in LIFO order.  With
+    ///   `wal_scope` constructed BEFORE `fallback`, an early return
+    ///   drops `wal_scope` AFTER `fallback` is gone — even in the
+    ///   panic-unwind + tokio-task-cancellation edge cases.
+    ///
+    /// * With the reverse order (checkpoint-first), a panic between
+    ///   `create_soft_checkpoint` and `wal_scope`'s construction
+    ///   would leave RSpace state uncommitted with no compensating
+    ///   WAL discard — the WAL would silently carry entries from a
+    ///   failed deploy into the next deploy's slice.
+    ///
+    /// This test pins the byte-order relationship inside the target
+    /// method's body.  A refactor that reorders (or moves either
+    /// construct out of the method) will trip this pin.
+    #[test]
+    fn process_deploy_cosigned_wal_scope_precedes_soft_checkpoint() {
+        let src = include_str!("runtime.rs");
+        let start = src
+            .find("async fn process_deploy_cosigned_with_budget_and_authority_mode")
+            .expect("target method must exist in runtime.rs");
+        // Terminal return of the target method — a distinctive
+        // literal so the body window is bounded correctly.
+        let end_marker = "Ok((deploy_result, eval_result.mergeable, fs_wal, exhausted))";
+        let body_end = src[start..]
+            .find(end_marker)
+            .expect("terminal 4-tuple return must exist inside the target method");
+        let body = &src[start..start + body_end];
+
+        let wal_pos = body.find("WalDeployScope::new_with_lock_sweep(").expect(
+            "wal_scope construction (via new_with_lock_sweep) must live inside the target method",
+        );
+        let ckpt_pos = body
+            .find("create_soft_checkpoint()")
+            .expect("create_soft_checkpoint() must live inside the target method");
+        assert!(
+            wal_pos < ckpt_pos,
+            "boundary-ordering regression: WalDeployScope::new_with_lock_sweep must \
+             be constructed BEFORE create_soft_checkpoint() in \
+             process_deploy_cosigned_with_budget_and_authority_mode. Rust drops \
+             locals LIFO, so this ordering guarantees wal_scope's Drop (discard-drain \
+             + lock sweep) runs on ALL early-return / panic-unwind / task-cancellation \
+             paths."
+        );
+    }
+
+    /// **Post-merge 4-tuple return-contract pin.**  The
+    /// `process_deploy_cosigned_with_budget_and_authority_mode` method
+    /// returns `Vec<WalEntry>` as its 3rd tuple element.  On the
+    /// success branch it MUST be populated via
+    /// `wal_scope.take_and_commit(&deploy_log)`; on the eval-failure
+    /// branch it MUST be `Vec::new()` so the RAII Drop discards the
+    /// deploy's WAL contribution (matching the RSpace revert on the
+    /// soft-checkpoint side).
+    ///
+    /// A future refactor that:
+    /// * calls `take_and_commit` unconditionally would commit WAL
+    ///   entries from a failed deploy — cross-deploy leak.
+    /// * omits `take_and_commit` on success would silently drop the
+    ///   deploy's WAL contribution — validator-wide observability
+    ///   sink.
+    ///
+    /// Both regressions are trapped by this source-scan pin.
+    #[test]
+    fn process_deploy_cosigned_fs_wal_success_and_failure_branches() {
+        let src = include_str!("runtime.rs");
+        let start = src
+            .find("async fn process_deploy_cosigned_with_budget_and_authority_mode")
+            .expect("target method must exist in runtime.rs");
+        let end_marker = "Ok((deploy_result, eval_result.mergeable, fs_wal, exhausted))";
+        let body_end = src[start..]
+            .find(end_marker)
+            .expect("terminal 4-tuple return must exist inside the target method");
+        let body = &src[start..start + body_end];
+
+        assert!(
+            body.contains("if eval_succeeded"),
+            "fs_wal branching pin: target method must gate the take_and_commit call \
+             on eval_succeeded so failed evaluations discard their WAL contribution"
+        );
+        assert!(
+            body.contains("wal_scope.take_and_commit(&deploy_log)"),
+            "fs_wal success branch pin: target method must drain the deploy's WAL \
+             via wal_scope.take_and_commit(&deploy_log) on the eval-success branch \
+             so the block emitter sees the deploy's per-deploy WAL slice in log order"
+        );
+        // Failure branch: fs_wal is Vec::new() so the wal_scope stays
+        // uncommitted (committed==false) and its Drop discards the entries.
+        assert!(
+            body.contains("Vec::new()"),
+            "fs_wal failure branch pin: target method must return Vec::new() for fs_wal \
+             on the eval-failure branch so wal_scope's Drop discards the deploy's WAL \
+             entries (mirrors the revert_to_soft_checkpoint on the RSpace side)"
+        );
+    }
+
     /// **Gap 3b: system-deploy path pin.**  System deploys use a
     /// state-hash-derived scope with the "phase8-system-deploy:"
     /// prefix so system-deploy scope space doesn't collide with
