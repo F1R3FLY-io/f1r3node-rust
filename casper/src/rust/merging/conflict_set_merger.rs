@@ -339,7 +339,7 @@ pub fn resolve_conflicts<R: Clone + Eq + std::hash::Hash + PartialOrd + Ord>(
     let optimal_rejection = get_optimal_rejection(
         rejection_options_with_overflow,
         |branch| branch.0.iter().map(|item| cost(item)).sum(),
-        |branch| branch.0.iter().map(|item| prior_losses(item)).sum(),
+        |branch| branch_losses(branch, prior_losses),
     );
 
     if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
@@ -800,12 +800,40 @@ pub fn merge<
     Ok((new_state, resolved.rejected))
 }
 
+/// Prior-loss profile of a set of rejected items: `(max, sum)`. The max is
+/// the chain-level rule ratified for phase 1 (a dependency chain carries its
+/// highest member count) lifted to the branch; the sum breaks max ties.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct LossProfile {
+    pub max: u64,
+    pub sum: u64,
+}
+
+impl LossProfile {
+    fn fold(self, other: LossProfile) -> LossProfile {
+        LossProfile {
+            max: self.max.max(other.max),
+            sum: self.sum.saturating_add(other.sum),
+        }
+    }
+}
+
+fn branch_losses<R>(branch: &Branch<R>, prior_losses: &impl Fn(&R) -> u64) -> LossProfile {
+    branch.0.iter().fold(LossProfile::default(), |acc, item| {
+        let losses = prior_losses(item);
+        acc.fold(LossProfile {
+            max: losses,
+            sum: losses,
+        })
+    })
+}
+
 /// Compute optimal rejection configuration.
 /// Find the optimal rejection set from conflicting branches.
 fn get_optimal_rejection<R: Eq + std::hash::Hash + Clone + Ord>(
     options: HashableSet<HashableSet<Branch<R>>>,
     target_f: impl Fn(&Branch<R>) -> u64,
-    losses_f: impl Fn(&Branch<R>) -> u64,
+    losses_f: impl Fn(&Branch<R>) -> LossProfile,
 ) -> HashableSet<Branch<R>> {
     assert!(
         options
@@ -830,67 +858,64 @@ fn get_optimal_rejection<R: Eq + std::hash::Hash + Clone + Ord>(
     tracing::debug!(target: "f1r3fly.merge.step", step = "get_optimal_rejection.ENTER",
         n_options = options.0.len());
 
-    // Convert to sorted list for deterministic processing
-    let mut options_vec: Vec<_> = options.0.into_iter().collect();
-    options_vec.sort_by(|a, b| {
-        // Zeroth criterion (issue #294): total prior losses of the rejected
-        // set, ascending — reject the branches with the FEWEST recorded
-        // losses, so a chain that already lost gains priority with every
-        // loss instead of losing the same tie forever. All-zero counts fall
-        // through to the cost criterion unchanged.
-        let a_losses: u64 = a.0.iter().map(|branch| losses_f(branch)).sum();
-        let b_losses: u64 = b.0.iter().map(|branch| losses_f(branch)).sum();
-
-        if a_losses != b_losses {
-            return a_losses.cmp(&b_losses);
-        }
-
-        // First criterion: sum of target function values
-        let a_sum: u64 = a.0.iter().map(|branch| target_f(branch)).sum();
-        let b_sum: u64 = b.0.iter().map(|branch| target_f(branch)).sum();
-
-        if a_sum != b_sum {
-            return a_sum.cmp(&b_sum);
-        }
-
-        // Second criterion: total size of branches
-        let a_size: usize = a.0.iter().map(|branch| branch.0.len()).sum();
-        let b_size: usize = b.0.iter().map(|branch| branch.0.len()).sum();
-
-        if a_size != b_size {
-            return a_size.cmp(&b_size);
-        }
-
-        let mut a_branches: Vec<_> = a.0.iter().collect();
-        let mut b_branches: Vec<_> = b.0.iter().collect();
-        a_branches.sort_by(|x, y| compare_branches(x, y));
-        b_branches.sort_by(|x, y| compare_branches(x, y));
-
-        for (a_branch, b_branch) in a_branches.iter().zip(b_branches.iter()) {
-            let ord = compare_branches(a_branch, b_branch);
-            if ord != std::cmp::Ordering::Equal {
-                return ord;
+    // Convert to sorted list for deterministic processing. The numeric keys
+    // are computed once per option, not once per comparison.
+    let mut keyed: Vec<(LossProfile, u64, usize, HashableSet<Branch<R>>)> = options
+        .0
+        .into_iter()
+        .map(|option| {
+            // Zeroth criterion (issue #294): prior losses of the rejected set,
+            // ascending — reject the set whose HIGHEST-loss member is lowest,
+            // then the set with the smaller loss total. A chain that already
+            // lost gains priority with every loss, and a coalition of
+            // low-loss chains can never outweigh one chain that has lost more
+            // than any of them. All-zero counts fall through to the cost
+            // criterion unchanged.
+            let losses = option.0.iter().fold(LossProfile::default(), |acc, branch| {
+                acc.fold(losses_f(branch))
+            });
+            // First criterion: sum of target function values
+            let cost: u64 = option.0.iter().map(|branch| target_f(branch)).sum();
+            // Second criterion: total size of branches
+            let size: usize = option.0.iter().map(|branch| branch.0.len()).sum();
+            (losses, cost, size, option)
+        })
+        .collect();
+    keyed.sort_by(
+        |(a_losses, a_cost, a_size, a), (b_losses, b_cost, b_size, b)| {
+            let by_keys = (a_losses, a_cost, a_size).cmp(&(b_losses, b_cost, b_size));
+            if by_keys != std::cmp::Ordering::Equal {
+                return by_keys;
             }
-        }
-        a_branches.len().cmp(&b_branches.len())
-    });
+
+            let mut a_branches: Vec<_> = a.0.iter().collect();
+            let mut b_branches: Vec<_> = b.0.iter().collect();
+            a_branches.sort_by(|x, y| compare_branches(x, y));
+            b_branches.sort_by(|x, y| compare_branches(x, y));
+
+            for (a_branch, b_branch) in a_branches.iter().zip(b_branches.iter()) {
+                let ord = compare_branches(a_branch, b_branch);
+                if ord != std::cmp::Ordering::Equal {
+                    return ord;
+                }
+            }
+            a_branches.len().cmp(&b_branches.len())
+        },
+    );
 
     if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
-        let candidates: Vec<(usize, u64, usize)> = options_vec
+        let candidates: Vec<(usize, LossProfile, u64, usize)> = keyed
             .iter()
-            .map(|o| {
-                let cost: u64 = o.0.iter().map(|branch| target_f(branch)).sum();
-                let size: usize = o.0.iter().map(|branch| branch.0.len()).sum();
-                (o.0.len(), cost, size)
-            })
+            .map(|(losses, cost, size, o)| (o.0.len(), *losses, *cost, *size))
             .collect();
         tracing::debug!(target: "f1r3fly.merge.step", step = "get_optimal_rejection.candidates",
-            candidates_n_branches_cost_size = ?candidates);
+            candidates_n_branches_losses_cost_size = ?candidates);
     }
 
-    let chosen = options_vec
+    let chosen = keyed
         .into_iter()
         .next()
+        .map(|(_, _, _, option)| option)
         .unwrap_or_else(|| HashableSet(HashSet::new()));
 
     if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
@@ -1143,6 +1168,13 @@ mod tests {
         HashableSet(branches.iter().cloned().collect::<HashSet<Branch<i32>>>())
     }
 
+    fn losses(count: u64) -> LossProfile {
+        LossProfile {
+            max: count,
+            sum: count,
+        }
+    }
+
     #[test]
     fn compare_branches_is_deterministic() {
         let a = branch(&[1, 2]);
@@ -1168,7 +1200,7 @@ mod tests {
         let chosen = get_optimal_rejection(
             options,
             |branch| branch.0.iter().map(|value| *value as u64).sum(),
-            |_branch| 0u64,
+            |_branch| losses(0),
         );
 
         assert_eq!(chosen, option_a);
@@ -1184,9 +1216,93 @@ mod tests {
             HashableSet(HashSet::from([option_a.clone(), option_b.clone()])),
             HashableSet(HashSet::from([option_b.clone(), option_a.clone()])),
         ] {
-            let chosen = get_optimal_rejection(options, |_branch| 0u64, |_branch| 0u64);
+            let chosen = get_optimal_rejection(options, |_branch| 0u64, |_branch| losses(0));
             assert_eq!(chosen, option_a);
         }
+    }
+
+    #[test]
+    fn optimal_rejection_keeps_higher_loss_branch_despite_cost() {
+        let high_loss = branch(&[1]);
+        let low_loss = branch(&[2]);
+        let reject_high_loss = rejection_option(std::slice::from_ref(&high_loss));
+        let reject_low_loss = rejection_option(std::slice::from_ref(&low_loss));
+        let options = HashableSet(HashSet::from([reject_high_loss, reject_low_loss.clone()]));
+
+        let chosen = get_optimal_rejection(
+            options,
+            |branch| if branch == &high_loss { 1 } else { 100 },
+            |branch| losses(if branch == &high_loss { 3 } else { 0 }),
+        );
+
+        assert_eq!(chosen, reject_low_loss);
+    }
+
+    #[test]
+    fn optimal_rejection_equal_nonzero_losses_fall_back_to_cost_and_order() {
+        let lower = branch(&[1]);
+        let higher = branch(&[2]);
+        let reject_lower = rejection_option(std::slice::from_ref(&lower));
+        let reject_higher = rejection_option(std::slice::from_ref(&higher));
+
+        let cost_choice = get_optimal_rejection(
+            HashableSet(HashSet::from([reject_lower.clone(), reject_higher.clone()])),
+            |branch| if branch == &lower { 10 } else { 1 },
+            |_branch| losses(4),
+        );
+        assert_eq!(cost_choice, reject_higher);
+
+        let order_choice = get_optimal_rejection(
+            HashableSet(HashSet::from([reject_lower.clone(), reject_higher])),
+            |_branch| 1,
+            |_branch| losses(4),
+        );
+        assert_eq!(order_choice, reject_lower);
+    }
+
+    #[test]
+    fn optimal_rejection_keeps_highest_loss_chain_over_low_loss_coalition() {
+        // Rejecting {first, second} sums to 4 losses; rejecting {third} sums
+        // to 3. A sum-only rule would reject third, the chain that has lost
+        // more than either rival. Max-first keeps it.
+        let first = branch(&[1]);
+        let second = branch(&[2]);
+        let third = branch(&[3]);
+        let reject_pair = rejection_option(&[first.clone(), second.clone()]);
+        let reject_single = rejection_option(std::slice::from_ref(&third));
+        let options = HashableSet(HashSet::from([reject_pair.clone(), reject_single]));
+
+        let chosen = get_optimal_rejection(
+            options,
+            |branch| if branch == &third { 100 } else { 1 },
+            |branch| losses(if branch == &third { 3 } else { 2 }),
+        );
+
+        assert_eq!(chosen, reject_pair);
+    }
+
+    #[test]
+    fn optimal_rejection_equal_max_losses_fall_back_to_loss_sum() {
+        let first = branch(&[1]);
+        let second = branch(&[2]);
+        let third = branch(&[3]);
+        let reject_pair = rejection_option(&[first.clone(), second.clone()]);
+        let reject_single = rejection_option(std::slice::from_ref(&third));
+        let options = HashableSet(HashSet::from([reject_pair, reject_single.clone()]));
+
+        let chosen = get_optimal_rejection(
+            options,
+            |branch| if branch == &third { 100 } else { 1 },
+            |_branch| losses(2),
+        );
+
+        assert_eq!(chosen, reject_single);
+    }
+
+    #[test]
+    fn branch_losses_takes_max_and_sum_over_members() {
+        let profile = branch_losses(&branch(&[1, 2, 3]), &|item: &i32| *item as u64);
+        assert_eq!(profile, LossProfile { max: 3, sum: 6 });
     }
 
     #[test]

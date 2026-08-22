@@ -342,9 +342,10 @@ content ordering is the tie-break that loss-aware adjudication subordinates.
 
 The prior-rejection count is the number of
 [kept rejection records](#kept-rejection-record) for a deploy signature that a
-merge can see in its view: the [merge scope](#merge-scope) plus the
+merge can see. The view contains the [merge scope](#merge-scope) and the
 base-lineage window. The count is on-chain data, so every validator derives
-the same value for the same merge.
+the same value for the same merge. A dependency chain uses the maximum count
+among its member signatures.
 
 **Preferred usage.** Use for the consensus-visible priority input to
 [loss-aware adjudication](#loss-aware-adjudication).
@@ -357,8 +358,8 @@ observability value that includes duplicate records.
 Loss-aware adjudication is the conflict-adjudication policy that ranks a
 higher [prior-rejection count](#prior-rejection-count) above
 [content ordering](#content-ordering). Every loss raises the priority of the
-loser, so starvation stays bounded. The policy applies at all three
-adjudication sites (issue #294, phase 1).
+loser in an adjudicable matchup. The policy applies at all three adjudication
+sites for issue #294 phase 1.
 
 **Preferred usage.** Use for the phase-1 remediation policy of issue #294.
 *Distinguish from* [Content ordering](#content-ordering): the fallback that
@@ -404,6 +405,16 @@ a lower bound on when a retry may appear, not a selection policy.
 *Avoid*: "retry timer" and "cooldown", because the gate keys on floor
 settlement, not on wall-clock time.
 
+### Retry frontier lease
+
+The retry frontier lease bounds proposer deferral when no selected parent
+covers all valid latest messages. The lease starts at the latest kept rejection
+height and permits normal packaging after three blocks.
+
+**Preferred usage.** Use for the phase-2 proposer selection bound.
+*Distinguish from* the [retry gate](#retry-gate), which controls block validity.
+*Avoid*: "retry timeout", because the lease uses block height, not time.
+
 ### Main-parent base bias
 
 Main-parent base bias is the starvation facet in which a merge bases on a
@@ -433,17 +444,14 @@ stays pending.
 
 ### Merged-frontier retry packaging
 
-Merged-frontier retry packaging is [remedy ladder](#remedy-ladder) option B1:
-the owner packages a gated retry only when its own tip already merges every
-same-key contender the owner can see. The retry then executes fresh on top of
-the settled contention instead of racing as a sibling. **Status: proposed** —
-the phase-2 decision on issue #294 is pending, tracked as TDD plan behavior
-B6.
+Merged-frontier retry packaging is [remedy ladder](#remedy-ladder) option B1.
+The owner first packages a gated retry only when one selected parent covers
+all valid latest messages. The [retry frontier lease](#retry-frontier-lease)
+permits normal packaging after three blocks. **Status: implemented.**
 
-**Preferred usage.** Use for ladder option B1, and state the proposal status
-until the decision lands.
+**Preferred usage.** Use for the ratified phase-2 packaging policy.
 *Distinguish from* the [retry gate](#retry-gate): the gate is a consensus
 legality rule; this packaging policy is node-local discretion on top of it.
 *Avoid*: "retry deferral" without qualification.
 
-[← Back to the Casper documentation map](README.md)
+[← Back to the Casper documentation map](./README.md)

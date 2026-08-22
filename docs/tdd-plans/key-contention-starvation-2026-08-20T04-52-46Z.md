@@ -23,7 +23,7 @@ behaviors:
       - tracer: true
         test: "rust::merging::dag_merger::tests::overfilled_splitter_prefers_previously_rejected_contender"
         red: "assertion failure: the contender with no prior losses must be the one rejected (behavioral, not compile)"
-        green: "keep-one survivor ordering sorts by (unpinned, Reverse(prior_rejections)); stable sort preserves existing determinism on ties"
+        green: "keep-one survivor ordering sorts by pinning and prior rejections, then uses the chain total order for deterministic ties"
         files:
           - casper/src/rust/merging/deploy_chain_index.rs   # new pub field prior_rejections (non-identity, default 0)
           - casper/src/rust/merging/dag_merger.rs           # keep-one ordering + test
@@ -51,7 +51,7 @@ behaviors:
     cycle_log:
       - test: "rust::merging::dag_merger::tests::sustained_same_key_contention_lands_before_window_closes"
         red: "starved deploy lost every merge for 50 rounds and expired — the issue's losing-every-merge shape, driven round-by-round through production adjudication with a fresh equal-cost contender per round"
-        green: "prior_rejection_counts implemented: per-sig count of non-duplicate RejectedDeploy records; stamp_prior_rejections sums a chain's deploy counts. Lands round 2."
+        green: "prior_rejection_counts records kept rejections per signature. stamp_prior_rejections uses the maximum member count. The retry lands in round 2."
         files:
           - casper/src/rust/merging/dag_merger.rs   # prior_rejection_counts, stamp_prior_rejections + test
         suite: "cargo test -p casper --lib: 298 passed"
@@ -86,7 +86,7 @@ behaviors:
         discovered:
           - "Main-parent base bias is separate from proposer-validator rejection-set agreement."
   - id: B6
-    statement: "A gated retry is packaged only when one selected parent covers every non-invalid latest-message justification"
+    statement: "A gated retry waits for one covering parent, but a three-block rejection-height lease bounds frontier-only deferral"
     priority: must
     deep_module: false
     done: true
@@ -94,14 +94,15 @@ behaviors:
     notes:
       - "Phase 2, option B1 (merged-frontier retry packaging) from docs/casper/CONSENSUS_PHILOSOPHY.md Section 5. Node-local packaging policy in prepare_user_deploys_with_policy; peer-safe by Ground Truth 2 (deferral is always legal). RED shape: in the racing harness, assert the owner block never packages the retry as a sibling of an unmerged contender."
     cycle_log:
-      - test: "rust::blocks::proposer::block_creator::tests::retry_frontier_defers_without_and_accepts_with_redundant_covering_parent"
-        red: "The open retry gate selected the buffered retry over two visible sibling parents."
-        green: "Retry selection requires one selected parent that covers every non-invalid latest-message justification. The test also accepts a covering parent when another selected parent is redundant."
+      - test: "rust::blocks::proposer::block_creator::tests::retry_frontier_defers_then_accepts_covering_parent_or_lease_escape"
+        red: "The first policy deferred failed integration deploys for 46 and 47 consecutive blocks because no parent covered the continuously moving frontier."
+        green: "Retry selection first waits for a covering parent. The retry becomes eligible after three blocks from its latest kept rejection."
         files:
           - casper/src/rust/blocks/proposer/block_creator.rs
         suite: "cargo test -p casper --lib: 310 passed"
         discovered:
-          - "The policy uses the authenticated parent and justification frontier. It does not predict Rholang keys from deploy source."
+          - "The policy uses authenticated parent, justification, and rejection-height data. It does not predict Rholang keys from deploy source."
+          - "CI run 32542517985 showed that an unbounded frontier wait can consume the full validity window during continuous proposals."
   - id: B7
     statement: "Under rotating merge proposers, a repeatedly rejected deploy lands before its validity window closes"
     priority: must
@@ -183,15 +184,20 @@ comparison table), Section 6 the ratified principles P1–P6.
 
 Ratified phase-2 path:
 
-- **B6** — merged-frontier retry packaging (ladder option B1): node-local
-  packaging policy, peer-safe, small diff.
+- **B6** — merged-frontier retry packaging (ladder option B1): owner-scoped
+  packaging with a three-block rejection-height lease.
 - **B7** — rotating-proposer test evidence (ladder option A): the active
   GREEN scenario in `loss_priority_spec`; the adversarial shape stays
   `#[ignore]`d as the C1 escalation sentinel.
+- **UCC waiver** — User Contract Concurrency is not a PR #312 merge gate.
+  All four standard integration matrices must pass.
+- **CbC scope** — `block_creator.rs` and `floor_context.rs` are mandatory.
+  PR #311 owns formal discharge.
 
-Escalation: C1 (loss-aware main-parent declaration) only behind soak
-evidence of residual expiries; C2 in reserve; C3 rejected (Principle P4:
-fork choice stays deploy-content-blind).
+Run three consecutive 60-minute contention soaks on the final phase-2 head.
+Each soak must use both providers. Activate C1 only if a valid deploy expires
+after `retry_frontier_escape`. Apply the same gate after C1 before C2.
+C3 remains rejected by Principle P4.
 
 ## Boundaries
 
