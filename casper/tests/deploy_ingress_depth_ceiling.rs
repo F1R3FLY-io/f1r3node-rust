@@ -470,55 +470,72 @@ fn ingress_child() {
         .expect("deploy_ingress_depth_ceiling: subject panicked");
 }
 
-/// Run one probe point. `true` iff ingress completed.
+const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+
 fn ingress_survives(teardown: Teardown, depth: usize, stack: usize) -> bool {
-    ingress_exit(teardown, depth, stack).success()
+    match ingress_probe(teardown, depth, stack) {
+        shared::rust::test_process::ProbeOutcome::Passed => true,
+        shared::rust::test_process::ProbeOutcome::Failed(failure)
+            if failure.kind == shared::rust::test_process::ProbeFailureKind::StackExhausted =>
+        {
+            false
+        }
+        shared::rust::test_process::ProbeOutcome::Failed(failure) => panic!(
+            "INVALID INGRESS PROBE: `{}` at depth {depth} on a {} KiB worker failed with \
+             {:?}, not native-stack exhaustion: {failure:?}",
+            teardown.tag(),
+            stack / 1024,
+            failure.kind,
+        ),
+    }
 }
 
-/// The exit status of one probe point, so a failure can be REPORTED with its
-/// signature rather than only counted.
-fn ingress_exit(teardown: Teardown, depth: usize, stack: usize) -> std::process::ExitStatus {
+fn ingress_probe(
+    teardown: Teardown,
+    depth: usize,
+    stack: usize,
+) -> shared::rust::test_process::ProbeOutcome {
     let exe = std::env::current_exe().expect("deploy_ingress_depth_ceiling: current_exe");
-    std::process::Command::new(exe)
+    let mut command = std::process::Command::new(exe);
+    command
         .args(["--ignored", "--exact", "ingress_child"])
         .env("INGRESS_TEARDOWN", teardown.tag())
         .env("INGRESS_DEPTH", depth.to_string())
-        .env("INGRESS_STACK", stack.to_string())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
+        .env("INGRESS_STACK", stack.to_string());
+    shared::rust::test_process::run_child_probe(&mut command, PROBE_TIMEOUT)
         .expect("deploy_ingress_depth_ceiling: failed to run child")
 }
 
-/// Greatest depth ingress survives on `stack` bytes. Exponential probe, then
-/// bisect. `cap` bounds the search so a converted ingress reports `None` rather
-/// than searching forever.
+/// Greatest depth ingress survives on `stack` bytes. The anti-vacuity base and
+/// inclusive cap are probed first; a failing cap is then bisected exactly.
+/// `cap` bounds the search so a converted ingress reports `None` rather than
+/// constructing every intervening power-of-two fixture.
 fn max_surviving_depth(teardown: Teardown, stack: usize, cap: usize) -> Option<usize> {
-    assert!(
-        ingress_survives(teardown, 1, stack),
-        "HARNESS FAILURE: ingress ({}) does not run at depth 1 on a {} KiB stack. That is \
-         not a depth ceiling — re-run the child directly to see the error.",
-        teardown.tag(),
-        stack / 1024
-    );
-    let mut lo = 1usize;
-    let mut hi = 2usize;
-    while hi <= cap && ingress_survives(teardown, hi, stack) {
-        lo = hi;
-        hi *= 2;
+    match shared::rust::test_process::monotone_ceiling(cap, |depth| {
+        ingress_probe(teardown, depth, stack)
+    })
+    .unwrap_or_else(|error| {
+        panic!(
+            "INVALID INGRESS DEPTH PROBE: `{}` at depth {} on a {} KiB worker failed with \
+             {:?}, not native-stack exhaustion: {:?}",
+            teardown.tag(),
+            error.depth,
+            stack / 1024,
+            error.failure.kind,
+            error.failure,
+        )
+    }) {
+        shared::rust::test_process::MonotoneCeiling::BaseFailed(failure) => panic!(
+            "HARNESS FAILURE: ingress ({}) does not run at depth 1 on a {} KiB stack. That is \
+             not a depth ceiling: {failure:?}",
+            teardown.tag(),
+            stack / 1024
+        ),
+        shared::rust::test_process::MonotoneCeiling::AtLeast(_) => None,
+        shared::rust::test_process::MonotoneCeiling::Exact {
+            greatest_survivor, ..
+        } => Some(greatest_survivor),
     }
-    if hi > cap {
-        return None; // survived the whole search range
-    }
-    while hi - lo > 1 {
-        let mid = lo + (hi - lo) / 2;
-        if ingress_survives(teardown, mid, stack) {
-            lo = mid;
-        } else {
-            hi = mid;
-        }
-    }
-    Some(lo)
 }
 
 /// Smallest stack (to [`RESOLUTION`] granularity) on which ingress survives at
@@ -649,7 +666,7 @@ fn ingress_depth_ceiling_has_not_got_worse() {
                 PRODUCTION_WORKER_STACK / (1024 * 1024),
                 max_depth,
                 max_depth + 1,
-                ingress_exit(Teardown::Worklist, max_depth + 1, PRODUCTION_WORKER_STACK),
+                ingress_probe(Teardown::Worklist, max_depth + 1, PRODUCTION_WORKER_STACK),
                 floor
             );
             assert!(

@@ -292,67 +292,55 @@ fn deploy_child() {
 // the parent: bisect DEPTH at a FIXED stack
 // ---------------------------------------------------------------------------
 
-/// Run one probe point in a child process. `true` iff the deploy completed.
-fn deploy_survives(subject: &str, depth: usize, stack: usize) -> bool {
-    let exe = std::env::current_exe().expect("deploy_depth_ceiling: current_exe");
-    std::process::Command::new(exe)
-        .args(["--ignored", "--exact", "deploy_child"])
-        .env("DEPLOY_SUBJECT", subject)
-        .env("DEPLOY_DEPTH", depth.to_string())
-        .env("DEPLOY_STACK", stack.to_string())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .expect("deploy_depth_ceiling: failed to run child")
-        .success()
-}
+const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
 
-/// The exit status of one probe point, for reporting the ABORT SIGNATURE rather
-/// than merely the fact of failure.
-fn deploy_exit(subject: &str, depth: usize, stack: usize) -> std::process::ExitStatus {
+fn deploy_probe(
+    subject: &str,
+    depth: usize,
+    stack: usize,
+) -> shared::rust::test_process::ProbeOutcome {
     let exe = std::env::current_exe().expect("deploy_depth_ceiling: current_exe");
-    std::process::Command::new(exe)
+    let mut command = std::process::Command::new(exe);
+    command
         .args(["--ignored", "--exact", "deploy_child"])
         .env("DEPLOY_SUBJECT", subject)
         .env("DEPLOY_DEPTH", depth.to_string())
-        .env("DEPLOY_STACK", stack.to_string())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
+        .env("DEPLOY_STACK", stack.to_string());
+    shared::rust::test_process::run_child_probe(&mut command, PROBE_TIMEOUT)
         .expect("deploy_depth_ceiling: failed to run child")
 }
 
 /// The greatest source nesting depth at which `subject` still completes on a
-/// `stack`-byte worker. Exponential probe upward, then bisect.
+/// `stack`-byte worker. The anti-vacuity base and inclusive cap are probed
+/// first; a failing cap is then bisected exactly.
 ///
 /// `hi_cap` bounds the search: a subject that survives it is reported as
 /// "≥ hi_cap" rather than searched forever.
 fn max_surviving_depth(subject: &str, stack: usize, hi_cap: usize) -> usize {
-    // Depth 1 must work, or the harness is broken rather than the subject deep.
-    assert!(
-        deploy_survives(subject, 1, stack),
-        "HARNESS FAILURE: `{subject}` does not even run at depth 1 on a {} KiB worker. \
-         That is not a depth ceiling — re-run the child directly to see the error.",
-        stack / 1024
-    );
-    let mut lo = 1usize; // known good
-    let mut hi = 2usize; // candidate bad
-    while hi <= hi_cap && deploy_survives(subject, hi, stack) {
-        lo = hi;
-        hi *= 2;
+    match shared::rust::test_process::monotone_ceiling(hi_cap, |depth| {
+        deploy_probe(subject, depth, stack)
+    })
+    .unwrap_or_else(|error| {
+        panic!(
+            "INVALID DEPTH PROBE: `{subject}` at depth {} on a {} KiB worker failed with \
+             {:?}, not native-stack exhaustion: {:?}",
+            error.depth,
+            stack / 1024,
+            error.failure.kind,
+            error.failure
+        )
+    }) {
+        shared::rust::test_process::MonotoneCeiling::BaseFailed(failure) => panic!(
+            "HARNESS FAILURE: `{subject}` does not even run at depth 1 on a {} KiB worker. \
+             That is not a depth ceiling: {failure:?}",
+            stack / 1024,
+        ),
+        shared::rust::test_process::MonotoneCeiling::AtLeast(depth)
+        | shared::rust::test_process::MonotoneCeiling::Exact {
+            greatest_survivor: depth,
+            ..
+        } => depth,
     }
-    if hi > hi_cap {
-        return lo;
-    }
-    while hi - lo > 1 {
-        let mid = lo + (hi - lo) / 2;
-        if deploy_survives(subject, mid, stack) {
-            lo = mid;
-        } else {
-            hi = mid;
-        }
-    }
-    lo
 }
 
 // ---------------------------------------------------------------------------
@@ -390,7 +378,7 @@ fn the_deploy_depth_ceiling_at_a_production_worker_stack() {
             "    plain_deploy    : depth {} runs, depth {} exits {:?}",
             plain,
             plain + 1,
-            deploy_exit("plain_deploy", plain + 1, PRODUCTION_WORKER_STACK)
+            deploy_probe("plain_deploy", plain + 1, PRODUCTION_WORKER_STACK)
         );
     }
     if env_get < HI_CAP {
@@ -398,7 +386,7 @@ fn the_deploy_depth_ceiling_at_a_production_worker_stack() {
             "    env_get_deploy  : depth {} runs, depth {} exits {:?}",
             env_get,
             env_get + 1,
-            deploy_exit("env_get_deploy", env_get + 1, PRODUCTION_WORKER_STACK)
+            deploy_probe("env_get_deploy", env_get + 1, PRODUCTION_WORKER_STACK)
         );
     }
 
