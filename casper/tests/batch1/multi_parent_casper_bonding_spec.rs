@@ -24,6 +24,7 @@ use crate::util::genesis_builder::{GenesisBuilder, DEFAULT_VALIDATOR_KEY_PAIRS};
 /// helper in `api::bonded_status_api_test`).
 async fn bonded_status(public_key: &PublicKey, node: &TestNode) -> bool {
     let casper_for_engine = Arc::new(MultiParentCasperImpl {
+        divergence_monitor: node.casper.divergence_monitor.clone(),
         block_retriever: node.casper.block_retriever.clone(),
         event_publisher: node.casper.event_publisher.clone(),
         runtime_manager: node.casper.runtime_manager.clone(),

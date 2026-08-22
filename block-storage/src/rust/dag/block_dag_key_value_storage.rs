@@ -667,6 +667,43 @@ impl KeyValueDagRepresentation {
         Ok(result)
     }
 
+    /// `ancestors` for the finalized-ancestry MARKING walk over a possibly
+    /// truncated DAG. A parent referenced by a held block whose own metadata
+    /// is not held is the restore horizon: everything below it is below the
+    /// anchor's floor, hence already settled, so the walk terminates there —
+    /// the parent is neither marked nor expanded. Erroring instead (as
+    /// `ancestors` does) aborts the LFB adoption and wedges the finalizer
+    /// forever while the chain grows past it. Callers for whom a missing
+    /// block is an availability failure to surface (merge scope) stay on
+    /// `ancestors`.
+    pub fn held_ancestors(
+        &self,
+        block_hash: BlockHash,
+        filter_f: impl Fn(&BlockHash) -> bool,
+    ) -> Result<HashSet<BlockHash>, KvStoreError> {
+        let mut result = HashSet::new();
+        let mut current_level = vec![self.lookup_unsafe(&block_hash)?];
+
+        while !current_level.is_empty() {
+            let mut next_level = Vec::new();
+
+            for metadata in &current_level {
+                for parent in &metadata.parents {
+                    if filter_f(parent) && !result.contains(parent) {
+                        if let Some(parent_metadata) = self.lookup(parent)? {
+                            result.insert(parent.clone());
+                            next_level.push(parent_metadata);
+                        }
+                    }
+                }
+            }
+
+            current_level = next_level;
+        }
+
+        Ok(result)
+    }
+
     pub fn with_ancestors(
         &self,
         block_hash: BlockHash,
@@ -735,6 +772,12 @@ pub struct BlockDagKeyValueStorage {
     /// sufficient here; a reader outside the lock would need stronger
     /// ordering, and could observe a stale-high bound.
     pub(crate) ft_lower_bound: Arc<AtomicU32>,
+    /// The shard's genesis block hash, persisted as a single-slot register.
+    /// On ceremony nodes it is derivable from the DAG (the height-0 block);
+    /// a truncated (LFS-restored) node holds no height-0 block and must
+    /// LEARN it — hash only, never the block — during restore. Consumers
+    /// that need a network-uniform genesis sentinel read this register.
+    pub(crate) genesis_hash_index: KeyValueTypedStoreImpl<String, BlockHashSerde>,
 }
 
 impl BlockDagKeyValueStorage {
@@ -785,6 +828,10 @@ impl BlockDagKeyValueStorage {
         let lifecycle_tables =
             DeployLifecycleTables::new(lifecycle_events_kv_store, lifecycle_terminal_kv_store);
 
+        let genesis_hash_kv_store = kvm.store("genesis-hash".to_string()).await?;
+        let genesis_hash_db: KeyValueTypedStoreImpl<String, BlockHashSerde> =
+            KeyValueTypedStoreImpl::new(genesis_hash_kv_store);
+
         Ok(Self {
             global_lock: Arc::new(PlRwLock::new(())),
             block_metadata_index: Arc::new(PlRwLock::new(block_metadata_store)),
@@ -796,7 +843,48 @@ impl BlockDagKeyValueStorage {
             latest_messages_index: latest_messages_db,
             dag_generation: Arc::new(AtomicU64::new(0)),
             ft_lower_bound: Arc::new(AtomicU32::new(0.0f32.to_bits())),
+            genesis_hash_index: genesis_hash_db,
         })
+    }
+
+    const GENESIS_HASH_KEY: &'static str = "genesis";
+
+    /// Record the shard's genesis block hash. Write-once: recording the same
+    /// value again is a no-op; recording a DIFFERENT value is an error — two
+    /// genesis identities on one node is a bootstrap-integrity violation,
+    /// never something to silently overwrite.
+    pub fn record_genesis_hash(&self, hash: BlockHash) -> Result<(), KvStoreError> {
+        let _lock_guard = self.global_lock.write();
+        let key = Self::GENESIS_HASH_KEY.to_string();
+        if let Some(BlockHashSerde(existing)) = self.genesis_hash_index.get_one(&key)? {
+            if existing == hash {
+                return Ok(());
+            }
+            return Err(KvStoreError::InvalidArgument(format!(
+                "genesis hash already recorded as {}; refusing to overwrite with {}",
+                PrettyPrinter::build_string_bytes(&existing),
+                PrettyPrinter::build_string_bytes(&hash),
+            )));
+        }
+        self.genesis_hash_index.put_one(key, BlockHashSerde(hash))
+    }
+
+    /// The shard's genesis hash: the learned register when present, else
+    /// derived from the held height-0 block (ceremony nodes). `None` only on
+    /// a truncated node that has not learned it.
+    pub fn genesis_hash(&self) -> Result<Option<BlockHash>, KvStoreError> {
+        if let Some(BlockHashSerde(hash)) = self
+            .genesis_hash_index
+            .get_one(&Self::GENESIS_HASH_KEY.to_string())?
+        {
+            return Ok(Some(hash));
+        }
+        let guard = self.block_metadata_index.read();
+        let dag_state = guard.dag_state().read();
+        Ok(dag_state
+            .height_map
+            .get(&0)
+            .and_then(|blocks| blocks.iter().min().cloned()))
     }
 
     // P2-16: the following two methods bypass `global_lock` — production
@@ -852,6 +940,9 @@ impl BlockDagKeyValueStorage {
             lifecycle: Arc::new(PlRwLock::new(DeployLifecycleTables::in_memory())),
             dag_generation,
             ft_lower_bound: Arc::new(AtomicU32::new(0.0f32.to_bits())),
+            genesis_hash_index: KeyValueTypedStoreImpl::new(Arc::new(
+                rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore::new(),
+            )),
         }
     }
 
@@ -1061,15 +1152,21 @@ impl BlockDagKeyValueStorage {
 
             let mut result = HashMap::new();
             if !newly_bonded_unseen.is_empty() {
-                let placeholder = {
-                    let guard = self.block_metadata_index.read();
-                    let dag_state = guard.dag_state().read();
-                    dag_state
-                        .height_map
-                        .get(&0)
-                        .and_then(|blocks| blocks.iter().min().cloned())
-                        .unwrap_or_else(|| block_hash.clone())
-                };
+                // The placeholder must be NETWORK-UNIFORM: every node seeds
+                // the same slot with the same value, or the joiner's first
+                // self-justifying proposal reads as an equivocation on
+                // whichever side seeded differently. Ceremony nodes derive
+                // genesis from their height-0 block; a truncated node holds
+                // none and uses the genesis hash it learned during restore.
+                // There is no third source — the block being inserted is
+                // right on no node.
+                let placeholder = self.genesis_hash()?.ok_or_else(|| {
+                    KvStoreError::InvalidArgument(format!(
+                        "cannot seed newly-bonded latest-message slot(s) while inserting {}: \
+                         no height-0 block is held and no genesis hash was learned",
+                        PrettyPrinter::build_string_bytes(&block_hash),
+                    ))
+                })?;
 
                 for validator in newly_bonded_unseen {
                     tracing::debug!(
@@ -1312,8 +1409,16 @@ impl BlockDagKeyValueStorage {
                     )));
                 }
 
+                // Held, unfinalized ancestry only. A parent edge can reach
+                // BELOW a restored node's truncation horizon — referenced but
+                // not held — and such an ancestor is settled by the restore
+                // contract (everything under the shipped window is finalized
+                // ancestry). Descending into it errored the whole finalizer
+                // run on the first sub-horizon parent, permanently: the same
+                // ancestry re-walks every run, so a restored node's LFB froze
+                // at its restore-era floor while the shard finalized on.
                 let indirectly_finalized = dag
-                    .ancestors(directly_finalized_hash.clone(), |hash| {
+                    .held_ancestors(directly_finalized_hash.clone(), |hash| {
                         !dag.is_finalized(hash)
                     })?;
 
