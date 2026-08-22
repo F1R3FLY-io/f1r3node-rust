@@ -1224,11 +1224,164 @@ tasks:
 
 ---
 
+### EPIC-016: Key-Contention Starvation Close-Out
+
+```yaml
+---
+epic_id: EPIC-016
+title: "Key-Contention Starvation Close-Out"
+status: pending
+priority: p1
+user_story: null
+issues: [294, 317, 104]
+blocked_by: []
+created_at: 2026-08-22
+updated_at: 2026-08-22
+claimed_by: null
+claimed_at: null
+execution_contract:
+  base_branch: feat/key-contention-phase2
+  branch: fix/key-contention-base-bias
+  stack: "PR #299 (phase 1) -> PR #312 (phase 2) -> this branch -> PR #311 (formal, merges last). PR #311 merges this branch's production changes without history rewriting and discharges the dag_merger.rs claim against the final head."
+  issue_policy: "Put Refs #294, #317, and #104 in the PR body. Close #294 only after every valid proposer schedule has deterministic termination and the fix is promoted to master."
+  ratified_2026_08_22:
+    - "The protected-cell cardinality invariant is enforced at block validation (REPLAY). This is a validation-rule change."
+    - "A protected single-value cell is authenticated by mergeable tag metadata only. Untagged integer datums are ordinary Rholang."
+    - "Typed rejection reasons travel on the wire in RejectedDeploy. Node-local deferral (BlockNotHeld) is never a wire reason."
+    - "The 2026-08-22 CI failure is not C1 soak evidence. It had no frontier-lease escape and no rival contention."
+tasks:
+  - id: TASK-016-1
+    title: "Authenticated single-value-cell classification"
+    status: pending
+    priority: p1
+    issues: [104]
+    discovered_in: docs/work-logs/shared-shard-single-number-cell-starvation-2026-08-22.md
+    claimed_by: null
+    blocked_by: []
+    notes:
+      - "Two classifiers exist today: binary_data_is_single_number in dag_merger.rs and check_single_value_cell_not_overfilled in rholang_merging_logic.rs. Both classify by datum shape, which is guessable from content."
+      - "The Rocq section Overfill in formal/rocq/merge_algebra/theories/ConflictSoundness.v proves guard detection at merge time only. Its header must state that boundary. That edit belongs to PR #311."
+    acceptance:
+      - "One classifier in rholang/src/rust/interpreter/merging/rholang_merging_logic.rs decides protection from authenticated mergeable tag metadata, never from datum shape"
+      - "rholang_merging_logic.rs carries cbc=mandatory in .gitattributes"
+      - "A unit test shows two integer datums on an untagged channel merge without rejection, and a second produce onto a tagged number cell is rejected"
+      - "The shared-shard reproduction recipe in the discovered_in work log no longer rejects"
+
+  - id: TASK-016-2
+    title: "Use a fresh channel per shared-shard deploy in system-integration"
+    status: pending
+    priority: p1
+    issues: [294]
+    discovered_in: docs/work-logs/shared-shard-single-number-cell-starvation-2026-08-22.md
+    claimed_by: null
+    blocked_by: []
+    repo: system-integration
+    notes:
+      - "_deploy_and_wait in test_web_api.py deploys @{2000+i}!(i) from one key in 16 tests. Only the second write to each channel is hazardous, so the failing test moves with xdist ordering."
+      - "Cross-repo change. Commit in a system-integration session, then bump SYSTEM_INTEGRATION_REF at all three sites here."
+      - "This fixture fix hides the trigger. It does not repair the lineage-dependent semantics; TASK-016-1 and TASK-016-3 do."
+    acceptance:
+      - "Each _deploy_and_wait call produces onto a channel no other test in the shared shard writes"
+      - "Three consecutive green runs of the four integration matrices on dev after the repin"
+
+  - id: TASK-016-3
+    title: "Enforce protected-cell cardinality at block validation"
+    status: pending
+    priority: p1
+    issues: [104, 294]
+    claimed_by: null
+    blocked_by: [TASK-016-1]
+    notes:
+      - "Composed invariant (PR #311): for every accepted block and every authenticated protected number cell, the block post-state holds at most one datum, regardless of block partition, parent order, main-parent identity, carrier lineage, retry count, proposer identity, or PLAY versus REPLAY."
+      - "A produce-only write that lands through the main-parent lineage never reaches the merge guard. Validation of the block's own deploy effects against its pre-state closes that path."
+      - "This is a consensus-visible validation-rule change. It needs upgrade coordination and a decision-record row. It supersedes the C1 acceptance line that forbids validation changes for this one rule."
+    acceptance:
+      - "A block whose own deploys push a protected cell past one datum is invalid at REPLAY on every validator"
+      - "The same admissibility decision results for two produces in one carrier block and for each produce in a separate block"
+      - "The negative control from PR #311 (merge-only guard, main-parent admission off, second produce through lineage) fails validation on the repaired head"
+      - "The enforcement file carries cbc=mandatory"
+      - "Decision-record row in docs/casper/CONSENSUS_PHILOSOPHY.md names the validation change and its coordination cost"
+
+  - id: TASK-016-4
+    title: "Typed rejection reasons and retry eligibility"
+    status: pending
+    priority: p1
+    issues: [294, 317]
+    claimed_by: null
+    blocked_by: [TASK-016-1]
+    notes:
+      - "RejectedDeploy carries only sig, duplicate, and carrier. Recovery and loss priority cannot tell a retryable loss from a terminal one, so a permanently unsafe deploy gains unbounded priority."
+      - "Reason table (PR #311): CollateralChainDrop retryable; MergeConflict retryable; DuplicateOccurrence not retryable; SafetyInvariantViolation terminal. Missing consensus history is deferral, never a rejection reason."
+      - "The reason field changes block-body encoding. Every validator must derive the same reason from authenticated inputs or InvalidRejectedDeploy disagrees."
+    acceptance:
+      - "RejectedDeploy in CasperMessage.proto carries a reason enum with the four wire reasons"
+      - "Each merge rejection site assigns one deterministic reason, and block validation recomputes the same reason"
+      - "prior_rejections counts retryable losses only"
+      - "Recovery does not re-package a deploy whose latest rejection is terminal, and the deploy lifecycle reports the terminal state"
+      - "The encoding change is named as a hard fork in the PR body"
+
+  - id: TASK-016-5
+    title: "Implement the C1 base-bias remedy over the admissible parent set"
+    status: pending
+    priority: p1
+    issues: [294, 317]
+    claimed_by: null
+    blocked_by: [TASK-016-3, TASK-016-4]
+    notes:
+      - "Option C1 from the remedy ladder: a proposer whose parent set holds a sibling carrying a chain with strictly more retryable prior rejections declares that sibling as parents[0]."
+      - "GuardBridge.v proves promotion is deterministic but not that the promoted parent is state-safe. A parent is promotable only when its post-state passes the TASK-016-3 validation."
+      - "PR #312 Limits: no proof of termination under fixed-proposer main-parent base bias. The ignored fixed-proposer test in casper/tests/batch2/loss_priority_spec.rs is the expected-RED sentinel."
+    acceptance:
+      - "C1 selects from the admissible parent set only and considers retryable rejections only"
+      - "The fixed-proposer sentinel test is no longer ignored and passes"
+      - "Fork choice stays deploy-content-blind (Principle P4); parent promotion is proposer policy computed from authenticated data"
+      - "Decision-record row in docs/casper/CONSENSUS_PHILOSOPHY.md marks C1 ratified"
+
+  - id: TASK-016-6
+    title: "Enable User Contract Concurrency and fail on contention expiry"
+    status: pending
+    priority: p2
+    issues: [294]
+    claimed_by: null
+    blocked_by: [TASK-016-5]
+    notes:
+      - "User Contract Concurrency was waived as a merge gate for PR #299 and PR #312. The waiver requires this follow-up."
+    acceptance:
+      - "The ucc integration matrix runs by default instead of skipping"
+      - "A contention expiry fails the run"
+      - "Three consecutive green runs"
+
+  - id: TASK-016-7
+    title: "Run three consecutive 60-minute contention soaks"
+    status: pending
+    priority: p2
+    issues: [294, 317]
+    claimed_by: null
+    blocked_by: [TASK-016-5, TASK-016-6]
+    notes:
+      - "Ratified in PR #312: each soak uses both supported providers. Start C2 only if one soak expires a valid deploy after retry_frontier_escape."
+      - "The 2026-08-22 shared-shard CI failure is not soak evidence for or against C1."
+    acceptance:
+      - "Three consecutive soaks on the final phase-2 head with no expired valid deploy"
+      - "Soak run IDs and head SHA recorded in this task"
+---
+```
+
+**Context:** PR #299 removed content-deterministic adjudication and PR #312 added merged-frontier retry packaging with a three-block lease. Neither proves termination under fixed-proposer main-parent base bias. The 2026-08-22 CI analysis found a third facet: the single-value-cell guard is a local merge lemma whose production bridge is incomplete. A produce-only second write lands through the main-parent lineage without reaching the guard, the cell then holds two datums, and loss priority cannot reorder a chain that has no rival. The repair is an authenticated classifier, validation-time enforcement, and typed rejection reasons so that C1 promotes only state-safe carriers of retryable losses.
+
+**Scope:**
+
+- Included: the authenticated classifier, REPLAY enforcement, wire rejection reasons with retry eligibility, C1 over the admissible parent set, the sentinel flip, UCC enablement, the soak evidence, and the system-integration fixture handoff
+- Excluded: C2 and C3 (C3 stays rejected: fork choice must remain deploy-content-blind), the formal composition proofs and cardinality-aware state models (PR #311), and the Rocq section Overfill header edit (PR #311)
+
+---
+
 ## Epic Dependency Graph
 
 ```text
 EPIC-011 (TLA exhaustive baseline, complete) ─> EPIC-012 / TASK-012-22
 EPIC-012 (open-issue PR queue)              (all other lanes start independently)
+PR #299 ─> PR #312 ─> EPIC-016 (key-contention close-out) ─> PR #311 (formal, merges last)
 
 EPIC-001 (system-integration alignment)    EPIC-003 (f1r3node: merge critical PRs)
 EPIC-002 (monitoring separation)               |
