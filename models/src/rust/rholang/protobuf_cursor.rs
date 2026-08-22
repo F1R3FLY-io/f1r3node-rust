@@ -1,17 +1,22 @@
-//! Borrowed, restartable cursors over canonical protobuf messages.
+//! Borrowed and owned restartable cursors over canonical protobuf messages.
 //!
 //! The generated protobuf decoder is the authority when a resident Rust value
 //! is required.  Some analyses need only selected child-message regions,
 //! however, and materialising every recursively shorter suffix turns an
 //! otherwise linear walk into a quadratic one.  This module supplies the
 //! complementary byte view: it validates protobuf framing and canonical field
-//! order while returning slices borrowed from the already-canonical source.
+//! order while returning borrowed slices or constant-size owned regions into
+//! the already-canonical source.
 //!
-//! It deliberately does not interpret a schema beyond [`CanonicalParProcessIndex`].
-//! Typed consumers remain responsible for checking the fields and wire types of
-//! their own component messages.
+//! It deliberately does not interpret a schema beyond
+//! [`CanonicalParProcessIndex`] and [`CanonicalParRegionIndex`]. Typed consumers
+//! remain responsible for checking the fields and wire types of their own
+//! component messages.
 
 use std::fmt;
+use std::ops::Range;
+
+use prost::bytes::Bytes;
 
 /// A half-open range inside the message passed to a cursor.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -28,6 +33,84 @@ impl CanonicalByteRange {
     pub fn slice(self, message: &[u8]) -> Option<&[u8]> { message.get(self.start..self.end) }
 }
 
+#[derive(Clone)]
+pub struct ProtobufRegion {
+    backing: Bytes,
+    range: Range<usize>,
+}
+
+impl ProtobufRegion {
+    #[inline]
+    pub fn new(backing: Bytes) -> Self {
+        let end = backing.len();
+        Self {
+            backing,
+            range: 0..end,
+        }
+    }
+
+    #[inline]
+    pub fn copy_from_slice(bytes: &[u8]) -> Self { Self::new(Bytes::copy_from_slice(bytes)) }
+
+    #[inline]
+    pub fn as_bytes(&self) -> &[u8] { &self.backing[self.range.clone()] }
+
+    #[inline]
+    pub fn len(&self) -> usize { self.range.end - self.range.start }
+
+    #[inline]
+    pub fn is_empty(&self) -> bool { self.range.is_empty() }
+
+    #[inline]
+    pub fn absolute_range(&self) -> Range<usize> { self.range.clone() }
+
+    pub fn subregion(&self, relative: CanonicalByteRange) -> Option<Self> {
+        if relative.start > relative.end || relative.end > self.len() {
+            return None;
+        }
+        let start = self.range.start.checked_add(relative.start)?;
+        let end = self.range.start.checked_add(relative.end)?;
+        Some(Self {
+            backing: self.backing.clone(),
+            range: start..end,
+        })
+    }
+
+    #[inline]
+    pub fn into_bytes(self) -> Bytes { self.backing.slice(self.range) }
+}
+
+impl From<Bytes> for ProtobufRegion {
+    #[inline]
+    fn from(bytes: Bytes) -> Self { Self::new(bytes) }
+}
+
+impl From<Vec<u8>> for ProtobufRegion {
+    #[inline]
+    fn from(bytes: Vec<u8>) -> Self { Self::new(Bytes::from(bytes)) }
+}
+
+impl AsRef<[u8]> for ProtobufRegion {
+    #[inline]
+    fn as_ref(&self) -> &[u8] { self.as_bytes() }
+}
+
+impl fmt::Debug for ProtobufRegion {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ProtobufRegion")
+            .field("range", &self.range)
+            .field("len", &self.len())
+            .finish()
+    }
+}
+
+impl PartialEq for ProtobufRegion {
+    #[inline]
+    fn eq(&self, other: &Self) -> bool { self.as_bytes() == other.as_bytes() }
+}
+
+impl Eq for ProtobufRegion {}
+
 /// The non-group protobuf wire types admitted by the Rholang schema.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
@@ -38,7 +121,7 @@ pub enum CanonicalWireType {
     Fixed32 = 5,
 }
 
-/// A framing or canonicality failure in a borrowed protobuf cursor.
+/// A framing or canonicality failure in a protobuf cursor.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CanonicalProtobufError {
     TruncatedVarint {
@@ -191,6 +274,61 @@ impl<'a> CanonicalField<'a> {
     pub fn expect_varint(self) -> Result<u64, CanonicalProtobufError> {
         match self.value {
             CanonicalFieldValue::Varint(value) => Ok(value),
+            _ => Err(CanonicalProtobufError::UnexpectedWireType {
+                offset: self.encoded_range.start,
+                field: self.number,
+                expected: CanonicalWireType::Varint,
+                actual: self.wire_type,
+            }),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CanonicalRegionFieldValue {
+    Varint(u64),
+    Fixed64(ProtobufRegion),
+    LengthDelimited(ProtobufRegion),
+    Fixed32(ProtobufRegion),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CanonicalRegionField {
+    pub number: u32,
+    pub wire_type: CanonicalWireType,
+    pub value: CanonicalRegionFieldValue,
+    pub encoded_range: CanonicalByteRange,
+    pub payload_range: CanonicalByteRange,
+}
+
+impl CanonicalRegionField {
+    pub fn expect_length_delimited(&self) -> Result<&ProtobufRegion, CanonicalProtobufError> {
+        match &self.value {
+            CanonicalRegionFieldValue::LengthDelimited(payload) => Ok(payload),
+            _ => Err(CanonicalProtobufError::UnexpectedWireType {
+                offset: self.encoded_range.start,
+                field: self.number,
+                expected: CanonicalWireType::LengthDelimited,
+                actual: self.wire_type,
+            }),
+        }
+    }
+
+    pub fn into_length_delimited(self) -> Result<ProtobufRegion, CanonicalProtobufError> {
+        match self.value {
+            CanonicalRegionFieldValue::LengthDelimited(payload) => Ok(payload),
+            _ => Err(CanonicalProtobufError::UnexpectedWireType {
+                offset: self.encoded_range.start,
+                field: self.number,
+                expected: CanonicalWireType::LengthDelimited,
+                actual: self.wire_type,
+            }),
+        }
+    }
+
+    pub fn expect_varint(&self) -> Result<u64, CanonicalProtobufError> {
+        match self.value {
+            CanonicalRegionFieldValue::Varint(value) => Ok(value),
             _ => Err(CanonicalProtobufError::UnexpectedWireType {
                 offset: self.encoded_range.start,
                 field: self.number,
@@ -383,6 +521,81 @@ impl<'a> CanonicalFieldCursor<'a> {
     }
 }
 
+#[derive(Clone, Debug)]
+pub struct CanonicalRegionFieldCursor {
+    message: ProtobufRegion,
+    at: usize,
+    last_field: u32,
+}
+
+impl CanonicalRegionFieldCursor {
+    pub fn new(message: ProtobufRegion) -> Self {
+        Self {
+            message,
+            at: 0,
+            last_field: 0,
+        }
+    }
+
+    #[inline]
+    pub fn is_empty(&self) -> bool { self.at == self.message.len() }
+
+    pub fn next_field(&mut self) -> Result<Option<CanonicalRegionField>, CanonicalProtobufError> {
+        let Some((number, wire_type, varint, encoded_range, payload_range, at, last_field)) =
+            (|| {
+                let mut borrowed = CanonicalFieldCursor {
+                    message: self.message.as_bytes(),
+                    at: self.at,
+                    last_field: self.last_field,
+                };
+                let field = borrowed.next_field()?;
+                Ok::<_, CanonicalProtobufError>(field.map(|field| {
+                    let varint = match field.value {
+                        CanonicalFieldValue::Varint(value) => Some(value),
+                        _ => None,
+                    };
+                    (
+                        field.number,
+                        field.wire_type,
+                        varint,
+                        field.encoded_range,
+                        field.payload_range,
+                        borrowed.at,
+                        borrowed.last_field,
+                    )
+                }))
+            })()?
+        else {
+            return Ok(None);
+        };
+
+        self.at = at;
+        self.last_field = last_field;
+        let payload = || {
+            self.message
+                .subregion(payload_range)
+                .expect("a field payload parsed from the same protobuf region")
+        };
+        let value = match wire_type {
+            CanonicalWireType::Varint => CanonicalRegionFieldValue::Varint(
+                varint.expect("the borrowed parser supplies a varint value"),
+            ),
+            CanonicalWireType::Fixed64 => CanonicalRegionFieldValue::Fixed64(payload()),
+            CanonicalWireType::LengthDelimited => {
+                CanonicalRegionFieldValue::LengthDelimited(payload())
+            }
+            CanonicalWireType::Fixed32 => CanonicalRegionFieldValue::Fixed32(payload()),
+        };
+        Ok(Some(CanonicalRegionField {
+            number,
+            wire_type,
+            value,
+            encoded_range,
+            payload_range,
+        }))
+    }
+}
+
 /// One contiguous run of repeated length-delimited fields.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CanonicalDelimitedRun<'a> {
@@ -423,6 +636,47 @@ impl<'a> CanonicalDelimitedCursor<'a> {
             });
         }
         field.expect_length_delimited().map(Some)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CanonicalRegionDelimitedRun {
+    encoded: ProtobufRegion,
+    field: u32,
+}
+
+impl CanonicalRegionDelimitedRun {
+    pub fn new(encoded: ProtobufRegion, field: u32) -> Self { Self { encoded, field } }
+
+    pub fn cursor(&self) -> CanonicalRegionDelimitedCursor {
+        CanonicalRegionDelimitedCursor {
+            fields: CanonicalRegionFieldCursor::new(self.encoded.clone()),
+            expected_field: self.field,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct CanonicalRegionDelimitedCursor {
+    fields: CanonicalRegionFieldCursor,
+    expected_field: u32,
+}
+
+impl CanonicalRegionDelimitedCursor {
+    #[inline]
+    pub fn is_empty(&self) -> bool { self.fields.is_empty() }
+
+    pub fn next_region(&mut self) -> Result<Option<ProtobufRegion>, CanonicalProtobufError> {
+        let Some(field) = self.fields.next_field()? else {
+            return Ok(None);
+        };
+        if field.number != self.expected_field {
+            return Err(CanonicalProtobufError::UnexpectedField {
+                offset: field.encoded_range.start,
+                field: field.number,
+            });
+        }
+        field.into_length_delimited().map(Some)
     }
 }
 
@@ -515,6 +769,108 @@ impl<'a> CanonicalParProcessIndex<'a> {
                 }
                 11 => extend_run(message, &mut index.bundles, field)?,
                 12 => extend_run(message, &mut index.conditionals, field)?,
+                number => {
+                    return Err(CanonicalProtobufError::UnexpectedField {
+                        offset: field.encoded_range.start,
+                        field: number,
+                    });
+                }
+            }
+        }
+        Ok(index)
+    }
+}
+
+fn extend_region_run(
+    message: &ProtobufRegion,
+    slot: &mut Option<CanonicalRegionDelimitedRun>,
+    field: &CanonicalRegionField,
+) -> Result<(), CanonicalProtobufError> {
+    field.expect_length_delimited()?;
+    let start = match slot {
+        Some(run) => {
+            let run_range = run.encoded.absolute_range();
+            let message_range = message.absolute_range();
+            debug_assert_eq!(
+                run_range.end,
+                message_range.start + field.encoded_range.start
+            );
+            run_range.start - message_range.start
+        }
+        None => field.encoded_range.start,
+    };
+    let encoded = message
+        .subregion(CanonicalByteRange {
+            start,
+            end: field.encoded_range.end,
+        })
+        .expect("a repeated-field run parsed from the same protobuf region");
+    *slot = Some(CanonicalRegionDelimitedRun::new(encoded, field.number));
+    Ok(())
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct CanonicalParRegionIndex {
+    pub sends: Option<CanonicalRegionDelimitedRun>,
+    pub receives: Option<CanonicalRegionDelimitedRun>,
+    pub news: Option<CanonicalRegionDelimitedRun>,
+    pub exprs: Option<CanonicalRegionDelimitedRun>,
+    pub matches: Option<CanonicalRegionDelimitedRun>,
+    pub unforgeables: Option<CanonicalRegionDelimitedRun>,
+    pub connectives: Option<CanonicalRegionDelimitedRun>,
+    pub bundles: Option<CanonicalRegionDelimitedRun>,
+    pub conditionals: Option<CanonicalRegionDelimitedRun>,
+    pub locally_free: Option<ProtobufRegion>,
+    pub connective_used: bool,
+}
+
+impl CanonicalParRegionIndex {
+    pub fn parse(message: ProtobufRegion) -> Result<Self, CanonicalProtobufError> {
+        let mut index = Self::default();
+        let mut fields = CanonicalRegionFieldCursor::new(message.clone());
+        while let Some(field) = fields.next_field()? {
+            match field.number {
+                1 => extend_region_run(&message, &mut index.sends, &field)?,
+                2 => extend_region_run(&message, &mut index.receives, &field)?,
+                4 => extend_region_run(&message, &mut index.news, &field)?,
+                5 => extend_region_run(&message, &mut index.exprs, &field)?,
+                6 => extend_region_run(&message, &mut index.matches, &field)?,
+                7 => extend_region_run(&message, &mut index.unforgeables, &field)?,
+                8 => extend_region_run(&message, &mut index.connectives, &field)?,
+                9 if index.locally_free.is_none() => {
+                    let offset = field.encoded_range.start;
+                    let payload = field.into_length_delimited()?;
+                    if payload.is_empty() {
+                        return Err(CanonicalProtobufError::NonCanonicalDefault {
+                            offset,
+                            field: 9,
+                        });
+                    }
+                    index.locally_free = Some(payload);
+                }
+                9 => {
+                    return Err(CanonicalProtobufError::DuplicateSingularField {
+                        offset: field.encoded_range.start,
+                        field: 9,
+                    });
+                }
+                10 if !index.connective_used => {
+                    if field.expect_varint()? != 1 {
+                        return Err(CanonicalProtobufError::NonCanonicalDefault {
+                            offset: field.encoded_range.start,
+                            field: 10,
+                        });
+                    }
+                    index.connective_used = true;
+                }
+                10 => {
+                    return Err(CanonicalProtobufError::DuplicateSingularField {
+                        offset: field.encoded_range.start,
+                        field: 10,
+                    });
+                }
+                11 => extend_region_run(&message, &mut index.bundles, &field)?,
+                12 => extend_region_run(&message, &mut index.conditionals, &field)?,
                 number => {
                     return Err(CanonicalProtobufError::UnexpectedField {
                         offset: field.encoded_range.start,

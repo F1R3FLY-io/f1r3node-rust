@@ -1,11 +1,35 @@
-//! Totality, canonicality, and restartability gates for the borrowed protobuf
-//! cursor used by byte-native process analyses.
+//! Totality, canonicality, and restartability gates for the borrowed and owned
+//! protobuf cursors used by byte-native process analyses.
 
 use models::rust::rholang::protobuf_cursor::{
-    CanonicalDelimitedRun, CanonicalFieldCursor, CanonicalFieldValue, CanonicalParProcessIndex,
-    CanonicalProtobufError, CanonicalWireType,
+    CanonicalByteRange, CanonicalDelimitedRun, CanonicalField, CanonicalFieldCursor,
+    CanonicalFieldValue, CanonicalParProcessIndex, CanonicalParRegionIndex, CanonicalProtobufError,
+    CanonicalRegionDelimitedRun, CanonicalRegionField, CanonicalRegionFieldCursor,
+    CanonicalRegionFieldValue, CanonicalWireType, ProtobufRegion,
 };
 use proptest::prelude::*;
+use prost::bytes::Bytes;
+
+fn assert_field_equivalent(borrowed: CanonicalField<'_>, owned: CanonicalRegionField) {
+    assert_eq!(borrowed.number, owned.number);
+    assert_eq!(borrowed.wire_type, owned.wire_type);
+    assert_eq!(borrowed.encoded_range, owned.encoded_range);
+    assert_eq!(borrowed.payload_range, owned.payload_range);
+    match (borrowed.value, owned.value) {
+        (CanonicalFieldValue::Varint(left), CanonicalRegionFieldValue::Varint(right)) => {
+            assert_eq!(left, right);
+        }
+        (CanonicalFieldValue::Fixed64(left), CanonicalRegionFieldValue::Fixed64(right))
+        | (
+            CanonicalFieldValue::LengthDelimited(left),
+            CanonicalRegionFieldValue::LengthDelimited(right),
+        )
+        | (CanonicalFieldValue::Fixed32(left), CanonicalRegionFieldValue::Fixed32(right)) => {
+            assert_eq!(left, right.as_bytes());
+        }
+        (left, right) => panic!("borrowed/owned field kind mismatch: {left:?} versus {right:?}"),
+    }
+}
 
 #[test]
 fn cursor_frames_every_non_group_wire_type_without_copying_payloads() {
@@ -39,6 +63,39 @@ fn cursor_frames_every_non_group_wire_type_without_copying_payloads() {
     );
     assert!(cursor.next_field().unwrap().is_none());
     assert!(cursor.is_empty());
+}
+
+#[test]
+fn owned_regions_slice_one_backing_allocation_and_match_borrowed_fields() {
+    let message = vec![
+        0x08, 0x96, 0x01, 0x11, 1, 2, 3, 4, 5, 6, 7, 8, 0x1a, 0x02, 9, 10, 0x25, 11, 12, 13, 14,
+    ];
+    let root = ProtobufRegion::from(message.clone());
+    let child = root
+        .subregion(CanonicalByteRange { start: 14, end: 16 })
+        .unwrap();
+    assert_eq!(child.as_bytes(), &[9, 10]);
+    assert_eq!(child.absolute_range(), 14..16);
+    assert_eq!(child.as_bytes().as_ptr(), root.as_bytes()[14..].as_ptr());
+    let grandchild = child
+        .subregion(CanonicalByteRange { start: 1, end: 2 })
+        .unwrap();
+    assert_eq!(grandchild.as_bytes(), &[10]);
+    assert_eq!(grandchild.absolute_range(), 15..16);
+    assert_eq!(
+        grandchild.as_bytes().as_ptr(),
+        root.as_bytes()[15..].as_ptr()
+    );
+
+    let mut borrowed = CanonicalFieldCursor::new(&message);
+    let mut owned = CanonicalRegionFieldCursor::new(root);
+    loop {
+        match (borrowed.next_field().unwrap(), owned.next_field().unwrap()) {
+            (Some(left), Some(right)) => assert_field_equivalent(left, right),
+            (None, None) => break,
+            (left, right) => panic!("borrowed/owned cursor length mismatch: {left:?} {right:?}"),
+        }
+    }
 }
 
 #[test]
@@ -126,6 +183,32 @@ fn delimited_run_rejects_wrong_tags_and_wire_types_but_accepts_present_empty() {
 }
 
 #[test]
+fn owned_and_borrowed_delimited_runs_are_restartable_and_differential() {
+    let encoded = [0x0a, 0x02, 0xa1, 0xa2, 0x0a, 0x00, 0x0a, 0x01, 0xb1];
+    let borrowed = CanonicalDelimitedRun::new(&encoded, 1);
+    let owned = CanonicalRegionDelimitedRun::new(ProtobufRegion::copy_from_slice(&encoded), 1);
+
+    let collect_borrowed = || {
+        let mut cursor = borrowed.cursor();
+        let mut values = Vec::new();
+        while let Some(payload) = cursor.next_payload().unwrap() {
+            values.push(payload.to_vec());
+        }
+        values
+    };
+    let collect_owned = || {
+        let mut cursor = owned.cursor();
+        let mut values = Vec::new();
+        while let Some(payload) = cursor.next_region().unwrap() {
+            values.push(payload.as_bytes().to_vec());
+        }
+        values
+    };
+    assert_eq!(collect_borrowed(), collect_owned());
+    assert_eq!(collect_owned(), vec![vec![0xa1, 0xa2], vec![], vec![0xb1]]);
+}
+
+#[test]
 fn par_index_reorders_runs_semantically_and_delimited_cursors_restart() {
     // Protobuf order: Send(1), Receive(2), New(4), Expr(5), Match(6),
     // metadata(9,10), Bundle(11), If(12). Payload bytes are arbitrary here;
@@ -172,6 +255,53 @@ fn par_index_reorders_runs_semantically_and_delimited_cursors_restart() {
 }
 
 #[test]
+fn owned_par_index_covers_every_family_and_root_metadata_without_decoding() {
+    let message = Bytes::from_static(&[
+        0x0a, 0x01, 0xa1, // Send
+        0x12, 0x01, 0xb1, // Receive
+        0x22, 0x01, 0xc1, // New
+        0x2a, 0x01, 0xd1, // Expr
+        0x32, 0x01, 0xe1, // Match
+        0x3a, 0x01, 0xe2, // Unforgeable
+        0x42, 0x01, 0xe3, // Connective
+        0x4a, 0x01, 0x01, // locallyFree
+        0x50, 0x01, // connective_used
+        0x5a, 0x01, 0xf1, // Bundle
+        0x62, 0x01, 0xf2, // If
+    ]);
+    let index = CanonicalParRegionIndex::parse(ProtobufRegion::from(message)).unwrap();
+
+    let singleton = |run: &models::rust::rholang::protobuf_cursor::CanonicalRegionDelimitedRun| {
+        let mut cursor = run.cursor();
+        let payload = cursor.next_region().unwrap().unwrap().as_bytes()[0];
+        assert!(cursor.next_region().unwrap().is_none());
+        payload
+    };
+    assert_eq!(singleton(index.sends.as_ref().unwrap()), 0xa1);
+    assert_eq!(singleton(index.receives.as_ref().unwrap()), 0xb1);
+    assert_eq!(singleton(index.news.as_ref().unwrap()), 0xc1);
+    assert_eq!(singleton(index.exprs.as_ref().unwrap()), 0xd1);
+    assert_eq!(singleton(index.matches.as_ref().unwrap()), 0xe1);
+    assert_eq!(singleton(index.unforgeables.as_ref().unwrap()), 0xe2);
+    assert_eq!(singleton(index.connectives.as_ref().unwrap()), 0xe3);
+    assert_eq!(singleton(index.bundles.as_ref().unwrap()), 0xf1);
+    assert_eq!(singleton(index.conditionals.as_ref().unwrap()), 0xf2);
+    assert_eq!(index.locally_free.unwrap().as_bytes(), &[1]);
+    assert!(index.connective_used);
+}
+
+#[test]
+fn owned_par_index_distinguishes_absent_from_present_empty_message_fields() {
+    let absent = CanonicalParRegionIndex::parse(ProtobufRegion::from(Vec::new())).unwrap();
+    assert!(absent.sends.is_none());
+
+    let present = CanonicalParRegionIndex::parse(ProtobufRegion::from(vec![0x0a, 0x00])).unwrap();
+    let mut sends = present.sends.unwrap().cursor();
+    assert!(sends.next_region().unwrap().unwrap().is_empty());
+    assert!(sends.next_region().unwrap().is_none());
+}
+
+#[test]
 fn par_index_rejects_noncanonical_metadata_defaults_and_duplicates() {
     for message in [
         &[0x4a, 0x00][..],             // explicitly empty locallyFree
@@ -198,5 +328,34 @@ proptest! {
     #[test]
     fn par_index_is_total_on_arbitrary_bytes(bytes in prop::collection::vec(any::<u8>(), 0..4096)) {
         let _ = CanonicalParProcessIndex::parse(&bytes);
+    }
+
+    #[test]
+    fn owned_and_borrowed_field_cursors_are_exactly_differential(
+        bytes in prop::collection::vec(any::<u8>(), 0..4096)
+    ) {
+        let mut borrowed = CanonicalFieldCursor::new(&bytes);
+        let mut owned = CanonicalRegionFieldCursor::new(ProtobufRegion::from(bytes.clone()));
+        for _ in 0..=bytes.len() {
+            match (borrowed.next_field(), owned.next_field()) {
+                (Ok(Some(left)), Ok(Some(right))) => assert_field_equivalent(left, right),
+                (Ok(None), Ok(None)) => return Ok(()),
+                (Err(left), Err(right)) => {
+                    prop_assert_eq!(left, right);
+                    return Ok(());
+                }
+                (left, right) => {
+                    prop_assert!(false, "borrowed/owned cursor mismatch: {left:?} versus {right:?}");
+                }
+            }
+        }
+        prop_assert!(false, "owned/borrowed cursors exceeded the input-byte progress bound");
+    }
+
+    #[test]
+    fn owned_par_index_is_total_on_arbitrary_bytes(
+        bytes in prop::collection::vec(any::<u8>(), 0..4096)
+    ) {
+        let _ = CanonicalParRegionIndex::parse(ProtobufRegion::from(bytes));
     }
 }
