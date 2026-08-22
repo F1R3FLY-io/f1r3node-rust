@@ -405,6 +405,16 @@ a lower bound on when a retry may appear, not a selection policy.
 *Avoid*: "retry timer" and "cooldown", because the gate keys on floor
 settlement, not on wall-clock time.
 
+### Retry frontier lease
+
+The retry frontier lease bounds proposer deferral when no selected parent
+covers all valid latest messages. The lease starts at the latest kept rejection
+height and permits normal packaging after three blocks.
+
+**Preferred usage.** Use for the phase-2 proposer selection bound.
+*Distinguish from* the [retry gate](#retry-gate), which controls block validity.
+*Avoid*: "retry timeout", because the lease uses block height, not time.
+
 ### Main-parent base bias
 
 Main-parent base bias is the starvation facet in which a merge bases on a
@@ -434,17 +444,14 @@ stays pending.
 
 ### Merged-frontier retry packaging
 
-Merged-frontier retry packaging is [remedy ladder](#remedy-ladder) option B1:
-the owner packages a gated retry only when its own tip already merges every
-same-key contender the owner can see. The retry then executes fresh on top of
-the settled contention instead of racing as a sibling. **Status: proposed** —
-the phase-2 decision on issue #294 is pending, tracked as TDD plan behavior
-B6.
+Merged-frontier retry packaging is [remedy ladder](#remedy-ladder) option B1.
+The owner first packages a gated retry only when one selected parent covers
+all valid latest messages. The [retry frontier lease](#retry-frontier-lease)
+permits normal packaging after three blocks. **Status: implemented.**
 
-**Preferred usage.** Use for ladder option B1, and state the proposal status
-until the decision lands.
+**Preferred usage.** Use for the ratified phase-2 packaging policy.
 *Distinguish from* the [retry gate](#retry-gate): the gate is a consensus
 legality rule; this packaging policy is node-local discretion on top of it.
 *Avoid*: "retry deferral" without qualification.
 
-[← Back to the Casper documentation map](README.md)
+[← Back to the Casper documentation map](./README.md)
