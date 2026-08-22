@@ -12,6 +12,7 @@ pub const VALIDATOR_METRICS_SOURCE: &str = "f1r3fly.casper.validator";
 pub const RHO_RUNTIME_METRICS_SOURCE: &str = "f1r3fly.casper.rho-runtime";
 pub const REPLAY_RHO_RUNTIME_METRICS_SOURCE: &str = "f1r3fly.casper.replay-rho-runtime";
 pub const BLOCK_PROCESSOR_METRICS_SOURCE: &str = "f1r3fly.casper.block-processor";
+pub const MERGEABLE_CHANNELS_GC_METRICS_SOURCE: &str = "f1r3fly.casper.mergeable-channels-gc";
 pub const CREATE_BLOCK_METRICS_SOURCE: &str = "f1r3fly.create-block";
 pub const BLOCK_API_METRICS_SOURCE: &str = "f1r3fly.block-api";
 pub const DEPLOY_API_METRICS_SOURCE: &str = "f1r3fly.block-api.deploy";

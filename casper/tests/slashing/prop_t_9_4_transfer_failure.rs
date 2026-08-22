@@ -1,6 +1,6 @@
 // References below to `formal/{rocq,tlaplus,sage}/slashing/`,
 // `FINDINGS.md`, `slashing-search-horizon.{md,sh}`, `slashing-traceability.md`,
-// `docs/theory/slashing/methodology/`, and `.mutants.toml` point at
+// `docs/casper/theory/slashing/methodology/`, and `.mutants.toml` point at
 // audit-corpus artifacts preserved on the `analysis/slashing` branch.
 //
 // Property-based test for T-9.4 (transfer-failure deterministic
@@ -8,7 +8,7 @@
 //
 // Theorem: T-9.4 (`t_9_4_transfer_failure_safety`,
 // formal/rocq/slashing/theories/BugFixTransferFailure.v).
-// Reference: docs/theory/slashing/design/09-bug-fixes-and-rationale.md §9.5.
+// Reference: docs/casper/theory/slashing/design/09-bug-fixes-and-rationale.md §9.5.
 //
 // Property: for every PoS state and every transfer outcome, the
 // slash transition reaches a deterministic finite-time conclusion

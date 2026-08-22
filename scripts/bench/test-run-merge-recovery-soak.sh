@@ -14,10 +14,9 @@ cat >"$TMP/bin/poetry" <<'SH'
 #!/usr/bin/env bash
 trap 'exit 143' TERM INT
 printf '%s\n' "$$" >"$FAKE_POETRY_PID_FILE"
-# Docker sessions write monitor artifacts under log-archive/ (the provider's
-# host-visible per-session dir); subprocess sessions write under data/. The
-# monitor CSV goes to the archive root and the metrics CSV to the data root
-# so a driver that searches only one of them fails this test.
+# Docker sessions write monitor artifacts under log-archive/. Subprocess
+# sessions write them under .subprocess-data/. The first scenario splits
+# telemetry across the archive and legacy data roots.
 mkdir -p "$FAKE_ARCHIVE_DIR/session" "$FAKE_DATA_DIR/session"
 # Every harness CSV below is written CRLF (sed 's/$/\r/'): the real harness
 # writes them with Python csv.writer, whose default line terminator is \r\n,
@@ -57,9 +56,12 @@ CSV
 # that also lives under data/): counting metrics must see it once.
 cat >"$FAKE_DATA_DIR/session/validator1.log" <<'LOG'
 proposal rejected: too far ahead of the last finalized block
+Propose timing: total_ms=3525
 LOG
 cp "$FAKE_DATA_DIR/session/validator1.log" "$FAKE_ARCHIVE_DIR/session/validator1.log"
 printf 'fake pytest started\n'
+printf 'low      |      30 |    1.0 |    1.9    5.9    5.9 |   90.0  100.0  101.0 |   45.4\r\n'
+printf 'sustained |    1200 |    4.0 |   18.3   87.6  106.6 |   85.1  120.6  133.3 |  -20.2\r\n'
 printf 'All-node LFBs at drain: {validator1: 12, validator2: 9} (spread 3 blocks)\n'
 if [ "${FAKE_EMIT_SOAK_METRIC:-false}" = "true" ]; then
 	printf 'SOAK_METRIC name=lfb_spread value=4 phase=drain\n'
@@ -164,6 +166,10 @@ jq -e '
   and .cpu_peak_core_grid_pct == {"validator1": {"0": 7.5, "1": 42}, "validator2": {"all": 20}}
   and .iteration_metrics[0].exit_code == 1
   and .iteration_metrics[0].rss_peak_mb == 768
+  and .iteration_metrics[0].finalization_latency == {p50_ms: 85100, p95_ms: 120600, p99_ms: 133300, samples: 2}
+  and .finalization_p50_ms == 85100
+  and .finalization_p95_ms == 120600
+  and .finalization_p99_ms == 133300
   and .iteration_metrics[0].cpu_peak_per_node_pct == {"validator1": 10, "validator2": 20}
   and .iteration_metrics[0].cpu_peak_per_node_core_pct == {"validator1": {"0": 7.5, "1": 42}}
   and .iteration_metrics[0].too_far_ahead_errors == 1
@@ -179,17 +185,12 @@ test -s "$TMP/fake-poetry.pid"
 # Scenario 2: the soak window ends mid-iteration. timeout(1) kills pytest and
 # reports 124; the driver must write the deadline marker, NOT count the
 # iteration as a failure (exit 0, no exit-code.txt, no early-exit), and still
-# publish the telemetry the snapshot loop harvested before the kill — the
-# emit call runs BEFORE the deadline break, and nothing else pins that
-# ordering. Canary 31554271086 iteration 2 (all-null metrics, exit 124) is
-# what the summary degrades to when the harness wrote no CSVs; here the fake
-# harness writes them immediately, so nulls would mean the driver dropped
-# metrics it had.
+# publish telemetry from the subprocess monitor root before the kill.
 mkdir -p "$TMP/si2"
 PATH="$TMP/bin:$PATH" \
 	FAKE_POETRY_PID_FILE="$TMP/fake-poetry-2.pid" \
 	FAKE_DATA_DIR="$TMP/si2/integration-tests/data" \
-	FAKE_ARCHIVE_DIR="$TMP/si2/integration-tests/log-archive" \
+	FAKE_ARCHIVE_DIR="$TMP/si2/integration-tests/.subprocess-data" \
 	FAKE_EMIT_SOAK_METRIC=true \
 	SOAK_DURATION_SECONDS=6 \
 	SYSTEM_INTEGRATION_DIR="$TMP/si2" \
@@ -233,6 +234,10 @@ jq -e '
   and .cpu_peak_core_grid_pct == {"validator1": {"0": 7.5, "1": 42}, "validator2": {"all": 20}}
   and .iteration_metrics[0].exit_code == 124
   and .iteration_metrics[0].rss_peak_mb == 768
+  and .iteration_metrics[0].finalization_latency == {p50_ms: 85100, p95_ms: 120600, p99_ms: 133300, samples: 2}
+  and .finalization_p50_ms == 85100
+  and .finalization_p95_ms == 120600
+  and .finalization_p99_ms == 133300
   and .iteration_metrics[0].cpu_peak_per_node_pct == {"validator1": 10, "validator2": 20}
   and .iteration_metrics[0].cpu_peak_per_node_core_pct == {"validator1": {"0": 7.5, "1": 42}}
   and .iteration_metrics[0].metrics.lfb_spread == {p50: 4, p95: 4, max: 4, min: 4, samples: 1}

@@ -33,9 +33,9 @@
 #
 # POLICY: this script is for LOCAL use only. Do NOT wire it (or any Rocq/TLA+/
 # Wolfram step) into .github/workflows/* — an earlier formal-CI workflow was
-# deliberately removed. See docs/theory/finalized-floor/finalized-floor-verification.md.
+# deliberately removed. See docs/casper/theory/finalized-floor/finalized-floor-verification.md.
 #
-# Companion doc: docs/theory/finalized-floor/finalized-floor-verification.md
+# Companion doc: docs/casper/theory/finalized-floor/finalized-floor-verification.md
 #
 # Env knobs:
 #   ROCQ_MEMMAX=16G   systemd MemoryMax for the Rocq build (default 16G)
@@ -236,7 +236,7 @@ echo "== [6/8] PlantUML diagrams (fail-soft) =="
 # The dossier's diagram set must render cleanly: a populated SVG (closing </svg>),
 # no stderr from plantuml. Mirrors the slashing diagram convention. Doc-only, so
 # fail-soft; SKIPPED if plantuml is absent or no .puml sources exist yet.
-DIAG_DIR="$REPO_ROOT/docs/theory/finalized-floor/diagrams"
+DIAG_DIR="$REPO_ROOT/docs/casper/theory/finalized-floor/diagrams"
 if command -v plantuml >/dev/null 2>&1; then
   n_puml=$(find "$DIAG_DIR" -name '*.puml' 2>/dev/null | wc -l)
   if [[ "$n_puml" -gt 0 ]]; then
@@ -252,7 +252,7 @@ if command -v plantuml >/dev/null 2>&1; then
     done
     [[ "$diag_ok" == "1" ]] && pass "all $n_puml PlantUML diagrams render clean (populated SVG, no stderr)"
   else
-    skip "no .puml sources in docs/theory/finalized-floor/diagrams"
+    skip "no .puml sources in docs/casper/theory/finalized-floor/diagrams"
   fi
 else
   skip "no plantuml on PATH"

@@ -756,7 +756,7 @@ pub async fn floor_of_block(
 ///
 /// Two paths, both yielding the identical frontier — the cache is a transparent
 /// optimization, proven so by L-ANC + L-SNAP (see
-/// `docs/theory/finalized-floor/finalized-floor-verification.md`):
+/// `docs/casper/theory/finalized-floor/finalized-floor-verification.md`):
 ///
 /// * **Warm** ([`incremental_frontier`]) — when `parent`'s own frontier
 ///   `F(parent)` is cached (persisted by [`floor_of_block`] on insertion).

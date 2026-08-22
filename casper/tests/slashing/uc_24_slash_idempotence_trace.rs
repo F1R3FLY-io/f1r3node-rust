@@ -1,6 +1,6 @@
 // UC-24 — Slash idempotence (T-Idem) trace.
 //
-// Maps to: docs/theory/slashing/slashing-specification.md §12 UC-24.
+// Maps to: docs/casper/theory/slashing/slashing-specification.md §12 UC-24.
 // Theorem: T-Idem.
 //
 use super::harness::SlashingTestHarness;

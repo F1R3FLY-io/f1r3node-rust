@@ -40,7 +40,8 @@
 //     post-ordering transform is the deploy-free DAG-covering collapse, which
 //     keeps ancestry only. These fixtures are DEPTH-1, where the tip ranking
 //     and the subtree descent coincide by construction; the depth-2 case where
-//     they separate is heaviest_subtree_descent.rs.
+//     they separate is heaviest_subtree_descent.rs. See
+//     docs/casper/theory/fork-choice/fork-choice-verification.md §6.2.
 //
 // LOCAL-ONLY verification (not consensus code). Run under `cargo test -p casper` and
 // gated by scripts/check-fork-choice-ALL.sh via the `fork_choice::` filter.

@@ -34,7 +34,7 @@
 //   transform is `prune_dag_covered_parents`, which collapses to a deploy-free
 //   ancestor-covering parent and cannot change which branch leads.
 //   (GuardBridge.v still models the retired stage 2; its re-derivation is
-//   pending — see docs/theory/fork-choice/fork-choice-verification.md §6.2.)
+//   pending — see docs/casper/theory/fork-choice/fork-choice-verification.md §6.2.)
 
 //   merged_sibling_scores — the MULTI-PARENT case the proptests above never
 //   build: every fixture in this directory is single-parent, and on a

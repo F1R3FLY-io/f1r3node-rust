@@ -1,13 +1,13 @@
 // References below to `formal/{rocq,tlaplus,sage}/slashing/`,
 // `FINDINGS.md`, `slashing-search-horizon.{md,sh}`, `slashing-traceability.md`,
-// `docs/theory/slashing/methodology/`, and `.mutants.toml` point at
+// `docs/casper/theory/slashing/methodology/`, and `.mutants.toml` point at
 // audit-corpus artifacts preserved on the `analysis/slashing` branch.
 //
 // Integration test — Tier 1 production-path verification of the
 // `InvalidFollows` arm of the dispatcher's `is_slashable()`
 // catch-all (Bug #3 fix).
 //
-// UC-29 from docs/theory/slashing/slashing-specification.md §12.
+// UC-29 from docs/casper/theory/slashing/slashing-specification.md §12.
 // Theorem citation: T-9.3 (catch-all dispatcher), Rocq
 // formal/rocq/slashing/theories/BugFixDispatcher.v.
 //

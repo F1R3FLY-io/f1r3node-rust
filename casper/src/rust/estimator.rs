@@ -17,10 +17,10 @@
 //!
 //! ## Slashing-protocol position
 //!
-//! See `docs/theory/slashing/slashing-verification.md` §6.4 (T-10) for
+//! See `docs/casper/theory/slashing/slashing-verification.md` §6.4 (T-10) for
 //! the abstract filter property. The operational realization is the
 //! conjunction `(invalid-block-flag) ∧ (bond=0 ⇒ zero weight)` — see
-//! `docs/theory/slashing/design/07-fork-choice-and-lifecycle.md`.
+//! `docs/casper/theory/slashing/design/07-fork-choice-and-lifecycle.md`.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
