@@ -6,7 +6,9 @@ ruby -ryaml - \
 	"$ROOT/.github/workflows/release.yml" \
 	"$ROOT/.github/workflows/release-evidence.yml" \
 	"$ROOT/.github/workflows/soak-in.yml" \
-	"$ROOT/.github/workflows/canary-publish.yml" <<'RUBY'
+	"$ROOT/.github/workflows/canary-publish.yml" \
+	"$ROOT/.github/workflows/oci-validation.yml" \
+	"$ROOT/.github/workflows/merge-recovery-soak.yml" <<'RUBY'
 def trigger(document)
   document["on"] || document[true]
 end
@@ -15,7 +17,7 @@ def fail_if(condition, message)
   abort(message) if condition
 end
 
-release_path, evidence_path, soakin_path, canary_path = ARGV
+release_path, evidence_path, soakin_path, canary_path, oci_path, soak_path = ARGV
 release = YAML.load_file(release_path)
 evidence = YAML.load_file(evidence_path)
 soakin = YAML.load_file(soakin_path)
@@ -131,5 +133,33 @@ forbidden = [
 end
 fail_if(File.read(canary_path).match?(/create-github-app-token|release-action@/), "canary publish must not mint tokens or use release actions")
 fail_if(release_text.match?(/create-github-app-token|release-action@/), "release promotion must not mint tokens or use release actions")
+# Gate workflows (Phase 3): candidate mode publishes section 8.1 documents
+# from one job that alone holds contents: write under release-credentials,
+# and the candidate image is pulled by digest, never rebuilt, in that mode.
+canary_text = File.read(canary_path)
+fail_if(!canary_text.include?("Publish canary images to OCIR"), "canary publish must dual-publish the index to OCIR")
+fail_if(!canary_text.match?(/record-images[^\n]*\\\n(?:[^\n]*\n){4}[^\n]*ocir-index-digest/m), "canary publish must record the OCIR index digest")
+{ "oci-validation" => oci_path, "merge-recovery-soak" => soak_path }.each do |label, path|
+  doc = YAML.load_file(path)
+  publish = doc.dig("jobs", "publish_candidate_evidence")
+  fail_if(!publish.is_a?(Hash), "#{label} must define the publish_candidate_evidence job")
+  fail_if(publish["environment"] != "release-credentials", "#{label} gate publication must use the release-credentials environment")
+  fail_if(publish.dig("permissions", "contents") != "write", "#{label} gate publication needs contents: write at the job level")
+  fail_if(publish["if"].to_s !~ /candidate_tag != ''/, "#{label} gate publication must run only in candidate mode")
+  doc.fetch("jobs").each do |name, job|
+    next if name == "publish_candidate_evidence"
+    fail_if(job.dig("permissions", "contents") == "write", "#{label} job #{name} must not hold contents: write")
+  end
+  text = File.read(path)
+  fail_if(!text.include?("release-gate-evidence.sh"), "#{label} must write gate documents with release-gate-evidence.sh")
+  fail_if(!text.include?("name: release-candidate"), "#{label} must upload the release-candidate marker artifact")
+end
+# The OCI image steps live in the reusable workflow; the soak's live inline.
+reusable_text = File.read("#{File.dirname(oci_path)}/reusable-oci-validation.yml")
+fail_if(!reusable_text.match?(/docker pull --platform [^\n]*@\$\{ARCH_DIGEST\}/), "OCI validation candidate mode must pull the image by digest")
+fail_if(!reusable_text.match?(/Build Docker Image\n\s+if: inputs\.candidate_tag == ''/m), "OCI validation must skip the source build in candidate mode")
+soak_text = File.read(soak_path)
+fail_if(!soak_text.match?(/docker pull --platform [^\n]*@\$\{amd64_digest\}/), "soak candidate mode must pull the image by digest")
+fail_if(!soak_text.match?(/Build node image\n\s+if: needs\.schedule_gate\.outputs\.candidate_tag == ''/m), "soak must skip the source build in candidate mode")
 puts "release workflow tests passed"
 RUBY

@@ -192,7 +192,7 @@ The evidence document includes these fields:
   },
   "images": {
     "docker_hub": "repository/image@sha256:index-digest",
-    "ocir": "registry/repository/image@sha256:index-digest",
+    "ocir_index_digest": "sha256:index-digest",
     "linux_amd64_digest": "sha256:architecture-digest",
     "linux_arm64_digest": "sha256:architecture-digest"
   },
@@ -204,7 +204,9 @@ Exact field names can change during implementation. The schema version must chan
 
 Phase 1 evidence uses `publication_mode: evidence_only`. Its image record uses `publication_state: not_published` and contains no registry references.
 
-Phase 2 canary evidence uses `publication_mode: canary`. It records the Docker Hub index reference and both architecture digests. The `ocir` field stays null: the OCIR registry location is repository-secret material and evidence is public. The OCIR canary path is deferred to Phase 3.
+Canary evidence uses `publication_mode: canary`. It records the Docker Hub index reference, both architecture digests, and the OCIR index digest. The canary publisher pushes the same image blobs and the same manifest list to both registries, so the two index digests are equal, and the evidence validator requires that equality. The OCIR repository path never appears in evidence: the path is repository-secret material and evidence is public.
+
+OCIR is the canonical registry for candidate gates. Full OCI validation and the 60h stability soak run inside OCI and pull the candidate from OCIR by digest. Docker Hub is the public mirror and receives the same index at canary time and the same stable tag at promotion.
 
 Evidence must not contain credentials, tokens, user data, or local absolute paths.
 
@@ -263,11 +265,13 @@ The full CI and heavy integration gates read the CI run recorded in the candidat
 
 ## 9. Full OCI validation
 
-Candidate OCI validation must consume the published canary image by digest.
+Candidate OCI validation consumes the published canary image by digest. The maintainer dispatches `oci-validation.yml` with `candidate_tag`. The workflow downloads the candidate evidence from the prerelease, verifies its checksum and the tag target, and pulls each architecture image from OCIR by its recorded manifest digest.
 
-The validation workflow extracts the subprocess binary from that image. It must not rebuild the candidate from source.
+The validation workflow extracts the subprocess binary from that image. It does not rebuild the candidate from source.
 
-The existing pull-request OCI mode can continue to build an unpublished image. Candidate mode must use the recorded image digest.
+The pull-request OCI mode continues to build an unpublished image. Candidate mode uses the recorded image digest.
+
+After a successful run, the `publish_candidate_evidence` job writes `oci-validation-evidence.json` (Section 8.1) with `release-gate-evidence.sh`, uploads it to the candidate prerelease, and uploads the `release-candidate` artifact that lets `release.yml` resume.
 
 OCI evidence records these values:
 
@@ -289,9 +293,11 @@ The release dispatch supplies these immutable values:
 - Candidate image index digest
 - Candidate evidence checksum
 
-The soak pulls the image by digest. The soak extracts the subprocess binary from the same image.
+The maintainer dispatches `merge-recovery-soak.yml` with `candidate_tag` and `duration: weekend-60h`. The soak job downloads the candidate evidence, verifies the tag target, pulls the linux/amd64 image from OCIR by its recorded digest, and extracts the subprocess binary from the same image. An in-window restart carries `candidate_tag` forward.
 
-Normal scheduled soak runs can continue to build a source target. A release-eligible run must use candidate artifact mode.
+Normal scheduled soak runs continue to build a source target. A release-eligible run uses candidate artifact mode.
+
+After the soak runs its course, the `publish_candidate_evidence` job writes `soak-evidence.json` and `verdict.json` (Section 8.1) from the run state and the report, uploads both to the candidate prerelease, and uploads the `release-candidate` artifact. A `regress` verdict is published as evidence; the existing ONS verdict email alerts the soak-report list, and promotion holds until a maintainer uploads `maintainer-review.json`.
 
 Stable promotion requires all these conditions:
 
@@ -532,11 +538,11 @@ This table defines the target state after the Section 17 workflow changes are co
 | `canary-publish.yml` | `workflow_run` (CI completed, master push, success), `workflow_dispatch` (ci_run_id) | Event + manual | 10–20 min *estimated* | Publishes the immutable canary when the source is release-eligible; skips cleanly otherwise |
 | `ci-fork-pr.yml` | `pull_request_target` (dev, master) | Event | Seconds, then the gated pipeline after maintainer approval | Fork lane into the gated pipeline |
 | `_integration-pipeline.yml` | `workflow_call` | Called by ci.yml and ci-fork-pr.yml | 35–50 min *measured* | Heavy pipeline: image build, ephemeral runners, integration matrix, smoke tests |
-| `merge-recovery-soak.yml` | `schedule` 02:30 and 03:30 UTC (self-suppressing fallback; the OCI Function scheduler is the primary dispatcher), `workflow_dispatch` | Time + manual | 22 h dev integration soak; 60 h stability soak; preflight-only runs cap at about 3 h | Runs both soaks; release-eligible runs use candidate artifact mode |
+| `merge-recovery-soak.yml` | `schedule` 02:30 and 03:30 UTC (self-suppressing fallback; the OCI Function scheduler is the primary dispatcher), `workflow_dispatch` (`candidate_tag` selects candidate artifact mode) | Time + manual | 22 h dev integration soak; 60 h stability soak; preflight-only runs cap at about 3 h | Runs both soaks; release-eligible runs use candidate artifact mode |
 | `soak-checkpoint-publish.yml` | `workflow_dispatch` from soak tooling | Tooling | About 1 min *measured* | Mid-run checkpoint publication |
 | `soak-dashboard-pages.yml` | `push` to master (dashboard paths), `workflow_dispatch` | Event + manual | 1–2 min *measured* | Dashboard shell redeploys |
 | `soak-preflight-status.yml`, `soak-signal.yml` | `workflow_dispatch` | Tooling + manual | About 1 min *measured* | Preflight status and operator signals |
-| `oci-validation.yml` | `workflow_dispatch` (pull-request mode and trusted exact-candidate mode) | Manual | 1–3 h *estimated*; the OCI daily VM quota can defer a run one day | Full OCI validation |
+| `oci-validation.yml` | `workflow_dispatch` (pull-request mode, or exact-candidate mode with `candidate_tag`) | Manual | 1–3 h *estimated*; the OCI daily VM quota can defer a run one day | Full OCI validation |
 | `reusable-oci-validation.yml` | `workflow_call` | Called by oci-validation.yml | Contained in the caller duration | OCI validation implementation; consumes the candidate digest |
 | `slashing-tests.yml` | `push`, `pull_request`, `schedule` 06:30 UTC daily, `workflow_dispatch` | Event + time + manual | 10–15 min *measured*; the nightly exhaustive tier exceeds 20 min | Slashing suite |
 | `release-evidence.yml` | `workflow_dispatch` (ci_run_id) | Manual | 10–20 min *estimated* (30-min cap) | Exact-run candidate evidence |
@@ -575,6 +581,8 @@ Phase 1 disables automatic stable publication. A manual workflow generates evide
 2. Run the 60h stability soak from the canary digest.
 3. Publish exact commit checks and evidence.
 4. Compare artifact-based results with current workflows.
+
+Phase 3 also makes OCIR the canonical gate registry. The canary publisher dual-publishes the index to OCIR and Docker Hub, and promotion copies the stable tag and the `latest` alias into both registries by digest.
 
 ### Phase 4: Stable promotion
 
