@@ -164,21 +164,27 @@ impl FloorContext {
             .collect())
     }
 
-    pub fn latest_kept_rejection_height(
+    /// Latest kept rejection height per sig, resolved against ONE
+    /// dispositions lookup so a retry batch costs a single map walk.
+    pub fn latest_kept_rejection_heights<'a>(
         &self,
         block_store: &KeyValueBlockStore,
         earliest_block_number: i64,
-        sig: &Bytes,
-    ) -> Result<Option<i64>, CasperError> {
-        Ok(self
-            .dispositions(block_store, earliest_block_number)?
-            .get(sig)
-            .and_then(|disposition| {
-                disposition
-                    .latest_kept_rejection
-                    .as_ref()
-                    .map(|(height, _)| *height)
-            }))
+        sigs: impl IntoIterator<Item = &'a Bytes>,
+    ) -> Result<std::collections::HashMap<Bytes, Option<i64>>, CasperError> {
+        let dispositions = self.dispositions(block_store, earliest_block_number)?;
+        Ok(sigs
+            .into_iter()
+            .map(|sig| {
+                let height = dispositions.get(sig).and_then(|disposition| {
+                    disposition
+                        .latest_kept_rejection
+                        .as_ref()
+                        .map(|(height, _)| *height)
+                });
+                (sig.clone(), height)
+            })
+            .collect())
     }
 
     /// The retry gate — a pure validity predicate over frozen block facts,

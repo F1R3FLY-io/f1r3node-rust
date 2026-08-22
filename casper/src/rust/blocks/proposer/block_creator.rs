@@ -953,25 +953,35 @@ async fn prepare_user_deploys_with_policy(
                         .contains_key(&justification.latest_block_hash)
                 })
                 .count();
+            let rejection_heights = match floor_ctx {
+                Some(ctx) => ctx.latest_kept_rejection_heights(
+                    block_store,
+                    earliest_block_number,
+                    retry_candidates.iter().map(|deploy| &deploy.sig),
+                )?,
+                None => HashMap::new(),
+            };
             let mut deferred_sigs = HashSet::new();
             for deploy in &retry_candidates {
-                let rejection_height = match floor_ctx {
-                    Some(ctx) => ctx.latest_kept_rejection_height(
-                        block_store,
-                        earliest_block_number,
-                        &deploy.sig,
-                    )?,
-                    None => None,
+                let rejection_height = rejection_heights.get(&deploy.sig).copied().flatten();
+                // Deferral is bounded ONLY by the lease. A candidate whose
+                // rejection height cannot be resolved has no lease clock, so
+                // it escapes now: the gate (proposer and validators alike)
+                // still bounds validity, and an unbounded packaging deferral
+                // is the starvation the lease exists to stop.
+                let escape_reason = match rejection_height {
+                    None => Some("rejection_height_unknown"),
+                    Some(height) if retry_frontier_deferral_lease_expired(block_number, height) => {
+                        Some("deferral_lease_expired")
+                    }
+                    Some(_) => None,
                 };
-                let lease_expired = rejection_height.is_some_and(|height| {
-                    retry_frontier_deferral_lease_expired(block_number, height)
-                });
-                if lease_expired {
+                if let Some(reason) = escape_reason {
                     tracing::info!(
                         target: "f1r3fly.casper.deploy_lifecycle",
                         event = "retry_frontier_escape",
                         deploy_sig = %hex::encode(&deploy.sig),
-                        reason = "deferral_lease_expired",
+                        reason,
                         next_block = block_number,
                         rejection_height,
                         deferral_lease_blocks = RETRY_FRONTIER_DEFERRAL_LEASE_BLOCKS,
@@ -6347,6 +6357,48 @@ mod tests {
             "a covering parent must admit the retry when another selected parent is redundant"
         );
 
+        // Reflexive cover: a selected parent that IS the sole valid latest
+        // message covers the frontier by itself, inside the lease.
+        snapshot.justifications = [Justification {
+            validator: validator(1),
+            latest_block_hash: left.block_hash.clone(),
+        }]
+        .into_iter()
+        .collect();
+        snapshot.parents = vec![left.clone()];
+        let prepared = prepare_user_deploys(
+            &snapshot,
+            61,
+            10_000,
+            deploy_storage.clone(),
+            rejected_deploy_buffer.clone(),
+            &block_store,
+            true,
+            true,
+        )
+        .await
+        .expect("prepare deploys with a parent that is a latest message");
+
+        assert!(
+            prepared
+                .deploys
+                .iter()
+                .any(|deploy| deploy.sig == retry.sig),
+            "a parent that is itself the latest message must count as covering it"
+        );
+
+        snapshot.justifications = [
+            Justification {
+                validator: validator(1),
+                latest_block_hash: left.block_hash.clone(),
+            },
+            Justification {
+                validator: validator(2),
+                latest_block_hash: right.block_hash.clone(),
+            },
+        ]
+        .into_iter()
+        .collect();
         snapshot.parents = vec![left, right];
         let prepared = prepare_user_deploys(
             &snapshot,
