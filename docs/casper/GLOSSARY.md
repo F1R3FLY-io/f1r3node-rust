@@ -342,9 +342,10 @@ content ordering is the tie-break that loss-aware adjudication subordinates.
 
 The prior-rejection count is the number of
 [kept rejection records](#kept-rejection-record) for a deploy signature that a
-merge can see in its view: the [merge scope](#merge-scope) plus the
+merge can see. The view contains the [merge scope](#merge-scope) and the
 base-lineage window. The count is on-chain data, so every validator derives
-the same value for the same merge.
+the same value for the same merge. A dependency chain uses the maximum count
+among its member signatures.
 
 **Preferred usage.** Use for the consensus-visible priority input to
 [loss-aware adjudication](#loss-aware-adjudication).
@@ -357,8 +358,8 @@ observability value that includes duplicate records.
 Loss-aware adjudication is the conflict-adjudication policy that ranks a
 higher [prior-rejection count](#prior-rejection-count) above
 [content ordering](#content-ordering). Every loss raises the priority of the
-loser, so starvation stays bounded. The policy applies at all three
-adjudication sites (issue #294, phase 1).
+loser in an adjudicable matchup. The policy applies at all three adjudication
+sites for issue #294 phase 1.
 
 **Preferred usage.** Use for the phase-1 remediation policy of issue #294.
 *Distinguish from* [Content ordering](#content-ordering): the fallback that

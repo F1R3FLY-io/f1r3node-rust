@@ -269,6 +269,127 @@ This term moved to the [Casper glossary](casper/GLOSSARY.md#remedy-ladder).
 
 This term moved to the [Casper glossary](casper/GLOSSARY.md#merged-frontier-retry-packaging).
 
+### Content ordering
+
+Content ordering is the deterministic comparison of conflicting deploy chains
+by content alone: total cost, then maximum single-deploy cost, then
+lexicographic signature. The content of a deploy never changes, so content
+ordering alone produces the same loser in every merge.
+
+**Preferred usage.** Use for the content-deterministic comparison inside
+conflict adjudication.
+*Distinguish from* [Loss-aware adjudication](#loss-aware-adjudication):
+content ordering is the tie-break that loss-aware adjudication subordinates.
+*Avoid*: "cost ordering", because cost is only the first comparison key.
+
+### Prior-rejection count
+
+The prior-rejection count is the number of
+[kept rejection records](#kept-rejection-record) for a deploy signature that a
+merge can see in its view: the [merge scope](#merge-scope) plus the
+base-lineage window. The count is on-chain data, so every validator derives
+the same value for the same merge.
+
+**Preferred usage.** Use for the consensus-visible priority input to
+[loss-aware adjudication](#loss-aware-adjudication).
+*Distinguish from* the lifecycle `rejection_count`, which is a node-local
+observability value that includes duplicate records.
+*Avoid*: "loss count" without qualification.
+
+### Loss-aware adjudication
+
+Loss-aware adjudication is the conflict-adjudication policy that ranks a
+higher [prior-rejection count](#prior-rejection-count) above
+[content ordering](#content-ordering). Every loss raises the priority of the
+loser, so starvation stays bounded. The policy applies at all three
+adjudication sites (issue #294, phase 1).
+
+**Preferred usage.** Use for the phase-1 remediation policy of issue #294.
+*Distinguish from* [Content ordering](#content-ordering): the fallback that
+decides when prior-rejection counts are equal.
+*Avoid*: "retry priority", which suggests a
+[deploy admission](#deploy-admission) ordering change that did not occur.
+
+### Kept rejection record
+
+A kept rejection record is a rejection record without the duplicate flag. It
+disputes a standing win of its deploy signature. It is the only record class
+that counts toward the [prior-rejection count](#prior-rejection-count) and
+that drives the retry disposition.
+
+**Preferred usage.** Use when record provenance matters, such as priority
+counting or [retry gate](#retry-gate) disposition.
+*Distinguish from* a duplicate-flagged record, which testifies that the
+effect of the signature is already present and disputes nothing.
+*Avoid*: "valid record", because duplicate records are also valid consensus
+content.
+
+### Carrier
+
+The carrier is the block that carried the rejected deploy copy that a merge
+adjudicated. Each rejection record names its carrier. Recovery custody is
+owner-scoped: only the sender of the carrier buffers the retry of that copy.
+
+**Preferred usage.** Use for the block a rejection record names.
+*Distinguish from* the recording block, which is the merge block whose body
+holds the rejection record.
+*Avoid*: "source block" without qualification.
+
+### Retry gate
+
+The retry gate is the rule that makes a retry legal only after the latest
+[kept rejection record](#kept-rejection-record) of the signature settles
+inside the frozen floor closure. The gate is a pure function of the block, so
+every validator computes the same verdict (`PrematureDeployRetry`).
+
+**Preferred usage.** Use for the floor-paced legality rule on re-proposal.
+*Distinguish from* [Deploy admission](#deploy-admission) ordering: the gate is
+a lower bound on when a retry may appear, not a selection policy.
+*Avoid*: "retry timer" and "cooldown", because the gate keys on floor
+settlement, not on wall-clock time.
+
+### Main-parent base bias
+
+Main-parent base bias is the starvation facet in which a merge bases on a
+main parent that already commits the effect of a contender. The chain of the
+retried deploy is then stale against the base, and the merge rejects it
+correctly. A proposer that always bases on the contender side therefore
+starves the retry structurally.
+
+**Preferred usage.** Use for the phase-2 facet of issue #294
+(`docs/casper/CONSENSUS_PHILOSOPHY.md` Section 2).
+*Distinguish from* the content-ordering facet, which
+[loss-aware adjudication](#loss-aware-adjudication) removed.
+*Avoid*: "merge bias" without qualification.
+
+### Remedy ladder
+
+The remedy ladder is the ordered set of remedies for
+[main-parent base bias](#main-parent-base-bias) in
+`docs/casper/CONSENSUS_PHILOSOPHY.md` Section 5. The ladder orders options by
+guarantee strength and risk, and escalation follows evidence (Principle P5).
+
+**Preferred usage.** Use for the documented option set and its escalation
+policy.
+*Distinguish from* the decision record, which tracks what shipped and what
+stays pending.
+*Avoid*: "options list".
+
+### Merged-frontier retry packaging
+
+Merged-frontier retry packaging is [remedy ladder](#remedy-ladder) option B1:
+the owner packages a gated retry only when its own tip already merges every
+same-key contender the owner can see. The retry then executes fresh on top of
+the settled contention instead of racing as a sibling. **Status: proposed** —
+the phase-2 decision on issue #294 is pending, tracked as TDD plan behavior
+B6.
+
+**Preferred usage.** Use for ladder option B1, and state the proposal status
+until the decision lands.
+*Distinguish from* the [retry gate](#retry-gate): the gate is a consensus
+legality rule; this packaging policy is node-local discretion on top of it.
+*Avoid*: "retry deferral" without qualification.
+
 ## Architecture Stack Mapping
 
 - **Formal-verification stack** = Rocq mechanization (`formal/rocq/`), TLA+
