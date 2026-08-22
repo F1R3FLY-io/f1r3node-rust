@@ -13,7 +13,9 @@ use models::rust::rholang::bincode_schema_tables::{
 use models::rust::rholang::match_schema::{
     RhoMatchFieldKind, RhoMatchPayloadKind, RhoPathCursor, RhoPathEvent,
 };
-use models::rust::rholang::match_schema_tables::{ParCursor, RHO_MATCH_REGISTRY};
+use models::rust::rholang::match_schema_tables::{
+    ParCursor, PAR_PROTOBUF_REGION_PROGRAM, RHO_MATCH_REGISTRY,
+};
 use models::rust::rholang::protobuf_schema::ProtobufKind;
 use models::rust::rholang::schema_meta_tables::SCHEMA_CHILDREN;
 
@@ -234,6 +236,37 @@ fn generated_match_programs_share_the_protobuf_wire_schema() {
                 }
             }
         }
+    }
+}
+
+#[test]
+fn external_par_has_a_distinct_descriptor_accurate_region_program() {
+    let (_, resident) = RHO_MATCH_REGISTRY
+        .iter()
+        .find(|(name, _)| *name == "Par")
+        .expect("Par must be in the generated registry");
+    assert_eq!(PAR_PROTOBUF_REGION_PROGRAM.type_id, resident.type_id);
+    assert_eq!(PAR_PROTOBUF_REGION_PROGRAM.type_name, resident.type_name);
+    assert!(!PAR_PROTOBUF_REGION_PROGRAM.fields.is_empty());
+    assert_eq!(
+        PAR_PROTOBUF_REGION_PROGRAM.fields.len(),
+        PAR_PROTOBUF_REGION_PROGRAM.protobuf_fields.len()
+    );
+
+    let mut previous = None;
+    for (match_field, protobuf_field) in PAR_PROTOBUF_REGION_PROGRAM
+        .fields
+        .iter()
+        .zip(PAR_PROTOBUF_REGION_PROGRAM.protobuf_fields)
+    {
+        assert!(previous.is_none_or(|tag| match_field.tag > tag));
+        assert_eq!(match_field.tag, protobuf_field.tag);
+        assert_eq!(match_field.name, protobuf_field.name);
+        assert!(field_kind_agrees_with_protobuf(
+            match_field.kind,
+            protobuf_field.kind
+        ));
+        previous = Some(match_field.tag);
     }
 }
 

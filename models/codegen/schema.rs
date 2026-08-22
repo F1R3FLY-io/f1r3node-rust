@@ -1134,7 +1134,13 @@ pub fn generate(fds: &FileDescriptorSet) -> Generated {
         &extern_set,
         &par_decoder_fields,
     );
-    let match_schema = emit_match_schema_source(&messages, &resolved, &oneofs, &extern_set);
+    let match_schema = emit_match_schema_source(
+        &messages,
+        &resolved,
+        &oneofs,
+        &extern_set,
+        &par_decoder_fields,
+    );
 
     // ★ THE NON-VACUITY FLOOR, at the generator rather than only at the consumer.
     //
@@ -8757,6 +8763,7 @@ fn emit_match_schema_source(
     resolved: &[(usize, Vec<Field>)],
     oneofs: &[Oneof],
     extern_set: &BTreeSet<&str>,
+    par_decoder_fields: &[Field],
 ) -> String {
     let mut src = String::with_capacity(128 * 1024);
     src.push_str(
@@ -8769,7 +8776,7 @@ fn emit_match_schema_source(
              RhoOneofPayload, RhoScalarRef,\n\
          };\n\
          use crate::rust::rholang::protobuf_schema::{\n\
-             EPATHMAP_PROTOBUF_PROGRAM, PAR_PROTOBUF_PROGRAM, ProtobufKind,\n\
+             EPATHMAP_PROTOBUF_PROGRAM, PAR_PROTOBUF_PROGRAM, ProtobufField, ProtobufKind,\n\
          };\n\
          use crate::rust::rholang::protobuf_schema_tables::*;\n\
          \n",
@@ -8794,6 +8801,73 @@ fn emit_match_schema_source(
         .iter()
         .map(|oneof| (oneof_key(messages, oneof), oneof))
         .collect();
+
+    // `Par` is external because its resident representation is one native
+    // PathMap-backed bag, so its resident match program below deliberately has
+    // one synthetic `components` field. Raw protobuf-region traversal still
+    // needs the descriptor's real fields. Emit that distinct view from the
+    // exact `par_decoder_fields` vector already consumed by the generated
+    // decoder; this is not another descriptor classification or output.
+    let par_message = messages
+        .iter()
+        .find(|message| message.leaf_name() == "Par")
+        .expect("schema: rhoapi.Par must exist for protobuf-region traversal");
+    let par_type_id = type_ids["Par"];
+    let par_wire_order = protobuf_order(par_decoder_fields);
+    writeln!(
+        src,
+        "pub static PAR_PROTOBUF_REGION_MATCH_FIELDS: &[RhoMatchField] = &["
+    )
+    .expect("write raw Par match fields");
+    for field in &par_wire_order {
+        let kind = match_field_kind_expr(par_message, field, &type_ids);
+        writeln!(
+            src,
+            "    RhoMatchField {{ tag: {}, name: \"{}\", kind: {kind} }},",
+            field.min_tag(),
+            field.rust_name.trim_start_matches("r#")
+        )
+        .expect("write raw Par match field");
+    }
+    writeln!(src, "];\n").expect("finish raw Par match fields");
+    writeln!(
+        src,
+        "pub static PAR_PROTOBUF_REGION_FIELDS: &[ProtobufField] = &["
+    )
+    .expect("write raw Par protobuf fields");
+    for field in &par_wire_order {
+        writeln!(
+            src,
+            "    ProtobufField {{ tag: {}, kind: {}, name: \"{}\" }},",
+            field.min_tag(),
+            protobuf_kind(&field.shape),
+            field.rust_name.trim_start_matches("r#")
+        )
+        .expect("write raw Par protobuf field");
+    }
+    writeln!(src, "];\n").expect("finish raw Par protobuf fields");
+    writeln!(
+        src,
+        "/// Descriptor-accurate raw-wire view of external PathMap-backed `Par`."
+    )
+    .expect("write raw Par program documentation");
+    writeln!(
+        src,
+        "/// The resident `PAR_RHO_MATCH_PROGRAM` remains the native bag view."
+    )
+    .expect("write raw Par program documentation");
+    writeln!(
+        src,
+        "pub static PAR_PROTOBUF_REGION_PROGRAM: RhoMatchProgram = RhoMatchProgram {{"
+    )
+    .expect("write raw Par protobuf-region program");
+    writeln!(src, "    type_id: {par_type_id},").expect("write raw Par type id");
+    writeln!(src, "    type_name: \"Par\",").expect("write raw Par type name");
+    writeln!(src, "    fields: PAR_PROTOBUF_REGION_MATCH_FIELDS,")
+        .expect("write raw Par structural fields");
+    writeln!(src, "    protobuf_fields: PAR_PROTOBUF_REGION_FIELDS,")
+        .expect("write raw Par protobuf fields");
+    writeln!(src, "}};\n").expect("finish raw Par protobuf-region program");
 
     for (message_index, message) in messages.iter().enumerate() {
         let type_id = u16::try_from(message_index + 1)
