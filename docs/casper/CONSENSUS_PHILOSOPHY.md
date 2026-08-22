@@ -42,19 +42,19 @@ Four facts about the implementation shape every remedy. Function names are the s
 
 ### 4.1 Adversarial surface of the phase-1 mechanism
 
-Phase 1 ranks a chain by its prior on-DAG losses. The user history that produces those losses is user-influenceable, so the mechanism needs its own adversarial analysis. Principle P4 is untouched: fork choice does not read the count. The count reaches only the three merge adjudication sites.
+Phase 1 ranks a chain by its prior on-DAG losses. Users can influence the history that produces those losses. Principle P4 is unchanged because fork choice does not read the count. The count reaches only the three merge adjudication sites.
 
-**Cost of a manufactured loss.** A rejection record exists only when a merge rejects a deploy that conflicts with a winner on the same key. One loss therefore needs one charged winner on that key. The merge drops the execution of the rejected deploy, and drops its phlo charge with it. The attacker pays for the winner, not for the loser. The cheapest attack is one user who sends two conflicting deploys to two proposers, which produce sibling blocks. Each such round costs the attacker one charged deploy and yields one recorded loss.
+**Cost of a manufactured loss.** A rejection record needs a conflicting winner on the same key. The rejected deploy does not pay execution cost. An attacker can also acquire rejection history against honest hot-key traffic. PR #216 does not yet define a price for this strategy.
 
-**Bound on the delay a lead buys.** Ranks compare the count, and the loser of every merge gains one loss. A victim with no history that meets an attacker with a lead of N loses at most N rounds on the count, plus the one tie round that the content ordering can already cost it. After that the victim has the higher count and wins. The attacker can extend the delay only with fresh losses, at one charged winner each. The lead is consumed one merge at a time, never amplified. The unit test `manufactured_loss_lead_delays_victim_by_exactly_lead_rounds` proves this bound.
+**Delay evidence.** The test `manufactured_loss_lead_delays_victim_by_exactly_lead_rounds` shows that a fixed lead is consumed one round at a time. The test does not bound continued lead farming or all valid schedules.
 
-**Window bound.** A merge counts only the kept records that the scope and the base-lineage window hold, down to the validity-window edge. Records that are older than `deploy_lifespan` do not count. An attacker cannot bank losses ahead of time and spend them later.
+**Window bound.** A merge counts only kept records from the scope and base-lineage window. Records older than `deploy_lifespan` do not count.
 
-**Same-key scope.** The count is a tie-break among chains that conflict. A lead on one key gives no priority on any other key, and no priority against a non-conflicting chain.
+**Conflict scope.** The current implementation attaches counts to deploy signatures. Conflict adjudication then aggregates counts across dependency chains. Maintainers must ratify the priority owner and aggregation rule.
 
-**Determinism requirement.** The count is consensus input, because it shapes the rejection set that peers validate with `InvalidRejectedDeploy`. Every validator must derive the count from the identical block set. A block that the node does not hold is a `BlockNotHeld` deferral, never an empty history. The unit test `scope_counts_fail_on_missing_visible_block` proves the refusal.
+**Determinism requirement.** The count is consensus input because it shapes the rejection set. Every validator must derive the count from the identical block set. A missing required block returns `BlockNotHeld` instead of an empty history. The test `scope_counts_fail_on_missing_visible_block` provides refusal evidence.
 
-**Residual exposure and escalation.** A well-funded attacker can delay every honest retry on one key by a constant number of merges at a linear cost in charged deploys. This is a bounded griefing surface, not a starvation surface, and it is cheaper to observe than to exploit. If soak evidence shows sustained lead farming, the ladder escalates in this order: saturate the effective lead at a small constant, then count only records from distinct proposers. Both changes are validation rules and need a lockstep upgrade (Principle P5).
+**Residual exposure and escalation.** The current comparator gives historical loss strict precedence over cost. Maintainers must ratify a cap, distinct-proposer rule, or other griefing control. Soak evidence and a scan budget must control later escalation.
 
 ## 5. The remedy ladder for base-bias starvation
 
@@ -173,11 +173,9 @@ The method of this document also follows the CBC spirit. CBC derives protocols s
 
 | Date | Decision | Status |
 |---|---|---|
-| 2026-08-20 | Phase 1: loss-aware adjudication at keep-one, rejection-option selection, and the unavailable-split claim order (commit `f6a00549d`) | Shipped, unit-proven |
-| 2026-08-20 | Phase 2 direction (A/B/C ladder above) | Pending maintainer decision |
+| 2026-08-20 | Phase 1: loss-aware adjudication at keep-one, rejection-option selection, and the unavailable-split claim order | Implemented in PR #299 with unit-test evidence. Ratification pending. |
+| 2026-08-20 | Phase 2: B1 merged-frontier packaging with rotating-proposer evidence | Implemented in PR #312. Liveness guarantee pending ratification. |
 
 The phase-2 working record lives in the TDD plan
-[`docs/tdd-plans/key-contention-starvation-2026-08-20T04-52-46Z.md`](../tdd-plans/key-contention-starvation-2026-08-20T04-52-46Z.md)
-(blocked behavior B4). The end-to-end racing-shape test
-`casper/tests/batch2/loss_priority_spec.rs` stays `#[ignore]`d until the
-phase-2 decision lands.
+[`docs/tdd-plans/key-contention-starvation-2026-08-20T04-52-46Z.md`](../tdd-plans/key-contention-starvation-2026-08-20T04-52-46Z.md).
+The fixed-proposer test in `casper/tests/batch2/loss_priority_spec.rs` remains an ignored expected-RED sentinel.
