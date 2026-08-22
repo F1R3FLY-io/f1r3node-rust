@@ -101,7 +101,8 @@ tasks:
   - id: TASK-013-3
     title: "Phase 2: canary publication (canary-publish.yml)"
     status: in_progress
-    branch: feature/release-process-implementation
+    branch: feature/release-phase2-canary-publication
+    blocked_by: []
     notes:
       - "Implemented as canary-publish.yml: workflow_run on CI completion publishes the immutable canary tag, prerelease, and Docker Hub images by digest from the run's own artifacts; ineligible runs skip cleanly. Evidence upgrades to publication_mode: canary via release-evidence.sh record-images. OCIR canary deferred to Phase 3 (registry location is secret material). Remains in_progress until the first live master run proves it."
     acceptance:
@@ -110,6 +111,7 @@ tasks:
     title: "Phase 3: artifact-based validation (candidate digest modes)"
     status: in_progress
     branch: feature/release-phase3-candidate-digest-validation
+    blocked_by: [TASK-013-3]
     notes:
       - "2026-08-22: stacked on Phase 4 (feature/release-phase4-promotion-controller). Registry decision ratified by the maintainer: OCIR is canonical for candidate gates, Docker Hub stays as the dual-published public mirror, no sync service."
       - "canary-publish.yml pushes the same index to OCIR; evidence records images.ocir_index_digest, which the validator requires to equal the Docker Hub index digest. The OCIR repository path never enters evidence."
@@ -127,6 +129,7 @@ tasks:
     title: "Phase 4: stable promotion controller"
     status: in_progress
     branch: feature/release-phase4-promotion-controller
+    blocked_by: [TASK-013-4]
     notes:
       - "2026-08-22: release-gates.sh evaluates the eight Section 8 gates from JSON documents only (pass, hold, or fail; exit 0, 10, or 20) and promote-release.sh plans Section 11 steps 4 to 14 from observed stable state, verifies binaries, emits stable-release-evidence.json, and bumps the next version. release.yml replaces the held stub: a read-only gates job, then a promote job under release-credentials that copies the image by digest with imagetools create, creates the verified stable tag and release, moves latest, and opens the next-version pull request. test-release-gates.sh, test-promote-release.sh, and the updated test-release-workflows.sh contract guard run in CI."
       - "Section 8.1 defines the gate-evidence contract that Phase 3 must publish as candidate prerelease assets. Until Phase 3 lands, the OCI, soak, and verdict gates hold, so no candidate is promotable end to end."
@@ -140,9 +143,19 @@ tasks:
   - id: TASK-013-6
     title: "Phase 5: Deployment Trains"
     status: pending
+    branch: feature/release-phase5-deployment-trains
+    blocked_by: [TASK-013-5]
+    notes:
+      - "2026-08-22: release-process.md Section 13.1.1 adds schema_version 2 stack manifests. A stack train binds the top-of-stack head as its one candidate; members merge bottom-up with true merge commits. Setup steps 3a to 3c and the validator depend on no earlier phase; canary, digest-bound gates, and promotion depend on Phases 2 to 4."
+      - "ci.yml runs pull-request CI only for bases dev, master, staging, trying, and feature/**. Stacked members that target another member's branch get no CI; train setup dispatches ci.yml on head_sha instead (Section 13.2)."
+      - "Rehearsal candidate for the stack-train step: the key-contention stack PR #299 -> #312 -> #319 -> #311 (EPIC-016), non-publishing, no version reservation."
     acceptance:
       - "deployment-train.yml validates manifests under .github/deployment-trains/ and starts trains"
-      - "One non-publishing rehearsal completes, then the cost-accounting train (PR #216) publishes first"
+      - "The validator accepts schema_version 1 and 2, and rejects a stack member with a foreign base, broken head ancestry, or a squash or rebase merge"
+      - "Setup dispatches ci.yml on head_sha when no successful run exists for that SHA and records the run identifier as CI evidence"
+      - "One non-publishing single-train rehearsal completes"
+      - "One non-publishing stack-train rehearsal completes on a stacked pull-request set"
+      - "The cost-accounting train (PR #216) publishes first"
   - id: TASK-013-7
     title: "Phase 6: Shard soak-in scheduling"
     status: in_progress
