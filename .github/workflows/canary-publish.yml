@@ -14,9 +14,12 @@
 #   - Canary image publication reuses the protected-branch-image-publish
 #     environment. The release-credentials environment arrives with
 #     Phase 4 stable promotion.
-#   - OCIR canary references are NOT recorded or published here: the
-#     registry location is repository-secret material and evidence is
-#     public. The OCIR canary path is deferred to Phase 3.
+#   - The same index is published to Docker Hub and to OCIR. OCIR is the
+#     canonical registry for candidate gates; Docker Hub is the public
+#     mirror. Evidence records the OCIR index digest only, never the OCIR
+#     repository path, because that path is repository-secret material
+#     and evidence is public. record-images requires both digests to be
+#     equal, so a registry that holds a different candidate stops the run.
 #
 # Idempotency and identity (release invariants 2 and 4): the identity
 # gate runs BEFORE any registry or repository mutation. A fresh
@@ -363,18 +366,79 @@ jobs:
               exit 1
             }
           done
-          ci-control/.github/scripts/release-evidence.sh record-images \
-            "$RUNNER_TEMP/release-evidence/release-evidence.json" \
-            "docker.io/${DOCKER_IMAGE_NAME}@${index_digest}" \
-            "$amd64_digest" \
-            "$arm64_digest"
-          sha256sum "$RUNNER_TEMP/release-evidence/release-evidence.json" \
-            > "$RUNNER_TEMP/release-evidence/release-evidence.json.sha256"
+          printf '%s\n' "$index_digest" > "$RUNNER_TEMP/docker-hub-index-digest"
+          printf '%s\n' "$amd64_digest" > "$RUNNER_TEMP/amd64-digest"
+          printf '%s\n' "$arm64_digest" > "$RUNNER_TEMP/arm64-digest"
 
       - name: Log out of Docker Hub
         if: always()
         shell: bash -euo pipefail {0}
         run: docker logout || true
+
+      - name: Log in to OCIR
+        if: steps.eligibility.outputs.eligible == 'true' && steps.identity.outputs.publish == 'true'
+        env:
+          OCIR_REGISTRY: ${{ secrets.OCIR_REGISTRY }}
+          OCIR_USERNAME: ${{ secrets.OCIR_USERNAME }}
+          OCIR_AUTH_TOKEN: ${{ secrets.OCIR_AUTH_TOKEN }}
+        shell: bash -euo pipefail {0}
+        run: |
+          printf '%s' "$OCIR_AUTH_TOKEN" | docker login "$OCIR_REGISTRY" --username "$OCIR_USERNAME" --password-stdin
+
+      - name: Publish canary images to OCIR
+        if: steps.eligibility.outputs.eligible == 'true' && steps.identity.outputs.publish == 'true'
+        env:
+          CANDIDATE_TAG: ${{ steps.evidence.outputs.candidate_tag }}
+          OCIR_BASE: ${{ secrets.OCIR_REGISTRY }}/${{ secrets.OCIR_NAMESPACE }}/${{ secrets.OCIR_REPO }}
+        shell: bash -euo pipefail {0}
+        run: |
+          # OCIR is the canonical registry for candidate gates (the soak and
+          # OCI validation run inside OCI). The same image blobs and the same
+          # manifest list are pushed here, so the index digest must equal the
+          # Docker Hub index digest; record-images enforces that equality.
+          # The OCIR repository path is secret material: only the digest is
+          # recorded in the public evidence, and this step prints no reference.
+          amd64_digest="$(cat "$RUNNER_TEMP/amd64-digest")"
+          arm64_digest="$(cat "$RUNNER_TEMP/arm64-digest")"
+          img="${OCIR_BASE}:${CANDIDATE_TAG}"
+          docker tag "${DOCKER_IMAGE_NAME}:amd64" "${img}-amd64"
+          docker tag "${DOCKER_IMAGE_NAME}:arm64" "${img}-arm64"
+          docker push "${img}-amd64" >/dev/null
+          docker push "${img}-arm64" >/dev/null
+          ocir_digest_of() {
+            docker inspect --format '{{join .RepoDigests "\n"}}' "$1" \
+              | sed -n "s|^${OCIR_BASE}@||p" | head -1
+          }
+          [ "$(ocir_digest_of "${img}-amd64")" = "$amd64_digest" ] || { echo "::error::OCIR amd64 manifest digest differs from Docker Hub"; exit 1; }
+          [ "$(ocir_digest_of "${img}-arm64")" = "$arm64_digest" ] || { echo "::error::OCIR arm64 manifest digest differs from Docker Hub"; exit 1; }
+          docker manifest create "$img" \
+            --amend "${OCIR_BASE}@${amd64_digest}" \
+            --amend "${OCIR_BASE}@${arm64_digest}"
+          ocir_index_digest="$(docker manifest push "$img" | tail -1)"
+          [[ "$ocir_index_digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::OCIR manifest push did not return an index digest"; exit 1; }
+          printf '%s\n' "$ocir_index_digest" > "$RUNNER_TEMP/ocir-index-digest"
+          echo "OCIR index digest: ${ocir_index_digest}"
+
+      - name: Log out of OCIR
+        if: always()
+        env:
+          OCIR_REGISTRY: ${{ secrets.OCIR_REGISTRY }}
+        shell: bash -euo pipefail {0}
+        run: |
+          if [ -n "$OCIR_REGISTRY" ]; then docker logout "$OCIR_REGISTRY" || true; fi
+
+      - name: Record published images
+        if: steps.eligibility.outputs.eligible == 'true' && steps.identity.outputs.publish == 'true'
+        shell: bash -euo pipefail {0}
+        run: |
+          ci-control/.github/scripts/release-evidence.sh record-images \
+            "$RUNNER_TEMP/release-evidence/release-evidence.json" \
+            "docker.io/${DOCKER_IMAGE_NAME}@$(cat "$RUNNER_TEMP/docker-hub-index-digest")" \
+            "$(cat "$RUNNER_TEMP/amd64-digest")" \
+            "$(cat "$RUNNER_TEMP/arm64-digest")" \
+            "$(cat "$RUNNER_TEMP/ocir-index-digest")"
+          sha256sum "$RUNNER_TEMP/release-evidence/release-evidence.json" \
+            > "$RUNNER_TEMP/release-evidence/release-evidence.json.sha256"
 
       - name: Create immutable canary tag
         if: steps.eligibility.outputs.eligible == 'true' && steps.identity.outputs.publish == 'true'

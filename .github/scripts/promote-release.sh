@@ -17,8 +17,15 @@ set -euo pipefail
 #       "stable_tag": null | {"sha": "<commit the tag resolves to>"},
 #       "stable_release": null | {"prerelease": false, "assets": ["..."]},
 #       "registry": {"stable_tag_digest": null | "sha256:...",
-#                    "latest_digest": null | "sha256:..."}
+#                    "latest_digest": null | "sha256:..."},
+#       "ocir": {"stable_tag_digest": null | "sha256:...",
+#                "latest_digest": null | "sha256:..."}
 #     }
+#
+# OCIR is the canonical registry for candidate gates and Docker Hub is the
+# public mirror. Both receive the stable tag and the latest alias. The OCIR
+# repository path never enters a plan or evidence document; the workflow
+# resolves it from secrets and the plan carries only digests.
 #
 # Every existing object must already match the candidate. A mismatch stops
 # promotion (section 4.4 and section 15). A matching object is skipped, which
@@ -54,6 +61,7 @@ plan() {
 	local evidence="$1" report="$2" state="$3" output="$4"
 	local source_sha target_version stable_tag candidate_tag index_ref index_digest
 	local evidence_sha report_sha highest tag_sha release_json registry_digest latest_digest
+	local ocir_registry_digest ocir_latest_digest
 	require_file "$evidence"
 	require_file "$report"
 	require_file "$state"
@@ -105,6 +113,15 @@ plan() {
 			fail "registry tag $stable_tag resolves to $registry_digest, not the candidate index $index_digest"
 	fi
 	latest_digest="$(jq -r '.registry.latest_digest // empty' "$state")"
+	ocir_registry_digest="$(jq -r '.ocir.stable_tag_digest // empty' "$state")"
+	if [ -n "$ocir_registry_digest" ]; then
+		require_digest "$ocir_registry_digest" "OCIR stable tag digest"
+		[ "$ocir_registry_digest" = "$index_digest" ] ||
+			fail "OCIR tag $stable_tag resolves to $ocir_registry_digest, not the candidate index $index_digest"
+	fi
+	ocir_latest_digest="$(jq -r '.ocir.latest_digest // empty' "$state")"
+	[ "$(jq -r '.images.ocir_index_digest' "$evidence")" = "$index_digest" ] ||
+		fail "candidate evidence OCIR index digest differs from the Docker Hub index digest"
 
 	mkdir -p "$(dirname "$output")"
 	jq -n \
@@ -122,6 +139,8 @@ plan() {
 		--argjson create_release "$([ "$release_json" = null ] && echo true || echo false)" \
 		--argjson copy_image "$([ -z "$registry_digest" ] && echo true || echo false)" \
 		--argjson move_latest "$([ "$latest_digest" != "$index_digest" ] && echo true || echo false)" \
+		--argjson copy_image_ocir "$([ -z "$ocir_registry_digest" ] && echo true || echo false)" \
+		--argjson move_latest_ocir "$([ "$ocir_latest_digest" != "$index_digest" ] && echo true || echo false)" \
 		--argjson binaries "$(jq -c '{
 			"f1r3node-linux-amd64": .artifacts.linux_amd64.binary_sha256,
 			"f1r3node-linux-arm64": .artifacts.linux_arm64.binary_sha256}' "$evidence")" '
@@ -139,7 +158,13 @@ plan() {
 				candidate_index: $index_ref,
 				index_digest: $index_digest,
 				stable_reference: ($image_repository + ":" + $stable_tag),
-				latest_reference: ($image_repository + ":latest")
+				latest_reference: ($image_repository + ":latest"),
+				ocir: {
+					canonical: true,
+					index_digest: $index_digest,
+					stable_tag: $stable_tag,
+					latest_tag: "latest"
+				}
 			},
 			binaries: $binaries,
 			actions: {
@@ -147,6 +172,8 @@ plan() {
 				create_release: $create_release,
 				copy_image: $copy_image,
 				move_latest: $move_latest,
+				copy_image_ocir: $copy_image_ocir,
+				move_latest_ocir: $move_latest_ocir,
 				open_next_version_pr: true
 			}
 		}' >"$output"
@@ -183,6 +210,7 @@ stable_evidence() {
 		gate_report_sha256: .gate_report_sha256,
 		images: {
 			docker_hub: (.image.repository + "@" + .image.index_digest),
+			ocir_index_digest: .image.ocir.index_digest,
 			stable_reference: .image.stable_reference
 		},
 		binaries: .binaries,

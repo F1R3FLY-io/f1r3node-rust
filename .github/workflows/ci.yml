@@ -173,6 +173,10 @@ jobs:
         shell: bash -euo pipefail {0}
         run: .github/scripts/test-promote-release.sh
 
+      - name: Verify release gate evidence
+        shell: bash -euo pipefail {0}
+        run: .github/scripts/test-release-gate-evidence.sh
+
       - name: Verify release workflows
         shell: bash -euo pipefail {0}
         run: .github/scripts/test-release-workflows.sh

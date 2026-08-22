@@ -51,7 +51,7 @@ mkdir -p "$GATES"
 INDEX_DIGEST="sha256:$(printf 'index' | sha256sum | awk '{print $1}')"
 REPO_REF=docker.io/f1r3flyindustries/f1r3fly-rust
 "$EVIDENCE_TOOL" record-images "$GATES/release-evidence.json" "$REPO_REF@$INDEX_DIGEST" \
-	"sha256:$(printf 'amd64' | sha256sum | awk '{print $1}')" "sha256:$(printf 'arm64' | sha256sum | awk '{print $1}')"
+	"sha256:$(printf 'amd64' | sha256sum | awk '{print $1}')" "sha256:$(printf 'arm64' | sha256sum | awk '{print $1}')" "$INDEX_DIGEST"
 EVIDENCE="$GATES/release-evidence.json"
 CANDIDATE_TAG="$(jq -r '.candidate_tag' "$EVIDENCE")"
 cp "$TMP/ci-run.json" "$TMP/ci-jobs.json" "$GATES/"
@@ -85,7 +85,7 @@ state() {
 }
 
 # --- Fresh promotion: every action planned ----------------------------------
-state '{stable_tags: ["v0.4.45"], stable_tag: null, stable_release: null, registry: {stable_tag_digest: null, latest_digest: null}}' >"$TMP/fresh.json"
+state '{stable_tags: ["v0.4.45"], stable_tag: null, stable_release: null, registry: {stable_tag_digest: null, latest_digest: null}, ocir: {stable_tag_digest: null, latest_digest: null}}' >"$TMP/fresh.json"
 PLAN="$TMP/plan.json"
 "$TOOL" plan "$EVIDENCE" "$REPORT" "$TMP/fresh.json" "$PLAN" 2>/dev/null
 jq -e --arg sha "$SOURCE_SHA" --arg digest "$INDEX_DIGEST" --arg tag "$CANDIDATE_TAG" '
@@ -93,20 +93,21 @@ jq -e --arg sha "$SOURCE_SHA" --arg digest "$INDEX_DIGEST" --arg tag "$CANDIDATE
 	and .image.index_digest == $digest
 	and .image.stable_reference == "docker.io/f1r3flyindustries/f1r3fly-rust:v0.4.46"
 	and .image.latest_reference == "docker.io/f1r3flyindustries/f1r3fly-rust:latest"
-	and .actions == {create_tag: true, create_release: true, copy_image: true, move_latest: true, open_next_version_pr: true}
+	and .actions == {create_tag: true, create_release: true, copy_image: true, move_latest: true, copy_image_ocir: true, move_latest_ocir: true, open_next_version_pr: true}
+	and .image.ocir == {canonical: true, index_digest: $digest, stable_tag: "v0.4.46", latest_tag: "latest"}
 	and (.binaries | keys) == ["f1r3node-linux-amd64", "f1r3node-linux-arm64"]' "$PLAN" >/dev/null
 "$TOOL" plan "$EVIDENCE" "$REPORT" "$TMP/fresh.json" "$TMP/plan-repeat.json" 2>/dev/null
 cmp "$PLAN" "$TMP/plan-repeat.json"
 
 # --- Resume: existing objects that match are skipped -----------------------
 state "{stable_tags: [\"v0.4.45\", \"v0.4.46\"], stable_tag: {sha: \"$SOURCE_SHA\"}, stable_release: {prerelease: false, assets: []},
-	registry: {stable_tag_digest: \"$INDEX_DIGEST\", latest_digest: \"$INDEX_DIGEST\"}}" >"$TMP/resume.json"
+	registry: {stable_tag_digest: \"$INDEX_DIGEST\", latest_digest: \"$INDEX_DIGEST\"}, ocir: {stable_tag_digest: \"$INDEX_DIGEST\", latest_digest: \"$INDEX_DIGEST\"}}" >"$TMP/resume.json"
 "$TOOL" plan "$EVIDENCE" "$REPORT" "$TMP/resume.json" "$TMP/resume-plan.json" 2>/dev/null
-jq -e '.actions == {create_tag: false, create_release: false, copy_image: false, move_latest: false, open_next_version_pr: true}' "$TMP/resume-plan.json" >/dev/null
+jq -e '.actions == {create_tag: false, create_release: false, copy_image: false, move_latest: false, copy_image_ocir: false, move_latest_ocir: false, open_next_version_pr: true}' "$TMP/resume-plan.json" >/dev/null
 state "{stable_tags: [\"v0.4.45\", \"v0.4.46\"], stable_tag: {sha: \"$SOURCE_SHA\"}, stable_release: null,
-	registry: {stable_tag_digest: null, latest_digest: \"sha256:$(printf 'older' | sha256sum | awk '{print $1}')\"}}" >"$TMP/partial.json"
+	registry: {stable_tag_digest: null, latest_digest: \"sha256:$(printf 'older' | sha256sum | awk '{print $1}')\"}, ocir: {stable_tag_digest: \"$INDEX_DIGEST\", latest_digest: null}}" >"$TMP/partial.json"
 "$TOOL" plan "$EVIDENCE" "$REPORT" "$TMP/partial.json" "$TMP/partial-plan.json" 2>/dev/null
-jq -e '.actions == {create_tag: false, create_release: true, copy_image: true, move_latest: true, open_next_version_pr: true}' "$TMP/partial-plan.json" >/dev/null
+jq -e '.actions == {create_tag: false, create_release: true, copy_image: true, move_latest: true, copy_image_ocir: false, move_latest_ocir: true, open_next_version_pr: true}' "$TMP/partial-plan.json" >/dev/null
 
 # --- Stop conditions ---------------------------------------------------------
 OTHER_SHA=fedcba9876543210fedcba9876543210fedcba98
@@ -114,6 +115,8 @@ state "{stable_tags: [\"v0.4.45\", \"v0.4.46\"], stable_tag: {sha: \"$OTHER_SHA\
 expect_failure 'stable tag points elsewhere' "$TOOL" plan "$EVIDENCE" "$REPORT" "$TMP/bad-tag.json" "$TMP/x.json"
 state "{stable_tags: [\"v0.4.45\"], stable_tag: null, stable_release: null, registry: {stable_tag_digest: \"sha256:$(printf 'other' | sha256sum | awk '{print $1}')\", latest_digest: null}}" >"$TMP/bad-registry.json"
 expect_failure 'registry stable tag points elsewhere' "$TOOL" plan "$EVIDENCE" "$REPORT" "$TMP/bad-registry.json" "$TMP/x.json"
+state "{stable_tags: [\"v0.4.45\"], stable_tag: null, stable_release: null, registry: {stable_tag_digest: null, latest_digest: null}, ocir: {stable_tag_digest: \"sha256:$(printf 'other' | sha256sum | awk '{print $1}')\", latest_digest: null}}" >"$TMP/bad-ocir.json"
+expect_failure 'OCIR stable tag points elsewhere' "$TOOL" plan "$EVIDENCE" "$REPORT" "$TMP/bad-ocir.json" "$TMP/x.json"
 state '{stable_tags: ["v0.4.45", "v0.4.47"], stable_tag: null, stable_release: null, registry: {stable_tag_digest: null, latest_digest: null}}' >"$TMP/overtaken.json"
 expect_failure 'higher stable version published first' "$TOOL" plan "$EVIDENCE" "$REPORT" "$TMP/overtaken.json" "$TMP/x.json"
 state "{stable_tags: [\"v0.4.45\"], stable_tag: null, stable_release: {prerelease: true, assets: []}, registry: {stable_tag_digest: null, latest_digest: null}}" >"$TMP/release-no-tag.json"
@@ -139,6 +142,7 @@ jq -e --arg sha "$SOURCE_SHA" --arg digest "$INDEX_DIGEST" --arg tag "$CANDIDATE
 	--arg esha "$(sha256sum "$EVIDENCE" | awk '{print $1}')" '
 	.schema_version == 1 and .stable_tag == "v0.4.46" and .candidate_tag == $tag and .source_sha == $sha
 	and .images.docker_hub == ("docker.io/f1r3flyindustries/f1r3fly-rust@" + $digest)
+	and .images.ocir_index_digest == $digest
 	and .promoted_at == "2026-08-20T00:00:00Z"
 	and .candidate_evidence_sha256 == $esha' "$STABLE" >/dev/null
 expect_failure 'stable digest differs from candidate' "$TOOL" stable-evidence "$PLAN" "sha256:$(printf 'other' | sha256sum | awk '{print $1}')" 2026-08-20T00:00:00Z "$TMP/x.json"

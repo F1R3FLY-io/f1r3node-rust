@@ -56,7 +56,7 @@ INDEX_DIGEST="sha256:$(printf 'index' | sha256sum | awk '{print $1}')"
 "$EVIDENCE_TOOL" record-images "$GATES/release-evidence.json" \
 	"docker.io/f1r3flyindustries/f1r3fly-rust@$INDEX_DIGEST" \
 	"sha256:$(printf 'amd64' | sha256sum | awk '{print $1}')" \
-	"sha256:$(printf 'arm64' | sha256sum | awk '{print $1}')"
+	"sha256:$(printf 'arm64' | sha256sum | awk '{print $1}')" "$INDEX_DIGEST"
 CANDIDATE_TAG="$(jq -r '.candidate_tag' "$GATES/release-evidence.json")"
 
 # --- Gate documents -------------------------------------------------------

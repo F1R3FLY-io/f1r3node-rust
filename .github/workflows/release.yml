@@ -202,11 +202,26 @@ jobs:
           name: gate-evaluation
           path: ${{ runner.temp }}/evaluation
 
+      - name: Log in to registries
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+          OCIR_REGISTRY: ${{ secrets.OCIR_REGISTRY }}
+          OCIR_USERNAME: ${{ secrets.OCIR_USERNAME }}
+          OCIR_AUTH_TOKEN: ${{ secrets.OCIR_AUTH_TOKEN }}
+        shell: bash -euo pipefail {0}
+        run: |
+          # Both logins happen before any observation so that a missing
+          # credential fails before the plan, not between tag and image.
+          printf '%s' "$DOCKERHUB_TOKEN" | docker login --username "$DOCKERHUB_USERNAME" --password-stdin
+          printf '%s' "$OCIR_AUTH_TOKEN" | docker login "$OCIR_REGISTRY" --username "$OCIR_USERNAME" --password-stdin
+
       - name: Observe stable state
         id: state
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CANDIDATE_TAG: ${{ needs.gates.outputs.candidate_tag }}
+          OCIR_BASE: ${{ secrets.OCIR_REGISTRY }}/${{ secrets.OCIR_NAMESPACE }}/${{ secrets.OCIR_REPO }}
         shell: bash -euo pipefail {0}
         run: |
           evidence="$RUNNER_TEMP/evaluation/gates/release-evidence.json"
@@ -227,29 +242,42 @@ jobs:
             release_json="$(jq '{prerelease: .prerelease, assets: [.assets[].name]}' <<<"$rel")"
           fi
           registry_digest() {
+            # $1 = repository reference without tag, $2 = tag. Prints the
+            # index digest, or null when the tag is absent. The OCIR
+            # reference is secret material and must never reach the log.
             local out
-            if out="$(docker buildx imagetools inspect "docker.io/${DOCKER_IMAGE_NAME}:$1" --format '{{json .Manifest.Digest}}' 2>&1)"; then
+            if out="$(docker buildx imagetools inspect "$1:$2" --format '{{json .Manifest.Digest}}' 2>&1)"; then
               jq -r . <<<"$out"
               return 0
             fi
             grep -qiE 'not found|manifest unknown|no such manifest|404' <<<"$out" && { echo null; return 0; }
-            echo "::error::registry inspection for ${DOCKER_IMAGE_NAME}:$1 failed: $out" >&2
+            echo "::error::registry inspection for tag $2 failed" >&2
             return 1
           }
-          stable_digest="$(registry_digest "$stable_tag")"
-          latest_digest="$(registry_digest latest)"
+          stable_digest="$(registry_digest "docker.io/${DOCKER_IMAGE_NAME}" "$stable_tag")"
+          latest_digest="$(registry_digest "docker.io/${DOCKER_IMAGE_NAME}" latest)"
+          ocir_stable_digest="$(registry_digest "$OCIR_BASE" "$stable_tag")"
+          ocir_latest_digest="$(registry_digest "$OCIR_BASE" latest)"
           jq -n \
             --argjson stable_tags "$stable_tags" \
             --argjson stable_tag "$tag_json" \
             --argjson stable_release "$release_json" \
             --arg stable_digest "$stable_digest" \
-            --arg latest_digest "$latest_digest" '{
+            --arg latest_digest "$latest_digest" \
+            --arg ocir_stable_digest "$ocir_stable_digest" \
+            --arg ocir_latest_digest "$ocir_latest_digest" '
+            def digest_or_null: if . == "null" then null else . end;
+            {
               stable_tags: $stable_tags,
               stable_tag: $stable_tag,
               stable_release: $stable_release,
               registry: {
-                stable_tag_digest: (if $stable_digest == "null" then null else $stable_digest end),
-                latest_digest: (if $latest_digest == "null" then null else $latest_digest end)
+                stable_tag_digest: ($stable_digest | digest_or_null),
+                latest_digest: ($latest_digest | digest_or_null)
+              },
+              ocir: {
+                stable_tag_digest: ($ocir_stable_digest | digest_or_null),
+                latest_digest: ($ocir_latest_digest | digest_or_null)
               }
             }' > "$RUNNER_TEMP/stable-state.json"
           cat "$RUNNER_TEMP/stable-state.json"
@@ -263,7 +291,7 @@ jobs:
             "$RUNNER_TEMP/evaluation/gate-report.json" \
             "$RUNNER_TEMP/stable-state.json" \
             "$RUNNER_TEMP/promotion-plan.json"
-          for key in create_tag create_release copy_image move_latest; do
+          for key in create_tag create_release copy_image move_latest copy_image_ocir move_latest_ocir; do
             echo "$key=$(jq -r ".actions.$key" "$RUNNER_TEMP/promotion-plan.json")" >> "$GITHUB_OUTPUT"
           done
           echo "next_version=$(jq -r '.next_version' "$RUNNER_TEMP/promotion-plan.json")" >> "$GITHUB_OUTPUT"
@@ -295,15 +323,6 @@ jobs:
             -f ref="refs/tags/$(jq -r '.stable_tag' "$RUNNER_TEMP/promotion-plan.json")" \
             -f sha="$(jq -r '.source_sha' "$RUNNER_TEMP/promotion-plan.json")" >/dev/null
 
-      - name: Log in to Docker Hub
-        if: steps.plan.outputs.copy_image == 'true' || steps.plan.outputs.move_latest == 'true'
-        env:
-          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
-          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
-        shell: bash -euo pipefail {0}
-        run: |
-          printf '%s' "$DOCKERHUB_TOKEN" | docker login --username "$DOCKERHUB_USERNAME" --password-stdin
-
       - name: Copy candidate image to the stable tag
         id: image
         shell: bash -euo pipefail {0}
@@ -323,6 +342,23 @@ jobs:
             exit 1
           }
           echo "stable_digest=$actual" >> "$GITHUB_OUTPUT"
+
+      - name: Copy candidate image to the OCIR stable tag
+        env:
+          OCIR_BASE: ${{ secrets.OCIR_REGISTRY }}/${{ secrets.OCIR_NAMESPACE }}/${{ secrets.OCIR_REPO }}
+        shell: bash -euo pipefail {0}
+        run: |
+          plan="$RUNNER_TEMP/promotion-plan.json"
+          expected="$(jq -r '.image.ocir.index_digest' "$plan")"
+          stable_tag="$(jq -r '.image.ocir.stable_tag' "$plan")"
+          if [ "$(jq -r '.actions.copy_image_ocir' "$plan")" = true ]; then
+            docker buildx imagetools create --tag "${OCIR_BASE}:${stable_tag}" "${OCIR_BASE}@${expected}"
+          fi
+          actual="$(docker buildx imagetools inspect "${OCIR_BASE}:${stable_tag}" --format '{{json .Manifest.Digest}}' | jq -r .)"
+          [ "$actual" = "$expected" ] || {
+            echo "::error::OCIR stable tag ${stable_tag} resolves to ${actual}, not the candidate index ${expected}"
+            exit 1
+          }
 
       - name: Publish stable evidence and release
         if: steps.plan.outputs.create_release == 'true'
@@ -357,20 +393,33 @@ jobs:
             "$assets/stable-release-evidence.json" \
             "$assets/stable-release-evidence.json.sha256"
 
-      - name: Move the latest alias
-        if: steps.plan.outputs.move_latest == 'true'
+      - name: Move the latest aliases
+        if: steps.plan.outputs.move_latest == 'true' || steps.plan.outputs.move_latest_ocir == 'true'
+        env:
+          OCIR_BASE: ${{ secrets.OCIR_REGISTRY }}/${{ secrets.OCIR_NAMESPACE }}/${{ secrets.OCIR_REPO }}
         shell: bash -euo pipefail {0}
         run: |
-          # Aliases move only after the stable tag, image, and release exist.
+          # Aliases move only after the stable tag, images, and release exist.
           plan="$RUNNER_TEMP/promotion-plan.json"
-          docker buildx imagetools create \
-            --tag "$(jq -r '.image.latest_reference' "$plan")" \
-            "$(jq -r '.image.candidate_index' "$plan")"
+          if [ "$(jq -r '.actions.move_latest' "$plan")" = true ]; then
+            docker buildx imagetools create \
+              --tag "$(jq -r '.image.latest_reference' "$plan")" \
+              "$(jq -r '.image.candidate_index' "$plan")"
+          fi
+          if [ "$(jq -r '.actions.move_latest_ocir' "$plan")" = true ]; then
+            docker buildx imagetools create \
+              --tag "${OCIR_BASE}:$(jq -r '.image.ocir.latest_tag' "$plan")" \
+              "${OCIR_BASE}@$(jq -r '.image.ocir.index_digest' "$plan")"
+          fi
 
-      - name: Log out of Docker Hub
+      - name: Log out of registries
         if: always()
+        env:
+          OCIR_REGISTRY: ${{ secrets.OCIR_REGISTRY }}
         shell: bash -euo pipefail {0}
-        run: docker logout || true
+        run: |
+          docker logout || true
+          if [ -n "$OCIR_REGISTRY" ]; then docker logout "$OCIR_REGISTRY" || true; fi
 
       - name: Open the next-version pull request
         env:
@@ -407,7 +456,7 @@ jobs:
             printf -- '- Stable tag: `%s`\n' "$(jq -r '.stable_tag' "$plan")"
             printf -- '- Candidate: `%s`\n' "$(jq -r '.candidate_tag' "$plan")"
             printf -- '- Source SHA: `%s`\n' "$(jq -r '.source_sha' "$plan")"
-            printf -- '- Image: `%s`\n' "$(jq -r '.image.repository + "@" + .image.index_digest' "$plan")"
+            printf -- '- Image: `%s` (same index digest in OCIR)\n' "$(jq -r '.image.repository + "@" + .image.index_digest' "$plan")"
             printf -- '- Next version: `%s`\n' "$(jq -r '.next_version' "$plan")"
             echo
             echo "The release now enters the Shard soak-in phase (docs/release-process.md section 12)."
