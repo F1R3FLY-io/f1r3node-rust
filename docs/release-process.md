@@ -229,6 +229,34 @@ The regression verdict is advisory because it is a relative week-over-week measu
 
 The promotion controller validates workflow identity through the GitHub API. A commit status alone is not sufficient evidence.
 
+### 8.1 Gate evidence contract
+
+The promotion controller reads every gate document from the candidate prerelease. A gate workflow that runs in candidate mode uploads its document as a release asset on the candidate tag and uploads a `release-candidate` workflow artifact that names the candidate tag. The controller resumes from that artifact.
+
+Each document binds to the candidate with these fields:
+
+```json
+{
+  "schema_version": 1,
+  "gate": "oci_validation",
+  "source_sha": "0123456789abcdef0123456789abcdef01234567",
+  "candidate_tag": "v0.4.46-canary.812",
+  "image_index_digest": "sha256:index-digest",
+  "workflow_run": {"id": 123456789, "attempt": 1, "path": ".github/workflows/oci-validation.yml", "conclusion": "success"}
+}
+```
+
+| Asset | Gate | Extra fields |
+|---|---|---|
+| `oci-validation-evidence.json` | Full OCI validation | `mode: candidate`, `system_integration_sha`, `required_jobs[]` |
+| `soak-evidence.json` | Integration preflight and 60h stability soak | `soak_kind: weekend`, `requested_duration_seconds: 216000`, `completed`, `artifact_mode: candidate`, `retry_attempt`, `coverage_preserved`, `preflight.status` |
+| `verdict.json` | Regression verdict | `verdict`, `source_sha` |
+| `maintainer-review.json` | Accepts a `regress` verdict | `verdict_accepted`, `reviewer`, `reference`, `reviewed_at` |
+
+The full CI and heavy integration gates read the CI run recorded in the candidate evidence. The slashing gate reads the newest successful push run of the slashing workflow for the source SHA. `release-required-ci-jobs.txt` and `release-required-slashing-jobs.txt` list the required jobs.
+
+`release-gates.sh evaluate` resolves each gate to `pass`, `hold`, or `fail`. A hold waits for evidence. A fail is exact-SHA evidence that contradicts the candidate, and no override can replace it.
+
 ## 9. Full OCI validation
 
 Candidate OCI validation must consume the published canary image by digest.
@@ -498,7 +526,7 @@ This table defines the target state after the Section 17 workflow changes are co
 | `reusable-oci-validation.yml` | `workflow_call` | Called by oci-validation.yml | Contained in the caller duration | OCI validation implementation; consumes the candidate digest |
 | `slashing-tests.yml` | `push`, `pull_request`, `schedule` 06:30 UTC daily, `workflow_dispatch` | Event + time + manual | 10–15 min *measured*; the nightly exhaustive tier exceeds 20 min | Slashing suite |
 | `release-evidence.yml` | `workflow_dispatch` (ci_run_id) | Manual | 10–20 min *estimated* (30-min cap) | Exact-run candidate evidence |
-| `release.yml` | `workflow_dispatch`; promotion resumes automatically after a missing gate completes | Manual start, automatic resume | 5–15 min *estimated* (no builds; copy and verify only) | Exact-candidate stable promotion |
+| `release.yml` | `workflow_dispatch` (candidate_tag); `workflow_run` on completion of Full OCI Validation, the slashing suite, and the soak (resume after a missing gate) | Manual start, automatic resume | 5–15 min *estimated* (no builds; copy and verify only) | Exact-candidate stable promotion |
 | `soak-in.yml` | `release` (stable tag published), `workflow_dispatch` | Event (one enrollment per stable release) + manual | Enrollment takes minutes; the soak-in period itself runs in the test net, not in Actions | Shard soak-in enrollment |
 | `deployment-train.yml` | `workflow_dispatch` (manifest path) | Manual | Minutes for setup *estimated*; the started gates run in their own workflows | Train validation and setup |
 | `testbed-quality-gate.yml` | `workflow_dispatch`, including dispatch from train manifest gates | Manual + tooling | No measured runs | Feature-specific train gate |
@@ -540,6 +568,8 @@ Phase 1 disables automatic stable publication. A manual workflow generates evide
 2. Remove the global latest-verdict release gate.
 3. Stop rebuilding on stable tag pushes.
 4. Move stable channel aliases only after digest verification.
+
+The controller (`release.yml`, `release-gates.sh`, `promote-release.sh`) can land before Phase 3. Its CI, heavy integration, and slashing gates work on Phase 2 candidates. Its OCI, soak, and verdict gates hold until Phase 3 publishes the Section 8.1 documents.
 
 ### Phase 5: Deployment Trains
 
