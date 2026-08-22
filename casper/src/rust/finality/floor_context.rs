@@ -164,6 +164,23 @@ impl FloorContext {
             .collect())
     }
 
+    pub fn latest_kept_rejection_height(
+        &self,
+        block_store: &KeyValueBlockStore,
+        earliest_block_number: i64,
+        sig: &Bytes,
+    ) -> Result<Option<i64>, CasperError> {
+        Ok(self
+            .dispositions(block_store, earliest_block_number)?
+            .get(sig)
+            .and_then(|disposition| {
+                disposition
+                    .latest_kept_rejection
+                    .as_ref()
+                    .map(|(height, _)| *height)
+            }))
+    }
+
     /// The retry gate — a pure validity predicate over frozen block facts,
     /// so proposer and every validator compute the identical verdict:
     /// re-including a rejected sig is legal iff its LATEST kept rejection
