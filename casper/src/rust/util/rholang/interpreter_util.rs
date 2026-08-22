@@ -1694,10 +1694,14 @@ pub async fn compute_parents_post_state(
                     .collect();
                 let mut cursor = Some(scope_anchor_hash.clone());
                 while let Some(hash) = cursor {
+                    // Metadata absent for a block on the main-parent chain is
+                    // a held-set gap, not the window edge: defer, never walk a
+                    // shorter lineage. `main_parent` is `None` only for a block
+                    // whose metadata is present and records no parent (genesis).
                     let number = s
                         .dag
-                        .block_number_unsafe(&hash)
-                        .map_err(CasperError::from)?;
+                        .block_number(&hash)
+                        .ok_or_else(|| CasperError::BlockNotHeld(hash.clone()))?;
                     if number < settled_walk_bound {
                         break;
                     }

@@ -9,7 +9,7 @@ use rholang::rust::build::compile_rholang_source::CompiledRholangSource;
 use rholang::rust::interpreter::errors::InterpreterError;
 use rholang::rust::interpreter::util::vault_address::VaultAddress;
 
-use crate::helper::rho_spec::RhoSpec;
+use crate::helper::rho_spec::{timeout_phase, RhoSpec, EVAL_TEST_SOURCE_PHASE};
 use crate::util::genesis_builder::GenesisBuilder;
 
 fn prepare_vault(vault_data: (&str, u64)) -> Vault {
@@ -107,14 +107,21 @@ fn run_pos_spec_once() -> Result<(), InterpreterError> {
         .unwrap()
 }
 
+/// The single retry absorbs a wedge under parallel suite load. It is not a
+/// performance allowance: set `RHO_SPEC_NO_RETRY=1` to surface the first
+/// timeout as the failure, so a run that must measure interpreter speed does
+/// not hide a regression behind the retry.
 #[test]
 fn pos_spec() {
     match run_pos_spec_once() {
-        Err(InterpreterError::BugFoundError(message))
-            if message.starts_with("Timeout of ")
-                && message.contains("phase 'eval-test-source'") =>
+        Err(err)
+            if timeout_phase(&err) == Some(EVAL_TEST_SOURCE_PHASE)
+                && std::env::var_os("RHO_SPEC_NO_RETRY").is_none() =>
         {
-            eprintln!("PoSSpec timed out under parallel load. The test will retry once.");
+            eprintln!(
+                "PoSSpec timed out in phase '{EVAL_TEST_SOURCE_PHASE}' under parallel load. \
+                 The test will retry once (set RHO_SPEC_NO_RETRY=1 to disable): {err:?}"
+            );
             run_pos_spec_once().expect("PoSSpec tests failed after timeout retry");
         }
         result => result.expect("PoSSpec tests failed"),

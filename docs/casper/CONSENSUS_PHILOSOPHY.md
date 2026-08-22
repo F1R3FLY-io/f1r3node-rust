@@ -60,9 +60,7 @@ Phase 1 ranks a chain by its prior on-DAG losses. Users can influence the histor
 
 ### 4.2 User Contract Concurrency waiver
 
-PRs #299 and #312 waive User Contract Concurrency as a merge gate. The job is disabled, and the suite does not fail on starvation.
-
-The neutral-base test supplies phase-1 evidence. The rotating-proposer test supplies phase-2 evidence. All four standard integration matrices must pass for PR #312.
+PR #299 waives User Contract Concurrency as a merge gate. The job is disabled, and the suite does not fail on starvation. The neutral-base integration test supplies the phase-1 system evidence.
 
 A follow-up change must enable the job and fail when contention expires a valid deploy. The acceptance gate must pass three consecutive runs.
 
@@ -80,24 +78,18 @@ The options are ordered by guarantee strength and by risk. The axes are fairness
 
 ### Option A — proposer rotation as the liveness mechanism
 
-Fork choice orders parents by stake score and then ascending block hash. Equal-stake siblings can alternate through hash order. Unequal stake does not provide equal chances.
+The fork-choice tie-break is the stake score, then the ascending block hash. The tie-break gives each side of a contention an even chance to become the base in each round. Over many rounds, the carrier of the starved deploy becomes the base, and the deploy lands.
 
-Proposer rotation becomes useful with B1. A retry owner can build on a parent that covers the visible frontier and package the retry sequentially.
+- **Pros:** This option needs no code change. It adds no new risk surface.
+- **Cons:** Liveness becomes probabilistic. The retry gate paces re-proposals on floor settlement, so a deploy gets two or three attempts inside its 50-block window. The observed failure had exactly two rejections. An even chance per attempt leaves an expiry probability that is too high for a liveness claim.
+- **Verdict:** This option is necessary as the test-evidence component. It is not sufficient alone.
 
-- **Pros:** This option needs no consensus change. It adds no new validation risk.
-- **Cons:** Rotation alone gives only probabilistic liveness. Unequal stake or limited retry attempts can keep the expiry probability too high.
-- **Verdict:** Use this option with B1 as test evidence. Do not use rotation alone as a liveness guarantee.
+### Option B1 — merged-frontier retry packaging (recommended next step)
 
-### Option B1 — merged-frontier retry packaging
+The owner packages a gated retry only when its own tip already merges every same-key contender that the owner can see. The retry then executes fresh and sequentially on top of the settled contention. It does not race as a sibling. When an unseen contender still races in, loss-aware adjudication covers the adjudicable subset.
 
-The owner first waits for one selected parent to cover every valid latest message. The retry then executes on a previously merged frontier.
-
-A three-block lease bounds this wait from the latest kept rejection height. The owner permits normal phase-1 retry packaging after the lease expires.
-
-The retry stays owner-scoped. The policy does not add deterministic inclusion leadership.
-
-- **Pros:** The policy is node-local. It needs no consensus change, wire change, or upgrade coordination. The lease prevents this policy from consuming the validity window.
-- **Cons:** The policy is a heuristic, not a guarantee. The lease escape can reopen a sibling race. Phase-1 adjudication covers only the adjudicable subset.
+- **Pros:** The policy is node-local. It needs no consensus change, no wire change, and no upgrade coordination. The diff in `prepare_user_deploys_with_policy` is small. Ground Truth 2 makes the deferral safe from peer rejection.
+- **Cons:** The policy is a heuristic, not a guarantee. Under saturated contention, a merged frontier without contenders never occurs. Each deferral spends validity window to increase the success probability. The policy does not influence merges that other validators build.
 
 ### Option B2 — per-key contender serialization
 
@@ -111,9 +103,7 @@ This option extends the inclusion-leadership mechanism to serialize same-key con
 A proposer applies this rule when its parent set contains a sibling that carries a chain with strictly more prior rejections. The proposer declares that sibling as `parents[0]`. The retry is then in the base and lands structurally.
 
 - **Pros:** This option gives the strongest liveness effect that needs no validation change. Ground Truth 1 makes it proposer policy: validators replay the declared parents and recompute the same merge. The priority derives from on-chain records, so the rule is deterministic.
-- **Cons:** The spine follows main parents. Fork-choice scores credit only the main-parent chain, and `prefer_certified_main_parent` exists to keep the spine on certified ground. Systematic deviation for fairness reasons risks finalization-health regressions. The option also opens a mild griefing vector: cheap manufactured losses could steer the main-parent choice of other proposers.
-
-Run three consecutive 60-minute contention soaks on the final phase-2 head. Each soak must use both supported providers. Activate C1 only if one soak expires a valid deploy after `retry_frontier_escape`.
+- **Cons:** The spine follows main parents. Fork-choice scores credit only the main-parent chain, and `prefer_certified_main_parent` exists to keep the spine on certified ground. Systematic deviation for fairness reasons risks finalization-health regressions. The option also opens a mild griefing vector: cheap manufactured losses could steer the main-parent choice of other proposers. This option must enter only after soak evidence supports it.
 
 ### Option C2 — loss-aware base fallback (reserve)
 
@@ -121,8 +111,6 @@ This option extends the existing base fallback rule. When a retry chain with str
 
 - **Pros:** The guarantee is deterministic and independent of the proposer. The option does not perturb fork choice. The rule shape already exists (Ground Truth 3), and validators recompute it identically.
 - **Cons:** The option is a true consensus change: every node must upgrade in lockstep. Floor-based merges carry the scope size and cost that the base-on-main-parent migration removed. The option re-opens the expensive path exactly in contended windows.
-
-Apply the same three-soak gate after C1. Activate C2 only if one soak still expires a valid deploy after the C1 remedy.
 
 ### Option C3 — loss-aware fork-choice weights (rejected)
 
@@ -133,7 +121,7 @@ This option biases fork-choice scoring by starved-retry priority.
 ### Comparison
 
 | Option | Fairness guarantee | Peer-rejection risk | Upgrade coordination | Finalization-health risk | Adversarial surface | Cost |
-| --- | --- | --- | --- | --- | --- | --- |
+|---|---|---|---|---|---|---|
 | A rotation + test | probabilistic, weak | none | none | none | none | trivial |
 | B1 merged-frontier packaging | strong in practice | none | none | none | none | small |
 | B2 per-key serialization | deterministic ordering | none | none | none | low | medium |
@@ -145,9 +133,9 @@ This option biases fork-choice scoring by starved-retry priority.
 
 ```mermaid
 flowchart TD
-    P1[Phase 1 - implemented:\nloss-aware adjudication\nat all three merge sites] --> B1[Phase 2 - implemented:\nB1 merged-frontier retry packaging\n+ A rotating-proposer test shape]
-    B1 -->|three 60-minute soaks\nshow a valid expiry| C1[Escalation:\nC1 loss-aware main-parent declaration\nbehind soak evidence]
-    C1 -->|the same gate still expires| C2[Reserve:\nC2 loss-aware base fallback\nlockstep consensus change]
+    P1[Phase 1 - shipped:\nloss-aware adjudication\nat all three merge sites] --> B1[Phase 2 - proposed:\nB1 merged-frontier retry packaging\n+ A rotating-proposer test shape]
+    B1 -->|soak or SI evidence\nshows residual expiries| C1[Escalation:\nC1 loss-aware main-parent declaration\nbehind soak evidence]
+    C1 -->|still insufficient| C2[Reserve:\nC2 loss-aware base fallback\nlockstep consensus change]
     C2 -.-> C3[C3 fork-choice weights:\nrejected - griefing vector]
     style C3 stroke-dasharray: 5 5
 ```
@@ -178,16 +166,7 @@ The ratified mandatory Correct by Construction scope contains these production a
 
 The required claims cover deterministic count derivation, unavailable-history refusal, total ordering, non-identity priority, and equal chain stamping.
 
-PR #312 applies the mandatory attributes. Formal discharge remains in PR #311. This deferral does not claim that tests prove Rust conformance.
-
-### 7.2 Correct by Construction scope for phase 2
-
-The phase-2 scope adds these production artifacts:
-
-- `casper/src/rust/blocks/proposer/block_creator.rs`
-- `casper/src/rust/finality/floor_context.rs`
-
-The required claims cover owner-scoped selection, authenticated frontier data, authenticated rejection height, and bounded deferral. PR #311 must discharge these claims.
+`interpreter_util.rs` already has the mandatory attribute. PR #299 defers the remaining attributes and formal discharge to PR #311. This deferral does not claim that tests prove Rust conformance.
 
 ### Historical position: the F1R3FLY specialization
 
@@ -205,7 +184,7 @@ These four properties belong to the F1R3FLY Casper specialization: concurrent Rh
 This position also organizes the table below. The rows align where this implementation inherits the CBC core. The divergences live exactly in the added merge layer, which is where the new principles (P1, P6) operate.
 
 | Aspect | CBC Casper position | This philosophy | Relation |
-| --- | --- | --- | --- |
+|---|---|---|---|
 | Safety guarantee | Asynchronous BFT safety holds while equivocating weight stays below a threshold | P6: per-merge safety is non-negotiable | Strong alignment. "Local safety composes into global starvation" is a concrete instance of the safety-versus-liveness tension that CBC deliberately accepts. |
 | Liveness | Not guaranteed under pure asynchrony. Progress relies on practical mechanisms under partial synchrony | The remedy ladder treats liveness as a risk gradient, escalated on evidence (P5) | Compatible. The ladder is an engineering elaboration of the same priority order. |
 | Estimator purity | The estimator is a pure function of validator messages and protocol state | P4: fork choice stays deploy-content-blind | Direct operationalization. Application data never enters the estimator. |
@@ -222,18 +201,16 @@ The method of this document also follows the CBC spirit. CBC derives protocols s
 ## 8. Decision record
 
 | Date | Decision | Status |
-| --- | --- | --- |
+|---|---|---|
 | 2026-08-20 | Phase 1: loss-aware adjudication at keep-one, rejection-option selection, and the unavailable-split claim order | Implemented in PR #299 with unit-test and integration evidence. |
-| 2026-08-21 | Phase 2: B1 merged-frontier retry packaging with proposer-rotation evidence | Implemented in PR #312 with integration evidence. |
-| 2026-08-22 | Bound frontier-only deferral to three blocks after the latest kept rejection | Ratified after integration evidence showed 46 and 47 consecutive deferrals. |
-| 2026-08-22 | Keep recovery owner-scoped without deterministic inclusion leadership | Ratified for phase 2. |
-| 2026-08-22 | Escalate to C1 only if one of three consecutive 60-minute, two-provider soaks expires a valid deploy after the lease escape | Ratified. Apply the same gate before C2. |
+| 2026-08-20 | Phase 2: B1 merged-frontier packaging with rotating-proposer evidence | Implemented in PR #312. Liveness guarantee pending ratification. |
 | 2026-08-22 | Prior rejection strictly outranks cost, and cost decides equal-count cases | Ratified for phase 1. |
 | 2026-08-22 | Each signature owns its count, and dependency-chain priority uses the maximum member count | Ratified for phase 1. |
-| 2026-08-22 | User Contract Concurrency is waived as a PR #299 and PR #312 merge gate | Ratified with a separate enablement and assertion follow-up. |
-| 2026-08-22 | Four phase-1 and two phase-2 production artifacts form the mandatory Correct by Construction scope | Ratified. Formal discharge remains in PR #311. |
+| 2026-08-22 | Rejection-option selection ranks options by their highest member count first, then by the count total, then by cost. A coalition of low-count chains cannot outweigh one chain with a higher count. | Implemented in PR #299 after multi-agent review. Pending ratification. |
+| 2026-08-22 | User Contract Concurrency is waived as a PR #299 merge gate | Ratified with a separate enablement and assertion follow-up. |
+| 2026-08-22 | Four production artifacts form the mandatory Correct by Construction scope | Ratified. Formal discharge remains in PR #311. |
 | 2026-08-22 | The scan benchmark uses the 256-block floor limit, 512 visible blocks, and a 10-percent regression limit | Ratified. Measurement remains a merge gate. |
 
 The phase-2 working record lives in the TDD plan
 [`docs/tdd-plans/key-contention-starvation-2026-08-20T04-52-46Z.md`](../tdd-plans/key-contention-starvation-2026-08-20T04-52-46Z.md).
-The active rotating-proposer test provides B1 landing evidence. The ignored fixed-proposer test records residual base bias as the C1 escalation sentinel.
+The fixed-proposer test in `casper/tests/batch2/loss_priority_spec.rs` remains an ignored expected-RED sentinel.
