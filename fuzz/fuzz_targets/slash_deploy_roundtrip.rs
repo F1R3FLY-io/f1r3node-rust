@@ -38,6 +38,8 @@ fuzz_target!(|input: Input| {
     let processed = ProcessedSystemDeploy::Succeeded {
         event_list: Vec::new(),
         system_deploy: slash,
+        pre_state_hash: Vec::<u8>::new().into(),
+        post_state_hash: Vec::<u8>::new().into(),
     };
 
     let proto = processed.clone().to_proto();
