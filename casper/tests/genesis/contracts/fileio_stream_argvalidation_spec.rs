@@ -445,3 +445,91 @@ in {{
     let spec = RhoSpec::new_with_genesis_parameters(compiled, vec![], GENESIS_TEST_TIMEOUT, params);
     spec.run_tests().await.expect("mapreduce empty spec failed");
 }
+
+/// Phase 9 slice 9c-i cap-boundary matrix — pins the runtime
+/// behavior of `Stream.chunk(@n)` around the `MAX_CHUNK_ITEMS=65536`
+/// boundary.  Complements the source-scan pin in
+/// `rholang/tests/fileio_cost_spec.rs::stream_chunk_enforces_max_chunk_items_cap`,
+/// which verifies the code text of the cap.  This test verifies the
+/// semantics: the cap comparison direction and the boundary value.
+///
+/// Matrix (executed sequentially against a ByteStream over a 10-byte
+/// file — the cap check fires before touching state, so cursor is
+/// unaffected between checks):
+///
+///   chunk(65536) → [true, container]     — boundary at cap (allowed)
+///   chunk(65537) → [false, FSERR_QUOTA_EXCEEDED, "chunk n exceeds MAX_CHUNK_ITEMS=65536"]
+///   chunk(1_000_000) → [false, FSERR_QUOTA_EXCEEDED, ...]  — well above cap
+///
+/// A regression that flips the comparison direction (`i < 65536`
+/// instead of `i > 65536`), shifts the boundary (`i >= 65536`), or
+/// silently removes the cap trips one of the three arms here.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn stream_chunk_max_items_cap_boundary() {
+    let content: Vec<u8> = (1u8..=10).collect();
+    let (_dir, params, fs_uri) = bundle_file(&content, "r");
+
+    let test_source = format!(
+        r#"
+new
+  rl(`rho:registry:lookup`),
+  RhoSpecCh,
+  fsCh,
+  test_chunk_cap
+in {{
+  rl!(`rho:id:zphjgsfy13h1k85isc8rtwtgt3t9zzt5pjd5ihykfmyapfc4wt3x5h`, *RhoSpecCh) |
+  for(@(_, RhoSpec) <- RhoSpecCh) {{
+    @RhoSpec!("testSuite",
+      [("chunk(n) enforces MAX_CHUNK_ITEMS=65536 boundary",
+        *test_chunk_cap)])
+  }} |
+
+  rl!(`{fs_uri}`, *fsCh) |
+  for(@(_, fs) <- fsCh) {{
+    contract test_chunk_cap(rhoSpec, _, ackCh) = {{
+      for(@[true, file] <- @fs!?("openFile", "target", {{"mode": "r"}})) {{
+        for(@[true, byteStream] <- @file!?("bytes")) {{
+          for(@rAtCap <- @byteStream!?("chunk", 65536)) {{
+            for(@rJustOverCap <- @byteStream!?("chunk", 65537)) {{
+              for(@rFarOverCap <- @byteStream!?("chunk", 1000000)) {{
+                match rAtCap {{
+                  [true, _bytes] => {{
+                    rhoSpec!("assert",
+                      ([rJustOverCap, rFarOverCap], "==",
+                       [[false, "FSERR_QUOTA_EXCEEDED",
+                         "chunk n exceeds MAX_CHUNK_ITEMS=65536"],
+                        [false, "FSERR_QUOTA_EXCEEDED",
+                         "chunk n exceeds MAX_CHUNK_ITEMS=65536"]]),
+                      "chunk cap: rejects at 65537 and 1000000, accepts 65536",
+                      *ackCh)
+                  }}
+                  _ => {{
+                    rhoSpec!("assert",
+                      (rAtCap, "==", [true, "unused"]),
+                      "chunk cap: chunk(65536) must be accepted (returned non-[true,_] shape)",
+                      *ackCh)
+                  }}
+                }}
+              }}
+            }}
+          }}
+        }}
+      }}
+    }}
+  }}
+}}
+"#
+    );
+
+    let compiled = CompiledRholangSource::new(
+        test_source,
+        HashMap::new(),
+        "ChunkCapBoundarySpec".to_string(),
+    )
+    .expect("compile chunk cap boundary spec");
+
+    let spec = RhoSpec::new_with_genesis_parameters(compiled, vec![], GENESIS_TEST_TIMEOUT, params);
+    spec.run_tests()
+        .await
+        .expect("chunk cap boundary spec failed");
+}

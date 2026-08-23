@@ -817,3 +817,59 @@ fn stream_chunk_enforces_max_chunk_items_cap() {
          hides the design intent from readers."
     );
 }
+
+/// **Slice 9c-i deferral-preservation pin — Buffer.toByteArray materialization cap.**
+///
+/// Phase 9 slice 9c originally called for materialization caps on
+/// Buffer.rho methods (`toString(cap)`, `toByteArray(cap)`,
+/// `toList(cap)` → `FSERR_QUOTA_EXCEEDED`).  These were deferred to
+/// an independent Rholang-API slice because they require a signature
+/// change (`toByteArray()` → `toByteArray(@cap)`) and updates to 4+
+/// caller sites in `File.rho`.  `Buffer.rho:641` documents this as
+/// a "Known deferral".
+///
+/// This pin holds the deferral until the follow-up slice lands:
+/// * `method toByteArray(` must appear (the method still exists)
+/// * The signature must be `method toByteArray()` with no `@cap`
+///   argument (i.e. a substring match `method toByteArray()` must
+///   be present, NOT `method toByteArray(@cap)`)
+/// * The "Known deferral" docstring must still be present in the
+///   file (so a partial "wire the cap without updating the doc"
+///   PR trips this test)
+///
+/// Delete this pin when the follow-up slice lands (with its own
+/// golden pins on the new cap value and API shape).
+#[test]
+fn buffer_to_byte_array_deferral_still_holds() {
+    let src = include_str!("../../casper/src/main/resources/Buffer.rho");
+    assert!(
+        src.contains("method toByteArray("),
+        "Buffer.rho must still define `method toByteArray(...)`.  If the \
+         method was renamed or removed, the follow-up materialization-cap \
+         slice needs to update this pin's expected identifier."
+    );
+    assert!(
+        src.contains("method toByteArray()"),
+        "slice 9c deferral regression: Buffer.rho::toByteArray is expected to \
+         still take NO arguments — the materialization cap was deferred to a \
+         separate Rholang-API slice per the plan doc.  If a `@cap` argument \
+         was added, either (a) revert until the full follow-up (including \
+         caller updates in File.rho and golden-value pins) lands, or (b) \
+         land the full follow-up AND delete this pin (replaced by cap-\
+         specific golden pins)."
+    );
+    assert!(
+        !src.contains("method toByteArray(@cap)"),
+        "slice 9c deferral regression: Buffer.rho::toByteArray must NOT have \
+         a `@cap` argument until the full materialization-cap follow-up slice \
+         lands."
+    );
+    assert!(
+        src.contains("Known deferral"),
+        "slice 9c deferral regression: Buffer.rho must retain the `Known \
+         deferral` docstring identifying FSERR_QUOTA_EXCEEDED as scheduled \
+         for a separate slice.  Removing the docstring while the deferral is \
+         still in effect misleads readers into thinking the quota check is \
+         wired when it is not."
+    );
+}
