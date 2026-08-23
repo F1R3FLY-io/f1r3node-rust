@@ -2002,7 +2002,120 @@ pub fn segment_extent(bytes: &[u8]) -> Option<usize> {
     None
 }
 
-pub(crate) fn path_declares_stable(path: &[u8]) -> Result<bool, CodecError> {
+/// Canonical top-level shape of one PathMap key.
+///
+/// A bare path represents one `Par`. A split path represents the elements of a
+/// top-level `EList` followed by [`tag::TERM`]. The distinction matters when an
+/// escaped segment is rewritten: a bare replacement is re-encoded as a whole
+/// path (and may itself become split), whereas one element of an existing split
+/// path must remain exactly one segment.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CanonicalTopLevelPathForm {
+    Bare,
+    Split,
+}
+
+/// One non-owning segment descriptor yielded by
+/// [`CanonicalTopLevelSegmentCursor`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CanonicalTopLevelSegment {
+    /// A structural segment in the `eval_stable` alphabet. Substitution is the
+    /// identity on its complete semantic domain, so consumers may copy this
+    /// envelope byte-for-byte.
+    Stable { envelope: Range<usize> },
+    /// The trie-only escape envelope and the canonical protobuf `Par` body it
+    /// contains. Both ranges are relative to the complete key.
+    Escape {
+        envelope: Range<usize>,
+        payload: Range<usize>,
+    },
+}
+
+/// Restartable, allocation-free cursor over the top-level segments of a
+/// canonical PathMap key.
+///
+/// Construction validates the complete path framing once. It deliberately does
+/// not decode any segment. In particular, a split list may yield a mixture of
+/// [`CanonicalTopLevelSegment::Stable`] and
+/// [`CanonicalTopLevelSegment::Escape`]; treating every unstable key as one
+/// whole escape would be incorrect.
+pub struct CanonicalTopLevelSegmentCursor {
+    cursor: usize,
+    content_end: usize,
+    form: CanonicalTopLevelPathForm,
+    stable: bool,
+}
+
+impl CanonicalTopLevelSegmentCursor {
+    /// Inspect a key whose canonical semantics were already validated at the
+    /// EPathMap/EntryTrie ingestion boundary.
+    ///
+    /// This constructor deliberately rechecks only the complete framing needed
+    /// to lend segment ranges. It is not an untrusted-input validator: escape
+    /// payload canonicality, nested PathMap images, and the prohibition on
+    /// nested escapes are invariants established before a key enters an
+    /// EPathMap. Call [`decode_trie_path`] at an untrusted byte boundary.
+    pub fn from_validated_path(path: &[u8]) -> Result<Self, CodecError> {
+        let (stable, form) = declared_path_shape(path)?;
+        if form == CanonicalTopLevelPathForm::Bare && path.first() == Some(&tag::ELIST) {
+            return Err(CodecError::BareTopLevelList);
+        }
+        let content_end = match form {
+            CanonicalTopLevelPathForm::Bare => path.len(),
+            CanonicalTopLevelPathForm::Split => path.len() - 1,
+        };
+        Ok(Self {
+            cursor: 0,
+            content_end,
+            form,
+            stable,
+        })
+    }
+
+    pub const fn form(&self) -> CanonicalTopLevelPathForm { self.form }
+
+    pub const fn is_stable(&self) -> bool { self.stable }
+
+    /// Lend the next descriptor from the same validated key passed to
+    /// [`Self::from_validated_path`]. Keeping the bytes outside the cursor lets
+    /// an owning PDA retain one shared `ProtobufRegion` without a self-reference
+    /// or a descriptor vector proportional to key width.
+    pub fn next_segment(&mut self, path: &[u8]) -> Option<CanonicalTopLevelSegment> {
+        assert_eq!(
+            path.len(),
+            match self.form {
+                CanonicalTopLevelPathForm::Bare => self.content_end,
+                CanonicalTopLevelPathForm::Split => self.content_end + 1,
+            },
+            "a top-level segment cursor must advance over its originating key"
+        );
+        if self.cursor == self.content_end {
+            return None;
+        }
+        let start = self.cursor;
+        skip_declared_segment(path, &mut self.cursor)
+            .expect("constructor validated every declared segment");
+        debug_assert!(self.cursor <= self.content_end);
+        let envelope = start..self.cursor;
+        if path[start] != tag::ESCAPE {
+            return Some(CanonicalTopLevelSegment::Stable { envelope });
+        }
+
+        let mut payload_start = start + 1;
+        let payload_len = read_uv(path, &mut payload_start, self.cursor)
+            .expect("constructor validated the escape length");
+        let payload_len = usize::try_from(payload_len)
+            .expect("constructor rejected an unaddressable escape length");
+        let payload_end = self.cursor;
+        debug_assert_eq!(payload_start.checked_add(payload_len), Some(payload_end));
+        Some(CanonicalTopLevelSegment::Escape {
+            envelope,
+            payload: payload_start..payload_end,
+        })
+    }
+}
+
+fn declared_path_shape(path: &[u8]) -> Result<(bool, CanonicalTopLevelPathForm), CodecError> {
     if path.is_empty() {
         return Err(CodecError::EmptyInput);
     }
@@ -2013,7 +2126,7 @@ pub(crate) fn path_declares_stable(path: &[u8]) -> Result<bool, CodecError> {
         if path[cursor] == tag::TERM {
             cursor += 1;
             return if cursor == path.len() {
-                Ok(stable)
+                Ok((stable, CanonicalTopLevelPathForm::Split))
             } else {
                 Err(CodecError::TerminatorMisplaced)
             };
@@ -2023,12 +2136,16 @@ pub(crate) fn path_declares_stable(path: &[u8]) -> Result<bool, CodecError> {
         segments += 1;
         if cursor == path.len() {
             return if segments == 1 {
-                Ok(stable)
+                Ok((stable, CanonicalTopLevelPathForm::Bare))
             } else {
                 Err(CodecError::UnterminatedMultiSegment)
             };
         }
     }
+}
+
+pub(crate) fn path_declares_stable(path: &[u8]) -> Result<bool, CodecError> {
+    declared_path_shape(path).map(|(stable, _)| stable)
 }
 
 fn skip_declared_segment(path: &[u8], cursor: &mut usize) -> Result<(), CodecError> {
@@ -2798,6 +2915,71 @@ mod tests {
         // The empty split form is the empty-list entry.
         let empty_list = decode_trie_path(&[0x00]).expect("empty split");
         assert_eq!(encode_trie_path(&empty_list), vec![0x00]);
+    }
+
+    #[test]
+    fn top_level_segment_cursor_preserves_mixed_split_and_bare_framing() {
+        // A payload byte equal to TERM is not a split terminator unless it is
+        // encountered at a segment boundary.
+        let bare_ending_zero = encode_trie_path(&gbytes(&[0]));
+        let mut bare = CanonicalTopLevelSegmentCursor::from_validated_path(&bare_ending_zero)
+            .expect("canonical bare path");
+        assert_eq!(bare.form(), CanonicalTopLevelPathForm::Bare);
+        assert!(bare.is_stable());
+        assert_eq!(
+            bare.next_segment(&bare_ending_zero),
+            Some(CanonicalTopLevelSegment::Stable {
+                envelope: 0..bare_ending_zero.len(),
+            })
+        );
+        assert_eq!(bare.next_segment(&bare_ending_zero), None);
+
+        let unstable = eset_par();
+        let mixed = encode_trie_path(&glist(vec![gstring("loc"), unstable.clone()]));
+        let mut cursor = CanonicalTopLevelSegmentCursor::from_validated_path(&mixed)
+            .expect("canonical mixed split path");
+        assert_eq!(cursor.form(), CanonicalTopLevelPathForm::Split);
+        assert!(!cursor.is_stable());
+        let first = cursor
+            .next_segment(&mixed)
+            .expect("stable location segment");
+        let second = cursor
+            .next_segment(&mixed)
+            .expect("escaped element segment");
+        assert!(cursor.next_segment(&mixed).is_none());
+        let CanonicalTopLevelSegment::Stable { envelope: first } = first else {
+            panic!("the location prefix must remain structural");
+        };
+        let CanonicalTopLevelSegment::Escape {
+            envelope: second,
+            payload,
+        } = second
+        else {
+            panic!("the unstable list element must use the escape arm");
+        };
+        let mut reconstructed = Vec::new();
+        reconstructed.extend_from_slice(&mixed[first]);
+        reconstructed.extend_from_slice(&mixed[second]);
+        reconstructed.push(tag::TERM);
+        assert_eq!(reconstructed, mixed);
+        assert_eq!(&mixed[payload], unstable.encode_to_vec());
+
+        let bare_escape = encode_trie_path(&unstable);
+        let mut bare = CanonicalTopLevelSegmentCursor::from_validated_path(&bare_escape)
+            .expect("canonical bare escape path");
+        assert_eq!(bare.form(), CanonicalTopLevelPathForm::Bare);
+        assert!(!bare.is_stable());
+        assert!(matches!(
+            bare.next_segment(&bare_escape),
+            Some(CanonicalTopLevelSegment::Escape { .. })
+        ));
+        assert_eq!(bare.next_segment(&bare_escape), None);
+
+        let mut empty = CanonicalTopLevelSegmentCursor::from_validated_path(&[tag::TERM])
+            .expect("canonical empty-list split path");
+        assert_eq!(empty.form(), CanonicalTopLevelPathForm::Split);
+        assert!(empty.is_stable());
+        assert_eq!(empty.next_segment(&[tag::TERM]), None);
     }
 
     // ── nested-map paths (the 0x0D arm inside a single key) ───────────────────

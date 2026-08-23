@@ -1191,6 +1191,51 @@ impl ParConstruction {
     /// unstable positions stream the already-planned protobuf body into the
     /// escape arm. No nested resident `Par` is constructed.
     pub fn canonical_path_bytes(&self, root: PlannedPar) -> Result<Vec<u8>, ParConstructionError> {
+        let mut output = Vec::new();
+        self.emit_canonical_path_into(root, &mut output)?;
+        Ok(output)
+    }
+
+    /// Emit one canonical trie segment for a planned `Par`.
+    ///
+    /// Unlike [`Self::canonical_path_bytes`], this never applies the top-level
+    /// split-list rule. It is the required operation when a substituted `Par`
+    /// remains one element of an enclosing split PathMap key.
+    pub fn canonical_segment_bytes(
+        &self,
+        root: PlannedPar,
+    ) -> Result<Vec<u8>, ParConstructionError> {
+        let mut output = Vec::new();
+        self.emit_canonical_segment_into(root, &mut output)?;
+        Ok(output)
+    }
+
+    /// Append one complete canonical PathMap key directly to an existing byte
+    /// sink, applying the top-level split-list rule.
+    pub fn emit_canonical_path_into(
+        &self,
+        root: PlannedPar,
+        output: &mut Vec<u8>,
+    ) -> Result<(), ParConstructionError> {
+        self.emit_canonical_key_into(root, true, output)
+    }
+
+    /// Append exactly one canonical trie segment directly to an existing byte
+    /// sink, without applying the top-level split-list rule.
+    pub fn emit_canonical_segment_into(
+        &self,
+        root: PlannedPar,
+        output: &mut Vec<u8>,
+    ) -> Result<(), ParConstructionError> {
+        self.emit_canonical_key_into(root, false, output)
+    }
+
+    fn emit_canonical_key_into(
+        &self,
+        root: PlannedPar,
+        apply_top_level_split: bool,
+        out: &mut Vec<u8>,
+    ) -> Result<(), ParConstructionError> {
         enum Op {
             Path(PlannedPar),
             Segment(PlannedPar),
@@ -1211,8 +1256,11 @@ impl ParConstruction {
             }
         }
 
-        let mut out = Vec::new();
-        let mut work = vec![Op::Path(root)];
+        let mut work = vec![if apply_top_level_split {
+            Op::Path(root)
+        } else {
+            Op::Segment(root)
+        }];
         while let Some(op) = work.pop() {
             match op {
                 Op::Byte(byte) => out.push(byte),
@@ -1237,8 +1285,8 @@ impl ParConstruction {
                     }
                     if !node.canonical_path_stable {
                         out.push(path_tag::ESCAPE);
-                        push_uv(&mut out, node.protobuf_len as u64);
-                        self.emit_par(par, &mut out);
+                        push_uv(out, node.protobuf_len as u64);
+                        self.emit_par(par, out);
                         continue;
                     }
                     let occurrence = self.occurrence_nodes[node
@@ -1254,14 +1302,14 @@ impl ParConstruction {
                         CanonicalSegment::Bytes(bytes) => out.extend_from_slice(bytes),
                         CanonicalSegment::List(children) => {
                             out.push(path_tag::ELIST);
-                            push_uv(&mut out, children.len() as u64);
+                            push_uv(out, children.len() as u64);
                             for &child in children.iter().rev() {
                                 work.push(Op::Segment(child));
                             }
                         }
                         CanonicalSegment::Tuple(children) => {
                             out.push(path_tag::ETUPLE);
-                            push_uv(&mut out, children.len() as u64);
+                            push_uv(out, children.len() as u64);
                             for &child in children.iter().rev() {
                                 work.push(Op::Segment(child));
                             }
@@ -1271,7 +1319,7 @@ impl ParConstruction {
                             match &map_node.repr {
                                 EPathMapRepr::Empty => {
                                     out.push(path_tag::EPATHMAP);
-                                    push_uv(&mut out, 0);
+                                    push_uv(out, 0);
                                 }
                                 EPathMapRepr::Set(entries) => {
                                     let mut region_len = 0usize;
@@ -1286,18 +1334,18 @@ impl ParConstruction {
                                             ))?;
                                     }
                                     out.push(path_tag::EPATHMAP);
-                                    push_uv(&mut out, region_len as u64);
+                                    push_uv(out, region_len as u64);
                                     let mut zipper = entries.read_zipper();
                                     while zipper.to_next_val() {
                                         let key = zipper.path();
-                                        push_uv(&mut out, key.len() as u64);
+                                        push_uv(out, key.len() as u64);
                                         out.extend_from_slice(key);
                                     }
                                 }
                                 EPathMapRepr::Map(_) => {
                                     out.push(path_tag::EPATHMAP_MAP);
-                                    push_uv(&mut out, map_node.snapshot_len as u64);
-                                    self.emit_wire(WireRoot::EPathMapSnapshot(*map), &mut out);
+                                    push_uv(out, map_node.snapshot_len as u64);
+                                    self.emit_wire(WireRoot::EPathMapSnapshot(*map), out);
                                 }
                             }
                         }
@@ -1305,7 +1353,7 @@ impl ParConstruction {
                 }
             }
         }
-        Ok(out)
+        Ok(())
     }
 
     fn push_proto_node(&mut self, pieces: Vec<ProtoPiece>) -> Result<usize, ParConstructionError> {
@@ -2917,6 +2965,92 @@ impl ParConstruction {
         )
     }
 
+    /// Multiply every occurrence in a planned parallel composition by one
+    /// checked Bag multiplicity.
+    ///
+    /// Substitution visits one canonical PathMap endpoint once even when that
+    /// endpoint represents many equal occurrences. If the endpoint is a
+    /// variable, its replacement can itself contain several distinct
+    /// components; scaling the immutable occurrence dictionary preserves the
+    /// product algebraically instead of expanding either multiplicity into a
+    /// work-item list. Root summaries are idempotent under positive Bag
+    /// scaling and are therefore retained exactly.
+    pub fn scale_multiplicity(
+        &mut self,
+        par: PlannedPar,
+        factor: Multiplicity,
+    ) -> Result<PlannedPar, ParConstructionError> {
+        if factor == Multiplicity::ONE {
+            return Ok(par);
+        }
+
+        let planned = &self.pars[par.0];
+        let locally_free = planned.locally_free.clone();
+        let connective_used = planned.connective_used;
+        let Some(root) = planned.occurrence_root else {
+            return self.par_from_occurrence_root(None, locally_free, connective_used);
+        };
+
+        // Clone the immutable AVL topology in one iterative post-order pass.
+        // Re-inserting its already-sorted endpoints would cost O(n log n) and
+        // allocate copied search spines; the ordering and balance are unchanged
+        // by pointwise scaling, so each reachable node needs exactly one clone.
+        enum ScaleFrame {
+            Visit(usize),
+            Finish(OccurrenceTreeNode),
+        }
+
+        let distinct_len = self.occurrence_distinct_len(Some(root));
+        let mut work = Vec::with_capacity(distinct_len);
+        let mut rebuilt = Vec::with_capacity(distinct_len);
+        work.push(ScaleFrame::Visit(root));
+        while let Some(frame) = work.pop() {
+            match frame {
+                ScaleFrame::Visit(index) => {
+                    let node = self.occurrence_nodes[index];
+                    work.push(ScaleFrame::Finish(node));
+                    if let Some(right) = node.right {
+                        work.push(ScaleFrame::Visit(right));
+                    }
+                    if let Some(left) = node.left {
+                        work.push(ScaleFrame::Visit(left));
+                    }
+                }
+                ScaleFrame::Finish(node) => {
+                    let right = node.right.map(|_| {
+                        rebuilt
+                            .pop()
+                            .expect("post-order scaling produced the right child")
+                    });
+                    let left = node.left.map(|_| {
+                        rebuilt
+                            .pop()
+                            .expect("post-order scaling produced the left child")
+                    });
+                    let multiplicity = node
+                        .occurrence
+                        .multiplicity
+                        .checked_mul(factor.get())?
+                        .expect("a positive Bag factor preserves a positive multiplicity");
+                    let scaled = self.push_occurrence_node(
+                        Occurrence {
+                            component: node.occurrence.component,
+                            multiplicity,
+                        },
+                        left,
+                        right,
+                    )?;
+                    rebuilt.push(scaled);
+                }
+            }
+        }
+        let scaled_root = rebuilt
+            .pop()
+            .expect("a non-empty occurrence tree produces one scaled root");
+        debug_assert!(rebuilt.is_empty());
+        self.par_from_occurrence_root(Some(scaled_root), locally_free, connective_used)
+    }
+
     /// Replace a planned `Par`'s root locally-free summary while sharing its
     /// immutable occurrence tree.
     ///
@@ -4210,6 +4344,94 @@ mod tests {
         assert_eq!(
             arena.protobuf_bytes(planned),
             source.protobuf_bytes().unwrap()
+        );
+    }
+
+    #[test]
+    fn planned_bag_scaling_multiplies_endpoints_without_expansion() {
+        let seven = Expr {
+            expr_instance: Some(ExprInstance::GInt(7)),
+        };
+        let eleven = Expr {
+            expr_instance: Some(ExprInstance::GInt(11)),
+        };
+        let source = Par::default()
+            .with_exprs(vec![seven.clone(), seven.clone(), eleven.clone()])
+            .with_locally_free(vec![1, 0, 1])
+            .with_connective_used(true);
+
+        let mut arena = ParConstruction::new();
+        let planned = arena.import_par(&source).expect("import resident Bag");
+        let identity = arena
+            .scale_multiplicity(planned, Multiplicity::ONE)
+            .expect("scale by the Bag identity");
+        assert_eq!(identity, planned, "multiplicity one must share the plan");
+
+        let occurrence_nodes_before = arena.occurrence_nodes.len();
+        let scaled = arena
+            .scale_multiplicity(planned, Multiplicity::new(3).unwrap())
+            .expect("scale every Bag endpoint");
+        assert_eq!(
+            arena.occurrence_nodes.len() - occurrence_nodes_before,
+            source.distinct_len(),
+            "pointwise scaling must clone each immutable AVL node exactly once"
+        );
+        let actual = arena.finish(scaled).expect("finish scaled Bag");
+
+        assert_eq!(actual.distinct_len(), 2);
+        assert_eq!(actual.count(&seven), 6);
+        assert_eq!(actual.count(&eleven), 3);
+        assert_eq!(actual.locally_free(), &[1, 0, 1]);
+        assert!(actual.connective_used());
+    }
+
+    #[test]
+    fn planned_canonical_segment_keeps_a_list_nested_while_path_splits_it() {
+        let mut arena = ParConstruction::new();
+        let leaf = planned_gint(&mut arena, 7).expect("plan list leaf");
+        let shell = Expr {
+            expr_instance: Some(ExprInstance::EListBody(EList {
+                ps: vec![Par::default()],
+                locally_free: Vec::new(),
+                connective_used: false,
+                remainder: None,
+            })),
+        };
+        let component = arena
+            .expr_component(&shell, &[leaf], false)
+            .expect("plan list component");
+        let list = arena
+            .singleton_component(component, Vec::new(), false)
+            .expect("plan list carrier");
+        let resident = Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::EListBody(EList {
+                ps: vec![resident_gint(7)],
+                locally_free: Vec::new(),
+                connective_used: false,
+                remainder: None,
+            })),
+        }]);
+
+        let path = arena.canonical_path_bytes(list).expect("planned path");
+        let segment = arena
+            .canonical_segment_bytes(list)
+            .expect("planned segment");
+        assert_eq!(
+            path,
+            super::super::canonical_path::encode_trie_path(&resident)
+        );
+        assert_eq!(
+            segment,
+            super::super::canonical_path::encode_trie_segment(&resident)
+        );
+        assert_ne!(
+            path, segment,
+            "the top-level list rule must remain explicit"
+        );
+        assert_eq!(path.last(), Some(&super::super::canonical_path::tag::TERM));
+        assert_eq!(
+            segment.first(),
+            Some(&super::super::canonical_path::tag::ELIST)
         );
     }
 

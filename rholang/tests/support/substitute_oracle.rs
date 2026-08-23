@@ -1215,4 +1215,99 @@ mod differential_substitute_worklist {
         let zipper = ExprInstance::EZipperBody(Default::default());
         assert!(!substitute_descends_into(&zipper));
     }
+
+    /// The byte-region lane must retain the Bag count attached to one
+    /// canonical component endpoint. Expanding the count into repeated work
+    /// items would be observationally equal on a small fixture, so this test
+    /// also checks the compressed result's distinct/cardinality split.
+    #[test]
+    fn region_substitution_scales_component_multiplicity_algebraically() {
+        use crate::rust::interpreter::test_utils::substitution_corpus::bound_var;
+
+        let site = bound_var(0)
+            .decode_occurrences::<Expr>()
+            .into_iter()
+            .next()
+            .expect("bound_var has one Expr component");
+        let term = models::par_from_default! {
+            exprs: vec![site; 17],
+            ..Default::default()
+        };
+        assert_eq!(term.distinct_len(), 1);
+        assert_eq!(term.cardinality(), 17);
+
+        let env = populated_env();
+        let actual = subject()
+            .substitute_no_sort(term.clone(), 0, &env)
+            .expect("multiplicity-preserving substitution");
+        let expected = par_recursive(term, SubCtx::root(0), EnvView::new(&env))
+            .expect("recursive multiplicity oracle");
+
+        assert_eq!(actual.encode_to_vec(), expected.encode_to_vec());
+        assert_eq!(actual.distinct_len(), 1);
+        assert_eq!(actual.cardinality(), 17);
+    }
+
+    /// Map-mode EPathMap keys and values are retained by the shallow decoder
+    /// as ACT topology plus value regions. Both sides remain substitutable and
+    /// the rebuilt result must stay map-mode rather than projecting entries
+    /// through an intermediate collection.
+    #[test]
+    fn epathmap_map_mode_substitutes_keys_and_retained_value_regions() {
+        use models::rhoapi::EList;
+        use models::rust::epathmap_trie_codec::EPathMapMode;
+        use models::rust::rhoapi_ext::EPathMap;
+
+        use crate::rust::interpreter::test_utils::substitution_corpus::{bound_var, expr_par};
+
+        // The second element is an escape segment inside a split EList key.
+        // If the key PDA accidentally encodes its replacement as a whole path,
+        // a replacement EList is flattened into the outer key and the oracle
+        // comparison below fails.
+        let mixed_split_key = expr_par(ExprInstance::EListBody(EList {
+            ps: vec![
+                expr_par(ExprInstance::GString("loc".to_owned())),
+                bound_var(0),
+            ],
+            locally_free: Vec::new(),
+            connective_used: false,
+            remainder: None,
+        }));
+
+        let map = EPathMap::new_map(
+            [
+                (bound_var(0), bound_var(1)),
+                (bound_var(2), bound_var(0)),
+                (mixed_split_key, bound_var(1)),
+            ],
+            Vec::new(),
+            false,
+            None,
+        );
+        let term = models::par_from_default! {
+            exprs: vec![Expr {
+                expr_instance: Some(ExprInstance::EPathmapBody(map)),
+            }],
+            ..Default::default()
+        };
+        let env = populated_env();
+        let actual = subject()
+            .substitute_no_sort(term.clone(), 0, &env)
+            .expect("map-mode EPathMap substitution");
+        let expected = par_recursive(term.clone(), SubCtx::root(0), EnvView::new(&env))
+            .expect("recursive map-mode EPathMap oracle");
+
+        assert_eq!(actual.encode_to_vec(), expected.encode_to_vec());
+        assert_ne!(actual.encode_to_vec(), term.encode_to_vec());
+        let expr = actual
+            .decode_occurrences::<Expr>()
+            .into_iter()
+            .next()
+            .expect("result retains the EPathMap Expr");
+        let ExprInstance::EPathmapBody(map) = expr.expr_instance.expect("Expr arm") else {
+            panic!("result changed the EPathMap Expr arm");
+        };
+        assert_eq!(map.mode(), EPathMapMode::Map);
+        assert_eq!(map.len(), 3);
+    }
 }

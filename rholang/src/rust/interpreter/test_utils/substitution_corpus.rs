@@ -313,10 +313,9 @@ pub fn every_expr_instance() -> Vec<(&'static str, ExprInstance)> {
                 remainder: None,
             }),
         ),
-        // ⚠ NOT descended into by `Substitute` today. The corpus carries a
-        // substitutable child on purpose: if a conversion ever starts
-        // descending, the differential reports a changed result rather than
-        // letting a consensus-visible "fix" ride along unnoticed.
+        // EPathMap is part of substitution's recursive semantic surface. Its
+        // key and value child provide non-vacuity for the encoded region lane;
+        // the EZipper immediately below retains the deliberately opaque twin.
         (
             "EPathmapBody",
             ExprInstance::EPathmapBody(pathmap_of(vec![bound_var(0), gint(5)])),
