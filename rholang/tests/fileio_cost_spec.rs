@@ -541,3 +541,217 @@ fn every_cost_helper_has_a_golden_pin() {
          the import block at the top of this file."
     );
 }
+
+// -------- Slice 9b regression pins ---------------------------------
+
+/// Extract the function-body substring for a top-level
+/// `impl`-method declaration in a Rust source string.  Used by the
+/// slice 9b pins to bound their per-handler scans.  Returns the body
+/// bounded by the next `pub async fn ` OR `pub fn ` on the same
+/// four-space-indent level (i.e. the next method in the same
+/// `impl` block), or the end of source if no next method exists.
+fn method_body<'a>(src: &'a str, method_signature_prefix: &str) -> Option<&'a str> {
+    let start = src.find(method_signature_prefix)?;
+    let body_start = start + method_signature_prefix.len();
+    let after = &src[body_start..];
+    // Look for the next top-level `pub async fn ` or `pub fn ` at
+    // the same indent level.  `impl`-block methods in this codebase
+    // start with `    pub async fn ` (four-space indent).
+    let end_a = after.find("\n    pub async fn ").unwrap_or(after.len());
+    let end_b = after.find("\n    pub fn ").unwrap_or(after.len());
+    let end = end_a.min(end_b);
+    Some(&after[..end])
+}
+
+/// **Slice 9b regression pin — handler charge presence.**
+///
+/// For every `pub async fn fs_<name>(` in `handlers.rs`, this test
+/// requires the body to contain a corresponding `costs::fs_<name>_cost(`
+/// call site.  Catches the class of regression where a future PR
+/// silently reverts (or forgets to add) a handler's cost charge —
+/// which would slip past existing runtime tests (`fs_wal_spec` doesn't
+/// observe cost accounting) and past compile-time checks (the
+/// helper stays exported).
+///
+/// Under D3, a missing handler charge is a load-bearing consensus
+/// bug: leader realizes cost C, validator re-executes and misses
+/// the charge → validator's realized cost is C - w → certificate
+/// mismatch → block rejected.  The failure mode is silent at code-
+/// review time and expensive at runtime, so a static pin is the
+/// right defense.
+///
+/// Placement flexibility: the test only requires the substring
+/// `costs::fs_<name>_cost(` inside the handler body.  Whether the
+/// charge is via `reserve_primitive` or `reserve_incremental_primitive`
+/// is irrelevant to this pin (both are consensus-observable).
+#[test]
+fn every_fs_handler_charges_its_cost_helper() {
+    let src = include_str!("../src/rust/interpreter/io/handlers.rs");
+    let mut missing = Vec::new();
+
+    // Iterate every `pub async fn fs_<name>(` declaration.
+    let mut cursor = 0usize;
+    while let Some(rel) = src[cursor..].find("pub async fn fs_") {
+        let abs = cursor + rel;
+        let after = &src[abs + "pub async fn ".len()..];
+        let name_end = after
+            .find(|c: char| !c.is_alphanumeric() && c != '_')
+            .unwrap_or(after.len());
+        let handler_name = &after[..name_end];
+        // Advance the cursor past this occurrence so the loop
+        // progresses even if the body scan fails.
+        cursor = abs + "pub async fn ".len() + name_end;
+
+        // Skip the mod-test names — they mention handler names in
+        // pinning strings, not in real dispatch declarations.
+        // Real handlers are in `impl FsProcesses { ... }` — indent
+        // matches "    pub async fn fs_<name>(".
+        let signature_prefix = format!("    pub async fn {handler_name}(");
+        let Some(body) = method_body(src, &signature_prefix) else {
+            continue;
+        };
+        let expected_call = format!("costs::{handler_name}_cost(");
+        if !body.contains(&expected_call) {
+            missing.push(handler_name.to_string());
+        }
+    }
+
+    assert!(
+        missing.is_empty(),
+        "slice 9b charge-presence regression: the following fs native handlers \
+         exist in handlers.rs but do NOT reference their `costs::<name>_cost(...)` \
+         helper in the function body: {missing:?}.  Under D3, a missing handler \
+         charge is a leader/replay consensus divergence: the validator will \
+         compute a realized cost different from the leader's committed witness \
+         and reject the block.  Add `self.metering.reserve_primitive(\
+         costs::<name>_cost(...))?;` at handler entry (or reserve_incremental_primitive \
+         for length-parameterized helpers that might legitimately produce zero \
+         cost).  See slice 9b-ii commit and the fs_open docstring in handlers.rs \
+         for placement rationale."
+    );
+}
+
+/// **Slice 9b regression pin — shared MeteredMachine.**
+///
+/// Verify `setup_reducer` in `rho_runtime.rs` creates ONE
+/// `MeteredMachine`, threads it into `dispatch_table_creator` (which
+/// gives the fs handlers a clone via `ProcessContext::create ->
+/// SystemProcesses::create -> FsProcesses::new`), AND passes clones
+/// to the reducer and its substitute.  A future refactor that
+/// accidentally created a SEPARATE `MeteredMachine::new(...)` for
+/// the handlers would silently break budget-consumption accounting
+/// (handler charges would decrement a different budget than the
+/// reducer's), which is a leader/replay divergence trap invisible
+/// until the first cost-heavy deploy.
+#[test]
+fn setup_reducer_shares_one_metered_machine() {
+    let src = include_str!("../src/rust/interpreter/rho_runtime.rs");
+    let setup_start = src
+        .find("async fn setup_reducer(")
+        .expect("setup_reducer must exist in rho_runtime.rs");
+    // Bound the scan at the next top-level `fn ` after setup_reducer.
+    let after = &src[setup_start..];
+    let end = after[1..]
+        .find("\nfn ")
+        .or_else(|| after[1..].find("\nasync fn "))
+        .unwrap_or(after.len());
+    let body = &after[..end + 1];
+
+    // Invariant 1: exactly one `MeteredMachine::new(` call site.
+    // A second call site would indicate a diverged budget.
+    let n_new = body.matches("MeteredMachine::new(").count();
+    assert_eq!(
+        n_new, 1,
+        "slice 9b-i plumbing regression: setup_reducer must construct EXACTLY \
+         ONE MeteredMachine (currently {n_new}).  Multiple MeteredMachine::new(...) \
+         call sites mean handler-side charges decrement a different budget than \
+         the reducer's — a silent leader/replay divergence trap under D3.  \
+         Clone the single machine into every consumer (dispatch_table_creator, \
+         DebruijnInterpreter's metering field, DebruijnInterpreter's Substitute)."
+    );
+
+    // Invariant 2: the `metering` binding must be passed to
+    // `dispatch_table_creator(...)`.  Enforce by requiring the
+    // `metering.clone()` argument appears inside the dispatch_table
+    // construction site.
+    let dtc_start = body
+        .find("dispatch_table_creator(")
+        .expect("setup_reducer must call dispatch_table_creator");
+    let dtc_body = &body[dtc_start..];
+    let dtc_close = dtc_body
+        .find(");")
+        .expect("dispatch_table_creator call must close");
+    let dtc_args = &dtc_body[..dtc_close];
+    assert!(
+        dtc_args.contains("metering.clone()") || dtc_args.contains("metering,"),
+        "slice 9b-i plumbing regression: dispatch_table_creator(...) call in \
+         setup_reducer must receive the SHARED `metering` binding (either as \
+         `metering.clone()` or as a final move of `metering`).  Without this \
+         thread, fs handlers get no MeteredMachine and cost accounting is a \
+         no-op for every fs syscall."
+    );
+
+    // Invariant 3: DebruijnInterpreter must be constructed with the
+    // same `metering` binding (as `metering: metering.clone()`) and
+    // its Substitute must consume the remaining `metering` (as
+    // `Substitute { metering }`).
+    let di_start = body
+        .find("DebruijnInterpreter {")
+        .expect("setup_reducer must construct DebruijnInterpreter");
+    let di_body = &body[di_start..];
+    let di_close = di_body.find("});").expect("DebruijnInterpreter must close");
+    let di_construct = &di_body[..di_close];
+    assert!(
+        di_construct.contains("metering: metering"),
+        "slice 9b-i plumbing regression: DebruijnInterpreter construction in \
+         setup_reducer must set `metering: metering.clone()` (or `metering: metering,\
+         `) using the SAME `metering` binding threaded into dispatch_table_creator."
+    );
+    assert!(
+        di_construct.contains("Substitute { metering }"),
+        "slice 9b-i plumbing regression: DebruijnInterpreter's Substitute must \
+         consume the same `metering` binding via `Substitute {{ metering }}`.  \
+         A refactor that constructs Substitute with a fresh MeteredMachine \
+         would leak a divergent budget into substitution accounting."
+    );
+}
+
+/// **Slice 9b regression pin — deferred per-entry charges stay at zero.**
+///
+/// The three partial-charge handlers (fs_entries, fs_entries_stream,
+/// fs_remove_dir) currently charge only their setup cost via
+/// `costs::fs_<name>_cost(0)` — the per-entry component
+/// (FS_ENTRIES_PER_ENTRY * n_entries) is deferred to a follow-up
+/// slice because it requires two-branch post-syscall counting (see
+/// slice 9b-iv commit message).
+///
+/// This pin holds the deferral by requiring the exact `_cost(0)`
+/// call site.  A future PR that silently "upgrades" to
+/// `_cost(some_expression)` without properly implementing the
+/// two-branch pattern would trip this pin — forcing the author to
+/// either (a) revert to the setup-only charge, or (b) do the full
+/// leader+replay two-branch implementation deliberately.
+///
+/// Delete this pin when the follow-up slice lands (with its own
+/// full-cost golden pins replacing this one).
+#[test]
+fn entries_family_charges_setup_only_pending_two_branch_impl() {
+    let src = include_str!("../src/rust/interpreter/io/handlers.rs");
+    for name in &["fs_entries", "fs_entries_stream", "fs_remove_dir"] {
+        let signature_prefix = format!("    pub async fn {name}(");
+        let body = method_body(src, &signature_prefix)
+            .unwrap_or_else(|| panic!("{name} handler must exist"));
+        let expected = format!("costs::{name}_cost(0)");
+        assert!(
+            body.contains(&expected),
+            "slice 9b-iv deferred-charge regression: {name} handler must charge \
+             `costs::{name}_cost(0)` — setup weight only — pending the two-branch \
+             post-syscall per-entry charge follow-up.  A non-zero argument here \
+             without the paired follow-up wiring would either under-charge \
+             (leader-only per-entry with replay divergence) or crash the deploy \
+             (post-syscall count evaluated on the replay branch where the syscall \
+             didn't run).  Either revert to `_cost(0)` OR land the full \
+             two-branch pattern AND replace this pin with a golden per-entry pin."
+        );
+    }
+}
