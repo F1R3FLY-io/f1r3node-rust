@@ -8,13 +8,15 @@ use models::rhoapi::{
     GUnforgeable, If, KeyValuePair, Match, New, Par, Receive, Send, Var,
 };
 use models::rust::par_bag::{
-    canonical_collection_remainder, canonical_expr_oneof_tag, canonical_expr_parts,
-    canonical_if_parts, canonical_match_parts, canonical_new_parts, canonical_par_connective_used,
-    canonical_par_locally_free_is_empty, canonical_receive_parts, canonical_send_parts,
-    canonical_single_expr_from_par, canonical_single_if_from_par, canonical_single_match_from_par,
-    canonical_single_new_from_par, canonical_single_receive_from_par,
-    canonical_single_send_from_par, with_component_key, CanonicalExprParts, CanonicalParBagKey,
-    ParBag, ParBagCodecError, ParBagProtobufError, ParComponentTag, PAR_BAG_KEY_DOMAIN,
+    canonical_collection_remainder, canonical_connective_parts, canonical_expr_oneof_tag,
+    canonical_expr_parts, canonical_if_parts, canonical_match_parts, canonical_new_parts,
+    canonical_par_connective_used, canonical_par_locally_free_is_empty, canonical_receive_parts,
+    canonical_send_parts, canonical_single_expr_from_par, canonical_single_if_from_par,
+    canonical_single_match_from_par, canonical_single_new_from_par,
+    canonical_single_receive_from_par, canonical_single_send_from_par, with_component_key,
+    CanonicalConnectiveCursorError, CanonicalConnectiveParts, CanonicalExprParts,
+    CanonicalParBagKey, ParBag, ParBagCodecError, ParBagProtobufError, ParComponentTag,
+    PAR_BAG_KEY_DOMAIN,
 };
 use models::rust::par_construction::{ParConstruction, PlannedConnective};
 use models::rust::rholang::implicits::{single_expr, single_unforgeable};
@@ -66,6 +68,73 @@ fn canonical_par_corpus() -> Par {
         ..If::default()
     }]);
     par
+}
+
+#[test]
+fn detached_connective_cursor_refuses_a_different_or_truncated_body() {
+    fn connective_bytes(values: &[i64]) -> Vec<u8> {
+        models::rust::rholang::protobuf_encoder::encode_to_vec(&Connective {
+            connective_instance: Some(ConnectiveInstance::ConnAndBody(ConnectiveBody {
+                ps: values
+                    .iter()
+                    .map(|value| {
+                        Par::default().with_exprs(vec![Expr {
+                            expr_instance: Some(ExprInstance::GInt(*value)),
+                        }])
+                    })
+                    .collect(),
+            })),
+        })
+    }
+
+    fn children(bytes: &[u8]) -> models::rust::par_bag::CanonicalConnectiveChildren<'_> {
+        match canonical_connective_parts(bytes).expect("canonical connective") {
+            CanonicalConnectiveParts::And(children) => children,
+            other => panic!("expected AND children, got {other:?}"),
+        }
+    }
+
+    let first = connective_bytes(&[1, 2]);
+    let second = connective_bytes(&[3, 4]);
+    let first_children = children(&first);
+    let second_children = children(&second);
+    assert_eq!(
+        first_children.message().len(),
+        second_children.message().len()
+    );
+
+    let mut cursor = first_children.cursor();
+    assert_eq!(
+        cursor.next_in(second_children.message()),
+        Err(CanonicalConnectiveCursorError::BodyMismatch),
+        "equal-length bytes from another body must not acquire validation provenance"
+    );
+    assert_eq!(cursor.len(), first_children.len());
+
+    let mut cursor = first_children.cursor();
+    let truncated = &first_children.message()[..first_children.message().len() - 1];
+    assert_eq!(
+        cursor.next_in(truncated),
+        Err(CanonicalConnectiveCursorError::BodyMismatch),
+        "a same-address prefix must fail before parsing"
+    );
+    assert_eq!(cursor.len(), first_children.len());
+
+    let expected = first_children.clone().collect::<Vec<_>>();
+    let mut cursor = first_children.cursor();
+    let mut actual = Vec::new();
+    while let Some(child) = cursor
+        .next_in(first_children.message())
+        .expect("the original validated body remains paired")
+    {
+        actual.push(child);
+    }
+    assert_eq!(actual, expected);
+    assert_eq!(
+        cursor.next_in(first_children.message()),
+        Ok(None),
+        "exhaustion is distinct from a body mismatch"
+    );
 }
 
 #[test]

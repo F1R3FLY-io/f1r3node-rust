@@ -3143,7 +3143,10 @@ fn start_encoded_and_branch(
     mut cursor: CanonicalConnectiveChildCursor,
     frames: &mut FrameStack,
 ) -> Job {
-    let Some(pattern) = cursor.next_in(body.as_slice()) else {
+    let Some(pattern) = cursor
+        .next_in(body.as_slice())
+        .expect("encoded AND cursor remains paired with its owned body")
+    else {
         return Job::Return(true);
     };
     let pattern = body
@@ -3172,7 +3175,10 @@ fn start_encoded_or_branch(
     mut cursor: CanonicalConnectiveChildCursor,
     frames: &mut FrameStack,
 ) -> Job {
-    let Some(pattern) = cursor.next_in(body.as_slice()) else {
+    let Some(pattern) = cursor
+        .next_in(body.as_slice())
+        .expect("encoded OR cursor remains paired with its owned body")
+    else {
         return Job::Return(false);
     };
     let pattern = body

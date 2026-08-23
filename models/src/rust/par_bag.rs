@@ -1444,8 +1444,22 @@ pub struct CanonicalConnectiveChildren<'a> {
 /// self-referential object or a projected `Vec<Par>`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CanonicalConnectiveChildCursor {
+    message_addr: usize,
+    message_len: usize,
     at: usize,
     remaining: usize,
+}
+
+/// Pairing error for a detached canonical [`ConnectiveBody`] child cursor.
+///
+/// The cursor carries only the ephemeral address and length of the validated
+/// body. It does not hash, copy, own, serialize, or otherwise create a second
+/// byte authority. Moving an owning region preserves its allocation, so the
+/// explicit matcher PDA may still store the cursor separately from that
+/// region while a caller cannot accidentally drive it with another body.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CanonicalConnectiveCursorError {
+    BodyMismatch,
 }
 
 impl<'a> CanonicalConnectiveChildren<'a> {
@@ -1462,7 +1476,12 @@ impl<'a> CanonicalConnectiveChildren<'a> {
         }
         Some(Self {
             message,
-            cursor: CanonicalConnectiveChildCursor { at: 0, remaining },
+            cursor: CanonicalConnectiveChildCursor {
+                message_addr: message.as_ptr() as usize,
+                message_len: message.len(),
+                at: 0,
+                remaining,
+            },
         })
     }
 
@@ -1484,11 +1503,17 @@ impl CanonicalConnectiveChildCursor {
 
     /// Lend the next child from the same body that was fully validated when
     /// this cursor was created.
-    pub fn next_in<'a>(&mut self, message: &'a [u8]) -> Option<&'a [u8]> {
+    pub fn next_in<'a>(
+        &mut self,
+        message: &'a [u8],
+    ) -> Result<Option<&'a [u8]>, CanonicalConnectiveCursorError> {
         const CHILD_KEY: u64 = (1 << 3) | 2;
 
+        if message.as_ptr() as usize != self.message_addr || message.len() != self.message_len {
+            return Err(CanonicalConnectiveCursorError::BodyMismatch);
+        }
         if self.remaining == 0 {
-            return None;
+            return Ok(None);
         }
         // This read is part of the cursor transition, not a diagnostic. Keep
         // it outside `debug_assert!`: assertions are erased in release builds
@@ -1499,8 +1524,11 @@ impl CanonicalConnectiveChildCursor {
             key, CHILD_KEY,
             "validated ConnectiveBody cursor remains aligned to a child key"
         );
-        let len = usize::try_from(read_canonical_varint(message, &mut self.at)?)
-            .expect("validated ConnectiveBody child length fits usize");
+        let len = usize::try_from(
+            read_canonical_varint(message, &mut self.at)
+                .expect("validated ConnectiveBody child length remains present"),
+        )
+        .expect("validated ConnectiveBody child length fits usize");
         let end = self
             .at
             .checked_add(len)
@@ -1510,14 +1538,18 @@ impl CanonicalConnectiveChildCursor {
             .expect("validated ConnectiveBody child range remains in bounds");
         self.at = end;
         self.remaining -= 1;
-        Some(child)
+        Ok(Some(child))
     }
 }
 
 impl<'a> Iterator for CanonicalConnectiveChildren<'a> {
     type Item = &'a [u8];
 
-    fn next(&mut self) -> Option<Self::Item> { self.cursor.next_in(self.message) }
+    fn next(&mut self) -> Option<Self::Item> {
+        self.cursor
+            .next_in(self.message)
+            .expect("validated ConnectiveBody iterator retains its original body")
+    }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
         (self.cursor.remaining, Some(self.cursor.remaining))
