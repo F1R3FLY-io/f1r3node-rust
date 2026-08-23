@@ -162,3 +162,98 @@ pub fn extract_ok_list_len(previous: &[Par]) -> Option<u64> {
     };
     Some(inner.ps.len() as u64)
 }
+
+#[cfg(test)]
+mod tests {
+    //! Slice 9b-iv follow-up: parity of `extract_ok_list_len` across
+    //! the reply shapes fs_entries emits — the extraction MUST agree
+    //! with the leader's actual `ok_list(rows)` construction on
+    //! success paths and cleanly yield `None` (→ zero supplement
+    //! charge) on every error path, keeping leader/replay per-entry
+    //! charges byte-identical.
+    //!
+    //! Regression scenarios each test defends against:
+    //!   * ok_list(N) length drift: extraction miscounts N.
+    //!   * Empty error reply matches a success shape by accident.
+    //!   * `[true, non_list]` reply (never produced by real handlers,
+    //!     but a hostile follower cache would fall through cleanly
+    //!     rather than panic).
+    //!   * Empty `previous` slice (should not happen in practice but
+    //!     the fallback is `None` → 0-supplement, matching leader on
+    //!     malformed reply).
+    use super::*;
+
+    #[test]
+    fn extract_ok_list_len_matches_ok_list_arity() {
+        for n in [0usize, 1, 10, 65_536] {
+            let items: Vec<Par> = (0..n).map(|_| Par::default()).collect();
+            let reply = ok_list(items);
+            assert_eq!(
+                extract_ok_list_len(std::slice::from_ref(&reply)),
+                Some(n as u64),
+                "extract_ok_list_len must count exactly the number of items \
+                 in ok_list — mismatch at n={n} means the two-branch charge \
+                 for fs_entries would over/under-count entries."
+            );
+        }
+    }
+
+    #[test]
+    fn extract_ok_list_len_returns_none_on_error_reply() {
+        let reply = err("FSERR_QUOTA_EXCEEDED", "entries exceeds MAX_ENTRIES");
+        assert_eq!(
+            extract_ok_list_len(std::slice::from_ref(&reply)),
+            None,
+            "extract_ok_list_len must return None on `[false, ...]` shapes \
+             so the caller charges 0 per-entry supplement — matches leader's \
+             own charge on error replies, preserving leader/replay parity."
+        );
+    }
+
+    #[test]
+    fn extract_ok_list_len_returns_none_on_ok_non_list_shape() {
+        // ok_int is `[true, GInt]` — the second slot is a scalar,
+        // not an EList.  Real handlers never emit this shape for
+        // entries-family, but a hostile follower cache could;
+        // fall-through to None is the safe default.
+        let reply = ok_int(42);
+        assert_eq!(
+            extract_ok_list_len(std::slice::from_ref(&reply)),
+            None,
+            "extract_ok_list_len must reject `[true, non-list]` shapes with \
+             None rather than panic or synthesize a bogus count.  Total \
+             extraction is required — any panic here would crash a follower \
+             validator on hostile input."
+        );
+    }
+
+    #[test]
+    fn extract_ok_list_len_returns_none_on_empty_previous() {
+        // An empty `previous` slice should never happen for a produced
+        // reply, but the safe fallback is None so the caller charges
+        // 0 supplement.
+        let previous: [Par; 0] = [];
+        assert_eq!(
+            extract_ok_list_len(&previous),
+            None,
+            "extract_ok_list_len must not panic on an empty previous slice; \
+             the None fallback yields a 0-supplement charge which is \
+             conservative and matches leader on any malformed reply."
+        );
+    }
+
+    #[test]
+    fn extract_ok_list_len_returns_none_on_bare_ok() {
+        // `ok_bare()` is `[true]` (no payload).  Fine as a success
+        // reply for `close` / `flush` / `remove_file`; not a
+        // valid entries reply, so extraction returns None.
+        let reply = ok_bare();
+        assert_eq!(
+            extract_ok_list_len(std::slice::from_ref(&reply)),
+            None,
+            "extract_ok_list_len must return None on `[true]` (bare success \
+             with no payload) — a bare ok reply is not an entries reply, so \
+             the None → 0-supplement fallback is correct."
+        );
+    }
+}
