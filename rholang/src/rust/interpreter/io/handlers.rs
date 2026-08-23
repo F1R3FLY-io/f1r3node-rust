@@ -661,6 +661,20 @@ impl FsProcesses {
         let [fd_par, n_par, ack] = args.as_slice() else {
             return Err(illegal_argument_error("fs_read"));
         };
+        // Phase 9 slice 9b-iv: charge fs_read cost based on the
+        // REQUESTED byte count.  Per costs.rs::fs_read_cost docstring,
+        // the requested count is what's charged (not actually-returned)
+        // so an EOF-truncated read still burns the intended bytes,
+        // closing the pre-seek-past-EOF cost-amplification vector.
+        // The count is a deterministic function of `n_par` (a user-
+        // supplied GInt), which is identical across leader and replay.
+        // A non-parseable or negative n_par yields 0 requested bytes,
+        // which still burns FS_SYSCALL_CONST = 100 for the dispatch.
+        let requested_bytes: u64 = RhoNumber::unapply(n_par)
+            .and_then(|n| u64::try_from(n).ok())
+            .unwrap_or(0);
+        self.metering
+            .reserve_primitive(costs::fs_read_cost(requested_bytes))?;
         if is_replay {
             // Follower: hash the leader's cached bytes and append a
             // matching WAL entry.  Fd is derivable from the arg;
@@ -712,6 +726,13 @@ impl FsProcesses {
         let [fd_par, off_par, n_par, ack] = args.as_slice() else {
             return Err(illegal_argument_error("fs_read_at"));
         };
+        // Phase 9 slice 9b-iv: charge fs_read_at cost based on the
+        // REQUESTED byte count.  See fs_read for rationale.
+        let requested_bytes: u64 = RhoNumber::unapply(n_par)
+            .and_then(|n| u64::try_from(n).ok())
+            .unwrap_or(0);
+        self.metering
+            .reserve_primitive(costs::fs_read_at_cost(requested_bytes))?;
         if is_replay {
             if let (Some(fd), Some(off), Some(bytes)) = (
                 RhoNumber::unapply(fd_par),
@@ -808,6 +829,21 @@ impl FsProcesses {
             (Some(fd), Some(bytes)) => Some((fd as u64, bytes)),
             _ => None,
         };
+        // Phase 9 slice 9b-iv: charge fs_write cost based on the
+        // requested byte count (bytes.len()).  Deterministic across
+        // leader and replay: `bytes_par` is a user-supplied
+        // GByteArray argument, identical on both sides.  Charge fires
+        // BEFORE the WAL-cap check and journal_write below so a
+        // MAX_WRITE_BYTES-oversized request still burns the dispatch
+        // cost + linear-per-byte cost the user intended to spend
+        // (matches the pre-charge boundary discipline in
+        // costs.rs::fs_read_cost).
+        let requested_bytes: u64 = parsed
+            .as_ref()
+            .map(|(_, bytes)| bytes.len() as u64)
+            .unwrap_or(0);
+        self.metering
+            .reserve_primitive(costs::fs_write_cost(requested_bytes))?;
         // M-R3 review fix (round 2): enforce MAX_WRITE_BYTES BEFORE
         // journaling so an oversized write cannot consume a WAL slot
         // for a call that will error out.  Mirror fs_truncate's
@@ -917,6 +953,14 @@ impl FsProcesses {
             (Some(fd), Some(off), Some(bytes)) if off >= 0 => Some((fd as u64, off as u64, bytes)),
             _ => None,
         };
+        // Phase 9 slice 9b-iv: charge fs_write_at cost based on the
+        // requested byte count.  See fs_write for rationale.
+        let requested_bytes: u64 = parsed
+            .as_ref()
+            .map(|(_, _, bytes)| bytes.len() as u64)
+            .unwrap_or(0);
+        self.metering
+            .reserve_primitive(costs::fs_write_at_cost(requested_bytes))?;
         // M-R3 review fix (round 2): MAX_WRITE_BYTES check BEFORE
         // journaling; see fs_write for rationale.
         if let Some((_, _, bytes)) = &parsed {
@@ -1534,6 +1578,15 @@ impl FsProcesses {
         &self,
         contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
     ) -> Result<Vec<Par>, InterpreterError> {
+        // Phase 9 slice 9b-iv: charge fs_entries SETUP cost only.
+        // Weight = 50 (the base term).  Per-entry cost
+        // (FS_ENTRIES_PER_ENTRY * n_entries) is deferred to a
+        // follow-up slice because it requires post-syscall counting
+        // on the leader branch and matching entry extraction from
+        // `previous` on the replay branch — a two-branch charge
+        // pattern rather than the single entry-point charge used
+        // by the other length-parameterized handlers.
+        self.metering.reserve_primitive(costs::fs_entries_cost(0))?;
         let Some((produce, is_replay, previous, args)) =
             self.is_contract_call().unapply(contract_args)
         else {
@@ -2011,6 +2064,16 @@ impl FsProcesses {
         &self,
         contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
     ) -> Result<Vec<Par>, InterpreterError> {
+        // Phase 9 slice 9b-iv: charge fs_remove_dir SETUP cost only.
+        // Weight = 200 (the base term).  Per-entry cost
+        // (FS_ENTRIES_PER_ENTRY * n_entries) is deferred to a
+        // follow-up slice because it requires post-syscall counting
+        // on the leader branch and matching entry extraction from
+        // `previous` on the replay branch — a two-branch charge
+        // pattern rather than the single entry-point charge used
+        // by the other length-parameterized handlers.
+        self.metering
+            .reserve_primitive(costs::fs_remove_dir_cost(0))?;
         let Some((produce, is_replay, previous, args)) =
             self.is_contract_call().unapply(contract_args)
         else {
@@ -2368,6 +2431,16 @@ impl FsProcesses {
         &self,
         contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
     ) -> Result<Vec<Par>, InterpreterError> {
+        // Phase 9 slice 9b-iv: charge fs_entries_stream SETUP cost only.
+        // Weight = 50 (the base term).  Per-entry cost
+        // (FS_ENTRIES_PER_ENTRY * n_entries) is deferred to a
+        // follow-up slice because it requires post-syscall counting
+        // on the leader branch and matching entry extraction from
+        // `previous` on the replay branch — a two-branch charge
+        // pattern rather than the single entry-point charge used
+        // by the other length-parameterized handlers.
+        self.metering
+            .reserve_primitive(costs::fs_entries_stream_cost(0))?;
         let Some((produce, is_replay, previous, args)) =
             self.is_contract_call().unapply(contract_args)
         else {
