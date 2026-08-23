@@ -6559,6 +6559,177 @@ async fn file_read_into_forwards_lease_conflict() {
     );
 }
 
+// -- Slice 9c-ii: Buffer.toByteArray(@cap) runtime gates -----------
+//
+// The slice landed with source-scan pins in fileio_cost_spec but no
+// runtime tests actually exercising the gate arms — all pre-existing
+// test callers pass `1073741824` (Buffer's platform cap) which never
+// fires the check.  These four tests provoke each arm end-to-end,
+// closing the "the gate compiles but might not fire" gap.
+//
+// Fixture pattern shared across the four tests: allocate a 4-byte
+// buffer, seed it via readInto over a 4-byte file, then call
+// toByteArray(cap) with the arm-specific cap value.  Uses "oracular"
+// cmode throughout — Buffer isn't consensus-observable at the WAL
+// layer, so no cmode-branching concerns.
+
+/// Non-Int `cap` (String literal here) → `[false,
+/// "BUFERR_INVALID_ARGUMENT", "cap must be an integer"]`.  Pins the
+/// outer `match cap { c /\ Int => ..., _ => BUFERR_INVALID_ARGUMENT }`
+/// arm in Buffer.rho::toByteArray.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn buffer_to_byte_array_non_int_cap_returns_bufferr_invalid_argument() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_libs(
+        r#"
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+          for (@_ <- @f!?("writeByteArray", "abcd".toUtf8Bytes())) {
+            for (@_ <- @f!?("seek", 0, "set")) {
+              for (@alloc <- Allocator!?()) {
+                for (@[true, buf] <- @alloc!?("allocBytes", 4)) {
+                  for (@_ <- @f!?("readInto", buf)) {
+                    for (@r <- @buf!?("toByteArray", "not-an-int")) {
+                      @"out"!(r)
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let (ok, code, _, _) = extract_reply(&reply);
+    assert!(!ok, "non-Int cap must be rejected");
+    assert_eq!(
+        code, "BUFERR_INVALID_ARGUMENT",
+        "non-Int cap must return BUFERR_INVALID_ARGUMENT (slice 9c-ii type-guard)"
+    );
+    let msg = extract_failure_msg(&reply);
+    assert!(
+        msg.contains("cap"),
+        "message must mention `cap`, got: {msg}"
+    );
+}
+
+/// Negative `cap` (`-1`) → `[false, "BUFERR_INVALID_CAPACITY", "cap
+/// must be non-negative"]`.  Pins the inner `match c < 0 { true =>
+/// BUFERR_INVALID_CAPACITY, false => ... }` arm.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn buffer_to_byte_array_negative_cap_returns_bufferr_invalid_capacity() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_libs(
+        r#"
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+          for (@_ <- @f!?("writeByteArray", "abcd".toUtf8Bytes())) {
+            for (@_ <- @f!?("seek", 0, "set")) {
+              for (@alloc <- Allocator!?()) {
+                for (@[true, buf] <- @alloc!?("allocBytes", 4)) {
+                  for (@_ <- @f!?("readInto", buf)) {
+                    for (@r <- @buf!?("toByteArray", -1)) {
+                      @"out"!(r)
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let (ok, code, _, _) = extract_reply(&reply);
+    assert!(!ok, "negative cap must be rejected");
+    assert_eq!(
+        code, "BUFERR_INVALID_CAPACITY",
+        "negative cap must return BUFERR_INVALID_CAPACITY (slice 9c-ii sign-guard)"
+    );
+}
+
+/// `ell > cap` — buffer filled with 4 bytes, cap=3 → `[false,
+/// "FSERR_QUOTA_EXCEEDED", "buffer content size exceeds cap"]`.
+/// **Load-bearing pin**: this is the DoS-defense arm the slice
+/// added.  A regression that inverts the comparison direction
+/// (`ell < c` instead of `ell > c`), or removes the check entirely,
+/// would silently let any-size materialization through.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn buffer_to_byte_array_cap_below_ell_returns_fserr_quota_exceeded() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_libs(
+        r#"
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+          for (@_ <- @f!?("writeByteArray", "abcd".toUtf8Bytes())) {
+            for (@_ <- @f!?("seek", 0, "set")) {
+              for (@alloc <- Allocator!?()) {
+                for (@[true, buf] <- @alloc!?("allocBytes", 4)) {
+                  for (@_ <- @f!?("readInto", buf)) {
+                    for (@r <- @buf!?("toByteArray", 3)) {
+                      @"out"!(r)
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let (ok, code, _, _) = extract_reply(&reply);
+    assert!(!ok, "over-cap materialization must fail");
+    assert_eq!(
+        code, "FSERR_QUOTA_EXCEEDED",
+        "cap < ell must return FSERR_QUOTA_EXCEEDED (slice 9c-ii materialization gate)"
+    );
+}
+
+/// `ell == cap` (boundary — exactly at cap) → `[true, bytes]`.
+/// Complementary to the over-cap pin: the `>` comparison must be
+/// strict, not `>=`.  Buffer filled with 4 bytes, cap=4 → success.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn buffer_to_byte_array_cap_exactly_at_ell_succeeds() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_libs(
+        r#"
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+          for (@_ <- @f!?("writeByteArray", "abcd".toUtf8Bytes())) {
+            for (@_ <- @f!?("seek", 0, "set")) {
+              for (@alloc <- Allocator!?()) {
+                for (@[true, buf] <- @alloc!?("allocBytes", 4)) {
+                  for (@_ <- @f!?("readInto", buf)) {
+                    for (@r <- @buf!?("toByteArray", 4)) {
+                      @"out"!(r)
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let (ok, _code, _, bytes) = extract_reply(&reply);
+    assert!(
+        ok,
+        "cap exactly equal to ell must succeed (`>` must be strict, not `>=`)"
+    );
+    assert_eq!(
+        bytes.as_deref(),
+        Some(b"abcd".as_ref()),
+        "boundary materialization returns full buffer content"
+    );
+}
+
 // -- File.writeFrom --------------------------------------------------
 
 /// writeFrom drains a filled buffer to the file at the current
