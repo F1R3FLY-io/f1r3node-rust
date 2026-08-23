@@ -142,10 +142,13 @@ tasks:
       - "One live promotion of a Phase 3 candidate publishes a stable tag, release, and image whose digest equals the candidate index"
   - id: TASK-013-6
     title: "Phase 5: Deployment Trains"
-    status: pending
+    status: in_progress
     branch: feature/release-phase5-deployment-trains
     blocked_by: [TASK-013-4]
     notes:
+      - "2026-08-22: release-train.sh validates schema 1 and 2 manifests, the member chain (bottom member targets integration_branch, each later member targets the preceding member), head ancestry from compare documents, merged-member merge-commit topology, the source version and publishing-only reservation, and picks or dispatches the ci.yml run for head_sha. deployment-train.yml runs Section 13.2 steps 1 to 9 from the default branch with actions:write only for the ci.yml dispatch and uploads the train-record artifact. test-release-train.sh covers 18 rejections; test-release-workflows.sh guards the workflow; ci.yml validates every manifest under .github/deployment-trains/."
+      - ".github/deployment-trains/key-contention.yml is the non-publishing rehearsal for #299 -> #312 -> #319 -> #311 at the heads observed 2026-08-22. The live stack currently fails the ancestry check: #311's head 6c70d818a predates #319's last two commits (325bbb28b, 80f0a3b6a). The rehearsal will reject until #311 is re-based on #319 and the manifest head_sha is updated."
+      - "Remaining for this task: train canary creation through canary-publish.yml (Section 4.2 tag format, train_id in evidence), train_gates evaluation in release-gates.sh from manifest required_gates, recorded-member-head reachability in promote-release.sh, and the Section 13.3 re-validation trigger after a member merge."
       - "2026-08-22: release-process.md Section 13.1.1 adds schema_version 2 stack manifests. A stack train binds the top-of-stack head as its one candidate; members merge bottom-up with true merge commits. Setup steps 4 to 6 (member chain, head ancestry, merged-member topology) and the validator depend on no earlier phase; canary, digest-bound gates, and promotion depend on Phases 2 to 4."
       - "2026-08-22 multi-agent review of PR #321: Section 13.2 is one numbered sequence; the member base rule points to the preceding member; merge method is re-validated after each member merge and every recorded member head is verified at promotion, which closes the force-push window; the CI filter text matches ci.yml."
       - "blocked_by encodes the stack merge order PR #322 -> #323 (Phase 4) -> #325 (Phase 3) -> #321 (Phase 5), which is also the code-dependency order: Phase 3 implements the Section 8.1 contract Phase 4 defines. Phase 4 becomes operational end to end only after Phase 3 publishes gate documents; that is a runtime dependency, not a merge dependency."

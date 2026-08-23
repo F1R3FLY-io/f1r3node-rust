@@ -463,6 +463,8 @@ The setup workflow performs these actions. Steps marked *stack* apply only to a 
 
 Multiple trains can run at the same time. Workflow concurrency keys include the train identifier and target version.
 
+`deployment-train.yml` implements steps 1 to 9 with `release-train.sh`: manifest validation (schema 1 and 2), the member chain, head ancestry, merged-member topology, the source version and reservation, and the CI evidence. The workflow produces a `train-record` artifact (manifest, train record with every member head, and the API documents it verified). A non-publishing train completes at step 9. A publishing train holds at step 9 until the train canary path (steps 10 to 13) lands.
+
 ### 13.3 Merge requirement
 
 The train pull request must merge before stable publication.
@@ -601,7 +603,7 @@ This table defines the target state after the Section 17 workflow changes are co
 | `release-evidence.yml` | `workflow_dispatch` (ci_run_id) | Manual | 10–20 min *estimated* (30-min cap) | Exact-run candidate evidence |
 | `release.yml` | `workflow_dispatch` (candidate_tag); `workflow_run` on completion of Full OCI Validation, the slashing suite, and the soak (resume after a missing gate) | Manual start, automatic resume | 5–15 min *estimated* (no builds; copy and verify only) | Exact-candidate stable promotion |
 | `soak-in.yml` | `release` (stable tag published), `workflow_dispatch` | Event (one enrollment per stable release) + manual | Enrollment takes minutes; the soak-in period itself runs in the test net, not in Actions | Shard soak-in enrollment |
-| `deployment-train.yml` | `workflow_dispatch` (manifest path) | Manual | Minutes for setup *estimated*; the started gates run in their own workflows | Train validation and setup |
+| `deployment-train.yml` | `workflow_dispatch` (`manifest_path`, `wait_for_ci`) | Manual | Minutes for setup; up to the CI duration when it dispatches `ci.yml` for the head | Train validation and setup (Section 13.2 steps 1 to 9) |
 | `testbed-quality-gate.yml` | `workflow_dispatch`, including dispatch from train manifest gates | Manual + tooling | No measured runs | Feature-specific train gate |
 | `deny-schedule.yml` | `schedule` Mondays 06:00 UTC, `workflow_dispatch` | Time + manual | About 1 min *measured* | Weekly advisory sweep |
 | `ci-runner-reaper.yml` | `schedule` every 30 min, `workflow_dispatch` | Time + manual | 1–2 min *measured* | Ephemeral-runner leak reaper |
