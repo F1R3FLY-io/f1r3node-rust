@@ -1,0 +1,24 @@
+# Non-publishing stack-train rehearsal (docs/release-process.md section 13,
+# EPIC-013 TASK-013-6 and EPIC-016). Members are listed bottom to top; the
+# candidate is the head of the top member (#311). publishing: false runs
+# setup and every gate but reserves no version and publishes nothing.
+#
+# The recorded heads are those observed on 2026-08-22. A member that moves
+# after this manifest is reviewed changes the stack head; update head_sha
+# through a normal pull request before running setup again.
+schema_version: 2
+id: key-contention
+state: proposed
+target_version: 0.4.45
+pull_request: 311
+head_sha: 6c70d818a0d2e3269e2293adf03bb87c42eeed82
+base_branch: master
+publishing: false
+stack:
+  integration_branch: dev
+  members:
+    - pull_request: 299
+    - pull_request: 312
+    - pull_request: 319
+    - pull_request: 311
+required_gates: []
