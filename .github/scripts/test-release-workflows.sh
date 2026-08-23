@@ -8,7 +8,8 @@ ruby -ryaml - \
 	"$ROOT/.github/workflows/soak-in.yml" \
 	"$ROOT/.github/workflows/canary-publish.yml" \
 	"$ROOT/.github/workflows/oci-validation.yml" \
-	"$ROOT/.github/workflows/merge-recovery-soak.yml" <<'RUBY'
+	"$ROOT/.github/workflows/merge-recovery-soak.yml" \
+	"$ROOT/.github/workflows/deployment-train.yml" <<'RUBY'
 def trigger(document)
   document["on"] || document[true]
 end
@@ -17,7 +18,7 @@ def fail_if(condition, message)
   abort(message) if condition
 end
 
-release_path, evidence_path, soakin_path, canary_path, oci_path, soak_path = ARGV
+release_path, evidence_path, soakin_path, canary_path, oci_path, soak_path, train_path = ARGV
 release = YAML.load_file(release_path)
 evidence = YAML.load_file(evidence_path)
 soakin = YAML.load_file(soakin_path)
@@ -161,5 +162,29 @@ fail_if(!reusable_text.match?(/Build Docker Image\n\s+if: inputs\.candidate_tag 
 soak_text = File.read(soak_path)
 fail_if(!soak_text.match?(/docker pull --platform [^\n]*@\$\{amd64_digest\}/), "soak candidate mode must pull the image by digest")
 fail_if(!soak_text.match?(/Build node image\n\s+if: needs\.schedule_gate\.outputs\.candidate_tag == ''/m), "soak must skip the source build in candidate mode")
+# Deployment train setup (Phase 5): manual, default-branch only, one job
+# whose only write permission is actions (the optional ci.yml dispatch), no
+# protected environment, pinned actions, and never a tag, release, image,
+# or branch mutation.
+train = YAML.load_file(train_path)
+train_trigger = trigger(train)
+fail_if(train_trigger.keys != ["workflow_dispatch"], "deployment train must be manual only")
+fail_if(train_trigger.dig("workflow_dispatch", "inputs", "manifest_path", "required") != true, "deployment train dispatch must require manifest_path")
+fail_if(train["permissions"] != {}, "deployment train must default to no permissions")
+fail_if(train.fetch("jobs").keys != ["setup"], "deployment train must contain the setup job only")
+setup = train.dig("jobs", "setup")
+fail_if(setup["if"] != "github.ref_name == github.event.repository.default_branch", "deployment train must run from the default branch")
+fail_if(setup["permissions"] != {"actions" => "write", "contents" => "read", "pull-requests" => "read"}, "deployment train setup permissions must be actions:write, contents:read, pull-requests:read")
+fail_if(setup.key?("environment"), "deployment train setup cannot use a protected environment")
+setup_uses = setup.fetch("steps").map { |step| step["uses"] }.compact.reject { |value| value.start_with?("./") }
+fail_if(setup_uses.empty?, "deployment train has no pinned actions")
+fail_if(setup_uses.any? { |value| !value.match?(/@[0-9a-f]{40}$/) }, "deployment train actions must use full commit SHAs")
+train_text = File.read(train_path)
+fail_if(train_text.match?(/docker\s+(build|push|login)|buildx|gh release|git push|refs\/tags|secrets\.(?!GITHUB_TOKEN)/), "deployment train setup must not publish or use secrets beyond GITHUB_TOKEN")
+fail_if(!train_text.include?("release-train.sh validate-manifest"), "deployment train must validate the manifest with release-train.sh")
+fail_if(!train_text.include?("release-train.sh validate-stack"), "deployment train must verify the stack chain with release-train.sh")
+fail_if(!train_text.include?("release-train.sh validate-version"), "deployment train must verify the source version with release-train.sh")
+fail_if(!train_text.include?("release-train.sh plan-ci"), "deployment train must plan CI evidence with release-train.sh")
+fail_if(!train_text.match?(/\.github\/deployment-trains\/\*\.yml\)/), "deployment train must constrain manifest_path to .github/deployment-trains/")
 puts "release workflow tests passed"
 RUBY
