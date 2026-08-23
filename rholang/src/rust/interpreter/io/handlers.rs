@@ -49,7 +49,7 @@ use super::path::{
 use super::response::*;
 use super::stat::{error_record, stat_record};
 use super::wal::{PayloadRef, WalEntry, WalOp, WalOutcome};
-use super::{ConsensusMode, CMODE_CONSENSUS_STR, CMODE_ORACULAR_STR};
+use super::{costs, ConsensusMode, CMODE_CONSENSUS_STR, CMODE_ORACULAR_STR};
 
 /// Slice 30c H-R3 integration: compute the ack channel's Blake2b256
 /// hash the same way rspace computes `channel_hash` for a produce
@@ -433,6 +433,18 @@ impl FsProcesses {
         &self,
         contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
     ) -> Result<Vec<Par>, InterpreterError> {
+        // Phase 9 slice 9b-ii: charge the fs_open weight at handler
+        // entry.  Placed BEFORE the argument-shape check on purpose:
+        // the charge is a pure function of the handler identity, so
+        // leader and replay both hit it regardless of arg validity —
+        // giving byte-identical `BillableTokenEvent::Primitive` logs
+        // across validators (a load-bearing consensus invariant under
+        // D3).  On budget exhaustion `?` propagates
+        // `OutOfPhlogistonsError`; the deploy is rejected before any
+        // syscall runs.  See rholang/src/rust/interpreter/io/costs.rs
+        // for the weight table and rholang/tests/fileio_cost_spec.rs
+        // for the golden-value regression pins.
+        self.metering.reserve_primitive(costs::fs_open_cost())?;
         let Some((produce, is_replay, previous, args)) =
             self.is_contract_call().unapply(contract_args)
         else {
@@ -593,6 +605,9 @@ impl FsProcesses {
         &self,
         contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
     ) -> Result<Vec<Par>, InterpreterError> {
+        // Phase 9 slice 9b-ii: charge fs_close weight at handler entry.
+        // See fs_open for the rationale on placement before unapply.
+        self.metering.reserve_primitive(costs::fs_close_cost())?;
         let Some((produce, is_replay, previous, args)) =
             self.is_contract_call().unapply(contract_args)
         else {
@@ -1019,6 +1034,9 @@ impl FsProcesses {
         &self,
         contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
     ) -> Result<Vec<Par>, InterpreterError> {
+        // Phase 9 slice 9b-ii: charge fs_seek weight at handler entry.
+        // See fs_open for the rationale on placement before unapply.
+        self.metering.reserve_primitive(costs::fs_seek_cost())?;
         let Some((produce, is_replay, previous, args)) =
             self.is_contract_call().unapply(contract_args)
         else {
@@ -1080,6 +1098,9 @@ impl FsProcesses {
         &self,
         contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
     ) -> Result<Vec<Par>, InterpreterError> {
+        // Phase 9 slice 9b-ii: charge fs_tell weight at handler entry.
+        // See fs_open for the rationale on placement before unapply.
+        self.metering.reserve_primitive(costs::fs_tell_cost())?;
         let Some((produce, is_replay, previous, args)) =
             self.is_contract_call().unapply(contract_args)
         else {
@@ -1131,6 +1152,9 @@ impl FsProcesses {
         &self,
         contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
     ) -> Result<Vec<Par>, InterpreterError> {
+        // Phase 9 slice 9b-ii: charge fs_size weight at handler entry.
+        // See fs_open for the rationale on placement before unapply.
+        self.metering.reserve_primitive(costs::fs_size_cost())?;
         let Some((produce, is_replay, previous, args)) =
             self.is_contract_call().unapply(contract_args)
         else {
@@ -1210,6 +1234,9 @@ impl FsProcesses {
         &self,
         contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
     ) -> Result<Vec<Par>, InterpreterError> {
+        // Phase 9 slice 9b-ii: charge fs_truncate weight at handler entry.
+        // See fs_open for the rationale on placement before unapply.
+        self.metering.reserve_primitive(costs::fs_truncate_cost())?;
         let Some((produce, is_replay, previous, args)) =
             self.is_contract_call().unapply(contract_args)
         else {
@@ -1295,6 +1322,9 @@ impl FsProcesses {
         &self,
         contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
     ) -> Result<Vec<Par>, InterpreterError> {
+        // Phase 9 slice 9b-ii: charge fs_flush weight at handler entry.
+        // See fs_open for the rationale on placement before unapply.
+        self.metering.reserve_primitive(costs::fs_flush_cost())?;
         let Some((produce, is_replay, previous, args)) =
             self.is_contract_call().unapply(contract_args)
         else {
@@ -1346,6 +1376,9 @@ impl FsProcesses {
         &self,
         contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
     ) -> Result<Vec<Par>, InterpreterError> {
+        // Phase 9 slice 9b-ii: charge fs_stat weight at handler entry.
+        // See fs_open for the rationale on placement before unapply.
+        self.metering.reserve_primitive(costs::fs_stat_cost())?;
         let Some((produce, is_replay, previous, args)) =
             self.is_contract_call().unapply(contract_args)
         else {
@@ -1439,6 +1472,9 @@ impl FsProcesses {
         &self,
         contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
     ) -> Result<Vec<Par>, InterpreterError> {
+        // Phase 9 slice 9b-ii: charge fs_exists weight at handler entry.
+        // See fs_open for the rationale on placement before unapply.
+        self.metering.reserve_primitive(costs::fs_exists_cost())?;
         let Some((produce, is_replay, previous, args)) =
             self.is_contract_call().unapply(contract_args)
         else {
@@ -2087,6 +2123,9 @@ impl FsProcesses {
         &self,
         contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
     ) -> Result<Vec<Par>, InterpreterError> {
+        // Phase 9 slice 9b-ii: charge fs_chmod weight at handler entry.
+        // See fs_open for the rationale on placement before unapply.
+        self.metering.reserve_primitive(costs::fs_chmod_cost())?;
         let Some((produce, is_replay, previous, args)) =
             self.is_contract_call().unapply(contract_args)
         else {
@@ -2191,6 +2230,9 @@ impl FsProcesses {
         &self,
         contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
     ) -> Result<Vec<Par>, InterpreterError> {
+        // Phase 9 slice 9b-ii: charge fs_chown weight at handler entry.
+        // See fs_open for the rationale on placement before unapply.
+        self.metering.reserve_primitive(costs::fs_chown_cost())?;
         let Some((produce, is_replay, previous, args)) =
             self.is_contract_call().unapply(contract_args)
         else {
@@ -2255,6 +2297,10 @@ impl FsProcesses {
         &self,
         contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
     ) -> Result<Vec<Par>, InterpreterError> {
+        // Phase 9 slice 9b-ii: charge fs_quarantine weight at handler entry.
+        // See fs_open for the rationale on placement before unapply.
+        self.metering
+            .reserve_primitive(costs::fs_quarantine_cost())?;
         let Some((produce, is_replay, previous, args)) =
             self.is_contract_call().unapply(contract_args)
         else {
@@ -2410,6 +2456,10 @@ impl FsProcesses {
         &self,
         contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
     ) -> Result<Vec<Par>, InterpreterError> {
+        // Phase 9 slice 9b-ii: charge fs_lock_range weight at handler entry.
+        // See fs_open for the rationale on placement before unapply.
+        self.metering
+            .reserve_primitive(costs::fs_lock_range_cost())?;
         let Some((produce, is_replay, previous, args)) =
             self.is_contract_call().unapply(contract_args)
         else {
@@ -2556,6 +2606,10 @@ impl FsProcesses {
         &self,
         contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
     ) -> Result<Vec<Par>, InterpreterError> {
+        // Phase 9 slice 9b-ii: charge fs_lock_sequential weight at handler entry.
+        // See fs_open for the rationale on placement before unapply.
+        self.metering
+            .reserve_primitive(costs::fs_lock_sequential_cost())?;
         let Some((produce, is_replay, previous, args)) =
             self.is_contract_call().unapply(contract_args)
         else {
@@ -2708,6 +2762,10 @@ impl FsProcesses {
         &self,
         contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
     ) -> Result<Vec<Par>, InterpreterError> {
+        // Phase 9 slice 9b-ii: charge fs_release_lock weight at handler entry.
+        // See fs_open for the rationale on placement before unapply.
+        self.metering
+            .reserve_primitive(costs::fs_release_lock_cost())?;
         let Some((produce, is_replay, previous, args)) =
             self.is_contract_call().unapply(contract_args)
         else {
@@ -2760,6 +2818,10 @@ impl FsProcesses {
         &self,
         contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
     ) -> Result<Vec<Par>, InterpreterError> {
+        // Phase 9 slice 9b-ii: charge fs_release_all_for_holder weight at handler entry.
+        // See fs_open for the rationale on placement before unapply.
+        self.metering
+            .reserve_primitive(costs::fs_release_all_for_holder_cost())?;
         let Some((produce, is_replay, previous, args)) =
             self.is_contract_call().unapply(contract_args)
         else {
