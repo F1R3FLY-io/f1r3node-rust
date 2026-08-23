@@ -840,6 +840,61 @@ fn run_probe(what: &str, depth: usize) {
             assert!(h.finish() != 0 || depth == usize::MAX);
             std::mem::forget(t);
         }
+        "rspace_datum_path" | "rspace_bag_insert" => {
+            use models::rhoapi::ListParWithRandom;
+            use rspace_plus_plus::rspace::data_index::RSpaceDataIndex;
+            use rspace_plus_plus::rspace::internal::Datum;
+            use rspace_plus_plus::rspace::rho_path::{RhoPathEncode, RhoPathV1};
+            use rspace_plus_plus::rspace::serializers::serializers::encode_datum;
+
+            let channel = "out".to_string();
+            let datum = Datum::create(
+                &channel,
+                ListParWithRandom {
+                    pars: vec![nested_list(depth)],
+                    random_state: Vec::new(),
+                },
+                false,
+            );
+            let started = std::time::Instant::now();
+            if what == "rspace_datum_path" {
+                let structure = datum.a.rho_path_structure();
+                let structure_ns = started.elapsed().as_nanos();
+                let identity_started = std::time::Instant::now();
+                let identity = encode_datum(&datum);
+                let identity_ns = identity_started.elapsed().as_nanos();
+                let framing_started = std::time::Instant::now();
+                let path = RhoPathV1::datum_key(&channel, &structure, &identity);
+                println!(
+                    "rspace_datum_path: depth={depth} bytes={} structure_bytes={} identity_bytes={} structure_ns={} identity_ns={} framing_ns={} elapsed_ns={}",
+                    path.len(),
+                    structure.len(),
+                    identity.len(),
+                    structure_ns,
+                    identity_ns,
+                    framing_started.elapsed().as_nanos(),
+                    started.elapsed().as_nanos()
+                );
+                std::mem::forget(path);
+                std::mem::forget(structure);
+                std::mem::forget(identity);
+            } else {
+                let mut index = RSpaceDataIndex::new();
+                let (path, multiplicity) = index
+                    .insert(&channel, &datum)
+                    .expect("stack_depth_probe: RSpace Bag insertion failed");
+                println!(
+                    "rspace_bag_insert: depth={depth} bytes={} multiplicity={} elapsed_ns={}",
+                    path.len(),
+                    multiplicity.get(),
+                    started.elapsed().as_nanos()
+                );
+                std::mem::forget(path);
+                std::mem::forget(index);
+            }
+            std::mem::forget(datum);
+            std::mem::forget(channel);
+        }
 
         // ---- the audit's "not separately tabulated, same class" list ----
         "par_to_sexpr" => {
@@ -976,28 +1031,14 @@ fn run_probe(what: &str, depth: usize) {
     }
 }
 
-/// Count `[[…[x]…]]` nesting levels ITERATIVELY. Used to prove a probe input
-/// actually has the nesting the probe claims (see the `decode` arm).
+/// Count the exact unary-list fixture directly in its canonical protobuf
+/// component. Used to prove a probe input actually has the nesting the probe
+/// claims without rebuilding every decoded suffix (see the `decode` arm).
 fn par_depth(p: &Par) -> usize {
-    let mut n = 0usize;
-    let mut cur = p.clone();
-    loop {
-        match cur
-            .first::<Expr>()
-            .expect("resident expression decodes")
-            .and_then(|(expr, _)| expr.expr_instance)
-        {
-            Some(ExprInstance::EListBody(list)) if !list.ps.is_empty() => {
-                n += 1;
-                cur = list
-                    .ps
-                    .into_iter()
-                    .next()
-                    .expect("non-empty list has a first child");
-            }
-            _ => return n,
-        }
-    }
+    p.canonical_unary_elist_gint_parts()
+        .filter(|(_depth, terminal)| *terminal == 0)
+        .map(|(depth, _terminal)| depth)
+        .expect("probe fixture is exactly a unary EList spine ending in GInt(0)")
 }
 
 /// Prefix `body` with `tag` + its varint length. Iterative by construction.

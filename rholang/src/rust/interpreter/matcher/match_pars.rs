@@ -18,11 +18,11 @@ pub fn compare_sends_without_locally_free(a: &Send, b: &Send) -> bool {
 }
 
 pub fn compare_receives_without_locally_free(a: &Receive, b: &Receive) -> bool {
-    match_pars_drive(MatchWork::Receive(a.clone(), b.clone()))
+    match_pars_or_preserve_domain_panic(MatchWork::Receive(a.clone(), b.clone()))
 }
 
 pub fn compare_news_without_locally_free(a: &New, b: &New) -> bool {
-    match_pars_drive(MatchWork::New(a.clone(), b.clone()))
+    match_pars_or_preserve_domain_panic(MatchWork::New(a.clone(), b.clone()))
 }
 
 pub fn compare_exprs_without_locally_free(a: &Expr, b: &Expr) -> bool {
@@ -53,11 +53,53 @@ pub fn compare_ifs_without_locally_free(a: &If, b: &If) -> bool {
 }
 
 pub fn compare_receive_binds_without_locally_free(a: &ReceiveBind, b: &ReceiveBind) -> bool {
-    match_pars_drive(MatchWork::ReceiveBind(a.clone(), b.clone()))
+    match_pars_or_preserve_domain_panic(MatchWork::ReceiveBind(a.clone(), b.clone()))
 }
 
 pub fn match_pars(target: &Par, pattern: &Par) -> bool {
+    match_pars_or_preserve_domain_panic(MatchWork::Par(target.clone(), pattern.clone()))
+}
+
+/// The exact partial-domain boundary of the historical concrete matcher.
+///
+/// Proto3 permits required-in-semantics child messages to be absent. The
+/// legacy matcher panics only when its short-circuit order actually reaches
+/// one of those fields. Exposing that boundary as data lets differential tests
+/// cover the maximum historical domain without intercepting unwinds or using
+/// an over-eager whole-tree well-formedness predicate.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum MatchParsDomainError {
+    ReceiveBodyTarget,
+    ReceiveBodyPattern,
+    NewBodyTarget,
+    NewBodyPattern,
+    ReceiveBindSourceTarget,
+    ReceiveBindSourcePattern,
+}
+
+impl MatchParsDomainError {
+    const fn legacy_message(self) -> &'static str {
+        match self {
+            Self::ReceiveBodyTarget => "Receive.body (target)",
+            Self::ReceiveBodyPattern => "Receive.body (pattern)",
+            Self::NewBodyTarget => "New.p (target)",
+            Self::NewBodyPattern => "New.p (pattern)",
+            Self::ReceiveBindSourceTarget => "ReceiveBind.source (target)",
+            Self::ReceiveBindSourcePattern => "ReceiveBind.source (pattern)",
+        }
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn try_match_pars(target: &Par, pattern: &Par) -> Result<bool, MatchParsDomainError> {
     match_pars_drive(MatchWork::Par(target.clone(), pattern.clone()))
+}
+
+fn match_pars_or_preserve_domain_panic(root: MatchWork) -> bool {
+    match match_pars_drive(root) {
+        Ok(result) => result,
+        Err(error) => panic!("{}", error.legacy_message()),
+    }
 }
 
 /// The recursive edges of the concrete fast path. All other fields are either
@@ -69,7 +111,7 @@ enum MatchWork {
     ReceiveBind(ReceiveBind, ReceiveBind),
 }
 
-fn match_pars_drive(root: MatchWork) -> bool {
+fn match_pars_drive(root: MatchWork) -> Result<bool, MatchParsDomainError> {
     let mut work = vec![root];
     while let Some(task) = work.pop() {
         match task {
@@ -89,7 +131,7 @@ fn match_pars_drive(root: MatchWork) -> bool {
                     || target.family_cardinality::<If>() != pattern.family_cardinality::<If>()
                     || target.connective_used() != pattern.connective_used()
                 {
-                    return false;
+                    return Ok(false);
                 }
 
                 let target_sends = target.decode_occurrences::<Send>();
@@ -144,7 +186,7 @@ fn match_pars_drive(root: MatchWork) -> bool {
                         .zip(&pattern_conditionals)
                         .all(|(target, pattern)| compare_ifs_without_locally_free(target, pattern))
                 {
-                    return false;
+                    return Ok(false);
                 }
                 work.extend(
                     target
@@ -169,12 +211,13 @@ fn match_pars_drive(root: MatchWork) -> bool {
                     || target.bind_count != pattern.bind_count
                     || target.connective_used != pattern.connective_used
                 {
-                    return false;
+                    return Ok(false);
                 }
-                work.push(MatchWork::Par(
-                    target.body.expect("Receive.body (target)"),
-                    pattern.body.expect("Receive.body (pattern)"),
-                ));
+                let target_body = target.body.ok_or(MatchParsDomainError::ReceiveBodyTarget)?;
+                let pattern_body = pattern
+                    .body
+                    .ok_or(MatchParsDomainError::ReceiveBodyPattern)?;
+                work.push(MatchWork::Par(target_body, pattern_body));
                 work.extend(
                     target
                         .binds
@@ -189,22 +232,24 @@ fn match_pars_drive(root: MatchWork) -> bool {
                     || target.uri != pattern.uri
                     || target.injections != pattern.injections
                 {
-                    return false;
+                    return Ok(false);
                 }
-                work.push(MatchWork::Par(
-                    target.p.expect("New.p (target)"),
-                    pattern.p.expect("New.p (pattern)"),
-                ));
+                let target_body = target.p.ok_or(MatchParsDomainError::NewBodyTarget)?;
+                let pattern_body = pattern.p.ok_or(MatchParsDomainError::NewBodyPattern)?;
+                work.push(MatchWork::Par(target_body, pattern_body));
             }
             MatchWork::ReceiveBind(target, pattern) => {
                 if target.remainder != pattern.remainder || target.free_count != pattern.free_count
                 {
-                    return false;
+                    return Ok(false);
                 }
-                work.push(MatchWork::Par(
-                    target.source.expect("ReceiveBind.source (target)"),
-                    pattern.source.expect("ReceiveBind.source (pattern)"),
-                ));
+                let target_source = target
+                    .source
+                    .ok_or(MatchParsDomainError::ReceiveBindSourceTarget)?;
+                let pattern_source = pattern
+                    .source
+                    .ok_or(MatchParsDomainError::ReceiveBindSourcePattern)?;
+                work.push(MatchWork::Par(target_source, pattern_source));
                 work.extend(
                     target
                         .patterns
@@ -216,5 +261,5 @@ fn match_pars_drive(root: MatchWork) -> bool {
             }
         }
     }
-    true
+    Ok(true)
 }

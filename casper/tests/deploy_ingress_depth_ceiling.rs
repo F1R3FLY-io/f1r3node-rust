@@ -188,8 +188,7 @@ use casper::rust::util::rholang::interpreter_util;
 use crypto::rust::signatures::secp256k1::Secp256k1;
 use crypto::rust::signatures::signatures_alg::SignaturesAlg;
 use crypto::rust::signatures::signed::{Cosigned, Signed};
-use models::rhoapi::expr::ExprInstance;
-use models::rhoapi::{Expr, Par};
+use models::rhoapi::Par;
 use models::rust::casper::protocol::casper_message::DeployData;
 use models::rust::normalizer_env::normalizer_env_from_cosigned_deploy;
 
@@ -299,39 +298,14 @@ fn source_bracket_depth(src: &str) -> usize { src.bytes().take_while(|b| *b == b
 /// borrows the term: the generated destructor remains the operation measured
 /// after this function returns.
 fn normalized_list_depth(root: &Par) -> usize {
-    let mut cursor = root.clone();
-    let mut depth = 0usize;
-
-    loop {
-        if cursor.family_cardinality::<Expr>() != 1 {
-            panic!(
-                "VACUOUS PROBE: expected one expression at normalized depth {depth}, got {}",
-                cursor.family_cardinality::<Expr>()
-            );
-        }
-        let expr = cursor
-            .first::<Expr>()
-            .expect("resident expression decodes")
-            .expect("cardinality checked above")
-            .0;
-        match expr.expr_instance {
-            Some(ExprInstance::EListBody(list)) => {
-                if list.ps.len() != 1 {
-                    panic!(
-                        "VACUOUS PROBE: expected a singleton list at normalized depth {depth}, \
-                         got {} elements",
-                        list.ps.len()
-                    );
-                }
-                depth += 1;
-                cursor = list.ps.into_iter().next().expect("singleton list");
-            }
-            Some(ExprInstance::GInt(0)) => return depth,
-            other => panic!(
-                "VACUOUS PROBE: normalized list ended at depth {depth} in {other:?}, not integer 0"
-            ),
-        }
-    }
+    let (depth, terminal) = root
+        .canonical_unary_elist_gint_parts()
+        .expect("VACUOUS PROBE: normalized output is not an exact unary EList/GInt spine");
+    assert_eq!(
+        terminal, 0,
+        "VACUOUS PROBE: normalized unary EList spine ended in integer {terminal}, not 0"
+    );
+    depth
 }
 
 /// A real, signed, single-signer `Cosigned<DeployData>` carrying a depth-`depth`

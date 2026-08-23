@@ -1077,15 +1077,35 @@ impl SingletonEPathMapEndpoint {
     }
 }
 
-/// Own one singleton EPathMap endpoint after one ParBag zipper visit.
+/// Prove that one singleton Expr endpoint has an EPathMap envelope without
+/// copying its potentially wide protobuf body.
+fn singleton_epathmap_route_hint(par: &Par) -> Option<CanonicalEPathMapRootRouteHint> {
+    if par.family_cardinality::<Expr>() != 1 || !par.all_components_are::<Expr>() {
+        return None;
+    }
+    let mut result = None;
+    par.visit_encoded::<Expr>(|entry| {
+        if entry.multiplicity().get() == 1 {
+            result = canonical_epathmap_root_view(entry.payload()).map(|view| view.route_hint());
+        }
+    });
+    result
+}
+
+/// Own one proved singleton EPathMap endpoint after one ParBag zipper visit.
 ///
 /// The callback borrows the ParBag zipper's reused path buffer, so it performs
 /// exactly one copy of the authoritative Expr and no decode. Complete generated
 /// validation occurs only after the callback returns and the zipper releases
 /// its PathMap cursor and path buffer. This prevents a multi-megabyte decoded
 /// EPathMap from overlapping the live source zipper while retaining one visit,
-/// one copy, and the native PathMap representation.
-fn singleton_epathmap_endpoint(par: &Par) -> Option<SingletonEPathMapEndpoint> {
+/// one copy, and the native PathMap representation. The route hint came from a
+/// preceding non-consuming visit to the same immutable `Par`; keeping it as an
+/// argument avoids reparsing the envelope during the ownership visit.
+fn singleton_epathmap_endpoint(
+    par: &Par,
+    route_hint: CanonicalEPathMapRootRouteHint,
+) -> Option<SingletonEPathMapEndpoint> {
     if par.family_cardinality::<Expr>() != 1 || !par.all_components_are::<Expr>() {
         return None;
     }
@@ -1094,10 +1114,6 @@ fn singleton_epathmap_endpoint(par: &Par) -> Option<SingletonEPathMapEndpoint> {
         if entry.multiplicity().get() != 1 {
             return;
         }
-        let Some(view) = canonical_epathmap_root_view(entry.payload()) else {
-            return;
-        };
-        let route_hint = view.route_hint();
         note_epathmap_endpoint_visit();
         result = Some(SingletonEPathMapEndpoint {
             component: entry.to_owned_canonical(),
@@ -1756,8 +1772,14 @@ fn evaluate_par(
             None => Job::Return(false),
         };
     }
-    if let Some(pattern_endpoint) = singleton_epathmap_endpoint(&pattern) {
-        let Some(target_endpoint) = singleton_epathmap_endpoint(&target) else {
+    if let Some(pattern_hint) = singleton_epathmap_route_hint(&pattern) {
+        let Some(target_hint) = singleton_epathmap_route_hint(&target) else {
+            return Job::Return(false);
+        };
+        let Some(target_endpoint) = singleton_epathmap_endpoint(&target, target_hint) else {
+            return Job::Return(false);
+        };
+        let Some(pattern_endpoint) = singleton_epathmap_endpoint(&pattern, pattern_hint) else {
             return Job::Return(false);
         };
         frames.push(Frame::RestoreOnFailure {

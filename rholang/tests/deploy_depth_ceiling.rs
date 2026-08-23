@@ -123,24 +123,14 @@ fn source_bracket_depth(src: &str) -> usize {
 /// `[[…[x]…]]` nesting of a normalized term, counted ITERATIVELY — a recursive
 /// checker would be the thing that overflows.
 fn par_depth(p: &Par) -> usize {
-    let mut n = 0usize;
-    let mut cur = p.clone();
-    loop {
-        let next = cur
-            .first::<Expr>()
-            .expect("resident expression decodes")
-            .and_then(|(expr, _)| match expr.expr_instance {
-                Some(ExprInstance::EListBody(l)) => l.ps.into_iter().next(),
-                _ => None,
-            });
-        match next {
-            Some(child) => {
-                n += 1;
-                cur = child;
-            }
-            None => return n,
-        }
-    }
+    let (depth, terminal) = p
+        .canonical_unary_elist_gint_parts()
+        .expect("VACUOUS PROBE: landed term is not an exact unary EList/GInt spine");
+    assert_eq!(
+        terminal, 0,
+        "VACUOUS PROBE: landed unary EList spine ended in integer {terminal}, not 0"
+    );
+    depth
 }
 
 fn gstring_channel(name: &str) -> Par {
@@ -212,7 +202,8 @@ async fn run_deploy_and_check(source: String, depth: usize) {
                 .pars
                 .first()
                 .expect("deploy_depth_ceiling: the datum carries no Par");
-            assert_carries("the term that landed at @\"out\"", par_depth(landed), depth);
+            let landed_depth = par_depth(landed);
+            assert_carries("the term that landed at @\"out\"", landed_depth, depth);
             // Visible under `--nocapture`, so a single probe point can be re-run by
             // hand and SEEN to have executed. The parent nulls the child's stdout.
             println!(
@@ -220,7 +211,7 @@ async fn run_deploy_and_check(source: String, depth: usize) {
                 depth,
                 result.cost.value,
                 data.len(),
-                par_depth(landed)
+                landed_depth
             );
         },
     )

@@ -1,0 +1,39 @@
+@startuml
+skinparam backgroundColor #FAFCFF
+skinparam shadowing false
+skinparam defaultFontName DejaVu Sans
+skinparam ArrowColor #38536B
+skinparam activity {
+  BackgroundColor #E9F2FA
+  BorderColor #38536B
+  FontColor #172A3A
+  DiamondBackgroundColor #FFF1C7
+  DiamondBorderColor #9C6A00
+}
+
+title RSpace structural-key cost attribution
+
+start
+:Authoritative ParBag endpoint\ncanonical Expr protobuf body;
+if (control or treatment?) then (control)
+  #FADBD8:Decode Expr and recursively rebuild\nsuffix ParBags;
+  note right
+    MEASURED: quadratic in unary-list depth
+    despite a 225--226 byte RMP result
+  end note
+else (treatment)
+  #D5F5E3:Generated protobuf-region cursor\nretains nested Par byte regions;
+  note right
+    Target: one bounded shell decode,
+    direct nested-Par token emission
+  end note
+endif
+:Emit versioned RMP structural bytes;
+:Frame RhoPathV1 key and append\ncanonical bincode identity;
+#D5F5E3:Insert one prepared byte path into\nBag = PathMap<Multiplicity>;
+note right
+  MEASURED: final insertion did not explain
+  the multi-second control slope
+end note
+stop
+@enduml

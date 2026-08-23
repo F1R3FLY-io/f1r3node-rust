@@ -9283,26 +9283,35 @@ text. Experiment 306 accepted the treatment at width 65,536: mean ratio **0.9843
 multiplicity. Its trusted deferred decoder can therefore check protobuf framing, EPM1 and ACT
 content without rebuilding the canonical ParBag key that admission already proved.
 
-**Algorithm 36 (OWN-EPathMap-ENDPOINT).** *Keep the borrowed zipper callback constant-work and
-enter the existing native PathMap matcher only after both cursors are released.*
+**Algorithm 36 (OWN-EPathMap-ENDPOINT).** *Prove both endpoint kinds without copying either wide
+body; own them only after the pair is eligible; enter the existing native PathMap matcher only
+after every cursor is released.*
 
 ```pseudocode
 procedure OWN-EPATHMAP-ENDPOINT(par_bag)
-    visit the sole Expr endpoint once
-    route_hint <- SHALLOW-EPATHMAP-ROOT-VIEW(endpoint.bytes)
-    component <- OWN-ADMITTED-CANONICAL-COMPONENT(endpoint)
-    leave callback and release both PathMap zippers
+    pattern_hint <- VISIT-WITHOUT-COPY(pattern, SHALLOW-EPATHMAP-ROOT-VIEW)
+    if pattern_hint is absent then delegate to the ordinary Expr route
+    target_hint <- VISIT-WITHOUT-COPY(target, SHALLOW-EPATHMAP-ROOT-VIEW)
+    if target_hint is absent then refuse with zero endpoint backing copies
 
-    if route_hint proves a recursive singleton map then
-        region <- MOVE-BYTES-INTO-PROTOBUF-REGION(component)
+    target_component <- OWN-ADMITTED-CANONICAL-COMPONENT(target)
+    pattern_component <- OWN-ADMITTED-CANONICAL-COMPONENT(pattern)
+    leave both callbacks and release both PathMap zippers
+
+    if both route hints prove recursive singleton maps then
+        regions <- MOVE-BYTES-INTO-PROTOBUF-REGIONS(target_component, pattern_component)
         schedule shared descendant cuts
     else
-        expr <- TRUSTED-DEFERRED-DECODE(component)
-        epathmap <- EXTRACT-EPATHMAP(expr)
-        enter existing PathMap set/map PDA(epathmap)
+        target_expr <- TRUSTED-DEFERRED-DECODE(target_component)
+        pattern_expr <- TRUSTED-DEFERRED-DECODE(pattern_component)
+        enter existing PathMap set/map PDA(target_expr, pattern_expr)
 ```
 
-Target preparation remains before pattern preparation, preserving malformed-input precedence.
+The successful path makes two non-consuming visits and one copying visit per endpoint; the
+additional visit is the price of proving pair eligibility without retaining two simultaneous
+zipper path buffers. An ineligible scalar or non-Expr target now rejects with zero proportional
+endpoint copies. Target decoding remains before pattern decoding, preserving malformed-input
+precedence.
 `RestoreOnFailure` still owns every matcher attempt, so a late refusal restores the complete entry
 `FreeMap`; set/map remainder and rollback behavior are unchanged. The recursive singleton-map case
 moves the owned byte vector into `ProtobufRegion` without another proportional copy. Every other

@@ -37,7 +37,7 @@ use super::free_map_transaction::{
     assert_unwind_probe, panic_after_writes_for_test, unwind_probe_subject, BindingDelta,
     FreeMapTransaction, UnwindRollbackWitness,
 };
-use super::match_pars::match_pars;
+use super::match_pars::{match_pars, try_match_pars, MatchParsDomainError};
 use super::r#match::{rho_path_query_atom, rho_path_query_cursor_atom};
 use super::recursive_oracle::spatial_matcher::{
     SpatialMatcher as RecursiveSpatialMatcher, SpatialMatcherContext as RecursiveContext,
@@ -235,6 +235,28 @@ fn wide_map_epathmap_skips_proportional_par_cut_construction() {
     }
     pattern.connective_used = true;
     assert_wide_epathmap_bypasses_region_cutting(pathmap(target, false), pathmap(pattern, true));
+}
+
+#[test]
+fn ineligible_scalar_target_rejects_before_copying_a_wide_epathmap_pattern() {
+    const WIDTH: usize = 512;
+    let mut pattern = EPathMap::default();
+    for index in 0..WIDTH {
+        pattern.insert_entry(new_gint_par(index as i64, Vec::new(), false));
+    }
+    pattern.connective_used = true;
+
+    let mut context = SpatialMatcherContext::new();
+    let (result, stats) = match_par_with_concrete_region_stats(
+        &mut context,
+        new_gint_par(7, Vec::new(), false),
+        pathmap(pattern, true),
+    );
+    assert_eq!(result, None);
+    assert_eq!(stats.epathmap_endpoint_visits, 0);
+    assert_eq!(stats.epathmap_region_backing_copies, 0);
+    assert_eq!(stats.epathmap_direct_expr_decodes, 0);
+    assert_eq!(stats.epathmap_region_cut_attempts, 0);
 }
 
 fn assert_mixed_epathmap_route(target: Par, pattern: Par, expected_match: bool) {
@@ -474,40 +496,63 @@ fn concrete_region_route_is_differentially_exact_on_the_canonical_par_corpus() {
         .filter(|(_, par)| !par.connective_used())
         .collect::<Vec<_>>();
     let (mut defined_pairs, mut legacy_undefined_pairs) = (0usize, 0usize);
+    let mut domain_errors = BTreeMap::<MatchParsDomainError, usize>::new();
     for (target_name, target) in &corpus {
         for (pattern_name, pattern) in &corpus {
-            let expected = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                match_pars(target, pattern)
-            }));
-            let Ok(expected) = expected else {
-                // The historical helper unwraps schema-required Par fields.
-                // The corpus intentionally contains absent-field messages for
-                // decoder coverage; they are outside the helper's domain.
-                legacy_undefined_pairs += 1;
-                continue;
+            let expected = match try_match_pars(target, pattern) {
+                Ok(expected) => expected,
+                Err(error) => {
+                    // The corpus intentionally contains absent required
+                    // fields. The fallible oracle boundary preserves the
+                    // historical short-circuit domain without observing an
+                    // unwind or rejecting malformed fields it never reaches.
+                    legacy_undefined_pairs += 1;
+                    *domain_errors.entry(error).or_default() += 1;
+                    continue;
+                }
             };
             defined_pairs += 1;
-            let actual = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                let mut context = SpatialMatcherContext::new();
+            let mut context = SpatialMatcherContext::new();
+            let actual =
                 match_par_with_concrete_region_stats(&mut context, target.clone(), pattern.clone())
                     .0
-                    .is_some()
-            }));
-            match actual {
-                Ok(actual) => assert_eq!(
-                    actual, expected,
-                    "concrete byte-region differential: {target_name} vs {pattern_name}"
-                ),
-                Err(_) => panic!(
-                    "concrete byte-region route panicked on legacy-defined pair: {target_name} vs {pattern_name}",
-                ),
-            }
+                    .is_some();
+            assert_eq!(
+                actual, expected,
+                "concrete byte-region differential: {target_name} vs {pattern_name}"
+            );
         }
     }
     assert!(defined_pairs > 0);
     assert!(
         legacy_undefined_pairs > 0,
         "the corpus guard must retain its absent-required-field controls"
+    );
+    assert_eq!(
+        defined_pairs + legacy_undefined_pairs,
+        corpus.len() * corpus.len(),
+        "the typed oracle partition must account for every corpus pair"
+    );
+    println!("legacy concrete matcher domain errors: {domain_errors:?}");
+}
+
+#[test]
+fn concrete_match_oracle_domain_tracks_reached_required_fields_only() {
+    let missing = Par::default().with_news(vec![New::default()]);
+    assert_eq!(
+        try_match_pars(&missing, &missing),
+        Err(MatchParsDomainError::NewBodyTarget),
+        "equal headers reach the first absent required child"
+    );
+
+    let mismatching_header = Par::default().with_news(vec![New {
+        bind_count: 1,
+        ..New::default()
+    }]);
+    assert_eq!(
+        try_match_pars(&missing, &mismatching_header),
+        Ok(false),
+        "a header mismatch short-circuits before either absent child"
     );
 }
 

@@ -1150,13 +1150,14 @@ pub(crate) fn canonical_ezipper_region_parts(
 pub fn canonical_exact_free_var_expr_level(message: &[u8]) -> Option<i32> {
     const EVAR_TAG: u32 = 19;
     const EVAR_VAR_KEY: u64 = (1 << 3) | 2;
-    const FREE_VAR_KEY: u64 = 2 << 3;
 
     let envelope = canonical_expr_envelope(message)?;
     (envelope.tag == EVAR_TAG).then_some(())?;
     let variable = canonical_single_delimited_field(envelope.payload, EVAR_VAR_KEY)?;
-    let zigzag = u32::try_from(canonical_single_varint_field(variable, FREE_VAR_KEY)?).ok()?;
-    Some(((zigzag >> 1) as i32) ^ -((zigzag & 1) as i32))
+    match canonical_var(variable)? {
+        CanonicalVar::Free(level) => Some(level),
+        _ => None,
+    }
 }
 
 /// A canonical singleton-Expr `Par` whose expression is exactly one free
@@ -1197,6 +1198,46 @@ fn canonical_single_varint_field(message: &[u8], expected_key: u64) -> Option<u6
     (read_canonical_varint(message, &mut at)? == expected_key).then_some(())?;
     let value = read_canonical_varint(message, &mut at)?;
     (at == message.len()).then_some(value)
+}
+
+/// The exact canonical protobuf image of `rhoapi.Var`.
+///
+/// `Var` is a oneof, so an explicitly present default scalar still emits its
+/// oneof key and a zero payload. The empty byte string is the distinct
+/// `Var::default()` value with no selected arm. Keeping this grammar in one
+/// cursor prevents specialized collection paths from silently accepting a
+/// different wire language than the generated decoder/canonical encoder.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CanonicalVar {
+    Absent,
+    Bound(i32),
+    Free(i32),
+    Wildcard,
+}
+
+#[inline]
+fn decode_canonical_sint32(encoded: u64) -> Option<i32> {
+    let encoded = u32::try_from(encoded).ok()?;
+    Some(((encoded >> 1) as i32) ^ -((encoded & 1) as i32))
+}
+
+fn canonical_var(message: &[u8]) -> Option<CanonicalVar> {
+    const BOUND_VAR_KEY: u64 = 1 << 3;
+    const FREE_VAR_KEY: u64 = 2 << 3;
+    const WILDCARD_KEY: u64 = (3 << 3) | 2;
+
+    if message.is_empty() {
+        return Some(CanonicalVar::Absent);
+    }
+    if let Some(encoded) = canonical_single_varint_field(message, BOUND_VAR_KEY) {
+        return decode_canonical_sint32(encoded).map(CanonicalVar::Bound);
+    }
+    if let Some(encoded) = canonical_single_varint_field(message, FREE_VAR_KEY) {
+        return decode_canonical_sint32(encoded).map(CanonicalVar::Free);
+    }
+    canonical_single_delimited_field(message, WILDCARD_KEY)
+        .filter(|body| body.is_empty())
+        .map(|_| CanonicalVar::Wildcard)
 }
 
 /// Extract the sole Connective component body from a canonical singleton
@@ -2345,19 +2386,11 @@ fn canonical_expr_locally_free_is_empty(message: &[u8]) -> Option<bool> {
         }
         19 => {
             const EVAR_VAR_KEY: u64 = (1 << 3) | 2;
-            const BOUND_VAR_KEY: u64 = 1 << 3;
-            const FREE_VAR_KEY: u64 = 2 << 3;
-            const WILDCARD_KEY: u64 = (3 << 3) | 2;
-
             let variable = canonical_single_delimited_field(envelope.payload, EVAR_VAR_KEY)?;
-            if canonical_single_varint_field(variable, BOUND_VAR_KEY).is_some() {
-                Some(false)
-            } else if canonical_single_varint_field(variable, FREE_VAR_KEY).is_some() {
-                Some(true)
-            } else {
-                canonical_single_delimited_field(variable, WILDCARD_KEY)
-                    .filter(|body| body.is_empty())
-                    .map(|_| true)
+            match canonical_var(variable)? {
+                CanonicalVar::Bound(_) => Some(false),
+                CanonicalVar::Free(_) | CanonicalVar::Wildcard => Some(true),
+                CanonicalVar::Absent => None,
             }
         }
         // Collection and method bodies carry the exact cached fold directly.
@@ -2404,21 +2437,10 @@ fn canonical_component_locally_free_is_empty(tag: ParComponentTag, message: &[u8
 /// matcher use its complete generated decoder rather than widening the wire
 /// language accepted by this fast path.
 pub fn canonical_collection_remainder(message: &[u8]) -> Option<(Option<i32>, bool)> {
-    const FREE_VAR_KEY: u64 = 2 << 3;
-    const WILDCARD_KEY: u64 = (3 << 3) | 2;
-
-    let mut at = 0usize;
-    let key = read_canonical_varint(message, &mut at)?;
-    if key == FREE_VAR_KEY {
-        let encoded = u32::try_from(read_canonical_varint(message, &mut at)?).ok()?;
-        (at == message.len()).then_some(())?;
-        let level = ((encoded >> 1) as i32) ^ -((encoded & 1) as i32);
-        Some((Some(level), false))
-    } else if key == WILDCARD_KEY {
-        (read_canonical_varint(message, &mut at)? == 0 && at == message.len()).then_some(())?;
-        Some((None, true))
-    } else {
-        None
+    match canonical_var(message)? {
+        CanonicalVar::Free(level) => Some((Some(level), false)),
+        CanonicalVar::Wildcard => Some((None, true)),
+        CanonicalVar::Absent | CanonicalVar::Bound(_) => None,
     }
 }
 
@@ -3096,6 +3118,8 @@ struct CanonicalSingletonEPathMapParts<'a> {
     expr_body: &'a [u8],
     snapshot: &'a [u8],
     epathmap_connective_used: bool,
+    epathmap_locally_free_is_empty: bool,
+    epathmap_has_remainder: bool,
     locally_free: &'a [u8],
     connective_used: bool,
 }
@@ -3113,6 +3137,8 @@ fn canonical_singleton_epathmap_parts(
         expr_body: carrier.body,
         snapshot: epathmap.snapshot,
         epathmap_connective_used: epathmap.connective_used,
+        epathmap_locally_free_is_empty: epathmap.locally_free_is_empty,
+        epathmap_has_remainder: epathmap.remainder.is_some(),
         locally_free: carrier.locally_free,
         connective_used: carrier.connective_used,
     })
@@ -3122,7 +3148,8 @@ fn canonical_singleton_epathmap_parts(
 struct CanonicalEPathMapEnvelope<'a> {
     snapshot: &'a [u8],
     connective_used: bool,
-    has_remainder: bool,
+    locally_free_is_empty: bool,
+    remainder: Option<&'a [u8]>,
 }
 
 /// Width-independent routing information for one canonical EPathMap Expr.
@@ -3182,8 +3209,10 @@ impl<'a> CanonicalEPathMapRootView<'a> {
 /// Borrow one canonical `Expr(EPathMap)` envelope while inspecting only its
 /// outer protobuf framing and fixed EPM1 prefix.
 ///
-/// The compact ACT arena is skipped by length. No trie node, canonical key,
-/// map value, `Par`, or proportional collection is traversed or materialized.
+/// The compact ACT arena is skipped by length. The bounded `Var` remainder,
+/// when present, is checked against its exact canonical protobuf grammar. No
+/// trie node, canonical key, map value, `Par`, or proportional collection is
+/// traversed or materialized.
 pub fn canonical_epathmap_root_view(expr: &[u8]) -> Option<CanonicalEPathMapRootView<'_>> {
     let (protobuf_body, envelope) = canonical_epathmap_body_and_parts(expr)?;
     let snapshot = crate::rust::epathmap_trie_codec::snapshot_route_hint(envelope.snapshot).ok()?;
@@ -3193,21 +3222,24 @@ pub fn canonical_epathmap_root_view(expr: &[u8]) -> Option<CanonicalEPathMapRoot
         route_hint: CanonicalEPathMapRootRouteHint {
             mode: snapshot.mode(),
             map_value_count: snapshot.map_value_count(),
-            has_remainder: envelope.has_remainder,
+            has_remainder: envelope.remainder.is_some(),
         },
     })
 }
 
 /// Inspect only the canonical Expr/EPathMap envelope and fixed EPM1 prefix.
 ///
-/// The compact ACT arena is skipped by length. No trie node, canonical key,
-/// map value, `Par`, or proportional collection is traversed or materialized.
+/// The compact ACT arena is skipped by length. The bounded `Var` remainder,
+/// when present, is checked against its exact canonical protobuf grammar. No
+/// trie node, canonical key, map value, `Par`, or proportional collection is
+/// traversed or materialized.
 pub fn canonical_epathmap_root_route_hint(expr: &[u8]) -> Option<CanonicalEPathMapRootRouteHint> {
     canonical_epathmap_root_view(expr).map(CanonicalEPathMapRootView::route_hint)
 }
 
-/// Borrow field 9 from one canonical EPathMap Expr without decoding its trie,
-/// metadata, or recursively nested map values.
+/// Borrow field 9 from one canonical EPathMap Expr without decoding its trie or
+/// recursively nested map values. Scalar metadata and the bounded remainder
+/// envelope are validated in place.
 fn canonical_epathmap_parts_from_expr(expr: &[u8]) -> Option<CanonicalEPathMapEnvelope<'_>> {
     canonical_epathmap_body_and_parts(expr).map(|(_, envelope)| envelope)
 }
@@ -3231,7 +3263,7 @@ fn canonical_epathmap_parts(pathmap: &[u8]) -> Option<CanonicalEPathMapEnvelope<
     let mut last_field = 0u64;
     let mut saw_locally_free = false;
     let mut saw_connective = false;
-    let mut saw_remainder = false;
+    let mut remainder = None;
     let mut snapshot = None;
     while at < pathmap.len() {
         let key = read_canonical_varint(pathmap, &mut at)?;
@@ -3250,10 +3282,13 @@ fn canonical_epathmap_parts(pathmap: &[u8]) -> Option<CanonicalEPathMapEnvelope<
                 (read_canonical_varint(pathmap, &mut at)? == 1).then_some(())?;
                 saw_connective = true;
             }
-            (5, 2) if !saw_remainder => {
+            (5, 2) if remainder.is_none() => {
                 let len = usize::try_from(read_canonical_varint(pathmap, &mut at)?).ok()?;
-                at = at.checked_add(len).filter(|end| *end <= pathmap.len())?;
-                saw_remainder = true;
+                let end = at.checked_add(len)?;
+                let body = pathmap.get(at..end)?;
+                canonical_var(body)?;
+                remainder = Some(body);
+                at = end;
             }
             (9, 2) if snapshot.is_none() => {
                 let len = usize::try_from(read_canonical_varint(pathmap, &mut at)?).ok()?;
@@ -3267,7 +3302,8 @@ fn canonical_epathmap_parts(pathmap: &[u8]) -> Option<CanonicalEPathMapEnvelope<
     Some(CanonicalEPathMapEnvelope {
         snapshot: snapshot?,
         connective_used: saw_connective,
-        has_remainder: saw_remainder,
+        locally_free_is_empty: !saw_locally_free,
+        remainder,
     })
 }
 
@@ -3288,10 +3324,19 @@ fn canonical_singleton_gint_par(protobuf: &[u8]) -> bool {
 /// image. Every loop iteration consumes one strictly smaller value body, so
 /// work and auxiliary state are linear in the final byte string rather than in
 /// the sum of all decoded suffix graphs.
-fn canonical_singleton_epathmap_chain_parts(mut snapshot: &[u8]) -> Option<(usize, &[u8])> {
+struct CanonicalSingletonEPathMapChainProof<'a> {
+    depth: usize,
+    terminal: &'a [u8],
+    nested_values_stable: bool,
+}
+
+fn canonical_singleton_epathmap_chain_proof(
+    mut snapshot: &[u8],
+) -> Option<CanonicalSingletonEPathMapChainProof<'_>> {
     use crate::rust::epathmap_trie_codec::{CanonicalSnapshotKey, EPathMapMode};
 
     let mut depth = 0usize;
+    let mut nested_values_stable = true;
     loop {
         let inspection =
             crate::rust::epathmap_trie_codec::inspect_canonical_map_snapshot(snapshot).ok()?;
@@ -3319,8 +3364,17 @@ fn canonical_singleton_epathmap_chain_parts(mut snapshot: &[u8]) -> Option<(usiz
         let value_body = snapshot.get(inspection.value_bodies[0].clone())?;
         depth = depth.checked_add(1)?;
         let Some(nested_parts) = canonical_singleton_epathmap_parts(value_body) else {
-            return Some((depth, value_body));
+            return Some(CanonicalSingletonEPathMapChainProof {
+                depth,
+                terminal: value_body,
+                nested_values_stable,
+            });
         };
+        nested_values_stable &= nested_parts.locally_free.is_empty()
+            && !nested_parts.connective_used
+            && nested_parts.epathmap_locally_free_is_empty
+            && !nested_parts.epathmap_connective_used
+            && !nested_parts.epathmap_has_remainder;
         let nested = nested_parts.snapshot;
         if nested.len() >= snapshot.len() {
             return None;
@@ -3329,9 +3383,8 @@ fn canonical_singleton_epathmap_chain_parts(mut snapshot: &[u8]) -> Option<(usiz
     }
 }
 
-fn canonical_singleton_epathmap_chain_is_stable(snapshot: &[u8]) -> bool {
-    canonical_singleton_epathmap_chain_parts(snapshot)
-        .is_some_and(|(_depth, terminal)| canonical_singleton_gint_par(terminal))
+fn canonical_singleton_epathmap_chain_parts(snapshot: &[u8]) -> Option<(usize, &[u8])> {
+    canonical_singleton_epathmap_chain_proof(snapshot).map(|proof| (proof.depth, proof.terminal))
 }
 
 /// Import a canonical, stable singleton EPathMap chain as one raw Expr
@@ -3339,7 +3392,12 @@ fn canonical_singleton_epathmap_chain_is_stable(snapshot: &[u8]) -> bool {
 /// a semantic consumer actually asks to decode that Expr.
 fn import_canonical_singleton_epathmap_par(protobuf: &[u8]) -> Option<Par> {
     let parts = canonical_singleton_epathmap_parts(protobuf)?;
-    canonical_singleton_epathmap_chain_is_stable(parts.snapshot).then_some(())?;
+    let chain = canonical_singleton_epathmap_chain_proof(parts.snapshot)?;
+    canonical_singleton_gint_par(chain.terminal).then_some(())?;
+    let component_stable = parts.epathmap_locally_free_is_empty
+        && !parts.epathmap_connective_used
+        && !parts.epathmap_has_remainder
+        && chain.nested_values_stable;
 
     let mut key = Vec::with_capacity(
         PAR_BAG_KEY_HEADER_LEN
@@ -3360,7 +3418,12 @@ fn import_canonical_singleton_epathmap_par(protobuf: &[u8]) -> Option<Par> {
 
     let mut components = ParBag::new();
     components
-        .insert_bytes(ParComponentTag::Expr, &key, Multiplicity::ONE, Some(true))
+        .insert_bytes(
+            ParComponentTag::Expr,
+            &key,
+            Multiplicity::ONE,
+            Some(component_stable),
+        )
         .expect("one validated singleton component cannot overflow multiplicity");
     Some(Par::from_parts(
         components,
@@ -5701,6 +5764,73 @@ mod fast_key_tests {
         }
     }
 
+    #[test]
+    fn canonical_var_cursor_accepts_exact_encoder_images_only() {
+        use crate::rhoapi::var::{VarInstance, WildcardMsg};
+
+        let cases = [
+            (Var::default(), CanonicalVar::Absent),
+            (
+                Var {
+                    var_instance: Some(VarInstance::BoundVar(0)),
+                },
+                CanonicalVar::Bound(0),
+            ),
+            (
+                Var {
+                    var_instance: Some(VarInstance::BoundVar(i32::MIN)),
+                },
+                CanonicalVar::Bound(i32::MIN),
+            ),
+            (
+                Var {
+                    var_instance: Some(VarInstance::BoundVar(i32::MAX)),
+                },
+                CanonicalVar::Bound(i32::MAX),
+            ),
+            (
+                Var {
+                    var_instance: Some(VarInstance::FreeVar(-1)),
+                },
+                CanonicalVar::Free(-1),
+            ),
+            (
+                Var {
+                    var_instance: Some(VarInstance::FreeVar(i32::MAX)),
+                },
+                CanonicalVar::Free(i32::MAX),
+            ),
+            (
+                Var {
+                    var_instance: Some(VarInstance::Wildcard(WildcardMsg {})),
+                },
+                CanonicalVar::Wildcard,
+            ),
+        ];
+        for (value, expected) in cases {
+            assert_eq!(
+                canonical_var(&protobuf_encoder::encode_to_vec(&value)),
+                Some(expected)
+            );
+        }
+
+        let mut overflowing_sint32 = vec![0x08];
+        prost::encoding::encode_varint(u64::from(u32::MAX) + 1, &mut overflowing_sint32);
+        for malformed in [
+            vec![0x08],                   // truncated scalar
+            vec![0x08, 0x80, 0x00],       // non-minimal scalar
+            vec![0x88, 0x00, 0x00],       // non-minimal key
+            vec![0x08, 0x00, 0x10, 0x00], // duplicate oneof arms
+            vec![0x20, 0x00],             // unknown field
+            vec![0x1a, 0x01],             // truncated wildcard
+            vec![0x1a, 0x01, 0x00],       // non-empty wildcard
+            vec![0x1a, 0x00, 0x20, 0x00], // trailing field
+            overflowing_sint32,
+        ] {
+            assert_eq!(canonical_var(&malformed), None, "accepted {malformed:02x?}");
+        }
+    }
+
     proptest::proptest! {
         #![proptest_config(proptest::test_runner::Config::with_cases(4_096))]
 
@@ -6290,6 +6420,63 @@ mod fast_key_tests {
     }
 
     #[test]
+    fn owned_canonical_epathmap_component_is_infallible_from_every_admission_lane() {
+        let key = Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::GString("key".to_owned())),
+        }]);
+        let value = Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::GInt(7)),
+        }]);
+        let programmatic = Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::EPathmapBody(EPathMap::new_map(
+                [(key, value)],
+                Vec::new(),
+                false,
+                None,
+            ))),
+        }]);
+        let protobuf = protobuf_encoder::encode_to_vec(&programmatic);
+
+        let compact = Par::from_parts(
+            ParBag::from_compact_bytes(&programmatic.components().compact_bytes())
+                .expect("compact ACT admission"),
+            programmatic.locally_free().to_vec(),
+            programmatic.connective_used(),
+        );
+        let mut construction = crate::rust::par_construction::ParConstruction::new();
+        let planned = construction
+            .import_par(&programmatic)
+            .expect("planned admission");
+        let planned = construction.finish(planned).expect("planned finish");
+        let direct = import_canonical_parbag_fast_path(&protobuf).expect("fast protobuf admission");
+
+        for (label, admitted) in [
+            ("typed insertion", programmatic),
+            ("compact ACT", compact),
+            ("planned construction", planned),
+            ("direct protobuf", direct),
+        ] {
+            let mut owned = None;
+            admitted.visit_encoded::<Expr>(|entry| owned = Some(entry.to_owned_canonical()));
+            let decoded = owned
+                .unwrap_or_else(|| panic!("{label}: singleton Expr endpoint missing"))
+                .decode()
+                .unwrap_or_else(|error| panic!("{label}: deferred decode failed: {error}"));
+            assert_eq!(
+                protobuf_encoder::encode_to_vec(&decoded),
+                protobuf_encoder::encode_to_vec(
+                    &admitted
+                        .first::<Expr>()
+                        .expect("resident Expr key remains canonical")
+                        .expect("one Expr")
+                        .0
+                ),
+                "{label}"
+            );
+        }
+    }
+
+    #[test]
     fn epathmap_root_route_hint_distinguishes_mode_value_count_and_remainder() {
         let par = |value| {
             Par::default().with_exprs(vec![Expr {
@@ -6383,6 +6570,20 @@ mod fast_key_tests {
         assert_eq!(protobuf_encoder::encode_to_vec(&imported), protobuf);
         assert_eq!(imported.locally_free(), expected.locally_free());
         assert_eq!(imported.connective_used(), expected.connective_used());
+        assert_eq!(
+            imported.components().cached_canonical_path_stability(),
+            Some(false),
+            "component stability must include nested value-Par and EPathMap metadata"
+        );
+        assert_eq!(
+            crate::rust::pathmap_crate_type_mapper::eval_stable_par_for_test(&imported),
+            crate::rust::pathmap_crate_type_mapper::eval_stable_par_for_test(&expected)
+        );
+        assert_eq!(
+            crate::rust::canonical_path::encode_trie_path(&imported),
+            crate::rust::canonical_path::encode_trie_path(&expected),
+            "fast import cannot make canonical paths construction-dependent"
+        );
 
         let mut owned = None;
         imported.visit_encoded::<Expr>(|entry| {
@@ -6409,6 +6610,126 @@ mod fast_key_tests {
                 .and_then(|scalar| canonical_expr_oneof_tag(scalar.expr())),
             Some(2)
         );
+    }
+
+    #[test]
+    fn singleton_epathmap_fast_import_stability_fold_matches_semantic_authority() {
+        use crate::rhoapi::Var;
+
+        let key = || {
+            Par::default().with_exprs(vec![Expr {
+                expr_instance: Some(ExprInstance::GString("key".to_owned())),
+            }])
+        };
+        let wrap = |value: Par,
+                    root_locally_free: Vec<u8>,
+                    root_connective: bool,
+                    map_locally_free: Vec<u8>,
+                    map_connective: bool,
+                    remainder: Option<Var>| {
+            Par::default()
+                .with_exprs(vec![Expr {
+                    expr_instance: Some(ExprInstance::EPathmapBody(EPathMap::new_map(
+                        [(key(), value)],
+                        map_locally_free,
+                        map_connective,
+                        remainder,
+                    ))),
+                }])
+                .with_locally_free(root_locally_free)
+                .with_connective_used(root_connective)
+        };
+        let terminal = || {
+            Par::default().with_exprs(vec![Expr {
+                expr_instance: Some(ExprInstance::GInt(7)),
+            }])
+        };
+        let clean_inner = || wrap(terminal(), Vec::new(), false, Vec::new(), false, None);
+        let cases = [
+            (
+                "clean",
+                wrap(clean_inner(), Vec::new(), false, Vec::new(), false, None),
+                true,
+            ),
+            (
+                "top root locally-free does not belong to the component cache",
+                wrap(clean_inner(), vec![1], false, Vec::new(), false, None),
+                true,
+            ),
+            (
+                "top root connective does not belong to the component cache",
+                wrap(clean_inner(), Vec::new(), true, Vec::new(), false, None),
+                true,
+            ),
+            (
+                "top map locally-free",
+                wrap(clean_inner(), Vec::new(), false, vec![1], false, None),
+                false,
+            ),
+            (
+                "top map connective",
+                wrap(clean_inner(), Vec::new(), false, Vec::new(), true, None),
+                false,
+            ),
+            (
+                "top map remainder",
+                wrap(
+                    clean_inner(),
+                    Vec::new(),
+                    false,
+                    Vec::new(),
+                    false,
+                    Some(Var::default()),
+                ),
+                false,
+            ),
+            (
+                "nested value root metadata",
+                wrap(
+                    wrap(terminal(), vec![1], false, Vec::new(), false, None),
+                    Vec::new(),
+                    false,
+                    Vec::new(),
+                    false,
+                    None,
+                ),
+                false,
+            ),
+            (
+                "nested map metadata",
+                wrap(
+                    wrap(terminal(), Vec::new(), false, vec![1], false, None),
+                    Vec::new(),
+                    false,
+                    Vec::new(),
+                    false,
+                    None,
+                ),
+                false,
+            ),
+        ];
+
+        for (label, programmatic, component_stable) in cases {
+            let protobuf = protobuf_encoder::encode_to_vec(&programmatic);
+            let imported = import_canonical_parbag_fast_path(&protobuf)
+                .unwrap_or_else(|| panic!("{label}: supported canonical chain was not imported"));
+            assert_eq!(imported, programmatic, "{label}");
+            assert_eq!(
+                imported.components().cached_canonical_path_stability(),
+                Some(component_stable),
+                "{label}"
+            );
+            assert_eq!(
+                crate::rust::pathmap_crate_type_mapper::eval_stable_par_for_test(&imported),
+                crate::rust::pathmap_crate_type_mapper::eval_stable_par_for_test(&programmatic),
+                "{label}"
+            );
+            assert_eq!(
+                crate::rust::canonical_path::encode_trie_path(&imported),
+                crate::rust::canonical_path::encode_trie_path(&programmatic),
+                "{label}"
+            );
+        }
     }
 
     #[test]
@@ -6451,6 +6772,62 @@ mod fast_key_tests {
         let mut malformed_snapshot = snapshot;
         malformed_snapshot[0] ^= 0xff;
         assert!(canonical_singleton_epathmap_chain_parts(&malformed_snapshot).is_none());
+    }
+
+    #[test]
+    fn singleton_epathmap_fast_import_rejects_malformed_outer_and_nested_remainders() {
+        use crate::rhoapi::var::VarInstance;
+
+        let key = || {
+            Par::default().with_exprs(vec![Expr {
+                expr_instance: Some(ExprInstance::GString("key".to_owned())),
+            }])
+        };
+        let remainder = || Var {
+            var_instance: Some(VarInstance::FreeVar(0)),
+        };
+        let mut chain = Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::GInt(7)),
+        }]);
+        for _ in 0..3 {
+            chain = Par::default().with_exprs(vec![Expr {
+                expr_instance: Some(ExprInstance::EPathmapBody(EPathMap::new_map(
+                    [(key(), chain)],
+                    Vec::new(),
+                    false,
+                    Some(remainder()),
+                ))),
+            }]);
+        }
+
+        let canonical = protobuf_encoder::encode_to_vec(&chain);
+        // EPathMap.remainder = field 5; FreeVar(0) is the exact two-byte
+        // oneof image [0x10, 0x00]. Each chain level contributes one frame.
+        let needle = [0x2a, 0x02, 0x10, 0x00];
+        let offsets = canonical
+            .windows(needle.len())
+            .enumerate()
+            .filter_map(|(offset, bytes)| (bytes == needle).then_some(offset))
+            .collect::<Vec<_>>();
+        assert_eq!(offsets.len(), 3, "one remainder frame per map level");
+
+        for offset in offsets {
+            let mut malformed = canonical.clone();
+            malformed[offset + 2] = 0x20; // same-length unknown Var field
+            assert!(
+                import_canonical_parbag_fast_path(&malformed).is_none(),
+                "a malformed remainder at byte {offset} entered the trusted fast importer"
+            );
+            if let Ok(decoded) =
+                crate::rust::rholang::protobuf_decoder::decode_par(malformed.as_slice())
+            {
+                assert_ne!(
+                    protobuf_encoder::encode_to_vec(&decoded),
+                    malformed,
+                    "a permissive full decode must canonicalize, not preserve, unknown Var bytes"
+                );
+            }
+        }
     }
 
     #[test]

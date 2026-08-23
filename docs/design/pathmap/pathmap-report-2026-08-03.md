@@ -8,6 +8,10 @@
 > [`docs/technical-reports/pathmap/pathmap-technical-report-2026-08-12.md`](../../technical-reports/pathmap/pathmap-technical-report-2026-08-12.md).
 > The fix index and section numbers below are cited by the consensus-change register and the
 > companion stack-safety report and must not be renumbered.
+>
+> New cross-cutting findings about PathMap APIs, CoW behavior, zippers, algebra, derived-key
+> preparation, and RSpace Bag usage are recorded chronologically in the
+> [PathMap engineering journal](pathmap-engineering-journal-2026-08-23.md).
 
 **Repository** `f1r3node-rust-mettail`, branch `feature/mettail`
 **Companion repository** `mettail-rust`, branch `feature/rho-native-set-automata`
