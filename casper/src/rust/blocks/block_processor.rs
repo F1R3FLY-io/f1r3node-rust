@@ -137,6 +137,21 @@ pub(crate) fn admit_as_settled(
         && seq_below_senders_latest
 }
 
+/// What the block-processing loop should do with a block whose validation
+/// attempt returned a hard `Err` (no verdict, not a typed deferral).
+///
+/// `Retry` keeps the block buffered — a transient fault heals on a later
+/// harvest, and the failure quarantine paces those retries. `PurgeAndQuarantine`
+/// is the bounded end: the block leaves the buffer loudly, and only a fresh
+/// peer delivery can bring it back (CI run 32588262605, arm64-docker joiner3:
+/// five buffered blocks re-harvested ~2,770 times each on the same estimator
+/// walk error — fail, pendant, fail — with nothing bounding the loop).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ValidationFailureDisposition {
+    Retry,
+    PurgeAndQuarantine,
+}
+
 /// Classify a validation outcome for post-processing.
 ///
 /// Everything except `Undecidable` is a verdict and is settled. `Undecidable`
@@ -175,6 +190,8 @@ const CASPER_BUFFER_APPROX_NODES_METRIC: &str = "casper.buffer.approx-nodes";
 const CASPER_BUFFER_DEPENDENCY_LOOP_PRUNED_METRIC: &str = "casper.buffer.dependency-loop-pruned";
 const MISSING_DEPENDENCY_ATTEMPTS_MAX_DEFAULT: u32 = 32;
 const MISSING_DEPENDENCY_ATTEMPTS_MAX_ENV: &str = "F1R3_MISSING_DEPENDENCY_ATTEMPTS_MAX";
+const VALIDATION_ERROR_ATTEMPTS_MAX_DEFAULT: u32 = 32;
+const VALIDATION_ERROR_ATTEMPTS_MAX_ENV: &str = "F1R3_VALIDATION_ERROR_ATTEMPTS_MAX";
 const MISSING_DEPENDENCY_QUARANTINE_MS_DEFAULT: u64 = 120_000;
 const MISSING_DEPENDENCY_QUARANTINE_MS_ENV: &str = "F1R3_MISSING_DEPENDENCY_QUARANTINE_MS";
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
@@ -190,6 +207,7 @@ static CASPER_BUFFER_STALE_TTL_MS_CFG: OnceLock<u64> = OnceLock::new();
 static CASPER_BUFFER_MAX_PRUNE_BATCH_CFG: OnceLock<usize> = OnceLock::new();
 static CASPER_BUFFER_PRUNE_INTERVAL_MS_CFG: OnceLock<u64> = OnceLock::new();
 static MISSING_DEPENDENCY_ATTEMPTS_MAX_CFG: OnceLock<u32> = OnceLock::new();
+static VALIDATION_ERROR_ATTEMPTS_MAX_CFG: OnceLock<u32> = OnceLock::new();
 static MISSING_DEPENDENCY_QUARANTINE_MS_CFG: OnceLock<u64> = OnceLock::new();
 
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
@@ -259,6 +277,18 @@ fn maybe_trim_allocator_after_block() {
 
 #[cfg(not(all(target_os = "linux", target_env = "gnu")))]
 fn maybe_trim_allocator_after_block() {}
+
+/// Hard-error attempt cap per buffered block. Public so tests exercise the
+/// bound the block-processing loop relies on.
+pub fn validation_error_attempts_max() -> u32 {
+    *VALIDATION_ERROR_ATTEMPTS_MAX_CFG.get_or_init(|| {
+        env::var_or_filtered(
+            VALIDATION_ERROR_ATTEMPTS_MAX_ENV,
+            VALIDATION_ERROR_ATTEMPTS_MAX_DEFAULT,
+            |v: &u32| *v > 0,
+        )
+    })
+}
 
 fn missing_dependency_attempts_max() -> u32 {
     *MISSING_DEPENDENCY_ATTEMPTS_MAX_CFG.get_or_init(|| {
@@ -368,6 +398,10 @@ impl<T: TransportLayer + Send + Sync> BlockProcessor<T> {
             .sweep_orphaned_missing_dependency_attempts()?;
         self.dependencies
             .sweep_orphaned_missing_dependency_quarantine()?;
+        self.dependencies
+            .sweep_expired_validation_error_quarantine()?;
+        self.dependencies
+            .sweep_orphaned_validation_error_attempts()?;
 
         if self
             .dependencies
@@ -632,6 +666,28 @@ impl<T: TransportLayer + Send + Sync> BlockProcessor<T> {
         self.dependencies.remove_from_buffer(block).await?;
         self.dependencies.ack_processed(block).await
     }
+
+    /// See [`BlockProcessorDependencies::note_validation_failure`].
+    pub fn note_validation_failure(
+        &self,
+        block_hash: &BlockHash,
+    ) -> Result<ValidationFailureDisposition, CasperError> {
+        self.dependencies.note_validation_failure(block_hash)
+    }
+
+    /// See [`BlockProcessorDependencies::is_validation_failure_quarantined`].
+    pub fn is_validation_failure_quarantined(
+        &self,
+        block_hash: &BlockHash,
+    ) -> Result<bool, CasperError> {
+        self.dependencies
+            .is_validation_failure_quarantined(block_hash)
+    }
+
+    /// See [`BlockProcessorDependencies::clear_validation_failures`].
+    pub fn clear_validation_failures(&self, block_hash: &BlockHash) -> Result<(), CasperError> {
+        self.dependencies.clear_validation_failures(block_hash)
+    }
 }
 
 /// Unified dependencies structure - equivalent to Scala companion object approach
@@ -648,6 +704,11 @@ pub struct BlockProcessorDependencies<T: TransportLayer + Send + Sync> {
     casper_buffer_last_prune_ms: Arc<AtomicU64>,
     missing_dependency_attempts: Arc<Mutex<HashMap<BlockHash, u32>>>,
     missing_dependency_quarantine_until: Arc<Mutex<HashMap<BlockHash, u64>>>,
+    /// Hard validation `Err`s per buffered block, bounding the
+    /// fail→pendant→fail loop the way `missing_dependency_attempts` bounds
+    /// the dependency-check loop.
+    validation_error_attempts: Arc<Mutex<HashMap<BlockHash, u32>>>,
+    validation_error_quarantine_until: Arc<Mutex<HashMap<BlockHash, u64>>>,
     /// Hashes solicited as dependencies by a block whose sender is bonded in
     /// this node's anchor. Membership is the third condition of
     /// [`admit_as_settled`]; entries are removed when the block arrives, and
@@ -684,6 +745,8 @@ impl<T: TransportLayer + Send + Sync> BlockProcessorDependencies<T> {
             casper_buffer_last_prune_ms: Arc::new(AtomicU64::new(0)),
             missing_dependency_attempts: Arc::new(Mutex::new(HashMap::new())),
             missing_dependency_quarantine_until: Arc::new(Mutex::new(HashMap::new())),
+            validation_error_attempts: Arc::new(Mutex::new(HashMap::new())),
+            validation_error_quarantine_until: Arc::new(Mutex::new(HashMap::new())),
             settled_solicitations: Arc::new(Mutex::new(HashSet::new())),
             settled_admissions: Arc::new(AtomicU64::new(0)),
             state_root_fetch_tx,
@@ -1153,6 +1216,149 @@ impl<T: TransportLayer + Send + Sync> BlockProcessorDependencies<T> {
             .get(block_hash)
             .copied()
             .is_some_and(|until| now_ms < until))
+    }
+
+    /// Record one hard validation `Err` for a buffered block and decide its
+    /// fate: pace further retries via the failure quarantine, and end the
+    /// retry loop entirely once the attempt cap is reached.
+    ///
+    /// The quarantine is stamped in both dispositions — between retries it
+    /// paces the pendant harvest, and after the cap it damps an immediate
+    /// re-delivery from restarting the loop hot. Only a fresh peer delivery
+    /// outlives the purge, which is exactly the re-delivery convergence the
+    /// truncation-horizon work relies on.
+    pub fn note_validation_failure(
+        &self,
+        block_hash: &BlockHash,
+    ) -> Result<ValidationFailureDisposition, CasperError> {
+        let reached_cap = {
+            let mut attempts = self.validation_error_attempts.lock().map_err(|_| {
+                CasperError::RuntimeError(
+                    "Failed to acquire validation_error_attempts lock".to_string(),
+                )
+            })?;
+            let next = attempts.entry(block_hash.clone()).or_insert(0);
+            *next = next.saturating_add(1);
+            if *next >= validation_error_attempts_max() {
+                attempts.remove(block_hash);
+                true
+            } else {
+                false
+            }
+        };
+
+        let now_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        let until = now_ms.saturating_add(missing_dependency_quarantine_ms());
+        let mut quarantine = self.validation_error_quarantine_until.lock().map_err(|_| {
+            CasperError::RuntimeError(
+                "Failed to acquire validation_error_quarantine_until lock".to_string(),
+            )
+        })?;
+        quarantine.insert(block_hash.clone(), until);
+
+        Ok(if reached_cap {
+            ValidationFailureDisposition::PurgeAndQuarantine
+        } else {
+            ValidationFailureDisposition::Retry
+        })
+    }
+
+    /// Whether the pendant harvest should skip this hash because its last
+    /// validation attempt hard-failed within the quarantine window.
+    pub fn is_validation_failure_quarantined(
+        &self,
+        block_hash: &BlockHash,
+    ) -> Result<bool, CasperError> {
+        let now_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        let quarantine = self.validation_error_quarantine_until.lock().map_err(|_| {
+            CasperError::RuntimeError(
+                "Failed to acquire validation_error_quarantine_until lock".to_string(),
+            )
+        })?;
+        Ok(quarantine
+            .get(block_hash)
+            .copied()
+            .is_some_and(|until| now_ms < until))
+    }
+
+    /// A settled verdict ends the failure ledger for this hash.
+    pub fn clear_validation_failures(&self, block_hash: &BlockHash) -> Result<(), CasperError> {
+        {
+            let mut attempts = self.validation_error_attempts.lock().map_err(|_| {
+                CasperError::RuntimeError(
+                    "Failed to acquire validation_error_attempts lock".to_string(),
+                )
+            })?;
+            attempts.remove(block_hash);
+        }
+        let mut quarantine = self.validation_error_quarantine_until.lock().map_err(|_| {
+            CasperError::RuntimeError(
+                "Failed to acquire validation_error_quarantine_until lock".to_string(),
+            )
+        })?;
+        quarantine.remove(block_hash);
+        Ok(())
+    }
+
+    fn sweep_expired_validation_error_quarantine(&self) -> Result<(), CasperError> {
+        let now_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        let mut quarantine = self.validation_error_quarantine_until.lock().map_err(|_| {
+            CasperError::RuntimeError(
+                "Failed to acquire validation_error_quarantine_until lock".to_string(),
+            )
+        })?;
+        quarantine.retain(|_, until| *until > now_ms);
+        Ok(())
+    }
+
+    fn sweep_orphaned_validation_error_attempts(&self) -> Result<(), CasperError> {
+        let to_clear: Vec<BlockHash> = {
+            let attempts = self.validation_error_attempts.lock().map_err(|_| {
+                CasperError::RuntimeError(
+                    "Failed to acquire validation_error_attempts lock".to_string(),
+                )
+            })?;
+
+            attempts
+                .keys()
+                .filter_map(|block_hash| {
+                    let block_hash_serde = BlockHashSerde(block_hash.clone());
+                    let is_active = self.casper_buffer.contains(&block_hash_serde)
+                        || self.casper_buffer.is_pendant(&block_hash_serde);
+
+                    if is_active {
+                        None
+                    } else {
+                        Some(block_hash.clone())
+                    }
+                })
+                .collect()
+        };
+
+        if to_clear.is_empty() {
+            return Ok(());
+        }
+
+        let mut attempts = self.validation_error_attempts.lock().map_err(|_| {
+            CasperError::RuntimeError(
+                "Failed to acquire validation_error_attempts lock".to_string(),
+            )
+        })?;
+
+        for block_hash in to_clear {
+            attempts.remove(&block_hash);
+        }
+
+        Ok(())
     }
 
     fn sweep_expired_missing_dependency_quarantine(&self) -> Result<(), CasperError> {

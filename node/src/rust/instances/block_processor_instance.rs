@@ -4,7 +4,7 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
 
-use casper::rust::blocks::block_processor::BlockProcessor;
+use casper::rust::blocks::block_processor::{BlockProcessor, ValidationFailureDisposition};
 use casper::rust::casper::MultiParentCasper;
 use casper::rust::errors::CasperError;
 use casper::rust::metrics_constants::{
@@ -264,6 +264,15 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorInstance<T> {
                     match result {
                         Ok(BlockProcessOutcome::Processed(block, res)) => {
                             tracing::info!("Block {} processing finished.", block_str);
+                            if let Err(err) =
+                                block_processor.clear_validation_failures(&block.block_hash)
+                            {
+                                tracing::warn!(
+                                    block = %block_str,
+                                    error = %err,
+                                    "failed to clear validation-failure ledger"
+                                );
+                            }
                             match result_tx.send((block, res)).await {
                                 Ok(_) => {}
                                 Err(err) => {
@@ -280,6 +289,32 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorInstance<T> {
                         | Ok(BlockProcessOutcome::Malformed) => {}
                         Err(e) => {
                             tracing::error!(block = %block_str, error = %e, "block processing failed");
+                            match block_processor.note_validation_failure(&block.block_hash) {
+                                Ok(ValidationFailureDisposition::Retry) => {}
+                                Ok(ValidationFailureDisposition::PurgeAndQuarantine) => {
+                                    tracing::warn!(
+                                        block = %block_str,
+                                        "hard-failing block purged from buffer after \
+                                         reaching the validation-error attempt cap"
+                                    );
+                                    if let Err(purge_err) =
+                                        block_processor.purge_from_buffer_and_ack(&block).await
+                                    {
+                                        tracing::warn!(
+                                            block = %block_str,
+                                            error = %purge_err,
+                                            "purge after validation-error cap failed"
+                                        );
+                                    }
+                                }
+                                Err(err) => {
+                                    tracing::warn!(
+                                        block = %block_str,
+                                        error = %err,
+                                        "failed to record validation failure"
+                                    );
+                                }
+                            }
                         }
                     }
 
@@ -310,6 +345,17 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorInstance<T> {
                             // Enqueue pendants if we can mark them as queued/in-processing first.
                             for pendant in &buffer_pendants {
                                 let pendant_hash = BlockHash::from(pendant.block_hash.clone());
+                                if block_processor
+                                    .is_validation_failure_quarantined(&pendant_hash)
+                                    .unwrap_or(false)
+                                {
+                                    tracing::debug!(
+                                        "Skipping dependency-free pendant {} during \
+                                         validation-failure quarantine",
+                                        PrettyPrinter::build_string_bytes(&pendant.block_hash)
+                                    );
+                                    continue;
+                                }
                                 if blocks_in_processing.insert(pendant_hash.clone()) {
                                     let max_in_flight = max_blocks_in_processing();
                                     if blocks_in_processing.len() > max_in_flight {
