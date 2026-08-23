@@ -1182,6 +1182,16 @@ mod tests {
         // billion-item chunk that would allocate an unbounded reply
         // list.  Same hard-fork discipline as prior anchor rolls.
         //
+        // Anchor roll 2026-08-23 (10c-reclassification): docstring
+        // additions to Stdin.rho / Stdout.rho / Fs.rho documenting
+        // that stdio is intrinsically oracular (no cmode arg on
+        // Stdin/Stdout constructors; deploy authors must not route
+        // stdin bytes into consensus state).  Semantic no-op (no
+        // executable code change; only docstrings) but the composed
+        // source includes docstrings so the hash rolls.  Pinned
+        // invariant: `stdio_agents_have_no_cmode_arg_and_stay_oracular`
+        // in `rholang/tests/fileio_cost_spec.rs`.
+        //
         // Anchor roll 2026-08-23 (slice 9c-ii): Buffer.rho::toByteArray
         // gained a required `@cap` argument returning FSERR_QUOTA_EXCEEDED
         // on `ell > cap`, and the 4 File.rho callers (writeFrom /
@@ -1189,10 +1199,11 @@ mod tests {
         // `67108864` = MAX_WRITE_BYTES.  Genesis-source composition
         // changes; new anchor below.
         //
+        // Prior anchor: fbea2d02 (slice 9c-ii toByteArray cap, 2026-08-23).
         // Prior anchor: 126a35ab (slice 9c-i reply-payload cap, 2026-08-23).
         // Prior anchor: 5f41dafe (cost-accounted-rho merge, 2026-08-21).
         // Prior anchor: c243b4db (pre-merge).
-        const EXPECTED: &str = "fbea2d02074b46d1c4941cbc8da4642247c3e83f08694ee74158125a8d22133d";
+        const EXPECTED: &str = "af6f10fa70075be16c059beecde480cbcb8fe3179ab83f75211d8155cf7f520f";
         assert_eq!(
             hex, EXPECTED,
             "M-12: compose_fs_genesis_source() hash changed.  If intentional \

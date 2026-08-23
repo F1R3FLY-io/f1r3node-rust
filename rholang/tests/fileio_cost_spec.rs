@@ -1076,3 +1076,67 @@ fn buffer_to_byte_array_has_cap_arg_and_quota_check() {
          downstream fs_write MAX_WRITE_BYTES cap)."
     );
 }
+
+/// **Stdio is intrinsically oracular — no cmode arg on Stdin/Stdout.**
+///
+/// Reclassifies slice 10c (stdio replay wiring) from "deferred pending
+/// harness" to "not needed by design": nondeterministic data sources
+/// (stdin, stdout side effects, and any future non-reproducible
+/// primitive) cannot be consensus-mode.  Their byte streams are
+/// intrinsically per-node — followers were not there when the leader's
+/// stdin arrived, and re-issuing `libc::read(0, ...)` produces
+/// different bytes (or nothing at all).  Consensus mode requires
+/// deterministic per-node reproducibility, which stdio cannot provide.
+///
+/// Enforcement is at the Stdin.rho / Stdout.rho constructor signatures:
+/// both take a bare `(@fd)` with NO `cmode` argument, mirroring
+/// File.rho / Dir.rho which DO take `(fd, canonRoot, rel, mode, cmode)`.
+/// A missing `cmode` field means Stdin / Stdout instances literally
+/// cannot be minted with a consensus mode — the semantic contradiction
+/// is closed at the type-of-signature level rather than at runtime.
+///
+/// This pin holds the invariant by refusing:
+///   * `constructor(@fd, @cmode)` (arity-2 with cmode)
+///   * `constructor(@fd, @canonRoot, @rel, @mode, @cmode)` (File-style)
+///   * any signature containing `@cmode` in Stdin.rho or Stdout.rho
+///
+/// A regression that adds cmode plumbing to Stdin/Stdout would trip
+/// this pin, forcing the author to either (a) revert (preferred) or
+/// (b) deliberately redesign — with the plan-doc reclassification
+/// of stdio-replay to "needed" and matching harness work.
+///
+/// Sanity check: the invariant relies on the pin catching a
+/// substring match against `@cmode` in the constructor signature.
+/// A refactor that renames `cmode` to something else (e.g. `mode`)
+/// while keeping the same semantic would evade this pin — but
+/// `mode` collides with File.rho's actual open-mode arg, so the
+/// naming convention itself acts as a secondary trip-wire.
+#[test]
+fn stdio_agents_have_no_cmode_arg_and_stay_oracular() {
+    let stdin_src = include_str!("../../casper/src/main/resources/Stdin.rho");
+    let stdout_src = include_str!("../../casper/src/main/resources/Stdout.rho");
+
+    // Stdin / Stdout constructor signatures must be exactly `(@fd)`.
+    // The plain string check catches the canonical shape; the
+    // negative check on `@cmode` catches most plausible refactors.
+    for (name, src) in [("Stdin.rho", stdin_src), ("Stdout.rho", stdout_src)] {
+        assert!(
+            src.contains("constructor(@fd) {"),
+            "stdio-oracular regression: {name} must retain the arity-1 \
+             `constructor(@fd) {{` signature.  A regression here likely \
+             means someone widened the constructor to accept cmode or \
+             other state — which would falsely imply stdio has a \
+             consensus-mode variant.  Stdio is intrinsically oracular; \
+             see the constructor docstring for the full rationale."
+        );
+        assert!(
+            !src.contains("@cmode"),
+            "stdio-oracular regression: {name} contains a `@cmode` \
+             argument somewhere.  Stdio has no consensus-mode variant \
+             (bytes are non-reproducible across nodes by nature).  \
+             Either revert the addition OR — if genuinely intended — \
+             redesign slice 10c with a capture/replay harness AND \
+             reclassify this pin as obsolete."
+        );
+    }
+}

@@ -7,6 +7,28 @@
 // fd to the actual stdout/stderr at Fs construction; tests inject a
 // mock over mockFdCell.
 //
+// ## Consensus discipline — stdio is INTRINSICALLY ORACULAR
+//
+// See Stdin.rho's matching section for the full rationale.  Summary:
+// Stdout (and Stderr, which routes through this same agent) is a
+// process-level side effect.  Follower validators MUST NOT re-execute
+// the underlying `write(1, ...)` / `write(2, ...)` syscall on replay
+// — doing so would emit output twice on the leader's node (once at
+// commit time, once at replay time on the follower) and print
+// leader-observed bytes on unrelated follower processes.
+//
+// Constructor deliberately takes NO `cmode` argument — mirrors
+// Stdin.rho.  A consensus-mode Stdout cap would be a semantic
+// contradiction; there is no code path that produces one.  The
+// pin `stdio_agents_have_no_cmode_arg_and_stay_oracular` in
+// `fileio_cost_spec.rs` enforces this at source-scan level.
+//
+// Deploys that write to stdout as a side effect should treat those
+// writes as debug-only / leader-only — they will NOT be replayed
+// on followers, and the tuplespace state MUST NOT depend on
+// whether the write succeeded.  Consistent with the treatment of
+// oracular file writes on non-Consensus caps.
+//
 // ## Delivered methods (spec §1105-1114)
 //
 //   constructor(@fd) — powerbox-provided process stdout / stderr fd

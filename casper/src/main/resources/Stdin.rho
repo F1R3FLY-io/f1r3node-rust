@@ -5,6 +5,34 @@
 // actual stdin at Fs construction; tests inject a mock fsRead over
 // mockFdCell.
 //
+// ## Consensus discipline — stdio is INTRINSICALLY ORACULAR
+//
+// Stdin, Stdout, and Stderr are process-level fds bound at Fs
+// construction.  Their byte streams are inherently non-reproducible
+// across nodes:
+//   * interactive stdin arrives on human timing;
+//   * piped stdin may short-read or be interrupted mid-read;
+//   * a follower validator wasn't there when the leader's stdin
+//     bytes arrived, and re-issuing `libc::read(0, ...)` on the
+//     follower produces different bytes (or nothing).
+//
+// Constructor deliberately takes NO `cmode` argument (unlike
+// File.rho / Dir.rho constructors, which take
+// `(fd, canonRoot, rel, mode, cmode)`).  A consensus-mode Stdin
+// cap is a semantic contradiction and there is no code path that
+// produces one.  Any deploy that reads stdin and routes bytes into
+// consensus-observable tuplespace state will produce divergent
+// state across nodes and fail consensus with an
+// `InvalidCostSettlement` or state-root mismatch.  This is a
+// deploy-author responsibility, not enforced at the Fs layer —
+// consistent with the treatment of oracular file reads whose
+// contents also cannot be re-read reproducibly.
+//
+// Pin: `stdio_agents_have_no_cmode_arg_and_stay_oracular` in
+// `fileio_cost_spec.rs` fails if any future refactor adds a
+// `cmode` argument to Stdin's / Stdout's constructor, which would
+// falsely suggest stdio has a consensus-mode variant.
+//
 // ## Delivered methods (spec §1079-1085)
 //
 //   constructor(@fd) — powerbox-provided process stdin fd

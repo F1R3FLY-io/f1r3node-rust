@@ -209,6 +209,20 @@ new Fs, fsBundleP,
     // Fresh-mint per call.  Two calls on the same Fs return DISTINCT
     // caps; closing one does not affect any subsequent call.  Fd
     // cell is read non-linearly so unbounded parallel calls are safe.
+    //
+    // ## Consensus discipline — stdio is INTRINSICALLY ORACULAR
+    //
+    // The Stdin / Stdout constructors take a fd only, no `cmode`
+    // argument (see Stdin.rho / Stdout.rho docstrings for full
+    // rationale).  Consensus-mode deploys are structurally still
+    // able to call `Fs.stdin()` / `Fs.stdout()` / `Fs.stderr()` —
+    // there is no runtime gate here — but any bytes read from
+    // stdin or side-effects observed via stdout MUST NOT flow into
+    // consensus-observable tuplespace state.  A deploy that routes
+    // stdin bytes into consensus state will diverge across nodes
+    // and fail consensus with a state-root mismatch.  This is a
+    // deploy-author invariant, consistent with the treatment of
+    // oracular file reads.
     method stdin() {
       for (@fd <<- @[*private, *fsStdinFdP]) {
         for (@cap <- Stdin!?(fd)) {
