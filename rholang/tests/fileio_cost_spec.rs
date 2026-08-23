@@ -755,3 +755,65 @@ fn entries_family_charges_setup_only_pending_two_branch_impl() {
         );
     }
 }
+
+// -------- Slice 9c-i regression pin --------------------------------
+
+/// **Slice 9c-i regression pin — Stream.rho chunk(n) payload cap.**
+///
+/// Enforces the `MAX_CHUNK_ITEMS=65536` cap on `Stream.rho::chunk(@n)`:
+/// n above the cap must return `FSERR_QUOTA_EXCEEDED` before any
+/// gathering starts.  Defense-in-depth against a caller requesting
+/// a billion-item chunk that would allocate an unbounded reply list
+/// AND against the per-item runtime cost cascading through
+/// `gatherN` past the caller's intended budget.
+///
+/// Under D3, silently removing the cap would let a deploy consume
+/// unbounded reply-payload allocation for a small charged cost
+/// (`chunk(n)` charges through the underlying stream `next()`
+/// dispatches, one per item — but the per-item consumption still
+/// runs unless capped).  Not a leader/replay-divergence risk (the
+/// same code runs on both), but a real DoS/fairness concern.
+///
+/// String-scan pin because Stream.rho is a `.rho` resource, not
+/// Rust code; the cap is embedded as an integer literal (Rholang
+/// has no shared-constant mechanism cross-file).  A silent drift
+/// would ALSO trip `compose_fs_genesis_source_golden_hex` in
+/// `casper::genesis::contracts::fs_genesis`, so this pin is
+/// defense-in-depth on top of the golden-hash discipline.
+#[test]
+fn stream_chunk_enforces_max_chunk_items_cap() {
+    let src = include_str!("../../casper/src/main/resources/Stream.rho");
+    // The cap MUST live inside the `method chunk(@n)` block.
+    let start = src
+        .find("method chunk(@n) {")
+        .expect("Stream.rho must define method chunk(@n)");
+    let after = &src[start..];
+    // Bound the scan at the next `method ` declaration in Stream.rho.
+    let end = after[1..]
+        .find("method ")
+        .map(|i| i + 1)
+        .unwrap_or(after.len());
+    let body = &after[..end];
+
+    assert!(
+        body.contains("65536"),
+        "slice 9c-i cap regression: Stream.rho::chunk(@n) must enforce \
+         MAX_CHUNK_ITEMS=65536.  The literal `65536` was not found in the \
+         method body; a silent removal of the cap opens an unbounded \
+         reply-payload allocation vector."
+    );
+    assert!(
+        body.contains("FSERR_QUOTA_EXCEEDED"),
+        "slice 9c-i cap regression: Stream.rho::chunk(@n) must return \
+         `FSERR_QUOTA_EXCEEDED` when n exceeds the cap.  Return code was \
+         not found in the method body; a change to a different error code \
+         (e.g. FSERR_BAD_ARG) would break caller error-taxonomy discipline."
+    );
+    assert!(
+        body.contains("MAX_CHUNK_ITEMS"),
+        "slice 9c-i cap regression: Stream.rho::chunk(@n) must reference \
+         `MAX_CHUNK_ITEMS` in either its cap comparison or its error \
+         message.  Removing the identifier while keeping the literal 65536 \
+         hides the design intent from readers."
+    );
+}

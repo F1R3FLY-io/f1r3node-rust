@@ -163,12 +163,32 @@ new foldConcurrentDispatch, foldConcurrentWorker, mapReduceDispatch, mapReduceWo
     // list via the chunk-builder.  Peek at builder via <<- (peek)
     // reads paramsP without consuming — safe because params are
     // immutable while the stream is not closed.
+    //
+    // Phase 9 slice 9c-i: reply-payload cap.  `n` is capped at 65536
+    // (matches `MAX_ENTRIES` in fileio's Rust `handlers.rs`).  Above
+    // the cap the method returns `FSERR_QUOTA_EXCEEDED` before any
+    // gathering starts.  Defense-in-depth against a caller requesting
+    // a billion-item chunk that would allocate an unbounded reply
+    // list AND against the per-item runtime cost cascading through
+    // `gatherN` past the caller's intended budget.  LineStream chunk
+    // returns `FSERR_UNSUPPORTED` earlier via the chunk-builder
+    // dispatch, so this cap only bites `EntryStream.chunk(n)` and
+    // `ByteStream.chunk(n)` — matching the plan doc §Phase 9 line
+    // 1225 slice 9c deliverable.  The cap number 65536 is embedded
+    // as an integer literal (Rholang has no shared-constant
+    // mechanism cross-file); the golden-hash pin in
+    // `compose_fs_genesis_source_golden_hex` catches any accidental
+    // drift.
     method chunk(@n) {
       match n {
         i /\ Int => {
           match i <= 0 {
             true => return!([false, "FSERR_BAD_ARG", "n must be positive"])
-            false => {
+            false => match i > 65536 {
+              true => return!(
+                [false, "FSERR_QUOTA_EXCEEDED",
+                 "chunk n exceeds MAX_CHUNK_ITEMS=65536"])
+              false => {
               // Early exit if already terminal.
               for (@state <<- @[*private, *stateP]) {
                 match state {
@@ -228,6 +248,7 @@ new foldConcurrentDispatch, foldConcurrentWorker, mapReduceDispatch, mapReduceWo
                   _ => return!([false, "FSERR_CLOSED", "stream state unrecognized"])
                 }
               }
+            }
             }
           }
         }
