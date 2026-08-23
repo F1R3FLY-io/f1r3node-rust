@@ -1,6 +1,6 @@
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/PrettyPrinter.scala
 
-use std::collections::HashSet;
+use std::cell::OnceCell;
 
 use models::rhoapi::connective::ConnectiveInstance;
 use models::rhoapi::expr::ExprInstance;
@@ -13,11 +13,21 @@ use models::rhoapi::{
 };
 use models::rust::bundle_ops::BundleOps;
 use models::rust::epathmap_trie_codec::EPathMapMode;
+use models::rust::par_bag::{Multiplicity, ParBagComponent};
 use models::rust::par_map_type_mapper::ParMapTypeMapper;
 use models::rust::par_set_type_mapper::ParSetTypeMapper;
 use models::rust::pathmap_integration::render_cursor_position;
+use models::rust::rholang::match_schema::RhoMatchProgram;
+use models::rust::rholang::match_schema_tables::{
+    BUNDLE_RHO_MATCH_PROGRAM, CONNECTIVE_RHO_MATCH_PROGRAM, EXPR_RHO_MATCH_PROGRAM,
+    IF_RHO_MATCH_PROGRAM,
+};
+use models::rust::rholang::protobuf_cursor::{
+    CanonicalByteRange, CanonicalParRegionIndex, CanonicalRegionDelimitedRun, ProtobufRegion,
+};
+use models::rust::rholang::protobuf_decoder;
+use models::rust::rholang::protobuf_region::cut_at_par;
 use shared::rust::shared::printer::{Audience, Printer};
-use shared::rust::shared::string_ops::wrap_with_braces;
 use typed_arena::Arena;
 
 use super::errors::InterpreterError;
@@ -566,7 +576,7 @@ impl PrettyPrinter {
         // Instead of panicking on errors, return a fallback string
         // This matches Scala behavior where errors are handled gracefully
         match self._build_string_from_expr(e) {
-            Ok(str) => self.cap(&str),
+            Ok(str) => str,
             Err(err) => {
                 // Return a fallback message instead of panicking
                 format!("<unprintable expr: {}>", err)
@@ -592,7 +602,7 @@ impl PrettyPrinter {
         // Instead of panicking on unknown types, return a fallback string
         // This matches Scala behavior where errors are handled gracefully
         match self._build_string_from_message(node, 0) {
-            Ok(str) => self.cap(&str),
+            Ok(str) => str,
             // ⚠ The fallback is NOT capped. That asymmetry is the pre-existing
             // behaviour and the driver's `Catch` frame reproduces it.
             Err(err) => format!("<unprintable: {}>", err),
@@ -626,7 +636,7 @@ impl PrettyPrinter {
         // Instead of panicking on errors, return a fallback string
         // This matches Scala behavior where errors are handled gracefully
         match self._build_channel_string(m, 0) {
-            Ok(str) => self.cap(&str),
+            Ok(str) => str,
             Err(err) => {
                 // Return a fallback message instead of panicking
                 format!("<unprintable channel: {}>", err)
@@ -998,10 +1008,12 @@ mod drive {
     //! | `CaseStep { .. }` | one `MatchCase`: its four mutations, then its children |
     //! | `Combine(k)` | run the post-order continuation `k` |
     //!
-    //! The value stack is a plain `Vec<String>`. Every work item pushes exactly
-    //! one value; every continuation pops the values of its children (which,
-    //! because children are pushed in **reverse**, sit on the stack **in
-    //! order**) and pushes exactly one.
+    //! The value stack is a `Vec<RenderId>` into a flat, length-cached render
+    //! arena. Every work item pushes exactly one value; every continuation pops
+    //! the values of its children (which, because children are pushed in
+    //! **reverse**, sit on the stack **in order**) and pushes exactly one. A
+    //! nested result is flattened once, at the end, rather than copied once per
+    //! ancestor.
     //!
     //! ---
     //!
@@ -1156,7 +1168,7 @@ mod drive {
     //!
     //! ---
     //!
-    //! # ★ Owned canonical collections stay inside the same drive
+    //! # ★ Canonical collections stay byte-native inside the same drive
     //!
     //! `ESetBody` and `EMapBody` preserve their historical canonical-ordering
     //! semantics by passing the source collection through `ParSetTypeMapper` or
@@ -1165,14 +1177,13 @@ mod drive {
     //! borrowed children on the existing worklist. No nested printer drive is
     //! opened.
     //!
-    //! Canonical sorting recursively canonicalizes every nested collection in
-    //! the returned tree. [`CanonicalCollections`] records those collection
-    //! addresses with an iterative child walk. When the PDA later reaches a
-    //! recorded set or map, its stored member order is already authoritative;
-    //! sorting it again would repeatedly canonicalize the remaining suffix of a
-    //! nested chain and turn a linear traversal into a quadratic one. The
-    //! registry visits each canonical `Par` at most once and lives exactly as
-    //! long as the arena whose addresses it records.
+    //! Resident `Par` values now take the stronger route: their canonical
+    //! protobuf body is retained once as a [`ProtobufRegion`], nested `Par`
+    //! fields become shared ranges, and Set/Map shallow shells use those ranges
+    //! directly. Thus no nested canonical collection is re-sorted or projected
+    //! into another owned `Vec<Par>` at all. Direct `Expr` entry points still
+    //! use the historical mappers because an arbitrary standalone `Expr` has
+    //! not passed through ParBag canonicalization.
     //!
     //! `EPathmapBody` and `EZipperBody` follow the same ownership rule: decoded
     //! trie keys and cursor segments live in the arena, while PathMap values are
@@ -1413,7 +1424,386 @@ mod drive {
         /// `EndCatch` — which sits one slot BELOW — in place.
         work_mark: usize,
         vals_mark: usize,
+        render_mark: usize,
         failed: bool,
+    }
+
+    /// A stack-safe, length-cached render DAG. Nodes refer to earlier nodes by
+    /// index, so ownership and drop are flat even when the rendered Rholang is
+    /// thousands of collections deep.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    struct RenderId(usize);
+
+    struct RenderNode {
+        byte_len: u128,
+        kind: RenderKind,
+    }
+
+    enum RenderKind {
+        Leaf(String),
+        Concat(RenderId, RenderId),
+        /// `base[..base_end]` followed by `dots` ASCII full stops. Repeated
+        /// interior caps are normalized into this one node rather than making
+        /// a chain of capped render nodes.
+        Capped {
+            base: RenderId,
+            base_end: u128,
+            dots: u128,
+        },
+        RepeatJoined {
+            child: RenderId,
+            separator: RenderId,
+            count: u64,
+        },
+    }
+
+    #[derive(Default)]
+    struct RenderArena {
+        nodes: Vec<RenderNode>,
+    }
+
+    impl RenderArena {
+        fn mark(&self) -> usize { self.nodes.len() }
+
+        fn truncate(&mut self, mark: usize) { self.nodes.truncate(mark); }
+
+        fn text(&mut self, text: impl Into<String>) -> RenderId {
+            let text = text.into();
+            let id = RenderId(self.nodes.len());
+            self.nodes.push(RenderNode {
+                byte_len: text.len() as u128,
+                kind: RenderKind::Leaf(text),
+            });
+            id
+        }
+
+        fn empty(&mut self) -> RenderId { self.text(String::new()) }
+
+        fn len(&self, id: RenderId) -> u128 { self.nodes[id.0].byte_len }
+
+        fn concat(&mut self, left: RenderId, right: RenderId) -> RenderId {
+            if self.len(left) == 0 {
+                return right;
+            }
+            if self.len(right) == 0 {
+                return left;
+            }
+            let byte_len = self
+                .len(left)
+                .checked_add(self.len(right))
+                .expect("protobuf-length preflight bounds rendered output length");
+            let id = RenderId(self.nodes.len());
+            self.nodes.push(RenderNode {
+                byte_len,
+                kind: RenderKind::Concat(left, right),
+            });
+            id
+        }
+
+        fn join(&mut self, parts: Vec<RenderId>, separator: &str) -> RenderId {
+            let mut parts = parts.into_iter();
+            let Some(mut result) = parts.next() else {
+                return self.empty();
+            };
+            for part in parts {
+                let separator = self.text(separator);
+                result = self.concat(result, separator);
+                result = self.concat(result, part);
+            }
+            result
+        }
+
+        fn repeat_joined(&mut self, child: RenderId, separator: RenderId, count: u64) -> RenderId {
+            if count == 0 {
+                return self.empty();
+            }
+            if count == 1 {
+                return child;
+            }
+            let count128 = u128::from(count);
+            let byte_len = self
+                .len(child)
+                .checked_mul(count128)
+                .and_then(|children| {
+                    self.len(separator)
+                        .checked_mul(count128 - 1)
+                        .and_then(|separators| children.checked_add(separators))
+                })
+                .expect("protobuf-length preflight bounds repeated rendered output length");
+            let id = RenderId(self.nodes.len());
+            self.nodes.push(RenderNode {
+                byte_len,
+                kind: RenderKind::RepeatJoined {
+                    child,
+                    separator,
+                    count,
+                },
+            });
+            id
+        }
+
+        fn byte_at(&self, mut id: RenderId, mut index: u128) -> u8 {
+            assert!(index < self.len(id));
+            loop {
+                match &self.nodes[id.0].kind {
+                    RenderKind::Leaf(text) => {
+                        return text.as_bytes()
+                            [usize::try_from(index).expect("a leaf byte offset is addressable")];
+                    }
+                    RenderKind::Concat(left, right) => {
+                        let left_len = self.len(*left);
+                        if index < left_len {
+                            id = *left;
+                        } else {
+                            index -= left_len;
+                            id = *right;
+                        }
+                    }
+                    RenderKind::Capped {
+                        base,
+                        base_end,
+                        dots: _,
+                    } => {
+                        if index < *base_end {
+                            id = *base;
+                        } else {
+                            return b'.';
+                        }
+                    }
+                    RenderKind::RepeatJoined {
+                        child,
+                        separator,
+                        count: _,
+                    } => {
+                        let child_len = self.len(*child);
+                        if index < child_len {
+                            id = *child;
+                            continue;
+                        }
+                        index -= child_len;
+                        let cycle = self
+                            .len(*separator)
+                            .checked_add(child_len)
+                            .expect("a repeated render cycle length was checked at construction");
+                        let offset = index % cycle;
+                        if offset < self.len(*separator) {
+                            id = *separator;
+                            index = offset;
+                        } else {
+                            id = *child;
+                            index = offset - self.len(*separator);
+                        }
+                    }
+                }
+            }
+        }
+
+        fn is_char_boundary(&self, id: RenderId, index: u128) -> bool {
+            index == 0
+                || index == self.len(id)
+                || (self.byte_at(id, index) & 0b1100_0000) != 0b1000_0000
+        }
+
+        fn floor_char_boundary(&self, id: RenderId, mut index: u128) -> u128 {
+            while !self.is_char_boundary(id, index) {
+                index -= 1;
+            }
+            index
+        }
+
+        fn cap(&mut self, audience: Audience, source: RenderId) -> RenderId {
+            let end = match audience {
+                Audience::Operator => match Printer::output_capped() {
+                    Some(n) => {
+                        let n = n as u128;
+                        if n > self.len(source) {
+                            // Preserve the standard-library slice panic text
+                            // used by the differential to locate cap sites.
+                            let rendered = self.flatten(source);
+                            let _ = Printer::cap(audience, &rendered);
+                            unreachable!("an out-of-range operator cap must panic")
+                        }
+                        self.floor_char_boundary(source, n)
+                    }
+                    None => return source,
+                },
+                Audience::Consensus => {
+                    if self.len(source) <= Printer::CONSENSUS_TRIM_AFTER as u128 {
+                        return source;
+                    }
+                    self.floor_char_boundary(source, Printer::CONSENSUS_TRIM_AFTER as u128)
+                }
+            };
+
+            let (base, base_end, dots) = match self.nodes[source.0].kind {
+                RenderKind::Capped {
+                    base,
+                    base_end,
+                    dots: _,
+                } if end <= base_end => (base, end, 3u128),
+                RenderKind::Capped {
+                    base,
+                    base_end,
+                    dots: _,
+                } => (
+                    base,
+                    base_end,
+                    end.checked_sub(base_end)
+                        .and_then(|kept_dots| kept_dots.checked_add(3))
+                        .expect("pretty-printer cap length exceeds the addressable range"),
+                ),
+                _ => (source, end, 3),
+            };
+            let byte_len = base_end
+                .checked_add(dots)
+                .expect("protobuf-length preflight bounds capped rendered output length");
+            let id = RenderId(self.nodes.len());
+            self.nodes.push(RenderNode {
+                byte_len,
+                kind: RenderKind::Capped {
+                    base,
+                    base_end,
+                    dots,
+                },
+            });
+            id
+        }
+
+        /// Whether the already-built prefix fixes every byte the final public
+        /// cap can observe. Stateful suffixes must still execute, but their
+        /// render nodes can be discarded once this becomes true.
+        fn final_prefix_complete(&self, audience: Audience, source: RenderId) -> bool {
+            match audience {
+                Audience::Operator => {
+                    Printer::output_capped().is_some_and(|limit| self.len(source) >= limit as u128)
+                }
+                Audience::Consensus => self.len(source) > Printer::CONSENSUS_TRIM_AFTER as u128,
+            }
+        }
+
+        fn flatten_final(&self, root: RenderId) -> Result<String, InterpreterError> {
+            usize::try_from(self.len(root)).map_err(|_| {
+                InterpreterError::DecodeError(
+                    "pretty-printer output length exceeds the addressable range".to_string(),
+                )
+            })?;
+            Ok(self.flatten(root))
+        }
+
+        fn flatten(&self, root: RenderId) -> String {
+            enum Piece {
+                Node(RenderId, u128),
+                Dots(u128),
+                Repeat {
+                    child: RenderId,
+                    separator: RenderId,
+                    remaining: u64,
+                    budget: u128,
+                    first: bool,
+                },
+            }
+
+            let capacity = usize::try_from(self.len(root))
+                .expect("pretty-printer output length exceeds the addressable range");
+            let mut output = String::with_capacity(capacity);
+            let mut work = vec![Piece::Node(root, self.len(root))];
+            while let Some(piece) = work.pop() {
+                match piece {
+                    Piece::Dots(count) => output.extend(std::iter::repeat_n(
+                        '.',
+                        usize::try_from(count).expect("a flattened cap is addressable"),
+                    )),
+                    Piece::Repeat {
+                        child,
+                        separator,
+                        remaining,
+                        budget,
+                        first,
+                    } => {
+                        if remaining == 0 || budget == 0 {
+                            continue;
+                        }
+                        let prefix = if first { None } else { Some(separator) };
+                        let prefix_len = prefix.map_or(0, |value| self.len(value));
+                        let child_budget = budget.saturating_sub(prefix_len).min(self.len(child));
+                        let consumed = prefix_len
+                            .min(budget)
+                            .checked_add(child_budget)
+                            .expect("a flattened repeat cannot consume more than its budget");
+                        if remaining > 1 && budget > consumed {
+                            work.push(Piece::Repeat {
+                                child,
+                                separator,
+                                remaining: remaining - 1,
+                                budget: budget - consumed,
+                                first: false,
+                            });
+                        }
+                        if child_budget != 0 {
+                            work.push(Piece::Node(child, child_budget));
+                        }
+                        if let Some(prefix) = prefix {
+                            if budget != 0 {
+                                work.push(Piece::Node(prefix, budget.min(prefix_len)));
+                            }
+                        }
+                    }
+                    Piece::Node(id, budget) => match &self.nodes[id.0].kind {
+                        RenderKind::Leaf(text) => output.push_str(
+                            &text[..usize::try_from(budget).expect("a leaf prefix is addressable")],
+                        ),
+                        RenderKind::Concat(left, right) => {
+                            let left_len = self.len(*left);
+                            if budget > left_len {
+                                work.push(Piece::Node(*right, budget - left_len));
+                            }
+                            work.push(Piece::Node(*left, budget.min(left_len)));
+                        }
+                        RenderKind::Capped {
+                            base,
+                            base_end,
+                            dots,
+                        } => {
+                            let kept_base = budget.min(*base_end);
+                            let kept_dots = budget.saturating_sub(*base_end).min(*dots);
+                            if kept_dots != 0 {
+                                work.push(Piece::Dots(kept_dots));
+                            }
+                            work.push(Piece::Node(*base, kept_base));
+                        }
+                        RenderKind::RepeatJoined {
+                            child,
+                            separator,
+                            count,
+                        } => work.push(Piece::Repeat {
+                            child: *child,
+                            separator: *separator,
+                            remaining: *count,
+                            budget,
+                            first: true,
+                        }),
+                    },
+                }
+            }
+            output
+        }
+
+        fn wrap_with_braces(&mut self, value: RenderId) -> RenderId {
+            // Any valid i32 is at most 11 bytes (`-2147483648`). Materialize
+            // only that bounded candidate; longer renders cannot parse.
+            let is_i32 = self.len(value) <= 11 && self.flatten(value).parse::<i32>().is_ok();
+            let already_parenthesized = self.len(value) >= 2
+                && self.byte_at(value, 0) == b'('
+                && self.byte_at(value, self.len(value) - 1) == b')';
+            if is_i32 || already_parenthesized {
+                value
+            } else {
+                let open = self.text("(");
+                let close = self.text(")");
+                let with_open = self.concat(open, value);
+                self.concat(with_open, close)
+            }
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -1424,6 +1814,52 @@ mod drive {
     enum PpMutation {
         /// `self.bound_shift += n`
         AddBoundShift(i32),
+    }
+
+    #[derive(Clone, Copy)]
+    enum EncodedFamily {
+        Send,
+        Receive,
+        Bundle,
+        New,
+        Match,
+        Unforgeable,
+        Connective,
+        If,
+    }
+
+    #[derive(Clone, Copy)]
+    enum PlannedFamily {
+        Expr,
+        Component(EncodedFamily),
+    }
+
+    #[derive(Clone, Copy)]
+    enum SuffixRetention {
+        None,
+        /// This Par is itself the input to the next cap (or the final cap).
+        FinalPrefix,
+        /// ChannelK must inspect/render the whole Par only while it is at most
+        /// 60 bytes. Past that threshold its transform is prefix-preserving.
+        ChannelFinalPrefix,
+    }
+
+    struct EncodedEndpoint {
+        family: PlannedFamily,
+        region: ProtobufRegion,
+        multiplicity: Multiplicity,
+        repeat_is_render_neutral: bool,
+        /// A stateful component is decoded on its first logical occurrence and
+        /// borrowed for the rest. This keeps the repeat continuation O(1)
+        /// without retaining one decoded recursive shell per occurrence. It
+        /// does not make the whole printer constant-memory: repeated `New`
+        /// must still append one semantically observable `NewBindRange` to
+        /// `news_shift_indices` per occurrence.
+        decoded: OnceCell<OwnedPpNode>,
+    }
+
+    struct EncodedParPlan {
+        endpoints: Vec<EncodedEndpoint>,
     }
 
     /// Which entry point a lazily-projected [`PpWork::OptPar`] child feeds.
@@ -1608,13 +2044,55 @@ mod drive {
         Literal(String),
         /// `_build_string_from_message(node, indent)`
         Node(PpNode<'a>, usize),
+        /// `Node`, with its result consumed immediately by `EndCatch`.
+        CappedNode(PpNode<'a>, usize),
+        /// A canonical protobuf `Par` range sharing the root message buffer.
+        EncodedPar(ProtobufRegion, usize),
+        /// A canonical protobuf `Expr` range. Nested `Par` fields are cut into
+        /// ranges before the shallow shell is decoded.
+        EncodedExpr(ProtobufRegion),
+        EncodedComponent(EncodedFamily, ProtobufRegion, usize),
+        /// A resident PathMap-backed `Par` whose protobuf length has already
+        /// been checked. The public root uses this variant so an overflow is
+        /// rejected before the drive allocates any traversal state.
+        PreflightedPar {
+            par: &'a Par,
+            indent: usize,
+            retention: SuffixRetention,
+        },
+        /// The corresponding channel entry after its up-front preflight.
+        PreflightedChannel {
+            par: &'a Par,
+            indent: usize,
+            result_capped: bool,
+        },
+        /// Decode a resident component endpoint at most once, even when its
+        /// multiplicity requires exact stateful repetition.
+        ResidentComponent(&'a EncodedEndpoint, usize),
+        ResidentParDrive {
+            plan: &'a EncodedParPlan,
+            endpoint: usize,
+            remaining: u64,
+            accumulated: Option<RenderId>,
+            indent: usize,
+            retention: SuffixRetention,
+        },
         /// `_build_string_from_expr(e)`
         ExprBody(&'a Expr),
         /// `_build_channel_string(p, indent)`
         Channel(&'a Par, usize),
+        /// `Channel`, with its transformed result consumed by `EndCatch`.
+        CappedChannel(&'a Par, usize),
         /// An `Option<Par>` child projected at POP time, so that its `.expect`
         /// fires in the same order the recursive form fired it in.
         OptPar {
+            field: &'a Option<Par>,
+            message: &'static str,
+            render: OptRender,
+            indent: usize,
+        },
+        /// `OptPar`, with its projected render consumed by `EndCatch`.
+        CappedOptPar {
             field: &'a Option<Par>,
             message: &'static str,
             render: OptRender,
@@ -1721,8 +2199,8 @@ mod drive {
         ConnectiveK {
             conn: &'a Connective,
         },
-        ParK {
-            par: &'a Par,
+        EncodedParK {
+            child_count: usize,
             indent: usize,
         },
         ChannelK {
@@ -1738,6 +2216,24 @@ mod drive {
         MapK {
             map: &'a EMap,
             entry_count: usize,
+        },
+        EncodedSetK {
+            remainder: Option<Var>,
+            child_count: usize,
+        },
+        EncodedMapK {
+            remainder: Option<Var>,
+            entry_count: usize,
+        },
+        ResidentParOccurrenceK {
+            plan: &'a EncodedParPlan,
+            endpoint: usize,
+            consumed: u64,
+            remaining_after: u64,
+            accumulated: Option<RenderId>,
+            indent: usize,
+            render_mark: usize,
+            retention: SuffixRetention,
         },
 
         /// ⚠ TEST ONLY. Pops exactly three children and joins them with
@@ -1756,6 +2252,22 @@ mod drive {
     /// which is what [`step`] records as `work_mark`. Every catching site goes
     /// through here, so that invariant is structural.
     fn push_catch<'a>(work: &mut Vec<PpWork<'a>>, kind: CatchKind, guarded: PpWork<'a>) {
+        let guarded = match guarded {
+            PpWork::Node(node, indent) => PpWork::CappedNode(node, indent),
+            PpWork::Channel(par, indent) => PpWork::CappedChannel(par, indent),
+            PpWork::OptPar {
+                field,
+                message,
+                render,
+                indent,
+            } => PpWork::CappedOptPar {
+                field,
+                message,
+                render,
+                indent,
+            },
+            guarded => guarded,
+        };
         work.push(PpWork::Combine(PpKont::EndCatch));
         work.push(guarded);
         work.push(PpWork::BeginCatch(kind));
@@ -1765,18 +2277,45 @@ mod drive {
     // entry points
     // -----------------------------------------------------------------------
 
+    #[derive(Clone, Copy)]
+    enum FinishPolicy {
+        /// Public entry points cap the symbolic render before flattening it.
+        Capped,
+        /// Test-only catch probes model an interior `_build_*` call and return
+        /// its uncapped value exactly as the historical probe did.
+        #[cfg(test)]
+        Raw,
+    }
+
+    fn preflight_par(par: &Par) -> Result<(), InterpreterError> {
+        par.protobuf_encoded_len()
+            .map(|_| ())
+            .map_err(|error| InterpreterError::DecodeError(error.to_string()))
+    }
+
     /// The machine form of `_build_string_from_message`.
     pub(super) fn drive_message(
         pp: &mut PrettyPrinter,
         node: PpNode<'_>,
         indent: usize,
     ) -> Result<String, InterpreterError> {
-        run(pp, PpWork::Node(node, indent))
+        let seed = match node {
+            PpNode::Par(par) => {
+                preflight_par(par)?;
+                PpWork::PreflightedPar {
+                    par,
+                    indent,
+                    retention: SuffixRetention::FinalPrefix,
+                }
+            }
+            node => PpWork::Node(node, indent),
+        };
+        run(pp, seed, FinishPolicy::Capped)
     }
 
     /// The machine form of `_build_string_from_expr`.
     pub(super) fn drive_expr(pp: &mut PrettyPrinter, e: &Expr) -> Result<String, InterpreterError> {
-        run(pp, PpWork::ExprBody(e))
+        run(pp, PpWork::ExprBody(e), FinishPolicy::Capped)
     }
 
     /// The machine form of `_build_channel_string`.
@@ -1785,7 +2324,16 @@ mod drive {
         p: &Par,
         indent: usize,
     ) -> Result<String, InterpreterError> {
-        run(pp, PpWork::Channel(p, indent))
+        preflight_par(p)?;
+        run(
+            pp,
+            PpWork::PreflightedChannel {
+                par: p,
+                indent,
+                result_capped: true,
+            },
+            FinishPolicy::Capped,
+        )
     }
 
     /// Initial capacity for both stacks. A `Par` of any interesting size
@@ -1793,6 +2341,25 @@ mod drive {
     /// triples; preallocating removes the first several growth reallocations
     /// from every render.
     const STACK_HINT: usize = 64;
+
+    #[cfg(test)]
+    #[derive(Clone, Copy, Debug, Default)]
+    pub(super) struct PrettyDriveStats {
+        pub root_protobuf_buffers: usize,
+        pub root_protobuf_bytes: usize,
+        pub encoded_pars: usize,
+        pub encoded_exprs: usize,
+        pub cut_field_visits: usize,
+        pub distinct_endpoint_copies: usize,
+        pub repeat_nodes: usize,
+        pub occurrence_renders: u64,
+        pub render_nodes: usize,
+        pub output_bytes: usize,
+    }
+
+    #[cfg(not(test))]
+    #[derive(Default)]
+    struct PrettyDriveStats;
 
     /// One decoded authoritative ParBag endpoint retained for one printer
     /// drive. This heterogeneous arena keeps component borrows stable without
@@ -1825,36 +2392,143 @@ mod drive {
         }
     }
 
-    #[derive(Default)]
-    struct CanonicalCollections {
-        collections: HashSet<*const ()>,
-    }
-
-    impl CanonicalCollections {
-        fn collection_id<T>(value: &T) -> *const () { std::ptr::from_ref(value).cast() }
-
-        fn contains<T>(&self, value: &T) -> bool {
-            self.collections.contains(&Self::collection_id(value))
-        }
-
-        fn mark_expr(&mut self, expr: &Expr) {
-            match expr.expr_instance.as_ref() {
-                Some(ExprInstance::ESetBody(set)) => {
-                    self.collections.insert(Self::collection_id(set));
-                }
-                Some(ExprInstance::EMapBody(map)) => {
-                    self.collections.insert(Self::collection_id(map));
-                }
-                _ => {}
-            }
+    fn decode_component(
+        family: EncodedFamily,
+        region: &ProtobufRegion,
+    ) -> Result<OwnedPpNode, InterpreterError> {
+        let decode_error =
+            |error: prost::DecodeError| InterpreterError::DecodeError(error.to_string());
+        match family {
+            EncodedFamily::Send => protobuf_decoder::decode_send(region.as_bytes())
+                .map(OwnedPpNode::Send)
+                .map_err(decode_error),
+            EncodedFamily::Receive => protobuf_decoder::decode_receive(region.as_bytes())
+                .map(OwnedPpNode::Receive)
+                .map_err(decode_error),
+            EncodedFamily::Bundle => protobuf_decoder::decode_bundle(region.as_bytes())
+                .map(OwnedPpNode::Bundle)
+                .map_err(decode_error),
+            EncodedFamily::New => protobuf_decoder::decode_new(region.as_bytes())
+                .map(OwnedPpNode::New)
+                .map_err(decode_error),
+            EncodedFamily::Match => protobuf_decoder::decode_match(region.as_bytes())
+                .map(OwnedPpNode::Match)
+                .map_err(decode_error),
+            EncodedFamily::Unforgeable => protobuf_decoder::decode_g_unforgeable(region.as_bytes())
+                .map(OwnedPpNode::Unforgeable)
+                .map_err(decode_error),
+            EncodedFamily::Connective => protobuf_decoder::decode_connective(region.as_bytes())
+                .map(OwnedPpNode::Connective)
+                .map_err(decode_error),
+            EncodedFamily::If => protobuf_decoder::decode_if(region.as_bytes())
+                .map(OwnedPpNode::If)
+                .map_err(decode_error),
         }
     }
 
     /// The single LIFO loop.
-    fn run<'root>(pp: &mut PrettyPrinter, seed: PpWork<'root>) -> Result<String, InterpreterError> {
+    fn run<'root>(
+        pp: &mut PrettyPrinter,
+        seed: PpWork<'root>,
+        finish: FinishPolicy,
+    ) -> Result<String, InterpreterError> {
         let decoded_entries = Arena::new();
         let decoded_components = Arena::new();
-        run_with_arena(pp, seed, &decoded_entries, &decoded_components)
+        let encoded_plans = Arena::new();
+        let mut stats = PrettyDriveStats::default();
+        run_with_arena(
+            pp,
+            seed,
+            &decoded_entries,
+            &decoded_components,
+            &encoded_plans,
+            &mut stats,
+            finish,
+        )
+    }
+
+    #[cfg(test)]
+    pub(super) fn drive_message_stats(
+        pp: &mut PrettyPrinter,
+        par: &Par,
+    ) -> Result<(String, PrettyDriveStats), InterpreterError> {
+        let (rendered, stats) = drive_message_stats_outcome(pp, par);
+        rendered.map(|rendered| (rendered, stats))
+    }
+
+    #[cfg(test)]
+    pub(super) fn drive_message_stats_outcome(
+        pp: &mut PrettyPrinter,
+        par: &Par,
+    ) -> (Result<String, InterpreterError>, PrettyDriveStats) {
+        let mut stats = PrettyDriveStats::default();
+        if let Err(error) = preflight_par(par) {
+            return (Err(error), stats);
+        }
+        let decoded_entries = Arena::new();
+        let decoded_components = Arena::new();
+        let encoded_plans = Arena::new();
+        let rendered = run_with_arena(
+            pp,
+            PpWork::PreflightedPar {
+                par,
+                indent: 0,
+                retention: SuffixRetention::FinalPrefix,
+            },
+            &decoded_entries,
+            &decoded_components,
+            &encoded_plans,
+            &mut stats,
+            FinishPolicy::Capped,
+        );
+        (rendered, stats)
+    }
+
+    #[cfg(test)]
+    pub(super) fn drive_expr_stats(
+        pp: &mut PrettyPrinter,
+        expression: &Expr,
+    ) -> Result<(String, PrettyDriveStats), InterpreterError> {
+        let decoded_entries = Arena::new();
+        let decoded_components = Arena::new();
+        let encoded_plans = Arena::new();
+        let mut stats = PrettyDriveStats::default();
+        let rendered = run_with_arena(
+            pp,
+            PpWork::ExprBody(expression),
+            &decoded_entries,
+            &decoded_components,
+            &encoded_plans,
+            &mut stats,
+            FinishPolicy::Capped,
+        )?;
+        Ok((rendered, stats))
+    }
+
+    #[cfg(test)]
+    pub(super) fn drive_channel_stats(
+        pp: &mut PrettyPrinter,
+        par: &Par,
+    ) -> Result<(String, PrettyDriveStats), InterpreterError> {
+        preflight_par(par)?;
+        let decoded_entries = Arena::new();
+        let decoded_components = Arena::new();
+        let encoded_plans = Arena::new();
+        let mut stats = PrettyDriveStats::default();
+        let rendered = run_with_arena(
+            pp,
+            PpWork::PreflightedChannel {
+                par,
+                indent: 0,
+                result_capped: true,
+            },
+            &decoded_entries,
+            &decoded_components,
+            &encoded_plans,
+            &mut stats,
+            FinishPolicy::Capped,
+        )?;
+        Ok((rendered, stats))
     }
 
     fn run_with_arena<'a>(
@@ -1862,12 +2536,14 @@ mod drive {
         seed: PpWork<'a>,
         decoded_entries: &'a Arena<Par>,
         decoded_components: &'a Arena<OwnedPpNode>,
+        encoded_plans: &'a Arena<EncodedParPlan>,
+        stats: &mut PrettyDriveStats,
+        finish: FinishPolicy,
     ) -> Result<String, InterpreterError> {
         let mut work: Vec<PpWork<'a>> = Vec::with_capacity(STACK_HINT);
-        let mut vals: Vec<String> = Vec::with_capacity(STACK_HINT);
+        let mut vals: Vec<RenderId> = Vec::with_capacity(STACK_HINT);
+        let mut renders = RenderArena::default();
         let mut catches: Vec<CatchFrame> = Vec::new();
-        let mut canonical_collections = CanonicalCollections::default();
-
         work.push(seed);
         while let Some(item) = work.pop() {
             if let Err(err) = step(
@@ -1875,10 +2551,12 @@ mod drive {
                 item,
                 decoded_entries,
                 decoded_components,
-                &mut canonical_collections,
+                encoded_plans,
                 &mut work,
                 &mut vals,
+                &mut renders,
                 &mut catches,
+                stats,
             ) {
                 // The recursive form's `?`: unwind to the innermost catching
                 // entry point on the call path, or out of the drive entirely.
@@ -1887,15 +2565,16 @@ mod drive {
                         let fallback = frame.kind.fallback(&err);
                         work.truncate(frame.work_mark);
                         vals.truncate(frame.vals_mark);
+                        renders.truncate(frame.render_mark);
                         frame.failed = true;
-                        vals.push(fallback);
+                        vals.push(renders.text(fallback));
                     }
                     None => return Err(err),
                 }
             }
         }
 
-        let result = vals
+        let mut result = vals
             .pop()
             .expect("pretty-printer drive: the value stack was empty at completion");
         assert!(
@@ -1909,7 +2588,16 @@ mod drive {
             "pretty-printer drive: {} catching scope(s) never closed",
             catches.len()
         );
-        Ok(result)
+        if matches!(finish, FinishPolicy::Capped) {
+            result = renders.cap(pp.audience, result);
+        }
+        let rendered = renders.flatten_final(result)?;
+        #[cfg(test)]
+        {
+            stats.render_nodes = renders.nodes.len();
+            stats.output_bytes = rendered.len();
+        }
+        Ok(rendered)
     }
 
     /// One transition. `Err` means "the recursive form would have returned
@@ -1919,39 +2607,199 @@ mod drive {
         item: PpWork<'a>,
         decoded_entries: &'a Arena<Par>,
         decoded_components: &'a Arena<OwnedPpNode>,
-        canonical_collections: &mut CanonicalCollections,
+        encoded_plans: &'a Arena<EncodedParPlan>,
         work: &mut Vec<PpWork<'a>>,
-        vals: &mut Vec<String>,
+        vals: &mut Vec<RenderId>,
+        renders: &mut RenderArena,
         catches: &mut Vec<CatchFrame>,
+        stats: &mut PrettyDriveStats,
     ) -> Result<(), InterpreterError> {
         match item {
-            PpWork::Literal(value) => vals.push(value),
+            PpWork::Literal(value) => vals.push(renders.text(value)),
 
             PpWork::Node(node, indent) => descend_node(
                 pp,
                 node,
                 indent,
                 decoded_components,
-                canonical_collections,
+                encoded_plans,
                 work,
                 vals,
+                renders,
+                stats,
             )?,
+
+            PpWork::CappedNode(node, indent) => match node {
+                PpNode::Par(par) => {
+                    preflight_par(par)?;
+                    descend_preflighted_par(
+                        pp,
+                        par,
+                        indent,
+                        SuffixRetention::FinalPrefix,
+                        encoded_plans,
+                        work,
+                        vals,
+                        renders,
+                        stats,
+                    );
+                }
+                node => descend_node(
+                    pp,
+                    node,
+                    indent,
+                    decoded_components,
+                    encoded_plans,
+                    work,
+                    vals,
+                    renders,
+                    stats,
+                )?,
+            },
+
+            PpWork::EncodedPar(region, indent) => {
+                descend_encoded_par(region, indent, work, stats)?;
+            }
+
+            PpWork::EncodedExpr(region) => {
+                descend_encoded_expr(region, decoded_components, work, vals, renders, stats)?
+            }
+
+            PpWork::EncodedComponent(family, region, indent) => {
+                let value = decode_component(family, &region)?;
+                let value = decoded_components.alloc(value);
+                work.push(PpWork::Node(value.as_node(), indent));
+            }
+
+            PpWork::PreflightedPar {
+                par,
+                indent,
+                retention,
+            } => descend_preflighted_par(
+                pp,
+                par,
+                indent,
+                retention,
+                encoded_plans,
+                work,
+                vals,
+                renders,
+                stats,
+            ),
+
+            PpWork::PreflightedChannel {
+                par,
+                indent,
+                result_capped,
+            } => {
+                // ⚠ Set, never reset. The preflight happened before this
+                // mutation, including for a public root channel.
+                pp.is_building_channel = true;
+                work.push(PpWork::Combine(PpKont::ChannelK { par }));
+                work.push(PpWork::PreflightedPar {
+                    par,
+                    indent,
+                    retention: if result_capped {
+                        SuffixRetention::ChannelFinalPrefix
+                    } else {
+                        SuffixRetention::None
+                    },
+                });
+            }
+
+            PpWork::ResidentComponent(endpoint, indent) => {
+                let PlannedFamily::Component(family) = endpoint.family else {
+                    unreachable!("an Expr endpoint cannot be decoded as a component")
+                };
+                if endpoint.decoded.get().is_none() {
+                    endpoint
+                        .decoded
+                        .set(decode_component(family, &endpoint.region)?)
+                        .map_err(|_| {
+                            InterpreterError::BugFoundError(
+                                "resident pretty-printer component initialized twice".to_string(),
+                            )
+                        })?;
+                }
+                let value = endpoint
+                    .decoded
+                    .get()
+                    .expect("resident component was initialized above");
+                work.push(PpWork::Node(value.as_node(), indent));
+            }
+
+            PpWork::ResidentParDrive {
+                plan,
+                endpoint,
+                remaining,
+                accumulated,
+                indent,
+                retention,
+            } => {
+                if endpoint == plan.endpoints.len() {
+                    vals.push(accumulated.expect("a non-empty Par plan renders a value"));
+                } else {
+                    let planned = &plan.endpoints[endpoint];
+                    let consumed = if planned.repeat_is_render_neutral {
+                        remaining
+                    } else {
+                        1
+                    };
+                    #[cfg(test)]
+                    {
+                        stats.occurrence_renders += 1;
+                    }
+                    work.push(PpWork::Combine(PpKont::ResidentParOccurrenceK {
+                        plan,
+                        endpoint,
+                        consumed,
+                        remaining_after: remaining - consumed,
+                        accumulated,
+                        indent,
+                        render_mark: renders.mark(),
+                        retention,
+                    }));
+                    match planned.family {
+                        PlannedFamily::Expr => push_catch(
+                            work,
+                            CatchKind::Expr,
+                            PpWork::EncodedExpr(planned.region.clone()),
+                        ),
+                        PlannedFamily::Component(_) => push_catch(
+                            work,
+                            CatchKind::Message,
+                            PpWork::ResidentComponent(planned, indent),
+                        ),
+                    }
+                }
+            }
 
             PpWork::ExprBody(e) => descend_expr(
                 pp,
                 e,
                 decoded_entries,
                 decoded_components,
-                canonical_collections,
                 work,
                 vals,
+                renders,
             )?,
 
             PpWork::Channel(p, indent) => {
-                // ⚠ Set, never reset. See the module documentation.
-                pp.is_building_channel = true;
-                work.push(PpWork::Combine(PpKont::ChannelK { par: p }));
-                work.push(PpWork::Node(PpNode::Par(p), indent));
+                preflight_par(p)?;
+                work.push(PpWork::PreflightedChannel {
+                    par: p,
+                    indent,
+                    result_capped: false,
+                });
+            }
+
+            PpWork::CappedChannel(p, indent) => {
+                preflight_par(p)?;
+                work.push(PpWork::PreflightedChannel {
+                    par: p,
+                    indent,
+                    result_capped: true,
+                });
             }
 
             PpWork::OptPar {
@@ -1967,10 +2815,24 @@ mod drive {
                 }
             }
 
+            PpWork::CappedOptPar {
+                field,
+                message,
+                render,
+                indent,
+            } => {
+                let par = field.as_ref().expect(message);
+                match render {
+                    OptRender::Message => work.push(PpWork::CappedNode(PpNode::Par(par), indent)),
+                    OptRender::Channel => work.push(PpWork::CappedChannel(par, indent)),
+                }
+            }
+
             PpWork::BeginCatch(kind) => catches.push(CatchFrame {
                 kind,
                 work_mark: work.len() - 1,
                 vals_mark: vals.len(),
+                render_mark: renders.mark(),
                 failed: false,
             }),
 
@@ -2036,7 +2898,7 @@ mod drive {
                 ));
             }
 
-            PpWork::Combine(kont) => combine(pp, kont, vals, catches)?,
+            PpWork::Combine(kont) => combine(pp, kont, work, vals, renders, catches, stats)?,
 
             #[cfg(test)]
             PpWork::TestCatchingFailure(p) => {
@@ -2045,7 +2907,7 @@ mod drive {
 
             #[cfg(test)]
             PpWork::TestSpawnThenFail(p) => {
-                vals.push(String::from("<must be truncated>"));
+                vals.push(renders.text("<must be truncated>"));
                 // Pops SECOND — so the unwind has to drop it.
                 work.push(PpWork::Node(PpNode::Par(p), 0));
                 // Pops FIRST, and fails.
@@ -2098,7 +2960,7 @@ mod drive {
         pp: &mut PrettyPrinter,
         sibling: &Par,
     ) -> Result<String, InterpreterError> {
-        run(pp, PpWork::TestCatchingFailure(sibling))
+        run(pp, PpWork::TestCatchingFailure(sibling), FinishPolicy::Raw)
     }
 
     /// ⚠ TEST ONLY. Drive `before`, then a **failing** catching region, then
@@ -2129,7 +2991,11 @@ mod drive {
         before: &Par,
         after: &Par,
     ) -> Result<String, InterpreterError> {
-        run(pp, PpWork::TestFailureBetweenSiblings { before, after })
+        run(
+            pp,
+            PpWork::TestFailureBetweenSiblings { before, after },
+            FinishPolicy::Raw,
+        )
     }
 
     /// ⚠ TEST ONLY. [`drive_splice_probe`]'s shape with **one more catching
@@ -2166,24 +3032,342 @@ mod drive {
         before: &Par,
         after: &Par,
     ) -> Result<String, InterpreterError> {
-        run(pp, PpWork::TestNestedCatchingFailure { before, after })
+        run(
+            pp,
+            PpWork::TestNestedCatchingFailure { before, after },
+            FinishPolicy::Raw,
+        )
     }
 
     // -----------------------------------------------------------------------
     // descend: `_build_string_from_message`
     // -----------------------------------------------------------------------
 
+    struct EncodedEndpointSeed {
+        family: PlannedFamily,
+        range: CanonicalByteRange,
+        multiplicity: Multiplicity,
+    }
+
+    fn add_encoded_payload_len<T: ParBagComponent>(par: &Par, total: &mut usize) {
+        par.visit_encoded::<T>(|entry| {
+            *total = total
+                .checked_add(entry.payload().len())
+                .expect("resident PathMap payload bytes already fit addressable memory");
+        });
+    }
+
+    fn append_encoded_endpoint_seeds<T: ParBagComponent>(
+        par: &Par,
+        family: PlannedFamily,
+        bytes: &mut Vec<u8>,
+        endpoints: &mut Vec<EncodedEndpointSeed>,
+    ) {
+        par.visit_encoded::<T>(|entry| {
+            let start = bytes.len();
+            bytes.extend_from_slice(entry.payload());
+            endpoints.push(EncodedEndpointSeed {
+                family,
+                range: CanonicalByteRange {
+                    start,
+                    end: bytes.len(),
+                },
+                multiplicity: entry.multiplicity(),
+            });
+        });
+    }
+
+    #[derive(Clone)]
+    enum NeutralityWork {
+        Par(ProtobufRegion),
+        Component(PlannedFamily, ProtobufRegion),
+    }
+
+    fn push_neutrality_run(
+        run: Option<&CanonicalRegionDelimitedRun>,
+        family: PlannedFamily,
+        work: &mut Vec<NeutralityWork>,
+    ) -> bool {
+        let Some(run) = run else {
+            return true;
+        };
+        let mut cursor = run.cursor();
+        loop {
+            match cursor.next_region() {
+                Ok(Some(region)) => work.push(NeutralityWork::Component(family, region)),
+                Ok(None) => return true,
+                Err(_) => return false,
+            }
+        }
+    }
+
+    fn expr_shell_has_complete_cuts(expression: &Expr, cut_count: usize) -> bool {
+        match expr_plan(expression) {
+            ExprPlan::Inline => cut_count == 0,
+            ExprPlan::Unary { p, .. } => p.is_some() && cut_count == 1,
+            ExprPlan::Binary { p1, p2, .. } => p1.is_some() && p2.is_some() && cut_count == 2,
+            ExprPlan::Matches {
+                target, pattern, ..
+            } => target.is_some() && pattern.is_some() && cut_count == 2,
+            ExprPlan::Bracketed { ps, .. } => cut_count == ps.len(),
+            ExprPlan::Set { set } => cut_count == set.ps.len(),
+            ExprPlan::Map { map } => map
+                .kvs
+                .len()
+                .checked_mul(2)
+                .is_some_and(|expected| cut_count == expected),
+            ExprPlan::Tuple { ps } => cut_count == ps.len(),
+            ExprPlan::Method { m } => {
+                m.target.is_some()
+                    && m.arguments
+                        .len()
+                        .checked_add(1)
+                        .is_some_and(|expected| cut_count == expected)
+            }
+            // EPathMap set/map keys and zipper cursor paths are also rendered
+            // Pars, but they are not represented by `plan.cuts()`. Until the
+            // proof visits those encoded key/cursor Pars too, rejecting these
+            // arms is the only conservative answer.
+            ExprPlan::PathMap { .. } | ExprPlan::Zipper { .. } => false,
+        }
+    }
+
+    fn push_component_neutrality_children(
+        family: PlannedFamily,
+        region: ProtobufRegion,
+        work: &mut Vec<NeutralityWork>,
+    ) -> bool {
+        let (program, shell_is_complete): (&'static RhoMatchProgram, fn(&[u8], usize) -> bool) =
+            match family {
+                PlannedFamily::Expr => (&EXPR_RHO_MATCH_PROGRAM, |bytes, cuts| {
+                    protobuf_decoder::decode_expr(bytes)
+                        .is_ok_and(|shell| expr_shell_has_complete_cuts(&shell, cuts))
+                }),
+                PlannedFamily::Component(EncodedFamily::Bundle) => {
+                    (&BUNDLE_RHO_MATCH_PROGRAM, |bytes, cuts| {
+                        protobuf_decoder::decode_bundle(bytes)
+                            .is_ok_and(|shell| shell.body.is_some() && cuts == 1)
+                    })
+                }
+                PlannedFamily::Component(EncodedFamily::Connective) => {
+                    (&CONNECTIVE_RHO_MATCH_PROGRAM, |bytes, cuts| {
+                        protobuf_decoder::decode_connective(bytes).is_ok_and(|shell| {
+                            let expected = match &shell.connective_instance {
+                                Some(ConnectiveInstance::ConnAndBody(value))
+                                | Some(ConnectiveInstance::ConnOrBody(value)) => value.ps.len(),
+                                Some(ConnectiveInstance::ConnNotBody(_)) => 1,
+                                Some(_) | None => 0,
+                            };
+                            cuts == expected
+                        })
+                    })
+                }
+                PlannedFamily::Component(EncodedFamily::If) => {
+                    (&IF_RHO_MATCH_PROGRAM, |bytes, cuts| {
+                        protobuf_decoder::decode_if(bytes).is_ok_and(|shell| {
+                            shell.condition.is_some()
+                                && shell.if_true.is_some()
+                                && shell.if_false.is_some()
+                                && cuts == 3
+                        })
+                    })
+                }
+                PlannedFamily::Component(EncodedFamily::Unforgeable) => {
+                    return protobuf_decoder::decode_g_unforgeable(region.as_bytes()).is_ok();
+                }
+                // These families may change the printer environment directly
+                // or invoke channel rendering, so no repeated-output collapse
+                // is permitted even if one particular shell looks inert.
+                PlannedFamily::Component(
+                    EncodedFamily::Send
+                    | EncodedFamily::Receive
+                    | EncodedFamily::New
+                    | EncodedFamily::Match,
+                ) => return false,
+            };
+
+        let Ok(plan) = cut_at_par(region, program) else {
+            return false;
+        };
+        if !shell_is_complete(plan.shallow_bytes().as_ref(), plan.cuts().len()) {
+            return false;
+        }
+        work.extend(
+            plan.cuts()
+                .iter()
+                .map(|cut| NeutralityWork::Par(cut.region().clone())),
+        );
+        true
+    }
+
+    /// Stack-safe, byte-native proof that rendering this endpoint from a fixed
+    /// incoming printer state has no state transition and therefore has the
+    /// same bytes and cap/panic disposition on every logical occurrence.
+    /// Unknown, malformed, channel-bearing and stateful shells are rejected.
+    fn endpoint_repeat_is_render_neutral(family: PlannedFamily, region: &ProtobufRegion) -> bool {
+        let mut work = vec![NeutralityWork::Component(family, region.clone())];
+        while let Some(item) = work.pop() {
+            match item {
+                NeutralityWork::Component(family, region) => {
+                    if !push_component_neutrality_children(family, region, &mut work) {
+                        return false;
+                    }
+                }
+                NeutralityWork::Par(region) => {
+                    let Ok(index) = CanonicalParRegionIndex::parse(region) else {
+                        return false;
+                    };
+                    // Any occurrence of these four families makes the entire
+                    // enclosing endpoint stateful, irrespective of depth.
+                    if index.sends.is_some()
+                        || index.receives.is_some()
+                        || index.news.is_some()
+                        || index.matches.is_some()
+                    {
+                        return false;
+                    }
+                    if !push_neutrality_run(
+                        index.bundles.as_ref(),
+                        PlannedFamily::Component(EncodedFamily::Bundle),
+                        &mut work,
+                    ) || !push_neutrality_run(
+                        index.exprs.as_ref(),
+                        PlannedFamily::Expr,
+                        &mut work,
+                    ) || !push_neutrality_run(
+                        index.unforgeables.as_ref(),
+                        PlannedFamily::Component(EncodedFamily::Unforgeable),
+                        &mut work,
+                    ) || !push_neutrality_run(
+                        index.connectives.as_ref(),
+                        PlannedFamily::Component(EncodedFamily::Connective),
+                        &mut work,
+                    ) || !push_neutrality_run(
+                        index.conditionals.as_ref(),
+                        PlannedFamily::Component(EncodedFamily::If),
+                        &mut work,
+                    ) {
+                        return false;
+                    }
+                }
+            }
+        }
+        true
+    }
+
+    fn build_encoded_par_plan(par: &Par, _stats: &mut PrettyDriveStats) -> EncodedParPlan {
+        let mut payload_bytes = 0usize;
+        add_encoded_payload_len::<Bundle>(par, &mut payload_bytes);
+        add_encoded_payload_len::<models::rhoapi::Send>(par, &mut payload_bytes);
+        add_encoded_payload_len::<Receive>(par, &mut payload_bytes);
+        add_encoded_payload_len::<New>(par, &mut payload_bytes);
+        add_encoded_payload_len::<Expr>(par, &mut payload_bytes);
+        add_encoded_payload_len::<Match>(par, &mut payload_bytes);
+        add_encoded_payload_len::<GUnforgeable>(par, &mut payload_bytes);
+        add_encoded_payload_len::<Connective>(par, &mut payload_bytes);
+        add_encoded_payload_len::<If>(par, &mut payload_bytes);
+
+        // One allocation/backing for every distinct endpoint payload in this
+        // resident Par. Multiplicity stays symbolic and does not affect the
+        // capacity.
+        let mut bytes = Vec::with_capacity(payload_bytes);
+        let mut seeds = Vec::with_capacity(par.distinct_len());
+        // Display order is historical and differs from protobuf field order.
+        append_encoded_endpoint_seeds::<Bundle>(
+            par,
+            PlannedFamily::Component(EncodedFamily::Bundle),
+            &mut bytes,
+            &mut seeds,
+        );
+        append_encoded_endpoint_seeds::<models::rhoapi::Send>(
+            par,
+            PlannedFamily::Component(EncodedFamily::Send),
+            &mut bytes,
+            &mut seeds,
+        );
+        append_encoded_endpoint_seeds::<Receive>(
+            par,
+            PlannedFamily::Component(EncodedFamily::Receive),
+            &mut bytes,
+            &mut seeds,
+        );
+        append_encoded_endpoint_seeds::<New>(
+            par,
+            PlannedFamily::Component(EncodedFamily::New),
+            &mut bytes,
+            &mut seeds,
+        );
+        let expr_start = seeds.len();
+        append_encoded_endpoint_seeds::<Expr>(par, PlannedFamily::Expr, &mut bytes, &mut seeds);
+        if mutating(DriveMutation::ParPushesExprsUnreversed) {
+            seeds[expr_start..].reverse();
+        }
+        append_encoded_endpoint_seeds::<Match>(
+            par,
+            PlannedFamily::Component(EncodedFamily::Match),
+            &mut bytes,
+            &mut seeds,
+        );
+        append_encoded_endpoint_seeds::<GUnforgeable>(
+            par,
+            PlannedFamily::Component(EncodedFamily::Unforgeable),
+            &mut bytes,
+            &mut seeds,
+        );
+        append_encoded_endpoint_seeds::<Connective>(
+            par,
+            PlannedFamily::Component(EncodedFamily::Connective),
+            &mut bytes,
+            &mut seeds,
+        );
+        append_encoded_endpoint_seeds::<If>(
+            par,
+            PlannedFamily::Component(EncodedFamily::If),
+            &mut bytes,
+            &mut seeds,
+        );
+
+        debug_assert_eq!(bytes.len(), payload_bytes);
+        let backing = ProtobufRegion::from(bytes);
+        let endpoints = seeds
+            .into_iter()
+            .map(|seed| {
+                let region = backing
+                    .subregion(seed.range)
+                    .expect("recorded endpoint range belongs to its shared backing");
+                let repeat_is_render_neutral = seed.multiplicity.get() > 1
+                    && endpoint_repeat_is_render_neutral(seed.family, &region);
+                EncodedEndpoint {
+                    family: seed.family,
+                    region,
+                    multiplicity: seed.multiplicity,
+                    repeat_is_render_neutral,
+                    decoded: OnceCell::new(),
+                }
+            })
+            .collect::<Vec<_>>();
+        #[cfg(test)]
+        {
+            _stats.distinct_endpoint_copies += endpoints.len();
+            _stats.root_protobuf_buffers += usize::from(!endpoints.is_empty());
+            _stats.root_protobuf_bytes += payload_bytes;
+        }
+        EncodedParPlan { endpoints }
+    }
+
     fn descend_node<'a>(
         pp: &mut PrettyPrinter,
         node: PpNode<'a>,
         indent: usize,
-        decoded_components: &'a Arena<OwnedPpNode>,
-        canonical_collections: &mut CanonicalCollections,
+        _decoded_components: &'a Arena<OwnedPpNode>,
+        encoded_plans: &'a Arena<EncodedParPlan>,
         work: &mut Vec<PpWork<'a>>,
-        vals: &mut Vec<String>,
+        vals: &mut Vec<RenderId>,
+        renders: &mut RenderArena,
+        _stats: &mut PrettyDriveStats,
     ) -> Result<(), InterpreterError> {
         match node {
-            PpNode::Var(v) => vals.push(pp.build_string_from_var(v)),
+            PpNode::Var(v) => vals.push(renders.text(pp.build_string_from_var(v))),
 
             PpNode::Unprintable(msg) => {
                 return Err(InterpreterError::BugFoundError(msg.to_string()));
@@ -2399,7 +3583,7 @@ mod drive {
                 });
             }
 
-            PpNode::Unforgeable(u) => vals.push(pp.build_string_from_unforgeable(u)?),
+            PpNode::Unforgeable(u) => vals.push(renders.text(pp.build_string_from_unforgeable(u)?)),
 
             PpNode::Connective(c) => match &c.connective_instance {
                 Some(ConnectiveInstance::ConnAndBody(value))
@@ -2417,107 +3601,290 @@ mod drive {
                         PpWork::Node(PpNode::Par(value), 0),
                     );
                 }
-                Some(ConnectiveInstance::VarRefBody(value)) => vals.push(format!(
+                Some(ConnectiveInstance::VarRefBody(value)) => vals.push(renders.text(format!(
                     "={}{}",
                     pp.free_id,
                     pp.free_shift - value.index - 1
-                )),
-                Some(ConnectiveInstance::ConnBool(_)) => vals.push(String::from("Bool")),
-                Some(ConnectiveInstance::ConnInt(_)) => vals.push(String::from("Int")),
-                Some(ConnectiveInstance::ConnString(_)) => vals.push(String::from("String")),
-                Some(ConnectiveInstance::ConnUri(_)) => vals.push(String::from("Uri")),
-                Some(ConnectiveInstance::ConnByteArray(_)) => vals.push(String::from("ByteArray")),
-                None => vals.push(String::new()),
+                ))),
+                Some(ConnectiveInstance::ConnBool(_)) => vals.push(renders.text("Bool")),
+                Some(ConnectiveInstance::ConnInt(_)) => vals.push(renders.text("Int")),
+                Some(ConnectiveInstance::ConnString(_)) => vals.push(renders.text("String")),
+                Some(ConnectiveInstance::ConnUri(_)) => vals.push(renders.text("Uri")),
+                Some(ConnectiveInstance::ConnByteArray(_)) => vals.push(renders.text("ByteArray")),
+                None => vals.push(renders.empty()),
             },
 
             PpNode::Par(p) => {
-                if pp.is_empty_par(p) {
-                    vals.push(String::from("Nil"));
-                } else if let Some((depth, terminal)) = p.canonical_unary_elist_gint_parts() {
-                    let terminal = terminal.to_string();
-                    let mut rendered = String::with_capacity(
-                        depth
-                            .checked_mul(2)
-                            .and_then(|brackets| brackets.checked_add(terminal.len()))
-                            .unwrap_or(terminal.len()),
-                    );
-                    rendered.extend(std::iter::repeat_n('[', depth));
-                    rendered.push_str(&terminal);
-                    rendered.extend(std::iter::repeat_n(']', depth));
-                    vals.push(rendered);
-                } else {
-                    work.push(PpWork::Combine(PpKont::ParK { par: p, indent }));
-                    // The nine categories, in the order the recursive form
-                    // walks them, pushed in REVERSE so they pop in order. All
-                    // non-catching, all at the SAME indent.
-                    for value in p.decode_occurrences::<If>().into_iter().rev() {
-                        let value = decoded_components.alloc(OwnedPpNode::If(value));
-                        work.push(PpWork::Node(value.as_node(), indent));
-                    }
-                    for value in p.decode_occurrences::<Connective>().into_iter().rev() {
-                        let value = decoded_components.alloc(OwnedPpNode::Connective(value));
-                        work.push(PpWork::Node(value.as_node(), indent));
-                    }
-                    for value in p.decode_occurrences::<GUnforgeable>().into_iter().rev() {
-                        let value = decoded_components.alloc(OwnedPpNode::Unforgeable(value));
-                        work.push(PpWork::Node(value.as_node(), indent));
-                    }
-                    for value in p.decode_occurrences::<Match>().into_iter().rev() {
-                        let value = decoded_components.alloc(OwnedPpNode::Match(value));
-                        work.push(PpWork::Node(value.as_node(), indent));
-                    }
-                    let expressions = p.decode_occurrences::<Expr>();
-                    match mutating(DriveMutation::ParPushesExprsUnreversed) {
-                        true => {
-                            for expression in expressions {
-                                let value = decoded_components.alloc(OwnedPpNode::Expr(expression));
-                                let PpNode::Expr(expression) = value.as_node() else {
-                                    unreachable!()
-                                };
-                                canonical_collections.mark_expr(expression);
-                                work.push(PpWork::Node(PpNode::Expr(expression), indent));
-                            }
-                        }
-                        false => {
-                            for expression in expressions.into_iter().rev() {
-                                let value = decoded_components.alloc(OwnedPpNode::Expr(expression));
-                                let PpNode::Expr(expression) = value.as_node() else {
-                                    unreachable!()
-                                };
-                                canonical_collections.mark_expr(expression);
-                                work.push(PpWork::Node(PpNode::Expr(expression), indent));
-                            }
-                        }
-                    }
-                    for value in p.decode_occurrences::<New>().into_iter().rev() {
-                        let value = decoded_components.alloc(OwnedPpNode::New(value));
-                        work.push(PpWork::Node(value.as_node(), indent));
-                    }
-                    for value in p.decode_occurrences::<Receive>().into_iter().rev() {
-                        let value = decoded_components.alloc(OwnedPpNode::Receive(value));
-                        work.push(PpWork::Node(value.as_node(), indent));
-                    }
-                    for value in p
-                        .decode_occurrences::<models::rhoapi::Send>()
-                        .into_iter()
-                        .rev()
-                    {
-                        let value = decoded_components.alloc(OwnedPpNode::Send(value));
-                        work.push(PpWork::Node(value.as_node(), indent));
-                    }
-                    for value in p.decode_occurrences::<Bundle>().into_iter().rev() {
-                        let value = decoded_components.alloc(OwnedPpNode::Bundle(value));
-                        work.push(PpWork::Node(value.as_node(), indent));
-                    }
-                }
+                preflight_par(p)?;
+                descend_preflighted_par(
+                    pp,
+                    p,
+                    indent,
+                    SuffixRetention::None,
+                    encoded_plans,
+                    work,
+                    vals,
+                    renders,
+                    _stats,
+                );
             }
         }
         Ok(())
     }
 
+    fn descend_preflighted_par<'a>(
+        pp: &PrettyPrinter,
+        par: &'a Par,
+        indent: usize,
+        retention: SuffixRetention,
+        encoded_plans: &'a Arena<EncodedParPlan>,
+        work: &mut Vec<PpWork<'a>>,
+        vals: &mut Vec<RenderId>,
+        renders: &mut RenderArena,
+        stats: &mut PrettyDriveStats,
+    ) {
+        #[cfg(test)]
+        {
+            stats.encoded_pars += 1;
+        }
+        if pp.is_empty_par(par) {
+            vals.push(renders.text("Nil"));
+        } else if let Some((depth, terminal)) = par.canonical_unary_elist_gint_parts() {
+            let terminal = terminal.to_string();
+            let mut rendered = String::with_capacity(
+                depth
+                    .checked_mul(2)
+                    .and_then(|brackets| brackets.checked_add(terminal.len()))
+                    .unwrap_or(terminal.len()),
+            );
+            rendered.extend(std::iter::repeat_n('[', depth));
+            rendered.push_str(&terminal);
+            rendered.extend(std::iter::repeat_n(']', depth));
+            vals.push(renders.text(rendered));
+        } else {
+            let plan = encoded_plans.alloc(build_encoded_par_plan(par, stats));
+            let remaining = plan
+                .endpoints
+                .first()
+                .map_or(0, |endpoint| endpoint.multiplicity.get());
+            work.push(PpWork::ResidentParDrive {
+                plan,
+                endpoint: 0,
+                remaining,
+                accumulated: None,
+                indent,
+                retention,
+            });
+        }
+    }
+
     // -----------------------------------------------------------------------
     // descend: `_build_string_from_expr`
     // -----------------------------------------------------------------------
+
+    fn collect_regions(
+        run: Option<&CanonicalRegionDelimitedRun>,
+    ) -> Result<Vec<ProtobufRegion>, InterpreterError> {
+        let Some(run) = run else {
+            return Ok(Vec::new());
+        };
+        let mut cursor = run.cursor();
+        let mut regions = Vec::new();
+        while let Some(region) = cursor
+            .next_region()
+            .map_err(|error| InterpreterError::DecodeError(error.to_string()))?
+        {
+            regions.push(region);
+        }
+        Ok(regions)
+    }
+
+    fn descend_encoded_par<'a>(
+        region: ProtobufRegion,
+        indent: usize,
+        work: &mut Vec<PpWork<'a>>,
+        _stats: &mut PrettyDriveStats,
+    ) -> Result<(), InterpreterError> {
+        #[cfg(test)]
+        {
+            _stats.encoded_pars += 1;
+        }
+        let index = CanonicalParRegionIndex::parse(region)
+            .map_err(|error| InterpreterError::DecodeError(error.to_string()))?;
+        let bundles = collect_regions(index.bundles.as_ref())?;
+        let sends = collect_regions(index.sends.as_ref())?;
+        let receives = collect_regions(index.receives.as_ref())?;
+        let news = collect_regions(index.news.as_ref())?;
+        let expressions = collect_regions(index.exprs.as_ref())?;
+        let matches = collect_regions(index.matches.as_ref())?;
+        let unforgeables = collect_regions(index.unforgeables.as_ref())?;
+        let connectives = collect_regions(index.connectives.as_ref())?;
+        let conditionals = collect_regions(index.conditionals.as_ref())?;
+        let child_count = bundles
+            .len()
+            .checked_add(sends.len())
+            .and_then(|n| n.checked_add(receives.len()))
+            .and_then(|n| n.checked_add(news.len()))
+            .and_then(|n| n.checked_add(expressions.len()))
+            .and_then(|n| n.checked_add(matches.len()))
+            .and_then(|n| n.checked_add(unforgeables.len()))
+            .and_then(|n| n.checked_add(connectives.len()))
+            .and_then(|n| n.checked_add(conditionals.len()))
+            .expect("Par cardinality exceeds the addressable printer range");
+        work.push(PpWork::Combine(PpKont::EncodedParK {
+            child_count,
+            indent,
+        }));
+
+        // Reverse family order and reverse occurrence order within each
+        // family. LIFO then reproduces Par's canonical forward rendering.
+        for region in conditionals.into_iter().rev() {
+            work.push(PpWork::EncodedComponent(EncodedFamily::If, region, indent));
+        }
+        for region in connectives.into_iter().rev() {
+            work.push(PpWork::EncodedComponent(
+                EncodedFamily::Connective,
+                region,
+                indent,
+            ));
+        }
+        for region in unforgeables.into_iter().rev() {
+            work.push(PpWork::EncodedComponent(
+                EncodedFamily::Unforgeable,
+                region,
+                indent,
+            ));
+        }
+        for region in matches.into_iter().rev() {
+            work.push(PpWork::EncodedComponent(
+                EncodedFamily::Match,
+                region,
+                indent,
+            ));
+        }
+        match mutating(DriveMutation::ParPushesExprsUnreversed) {
+            true => {
+                for region in expressions {
+                    push_catch(work, CatchKind::Expr, PpWork::EncodedExpr(region));
+                }
+            }
+            false => {
+                for region in expressions.into_iter().rev() {
+                    push_catch(work, CatchKind::Expr, PpWork::EncodedExpr(region));
+                }
+            }
+        }
+        for region in news.into_iter().rev() {
+            work.push(PpWork::EncodedComponent(EncodedFamily::New, region, indent));
+        }
+        for region in receives.into_iter().rev() {
+            work.push(PpWork::EncodedComponent(
+                EncodedFamily::Receive,
+                region,
+                indent,
+            ));
+        }
+        for region in sends.into_iter().rev() {
+            work.push(PpWork::EncodedComponent(
+                EncodedFamily::Send,
+                region,
+                indent,
+            ));
+        }
+        for region in bundles.into_iter().rev() {
+            work.push(PpWork::EncodedComponent(
+                EncodedFamily::Bundle,
+                region,
+                indent,
+            ));
+        }
+        Ok(())
+    }
+
+    fn descend_encoded_expr<'a>(
+        region: ProtobufRegion,
+        decoded_components: &'a Arena<OwnedPpNode>,
+        work: &mut Vec<PpWork<'a>>,
+        _vals: &mut Vec<RenderId>,
+        _renders: &mut RenderArena,
+        _stats: &mut PrettyDriveStats,
+    ) -> Result<(), InterpreterError> {
+        #[cfg(test)]
+        {
+            _stats.encoded_exprs += 1;
+        }
+        let plan = cut_at_par(region, &EXPR_RHO_MATCH_PROGRAM)
+            .map_err(|error| InterpreterError::DecodeError(error.to_string()))?;
+        #[cfg(test)]
+        {
+            _stats.cut_field_visits = _stats
+                .cut_field_visits
+                .checked_add(plan.stats().field_visits)
+                .expect("pretty-printer test counter overflow");
+        }
+        let shell = protobuf_decoder::decode_expr(plan.shallow_bytes())
+            .map_err(|error| InterpreterError::DecodeError(error.to_string()))?;
+        match shell.expr_instance {
+            Some(ExprInstance::ESetBody(set)) => {
+                if plan.cuts().len() != set.ps.len() {
+                    return Err(InterpreterError::DecodeError(format!(
+                        "ESet protobuf cut count {} did not match {} shallow children",
+                        plan.cuts().len(),
+                        set.ps.len()
+                    )));
+                }
+                work.push(PpWork::Combine(PpKont::EncodedSetK {
+                    remainder: set.remainder,
+                    child_count: set.ps.len(),
+                }));
+                for cut in plan.cuts().iter().rev() {
+                    push_catch(
+                        work,
+                        CatchKind::Message,
+                        PpWork::EncodedPar(cut.region().clone(), 0),
+                    );
+                }
+            }
+            Some(ExprInstance::EMapBody(map)) => {
+                let child_count = map
+                    .kvs
+                    .len()
+                    .checked_mul(2)
+                    .expect("an addressable map cannot overflow its child count");
+                if plan.cuts().len() != child_count {
+                    return Err(InterpreterError::DecodeError(format!(
+                        "EMap protobuf cut count {} did not match {} shallow children",
+                        plan.cuts().len(),
+                        child_count
+                    )));
+                }
+                work.push(PpWork::Combine(PpKont::EncodedMapK {
+                    remainder: map.remainder,
+                    entry_count: map.kvs.len(),
+                }));
+                for cut in plan.cuts().iter().rev() {
+                    push_catch(
+                        work,
+                        CatchKind::Message,
+                        PpWork::EncodedPar(cut.region().clone(), 0),
+                    );
+                }
+            }
+            _ => {
+                // Only Set/Map shells have a region-native printer arm today.
+                // Reconstruct every other Expr exactly, so its existing PDA
+                // sees the real Par children rather than the empty cut slots.
+                let expression = protobuf_decoder::decode_expr(plan.reconstructed_bytes())
+                    .map_err(|error| InterpreterError::DecodeError(error.to_string()))?;
+                let value = decoded_components.alloc(OwnedPpNode::Expr(expression));
+                let PpNode::Expr(expression) = value.as_node() else {
+                    unreachable!()
+                };
+                work.push(PpWork::ExprBody(expression));
+            }
+        }
+        Ok(())
+    }
 
     /// The **single source** for "which children does this `Expr` arm have, and
     /// in what order" — used by both [`descend_expr`] and [`combine_expr`] so
@@ -2745,9 +4112,9 @@ mod drive {
         e: &'a Expr,
         decoded_entries: &'a Arena<Par>,
         decoded_components: &'a Arena<OwnedPpNode>,
-        canonical_collections: &mut CanonicalCollections,
         work: &mut Vec<PpWork<'a>>,
-        vals: &mut Vec<String>,
+        vals: &mut Vec<RenderId>,
+        renders: &mut RenderArena,
     ) -> Result<(), InterpreterError> {
         // Every worklisted child of an `Expr` goes through the CATCHING
         // `build_string_from_message`, i.e. indent 0 and capped.
@@ -2807,7 +4174,7 @@ mod drive {
         }
 
         match expr_plan(e) {
-            ExprPlan::Inline => vals.push(inline_expr(pp, e)?),
+            ExprPlan::Inline => vals.push(renders.text(inline_expr(pp, e)?)),
 
             ExprPlan::Unary { p, msg, .. } => {
                 work.push(PpWork::Combine(PpKont::ExprK { expr: e }));
@@ -2844,16 +4211,6 @@ mod drive {
             }
 
             ExprPlan::Set { set } => {
-                if canonical_collections.contains(set) {
-                    work.push(PpWork::Combine(PpKont::SetK {
-                        set,
-                        child_count: set.ps.len(),
-                    }));
-                    for par in set.ps.iter().rev() {
-                        push_catch(work, CatchKind::Message, PpWork::Node(PpNode::Par(par), 0));
-                    }
-                    return Ok(());
-                }
                 let sorted = ParSetTypeMapper::eset_to_par_set(set.clone())
                     .ps
                     .sorted_pars;
@@ -2868,23 +4225,6 @@ mod drive {
             }
 
             ExprPlan::Map { map } => {
-                if canonical_collections.contains(map) {
-                    work.push(PpWork::Combine(PpKont::MapK {
-                        map,
-                        entry_count: map.kvs.len(),
-                    }));
-                    for pair in map.kvs.iter().rev() {
-                        let value = pair.value.as_ref().expect("KeyValuePair.value");
-                        let key = pair.key.as_ref().expect("KeyValuePair.key");
-                        push_catch(
-                            work,
-                            CatchKind::Message,
-                            PpWork::Node(PpNode::Par(value), 0),
-                        );
-                        push_catch(work, CatchKind::Message, PpWork::Node(PpNode::Par(key), 0));
-                    }
-                    return Ok(());
-                }
                 let sorted = ParMapTypeMapper::emap_to_par_map(map.clone())
                     .ps
                     .sorted_list;
@@ -3028,7 +4368,7 @@ mod drive {
     // -----------------------------------------------------------------------
 
     /// Pop `n` child values, in the order they were produced.
-    fn take(vals: &mut Vec<String>, n: usize) -> Vec<String> {
+    fn take(vals: &mut Vec<RenderId>, n: usize) -> Vec<RenderId> {
         assert!(
             vals.len() >= n,
             "pretty-printer drive: a continuation wanted {} children but the value stack \
@@ -3039,16 +4379,30 @@ mod drive {
         vals.split_off(vals.len() - n)
     }
 
-    fn one(vals: &mut Vec<String>) -> String {
+    fn one(vals: &mut Vec<RenderId>) -> RenderId {
         vals.pop()
             .expect("pretty-printer drive: a continuation wanted a child that was never pushed")
     }
 
-    fn combine(
+    fn take_strings(renders: &RenderArena, vals: &mut Vec<RenderId>, n: usize) -> Vec<String> {
+        take(vals, n)
+            .into_iter()
+            .map(|value| renders.flatten(value))
+            .collect()
+    }
+
+    fn one_string(renders: &RenderArena, vals: &mut Vec<RenderId>) -> String {
+        renders.flatten(one(vals))
+    }
+
+    fn combine<'a>(
         pp: &mut PrettyPrinter,
-        kont: PpKont<'_>,
-        vals: &mut Vec<String>,
+        kont: PpKont<'a>,
+        work: &mut Vec<PpWork<'a>>,
+        vals: &mut Vec<RenderId>,
+        renders: &mut RenderArena,
         catches: &mut Vec<CatchFrame>,
+        _stats: &mut PrettyDriveStats,
     ) -> Result<(), InterpreterError> {
         match kont {
             PpKont::EndCatch => {
@@ -3059,31 +4413,35 @@ mod drive {
                 // (`build_string_from_node`) and is reproduced exactly.
                 if !frame.failed || mutating(DriveMutation::EndCatchCapsFallback) {
                     let value = one(vals);
-                    vals.push(pp.cap(&value));
+                    vals.push(renders.cap(pp.audience, value));
                 }
             }
 
             PpKont::SendK { send } => {
-                let chan = one(vals);
-                let data = take(vals, send.data.len());
+                let chan = one_string(renders, vals);
+                let data = take_strings(renders, vals, send.data.len());
                 let str = if send.persistent {
                     String::from("!!(")
                 } else {
                     String::from("!(")
                 };
-                vals.push(format!("{}{}{})", chan, str, data.join(", ")));
+                vals.push(renders.text(format!("{}{}{})", chan, str, data.join(", "))));
             }
 
             PpKont::RecvBindJoin { recv, index } => {
                 // ⚠ The source was pushed LAST, so it comes off FIRST.
                 let (source, patterns) = match mutating(DriveMutation::RecvBindJoinPatternsFirst) {
                     true => {
-                        let patterns = take(vals, recv.binds[index].patterns.len());
-                        (one(vals), patterns)
+                        let patterns =
+                            take_strings(renders, vals, recv.binds[index].patterns.len());
+                        (one_string(renders, vals), patterns)
                     }
                     false => {
-                        let source = one(vals);
-                        (source, take(vals, recv.binds[index].patterns.len()))
+                        let source = one_string(renders, vals);
+                        (
+                            source,
+                            take_strings(renders, vals, recv.binds[index].patterns.len()),
+                        )
                     }
                 };
                 let mut string = patterns.join(", ");
@@ -3098,7 +4456,7 @@ mod drive {
                 if index != recv.binds.len() - 1 {
                     string.push_str("  & ");
                 }
-                vals.push(string);
+                vals.push(renders.text(string));
             }
 
             PpKont::ReceiveK { recv, indent } => {
@@ -3106,18 +4464,18 @@ mod drive {
                 // guard, then binds. `receive_guard` is the same predicate the
                 // descent used to decide whether to push a guard value at all,
                 // so the two cannot disagree about how many values are here.
-                let body_str = one(vals);
+                let body_str = one_string(renders, vals);
                 let where_clause = match receive_guard(recv) {
                     // ⚠ The grammar attaches `where` to the RECEIPT, not to a
                     // bind (`receipt: conc1(bind) optional('where' guard)`), so
                     // it goes after `binds_string` — after **every** bind — and
                     // inside the parentheses.
-                    Some(_) => format!(" where {}", one(vals)),
+                    Some(_) => format!(" where {}", one_string(renders, vals)),
                     None => String::new(),
                 };
-                let binds_string = take(vals, recv.binds.len()).concat();
+                let binds_string = take_strings(renders, vals, recv.binds.len()).concat();
                 if !body_str.is_empty() {
-                    vals.push(format!(
+                    vals.push(renders.text(format!(
                         "for( {}{} ) {{\n{}{}{}\n{}}}",
                         binds_string,
                         where_clause,
@@ -3125,54 +4483,56 @@ mod drive {
                         body_str,
                         pp.indent_string().repeat(indent),
                         ""
-                    ));
+                    )));
                 } else {
-                    vals.push(format!("for( {}{} ) {{}}", binds_string, where_clause));
+                    vals.push(
+                        renders.text(format!("for( {}{} ) {{}}", binds_string, where_clause)),
+                    );
                 }
             }
 
             PpKont::BundleK { show, indent } => {
-                let body = one(vals);
-                vals.push(format!(
+                let body = one_string(renders, vals);
+                vals.push(renders.text(format!(
                     "{}{{\n{}{}\n}}",
                     show,
                     pp.indent_string().repeat(indent + 1),
                     body
-                ));
+                )));
             }
 
             PpKont::NewK { variables, indent } => {
-                let body = one(vals);
+                let body = one_string(renders, vals);
                 let result = format!(
                     "new {} in {{\n{}{}",
                     variables,
                     pp.indent_string().repeat(indent + 1),
                     body
                 );
-                vals.push(format!(
+                vals.push(renders.text(format!(
                     "{}\n{}{}",
                     result,
                     pp.indent_string().repeat(indent),
                     "}"
-                ));
+                )));
             }
 
             PpKont::CaseJoin { indent } => {
-                let source = one(vals);
-                let pattern = one(vals);
+                let source = one_string(renders, vals);
+                let pattern = one_string(renders, vals);
                 // Both depend only on `indent`, so recomputing them here is the
                 // same string the recursive form built before its mutations.
                 let open_brace = format!("{{\n{}", pp.indent_string().repeat(indent + 1));
                 let close_brace = format!("\n{}}}", pp.indent_string().repeat(indent));
-                vals.push(format!(
+                vals.push(renders.text(format!(
                     "{} => {}{}{}",
                     pattern, open_brace, source, close_brace
-                ));
+                )));
             }
 
             PpKont::MatchK { m, indent } => {
-                let cases = take(vals, m.cases.len());
-                let target = one(vals);
+                let cases = take_strings(renders, vals, m.cases.len());
+                let target = one_string(renders, vals);
                 let mut cases_string = String::new();
                 for (i, case) in cases.iter().enumerate() {
                     cases_string.push_str(&pp.indent_string().repeat(indent + 1));
@@ -3187,19 +4547,19 @@ mod drive {
                     pp.indent_string().repeat(indent + 1),
                     cases_string
                 );
-                vals.push(format!(
+                vals.push(renders.text(format!(
                     "{}\n{}{}",
                     result,
                     pp.indent_string().repeat(indent),
                     "}"
-                ));
+                )));
             }
 
             PpKont::IfK { indent } => {
-                let if_false = one(vals);
-                let if_true = one(vals);
-                let condition = one(vals);
-                vals.push(format!(
+                let if_false = one_string(renders, vals);
+                let if_true = one_string(renders, vals);
+                let condition = one_string(renders, vals);
+                vals.push(renders.text(format!(
                     "if ({}) {{\n{}{}\n{}}} else {{\n{}{}\n{}}}",
                     condition,
                     pp.indent_string().repeat(indent + 1),
@@ -3208,21 +4568,21 @@ mod drive {
                     pp.indent_string().repeat(indent + 1),
                     if_false,
                     pp.indent_string().repeat(indent),
-                ));
+                )));
             }
 
             PpKont::ConnectiveK { conn } => match &conn.connective_instance {
                 Some(ConnectiveInstance::ConnAndBody(value)) => {
-                    let ps = take(vals, value.ps.len());
-                    vals.push(format!("{{ {} }}", ps.join(" /\\ ")));
+                    let ps = take_strings(renders, vals, value.ps.len());
+                    vals.push(renders.text(format!("{{ {} }}", ps.join(" /\\ "))));
                 }
                 Some(ConnectiveInstance::ConnOrBody(value)) => {
-                    let ps = take(vals, value.ps.len());
-                    vals.push(format!("{{ {} }}", ps.join(" \\/ ")));
+                    let ps = take_strings(renders, vals, value.ps.len());
+                    vals.push(renders.text(format!("{{ {} }}", ps.join(" \\/ "))));
                 }
                 Some(ConnectiveInstance::ConnNotBody(_)) => {
-                    let p = one(vals);
-                    vals.push(format!("~{{{}}}", p));
+                    let p = one_string(renders, vals);
+                    vals.push(renders.text(format!("~{{{}}}", p)));
                 }
                 // A continuation is pushed only for the three arms above.
                 _ => unreachable!(
@@ -3231,12 +4591,86 @@ mod drive {
                 ),
             },
 
-            PpKont::ParK { par, indent } => {
-                let cardinality = usize::try_from(par.cardinality())
-                    .expect("Par cardinality exceeds the addressable printer range");
-                let children = take(vals, cardinality);
-                let separator = format!(" |\n{}", pp.indent_string().repeat(indent));
-                vals.push(children.join(&separator));
+            PpKont::EncodedParK {
+                child_count,
+                indent,
+            } => {
+                if child_count == 1 {
+                    let child = one(vals);
+                    vals.push(child);
+                } else {
+                    let children = take(vals, child_count);
+                    let separator = format!(" |\n{}", pp.indent_string().repeat(indent));
+                    vals.push(renders.join(children, &separator));
+                }
+            }
+
+            PpKont::ResidentParOccurrenceK {
+                plan,
+                endpoint,
+                consumed,
+                remaining_after,
+                accumulated,
+                indent,
+                render_mark,
+                retention,
+            } => {
+                let child = one(vals);
+                let accumulated = if accumulated.is_some_and(|prefix| {
+                    let final_prefix = renders.final_prefix_complete(pp.audience, prefix);
+                    match retention {
+                        SuffixRetention::None => false,
+                        SuffixRetention::FinalPrefix => final_prefix,
+                        SuffixRetention::ChannelFinalPrefix => {
+                            renders.len(prefix) > 60 && final_prefix
+                        }
+                    }
+                }) {
+                    // The occurrence has fully executed — including its catch,
+                    // cap, state transitions and panic/error disposition — but
+                    // its bytes are beyond the final observable prefix.
+                    renders.truncate(render_mark);
+                    accumulated
+                } else {
+                    let separator =
+                        renders.text(format!(" |\n{}", pp.indent_string().repeat(indent)));
+                    let chunk = if consumed == 1 {
+                        child
+                    } else {
+                        #[cfg(test)]
+                        {
+                            // One node represents all logical copies.
+                            // This counter is independent of multiplicity.
+                            _stats.repeat_nodes += 1;
+                        }
+                        renders.repeat_joined(child, separator, consumed)
+                    };
+                    match accumulated {
+                        Some(previous) => {
+                            let joined = renders.concat(previous, separator);
+                            Some(renders.concat(joined, chunk))
+                        }
+                        None => Some(chunk),
+                    }
+                };
+                let (endpoint, remaining) = if remaining_after == 0 {
+                    let endpoint = endpoint + 1;
+                    let remaining = plan
+                        .endpoints
+                        .get(endpoint)
+                        .map_or(0, |next| next.multiplicity.get());
+                    (endpoint, remaining)
+                } else {
+                    (endpoint, remaining_after)
+                };
+                work.push(PpWork::ResidentParDrive {
+                    plan,
+                    endpoint,
+                    remaining,
+                    accumulated,
+                    indent,
+                    retention,
+                });
             }
 
             PpKont::ChannelK { par } => {
@@ -3246,28 +4680,36 @@ mod drive {
                 if mutating(DriveMutation::ChannelResetsFlag) {
                     pp.is_building_channel = false;
                 }
-                let str = one(vals);
-                let quoted = if str.len() > 60 {
-                    quote_if_not_new(par, str, &pp.news_shift_indices, pp.bound_shift)
+                let rendered = one(vals);
+                let quoted = if renders.len(rendered) > 60 {
+                    quote_if_not_new(
+                        par,
+                        rendered,
+                        &pp.news_shift_indices,
+                        pp.bound_shift,
+                        renders,
+                    )
                 } else {
+                    let str = renders.flatten(rendered);
                     let whitespace = "\n(\\s\\s)*";
                     let replaced = regex::Regex::new(whitespace)
                         .unwrap()
                         .replace_all(&str, " ");
                     quote_if_not_new(
                         par,
-                        replaced.to_string(),
+                        renders.text(replaced.to_string()),
                         &pp.news_shift_indices,
                         pp.bound_shift,
+                        renders,
                     )
                 };
                 vals.push(quoted);
             }
 
-            PpKont::ExprK { expr } => combine_expr(pp, expr, vals),
+            PpKont::ExprK { expr } => combine_expr(pp, expr, vals, renders),
 
             PpKont::SetK { set, child_count } => {
-                let elements = take(vals, child_count).join(", ");
+                let elements = take_strings(renders, vals, child_count).join(", ");
                 let remainder = &set.remainder;
                 let remainder_string = pp.build_remainder_string(remainder);
                 let rendered = if remainder.is_some() && !elements.is_empty() {
@@ -3277,11 +4719,12 @@ mod drive {
                 } else {
                     format!("Set({})", elements)
                 };
-                vals.push(rendered);
+                vals.push(renders.text(rendered));
             }
 
             PpKont::MapK { map, entry_count } => {
-                let rendered = take(
+                let rendered = take_strings(
+                    renders,
                     vals,
                     entry_count
                         .checked_mul(2)
@@ -3298,19 +4741,85 @@ mod drive {
                 }
                 result.push_str(&pp.build_remainder_string(&map.remainder));
                 result.push('}');
-                vals.push(result);
+                vals.push(renders.text(result));
+            }
+
+            PpKont::EncodedSetK {
+                remainder,
+                child_count,
+            } => {
+                let elements = if child_count == 1 {
+                    one(vals)
+                } else {
+                    let children = take(vals, child_count);
+                    renders.join(children, ", ")
+                };
+                let remainder_string = pp.build_remainder_string(&remainder);
+                let open = renders.text("Set(");
+                let close = renders.text(")");
+                let mut rendered = renders.concat(open, elements);
+                if remainder.is_some() {
+                    let remainder = renders.text(remainder_string);
+                    rendered = renders.concat(rendered, remainder);
+                }
+                rendered = renders.concat(rendered, close);
+                vals.push(rendered);
+            }
+
+            PpKont::EncodedMapK {
+                remainder,
+                entry_count,
+            } => {
+                let child_count = entry_count
+                    .checked_mul(2)
+                    .expect("an addressable map cannot overflow its child count");
+                let open = renders.text("{");
+                let mut rendered = open;
+                if entry_count == 1 {
+                    let value = one(vals);
+                    let key = one(vals);
+                    rendered = renders.concat(rendered, key);
+                    let separator = renders.text(" : ");
+                    rendered = renders.concat(rendered, separator);
+                    rendered = renders.concat(rendered, value);
+                } else {
+                    let children = take(vals, child_count);
+                    let mut children = children.into_iter();
+                    for index in 0..entry_count {
+                        if index != 0 {
+                            let separator = renders.text(", ");
+                            rendered = renders.concat(rendered, separator);
+                        }
+                        let key = children.next().expect("map key render");
+                        let value = children.next().expect("map value render");
+                        rendered = renders.concat(rendered, key);
+                        let separator = renders.text(" : ");
+                        rendered = renders.concat(rendered, separator);
+                        rendered = renders.concat(rendered, value);
+                    }
+                }
+                let remainder = renders.text(pp.build_remainder_string(&remainder));
+                rendered = renders.concat(rendered, remainder);
+                let close = renders.text("}");
+                rendered = renders.concat(rendered, close);
+                vals.push(rendered);
             }
 
             #[cfg(test)]
             PpKont::TestJoinThree => {
                 let three = take(vals, 3);
-                vals.push(three.join(" | "));
+                vals.push(renders.join(three, " | "));
             }
         }
         Ok(())
     }
 
-    fn take_pathmap_repr(pp: &PrettyPrinter, pathmap: &EPathMap, vals: &mut Vec<String>) -> String {
+    fn take_pathmap_repr(
+        pp: &PrettyPrinter,
+        pathmap: &EPathMap,
+        vals: &mut Vec<RenderId>,
+        renders: &mut RenderArena,
+    ) -> RenderId {
         let child_count = match pathmap.mode() {
             EPathMapMode::Empty | EPathMapMode::Set => pathmap.len(),
             EPathMapMode::Map => pathmap
@@ -3318,7 +4827,7 @@ mod drive {
                 .checked_mul(2)
                 .expect("an addressable EPathMap cannot overflow its child count"),
         };
-        let rendered = take(vals, child_count);
+        let rendered = take_strings(renders, vals, child_count);
         let elements = match pathmap.mode() {
             EPathMapMode::Empty | EPathMapMode::Set => rendered.join(", "),
             EPathMapMode::Map => {
@@ -3336,15 +4845,20 @@ mod drive {
         };
         let remainder_string = pp.build_remainder_string(&pathmap.remainder);
         if pathmap.remainder.is_some() && !elements.is_empty() {
-            format!("{{|{}{}|}}", elements, remainder_string)
+            renders.text(format!("{{|{}{}|}}", elements, remainder_string))
         } else if pathmap.remainder.is_some() {
-            format!("{{|{}|}}", remainder_string)
+            renders.text(format!("{{|{}|}}", remainder_string))
         } else {
-            format!("{{|{}|}}", elements)
+            renders.text(format!("{{|{}|}}", elements))
         }
     }
 
-    fn combine_expr(pp: &mut PrettyPrinter, e: &Expr, vals: &mut Vec<String>) {
+    fn combine_expr(
+        pp: &mut PrettyPrinter,
+        e: &Expr,
+        vals: &mut Vec<RenderId>,
+        renders: &mut RenderArena,
+    ) {
         match expr_plan(e) {
             ExprPlan::Inline => unreachable!(
                 "pretty-printer drive: `ExprK` over an inline arm — [`descend_expr`] pushes \
@@ -3353,19 +4867,27 @@ mod drive {
 
             ExprPlan::Unary { prefix, .. } => {
                 let p = one(vals);
-                vals.push(format!("{}{}", prefix, wrap_with_braces(p)));
+                let p = renders.wrap_with_braces(p);
+                let prefix = renders.text(prefix);
+                vals.push(renders.concat(prefix, p));
             }
 
             ExprPlan::Binary { op, .. } => {
                 let p2 = one(vals);
                 let p1 = one(vals);
-                vals.push(format!("{} {} {}", p1, op, wrap_with_braces(p2)));
+                let p2 = renders.wrap_with_braces(p2);
+                let operator = renders.text(format!(" {} ", op));
+                let result = renders.concat(p1, operator);
+                vals.push(renders.concat(result, p2));
             }
 
             ExprPlan::Matches { .. } => {
                 let pattern = one(vals);
                 let target = one(vals);
-                vals.push(wrap_with_braces(format!("{} matches {}", target, pattern)));
+                let matches = renders.text(" matches ");
+                let result = renders.concat(target, matches);
+                let result = renders.concat(result, pattern);
+                vals.push(renders.wrap_with_braces(result));
             }
 
             ExprPlan::Bracketed {
@@ -3374,7 +4896,7 @@ mod drive {
                 open,
                 close,
             } => {
-                let elements = take(vals, ps.len()).join(", ");
+                let elements = take_strings(renders, vals, ps.len()).join(", ");
                 // ⚠ Reads `free_shift` / `bound_shift` AFTER the elements have
                 // been rendered — which is where the recursive form reads them.
                 let remainder_string = pp.build_remainder_string(remainder);
@@ -3385,11 +4907,11 @@ mod drive {
                 } else {
                     format!("{}{}{}", open, elements, close)
                 };
-                vals.push(full_result);
+                vals.push(renders.text(full_result));
             }
 
             ExprPlan::PathMap { pathmap } => {
-                let rendered = take_pathmap_repr(pp, pathmap, vals);
+                let rendered = take_pathmap_repr(pp, pathmap, vals, renders);
                 vals.push(rendered);
             }
 
@@ -3399,34 +4921,36 @@ mod drive {
 
             ExprPlan::Zipper { zipper } => {
                 let pathmap = zipper.pathmap.as_ref().expect("zipper pathmap was None");
-                let path_segments = take(vals, zipper.current_path.len());
-                let pathmap_repr = take_pathmap_repr(pp, pathmap, vals);
+                let path_segments = take_strings(renders, vals, zipper.current_path.len());
+                let pathmap_repr = take_pathmap_repr(pp, pathmap, vals, renders);
                 let zipper_type = if zipper.is_write_zipper {
                     "WriteZipper"
                 } else {
                     "ReadZipper"
                 };
                 let current_path_repr = render_cursor_position(zipper.cursor_kind, &path_segments);
-                vals.push(format!(
+                vals.push(renders.text(format!(
                     "{}(at: {}, {})",
-                    zipper_type, current_path_repr, pathmap_repr
-                ));
+                    zipper_type,
+                    current_path_repr,
+                    renders.flatten(pathmap_repr)
+                )));
             }
 
             ExprPlan::Tuple { ps } => {
-                let elements = take(vals, ps.len()).join(", ");
-                vals.push(format!("({})", elements));
+                let elements = take_strings(renders, vals, ps.len()).join(", ");
+                vals.push(renders.text(format!("({})", elements)));
             }
 
             ExprPlan::Method { m } => {
-                let target = one(vals);
-                let args = take(vals, m.arguments.len());
-                vals.push(format!(
+                let target = one_string(renders, vals);
+                let args = take_strings(renders, vals, m.arguments.len());
+                vals.push(renders.text(format!(
                     "({}).{}({})",
                     target,
                     m.method_name,
                     args.join(", ")
-                ));
+                )));
             }
         }
     }
@@ -3436,10 +4960,11 @@ mod drive {
     /// AFTER the sub-render, exactly as the closure's call site read them.
     fn quote_if_not_new(
         p: &Par,
-        s: String,
+        rendered: RenderId,
         news_shift_indices: &[NewBindRange],
         bound_shift: i32,
-    ) -> String {
+        renders: &mut RenderArena,
+    ) -> RenderId {
         let expression = if p.family_cardinality::<Expr>() == 1 {
             p.first::<Expr>()
                 .expect("canonical resident ParBag endpoints decode")
@@ -3473,9 +4998,45 @@ mod drive {
         };
 
         if is_bound_new {
-            s
+            rendered
         } else {
-            format!("@{{{}}}", s)
+            let open = renders.text("@{");
+            let close = renders.text("}");
+            let result = renders.concat(open, rendered);
+            renders.concat(result, close)
+        }
+    }
+
+    #[cfg(test)]
+    mod render_arena_properties {
+        use proptest::prelude::*;
+
+        use super::*;
+
+        proptest! {
+            #[test]
+            fn symbolic_repeat_flattens_and_consensus_caps_like_materialized_join(
+                chars in prop::collection::vec(any::<char>(), 0..8),
+                count in 2u64..256,
+            ) {
+                let child: String = chars.into_iter().collect();
+                let separator = " ¦ ";
+                let materialized = std::iter::repeat_n(child.as_str(), count as usize)
+                    .collect::<Vec<_>>()
+                    .join(separator);
+
+                let mut arena = RenderArena::default();
+                let child_id = arena.text(child);
+                let separator_id = arena.text(separator);
+                let repeated = arena.repeat_joined(child_id, separator_id, count);
+                prop_assert_eq!(arena.flatten(repeated), materialized.as_str());
+
+                let capped = arena.cap(Audience::Consensus, repeated);
+                prop_assert_eq!(
+                    arena.flatten(capped),
+                    Printer::cap(Audience::Consensus, &materialized)
+                );
+            }
         }
     }
 }
@@ -3483,6 +5044,11 @@ mod drive {
 // ===========================================================================
 // the differential: the machine against the recursive twin
 // ===========================================================================
+
+#[cfg(test)]
+#[allow(dead_code)]
+#[path = "../../../tests/support/planned_deep_fixture.rs"]
+mod planned_deep_fixture;
 
 #[cfg(test)]
 mod differential {
@@ -3505,7 +5071,8 @@ mod differential {
     //! | RAW `generate_par(1..=4)` | the same shapes with `free_count` / `bind_count` / var levels drawn from `any::<i32>()`, compared by *disposition* — the two forms must agree even where the shared arithmetic overflows |
     //! | [`every_node_kind`] | every [`PpNode`] variant, each reached through the entry point that actually reaches it |
     //! | [`every_expr_arm`] | all 36 `ExprInstance` arms, including the owned-canonical (`ESet`, `EMap`, `EZipper`) paths and both `wrap_with_braces` shapes |
-    //! | [`nested_unsorted_sets_and_maps_match_the_recursive_oracle`] | nested canonical collection intermediates reuse their recursively sorted representation without changing one output byte |
+    //! | [`nested_unsorted_sets_and_maps_match_the_recursive_oracle`] | resident canonical collections use protobuf-region children without changing one output byte; direct standalone `Expr` values retain historical sorting |
+    //! | [`depth_4096_collections_use_one_buffer_and_linear_region_work`] | one root protobuf buffer, one encoded `Par`/`Expr` visit per logical nested member, linear cut-field and render-node counters, and exact output lengths at depth 4096 |
     //! | [`two_binds_that_bind_different_counts`] | ★ the ONLY shape where a *sequenced* `bound_shift` differs from a precomputed one |
     //! | [`a_receive_with_a_where_guard`] | ★ `Receive.condition` — a field NEITHER printer used to read, and which `generate_par` never generates, so no proptest corpus here reaches it |
     //! | [`a_match_nested_in_a_send`] | the `Match` target rendered MID-traversal, with siblings on both sides and printer state already moved |
@@ -3540,12 +5107,16 @@ mod differential {
         GFixedPoint, GPrivate, GUnforgeable, If, KeyValuePair, Match, MatchCase, New, Par, Receive,
         ReceiveBind, Send, Var, VarRef,
     };
+    use models::rust::par_bag::Multiplicity;
     use models::rust::rhoapi_ext::EPathMap;
     use models::rust::test_utils::test_utils::{assert_generator_not_vacuous, generate_par};
     use proptest::prelude::*;
     use prost::Message;
 
-    use super::{NewBindRange, PpNode, PrettyPrinter, UNPRINTABLE_ANY};
+    use super::{
+        planned_deep_fixture, InterpreterError, NewBindRange, PpNode, PrettyPrinter, Printer,
+        UNPRINTABLE_ANY,
+    };
 
     // -----------------------------------------------------------------------
     // the comparison
@@ -4185,6 +5756,18 @@ mod differential {
         }
     }
 
+    fn repeated_component<T: models::rust::par_bag::ParBagComponent>(value: &T, count: u64) -> Par {
+        let mut par = Par::default();
+        par.insert_component_many(
+            value,
+            Multiplicity::new(count).expect("test multiplicity is nonzero"),
+            Vec::new(),
+            false,
+        )
+        .expect("test multiplicity fits the resident ParBag");
+        par
+    }
+
     /// A `New` that introduces `bind_count` names over `body`. Used to move
     /// `bound_shift` *mid-traversal*, which is the whole point of the
     /// two-bind corpus below.
@@ -4713,6 +6296,267 @@ mod differential {
 
         models::rust::rholang::par_children::dismantle(nested_set);
         models::rust::rholang::par_children::dismantle(nested_map);
+    }
+
+    #[test]
+    fn depth_4096_collections_use_one_buffer_and_linear_region_work() {
+        const DEPTH: usize = 4096;
+
+        let set = planned_deep_fixture::nested_sets_leaf(DEPTH, 0);
+        let (set_rendered, set_stats) =
+            super::drive::drive_message_stats(&mut PrettyPrinter::new(), &set)
+                .expect("the region-native nested Set render");
+        assert_eq!(set_rendered.len(), DEPTH * 5 + 1);
+        assert_eq!(set_rendered.matches("Set(").count(), DEPTH);
+        assert_eq!(set_stats.root_protobuf_buffers, 1);
+        assert_eq!(set_stats.encoded_pars, DEPTH + 1);
+        assert_eq!(set_stats.encoded_exprs, DEPTH + 1);
+        assert!(set_stats.cut_field_visits <= (DEPTH + 1) * 8);
+        assert!(set_stats.render_nodes <= DEPTH * 12 + 32);
+        assert_eq!(set_stats.output_bytes, set_rendered.len());
+        assert!(set_stats.root_protobuf_bytes > set_rendered.len());
+
+        let map = planned_deep_fixture::nested_maps(DEPTH);
+        let (map_rendered, map_stats) =
+            super::drive::drive_message_stats(&mut PrettyPrinter::new(), &map)
+                .expect("the region-native nested Map render");
+        assert_eq!(map_rendered.len(), DEPTH * 6 + 1);
+        assert_eq!(
+            map_rendered.bytes().filter(|byte| *byte == b'{').count(),
+            DEPTH
+        );
+        assert_eq!(map_stats.root_protobuf_buffers, 1);
+        assert_eq!(map_stats.encoded_pars, DEPTH * 2 + 1);
+        assert_eq!(map_stats.encoded_exprs, DEPTH * 2 + 1);
+        assert!(map_stats.cut_field_visits <= (DEPTH * 2 + 1) * 8);
+        assert!(map_stats.render_nodes <= DEPTH * 16 + 32);
+        assert_eq!(map_stats.output_bytes, map_rendered.len());
+        assert!(map_stats.root_protobuf_bytes > map_rendered.len());
+    }
+
+    #[test]
+    fn finite_multiplicity_two_is_byte_exact_for_both_audiences() {
+        let expr = Expr {
+            expr_instance: Some(ExprInstance::GInt(7)),
+        };
+        let par = repeated_component(&expr, 2);
+
+        let mut driven = PrettyPrinter::new();
+        let mut oracle = PrettyPrinter::new();
+        assert_eq!(
+            driven.build_string_from_message(&par),
+            oracle.oracle_build_string_from_message(&par)
+        );
+        assert_eq!(driven.build_string_from_message(&par), "7 |\n7");
+
+        let mut driven = PrettyPrinter::for_consensus();
+        let mut oracle = PrettyPrinter::for_consensus();
+        assert_eq!(
+            driven.build_channel_string(&par),
+            oracle.oracle_build_channel_string(&par)
+        );
+    }
+
+    #[test]
+    fn moderate_pure_multiplicity_stays_symbolic_through_the_consensus_cap() {
+        const COUNT: u64 = 4096;
+        let expr = Expr {
+            expr_instance: Some(ExprInstance::GInt(7)),
+        };
+        let par = repeated_component(&expr, COUNT);
+        let mut driven = PrettyPrinter::for_consensus();
+        let (rendered, stats) = super::drive::drive_message_stats(&mut driven, &par)
+            .expect("symbolic repeated Expr render");
+
+        let mut oracle = PrettyPrinter::for_consensus();
+        assert_eq!(rendered, oracle.oracle_build_string_from_message(&par));
+        assert_eq!(rendered.len(), Printer::CONSENSUS_TRIM_AFTER + 3);
+        assert_eq!(stats.root_protobuf_buffers, 1);
+        assert_eq!(stats.distinct_endpoint_copies, 1);
+        assert_eq!(stats.occurrence_renders, 1);
+        assert_eq!(stats.repeat_nodes, 1);
+        assert!(
+            stats.render_nodes < 32,
+            "a symbolic repeat allocated per occurrence: {stats:?}"
+        );
+    }
+
+    #[test]
+    fn recursively_neutral_collection_multiplicity_is_proved_byte_natively() {
+        const COUNT: u64 = 64;
+        let set = Expr {
+            expr_instance: Some(ExprInstance::ESetBody(ESet {
+                ps: vec![gint(2), gint(1)],
+                locally_free: Vec::new(),
+                connective_used: false,
+                remainder: None,
+            })),
+        };
+        let par = repeated_component(&set, COUNT);
+        let mut driven = PrettyPrinter::for_consensus();
+        let (rendered, stats) = super::drive::drive_message_stats(&mut driven, &par)
+            .expect("recursively neutral repeated Set render");
+        let mut oracle = PrettyPrinter::for_consensus();
+        assert_eq!(rendered, oracle.oracle_build_string_from_message(&par));
+        assert_eq!(stats.occurrence_renders, 1);
+        assert_eq!(stats.repeat_nodes, 1);
+    }
+
+    #[test]
+    fn stateful_new_multiplicity_executes_every_occurrence_and_preserves_state() {
+        const COUNT: u64 = 4;
+        let new = New {
+            bind_count: 1,
+            p: Some(bound_var(0)),
+            uri: Vec::new(),
+            injections: Default::default(),
+            locally_free: Vec::new(),
+        };
+        let par = repeated_component(&new, COUNT);
+
+        let mut driven = PrettyPrinter::for_consensus();
+        let (rendered, stats) = super::drive::drive_message_stats(&mut driven, &par)
+            .expect("stateful repeated New render");
+        let mut oracle = PrettyPrinter::for_consensus();
+        let expected = oracle.oracle_build_string_from_message(&par);
+        assert_eq!(rendered, expected);
+        // Each New occurrence plus its one-Expr body endpoint.
+        assert_eq!(stats.occurrence_renders, COUNT * 2);
+        assert_eq!(stats.repeat_nodes, 0);
+        assert_eq!(driven.free_shift, oracle.free_shift);
+        assert_eq!(driven.bound_shift, oracle.bound_shift);
+        assert_eq!(driven.news_shift_indices, oracle.news_shift_indices);
+        assert_eq!(driven.free_id, oracle.free_id);
+        assert_eq!(driven.base_id, oracle.base_id);
+        assert_eq!(driven.is_building_channel, oracle.is_building_channel);
+    }
+
+    #[test]
+    fn capped_stateful_multiplicity_is_memory_bounded_under_expr_and_channel_roots() {
+        const COUNT: u64 = 512;
+        let new = New {
+            bind_count: 1,
+            p: Some(bound_var(0)),
+            uri: Vec::new(),
+            injections: Default::default(),
+            locally_free: Vec::new(),
+        };
+
+        let expression_child = repeated_component(&new, COUNT);
+        let expression = Expr {
+            expr_instance: Some(ExprInstance::EListBody(EList {
+                ps: vec![expression_child],
+                locally_free: Vec::new(),
+                connective_used: false,
+                remainder: None,
+            })),
+        };
+        let mut driven_expr = PrettyPrinter::for_consensus();
+        let (expr_rendered, expr_stats) =
+            super::drive::drive_expr_stats(&mut driven_expr, &expression)
+                .expect("capped stateful Expr-root render");
+        let mut oracle_expr = PrettyPrinter::for_consensus();
+        assert_eq!(
+            expr_rendered,
+            oracle_expr.oracle_build_string_from_expr(&expression)
+        );
+        // Each New occurrence plus its one-Expr body endpoint.
+        assert_eq!(expr_stats.occurrence_renders, COUNT * 2);
+        assert_eq!(driven_expr.news_shift_indices.len(), COUNT as usize);
+        assert!(
+            expr_stats.render_nodes < 4096,
+            "capped Expr-root render retained one DAG segment per occurrence: {expr_stats:?}"
+        );
+
+        let channel = repeated_component(&new, COUNT);
+        let mut driven_channel = PrettyPrinter::for_consensus();
+        let (channel_rendered, channel_stats) =
+            super::drive::drive_channel_stats(&mut driven_channel, &channel)
+                .expect("capped stateful channel-root render");
+        let mut oracle_channel = PrettyPrinter::for_consensus();
+        assert_eq!(
+            channel_rendered,
+            oracle_channel.oracle_build_channel_string(&channel)
+        );
+        assert_eq!(channel_stats.occurrence_renders, COUNT * 2);
+        assert_eq!(driven_channel.news_shift_indices.len(), COUNT as usize);
+        assert!(
+            channel_stats.render_nodes < 4096,
+            "capped channel-root render retained one DAG segment per occurrence: \
+             {channel_stats:?}"
+        );
+    }
+
+    #[test]
+    fn protobuf_overflow_preflight_precedes_every_audience_and_cap_mode() {
+        const TRIM: &str = "PRETTY_PRINTER_OUTPUT_TRIM_AFTER";
+        let module = module_path!()
+            .split_once("::")
+            .map(|(_, rest)| rest)
+            .expect("module_path! is crate-qualified");
+        let test_name =
+            format!("{module}::protobuf_overflow_preflight_precedes_every_audience_and_cap_mode");
+
+        if std::env::var(TRIM).is_err() {
+            let output = std::process::Command::new(std::env::current_exe().expect("current_exe"))
+                .args(["--exact", &test_name, "--nocapture"])
+                .env(TRIM, "4")
+                .output()
+                .expect("failed to re-exec protobuf-overflow cap child");
+            let text = String::from_utf8_lossy(&output.stdout).into_owned()
+                + &String::from_utf8_lossy(&output.stderr);
+            assert!(
+                output.status.success() && text.contains("1 passed"),
+                "the capped protobuf-overflow child failed or ran no test:\n{text}"
+            );
+        }
+
+        let expr = Expr {
+            expr_instance: Some(ExprInstance::GInt(7)),
+        };
+        let par = repeated_component(&expr, u64::MAX);
+        let protobuf_error = par
+            .protobuf_encoded_len()
+            .expect_err("u64::MAX repeated protobuf fields must exceed usize")
+            .to_string();
+        let decode_error = InterpreterError::DecodeError(protobuf_error.clone());
+
+        for mut printer in [PrettyPrinter::new(), PrettyPrinter::for_consensus()] {
+            let initial = printer.clone();
+            let (result, stats) = super::drive::drive_message_stats_outcome(&mut printer, &par);
+            assert_eq!(
+                result
+                    .expect_err("overflow must fail before traversal")
+                    .to_string(),
+                decode_error.to_string()
+            );
+            assert_eq!(stats.root_protobuf_buffers, 0);
+            assert_eq!(stats.root_protobuf_bytes, 0);
+            assert_eq!(stats.distinct_endpoint_copies, 0);
+            assert_eq!(stats.encoded_pars, 0);
+            assert_eq!(stats.encoded_exprs, 0);
+            assert_eq!(stats.occurrence_renders, 0);
+            assert_eq!(stats.repeat_nodes, 0);
+            assert_eq!(stats.render_nodes, 0);
+            assert_eq!(stats.output_bytes, 0);
+            assert_eq!(printer.free_shift, initial.free_shift);
+            assert_eq!(printer.bound_shift, initial.bound_shift);
+            assert_eq!(printer.news_shift_indices, initial.news_shift_indices);
+            assert_eq!(printer.is_building_channel, initial.is_building_channel);
+        }
+
+        let expected_message = format!("<unprintable: {decode_error}>");
+        let expected_channel = format!("<unprintable channel: {decode_error}>");
+        for mut printer in [PrettyPrinter::new(), PrettyPrinter::for_consensus()] {
+            assert_eq!(printer.build_string_from_message(&par), expected_message);
+        }
+        for mut printer in [PrettyPrinter::new(), PrettyPrinter::for_consensus()] {
+            assert_eq!(printer.build_channel_string(&par), expected_channel);
+            assert!(
+                !printer.is_building_channel,
+                "channel state mutated before protobuf overflow preflight"
+            );
+        }
     }
 
     // -----------------------------------------------------------------------
