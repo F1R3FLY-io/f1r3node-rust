@@ -139,7 +139,16 @@ env:
   # iterations) and the orchestrator host guardian (every iteration) use it.
   SOAK_HOST_FREE_FLOOR_MB: "8192"
   # Third pin site; keep identical to the other two — bump via scripts/repin-system-integration.sh.
-  SYSTEM_INTEGRATION_REF: 56884ab896a8d37d7fa7cba8eed2a0ffef9c1b6a
+  # Pin history:
+  # 2026-08-23: 56884ab -> 3e5b5eb (system-integration main, PR #128). Carries
+  #   SI PR #127: _deploy_and_wait in test_web_api.py deploys onto a fresh
+  #   string channel per call. Closes the shared-shard finalization timeouts
+  #   (rejection_count 15-24) caused by a second bare-integer produce onto a
+  #   reused @2000-@2002 cell; see docs/work-logs/shared-shard-single-number-
+  #   cell-starvation-2026-08-22.md. Also carries SI PR #129 shard-port
+  #   reservation. Verified: SI PR #127 CI green; f1r3node-rust run
+  #   32615164762 attempt 1 reproduced the timeout on the old pin.
+  SYSTEM_INTEGRATION_REF: 3e5b5eb89be3f5ef64c3dc3648bb56ebe30eb263
   # Pinned OCI CLI installer (release tag + sha256). The checksum fails closed
   # if the tag is ever moved. Bump both together when upgrading.
   OCI_CLI_INSTALLER_URL: "https://raw.githubusercontent.com/oracle/oci-cli/v3.89.1/scripts/install/install.sh"
