@@ -165,6 +165,14 @@ jobs:
         shell: bash -euo pipefail {0}
         run: .github/scripts/test-release-evidence.sh
 
+      - name: Verify release gates
+        shell: bash -euo pipefail {0}
+        run: .github/scripts/test-release-gates.sh
+
+      - name: Verify release promotion
+        shell: bash -euo pipefail {0}
+        run: .github/scripts/test-promote-release.sh
+
       - name: Verify release workflows
         shell: bash -euo pipefail {0}
         run: .github/scripts/test-release-workflows.sh
