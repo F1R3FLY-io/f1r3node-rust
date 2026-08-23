@@ -15,6 +15,12 @@ set -euo pipefail
 #                        adjacent member pair (status ahead|identical means
 #                        the lower head is an ancestor of the upper head)
 #   merge-<N>.json       GET commits/<merge_commit_sha> for a merged member
+#   reach-<N>.json       GET compare/<merge_commit_sha>...<integration_branch>
+#                        for a merged member (status ahead|identical means the
+#                        merge commit is reachable from integration_branch)
+#
+# Every JSON input is parsed with jq -e, so an empty or malformed file fails
+# the validation the same way a missing file does.
 #
 # Outputs `train-record.json`: the reviewed intent plus every member head
 # observed at setup. Section 13.3 re-validates the chain against this record
@@ -82,13 +88,14 @@ validate_manifest() {
 # Section 13.2 steps 3 to 6 from the fetched API documents.
 validate_stack() {
 	local manifest_json="$1" inputs="$2" output="$3"
-	local members integration top_sha n lower upper prev_branch
+	local members integration top_sha n lower upper prev_branch prev_merged base
 	local record_members="[]" merged count
 	jq -e 'has("stack")' <<<"$manifest_json" >/dev/null || fail "validate-stack requires a stack manifest"
 	integration="$(jq -r '.stack.integration_branch' <<<"$manifest_json")"
 	top_sha="$(jq -r '.head_sha' <<<"$manifest_json")"
 	members="$(jq -r '.stack.members[].pull_request' <<<"$manifest_json")"
 	prev_branch="$integration"
+	prev_merged=true
 	lower=""
 	count=0
 	while IFS= read -r n; do
@@ -96,12 +103,16 @@ validate_stack() {
 		require_file "$inputs/pull-$n.json"
 		# Step 4: member chain. The bottom member targets integration_branch;
 		# every later member targets the branch of the preceding member.
-		jq -e --arg base "$prev_branch" '
+		# After the preceding member merges and its branch is deleted, GitHub
+		# retargets the next member to integration_branch; that base is then
+		# also accepted, and steps 5 and 6 keep the chain honest.
+		jq -e --arg base "$prev_branch" --arg integration "$integration" --argjson prev_merged "$prev_merged" '
 			type == "object"
 			and (.number | type == "number")
 			and (.state == "open" or .merged == true)
-			and .base.ref == $base' "$inputs/pull-$n.json" >/dev/null ||
-			fail "member #$n must be open or merged and must target $prev_branch"
+			and (.base.ref == $base or ($prev_merged and .base.ref == $integration))' "$inputs/pull-$n.json" >/dev/null ||
+			fail "member #$n must be open or merged and must target $prev_branch$([ "$prev_merged" = true ] && [ "$prev_branch" != "$integration" ] && printf ' (or %s after the preceding member merged)' "$integration")"
+		base="$(jq -r '.base.ref' "$inputs/pull-$n.json")"
 		upper="$(jq -r '.head.sha' "$inputs/pull-$n.json")"
 		[[ "$upper" =~ ^[0-9a-f]{40}$ ]] || fail "member #$n has no full head SHA"
 		# Step 5: head ancestry. The lower head must be an ancestor of this
@@ -112,8 +123,9 @@ validate_stack() {
 				fail "member #$n head $upper does not contain the preceding member head $lower"
 		fi
 		# Step 6: merged-member topology. A merged member must have a true
-		# merge commit on integration_branch whose second parent is its head.
-		merged="$(jq -r '.merged' "$inputs/pull-$n.json")"
+		# merge commit whose second parent is its head, and that merge commit
+		# must be reachable from integration_branch.
+		merged="$(jq -r '.merged // false' "$inputs/pull-$n.json")"
 		if [ "$merged" = true ]; then
 			local merge_sha
 			merge_sha="$(jq -r '.merge_commit_sha // empty' "$inputs/pull-$n.json")"
@@ -122,10 +134,14 @@ validate_stack() {
 			jq -e --arg sha "$merge_sha" --arg head "$upper" '
 				.sha == $sha and (.parents | length == 2) and .parents[1].sha == $head' "$inputs/merge-$n.json" >/dev/null ||
 				fail "merged member #$n did not merge with a true merge commit whose second parent is its head"
+			require_file "$inputs/reach-$n.json"
+			jq -e '.status == "ahead" or .status == "identical"' "$inputs/reach-$n.json" >/dev/null ||
+				fail "merged member #$n merge commit $merge_sha is not reachable from $integration"
 		fi
-		record_members="$(jq --argjson n "$n" --arg head "$upper" --arg base "$prev_branch" --argjson merged "$merged" \
+		record_members="$(jq --argjson n "$n" --arg head "$upper" --arg base "$base" --argjson merged "$merged" \
 			'. + [{pull_request: $n, head_sha: $head, base: $base, merged: $merged}]' <<<"$record_members")"
 		prev_branch="$(jq -r '.head.ref' "$inputs/pull-$n.json")"
+		prev_merged="$merged"
 		lower="$upper"
 	done <<<"$members"
 	[ "$lower" = "$top_sha" ] || fail "manifest head_sha $top_sha is not the head of the top member ($lower)"
@@ -181,7 +197,10 @@ validate_version() {
 
 # Section 13.2 step 9: choose the CI evidence. RUNS_JSON is the list of
 # ci.yml runs for head_sha from any event. Prints the newest successful
-# run id, or "dispatch" when none exists.
+# run id, or "dispatch" when none exists. A run listed under the repository
+# always carries repository.full_name == the repository, even for a
+# pull_request run from a fork; head_repository names where the head commit
+# lives, so both must match.
 plan_ci() {
 	local runs_json="$1" head_sha="$2" repository="$3" id
 	require_file "$runs_json"
@@ -189,7 +208,8 @@ plan_ci() {
 		[.workflow_runs[]
 			| select(.head_sha == $sha and .path == ".github/workflows/ci.yml"
 				and .status == "completed" and .conclusion == "success"
-				and .repository.full_name == $repo)]
+				and .repository.full_name == $repo
+				and .head_repository.full_name == $repo)]
 		| sort_by(.run_number) | last | .id // empty' "$runs_json")"
 	if [ -n "$id" ]; then printf '%s\n' "$id"; else printf 'dispatch\n'; fi
 }

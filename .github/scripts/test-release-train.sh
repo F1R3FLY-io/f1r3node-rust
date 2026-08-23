@@ -82,6 +82,7 @@ pull() { # number state merged base head_ref head_sha [merge_sha]
 		merge_commit_sha: (if $merge == "" then null else $merge end)}' >"$IN/pull-$1.json"
 }
 compare() { jq -n --arg s "$3" '{status: $s}' >"$IN/compare-$1-$2.json"; }
+reach() { jq -n --arg s "$2" '{status: $s}' >"$IN/reach-$1.json"; }
 pull 299 open false dev fix/key-contention-starvation "$S299"
 pull 312 open false fix/key-contention-starvation feat/key-contention-phase2 "$S312"
 pull 319 open false feat/key-contention-phase2 fix/key-contention-base-bias "$S319"
@@ -100,7 +101,9 @@ jq -e --arg top "$S311" --arg s299 "$S299" '
 
 # --- Section 15 rejections ------------------------------------------------------
 stack_case() { # label, then a shell snippet that mutates a copy of inputs
-	local label="$1" snippet="$2" dir="$TMP/case-$RANDOM"
+	local label="$1" snippet="$2" dir
+	dir="$(mktemp -d "$TMP/case-XXXXXX")"
+	rmdir "$dir"
 	cp -R "$IN" "$dir"
 	( IN="$dir"; eval "$snippet" )
 	expect_failure "$label" "$TOOL" validate-stack "$TMP/stack.json" "$dir" "$dir/record.json"
@@ -120,7 +123,15 @@ stack_case 'merged member without a merge commit' \
 stack_case 'merged member squashed (single parent)' \
 	'pull 299 closed true dev fix/key-contention-starvation "$S299" "$OTHER"; jq -n --arg sha "$OTHER" --arg p "$(sha parent)" "{sha: \$sha, parents: [{sha: \$p}]}" >"$IN/merge-299.json"'
 stack_case 'merged member merge commit second parent is not the recorded head' \
-	'pull 299 closed true dev fix/key-contention-starvation "$S299" "$OTHER"; jq -n --arg sha "$OTHER" --arg p "$(sha parent)" --arg q "$(sha q)" "{sha: \$sha, parents: [{sha: \$p}, {sha: \$q}]}" >"$IN/merge-299.json"'
+	'pull 299 closed true dev fix/key-contention-starvation "$S299" "$OTHER"; jq -n --arg sha "$OTHER" --arg p "$(sha parent)" --arg q "$(sha q)" "{sha: \$sha, parents: [{sha: \$p}, {sha: \$q}]}" >"$IN/merge-299.json"; reach 299 identical'
+stack_case 'merged member merge commit is not reachable from the integration branch' \
+	'pull 299 closed true dev fix/key-contention-starvation "$S299" "$OTHER"; jq -n --arg sha "$OTHER" --arg p "$(sha parent)" --arg q "$S299" "{sha: \$sha, parents: [{sha: \$p}, {sha: \$q}]}" >"$IN/merge-299.json"; reach 299 diverged'
+stack_case 'merged member without a reachability document' \
+	'pull 299 closed true dev fix/key-contention-starvation "$S299" "$OTHER"; jq -n --arg sha "$OTHER" --arg p "$(sha parent)" --arg q "$S299" "{sha: \$sha, parents: [{sha: \$p}, {sha: \$q}]}" >"$IN/merge-299.json"'
+stack_case 'member retargeted to the integration branch while its predecessor is still open' \
+	'pull 312 open false dev feat/key-contention-phase2 "$S312"'
+stack_case 'empty pull request document' \
+	': >"$IN/pull-312.json"'
 
 # A correctly merged bottom member passes.
 MERGED="$TMP/merged"
@@ -128,8 +139,17 @@ cp -R "$IN" "$MERGED"
 M299="$(sha merge299)"
 ( IN="$MERGED"; pull 299 closed true dev fix/key-contention-starvation "$S299" "$M299" )
 jq -n --arg sha "$M299" --arg p "$(sha devtip)" --arg q "$S299" '{sha: $sha, parents: [{sha: $p}, {sha: $q}]}' >"$MERGED/merge-299.json"
+( IN="$MERGED"; reach 299 ahead )
 "$TOOL" validate-stack "$TMP/stack.json" "$MERGED" "$MERGED/record.json" 2>/dev/null
-jq -e '.members[0].merged == true' "$MERGED/record.json" >/dev/null
+jq -e '.members[0].merged == true and .members[1].base == "fix/key-contention-starvation"' "$MERGED/record.json" >/dev/null
+# After the merged member's branch is deleted, GitHub retargets the next
+# member to the integration branch (Section 13.3). That base is accepted and
+# recorded as observed.
+RETARGET="$TMP/retarget"
+cp -R "$MERGED" "$RETARGET"
+( IN="$RETARGET"; pull 312 open false dev feat/key-contention-phase2 "$S312" )
+"$TOOL" validate-stack "$TMP/stack.json" "$RETARGET" "$RETARGET/record.json" 2>/dev/null
+jq -e '.members[0].merged == true and .members[1].base == "dev" and .members[2].base == "feat/key-contention-phase2"' "$RETARGET/record.json" >/dev/null
 
 # --- Version and reservation ---------------------------------------------------
 SRC="$TMP/source"
@@ -171,13 +191,17 @@ sed -i.bak 's/^state: active$/state: promoted/' "$TMP/manifests/other.yml"
 
 # --- CI planning ----------------------------------------------------------------
 jq -n --arg sha "$S311" --arg repo "$REPOSITORY" '{workflow_runs: [
-	{id: 1, run_number: 10, head_sha: $sha, path: ".github/workflows/ci.yml", status: "completed", conclusion: "success", repository: {full_name: $repo}},
-	{id: 2, run_number: 11, head_sha: $sha, path: ".github/workflows/ci.yml", status: "completed", conclusion: "failure", repository: {full_name: $repo}},
-	{id: 3, run_number: 12, head_sha: $sha, path: ".github/workflows/ci.yml", status: "completed", conclusion: "success", repository: {full_name: $repo}},
-	{id: 4, run_number: 13, head_sha: $sha, path: ".github/workflows/slashing-tests.yml", status: "completed", conclusion: "success", repository: {full_name: $repo}}]}' >"$TMP/runs.json"
+	{id: 1, run_number: 10, head_sha: $sha, path: ".github/workflows/ci.yml", status: "completed", conclusion: "success", repository: {full_name: $repo}, head_repository: {full_name: $repo}},
+	{id: 2, run_number: 11, head_sha: $sha, path: ".github/workflows/ci.yml", status: "completed", conclusion: "failure", repository: {full_name: $repo}, head_repository: {full_name: $repo}},
+	{id: 3, run_number: 12, head_sha: $sha, path: ".github/workflows/ci.yml", status: "completed", conclusion: "success", repository: {full_name: $repo}, head_repository: {full_name: $repo}},
+	{id: 4, run_number: 13, head_sha: $sha, path: ".github/workflows/slashing-tests.yml", status: "completed", conclusion: "success", repository: {full_name: $repo}, head_repository: {full_name: $repo}}]}' >"$TMP/runs.json"
 [ "$("$TOOL" plan-ci "$TMP/runs.json" "$S311" "$REPOSITORY")" = 3 ]
 [ "$("$TOOL" plan-ci "$TMP/runs.json" "$OTHER" "$REPOSITORY")" = dispatch ]
-jq '.workflow_runs |= map(.repository.full_name = "fork/repo")' "$TMP/runs.json" >"$TMP/runs-fork.json"
+# A pull_request run from a fork lists repository == the base repository;
+# only head_repository reveals the fork.
+jq '.workflow_runs |= map(.head_repository.full_name = "fork/repo")' "$TMP/runs.json" >"$TMP/runs-fork.json"
 [ "$("$TOOL" plan-ci "$TMP/runs-fork.json" "$S311" "$REPOSITORY")" = dispatch ]
+jq '.workflow_runs |= map(del(.head_repository))' "$TMP/runs.json" >"$TMP/runs-nohead.json"
+[ "$("$TOOL" plan-ci "$TMP/runs-nohead.json" "$S311" "$REPOSITORY")" = dispatch ]
 
 printf 'release train tests passed\n'

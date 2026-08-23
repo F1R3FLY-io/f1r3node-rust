@@ -96,18 +96,32 @@ jobs:
           else
             members="$(jq -r '.pull_request' "$manifest")"
           fi
+          integration="$(jq -r '.stack.integration_branch // empty' "$manifest")"
           lower=""
           while IFS= read -r n; do
             gh api "repos/${GITHUB_REPOSITORY}/pulls/${n}" > "$inputs/pull-$n.json"
+            # Every member head must live in this repository: the validator
+            # and the ci.yml dispatch below both name branches of this repository.
+            head_repo="$(jq -r '.head.repo.full_name // empty' "$inputs/pull-$n.json")"
+            [ "$head_repo" = "$GITHUB_REPOSITORY" ] || {
+              echo "::error::pull request #${n} head lives in ${head_repo:-an unknown repository}, not ${GITHUB_REPOSITORY}"
+              exit 1
+            }
             upper="$(jq -r '.head.sha' "$inputs/pull-$n.json")"
             if [ -n "$lower" ]; then
               gh api "repos/${GITHUB_REPOSITORY}/compare/${lower}...${upper}" \
                 --jq '{status: .status, ahead_by: .ahead_by, behind_by: .behind_by}' > "$inputs/compare-$lower-$upper.json"
             fi
-            if [ "$(jq -r '.merged' "$inputs/pull-$n.json")" = true ]; then
+            if [ "$(jq -r '.merged // false' "$inputs/pull-$n.json")" = true ]; then
               merge_sha="$(jq -r '.merge_commit_sha' "$inputs/pull-$n.json")"
               gh api "repos/${GITHUB_REPOSITORY}/commits/${merge_sha}" \
                 --jq '{sha: .sha, parents: [.parents[] | {sha: .sha}]}' > "$inputs/merge-$n.json"
+              if [ -n "$integration" ]; then
+                # ahead|identical: the merge commit is an ancestor of the
+                # integration branch tip.
+                gh api "repos/${GITHUB_REPOSITORY}/compare/${merge_sha}...${integration}" \
+                  --jq '{status: .status, ahead_by: .ahead_by, behind_by: .behind_by}' > "$inputs/reach-$n.json"
+              fi
             fi
             lower="$upper"
           done <<<"$members"
