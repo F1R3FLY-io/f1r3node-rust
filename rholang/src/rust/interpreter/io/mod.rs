@@ -10,6 +10,7 @@
 // `Fs` agent.
 
 pub mod consensus_fingerprint;
+pub mod costs;
 pub mod errors;
 pub mod handle_table;
 pub mod handlers;
