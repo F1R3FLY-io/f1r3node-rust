@@ -1712,6 +1712,7 @@ fn dispatch_table_creator(
     chromadb_service: SharedChromaDBService,
     fs_handles: super::io::handle_table::FileHandleTable,
     fs_mode: super::io::ConsensusMode,
+    metering: super::metering::MeteredMachine,
 ) -> RhoDispatchMap {
     let mut dispatch_table = HashMap::new();
 
@@ -1739,6 +1740,7 @@ fn dispatch_table_creator(
             chromadb_service.clone(),
             fs_handles.clone(),
             fs_mode,
+            metering.clone(),
         ));
 
         dispatch_table.insert(tuple.0, tuple.1);
@@ -1839,6 +1841,17 @@ async fn setup_reducer(
     // (uses it directly in the eval_new fast path).
     let urn_map = Arc::new(urn_map);
 
+    // Phase 9 slice 9b-i: create the MeteredMachine BEFORE building
+    // the dispatch table so `FsProcesses` handlers (constructed inside
+    // `dispatch_table_creator` via `ProcessContext::create ->
+    // SystemProcesses::create -> FsProcesses::new`) get a clone.  Every
+    // clone shares the same underlying budget via `Arc` internals, so
+    // a handler-side charge decrements the same budget the reducer
+    // observes.  The `substitute: Substitute { metering }` at the end
+    // of this function consumes the last clone; every intermediate
+    // consumer holds a `.clone()`.
+    let metering = super::metering::MeteredMachine::new(cost.clone());
+
     let replay_dispatch_table = dispatch_table_creator(
         rspace.clone(),
         temp_dispatcher.clone(),
@@ -1853,6 +1866,7 @@ async fn setup_reducer(
         chromadb_service,
         fs_handles,
         fs_mode,
+        metering.clone(),
     );
 
     let dispatcher = Arc::new(RholangAndScalaDispatcher {
@@ -1860,7 +1874,6 @@ async fn setup_reducer(
         reducer: reducer_cell.clone(),
     });
 
-    let metering = super::metering::MeteredMachine::new(cost.clone());
     let reducer = Arc::new(DebruijnInterpreter {
         space: rspace.clone(),
         dispatcher: dispatcher.clone(),

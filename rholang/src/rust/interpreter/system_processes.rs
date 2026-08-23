@@ -447,6 +447,7 @@ impl ProcessContext {
         chromadb_service: SharedChromaDBService,
         fs_handles: super::io::handle_table::FileHandleTable,
         fs_mode: super::io::ConsensusMode,
+        metering: super::metering::MeteredMachine,
     ) -> Self {
         ProcessContext {
             space: space.clone(),
@@ -467,6 +468,7 @@ impl ProcessContext {
                 chromadb_service,
                 fs_handles,
                 fs_mode,
+                metering,
             ),
         }
     }
@@ -678,12 +680,14 @@ impl SystemProcesses {
         chromadb_service: SharedChromaDBService,
         fs_handles: super::io::handle_table::FileHandleTable,
         fs_mode: super::io::ConsensusMode,
+        metering: super::metering::MeteredMachine,
     ) -> Self {
         let fs = super::io::handlers::FsProcesses::new(
             dispatcher.clone(),
             space.clone(),
             fs_handles,
             fs_mode,
+            metering,
         );
         SystemProcesses {
             dispatcher,

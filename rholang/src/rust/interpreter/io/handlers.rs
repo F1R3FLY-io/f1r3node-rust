@@ -32,6 +32,7 @@ use tokio::task::spawn_blocking;
 use super::super::contract_call::ContractCall;
 use super::super::dispatch::RhoDispatch;
 use super::super::errors::{illegal_argument_error, InterpreterError};
+use super::super::metering::MeteredMachine;
 use super::super::rho_runtime::RhoISpace;
 use super::super::rho_type::{RhoBoolean, RhoByteArray, RhoNumber, RhoString};
 use super::errors::*;
@@ -87,12 +88,22 @@ pub const MAX_WRITE_BYTES: u64 = 64 * 1024 * 1024;
 
 /// Shared per-runtime state for the fs native handlers.  Cloned into
 /// each handler closure via `ProcessContext`.
+///
+/// Phase 9 slice 9b: `metering` is the per-deploy `MeteredMachine`
+/// shared with the reducer.  Handler entries emit
+/// `metering.reserve_primitive(costs::fs_X())` before doing any
+/// work, so a deploy that exhausts its budget is rejected at the
+/// syscall boundary rather than mid-flight.  See
+/// `rholang/src/rust/interpreter/io/costs.rs` for the weight table
+/// and `rholang/tests/fileio_cost_spec.rs` for the golden-value
+/// regression pins.
 #[derive(Clone)]
 pub struct FsProcesses {
     pub dispatcher: RhoDispatch,
     pub space: RhoISpace,
     pub handles: FileHandleTable,
     pub mode: ConsensusMode,
+    pub metering: MeteredMachine,
 }
 
 impl FsProcesses {
@@ -101,12 +112,14 @@ impl FsProcesses {
         space: RhoISpace,
         handles: FileHandleTable,
         mode: ConsensusMode,
+        metering: MeteredMachine,
     ) -> Self {
         FsProcesses {
             dispatcher,
             space,
             handles,
             mode,
+            metering,
         }
     }
 
