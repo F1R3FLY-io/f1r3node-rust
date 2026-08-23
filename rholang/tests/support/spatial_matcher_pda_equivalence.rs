@@ -2,6 +2,9 @@
 
 #[path = "../../../models/tests/par_corpus/mod.rs"]
 mod par_corpus;
+#[allow(dead_code)]
+#[path = "planned_deep_fixture.rs"]
+mod planned_deep_fixture;
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
@@ -34,6 +37,7 @@ use super::free_map_transaction::{
     assert_unwind_probe, panic_after_writes_for_test, unwind_probe_subject, BindingDelta,
     FreeMapTransaction, UnwindRollbackWitness,
 };
+use super::match_pars::match_pars;
 use super::r#match::{rho_path_query_atom, rho_path_query_cursor_atom};
 use super::recursive_oracle::spatial_matcher::{
     SpatialMatcher as RecursiveSpatialMatcher, SpatialMatcherContext as RecursiveContext,
@@ -41,8 +45,8 @@ use super::recursive_oracle::spatial_matcher::{
 use super::spatial_matcher::{SpatialMatcher, SpatialMatcherContext};
 use super::spatial_matcher_pda::{
     apply_update_deltas, connective_candidate_positions_with_stats, encoded_expr_outer_route,
-    if_target_index_shape, match_par_list_with_stats, match_par_with_stats,
-    match_par_with_transaction_stats, match_send_list_with_remainder_stats,
+    if_target_index_shape, match_par_list_with_stats, match_par_with_concrete_region_stats,
+    match_par_with_stats, match_par_with_transaction_stats, match_send_list_with_remainder_stats,
     match_send_list_with_stats, send_target_index_shape, EncodedExprOuterRoute,
 };
 
@@ -59,6 +63,255 @@ fn encoded_expr_outer_route_rejects_only_proven_different_tags() {
             assert_eq!(encoded_expr_outer_route(target, pattern), expected);
         }
     }
+}
+
+#[test]
+fn concrete_authoritative_equality_bypasses_recursive_projection_at_depth() {
+    let target = planned_deep_fixture::nested_binders(512);
+    let pattern = planned_deep_fixture::nested_binders(512);
+    let mut context = SpatialMatcherContext::new();
+    let (result, stats) = match_par_with_concrete_region_stats(&mut context, target, pattern);
+    assert_eq!(result, Some(()));
+    assert_eq!(stats.authoritative_equal_fast_positives, 1);
+    assert_eq!(stats.byte_region_attempts, 0);
+    assert_eq!(stats.legacy_fallbacks, 0);
+}
+
+#[test]
+fn concrete_binder_byte_regions_scale_linearly_when_ignored_metadata_differs() {
+    const DEPTH: usize = 256;
+    let target = planned_deep_fixture::nested_binders_with_component_metadata(DEPTH, vec![1]);
+    let pattern = planned_deep_fixture::nested_binders_with_component_metadata(DEPTH, vec![2]);
+    assert_ne!(
+        target, pattern,
+        "metadata must defeat authoritative equality"
+    );
+
+    let mut context = SpatialMatcherContext::new();
+    let (result, stats) = match_par_with_concrete_region_stats(&mut context, target, pattern);
+    assert_eq!(result, Some(()));
+    assert_eq!(stats.authoritative_equal_fast_positives, 0);
+    assert_eq!(stats.byte_region_attempts, 1);
+    assert_eq!(stats.legacy_fallbacks, 0);
+    assert!(stats.par_region_pairs >= DEPTH * 2);
+    assert!(stats.par_region_pairs <= DEPTH * 8 + 8);
+    assert!(stats.component_region_pairs >= DEPTH * 2);
+    assert!(stats.component_region_pairs <= DEPTH * 8 + 8);
+    assert!(
+        stats.max_pending_tasks <= 8,
+        "the chain must retain bounded pending work, got {stats:?}"
+    );
+}
+
+#[test]
+fn dynamic_singleton_epathmap_values_descend_by_shared_regions_at_depth() {
+    const DEPTH: usize = 256;
+    let target = planned_deep_fixture::nested_pathmap_chain_leaf(DEPTH, 7);
+    let pattern = planned_deep_fixture::nested_pathmap_match_pattern(DEPTH);
+    let mut context = SpatialMatcherContext::new();
+    let (result, stats) = match_par_with_concrete_region_stats(&mut context, target, pattern);
+    assert_eq!(result, Some(()));
+    assert_eq!(
+        context.free_map.get(&0),
+        Some(&new_gint_par(7, Vec::new(), false))
+    );
+    assert_eq!(stats.epathmap_region_levels, DEPTH);
+    assert_eq!(stats.epathmap_full_decode_fallbacks, 0);
+    assert_eq!(stats.epathmap_leaf_decodes, 1);
+    assert_eq!(stats.legacy_fallbacks, 0);
+}
+
+#[test]
+fn singleton_epathmap_region_route_preserves_dynamic_key_then_value_bindings() {
+    let target = pathmap(
+        EPathMap::new_map(
+            [(
+                new_gint_par(11, Vec::new(), false),
+                new_gint_par(22, Vec::new(), false),
+            )],
+            Vec::new(),
+            false,
+            None,
+        ),
+        false,
+    );
+    let pattern = pathmap(
+        EPathMap::new_map(
+            [(
+                new_freevar_par(0, Vec::new()),
+                new_freevar_par(1, Vec::new()),
+            )],
+            Vec::new(),
+            true,
+            None,
+        ),
+        true,
+    );
+    let mut context = SpatialMatcherContext::new();
+    let (result, stats) = match_par_with_concrete_region_stats(&mut context, target, pattern);
+    assert_eq!(result, Some(()));
+    assert_eq!(
+        context.free_map.get(&0),
+        Some(&new_gint_par(11, Vec::new(), false))
+    );
+    assert_eq!(
+        context.free_map.get(&1),
+        Some(&new_gint_par(22, Vec::new(), false))
+    );
+    assert_eq!(stats.epathmap_region_levels, 1);
+    assert_eq!(stats.epathmap_full_decode_fallbacks, 0);
+    assert_eq!(stats.epathmap_leaf_decodes, 1);
+}
+
+fn guarded_concrete_receive(condition: Par, peek: bool, locally_free: Vec<u8>) -> Par {
+    models::par_from_default! {
+        receives: vec![Receive {
+            binds: vec![ReceiveBind {
+                patterns: vec![Par::default()],
+                source: Some(new_gint_par(1, Vec::new(), false)),
+                remainder: None,
+                free_count: 0,
+            }],
+            body: Some(new_gint_par(2, Vec::new(), false)),
+            persistent: false,
+            peek,
+            bind_count: 1,
+            locally_free,
+            connective_used: false,
+            condition: Some(condition),
+        }],
+        ..Default::default()
+    }
+}
+
+#[test]
+fn concrete_region_route_preserves_receive_condition_and_metadata_equations() {
+    let target = guarded_concrete_receive(new_gint_par(7, Vec::new(), false), false, vec![1]);
+    let pattern = guarded_concrete_receive(new_gint_par(99, Vec::new(), false), false, vec![2]);
+    assert!(
+        match_pars(&target, &pattern),
+        "the legacy concrete equation ignores condition and locally_free"
+    );
+    let mut context = SpatialMatcherContext::new();
+    let (result, stats) = match_par_with_concrete_region_stats(&mut context, target, pattern);
+    assert_eq!(result, Some(()));
+    assert_eq!(stats.byte_region_attempts, 1);
+    assert_eq!(stats.legacy_fallbacks, 0);
+
+    let target = guarded_concrete_receive(new_gint_par(7, Vec::new(), false), false, vec![1]);
+    let pattern = guarded_concrete_receive(new_gint_par(99, Vec::new(), false), true, vec![2]);
+    assert!(!match_pars(&target, &pattern));
+    let mut context = SpatialMatcherContext::new();
+    let (result, stats) = match_par_with_concrete_region_stats(&mut context, target, pattern);
+    assert_eq!(result, None);
+    assert_eq!(stats.byte_region_attempts, 1);
+    assert_eq!(stats.legacy_fallbacks, 0);
+}
+
+#[test]
+fn concrete_region_route_preserves_nested_par_equality_metadata_equation() {
+    let mut target_channel = new_gint_par(7, Vec::new(), false);
+    target_channel.locally_free = vec![1];
+    let mut pattern_channel = target_channel.clone();
+    pattern_channel.locally_free = vec![2];
+    assert_eq!(
+        target_channel, pattern_channel,
+        "Par equality deliberately ignores root locally_free"
+    );
+    let target = send(target_channel, vec![], false);
+    let pattern = send(pattern_channel, vec![], false);
+    assert!(match_pars(&target, &pattern));
+
+    let mut context = SpatialMatcherContext::new();
+    let (result, stats) = match_par_with_concrete_region_stats(&mut context, target, pattern);
+    assert_eq!(result, Some(()));
+    assert_eq!(stats.byte_region_attempts, 1);
+    assert!(stats.par_region_pairs >= 1);
+    assert_eq!(stats.legacy_fallbacks, 0);
+}
+
+#[test]
+fn concrete_receive_region_route_preserves_legacy_zip_equations() {
+    let bind = |patterns: Vec<Par>, source: i64| ReceiveBind {
+        patterns,
+        source: Some(new_gint_par(source, Vec::new(), false)),
+        remainder: None,
+        free_count: 0,
+    };
+    let receive = |binds: Vec<ReceiveBind>| {
+        models::par_from_default! {
+            receives: vec![Receive {
+                binds,
+                body: Some(new_gint_par(2, Vec::new(), false)),
+                persistent: false,
+                peek: false,
+                bind_count: 1,
+                locally_free: Vec::new(),
+                connective_used: false,
+                condition: None,
+            }],
+            ..Default::default()
+        }
+    };
+    let target = receive(vec![
+        bind(vec![Par::default(), new_gint_par(3, Vec::new(), false)], 1),
+        bind(vec![new_gint_par(4, Vec::new(), false)], 5),
+    ]);
+    let pattern = receive(vec![bind(vec![Par::default()], 1)]);
+    assert!(
+        match_pars(&target, &pattern),
+        "legacy Receive and ReceiveBind equations zip their vectors"
+    );
+
+    let mut context = SpatialMatcherContext::new();
+    let (result, stats) = match_par_with_concrete_region_stats(&mut context, target, pattern);
+    assert_eq!(result, Some(()));
+    assert_eq!(stats.byte_region_attempts, 1);
+    assert_eq!(stats.legacy_fallbacks, 0);
+}
+
+#[test]
+fn concrete_region_route_is_differentially_exact_on_the_canonical_par_corpus() {
+    let corpus = par_corpus::par_corpus()
+        .into_iter()
+        .filter(|(_, par)| !par.connective_used())
+        .collect::<Vec<_>>();
+    let (mut defined_pairs, mut legacy_undefined_pairs) = (0usize, 0usize);
+    for (target_name, target) in &corpus {
+        for (pattern_name, pattern) in &corpus {
+            let expected = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                match_pars(target, pattern)
+            }));
+            let Ok(expected) = expected else {
+                // The historical helper unwraps schema-required Par fields.
+                // The corpus intentionally contains absent-field messages for
+                // decoder coverage; they are outside the helper's domain.
+                legacy_undefined_pairs += 1;
+                continue;
+            };
+            defined_pairs += 1;
+            let actual = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let mut context = SpatialMatcherContext::new();
+                match_par_with_concrete_region_stats(&mut context, target.clone(), pattern.clone())
+                    .0
+                    .is_some()
+            }));
+            match actual {
+                Ok(actual) => assert_eq!(
+                    actual, expected,
+                    "concrete byte-region differential: {target_name} vs {pattern_name}"
+                ),
+                Err(_) => panic!(
+                    "concrete byte-region route panicked on legacy-defined pair: {target_name} vs {pattern_name}",
+                ),
+            }
+        }
+    }
+    assert!(defined_pairs > 0);
+    assert!(
+        legacy_undefined_pairs > 0,
+        "the corpus guard must retain its absent-required-field controls"
+    );
 }
 
 fn compare(label: &str, target: Par, pattern: Par) {

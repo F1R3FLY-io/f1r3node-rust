@@ -42,7 +42,16 @@ use models::rust::rholang::implicits::vector_par;
 use models::rust::rholang::match_path::{
     encode_match_path, encode_par_match_atom, shares_cow_bincode_identity,
 };
-use models::rust::rholang::match_schema_tables::ParCursor;
+use models::rust::rholang::match_schema::RhoMatchProgram;
+use models::rust::rholang::match_schema_tables::{
+    ParCursor, BUNDLE_RHO_MATCH_PROGRAM, CONNECTIVE_RHO_MATCH_PROGRAM, EXPR_RHO_MATCH_PROGRAM,
+    GUNFORGEABLE_RHO_MATCH_PROGRAM, IF_RHO_MATCH_PROGRAM, MATCH_RHO_MATCH_PROGRAM,
+    NEW_RHO_MATCH_PROGRAM, RECEIVE_RHO_MATCH_PROGRAM, SEND_RHO_MATCH_PROGRAM,
+};
+use models::rust::rholang::protobuf_cursor::{CanonicalParRegionIndex, ProtobufRegion};
+use models::rust::rholang::protobuf_region::{
+    cut_at_par, ProtobufCutPlan, ProtobufRegionStep, ProtobufRegionStepKind,
+};
 use models::rust::utils::*;
 use pathmap::PathMap;
 use rspace_plus_plus::rspace::bag::Bag;
@@ -60,7 +69,13 @@ use super::has_locally_free::HasLocallyFree;
 use super::lazy_relation::RelationalMatchStats;
 use super::lazy_relation::{EdgeResult, LazyRelation, RelationCursor};
 use super::list_match::validate_update_deltas;
-use super::match_pars::match_pars;
+use super::match_pars::{
+    compare_bundles_without_locally_free, compare_connectives_without_locally_free,
+    compare_exprs_without_locally_free, compare_ifs_without_locally_free,
+    compare_matches_without_locally_free, compare_news_without_locally_free,
+    compare_receives_without_locally_free, compare_sends_without_locally_free,
+    compare_unforgeables_without_locally_free, match_pars,
+};
 use super::par_count::ParCount;
 use super::r#match::{rho_path_query_atom, rho_path_query_cursor_atom};
 use super::spatial_matcher::SpatialMatcherContext;
@@ -100,6 +115,97 @@ pub(super) fn match_par(
 thread_local! {
     static LIST_RELATION_STATS: Cell<RelationalMatchStats> =
         Cell::new(RelationalMatchStats::default());
+    static CONCRETE_REGION_STATS: Cell<ConcreteRegionMatchStats> =
+        Cell::new(ConcreteRegionMatchStats::default());
+}
+
+/// Test-visible evidence that the concrete route performs bounded byte-region
+/// work instead of rebuilding successively shorter recursive values.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) struct ConcreteRegionMatchStats {
+    pub authoritative_equal_fast_positives: usize,
+    pub byte_region_attempts: usize,
+    pub par_region_pairs: usize,
+    pub component_region_pairs: usize,
+    pub retained_par_cuts: usize,
+    pub legacy_fallbacks: usize,
+    pub max_pending_tasks: usize,
+    pub epathmap_region_levels: usize,
+    pub epathmap_full_decode_fallbacks: usize,
+    pub epathmap_leaf_decodes: usize,
+}
+
+#[cfg(test)]
+fn update_concrete_region_stats(update: impl FnOnce(&mut ConcreteRegionMatchStats)) {
+    CONCRETE_REGION_STATS.with(|stats| {
+        let mut current = stats.get();
+        update(&mut current);
+        stats.set(current);
+    });
+}
+
+#[inline]
+fn note_authoritative_equal_fast_positive() {
+    #[cfg(test)]
+    update_concrete_region_stats(|stats| stats.authoritative_equal_fast_positives += 1);
+}
+
+#[inline]
+fn note_concrete_region_attempt() {
+    #[cfg(test)]
+    update_concrete_region_stats(|stats| stats.byte_region_attempts += 1);
+}
+
+#[inline]
+fn note_concrete_region_fallback() {
+    #[cfg(test)]
+    update_concrete_region_stats(|stats| stats.legacy_fallbacks += 1);
+}
+
+#[inline]
+fn note_concrete_par_region_pair() {
+    #[cfg(test)]
+    update_concrete_region_stats(|stats| stats.par_region_pairs += 1);
+}
+
+#[inline]
+fn note_concrete_component_region_pair(cuts: usize) {
+    #[cfg(test)]
+    update_concrete_region_stats(|stats| {
+        stats.component_region_pairs += 1;
+        stats.retained_par_cuts += cuts;
+    });
+    #[cfg(not(test))]
+    let _ = cuts;
+}
+
+#[inline]
+fn note_concrete_pending_tasks(pending: usize) {
+    #[cfg(test)]
+    update_concrete_region_stats(|stats| {
+        stats.max_pending_tasks = stats.max_pending_tasks.max(pending);
+    });
+    #[cfg(not(test))]
+    let _ = pending;
+}
+
+#[inline]
+fn note_epathmap_region_level() {
+    #[cfg(test)]
+    update_concrete_region_stats(|stats| stats.epathmap_region_levels += 1);
+}
+
+#[inline]
+fn note_epathmap_full_decode_fallback() {
+    #[cfg(test)]
+    update_concrete_region_stats(|stats| stats.epathmap_full_decode_fallbacks += 1);
+}
+
+#[inline]
+fn note_epathmap_leaf_decode() {
+    #[cfg(test)]
+    update_concrete_region_stats(|stats| stats.epathmap_leaf_decodes += 1);
 }
 
 #[cfg(feature = "spatial-matcher-connective-domain-differential")]
@@ -268,6 +374,18 @@ pub(super) fn match_par_with_stats(
 }
 
 #[cfg(test)]
+pub(super) fn match_par_with_concrete_region_stats(
+    context: &mut SpatialMatcherContext,
+    target: Par,
+    pattern: Par,
+) -> (Option<()>, ConcreteRegionMatchStats) {
+    CONCRETE_REGION_STATS.with(|stats| stats.set(ConcreteRegionMatchStats::default()));
+    let result = drive(context, MatchPair::Par(target, pattern));
+    let stats = CONCRETE_REGION_STATS.with(Cell::get);
+    (result, stats)
+}
+
+#[cfg(test)]
 pub(super) fn match_par_with_transaction_stats(
     context: &mut SpatialMatcherContext,
     target: Par,
@@ -428,6 +546,8 @@ enum Job {
     EncodedReceive(EncodedRegion, EncodedRegion),
     EncodedMatch(EncodedRegion, EncodedRegion),
     EncodedExpr(EncodedRegion, EncodedRegion),
+    ProtobufPar(Box<(ProtobufRegion, ProtobufRegion)>),
+    ProtobufExpr(Box<(ProtobufRegion, ProtobufRegion)>),
     ParConnectives(Box<ParConnectiveState>),
     ConnectiveCandidates(Box<ConnectiveCandidates>),
     ListInit(ListRequest),
@@ -476,6 +596,9 @@ enum Frame {
     },
     EncodedSibling {
         sibling: Box<(EncodedRegion, EncodedRegion)>,
+    },
+    ProtobufSibling {
+        sibling: Box<(ProtobufRegion, ProtobufRegion)>,
     },
     BindOnSuccess {
         level: i32,
@@ -620,6 +743,14 @@ fn drive_job(context: &mut SpatialMatcherContext, mut job: Job) -> Option<()> {
             Job::EncodedExpr(target, pattern) => {
                 evaluate_encoded_expr(target, pattern, &mut frames)
             }
+            Job::ProtobufPar(pair) => {
+                let (target, pattern) = *pair;
+                evaluate_protobuf_par(&mut transaction, target, pattern)
+            }
+            Job::ProtobufExpr(pair) => {
+                let (target, pattern) = *pair;
+                evaluate_protobuf_expr(&mut transaction, target, pattern, &mut frames)
+            }
             Job::ParConnectives(state) => step_par_connectives(*state, &mut frames),
             Job::ConnectiveCandidates(state) => {
                 step_connective_candidates(&mut transaction, *state, &mut frames)
@@ -737,6 +868,13 @@ fn resume(
             if result {
                 let (target, pattern) = *sibling;
                 Job::EncodedPar(target, pattern)
+            } else {
+                Job::Return(false)
+            }
+        }
+        Frame::ProtobufSibling { sibling } => {
+            if result {
+                Job::ProtobufPar(sibling)
             } else {
                 Job::Return(false)
             }
@@ -883,6 +1021,23 @@ fn singleton_component_region<T: ParBagComponent>(par: &Par) -> Option<EncodedRe
     result
 }
 
+/// Copy one authoritative EPathMap Expr endpoint into the `Bytes`-backed
+/// region machine exactly once. Descendant map values are then constant-size
+/// subregions of this allocation instead of recursively decoded suffixes.
+fn singleton_epathmap_expr_region(par: &Par) -> Option<ProtobufRegion> {
+    if par.family_cardinality::<Expr>() != 1 || !par.all_components_are::<Expr>() {
+        return None;
+    }
+    let mut result = None;
+    par.visit_encoded::<Expr>(|entry| {
+        if entry.multiplicity().get() == 1 && canonical_expr_oneof_tag(entry.payload()) == Some(32)
+        {
+            result = Some(ProtobufRegion::copy_from_slice(entry.payload()));
+        }
+    });
+    result
+}
+
 /// Whether the whole target is byte-for-byte equivalent to the sole candidate
 /// that the legacy `sub_pars` projection would expose to a root Connective.
 ///
@@ -929,6 +1084,498 @@ fn sole_free_var_capture_is_admissible(
         && concrete_target_components_are_locally_closed(target)
 }
 
+/// A nested `Par` is not compared under one universal equation. The concrete
+/// matcher deliberately ignores component metadata only along `New.p` and the
+/// recursive receive/bind edges. Every other component field uses ordinary
+/// generated equality, whose nested `Par` leaves use `Par::eq`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ConcreteParEquation {
+    MatchPars,
+    ParEq,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ConcreteComponentFamily {
+    Send,
+    Receive,
+    New,
+    Expr,
+    Match,
+    GUnforgeable,
+    Bundle,
+    Connective,
+    If,
+}
+
+impl ConcreteComponentFamily {
+    fn program(self) -> &'static RhoMatchProgram {
+        match self {
+            Self::Send => &SEND_RHO_MATCH_PROGRAM,
+            Self::Receive => &RECEIVE_RHO_MATCH_PROGRAM,
+            Self::New => &NEW_RHO_MATCH_PROGRAM,
+            Self::Expr => &EXPR_RHO_MATCH_PROGRAM,
+            Self::Match => &MATCH_RHO_MATCH_PROGRAM,
+            Self::GUnforgeable => &GUNFORGEABLE_RHO_MATCH_PROGRAM,
+            Self::Bundle => &BUNDLE_RHO_MATCH_PROGRAM,
+            Self::Connective => &CONNECTIVE_RHO_MATCH_PROGRAM,
+            Self::If => &IF_RHO_MATCH_PROGRAM,
+        }
+    }
+}
+
+#[derive(Clone)]
+enum ConcreteRegionTask {
+    Par {
+        target: ProtobufRegion,
+        pattern: ProtobufRegion,
+        equation: ConcreteParEquation,
+    },
+    Component {
+        target: ProtobufRegion,
+        pattern: ProtobufRegion,
+        family: ConcreteComponentFamily,
+        equation: ConcreteParEquation,
+    },
+}
+
+struct ConcreteCut {
+    path: Vec<ProtobufRegionStep>,
+    region: ProtobufRegion,
+    equation: ConcreteParEquation,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct ReceiveCutAddress {
+    group: u8,
+    bind: u32,
+    field: u8,
+    occurrence: u32,
+}
+
+impl ReceiveCutAddress {
+    #[inline]
+    const fn is_body(self) -> bool { self.group == 1 }
+}
+
+#[inline]
+fn root_step_is(path: &[ProtobufRegionStep], program: &'static RhoMatchProgram, tag: u32) -> bool {
+    path.first()
+        .map(|step| step.owner_type_id == program.type_id && step.field_tag == tag)
+        .unwrap_or(false)
+}
+
+/// Convert the retained cuts into exactly the recursive obligations of the
+/// selected equality equation. `Receive.condition` is intentionally absent:
+/// the historical concrete matcher does not inspect it. This omission is
+/// scoped to `MatchPars`; generated equality continues to compare it.
+fn concrete_cuts(
+    plan: &ProtobufCutPlan,
+    family: ConcreteComponentFamily,
+    equation: ConcreteParEquation,
+) -> Option<Vec<ConcreteCut>> {
+    let mut cuts = Vec::with_capacity(plan.cuts().len());
+    for (index, cut) in plan.cuts().iter().enumerate() {
+        let path = plan.cut_path(index)?;
+        if equation == ConcreteParEquation::MatchPars
+            && family == ConcreteComponentFamily::Receive
+            && root_step_is(&path, &RECEIVE_RHO_MATCH_PROGRAM, 8)
+        {
+            continue;
+        }
+        let nested_equation = match (equation, family) {
+            (ConcreteParEquation::MatchPars, ConcreteComponentFamily::New)
+                if root_step_is(&path, &NEW_RHO_MATCH_PROGRAM, 2) =>
+            {
+                ConcreteParEquation::MatchPars
+            }
+            (ConcreteParEquation::MatchPars, ConcreteComponentFamily::Receive) => {
+                ConcreteParEquation::MatchPars
+            }
+            _ => ConcreteParEquation::ParEq,
+        };
+        cuts.push(ConcreteCut {
+            path,
+            region: cut.region().clone(),
+            equation: nested_equation,
+        });
+    }
+    Some(cuts)
+}
+
+fn receive_cut_address(cut: &ConcreteCut) -> Option<ReceiveCutAddress> {
+    let root = cut.path.first()?;
+    if root.owner_type_id != RECEIVE_RHO_MATCH_PROGRAM.type_id {
+        return None;
+    }
+    match root.field_tag {
+        1 => {
+            let bind_field = cut.path.get(1)?;
+            match bind_field.field_tag {
+                1 => Some(ReceiveCutAddress {
+                    group: 0,
+                    bind: root.occurrence,
+                    field: 0,
+                    occurrence: bind_field.occurrence,
+                }),
+                2 => Some(ReceiveCutAddress {
+                    group: 0,
+                    bind: root.occurrence,
+                    field: 1,
+                    occurrence: 0,
+                }),
+                _ => None,
+            }
+        }
+        2 => Some(ReceiveCutAddress {
+            group: 1,
+            bind: 0,
+            field: 0,
+            occurrence: 0,
+        }),
+        _ => None,
+    }
+}
+
+/// Preserve the two historical `zip` equations exactly: surplus receive
+/// binds, and surplus patterns inside a paired bind, are ignored. Canonical
+/// cut paths expose both occurrence indexes, so the intersection can be
+/// streamed without decoding or expanding the recursive `Par` bodies.
+fn pair_receive_match_cuts(
+    target: Vec<ConcreteCut>,
+    pattern: Vec<ConcreteCut>,
+) -> Option<Vec<ConcreteRegionTask>> {
+    let (mut target_at, mut pattern_at) = (0usize, 0usize);
+    let mut paired = Vec::new();
+    while target_at < target.len() && pattern_at < pattern.len() {
+        let target_address = receive_cut_address(&target[target_at])?;
+        let pattern_address = receive_cut_address(&pattern[pattern_at])?;
+        match target_address.cmp(&pattern_address) {
+            Ordering::Equal => {
+                if target[target_at].path != pattern[pattern_at].path {
+                    return None;
+                }
+                paired.push(ConcreteRegionTask::Par {
+                    target: target[target_at].region.clone(),
+                    pattern: pattern[pattern_at].region.clone(),
+                    equation: ConcreteParEquation::MatchPars,
+                });
+                target_at += 1;
+                pattern_at += 1;
+            }
+            Ordering::Less if !target_address.is_body() => {
+                target_at += 1;
+            }
+            Ordering::Greater if !pattern_address.is_body() => {
+                pattern_at += 1;
+            }
+            _ => return None,
+        }
+    }
+    for cut in target[target_at..].iter().chain(&pattern[pattern_at..]) {
+        if receive_cut_address(cut)?.is_body() {
+            return None;
+        }
+    }
+    Some(paired)
+}
+
+fn compare_concrete_component_shells(
+    family: ConcreteComponentFamily,
+    equation: ConcreteParEquation,
+    target: &[u8],
+    pattern: &[u8],
+) -> Option<bool> {
+    use models::rust::rholang::protobuf_decoder;
+
+    macro_rules! compare_shell {
+        ($decode:ident, $legacy:ident) => {{
+            let target = protobuf_decoder::$decode(target).ok()?;
+            let pattern = protobuf_decoder::$decode(pattern).ok()?;
+            Some(match equation {
+                ConcreteParEquation::MatchPars => $legacy(&target, &pattern),
+                ConcreteParEquation::ParEq => target == pattern,
+            })
+        }};
+    }
+
+    match family {
+        ConcreteComponentFamily::Send => {
+            compare_shell!(decode_send, compare_sends_without_locally_free)
+        }
+        ConcreteComponentFamily::Receive => {
+            compare_shell!(decode_receive, compare_receives_without_locally_free)
+        }
+        ConcreteComponentFamily::New => {
+            compare_shell!(decode_new, compare_news_without_locally_free)
+        }
+        ConcreteComponentFamily::Expr => {
+            compare_shell!(decode_expr, compare_exprs_without_locally_free)
+        }
+        ConcreteComponentFamily::Match => {
+            compare_shell!(decode_match, compare_matches_without_locally_free)
+        }
+        ConcreteComponentFamily::GUnforgeable => compare_shell!(
+            decode_g_unforgeable,
+            compare_unforgeables_without_locally_free
+        ),
+        ConcreteComponentFamily::Bundle => {
+            compare_shell!(decode_bundle, compare_bundles_without_locally_free)
+        }
+        ConcreteComponentFamily::Connective => {
+            compare_shell!(decode_connective, compare_connectives_without_locally_free)
+        }
+        ConcreteComponentFamily::If => {
+            compare_shell!(decode_if, compare_ifs_without_locally_free)
+        }
+    }
+}
+
+fn compare_concrete_component_regions(
+    target: ProtobufRegion,
+    pattern: ProtobufRegion,
+    family: ConcreteComponentFamily,
+    equation: ConcreteParEquation,
+    pending: &mut Vec<ConcreteRegionTask>,
+) -> Option<bool> {
+    if target == pattern {
+        note_concrete_component_region_pair(0);
+        return Some(true);
+    }
+
+    let target_plan = cut_at_par(target, family.program()).ok()?;
+    let pattern_plan = cut_at_par(pattern, family.program()).ok()?;
+    note_concrete_component_region_pair(target_plan.cuts().len() + pattern_plan.cuts().len());
+    if !compare_concrete_component_shells(
+        family,
+        equation,
+        target_plan.shallow_bytes().as_ref(),
+        pattern_plan.shallow_bytes().as_ref(),
+    )? {
+        return Some(false);
+    }
+
+    let target_cuts = concrete_cuts(&target_plan, family, equation)?;
+    let pattern_cuts = concrete_cuts(&pattern_plan, family, equation)?;
+    if equation == ConcreteParEquation::MatchPars && family == ConcreteComponentFamily::Receive {
+        let nested = pair_receive_match_cuts(target_cuts, pattern_cuts)?;
+        pending.extend(nested.into_iter().rev());
+        note_concrete_pending_tasks(pending.len());
+        return Some(true);
+    }
+    if target_cuts.len() != pattern_cuts.len() {
+        return None;
+    }
+    let mut nested = Vec::with_capacity(target_cuts.len());
+    for (target, pattern) in target_cuts.into_iter().zip(pattern_cuts) {
+        if target.path != pattern.path || target.equation != pattern.equation {
+            return None;
+        }
+        nested.push(ConcreteRegionTask::Par {
+            target: target.region,
+            pattern: pattern.region,
+            equation: target.equation,
+        });
+    }
+    pending.extend(nested.into_iter().rev());
+    note_concrete_pending_tasks(pending.len());
+    Some(true)
+}
+
+fn enqueue_delimited_region_run(
+    target: Option<&models::rust::rholang::protobuf_cursor::CanonicalRegionDelimitedRun>,
+    pattern: Option<&models::rust::rholang::protobuf_cursor::CanonicalRegionDelimitedRun>,
+    family: ConcreteComponentFamily,
+    equation: ConcreteParEquation,
+    tasks: &mut Vec<ConcreteRegionTask>,
+) -> Option<bool> {
+    let mut target = target.map(|run| run.cursor());
+    let mut pattern = pattern.map(|run| run.cursor());
+    loop {
+        let target_region = match target.as_mut() {
+            Some(cursor) => cursor.next_region().ok()?,
+            None => None,
+        };
+        let pattern_region = match pattern.as_mut() {
+            Some(cursor) => cursor.next_region().ok()?,
+            None => None,
+        };
+        match (target_region, pattern_region) {
+            (Some(target), Some(pattern)) => tasks.push(ConcreteRegionTask::Component {
+                target,
+                pattern,
+                family,
+                equation,
+            }),
+            (None, None) => return Some(true),
+            _ => return Some(false),
+        }
+    }
+}
+
+fn compare_concrete_par_regions(
+    target: ProtobufRegion,
+    pattern: ProtobufRegion,
+    equation: ConcreteParEquation,
+    pending: &mut Vec<ConcreteRegionTask>,
+) -> Option<bool> {
+    note_concrete_par_region_pair();
+    if target == pattern {
+        return Some(true);
+    }
+    let target = CanonicalParRegionIndex::parse(target).ok()?;
+    let pattern = CanonicalParRegionIndex::parse(pattern).ok()?;
+    if target.connective_used != pattern.connective_used {
+        return Some(false);
+    }
+
+    let mut components = Vec::new();
+    macro_rules! enqueue_family {
+        ($field:ident, $family:ident) => {
+            if !enqueue_delimited_region_run(
+                target.$field.as_ref(),
+                pattern.$field.as_ref(),
+                ConcreteComponentFamily::$family,
+                equation,
+                &mut components,
+            )? {
+                return Some(false);
+            }
+        };
+    }
+    // Preserve the legacy concrete matcher's observable family decision order.
+    enqueue_family!(sends, Send);
+    enqueue_family!(exprs, Expr);
+    enqueue_family!(matches, Match);
+    enqueue_family!(unforgeables, GUnforgeable);
+    enqueue_family!(bundles, Bundle);
+    enqueue_family!(connectives, Connective);
+    enqueue_family!(conditionals, If);
+    enqueue_family!(receives, Receive);
+    enqueue_family!(news, New);
+    pending.extend(components.into_iter().rev());
+    note_concrete_pending_tasks(pending.len());
+    Some(true)
+}
+
+fn resident_component_runs<T: ParBagComponent>(par: &Par) -> Vec<(ProtobufRegion, u64)> {
+    let mut runs = Vec::new();
+    par.visit_encoded::<T>(|entry| {
+        runs.push((
+            ProtobufRegion::copy_from_slice(entry.payload()),
+            entry.multiplicity().get(),
+        ));
+    });
+    runs
+}
+
+fn enqueue_resident_family<T: ParBagComponent>(
+    target: &Par,
+    pattern: &Par,
+    family: ConcreteComponentFamily,
+    tasks: &mut Vec<ConcreteRegionTask>,
+) -> bool {
+    let target = resident_component_runs::<T>(target);
+    let pattern = resident_component_runs::<T>(pattern);
+    let (mut target_index, mut pattern_index) = (0usize, 0usize);
+    let (mut target_left, mut pattern_left) = (0u64, 0u64);
+    while target_index < target.len() && pattern_index < pattern.len() {
+        if target_left == 0 {
+            target_left = target[target_index].1;
+        }
+        if pattern_left == 0 {
+            pattern_left = pattern[pattern_index].1;
+        }
+        let paired = target_left.min(pattern_left);
+        debug_assert_ne!(paired, 0);
+        tasks.push(ConcreteRegionTask::Component {
+            target: target[target_index].0.clone(),
+            pattern: pattern[pattern_index].0.clone(),
+            family,
+            equation: ConcreteParEquation::MatchPars,
+        });
+        target_left -= paired;
+        pattern_left -= paired;
+        if target_left == 0 {
+            target_index += 1;
+        }
+        if pattern_left == 0 {
+            pattern_index += 1;
+        }
+    }
+    target_index == target.len()
+        && pattern_index == pattern.len()
+        && target_left == 0
+        && pattern_left == 0
+}
+
+/// Byte-region implementation of the concrete equations in `match_pars`.
+/// `None` is a conservative request for the legacy PDA, never a negative.
+fn match_concrete_par_regions(target: &Par, pattern: &Par) -> Option<bool> {
+    note_concrete_region_attempt();
+    if target.family_cardinality::<Send>() != pattern.family_cardinality::<Send>()
+        || target.family_cardinality::<Receive>() != pattern.family_cardinality::<Receive>()
+        || target.family_cardinality::<New>() != pattern.family_cardinality::<New>()
+        || target.family_cardinality::<Expr>() != pattern.family_cardinality::<Expr>()
+        || target.family_cardinality::<Match>() != pattern.family_cardinality::<Match>()
+        || target.family_cardinality::<GUnforgeable>()
+            != pattern.family_cardinality::<GUnforgeable>()
+        || target.family_cardinality::<Bundle>() != pattern.family_cardinality::<Bundle>()
+        || target.family_cardinality::<Connective>() != pattern.family_cardinality::<Connective>()
+        || target.family_cardinality::<If>() != pattern.family_cardinality::<If>()
+        || target.connective_used() != pattern.connective_used()
+    {
+        return Some(false);
+    }
+
+    let mut ordered = Vec::new();
+    macro_rules! resident_family {
+        ($ty:ty, $family:ident) => {
+            if !enqueue_resident_family::<$ty>(
+                target,
+                pattern,
+                ConcreteComponentFamily::$family,
+                &mut ordered,
+            ) {
+                return Some(false);
+            }
+        };
+    }
+    resident_family!(Send, Send);
+    resident_family!(Expr, Expr);
+    resident_family!(Match, Match);
+    resident_family!(GUnforgeable, GUnforgeable);
+    resident_family!(Bundle, Bundle);
+    resident_family!(Connective, Connective);
+    resident_family!(If, If);
+    resident_family!(Receive, Receive);
+    resident_family!(New, New);
+
+    let mut pending = Vec::with_capacity(ordered.len());
+    pending.extend(ordered.into_iter().rev());
+    note_concrete_pending_tasks(pending.len());
+    while let Some(task) = pending.pop() {
+        let matched = match task {
+            ConcreteRegionTask::Par {
+                target,
+                pattern,
+                equation,
+            } => compare_concrete_par_regions(target, pattern, equation, &mut pending),
+            ConcreteRegionTask::Component {
+                target,
+                pattern,
+                family,
+                equation,
+            } => {
+                compare_concrete_component_regions(target, pattern, family, equation, &mut pending)
+            }
+        }?;
+        if !matched {
+            return Some(false);
+        }
+    }
+    Some(true)
+}
+
 struct ConnectivePlan {
     connective: Connective,
     bounds: (ParCount, ParCount),
@@ -957,6 +1604,18 @@ fn evaluate_par(
     frames: &mut FrameStack,
 ) -> Job {
     if !pattern.connective_used() {
+        // `Par::eq` is authoritative over the resident PathMap representation
+        // and is the cheapest positive proof for independently built concrete
+        // terms. It is gated by the pattern's connective summary: taking it on
+        // a spatial pattern would skip captures and connective semantics.
+        if target == pattern {
+            note_authoritative_equal_fast_positive();
+            return Job::Return(true);
+        }
+        if let Some(matched) = match_concrete_par_regions(&target, &pattern) {
+            return Job::Return(matched);
+        }
+        note_concrete_region_fallback();
         return Job::Return(match_pars(&target, &pattern));
     }
 
@@ -1023,6 +1682,17 @@ fn evaluate_par(
                     checkpoint: context.checkpoint(),
                 });
                 Job::EncodedMatch(target_match, pattern_match)
+            }
+            None => Job::Return(false),
+        };
+    }
+    if let Some(pattern_expr) = singleton_epathmap_expr_region(&pattern) {
+        return match singleton_epathmap_expr_region(&target) {
+            Some(target_expr) => {
+                frames.push(Frame::RestoreOnFailure {
+                    checkpoint: context.checkpoint(),
+                });
+                Job::ProtobufExpr(Box::new((target_expr, pattern_expr)))
             }
             None => Job::Return(false),
         };
@@ -1652,6 +2322,244 @@ fn evaluate_encoded_expr(
                 .expect("an authoritative Expr pattern endpoint is canonical");
             evaluate_expr(target, pattern, frames)
         }
+    }
+}
+
+fn protobuf_child(parent: &ProtobufRegion, child: &[u8]) -> Option<ProtobufRegion> {
+    let root_start = parent.as_bytes().as_ptr() as usize;
+    let child_start = child.as_ptr() as usize;
+    let start = child_start.checked_sub(root_start)?;
+    let end = start.checked_add(child.len())?;
+    parent.subregion(models::rust::rholang::protobuf_cursor::CanonicalByteRange { start, end })
+}
+
+fn compare_protobuf_par_eq_regions(
+    target: ProtobufRegion,
+    pattern: ProtobufRegion,
+) -> Option<bool> {
+    let mut pending = vec![ConcreteRegionTask::Par {
+        target,
+        pattern,
+        equation: ConcreteParEquation::ParEq,
+    }];
+    while let Some(task) = pending.pop() {
+        let matched = match task {
+            ConcreteRegionTask::Par {
+                target,
+                pattern,
+                equation,
+            } => compare_concrete_par_regions(target, pattern, equation, &mut pending),
+            ConcreteRegionTask::Component {
+                target,
+                pattern,
+                family,
+                equation,
+            } => {
+                compare_concrete_component_regions(target, pattern, family, equation, &mut pending)
+            }
+        }?;
+        if !matched {
+            return Some(false);
+        }
+    }
+    Some(true)
+}
+
+fn evaluate_protobuf_par(
+    context: &mut FreeMapTransaction<'_>,
+    target: ProtobufRegion,
+    pattern: ProtobufRegion,
+) -> Job {
+    if target == pattern && canonical_par_connective_used(pattern.as_bytes()) == Some(false) {
+        return Job::Return(true);
+    }
+
+    if let Some(free_var) = canonical_exact_free_var_par(pattern.as_bytes()) {
+        if free_var.connective_used() {
+            note_epathmap_leaf_decode();
+            let target = models::rust::rholang::protobuf_decoder::decode_par(target.as_bytes())
+                .expect("an authoritative EPathMap value Par is canonical");
+            if sole_free_var_capture_is_admissible(context, &target, free_var.level()) {
+                context.write(free_var.level(), target);
+                return Job::Return(true);
+            }
+            let pattern = models::rust::rholang::protobuf_decoder::decode_par(pattern.as_bytes())
+                .expect("an authoritative EPathMap pattern Par is canonical");
+            return match_job(MatchPair::Par(target, pattern));
+        }
+    }
+
+    let target_expr = canonical_single_expr_from_par(target.as_bytes())
+        .and_then(|expr| protobuf_child(&target, expr));
+    let pattern_expr = canonical_single_expr_from_par(pattern.as_bytes())
+        .and_then(|expr| protobuf_child(&pattern, expr));
+    if let Some(pattern_expr) = pattern_expr {
+        if canonical_expr_oneof_tag(pattern_expr.as_bytes()) == Some(32) {
+            return match target_expr {
+                Some(target_expr)
+                    if canonical_expr_oneof_tag(target_expr.as_bytes()) == Some(32) =>
+                {
+                    Job::ProtobufExpr(Box::new((target_expr, pattern_expr)))
+                }
+                _ => Job::Return(false),
+            };
+        }
+    }
+
+    note_epathmap_full_decode_fallback();
+    let target = models::rust::rholang::protobuf_decoder::decode_par(target.as_bytes())
+        .expect("an authoritative EPathMap value Par is canonical");
+    let pattern = models::rust::rholang::protobuf_decoder::decode_par(pattern.as_bytes())
+        .expect("an authoritative EPathMap pattern Par is canonical");
+    match_job(MatchPair::Par(target, pattern))
+}
+
+fn sole_epathmap_map_value(plan: &ProtobufCutPlan) -> Option<ProtobufRegion> {
+    let [group] = plan.epathmaps() else {
+        return None;
+    };
+    if group.mode() != EPathMapMode::Map || group.cut_range().len() != 1 {
+        return None;
+    }
+    let index = group.cut_range().start;
+    let path = plan.cut_path(index)?;
+    path.iter()
+        .any(|step| step.kind == ProtobufRegionStepKind::EPathMapValue)
+        .then(|| plan.cuts()[index].region().clone())
+}
+
+fn decode_shallow_epathmap_expr(plan: &ProtobufCutPlan) -> Option<EPathMap> {
+    let expr = models::rust::rholang::protobuf_decoder::decode_expr(plan.shallow_bytes()).ok()?;
+    match expr.expr_instance {
+        Some(EPathmapBody(map)) => Some(map),
+        _ => None,
+    }
+}
+
+fn fallback_protobuf_expr(
+    target: ProtobufRegion,
+    pattern: ProtobufRegion,
+    frames: &mut FrameStack,
+) -> Job {
+    note_epathmap_full_decode_fallback();
+    let target = models::rust::rholang::protobuf_decoder::decode_expr(target.as_bytes())
+        .expect("an authoritative EPathMap target Expr is canonical");
+    let pattern = models::rust::rholang::protobuf_decoder::decode_expr(pattern.as_bytes())
+        .expect("an authoritative EPathMap pattern Expr is canonical");
+    evaluate_expr(target, pattern, frames)
+}
+
+fn evaluate_protobuf_expr(
+    context: &mut FreeMapTransaction<'_>,
+    target: ProtobufRegion,
+    pattern: ProtobufRegion,
+    frames: &mut FrameStack,
+) -> Job {
+    if canonical_expr_oneof_tag(target.as_bytes()) != Some(32)
+        || canonical_expr_oneof_tag(pattern.as_bytes()) != Some(32)
+    {
+        return fallback_protobuf_expr(target, pattern, frames);
+    }
+    let Ok(target_plan) = cut_at_par(target.clone(), &EXPR_RHO_MATCH_PROGRAM) else {
+        return fallback_protobuf_expr(target, pattern, frames);
+    };
+    let Ok(pattern_plan) = cut_at_par(pattern.clone(), &EXPR_RHO_MATCH_PROGRAM) else {
+        return fallback_protobuf_expr(target, pattern, frames);
+    };
+    let Some(target_map) = decode_shallow_epathmap_expr(&target_plan) else {
+        return fallback_protobuf_expr(target, pattern, frames);
+    };
+    let Some(pattern_map) = decode_shallow_epathmap_expr(&pattern_plan) else {
+        return fallback_protobuf_expr(target, pattern, frames);
+    };
+    if pattern_map.remainder.is_some() || target_map.len() != 1 || pattern_map.len() != 1 {
+        return fallback_protobuf_expr(target, pattern, frames);
+    }
+    let target_mode = target_map.mode();
+    let pattern_mode = pattern_map.mode();
+    if target_mode != pattern_mode {
+        return Job::Return(false);
+    }
+
+    let Some(target_entry) = take_single_path_entry(target_map) else {
+        return Job::Return(false);
+    };
+    let Some(pattern_entry) = take_single_path_entry(pattern_map) else {
+        return Job::Return(false);
+    };
+    note_epathmap_region_level();
+    match (target_entry, pattern_entry) {
+        (OwnedEPathMapEntry::Set(target_key), OwnedEPathMapEntry::Set(pattern_key)) => {
+            let metadata = EntryTrie::encoded_key_metadata(&pattern_key)
+                .expect("set pattern key is a canonical Par path");
+            if !metadata.connective_used {
+                return Job::Return(target_key == pattern_key);
+            }
+            frames.push(Frame::RestoreOnFailure {
+                checkpoint: context.checkpoint(),
+            });
+            match_job(MatchPair::Par(
+                decode_trie_path(&target_key).expect("set target key is a canonical Par path"),
+                decode_trie_path(&pattern_key).expect("set pattern key is a canonical Par path"),
+            ))
+        }
+        (
+            OwnedEPathMapEntry::Map {
+                key: target_key, ..
+            },
+            OwnedEPathMapEntry::Map {
+                key: pattern_key, ..
+            },
+        ) => {
+            let Some(target_value) = sole_epathmap_map_value(&target_plan) else {
+                return fallback_protobuf_expr(target, pattern, frames);
+            };
+            let Some(pattern_value) = sole_epathmap_map_value(&pattern_plan) else {
+                return fallback_protobuf_expr(target, pattern, frames);
+            };
+            let metadata = EntryTrie::encoded_key_metadata(&pattern_key)
+                .expect("map pattern key is a canonical Par path");
+            if !metadata.connective_used {
+                if target_key != pattern_key {
+                    return Job::Return(false);
+                }
+                if canonical_par_connective_used(pattern_value.as_bytes()) == Some(false) {
+                    let matched = compare_protobuf_par_eq_regions(
+                        target_value.clone(),
+                        pattern_value.clone(),
+                    )
+                    .unwrap_or_else(|| {
+                        let target = models::rust::rholang::protobuf_decoder::decode_par(
+                            target_value.as_bytes(),
+                        )
+                        .expect("an authoritative exact map value is canonical");
+                        let pattern = models::rust::rholang::protobuf_decoder::decode_par(
+                            pattern_value.as_bytes(),
+                        )
+                        .expect("an authoritative exact map pattern is canonical");
+                        target == pattern
+                    });
+                    return Job::Return(matched);
+                }
+                frames.push(Frame::RestoreOnFailure {
+                    checkpoint: context.checkpoint(),
+                });
+                Job::ProtobufPar(Box::new((target_value, pattern_value)))
+            } else {
+                frames.push(Frame::RestoreOnFailure {
+                    checkpoint: context.checkpoint(),
+                });
+                frames.push(Frame::ProtobufSibling {
+                    sibling: Box::new((target_value, pattern_value)),
+                });
+                match_job(MatchPair::Par(
+                    decode_trie_path(&target_key).expect("map target key is a canonical Par path"),
+                    decode_trie_path(&pattern_key)
+                        .expect("map pattern key is a canonical Par path"),
+                ))
+            }
+        }
+        _ => Job::Return(false),
     }
 }
 

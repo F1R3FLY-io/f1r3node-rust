@@ -156,6 +156,14 @@ pub(crate) fn nested_nots(depth: usize) -> Par {
 }
 
 pub(crate) fn nested_binders(depth: usize) -> Par {
+    nested_binders_with_component_metadata(depth, Vec::new())
+}
+
+/// The same alternating binder chain with deliberately different ignored
+/// component metadata. This keeps the semantic witness equal while preventing
+/// authoritative `Par::eq` from proving it before the byte-region matcher is
+/// exercised.
+pub(crate) fn nested_binders_with_component_metadata(depth: usize, locally_free: Vec<u8>) -> Par {
     let mut arena = ParConstruction::new();
     let empty = arena.empty_par().expect("plan empty binder child");
     let zero = import(
@@ -175,7 +183,7 @@ pub(crate) fn nested_binders(depth: usize) -> Par {
         persistent: false,
         peek: false,
         bind_count: 1,
-        locally_free: Vec::new(),
+        locally_free: locally_free.clone(),
         connective_used: false,
         condition: None,
     };
@@ -184,7 +192,7 @@ pub(crate) fn nested_binders(depth: usize) -> Par {
         p: Some(Par::default()),
         uri: Vec::new(),
         injections: BTreeMap::new(),
-        locally_free: Vec::new(),
+        locally_free,
     };
     for _ in 0..depth {
         let receive = arena
