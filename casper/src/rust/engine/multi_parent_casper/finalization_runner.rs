@@ -434,6 +434,14 @@ pub(crate) async fn compute_last_finalized_block(
                     .on_containment_hold(&last_finalized_block_hash, derived.block_number);
                 None
             }
+            crate::rust::finality::floor::FloorOfView::AbsenceHold { missing } => {
+                tracing::debug!(
+                    missing = %PrettyPrinter::build_string_bytes(&missing),
+                    "finalizer holds this cycle: the floor walk needs a block \
+                     this node does not hold; catch-up delivers it"
+                );
+                None
+            }
         };
 
     let new_lfb_found = new_lfb_opt.is_some();

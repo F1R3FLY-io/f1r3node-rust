@@ -312,6 +312,15 @@ pub enum FloorOfView {
     /// this node: a finality divergence. The finalization runner's
     /// `DivergenceMonitor` tracks exactly that.
     ContainmentHold { derived: Floor },
+    /// The walk needed a block this node does not hold — a truncated
+    /// node's descent crossed its retention edge (CI run 32588262605:
+    /// a newly-bonded validator's genesis-seeded latest-message slot
+    /// dragged a height-0 tip into the derivation on a restored joiner).
+    /// This is the one caller-local read of the floor machinery, so the
+    /// sound outcome is to hold the cycle: catch-up delivers what is
+    /// missing, and the next run derives cleanly. Deeper walks keep
+    /// R-DET's contract — absence still refuses to become a verdict.
+    AbsenceHold { missing: BlockHash },
 }
 
 impl FloorOfView {
@@ -321,7 +330,9 @@ impl FloorOfView {
     pub fn advanced(self) -> Option<Floor> {
         match self {
             FloorOfView::Advance(floor) => Some(floor),
-            FloorOfView::NoAdvance | FloorOfView::ContainmentHold { .. } => None,
+            FloorOfView::NoAdvance
+            | FloorOfView::ContainmentHold { .. }
+            | FloorOfView::AbsenceHold { .. } => None,
         }
     }
 }
@@ -339,34 +350,52 @@ pub async fn floor_of_view(
     current: &Floor,
     ftt: FtThreshold,
 ) -> Result<FloorOfView, CasperError> {
-    let mut tips: Vec<BlockHash> = dag
-        .latest_message_hashes()
-        .into_iter()
-        .map(|(_, hash)| hash)
-        .collect();
+    // A latest-message slot whose held target the validator never signed
+    // is a seed — the newly-bonded genesis placeholder — not testimony,
+    // and it must not drag a height-0 tip into this derivation. A slot
+    // whose target has no local metadata stays in: if a walk needs the
+    // block, the absence hold below covers it. Node-local filtering is
+    // sound here because this is the finalizer's own LFB clock, not a
+    // consensus-visible derivation.
+    let mut testimony: Vec<(Validator, BlockHash)> = Vec::new();
+    for (validator, hash) in dag.latest_message_hashes() {
+        if let Some(metadata) = dag.lookup(&hash).map_err(CasperError::from)? {
+            if metadata.sender != validator {
+                continue;
+            }
+        }
+        testimony.push((validator, hash));
+    }
+    let mut tips: Vec<BlockHash> = testimony.iter().map(|(_, hash)| hash.clone()).collect();
     tips.sort();
     tips.dedup();
     if tips.is_empty() {
         return Ok(FloorOfView::NoAdvance);
     }
-    let live_snapshot: BTreeMap<Validator, BlockHash> =
-        dag.latest_message_hashes().into_iter().collect();
-    let derived = finalized_floor(dag, block_store, &tips, &live_snapshot, ftt).await?;
+    let live_snapshot: BTreeMap<Validator, BlockHash> = testimony.into_iter().collect();
+    let derived = match finalized_floor(dag, block_store, &tips, &live_snapshot, ftt).await {
+        Ok(derived) => derived,
+        Err(CasperError::BlockNotHeld(missing)) => return Ok(FloorOfView::AbsenceHold { missing }),
+        Err(other) => return Err(other),
+    };
     if derived.hash == current.hash || derived.block_number <= current.block_number {
         return Ok(FloorOfView::NoAdvance);
     }
     let mut memo = IntroducedSigsMemo::new();
-    if state_contains(dag, block_store, &derived, current, &mut memo)? {
-        Ok(FloorOfView::Advance(derived))
-    } else {
-        tracing::warn!(
-            target: "f1r3fly.finalizer",
-            derived = %PrettyPrinter::build_string_bytes(&derived.hash),
-            derived_number = derived.block_number,
-            current = %PrettyPrinter::build_string_bytes(&current.hash),
-            "floor-of-view does not capture the current LFB; holding"
-        );
-        Ok(FloorOfView::ContainmentHold { derived })
+    match state_contains(dag, block_store, &derived, current, &mut memo) {
+        Ok(true) => Ok(FloorOfView::Advance(derived)),
+        Ok(false) => {
+            tracing::warn!(
+                target: "f1r3fly.finalizer",
+                derived = %PrettyPrinter::build_string_bytes(&derived.hash),
+                derived_number = derived.block_number,
+                current = %PrettyPrinter::build_string_bytes(&current.hash),
+                "floor-of-view does not capture the current LFB; holding"
+            );
+            Ok(FloorOfView::ContainmentHold { derived })
+        }
+        Err(CasperError::BlockNotHeld(missing)) => Ok(FloorOfView::AbsenceHold { missing }),
+        Err(other) => Err(other),
     }
 }
 
@@ -1210,6 +1239,87 @@ mod frontier_determinism_tests {
 
     fn seed_number(dag: &KeyValueDagRepresentation, hash: &Bytes) -> i64 {
         dag.lookup(hash).unwrap().expect("held").block_number
+    }
+
+    /// CI run 32588262605, arm64-subprocess joiner8 18:26:28: a block
+    /// insertion registered a newly-bonded validator's latest-message slot
+    /// with the network-uniform genesis placeholder, the queued finalizer
+    /// iteration collected it as a tip, and the containment descent from a
+    /// live candidate toward the height-0 candidate crossed the restore
+    /// horizon at the first unheld state-parent. `BlockNotHeld` escaped to
+    /// "finalizer-run failed" — a forbidden log entry that failed an
+    /// otherwise-green leg.
+    ///
+    /// The genesis block carries an empty sender, so a latest-message slot
+    /// pointing at it under any validator key is provably a seed: the
+    /// validator never signed it.
+    fn mk_truncated_dag_with_seeded_tip() -> (KeyValueDagRepresentation, Bytes, Vec<Bytes>, Bytes) {
+        let (mut dag, absent, held) = mk_truncated_dag();
+        let genesis = h(1);
+        dag.block_metadata_index
+            .write()
+            .add(md(genesis.clone(), vec![], 0, &Bytes::new()))
+            .unwrap();
+        dag.dag_set.insert(genesis.clone());
+        dag.block_number_map.insert(genesis.clone(), 0);
+        dag.put_cached_floor(held[3].clone(), held[1].clone())
+            .unwrap();
+        dag.put_cached_frontier(held[3].clone(), held[1].clone())
+            .unwrap();
+        let seeded_validator = Bytes::from(vec![7; 65]);
+        dag.latest_messages_map.insert(val(), held[4].clone());
+        dag.latest_messages_map
+            .insert(seeded_validator, genesis.clone());
+        (dag, absent, held, genesis)
+    }
+
+    /// The absorb: a finalizer-view derivation whose walk steps off the
+    /// retention edge holds the cycle instead of failing the run. No seeds
+    /// involved — the real tip's own uncached floor recursion reaches the
+    /// absent parent — so this outcome is stable under the seeded-tip
+    /// filter too.
+    #[tokio::test]
+    async fn a_walk_crossing_the_retention_edge_holds_the_cycle() {
+        let thr = FtThreshold::from_f32_lossy(0.1);
+        let (mut dag, absent, held) = mk_truncated_dag();
+        dag.latest_messages_map.insert(val(), held[4].clone());
+        let current = Floor {
+            hash: held[1].clone(),
+            block_number: seed_number(&dag, &held[1]),
+        };
+
+        let outcome = floor_of_view(&dag, &mk_store(), &current, thr)
+            .await
+            .expect(
+                "absence during the finalizer's local read must hold the \
+                 cycle, never fail the run",
+            );
+        assert!(
+            matches!(outcome, FloorOfView::AbsenceHold { ref missing } if *missing == absent),
+            "the hold must name the block below the window; got {outcome:?}"
+        );
+    }
+
+    /// The filter: a latest-message slot whose target the validator never
+    /// signed is bookkeeping, not testimony — it must not drag a height-0
+    /// tip into the derivation. With the seed excluded, the real tip's
+    /// seeded-anchor caches derive cleanly.
+    #[tokio::test]
+    async fn a_seeded_latest_message_is_not_a_floor_tip() {
+        let thr = FtThreshold::from_f32_lossy(0.1);
+        let (dag, _absent, held, _genesis) = mk_truncated_dag_with_seeded_tip();
+        let current = Floor {
+            hash: held[0].clone(),
+            block_number: seed_number(&dag, &held[0]),
+        };
+
+        let outcome = floor_of_view(&dag, &mk_store(), &current, thr)
+            .await
+            .expect("a seeded slot must not fail the finalizer's local read");
+        assert!(
+            matches!(outcome, FloorOfView::Advance(_)),
+            "with the seed excluded the real tip derives cleanly; got {outcome:?}"
+        );
     }
 
     #[tokio::test]
