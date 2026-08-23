@@ -124,3 +124,41 @@ pub fn extract_ok_bytes(previous: &[Par]) -> Option<Vec<u8>> {
     let val_par = list.ps.get(1)?;
     RhoByteArray::unapply(val_par)
 }
+
+/// Slice 9b-iv follow-up: extract the length of the inner list from
+/// a cached `[true, [x, y, z, ...]]` reply.  Returns `Some(n)` where
+/// `n` is the number of items in the inner list; `None` on error
+/// replies (`[false, ...]`), on `[true, non_list]` shapes, or on
+/// any non-list-of-list reply.
+///
+/// The entries-family handlers (`fs_entries`,
+/// eventually `fs_entries_stream`) use this on their `is_replay = true`
+/// branch to recover the leader-supplied entry count from `previous`
+/// and match the leader's per-entry supplement charge —
+/// keeping the D3 canonical event log byte-identical across the
+/// leader/follower split without re-executing the syscall.
+///
+/// Total; never panics.  A hostile or out-of-band `previous` shape
+/// yields `None` rather than a partial extraction, and the caller
+/// treats `None` as "charge 0 per-entry supplement" — which matches
+/// the leader path's charge on error replies (also 0), preserving
+/// parity even when the reply is malformed.
+pub fn extract_ok_list_len(previous: &[Par]) -> Option<u64> {
+    let head = previous.first()?;
+    let expr = head.exprs.first()?;
+    let outer = match expr.expr_instance.as_ref()? {
+        ExprInstance::EListBody(l) => l,
+        _ => return None,
+    };
+    let ok_par = outer.ps.first()?;
+    if RhoBoolean::unapply(ok_par) != Some(true) {
+        return None;
+    }
+    let inner_par = outer.ps.get(1)?;
+    let inner_expr = inner_par.exprs.first()?;
+    let inner = match inner_expr.expr_instance.as_ref()? {
+        ExprInstance::EListBody(l) => l,
+        _ => return None,
+    };
+    Some(inner.ps.len() as u64)
+}

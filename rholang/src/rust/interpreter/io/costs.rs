@@ -266,3 +266,63 @@ pub fn fs_remove_dir_cost(subtree_entry_count: u64) -> Cost {
 pub fn fs_release_all_for_holder_cost() -> Cost {
     Cost::create(FS_SYSCALL_CONST, "fs_release_all_for_holder")
 }
+
+// -------- Two-branch per-entry supplements (slice 9b-iv follow-up) --------
+//
+// The entries-family handlers charge in two `reserve_primitive` calls:
+// the first at handler entry (setup only via `fs_<name>_cost(0)`),
+// the second after the reply is known (per-entry supplement scaled by
+// the entry count).  Both branches (leader from syscall result,
+// replay from `previous`) emit the same two events with the same
+// weights in the same order, keeping the D3 canonical event log
+// byte-identical.  Sum of the two charges MUST equal
+// `fs_<name>_cost(n_entries)` — verified in
+// `fileio_cost_spec::entries_family_supplement_matches_combined_cost`.
+//
+// Wired: `fs_entries` charges its supplement post-reply.
+// Deferred: `fs_entries_stream` (still a stub returning
+// FSERR_UNSUPPORTED — no entries to charge for), `fs_remove_dir`
+// (subtree count is not surfaced in the current `[true]` reply
+// shape; changing to `[true, n_deleted]` would ripple through
+// Dir.rho + file_dir_check + fs_generator callers.  The supplement
+// helper is available for both so wiring is a one-line change once
+// the blockers clear).
+
+/// Per-entry supplement for the `fs_entries` two-branch charge.
+/// Sits alongside `fs_entries_cost(0)` (the setup component at
+/// handler entry) as a second `reserve_primitive` call executed
+/// after the entry count is knowable — leader from the fresh
+/// reply; replay from `previous`.  Sum matches `fs_entries_cost(n)`.
+pub fn fs_entries_per_entry_supplement_cost(n_entries: u64) -> Cost {
+    Cost::create(
+        saturate_linear(0, FS_ENTRIES_PER_ENTRY as u64, n_entries),
+        "fs_entries_per_entry",
+    )
+}
+
+/// Per-entry supplement for `fs_entries_stream` — same shape as
+/// `fs_entries_per_entry_supplement_cost`.  Deferred wiring: the
+/// current stub returns `FSERR_UNSUPPORTED` unconditionally, so
+/// no supplement charge is needed (n = 0 always).  Ready-to-use
+/// helper for when the streaming backing lands.
+pub fn fs_entries_stream_per_entry_supplement_cost(n_entries: u64) -> Cost {
+    Cost::create(
+        saturate_linear(0, FS_ENTRIES_PER_ENTRY as u64, n_entries),
+        "fs_entries_stream_per_entry",
+    )
+}
+
+/// Per-entry supplement for `fs_remove_dir` — same shape.  Deferred
+/// wiring: the reply is currently `[true]` on success (no count),
+/// so leader and replay have no shared value to derive `n` from.
+/// Unblocking requires either (a) instrumenting `remove_dir_recursive`
+/// to count and threading the count into the reply as
+/// `[true, n_deleted]` with the Dir.rho + test callers updated, or
+/// (b) capping recursive removeDir at a fixed subtree entry budget
+/// and charging that flat.  Helper is ready for either path.
+pub fn fs_remove_dir_per_entry_supplement_cost(subtree_entry_count: u64) -> Cost {
+    Cost::create(
+        saturate_linear(0, FS_ENTRIES_PER_ENTRY as u64, subtree_entry_count),
+        "fs_remove_dir_per_entry",
+    )
+}

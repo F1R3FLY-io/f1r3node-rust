@@ -1578,14 +1578,14 @@ impl FsProcesses {
         &self,
         contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
     ) -> Result<Vec<Par>, InterpreterError> {
-        // Phase 9 slice 9b-iv: charge fs_entries SETUP cost only.
-        // Weight = 50 (the base term).  Per-entry cost
-        // (FS_ENTRIES_PER_ENTRY * n_entries) is deferred to a
-        // follow-up slice because it requires post-syscall counting
-        // on the leader branch and matching entry extraction from
-        // `previous` on the replay branch — a two-branch charge
-        // pattern rather than the single entry-point charge used
-        // by the other length-parameterized handlers.
+        // Phase 9 slice 9b-iv: charge fs_entries SETUP cost at entry.
+        // Weight = 50 (the base term, `fs_entries_cost(0)`).  The
+        // per-entry supplement (FS_ENTRIES_PER_ENTRY * n_entries)
+        // fires as a second `reserve_primitive` call once `n` is
+        // knowable — see the two-branch post-reply supplement charges
+        // below.  Both branches emit the same two-event sequence
+        // with matching weights so the D3 canonical event log is
+        // byte-identical across leader and follower.
         self.metering.reserve_primitive(costs::fs_entries_cost(0))?;
         let Some((produce, is_replay, previous, args)) =
             self.is_contract_call().unapply(contract_args)
@@ -1621,6 +1621,15 @@ impl FsProcesses {
                 _ => None,
             };
         if is_replay {
+            // Slice 9b-iv follow-up: per-entry supplement charge on
+            // the replay branch.  `n` comes from the leader's cached
+            // `[true, [row1, ..., rowN]]` reply via
+            // `extract_ok_list_len(&previous)`; an error reply or
+            // shape mismatch yields `None`, matched by the leader
+            // branch charging 0 for the same shape (see below).
+            let n_entries = extract_ok_list_len(&previous).unwrap_or(0);
+            self.metering
+                .reserve_primitive(costs::fs_entries_per_entry_supplement_cost(n_entries))?;
             if let Some(p) = journal_path.clone() {
                 if let Some(reply_par) = previous.first() {
                     self.journal_state_read(mode, WalOp::Entries, p, reply_par, ack, None);
@@ -1699,6 +1708,16 @@ impl FsProcesses {
             }
             _ => err(FSERR_BAD_ARG, "expected (String, String)"),
         };
+        // Slice 9b-iv follow-up: per-entry supplement charge on the
+        // leader branch.  Extracts n from the fresh `reply` via the
+        // same helper the replay branch uses on `previous`, so both
+        // branches derive n from the identical Par shape.  Error
+        // replies and shape mismatches yield n = 0, charging only
+        // the setup portion — matches the follower's behavior on the
+        // same shape.
+        let n_entries = extract_ok_list_len(std::slice::from_ref(&reply)).unwrap_or(0);
+        self.metering
+            .reserve_primitive(costs::fs_entries_per_entry_supplement_cost(n_entries))?;
         // M-5: leader journals from fresh reply.
         if let Some(p) = journal_path {
             self.journal_state_read(mode, WalOp::Entries, p, &reply, ack, None);

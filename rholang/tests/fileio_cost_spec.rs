@@ -38,12 +38,13 @@
 use rholang::rust::interpreter::accounting::costs::Cost;
 use rholang::rust::interpreter::io::costs::{
     fs_chmod_cost, fs_chown_cost, fs_close_cost, fs_copy_file_cost, fs_entries_cost,
-    fs_entries_stream_cost, fs_exists_cost, fs_flush_cost, fs_lock_range_cost,
+    fs_entries_per_entry_supplement_cost, fs_entries_stream_cost,
+    fs_entries_stream_per_entry_supplement_cost, fs_exists_cost, fs_flush_cost, fs_lock_range_cost,
     fs_lock_sequential_cost, fs_open_cost, fs_quarantine_cost, fs_read_at_cost, fs_read_cost,
-    fs_release_all_for_holder_cost, fs_release_lock_cost, fs_remove_dir_cost, fs_remove_file_cost,
-    fs_rename_cost, fs_seek_cost, fs_size_cost, fs_stat_cost, fs_tell_cost, fs_truncate_cost,
-    fs_write_at_cost, fs_write_cost, FS_ENTRIES_PER_ENTRY, FS_ENTRIES_SETUP,
-    FS_PATH_MUTATION_CONST, FS_SYSCALL_CONST,
+    fs_release_all_for_holder_cost, fs_release_lock_cost, fs_remove_dir_cost,
+    fs_remove_dir_per_entry_supplement_cost, fs_remove_file_cost, fs_rename_cost, fs_seek_cost,
+    fs_size_cost, fs_stat_cost, fs_tell_cost, fs_truncate_cost, fs_write_at_cost, fs_write_cost,
+    FS_ENTRIES_PER_ENTRY, FS_ENTRIES_SETUP, FS_PATH_MUTATION_CONST, FS_SYSCALL_CONST,
 };
 
 // -------- Weight-class constants -----------------------------------
@@ -324,6 +325,131 @@ fn fs_entries_stream_weight_at_10_entries_is_pinned() {
 fn fs_remove_dir_weight_at_zero_entries_is_pinned() {
     // Empty directory removal — path-mutation base only.
     assert_eq!(fs_remove_dir_cost(0), Cost::create(200, "fs_remove_dir"));
+}
+
+// -------- Slice 9b-iv follow-up: per-entry supplement pins ---------
+//
+// The supplement helpers are the second `reserve_primitive` call in
+// the two-branch entries-family pattern.  Sum with `_cost(0)` must
+// equal `_cost(n)` for every input — `entries_family_supplements_match_combined_costs`
+// below sweeps that invariant.  These pins additionally lock the
+// supplement shape (0 at n=0, coefficient at 1, saturation at
+// u64::MAX) so a regression in the split can't silently be "fixed"
+// by tweaking the setup component to compensate.
+
+#[test]
+fn fs_entries_per_entry_supplement_at_zero_is_zero() {
+    assert_eq!(
+        fs_entries_per_entry_supplement_cost(0),
+        Cost::create(0, "fs_entries_per_entry"),
+    );
+}
+
+#[test]
+fn fs_entries_per_entry_supplement_at_one_pins_coefficient() {
+    assert_eq!(
+        fs_entries_per_entry_supplement_cost(1),
+        Cost::create(FS_ENTRIES_PER_ENTRY, "fs_entries_per_entry"),
+    );
+}
+
+#[test]
+fn fs_entries_per_entry_supplement_at_10_is_pinned() {
+    assert_eq!(
+        fs_entries_per_entry_supplement_cost(10),
+        Cost::create(32 * 10, "fs_entries_per_entry"),
+    );
+}
+
+#[test]
+fn fs_entries_per_entry_supplement_saturates_at_u64_max() {
+    assert_eq!(
+        fs_entries_per_entry_supplement_cost(u64::MAX),
+        Cost::create(i64::MAX, "fs_entries_per_entry"),
+    );
+}
+
+#[test]
+fn fs_entries_stream_per_entry_supplement_at_zero_is_zero() {
+    assert_eq!(
+        fs_entries_stream_per_entry_supplement_cost(0),
+        Cost::create(0, "fs_entries_stream_per_entry"),
+    );
+}
+
+#[test]
+fn fs_entries_stream_per_entry_supplement_at_10_is_pinned() {
+    assert_eq!(
+        fs_entries_stream_per_entry_supplement_cost(10),
+        Cost::create(32 * 10, "fs_entries_stream_per_entry"),
+    );
+}
+
+#[test]
+fn fs_remove_dir_per_entry_supplement_at_zero_is_zero() {
+    assert_eq!(
+        fs_remove_dir_per_entry_supplement_cost(0),
+        Cost::create(0, "fs_remove_dir_per_entry"),
+    );
+}
+
+#[test]
+fn fs_remove_dir_per_entry_supplement_at_10_is_pinned() {
+    assert_eq!(
+        fs_remove_dir_per_entry_supplement_cost(10),
+        Cost::create(32 * 10, "fs_remove_dir_per_entry"),
+    );
+}
+
+/// Invariant that ties the split back to the whole: for every
+/// entries-family helper, the SATURATING SUM of
+/// `_cost(0)` plus `_per_entry_supplement_cost(n)` MUST equal
+/// `_cost(n)` at every input.  This guards against a refactor that
+/// alters the split (e.g. moves part of the setup coefficient into
+/// the supplement) without adjusting the total.  Total-weight drift
+/// is the load-bearing consensus risk; this pin catches it directly.
+///
+/// Sweeps small integers (0, 1, 10, 1000, 100_000) plus u64::MAX to
+/// hit both normal paths and the saturation boundary.  Uses
+/// `saturating_add` on the two-charge sum because the two individual
+/// `reserve_primitive` calls at runtime each carry an
+/// already-saturated Cost — an adversarial u64::MAX supplement would
+/// reserve i64::MAX in the second charge and fail the budget check
+/// on its own, but the compile-time golden pin must not overflow
+/// while verifying the equality.
+#[test]
+fn entries_family_supplements_match_combined_costs() {
+    let sample_ns: &[u64] = &[0, 1, 10, 1000, 100_000, u64::MAX];
+    for &n in sample_ns {
+        // fs_entries
+        assert_eq!(
+            fs_entries_cost(0)
+                .value
+                .saturating_add(fs_entries_per_entry_supplement_cost(n).value),
+            fs_entries_cost(n).value,
+            "slice 9b-iv total-weight drift: \
+             fs_entries_cost(0) + fs_entries_per_entry_supplement_cost({n}) \
+             must equal fs_entries_cost({n}).  A mismatch means the two-branch \
+             split has drifted from the single-charge helper — every \
+             non-empty entries call would over- or under-charge.",
+        );
+        // fs_entries_stream
+        assert_eq!(
+            fs_entries_stream_cost(0)
+                .value
+                .saturating_add(fs_entries_stream_per_entry_supplement_cost(n).value),
+            fs_entries_stream_cost(n).value,
+            "slice 9b-iv total-weight drift (fs_entries_stream at n={n})",
+        );
+        // fs_remove_dir
+        assert_eq!(
+            fs_remove_dir_cost(0)
+                .value
+                .saturating_add(fs_remove_dir_per_entry_supplement_cost(n).value),
+            fs_remove_dir_cost(n).value,
+            "slice 9b-iv total-weight drift (fs_remove_dir at n={n})",
+        );
+    }
 }
 
 // -------- u64::MAX saturation pins ---------------------------------
@@ -716,28 +842,84 @@ fn setup_reducer_shares_one_metered_machine() {
     );
 }
 
-/// **Slice 9b regression pin — deferred per-entry charges stay at zero.**
+/// **Slice 9b-iv follow-up pin — fs_entries has full two-branch charge.**
 ///
-/// The three partial-charge handlers (fs_entries, fs_entries_stream,
-/// fs_remove_dir) currently charge only their setup cost via
-/// `costs::fs_<name>_cost(0)` — the per-entry component
-/// (FS_ENTRIES_PER_ENTRY * n_entries) is deferred to a follow-up
-/// slice because it requires two-branch post-syscall counting (see
-/// slice 9b-iv commit message).
+/// After landing per-entry two-branch charges on `fs_entries`, this pin
+/// requires the handler body to contain BOTH the setup call
+/// (`costs::fs_entries_cost(0)`) AND the per-entry supplement call
+/// (`costs::fs_entries_per_entry_supplement_cost(`).  The supplement
+/// MUST be present on both branches — leader (post-`spawn_blocking`,
+/// extracting `n` from the fresh reply) and replay (extracting `n`
+/// from `previous`) — to keep the D3 canonical event log
+/// byte-identical across leader and follower.
+///
+/// A single-branch charge (leader-only or replay-only) is a leader/
+/// replay consensus divergence trap.  A missing supplement means we're
+/// undercharging every non-empty directory listing.
+///
+/// Pin shape: substring-match the supplement helper name and require
+/// at least two occurrences within the handler body (one per branch).
+#[test]
+fn fs_entries_charges_supplement_on_both_branches() {
+    let src = include_str!("../src/rust/interpreter/io/handlers.rs");
+    let signature_prefix = "    pub async fn fs_entries(";
+    let body =
+        method_body(src, signature_prefix).expect("fs_entries handler must exist in handlers.rs");
+
+    assert!(
+        body.contains("costs::fs_entries_cost(0)"),
+        "slice 9b-iv regression: fs_entries must retain its setup-only \
+         `costs::fs_entries_cost(0)` charge at handler entry — the per-entry \
+         supplement is layered on top, not a replacement."
+    );
+
+    let supplement_call = "costs::fs_entries_per_entry_supplement_cost(";
+    let n_supplement = body.matches(supplement_call).count();
+    assert!(
+        n_supplement >= 2,
+        "slice 9b-iv regression: fs_entries must charge \
+         `{supplement_call}` on BOTH the replay and leader branches \
+         (currently {n_supplement} call site(s)).  A single-branch \
+         charge is a leader/replay consensus divergence: the two \
+         validators compute different `authority_cost_witness.realized` \
+         values and reject each other's blocks.  Preserve two \
+         `reserve_primitive(costs::fs_entries_per_entry_supplement_cost(n))?;` \
+         call sites — one after `if is_replay {{` extracts n from \
+         `previous`, one after the leader's `spawn_blocking` completes \
+         extracting n from the fresh reply."
+    );
+}
+
+/// **Slice 9b-iv follow-up pin — fs_entries_stream + fs_remove_dir stay
+/// setup-only, pending blocker resolution.**
+///
+/// Kept from the original entries-family setup-only pin: fs_entries_stream
+/// is a stub returning `FSERR_UNSUPPORTED` unconditionally (Phase-1 tail-
+/// end backing not yet landed), so the per-entry component is always 0
+/// — no supplement wiring is meaningful yet.  fs_remove_dir has a
+/// separate blocker: the recursive-remove reply is `[true]` on success
+/// with no count, so leader and replay have no shared value to derive
+/// `n` from.  Unblocking requires either (a) instrumenting
+/// `remove_dir_recursive` to count and threading the count into the
+/// reply as `[true, n_deleted]` (with Dir.rho + file_dir_check + fs_generator
+/// callers updated to accept the new shape), or (b) capping recursive
+/// removeDir at a fixed subtree entry budget and charging that flat.
+/// Supplement helpers (`fs_entries_stream_per_entry_supplement_cost`,
+/// `fs_remove_dir_per_entry_supplement_cost`) are already exported by
+/// `costs.rs` so wiring is a one-line change once either blocker
+/// resolves.
 ///
 /// This pin holds the deferral by requiring the exact `_cost(0)`
 /// call site.  A future PR that silently "upgrades" to
-/// `_cost(some_expression)` without properly implementing the
-/// two-branch pattern would trip this pin — forcing the author to
-/// either (a) revert to the setup-only charge, or (b) do the full
-/// leader+replay two-branch implementation deliberately.
-///
-/// Delete this pin when the follow-up slice lands (with its own
-/// full-cost golden pins replacing this one).
+/// `_cost(some_expression)` without also wiring the paired supplement
+/// on the reciprocal branch would trip this pin — forcing the author
+/// to either (a) revert, or (b) land the full two-branch pattern AND
+/// swap this pin for a `_charges_supplement_on_both_branches` pin
+/// (see the fs_entries pin above for the template).
 #[test]
-fn entries_family_charges_setup_only_pending_two_branch_impl() {
+fn entries_stream_and_remove_dir_charge_setup_only_pending_blocker_resolution() {
     let src = include_str!("../src/rust/interpreter/io/handlers.rs");
-    for name in &["fs_entries", "fs_entries_stream", "fs_remove_dir"] {
+    for name in &["fs_entries_stream", "fs_remove_dir"] {
         let signature_prefix = format!("    pub async fn {name}(");
         let body = method_body(src, &signature_prefix)
             .unwrap_or_else(|| panic!("{name} handler must exist"));
@@ -745,13 +927,15 @@ fn entries_family_charges_setup_only_pending_two_branch_impl() {
         assert!(
             body.contains(&expected),
             "slice 9b-iv deferred-charge regression: {name} handler must charge \
-             `costs::{name}_cost(0)` — setup weight only — pending the two-branch \
-             post-syscall per-entry charge follow-up.  A non-zero argument here \
-             without the paired follow-up wiring would either under-charge \
-             (leader-only per-entry with replay divergence) or crash the deploy \
-             (post-syscall count evaluated on the replay branch where the syscall \
-             didn't run).  Either revert to `_cost(0)` OR land the full \
-             two-branch pattern AND replace this pin with a golden per-entry pin."
+             `costs::{name}_cost(0)` — setup weight only — pending blocker \
+             resolution.  {name} blocker: fs_entries_stream is a stub \
+             (Phase-1 backing not yet implemented); fs_remove_dir needs a \
+             reply-shape change to expose `n_deleted` for two-branch \
+             counting.  If you're landing the fix, wire the paired \
+             supplement charge (`costs::{name}_per_entry_supplement_cost`) \
+             on BOTH branches (leader from fresh reply, replay from \
+             `previous`) AND replace this pin with the \
+             `_charges_supplement_on_both_branches` shape."
         );
     }
 }
