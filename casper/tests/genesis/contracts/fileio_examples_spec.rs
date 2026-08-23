@@ -273,6 +273,178 @@ in {{
         .expect("fileio_lockrange spec failed");
 }
 
+/// Phase 10 3-way lock-contention stress (2026-08-23): three caps
+/// on the same bundled file exercise the anti-starvation sequence
+/// {hold, conflict, release, retry-and-admit} across two waiters.
+/// Verifies end-to-end that cap1's release restores admission to
+/// cap2, and cap2's release in turn restores admission to cap3 —
+/// neither queued cap is starved by the other.
+///
+/// Sequence:
+///   1. cap1 lockRange wait:false → [true, token1].
+///   2. cap2 lockRange wait:false → [false, "FSERR_BUSY", _]
+///      (conflicts with cap1's held range).
+///   3. cap3 lockRange wait:false → [false, "FSERR_BUSY", _]
+///      (same conflict; parallel proof both are blocked).
+///   4. token1.release() → cap1 releases.
+///   5. cap2 lockRange wait:false → [true, token2].
+///   6. cap3 lockRange wait:false → [false, "FSERR_BUSY", _]
+///      (still blocked by cap2 now).
+///   7. token2.release() → cap2 releases.
+///   8. cap3 lockRange wait:false → [true, token3].
+///   9. token3.release() → clean shutdown.
+///
+/// This uses wait:false throughout (fail-fast on conflict) instead
+/// of wait:true (park until admissible) because the RhoSpec harness
+/// under `casper::helper::rho_spec` does not currently drive the
+/// tokio task infrastructure the wait:true admit-await path
+/// requires — a concurrent-waiter deploy times out silently rather
+/// than resolving the parked acquires.  Strict head-of-line FIFO
+/// order between concurrent wait:true parkers is unit-tested at
+/// the LockRegistry layer
+/// (`rholang/src/rust/interpreter/io/lock.rs::three_waiters_admit_fifo_after_release`);
+/// end-to-end wait:true coverage awaits harness plumbing (own
+/// slice, likely part of the two-runtime replay harness work).
+///
+/// The retry-after-release pattern still exercises the load-bearing
+/// cross-cap plumbing: LockRegistry keying on `(dev, inode)`
+/// aggregation of the three fresh-mint caps, conflict detection
+/// per-range, release-triggered-availability, and clean
+/// termination.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn fileio_lockrange_three_way_no_starvation() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let file_path = dir.path().join("threeway.dat");
+    std::fs::write(&file_path, vec![0u8; 512]).expect("seed file");
+    let canon = std::fs::canonicalize(&file_path).expect("canonicalize");
+
+    let entry = BundleEntry::try_new(
+        "target".to_string(),
+        canon,
+        BundleEntryKind::File,
+        "rw".to_string(),
+        BundleConsensusMode::Oracular,
+    )
+    .expect("bundle entry construction");
+    let mut params = GenesisBuilder::build_genesis_parameters_with_defaults(None, None);
+    params.2.fs_bundle = vec![entry];
+    let fs_uri = fs_genesis::fs_genesis_uri(&standard_deploys::FS_GENERATOR_PUB_KEY);
+
+    let test_source = format!(
+        r#"
+new
+  rl(`rho:registry:lookup`),
+  RhoSpecCh,
+  fsCh,
+  test_three_way
+in {{
+  rl!(`rho:id:zphjgsfy13h1k85isc8rtwtgt3t9zzt5pjd5ihykfmyapfc4wt3x5h`, *RhoSpecCh) |
+  for(@(_, RhoSpec) <- RhoSpecCh) {{
+    @RhoSpec!("testSuite",
+      [("3-way lockRange no starvation across release chain",
+        *test_three_way)])
+  }} |
+
+  rl!(`{fs_uri}`, *fsCh) |
+  for(@(_, fs) <- fsCh) {{
+    contract test_three_way(rhoSpec, _, ackCh) = {{
+      for(@[true, cap1] <- @fs!?("openFile", "target", {{"mode": "rw"}});
+          @[true, cap2] <- @fs!?("openFile", "target", {{"mode": "rw"}});
+          @[true, cap3] <- @fs!?("openFile", "target", {{"mode": "rw"}})) {{
+        for(@[true, token1] <- @cap1!?("lockRange", 0, 100, "w")) {{
+          // cap2 + cap3 both conflict with cap1's hold.
+          for(@r2busy <- @cap2!?("lockRange", 0, 100, "w");
+              @r3busy <- @cap3!?("lockRange", 0, 100, "w")) {{
+            match [r2busy, r3busy] {{
+              [[false, "FSERR_BUSY", _], [false, "FSERR_BUSY", _]] => {{
+                // Release cap1; cap2 must succeed, cap3 remains blocked.
+                for(@rel1 <- @token1!?("release")) {{
+                  match rel1 {{
+                    [true] => {{
+                      for(@r2ok <- @cap2!?("lockRange", 0, 100, "w");
+                          @r3still <- @cap3!?("lockRange", 0, 100, "w")) {{
+                        match [r2ok, r3still] {{
+                          [[true, token2], [false, "FSERR_BUSY", _]] => {{
+                            for(@rel2 <- @token2!?("release")) {{
+                              match rel2 {{
+                                [true] => {{
+                                  for(@r3ok <- @cap3!?("lockRange", 0, 100, "w")) {{
+                                    match r3ok {{
+                                      [true, token3] => {{
+                                        for(@rel3 <- @token3!?("release")) {{
+                                          match rel3 {{
+                                            [true] => {{
+                                              rhoSpec!("assert", (true, "==", true),
+                                                "3-way no-starvation: cap1->cap2->cap3 release chain fully drained",
+                                                *ackCh)
+                                            }}
+                                            _ => {{
+                                              rhoSpec!("assert", (rel3, "==", "[true]"),
+                                                "token3 release must succeed", *ackCh)
+                                            }}
+                                          }}
+                                        }}
+                                      }}
+                                      _ => {{
+                                        rhoSpec!("assert", (r3ok, "==", "[true, token3]"),
+                                          "cap3 must acquire after cap2 releases", *ackCh)
+                                      }}
+                                    }}
+                                  }}
+                                }}
+                                _ => {{
+                                  rhoSpec!("assert", (rel2, "==", "[true]"),
+                                    "token2 release must succeed", *ackCh)
+                                }}
+                              }}
+                            }}
+                          }}
+                          _ => {{
+                            rhoSpec!("assert",
+                              ([r2ok, r3still], "==",
+                               "[[true, token2], [false, FSERR_BUSY, _]]"),
+                              "post-release-1: cap2 admitted, cap3 still busy", *ackCh)
+                          }}
+                        }}
+                      }}
+                    }}
+                    _ => {{
+                      rhoSpec!("assert", (rel1, "==", "[true]"),
+                        "token1 release must succeed", *ackCh)
+                    }}
+                  }}
+                }}
+              }}
+              _ => {{
+                rhoSpec!("assert",
+                  ([r2busy, r3busy], "==",
+                   "[[false, FSERR_BUSY, _], [false, FSERR_BUSY, _]]"),
+                  "both cap2 and cap3 must observe FSERR_BUSY while cap1 holds",
+                  *ackCh)
+              }}
+            }}
+          }}
+        }}
+      }}
+    }}
+  }}
+}}
+"#
+    );
+
+    let compiled = CompiledRholangSource::new(
+        test_source,
+        HashMap::new(),
+        "FileioThreeWayLockSpec".to_string(),
+    )
+    .expect("compile three-way lock test source");
+
+    let spec = RhoSpec::new_with_genesis_parameters(compiled, vec![], GENESIS_TEST_TIMEOUT, params);
+    spec.run_tests()
+        .await
+        .expect("three-way lockRange spec failed");
+}
+
 /// Slice 10a-3: canonical example `fileio_static.rho`.
 ///
 /// Static-config file-to-file line copy: read every line from a pre-
