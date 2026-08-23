@@ -53,7 +53,7 @@ in {
                   for(@innerReply <- @rows!?("getAt", i)) {
                     match innerReply {
                       [true, inner] => {
-                        for(@bytesReply <- @inner!?("toByteArray")) {
+                        for(@bytesReply <- @inner!?("toByteArray", 1073741824)) {
                           match bytesReply {
                             [true, lineBytes] => {
                               stdout!((i, lineBytes.toUtf8String())) |

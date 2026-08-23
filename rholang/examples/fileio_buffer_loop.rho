@@ -50,7 +50,7 @@ in {
         for(@r <- @file!?("readLineInto", buf)) {
           match r {
             [true, [_nBytes, m /\ Map]] => {
-              for(@bytesReply <- @buf!?("toByteArray")) {
+              for(@bytesReply <- @buf!?("toByteArray", 1073741824)) {
                 match bytesReply {
                   [true, lineBytes] => {
                     stdout!(("line", lineBytes.toUtf8String())) |

@@ -6117,7 +6117,7 @@ in {
                         "writeFrom requires a write-capable mode"])
                     }
                     _ => {
-                      for (@baReply <- @buf!?("toByteArray")) {
+                      for (@baReply <- @buf!?("toByteArray", 67108864)) {
                         match baReply {
                           [true, bytes /\ ByteArray] => {
                             // Phase 8 slice 8a step 4d-1 — cursor-relative
@@ -6239,7 +6239,7 @@ in {
                             "r" => return!([false, "FSERR_UNSUPPORTED",
                               "writeFrom requires a write-capable mode"])
                             _   => {
-                              for (@baReply <- @buf!?("toByteArray")) {
+                              for (@baReply <- @buf!?("toByteArray", 67108864)) {
                                 match baReply {
                                   [true, bytes /\ ByteArray] => {
                                     match bytes.length() <= 0 {
@@ -6663,7 +6663,7 @@ in {
                                 "writeFromAt requires a write-capable mode"])
                             }
                             _ => {
-                              for (@baReply <- @buf!?("toByteArray")) {
+                              for (@baReply <- @buf!?("toByteArray", 67108864)) {
                                 match baReply {
                                   [true, bytes /\ ByteArray] => {
                                     // Phase 8 slice 8a step 4d-1 — acquire a
@@ -6782,7 +6782,7 @@ in {
                                     "r" => return!([false, "FSERR_UNSUPPORTED",
                                       "writeFromAt requires a write-capable mode"])
                                     _   => {
-                                      for (@baReply <- @buf!?("toByteArray")) {
+                                      for (@baReply <- @buf!?("toByteArray", 67108864)) {
                                         match baReply {
                                           [true, bytes /\ ByteArray] => {
                                             match bytes.length() <= 0 {

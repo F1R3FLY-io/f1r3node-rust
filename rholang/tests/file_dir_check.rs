@@ -6387,7 +6387,7 @@ async fn file_read_into_fills_buffer_from_cursor() {
                 for (@[true, buf] <- @alloc!?("allocBytes", 4)) {
                   for (@readReply <- @f!?("readInto", buf)) {
                     // Verify buffer content via toByteArray.
-                    for (@baReply <- @buf!?("toByteArray")) {
+                    for (@baReply <- @buf!?("toByteArray", 1073741824)) {
                       // And verify cursor advanced by peek at tell().
                       for (@tellReply <- @f!?("tell")) {
                         @"out"!([readReply, baReply, tellReply])
@@ -6816,7 +6816,7 @@ async fn file_read_into_utf8_buffer_truncates_at_codepoint_boundary() {
               // 2-byte utf8-unit buffer (direct Buffer mint).
               for (@buf <- Buffer!?(2, "utf8")) {
                 for (@readReply <- @f!?("readInto", buf)) {
-                  for (@baReply <- @buf!?("toByteArray")) {
+                  for (@baReply <- @buf!?("toByteArray", 1073741824)) {
                     for (@tellReply <- @f!?("tell")) {
                       // Also read the rest to verify the seek-back
                       // preserved the truncated tail.
@@ -6902,7 +6902,7 @@ async fn file_read_into_byte_buffer_ignores_codepoint_boundary() {
               for (@alloc <- Allocator!?()) {
                 for (@[true, buf] <- @alloc!?("allocBytes", 2)) {
                   for (@readReply <- @f!?("readInto", buf)) {
-                    for (@baReply <- @buf!?("toByteArray")) {
+                    for (@baReply <- @buf!?("toByteArray", 1073741824)) {
                       for (@tellReply <- @f!?("tell")) {
                         @"out"!([readReply, baReply, tellReply])
                       }
@@ -6954,7 +6954,7 @@ async fn file_read_into_on_read_only_file_succeeds() {
             for (@alloc <- Allocator!?()) {
               for (@[true, buf] <- @alloc!?("allocBytes", 4)) {
                 for (@readReply <- @f!?("readInto", buf)) {
-                  for (@baReply <- @buf!?("toByteArray")) {
+                  for (@baReply <- @buf!?("toByteArray", 1073741824)) {
                     @"out"!([readReply, baReply])
                   }
                 }
@@ -7007,7 +7007,7 @@ async fn file_read_at_into_positional_fill_does_not_move_cursor() {
             for (@alloc <- Allocator!?()) {
               for (@[true, buf] <- @alloc!?("allocBytes", 4)) {
                 for (@readReply <- @f!?("readAtInto", 2, buf)) {
-                  for (@baReply <- @buf!?("toByteArray")) {
+                  for (@baReply <- @buf!?("toByteArray", 1073741824)) {
                     for (@tellReply <- @f!?("tell")) {
                       @"out"!([readReply, baReply, tellReply])
                     }
@@ -7078,7 +7078,7 @@ async fn file_read_at_into_utf8_truncates_no_seek_back() {
               // Cursor at 0.
               for (@buf <- Buffer!?(2, "utf8")) {
                 for (@readReply <- @f!?("readAtInto", 0, buf)) {
-                  for (@baReply <- @buf!?("toByteArray")) {
+                  for (@baReply <- @buf!?("toByteArray", 1073741824)) {
                     for (@tellReply <- @f!?("tell")) {
                       @"out"!([readReply, baReply, tellReply])
                     }
@@ -7135,7 +7135,7 @@ async fn file_read_at_into_on_read_only_file_succeeds() {
             for (@alloc <- Allocator!?()) {
               for (@[true, buf] <- @alloc!?("allocBytes", 5)) {
                 for (@readReply <- @f!?("readAtInto", 0, buf)) {
-                  for (@baReply <- @buf!?("toByteArray")) {
+                  for (@baReply <- @buf!?("toByteArray", 1073741824)) {
                     @"out"!([readReply, baReply])
                   }
                 }
@@ -7758,7 +7758,7 @@ async fn file_read_line_into_happy_path() {
               for (@alloc <- Allocator!?()) {
                 for (@[true, buf] <- @alloc!?("allocBytes", 10)) {
                   for (@readReply <- @f!?("readLineInto", buf)) {
-                    for (@baReply <- @buf!?("toByteArray")) {
+                    for (@baReply <- @buf!?("toByteArray", 1073741824)) {
                       for (@tellReply <- @f!?("tell")) {
                         @"out"!([readReply, baReply, tellReply])
                       }
@@ -7855,7 +7855,7 @@ async fn file_read_line_into_truncated_when_line_exceeds_buffer() {
               for (@alloc <- Allocator!?()) {
                 for (@[true, buf] <- @alloc!?("allocBytes", 3)) {
                   for (@readReply <- @f!?("readLineInto", buf)) {
-                    for (@baReply <- @buf!?("toByteArray")) {
+                    for (@baReply <- @buf!?("toByteArray", 1073741824)) {
                       for (@tellReply <- @f!?("tell")) {
                         @"out"!([readReply, baReply, tellReply])
                       }
@@ -7898,7 +7898,7 @@ async fn file_read_line_into_unterminated_final_line_marks_eof() {
               for (@alloc <- Allocator!?()) {
                 for (@[true, buf] <- @alloc!?("allocBytes", 10)) {
                   for (@readReply <- @f!?("readLineInto", buf)) {
-                    for (@baReply <- @buf!?("toByteArray")) {
+                    for (@baReply <- @buf!?("toByteArray", 1073741824)) {
                       @"out"!([readReply, baReply])
                     }
                   }
@@ -7939,7 +7939,7 @@ async fn file_read_line_into_utf8_boundary_marks_truncated_preserves_lf() {
             for (@_ <- @f!?("seek", 0, "set")) {
               for (@buf <- Buffer!?(2, "utf8")) {
                 for (@readReply <- @f!?("readLineInto", buf)) {
-                  for (@baReply <- @buf!?("toByteArray")) {
+                  for (@baReply <- @buf!?("toByteArray", 1073741824)) {
                     for (@tellReply <- @f!?("tell")) {
                       @"out"!([readReply, baReply, tellReply])
                     }
@@ -7986,10 +7986,10 @@ async fn file_read_line_into_sequential_reads_advance_correctly() {
               for (@alloc <- Allocator!?()) {
                 for (@[true, buf1] <- @alloc!?("allocBytes", 10)) {
                   for (@r1 <- @f!?("readLineInto", buf1)) {
-                    for (@ba1 <- @buf1!?("toByteArray")) {
+                    for (@ba1 <- @buf1!?("toByteArray", 1073741824)) {
                       for (@[true, buf2] <- @alloc!?("allocBytes", 10)) {
                         for (@r2 <- @f!?("readLineInto", buf2)) {
-                          for (@ba2 <- @buf2!?("toByteArray")) {
+                          for (@ba2 <- @buf2!?("toByteArray", 1073741824)) {
                             @"out"!([r1, ba1, r2, ba2])
                           }
                         }
@@ -8120,7 +8120,7 @@ async fn file_read_line_into_full_buffer_returns_truncated_not_eof() {
                     for (@[true, _] <- @buf!?("writeBytes", "xyz".toUtf8Bytes())) {
                       for (@[true] <- @buf!?("endFill", tok)) {
                         for (@rReply <- @f!?("readLineInto", buf)) {
-                          for (@baReply <- @buf!?("toByteArray")) {
+                          for (@baReply <- @buf!?("toByteArray", 1073741824)) {
                             for (@tellReply <- @f!?("tell")) {
                               @"out"!([rReply, baReply, tellReply])
                             }
@@ -8170,7 +8170,7 @@ async fn file_read_line_into_malformed_utf8_at_cursor_returns_fserr_io() {
           for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
             for (@buf <- Buffer!?(10, "utf8")) {
               for (@rReply <- @f!?("readLineInto", buf)) {
-                for (@baReply <- @buf!?("toByteArray")) {
+                for (@baReply <- @buf!?("toByteArray", 1073741824)) {
                   @"out"!([rReply, baReply])
                 }
               }
@@ -8213,7 +8213,7 @@ async fn file_read_line_into_content_matches_capacity_defers_lf() {
               for (@alloc <- Allocator!?()) {
                 for (@[true, buf1] <- @alloc!?("allocBytes", 4)) {
                   for (@r1 <- @f!?("readLineInto", buf1)) {
-                    for (@ba1 <- @buf1!?("toByteArray")) {
+                    for (@ba1 <- @buf1!?("toByteArray", 1073741824)) {
                       for (@tell1 <- @f!?("tell")) {
                         for (@[true, buf2] <- @alloc!?("allocBytes", 4)) {
                           for (@r2 <- @f!?("readLineInto", buf2)) {
@@ -8276,7 +8276,7 @@ async fn file_read_line_into_buffer_strictly_larger_than_content_plus_lf() {
               for (@alloc <- Allocator!?()) {
                 for (@[true, buf] <- @alloc!?("allocBytes", 5)) {
                   for (@rReply <- @f!?("readLineInto", buf)) {
-                    for (@baReply <- @buf!?("toByteArray")) {
+                    for (@baReply <- @buf!?("toByteArray", 1073741824)) {
                       for (@tellReply <- @f!?("tell")) {
                         @"out"!([rReply, baReply, tellReply])
                       }
@@ -8322,10 +8322,10 @@ async fn file_read_line_into_utf8_chained_after_truncation() {
             for (@_ <- @f!?("seek", 0, "set")) {
               for (@buf1 <- Buffer!?(2, "utf8")) {
                 for (@r1 <- @f!?("readLineInto", buf1)) {
-                  for (@ba1 <- @buf1!?("toByteArray")) {
+                  for (@ba1 <- @buf1!?("toByteArray", 1073741824)) {
                     for (@buf2 <- Buffer!?(4, "utf8")) {
                       for (@r2 <- @f!?("readLineInto", buf2)) {
-                        for (@ba2 <- @buf2!?("toByteArray")) {
+                        for (@ba2 <- @buf2!?("toByteArray", 1073741824)) {
                           for (@buf3 <- Buffer!?(4, "utf8")) {
                             for (@r3 <- @f!?("readLineInto", buf3)) {
                               @"out"!([r1, ba1, r2, ba2, r3])
@@ -9698,9 +9698,9 @@ async fn file_read_lines_into_happy_path() {
                     for (@[true, b0] <- @rows!?("getAt", 0)) {
                       for (@[true, b1] <- @rows!?("getAt", 1)) {
                         for (@[true, b2] <- @rows!?("getAt", 2)) {
-                          for (@ba0 <- @b0!?("toByteArray")) {
-                            for (@ba1 <- @b1!?("toByteArray")) {
-                              for (@ba2 <- @b2!?("toByteArray")) {
+                          for (@ba0 <- @b0!?("toByteArray", 1073741824)) {
+                            for (@ba1 <- @b1!?("toByteArray", 1073741824)) {
+                              for (@ba2 <- @b2!?("toByteArray", 1073741824)) {
                                 @"out"!([rReply, ba0, ba1, ba2])
                               }
                             }
@@ -9816,7 +9816,7 @@ async fn file_read_lines_into_truncates_overflow_line() {
                 for (@[true, rows] <- @alloc!?("allocRows", 2, 3, "bytes")) {
                   for (@rReply <- @f!?("readLinesInto", rows)) {
                     for (@[true, b0] <- @rows!?("getAt", 0)) {
-                      for (@ba0 <- @b0!?("toByteArray")) {
+                      for (@ba0 <- @b0!?("toByteArray", 1073741824)) {
                         @"out"!([rReply, ba0])
                       }
                     }
@@ -9881,7 +9881,7 @@ async fn file_read_lines_into_blank_lines() {
                 for (@[true, rows] <- @alloc!?("allocRows", 5, 10, "bytes")) {
                   for (@rReply <- @f!?("readLinesInto", rows)) {
                     for (@[true, b0] <- @rows!?("getAt", 0)) {
-                      for (@ba0 <- @b0!?("toByteArray")) {
+                      for (@ba0 <- @b0!?("toByteArray", 1073741824)) {
                         @"out"!([rReply, ba0])
                       }
                     }
@@ -9921,7 +9921,7 @@ async fn file_read_lines_into_unterminated_final_line() {
                 for (@[true, rows] <- @alloc!?("allocRows", 3, 10, "bytes")) {
                   for (@rReply <- @f!?("readLinesInto", rows)) {
                     for (@[true, b0] <- @rows!?("getAt", 0)) {
-                      for (@ba0 <- @b0!?("toByteArray")) {
+                      for (@ba0 <- @b0!?("toByteArray", 1073741824)) {
                         @"out"!([rReply, ba0])
                       }
                     }
@@ -10198,8 +10198,8 @@ async fn file_read_lines_into_overflow_then_normal_next_line() {
                   for (@rReply <- @f!?("readLinesInto", rows)) {
                     for (@[true, b0] <- @rows!?("getAt", 0)) {
                       for (@[true, b1] <- @rows!?("getAt", 1)) {
-                        for (@ba0 <- @b0!?("toByteArray")) {
-                          for (@ba1 <- @b1!?("toByteArray")) {
+                        for (@ba0 <- @b0!?("toByteArray", 1073741824)) {
+                          for (@ba1 <- @b1!?("toByteArray", 1073741824)) {
                             @"out"!([rReply, ba0, ba1])
                           }
                         }
@@ -10350,7 +10350,7 @@ async fn file_read_lines_into_utf8_rows_multibyte_content() {
                 for (@[true, rows] <- @alloc!?("allocRows", 2, 10, "utf8")) {
                   for (@rReply <- @f!?("readLinesInto", rows)) {
                     for (@[true, b0] <- @rows!?("getAt", 0)) {
-                      for (@ba0 <- @b0!?("toByteArray")) {
+                      for (@ba0 <- @b0!?("toByteArray", 1073741824)) {
                         @"out"!([rReply, ba0])
                       }
                     }
@@ -10396,9 +10396,9 @@ async fn file_read_lines_into_mixed_blank_and_content_lines() {
                     for (@[true, b0] <- @rows!?("getAt", 0)) {
                       for (@[true, b1] <- @rows!?("getAt", 1)) {
                         for (@[true, b2] <- @rows!?("getAt", 2)) {
-                          for (@ba0 <- @b0!?("toByteArray")) {
-                            for (@ba1 <- @b1!?("toByteArray")) {
-                              for (@ba2 <- @b2!?("toByteArray")) {
+                          for (@ba0 <- @b0!?("toByteArray", 1073741824)) {
+                            for (@ba1 <- @b1!?("toByteArray", 1073741824)) {
+                              for (@ba2 <- @b2!?("toByteArray", 1073741824)) {
                                 @"out"!([rReply, ba0, ba1, ba2])
                               }
                             }
@@ -10449,7 +10449,7 @@ async fn file_read_lines_into_pre_filled_inner_is_cleared() {
                     // Pre-fill inner 0 with stale bytes.
                     for (@_ <- @b0!?("writeBytes", "STALE".toUtf8Bytes())) {
                       for (@_ <- @f!?("readLinesInto", rows)) {
-                        for (@ba0 <- @b0!?("toByteArray")) {
+                        for (@ba0 <- @b0!?("toByteArray", 1073741824)) {
                           @"out"!(ba0)
                         }
                       }
@@ -10560,7 +10560,7 @@ async fn file_read_lines_into_line_exactly_at_cap_plus_lf() {
                 for (@[true, rows] <- @alloc!?("allocRows", 2, 4, "bytes")) {
                   for (@rReply <- @f!?("readLinesInto", rows)) {
                     for (@[true, b0] <- @rows!?("getAt", 0)) {
-                      for (@ba0 <- @b0!?("toByteArray")) {
+                      for (@ba0 <- @b0!?("toByteArray", 1073741824)) {
                         @"out"!([rReply, ba0])
                       }
                     }

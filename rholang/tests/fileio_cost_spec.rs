@@ -1002,58 +1002,77 @@ fn stream_chunk_enforces_max_chunk_items_cap() {
     );
 }
 
-/// **Slice 9c-i deferral-preservation pin — Buffer.toByteArray materialization cap.**
+/// **Slice 9c-ii landed-pin — Buffer.toByteArray(@cap) materialization cap.**
 ///
-/// Phase 9 slice 9c originally called for materialization caps on
-/// Buffer.rho methods (`toString(cap)`, `toByteArray(cap)`,
-/// `toList(cap)` → `FSERR_QUOTA_EXCEEDED`).  These were deferred to
-/// an independent Rholang-API slice because they require a signature
-/// change (`toByteArray()` → `toByteArray(@cap)`) and updates to 4+
-/// caller sites in `File.rho`.  `Buffer.rho:641` documents this as
-/// a "Known deferral".
+/// Replaces the prior deferral pin (`buffer_to_byte_array_deferral_still_holds`).
+/// The materialization cap docstringed at spec §446 (`FSERR_QUOTA_EXCEEDED`)
+/// is now wired on `Buffer.rho::method toByteArray(@cap)`:
 ///
-/// This pin holds the deferral until the follow-up slice lands:
-/// * `method toByteArray(` must appear (the method still exists)
-/// * The signature must be `method toByteArray()` with no `@cap`
-///   argument (i.e. a substring match `method toByteArray()` must
-///   be present, NOT `method toByteArray(@cap)`)
-/// * The "Known deferral" docstring must still be present in the
-///   file (so a partial "wire the cap without updating the doc"
-///   PR trips this test)
+///   * `cap` is a required positional argument of type Int.
+///   * Non-Int cap → `[false, "BUFERR_INVALID_ARGUMENT", ...]`.
+///   * cap < 0 → `[false, "BUFERR_INVALID_CAPACITY", ...]`.
+///   * `ell > cap` → `[false, "FSERR_QUOTA_EXCEEDED", ...]`.
 ///
-/// Delete this pin when the follow-up slice lands (with its own
-/// golden pins on the new cap value and API shape).
+/// The 4 `File.rho` callers (writeFrom / writeFromAt, arity-1 and
+/// arity-2 wait:true variants) pass `67108864` = `MAX_WRITE_BYTES`
+/// (64 MiB) so an over-cap buffer fails at Buffer materialization
+/// rather than downstream `fs_write` dispatch.
+///
+/// This pin holds all three sides:
+///   1. Buffer.rho::toByteArray REQUIRES the `@cap` argument
+///      (`method toByteArray(@cap)` present; `method toByteArray()`
+///      no longer present).
+///   2. Buffer.rho contains the `FSERR_QUOTA_EXCEEDED` reply arm
+///      for `ell > cap`.
+///   3. Every `File.rho` `toByteArray` call site passes a
+///      non-empty second argument (grep-based check for arity-1
+///      calls; no `!?("toByteArray")` bare pattern in File.rho).
 #[test]
-fn buffer_to_byte_array_deferral_still_holds() {
-    let src = include_str!("../../casper/src/main/resources/Buffer.rho");
+fn buffer_to_byte_array_has_cap_arg_and_quota_check() {
+    let buffer_src = include_str!("../../casper/src/main/resources/Buffer.rho");
+    let file_src = include_str!("../../casper/src/main/resources/File.rho");
+
     assert!(
-        src.contains("method toByteArray("),
-        "Buffer.rho must still define `method toByteArray(...)`.  If the \
-         method was renamed or removed, the follow-up materialization-cap \
-         slice needs to update this pin's expected identifier."
+        buffer_src.contains("method toByteArray(@cap)"),
+        "slice 9c-ii regression: Buffer.rho::toByteArray must accept `@cap` \
+         as its explicit argument.  A regression removing the `@cap` \
+         parameter would silently defeat the FSERR_QUOTA_EXCEEDED gate \
+         and let arbitrary-size buffer materialization proceed."
     );
     assert!(
-        src.contains("method toByteArray()"),
-        "slice 9c deferral regression: Buffer.rho::toByteArray is expected to \
-         still take NO arguments — the materialization cap was deferred to a \
-         separate Rholang-API slice per the plan doc.  If a `@cap` argument \
-         was added, either (a) revert until the full follow-up (including \
-         caller updates in File.rho and golden-value pins) lands, or (b) \
-         land the full follow-up AND delete this pin (replaced by cap-\
-         specific golden pins)."
+        !buffer_src.contains("method toByteArray()"),
+        "slice 9c-ii regression: Buffer.rho must NOT define arity-0 \
+         `method toByteArray()` alongside the arity-1 variant.  A dual \
+         signature would let legacy callers bypass the cap; the slice \
+         explicitly transitions to the arity-1-only shape."
     );
     assert!(
-        !src.contains("method toByteArray(@cap)"),
-        "slice 9c deferral regression: Buffer.rho::toByteArray must NOT have \
-         a `@cap` argument until the full materialization-cap follow-up slice \
-         lands."
+        buffer_src.contains("FSERR_QUOTA_EXCEEDED"),
+        "slice 9c-ii regression: Buffer.rho::toByteArray must return \
+         `FSERR_QUOTA_EXCEEDED` on `ell > cap`.  Missing this string \
+         means the cap arg landed without wiring the quota check — \
+         DoS defense is a no-op."
     );
+
+    // Every File.rho toByteArray call site must pass a cap; no bare
+    // `!?("toByteArray")` (no arg) may remain.  The pattern
+    // `!?("toByteArray",` (with comma) proves the caller passes at
+    // least one explicit argument beyond the method name.
     assert!(
-        src.contains("Known deferral"),
-        "slice 9c deferral regression: Buffer.rho must retain the `Known \
-         deferral` docstring identifying FSERR_QUOTA_EXCEEDED as scheduled \
-         for a separate slice.  Removing the docstring while the deferral is \
-         still in effect misleads readers into thinking the quota check is \
-         wired when it is not."
+        !file_src.contains("!?(\"toByteArray\")"),
+        "slice 9c-ii regression: File.rho contains at least one arity-0 \
+         `!?(\"toByteArray\")` call site.  Every caller must pass a `cap` \
+         argument (typically `67108864` = MAX_WRITE_BYTES) so a bloated \
+         buffer fails at materialization rather than downstream fs_write."
+    );
+    // At least one arity-1 caller must exist (grepping for the specific
+    // MAX_WRITE_BYTES cap value confirms the caller pattern lands intact).
+    assert!(
+        file_src.contains("!?(\"toByteArray\", 67108864)"),
+        "slice 9c-ii regression: File.rho must contain the arity-1 \
+         `!?(\"toByteArray\", 67108864)` call site pattern.  If the cap \
+         value changed intentionally, update this pin to match the new \
+         value AND document why (typical rationale: matching the \
+         downstream fs_write MAX_WRITE_BYTES cap)."
     );
 }

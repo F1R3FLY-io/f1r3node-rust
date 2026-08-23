@@ -320,45 +320,88 @@ new Buffer, Allocator, Rows, metaP, chunkP, innerP, rowsMetaP,
       }
     } |
 
-    // toByteArray() — copy of [0, ell), no cursor move.  Refused under
-    // held lease.
-    method toByteArray() {
-      for (@meta <- @[*private, *metaP]) {
-        match meta {
-          "REVOKED" => {
-            @[*private, *metaP]!("REVOKED") |
-            return!([false, "BUFERR_REVOKED", "buffer is closed"])
-          }
-          (ell, _rho, _cap, _u, lease, lo, hi) => {
-            match lease {
-              "none" => {
-                match ell == 0 {
-                  true => {
-                    @[*private, *metaP]!(meta) |
-                    return!([true, "".hexToBytes()])
+    // toByteArray(@cap) — copy of [0, ell), no cursor move.  Refused
+    // under held lease.
+    //
+    // ## Materialization cap (slice 9c-ii)
+    //
+    // `cap` is the caller's budget for materialized bytes.  Signature
+    // added to close spec §446's `FSERR_QUOTA_EXCEEDED` gap: pre-slice-
+    // 9c-ii `toByteArray()` was unbounded (limited only by Buffer's
+    // 1 GiB platform allocation cap), so a caller with no other budget
+    // knowledge could be forced into a 1 GiB copy by a bloated buffer.
+    //
+    // Semantics:
+    //   * non-Int cap                  → `[false, "BUFERR_INVALID_ARGUMENT", ...]`
+    //   * cap < 0                      → `[false, "BUFERR_INVALID_CAPACITY", ...]`
+    //   * ell > cap                    → `[false, "FSERR_QUOTA_EXCEEDED", ...]`
+    //   * ell ≤ cap on non-lease meta  → `[true, bytes]` (0 ≤ i < ell)
+    //
+    // Cap validation runs BEFORE the meta peek so a malformed cap
+    // fails fast without disturbing the buffer state cell.
+    //
+    // Callers: `File.writeFrom` / `File.writeFromAt` (arity-1 and
+    // arity-2 wait:true variants) pass `67108864` (MAX_WRITE_BYTES
+    // = 64 MiB), matching the downstream `fs_write` cap so an
+    // over-cap buffer fails at materialization rather than syscall
+    // dispatch.
+    method toByteArray(@cap) {
+      match cap {
+        c /\ Int => {
+          match c < 0 {
+            true => return!(
+              [false, "BUFERR_INVALID_CAPACITY", "cap must be non-negative"])
+            false => {
+              for (@meta <- @[*private, *metaP]) {
+                match meta {
+                  "REVOKED" => {
+                    @[*private, *metaP]!("REVOKED") |
+                    return!([false, "BUFERR_REVOKED", "buffer is closed"])
                   }
-                  false => {
-                    new gCh in {
-                      gatherChunks!(*private, *chunkP, lo, hi, *gCh) |
-                      for (@allBytes <- gCh) {
+                  (ell, _rho, _cap, _u, lease, lo, hi) => {
+                    match lease {
+                      "none" => {
+                        match ell > c {
+                          true => {
+                            @[*private, *metaP]!(meta) |
+                            return!([false, "FSERR_QUOTA_EXCEEDED",
+                              "buffer content size exceeds cap"])
+                          }
+                          false => {
+                            match ell == 0 {
+                              true => {
+                                @[*private, *metaP]!(meta) |
+                                return!([true, "".hexToBytes()])
+                              }
+                              false => {
+                                new gCh in {
+                                  gatherChunks!(*private, *chunkP, lo, hi, *gCh) |
+                                  for (@allBytes <- gCh) {
+                                    @[*private, *metaP]!(meta) |
+                                    return!([true, allBytes.slice(0, ell)])
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                      _ => {
                         @[*private, *metaP]!(meta) |
-                        return!([true, allBytes.slice(0, ell)])
+                        return!([false, "BUFERR_FILLING", "fill in progress"])
                       }
                     }
                   }
+                  _ => {
+                    @[*private, *metaP]!(meta) |
+                    return!([false, "BUFERR_REVOKED", "buffer state unrecognized"])
+                  }
                 }
-              }
-              _ => {
-                @[*private, *metaP]!(meta) |
-                return!([false, "BUFERR_FILLING", "fill in progress"])
               }
             }
           }
-          _ => {
-            @[*private, *metaP]!(meta) |
-            return!([false, "BUFERR_REVOKED", "buffer state unrecognized"])
-          }
         }
+        _ => return!([false, "BUFERR_INVALID_ARGUMENT", "cap must be an integer"])
       }
     } |
 
