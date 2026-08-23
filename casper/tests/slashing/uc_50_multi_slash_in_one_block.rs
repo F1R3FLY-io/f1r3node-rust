@@ -1,7 +1,7 @@
 // UC-50 — Multiple slashes applied in succession (one block can
 // dispatch slashes to multiple validators).
 //
-// Maps to: docs/theory/slashing/slashing-specification.md §12 UC-50.
+// Maps to: docs/casper/theory/slashing/slashing-specification.md §12 UC-50.
 // Theorems: T-Idem, T-11.
 // Reference: design/06-proposing-and-effect.md §6.4.
 //

@@ -82,6 +82,10 @@ The Cargo workspace contains 10 crates:
 | [Consensus Protocol](./casper/CONSENSUS_PROTOCOL.md) | End-to-end protocol walkthrough, abstraction boundaries for adding new consensus |
 | [Byzantine Fault Tolerance](./casper/BYZANTINE_FAULT_TOLERANCE.md) | BFT architecture, clique oracle, equivocation detection, slashing |
 | [Synchrony Constraint](./casper/SYNC_CONSTRAINT.md) | Synchrony constraint mechanism, configuration, troubleshooting |
+| [Consensus Philosophy](./casper/CONSENSUS_PHILOSOPHY.md) | Design principles, deploy-fairness remedy ladder, CBC Casper relation |
+| [Casper Glossary](./casper/GLOSSARY.md) | Canonical casper-domain terms (split from the central glossary) |
+| [Theory dossiers](./casper/theory/README.md) | Fork choice, finalized floor, merge algebra, and slashing dossiers |
+| [Validation](./casper/validation/) | FV campaign gap analysis, merge-recovery validation plan |
 | [Consensus Configuration](https://github.com/F1R3FLY-io/system-integration/blob/main/docs/consensus-configuration.md) | FTT and synchrony threshold semantics, recommended values |
 
 ### Rholang Language
@@ -109,7 +113,7 @@ The Cargo workspace contains 10 crates:
 |----------|-------------|
 | [F1r3fly Architecture](./f1r3fly_architecture.md) | High-level architecture overview |
 | [F1r3fly State Diagram](./f1r3fly_state_diagram.md) | Node lifecycle state diagrams |
-| [Namespaces & Scaling](./namespaces-scaling-mercury.md) | Namespace organization, regional namespaces |
+| [Namespaces & Scaling](./archive/namespaces-scaling-mercury.md) | Namespace organization, regional namespaces |
 | [Features](./features.md) | Feature requirements and status |
 
 ### Genesis & Token Identity

@@ -3,7 +3,7 @@
 These targets expand the slashing search horizon with coverage-guided
 fuzzing. They are seedable from Sage/Hypothesis fixtures and are not proof
 authority; crashes must be minimized, replayed deterministically, classified
-in `docs/theory/slashing/slashing-traceability.md`, and promoted to Rocq/TLA+
+in `docs/casper/theory/slashing/slashing-traceability.md`, and promoted to Rocq/TLA+
 only after review.
 
 Run smoke checks:

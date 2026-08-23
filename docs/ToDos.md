@@ -101,28 +101,63 @@ tasks:
   - id: TASK-013-3
     title: "Phase 2: canary publication (canary-publish.yml)"
     status: in_progress
-    branch: feature/release-process-implementation
+    branch: feature/release-phase2-canary-publication
+    blocked_by: []
     notes:
       - "Implemented as canary-publish.yml: workflow_run on CI completion publishes the immutable canary tag, prerelease, and Docker Hub images by digest from the run's own artifacts; ineligible runs skip cleanly. Evidence upgrades to publication_mode: canary via release-evidence.sh record-images. OCIR canary deferred to Phase 3 (registry location is secret material). Remains in_progress until the first live master run proves it."
     acceptance:
       - "canary-publish.yml publishes immutable canary tags, prereleases, and images from tested artifacts on release-eligible master runs"
   - id: TASK-013-4
     title: "Phase 3: artifact-based validation (candidate digest modes)"
-    status: pending
+    status: in_progress
+    branch: feature/release-phase3-candidate-digest-validation
+    blocked_by: [TASK-013-5]
+    notes:
+      - "2026-08-22: stacked on Phase 4 (feature/release-phase4-promotion-controller). Registry decision ratified by the maintainer: OCIR is canonical for candidate gates, Docker Hub stays as the dual-published public mirror, no sync service."
+      - "canary-publish.yml pushes the same index to OCIR; evidence records images.ocir_index_digest, which the validator requires to equal the Docker Hub index digest. The OCIR repository path never enters evidence."
+      - "oci-validation.yml gains candidate_tag (exact-candidate mode); reusable-oci-validation.yml pulls each architecture image from OCIR by digest instead of building. merge-recovery-soak.yml gains candidate_tag, pulls the amd64 image by digest, and carries the tag through an in-window restart."
+      - "Both gate workflows publish Section 8.1 documents with release-gate-evidence.sh from a publish_candidate_evidence job under release-credentials, plus the release-candidate marker that resumes release.yml. test-release-gate-evidence.sh proves the writer against release-gates.sh."
+      - "promote-release.sh and release.yml copy the stable tag and latest into OCIR as well as Docker Hub."
+      - "The regress alert reuses the soak's existing ONS verdict email; promotion holds until maintainer-review.json is uploaded."
+      - "2026-08-22 multi-agent review of PR #325: gate documents carry candidate_evidence_sha256 and are written from the evidence file the run kept as a same-run artifact, never a re-downloaded release asset; release-gates.sh requires that digest to equal the evidence under evaluation. A candidate soak restart must name restart_of_run_id and match the original run's soak-window artifact (candidate, attempt 0, weekend, end epoch); coverage_preserved is true only for a verified restart."
     acceptance:
       - "merge-recovery-soak.yml and oci-validation.yml consume the candidate image digest without rebuilding"
+      - "The canary publisher publishes the same index digest to OCIR and Docker Hub, and evidence records the OCIR digest"
+      - "One exact-candidate OCI validation run and one candidate weekend soak publish Section 8.1 documents that release-gates.sh evaluates as pass"
+      - "Optional hardening: a read-only OCIR pull token replaces OCIR_AUTH_TOKEN in the soak and OCI validation pull steps (the OCIR_* secrets are repository-scoped and already readable there, verified 2026-08-22)"
   - id: TASK-013-5
     title: "Phase 4: stable promotion controller"
-    status: pending
+    status: in_progress
+    branch: feature/release-phase4-promotion-controller
+    blocked_by: [TASK-013-3]
+    notes:
+      - "2026-08-22: release-gates.sh evaluates the eight Section 8 gates from JSON documents only (pass, hold, or fail; exit 0, 10, or 20) and promote-release.sh plans Section 11 steps 4 to 14 from observed stable state, verifies binaries, emits stable-release-evidence.json, and bumps the next version. release.yml replaces the held stub: a read-only gates job, then a promote job under release-credentials that copies the image by digest with imagetools create, creates the verified stable tag and release, moves latest, and opens the next-version pull request. test-release-gates.sh, test-promote-release.sh, and the updated test-release-workflows.sh contract guard run in CI."
+      - "Section 8.1 defines the gate-evidence contract that Phase 3 must publish as candidate prerelease assets. Until Phase 3 lands, the OCI, soak, and verdict gates hold, so no candidate is promotable end to end."
+      - "The regress-verdict OCI Notifications alert belongs to the soak workflow (Phase 3); the controller holds on regress until maintainer-review.json accepts it."
+      - "2026-08-22 multi-agent review of PR #323: fail-closed gate evaluation (a malformed document fails its gate, the report always holds all eight gates), API-verified run identity for the OCI and soak documents, API-verified reviewer permission for maintainer-review.json, resume verifies existing release assets and refuses when a newer stable exists, latest is verified after the move, the next-version step is idempotent and keeps the token out of the remote URL, and the workflow_run resume is bound to a default-branch dispatch of a gate workflow whose marker names the evidence source. Concurrency was already serialized by the concurrency group; documented in Section 11.1."
     acceptance:
       - "release.yml performs exact-candidate promotion via release-gates.sh and promote-release.sh"
       - "A regress verdict publishes an OCI Notifications alert to the soak-report list and holds promotion for documented maintainer review"
+      - "The release-credentials environment exists with DOCKERHUB_USERNAME and DOCKERHUB_TOKEN and required reviewers"
+      - "One live promotion of a Phase 3 candidate publishes a stable tag, release, and image whose digest equals the candidate index"
   - id: TASK-013-6
     title: "Phase 5: Deployment Trains"
     status: pending
+    branch: feature/release-phase5-deployment-trains
+    blocked_by: [TASK-013-4]
+    notes:
+      - "2026-08-22: release-process.md Section 13.1.1 adds schema_version 2 stack manifests. A stack train binds the top-of-stack head as its one candidate; members merge bottom-up with true merge commits. Setup steps 4 to 6 (member chain, head ancestry, merged-member topology) and the validator depend on no earlier phase; canary, digest-bound gates, and promotion depend on Phases 2 to 4."
+      - "2026-08-22 multi-agent review of PR #321: Section 13.2 is one numbered sequence; the member base rule points to the preceding member; merge method is re-validated after each member merge and every recorded member head is verified at promotion, which closes the force-push window; the CI filter text matches ci.yml."
+      - "blocked_by encodes the stack merge order PR #322 -> #323 (Phase 4) -> #325 (Phase 3) -> #321 (Phase 5), which is also the code-dependency order: Phase 3 implements the Section 8.1 contract Phase 4 defines. Phase 4 becomes operational end to end only after Phase 3 publishes gate documents; that is a runtime dependency, not a merge dependency."
+      - "ci.yml runs pull-request CI for bases dev, master, staging, trying, and feature/**. A member whose base is outside that set (fix/**, formal/**) gets no pull-request run; train setup requires one successful ci.yml run for head_sha from any event and dispatches one when none exists (Section 13.2 step 9)."
+      - "Rehearsal candidate for the stack-train step: the key-contention stack PR #299 -> #312 -> #319 -> #311 (EPIC-016), non-publishing, no version reservation."
     acceptance:
       - "deployment-train.yml validates manifests under .github/deployment-trains/ and starts trains"
-      - "One non-publishing rehearsal completes, then the cost-accounting train (PR #216) publishes first"
+      - "The validator accepts schema_version 1 and 2, and rejects a stack member with a foreign base, broken head ancestry, or a squash or rebase merge"
+      - "Setup dispatches ci.yml on head_sha when no successful run exists for that SHA and records the run identifier as CI evidence"
+      - "One non-publishing single-train rehearsal completes"
+      - "One non-publishing stack-train rehearsal completes on a stacked pull-request set"
+      - "The cost-accounting train (PR #216) publishes first"
   - id: TASK-013-7
     title: "Phase 6: Shard soak-in scheduling"
     status: in_progress

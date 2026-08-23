@@ -33,7 +33,7 @@ default = []
 # Production builds MUST NOT enable this feature. Test crates that
 # need the helpers enable `test-internals` via their dev-dependency on
 # `block-storage`. See
-# `docs/theory/slashing/slashing-verification.md` §9.2 (Bug #2).
+# `docs/casper/theory/slashing/slashing-verification.md` §9.2 (Bug #2).
 test-internals = []
 
 [dev-dependencies]
@@ -43,21 +43,14 @@ proptest = { workspace = true }
 # See block-storage/tests/loom_equivocations_tracker.rs.
 loom = "=0.7.2"
 
-# P2-16: integration tests in `tests/block_dag_storage_test.rs` call the
-# gated `equivocation_records` / `insert_equivocation_record` /
-# `update_equivocation_record` helpers. They require the
-# `test-internals` feature; `cargo test --workspace --all-features`
-# already enables it, but the per-target `required-features` makes the
-# dependency explicit and prevents `cargo test` (default features only)
-# from confusingly omitting these tests.
-[[test]]
-name = "block_dag_storage_test"
-required-features = ["test-internals"]
-
-[[test]]
-name = "mod"
-required-features = ["test-internals"]
-
+# P2-16: these targets used to carry `required-features = ["test-internals"]`
+# because two equivocation tests called the gated lock-bypass helpers. A crate
+# cannot dev-depend on itself, so that feature could only be reached by passing
+# `--features` on the command line — and a target whose required features are
+# unmet is SKIPPED, not failed, so CI (`cargo nextest run -p block-storage`,
+# no `--features`) silently ran none of these tests. The two tests now go
+# through `access_equivocations_tracker`, the same locked path production uses,
+# so nothing here needs the feature and every test is visible by default.
 [[test]]
 name = "loom_equivocations_tracker"
 

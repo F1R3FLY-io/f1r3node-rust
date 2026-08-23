@@ -24,18 +24,18 @@
 //! * `block_metadata_index` is itself `parking_lot::RwLock`-wrapped for
 //!   fine-grained concurrency.
 //!
-//! See `docs/theory/slashing/slashing-verification.md` for the
+//! See `docs/casper/theory/slashing/slashing-verification.md` for the
 //! protocol-level theorems whose witnesses are recorded here.
 
 // References below to `formal/{rocq,tlaplus,sage}/slashing/`,
 // `FINDINGS.md`, `slashing-search-horizon.{md,sh}`, `slashing-traceability.md`,
-// `docs/theory/slashing/methodology/`, and `.mutants.toml` point at
+// `docs/casper/theory/slashing/methodology/`, and `.mutants.toml` point at
 // audit-corpus artifacts preserved on the `analysis/slashing` branch.
 //
 // See block-storage/src/main/scala/coop/rchain/blockstorage/dag/BlockDagKeyValueStorage.scala
 
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 
 use models::rust::block_hash::{self, BlockHash, BlockHashSerde};
@@ -719,6 +719,22 @@ pub struct BlockDagKeyValueStorage {
     /// Monotonically increasing counter incremented on every successful block insert.
     /// Used by caches to detect when the DAG has changed.
     pub(crate) dag_generation: Arc<AtomicU64>,
+    /// Lower bound on `fault_tolerance_value` across `finalized_block_set`,
+    /// held as `f32` bits (`f32::to_bits` / `from_bits`) so it fits an atomic.
+    /// `propagate_ft_to_finalized_blocks` reads it to skip a scan that could
+    /// only raise blocks already at or above `ft_value`.
+    ///
+    /// The invariant is one-sided: too LOW costs one needless scan, too HIGH
+    /// skips a scan that was needed and leaves blocks under-propagated. So
+    /// lowering is free and may happen at any time, while raising is only
+    /// sound once a scan has actually rewritten every finalized block.
+    ///
+    /// Both writers hold `global_lock` exclusively — the lowering in
+    /// `record_directly_finalized`'s persist closure and the raise at the end
+    /// of `propagate_ft_to_finalized_blocks`. That is what makes `Relaxed`
+    /// sufficient here; a reader outside the lock would need stronger
+    /// ordering, and could observe a stale-high bound.
+    pub(crate) ft_lower_bound: Arc<AtomicU32>,
 }
 
 impl BlockDagKeyValueStorage {
@@ -779,13 +795,14 @@ impl BlockDagKeyValueStorage {
             lifecycle: Arc::new(PlRwLock::new(lifecycle_tables)),
             latest_messages_index: latest_messages_db,
             dag_generation: Arc::new(AtomicU64::new(0)),
+            ft_lower_bound: Arc::new(AtomicU32::new(0.0f32.to_bits())),
         })
     }
 
-    // P2-16: the following three methods bypass `global_lock` — production
+    // P2-16: the following two methods bypass `global_lock` — production
     // code MUST route through `access_equivocations_tracker` to honor the
     // Bug #2 / T-9.2 atomicity contract (see
-    // `docs/theory/slashing/slashing-verification.md` §9.2 and
+    // `docs/casper/theory/slashing/slashing-verification.md` §9.2 and
     // `formal/rocq/slashing/theories/BugFixAtomicTracker.v`). They are
     // gated behind `#[cfg(any(test, feature = "test-internals"))]` so the
     // compiler hard-fails on any production caller — the prior
@@ -803,19 +820,6 @@ impl BlockDagKeyValueStorage {
         record: EquivocationRecord,
     ) -> Result<(), KvStoreError> {
         self.equivocation_tracker_index.add(record)
-    }
-
-    #[cfg(any(test, feature = "test-internals"))]
-    #[doc(hidden)]
-    pub fn update_equivocation_record(
-        &self,
-        mut record: EquivocationRecord,
-        block_hash: BlockHash,
-    ) -> Result<(), KvStoreError> {
-        self.equivocation_tracker_index.add({
-            record.equivocation_detected_block_hashes.insert(block_hash);
-            record
-        })
     }
 
     /// Phase 11 (visibility hardening): test fixtures used to build a
@@ -847,6 +851,7 @@ impl BlockDagKeyValueStorage {
             equivocation_tracker_index,
             lifecycle: Arc::new(PlRwLock::new(DeployLifecycleTables::in_memory())),
             dag_generation,
+            ft_lower_bound: Arc::new(AtomicU32::new(0.0f32.to_bits())),
         }
     }
 
@@ -1268,12 +1273,29 @@ impl BlockDagKeyValueStorage {
 
                 // P2-12: record_finalized mutates block metadata; exclusive lock.
                 let _lock_guard = self.global_lock.write();
+
+                // These blocks enter at `ft_value`, possibly below what earlier
+                // rounds propagated — the bound has to follow them down. Lowered
+                // BEFORE the fallible write, not after: `record_finalized` adds to
+                // `finalized_block_set` before it persists, so an error on the way
+                // out would leave those blocks in the set with the bound still
+                // high, and every later propagate at or under it would skip the
+                // scan that raises them. Lowering early can only cost one
+                // unnecessary scan.
+                let _ = self.ft_lower_bound.fetch_update(
+                    Ordering::Relaxed,
+                    Ordering::Relaxed,
+                    |bits| (ft_value < f32::from_bits(bits)).then(|| ft_value.to_bits()),
+                );
+
                 let mut block_metadata_index_guard = self.block_metadata_index.write();
                 block_metadata_index_guard.record_finalized(
                     directly_finalized_hash.clone(),
                     indirectly_finalized,
                     ft_value,
-                )
+                )?;
+                drop(block_metadata_index_guard);
+                Ok(())
             };
 
         let mut effect_applied: HashSet<BlockHash> = HashSet::new();
@@ -1336,12 +1358,32 @@ impl BlockDagKeyValueStorage {
         // P2-12: mutates `block_metadata_index`; exclusive lock.
         let _lock_guard = self.global_lock.write();
 
+        // Nothing is below the bound and this scan only raises, so it would
+        // rewrite nothing. Skipping keeps `global_lock` off an O(finalized) walk.
+        if ft_value <= f32::from_bits(self.ft_lower_bound.load(Ordering::Relaxed)) {
+            metrics::counter!("propagate_ft.skipped", "source" => "f1r3fly.casper.block-dag")
+                .increment(1);
+            return Ok(());
+        }
+
         // Update ALL finalized blocks with lower FT, not just ancestors of the
         // current LFB. In a multi-parent DAG, finalized blocks on orphaned
         // branches are not reachable via the ancestor chain of the new LFB.
+        let scan_started = std::time::Instant::now();
         let mut block_metadata_index_guard = self.block_metadata_index.write();
         let finalized_hashes = block_metadata_index_guard.finalized_block_hashes();
-        block_metadata_index_guard.update_ft_if_higher(finalized_hashes, ft_value)
+        let scanned = finalized_hashes.len();
+        block_metadata_index_guard.update_ft_if_higher(finalized_hashes, ft_value)?;
+        drop(block_metadata_index_guard);
+        metrics::histogram!("propagate_ft.scan.time", "source" => "f1r3fly.casper.block-dag")
+            .record(scan_started.elapsed().as_secs_f64());
+        metrics::histogram!("propagate_ft.scan.blocks", "source" => "f1r3fly.casper.block-dag")
+            .record(scanned as f64);
+
+        // Every finalized block is now at or above `ft_value`.
+        self.ft_lower_bound
+            .store(ft_value.to_bits(), Ordering::Relaxed);
+        Ok(())
     }
 }
 

@@ -3,7 +3,7 @@
 // Theorem: T-AuthCheck — Rholang-level observation at
 // PoS.rhox:437-439 (`sysAuthTokenOps!("check", sysAuthToken,
 // *isValidTokenCh)`).
-// Reference: docs/theory/slashing/slashing-specification.md §6.7,
+// Reference: docs/casper/theory/slashing/slashing-specification.md §6.7,
 // design/06-proposing-and-effect.md §6.7.
 //
 // Property: a slash deploy with a spoofed/invalid system auth token
