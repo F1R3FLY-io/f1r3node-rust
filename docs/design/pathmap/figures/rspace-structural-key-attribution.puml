@@ -16,24 +16,36 @@ title RSpace structural-key cost attribution
 start
 :Authoritative ParBag endpoint\ncanonical Expr protobuf body;
 if (control or treatment?) then (control)
-  #FADBD8:Decode Expr and recursively rebuild\nsuffix ParBags;
+  :Decode Expr and recursively rebuild\nsuffix ParBags; <<#FADBD8>>
   note right
     MEASURED: quadratic in unary-list depth
-    despite a 225--226 byte RMP result
+    despite a 225 to 226 byte RMP result
   end note
 else (treatment)
-  #D5F5E3:Generated protobuf-region cursor\nretains nested Par byte regions;
-  note right
-    Target: one bounded shell decode,
-    direct nested-Par token emission
-  end note
+  :Verify RPB3 provenance and\nvalidate the canonical shell;
+  if (admission valid?) then (yes)
+    :Generated protobuf-region cursor\nretains nested Par byte regions; <<#D5F5E3>>
+    note right
+      Target: one bounded shell decode,
+      direct nested-Par token emission
+    end note
+  else (no)
+    :Refuse before emitting RMP bytes\nor mutating the Bag; <<#FADBD8>>
+    stop
+  endif
 endif
 :Emit versioned RMP structural bytes;
 :Frame RhoPathV1 key and append\ncanonical bincode identity;
-#D5F5E3:Insert one prepared byte path into\nBag = PathMap<Multiplicity>;
+:Insert one prepared byte path into\nthe PathMap<Multiplicity> Bag;
 note right
   MEASURED: final insertion did not explain
   the multi-second control slope
 end note
 stop
+
+legend bottom
+  |<#FADBD8>| measured control cost or refusal |
+  |<#D5F5E3>| provisional cursor treatment |
+  |<#E9F2FA>| unchanged pipeline stage |
+endlegend
 @enduml

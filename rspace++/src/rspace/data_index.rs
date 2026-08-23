@@ -1,3 +1,4 @@
+use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::fmt;
 use std::marker::PhantomData;
@@ -11,7 +12,6 @@ use pathmap::zipper::{
 use serde::Serialize;
 
 use super::bag::{Bag, BagDelta, BagError, Multiplicity};
-use super::candidate_order::deterministic_candidate_hash;
 use super::hashing::blake2b256_hash::Blake2b256Hash;
 use super::internal::{Datum, DatumAddress};
 use super::rho_path::{
@@ -19,7 +19,7 @@ use super::rho_path::{
     StoredSequenceFrameScanner, StoredSequenceFrameStep,
 };
 use super::serializers::cold_store_decode::{ColdStoreDecode, ColdStoreDecodeError};
-use super::serializers::serializers::{CandidateOrderingBytes, decode_datum, encode_datum};
+use super::serializers::serializers::{decode_datum, encode_datum};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DataIndexError {
@@ -28,6 +28,7 @@ pub enum DataIndexError {
     Decode(ColdStoreDecodeError),
     CardinalityOverflow(u128),
     AllocationFailure(usize),
+    DuplicateDatumIdentity,
     IndexOutOfBounds { index: i32, cardinality: u128 },
 }
 
@@ -43,6 +44,9 @@ impl fmt::Display for DataIndexError {
             Self::AllocationFailure(requested) => {
                 write!(f, "unable to reserve space for {requested} bag elements")
             }
+            Self::DuplicateDatumIdentity => f.write_str(
+                "one canonical datum identity is stored under multiple derived RhoPaths",
+            ),
             Self::IndexOutOfBounds { index, cardinality } => {
                 write!(f, "datum index {index} is out of bounds for cardinality {cardinality}")
             }
@@ -106,6 +110,60 @@ struct EncodedIndexedDatum {
     path: Vec<u8>,
     identity_offset: usize,
     multiplicity: Multiplicity,
+}
+
+/// Compare datum candidates without consulting their derived structural path.
+///
+/// The 256-bit hash is the ordinary fast ordering key. Canonical datum bytes
+/// make its collision case total and representation-independent: changing an
+/// in-memory RhoMatchPath version can never change which COMM is considered
+/// first. The identity is already the collision-free suffix of every stored
+/// datum path, so no additional trie-path tie-break is required.
+fn compare_candidate_identity(
+    left_hash: &Blake2b256Hash,
+    left_identity: &[u8],
+    right_hash: &Blake2b256Hash,
+    right_identity: &[u8],
+) -> Ordering {
+    left_hash
+        .cmp(right_hash)
+        .then_with(|| left_identity.cmp(right_identity))
+}
+
+#[cfg(not(test))]
+#[inline(always)]
+fn datum_identity_digest(identity: &[u8]) -> Blake2b256Hash { Blake2b256Hash::new(identity) }
+
+#[cfg(test)]
+fn datum_identity_digest(identity: &[u8]) -> Blake2b256Hash {
+    super::candidate_digest_test_hook::digest(identity)
+}
+
+fn sort_encoded_candidates(entries: &mut [(Blake2b256Hash, EncodedIndexedDatum)]) {
+    entries.sort_unstable_by(|(left_hash, left), (right_hash, right)| {
+        compare_candidate_identity(
+            left_hash,
+            &left.path[left.identity_offset..],
+            right_hash,
+            &right.path[right.identity_offset..],
+        )
+    });
+}
+
+fn validate_unique_candidate_identities(
+    entries: &[(Blake2b256Hash, EncodedIndexedDatum)],
+) -> Result<(), DataIndexError> {
+    if entries.windows(2).any(|pair| {
+        if pair[0].0 != pair[1].0 {
+            return false;
+        }
+        let left = &pair[0].1;
+        let right = &pair[1].1;
+        left.path[left.identity_offset..] == right.path[right.identity_offset..]
+    }) {
+        return Err(DataIndexError::DuplicateDatumIdentity);
+    }
+    Ok(())
 }
 
 /// Fixed-width position in a candidate catalog's canonical order.
@@ -215,7 +273,7 @@ pub struct CandidatePool<A: Clone> {
     decode: fn(&[u8]) -> Datum<A>,
 }
 
-#[derive(Clone)]
+#[cfg_attr(any(test, feature = "candidate-checkpoint-experiment"), derive(Clone))]
 struct CandidateProductCursor<'a> {
     availability: ReadZipperUntracked<'a, 'static, Multiplicity>,
     positions: ReadZipperUntracked<'a, 'static, CandidatePosition>,
@@ -233,8 +291,18 @@ impl<'a> CandidateProductCursor<'a> {
     }
 
     fn descend_to_existing(&mut self, path: &[u8]) -> bool {
-        self.availability.descend_to_existing(path) == path.len() &&
-            self.positions.descend_to_existing(path) == path.len()
+        let availability_depth = self.availability.descend_to_existing(path);
+        let positions_depth = self.positions.descend_to_existing(path);
+        if availability_depth == path.len() && positions_depth == path.len() {
+            return true;
+        }
+        for _ in 0..availability_depth {
+            self.availability.ascend_byte();
+        }
+        for _ in 0..positions_depth {
+            self.positions.ascend_byte();
+        }
+        false
     }
 
     fn descend_to_byte(&mut self, byte: u8) {
@@ -248,6 +316,12 @@ impl<'a> CandidateProductCursor<'a> {
         debug_assert_eq!(availability_ascended, positions_ascended);
     }
 
+    fn ascend_bytes(&mut self, count: usize) {
+        for _ in 0..count {
+            self.ascend_byte();
+        }
+    }
+
     fn child_mask(&self) -> ByteMask {
         self.availability.child_mask() & self.positions.child_mask()
     }
@@ -256,25 +330,73 @@ impl<'a> CandidateProductCursor<'a> {
         self.availability.get_val()?;
         self.positions.get_val().copied()
     }
+
+    fn checkpoint(&self) -> Option<CandidateProductCheckpoint> {
+        let availability_root = self.availability.get_val().copied();
+        let positions_root = self.positions.get_val().copied();
+        let mut availability = ZipperSubtries::make_map(&self.availability).unwrap_or_default();
+        let mut positions = ZipperSubtries::make_map(&self.positions).unwrap_or_default();
+        if let Some(value) = availability_root {
+            availability.insert(&[], value);
+        }
+        if let Some(value) = positions_root {
+            positions.insert(&[], value);
+        }
+        if availability.is_empty() || positions.is_empty() {
+            return None;
+        }
+        #[cfg(test)]
+        {
+            candidate_product_test_metrics::record_checkpoint();
+            if availability_root.is_some() || positions_root.is_some() {
+                candidate_product_test_metrics::record_root_endpoint_restoration();
+            }
+        }
+        Some(CandidateProductCheckpoint {
+            availability,
+            positions,
+        })
+    }
 }
 
-struct CandidateQueryState<'a> {
-    cursor: CandidateProductCursor<'a>,
+/// A depth-independent candidate-product continuation.
+///
+/// Current RhoPath framing places stored candidate values only after the outer
+/// structure terminator and datum-identity suffix, never at the boundary after
+/// one complete component. Checkpoint extraction nevertheless preserves a
+/// focus value defensively, so correctness does not depend on that framing
+/// invariant, PathMap's optional `graft_root_vals` feature, or a future
+/// encoding continuing to omit endpoints at component boundaries.
+#[derive(Clone)]
+struct CandidateProductCheckpoint {
+    availability: PathMap<Multiplicity>,
+    positions: PathMap<CandidatePosition>,
+}
+
+impl CandidateProductCheckpoint {
+    fn cursor(&self) -> CandidateProductCursor<'_> {
+        CandidateProductCursor::new(&self.availability, &self.positions)
+    }
+}
+
+struct CandidateQueryState {
+    checkpoint: CandidateProductCheckpoint,
     atom_index: usize,
     captures: PathMap<Arc<[u8]>>,
 }
 
-fn visit_sequence_frames<'a>(
-    cursor: CandidateProductCursor<'a>,
-    mut visitor: impl FnMut(CandidateProductCursor<'a>, &[u8]),
+fn visit_sequence_frames(
+    cursor: CandidateProductCursor<'_>,
+    mut visitor: impl FnMut(CandidateProductCheckpoint, &[u8]),
 ) {
-    visit_sequence_frames_with_prefix(cursor, &[], &mut visitor);
+    visit_sequence_frames_with_prefix(cursor, &[], |_| true, &mut visitor);
 }
 
-fn visit_sequence_frames_with_prefix<'a>(
-    mut cursor: CandidateProductCursor<'a>,
+fn visit_sequence_frames_with_prefix(
+    mut cursor: CandidateProductCursor<'_>,
     prefix: &[u8],
-    mut visitor: impl FnMut(CandidateProductCursor<'a>, &[u8]),
+    mut accepts: impl FnMut(&[u8]) -> bool,
+    mut visitor: impl FnMut(CandidateProductCheckpoint, &[u8]),
 ) {
     if !cursor.descend_to_existing(prefix) {
         return;
@@ -302,7 +424,13 @@ fn visit_sequence_frames_with_prefix<'a>(
                     StoredSequenceFrameStep::Complete => {
                         cursor.descend_to_byte(byte);
                         frame.push(byte);
-                        visitor(cursor.clone(), &frame);
+                        #[cfg(test)]
+                        candidate_product_test_metrics::record_frame();
+                        if accepts(&frame) {
+                            if let Some(checkpoint) = cursor.checkpoint() {
+                                visitor(checkpoint, &frame);
+                            }
+                        }
                         frame.pop();
                         cursor.ascend_byte();
                     }
@@ -321,7 +449,7 @@ fn visit_sequence_frames_with_prefix<'a>(
 }
 
 fn visit_product_values(
-    mut cursor: CandidateProductCursor<'_>,
+    cursor: &mut CandidateProductCursor<'_>,
     mut visitor: impl FnMut(CandidatePosition),
 ) {
     if let Some(position) = cursor.position() {
@@ -344,6 +472,125 @@ fn visit_product_values(
                 }
             }
         }
+    }
+}
+
+fn drive_candidate_query(
+    mut cursor: CandidateProductCursor<'_>,
+    mut atom_index: usize,
+    captures: PathMap<Arc<[u8]>>,
+    query: &RhoPathQuery,
+    stored_offset: usize,
+    work: &mut Vec<CandidateQueryState>,
+    result: &mut Vec<usize>,
+) {
+    loop {
+        let Some(atom) = query.atoms().get(atom_index) else {
+            break;
+        };
+        match atom {
+            CompiledRhoPathQueryAtom::Exact { stored_frame, .. } => {
+                if !cursor.descend_to_existing(stored_frame) {
+                    return;
+                }
+                atom_index += 1;
+            }
+            CompiledRhoPathQueryAtom::Capture(id) => {
+                let capture_path = id.path();
+                if let Some(frame) = captures.get(capture_path) {
+                    if !cursor.descend_to_existing(frame.as_ref()) {
+                        return;
+                    }
+                    atom_index += 1;
+                    continue;
+                }
+                visit_sequence_frames(cursor, |checkpoint, frame| {
+                    let mut captures = captures.clone();
+                    captures.insert(capture_path, Arc::from(frame));
+                    work.push(CandidateQueryState {
+                        checkpoint,
+                        atom_index: atom_index + 1,
+                        captures,
+                    });
+                });
+                return;
+            }
+            CompiledRhoPathQueryAtom::Wildcard => {
+                visit_sequence_frames(cursor, |checkpoint, _| {
+                    work.push(CandidateQueryState {
+                        checkpoint,
+                        atom_index: atom_index + 1,
+                        captures: captures.clone(),
+                    });
+                });
+                return;
+            }
+            CompiledRhoPathQueryAtom::Match(nested_query) => {
+                visit_sequence_frames_with_prefix(
+                    cursor,
+                    nested_query.product_prefix(),
+                    |frame| nested_query.matches_product_frame(frame),
+                    |checkpoint, _| {
+                        work.push(CandidateQueryState {
+                            checkpoint,
+                            atom_index: atom_index + 1,
+                            captures: captures.clone(),
+                        });
+                    },
+                );
+                return;
+            }
+        }
+    }
+
+    if cursor.descend_to_existing(&[0, 0]) {
+        visit_product_values(&mut cursor, |position| {
+            result.push(position.index() + stored_offset);
+        });
+        cursor.ascend_bytes(2);
+    }
+    if query.accepts_remainder() {
+        visit_sequence_frames(cursor, |checkpoint, _| {
+            work.push(CandidateQueryState {
+                checkpoint,
+                atom_index,
+                captures: captures.clone(),
+            });
+        });
+    }
+}
+
+#[cfg(test)]
+mod candidate_product_test_metrics {
+    use std::cell::Cell;
+
+    thread_local! {
+        static CHECKPOINTS: Cell<usize> = const { Cell::new(0) };
+        static VISITED_FRAMES: Cell<usize> = const { Cell::new(0) };
+        static ROOT_ENDPOINT_RESTORATIONS: Cell<usize> = const { Cell::new(0) };
+    }
+
+    pub(super) fn reset() {
+        CHECKPOINTS.set(0);
+        VISITED_FRAMES.set(0);
+        ROOT_ENDPOINT_RESTORATIONS.set(0);
+    }
+
+    pub(super) fn record_checkpoint() { CHECKPOINTS.set(CHECKPOINTS.get() + 1); }
+
+    pub(super) fn record_frame() { VISITED_FRAMES.set(VISITED_FRAMES.get() + 1); }
+
+    pub(super) fn record_root_endpoint_restoration() {
+        ROOT_ENDPOINT_RESTORATIONS.set(ROOT_ENDPOINT_RESTORATIONS.get() + 1);
+    }
+
+    pub(super) fn root_endpoint_restorations() -> usize { ROOT_ENDPOINT_RESTORATIONS.get() }
+
+    pub(super) fn take() -> (usize, usize) {
+        let result = (CHECKPOINTS.get(), VISITED_FRAMES.get());
+        CHECKPOINTS.set(0);
+        VISITED_FRAMES.set(0);
+        result
     }
 }
 
@@ -430,90 +677,27 @@ impl<A: Clone> CandidatePool<A> {
         if !root.descend_to_existing(&[1]) {
             return result;
         }
-        let mut work = vec![CandidateQueryState {
-            cursor: root,
-            atom_index: 0,
-            captures: PathMap::new(),
-        }];
+        let mut work = Vec::new();
+        drive_candidate_query(
+            root,
+            0,
+            PathMap::new(),
+            query,
+            stored_offset,
+            &mut work,
+            &mut result,
+        );
         while let Some(state) = work.pop() {
-            if let Some(atom) = query.atoms().get(state.atom_index) {
-                match atom {
-                    CompiledRhoPathQueryAtom::Exact { stored_frame, .. } => {
-                        let mut cursor = state.cursor;
-                        if cursor.descend_to_existing(stored_frame) {
-                            work.push(CandidateQueryState {
-                                cursor,
-                                atom_index: state.atom_index + 1,
-                                captures: state.captures,
-                            });
-                        }
-                    }
-                    CompiledRhoPathQueryAtom::Capture(id) => {
-                        let capture_path = id.path();
-                        if let Some(frame) = state.captures.get(capture_path) {
-                            let mut cursor = state.cursor;
-                            if cursor.descend_to_existing(frame.as_ref()) {
-                                work.push(CandidateQueryState {
-                                    cursor,
-                                    atom_index: state.atom_index + 1,
-                                    captures: state.captures,
-                                });
-                            }
-                        } else {
-                            visit_sequence_frames(state.cursor, |cursor, frame| {
-                                let mut captures = state.captures.clone();
-                                captures.insert(capture_path, Arc::from(frame));
-                                work.push(CandidateQueryState {
-                                    cursor,
-                                    atom_index: state.atom_index + 1,
-                                    captures,
-                                });
-                            });
-                        }
-                    }
-                    CompiledRhoPathQueryAtom::Wildcard => {
-                        visit_sequence_frames(state.cursor, |cursor, _| {
-                            work.push(CandidateQueryState {
-                                cursor,
-                                atom_index: state.atom_index + 1,
-                                captures: state.captures.clone(),
-                            });
-                        });
-                    }
-                    CompiledRhoPathQueryAtom::Match(query) => {
-                        visit_sequence_frames_with_prefix(
-                            state.cursor,
-                            query.product_prefix(),
-                            |cursor, frame| {
-                                if query.matches_product_frame(frame) {
-                                    work.push(CandidateQueryState {
-                                        cursor,
-                                        atom_index: state.atom_index + 1,
-                                        captures: state.captures.clone(),
-                                    });
-                                }
-                            },
-                        );
-                    }
-                }
-                continue;
-            }
-
-            let mut end = state.cursor.clone();
-            if end.descend_to_existing(&[0, 0]) {
-                visit_product_values(end, |position| {
-                    result.push(position.index() + stored_offset);
-                });
-            }
-            if query.accepts_remainder() {
-                visit_sequence_frames(state.cursor, |cursor, _| {
-                    work.push(CandidateQueryState {
-                        cursor,
-                        atom_index: state.atom_index,
-                        captures: state.captures.clone(),
-                    });
-                });
-            }
+            let cursor = state.checkpoint.cursor();
+            drive_candidate_query(
+                cursor,
+                state.atom_index,
+                state.captures,
+                query,
+                stored_offset,
+                &mut work,
+                &mut result,
+            );
         }
         result.sort_unstable();
         result.dedup();
@@ -703,27 +887,26 @@ impl RSpaceDataIndex {
     ) -> Result<Vec<IndexedDatum<A>>, DataIndexError>
     where
         C: RhoPathEncode,
-        A: Clone + ColdStoreDecode + Serialize,
-        Datum<A>: CandidateOrderingBytes,
+        A: Clone + ColdStoreDecode,
     {
-        let entries = self.channel_entries(channel)?;
-        let mut decorated = entries
+        let prefix = RhoPathV1::datum_prefix(channel);
+        self.ordered_encoded_channel_entries(&prefix)?
             .into_iter()
-            .map(|entry| (deterministic_candidate_hash(&entry.datum), entry))
-            .collect::<Vec<_>>();
-        decorated.sort_unstable_by(|(left_hash, left), (right_hash, right)| {
-            left_hash
-                .cmp(right_hash)
-                .then_with(|| left.path.cmp(&right.path))
-        });
-        Ok(decorated.into_iter().map(|(_, entry)| entry).collect())
+            .map(|entry| {
+                let datum = decode_datum(&entry.path[entry.identity_offset..])?;
+                Ok(IndexedDatum {
+                    path: entry.path,
+                    datum,
+                    multiplicity: entry.multiplicity,
+                })
+            })
+            .collect()
     }
 
     pub fn candidate_pool<C, A>(&self, channel: &C) -> Result<CandidatePool<A>, DataIndexError>
     where
         C: RhoPathEncode,
-        A: Clone + ColdStoreDecode + Serialize,
-        Datum<A>: CandidateOrderingBytes,
+        A: Clone + ColdStoreDecode,
     {
         let prefix = RhoPathV1::datum_prefix(channel);
         let catalog = self.candidate_catalog::<A>(&prefix)?;
@@ -764,18 +947,15 @@ impl RSpaceDataIndex {
         self.bag.try_visit_prefix(prefix, |path, multiplicity| {
             let view = RhoPathV1::parse_datum(path)?;
             let identity_offset = path.len() - view.datum_identity().len();
-            decorated.push((Blake2b256Hash::new(view.datum_identity()), EncodedIndexedDatum {
+            decorated.push((datum_identity_digest(view.datum_identity()), EncodedIndexedDatum {
                 path: path.to_vec(),
                 identity_offset,
                 multiplicity,
             }));
             Ok::<(), DataIndexError>(())
         })?;
-        decorated.sort_unstable_by(|(left_hash, left), (right_hash, right)| {
-            left_hash
-                .cmp(right_hash)
-                .then_with(|| left.path.cmp(&right.path))
-        });
+        sort_encoded_candidates(&mut decorated);
+        validate_unique_candidate_identities(&decorated)?;
         Ok(decorated.into_iter().map(|(_, entry)| entry).collect())
     }
 
@@ -981,8 +1161,7 @@ impl<C, A: Clone> RSpaceDataStore<C, A> {
     ) -> Result<Option<Vec<IndexedDatum<A>>>, DataIndexError>
     where
         C: RhoPathEncode,
-        A: Clone + ColdStoreDecode + Serialize,
-        Datum<A>: CandidateOrderingBytes,
+        A: Clone + ColdStoreDecode,
     {
         if self.is_loaded(channel) {
             self.index.ordered_channel_entries(channel).map(Some)
@@ -994,8 +1173,7 @@ impl<C, A: Clone> RSpaceDataStore<C, A> {
     pub fn channel_data(&self, channel: &C) -> Result<Option<Vec<Datum<A>>>, DataIndexError>
     where
         C: RhoPathEncode,
-        A: Clone + ColdStoreDecode + Serialize,
-        Datum<A>: CandidateOrderingBytes,
+        A: Clone + ColdStoreDecode,
     {
         self.channel_entries(channel)?
             .map(expand_entries)
@@ -1005,8 +1183,7 @@ impl<C, A: Clone> RSpaceDataStore<C, A> {
     pub fn channel_pool(&self, channel: &C) -> Result<Option<CandidatePool<A>>, DataIndexError>
     where
         C: RhoPathEncode,
-        A: Clone + ColdStoreDecode + Serialize,
-        Datum<A>: CandidateOrderingBytes,
+        A: Clone + ColdStoreDecode,
     {
         let prefix = RhoPathV1::datum_prefix(channel);
         if self.loaded_channels.contains(&prefix) {
@@ -1070,8 +1247,7 @@ impl<C, A: Clone> RSpaceDataStore<C, A> {
     pub fn remove_index(&mut self, channel: &C, index: i32) -> Result<(), DataIndexError>
     where
         C: RhoPathEncode,
-        A: Clone + ColdStoreDecode + Serialize,
-        Datum<A>: CandidateOrderingBytes,
+        A: Clone + ColdStoreDecode,
     {
         let entries = self.channel_entries(channel)?.unwrap_or_default();
         let cardinality = channel_cardinality(&entries);
@@ -1090,8 +1266,7 @@ impl<C, A: Clone> RSpaceDataStore<C, A> {
     pub fn loaded_records(&self) -> Result<Vec<(C, Vec<Datum<A>>)>, DataIndexError>
     where
         C: Clone + ColdStoreDecode + RhoPathEncode,
-        A: Clone + ColdStoreDecode + Serialize,
-        Datum<A>: CandidateOrderingBytes,
+        A: Clone + ColdStoreDecode,
     {
         let mut records = Vec::with_capacity(self.loaded_channel_count);
         for (path, _) in self.loaded_channels.iter() {
@@ -1150,3 +1325,90 @@ fn expand_entries<A: Clone>(
     }
     Ok(datums)
 }
+
+#[cfg(test)]
+mod candidate_identity_order_tests {
+    use super::*;
+
+    /// Compile-time witness that byte-native catalog/read operations require
+    /// decoding only. Reintroducing the retired decoded-hash route would make
+    /// this generic body demand `A: Serialize` and fail to type-check.
+    #[allow(dead_code)]
+    fn decode_only_catalog_api_witness<C, A>(
+        index: &RSpaceDataIndex,
+        store: &mut RSpaceDataStore<C, A>,
+        channel: &C,
+    ) where
+        C: Clone + ColdStoreDecode + RhoPathEncode,
+        A: Clone + ColdStoreDecode,
+    {
+        let _: Result<Vec<IndexedDatum<A>>, DataIndexError> =
+            index.ordered_channel_entries(channel);
+        let _: Result<CandidatePool<A>, DataIndexError> = index.candidate_pool(channel);
+        let _: Result<Option<Vec<IndexedDatum<A>>>, DataIndexError> =
+            store.channel_entries(channel);
+        let _: Result<Option<Vec<Datum<A>>>, DataIndexError> = store.channel_data(channel);
+        let _: Result<Option<CandidatePool<A>>, DataIndexError> = store.channel_pool(channel);
+        let _: Result<(), DataIndexError> = store.remove_index(channel, 0);
+        let _: Result<Vec<(C, Vec<Datum<A>>)>, DataIndexError> = store.loaded_records();
+    }
+
+    fn encoded(path_prefix: &[u8], identity: &[u8]) -> EncodedIndexedDatum {
+        let mut path = path_prefix.to_vec();
+        let identity_offset = path.len();
+        path.extend_from_slice(identity);
+        EncodedIndexedDatum {
+            path,
+            identity_offset,
+            multiplicity: Multiplicity::ONE,
+        }
+    }
+
+    #[test]
+    fn a_hash_collision_is_ordered_by_identity_not_the_derived_rho_path() {
+        let collision = Blake2b256Hash::from_bytes(vec![0xAB; 32]);
+        let mut entries = vec![
+            // Full-path order says `a...z` first; identity order says `a`
+            // first. This deliberately opposes the removed RMP tie-break.
+            (collision.clone(), encoded(b"a-rmp", b"z-identity")),
+            (collision, encoded(b"z-rmp", b"a-identity")),
+        ];
+
+        assert!(
+            entries[0].1.path < entries[1].1.path,
+            "legacy full-path order must oppose identity order"
+        );
+        sort_encoded_candidates(&mut entries);
+
+        assert_eq!(&entries[0].1.path[entries[0].1.identity_offset..], b"a-identity");
+        assert_eq!(&entries[1].1.path[entries[1].1.identity_offset..], b"z-identity");
+    }
+
+    #[test]
+    fn one_identity_under_two_derived_paths_is_rejected() {
+        let identity = b"same-identity";
+        let hash = Blake2b256Hash::new(identity);
+        let mut entries =
+            vec![(hash.clone(), encoded(b"a-rmp", identity)), (hash, encoded(b"z-rmp", identity))];
+
+        sort_encoded_candidates(&mut entries);
+
+        assert_eq!(
+            validate_unique_candidate_identities(&entries),
+            Err(DataIndexError::DuplicateDatumIdentity)
+        );
+    }
+}
+
+#[cfg(test)]
+#[path = "../../tests/data_index/candidate_product_checkpoint.rs"]
+mod candidate_product_checkpoint_tests;
+
+#[cfg(test)]
+#[path = "../../tests/data_index/digest_collision_replay.rs"]
+mod digest_collision_replay_tests;
+
+#[cfg(feature = "candidate-checkpoint-experiment")]
+#[doc(hidden)]
+#[path = "../../tests/data_index/candidate_checkpoint_experiment.rs"]
+pub mod candidate_checkpoint_experiment;

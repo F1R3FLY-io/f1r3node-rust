@@ -36,7 +36,9 @@ in [§2](#2-background-and-definitions), which every axis table refers back to.
 | **RPB1** | *resident ParBag key format, version 1* — the first internal encoding of canonical ParBag trie keys. | retired **CBR-055** evidence |
 | **RPB2** | *resident ParBag key format, version 2* — the dormant ACT/key format. | retired **CBR-055** evidence |
 | **RPB3** | *resident ParBag key format, version 3* — the current score/body key format. | retired **CBR-055** evidence |
+| **RMP** | *Rholang Match Path* — the family name for versioned, derived structural paths used only by candidate matching indexes. | **CBR-053** |
 | **RMP1** | *Rholang Match Path format version 1* — the self-delimiting structural token stream used by generated matcher queries. | **CBR-053** |
+| **RMP2** | *Rholang Match Path format version 2* — the semantic ParBag-record successor whose resident and canonical-protobuf-region producers share one generated event grammar. | **CBR-053** |
 | **TRIE** | not an acronym — typographic emphasis for the prefix-compressed trie that is the EPathMap representation. | **CBR-041** |
 | **D3 / DR-9 / OD-1 / OD-3** | the token cost model's design-record identifiers (`docs/theory/cost-accounting-impl/d3-replace-phlo-with-tokens.md`). | [§2.2](#22-language-and-runtime-vocabulary), [§3.3](#33-how-each-axis-value-was-established) |
 | **COMM** | the Rho-calculus synchronisation of a produce with a consume; realized by a committed RSpace rendezvous. | [§2.2](#22-language-and-runtime-vocabulary) |
@@ -597,7 +599,7 @@ is a *future* fork, not a present one).
 | [CBR-042](#cbr-042) | N | …and on the **bincode** wire too — `U(m)` verbatim and contiguous, then the values (FORM ②), so the reader never decodes a trie key | `3a32cf07` | ○ | ○ | ● | ○ | ● | ○ | ○ | CORRECTIVE | **W** |
 | [CBR-043](#cbr-043) | N | …but of **the entries that surface WRITES**. FORM ② keyed lf-blanked values by the *unblanked* entries, putting an entry's `locally_free` on the event hash | `8cf0b770` | ○ | ○ | ● | ○ | ● | ○ | ○ | CORRECTIVE | **W** |
 | [CBR-044](#cbr-044) | N | EPathMap becomes a homogeneous PathMap set/map and both codecs carry one versioned EPM1 trie snapshot; generated protobuf PDAs remove the read ceiling | `26876b65` | ● | ● | ● | ● | ● | ● | ○ | CORRECTIVE | **W** |
-| [CBR-053](#cbr-053) | N | Retained PathMap indexes and synchronized datum-first/receive-first/inner-AC query products skip candidates that cannot match a compiled counterpart | `a89cbc294`, `f149cef2b`, `ea8c39f92`, `564dac0b4`, `0b601ce67`, `f43858ec2`, `b6b53d1b3`, `e1a587c9f`, `5a56376b4`, `697db373b`, `250e96c80`, `2d91c4394`, `bbe91b90f`, `3a70ddc58`, `ad5d37a59`, `26b72b096`, `0d7a6a3f8`, `1560f4371`, `46aaa6472`, `8e4938ec6`, `cd01ea721`, `21ece399d`, `0f9beb5f0`, `87679597d`, `9a746f2bf`, `514659e2b`, `27557c374`, `ad395c357`, `61accc170`, `92240a452`, `03685f4c7`, `4f022ad9b`; benchmarks `7bc5c6994`, `7b3254573`, `48e6f7d3c`; pgmcp experiments 224, 225, 226, 229, 233, 248 | ○ | ? | ○ | ○ | ? | ○ | ○ | UNVERIFIED | **?** |
+| [CBR-053](#cbr-053) | N | Retained PathMap indexes and synchronized datum-first/receive-first/inner-AC query products skip candidates that cannot match a compiled counterpart | `a89cbc294`, `f149cef2b`, `ea8c39f92`, `564dac0b4`, `0b601ce67`, `f43858ec2`, `b6b53d1b3`, `e1a587c9f`, `5a56376b4`, `697db373b`, `250e96c80`, `2d91c4394`, `bbe91b90f`, `3a70ddc58`, `ad5d37a59`, `26b72b096`, `0d7a6a3f8`, `1560f4371`, `46aaa6472`, `8e4938ec6`, `cd01ea721`, `21ece399d`, `0f9beb5f0`, `87679597d`, `9a746f2bf`, `514659e2b`, `27557c374`, `ad395c357`, `61accc170`, `92240a452`, `03685f4c7`, `4f022ad9b`; this checkpoint; benchmarks `7bc5c6994`, `7b3254573`, `48e6f7d3c`; pgmcp experiments 224, 225, 226, 229, 233, 248, 5984, 5990 | ○ | ? | ○ | ○ | ? | ○ | ○ | UNVERIFIED | **?** |
 | [CBR-L07](#cbr-l07) | L | `List.last()` in MeTTaIL's Rholang | `bbceb6d9`, `6e543c01` | · | · | · | · | · | ● | · | PERMISSIVE | **W** |
 | [CBR-L08](#cbr-l08) | L | The kv element-category gate — a Name in a kv slot is refused, not silently dropped | *in flight* | ● | ● | ● | ● | ● | ● | ○ | REGRESSIVE | **W** |
 | [CBR-L10](#cbr-l10) | L | A pathmap's entries come from a projection, not a field | `832d510f` | ○ | ● | ● | ● | ● | ○ | ○ | CORRECTIVE | **W** |
@@ -5078,6 +5080,66 @@ concrete differential covers all 58 generated message roots and checks the produ
 every successful case in the independent recursive-oracle corpus. This narrows CBR-053's remaining
 `UNVERIFIED` surface to AC compilation and generated end-to-end play/replay schedules; it does not
 retire those axes or introduce a consensus change.
+
+**CBR-053 living continuation (2026-08-23, RMP2 semantic projection and candidate-product
+continuations).** The uncommitted campaign successor replaces reconstructible RMP1 component
+summaries with versioned RMP2 semantic records emitted by either the resident ParBag visitor or a
+generated canonical-protobuf-region cursor. Each record carries one constructor-family tag, one
+checked `Multiplicity(u64)`, and the authoritative canonical protobuf body already resident in the
+`PathMap<Multiplicity>` endpoint. It does not decode a `Vec<Par>`, expand multiplicity into
+occurrences, sort elements, serialize an ACT snapshot, or alter PathMap.
+
+The derived RMP2 bytes are confined to the in-memory candidate index. They do not enter protobuf,
+bincode, EPM1, cold-store, network, signature, event-hash, or post-state bytes. A clone-family cache
+retains only the versioned 32-byte RMP2 digest inside the existing `Arc<ParBagAux>` CoW root.
+Mutation, semantic no-op, failure, metadata, concurrent initialization, and exact transcript gates
+show that the cache changes work only. Full wall/allocation, Cachegrind, and headless Heaptrack
+experiments measure constant warm work and no retained allocation slope; those performance results
+cannot change the consensus classification.
+
+Datum identity ordering is now the total order on BLAKE2b-256 of the canonical datum-identity
+suffix, then the suffix bytes. Duplicate identity under two derived paths is rejected rather than
+resolved by a store position. A thread-local test injector forces all identity digests to collide
+and proves play/replay bindings, multiplicity, COMM events, and post-state root agree while two
+distinct identities remain distinct. The identity bytes—not derived RMP bytes—remain the tie-break
+authority; the exact trie path remains the removal address.
+
+Vector-backed continuation identity uses the corresponding total tuple: BLAKE2b-256 of the
+canonical `WaitingContinuation` bytes, then those complete bytes, then original vector store index
+only for byte-identical repetitions. The original index remains the removal address carried through
+the sort. A production-boundary injector forces two distinct continuation digests to collide while
+their canonical identity order opposes the hot store's newest-first vector order. Play and replay
+select the index-one continuation, leave index zero resident, name the selected `Consume` in the
+COMM, and converge on the same non-empty map and post-state root. The injector is thread-local and
+test-only; release code contains no override state or conditional branch.
+
+Dynamic non-ground `New`, `ReceiveBind`, and `MatchCase` rows fail closed to the universal
+candidate domain where the authoritative spatial matcher ignores protobuf fields the generated
+query grammar would otherwise exact-encode. Constructor counterexamples and the complete
+recursive-oracle-success-implies-query-admission property pass. This may add conservative false
+positives; it cannot remove a candidate on those rows.
+
+The candidate-product traversal itself preserves both synchronized PathMaps. It now consumes
+maximal exact and already-bound-capture runs on one paired cursor and constructs a CoW suffix
+checkpoint only for an accepted branch continuation. The rejected checkpoint-per-atom matrix is
+retained. The selected 3,000-observation paired matrix equals both the frozen prior traversal and
+the byte oracle in every cell; randomized tries, transactional asymmetric-descent restoration,
+allocation/instruction profiles, and depth 16,384 on a 256 KiB native stack also pass. These facts
+establish implementation equivalence for the measured query product, not permission to weaken the
+authoritative spatial verdict.
+
+Suffix construction also preserves an endpoint at the zipper focus before extracting descendants,
+then restores it at the new root. Current RhoPath component boundaries exercise the faster
+no-endpoint arm, but correctness no longer depends on that framing fact or on PathMap's optional
+`graft_root_vals` feature. A root-plus-child control proves both synchronized endpoint values remain
+visible; a separate counter proves canonical branches require zero defensive restorations.
+
+Rocq and Verus close the shared semantic-event, adjacent-coalescing, cardinality, nonadjacent-repeat,
+and opaque-nested-`Par` obligations at the maintained runtime event boundary. They explicitly do
+not prove arbitrary protobuf parsing or BLAKE2b collision resistance. At this checkpoint, the exact
+full-release workspace and complete generated end-to-end lifecycle remain open. Verdict and
+post-state axes therefore remain `UNVERIFIED`; this continuation reduces the named gap and does not
+prematurely retire CBR-053.
 
 ### B.2 The original commit-level exemptions
 

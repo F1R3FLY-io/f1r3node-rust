@@ -10,7 +10,7 @@ const ESCAPE: u8 = 0;
 const ESCAPED_ZERO: u8 = 0xFF;
 const FRAME_END: u8 = 0;
 
-pub const RHO_MATCH_PATH_VERSION: [u8; 4] = *b"RMP\x01";
+pub const RHO_MATCH_PATH_VERSION: [u8; 4] = *b"RMP\x02";
 pub const RHO_MATCH_NODE_START: u8 = 0x01;
 pub const RHO_MATCH_NODE_END: u8 = 0x02;
 pub const RHO_MATCH_FIELD_START: u8 = 0x03;
@@ -34,7 +34,8 @@ pub const RHO_MATCH_ONEOF_START: u8 = 0x26;
 pub const RHO_MATCH_ONEOF_END: u8 = 0x27;
 pub const RHO_MATCH_PATHMAP: u8 = 0x28;
 /// Repository-owned `ParBag` summary: distinct endpoints, total cardinality,
-/// and the domain-separated digest of its canonical PathMap image.
+/// and the domain-separated digest of its canonical, multiplicity-compressed
+/// component transcript. No ACT/PathMap storage bytes enter this token.
 pub const RHO_MATCH_PAR_BAG: u8 = 0x29;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -85,11 +86,11 @@ enum CompiledRhoMatchQueryPart {
     Wildcard,
 }
 
-/// A stack-safe structural query over one complete `RMP1` value.
+/// A stack-safe structural query over one complete `RMP2` value.
 ///
 /// Exact runs are stored in the same escaped form used by the enclosing
 /// RhoPathV1 datum-structure frame. Wildcards and captures consume exactly one
-/// self-delimiting RMP1 value. Repeated capture identifiers compare their
+/// self-delimiting RMP2 value. Repeated capture identifiers compare their
 /// canonical escaped byte slices without decoding a `Par`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct RhoMatchQuery {
@@ -340,7 +341,7 @@ impl RhoPathQuery {
     ///
     /// The returned bytes are in the unframed datum-structure representation
     /// consumed by [`Self::matches_structure`]. A nested match contributes its
-    /// exact RMP1 prefix without closing the surrounding structural frame.
+    /// exact RMP2 prefix without closing the surrounding structural frame.
     pub fn retained_prefix(&self) -> Vec<u8> {
         let mut prefix = vec![1];
         for atom in &self.atoms {

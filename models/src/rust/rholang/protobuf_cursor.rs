@@ -409,6 +409,7 @@ pub struct CanonicalFieldCursor<'a> {
     message: &'a [u8],
     at: usize,
     last_field: u32,
+    enforce_numeric_order: bool,
 }
 
 impl<'a> CanonicalFieldCursor<'a> {
@@ -417,6 +418,24 @@ impl<'a> CanonicalFieldCursor<'a> {
             message,
             at: 0,
             last_field: 0,
+            enforce_numeric_order: true,
+        }
+    }
+
+    /// Frame fields in producer order without assuming that their actual tag
+    /// numbers are monotone.
+    ///
+    /// Prost orders a oneof *slot* by its minimum declared tag, but the
+    /// selected arm writes its own tag. A later ordinary field may therefore
+    /// have a smaller numeric tag even though the message is exactly the
+    /// canonical output of the generated encoder. Schema-aware consumers must
+    /// validate the resolved generated slot order instead.
+    pub const fn in_prost_slot_order(message: &'a [u8]) -> Self {
+        Self {
+            message,
+            at: 0,
+            last_field: 0,
+            enforce_numeric_order: false,
         }
     }
 
@@ -437,7 +456,7 @@ impl<'a> CanonicalFieldCursor<'a> {
             });
         }
         let number = field_u64 as u32;
-        if number < self.last_field {
+        if self.enforce_numeric_order && number < self.last_field {
             return Err(CanonicalProtobufError::DecreasingFieldOrder {
                 offset: field_start,
                 previous: self.last_field,
@@ -589,6 +608,7 @@ impl CanonicalRegionFieldCursor {
                     message: self.message.as_bytes(),
                     at: self.at,
                     last_field: self.last_field,
+                    enforce_numeric_order: true,
                 };
                 let field = borrowed.next_field()?;
                 Ok::<_, CanonicalProtobufError>(field.map(|field| {

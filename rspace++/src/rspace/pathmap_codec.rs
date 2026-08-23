@@ -54,6 +54,21 @@ impl CompactPath {
     }
 }
 
+/// One event in the logical byte-trie represented by an ACTree03 arena.
+///
+/// `Value` describes the current logical node, `Edge` descends to one child,
+/// and `Leave` returns to the parent. A complete walk starts with the root's
+/// `Value` and ends with the root's `Leave`. Compressed ACT line nodes are
+/// expanded as borrowed edge bytes, so consumers receive exactly the event
+/// sequence produced by an in-memory PathMap zipper without reconstructing a
+/// PathMap or copying complete keys.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CompactTrieTopologyEvent {
+    Value(bool),
+    Edge(u8),
+    Leave,
+}
+
 #[derive(Clone)]
 struct ActNode {
     encoded_len: usize,
@@ -131,6 +146,64 @@ impl<'a> CompactTrie<'a> {
     pub fn is_empty(&self) -> bool {
         let root = &self.parsed.semantic_nodes[&self.parsed.root_id];
         root.line.is_none() && root.value.is_none() && root.children.is_empty()
+    }
+
+    /// Visit the complete logical byte topology in depth-first zipper order.
+    ///
+    /// Time is linear in logical trie nodes, heap state is linear only in ACT
+    /// branch depth, and native-stack use is constant. A compressed line is
+    /// read directly from the arena and emits one logical edge/node pair per
+    /// byte. Value ordinals are intentionally erased to `bool`; callers that
+    /// need value-table validation must run the mode-specific EPM1 validator
+    /// before consuming these events.
+    pub fn visit_topology<E>(
+        &self,
+        mut visitor: impl FnMut(CompactTrieTopologyEvent) -> Result<(), E>,
+    ) -> Result<(), E> {
+        enum Work {
+            Visit(usize),
+            Edge(u8),
+            Leave(usize),
+        }
+
+        let mut work = vec![Work::Visit(self.parsed.root_id)];
+        while let Some(next) = work.pop() {
+            match next {
+                Work::Visit(id) => {
+                    let node = &self.parsed.semantic_nodes[&id];
+                    let line = node
+                        .line
+                        .as_ref()
+                        .map_or(&[][..], |line| &self.bytes[line.suffix.clone()]);
+
+                    // A semantic line stores the value and branches at the
+                    // final suffix node. The current node and every earlier
+                    // suffix node are necessarily value-free.
+                    visitor(CompactTrieTopologyEvent::Value(
+                        line.is_empty() && node.value.is_some(),
+                    ))?;
+                    for (index, byte) in line.iter().copied().enumerate() {
+                        visitor(CompactTrieTopologyEvent::Edge(byte))?;
+                        visitor(CompactTrieTopologyEvent::Value(
+                            index + 1 == line.len() && node.value.is_some(),
+                        ))?;
+                    }
+
+                    work.push(Work::Leave(line.len() + 1));
+                    for &(byte, child) in node.children.iter().rev() {
+                        work.push(Work::Visit(child));
+                        work.push(Work::Edge(byte));
+                    }
+                }
+                Work::Edge(byte) => visitor(CompactTrieTopologyEvent::Edge(byte))?,
+                Work::Leave(count) => {
+                    for _ in 0..count {
+                        visitor(CompactTrieTopologyEvent::Leave)?;
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Visit every value-bearing node and explicit childless endpoint with a
@@ -351,7 +424,7 @@ fn parse_act_tree(bytes: &[u8]) -> Result<ParsedAct, CompactTrieError> {
         if semantic_nodes.contains_key(&id) {
             continue;
         }
-        let semantic = semantic_act_node(id, root_id, &nodes)?;
+        let semantic = semantic_act_node(id, &nodes)?;
         semantic_work.extend(semantic.children.iter().map(|(_, child)| *child));
         semantic_nodes.insert(id, semantic);
     }
@@ -506,7 +579,6 @@ fn branch_children(
 
 fn semantic_act_node(
     id: usize,
-    root_id: usize,
     nodes: &HashMap<usize, ActNode>,
 ) -> Result<SemanticActNode, CompactTrieError> {
     let node = nodes
@@ -563,15 +635,11 @@ fn semantic_act_node(
             "ACTree03 contains an uncompressed value-free unary branch",
         ));
     }
-    if id != root_id &&
-        semantic.line.is_none() &&
-        semantic.value.is_none() &&
-        semantic.children.is_empty()
-    {
-        return Err(CompactTrieError::new(
-            "ACTree03 contains an uncompressed empty non-root branch",
-        ));
-    }
+    // A value-free childless branch is not redundant: PathMap's canonical
+    // writer uses it for an explicit path endpoint whose final edge branches
+    // from another path. `CompactTrie::visit` exposes that endpoint, and the
+    // decoder must recreate it with `create_path`. The value-free unary case
+    // above remains non-canonical because the writer line-compresses it.
     if semantic.wrapper.is_some() && semantic.children.is_empty() {
         return Err(CompactTrieError::new("ACTree03 line branch wrapper has no children"));
     }

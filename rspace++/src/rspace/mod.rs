@@ -1,5 +1,8 @@
 pub mod bag;
 pub mod candidate_order;
+#[cfg(test)]
+#[path = "../../tests/data_index/candidate_digest_override.rs"]
+pub(crate) mod candidate_digest_test_hook;
 pub mod data_index;
 pub mod hashing;
 pub mod pathmap_codec;

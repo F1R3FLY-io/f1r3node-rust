@@ -1160,6 +1160,32 @@ pub fn canonical_exact_free_var_expr_level(message: &[u8]) -> Option<i32> {
     }
 }
 
+/// The two exact `EVar` forms that compile to an ordered-query hole.
+///
+/// This is a byte-native classification over an already canonical component
+/// body. `None` is lack of proof and must retain the ordinary semantic path.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CanonicalExactHole {
+    FreeVar(i32),
+    Wildcard,
+}
+
+/// Classify an exact canonical `Expr(EVar(FreeVar | Wildcard))` without
+/// constructing `Expr` or `Var`.
+pub fn canonical_exact_hole_expr(message: &[u8]) -> Option<CanonicalExactHole> {
+    const EVAR_TAG: u32 = 19;
+    const EVAR_VAR_KEY: u64 = (1 << 3) | 2;
+
+    let envelope = canonical_expr_envelope(message)?;
+    (envelope.tag == EVAR_TAG).then_some(())?;
+    let variable = canonical_single_delimited_field(envelope.payload, EVAR_VAR_KEY)?;
+    match canonical_var(variable)? {
+        CanonicalVar::Free(level) => Some(CanonicalExactHole::FreeVar(level)),
+        CanonicalVar::Wildcard => Some(CanonicalExactHole::Wildcard),
+        CanonicalVar::Absent | CanonicalVar::Bound(_) => None,
+    }
+}
+
 /// A canonical singleton-Expr `Par` whose expression is exactly one free
 /// variable. Root matcher metadata is retained because `connective_used`
 /// controls whether the variable denotes a capture or ordinary data.
@@ -3815,6 +3841,14 @@ impl ParFamilyMetrics {
 struct ParBagAux {
     metrics: ParFamilyMetrics,
     compact_snapshot: OnceLock<Arc<[u8]>>,
+    /// RMP2's BLAKE2b-256 digest of the canonical component transcript.
+    ///
+    /// Counts and token framing stay outside this cell: they are O(1) metrics,
+    /// while this is the one derived value that otherwise reopens every
+    /// PathMap family prefix. The cell lives in the existing CoW auxiliary root
+    /// so untouched clones share it and a successful component mutation drops
+    /// it with the other component-derived projections.
+    rmp2_component_digest: OnceLock<[u8; 32]>,
     /// Concatenated component score keys in canonical Par family order.
     score_components: OnceLock<Arc<[u8]>>,
     /// Canonical protobuf component bytes on either side of root fields 9/10.
@@ -3835,6 +3869,7 @@ impl ParBagAux {
         Self {
             metrics,
             compact_snapshot: OnceLock::new(),
+            rmp2_component_digest: OnceLock::new(),
             score_components: OnceLock::new(),
             protobuf_before_root: OnceLock::new(),
             protobuf_after_root: OnceLock::new(),
@@ -3846,8 +3881,8 @@ impl ParBagAux {
 
 pub struct ParBag {
     components: Bag,
-    /// Cardinalities, distinct counts, and the canonical ACTree03 image are
-    /// shared by CoW clones. A successful mutation detaches this compact
+    /// Cardinalities, distinct counts, and component-derived memoized images
+    /// are shared by CoW clones. A successful mutation detaches this compact
     /// metadata/cache block exactly once.
     aux: Arc<ParBagAux>,
 }
@@ -4092,6 +4127,7 @@ impl ParBag {
         }
         let aux = Arc::get_mut(&mut self.aux).expect("ParBag owns its detached auxiliary state");
         let _ = aux.compact_snapshot.take();
+        let _ = aux.rmp2_component_digest.take();
         let _ = aux.score_components.take();
         let _ = aux.protobuf_before_root.take();
         let _ = aux.protobuf_after_root.take();
@@ -4314,6 +4350,23 @@ impl ParBag {
     }
 
     pub fn is_empty(&self) -> bool { self.components.is_empty() }
+
+    /// Return RMP2's memoized component-transcript digest.
+    ///
+    /// The caller owns the versioned transcript algorithm. This narrow closure
+    /// boundary keeps `ParBag` independent of `rholang::match_path` while the
+    /// cache remains attached to the authoritative CoW component storage.
+    /// Only the 32-byte digest is retained; counts, token bytes, transcript
+    /// bytes, compact ACT images, and region-route summaries are not cached.
+    pub(crate) fn memoized_rmp2_component_digest(
+        &self,
+        initialize: impl FnOnce(&Self) -> [u8; 32],
+    ) -> [u8; 32] {
+        *self
+            .aux
+            .rmp2_component_digest
+            .get_or_init(|| initialize(self))
+    }
 
     /// Cached stability of the complete component bag under the assumption
     /// that the owning `Par` has empty root metadata. Empty and multi-element
@@ -5017,6 +5070,15 @@ mod fast_key_tests {
         protobuf_encoder::encode_into(&scored.term, &mut key);
         key.extend_from_slice(&score_len.to_be_bytes());
         key
+    }
+
+    #[test]
+    fn par_bag_aux_size_including_the_rmp2_digest_has_an_explicit_budget() {
+        let measured = std::mem::size_of::<ParBagAux>();
+        assert!(
+            measured <= 672,
+            "ParBagAux measured {measured} bytes, exceeding the reviewed per-CoW-root cache budget"
+        );
     }
 
     #[test]

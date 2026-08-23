@@ -7,8 +7,8 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt::Debug;
 use std::hash::Hash;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
+use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 
 pub static LOCK_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -988,17 +988,27 @@ where
         data: Datum<A>,
     ) -> MaybeProduceCandidate<C, P, A, K> {
         let store = self.get_store();
-        let bat_channel_pool = store.get_candidate_pool(&bat_channel);
+        // A produce with no waiting continuation cannot inspect resting data.
+        // Open this potentially large, hash-ordered catalog only if retained
+        // pruning or the spatial matcher actually requests it, and share the
+        // one immutable pool across repeated occurrences of the same channel.
+        let bat_channel_pool: OnceLock<CandidatePool<A>> = OnceLock::new();
         let fetch_matching_continuations =
             |channels: Vec<C>| -> Vec<(WaitingContinuation<P, K>, i32)> {
                 let (version, continuations) = store.get_continuations_versioned(&channels);
+                if continuations.is_empty() {
+                    self.retained_set_automata.remove(&channels);
+                    return Vec::new();
+                }
+                let resting_data =
+                    bat_channel_pool.get_or_init(|| store.get_candidate_pool(&bat_channel));
                 let selection = self.retained_candidate_selection(
                     &channels,
                     &continuations,
                     version,
                     &bat_channel,
                     &data.a,
-                    &bat_channel_pool,
+                    resting_data,
                 );
                 let mut ordered = self.shuffle_with_index(continuations);
                 if let Some(selection) = selection {
@@ -1026,7 +1036,9 @@ where
          */
         let fetch_matching_data = |channel| -> (C, CandidatePool<A>) {
             let mut pool = if channel == bat_channel {
-                bat_channel_pool.clone()
+                bat_channel_pool
+                    .get_or_init(|| store.get_candidate_pool(&bat_channel))
+                    .clone()
             } else {
                 store.get_candidate_pool(&channel)
             };
@@ -1522,6 +1534,11 @@ where
                     metrics::counter!("rspace.matcher.continuations_returned", "source" => RSPACE_METRICS_SOURCE)
                         .increment(match_candidates.len() as u64);
 
+                    if match_candidates.is_empty() {
+                        remaining = rest.to_vec();
+                        continue;
+                    }
+
                     let t_data = Instant::now();
                     let channel_to_indexed_data: HashMap<C, CandidatePool<A>> = channels
                         .iter()
@@ -1560,8 +1577,11 @@ where
     ///
     /// The name is historical: this never shuffled. A random shuffle would make
     /// equally valid matches diverge across validators, so the order is a hash
-    /// of the serialized candidate with the vector store index as tie breaker.
-    /// Datum pools use `RSpaceDataIndex`'s `(hash, trie path)` order instead.
+    /// of the serialized candidate, then the complete serialized identity to
+    /// resolve a digest collision. Vector store index distinguishes only
+    /// byte-identical repetitions and remains their removal address.
+    /// Datum pools use `RSpaceDataIndex`'s `(hash, canonical datum identity
+    /// bytes)` order instead.
     fn shuffle_with_index<D>(&self, t: Vec<D>) -> Vec<(D, i32)>
     where D: CandidateOrderingBytes {
         order_candidates_with_index(t)

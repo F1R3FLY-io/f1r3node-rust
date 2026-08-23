@@ -146,6 +146,21 @@ fn empty_maps_use_the_mode_neutral_epm1_encoding() {
 }
 
 #[test]
+fn root_divergent_value_free_endpoint_round_trips_the_canonical_epm1_image() {
+    let endpoint = b"dangling/endpoint";
+    let mut map = EPathMap::new(vec![gint(1)], Vec::new(), false, None);
+    assert!(map.create_path(endpoint).unwrap());
+    assert!(map.path_prefix_exists(endpoint));
+
+    let snapshot = map.trie_snapshot().to_vec();
+    let protobuf = protobuf_encoder::encode_to_vec(&map);
+    let decoded = protobuf_decoder::decode_epath_map(protobuf.as_slice()).unwrap();
+
+    assert_eq!(decoded.trie_snapshot(), snapshot);
+    assert!(decoded.path_prefix_exists(endpoint));
+}
+
+#[test]
 fn cold_clone_family_builds_one_snapshot_and_mutation_detaches_only_the_writer() {
     let original = EPathMap::new(vec![gint(1), gint(2)], Vec::new(), false, None);
     let mut sibling = original.clone();

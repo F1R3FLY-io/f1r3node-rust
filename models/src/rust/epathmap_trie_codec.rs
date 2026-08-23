@@ -15,7 +15,9 @@ use pathmap::zipper::ZipperReadOnlyIteration;
 use pathmap::zipper::{ZipperIteration, ZipperMoving};
 use pathmap::PathMap;
 use prost::bytes::Bytes;
-use rspace_plus_plus::rspace::pathmap_codec::{CompactPath, CompactTrie, CompactTrieError};
+use rspace_plus_plus::rspace::pathmap_codec::{
+    CompactPath, CompactTrie, CompactTrieError, CompactTrieTopologyEvent,
+};
 
 use crate::rhoapi::Par;
 use crate::rust::rholang::{protobuf_decoder, protobuf_encoder};
@@ -168,6 +170,14 @@ pub(crate) struct CanonicalSnapshotValueRegions {
     pub(crate) prefix: Range<usize>,
     pub(crate) value_bodies: Vec<Range<usize>>,
 }
+
+/// One event in the logical zipper walk of a canonical EPM1 trie.
+///
+/// This is intentionally independent of ACTree03's physical compression.  A
+/// consumer sees exactly the root/value, byte-edge/value, and postorder-leave
+/// sequence produced by a live `PathMap` read zipper, without reconstructing a
+/// temporary map or collecting its endpoints.
+pub(crate) use rspace_plus_plus::rspace::pathmap_codec::CompactTrieTopologyEvent as CanonicalSnapshotTopologyEvent;
 
 struct CanonicalSnapshotFraming<'a> {
     mode: EPathMapMode,
@@ -627,7 +637,7 @@ fn collect_canonical_keys(
             }
             CompactPath::Owned(path) => CanonicalSnapshotKey::Owned(path),
         });
-        Ok(())
+        Ok::<(), TrieCodecError>(())
     })?;
     Ok(keys)
 }
@@ -829,6 +839,52 @@ pub(crate) fn inspect_canonical_snapshot_value_regions(
         prefix: 0..framing.value_table_start,
         value_bodies: framing.value_bodies,
     })
+}
+
+/// Validate one EPM1 image and stream its exact logical PathMap topology.
+///
+/// Canonical value-ordinal validation runs to completion before the first
+/// event becomes observable. `CompactTrie::visit_topology` then expands ACT
+/// line compression directly into the same DFS event language as a live
+/// `PathMap` zipper. No PathMap, key collection, or map value is constructed.
+pub(crate) fn visit_canonical_snapshot_topology(
+    bytes: &[u8],
+    mut visitor: impl FnMut(CanonicalSnapshotTopologyEvent),
+) -> Result<(EPathMapMode, usize), TrieCodecError> {
+    let prefix = parse_canonical_snapshot_prefix(bytes)?;
+    let mut value_cursor = prefix.value_table_start;
+    for _ in 0..prefix.value_count {
+        let len = read_len(bytes, &mut value_cursor, "map value length")?;
+        take(bytes, &mut value_cursor, len, "map value payload")?;
+    }
+    if value_cursor != bytes.len() {
+        return Err(TrieCodecError::new("trailing bytes after EPM1 payload"));
+    }
+
+    if prefix.mode == EPathMapMode::Empty {
+        if !prefix.arena.is_empty() || prefix.value_count != 0 {
+            return Err(TrieCodecError::new(
+                "neutral empty EPathMap carries trie or values",
+            ));
+        }
+        visitor(CompactTrieTopologyEvent::Value(false));
+        visitor(CompactTrieTopologyEvent::Leave);
+        return Ok((prefix.mode, 0));
+    }
+
+    let trie = CompactTrie::parse_canonical(prefix.arena)?;
+    visit_canonical_value_paths(&trie, prefix.mode, prefix.value_count, |_path| Ok(()))?;
+    let mut length = 0usize;
+    trie.visit_topology(|event| {
+        if event == CompactTrieTopologyEvent::Value(true) {
+            length = length
+                .checked_add(1)
+                .ok_or_else(|| TrieCodecError::new("EPathMap length overflows usize"))?;
+        }
+        visitor(event);
+        Ok::<(), TrieCodecError>(())
+    })?;
+    Ok((prefix.mode, length))
 }
 
 pub(crate) fn inspect_canonical_map_snapshot(
@@ -1314,6 +1370,13 @@ mod tests {
         line_set.insert(b"shared/line/b", ());
         line_set.create_path(b"shared/dangling");
 
+        // The endpoint diverges at the root from the value-bearing key. The
+        // canonical writer represents its leaf as a value-free childless
+        // branch rather than a compressed line node.
+        let mut root_divergent_endpoint_set = PathMap::new();
+        root_divergent_endpoint_set.insert(b"value/key", ());
+        root_divergent_endpoint_set.create_path(b"dangling/endpoint");
+
         let mut line_map = PathMap::new();
         line_map.insert(b"same/suffix/x", int(1));
         line_map.insert(b"other/suffix/x", int(2));
@@ -1327,6 +1390,7 @@ mod tests {
         let fixtures = [
             encode(&EPathMapRepr::Empty),
             encode(&EPathMapRepr::Set(line_set)),
+            encode(&EPathMapRepr::Set(root_divergent_endpoint_set)),
             encode(&EPathMapRepr::Map(line_map)),
             encode(&EPathMapRepr::Set(dense_set)),
         ];

@@ -748,11 +748,14 @@ where
     ///    *set* in different *orders*, and any trace that names a rendezvous by
     ///    position would diverge.
     /// 2. **Continuations within a group** are ordered by
-    ///    [`order_candidates_with_index`] with the vector store index as tie
-    ///    breaker.
+    ///    [`order_candidates_with_index`] on `(candidate hash, canonical
+    ///    continuation identity bytes, vector store index)`. Store index breaks
+    ///    ties only between byte-identical repetitions and remains the removal
+    ///    address carried through the sort.
     /// 3. **Selections within a continuation** are ordered by the depth-first
     ///    descent of [`SpaceMatcher::enumerate_admissible_selections`] over
-    ///    PathMap candidate pools ordered by `(candidate hash, trie path)`.
+    ///    PathMap candidate pools ordered by `(candidate hash, canonical datum
+    ///    identity bytes)`.
     ///
     /// # ⚠ The head of a group's selections is NOT "what an ordinary run does"
     ///

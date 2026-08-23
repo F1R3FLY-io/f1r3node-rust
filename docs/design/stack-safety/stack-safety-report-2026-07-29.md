@@ -259,7 +259,7 @@ Where a number could **not** be obtained it is written **NOT MEASURED**, with th
 
 **Conventions.** $`B_0 \rightarrow B_1`$ is bytes of native stack per nesting level before and after, release profile unless the row says otherwise. **0** means *measured flat at both ends of a 4 $`\rightarrow`$ 4,096 ladder in both profiles*. "—" means the axis does not apply; **⌀** means **no measurement exists** (every ⌀ is itemised in [§5.9](#59-measurements-that-could-not-be-obtained)).
 
-Abbreviations used throughout are ABI (application binary interface), CBR (consensus behavior register), EPM1 (EPathMap version 1), PDA (pushdown automaton), WPDA (weighted pushdown automaton), SMT (satisfiability modulo theories), TLA (Temporal Logic of Actions), LRU (least-recently-used), SHA (Secure Hash Algorithm), RHOLANG (reflective higher-order language), MSO (monadic second-order logic), KAT (Kleene algebra with tests), LTL (linear temporal logic), REPL (read-evaluate-print loop), Ir (instruction references), Dr (data reads), Dw (data writes), and TSV (tab-separated values).
+Abbreviations used throughout are ABI (application binary interface), CBR (consensus behavior register), EPM1 (EPathMap version 1), RMP2 (Rholang Match Path format version 2), PDA (pushdown automaton), WPDA (weighted pushdown automaton), SMT (satisfiability modulo theories), TLA (Temporal Logic of Actions), LRU (least-recently-used), SHA (Secure Hash Algorithm), RHOLANG (reflective higher-order language), MSO (monadic second-order logic), KAT (Kleene algebra with tests), LTL (linear temporal logic), REPL (read-evaluate-print loop), Ir (instruction references), Dr (data reads), Dw (data writes), and TSV (tab-separated values).
 
 ★★ **`SS-Y…` is a family added by this revision, and it exists because the register had no way to spell the thing it most needed to say.** The prior families — `SS-A…` core traversals, `SS-B…` evaluator/async, `SS-C…` codecs, `SS-D…` deploy path, `SS-E…` instrument, `SS-F…`/`SS-G…` `mettail-rust`, `SS-X…` rejected — could record a *fix*, a *partial* fix, or a *rejected candidate*, but **not a live unrepaired defect introduced by a fix in this very register**. A register that can only hold good news is a register that reports coverage it does not have. **`SS-Y…` rows are allocated while defects are open**, they are never "class change: yes", and a row is discharged only by a commit that repairs it — never by deletion. Repaired rows remain in the register with their repair SHA and status, preserving the defect history. The allocation rule is added to [Appendix F](#appendix-f--the-per-fix-template-fill-this-in-do-not-invent-a-shape) with the others.
 
@@ -284,6 +284,8 @@ Abbreviations used throughout are ABI (application binary interface), CBR (conse
 | **SS-A17** | this checkpoint; pgmcp `accounting-demand-local-occurrence-linear-walk`; experiment 303 | f1r3node | accounting-demand traversal over resident `Par` suffixes $`\rightarrow`$ one borrowed canonical-protobuf-region PDA fed directly by the authoritative ParBag/PathMap endpoint visitor | exact suffix control **145.317 ms $`\rightarrow`$ 12.683 µs** at depth 128 and **8.210 s $`\rightarrow`$ 49.497 µs** at depth 512; treatment endpoint exponent **1.015** through depth 20,000; **20,000** levels on **128 KiB**; compressed scalar multiplicity 1 through $`2^{32}-1`$ remains **0.728–0.750 µs** | **no** — exact recursive trace, callback order, saturation, unknown propagation, schema, and lane differentials; Rocq/Verus/TLA+ closure; CBR-066 | [5.32](#532-accounting-demand-canonical-protobuf-region-pda-ss-a17-ss-y11) |
 | **SS-A18** | this checkpoint; pgmcp experiment 306 | f1r3node | wide recursive pretty-print planning $`\rightarrow`$ presence-safe compact protobuf shells, consumed cut storage, region-native Expr planning, and one n-ary output rope | native stack remains **0 B/level**; width 65,536 mean treatment/control ratio **0.984332**, one-sided 95% upper **0.998872** | **no** — exact recursive-oracle text, printer state, malformed-field disposition, and fallback semantics retained; CBR-068 | [5.33](#533-canonical-protobuf-width-refinement-for-the-printer-and-epathmap-matcher-ss-a18-ss-a19-ss-x2-ss-y12-ss-y13) |
 | **SS-A19** | this checkpoint; pgmcp experiment 309 | f1r3node | wide EPathMap route preparation $`\rightarrow`$ one proof-carrying owned canonical Expr per endpoint, zipper release, trusted deferred decode, and direct native PathMap PDA dispatch | native stack remains **0 B/level**; worst-subject ratio mean **0.885350**, one-sided 95% upper **0.904244**; allocations **7,674,833 rejected $`\rightarrow`$ 4,660,158 selected** | **no** — exact verdict, complete `FreeMap`, rollback, remainder, malformed-input precedence, EPM1, and PathMap semantics retained; CBR-067 | [5.33](#533-canonical-protobuf-width-refinement-for-the-printer-and-epathmap-matcher-ss-a18-ss-a19-ss-x2-ss-y12-ss-y13) |
+| **SS-A20** | this checkpoint; pgmcp #5983/#5984 | f1r3node | resident and canonical-protobuf-region RMP2 semantic events share one generated byte cursor; unchanged ParBag clone families memoize only the versioned 32-byte transcript digest | direct projection remains $`O(1)`$ native stack; warm digest is approximately **29 instructions / 13 reads / 9 writes** independent of 69 B–4.21 MiB transcript size; largest-cell median **7.221 ms $`\rightarrow`$ 175.5 ns**; warm allocation calls **0** | **no** — exact event/transcript/digest, mutation, CoW, concurrency, schema, malformed-input, and formal semantic-boundary gates; CBR-053 continuation | [5.34](#534-rmp2-byte-native-projection-cache-and-candidate-product-continuations-ss-a20-ss-a21-ss-y14) |
+| **SS-A21** | this checkpoint; pgmcp #5985/#5990 | f1r3node | retained paired PathMap read-zipper clones $`\rightarrow`$ maximal deterministic-run cursor PDA with CoW suffix checkpoints only for accepted branches | first treatment rejected at about **2× slower** for exact/repeated queries; selected v2 wins every paired cell, minimum **1.387×**, nested depth-4,096 up to **95.522×**; exact/repeated/wildcard depth **16,384 on 256 KiB** | **no** — frozen legacy/byte-oracle equality, randomized tries, allocation and instruction attribution, transactional zipper restoration; CBR-053 continuation | [5.34](#534-rmp2-byte-native-projection-cache-and-candidate-product-continuations-ss-a20-ss-a21-ss-y14) |
 | **SS-B1** | `a929a2d6` | f1r3node | expression-evaluator SCC $`\rightarrow`$ `eval_drive` | overflow $`\approx`$ 1.5k $`\rightarrow`$ OK at 50,000 | **yes** | [5.2.1](#521-the-expression-evaluator-trampoline-a929a2d6) |
 | **SS-B2** | `29856679`, `55b97f84`, `a0a50473` | f1r3node | five async join sites detached | 300 s $`\rightarrow`$ **93.7 s CPU** | **yes** (heap chain) | [5.2.2](#522--the-tokio-fire-and-forget-driver--establishing-the-mechanism-not-assuming-it) |
 | **SS-B3** | `9843e4b6` | f1r3node | `StackGrowingFuture` + `stacker` **deleted** | — | dependency removed | [5.2.2](#522--the-tokio-fire-and-forget-driver--establishing-the-mechanism-not-assuming-it) |
@@ -363,6 +365,7 @@ Abbreviations used throughout are ABI (application binary interface), CBR (conse
 | **SS-Y2** | named `3276c1ee`; repaired `26876b65` | f1r3node | The hand-written host-recursive `impl Hash for Par` / `impl PartialEq for Par` defect named by SS-G6 on a consensus-adjacent canonical-sort path | 625 debug / 113 release B/level $`\rightarrow`$ **0** | ★ **repaired** by schema-generated Eq/Hash PDAs and independent PathMap set/map hash gates | [5.6.6](#566--174-attributed-to-models-impl-hash-for-par-3276c1ee) |
 | **SS-Y12** | exposed after `efa9aaa0b`; repaired by SS-A18; pgmcp experiment 306 | f1r3node | the first protobuf-region printer retained per-child planning/projection and binary concatenation work on the width axis | diagnostic smoke ~0.28 s control / ~0.33 s treatment; selected n=30 ratio upper bound **0.998872** | ✅ **REPAIRED** — one compact shell, consumed cuts, region-native planning, and one bounded n-ary rope | [5.33](#533-canonical-protobuf-width-refinement-for-the-printer-and-epathmap-matcher-ss-a18-ss-a19-ss-x2-ss-y12-ss-y13) |
 | **SS-Y13** | exposed by experiments 307–308; repaired by SS-A19; pgmcp experiment 309 | f1r3node | the nominally width-independent EPathMap matcher first built proportional cut plans, then redundantly rebuilt every canonical path after ParBag had already validated the resident endpoint | rejected treatment allocations **7,674,833** versus **5,222,542** control; selected treatment **4,660,158**, with no `validate_canonical_path` frame beneath endpoint preparation | ✅ **REPAIRED** — admission proof crosses the zipper boundary and trusted decoding starts only after both borrowed cursors are released | [5.33](#533-canonical-protobuf-width-refinement-for-the-printer-and-epathmap-matcher-ss-a18-ss-a19-ss-x2-ss-y12-ss-y13) |
+| **SS-Y14** | exposed by pgmcp experiment 5990 v1; repaired by SS-A21 | f1r3node | creating a bounded CoW suffix checkpoint after every deterministic exact or already-bound-capture atom removed clone slope but doubled ordinary exact/repeated-query latency | v1 exact median control/treatment ratio about **0.487** and repeated about **0.536**; the negative 3,000-observation matrix is retained | ✅ **REPAIRED** — one paired cursor consumes maximal deterministic runs and checkpoints only branch ownership | [5.34](#534-rmp2-byte-native-projection-cache-and-candidate-product-continuations-ss-a20-ss-a21-ss-y14) |
 | **SS-E1** | `5a744c66`, `ad468163`, `08e876fd`, `6a264e05` | f1r3node | ★ **Phase 3b's PREREQUISITE instrument** — the identical-total-order argument, the sorter golden's first depth-$`\geq 2`$ rows, and the re-entry ladder probe. ⚠ **No traversal was converted**, so this is deliberately not a class change | ⌀ — an instrument, not a traversal | **no** — by construction | [5.6.7](#567-ss-e1--3bs-prerequisite-instrument-and-the-two-checks-that-were-blind) |
 | **SS-E2** | `26876b65`, `87e514b6` | f1r3node | generated traversal registry $`\leftrightarrow`$ proof/oracle manifest; Rocq generic PDA equivalence, EPathMap algebra, and structural EPM1 framing/value-table laws; SMT mode dispatch; TLA+ transition model | 30 depth + 6 width production subjects, **zero tripwire subjects** | enabling and closure evidence | [5.12](#512-generated-par-pda-closure-ss-a8-ss-e2) |
 | **SS-E3** | `b2d84064`, `68e8290d` | f1r3node | Phase 7 resource closure: independent PathMap set/map hash and `Message::clear` ladders; derived-register Cachegrind axis; matched-control Massif axis | **40** converted subjects, all subquadratic; four stack-to-heap transfers measured linear | enabling and closure evidence | [5.14](#514-resource-closure--heap-and-deterministic-time-ss-e3); PathMap slice: [PathMap §5.6](../pathmap/pathmap-report-2026-08-03.md#56-hash-and-clear-ladders) |
@@ -519,6 +522,7 @@ register rows (SS-C5…SS-C14, SS-Y6) and the stack-safety consequences.
   - [5.31 Drive-local `FreeMap` undo journal and exact FreeVar capture compression [SS-A16]](#531-drive-local-freemap-undo-journal-and-exact-freevar-capture-compression-ss-a16)
   - [5.32 Accounting-demand canonical protobuf-region PDA [SS-A17, SS-Y11]](#532-accounting-demand-canonical-protobuf-region-pda-ss-a17-ss-y11)
   - [5.33 Canonical-protobuf width refinement for the printer and EPathMap matcher [SS-A18, SS-A19, SS-X2, SS-Y12, SS-Y13]](#533-canonical-protobuf-width-refinement-for-the-printer-and-epathmap-matcher-ss-a18-ss-a19-ss-x2-ss-y12-ss-y13)
+  - [5.34 RMP2 byte-native projection, cache, and candidate-product continuations [SS-A20, SS-A21, SS-Y14]](#534-rmp2-byte-native-projection-cache-and-candidate-product-continuations-ss-a20-ss-a21-ss-y14)
 - [6. Discussion](#6-discussion)
   - [6.1 Why the explicit-worklist shape, and why it is *smaller* than what it replaces](#61-why-the-explicit-worklist-shape-and-why-it-is-smaller-than-what-it-replaces)
   - [6.2 Why the SCC is the unit of conversion](#62-why-the-scc-is-the-unit-of-conversion)
@@ -9357,6 +9361,152 @@ and
 [`measurements/protobuf-region-width-experiments-306-309-analysis-2026-08-23.json`](measurements/protobuf-region-width-experiments-306-309-analysis-2026-08-23.json).
 CBR-067 and CBR-068 record the measured-neutral consensus disposition.
 
+### 5.34 RMP2 byte-native projection, cache, and candidate-product continuations [SS-A20, SS-A21, SS-Y14]
+
+This living checkpoint closes two different depth costs in the reconstructible RSpace candidate
+index. It does **not** replace `ParBag` or either candidate trie. A `Par` remains one
+`PathMap<Multiplicity>` product, candidate availability remains a `PathMap<Multiplicity>`, and
+candidate positions remain a synchronized PathMap of stable store indices. No `Vec<Par>`, decoded
+shadow collection, element sort, or PathMap fork enters either repair.
+
+#### 5.34.1 RMP2 projects semantic protobuf regions directly
+
+RMP2 is the second version of the internal Rho match path. It is derived, reconstructible index
+data—not protobuf, bincode, EPM1, an event, a signature, or a cold-store record. Its ParBag token
+contains distinct endpoint count, logical cardinality, and a BLAKE2b-256 digest over adjacent
+semantic component records. Each record contains the constructor-family tag, checked
+`Multiplicity(u64)`, exact canonical protobuf-body length, and the authoritative protobuf body
+already stored in the ParBag key. Multiplicity is encoded once per distinct trie endpoint; it never
+expands into repeated occurrences.
+
+The canonical-protobuf-region cursor and resident ParBag visitor now emit one common event
+language. Nested `Par` values are opaque component bodies at this layer: the enclosing recursive
+PDA schedules their regions explicitly rather than rebuilding and hashing every recursively
+shorter suffix. Checked schema lookup refuses drift by tag, name, or wire kind. Absent oneofs,
+present defaults, canonical varint widths, conflicting oneofs, and malformed metadata have direct
+resident-versus-region differentials.
+
+```text
+Algorithm RMP2-SEMANTIC-REGION(region)
+Input:  one checked canonical protobuf region for a Par
+Output: the same semantic component-event stream as resident ParBag traversal
+
+1. Validate the generated root program and every field boundary before indexing it.
+2. Advance one explicit protobuf cursor; never decode a recursively shorter Par suffix.
+3. For each top-level component body, emit family tag, multiplicity one, length, and borrowed body.
+4. Coalesce only adjacent equal semantic records and add their multiplicities with checked u64
+   arithmetic; do not coalesce a nonadjacent repeat.
+5. Treat a nested Par body as opaque here and schedule its own region in the enclosing PDA.
+6. On schema or canonicality mismatch, return an error before publishing an endpoint event.
+```
+
+Rocq proves the common event correspondence, adjacent-run coalescing, cardinality, the
+nonadjacent-repeat counterexample, and opacity rule. Verus checks the executable accumulation and
+flush obligations without cheating. Rust differentials bridge all maintained Expr oneofs and
+two-/three-run cases to the two runtime event sources. The assurance boundary is explicit: these
+proofs do not claim arbitrary protobuf-parser correctness or BLAKE2b collision resistance.
+
+#### 5.34.2 One versioned digest belongs to one CoW clone family
+
+The one derived value that otherwise reopens every ParBag endpoint is the RMP2 component digest.
+It now occupies one `OnceLock<[u8; 32]>` in the existing `Arc<ParBagAux>` copy-on-write root.
+Distinct count and cardinality remain the Bag's constant-time summaries. Transcript bytes, decoded
+components, protobuf-region results, ACT images, and global cache entries are not retained.
+
+```text
+Algorithm CLONE-FAMILY-RMP2-DIGEST(bag)
+Input:  an immutable ParBag and its shared auxiliary root
+Output: the exact versioned RMP2 digest
+
+1. If the OnceLock is warm, return its inline 32-byte value and visit zero endpoints.
+2. Otherwise initialize exactly once across concurrent readers by streaming the authoritative
+   endpoint records into BLAKE2b-256.
+3. Preserve the cell across untouched CoW clones, metadata-only changes, semantic no-ops, and
+   failed multiplicity transitions.
+4. On a successful component mutation, detach a shared writer or clear a uniquely owned cell;
+   leave every unchanged clone on its original warm root.
+5. Recompute lazily on the changed root's next request.
+```
+
+Seven focused cache tests cover cold/warm access, untouched clones, mutation-local invalidation,
+every component mutation route, failures/no-ops/metadata, eight concurrent initializers, and exact
+transcript equality. `ParBagAux` is 672 bytes on the measured 64-bit target, enforced as an upper
+budget. The 75-cell matrix crosses widths 1–1,024, canonical bodies 16–4,096 bytes, and
+multiplicities 1–32. Its 13,500 observations have equal lane checksums; warm, prewarmed-CoW, and
+second-post-mutation calls allocate zero bytes. At the largest 4,214,817-byte transcript, median
+uncached/cold/warm times are 7.221289 ms, 7.176509 ms, and 175.5 ns.
+
+The first 30-pair 609-byte cell reported a 7.36% cold regression and remains in the raw matrix.
+A 300-pair replication put the paired ratio-of-means 99% bootstrap interval at
+[0.934846, 1.049629], within the preregistered 5% ceiling. No size threshold or bypass was added.
+Cachegrind subtracts matched null subjects at 69, 17,697, and 4,214,817 transcript bytes. A warm
+request stays approximately 29 instructions, 13 data reads, and 9 data writes at every sentinel.
+Headless Heaptrack records exactly equal allocation-call totals between 10,000 warm requests and
+their matched warm-null controls; the digest is inline and creates no retained heap slope.
+
+#### 5.34.3 Candidate traversal keeps one cursor until ownership actually branches
+
+The candidate product intersects availability and position tries through synchronized zippers. The
+former worklist retained clones of both read zippers. Because a clone copies complete prefix and
+ancestor state, retaining one at successively deeper frames can accumulate:
+
+```math
+\sum_{k=1}^{n} \Theta(k) = \Theta(n^2).
+```
+
+The first repair replaced every retained clone with a bounded CoW suffix root. That v1 treatment
+removed the depth-growing ancestor copy and made wildcard, remainder, and nested-match queries
+substantially faster, but exact and repeated-capture queries became about twice as slow. SS-Y14
+preserves that rejected 3,000-observation matrix.
+
+The selected v2 pushdown automaton instead consumes a maximal run of exact atoms and already-bound
+captures on one moving paired cursor. It makes a CoW suffix checkpoint only when an accepted
+wildcard, first capture, nested predicate, or remainder branch must outlive the current scan.
+Rejected predicates allocate no checkpoint. Terminal value visitation borrows the cursor and
+restores its focus. A failed asymmetric descent independently restores both zippers before the PDA
+continues or refuses.
+
+`ZipperSubtries::make_map` may omit the value at its current focus when PathMap is built without the
+optional `graft_root_vals` feature. The checkpoint therefore snapshots each synchronized focus
+value, extracts the descendant suffix through native CoW operations, and restores the value at the
+new root. It refuses only when either synchronized side is genuinely empty after restoration. This
+removes dependence on a debug-only framing assertion without reintroducing retained zipper clones,
+a release panic, or a false-negative candidate fallback. Current RhoPath component framing still
+takes the no-restoration fast arm, verified by a dedicated counter.
+
+Eleven focused controls cover zero-checkpoint exact runs, one-checkpoint repeated capture, rejected
+nested frames, asymmetric restoration, focus-root plus descendant preservation, the canonical
+no-restoration fast arm, dense/compressed topology, terminal/remainder coexistence, and 128
+fixed-seed random small tries against both the frozen implementation and byte oracle.
+The complete v2 paired matrix contains 3,000 observations over 50 cells. Every cell preserves the
+result digest and beats the frozen control; the minimum paired median speedup is 1.387 times.
+Median speedups are 1.422 for exact, 1.419 for repeated capture, 2.330 for wildcard, 3.647 for
+remainder, and 6.111 for nested match. At depth 4,096, compressed nested match reaches 95.522 times.
+
+Headless Heaptrack attributes 7 fewer allocation calls per exact operation and 14 fewer per
+repeated-capture operation. Callgrind finds 4.48%–6.63% fewer whole-process instructions at every
+registered depth 256–4,096. Exact, repeated-capture, and wildcard each complete at depth 16,384 on
+a 256 KiB native thread stack without `RUST_MIN_STACK`, `stacker`, an artificial traversal limit,
+or a recursive fallback.
+
+#### 5.34.4 Evidence and current lifecycle boundary
+
+The raw and derived evidence is retained in:
+
+- [`measurements/rmp2-par-bag-digest-cache-2026-08-23.tsv`](measurements/rmp2-par-bag-digest-cache-2026-08-23.tsv);
+- [`measurements/rmp2-par-bag-digest-cache-tiny-replication-2026-08-23.metadata.md`](measurements/rmp2-par-bag-digest-cache-tiny-replication-2026-08-23.metadata.md);
+- [`measurements/rmp2-par-bag-digest-cache-resource-profiles-2026-08-23.md`](measurements/rmp2-par-bag-digest-cache-resource-profiles-2026-08-23.md);
+- [`measurements/rspace-candidate-suffix-checkpoint-v1-2026-08-23.tsv`](measurements/rspace-candidate-suffix-checkpoint-v1-2026-08-23.tsv);
+- [`measurements/rspace-candidate-suffix-checkpoint-v2-2026-08-23.tsv`](measurements/rspace-candidate-suffix-checkpoint-v2-2026-08-23.tsv);
+- [`measurements/rspace-candidate-suffix-checkpoint-v2-heaptrack-2026-08-23.md`](measurements/rspace-candidate-suffix-checkpoint-v2-heaptrack-2026-08-23.md); and
+- [`measurements/rspace-candidate-suffix-checkpoint-v2-callgrind-2026-08-23.md`](measurements/rspace-candidate-suffix-checkpoint-v2-callgrind-2026-08-23.md).
+
+The resource hypotheses and focused semantic/stack gates are accepted. The exact release workspace
+run, broader COMM/replay lifecycle, and immutable commit coordinate remain open at this checkpoint.
+CBR-053 therefore remains the active consensus boundary: derived candidate bytes and traversal may
+produce conservative false positives, but a false negative could hide a COMM and cannot be retired
+until the system gates close.
+
 ---
 
 ## 6. Discussion
@@ -10171,6 +10321,13 @@ heaptrack_print /tmp/heaptrack-exp309-treatment-set.zst.zst \
 | [`measurements/phase7-depth-corpora-2026-08-03.tsv`](measurements/phase7-depth-corpora-2026-08-03.tsv) | corpus denominators for the histograms (§5.15.1) |
 | [`measurements/protobuf-region-width-experiments-306-309-2026-08-23.tsv`](measurements/protobuf-region-width-experiments-306-309-2026-08-23.tsv) | all 630 warmup/retained ABBA observations for the printer and EPathMap width treatments, including both rejected matcher candidates (§5.33) |
 | [`measurements/protobuf-region-width-experiments-306-309-analysis-2026-08-23.json`](measurements/protobuf-region-width-experiments-306-309-analysis-2026-08-23.json) | locked protocol, source/binary hashes, confidence bounds, pgmcp identifiers/digests, causal profile counters, and equivalence/resource gates for experiments 306–309 (§5.33) |
+| [`measurements/rmp2-par-bag-digest-cache-2026-08-23.tsv`](measurements/rmp2-par-bag-digest-cache-2026-08-23.tsv) | SS-A20's complete 75-cell, six-lane wall/allocation matrix, including the preserved 30-pair tiny-cell negative (§5.34) |
+| [`measurements/rmp2-par-bag-digest-cache-tiny-replication-2026-08-23.tsv`](measurements/rmp2-par-bag-digest-cache-tiny-replication-2026-08-23.tsv) | SS-A20's 300-pair powered replication of the preregistered cold-regression sentinel (§5.34) |
+| [`measurements/rmp2-par-bag-digest-cache-resource-profiles-2026-08-23.md`](measurements/rmp2-par-bag-digest-cache-resource-profiles-2026-08-23.md) | matched-null Cachegrind and headless Heaptrack instruction, data-access, allocation, retained-heap, command, and scope record (§5.34) |
+| [`measurements/rspace-candidate-suffix-checkpoint-v1-2026-08-23.tsv`](measurements/rspace-candidate-suffix-checkpoint-v1-2026-08-23.tsv) | SS-Y14's rejected checkpoint-per-atom paired matrix (§5.34) |
+| [`measurements/rspace-candidate-suffix-checkpoint-v2-2026-08-23.tsv`](measurements/rspace-candidate-suffix-checkpoint-v2-2026-08-23.tsv) | SS-A21's selected deterministic-run hybrid paired matrix over exact, repeated-capture, wildcard, remainder, and nested queries (§5.34) |
+| [`measurements/rspace-candidate-suffix-checkpoint-v2-heaptrack-2026-08-23.md`](measurements/rspace-candidate-suffix-checkpoint-v2-heaptrack-2026-08-23.md) | SS-A21's headless allocation-mechanism attribution (§5.34) |
+| [`measurements/rspace-candidate-suffix-checkpoint-v2-callgrind-2026-08-23.md`](measurements/rspace-candidate-suffix-checkpoint-v2-callgrind-2026-08-23.md) | SS-A21's deterministic instruction ladder and exact result digests (§5.34) |
 | [`measurements/spatial-matcher-heap-2026-08-04.tsv`](measurements/spatial-matcher-heap-2026-08-04.tsv) | matched matcher/control allocator, peak-heap, profiler-RSS, unprofiled-RSS, and runtime rows before `714d618c`, after it, and after the final singleton refinement `6f1412ee` (§5.16.4) |
 | [`measurements/e8b-native-pathmap-par-e6a-2026-08-04.tsv`](measurements/e8b-native-pathmap-par-e6a-2026-08-04.tsv) | the 51 submitted samples per arm, treatment phase splits, finalized digests, and locked E-8b decision metadata (§5.17.3) |
 | [`measurements/epathmap-canonical-worklist-2026-08-08.tsv`](measurements/epathmap-canonical-worklist-2026-08-08.tsv) | the SS-C12 quadratic predecessor, reproducible linear ladder, depth-20,000 worklist, malformed-gate allocator lifetime, and formal-equivalence aggregate (§5.19) |

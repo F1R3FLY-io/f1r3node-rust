@@ -30,6 +30,10 @@ schnorr_secp256k1_experimental = ["crypto/schnorr_secp256k1_experimental"]
 # Phase 7 measurement only. The implementation lives under `tests/support` and
 # production call sites compile to nothing unless this feature is selected.
 phase7-depth-histograms = []
+# Measurement-only access to the uncached RMP2 digest control. Production
+# callers use the memoized encoder; experiments enable this feature explicitly
+# so control and treatment share one transcript implementation.
+rmp2-digest-experiment = []
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ["cfg(kani)"] }
@@ -307,6 +311,15 @@ harness = false
 name = "par_bag_exact_membership"
 path = "benches/par_bag_exact_membership.rs"
 harness = false
+
+# Preregistered RMP2 digest-cache experiment. Both the uncached control and the
+# public benchmark wrappers are compiled only for this target; ordinary models
+# builds retain the crate-private production route and no experiment branch.
+[[bench]]
+name = "rmp2_par_bag_digest_cache"
+path = "benches/rmp2_par_bag_digest_cache.rs"
+harness = false
+required-features = ["rmp2-digest-experiment"]
 
 # The heap-profile subject. One arm per run (`MASSIF_ARM`), so `massif`'s
 # snapshots describe ONE mechanism instead of superimposing three.

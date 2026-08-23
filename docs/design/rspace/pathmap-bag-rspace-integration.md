@@ -5,7 +5,7 @@ Status: implementation in progress and living engineering report
 Campaign: `campaign-4131-rspace-pathmap-integration`
 
 Experiment: `rspace-pathmap-end-to-end-layout-2026-08-15`
-Last updated: 2026-08-16
+Last updated: 2026-08-23
 Current implementation checkpoint: `d659157f2`
 
 Chronological PathMap findings and negative results are maintained in the
@@ -35,6 +35,7 @@ Neither a `Vec<Par>` nor a hash table is an authoritative substitute for a trie 
 | DFS | Depth-first search: traversal that completes one branch before moving to its sibling. |
 | PDA | Pushdown automaton: an iterative state machine with an explicit stack. |
 | RMP1 | Rholang Match Path format version 1: the self-delimiting structural token stream used by generated matcher queries. |
+| RMP2 | Rholang Match Path format version 2: the current derived structural token stream, whose ParBag token hashes semantic constructor-tag/multiplicity/canonical-protobuf records rather than an ACT snapshot. |
 | RSS | Resident set size: the physical-memory footprint attributed to a process by the operating system. |
 | RSpace | The tuple-space implementation that stores Rholang data and waiting continuations and selects COMMs. |
 | mCRL2 | A process-algebra toolset used here for branching-bisimulation and modal reachability checks. |
@@ -542,9 +543,12 @@ original keys and values, so reconstructing a rhoapi object graph would be both 
 Instead, `ValidatedRhoMatchPath::to_canonical_bytes` decodes the borrowed typed token stream and
 re-emits every tag, fixed-width integer, length, scalar, and digest without recursive objects.
 Validated paths compare and hash solely by those canonical bytes. An independent 66-shape
-descriptor corpus pins each encoded length and BLAKE2b-256 digest in
-`models/tests/fixtures/goldens/rmp1-corpus-v1.tsv`; the same corpus round-trips byte for byte, and
-the 20,000-level case re-emits on a 256 KiB worker stack. These checks close the codec's
+descriptor corpus pinned each encoded length and BLAKE2b-256 digest in the historical
+`bbdd22887:models/tests/fixtures/goldens/rmp1-corpus-v1.tsv`; the same corpus round-tripped byte for
+byte, and the 20,000-level case re-emitted on a 256 KiB worker stack. The retired RMP1 file is not a
+live validation input: the current versioned successor is
+[`rmp2-corpus-v1.tsv`](../../../models/tests/fixtures/goldens/rmp2-corpus-v1.tsv), whose tests reject
+an RMP1 version prefix rather than silently reinterpreting it. These checks close the codec's
 cross-platform golden and token round-trip gaps. They do not prove the still-open concrete
 query-compiler superset premises or change RSpace matching semantics.
 

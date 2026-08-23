@@ -1,4 +1,4 @@
-//! Validated, stack-safe navigation of `RMP1` structural matching paths.
+//! Validated, stack-safe navigation of `RMP2` structural matching paths.
 
 use std::cmp::Ordering;
 use std::fmt;
@@ -64,7 +64,7 @@ pub struct RhoMatchPathError {
 
 impl fmt::Display for RhoMatchPathError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "invalid RMP1 path at byte {}: ", self.offset)?;
+        write!(f, "invalid RMP2 path at byte {}: ", self.offset)?;
         match &self.kind {
             RhoMatchPathErrorKind::InvalidVersion => f.write_str("invalid version"),
             RhoMatchPathErrorKind::Truncated => f.write_str("truncated token"),
@@ -459,7 +459,7 @@ impl<'a> ValidatedRhoMatchPath<'a> {
 
     /// Re-emit the canonical bytes represented by this validated token stream.
     ///
-    /// `RMP1` is intentionally a structural search image rather than a second
+    /// `RMP2` is intentionally a structural search image rather than a second
     /// `Par` serialization: an `EPathMap` token carries a key-topology digest,
     /// so reconstructing the original term would be lossy by design. This is
     /// therefore the codec's lossless round trip. It decodes every token and
@@ -469,9 +469,9 @@ impl<'a> ValidatedRhoMatchPath<'a> {
         let mut output = Vec::with_capacity(self.bytes.len());
         output.extend_from_slice(&RHO_MATCH_PATH_VERSION);
         let cursor = EncodedRhoMatchPathCursor::new(self.bytes)
-            .expect("validated RMP1 bytes retain their version");
+            .expect("validated RMP2 bytes retain their version");
         for token in cursor {
-            let token = token.expect("validated RMP1 bytes retain their token grammar");
+            let token = token.expect("validated RMP2 bytes retain their token grammar");
             append_canonical_token(&mut output, token.token);
         }
         output
@@ -614,7 +614,7 @@ fn append_canonical_scalar(output: &mut Vec<u8>, value: RhoMatchPathScalar<'_>) 
 }
 
 fn append_canonical_bytes(output: &mut Vec<u8>, value: &[u8]) {
-    let len = u64::try_from(value.len()).expect("an allocated RMP1 field length fits in u64");
+    let len = u64::try_from(value.len()).expect("an allocated RMP2 field length fits in u64");
     output.extend_from_slice(&len.to_be_bytes());
     output.extend_from_slice(value);
 }

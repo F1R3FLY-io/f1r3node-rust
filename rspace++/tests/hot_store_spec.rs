@@ -17,6 +17,7 @@ use rspace_plus_plus::rspace::hot_store_action::{
     InsertContinuations, InsertData, InsertJoins,
 };
 use rspace_plus_plus::rspace::internal::{Datum, WaitingContinuation};
+use rspace_plus_plus::rspace::serializers::serializers::CandidateOrderingBytes;
 use rstest::*;
 use serde::Serialize;
 
@@ -905,21 +906,18 @@ fn check_same_elements<T: Hash + Eq>(vec1: Vec<T>, vec2: Vec<T>) -> bool {
     counts(vec1) == counts(vec2)
 }
 
-fn canonical_data(channel: &String, data: Vec<Data>) -> Vec<Data> {
+fn canonical_data(_channel: &String, data: Vec<Data>) -> Vec<Data> {
     let mut decorated = data
         .into_iter()
         .map(|datum| {
-            (
-                deterministic_candidate_hash(&datum),
-                RSpaceDataIndex::datum_path(channel, &datum),
-                datum,
-            )
+            let identity = datum.candidate_ordering_bytes();
+            (deterministic_candidate_hash(&datum), identity, datum)
         })
         .collect::<Vec<_>>();
-    decorated.sort_unstable_by(|(left_hash, left_path, _), (right_hash, right_path, _)| {
+    decorated.sort_unstable_by(|(left_hash, left_identity, _), (right_hash, right_identity, _)| {
         left_hash
             .cmp(right_hash)
-            .then_with(|| left_path.cmp(right_path))
+            .then_with(|| left_identity.cmp(right_identity))
     });
     decorated.into_iter().map(|(_, _, datum)| datum).collect()
 }

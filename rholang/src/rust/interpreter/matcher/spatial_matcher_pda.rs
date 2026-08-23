@@ -506,6 +506,40 @@ pub(super) fn match_send_list_with_remainder_stats(
     (result, stats)
 }
 
+/// Test-only observation of the candidate query compiled for one direct
+/// `MatchValue` AC row. `None` is the production fallback-to-All decision;
+/// `Some(false)` is the only unsound result when the authoritative matcher
+/// accepts the same `(target, pattern)` pair.
+#[cfg(test)]
+fn direct_match_value_ac_query_acceptance(target: MatchValue, pattern: MatchValue) -> Option<bool> {
+    let context = SpatialMatcherContext::new();
+    let mut captures = PathMap::new();
+    pattern
+        .rho_path_query(&context, &mut captures)
+        .map(|query| query.matches_structure(&target.rho_path_structure()))
+}
+
+#[cfg(test)]
+pub(super) fn new_ac_query_acceptance(target: New, pattern: New) -> Option<bool> {
+    direct_match_value_ac_query_acceptance(MatchValue::New(target), MatchValue::New(pattern))
+}
+
+#[cfg(test)]
+pub(super) fn match_ac_query_acceptance(target: Match, pattern: Match) -> Option<bool> {
+    direct_match_value_ac_query_acceptance(MatchValue::Match(target), MatchValue::Match(pattern))
+}
+
+#[cfg(test)]
+pub(super) fn receive_bind_ac_query_acceptance(
+    target: ReceiveBind,
+    pattern: ReceiveBind,
+) -> Option<bool> {
+    direct_match_value_ac_query_acceptance(
+        MatchValue::ReceiveBind(target),
+        MatchValue::ReceiveBind(pattern),
+    )
+}
+
 #[cfg(test)]
 pub(super) fn send_target_index_shape(targets: Vec<Send>) -> (u64, usize) {
     let targets = targets
@@ -3758,7 +3792,7 @@ impl MatchValue {
     ) -> Option<RhoPathQuery> {
         if matches!(self, Self::EncodedPar(_) | Self::EncodedParPair(_)) {
             // The byte-native collection relation remains authoritative. A
-            // future protobuf-to-RMP1 cursor may add conservative pruning;
+            // future protobuf-to-RMP2 cursor may add conservative pruning;
             // `None` means the current proof search scans the full domain.
             return None;
         }
@@ -3996,7 +4030,7 @@ enum CandidateCompileWork<'a> {
 ///
 /// `All` is the deliberate conservative fallback and `Empty` is reserved for
 /// connectives whose authoritative matcher always refuses (`VarRef`/absent or
-/// an empty disjunction). Query leaves contain only the already-proved RMP1
+/// an empty disjunction). Query leaves contain only the already-proved RMP2
 /// compiler output; this layer adds no byte interpretation of its own. Child
 /// edges are arena indices, so inspecting and dropping a deep branching plan
 /// never re-enters Rust's native call stack.
@@ -4505,7 +4539,7 @@ struct ListTargetGroup {
 /// Derived prefix-compressed target catalog for one unordered list match.
 ///
 /// The authoritative trie is a [`Bag`]: a `PathMap<Multiplicity>` whose key is
-/// the framed RMP1 structure followed by a collision-free identity. Resident
+/// the framed RMP2 structure followed by a collision-free identity. Resident
 /// values use stack-safe canonical bincode; borrowed collection values use
 /// their canonical protobuf region. Structurally equal values therefore share
 /// trie prefixes while byte-identical values share one multiplicity cell. A parallel

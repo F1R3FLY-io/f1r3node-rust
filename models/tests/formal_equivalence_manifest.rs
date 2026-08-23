@@ -6,6 +6,15 @@
 //! that every named file, theorem, and oracle marker exists.
 
 use std::collections::{BTreeMap, BTreeSet};
+
+#[test]
+fn rmp2_region_summary_differential_has_an_executable_formal_bridge_marker() {
+    const MARKER: &str = "resident_and_region_par_bag_summaries_match_for_every_canonical_family";
+    assert!(
+        include_str!("match_path_structure.rs").contains(&format!("fn {MARKER}")),
+        "the RMP2 resident/region equivalence marker must remain executable"
+    );
+}
 use std::path::{Path, PathBuf};
 
 use models::rust::rholang::schema_meta::{
@@ -115,8 +124,8 @@ fn every_repository_boundary_pda_has_one_production_proof_and_oracle_binding() {
         "rholang::Encoded Connective exact-scalar refinement",
         "rholang::Encoded Expr outer-envelope routing",
         "rholang::EPathMap singleton owned-zipper matching",
-        "models::RMP1 generated cursor encoder",
-        "rholang::RMP1 ordered query compiler",
+        "models::RMP2 generated cursor encoder",
+        "rholang::RMP2 ordered query compiler",
         "rholang::Accounting demand byte-region PDA",
     ];
 
@@ -201,6 +210,7 @@ fn rocq_kernel_contains_no_unproved_declarations() {
         "formal/rocq/stack_safe_pda/theories/EPathMap.v",
         "formal/rocq/stack_safe_pda/theories/Bag.v",
         "formal/rocq/stack_safe_pda/theories/EPM1.v",
+        "formal/rocq/stack_safe_pda/theories/RMP2.v",
         "formal/rocq/stack_safe_pda/theories/SpatialMatcher.v",
         "formal/rocq/stack_safe_pda/theories/FreeMapJournal.v",
         "formal/rocq/stack_safe_pda/theories/AccountingDemand.v",
@@ -212,6 +222,98 @@ fn rocq_kernel_contains_no_unproved_declarations() {
                 "{relative} contains an unproved declaration marker `{forbidden}`"
             );
         }
+    }
+}
+
+#[test]
+fn rmp2_transcript_routing_and_candidate_order_bridges_are_manifested() {
+    let verus = read_repository_file("formal/verus/rmp2_par_bag_transcript.rs");
+    for marker in [
+        "proof fn resident_and_region_accumulators_are_equivalent(",
+        "proof fn record_correspondence_precondition_is_non_vacuous(",
+        "proof fn corresponding_semantic_fields_project_identically(",
+        "pub fn executable_adjacent_coalescer_step(",
+        "pub fn executable_finalize_adjacent_distinct(",
+        "proof fn nested_par_projection_is_opaque_to_recursive_components(",
+        "pub fn executable_saturating_add(",
+        "pub fn executable_occurrence_step(",
+        "pub fn executable_exact_run_multiplicity_increment(",
+        "pub fn executable_body_length(",
+    ] {
+        assert!(
+            verus.contains(marker),
+            "RMP2 Verus proof is missing `{marker}`"
+        );
+    }
+    for forbidden in ["assume(", "admit(", "external_body"] {
+        assert!(
+            !verus.contains(forbidden),
+            "RMP2 Verus proof contains forbidden escape `{forbidden}`"
+        );
+    }
+
+    let rocq = read_repository_file("formal/rocq/stack_safe_pda/theories/RMP2.v");
+    for marker in [
+        "Theorem emitted_opaque_par_token_has_exactly_49_bytes",
+        "Theorem dynamic_shell_classification_is_independent_of_summary",
+        "Theorem compiled_opaque_query_has_no_false_negative",
+        "Theorem unsupported_opaque_shell_fails_closed",
+        "Theorem canonical_candidate_order_is_independent_of_derived_rmp_bytes",
+        "Theorem corresponding_semantic_fields_have_identical_projection",
+        "Theorem adjacent_coalescing_preserves_exact_cardinality",
+        "Theorem nested_par_projection_is_opaque_to_recursive_component_structure",
+        "Print Assumptions emitted_opaque_par_token_has_exactly_49_bytes.",
+        "Print Assumptions compiled_opaque_query_has_no_false_negative.",
+        "Print Assumptions unsupported_opaque_shell_fails_closed.",
+        "Print Assumptions canonical_candidate_order_is_independent_of_derived_rmp_bytes.",
+        "Print Assumptions corresponding_semantic_fields_have_identical_projection.",
+        "Print Assumptions adjacent_coalescing_preserves_exact_cardinality.",
+        "Print Assumptions nested_par_projection_is_opaque_to_recursive_component_structure.",
+    ] {
+        assert!(
+            rocq.contains(marker),
+            "RMP2 Rocq proof is missing `{marker}`"
+        );
+    }
+
+    // These are executable boundary witnesses, not claims that Rocq or Verus
+    // verified BLAKE2, protobuf parsing, generated Rust, or allocator behavior.
+    let model_oracles = read_repository_file("models/tests/match_path_cursor.rs");
+    assert!(model_oracles.contains("decoded_tokens_canonically_reencode_every_schema_shape"));
+    let transcript_oracles = read_repository_file("models/tests/match_path_structure.rs");
+    for marker in [
+        "resident_and_region_par_bag_summaries_match_for_every_canonical_family",
+        "rmp2_parbag_transcript_preserves_multiplicity_without_occurrence_expansion",
+        "resident_and_canonical_region_sources_have_identical_semantic_field_projection",
+        "canonical_region_coalesces_only_adjacent_identical_occurrences",
+        "nested_par_projection_is_one_opaque_bag_token_plus_root_metadata",
+    ] {
+        assert!(
+            transcript_oracles.contains(marker),
+            "RMP2 transcript oracle is missing `{marker}`"
+        );
+    }
+    let matcher_oracles =
+        read_repository_file("rholang/tests/support/spatial_matcher_pda_equivalence.rs");
+    assert!(matcher_oracles
+        .contains("compiled_rho_path_query_is_a_superset_of_every_recursive_oracle_success"));
+    let ordering_oracles = read_repository_file("rspace++/src/rspace/data_index.rs");
+    assert!(ordering_oracles
+        .contains("a_hash_collision_is_ordered_by_identity_not_the_derived_rho_path"));
+
+    let coq_project = read_repository_file("formal/rocq/stack_safe_pda/_CoqProject");
+    assert!(coq_project.contains("theories/RMP2.v"));
+    let runner = read_repository_file("scripts/check-stack-safe-pda-proofs.sh");
+    for marker in [
+        "theories/RMP2.v",
+        "rmp2_closed_capstones",
+        "expected all seven RMP2 Rocq capstones to be closed",
+        "formal/verus/rmp2_par_bag_transcript.rs",
+    ] {
+        assert!(
+            runner.contains(marker),
+            "RMP2 formal runner is missing `{marker}`"
+        );
     }
 }
 

@@ -318,7 +318,7 @@ pub static BOUNDARY_PDA_EQUIVALENCE_EVIDENCE: &[BoundaryEquivalenceEvidence] = &
         executable_marker: "map_match_subtracts_exact_pairs_and_binds_key_and_value",
     },
     BoundaryEquivalenceEvidence {
-        surface: "models::RMP1 generated cursor encoder",
+        surface: "models::RMP2 generated cursor encoder",
         production_file: "models/src/rust/rholang/match_path.rs",
         production_marker: "for event in RhoPathCursor::new(root)",
         proof_file: PDA_PROOF,
@@ -327,7 +327,7 @@ pub static BOUNDARY_PDA_EQUIVALENCE_EVIDENCE: &[BoundaryEquivalenceEvidence] = &
         executable_marker: "decoded_tokens_canonically_reencode_every_schema_shape",
     },
     BoundaryEquivalenceEvidence {
-        surface: "rholang::RMP1 ordered query compiler",
+        surface: "rholang::RMP2 ordered query compiler",
         production_file: "rholang/src/rust/interpreter/matcher/match.rs",
         production_marker: "fn compile_ordered_nested_query(",
         proof_file: "formal/rocq/stack_safe_pda/theories/SpatialMatcher.v",

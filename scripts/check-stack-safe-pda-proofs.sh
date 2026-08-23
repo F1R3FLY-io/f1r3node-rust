@@ -22,6 +22,17 @@ tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/StackSafePDA.v
 tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/EPathMap.v
 tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/Bag.v
 tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/EPM1.v
+rmp2_rocq_output="$(
+  tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/RMP2.v 2>&1
+)"
+printf '%s\n' "$rmp2_rocq_output"
+rmp2_closed_capstones="$({
+  printf '%s\n' "$rmp2_rocq_output" | grep -c '^Closed under the global context$'
+} || true)"
+if [[ "$rmp2_closed_capstones" != "7" ]]; then
+  echo "stack-safe-pda: expected all seven RMP2 Rocq capstones to be closed; got $rmp2_closed_capstones" >&2
+  exit 1
+fi
 tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/SpatialMatcher.v
 free_map_rocq_output="$(
   tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/FreeMapJournal.v 2>&1
@@ -56,6 +67,8 @@ tlc_bounded "$verus_bin" --no-cheating --num-threads 1 \
   "$repo_root/formal/verus/epathmap_canonical_worklist.rs"
 tlc_bounded "$verus_bin" --no-cheating --num-threads 1 \
   "$repo_root/formal/verus/bag_checked_delta.rs"
+tlc_bounded "$verus_bin" --no-cheating --num-threads 1 \
+  "$repo_root/formal/verus/rmp2_par_bag_transcript.rs"
 tlc_bounded "$verus_bin" --no-cheating --num-threads 1 \
   "$repo_root/formal/verus/free_map_transaction.rs"
 tlc_bounded "$verus_bin" --no-cheating --num-threads 1 \

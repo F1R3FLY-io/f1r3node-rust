@@ -15,7 +15,7 @@ use models::rust::rholang::match_path_cursor::{
 use models::rust::rholang::match_schema_tables::ParCursor;
 
 fn corpus_golden_manifest() -> String {
-    let mut output = String::from("# RMP1 corpus v1: name\tencoded-bytes\tblake2b-256\n");
+    let mut output = String::from("# RMP2 corpus v1: name\tencoded-bytes\tblake2b-256\n");
     for (name, par) in par_corpus::par_corpus() {
         let encoded = encode_par_match_path(&par);
         let digest = Blake2b256::hash(encoded.clone());
@@ -40,7 +40,7 @@ fn exhaustive_corpus_is_schema_valid_and_navigable() {
 
         let mut token_count = 0;
         let mut node_count = 0;
-        for token in EncodedRhoMatchPathCursor::new(&encoded).expect("RMP1 version") {
+        for token in EncodedRhoMatchPathCursor::new(&encoded).expect("RMP2 version") {
             let token = token.unwrap_or_else(|error| panic!("{name}: {error}"));
             token_count += 1;
             if matches!(token.token, RhoMatchPathToken::NodeStart { .. }) {
@@ -77,16 +77,16 @@ fn decoded_tokens_canonically_reencode_every_schema_shape() {
 #[test]
 fn canonical_corpus_matches_the_platform_independent_golden_manifest() {
     let actual = corpus_golden_manifest();
-    if std::env::var_os("UPDATE_RMP1_GOLDEN").is_some() {
+    if std::env::var_os("UPDATE_RMP2_GOLDEN").is_some() {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/fixtures/goldens/rmp1-corpus-v1.tsv");
-        std::fs::write(path, actual).expect("write reviewed RMP1 golden manifest");
+            .join("tests/fixtures/goldens/rmp2-corpus-v1.tsv");
+        std::fs::write(path, actual).expect("write reviewed RMP2 golden manifest");
         return;
     }
-    let expected = include_str!("fixtures/goldens/rmp1-corpus-v1.tsv");
+    let expected = include_str!("fixtures/goldens/rmp2-corpus-v1.tsv");
     assert_eq!(
         actual, expected,
-        "RMP1 bytes drifted; review the schema/codec change and update the committed golden only \
+        "RMP2 bytes drifted; review the schema/codec change and update the committed golden only \
          when a new format version is intentional"
     );
 }
@@ -156,6 +156,13 @@ fn malformed_tokens_lengths_fields_and_nesting_are_rejected() {
     let mut bad_version = encoded.clone();
     bad_version[0] ^= 0xFF;
     assert!(validate_match_path(&bad_version).is_err());
+
+    let mut retired_rmp1 = encoded.clone();
+    retired_rmp1[..RHO_MATCH_PATH_VERSION.len()].copy_from_slice(b"RMP\x01");
+    assert!(
+        validate_match_path(&retired_rmp1).is_err(),
+        "the RMP2 reader must not reinterpret a retired RMP1 derived index"
+    );
 
     let small = encode_par_match_path(&par_corpus::gint(7));
     for end in RHO_MATCH_PATH_VERSION.len()..small.len() {
@@ -280,13 +287,27 @@ fn malformed_tokens_lengths_fields_and_nesting_are_rejected() {
 }
 
 #[test]
+fn par_bag_token_is_the_fixed_49_byte_rmp2_summary() {
+    let encoded = encode_par_match_path(&par_corpus::all_par_fields());
+    let spans = EncodedRhoMatchPathCursor::new(&encoded)
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    let token = spans
+        .iter()
+        .find(|span| matches!(span.token, RhoMatchPathToken::ParBag { .. }))
+        .expect("a Par root has one ParBag token");
+    assert_eq!(token.end - token.start, 1 + 8 + 8 + 32);
+}
+
+#[test]
 fn validation_and_subtree_navigation_fit_a_small_native_stack() {
     std::thread::Builder::new()
         .name("encoded-rho-match-path".to_string())
         .stack_size(256 * 1024)
         .spawn(|| {
             let encoded = encode_par_match_path(&par_corpus::deep_par(20_000));
-            let validated = validate_match_path(&encoded).expect("validate deep RMP1 path");
+            let validated = validate_match_path(&encoded).expect("validate deep RMP2 path");
             assert_eq!(validated.bytes(), encoded);
             assert_eq!(validated.to_canonical_bytes(), encoded);
 

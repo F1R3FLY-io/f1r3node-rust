@@ -17,8 +17,8 @@ use models::rhoapi::connective::ConnectiveInstance::{
 use models::rhoapi::expr::ExprInstance::EPathmapBody;
 use models::rhoapi::{
     Bundle, Connective, ConnectiveBody, DeployId, DeployerId, EPathMap, ETuple, Expr, GBigRational,
-    GDeployId, GFixedPoint, GUnforgeable, If, KeyValuePair, Match, New, PCost, Par, Receive,
-    ReceiveBind, Send, VarRef,
+    GDeployId, GFixedPoint, GUnforgeable, If, KeyValuePair, Match, MatchCase, New, PCost, Par,
+    Receive, ReceiveBind, Send, Var, VarRef,
 };
 use models::rust::par_bag::ParBag;
 use models::rust::par_construction::ParConstruction;
@@ -45,9 +45,10 @@ use super::recursive_oracle::spatial_matcher::{
 use super::spatial_matcher::{SpatialMatcher, SpatialMatcherContext};
 use super::spatial_matcher_pda::{
     apply_update_deltas, connective_candidate_positions_with_stats, encoded_expr_outer_route,
-    if_target_index_shape, match_par_list_with_stats, match_par_with_concrete_region_stats,
-    match_par_with_stats, match_par_with_transaction_stats, match_send_list_with_remainder_stats,
-    match_send_list_with_stats, send_target_index_shape, EncodedExprOuterRoute,
+    if_target_index_shape, match_ac_query_acceptance, match_par_list_with_stats,
+    match_par_with_concrete_region_stats, match_par_with_stats, match_par_with_transaction_stats,
+    match_send_list_with_remainder_stats, match_send_list_with_stats, new_ac_query_acceptance,
+    receive_bind_ac_query_acceptance, send_target_index_shape, EncodedExprOuterRoute,
 };
 
 #[test]
@@ -615,7 +616,7 @@ fn cover_generated_query_root(
 }
 
 /// Owned roots decoded one endpoint at a time from an opaque ParBag event.
-/// RMP1 deliberately treats a ParBag as one compact token in production, but
+/// RMP2 deliberately treats a ParBag as one compact token in production, but
 /// the generated-query coverage proof must still exercise every schema program
 /// hidden behind those tokens. This explicit heap queue follows that ownership
 /// boundary without reintroducing recursive test traversal or a retained
@@ -797,6 +798,151 @@ fn compiled_rho_path_query_is_a_superset_of_every_recursive_oracle_success() {
             vec![new_freevar_par(1, Vec::new())],
             true,
         ),
+    );
+}
+
+#[test]
+fn dynamic_direct_match_value_rows_decline_when_new_ignored_fields_differ() {
+    let target = New {
+        bind_count: 1,
+        p: Some(new_gint_par(7, Vec::new(), false)),
+        uri: vec!["rho:id:target".to_owned()],
+        injections: BTreeMap::from([(
+            "target-injection".to_owned(),
+            new_gint_par(11, Vec::new(), false),
+        )]),
+        locally_free: vec![1],
+    };
+    let pattern = New {
+        bind_count: 1,
+        p: Some(new_freevar_par(0, Vec::new())),
+        uri: vec!["rho:id:pattern".to_owned()],
+        injections: BTreeMap::from([(
+            "pattern-injection".to_owned(),
+            new_gint_par(22, Vec::new(), false),
+        )]),
+        locally_free: vec![2],
+    };
+
+    let mut oracle = RecursiveContext::new();
+    assert!(
+        oracle
+            .spatial_match(target.clone(), pattern.clone())
+            .is_some(),
+        "the authoritative New equation ignores URI, injections, and locally_free"
+    );
+    assert_eq!(
+        new_ac_query_acceptance(target, pattern),
+        None,
+        "a dynamic direct MatchValue::New row must fall back to All, never constrain ignored fields"
+    );
+}
+
+#[test]
+fn dynamic_direct_match_value_rows_decline_when_receive_bind_ignored_fields_differ() {
+    let target = ReceiveBind {
+        patterns: vec![new_gint_par(3, Vec::new(), false)],
+        source: Some(new_gint_par(7, Vec::new(), false)),
+        remainder: Some(Var::default()),
+        free_count: 41,
+    };
+    let pattern = ReceiveBind {
+        patterns: vec![new_gint_par(3, Vec::new(), false)],
+        source: Some(new_freevar_par(0, Vec::new())),
+        remainder: None,
+        free_count: 0,
+    };
+
+    let mut oracle = RecursiveContext::new();
+    assert!(
+        oracle
+            .spatial_match(target.clone(), pattern.clone())
+            .is_some(),
+        "the authoritative ReceiveBind equation ignores remainder and free_count"
+    );
+    assert_eq!(
+        receive_bind_ac_query_acceptance(target, pattern),
+        None,
+        "a dynamic direct MatchValue::ReceiveBind row must fall back to All, never constrain ignored fields"
+    );
+}
+
+#[test]
+fn dynamic_direct_match_value_rows_decline_when_match_case_ignored_fields_differ() {
+    let target = Match {
+        target: Some(new_gint_par(1, Vec::new(), false)),
+        cases: vec![MatchCase {
+            pattern: Some(new_gint_par(2, Vec::new(), false)),
+            source: Some(new_gint_par(7, Vec::new(), false)),
+            free_count: 41,
+            guard: Some(new_gbool_par(true, Vec::new(), false)),
+        }],
+        locally_free: vec![1],
+        connective_used: false,
+    };
+    let pattern = Match {
+        target: Some(new_gint_par(1, Vec::new(), false)),
+        cases: vec![MatchCase {
+            pattern: Some(new_gint_par(2, Vec::new(), false)),
+            source: Some(new_freevar_par(0, Vec::new())),
+            free_count: 0,
+            guard: None,
+        }],
+        locally_free: vec![2],
+        connective_used: true,
+    };
+
+    let mut oracle = RecursiveContext::new();
+    assert!(
+        oracle
+            .spatial_match(target.clone(), pattern.clone())
+            .is_some(),
+        "the authoritative Match/MatchCase equations ignore case free_count, guard, and root metadata"
+    );
+    assert_eq!(
+        match_ac_query_acceptance(target, pattern),
+        None,
+        "a dynamic direct MatchValue::Match row must fall back to All, never constrain ignored fields"
+    );
+}
+
+#[test]
+fn ground_direct_match_value_rows_keep_the_exact_query_lane() {
+    let new = New {
+        bind_count: 1,
+        p: Some(new_gint_par(7, Vec::new(), false)),
+        uri: vec!["rho:id:ground".to_owned()],
+        injections: BTreeMap::new(),
+        locally_free: Vec::new(),
+    };
+    assert_eq!(new_ac_query_acceptance(new.clone(), new), Some(true));
+
+    let bind = ReceiveBind {
+        patterns: vec![new_gint_par(3, Vec::new(), false)],
+        source: Some(new_gint_par(7, Vec::new(), false)),
+        remainder: None,
+        free_count: 0,
+    };
+    assert_eq!(
+        receive_bind_ac_query_acceptance(bind.clone(), bind),
+        Some(true)
+    );
+
+    let case = MatchCase {
+        pattern: Some(new_gint_par(2, Vec::new(), false)),
+        source: Some(new_gint_par(7, Vec::new(), false)),
+        free_count: 0,
+        guard: None,
+    };
+    let matched = Match {
+        target: Some(new_gint_par(1, Vec::new(), false)),
+        cases: vec![case],
+        locally_free: Vec::new(),
+        connective_used: false,
+    };
+    assert_eq!(
+        match_ac_query_acceptance(matched.clone(), matched),
+        Some(true)
     );
 }
 
@@ -2286,7 +2432,7 @@ fn production_list_pda_reuses_adjacent_duplicate_bag_identity() {
     assert_eq!(stats.target_key_encodes, 1);
 
     // AlwaysEqual and Par's semantic order deliberately ignore
-    // `locally_free`, while RMP1 and bincode identity retain it. The reuse
+    // `locally_free`, while RMP2 and bincode identity retain it. The reuse
     // guard must therefore use the generated CoW byte-identity proof or these
     // two distinct trie keys collapse.
     let first = send_value(

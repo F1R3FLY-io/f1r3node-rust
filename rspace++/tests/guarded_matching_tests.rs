@@ -993,9 +993,10 @@ async fn the_cost_of_a_complete_guarded_search_is_bounded_and_measured() {
     println!("  control — the SAME store with no guard: {spatial} Match::get, {elapsed:?}");
 }
 
-/// The PathMap candidate order is a function of candidate bytes and trie paths,
-/// not insertion order. The same data inserted in opposite orders therefore
-/// presents the same exact-path-addressed sequence to the matcher.
+/// The PathMap candidate order is a function of canonical datum identity bytes,
+/// not insertion order or a derived trie path. The same data inserted in
+/// opposite orders therefore presents the same exact-path-addressed sequence
+/// to the matcher.
 #[test]
 fn the_canonical_candidate_order_is_a_pure_function_of_the_candidates() {
     let ordered_payloads = |values: &[&str]| -> Vec<String> {

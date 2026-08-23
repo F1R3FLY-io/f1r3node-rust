@@ -10,6 +10,13 @@ edition = "2021"
 [lib]
 doctest = false
 
+[features]
+default = []
+# Measurement-only access to the removed zipper-clone control and the exact
+# production suffix-checkpoint path. Ordinary builds compile neither the
+# facade nor its legacy control.
+candidate-checkpoint-experiment = []
+
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
@@ -85,3 +92,8 @@ harness = false
 [[bench]]
 name = "rspace_retained_automaton_build"
 harness = false
+
+[[bench]]
+name = "rspace_candidate_suffix_checkpoint"
+harness = false
+required-features = ["candidate-checkpoint-experiment"]

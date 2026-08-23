@@ -10,6 +10,7 @@ use rspace_plus_plus::rspace::rho_path::RhoPathEncode;
 use rspace_plus_plus::rspace::serializers::cold_store_decode::{
     ColdStoreDecode, ColdStoreDecodeError, legacy_prefix,
 };
+use rspace_plus_plus::rspace::serializers::serializers::encode_datum;
 use rspace_plus_plus::rspace::trace::event::Produce;
 use serde::{Deserialize, Serialize};
 
@@ -226,6 +227,111 @@ fn candidate_pool_uses_identity_bytes_for_order_and_decodes_on_first_access() {
             .unwrap()
             .is_empty()
     );
+}
+
+#[test]
+fn decoded_entries_and_encoded_pool_have_the_same_exact_order_and_addresses() {
+    let channel = "channel".to_string();
+    let values = [
+        datum("alpha", false, 1),
+        datum("beta", true, 2),
+        datum("gamma", false, 3),
+        datum("delta", true, 4),
+    ];
+    let mut index = RSpaceDataIndex::new();
+    for value in &values {
+        index.insert(&channel, value).unwrap();
+    }
+
+    let decoded = index
+        .ordered_channel_entries::<_, String>(&channel)
+        .expect("the decoded public view must use the stored-identity order");
+    let pool = index
+        .candidate_pool::<_, String>(&channel)
+        .expect("the encoded candidate catalog must build");
+
+    assert_eq!(pool.len(), decoded.len());
+    for (position, expected) in decoded.iter().enumerate() {
+        let (actual, address) = pool
+            .candidate(position)
+            .expect("every distinct encoded entry must occupy one catalog position");
+        let DatumAddress::Stored(path) = address else {
+            panic!("an index-backed candidate cannot have a fresh address");
+        };
+        assert_eq!(path.as_ref(), expected.path.as_slice());
+        assert_eq!(actual, &expected.datum);
+
+        let view = rspace_plus_plus::rspace::rho_path::RhoPathV1::parse_datum(path.as_ref())
+            .expect("an inserted path must remain a valid datum path");
+        assert_eq!(
+            view.datum_identity(),
+            encode_datum(actual),
+            "the decoded datum must be the exact identity bytes that ordered the encoded catalog"
+        );
+    }
+}
+
+#[test]
+fn repeated_exact_identity_is_one_ordered_position_with_reservable_multiplicity() {
+    let channel = "channel".to_string();
+    let repeated = datum("repeated", false, 9);
+    let mut index = RSpaceDataIndex::new();
+    for _ in 0..3 {
+        index.insert(&channel, &repeated).unwrap();
+    }
+
+    let entries = index
+        .ordered_channel_entries::<_, String>(&channel)
+        .expect("one exact identity is valid regardless of multiplicity");
+    assert_eq!(entries.len(), 1, "multiplicity must not expand the ordered catalog");
+    assert_eq!(entries[0].multiplicity.get(), 3);
+
+    let mut pool = index.candidate_pool::<_, String>(&channel).unwrap();
+    assert_eq!(pool.len(), 1, "the pool has one position per exact identity");
+    let (_, original_address) = pool
+        .candidate(0)
+        .expect("the repeated candidate is available");
+
+    assert!(pool.reserve(0));
+    assert!(pool.candidate(0).is_some(), "two copies remain after one reservation");
+    assert!(pool.reserve(0));
+    assert!(pool.candidate(0).is_some(), "one copy remains after two reservations");
+    assert!(pool.reserve(0));
+    assert!(pool.candidate(0).is_none(), "all three copies are now reserved");
+    assert!(!pool.reserve(0), "a fourth reservation must fail");
+
+    pool.release(0);
+    let (_, restored_address) = pool.candidate(0).expect("release restores one copy");
+    assert_eq!(restored_address, original_address, "multiplicity shares one exact removal address");
+}
+
+#[test]
+fn public_index_refuses_one_identity_stored_under_two_derived_paths() {
+    use rspace_plus_plus::rspace::bag::Bag;
+    use rspace_plus_plus::rspace::rho_path::RhoPathV1;
+
+    let channel = "channel".to_string();
+    let value = datum("same datum", false, 7);
+    let identity = encode_datum(&value);
+    let left = RhoPathV1::datum_key(&channel, b"a-derived-structure", &identity);
+    let right = RhoPathV1::datum_key(&channel, b"z-derived-structure", &identity);
+    assert_ne!(left, right, "the malformed fixture needs two exact trie paths");
+
+    let mut bag = Bag::new();
+    bag.insert(&left).unwrap();
+    bag.insert(&right).unwrap();
+    let index = RSpaceDataIndex::from_bag(bag);
+    assert_eq!(index.distinct_len(), 2, "the public Bag constructor makes the edge case real");
+
+    assert_eq!(
+        index.ordered_channel_entries::<_, String>(&channel),
+        Err(DataIndexError::DuplicateDatumIdentity),
+        "the decoded ordering boundary must reject a non-total identity catalog"
+    );
+    assert!(matches!(
+        index.candidate_pool::<_, String>(&channel),
+        Err(DataIndexError::DuplicateDatumIdentity)
+    ));
 }
 
 #[test]

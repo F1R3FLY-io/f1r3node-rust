@@ -1,0 +1,51 @@
+@startuml
+skinparam backgroundColor #FAFCFF
+skinparam shadowing false
+skinparam defaultFontName DejaVu Sans
+skinparam ArrowColor #38536B
+skinparam rectangle {
+  BorderColor #38536B
+  FontColor #172A3A
+  RoundCorner 12
+}
+
+title RMP2 multiplicity-compressed ParBag transcript
+
+rectangle "Resident authority\nPathMap<Multiplicity> Bag" as Resident #D5F5E3
+rectangle "Admitted canonical Par region\nrepeated component fields" as Region #E9F2FA
+rectangle "Provenance and canonical-order validation\nchecked counters" as Validate #FFF1C7
+rectangle "Refuse malformed, out-of-order,\nor overflowing input; emit no token" as Refuse #FADBD8
+rectangle "Canonical record stream\nfamily tag | multiplicity | body length | body" as Records #FFF1C7
+rectangle "Count accumulator\ndistinct and saturated-u64 cardinality" as Counts #E9F2FA
+rectangle "BLAKE2b-256\nexact domain: RhoMatchPath/ParBag/\ncomponents/v2" as Digest #F5E6CC
+rectangle "RMP2 ParBag token\ndistinct | saturated cardinality | digest" as Token #D5F5E3
+
+Resident --> Records : one zipper visit per\ndistinct endpoint
+Region --> Validate
+Validate --> Records : valid canonical order;\ncoalesce adjacent identical bodies
+Validate --> Refuse : invalid
+Records --> Counts : checked distinct;\nsaturating cardinality projection
+Records --> Digest : one self-delimiting record\nper distinct endpoint
+Counts --> Token
+Digest --> Token
+
+note bottom of Records
+  No occurrence expansion in the digest record stream
+  Region source remains occurrence-expanded and must be scanned
+  No score or RPB3 reconstruction
+  No ACT materialization
+  No AST or Vec<Par>
+end note
+
+note bottom of Digest
+  Empty Bag: hash the exact domain alone
+end note
+
+legend bottom
+  |<#D5F5E3>| authoritative input or provisional output |
+  |<#E9F2FA>| region/count processing |
+  |<#FFF1C7>| validation or canonical transcript |
+  |<#F5E6CC>| cryptographic digest |
+  |<#FADBD8>| refusal without output |
+endlegend
+@enduml

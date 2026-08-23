@@ -338,7 +338,7 @@ End RetainedBagProduct.
 
 (** Concrete semantic bridge for the generated ordered RhoPath compiler.
 
-    [rho_value] abstracts one descriptor node after canonical RMP1 encoding.
+    [rho_value] abstracts one descriptor node after canonical RMP2 encoding.
     Its [identity] is the complete canonical byte identity, [label] is the
     generated message/variant tag, and [children] are the ordered descriptor
     children.  Exact instructions compare identities, holes accept one complete

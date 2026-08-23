@@ -239,6 +239,34 @@ fn nonlinear_ordered_bindings_fall_back_before_a_query_can_change_legacy_semanti
 }
 
 #[test]
+fn deep_region_query_scanner_is_stack_safe_for_a_dynamic_unary_chain() {
+    std::thread::Builder::new()
+        .name("deep-rmp2-region-query".to_string())
+        .stack_size(512 * 1024)
+        .spawn(|| {
+            const DEPTH: usize = 4_096;
+            let matcher = Matcher;
+            let pattern = BindPattern {
+                patterns: vec![Par::wrap_unary_elist(DEPTH, new_freevar_par(0, Vec::new()))
+                    .expect("canonical unary-list pattern is representable")],
+                remainder: None,
+                free_count: 1,
+            };
+            let query = matcher
+                .rho_path_query(&pattern)
+                .expect("deep linear capture has a conservative RMP2 query");
+            let matching = datum(
+                Par::wrap_unary_elist(DEPTH, integer(99))
+                    .expect("canonical unary-list datum is representable"),
+            );
+            assert!(query.matches_structure(&matching.rho_path_structure()));
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+#[test]
 fn ordered_method_target_and_arguments_compile_without_a_variant_specific_path() {
     let matcher = Matcher;
     let pattern = BindPattern {
