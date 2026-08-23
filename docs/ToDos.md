@@ -154,6 +154,7 @@ tasks:
       - "blocked_by encodes the stack merge order PR #322 -> #323 (Phase 4) -> #325 (Phase 3) -> #321 (Phase 5), which is also the code-dependency order: Phase 3 implements the Section 8.1 contract Phase 4 defines. Phase 4 becomes operational end to end only after Phase 3 publishes gate documents; that is a runtime dependency, not a merge dependency."
       - "ci.yml runs pull-request CI for bases dev, master, staging, trying, and feature/**. A member whose base is outside that set (fix/**, formal/**) gets no pull-request run; train setup requires one successful ci.yml run for head_sha from any event and dispatches one when none exists (Section 13.2 step 9)."
       - "Rehearsal candidate for the stack-train step: the key-contention stack PR #299 -> #312 -> #319 -> #311 (EPIC-016), non-publishing, no version reservation."
+      - "2026-08-23 multi-agent review of PR #328: plan-ci also requires head_repository.full_name to match (the run list reports the base repository for every run); a merged member proves merge-commit reachability from integration_branch through a reach-<N>.json compare document; a member whose predecessor has merged may target integration_branch, because GitHub retargets the pull request when the merged branch is deleted; setup fails fast on a member head outside this repository. 23 rejection cases plus merged and retargeted acceptance paths."
     acceptance:
       - "deployment-train.yml validates manifests under .github/deployment-trains/ and starts trains"
       - "The validator accepts schema_version 1 and 2, and rejects a stack member with a foreign base, broken head ancestry, or a squash or rebase merge"
@@ -633,6 +634,22 @@ tasks:
       - "Nodes parse both legacy rnode:// and new f1r3fly:// addresses during a documented transition window"
       - "Nodes emit the new scheme only when compatibility permits"
       - "Mixed-version discovery, bootstrap configuration, CLI parsing, and eventual legacy-removal criteria are tested and documented"
+  - id: TASK-012-30
+    title: "Bind ephemeral CI runners to the run that launched them"
+    status: pending
+    issues: []
+    base_branch: dev
+    branch: fix/ci-ephemeral-runner-run-binding
+    proposed_pr_title: "fix(ci): bind ephemeral runners to their launching run"
+    claimed_by: null
+    blocked_by: []
+    notes:
+      - "2026-08-23: three Heavy Pipelines overlapped (#316 re-run, #328, #329). Launch Ephemeral Runners starts exactly two amd64 and two arm64 VMs per run, but GitHub assigns queued jobs to runners by label only, so the pool is shared. PR #328's amd64-docker job took PR #329's second amd64 VM (ci-eph-...-042856-6d1807) five minutes before #329's integration jobs queued; #329's amd64-subprocess then waited with no runner until the run was cancelled and re-run in full. Same symptom as the re-run-failed-jobs trap, different cause."
+      - "The per-run label is the minimal fix: launch-runner.sh registers each VM with an extra label run-<GITHUB_RUN_ID>, and the ephemeral jobs add that label to runs-on. Idle VMs from another run then never match."
+    acceptance:
+      - "Each ephemeral runner registers with a label that names the run that launched it, and every ephemeral job in _integration-pipeline.yml requires that label"
+      - "Two Heavy Pipelines started within one minute of each other both complete without a job waiting on a runner that another run consumed"
+      - "An idle ephemeral VM that its run no longer needs still self-terminates on the idle timeout"
 ---
 ```
 
