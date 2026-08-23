@@ -1048,6 +1048,97 @@ pub fn canonical_expr_oneof_tag(message: &[u8]) -> Option<u32> {
     canonical_expr_envelope(message).map(|envelope| envelope.tag)
 }
 
+/// Borrowed score and metadata inputs of one trusted canonical EZipper region.
+pub(crate) struct CanonicalEzipperRegionParts<'a> {
+    pub(crate) snapshot: &'a [u8],
+    pub(crate) locally_free: &'a [u8],
+    pub(crate) connective_used: bool,
+}
+
+/// Borrow the score input and substitution summaries from an authoritative
+/// canonical `Expr(EZipper)` body while skipping the cursor's PathMap values
+/// and path segments by their protobuf extents.
+///
+/// This is deliberately a *resident-key* cursor, not a general protobuf
+/// validator. Its caller must prove that `message` is either the payload of a
+/// typed RPB3 endpoint or a subregion cut from such a payload. At the RPB3
+/// boundary [`validate_typed_key`] decodes the component and recompiles its
+/// complete key; consequently a missing required field, a non-canonical
+/// collection order, or an invalid EPM1 snapshot cannot enter this lane. The
+/// shallow scan below then preserves those already-authoritative bytes without
+/// decoding the recursive `PathMap<Par>` value graph a second time.
+pub(crate) fn canonical_ezipper_region_parts(
+    message: &[u8],
+) -> Option<CanonicalEzipperRegionParts<'_>> {
+    let CanonicalExprEnvelope {
+        tag: 33,
+        payload: zipper,
+    } = canonical_expr_envelope(message)?
+    else {
+        return None;
+    };
+
+    let mut at = 0usize;
+    let mut last_field = 0u64;
+    let mut saw_pathmap = false;
+    let mut saw_is_write = false;
+    let mut saw_locally_free = false;
+    let mut saw_connective = false;
+    let mut saw_cursor_kind = false;
+    let mut pathmap = None;
+    let mut locally_free = &[][..];
+    while at < zipper.len() {
+        let key = read_canonical_varint(zipper, &mut at)?;
+        let field = key >> 3;
+        let wire = key & 0x07;
+        (field >= last_field).then_some(())?;
+        last_field = field;
+        match (field, wire) {
+            (1, 2) if !saw_pathmap => {
+                let len = usize::try_from(read_canonical_varint(zipper, &mut at)?).ok()?;
+                let end = at.checked_add(len)?;
+                pathmap = Some(zipper.get(at..end)?);
+                at = end;
+                saw_pathmap = true;
+            }
+            // `current_path` is the sole repeated field.
+            (2, 2) => {
+                let len = usize::try_from(read_canonical_varint(zipper, &mut at)?).ok()?;
+                at = at.checked_add(len).filter(|end| *end <= zipper.len())?;
+            }
+            // Canonical proto3 omits false scalar defaults.
+            (3, 0) if !saw_is_write => {
+                (read_canonical_varint(zipper, &mut at)? == 1).then_some(())?;
+                saw_is_write = true;
+            }
+            (4, 2) if !saw_locally_free => {
+                let len = usize::try_from(read_canonical_varint(zipper, &mut at)?).ok()?;
+                (len != 0).then_some(())?;
+                let end = at.checked_add(len)?;
+                locally_free = zipper.get(at..end)?;
+                at = end;
+                saw_locally_free = true;
+            }
+            (5, 0) if !saw_connective => {
+                (read_canonical_varint(zipper, &mut at)? == 1).then_some(())?;
+                saw_connective = true;
+            }
+            (6, 0) if !saw_cursor_kind => {
+                matches!(read_canonical_varint(zipper, &mut at)?, 1 | 2).then_some(())?;
+                saw_cursor_kind = true;
+            }
+            _ => return None,
+        }
+    }
+    let pathmap = pathmap.filter(|_| saw_pathmap)?;
+    let map = canonical_epathmap_parts(pathmap)?;
+    Some(CanonicalEzipperRegionParts {
+        snapshot: map.snapshot,
+        locally_free,
+        connective_used: saw_connective,
+    })
+}
+
 /// Extract the level from an exact canonical `Expr(EVar(FreeVar(level)))`
 /// without decoding any recursively nested expression alternative.
 ///
@@ -3044,6 +3135,10 @@ fn canonical_epathmap_parts_from_expr(expr: &[u8]) -> Option<CanonicalEPathMapEn
         return None;
     };
 
+    canonical_epathmap_parts(pathmap)
+}
+
+fn canonical_epathmap_parts(pathmap: &[u8]) -> Option<CanonicalEPathMapEnvelope<'_>> {
     let mut at = 0usize;
     let mut last_field = 0u64;
     let mut saw_locally_free = false;
@@ -3272,9 +3367,31 @@ fn validate_key(path: &[u8]) -> Result<(ParComponentTag, usize, bool), ParBagCod
 /// Decode only when an operation actually needs the Rust AST value.
 #[derive(Clone, Copy)]
 pub struct EncodedParComponent<'a, T> {
+    score: &'a [u8],
     payload: &'a [u8],
     multiplicity: Multiplicity,
     marker: PhantomData<fn() -> T>,
+}
+
+/// An owned proof that one authoritative RPB3 endpoint is an `EZipper`.
+///
+/// The score/body pair can only be created by the typed [`ParBag`] visitor,
+/// after the resident trie key has passed its complete invariant checks.  The
+/// private fields deliberately prevent downstream code from pairing arbitrary
+/// score bytes with a different protobuf body.
+pub struct OwnedCanonicalEzipper {
+    score: Box<[u8]>,
+    protobuf: Box<[u8]>,
+    locally_free: Box<[u8]>,
+    connective_used: bool,
+}
+
+impl OwnedCanonicalEzipper {
+    pub fn locally_free(&self) -> &[u8] { &self.locally_free }
+
+    pub const fn connective_used(&self) -> bool { self.connective_used }
+
+    pub(crate) fn into_parts(self) -> (Box<[u8]>, Box<[u8]>) { (self.score, self.protobuf) }
 }
 
 /// One typed component yielded to a representation-independent worklist.
@@ -3299,6 +3416,8 @@ impl<T> AsRef<T> for ParComponentItem<'_, T> {
 }
 
 impl<'a, T: ParBagComponent> EncodedParComponent<'a, T> {
+    pub const fn score(&self) -> &'a [u8] { self.score }
+
     pub const fn payload(&self) -> &'a [u8] { self.payload }
 
     pub const fn multiplicity(&self) -> Multiplicity { self.multiplicity }
@@ -3326,6 +3445,20 @@ impl EncodedParComponent<'_, Bundle> {
 }
 
 impl<'a> EncodedParComponent<'a, Expr> {
+    /// Retain an opaque runtime zipper as its authoritative RPB3 score/body
+    /// pair.  This performs only canonical field-envelope scans: the inner
+    /// `EPathMap` snapshot is skipped by length and is never decoded or
+    /// traversed.
+    pub fn to_owned_canonical_ezipper(&self) -> Option<OwnedCanonicalEzipper> {
+        let parts = canonical_ezipper_region_parts(self.payload)?;
+        Some(OwnedCanonicalEzipper {
+            score: self.score.into(),
+            protobuf: self.payload.into(),
+            locally_free: parts.locally_free.into(),
+            connective_used: parts.connective_used,
+        })
+    }
+
     /// Borrow the depth and terminal `Par` body of an exact one-entry
     /// `PathMap<Par>` value chain.
     ///
@@ -4226,9 +4359,10 @@ impl ParBag {
     ) {
         self.components
             .visit_relative_prefix(&component_prefix(T::TAG), |suffix, multiplicity| {
-                let (_score, payload) = split_key_suffix(T::TAG, suffix)
+                let (score, payload) = split_key_suffix(T::TAG, suffix)
                     .expect("ParBag invariant: every stored component key was validated");
                 visitor(EncodedParComponent {
+                    score,
                     payload,
                     multiplicity,
                     marker: PhantomData,

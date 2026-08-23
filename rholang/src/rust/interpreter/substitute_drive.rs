@@ -103,7 +103,9 @@ use models::rust::canonical_path::{
     CanonicalTopLevelSegmentCursor,
 };
 use models::rust::epathmap_trie_codec::{EPathMapMode, EPathMapRepr};
-use models::rust::par_bag::{canonical_expr_oneof_tag, Multiplicity, ParBagComponent};
+use models::rust::par_bag::{
+    canonical_expr_oneof_tag, Multiplicity, OwnedCanonicalEzipper, ParBagComponent,
+};
 use models::rust::par_construction::{ParConstruction, PlannedComponent, PlannedPar};
 use models::rust::rhoapi_ext::{OwnedEPathMapEntries, OwnedEPathMapEntry};
 use models::rust::rholang::match_schema_tables::{
@@ -259,7 +261,8 @@ enum EncodedFamily {
 
 pub(crate) struct EncodedOccurrence {
     family: EncodedFamily,
-    region: ProtobufRegion,
+    region: Option<ProtobufRegion>,
+    canonical_ezipper: Option<OwnedCanonicalEzipper>,
     multiplicity: Multiplicity,
 }
 
@@ -269,6 +272,7 @@ pub(crate) struct RegionParSubstitution {
     locally_free: Vec<u8>,
     connective_used: bool,
     ctx: SubCtx,
+    preserve: bool,
 }
 
 enum RegionChild {
@@ -281,6 +285,7 @@ enum RegionChild {
 enum RegionComponentShell {
     Expr {
         arm: ExprArm,
+        preserve_shell: Option<Expr>,
         depth: i32,
         shift: i32,
     },
@@ -303,6 +308,8 @@ pub(crate) struct RegionComponentKont {
     /// Generated protobuf child order as indices into semantic evaluation
     /// order. Empty means the two orders are identical.
     wire_order: Vec<usize>,
+    /// Identity-import mode bypasses every substitution-only rewrite.
+    preserve: bool,
 }
 
 /// A pending unit of work.
@@ -313,12 +320,12 @@ pub(crate) enum SubWork {
     Par(Option<Par>, SubCtx),
     /// A canonical protobuf `Par` body retained as one shared byte region.
     ParRegion(ProtobufRegion, SubCtx),
-    /// Import an intentionally unsubstituted child once. New injections and
-    /// opaque runtime cursor state use this semantic boundary.
+    /// Import an intentionally unsubstituted child through the same iterative
+    /// region PDA. New injections use this semantic boundary.
     ImportParRegion(ProtobufRegion),
     PlannedPar(PlannedPar),
     CanonicalKey(Vec<u8>),
-    RegionComponent(EncodedOccurrence, SubCtx),
+    RegionComponent(EncodedOccurrence, SubCtx, bool),
     RegionPar(Box<RegionParSubstitution>),
     Expr(Expr, SubCtx),
     Send(Send, SubCtx),
@@ -437,6 +444,7 @@ pub(crate) struct PathMapSubstitution {
     connective_used: bool,
     remainder: Option<Var>,
     ctx: SubCtx,
+    preserve: bool,
     values: PathMapValueSource,
     completion: PathMapCompletion,
 }
@@ -651,15 +659,14 @@ impl Substitute {
                     descend_par_region(region, ctx, view, empty, &mut work)?
                 }
                 SubWork::ImportParRegion(region) => {
-                    let par = protobuf_decoder::decode_par(region.into_bytes())
-                        .map_err(|error| InterpreterError::DecodeError(error.to_string()))?;
-                    vals.push(PlannedSubVal::Par(construction.import_par(&par)?));
+                    descend_preserved_par_region(region, empty, &mut work)?;
                 }
                 SubWork::PlannedPar(par) => vals.push(PlannedSubVal::Par(par)),
                 SubWork::CanonicalKey(key) => vals.push(PlannedSubVal::CanonicalKey(key)),
-                SubWork::RegionComponent(occurrence, ctx) => descend_region_component(
+                SubWork::RegionComponent(occurrence, ctx, preserve) => descend_region_component(
                     occurrence,
                     ctx,
+                    preserve,
                     view,
                     empty,
                     &mut construction,
@@ -726,9 +733,31 @@ fn append_resident_family<T: ParBagComponent>(
     term.visit_encoded::<T>(|entry| {
         occurrences.push(EncodedOccurrence {
             family,
-            region: ProtobufRegion::copy_from_slice(entry.payload()),
+            region: Some(ProtobufRegion::copy_from_slice(entry.payload())),
+            canonical_ezipper: None,
             multiplicity: entry.multiplicity(),
         });
+    });
+}
+
+fn append_resident_exprs(term: &Par, occurrences: &mut Vec<EncodedOccurrence>) {
+    term.visit_encoded::<Expr>(|entry| {
+        let multiplicity = entry.multiplicity();
+        if let Some(canonical_ezipper) = entry.to_owned_canonical_ezipper() {
+            occurrences.push(EncodedOccurrence {
+                family: EncodedFamily::Expr,
+                region: None,
+                canonical_ezipper: Some(canonical_ezipper),
+                multiplicity,
+            });
+        } else {
+            occurrences.push(EncodedOccurrence {
+                family: EncodedFamily::Expr,
+                region: Some(ProtobufRegion::copy_from_slice(entry.payload())),
+                canonical_ezipper: None,
+                multiplicity,
+            });
+        }
     });
 }
 
@@ -744,7 +773,11 @@ fn append_region_family(
         .map_err(|error| InterpreterError::DecodeError(error.to_string()))?
     {
         if let Some(previous) = occurrences.last_mut().filter(|previous| {
-            previous.family == family && previous.region.as_bytes() == region.as_bytes()
+            previous.family == family
+                && previous
+                    .region
+                    .as_ref()
+                    .is_some_and(|previous| previous.as_bytes() == region.as_bytes())
         }) {
             previous.multiplicity = previous
                 .multiplicity
@@ -753,7 +786,8 @@ fn append_region_family(
         } else {
             occurrences.push(EncodedOccurrence {
                 family,
-                region,
+                region: Some(region),
+                canonical_ezipper: None,
                 multiplicity: Multiplicity::ONE,
             });
         }
@@ -766,6 +800,7 @@ fn schedule_region_par(
     locally_free: Vec<u8>,
     connective_used: bool,
     ctx: SubCtx,
+    preserve: bool,
     empty: PlannedPar,
     work: &mut Vec<SubWork>,
 ) {
@@ -777,6 +812,7 @@ fn schedule_region_par(
         locally_free,
         connective_used,
         ctx,
+        preserve,
     })));
 }
 
@@ -792,7 +828,7 @@ fn descend_par(
     // This is the legacy substitution/error order, not protobuf tag order.
     // Every visitor lends one distinct PathMap endpoint and its Bag count; the
     // protobuf body is copied once into the backing shared by all descendants.
-    append_resident_family::<Expr>(&term, EncodedFamily::Expr, &mut occurrences);
+    append_resident_exprs(&term, &mut occurrences);
     append_resident_family::<Connective>(&term, EncodedFamily::Connective, &mut occurrences);
     append_resident_family::<Send>(&term, EncodedFamily::Send, &mut occurrences);
     append_resident_family::<Bundle>(&term, EncodedFamily::Bundle, &mut occurrences);
@@ -809,6 +845,7 @@ fn descend_par(
         set_bits_until(locally_free, view.shift(ctx)),
         connective_used,
         ctx,
+        false,
         empty,
         work,
     );
@@ -866,6 +903,69 @@ fn descend_par_region(
         set_bits_until(locally_free, view.shift(ctx)),
         index.connective_used,
         ctx,
+        false,
+        empty,
+        work,
+    );
+    Ok(())
+}
+
+fn descend_preserved_par_region(
+    region: ProtobufRegion,
+    empty: PlannedPar,
+    work: &mut Vec<SubWork>,
+) -> Result<(), InterpreterError> {
+    // Identity import is reachable only through a `Par` cut descended from a
+    // typed, validated resident RPB3 endpoint. `ProtobufRegion` supplies the
+    // shared range, while that enclosing endpoint supplies semantic trust.
+    // Preserve mode therefore retains canonical bytes; it is not a public
+    // decoder for arbitrary canonically framed protobuf.
+    let index = CanonicalParRegionIndex::parse(region)
+        .map_err(|error| InterpreterError::DecodeError(error.to_string()))?;
+    let mut occurrences = Vec::new();
+    append_region_family(index.exprs.as_ref(), EncodedFamily::Expr, &mut occurrences)?;
+    append_region_family(
+        index.connectives.as_ref(),
+        EncodedFamily::Connective,
+        &mut occurrences,
+    )?;
+    append_region_family(index.sends.as_ref(), EncodedFamily::Send, &mut occurrences)?;
+    append_region_family(
+        index.bundles.as_ref(),
+        EncodedFamily::Bundle,
+        &mut occurrences,
+    )?;
+    append_region_family(
+        index.receives.as_ref(),
+        EncodedFamily::Receive,
+        &mut occurrences,
+    )?;
+    append_region_family(index.news.as_ref(), EncodedFamily::New, &mut occurrences)?;
+    append_region_family(
+        index.matches.as_ref(),
+        EncodedFamily::Match,
+        &mut occurrences,
+    )?;
+    append_region_family(
+        index.conditionals.as_ref(),
+        EncodedFamily::If,
+        &mut occurrences,
+    )?;
+    append_region_family(
+        index.unforgeables.as_ref(),
+        EncodedFamily::Unforgeable,
+        &mut occurrences,
+    )?;
+    let locally_free = index
+        .locally_free
+        .as_ref()
+        .map_or_else(Vec::new, |bytes| bytes.as_bytes().to_vec());
+    schedule_region_par(
+        occurrences,
+        locally_free,
+        index.connective_used,
+        SubCtx::root(0),
+        true,
         empty,
         work,
     );
@@ -880,17 +980,22 @@ fn step_region_par(
 ) -> Result<(), InterpreterError> {
     if let Some(occurrence) = state.rest.pop() {
         let ctx = state.ctx;
+        let preserve = state.preserve;
         work.push(SubWork::Combine(SubKont::RegionParK(state)));
-        work.push(SubWork::RegionComponent(occurrence, ctx));
+        work.push(SubWork::RegionComponent(occurrence, ctx, preserve));
         return Ok(());
     }
 
-    let metadata = construction.par(
-        std::iter::empty(),
-        state.locally_free,
-        state.connective_used,
-    )?;
-    let root = construction.parallel(state.acc, metadata)?;
+    let root = if state.preserve {
+        construction.with_metadata(state.acc, state.locally_free, state.connective_used)?
+    } else {
+        let metadata = construction.par(
+            std::iter::empty(),
+            state.locally_free,
+            state.connective_used,
+        )?;
+        construction.parallel(state.acc, metadata)?
+    };
     vals.push(PlannedSubVal::Par(root));
     Ok(())
 }
@@ -928,6 +1033,23 @@ impl<'a> RegionCutCursor<'a> {
         }
     }
 
+    fn required_mode(
+        &mut self,
+        present: bool,
+        ctx: SubCtx,
+        preserve: bool,
+    ) -> Result<RegionChild, InterpreterError> {
+        if preserve {
+            if present {
+                self.preserved()
+            } else {
+                Ok(RegionChild::Missing(ctx))
+            }
+        } else {
+            self.required(present, ctx)
+        }
+    }
+
     fn optional(
         &mut self,
         present: bool,
@@ -941,8 +1063,34 @@ impl<'a> RegionCutCursor<'a> {
         }
     }
 
+    fn optional_mode(
+        &mut self,
+        present: bool,
+        ctx: SubCtx,
+        empty: PlannedPar,
+        preserve: bool,
+    ) -> Result<RegionChild, InterpreterError> {
+        if preserve {
+            if present {
+                self.preserved()
+            } else {
+                Ok(RegionChild::Empty(empty))
+            }
+        } else {
+            self.optional(present, ctx, empty)
+        }
+    }
+
     fn substituted(&mut self, ctx: SubCtx) -> Result<RegionChild, InterpreterError> {
         Ok(RegionChild::Substitute(self.take()?, ctx))
+    }
+
+    fn traversed(&mut self, ctx: SubCtx, preserve: bool) -> Result<RegionChild, InterpreterError> {
+        if preserve {
+            self.preserved()
+        } else {
+            self.substituted(ctx)
+        }
     }
 
     fn preserved(&mut self) -> Result<RegionChild, InterpreterError> {
@@ -978,6 +1126,7 @@ fn schedule_region_component(
     multiplicity: Multiplicity,
     children: Vec<RegionChild>,
     wire_order: Vec<usize>,
+    preserve: bool,
     work: &mut Vec<SubWork>,
 ) {
     let child_count = children.len();
@@ -987,6 +1136,7 @@ fn schedule_region_component(
             multiplicity,
             child_count,
             wire_order,
+            preserve,
         },
     )));
     push_region_children(work, children);
@@ -1016,9 +1166,9 @@ fn region_decode_error(error: impl std::fmt::Display) -> InterpreterError {
 
 /// Recognize the opaque runtime-only zipper arm from the canonical `Expr`
 /// envelope without first building a cut-at-`Par` plan for the PathMap stored
-/// inside it. The full generated decoder still validates and imports the
-/// expression below; this look-ahead only avoids scanning a subtree that
-/// substitution is forbidden to enter.
+/// inside it. The byte-native importer derives its score and summaries from
+/// the canonical envelope and skips the subtree that substitution is
+/// forbidden to enter.
 fn region_expr_is_ezipper(region: &ProtobufRegion) -> bool {
     canonical_expr_oneof_tag(region.as_bytes()) == Some(33)
 }
@@ -1028,6 +1178,7 @@ fn begin_region_epathmap(
     plan: ProtobufCutPlan,
     occurrence: EncodedOccurrence,
     ctx: SubCtx,
+    preserve: bool,
     view: EnvView<'_>,
     work: &mut Vec<SubWork>,
 ) -> Result<(), InterpreterError> {
@@ -1057,10 +1208,15 @@ fn begin_region_epathmap(
     work.push(SubWork::PathMap(Box::new(PathMapSubstitution {
         entries: parts.entries,
         result,
-        locally_free: set_bits_until(parts.locally_free, view.shift(ctx)),
+        locally_free: if preserve {
+            parts.locally_free
+        } else {
+            set_bits_until(parts.locally_free, view.shift(ctx))
+        },
         connective_used: parts.connective_used,
         remainder: parts.remainder,
         ctx,
+        preserve,
         values: PathMapValueSource::Regions {
             plan,
             next: cut_range.start,
@@ -1072,28 +1228,50 @@ fn begin_region_epathmap(
 }
 
 fn descend_region_component(
-    occurrence: EncodedOccurrence,
+    mut occurrence: EncodedOccurrence,
     ctx: SubCtx,
+    preserve: bool,
     view: EnvView<'_>,
     empty: PlannedPar,
     construction: &mut ParConstruction,
     work: &mut Vec<SubWork>,
     vals: &mut Vec<PlannedSubVal>,
 ) -> Result<(), InterpreterError> {
-    if occurrence.family == EncodedFamily::Expr && region_expr_is_ezipper(&occurrence.region) {
-        // EZipper is runtime cursor state and substitution has always treated
-        // it as opaque, including its PathMap. Avoid `cut_at_par`: doing so
-        // would traverse and retain every value region merely to discard the
-        // plan. Import the one distinct component exactly once instead.
-        let original = protobuf_decoder::decode_expr(occurrence.region.into_bytes())
-            .map_err(region_decode_error)?;
-        let component = construction.import_component(&original)?;
+    if let Some(canonical) = occurrence.canonical_ezipper.take() {
+        debug_assert_eq!(occurrence.family, EncodedFamily::Expr);
+        let locally_free = canonical.locally_free().to_vec();
+        let connective_used = canonical.connective_used();
+        let component = construction.import_canonical_ezipper(canonical)?;
         vals.push(PlannedSubVal::Par(component_contribution(
             construction,
             component,
             occurrence.multiplicity,
-            expr_locally_free_ref(&original, ctx.depth),
-            expr_connective_used_ref(&original),
+            locally_free,
+            connective_used,
+        )?));
+        return Ok(());
+    }
+
+    let region = occurrence
+        .region
+        .as_ref()
+        .expect("non-resident-EZipper occurrence retains its protobuf region");
+    if occurrence.family == EncodedFamily::Expr && region_expr_is_ezipper(region) {
+        // EZipper is runtime cursor state and substitution has always treated
+        // it as opaque, including its PathMap. Avoid `cut_at_par`: doing so
+        // would traverse and retain every value region merely to discard the
+        // plan. The region descends from RPB3 typed-key validation (see
+        // `descend_preserved_par_region`), so derive the exact score from the
+        // embedded EPM1 bytes and retain the original protobuf body without
+        // decoding either structure.
+        let (component, locally_free, connective_used) =
+            construction.import_canonical_ezipper_region(region.as_bytes())?;
+        vals.push(PlannedSubVal::Par(component_contribution(
+            construction,
+            component,
+            occurrence.multiplicity,
+            locally_free,
+            connective_used,
         )?));
         return Ok(());
     }
@@ -1109,18 +1287,20 @@ fn descend_region_component(
         EncodedFamily::If => &IF_RHO_MATCH_PROGRAM,
         EncodedFamily::Unforgeable => &GUNFORGEABLE_RHO_MATCH_PROGRAM,
     };
-    let plan = cut_at_par(occurrence.region.clone(), program).map_err(region_decode_error)?;
+    let plan = cut_at_par(region.clone(), program).map_err(region_decode_error)?;
     let shallow = plan.shallow_bytes();
 
     match occurrence.family {
         EncodedFamily::Send => {
             let mut shell = protobuf_decoder::decode_send(shallow).map_err(region_decode_error)?;
-            shell.locally_free = set_bits_until(shell.locally_free, view.shift(ctx));
+            if !preserve {
+                shell.locally_free = set_bits_until(shell.locally_free, view.shift(ctx));
+            }
             let mut cuts = RegionCutCursor::new(&plan);
             let mut children = Vec::with_capacity(shell.data.len() + 1);
-            children.push(cuts.required(shell.chan.is_some(), ctx)?);
+            children.push(cuts.required_mode(shell.chan.is_some(), ctx, preserve)?);
             for _ in &shell.data {
-                children.push(cuts.substituted(ctx)?);
+                children.push(cuts.traversed(ctx, preserve)?);
             }
             cuts.finish()?;
             schedule_region_component(
@@ -1128,30 +1308,34 @@ fn descend_region_component(
                 occurrence.multiplicity,
                 children,
                 Vec::new(),
+                preserve,
                 work,
             );
         }
         EncodedFamily::Bundle => {
             let shell = protobuf_decoder::decode_bundle(shallow).map_err(region_decode_error)?;
             let mut cuts = RegionCutCursor::new(&plan);
-            let children = vec![cuts.required(shell.body.is_some(), ctx)?];
+            let children = vec![cuts.required_mode(shell.body.is_some(), ctx, preserve)?];
             cuts.finish()?;
             schedule_region_component(
                 RegionComponentShell::Bundle(shell),
                 occurrence.multiplicity,
                 children,
                 Vec::new(),
+                preserve,
                 work,
             );
         }
         EncodedFamily::If => {
             let mut shell = protobuf_decoder::decode_if(shallow).map_err(region_decode_error)?;
-            shell.locally_free = set_bits_until(shell.locally_free, view.shift(ctx));
+            if !preserve {
+                shell.locally_free = set_bits_until(shell.locally_free, view.shift(ctx));
+            }
             let mut cuts = RegionCutCursor::new(&plan);
             let children = vec![
-                cuts.required(shell.condition.is_some(), ctx)?,
-                cuts.required(shell.if_true.is_some(), ctx)?,
-                cuts.required(shell.if_false.is_some(), ctx)?,
+                cuts.required_mode(shell.condition.is_some(), ctx, preserve)?,
+                cuts.required_mode(shell.if_true.is_some(), ctx, preserve)?,
+                cuts.required_mode(shell.if_false.is_some(), ctx, preserve)?,
             ];
             cuts.finish()?;
             schedule_region_component(
@@ -1159,15 +1343,27 @@ fn descend_region_component(
                 occurrence.multiplicity,
                 children,
                 Vec::new(),
+                preserve,
                 work,
             );
         }
         EncodedFamily::New => {
             let mut shell = protobuf_decoder::decode_new(shallow).map_err(region_decode_error)?;
-            shell.locally_free = set_bits_until(shell.locally_free, view.shift(ctx));
+            if !preserve {
+                shell.locally_free = set_bits_until(shell.locally_free, view.shift(ctx));
+            }
             let mut cuts = RegionCutCursor::new(&plan);
             let mut children = Vec::with_capacity(shell.injections.len() + 1);
-            children.push(cuts.required(shell.p.is_some(), ctx.shifted(shell.bind_count))?);
+            children.push(cuts.required_mode(
+                shell.p.is_some(),
+                ctx.shifted(shell.bind_count),
+                preserve,
+            )?);
+            // Prost emits map entries by the BTreeMap's key order and the
+            // generated region program visits the same wire order. Thus each
+            // retained value cut remains associated with the corresponding
+            // key in `shell.injections`; neither side projects or re-sorts the
+            // map independently here.
             for _ in &shell.injections {
                 children.push(cuts.preserved()?);
             }
@@ -1177,22 +1373,25 @@ fn descend_region_component(
                 occurrence.multiplicity,
                 children,
                 Vec::new(),
+                preserve,
                 work,
             );
         }
         EncodedFamily::Receive => {
             let mut shell =
                 protobuf_decoder::decode_receive(shallow).map_err(region_decode_error)?;
-            shell.locally_free = set_bits_until(shell.locally_free, view.shift(ctx));
+            if !preserve {
+                shell.locally_free = set_bits_until(shell.locally_free, view.shift(ctx));
+            }
             let mut cuts = RegionCutCursor::new(&plan);
             let mut children = Vec::new();
             let mut wire_order = Vec::new();
             for bind in &shell.binds {
                 let mut patterns = Vec::with_capacity(bind.patterns.len());
                 for _ in &bind.patterns {
-                    patterns.push(cuts.substituted(ctx.deeper())?);
+                    patterns.push(cuts.traversed(ctx.deeper(), preserve)?);
                 }
-                let source = cuts.required(bind.source.is_some(), ctx)?;
+                let source = cuts.required_mode(bind.source.is_some(), ctx, preserve)?;
 
                 let source_index = children.len();
                 children.push(source);
@@ -1203,10 +1402,15 @@ fn descend_region_component(
             }
             let shifted = ctx.shifted(shell.bind_count);
             let body_index = children.len();
-            children.push(cuts.required(shell.body.is_some(), shifted)?);
+            children.push(cuts.required_mode(shell.body.is_some(), shifted, preserve)?);
             wire_order.push(body_index);
             let condition_index = children.len();
-            children.push(cuts.optional(shell.condition.is_some(), shifted, empty)?);
+            children.push(cuts.optional_mode(
+                shell.condition.is_some(),
+                shifted,
+                empty,
+                preserve,
+            )?);
             wire_order.push(condition_index);
             cuts.finish()?;
             schedule_region_component(
@@ -1214,18 +1418,21 @@ fn descend_region_component(
                 occurrence.multiplicity,
                 children,
                 wire_order,
+                preserve,
                 work,
             );
         }
         EncodedFamily::Match => {
             let mut shell = protobuf_decoder::decode_match(shallow).map_err(region_decode_error)?;
-            shell.locally_free = set_bits_until(shell.locally_free, view.shift(ctx));
+            if !preserve {
+                shell.locally_free = set_bits_until(shell.locally_free, view.shift(ctx));
+            }
             let mut cuts = RegionCutCursor::new(&plan);
             let mut children = Vec::new();
             let mut wire_order = Vec::new();
 
             let target_index = children.len();
-            children.push(cuts.required(shell.target.is_some(), ctx)?);
+            children.push(cuts.required_mode(shell.target.is_some(), ctx, preserve)?);
             wire_order.push(target_index);
 
             let mut retained_cases = Vec::with_capacity(shell.cases.len());
@@ -1233,23 +1440,26 @@ fn descend_region_component(
                 let pattern = case.pattern.is_some().then(|| cuts.take()).transpose()?;
                 let source = case.source.is_some().then(|| cuts.take()).transpose()?;
                 let guard = case.guard.is_some().then(|| cuts.take()).transpose()?;
-                if pattern.is_none() || source.is_none() {
+                if !preserve && (pattern.is_none() || source.is_none()) {
                     continue;
                 }
 
                 let shifted = ctx.shifted(case.free_count);
                 let source_index = children.len();
-                children.push(RegionChild::Substitute(
-                    source.expect("a retained case has a source"),
-                    shifted,
-                ));
+                children.push(match source {
+                    Some(region) if preserve => RegionChild::Preserve(region),
+                    Some(region) => RegionChild::Substitute(region, shifted),
+                    None => RegionChild::Missing(shifted),
+                });
                 let pattern_index = children.len();
-                children.push(RegionChild::Substitute(
-                    pattern.expect("a retained case has a pattern"),
-                    ctx.deeper(),
-                ));
+                children.push(match pattern {
+                    Some(region) if preserve => RegionChild::Preserve(region),
+                    Some(region) => RegionChild::Substitute(region, ctx.deeper()),
+                    None => RegionChild::Missing(ctx.deeper()),
+                });
                 let guard_index = children.len();
                 children.push(match guard {
+                    Some(region) if preserve => RegionChild::Preserve(region),
                     Some(region) => RegionChild::Substitute(region, shifted),
                     None => RegionChild::Empty(empty),
                 });
@@ -1263,37 +1473,55 @@ fn descend_region_component(
                 occurrence.multiplicity,
                 children,
                 wire_order,
+                preserve,
                 work,
             );
         }
         EncodedFamily::Expr => {
             let expr = protobuf_decoder::decode_expr(shallow).map_err(region_decode_error)?;
+            let preserve_shell = preserve.then(|| expr.clone());
             let instance = super::unwrap_option_safe(expr.expr_instance)?;
             match instance {
                 ExprInstance::EPathmapBody(pathmap) => {
-                    return begin_region_epathmap(pathmap, plan, occurrence, ctx, view, work);
+                    return begin_region_epathmap(
+                        pathmap, plan, occurrence, ctx, preserve, view, work,
+                    );
                 }
                 ExprInstance::EZipperBody(_) => unreachable!(
                     "the canonical Expr tag look-ahead handles opaque EZipper before cutting"
                 ),
                 ExprInstance::EVarBody(evar) => {
-                    let contribution = match maybe_substitute_evar_view(evar, ctx, view)? {
-                        Either::Left(evar) => {
-                            let shell = Expr {
-                                expr_instance: Some(ExprInstance::EVarBody(evar)),
-                            };
-                            let component = construction.expr_component(&shell, &[], false)?;
-                            component_contribution(
-                                construction,
-                                component,
-                                occurrence.multiplicity,
-                                expr_locally_free_ref(&shell, ctx.depth),
-                                expr_connective_used_ref(&shell),
-                            )?
-                        }
-                        Either::Right(par) => {
-                            let imported = construction.import_par(&par)?;
-                            scale_contribution(construction, imported, occurrence.multiplicity)?
+                    let contribution = if preserve {
+                        let shell = Expr {
+                            expr_instance: Some(ExprInstance::EVarBody(evar)),
+                        };
+                        let component = construction.expr_component(&shell, &[], false)?;
+                        component_contribution(
+                            construction,
+                            component,
+                            occurrence.multiplicity,
+                            expr_locally_free_ref(&shell, ctx.depth),
+                            expr_connective_used_ref(&shell),
+                        )?
+                    } else {
+                        match maybe_substitute_evar_view(evar, ctx, view)? {
+                            Either::Left(evar) => {
+                                let shell = Expr {
+                                    expr_instance: Some(ExprInstance::EVarBody(evar)),
+                                };
+                                let component = construction.expr_component(&shell, &[], false)?;
+                                component_contribution(
+                                    construction,
+                                    component,
+                                    occurrence.multiplicity,
+                                    expr_locally_free_ref(&shell, ctx.depth),
+                                    expr_connective_used_ref(&shell),
+                                )?
+                            }
+                            Either::Right(par) => {
+                                let imported = construction.import_par(&par)?;
+                                scale_contribution(construction, imported, occurrence.multiplicity)?
+                            }
                         }
                     };
                     vals.push(PlannedSubVal::Par(contribution));
@@ -1303,7 +1531,7 @@ fn descend_region_component(
                     let mut cuts = RegionCutCursor::new(&plan);
                     let mut children = Vec::with_capacity(set.ps.len());
                     for _ in &set.ps {
-                        children.push(cuts.substituted(ctx)?);
+                        children.push(cuts.traversed(ctx, preserve)?);
                     }
                     cuts.finish()?;
                     schedule_region_component(
@@ -1313,12 +1541,14 @@ fn descend_region_component(
                                 locally_free: set.locally_free,
                                 remainder: set.remainder,
                             },
+                            preserve_shell,
                             depth: ctx.depth,
                             shift: view.shift(ctx),
                         },
                         occurrence.multiplicity,
                         children,
                         Vec::new(),
+                        preserve,
                         work,
                     );
                 }
@@ -1326,8 +1556,8 @@ fn descend_region_component(
                     let mut cuts = RegionCutCursor::new(&plan);
                     let mut children = Vec::with_capacity(map.kvs.len() * 2);
                     for pair in &map.kvs {
-                        children.push(cuts.required(pair.key.is_some(), ctx)?);
-                        children.push(cuts.required(pair.value.is_some(), ctx)?);
+                        children.push(cuts.required_mode(pair.key.is_some(), ctx, preserve)?);
+                        children.push(cuts.required_mode(pair.value.is_some(), ctx, preserve)?);
                     }
                     cuts.finish()?;
                     schedule_region_component(
@@ -1337,12 +1567,14 @@ fn descend_region_component(
                                 locally_free: map.locally_free,
                                 remainder: map.remainder,
                             },
+                            preserve_shell,
                             depth: ctx.depth,
                             shift: view.shift(ctx),
                         },
                         occurrence.multiplicity,
                         children,
                         Vec::new(),
+                        preserve,
                         work,
                     );
                 }
@@ -1357,18 +1589,20 @@ fn descend_region_component(
                         } else {
                             ctx
                         };
-                        children.push(cuts.required(child.is_some(), slot_ctx)?);
+                        children.push(cuts.required_mode(child.is_some(), slot_ctx, preserve)?);
                     }
                     cuts.finish()?;
                     schedule_region_component(
                         RegionComponentShell::Expr {
                             arm,
+                            preserve_shell,
                             depth: ctx.depth,
                             shift: view.shift(ctx),
                         },
                         occurrence.multiplicity,
                         children,
                         Vec::new(),
+                        preserve,
                         work,
                     );
                 }
@@ -1377,29 +1611,56 @@ fn descend_region_component(
         EncodedFamily::Connective => {
             let connective =
                 protobuf_decoder::decode_connective(shallow).map_err(region_decode_error)?;
+            if preserve && connective.connective_instance.is_none() {
+                let component = construction.connective_component(&connective, &[])?;
+                vals.push(PlannedSubVal::Par(component_contribution(
+                    construction,
+                    component,
+                    occurrence.multiplicity,
+                    Vec::new(),
+                    false,
+                )?));
+                return Ok(());
+            }
             let Some(instance) = connective.connective_instance else {
                 vals.push(PlannedSubVal::Par(empty));
                 return Ok(());
             };
             let instance = match instance {
                 ConnectiveInstance::VarRefBody(var_ref) => {
-                    let contribution = match maybe_substitute_var_ref_view(var_ref, ctx, view)? {
-                        Either::Left(_) => {
-                            let shell = Connective {
-                                connective_instance: Some(ConnectiveInstance::VarRefBody(var_ref)),
-                            };
-                            let value = plan_connective(construction, &shell, &[], ctx.depth)?;
-                            component_contribution(
-                                construction,
-                                value.component,
-                                occurrence.multiplicity,
-                                value.locally_free,
-                                value.connective_used,
-                            )?
-                        }
-                        Either::Right(par) => {
-                            let imported = construction.import_par(&par)?;
-                            scale_contribution(construction, imported, occurrence.multiplicity)?
+                    let contribution = if preserve {
+                        let shell = Connective {
+                            connective_instance: Some(ConnectiveInstance::VarRefBody(var_ref)),
+                        };
+                        let value = plan_connective(construction, &shell, &[], ctx.depth)?;
+                        component_contribution(
+                            construction,
+                            value.component,
+                            occurrence.multiplicity,
+                            value.locally_free,
+                            value.connective_used,
+                        )?
+                    } else {
+                        match maybe_substitute_var_ref_view(var_ref, ctx, view)? {
+                            Either::Left(_) => {
+                                let shell = Connective {
+                                    connective_instance: Some(ConnectiveInstance::VarRefBody(
+                                        var_ref,
+                                    )),
+                                };
+                                let value = plan_connective(construction, &shell, &[], ctx.depth)?;
+                                component_contribution(
+                                    construction,
+                                    value.component,
+                                    occurrence.multiplicity,
+                                    value.locally_free,
+                                    value.connective_used,
+                                )?
+                            }
+                            Either::Right(par) => {
+                                let imported = construction.import_par(&par)?;
+                                scale_contribution(construction, imported, occurrence.multiplicity)?
+                            }
                         }
                     };
                     vals.push(PlannedSubVal::Par(contribution));
@@ -1418,7 +1679,7 @@ fn descend_region_component(
             let mut cuts = RegionCutCursor::new(&plan);
             let mut children = Vec::with_capacity(child_count);
             for _ in 0..child_count {
-                children.push(cuts.substituted(ctx)?);
+                children.push(cuts.traversed(ctx, preserve)?);
             }
             cuts.finish()?;
             schedule_region_component(
@@ -1429,6 +1690,7 @@ fn descend_region_component(
                 occurrence.multiplicity,
                 children,
                 Vec::new(),
+                preserve,
                 work,
             );
         }
@@ -1479,6 +1741,7 @@ fn descend_expr(
             connective_used: parts.connective_used,
             remainder: parts.remainder,
             ctx,
+            preserve: false,
             values: PathMapValueSource::Resident,
             completion: PathMapCompletion::Expr,
         })));
@@ -1580,13 +1843,21 @@ fn step_pathmap(
     match state.entries.next() {
         Some(OwnedEPathMapEntry::Set(key)) => {
             let ctx = state.ctx;
-            let key_work = pathmap_key_work(key, ctx)?;
+            let key_work = if state.preserve {
+                SubWork::CanonicalKey(key)
+            } else {
+                pathmap_key_work(key, ctx)?
+            };
             work.push(SubWork::Combine(SubKont::PathMapSetK(state)));
             work.push(key_work);
         }
         Some(OwnedEPathMapEntry::Map { key, value }) => {
             let ctx = state.ctx;
-            let key_work = pathmap_key_work(key, ctx)?;
+            let key_work = if state.preserve {
+                SubWork::CanonicalKey(key)
+            } else {
+                pathmap_key_work(key, ctx)?
+            };
             let value_work = match &mut state.values {
                 PathMapValueSource::Resident => SubWork::Par(Some(value), ctx),
                 PathMapValueSource::Regions { plan, next, end } => {
@@ -1602,7 +1873,11 @@ fn step_pathmap(
                         )
                     })?;
                     *next += 1;
-                    SubWork::ParRegion(cut.region().clone(), ctx)
+                    if state.preserve {
+                        SubWork::ImportParRegion(cut.region().clone())
+                    } else {
+                        SubWork::ParRegion(cut.region().clone(), ctx)
+                    }
                 }
             };
             work.push(SubWork::Combine(SubKont::PathMapMapK(state)));
@@ -2133,6 +2408,7 @@ fn combine(
             work.push(SubWork::RegionPar(state));
         }
         SubKont::RegionComponentK(kont) => {
+            let preserve = kont.preserve;
             let semantic_children = pop_n_par(vals, kont.child_count);
             let children = if kont.wire_order.is_empty() {
                 semantic_children
@@ -2151,13 +2427,40 @@ fn combine(
             };
 
             let (component, locally_free, connective_used) = match kont.shell {
-                RegionComponentShell::Expr { arm, depth, shift } => {
-                    let value = plan_expr(construction, arm, children, depth, shift)?;
-                    (value.component, value.locally_free, value.connective_used)
+                RegionComponentShell::Expr {
+                    arm,
+                    preserve_shell,
+                    depth,
+                    shift,
+                } => {
+                    if let Some(shell) = preserve_shell {
+                        let mut children = children;
+                        if matches!(arm, ExprArm::EMethod { .. }) {
+                            children.rotate_left(1);
+                        }
+                        let component = construction.expr_component(&shell, &children, false)?;
+                        (
+                            component,
+                            expr_locally_free_ref(&shell, depth),
+                            expr_connective_used_ref(&shell),
+                        )
+                    } else {
+                        let value = plan_expr(construction, arm, children, depth, shift)?;
+                        (value.component, value.locally_free, value.connective_used)
+                    }
                 }
                 RegionComponentShell::Connective { shell, depth } => {
-                    let value = plan_connective(construction, &shell, &children, depth)?;
-                    (value.component, value.locally_free, value.connective_used)
+                    if preserve {
+                        let component = construction.connective_component(&shell, &children)?;
+                        (
+                            component,
+                            connective_locally_free_ref(&shell, depth),
+                            connective_connective_used_ref(&shell),
+                        )
+                    } else {
+                        let value = plan_connective(construction, &shell, &children, depth)?;
+                        (value.component, value.locally_free, value.connective_used)
+                    }
                 }
                 RegionComponentShell::Send(shell) => {
                     let component = construction.send_component(&shell, &children)?;
@@ -2165,10 +2468,14 @@ fn combine(
                 }
                 RegionComponentShell::Bundle(mut shell) => {
                     let mut body = children[0];
-                    if let Some((inner, write_flag, read_flag)) = construction.single_bundle(body) {
-                        shell.write_flag &= write_flag;
-                        shell.read_flag &= read_flag;
-                        body = inner;
+                    if !preserve {
+                        if let Some((inner, write_flag, read_flag)) =
+                            construction.single_bundle(body)
+                        {
+                            shell.write_flag &= write_flag;
+                            shell.read_flag &= read_flag;
+                            body = inner;
+                        }
                     }
                     shell.body = Some(Par::default());
                     let component = construction.bundle_component(&shell, &[body])?;

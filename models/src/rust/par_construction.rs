@@ -31,7 +31,8 @@ use prost::encoding::{encoded_len_varint, key_len};
 use super::canonical_path::tag as path_tag;
 use super::epathmap_trie_codec::{self, EPathMapMode, EPathMapRepr};
 use super::par_bag::{
-    CanonicalParBagKey, Multiplicity, ParBag, ParBagComponent, ParComponentTag, PAR_BAG_KEY_DOMAIN,
+    canonical_ezipper_region_parts, CanonicalParBagKey, Multiplicity, OwnedCanonicalEzipper,
+    ParBag, ParBagComponent, ParComponentTag, PAR_BAG_KEY_DOMAIN,
 };
 use super::rholang::protobuf_encoder;
 use super::rholang::protobuf_schema::{ProtobufDescent, ProtobufNode, ProtobufSeq, NO_RESUME};
@@ -91,6 +92,7 @@ pub enum ParConstructionError {
         supplied: usize,
     },
     Multiplicity(super::par_bag::BagError),
+    InvalidCanonicalEzipperRegion,
 }
 
 impl fmt::Display for ParConstructionError {
@@ -117,6 +119,9 @@ impl fmt::Display for ParConstructionError {
                 "{context} requires {expected} planned Par children but received {supplied}"
             ),
             Self::Multiplicity(error) => error.fmt(formatter),
+            Self::InvalidCanonicalEzipperRegion => {
+                formatter.write_str("invalid canonical EZipper protobuf region")
+            }
         }
     }
 }
@@ -125,7 +130,11 @@ impl std::error::Error for ParConstructionError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Multiplicity(error) => Some(error),
-            _ => None,
+            Self::LengthOverflow(_)
+            | Self::MissingParSlot { .. }
+            | Self::ExtraParSlots { .. }
+            | Self::ChildArity { .. }
+            | Self::InvalidCanonicalEzipperRegion => None,
         }
     }
 }
@@ -1751,6 +1760,59 @@ impl ParConstruction {
         Ok(self.component_from_proto(T::TAG, score, protobuf, key.canonical_path_stable(), None))
     }
 
+    /// Import an authoritative resident runtime zipper without decoding its
+    /// protobuf body or traversing its embedded PathMap.  The opaque token is
+    /// constructible only by `ParBag`'s typed RPB3 visitor, so its score and
+    /// body cannot be mixed with bytes from a different endpoint.
+    pub fn import_canonical_ezipper(
+        &mut self,
+        canonical: OwnedCanonicalEzipper,
+    ) -> Result<PlannedComponent, ParConstructionError> {
+        let (encoded_score, encoded_protobuf) = canonical.into_parts();
+        let fragment = self.bytes(encoded_score);
+        let score = self.score_from_pieces(vec![ScorePiece::Bytes(fragment)])?;
+        let protobuf = self.push_proto_node(if encoded_protobuf.is_empty() {
+            Vec::new()
+        } else {
+            vec![ProtoPiece::Bytes(encoded_protobuf)]
+        })?;
+        Ok(self.component_from_proto(ParComponentTag::Expr, score, protobuf, false, None))
+    }
+
+    /// Import a trusted canonical EZipper protobuf region that is nested below
+    /// another component and therefore has no enclosing RPB3 score prefix.
+    /// The score is derived directly from the borrowed EPM1 snapshot and the
+    /// zipper connective bit; PathMap values and cursor paths are skipped by
+    /// length and the original protobuf body is retained byte-for-byte.
+    ///
+    /// `encoded_protobuf` must descend from a component key admitted by RPB3's
+    /// full typed-key validation. This method is public only because the
+    /// substitution PDA lives in the sibling `rholang` crate; it is not an
+    /// untrusted protobuf entry point. Untrusted bytes must first pass the
+    /// ordinary generated decoder and canonical key recompilation.
+    pub fn import_canonical_ezipper_region(
+        &mut self,
+        encoded_protobuf: &[u8],
+    ) -> Result<(PlannedComponent, Vec<u8>, bool), ParConstructionError> {
+        let parts = canonical_ezipper_region_parts(encoded_protobuf)
+            .ok_or(ParConstructionError::InvalidCanonicalEzipperRegion)?;
+        let locally_free = parts.locally_free.to_vec();
+        let connective_used = parts.connective_used;
+        let snapshot_score = self.score_bytes(parts.snapshot)?;
+        let connective = self.score_i64(i64::from(connective_used))?;
+        let score = self.score_constructor(Score::EPATHMAP + 1, [snapshot_score, connective])?;
+        let protobuf = self.push_proto_node(if encoded_protobuf.is_empty() {
+            Vec::new()
+        } else {
+            vec![ProtoPiece::Bytes(encoded_protobuf.into())]
+        })?;
+        Ok((
+            self.component_from_proto(ParComponentTag::Expr, score, protobuf, false, None),
+            locally_free,
+            connective_used,
+        ))
+    }
+
     fn require_arity(
         context: &'static str,
         expected: usize,
@@ -3069,6 +3131,20 @@ impl ParConstruction {
         self.par_from_occurrence_root(occurrence_root, locally_free, connective_used)
     }
 
+    /// Replace both root summaries while sharing the immutable occurrence
+    /// tree. Canonical protobuf-region identity import uses the summaries from
+    /// the indexed source message verbatim rather than re-inferring them from
+    /// component contributions.
+    pub fn with_metadata(
+        &mut self,
+        par: PlannedPar,
+        locally_free: Vec<u8>,
+        connective_used: bool,
+    ) -> Result<PlannedPar, ParConstructionError> {
+        let occurrence_root = self.pars[par.0].occurrence_root;
+        self.par_from_occurrence_root(occurrence_root, locally_free, connective_used)
+    }
+
     /// Import an already-authoritative resident `Par` without decoding any
     /// component or traversing any nested AST.
     ///
@@ -4163,6 +4239,73 @@ mod tests {
             actual_zipper.compact_snapshot(),
             expected_zipper.compact_snapshot()
         );
+    }
+
+    #[test]
+    fn resident_ezipper_import_retains_authoritative_score_and_protobuf() {
+        let zipper = EZipper {
+            pathmap: Some(EPathMap::from_set_iter(
+                [resident_gint(1), resident_gint(2)],
+                Vec::new(),
+                false,
+                None,
+            )),
+            current_path: vec![vec![path_tag::GINT, 2]],
+            is_write_zipper: true,
+            locally_free: vec![1, 0, 1],
+            connective_used: true,
+            cursor_kind: 1,
+        };
+        let original = Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::EZipperBody(zipper)),
+        }]);
+        let original_bytes = original.protobuf_bytes().unwrap();
+        let original_snapshot = original.compact_snapshot();
+
+        let mut retained = None;
+        original.visit_encoded::<Expr>(|entry| {
+            assert!(retained.is_none(), "fixture has one distinct Expr endpoint");
+            let protobuf = entry.payload().to_vec();
+            let canonical = entry
+                .to_owned_canonical_ezipper()
+                .expect("typed resident EZipper proof");
+            assert_eq!(canonical.locally_free(), [1, 0, 1]);
+            assert!(canonical.connective_used());
+            retained = Some((canonical, protobuf, entry.multiplicity()));
+        });
+        let (canonical, protobuf, multiplicity) = retained.expect("resident EZipper endpoint");
+
+        let mut arena = ParConstruction::new();
+        let component = arena.import_canonical_ezipper(canonical).unwrap();
+        let planned = arena
+            .par(
+                [(component, multiplicity)],
+                original.locally_free().to_vec(),
+                original.connective_used(),
+            )
+            .unwrap();
+        let imported = arena.finish(planned).unwrap();
+        assert_eq!(imported.protobuf_bytes().unwrap(), original_bytes);
+        assert_eq!(imported.compact_snapshot(), original_snapshot);
+        assert_eq!(imported, original);
+
+        let mut arena = ParConstruction::new();
+        let (component, locally_free, connective_used) = arena
+            .import_canonical_ezipper_region(&protobuf)
+            .expect("nested canonical EZipper import");
+        assert_eq!(locally_free, [1, 0, 1]);
+        assert!(connective_used);
+        let planned = arena
+            .par(
+                [(component, multiplicity)],
+                original.locally_free().to_vec(),
+                original.connective_used(),
+            )
+            .unwrap();
+        let imported = arena.finish(planned).unwrap();
+        assert_eq!(imported.protobuf_bytes().unwrap(), original_bytes);
+        assert_eq!(imported.compact_snapshot(), original_snapshot);
+        assert_eq!(imported, original);
     }
 
     #[test]

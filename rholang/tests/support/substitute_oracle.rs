@@ -1248,6 +1248,125 @@ mod differential_substitute_worklist {
         assert_eq!(actual.cardinality(), 17);
     }
 
+    #[test]
+    fn deep_new_injection_identity_import_is_stack_safe_and_byte_exact() {
+        std::thread::Builder::new()
+            .stack_size(256 * 1024)
+            .spawn(|| {
+                const DEPTH: usize = 4_096;
+                let mut injected = models::par_from_default! {
+                    exprs: vec![Expr {
+                        expr_instance: Some(ExprInstance::GInt(7)),
+                    }],
+                    ..Default::default()
+                };
+                for _ in 0..DEPTH {
+                    injected = models::par_from_default! {
+                        exprs: vec![Expr {
+                            expr_instance: Some(ExprInstance::ENotBody(models::rhoapi::ENot {
+                                p: Some(injected),
+                            })),
+                        }],
+                        ..Default::default()
+                    };
+                }
+
+                let term = Par::default().with_news(vec![New {
+                    bind_count: 0,
+                    p: Some(Par::default()),
+                    uri: Vec::new(),
+                    injections: std::collections::BTreeMap::from([("deep".to_owned(), injected)]),
+                    locally_free: Vec::new(),
+                }]);
+                let expected = term.encode_to_vec();
+                let actual = subject()
+                    .substitute_no_sort(term, 0, &empty_env())
+                    .expect("deep New injection identity import");
+                assert_eq!(actual.encode_to_vec(), expected);
+            })
+            .expect("spawn fixed-stack New injection gate")
+            .join()
+            .expect("fixed-stack New injection gate");
+    }
+
+    #[test]
+    fn new_injection_preserves_epathmap_keys_values_and_ezipper_bytes() {
+        use models::rhoapi::EZipper;
+
+        use crate::rust::interpreter::test_utils::substitution_corpus::bound_var;
+
+        let map = EPathMap::new_map([(bound_var(0), bound_var(1))], vec![1], true, None);
+        let injected = Par::default().with_exprs(vec![
+            Expr {
+                expr_instance: Some(ExprInstance::EPathmapBody(map.clone())),
+            },
+            Expr {
+                expr_instance: Some(ExprInstance::EZipperBody(EZipper {
+                    pathmap: Some(map),
+                    current_path: Vec::new(),
+                    is_write_zipper: true,
+                    locally_free: vec![1],
+                    connective_used: true,
+                    cursor_kind: 2,
+                })),
+            },
+        ]);
+        let term = Par::default().with_news(vec![New {
+            bind_count: 0,
+            p: Some(Par::default()),
+            uri: Vec::new(),
+            injections: std::collections::BTreeMap::from([("pathmap".to_owned(), injected)]),
+            locally_free: Vec::new(),
+        }]);
+        let expected = term.encode_to_vec();
+        let actual = subject()
+            .substitute_no_sort(term, 0, &populated_env())
+            .expect("PathMap/EZipper injection identity import");
+        assert_eq!(actual.encode_to_vec(), expected);
+    }
+
+    /// Identity import is a wire-preservation contract, not merely a semantic
+    /// equality claim. Drive the exhaustive substitution corpus as values of
+    /// a two-entry protobuf map so the proof covers generated map ordering as
+    /// well as every Expr/Connective arm, ESet/EMap, Receive condition, Match
+    /// guard, Bundle, binder metadata, and compressed component multiplicity.
+    #[test]
+    fn new_injections_preserve_the_exhaustive_corpus_byte_exact() {
+        for case in substitution_corpus() {
+            let duplicate_expr = Expr {
+                expr_instance: Some(ExprInstance::GInt(77)),
+            };
+            let duplicate = Par::default().with_exprs(vec![duplicate_expr.clone(), duplicate_expr]);
+            assert_eq!(duplicate.distinct_len(), 1);
+            assert_eq!(duplicate.cardinality(), 2);
+
+            let term = Par::default().with_news(vec![New {
+                bind_count: 0,
+                p: Some(Par::default()),
+                uri: Vec::new(),
+                // Insert in reverse lexical order. BTreeMap/protobuf canonical
+                // order must still keep each retained region with its key.
+                injections: std::collections::BTreeMap::from([
+                    (format!("z/{}", case.name), case.term),
+                    ("a/multiplicity-sentinel".to_owned(), duplicate),
+                ]),
+                locally_free: Vec::new(),
+            }]);
+            let expected = term.encode_to_vec();
+            let actual = subject()
+                .substitute_no_sort(term, 0, &populated_env())
+                .unwrap_or_else(|error| {
+                    panic!("identity import failed for `{}`: {error}", case.name)
+                });
+            assert_eq!(
+                actual.encode_to_vec(),
+                expected,
+                "identity import changed canonical bytes for `{}`",
+                case.name
+            );
+        }
+    }
+
     /// Map-mode EPathMap keys and values are retained by the shallow decoder
     /// as ACT topology plus value regions. Both sides remain substitutable and
     /// the rebuilt result must stay map-mode rather than projecting entries

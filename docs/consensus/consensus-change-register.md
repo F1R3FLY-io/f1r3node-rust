@@ -4222,6 +4222,27 @@ proven, so this register does not invent one. Under the owner-ruled inclusion cr
 complete recursive construction contract while removing quadratic rebuilding is retained as a
 witnessed bug fix rather than promoted to the active may-change-consensus table.
 
+**CBR-055 classification continuation (2026-08-22, substitution-region closure).** Nested
+`New.injections` values now use the same iterative protobuf-region construction machine as ordinary
+substitution children, in an explicit identity-import mode, instead of decoding a complete resident
+`Par` and importing it again. Resident and nested `EZipper` values likewise retain their validated
+RPB3 score/body or derive the same score directly from the authoritative EPM1 snapshot without
+decoding the embedded PathMap. EPathMap keys remain canonical trie paths, values remain shared
+regions until bottom-up construction, and no entry vector or independent element sort is created.
+
+Identity mode is intentionally narrower than substitution: it preserves component multiplicity,
+root metadata, EVar/VarRef bodies, Match cases, Bundle nesting, and canonical collection bytes. Its
+trust boundary is the complete RPB3 typed-key validator; the shallow cursor does not admit arbitrary
+protobuf. A depth-4,096 injection passes on a 256 KiB native stack, the exhaustive substitution
+corpus passes as values of a two-key injection map with complete protobuf equality, and the complete
+`rholang --lib` gate passes 359/359 under an 8 GiB zero-swap cap. The existing recursive differential
+continues to agree on sorted and unsorted result bytes, errors, ordered charge tokens, and total
+charge. Consequently no normalized value, protobuf/bincode/EPM1 byte, post-state or event hash,
+COMM schedule, charge, EPathMap mode, PathMap topology, algebra/lattice result, or parallel execution
+order moves. This is additional resource/equivalence evidence for retired CBR-055, not a new active
+may-change-consensus entry; stack-safety report §5.28.6 preserves the scoped evidence and the
+unmeasured performance axes.
+
 **CBR-056 through CBR-061 classification continuation (2026-08-20).** These six records close one
 shared representation-assumption defect: consumers treated `Par` as if a projection over one
 repeated field described the complete value, while the authoritative representation is one

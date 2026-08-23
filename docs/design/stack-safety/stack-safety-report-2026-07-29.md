@@ -8282,6 +8282,51 @@ allocation and hardware-counter ladders remain required before claiming populati
 general effect size. Other final-root-only deep fixtures remain under the same reviewed migration,
 so this paragraph does not claim complete release-workspace closure. **MEASURED (f).**
 
+#### 5.28.6 Substitution-region construction closure
+
+The first `ParConstruction` checkpoint still had two construction-side escape hatches. A nested
+`New.injections` value was decoded as a complete resident `Par` and then imported again, and an
+opaque `EZipper` nested below such a value decoded its complete `EPathMap`. Neither call was native-
+stack recursive, but on a depth-$`d`$ injection or zipper map it could rematerialize the recursively
+shorter resident suffixes that the region PDA was introduced to avoid. **DERIVED** from the removed
+`decode_par`/`import_par` and nested-`EZipper` decode sites.
+
+The successor drives injection values through the same explicit protobuf-region machine in an
+identity-import mode. That mode retains canonical component multiplicity and root metadata but
+bypasses every substitution-only rewrite: bound variables and `VarRef`s are not replaced, bitsets
+are not shifted, absent match cases are not filtered, and nested bundles are not merged. An
+EPathMap remains its native `Empty | PathMap<()> | PathMap<Par>` representation: set/map keys remain
+canonical path bytes, map values are visited as shared protobuf ranges, and no `Vec<Par>` or entry
+sort is introduced. The generated protobuf map order and `BTreeMap` key order are the same order, so
+each retained `New.injections` value cut remains attached to its original string key.
+
+Resident `EZipper` endpoints carry an opaque score/body token produced only by the typed RPB3
+visitor. Nested zipper regions inherit the same trust from their validated ancestor endpoint. A
+shallow cursor skips `current_path` and the EPM1 snapshot by their protobuf extents, derives the
+legacy score directly from the snapshot bytes and connective bit, and retains the authoritative
+protobuf body byte-for-byte. It does not decode or traverse the embedded PathMap. This is not an
+untrusted protobuf acceptance path: RPB3 admission has already decoded the component, validated the
+EPM1 body, and recompiled the complete canonical key; arbitrary bytes still enter through the
+generated decoder and key validator.
+
+On 2026-08-22, under `MemoryMax=8G`, `MemorySwapMax=0`, and `AllowedCPUs=0-15`, the complete
+`rholang --lib` gate passed **359/359** in 57.38 s. The permanent anti-vacuity evidence includes:
+
+- a depth-4,096 `New` injection completing on a 256 KiB native stack with exact protobuf equality;
+- exact EPathMap key/value and opaque-EZipper byte preservation inside an injection;
+- every exhaustive substitution-corpus value placed behind a two-entry injection map, covering all
+  Expr and Connective arms, ESet/EMap, optional Receive condition, Match guard, Bundle, binder/root
+  metadata, and multiplicity two while checking the complete enclosing protobuf image; and
+- the existing recursive substitution oracle, sorted/unsorted entry points, error parity, ordered
+  charge trace, total charge, EPathMap substitution, and representation guards.
+
+This closes the two named construction escapes with $`O(1)`$ native stack and one shared backing
+image per ancestor region. No wall-clock speedup, allocation population, or peak-RSS effect is
+claimed from this correctness run; those axes are **NOT MEASURED** here. No PathMap source change,
+stack enlargement, `stacker`, depth cap, decoded trie shadow, collection projection, or recursive
+fallback was introduced. The complete release workspace remains a separate gate and is not implied
+by the focused library result. **MEASURED (f).**
+
 ---
 
 ### 5.29 ParBag family and count-domain completeness [SS-A13, SS-A14, SS-Y9]
