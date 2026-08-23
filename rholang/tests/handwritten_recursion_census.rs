@@ -760,15 +760,18 @@ const RECURSION_DISPOSITIONS: &[ComponentDisposition] = &[
         disposition: QUALIFIED_DELEGATION,
     },
     ComponentDisposition {
-        label: "rholang.interpreter.matcher.fold_match+rholang.interpreter.matcher.match+rholang.interpreter.matcher.spatial_matcher+rholang.interpreter.matcher.spatial_matcher_pda.fold_match-compile_ordered_nested_query-get-record_linear_capture-rho_path_query_atom-rho_path_query_cursor_atom-spatial_match-spatial_match_par_ref-compile_candidate_plan-compile_par_candidate_plan-drive-drive_job-init_list-match_connective-match_par-match_par_pair-rho_path_candidate_plan-rho_path_query",
+        label: "rholang.interpreter.matcher.fold_match+rholang.interpreter.matcher.match+rholang.interpreter.matcher.spatial_matcher+rholang.interpreter.matcher.spatial_matcher_pda.fold_match-admitted_expr_is_dynamic-compile_ordered_nested_query-compile_ordered_region_query-get-record_linear_capture-rho_path_query_atom-rho_path_query_cursor_atom-rho_path_query_region_atom-spatial_match-spatial_match_par_ref-compile_candidate_plan-compile_par_candidate_plan-drive-drive_job-init_list-match_connective-match_par-match_par_pair-rho_path_candidate_plan-rho_path_query",
         members: members![
             ("rholang/src/rust/interpreter/matcher/fold_match.rs", "fold_match", 0),
             ("rholang/src/rust/interpreter/matcher/fold_match.rs", "fold_match", 1),
+            ("rholang/src/rust/interpreter/matcher/match.rs", "admitted_expr_is_dynamic", 0),
             ("rholang/src/rust/interpreter/matcher/match.rs", "compile_ordered_nested_query", 0),
+            ("rholang/src/rust/interpreter/matcher/match.rs", "compile_ordered_region_query", 0),
             ("rholang/src/rust/interpreter/matcher/match.rs", "get", 0),
             ("rholang/src/rust/interpreter/matcher/match.rs", "record_linear_capture", 0),
             ("rholang/src/rust/interpreter/matcher/match.rs", "rho_path_query_atom", 0),
             ("rholang/src/rust/interpreter/matcher/match.rs", "rho_path_query_cursor_atom", 0),
+            ("rholang/src/rust/interpreter/matcher/match.rs", "rho_path_query_region_atom", 0),
             ("rholang/src/rust/interpreter/matcher/spatial_matcher.rs", "spatial_match", 0),
             ("rholang/src/rust/interpreter/matcher/spatial_matcher.rs", "spatial_match", 1),
             ("rholang/src/rust/interpreter/matcher/spatial_matcher.rs", "spatial_match", 2),
@@ -784,7 +787,7 @@ const RECURSION_DISPOSITIONS: &[ComponentDisposition] = &[
             ("rholang/src/rust/interpreter/matcher/spatial_matcher_pda.rs", "rho_path_candidate_plan", 0),
             ("rholang/src/rust/interpreter/matcher/spatial_matcher_pda.rs", "rho_path_query", 0),
         ],
-        disposition: Disposition::Measured("all heterogeneous spatial descent is the explicit Job/FrameStack PDA; depth, width, connective, set, and map gate subjects cover this exact cross-file matcher component"),
+        disposition: Disposition::Measured("all heterogeneous spatial descent is the explicit Job/FrameStack PDA; the protobuf-region query route is a generated CanonicalRhoPathRegionCursor plus an explicit Scan worklist and is driven to depth 4,096 on 512 KiB; depth, width, connective, set, and map gates cover the remaining cross-file component. The apparent return edge is conservative receiver erasure joining RhoPathCaptureId::get to Matcher::get, not runtime recursion"),
     },
     ComponentDisposition {
         label: "rholang.interpreter.matcher.has_locally_free.connective_used",

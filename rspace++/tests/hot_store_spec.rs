@@ -9,7 +9,6 @@ use proptest_derive::Arbitrary;
 use rand::prelude::SliceRandom;
 use rand::thread_rng;
 use rspace_plus_plus::rspace::candidate_order::deterministic_candidate_hash;
-use rspace_plus_plus::rspace::data_index::RSpaceDataIndex;
 use rspace_plus_plus::rspace::history::history_reader::HistoryReaderBase;
 use rspace_plus_plus::rspace::hot_store::{HotStore, HotStoreInstances, HotStoreState};
 use rspace_plus_plus::rspace::hot_store_action::{
