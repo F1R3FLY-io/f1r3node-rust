@@ -1552,7 +1552,7 @@ impl FsProcesses {
                                     let (c, m) = quarantine_err_reply(&qe);
                                     err(c, m)
                                 }
-                                IoError(_) => ok_bool(false),
+                                IoError(_, _) => ok_bool(false),
                             };
                         }
                     };

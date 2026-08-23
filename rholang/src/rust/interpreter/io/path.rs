@@ -22,6 +22,7 @@
 
 use std::ffi::{CString, OsStr};
 use std::fs::File;
+use std::io;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Component, Path};
@@ -46,7 +47,20 @@ pub enum QuarantineError {
     /// out-of-band `mv` / recreate / rebind on the provisioned
     /// path.
     RootIdentityChanged,
-    IoError(String),
+    /// `IoError(kind, scrubbed_msg)` — the scrubbed
+    /// (`io_msg_scrub`) display and the classifier that lets
+    /// `quarantine_err_reply` route AlreadyExists to
+    /// `FSERR_ALREADY_EXISTS`, NotFound to `FSERR_NOT_FOUND`, etc.
+    /// (via `io_err_code`).  Pre-slice-10b this variant carried
+    /// only the string, collapsing every syscall failure to
+    /// `FSERR_IO` and stripping a caller's ability to do
+    /// create-if-not-exists via `wx` mode.  Callers without a
+    /// natural `io::ErrorKind` (e.g., `CString::NulError`) may
+    /// synthesize `io::ErrorKind::Other`, which `io_err_code`
+    /// maps back to `FSERR_IO` — preserving legacy behavior for
+    /// those sites while unlocking specific codes for real
+    /// syscall errors.
+    IoError(io::ErrorKind, String),
 }
 
 /// A safely-resolved leaf position: a dirfd for the parent directory and
@@ -238,9 +252,8 @@ pub fn fstat_dev_inode(fd: i32) -> Result<(u64, u64), QuarantineError> {
         unsafe {
             let mut st: libc::stat = std::mem::zeroed();
             if libc::fstat(fd, &mut st) < 0 {
-                return Err(QuarantineError::IoError(
-                    std::io::Error::last_os_error().to_string(),
-                ));
+                let e = std::io::Error::last_os_error();
+                return Err(QuarantineError::IoError(e.kind(), e.to_string()));
             }
             // st.st_dev / st.st_ino widths differ across platforms
             // (u32 vs u64).  Widen uniformly to u64 for comparison.
@@ -338,7 +351,7 @@ pub fn safe_open(
 
 fn open_dir(path: &Path, nofollow: bool) -> Result<OwnedFd, QuarantineError> {
     let cpath = CString::new(path.as_os_str().as_bytes())
-        .map_err(|e| QuarantineError::IoError(e.to_string()))?;
+        .map_err(|e| QuarantineError::IoError(io::ErrorKind::InvalidInput, e.to_string()))?;
     unsafe {
         let mut flags = libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC;
         if nofollow {
@@ -435,7 +448,14 @@ fn map_open_err(e: std::io::Error) -> QuarantineError {
     // I/O error or an escape attempt (ENOENT on `..`, etc.).
     match e.raw_os_error() {
         Some(libc::ELOOP) => QuarantineError::SymlinkComponent,
-        _ => QuarantineError::IoError(io_msg_scrub(&e)),
+        // Carry the io::ErrorKind so `quarantine_err_reply` can route
+        // AlreadyExists → FSERR_ALREADY_EXISTS, NotFound →
+        // FSERR_NOT_FOUND, PermissionDenied → FSERR_PERM, etc.  Pre-
+        // slice-10b this arm collapsed every non-ELOOP failure to
+        // FSERR_IO, breaking the create-if-not-exists idiom under
+        // `wx`/`w+x` open modes (the caller received FSERR_IO instead
+        // of the mapped FSERR_ALREADY_EXISTS on collision).
+        _ => QuarantineError::IoError(e.kind(), io_msg_scrub(&e)),
     }
 }
 
@@ -522,7 +542,7 @@ mod path_tests {
 /// Translate `QuarantineError` to the (code, message) pair for the
 /// `[false, code, msg]` reply shape.
 pub fn quarantine_err_reply(e: &QuarantineError) -> (&'static str, String) {
-    use super::errors::{FSERR_BAD_ARG, FSERR_IO, FSERR_QUARANTINE};
+    use super::errors::{io_err_code, FSERR_BAD_ARG, FSERR_QUARANTINE};
     match e {
         QuarantineError::Empty => (FSERR_BAD_ARG, "empty relative path".into()),
         QuarantineError::RootSelf => (FSERR_BAD_ARG, "path resolves to root itself".into()),
@@ -537,7 +557,15 @@ pub fn quarantine_err_reply(e: &QuarantineError) -> (&'static str, String) {
              on the provisioned path"
                 .into(),
         ),
-        QuarantineError::IoError(m) => (FSERR_IO, m.clone()),
+        QuarantineError::IoError(kind, m) => {
+            // Route via `io_err_code` so AlreadyExists / NotFound /
+            // PermissionDenied / Unsupported reach their spec-canonical
+            // FSERR codes instead of collapsing to FSERR_IO.  Kinds
+            // without a dedicated FSERR (e.g. `Other`) fall back to
+            // FSERR_IO via io_err_code's default arm.
+            let synthetic = io::Error::from(*kind);
+            (io_err_code(&synthetic), m.clone())
+        }
     }
 }
 
@@ -773,4 +801,75 @@ mod tests {
     // (uses the already-pub `fstat_dev_inode` helper) is the
     // oracular-correct keyer; the path-based helper was semantically
     // wrong for LockRegistry keying under oracular file swap.
+
+    /// Slice-10b bug-fix pin: `quarantine_err_reply` MUST route
+    /// `QuarantineError::IoError(kind, _)` through `io_err_code(kind)`
+    /// so real syscall errors (AlreadyExists / NotFound /
+    /// PermissionDenied / Unsupported) reach their spec-canonical
+    /// FSERR codes.  Pre-fix the router collapsed every IoError to
+    /// `FSERR_IO`, breaking the create-if-not-exists idiom under
+    /// `wx`/`w+x` (a caller checking for FSERR_ALREADY_EXISTS to
+    /// distinguish "already there" from "genuinely broken" got
+    /// FSERR_IO instead — indistinguishable from a disk failure).
+    ///
+    /// A regression that reverts the enum variant to `IoError(String)`
+    /// or the reply arm to `(FSERR_IO, _)` trips one of these four
+    /// arms.
+    #[test]
+    fn quarantine_err_reply_routes_io_error_kind_to_matching_fserr() {
+        use super::super::errors::{
+            FSERR_ALREADY_EXISTS, FSERR_BAD_ARG, FSERR_IO, FSERR_NOT_FOUND, FSERR_PERM,
+            FSERR_UNSUPPORTED,
+        };
+        let cases: &[(io::ErrorKind, &str, &str)] = &[
+            (io::ErrorKind::AlreadyExists, FSERR_ALREADY_EXISTS, "wx"),
+            (io::ErrorKind::NotFound, FSERR_NOT_FOUND, "missing"),
+            (io::ErrorKind::PermissionDenied, FSERR_PERM, "read-only fs"),
+            (io::ErrorKind::Unsupported, FSERR_UNSUPPORTED, "no fifo"),
+            (io::ErrorKind::InvalidInput, FSERR_BAD_ARG, "bad flag"),
+            // `Other` is the fall-through: preserves FSERR_IO for
+            // sites that don't have a natural kind (e.g., CString
+            // NulError inside `open_dir`).
+            (io::ErrorKind::Other, FSERR_IO, "some io error"),
+        ];
+        for (kind, expected_code, msg) in cases {
+            let (got_code, got_msg) =
+                quarantine_err_reply(&QuarantineError::IoError(*kind, (*msg).to_string()));
+            assert_eq!(
+                got_code, *expected_code,
+                "quarantine_err_reply(IoError({kind:?})) should route to {expected_code}",
+            );
+            assert_eq!(&got_msg, msg, "message must be forwarded verbatim");
+        }
+    }
+
+    /// Slice-10b bug-fix pin: `safe_open` on `O_CREAT | O_EXCL`
+    /// with a pre-existing leaf must produce
+    /// `QuarantineError::IoError(AlreadyExists, _)` — the shape
+    /// that `quarantine_err_reply` routes to FSERR_ALREADY_EXISTS.
+    /// Pre-fix `map_open_err` discarded the io::ErrorKind, and this
+    /// arm silently degraded to FSERR_IO downstream.
+    #[test]
+    fn safe_open_o_excl_on_existing_reports_already_exists_kind() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        fs::write(root.join("existing.txt"), b"already here").unwrap();
+
+        let err = safe_open(
+            &root,
+            "existing.txt",
+            libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL,
+            0o644,
+        )
+        .expect_err("O_CREAT|O_EXCL on existing must fail");
+        match err {
+            QuarantineError::IoError(io::ErrorKind::AlreadyExists, _) => {}
+            other => panic!(
+                "expected IoError(AlreadyExists, _), got {other:?} — the fix \
+                 to preserve io::ErrorKind in QuarantineError::IoError has \
+                 regressed and callers can no longer distinguish EEXIST from \
+                 arbitrary IO failure"
+            ),
+        }
+    }
 }
