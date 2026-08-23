@@ -35,9 +35,9 @@ The journal complements, rather than duplicates, three living reports:
 | EPathMap | Rholang's homogeneous `Empty | Set(PathMap<()>) | Map(PathMap<Par>)` value. |
 | Bag | RSpace's `PathMap<Multiplicity>` multiset; one unique byte path stores one strictly positive `u64` multiplicity. |
 | RMP | Rholang Match Path, the versioned, derived structural search image used by the RSpace candidate index. |
+| RPB3 | The version-3 authoritative ParBag key grammar: component family, canonical score, canonical protobuf body, and score-length trailer. |
 | RMP1 | The first RMP token grammar, whose ParBag token fingerprints the RPB3/ACT representation. |
 | RMP2 | The provisional second RMP token grammar described in J-005; it fingerprints semantic ParBag endpoint records and is not accepted until H-001 closes. |
-| RPB3 | The version-3 authoritative ParBag key grammar: component family, canonical score, canonical protobuf body, and score-length trailer. |
 | EPM1 | The version-1 compact EPathMap format: mode and cardinality metadata, ACTree03 topology, and direct map-value protobuf regions. |
 | ACT | Arena Compact Tree, PathMap's compact trie snapshot family. |
 | ACTree03 | The ACT encoding used as the topology portion of EPM1. |
@@ -63,6 +63,9 @@ The journal complements, rather than duplicates, three living reports:
 | PDA | Pushdown automaton: an iterative traversal whose explicit frames live on the heap. |
 | CPU | Central processing unit. CPU time sums the execution time consumed by the process's threads. |
 | RSS | Resident set size: the process memory currently resident in physical memory. |
+| CBR | Consensus-Breaking Register: the historical stable identifier prefix retained by the living consensus-change register. |
+| RAII | Resource acquisition is initialization: ownership binds resource lifetime to construction and destruction. |
+| SHA | Secure Hash Algorithm: used here in the standard `SHA-256` artifact-integrity label. |
 | KiB and MiB | Binary size units of `$`2^{10}`$` and `$`2^{20}`$` bytes, respectively. |
 | Heaptrack | A heap-allocation profiler. “Headless” use records and analyzes traces through command-line tools without launching its graphical interface. |
 | `$`n`$` | The input's logical number of trie endpoints, AST levels, or bytes, as specified per experiment. |
@@ -75,8 +78,11 @@ The journal complements, rather than duplicates, three living reports:
 
 Each performance investigation follows this literate procedure:
 
-```text
-Algorithm: isolate a suspected PathMap cost
+**Algorithm 1 (Isolate a suspected PathMap cost).** This procedure separates a trie operation from
+its surrounding codecs and lifecycle work before assigning a complexity class.
+
+```pseudocode
+ALGORITHM IsolatePathMapCost(operation, geometric_sizes)
 
 Input:
     a production operation and a geometric size ladder
@@ -93,6 +99,9 @@ Output:
 7. Change the narrowest authoritative boundary, preserving PathMap as the trie.
 8. Prove semantic equivalence, rerun the ladder, and record the treatment beside control.
 ```
+
+The procedure is intentionally representation-aware: a result attributed to PathMap must survive
+the phase split rather than inherit the cost of a decoder, sorter, or destructor around it.
 
 For observations `$`T(n)`$` at geometric depths, the first diagnostic is the doubling ratio:
 
@@ -497,7 +506,7 @@ encoded and decoded APIs return byte-identical ordering keys, and run play/repla
 post-state equivalence gates. Append a dated acceptance or rejection amendment; do not silently
 promote this entry into the accepted-rule table.
 
-Checkpoint amendment — 2026-08-23: ACCEPTED LOCAL COMPARATOR; end-to-end replay gate OPEN. The
+Checkpoint amendment — 2026-08-23: accepted local comparator rule; end-to-end replay gate open. The
 vector-backed continuation order now uses the same collision rule as the PathMap-backed datum
 catalog: `(BLAKE2b-256 digest, complete canonical identity bytes)`. Store index is consulted only
 for byte-identical repeated continuation entries because those entries require distinct removal
@@ -1209,13 +1218,94 @@ small-stack gate. The byte-native datum catalog/read API also drops the obsolete
 `CandidateOrderingBytes` requirements left by the decoded-hash route; a decode-only generic compile
 witness prevents their accidental return. No PathMap source or feature was changed.
 
+### J-016 — 2026-08-23: preserve admitted regions and CoW roots across reducer boundaries
+
+Question: Why did the exact depth-131,072 deploy gate still exceed its watchdog after RMP2's
+structural PathMap query became byte-native, and which PathMap properties should cross the two
+remaining abstraction boundaries?
+
+Status: MEASURED DEFECT, ACCEPTED REPAIR, and EXACT WORKSPACE ACCEPTANCE. The implementation is
+`f1r3node-rust-mettail@1afd4791e`; the reachable records are pgmcp bugs 5994 and 5995, experiment
+311, and artifacts 380–381. The durable resource record is
+[`resident-send-reducer-join-2026-08-23.md`](../stack-safety/measurements/resident-send-reducer-join-2026-08-23.md).
+
+The first diagnosis rejected the tempting hypothesis that PathMap lookup or final RSpace insertion
+was responsible. At depth 8,192, post-RMP2 structural projection took 590,939 ns and final insertion
+contributed about 12,976 allocation calls. Headless Heaptrack instead attributed 52,712,929 of
+53,716,424 whole-process allocation calls to the generated nested `Send` decoder: each successively
+shorter child `Par` suffix was attached to a new `ParBag`, which repeatedly rebuilt PathMap payloads
+before evaluation began. The canonical top-level `Par` importer could not help because nested
+`Send` children did not cross that boundary.
+
+The selected projection retains PathMap's authoritative byte representation. It derives the
+optional-channel and repeated-data roles from `SEND_RHO_MATCH_PROGRAM`, applies the existing
+stack-safe `cut_at_par` region PDA to the admitted RPB3 endpoint, decodes only the compact scalar
+shell, and decodes each immediate child exactly once through the established top-level importer.
+It does not enumerate the ParBag, manufacture a `Vec<Par>`, sort an occurrence list, or introduce a
+shadow map. Decreasing fields, duplicate singular fields, and schema near misses take the complete
+generated decoder, so the optimization remains a proof-carrying fast path rather than a new wire
+authority.
+
+That repair made `plain_deploy` linear but exposed an independent `env_get_deploy` slope. A second
+headless profile attributed 52,639,873 of 53,747,932 allocation calls to
+`computed_locally_free_par -> generated Expr decoder -> attach_par_exprs -> ParBag insertion`.
+`descend_eval` had correctly returned the environment binding as a resident CoW `Par`, but erased
+the stronger fact that canonical-path-stable ground data has an empty structural locally-free
+fold. Its parent `EvKont::Join` then semantically decoded the complete recursive value merely to
+reprove that empty summary, and subsequently imported the same value into `ParConstruction`.
+
+The final design makes the proof explicit. `StableGround` certifies evaluator identity *and* an
+empty structural fold; `ExpressionFree` certifies only evaluator identity for reflected process
+families. Only the former receives the empty-fold certificate. At a one-child `Join` whose
+expression-free shell has the additive-zero component Bag, the evaluator moves the resident child
+root and applies the existing `Par::parallel` metadata equations directly:
+
+```math
+B_{\mathrm{out}} = B_{\mathrm{child}} \oplus \varnothing = B_{\mathrm{child}},
+```
+
+```math
+L_{\mathrm{out}} = L_{\mathrm{child}} \mathbin{\mathrm{union}} L_{\mathrm{shell}},
+\qquad
+C_{\mathrm{out}} = C_{\mathrm{child}} \lor C_{\mathrm{shell}}.
+```
+
+Here `B` is the authoritative `PathMap<Multiplicity>` component Bag, `L` is the wire-visible
+locally-free byte vector, and `C` is `connective_used`. The historical child-then-shell `union` is
+retained exactly, including trailing zero bytes; the separately carried structural fold remains
+the child's proof because an empty component shell contributes no structural bits. Every near miss
+uses the complete construction PDA.
+
+MEASURED results:
+
+- `plain_deploy` control time was 2.91, 10.79, and 44.21 seconds at depths 8,192, 16,384, and
+  32,768; the region projection measured 0.06, 0.13, and 0.26 seconds and reached depth 131,072 in
+  1.06 seconds;
+- `env_get_deploy` before the neutral Join measured 2.59 and 9.94 seconds at depths 8,192 and
+  16,384 and exceeded 146.9 seconds at depth 131,072; after the repair it measured 0.13, 0.25,
+  0.48, and 2.03 seconds through depth 131,072;
+- the post-Join depth-8,192 profile records 963,802 allocation calls, a 98.21% reduction from the
+  immediate predecessor, and no dominant full semantic decoder/import stack;
+- the unchanged 2 MiB-worker gate accepts both deploy subjects at depth 131,072 in 3.14 seconds;
+  and
+- the exact release workspace run passes 4,495 of 4,495 executed tests, with 53 declared skips and
+  zero failures.
+
+The tests preserve optional-field presence, repeated-child order, unknown metadata, malformed
+EPathMap refusal, fallback reachability, exact protobuf and bincode values, recursive-oracle result
+and charge traces, and the original PathMap storage root. No PathMap source or feature changed.
+
+The timing ladders remain PRELIMINARY one-observation attribution evidence. Experiment 311's
+registered 30-sample statistical magnitude decision remains pending and must not be inferred from
+these rows. That pending magnitude estimate does not reopen the repaired correctness/resource gate.
+
 ## Open hypotheses and required closure evidence
 
 | ID | Hypothesis | Required evidence before acceptance | Status |
 |---|---|---|---|
-| H-001 | Direct canonical protobuf-region RMP2 projection changes the deep unary-list structural path from quadratic to linear time. | Generated-schema differential corpus; resident/region transcript equality; malformed-region refusal; geometric timing/allocation ladder; exact candidate and COMM equivalence. | In progress |
-| H-002 | A narrow substitution identity certificate removes a separate linear allocation slope for already-stable ground send data. | Byte, score, accounting, event, RSpace identity, near-miss, and zero-work controls. | Planned after H-001 attribution repair |
-| H-003 | After H-001 and H-002, the exact depth-131,072 deploy completes under the unchanged 2 MiB worker stack and 120-second watchdog. | Exact release depth gate under capped RSS and zero swap. | Open |
+| H-001 | Direct canonical protobuf-region RMP2 projection changes the deep unary-list structural path from quadratic to linear time. | Generated-schema differential corpus; resident/region transcript equality; malformed-region refusal; geometric timing/allocation ladder; exact candidate and COMM equivalence. | **Accepted for mechanism and gates at `1afd4791e`**; experiment 311's n=30 magnitude verdict remains pending |
+| H-002 | A narrow substitution identity certificate plus the additive-zero resident Join removes redundant traversal for already-stable ground send data. | Byte, score, accounting, event, RSpace identity, near-miss, CoW-root, and zero-work controls. | **Accepted at `1afd4791e`**; 98.21% fewer profiled allocation calls and exact recursive/charge differentials |
+| H-003 | After H-001 and H-002, the exact depth-131,072 deploy completes under the unchanged 2 MiB worker stack and 120-second watchdog. | Exact release depth gate under capped RSS and zero swap. | **Accepted**; both subjects reach 131,072 and the exact release workspace passes 4,495/4,495 |
 | H-004 | Datum and continuation candidate order is independent of derived RMP bytes and digest collisions in encoded, decoded, play, and replay routes. | Opposing-RMP and forced-hash-collision controls; duplicate-identity refusal; multiplicity preservation; original-address removal; encoded/decoded key identity; play/replay COMM and post-state equivalence. | Both focused end-to-end collision/replay gates passed; release open |
 | H-005 | Lazy nested-Par summarization changes the dynamic deep-unary query route from repeated suffix hashing to one selected-token hash. | Shell-classifier differential; malformed-shell refusal; exact summary-count probe; geometric time/allocation ladder; emitted-token and candidate equivalence. | Open |
 | H-006 | A clone-family-shared `OnceLock<[u8; 32]>` removes repeated resident RMP2 transcript walks with fixed retained space and no material cold regression. | Exact bytes/oracle; one initialization per clone family; mutation/no-op/metadata/concurrency matrix; zero warm endpoint visits; preregistered cold/warm/clone/post-mutation time, allocation, instructions, and headless Heaptrack RSS gates from pgmcp 5983/5984. | Resource and focused semantic hypotheses accepted; COMM/replay/full-release lifecycle gates open |

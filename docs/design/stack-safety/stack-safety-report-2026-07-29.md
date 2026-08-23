@@ -366,6 +366,7 @@ Abbreviations used throughout are ABI (application binary interface), CBR (conse
 | **SS-Y12** | exposed after `efa9aaa0b`; repaired by SS-A18; pgmcp experiment 306 | f1r3node | the first protobuf-region printer retained per-child planning/projection and binary concatenation work on the width axis | diagnostic smoke ~0.28 s control / ~0.33 s treatment; selected n=30 ratio upper bound **0.998872** | ✅ **REPAIRED** — one compact shell, consumed cuts, region-native planning, and one bounded n-ary rope | [5.33](#533-canonical-protobuf-width-refinement-for-the-printer-and-epathmap-matcher-ss-a18-ss-a19-ss-x2-ss-y12-ss-y13) |
 | **SS-Y13** | exposed by experiments 307–308; repaired by SS-A19; pgmcp experiment 309 | f1r3node | the nominally width-independent EPathMap matcher first built proportional cut plans, then redundantly rebuilt every canonical path after ParBag had already validated the resident endpoint | rejected treatment allocations **7,674,833** versus **5,222,542** control; selected treatment **4,660,158**, with no `validate_canonical_path` frame beneath endpoint preparation | ✅ **REPAIRED** — admission proof crosses the zipper boundary and trusted decoding starts only after both borrowed cursors are released | [5.33](#533-canonical-protobuf-width-refinement-for-the-printer-and-epathmap-matcher-ss-a18-ss-a19-ss-x2-ss-y12-ss-y13) |
 | **SS-Y14** | exposed by pgmcp experiment 5990 v1; repaired by SS-A21 | f1r3node | creating a bounded CoW suffix checkpoint after every deterministic exact or already-bound-capture atom removed clone slope but doubled ordinary exact/repeated-query latency | v1 exact median control/treatment ratio about **0.487** and repeated about **0.536**; the negative 3,000-observation matrix is retained | ✅ **REPAIRED** — one paired cursor consumes maximal deterministic runs and checkpoints only branch ownership | [5.34](#534-rmp2-byte-native-projection-cache-and-candidate-product-continuations-ss-a20-ss-a21-ss-y14) |
+| **SS-Y15** | exposed by the exact release workspace gate after `253d17545`; repaired `1afd4791e`; pgmcp bugs 5994/5995 and experiment 311 | f1r3node | two stack-safe boundaries still rebuilt every recursively shorter resident suffix: generated nested-`Send` child attachment before evaluation, then loss of the stable-ground structural proof and PathMap CoW root at reducer `Join` | `plain_deploy` control **2.91 / 10.79 / 44.21 s** at depths 8,192/16,384/32,768; pre-Join `env_get_deploy` **2.59 / 9.94 s** at 8,192/16,384 and >146.9 s at 131,072; depth-8,192 environment profile **53,747,932 $`\rightarrow`$ 963,802** allocation calls | ✅ **REPAIRED** — generated-schema immediate-child regions, typed stable-ground proof, substitution CoW identity, and the general additive-zero resident Bag Join; selected times **0.13 / 0.25 / 0.48 / 2.03 s** through depth 131,072; unchanged 2 MiB/120 s gate and exact 4,495-test release workspace pass | [5.35](#535-resident-send-projection-and-proof-preserving-reducer-join-ss-y15) |
 | **SS-E1** | `5a744c66`, `ad468163`, `08e876fd`, `6a264e05` | f1r3node | ★ **Phase 3b's PREREQUISITE instrument** — the identical-total-order argument, the sorter golden's first depth-$`\geq 2`$ rows, and the re-entry ladder probe. ⚠ **No traversal was converted**, so this is deliberately not a class change | ⌀ — an instrument, not a traversal | **no** — by construction | [5.6.7](#567-ss-e1--3bs-prerequisite-instrument-and-the-two-checks-that-were-blind) |
 | **SS-E2** | `26876b65`, `87e514b6` | f1r3node | generated traversal registry $`\leftrightarrow`$ proof/oracle manifest; Rocq generic PDA equivalence, EPathMap algebra, and structural EPM1 framing/value-table laws; SMT mode dispatch; TLA+ transition model | 30 depth + 6 width production subjects, **zero tripwire subjects** | enabling and closure evidence | [5.12](#512-generated-par-pda-closure-ss-a8-ss-e2) |
 | **SS-E3** | `b2d84064`, `68e8290d` | f1r3node | Phase 7 resource closure: independent PathMap set/map hash and `Message::clear` ladders; derived-register Cachegrind axis; matched-control Massif axis | **40** converted subjects, all subquadratic; four stack-to-heap transfers measured linear | enabling and closure evidence | [5.14](#514-resource-closure--heap-and-deterministic-time-ss-e3); PathMap slice: [PathMap §5.6](../pathmap/pathmap-report-2026-08-03.md#56-hash-and-clear-ladders) |
@@ -523,6 +524,7 @@ register rows (SS-C5…SS-C14, SS-Y6) and the stack-safety consequences.
   - [5.32 Accounting-demand canonical protobuf-region PDA [SS-A17, SS-Y11]](#532-accounting-demand-canonical-protobuf-region-pda-ss-a17-ss-y11)
   - [5.33 Canonical-protobuf width refinement for the printer and EPathMap matcher [SS-A18, SS-A19, SS-X2, SS-Y12, SS-Y13]](#533-canonical-protobuf-width-refinement-for-the-printer-and-epathmap-matcher-ss-a18-ss-a19-ss-x2-ss-y12-ss-y13)
   - [5.34 RMP2 byte-native projection, cache, and candidate-product continuations [SS-A20, SS-A21, SS-Y14]](#534-rmp2-byte-native-projection-cache-and-candidate-product-continuations-ss-a20-ss-a21-ss-y14)
+  - [5.35 Resident Send projection and proof-preserving reducer Join [SS-Y15]](#535-resident-send-projection-and-proof-preserving-reducer-join-ss-y15)
 - [6. Discussion](#6-discussion)
   - [6.1 Why the explicit-worklist shape, and why it is *smaller* than what it replaces](#61-why-the-explicit-worklist-shape-and-why-it-is-smaller-than-what-it-replaces)
   - [6.2 Why the SCC is the unit of conversion](#62-why-the-scc-is-the-unit-of-conversion)
@@ -9507,6 +9509,112 @@ CBR-053 therefore remains the active consensus boundary: derived candidate bytes
 produce conservative false positives, but a false negative could hide a COMM and cannot be retired
 until the system gates close.
 
+### 5.35 Resident Send projection and proof-preserving reducer Join [SS-Y15]
+
+SS-Y15 is a resource-slope correction discovered by the exact full-release policy, not another
+native-recursion conversion. The production evaluator, substitution, generated codecs, and
+generated `Drop`/`Clone` implementations were already stack safe. Nevertheless, a stack-safe
+machine can still be operationally unusable if it retains or reconstructs all recursively shorter
+suffixes. The unchanged depth-131,072 gate exposed exactly that distinction by reaching its
+120-second child watchdog without exhausting the 2 MiB worker stack.
+
+#### 5.35.1 The first suffix series existed before evaluation
+
+At `253d17545`, direct RMP2 structural projection at depth 8,192 took 590,939 ns and final RSpace
+insertion accounted for about 12,976 allocation calls. Those counters reject PathMap lookup,
+candidate filtering, and final Bag insertion as the dominant cause. Headless Heaptrack instead
+attributed 52,712,929 of 53,716,424 allocation calls to generated `Send` decoding: nested child
+`Par` messages were attached to successively shorter `ParBag` values, rebuilding PathMap payloads
+before `eval_send`, substitution, or RSpace matching could run.
+
+The selected repair derives the channel and data roles from the generated
+`SEND_RHO_MATCH_PROGRAM`, uses the existing stack-safe protobuf-region cutter on the admitted RPB3
+endpoint, decodes the compact scalar shell, and imports each immediate child `Par` once. The output
+is the ordinary `Send`; `eval_send`, its one-COMM reservation, channel/data order, random splitting,
+metering, and RSpace operations are unchanged. Noncanonical field order, duplicate singulars, or a
+schema near miss retain the complete generated-decoder path. This is a projection over
+proof-carrying canonical bytes, not a second codec.
+
+One-observation PRELIMINARY release ladders make the mechanism visible:
+
+| depth | nested-decoder control | generated-region treatment |
+|---:|---:|---:|
+| 8,192 | 2.91 s / 64,144 KiB | 0.06 s / 50,524 KiB |
+| 16,384 | 10.79 s / 105,188 KiB | 0.13 s / 81,248 KiB |
+| 32,768 | 44.21 s / 191,644 KiB | 0.26 s / 144,620 KiB |
+| 131,072 | not run after the quadratic ladder | 1.06 s / 484,776 KiB |
+
+The control is approximately $`\Theta(d^2)`$ in depth; the treatment is consistent with
+$`\Theta(d)`$ encoded-size work. Both RSS columns are proportional to the materialized value. The
+repair removes repeated suffixes; it does not claim that a depth-$`d`$ AST occupies constant heap.
+
+#### 5.35.2 The second suffix series was proof loss, then a non-native Bag Join
+
+After the `Send` projection, `env_get_deploy` still measured 2.59 s / 70,740 KiB at depth 8,192 and
+9.94 s / 153,316 KiB at depth 16,384. A depth-131,072 diagnostic exceeded 146.9 seconds without a
+stack failure. Its headless profile attributed 52,639,873 of 53,747,932 allocation calls to
+`computed_locally_free_par`, generated `Expr` decoding, child attachment, and PathMap insertion.
+
+The reducer had retained the environment binding as a resident CoW `Par`, but its `EvPar` erased
+which identity theorem admitted it. A process-only expression-free value proves only that
+`eval_expr` is byte-identical; arbitrary structural metadata must still be recomputed. A canonical-
+path-stable ground value proves the stronger empty structural locally-free fold. The implementation
+now represents those as distinct `StableGround` and `ExpressionFree` proof classes and carries an
+empty fold only for the former.
+
+The parent `Join` then applies the existing Bag identity when its expression-free shell has no
+component endpoint and there is exactly one completed resident child:
+
+```math
+B_{\mathrm{child}} \oplus \varnothing = B_{\mathrm{child}}.
+```
+
+The child PathMap root is moved, not enumerated. Root metadata follows the historical
+`child.parallel(shell)` equations: child-then-shell `union` for `locally_free`, including trailing
+zero bytes, and boolean OR for `connective_used`. The child's separately carried structural proof
+is unchanged because an empty component shell contributes no structural bits. Every near miss
+enters the complete `ParConstruction` PDA. This is the general zero law of the component Bag, not
+an `EVar` special case.
+
+The selected environment ladder is:
+
+| depth | elapsed | maximum RSS |
+|---:|---:|---:|
+| 8,192 | 0.13 s | 74,996 KiB |
+| 16,384 | 0.25 s | 147,660 KiB |
+| 32,768 | 0.48 s | 280,440 KiB |
+| 131,072 | 2.03 s | 869,920 KiB |
+
+At depth 8,192, headless Heaptrack records 963,802 whole-process allocation calls, a 98.21%
+reduction from the immediate predecessor. The prior semantic decoder/import stack is absent from
+the dominant allocation sites; ordinary iterative scoring/construction remains.
+
+#### 5.35.3 Acceptance and assurance boundary
+
+Release-focused evidence consists of five resident-projection cases, three substitution-identity
+cases, and all fifteen evaluator recursive differentials. The corpus pins missing versus
+present-empty channel, repeated-child order, metadata/unknown fields, malformed EPathMap errors,
+complete-decoder fallback, variables and process-only near misses, exact protobuf/bincode results,
+charge traces, depth 4,096 on 256 KiB, depth 8,192 on 256 KiB, and exact PathMap storage sharing.
+
+The unchanged production gate passes both `plain_deploy` and `env_get_deploy` at depth 131,072 on a
+2 MiB worker in 3.14 seconds without `RUST_MIN_STACK`, `stacker`, swap, a recursive fallback, or a
+depth limit. The run of record
+
+```bash
+RUST_BACKTRACE=1 cargo nextest run --release --no-fail-fast --workspace
+```
+
+under `MemoryHigh=20G`, `MemoryMax=24G`, and `MemorySwapMax=0` passes **4,495 of 4,495** executed
+tests in 138.379 seconds; 53 declared skips remain skips and zero tests fail. The committed source
+coordinate is `1afd4791e`.
+
+The complete method, artifact checksums, commands, and validity threats are in
+[`measurements/resident-send-reducer-join-2026-08-23.md`](measurements/resident-send-reducer-join-2026-08-23.md).
+Experiment 311's registered 30-sample statistical magnitude decision remains pending; the
+single-observation ladder is reported only as mechanism/asymptotic attribution. That distinction
+does not reopen the exact semantic, stack, or release gates.
+
 ---
 
 ## 6. Discussion
@@ -10086,6 +10194,11 @@ guard must be replaced *before* the cap is touched, never after.
    every grammar-analysis routine over a statically bounded declaration graph has been rewritten;
    neither is a deploy-controlled traversal-depth exposure.
 
+   The later SS-Y15 release-policy finding sharpens “complete” to include usable heap/time shape:
+   admitted resident `Send` children and stable environment bindings no longer rebuild all shorter
+   protobuf/PathMap suffixes. Both exact deploy subjects now reach depth 131,072 on the unchanged
+   2 MiB worker, and the exact 4,495-test release workspace passes without stack tuning.
+
 ---
 
 ## References
@@ -10307,6 +10420,17 @@ heaptrack_print /tmp/heaptrack-exp309-treatment-set.zst.zst \
   > /tmp/heaptrack-exp309-treatment-set-report.txt
 ```
 
+**A.11 — SS-Y15 resident-Send/reducer-Join release acceptance.** Exact subject-specific commands,
+binary hashes, Heaptrack invocation, and artifact checksums are retained in the linked measurement
+record. The workspace command is deliberately free of `RUST_MIN_STACK`.
+
+```bash
+systemd-run --user --scope \
+  -p MemoryHigh=20G -p MemoryMax=24G -p MemorySwapMax=0 \
+  env RUST_BACKTRACE=1 cargo nextest run --release --no-fail-fast --workspace \
+  > /tmp/campaign-4131-full-release-nextest-1afd4791e.log 2>&1
+```
+
 ---
 
 ## Appendix B — raw data locations
@@ -10328,6 +10452,7 @@ heaptrack_print /tmp/heaptrack-exp309-treatment-set.zst.zst \
 | [`measurements/rspace-candidate-suffix-checkpoint-v2-2026-08-23.tsv`](measurements/rspace-candidate-suffix-checkpoint-v2-2026-08-23.tsv) | SS-A21's selected deterministic-run hybrid paired matrix over exact, repeated-capture, wildcard, remainder, and nested queries (§5.34) |
 | [`measurements/rspace-candidate-suffix-checkpoint-v2-heaptrack-2026-08-23.md`](measurements/rspace-candidate-suffix-checkpoint-v2-heaptrack-2026-08-23.md) | SS-A21's headless allocation-mechanism attribution (§5.34) |
 | [`measurements/rspace-candidate-suffix-checkpoint-v2-callgrind-2026-08-23.md`](measurements/rspace-candidate-suffix-checkpoint-v2-callgrind-2026-08-23.md) | SS-A21's deterministic instruction ladder and exact result digests (§5.34) |
+| [`measurements/resident-send-reducer-join-2026-08-23.md`](measurements/resident-send-reducer-join-2026-08-23.md) | SS-Y15's generated-region and proof-preserving Join ladders, headless allocation attribution, exact 131,072-depth gate, full release result, commands, hashes, and threats (§5.35) |
 | [`measurements/spatial-matcher-heap-2026-08-04.tsv`](measurements/spatial-matcher-heap-2026-08-04.tsv) | matched matcher/control allocator, peak-heap, profiler-RSS, unprofiled-RSS, and runtime rows before `714d618c`, after it, and after the final singleton refinement `6f1412ee` (§5.16.4) |
 | [`measurements/e8b-native-pathmap-par-e6a-2026-08-04.tsv`](measurements/e8b-native-pathmap-par-e6a-2026-08-04.tsv) | the 51 submitted samples per arm, treatment phase splits, finalized digests, and locked E-8b decision metadata (§5.17.3) |
 | [`measurements/epathmap-canonical-worklist-2026-08-08.tsv`](measurements/epathmap-canonical-worklist-2026-08-08.tsv) | the SS-C12 quadratic predecessor, reproducible linear ladder, depth-20,000 worklist, malformed-gate allocator lifetime, and formal-equivalence aggregate (§5.19) |
@@ -10436,13 +10561,16 @@ accepting this file as a positional extra page):
 
 ```bash
 DOCLINT_DOI=off ../mettail-rust/docs/languages/validate.sh \
+  docs/design/pathmap/pathmap-engineering-journal-2026-08-23.md \
   docs/design/stack-safety/stack-safety-report-2026-07-29.md \
+  docs/design/stack-safety/measurements/resident-send-reducer-join-2026-08-23.md \
   docs/consensus/consensus-change-register.md
 ```
 
 The run of record for this revision (2026-08-23), SHA-256
-`82a355c1708648d8563ef0b5b691091c48246c4ff94288735818dca6a45ac9df`, passes **16 of 17**
-mechanised checks over both living reports with the
+`53f7a604c5f80c54c590fd91e45782286b048f340ea192a8b88a27e1f1028f54`, passes **16 of 17**
+mechanised checks over the two living reports, the PathMap journal, and the SS-Y15 measurement
+record, with the
 network-dependent DOI-resolution check explicitly skipped (`DOCLINT_DOI=off`); the four
 editorially-judged guidelines are dispositioned in §E.3. This is a timestamped measurement, not a
 standing property — re-run the command after any edit, and do not count the skip as a pass.
