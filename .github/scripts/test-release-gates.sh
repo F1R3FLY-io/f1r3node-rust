@@ -56,7 +56,7 @@ INDEX_DIGEST="sha256:$(printf 'index' | sha256sum | awk '{print $1}')"
 "$EVIDENCE_TOOL" record-images "$GATES/release-evidence.json" \
 	"docker.io/f1r3flyindustries/f1r3fly-rust@$INDEX_DIGEST" \
 	"sha256:$(printf 'amd64' | sha256sum | awk '{print $1}')" \
-	"sha256:$(printf 'arm64' | sha256sum | awk '{print $1}')"
+	"sha256:$(printf 'arm64' | sha256sum | awk '{print $1}')" "$INDEX_DIGEST"
 CANDIDATE_TAG="$(jq -r '.candidate_tag' "$GATES/release-evidence.json")"
 
 # --- Gate documents -------------------------------------------------------
@@ -68,11 +68,12 @@ jq -n '{jobs: (
 	+ [range(1; 12) | {name: ("Pre-fix regression backstops (" + tostring + ")")}]
 	+ [{name: "TLA+ invariant check", status: "completed", conclusion: "skipped"}]
 	| map(. + {status: "completed", conclusion: (.conclusion // "success")}))}' >"$GATES/slashing-jobs.json"
+EVIDENCE_SHA256="$(sha256sum "$GATES/release-evidence.json" | awk '{print $1}')"
 binding() {
-	jq -n --arg gate "$1" --arg sha "$SOURCE_SHA" --arg tag "$CANDIDATE_TAG" --arg digest "$INDEX_DIGEST" \
+	jq -n --arg gate "$1" --arg sha "$SOURCE_SHA" --arg tag "$CANDIDATE_TAG" --arg digest "$INDEX_DIGEST" --arg esha "$EVIDENCE_SHA256" \
 		--arg path "$2" --argjson id "$3" '{
 		schema_version: 1, gate: $gate, source_sha: $sha, candidate_tag: $tag, image_index_digest: $digest,
-		workflow_run: {id: $id, attempt: 1, path: $path, conclusion: "success"}}'
+		candidate_evidence_sha256: $esha, workflow_run: {id: $id, attempt: 1, path: $path, conclusion: "success"}}'
 }
 binding oci_validation .github/workflows/oci-validation.yml 777 | jq --arg pin "$PIN" '. + {
 	mode: "candidate", system_integration_sha: $pin,
@@ -156,6 +157,7 @@ fail_case 'required CI job id differs from evidence' ci-jobs.json '(.jobs[] | se
 fail_case 'slashing run for another commit' slashing-run.json ".head_sha = \"$OTHER_SHA\"" slashing
 fail_case 'slashing matrix job failed' slashing-jobs.json '(.jobs[] | select(.name == "Pre-fix regression backstops (7)") | .conclusion) = "failure"' slashing
 fail_case 'slashing matrix absent' slashing-jobs.json '.jobs |= map(select(.name | startswith("Pre-fix") | not))' slashing
+fail_case 'OCI document built from other evidence' oci-validation-evidence.json '.candidate_evidence_sha256 = "0000000000000000000000000000000000000000000000000000000000000000"' oci_validation
 fail_case 'OCI validation on another image' oci-validation-evidence.json '.image_index_digest = "sha256:0000000000000000000000000000000000000000000000000000000000000000"' oci_validation
 fail_case 'OCI validation in pull-request mode' oci-validation-evidence.json '.mode = "pull-request"' oci_validation
 fail_case 'OCI validation with another system-integration pin' oci-validation-evidence.json ".system_integration_sha = \"$OTHER_SHA\"" oci_validation
