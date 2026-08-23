@@ -872,4 +872,61 @@ mod tests {
             ),
         }
     }
+
+    /// Slice-10b review pin (FIPS defense-in-depth): the scrubbed
+    /// message that leaves `map_open_err` — and therefore reaches
+    /// the Rholang reply tuple via `quarantine_err_reply` — must
+    /// NOT contain any component of the caller's canonical path.
+    /// Pre-fix `map_open_err` correctly called `io_msg_scrub` (which
+    /// formats only the `io::ErrorKind` display), but a reasonable-
+    /// looking refactor to `format!("{}", e)` or `e.to_string()`
+    /// would leak the underlying path (stdlib's `io::Error`
+    /// constructed via `Error::from_raw_os_error` combined with
+    /// path context can emit `"No such file or directory: /foo/bar"`
+    /// — the exact leakage the L-2 fix on `io_msg_scrub` intends
+    /// to prevent).
+    ///
+    /// Provokes a real EEXIST via `safe_open(O_CREAT|O_EXCL)` on a
+    /// pre-existing leaf and asserts the returned message does not
+    /// contain the temp-directory basename.  Fails loudly if a
+    /// future refactor swaps `io_msg_scrub` for a raw `Display`.
+    #[test]
+    fn safe_open_error_message_does_not_leak_canonical_path() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        // Ensure the tempdir path contains a segment we can grep for.
+        let tmp_basename = root
+            .file_name()
+            .and_then(|n| n.to_str())
+            .expect("tempdir path has a unicode basename")
+            .to_owned();
+        let leaf = "leaky-path-probe.txt";
+        fs::write(root.join(leaf), b"already here").unwrap();
+
+        let err = safe_open(
+            &root,
+            leaf,
+            libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL,
+            0o644,
+        )
+        .expect_err("O_CREAT|O_EXCL on existing must fail");
+        let (_code, msg) = quarantine_err_reply(&err);
+
+        // Neither the tempdir basename nor the leaf filename should
+        // appear in the reply.  A raw `e.to_string()` in place of
+        // `io_msg_scrub` would let one of these through on hosts
+        // whose libc annotates EEXIST with the offending path.
+        assert!(
+            !msg.contains(&tmp_basename),
+            "FIPS: reply message must not leak the tempdir path.  \
+             Got message: {msg:?}; tempdir basename: {tmp_basename:?}. \
+             Check that `map_open_err` still calls `io_msg_scrub(&e)` \
+             and not `e.to_string()` / `format!(\"{{}}\", e)`."
+        );
+        assert!(
+            !msg.contains(leaf),
+            "FIPS: reply message must not leak the leaf filename.  \
+             Got message: {msg:?}; leaf name: {leaf:?}."
+        );
+    }
 }
