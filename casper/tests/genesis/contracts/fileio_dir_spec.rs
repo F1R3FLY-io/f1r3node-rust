@@ -11,10 +11,15 @@
 //!   - `Dir.openFile(rel, "r")` on a "r"-mode Dir returns a File cap
 //!     whose readN drains the seeded content.
 //!
-//! Deferred: Dir mutations (removeFile/removeDir/rename/copyFile)
-//! require rw-mode Dir bundles + on-disk verification patterns
-//! that duplicate `fileio_file_spec` scaffolding; landing as a
-//! follow-up slice keeps this file small.
+//! Phase 10 Dir mutations coverage (2026-08-23): the four mutation
+//! methods (`removeFile` / `removeDir(recursive)` / `rename` /
+//! `copyFile`) each get an rw-mode round-trip with on-disk `std::fs`
+//! verification, mirroring `file_truncate_write_mode_roundtrip` in
+//! `fileio_file_spec.rs`.  Each test seeds the tempdir with
+//! predictable content, exercises the mutation through the Dir
+//! agent's API, asserts the Rholang reply shape, then re-reads the
+//! filesystem to confirm the mutation actually landed on disk (not
+//! just that the reply arrived).
 
 use std::collections::HashMap;
 
@@ -231,4 +236,271 @@ in {{
     spec.run_tests()
         .await
         .expect("dir_openfile_readn spec failed");
+}
+
+// ----- Phase 10 mutations coverage (2026-08-23) ---------------------
+
+/// `Dir.removeFile("child.txt")` on an rw-mode Dir returns `[true]`
+/// AND the child file is actually gone from disk after the deploy
+/// completes.  Post-run `std::fs::exists` check catches a regression
+/// where the reply is synthesized without invoking the underlying
+/// `unlinkat(2)`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn dir_remove_file_actually_unlinks() {
+    let (dir, params, fs_uri) = bundle_dir_with_child("rw", b"unlink me");
+    let child_path = std::fs::canonicalize(dir.path())
+        .expect("canonicalize root")
+        .join("child.txt");
+    assert!(child_path.exists(), "seed child.txt must exist pre-run");
+
+    let test_source = format!(
+        r#"
+new
+  rl(`rho:registry:lookup`),
+  RhoSpecCh,
+  fsCh,
+  test_remove_file
+in {{
+  rl!(`rho:id:zphjgsfy13h1k85isc8rtwtgt3t9zzt5pjd5ihykfmyapfc4wt3x5h`, *RhoSpecCh) |
+  for(@(_, RhoSpec) <- RhoSpecCh) {{
+    @RhoSpec!("testSuite",
+      [("Dir.removeFile actually unlinks the child file",
+        *test_remove_file)])
+  }} |
+
+  rl!(`{fs_uri}`, *fsCh) |
+  for(@(_, fs) <- fsCh) {{
+    contract test_remove_file(rhoSpec, _, ackCh) = {{
+      for(@[true, d] <- @fs!?("openDir", "shareddir", {{"mode": "rw"}})) {{
+        for(@r <- @d!?("removeFile", "child.txt")) {{
+          rhoSpec!("assert", (r, "==", [true]),
+            "Dir.removeFile('child.txt') → [true]", *ackCh)
+        }}
+      }}
+    }}
+  }}
+}}
+"#
+    );
+
+    let compiled =
+        CompiledRholangSource::new(test_source, HashMap::new(), "DirRemoveFileSpec".to_string())
+            .expect("compile dir_remove_file spec");
+    let spec = RhoSpec::new_with_genesis_parameters(compiled, vec![], GENESIS_TEST_TIMEOUT, params);
+    spec.run_tests().await.expect("dir_remove_file spec failed");
+
+    assert!(
+        !child_path.exists(),
+        "post-run child.txt must be gone from disk (Dir.removeFile is expected to \
+         invoke unlinkat, not just synthesize a [true] reply)"
+    );
+}
+
+/// `Dir.removeDir("subdir", true)` on an rw-mode Dir returns `[true]`
+/// AND the entire subdirectory subtree is gone from disk.  Seeds a
+/// two-file subdirectory so a non-recursive `unlinkat(AT_REMOVEDIR)`
+/// would fail with ENOTEMPTY — verifies the recursive walker is
+/// actually invoked.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn dir_remove_dir_recursive_wipes_subtree() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = std::fs::canonicalize(dir.path()).expect("canonicalize");
+    let sub = root.join("subdir");
+    std::fs::create_dir(&sub).expect("mkdir subdir");
+    std::fs::write(sub.join("a.txt"), b"a").expect("seed a.txt");
+    std::fs::write(sub.join("b.txt"), b"b").expect("seed b.txt");
+    assert!(sub.exists(), "subdir must exist pre-run");
+
+    let entry = BundleEntry::try_new(
+        "shareddir".to_string(),
+        root,
+        BundleEntryKind::Dir,
+        "rw".to_string(),
+        BundleConsensusMode::Oracular,
+    )
+    .expect("bundle entry");
+    let mut params = GenesisBuilder::build_genesis_parameters_with_defaults(None, None);
+    params.2.fs_bundle = vec![entry];
+    let fs_uri = fs_genesis::fs_genesis_uri(&standard_deploys::FS_GENERATOR_PUB_KEY);
+
+    let test_source = format!(
+        r#"
+new
+  rl(`rho:registry:lookup`),
+  RhoSpecCh,
+  fsCh,
+  test_remove_dir_recursive
+in {{
+  rl!(`rho:id:zphjgsfy13h1k85isc8rtwtgt3t9zzt5pjd5ihykfmyapfc4wt3x5h`, *RhoSpecCh) |
+  for(@(_, RhoSpec) <- RhoSpecCh) {{
+    @RhoSpec!("testSuite",
+      [("Dir.removeDir(recursive) wipes the subtree",
+        *test_remove_dir_recursive)])
+  }} |
+
+  rl!(`{fs_uri}`, *fsCh) |
+  for(@(_, fs) <- fsCh) {{
+    contract test_remove_dir_recursive(rhoSpec, _, ackCh) = {{
+      for(@[true, d] <- @fs!?("openDir", "shareddir", {{"mode": "rw"}})) {{
+        for(@r <- @d!?("removeDir", "subdir", true)) {{
+          rhoSpec!("assert", (r, "==", [true]),
+            "Dir.removeDir('subdir', true) → [true]", *ackCh)
+        }}
+      }}
+    }}
+  }}
+}}
+"#
+    );
+
+    let compiled = CompiledRholangSource::new(
+        test_source,
+        HashMap::new(),
+        "DirRemoveDirRecursiveSpec".to_string(),
+    )
+    .expect("compile dir_remove_dir_recursive spec");
+    let spec = RhoSpec::new_with_genesis_parameters(compiled, vec![], GENESIS_TEST_TIMEOUT, params);
+    spec.run_tests()
+        .await
+        .expect("dir_remove_dir_recursive spec failed");
+
+    assert!(
+        !sub.exists(),
+        "post-run subdir/ must be gone from disk (recursive removeDir must \
+         walk children and unlink them)"
+    );
+    // Keep tempdir alive through the assertions.
+    drop(dir);
+}
+
+/// `Dir.rename("old.txt", "new.txt")` returns `[true]` AND the old
+/// filename is gone from disk while the new filename holds the same
+/// content.  Verifies the underlying `renameat` actually swapped the
+/// directory entry rather than copying or synthesizing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn dir_rename_moves_child_on_disk() {
+    // bundle_dir_with_child seeds `child.txt`; rename it to
+    // `renamed.txt`.
+    let (dir, params, fs_uri) = bundle_dir_with_child("rw", b"rename me");
+    let root = std::fs::canonicalize(dir.path()).expect("canonicalize");
+    let old_path = root.join("child.txt");
+    let new_path = root.join("renamed.txt");
+    assert!(old_path.exists(), "seed child.txt must exist");
+    assert!(!new_path.exists(), "renamed.txt must not exist yet");
+
+    let test_source = format!(
+        r#"
+new
+  rl(`rho:registry:lookup`),
+  RhoSpecCh,
+  fsCh,
+  test_rename
+in {{
+  rl!(`rho:id:zphjgsfy13h1k85isc8rtwtgt3t9zzt5pjd5ihykfmyapfc4wt3x5h`, *RhoSpecCh) |
+  for(@(_, RhoSpec) <- RhoSpecCh) {{
+    @RhoSpec!("testSuite",
+      [("Dir.rename moves child.txt → renamed.txt on disk",
+        *test_rename)])
+  }} |
+
+  rl!(`{fs_uri}`, *fsCh) |
+  for(@(_, fs) <- fsCh) {{
+    contract test_rename(rhoSpec, _, ackCh) = {{
+      for(@[true, d] <- @fs!?("openDir", "shareddir", {{"mode": "rw"}})) {{
+        for(@r <- @d!?("rename", "child.txt", "renamed.txt")) {{
+          rhoSpec!("assert", (r, "==", [true]),
+            "Dir.rename → [true]", *ackCh)
+        }}
+      }}
+    }}
+  }}
+}}
+"#
+    );
+
+    let compiled =
+        CompiledRholangSource::new(test_source, HashMap::new(), "DirRenameSpec".to_string())
+            .expect("compile dir_rename spec");
+    let spec = RhoSpec::new_with_genesis_parameters(compiled, vec![], GENESIS_TEST_TIMEOUT, params);
+    spec.run_tests().await.expect("dir_rename spec failed");
+
+    assert!(
+        !old_path.exists(),
+        "post-run child.txt (source) must be gone from disk"
+    );
+    assert!(
+        new_path.exists(),
+        "post-run renamed.txt (destination) must exist on disk"
+    );
+    let content = std::fs::read(&new_path).expect("read renamed.txt");
+    assert_eq!(
+        content, b"rename me",
+        "rename must preserve the file content byte-for-byte"
+    );
+}
+
+/// `Dir.copyFile("src.txt", "dst.txt")` returns `[true, n]` where n
+/// is the byte count copied AND both source and destination exist on
+/// disk after the deploy, with identical content.  Verifies the
+/// native copy actually reads/writes rather than link-substituting
+/// (a hard-link would also make both paths resolve to the same
+/// content, but changing dst.txt would then also mutate src.txt —
+/// this test bounds the shape but not that specific correctness
+/// aspect; file_dir_check covers that in the mock-syscall layer).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn dir_copy_file_duplicates_content_on_disk() {
+    let (dir, params, fs_uri) = bundle_dir_with_child("rw", b"copy me");
+    let root = std::fs::canonicalize(dir.path()).expect("canonicalize");
+    let src_path = root.join("child.txt");
+    let dst_path = root.join("copy.txt");
+    assert!(src_path.exists(), "seed child.txt must exist");
+    assert!(!dst_path.exists(), "copy.txt must not exist yet");
+
+    let test_source = format!(
+        r#"
+new
+  rl(`rho:registry:lookup`),
+  RhoSpecCh,
+  fsCh,
+  test_copy
+in {{
+  rl!(`rho:id:zphjgsfy13h1k85isc8rtwtgt3t9zzt5pjd5ihykfmyapfc4wt3x5h`, *RhoSpecCh) |
+  for(@(_, RhoSpec) <- RhoSpecCh) {{
+    @RhoSpec!("testSuite",
+      [("Dir.copyFile duplicates child.txt → copy.txt on disk",
+        *test_copy)])
+  }} |
+
+  rl!(`{fs_uri}`, *fsCh) |
+  for(@(_, fs) <- fsCh) {{
+    contract test_copy(rhoSpec, _, ackCh) = {{
+      for(@[true, d] <- @fs!?("openDir", "shareddir", {{"mode": "rw"}})) {{
+        for(@r <- @d!?("copyFile", "child.txt", "copy.txt")) {{
+          // Native fs_copyFile returns [true, nBytes]; content is
+          // 7 bytes ("copy me" without a trailing newline).
+          rhoSpec!("assert", (r, "==", [true, 7]),
+            "Dir.copyFile → [true, 7]", *ackCh)
+        }}
+      }}
+    }}
+  }}
+}}
+"#
+    );
+
+    let compiled =
+        CompiledRholangSource::new(test_source, HashMap::new(), "DirCopyFileSpec".to_string())
+            .expect("compile dir_copy_file spec");
+    let spec = RhoSpec::new_with_genesis_parameters(compiled, vec![], GENESIS_TEST_TIMEOUT, params);
+    spec.run_tests().await.expect("dir_copy_file spec failed");
+
+    assert!(src_path.exists(), "source child.txt must still exist");
+    assert!(dst_path.exists(), "destination copy.txt must exist");
+    let src_bytes = std::fs::read(&src_path).expect("read child.txt");
+    let dst_bytes = std::fs::read(&dst_path).expect("read copy.txt");
+    assert_eq!(
+        src_bytes, dst_bytes,
+        "source and destination must have identical content post-copy"
+    );
+    assert_eq!(src_bytes, b"copy me", "source content preserved");
 }
