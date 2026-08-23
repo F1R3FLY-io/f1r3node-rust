@@ -116,6 +116,10 @@ fn dynamic_singleton_epathmap_values_descend_by_shared_regions_at_depth() {
         Some(&new_gint_par(7, Vec::new(), false))
     );
     assert_eq!(stats.epathmap_region_levels, DEPTH);
+    assert_eq!(stats.epathmap_endpoint_visits, 2);
+    assert_eq!(stats.epathmap_region_backing_copies, 2);
+    assert_eq!(stats.epathmap_region_cut_attempts, DEPTH * 2);
+    assert_eq!(stats.epathmap_direct_expr_decodes, 0);
     assert_eq!(stats.epathmap_full_decode_fallbacks, 0);
     assert_eq!(stats.epathmap_leaf_decodes, 1);
     assert_eq!(stats.legacy_fallbacks, 0);
@@ -159,8 +163,201 @@ fn singleton_epathmap_region_route_preserves_dynamic_key_then_value_bindings() {
         Some(&new_gint_par(22, Vec::new(), false))
     );
     assert_eq!(stats.epathmap_region_levels, 1);
+    assert_eq!(stats.epathmap_endpoint_visits, 2);
+    assert_eq!(stats.epathmap_region_backing_copies, 2);
+    assert_eq!(stats.epathmap_region_cut_attempts, 2);
+    assert_eq!(stats.epathmap_direct_expr_decodes, 0);
     assert_eq!(stats.epathmap_full_decode_fallbacks, 0);
     assert_eq!(stats.epathmap_leaf_decodes, 1);
+}
+
+fn assert_wide_epathmap_bypasses_region_cutting(target: Par, pattern: Par) {
+    let mut oracle = RecursiveContext::new();
+    let expected = oracle
+        .spatial_match(target.clone(), pattern.clone())
+        .is_some();
+
+    let mut context = SpatialMatcherContext::new();
+    let (result, stats) = match_par_with_concrete_region_stats(&mut context, target, pattern);
+    assert_eq!(result.is_some(), expected);
+    assert_eq!(context.free_map, oracle.free_map);
+    assert_eq!(stats.epathmap_region_levels, 0);
+    assert_eq!(stats.epathmap_endpoint_visits, 2);
+    assert_eq!(stats.epathmap_region_preflight_bypasses, 1);
+    assert_eq!(stats.epathmap_region_backing_copies, 2);
+    assert_eq!(stats.epathmap_region_cut_attempts, 0);
+    assert_eq!(stats.epathmap_direct_expr_decodes, 2);
+    assert_eq!(
+        stats.epathmap_full_decode_fallbacks, 0,
+        "the borrowed preflight should enter the generic PDA directly"
+    );
+}
+
+#[test]
+fn wide_set_epathmap_skips_the_map_value_region_cutter() {
+    const WIDTH: usize = 64;
+    let mut target = EPathMap::default();
+    let mut pattern = EPathMap::default();
+    for index in 0..WIDTH {
+        let entry = new_gint_par(index as i64, Vec::new(), false);
+        target.insert_entry(entry.clone());
+        pattern.insert_entry(if index + 1 == WIDTH {
+            new_freevar_par(0, Vec::new())
+        } else {
+            entry
+        });
+    }
+    pattern.connective_used = true;
+    assert_wide_epathmap_bypasses_region_cutting(pathmap(target, false), pathmap(pattern, true));
+}
+
+#[test]
+fn wide_map_epathmap_skips_proportional_par_cut_construction() {
+    const WIDTH: usize = 64;
+    let mut target = EPathMap::default();
+    let mut pattern = EPathMap::default();
+    for index in 0..WIDTH {
+        let key = new_gint_par(index as i64, Vec::new(), false);
+        let value = new_gint_par((10_000 + index) as i64, Vec::new(), false);
+        target
+            .insert_map_entry(key.clone(), value.clone())
+            .expect("fresh target remains map-mode");
+        pattern
+            .insert_map_entry(
+                key,
+                if index + 1 == WIDTH {
+                    new_freevar_par(0, Vec::new())
+                } else {
+                    value
+                },
+            )
+            .expect("fresh pattern remains map-mode");
+    }
+    pattern.connective_used = true;
+    assert_wide_epathmap_bypasses_region_cutting(pathmap(target, false), pathmap(pattern, true));
+}
+
+fn assert_mixed_epathmap_route(target: Par, pattern: Par, expected_match: bool) {
+    let mut oracle = RecursiveContext::new();
+    let expected = oracle
+        .spatial_match(target.clone(), pattern.clone())
+        .is_some();
+    assert_eq!(expected, expected_match);
+
+    let mut context = SpatialMatcherContext::new();
+    let (result, stats) = match_par_with_concrete_region_stats(&mut context, target, pattern);
+    assert_eq!(result.is_some(), expected);
+    assert_eq!(context.free_map, oracle.free_map);
+    assert_eq!(stats.epathmap_endpoint_visits, 2);
+    assert_eq!(stats.epathmap_region_preflight_bypasses, 1);
+    assert_eq!(stats.epathmap_region_backing_copies, 2);
+    assert_eq!(stats.epathmap_region_cut_attempts, 0);
+    assert_eq!(stats.epathmap_direct_expr_decodes, 2);
+    assert_eq!(stats.epathmap_full_decode_fallbacks, 0);
+}
+
+#[test]
+fn singleton_target_and_remainder_pattern_use_one_mixed_route_visit_each() {
+    let key = new_gint_par(1, Vec::new(), false);
+    let value = new_gint_par(11, Vec::new(), false);
+    let target = EPathMap::new_map([(key.clone(), value.clone())], Vec::new(), false, None);
+    let pattern = EPathMap::new_map(
+        [(key, value)],
+        Vec::new(),
+        true,
+        Some(models::rust::utils::new_wildcard_var()),
+    );
+    assert_mixed_epathmap_route(pathmap(target, false), pathmap(pattern, true), true);
+}
+
+#[test]
+fn singleton_set_and_singleton_map_mode_mismatch_still_rejects() {
+    let key = new_gint_par(1, Vec::new(), false);
+    let mut target = EPathMap::default();
+    target.insert_entry(key.clone());
+    let pattern = EPathMap::new_map(
+        [(key, new_gint_par(11, Vec::new(), false))],
+        Vec::new(),
+        false,
+        None,
+    );
+    assert_mixed_epathmap_route(pathmap(target, false), pathmap(pattern, true), false);
+}
+
+#[test]
+fn wide_target_and_singleton_pattern_preserve_exact_cardinality() {
+    let key = |value: i64| new_gint_par(value, Vec::new(), false);
+    let value = |value: i64| new_gint_par(10 + value, Vec::new(), false);
+    let target = EPathMap::new_map(
+        [(key(1), value(1)), (key(2), value(2))],
+        Vec::new(),
+        false,
+        None,
+    );
+    let pattern = EPathMap::new_map([(key(1), value(1))], Vec::new(), false, None);
+    assert_mixed_epathmap_route(pathmap(target, false), pathmap(pattern, true), false);
+}
+
+#[test]
+fn wide_epathmap_direct_route_restores_entry_freemap_after_late_failure() {
+    const WIDTH: usize = 64;
+    let mut target_map = EPathMap::default();
+    let mut pattern_map = EPathMap::default();
+    for index in 0..WIDTH {
+        let key = new_gint_par(index as i64, Vec::new(), false);
+        let value = new_gint_par((10_000 + index) as i64, Vec::new(), false);
+        target_map
+            .insert_map_entry(key.clone(), value.clone())
+            .expect("fresh target remains map-mode");
+        let pattern_value = if index == 0 {
+            new_freevar_par(0, Vec::new())
+        } else if index + 1 == WIDTH {
+            list(vec![new_freevar_par(1, Vec::new())], true)
+        } else {
+            value
+        };
+        pattern_map
+            .insert_map_entry(key, pattern_value)
+            .expect("fresh pattern remains map-mode");
+    }
+    pattern_map.connective_used = true;
+    let target = pathmap(target_map, false);
+    let pattern = pathmap(pattern_map, true);
+
+    let mut baseline = BTreeMap::new();
+    baseline.insert(
+        99,
+        new_gstring_par("entry binding".to_owned(), Vec::new(), false),
+    );
+
+    let mut transaction_context = SpatialMatcherContext::new();
+    transaction_context.free_map = baseline.clone();
+    let (result, transaction_stats) =
+        match_par_with_transaction_stats(&mut transaction_context, target.clone(), pattern.clone());
+    assert_eq!(result, None);
+    assert!(
+        transaction_stats.writes >= 1,
+        "the first dynamic map value must bind before the later value fails"
+    );
+    assert!(
+        transaction_stats.rollback_entries >= 1,
+        "the failed match must roll the earlier binding back"
+    );
+    assert_eq!(transaction_context.free_map, baseline);
+
+    let mut region_context = SpatialMatcherContext::new();
+    region_context.free_map = baseline.clone();
+    let (result, stats) =
+        match_par_with_concrete_region_stats(&mut region_context, target, pattern);
+    assert_eq!(result, None);
+    assert_eq!(region_context.free_map, baseline);
+    assert_eq!(stats.epathmap_endpoint_visits, 2);
+    assert_eq!(stats.epathmap_region_preflight_bypasses, 1);
+    assert_eq!(stats.epathmap_region_backing_copies, 2);
+    assert_eq!(stats.epathmap_region_cut_attempts, 0);
+    assert_eq!(stats.epathmap_direct_expr_decodes, 2);
+    assert_eq!(stats.epathmap_region_levels, 0);
+    assert_eq!(stats.epathmap_full_decode_fallbacks, 0);
 }
 
 fn guarded_concrete_receive(condition: Par, peek: bool, locally_free: Vec<u8>) -> Par {

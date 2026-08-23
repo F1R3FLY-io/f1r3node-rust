@@ -23,16 +23,17 @@ use models::rhoapi::If;
 use models::rust::canonical_path::decode_trie_path;
 use models::rust::epathmap_trie_codec::EPathMapMode;
 use models::rust::par_bag::{
-    canonical_collection_remainder, canonical_connective_parts,
-    canonical_exact_free_var_expr_level, canonical_exact_free_var_par, canonical_exact_scalar_expr,
-    canonical_exact_scalar_par, canonical_expr_oneof_tag, canonical_expr_parts, canonical_if_parts,
-    canonical_match_parts, canonical_new_parts, canonical_par_connective_used,
-    canonical_par_locally_free_is_empty, canonical_receive_parts, canonical_send_parts,
-    canonical_single_connective_from_par, canonical_single_expr_from_par,
-    canonical_single_if_from_par, canonical_single_match_from_par, canonical_single_new_from_par,
-    canonical_single_receive_from_par, canonical_single_send_from_par,
-    CanonicalConnectiveChildCursor, CanonicalConnectiveChildren, CanonicalConnectiveParts,
-    CanonicalExprParts, ParBagComponent,
+    canonical_collection_remainder, canonical_connective_parts, canonical_epathmap_root_route_hint,
+    canonical_epathmap_root_view, canonical_exact_free_var_expr_level,
+    canonical_exact_free_var_par, canonical_exact_scalar_expr, canonical_exact_scalar_par,
+    canonical_expr_oneof_tag, canonical_expr_parts, canonical_if_parts, canonical_match_parts,
+    canonical_new_parts, canonical_par_connective_used, canonical_par_locally_free_is_empty,
+    canonical_receive_parts, canonical_send_parts, canonical_single_connective_from_par,
+    canonical_single_expr_from_par, canonical_single_if_from_par, canonical_single_match_from_par,
+    canonical_single_new_from_par, canonical_single_receive_from_par,
+    canonical_single_send_from_par, CanonicalConnectiveChildCursor, CanonicalConnectiveChildren,
+    CanonicalConnectiveParts, CanonicalEPathMapRootRouteHint, CanonicalExprParts,
+    OwnedCanonicalParComponent, ParBagComponent,
 };
 use models::rust::par_map_type_mapper::ParMapTypeMapper;
 use models::rust::par_set_type_mapper::ParSetTypeMapper;
@@ -132,6 +133,11 @@ pub(super) struct ConcreteRegionMatchStats {
     pub legacy_fallbacks: usize,
     pub max_pending_tasks: usize,
     pub epathmap_region_levels: usize,
+    pub epathmap_endpoint_visits: usize,
+    pub epathmap_region_preflight_bypasses: usize,
+    pub epathmap_region_backing_copies: usize,
+    pub epathmap_region_cut_attempts: usize,
+    pub epathmap_direct_expr_decodes: usize,
     pub epathmap_full_decode_fallbacks: usize,
     pub epathmap_leaf_decodes: usize,
 }
@@ -194,6 +200,38 @@ fn note_concrete_pending_tasks(pending: usize) {
 fn note_epathmap_region_level() {
     #[cfg(test)]
     update_concrete_region_stats(|stats| stats.epathmap_region_levels += 1);
+}
+
+#[inline]
+fn note_epathmap_endpoint_visit() {
+    #[cfg(test)]
+    update_concrete_region_stats(|stats| stats.epathmap_endpoint_visits += 1);
+}
+
+#[inline]
+fn note_epathmap_region_preflight_bypass() {
+    #[cfg(test)]
+    update_concrete_region_stats(|stats| stats.epathmap_region_preflight_bypasses += 1);
+}
+
+#[inline]
+fn note_epathmap_region_backing_copy() {
+    #[cfg(test)]
+    update_concrete_region_stats(|stats| stats.epathmap_region_backing_copies += 1);
+}
+
+#[inline]
+fn note_epathmap_region_cut_attempt() {
+    #[cfg(test)]
+    update_concrete_region_stats(|stats| stats.epathmap_region_cut_attempts += 1);
+}
+
+#[inline]
+fn note_epathmap_direct_expr_decodes(count: usize) {
+    #[cfg(test)]
+    update_concrete_region_stats(|stats| stats.epathmap_direct_expr_decodes += count);
+    #[cfg(not(test))]
+    let _ = count;
 }
 
 #[inline]
@@ -1021,19 +1059,51 @@ fn singleton_component_region<T: ParBagComponent>(par: &Par) -> Option<EncodedRe
     result
 }
 
-/// Copy one authoritative EPathMap Expr endpoint into the `Bytes`-backed
-/// region machine exactly once. Descendant map values are then constant-size
-/// subregions of this allocation instead of recursively decoded suffixes.
-fn singleton_epathmap_expr_region(par: &Par) -> Option<ProtobufRegion> {
+struct SingletonEPathMapEndpoint {
+    component: OwnedCanonicalParComponent<Expr>,
+    route_hint: CanonicalEPathMapRootRouteHint,
+}
+
+impl SingletonEPathMapEndpoint {
+    fn into_epathmap(self) -> EPathMap {
+        let expr = self
+            .component
+            .decode()
+            .expect("an authoritative singleton EPathMap Expr is canonical");
+        match expr.expr_instance {
+            Some(EPathmapBody(path)) => path,
+            _ => unreachable!("the canonical root view proved an EPathMap Expr"),
+        }
+    }
+}
+
+/// Own one singleton EPathMap endpoint after one ParBag zipper visit.
+///
+/// The callback borrows the ParBag zipper's reused path buffer, so it performs
+/// exactly one copy of the authoritative Expr and no decode. Complete generated
+/// validation occurs only after the callback returns and the zipper releases
+/// its PathMap cursor and path buffer. This prevents a multi-megabyte decoded
+/// EPathMap from overlapping the live source zipper while retaining one visit,
+/// one copy, and the native PathMap representation.
+fn singleton_epathmap_endpoint(par: &Par) -> Option<SingletonEPathMapEndpoint> {
     if par.family_cardinality::<Expr>() != 1 || !par.all_components_are::<Expr>() {
         return None;
     }
     let mut result = None;
     par.visit_encoded::<Expr>(|entry| {
-        if entry.multiplicity().get() == 1 && canonical_expr_oneof_tag(entry.payload()) == Some(32)
-        {
-            result = Some(ProtobufRegion::copy_from_slice(entry.payload()));
+        if entry.multiplicity().get() != 1 {
+            return;
         }
+        let Some(view) = canonical_epathmap_root_view(entry.payload()) else {
+            return;
+        };
+        let route_hint = view.route_hint();
+        note_epathmap_endpoint_visit();
+        result = Some(SingletonEPathMapEndpoint {
+            component: entry.to_owned_canonical(),
+            route_hint,
+        });
+        note_epathmap_region_backing_copy();
     });
     result
 }
@@ -1686,16 +1756,32 @@ fn evaluate_par(
             None => Job::Return(false),
         };
     }
-    if let Some(pattern_expr) = singleton_epathmap_expr_region(&pattern) {
-        return match singleton_epathmap_expr_region(&target) {
-            Some(target_expr) => {
-                frames.push(Frame::RestoreOnFailure {
-                    checkpoint: context.checkpoint(),
-                });
-                Job::ProtobufExpr(Box::new((target_expr, pattern_expr)))
-            }
-            None => Job::Return(false),
+    if let Some(pattern_endpoint) = singleton_epathmap_endpoint(&pattern) {
+        let Some(target_endpoint) = singleton_epathmap_endpoint(&target) else {
+            return Job::Return(false);
         };
+        frames.push(Frame::RestoreOnFailure {
+            checkpoint: context.checkpoint(),
+        });
+        if target_endpoint.route_hint.mode() == EPathMapMode::Map
+            && pattern_endpoint.route_hint.mode() == EPathMapMode::Map
+            && target_endpoint.route_hint.map_value_count() == 1
+            && pattern_endpoint.route_hint.map_value_count() == 1
+            && !pattern_endpoint.route_hint.has_remainder()
+        {
+            return Job::ProtobufExpr(Box::new((
+                ProtobufRegion::from(target_endpoint.component.into_payload()),
+                ProtobufRegion::from(pattern_endpoint.component.into_payload()),
+            )));
+        }
+
+        note_epathmap_region_preflight_bypass();
+        note_epathmap_direct_expr_decodes(2);
+        // Decode target first to preserve the historical malformed-input error
+        // precedence even though the pattern endpoint is discovered first.
+        let target = target_endpoint.into_epathmap();
+        let pattern = pattern_endpoint.into_epathmap();
+        return Job::PathInit(Box::new((target, pattern)));
     }
     if let Some(pattern_expr) = singleton_component_region::<Expr>(&pattern) {
         let pattern_tag = canonical_expr_parts(pattern_expr.as_slice()).map(|parts| parts.tag());
@@ -2442,6 +2528,7 @@ fn fallback_protobuf_expr(
     frames: &mut FrameStack,
 ) -> Job {
     note_epathmap_full_decode_fallback();
+    note_epathmap_direct_expr_decodes(2);
     let target = models::rust::rholang::protobuf_decoder::decode_expr(target.as_bytes())
         .expect("an authoritative EPathMap target Expr is canonical");
     let pattern = models::rust::rholang::protobuf_decoder::decode_expr(pattern.as_bytes())
@@ -2455,14 +2542,34 @@ fn evaluate_protobuf_expr(
     pattern: ProtobufRegion,
     frames: &mut FrameStack,
 ) -> Job {
-    if canonical_expr_oneof_tag(target.as_bytes()) != Some(32)
-        || canonical_expr_oneof_tag(pattern.as_bytes()) != Some(32)
+    let Some(target_hint) = canonical_epathmap_root_route_hint(target.as_bytes()) else {
+        return fallback_protobuf_expr(target, pattern, frames);
+    };
+    let Some(pattern_hint) = canonical_epathmap_root_route_hint(pattern.as_bytes()) else {
+        return fallback_protobuf_expr(target, pattern, frames);
+    };
+    // The shared-region route exists to keep recursive PathMap<Par> value
+    // chains linear. A set has no recursive value, while a non-singleton map
+    // would make `cut_at_par` build one cut/path per value only to fail the
+    // cardinality check and decode the complete maps again. The EPM prefix
+    // exposes map value count without walking the ACT arena, so reject those
+    // unprofitable routes before allocating or traversing width. This is only
+    // dispatch: the eligible singleton route still performs the complete
+    // canonical framing and topology validation below.
+    if target_hint.mode() != EPathMapMode::Map
+        || pattern_hint.mode() != EPathMapMode::Map
+        || target_hint.map_value_count() != 1
+        || pattern_hint.map_value_count() != 1
+        || pattern_hint.has_remainder()
     {
+        note_epathmap_region_preflight_bypass();
         return fallback_protobuf_expr(target, pattern, frames);
     }
+    note_epathmap_region_cut_attempt();
     let Ok(target_plan) = cut_at_par(target.clone(), &EXPR_RHO_MATCH_PROGRAM) else {
         return fallback_protobuf_expr(target, pattern, frames);
     };
+    note_epathmap_region_cut_attempt();
     let Ok(pattern_plan) = cut_at_par(pattern.clone(), &EXPR_RHO_MATCH_PROGRAM) else {
         return fallback_protobuf_expr(target, pattern, frames);
     };

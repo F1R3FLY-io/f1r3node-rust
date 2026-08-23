@@ -1,0 +1,192 @@
+{
+  "schema": "f1r3node.protobuf-region-width-experiments.analysis.v1",
+  "recorded_at": "2026-08-23",
+  "raw_observations": "protobuf-region-width-experiments-306-309-2026-08-23.tsv",
+  "protocol": {
+    "width": 65536,
+    "stack_bytes": 262144,
+    "warmups_per_experiment": 3,
+    "order": "odd AB / even BA",
+    "affinity_cpu": 1,
+    "memory_max_bytes": 8589934592,
+    "swap_max_bytes": 0,
+    "acceptance": "U_0.95(mean treatment/control ratio) < 1.05; matcher primary is per-pair max(set_ratio,map_ratio)",
+    "optional_stopping": false
+  },
+  "provenance": {
+    "base_git_ref": "c54a2354c99bd504ff42e20793ddd13972f6f49c",
+    "control_git_ref": "0c27a7c878e1c8382197cd2c53f1493ca3270c39",
+    "control_binary_sha256": "3df98025a0cdb1c60e6fcf12a45340da447d8821919fb455de6895b1b6920e42",
+    "experiment_309_treatment_binary_sha256": "b5109de3bb0c79b8297745e08d7f973b8f8fa7582a4ef1ac6e581bf90c8dac76",
+    "raw_source_sha256": {
+      "308": "a0859d8a309719319e162420ea809079ae8893df211922c4179061a627a39495",
+      "309": "3316872b6defca3f3b80d0bc56b3271989f934d11fba07053060c144b1f69e64",
+      "306_307": "ad0e931fbe1c1c698a13ae69456d1c3c163d3b48874340aceb54861d7ac5b5c0"
+    },
+    "paired_analysis_sha256": {
+      "308": "9693448bfab80fde677f314cf9c40ee215f536b7f01768e299bb222f96c39a9f",
+      "309": "c8d586ef2e4a2ad854c40f3d766abe7dd4f059edac445b3aafba05526be66071",
+      "306_307": "05811f61092e86f9886bb756fb3327d6fda0e505e8630fdde3ca784493a069d1"
+    }
+  },
+  "experiments": [
+    {
+      "id": 306,
+      "slug": "pretty-printer-wide-region-repair-ratio",
+      "n": 30,
+      "subject": "pretty_wide",
+      "mean_ratio": 0.98433241691443,
+      "median_ratio": 0.977731390990303,
+      "upper_one_sided_95": 0.998872260409583,
+      "verdict": "accepted",
+      "pgmcp_result_id": 360
+    },
+    {
+      "id": 307,
+      "slug": "spatial-matcher-wide-epathmap-route-repair-ratio",
+      "n": 30,
+      "subject": "set",
+      "mean_ratio": 1.03483226180028,
+      "median_ratio": 1.04135773778692,
+      "upper_one_sided_95": 1.05516273263017,
+      "cell_verdict": "rejected"
+    },
+    {
+      "id": 307,
+      "slug": "spatial-matcher-wide-epathmap-route-repair-ratio",
+      "n": 30,
+      "subject": "map",
+      "mean_ratio": 0.968219464054138,
+      "median_ratio": 0.968600135434232,
+      "upper_one_sided_95": 0.978912460378395,
+      "cell_verdict": "accepted"
+    },
+    {
+      "id": 307,
+      "slug": "spatial-matcher-wide-epathmap-route-repair-ratio",
+      "n": 30,
+      "subject": "worst",
+      "mean_ratio": 1.04765548303721,
+      "median_ratio": 1.04135773778692,
+      "upper_one_sided_95": 1.06140780621114,
+      "verdict": "rejected",
+      "pgmcp_result_id": 361
+    },
+    {
+      "id": 308,
+      "slug": "spatial-matcher-epathmap-single-visit-repair-ratio",
+      "n": 51,
+      "subject": "set",
+      "mean_ratio": 1.0890030906455,
+      "median_ratio": 1.07914818456904,
+      "upper_one_sided_95": 1.10108349769515,
+      "cell_verdict": "rejected"
+    },
+    {
+      "id": 308,
+      "slug": "spatial-matcher-epathmap-single-visit-repair-ratio",
+      "n": 51,
+      "subject": "map",
+      "mean_ratio": 0.962942323703771,
+      "median_ratio": 0.965147585149512,
+      "upper_one_sided_95": 0.970596644062464,
+      "cell_verdict": "accepted"
+    },
+    {
+      "id": 308,
+      "slug": "spatial-matcher-epathmap-single-visit-repair-ratio",
+      "n": 51,
+      "subject": "worst",
+      "mean_ratio": 1.0890952801539,
+      "median_ratio": 1.07914818456904,
+      "upper_one_sided_95": 1.10116282105214,
+      "verdict": "rejected",
+      "pgmcp_result_id": 362
+    },
+    {
+      "id": 309,
+      "slug": "spatial-matcher-epathmap-post-zipper-decode-ratio",
+      "n": 51,
+      "subject": "set",
+      "control_mean_seconds": 0.666920685,
+      "treatment_mean_seconds": 0.562314305,
+      "mean_ratio": 0.8503956769,
+      "median_ratio": 0.8431636701,
+      "upper_one_sided_95": 0.8755096564,
+      "cell_verdict": "accepted"
+    },
+    {
+      "id": 309,
+      "slug": "spatial-matcher-epathmap-post-zipper-decode-ratio",
+      "n": 51,
+      "subject": "map",
+      "control_mean_seconds": 1.436862343,
+      "treatment_mean_seconds": 1.193852425,
+      "mean_ratio": 0.8323527997,
+      "median_ratio": 0.8338823355,
+      "upper_one_sided_95": 0.8428002393,
+      "cell_verdict": "accepted"
+    },
+    {
+      "id": 309,
+      "slug": "spatial-matcher-epathmap-post-zipper-decode-ratio",
+      "n": 51,
+      "subject": "worst",
+      "mean_ratio": 0.8853502871,
+      "median_ratio": 0.8647010181,
+      "upper_one_sided_95": 0.9042439218,
+      "verdict": "accepted",
+      "pgmcp_result_id": 363
+    }
+  ],
+  "causal_profiles": {
+    "experiment_308": {
+      "perf_stat": {
+        "control_instructions": 5290661275,
+        "treatment_instructions": 6420958934,
+        "control_branches": 782070612,
+        "treatment_branches": 1023637552,
+        "control_cache_references": 97269152,
+        "treatment_cache_references": 191637211
+      },
+      "heaptrack": {
+        "control_allocations": 5222542,
+        "rejected_treatment_allocations": 7674833
+      },
+      "finding": "public decode_epath_map redundantly validated and rebuilt every canonical Par path after ParBag admission"
+    },
+    "experiment_309": {
+      "heaptrack_capture_sha256": "8418a7395cb338821db8a58c594df8fcb82672eec0031f1235b5ba07196b1b1d",
+      "allocations": 4660158,
+      "temporary_allocations": 1179822,
+      "peak_heap_mib": 34.28,
+      "peak_rss_mib": 55.93,
+      "singleton_endpoint_allocation_calls": 52,
+      "singleton_owned_copy_calls": 2,
+      "singleton_owned_copy_peak_kib": 223.63,
+      "singleton_validate_canonical_path_frames": 0
+    }
+  },
+  "verification": {
+    "matcher_recursive_oracle_differential": "45/45",
+    "proof_carrying_component_test": "1/1",
+    "protobuf_region_differential": "8/8",
+    "epathmap_models_focused": "22/22",
+    "release_stack_gate": "12/12 active; 4 intentional ignores",
+    "test_list": "16 tests, 0 benchmarks; every line ended in ': test'"
+  },
+  "pgmcp": {
+    "experiment_309_control_run_id": "98653f80-78f1-4960-ac56-17dd3f1d2065",
+    "experiment_309_control_digest": "sha256:4a44d7256a7a0ce1d2e7557ab166623a3a133461cb2a6d6c2cdfe10b72d182b7",
+    "experiment_309_treatment_run_id": "b0859f75-81c9-4598-9b44-08cefabd32ea",
+    "experiment_309_treatment_digest": "sha256:b03cbc46da3fef593dec8d21c31e94752307bfac3c39a2635aca6370bc34a46d",
+    "artifact_ids": [
+      374,
+      375,
+      376,
+      377,
+      378,
+      379
+    ]
+  }
+}

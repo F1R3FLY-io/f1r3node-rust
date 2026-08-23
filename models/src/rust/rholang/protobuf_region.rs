@@ -141,14 +141,30 @@ impl From<TrieCodecError> for ProtobufRegionError {
 #[derive(Clone, Debug)]
 enum Piece {
     Borrowed(ProtobufRegion),
-    Child { tag: u32, node: usize },
-    Par { tag: u32, cut: usize },
-    EPathMap { tag: u32, group: usize },
+    Child {
+        tag: u32,
+        node: usize,
+        /// A compact shell normally elides an empty repeated child whose only
+        /// contents were cut `Par` fields. Singular/oneof message presence is
+        /// semantically observable, however, so its empty envelope remains.
+        /// Genuinely empty repeated messages are retained separately by
+        /// comparing the child's original payload length.
+        retain_empty_shell: bool,
+    },
+    Par {
+        tag: u32,
+        cut: usize,
+    },
+    EPathMap {
+        tag: u32,
+        group: usize,
+    },
 }
 
 #[derive(Clone, Debug)]
 struct Node {
     pieces: Vec<Piece>,
+    compact_len: usize,
     shallow_len: usize,
     original_len: usize,
 }
@@ -179,6 +195,7 @@ struct Frame {
     schema: FrameSchema,
     path_leaf: Option<usize>,
     return_tag: Option<u32>,
+    return_retain_empty_shell: bool,
     pieces: Vec<Piece>,
     last_tag: u32,
     occurrence: u32,
@@ -191,6 +208,7 @@ impl Frame {
         schema: FrameSchema,
         path_leaf: Option<usize>,
         return_tag: Option<u32>,
+        return_retain_empty_shell: bool,
     ) -> Self {
         let field_count = match schema {
             FrameSchema::Message(program) => program.fields.len(),
@@ -202,6 +220,7 @@ impl Frame {
             schema,
             path_leaf,
             return_tag,
+            return_retain_empty_shell,
             pieces: Vec::new(),
             last_tag: 0,
             occurrence: 0,
@@ -239,6 +258,17 @@ impl ProtobufCutPlan {
     #[inline]
     pub fn cuts(&self) -> &[ProtobufParCut] { &self.cuts }
 
+    /// Consume the plan and transfer its cut storage without cloning any
+    /// shared protobuf backing handles.
+    ///
+    /// This is the execution boundary for consumers that have already emitted
+    /// their typed shell and no longer need reconstructed bytes or cut paths.
+    /// Returning the cut records, rather than projecting a new
+    /// `Vec<ProtobufRegion>`, preserves the existing vector allocation as well
+    /// as each region's owned range handle.
+    #[inline]
+    pub fn into_cuts(self) -> Vec<ProtobufParCut> { self.cuts }
+
     #[inline]
     pub fn epathmaps(&self) -> &[ProtobufEPathMapRegion] { &self.epathmaps }
 
@@ -257,6 +287,21 @@ impl ProtobufCutPlan {
         Some(path)
     }
 
+    /// Inspect one edge of a retained cut path without allocating the complete
+    /// root-to-leaf path. `generations == 0` returns the field that owns the
+    /// cut `Par`; larger values walk toward the root.
+    ///
+    /// Region-native consumers use this to validate collection structure
+    /// before transferring the cut storage with [`Self::into_cuts`]. The walk
+    /// is bounded by generated-schema nesting depth and allocates nothing.
+    pub fn cut_step_from_leaf(&self, cut: usize, generations: usize) -> Option<ProtobufRegionStep> {
+        let mut at = self.cuts.get(cut)?.path_leaf;
+        for _ in 0..generations {
+            at = self.paths.get(at)?.parent?;
+        }
+        Some(self.paths.get(at)?.step)
+    }
+
     pub fn epathmap_path(&self, group: usize) -> Option<Vec<ProtobufRegionStep>> {
         let mut at = Some(self.epathmaps.get(group)?.path_leaf);
         let mut path = Vec::new();
@@ -269,9 +314,23 @@ impl ProtobufCutPlan {
         Some(path)
     }
 
-    pub fn shallow_bytes(&self) -> Bytes { self.emit(true) }
+    pub fn shallow_bytes(&self) -> Bytes { self.emit(EmitMode::Shallow) }
 
-    pub fn reconstructed_bytes(&self) -> Bytes { self.emit(false) }
+    /// Emit a typed shell without materialising one empty `Par` per cut.
+    ///
+    /// Unlike [`Self::shallow_bytes`], which preserves repeated-field arity by
+    /// emitting a zero-length placeholder for every cut, this form omits cut
+    /// fields altogether. Repeated message envelopes whose nonempty payload
+    /// consisted only of omitted cuts are elided as well. Genuinely present
+    /// zero-length repeated messages, singular envelopes, and oneof envelopes
+    /// remain so generated decoders preserve observable presence and
+    /// discriminants.
+    /// Consumers recover child arity and order from [`Self::cuts`] and their
+    /// generated-schema paths. Emission is iterative and retains EPathMap's
+    /// shallow ACT topology.
+    pub fn compact_shell_bytes(&self) -> Bytes { self.emit(EmitMode::Compact) }
+
+    pub fn reconstructed_bytes(&self) -> Bytes { self.emit(EmitMode::Original) }
 }
 
 #[derive(Clone, Copy)]
@@ -456,6 +515,7 @@ impl Builder {
         kind: ProtobufRegionStepKind,
         type_id: u16,
         parent_path: Option<usize>,
+        retain_empty_shell: bool,
     ) -> Result<(), ProtobufRegionError> {
         let path_leaf = self.path(parent_path, ProtobufRegionStep {
             owner_type_id: owner.type_id,
@@ -477,6 +537,7 @@ impl Builder {
                 FrameSchema::Message(program),
                 Some(path_leaf),
                 Some(wire_tag),
+                retain_empty_shell,
             ));
             self.stats.max_frames = self.stats.max_frames.max(frames.len());
         }
@@ -605,6 +666,8 @@ fn process_message_field(
             | (RhoMatchFieldKind::MessageSequence(type_id), ProtobufKind::RepeatedMessage) => {
                 let tag = field.number;
                 let payload = field.into_length_delimited()?;
+                let retain_empty_shell =
+                    matches!(schema_field.kind, RhoMatchFieldKind::OptionalMessage(_));
                 builder.add_child(
                     frames,
                     payload,
@@ -615,6 +678,7 @@ fn process_message_field(
                     ProtobufRegionStepKind::Message,
                     type_id,
                     path_leaf,
+                    retain_empty_shell,
                 )?;
             }
             (
@@ -633,6 +697,7 @@ fn process_message_field(
                     },
                     path_leaf,
                     Some(outer_tag),
+                    false,
                 ));
                 builder.stats.max_frames = builder.stats.max_frames.max(frames.len());
             }
@@ -688,6 +753,7 @@ fn process_message_field(
                     ProtobufRegionStepKind::Message,
                     type_id,
                     path_leaf,
+                    true,
                 )?;
             }
             RhoMatchPayloadKind::Bool
@@ -773,6 +839,7 @@ fn process_map_entry_field(
                 ProtobufRegionStepKind::MapValue,
                 value_type_id,
                 parent_path,
+                true,
             )?;
         }
         _ => {
@@ -825,19 +892,30 @@ fn finish_node(
     cuts: &[ProtobufParCut],
     epathmaps: &[ProtobufEPathMapRegion],
 ) -> Result<Node, ProtobufRegionError> {
+    let mut compact_len = 0usize;
     let mut shallow_len = 0usize;
     let mut original_len = 0usize;
     for piece in &pieces {
-        let (shallow, original) = match piece {
-            Piece::Borrowed(region) => (region.len(), region.len()),
-            Piece::Child { tag, node } => {
+        let (compact, shallow, original) = match piece {
+            Piece::Borrowed(region) => (region.len(), region.len(), region.len()),
+            Piece::Child {
+                tag,
+                node,
+                retain_empty_shell,
+            } => {
                 let child = &nodes[*node];
                 (
+                    if child.compact_len == 0 && child.original_len != 0 && !retain_empty_shell {
+                        0
+                    } else {
+                        delimited_len(*tag, child.compact_len)?
+                    },
                     delimited_len(*tag, child.shallow_len)?,
                     delimited_len(*tag, child.original_len)?,
                 )
             }
             Piece::Par { tag, cut } => (
+                0,
                 delimited_len(*tag, 0)?,
                 delimited_len(*tag, cuts[*cut].region.len())?,
             ),
@@ -847,15 +925,18 @@ fn finish_node(
                 let original = epm_payload_len(&group.prefix, group.cuts.clone(), cuts, false)?;
                 (
                     delimited_len(*tag, shallow)?,
+                    delimited_len(*tag, shallow)?,
                     delimited_len(*tag, original)?,
                 )
             }
         };
+        compact_len = checked_add(compact_len, compact)?;
         shallow_len = checked_add(shallow_len, shallow)?;
         original_len = checked_add(original_len, original)?;
     }
     Ok(Node {
         pieces,
+        compact_len,
         shallow_len,
         original_len,
     })
@@ -878,7 +959,13 @@ pub fn cut_at_par(
         });
     }
     let mut builder = Builder::new();
-    let mut frames = vec![Frame::new(input, FrameSchema::Message(program), None, None)];
+    let mut frames = vec![Frame::new(
+        input,
+        FrameSchema::Message(program),
+        None,
+        None,
+        true,
+    )];
     builder.stats.max_frames = 1;
     let root;
 
@@ -929,6 +1016,7 @@ pub fn cut_at_par(
             .pop()
             .expect("an exhausted cursor belongs to a live frame");
         let return_tag = frame.return_tag;
+        let return_retain_empty_shell = frame.return_retain_empty_shell;
         let expected_original_len = frame.region.len();
         let node = finish_node(
             frame.pieces,
@@ -954,6 +1042,7 @@ pub fn cut_at_par(
                 .push(Piece::Child {
                     tag,
                     node: node_index,
+                    retain_empty_shell: return_retain_empty_shell,
                 });
         } else {
             root = node_index;
@@ -984,12 +1073,19 @@ enum Emit {
     Piece { node: usize, piece: usize },
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum EmitMode {
+    Compact,
+    Shallow,
+    Original,
+}
+
 impl ProtobufCutPlan {
-    fn emit(&self, shallow: bool) -> Bytes {
-        let root_len = if shallow {
-            self.nodes[self.root].shallow_len
-        } else {
-            self.nodes[self.root].original_len
+    fn emit(&self, mode: EmitMode) -> Bytes {
+        let root_len = match mode {
+            EmitMode::Compact => self.nodes[self.root].compact_len,
+            EmitMode::Shallow => self.nodes[self.root].shallow_len,
+            EmitMode::Original => self.nodes[self.root].original_len,
         };
         let mut out = Vec::with_capacity(root_len);
         let mut work = vec![Emit::Node(self.root)];
@@ -1002,25 +1098,44 @@ impl ProtobufCutPlan {
                 }
                 Emit::Piece { node, piece } => match &self.nodes[node].pieces[piece] {
                     Piece::Borrowed(region) => out.extend_from_slice(region.as_bytes()),
-                    Piece::Child { tag, node } => {
-                        let child_len = if shallow {
-                            self.nodes[*node].shallow_len
-                        } else {
-                            self.nodes[*node].original_len
+                    Piece::Child {
+                        tag,
+                        node,
+                        retain_empty_shell,
+                    } => {
+                        let child_len = match mode {
+                            EmitMode::Compact => self.nodes[*node].compact_len,
+                            EmitMode::Shallow => self.nodes[*node].shallow_len,
+                            EmitMode::Original => self.nodes[*node].original_len,
                         };
+                        if mode == EmitMode::Compact
+                            && child_len == 0
+                            && self.nodes[*node].original_len != 0
+                            && !retain_empty_shell
+                        {
+                            continue;
+                        }
                         emit_delimited_header(*tag, child_len, &mut out);
                         work.push(Emit::Node(*node));
                     }
                     Piece::Par { tag, cut } => {
+                        if mode == EmitMode::Compact {
+                            continue;
+                        }
                         let body = &self.cuts[*cut].region;
-                        let body_len = if shallow { 0 } else { body.len() };
+                        let body_len = if mode == EmitMode::Shallow {
+                            0
+                        } else {
+                            body.len()
+                        };
                         emit_delimited_header(*tag, body_len, &mut out);
-                        if !shallow {
+                        if mode == EmitMode::Original {
                             out.extend_from_slice(body.as_bytes());
                         }
                     }
                     Piece::EPathMap { tag, group } => {
                         let group = &self.epathmaps[*group];
+                        let shallow = mode != EmitMode::Original;
                         let payload_len =
                             epm_payload_len(&group.prefix, group.cuts.clone(), &self.cuts, shallow)
                                 .expect("validated plan lengths remain representable");
@@ -1033,7 +1148,7 @@ impl ProtobufCutPlan {
                                     .expect("a planned usize protobuf length fits u64"),
                                 &mut out,
                             );
-                            if !shallow {
+                            if mode == EmitMode::Original {
                                 out.extend_from_slice(cut.region.as_bytes());
                             }
                         }

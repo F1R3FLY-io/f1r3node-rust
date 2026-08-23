@@ -3122,11 +3122,99 @@ fn canonical_singleton_epathmap_parts(
 struct CanonicalEPathMapEnvelope<'a> {
     snapshot: &'a [u8],
     connective_used: bool,
+    has_remainder: bool,
+}
+
+/// Width-independent routing information for one canonical EPathMap Expr.
+///
+/// The outer protobuf envelope is checked exactly, but the EPM1 result is only
+/// a route hint: its ACT topology and value table have not been validated.
+/// Consumers selecting a byte-region specialization must still invoke the
+/// complete canonical snapshot parser before trusting any key or value.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CanonicalEPathMapRootRouteHint {
+    mode: crate::rust::epathmap_trie_codec::EPathMapMode,
+    map_value_count: usize,
+    has_remainder: bool,
+}
+
+impl CanonicalEPathMapRootRouteHint {
+    #[inline]
+    pub const fn mode(self) -> crate::rust::epathmap_trie_codec::EPathMapMode { self.mode }
+
+    #[inline]
+    pub const fn map_value_count(self) -> usize { self.map_value_count }
+
+    #[inline]
+    pub const fn has_remainder(self) -> bool { self.has_remainder }
+}
+
+/// Borrowed canonical envelope for one `Expr(EPathMap)` endpoint.
+///
+/// The protobuf body and EPM1 snapshot remain slices of the caller's existing
+/// authoritative bytes.  The route hint is intentionally shallow: consumers
+/// must still pass [`Self::protobuf_body`] to the complete generated decoder,
+/// or pass [`Self::snapshot`] to the complete canonical snapshot inspector,
+/// before trusting trie topology, keys, or map values.
+#[derive(Clone, Copy, Debug)]
+pub struct CanonicalEPathMapRootView<'a> {
+    protobuf_body: &'a [u8],
+    snapshot: &'a [u8],
+    route_hint: CanonicalEPathMapRootRouteHint,
+}
+
+impl<'a> CanonicalEPathMapRootView<'a> {
+    /// The complete protobuf body of the `EPathMap`, excluding its enclosing
+    /// `Expr` oneof key and length.
+    #[inline]
+    pub const fn protobuf_body(self) -> &'a [u8] { self.protobuf_body }
+
+    /// The borrowed EPM1 snapshot stored in protobuf field 9.
+    #[inline]
+    pub const fn snapshot(self) -> &'a [u8] { self.snapshot }
+
+    /// Width-independent dispatch information from the canonical envelope and
+    /// fixed EPM1 prefix. This is not a validation result.
+    #[inline]
+    pub const fn route_hint(self) -> CanonicalEPathMapRootRouteHint { self.route_hint }
+}
+
+/// Borrow one canonical `Expr(EPathMap)` envelope while inspecting only its
+/// outer protobuf framing and fixed EPM1 prefix.
+///
+/// The compact ACT arena is skipped by length. No trie node, canonical key,
+/// map value, `Par`, or proportional collection is traversed or materialized.
+pub fn canonical_epathmap_root_view(expr: &[u8]) -> Option<CanonicalEPathMapRootView<'_>> {
+    let (protobuf_body, envelope) = canonical_epathmap_body_and_parts(expr)?;
+    let snapshot = crate::rust::epathmap_trie_codec::snapshot_route_hint(envelope.snapshot).ok()?;
+    Some(CanonicalEPathMapRootView {
+        protobuf_body,
+        snapshot: envelope.snapshot,
+        route_hint: CanonicalEPathMapRootRouteHint {
+            mode: snapshot.mode(),
+            map_value_count: snapshot.map_value_count(),
+            has_remainder: envelope.has_remainder,
+        },
+    })
+}
+
+/// Inspect only the canonical Expr/EPathMap envelope and fixed EPM1 prefix.
+///
+/// The compact ACT arena is skipped by length. No trie node, canonical key,
+/// map value, `Par`, or proportional collection is traversed or materialized.
+pub fn canonical_epathmap_root_route_hint(expr: &[u8]) -> Option<CanonicalEPathMapRootRouteHint> {
+    canonical_epathmap_root_view(expr).map(CanonicalEPathMapRootView::route_hint)
 }
 
 /// Borrow field 9 from one canonical EPathMap Expr without decoding its trie,
 /// metadata, or recursively nested map values.
 fn canonical_epathmap_parts_from_expr(expr: &[u8]) -> Option<CanonicalEPathMapEnvelope<'_>> {
+    canonical_epathmap_body_and_parts(expr).map(|(_, envelope)| envelope)
+}
+
+fn canonical_epathmap_body_and_parts(
+    expr: &[u8],
+) -> Option<(&[u8], CanonicalEPathMapEnvelope<'_>)> {
     let CanonicalExprEnvelope {
         tag: 32,
         payload: pathmap,
@@ -3135,7 +3223,7 @@ fn canonical_epathmap_parts_from_expr(expr: &[u8]) -> Option<CanonicalEPathMapEn
         return None;
     };
 
-    canonical_epathmap_parts(pathmap)
+    Some((pathmap, canonical_epathmap_parts(pathmap)?))
 }
 
 fn canonical_epathmap_parts(pathmap: &[u8]) -> Option<CanonicalEPathMapEnvelope<'_>> {
@@ -3179,6 +3267,7 @@ fn canonical_epathmap_parts(pathmap: &[u8]) -> Option<CanonicalEPathMapEnvelope<
     Some(CanonicalEPathMapEnvelope {
         snapshot: snapshot?,
         connective_used: saw_connective,
+        has_remainder: saw_remainder,
     })
 }
 
@@ -3373,6 +3462,34 @@ pub struct EncodedParComponent<'a, T> {
     marker: PhantomData<fn() -> T>,
 }
 
+/// Owned canonical protobuf body copied from one validated RPB3 endpoint.
+///
+/// Construction is restricted to [`EncodedParComponent`], whose bytes came
+/// from an invariant-checked resident [`ParBag`] key. The type therefore
+/// carries the admission proof required by the deferred EPathMap decoder after
+/// the visiting zipper releases its borrowed path buffer. It deliberately owns
+/// only the protobuf body: copying the proportional score prefix would add no
+/// decoding evidence and would duplicate potentially large data.
+pub struct OwnedCanonicalParComponent<T> {
+    payload: Vec<u8>,
+    multiplicity: Multiplicity,
+    marker: PhantomData<fn() -> T>,
+}
+
+impl<T: ParBagComponent> OwnedCanonicalParComponent<T> {
+    pub fn payload(&self) -> &[u8] { &self.payload }
+
+    pub const fn multiplicity(&self) -> Multiplicity { self.multiplicity }
+
+    /// Decode through the proof-carrying resident-key path. Full canonical
+    /// validation already occurred at ParBag admission; the decoder still
+    /// validates protobuf/EPM1 framing and ACT structure without rebuilding
+    /// every canonical EPathMap key a second time.
+    pub fn decode(self) -> Result<T, ParBagCodecError> { decode_exact::<T>(&self.payload) }
+
+    pub fn into_payload(self) -> Vec<u8> { self.payload }
+}
+
 /// An owned proof that one authoritative RPB3 endpoint is an `EZipper`.
 ///
 /// The score/body pair can only be created by the typed [`ParBag`] visitor,
@@ -3423,6 +3540,14 @@ impl<'a, T: ParBagComponent> EncodedParComponent<'a, T> {
     pub const fn multiplicity(&self) -> Multiplicity { self.multiplicity }
 
     pub fn decode(self) -> Result<T, ParBagCodecError> { decode_exact::<T>(self.payload) }
+
+    pub fn to_owned_canonical(self) -> OwnedCanonicalParComponent<T> {
+        OwnedCanonicalParComponent {
+            payload: self.payload.to_vec(),
+            multiplicity: self.multiplicity,
+            marker: PhantomData,
+        }
+    }
 }
 
 impl EncodedParComponent<'_, Connective> {
@@ -6165,6 +6290,67 @@ mod fast_key_tests {
     }
 
     #[test]
+    fn epathmap_root_route_hint_distinguishes_mode_value_count_and_remainder() {
+        let par = |value| {
+            Par::default().with_exprs(vec![Expr {
+                expr_instance: Some(ExprInstance::GInt(value)),
+            }])
+        };
+        let encode_expr = |map| {
+            protobuf_encoder::encode_to_vec(&Expr {
+                expr_instance: Some(ExprInstance::EPathmapBody(map)),
+            })
+        };
+
+        let mut set = EPathMap::default();
+        set.insert_entry(par(1));
+        set.insert_entry(par(2));
+        let encoded_set = encode_expr(set);
+        let set_view =
+            canonical_epathmap_root_view(&encoded_set).expect("canonical set Expr root view");
+        let set_hint = set_view.route_hint();
+        assert_eq!(
+            set_hint.mode(),
+            crate::rust::epathmap_trie_codec::EPathMapMode::Set
+        );
+        assert_eq!(set_hint.map_value_count(), 0);
+        assert!(!set_hint.has_remainder());
+        assert_eq!(
+            set_view.protobuf_body(),
+            canonical_expr_envelope(&encoded_set)
+                .expect("canonical set Expr envelope")
+                .payload
+        );
+        assert_eq!(
+            set_view.snapshot(),
+            canonical_epathmap_snapshot_from_expr(&encoded_set)
+                .expect("canonical set EPM1 snapshot")
+        );
+
+        let map = EPathMap::new_map(
+            [(par(1), par(11)), (par(2), par(22))],
+            Vec::new(),
+            true,
+            Some(Var::default()),
+        );
+        let map_hint = canonical_epathmap_root_route_hint(&encode_expr(map))
+            .expect("canonical map Expr route hint");
+        assert_eq!(
+            map_hint.mode(),
+            crate::rust::epathmap_trie_codec::EPathMapMode::Map
+        );
+        assert_eq!(map_hint.map_value_count(), 2);
+        assert!(map_hint.has_remainder());
+
+        assert!(
+            canonical_epathmap_root_route_hint(&protobuf_encoder::encode_to_vec(&Expr {
+                expr_instance: Some(ExprInstance::GInt(7)),
+            }))
+            .is_none()
+        );
+    }
+
+    #[test]
     fn direct_singleton_epathmap_chain_import_preserves_root_and_map_metadata() {
         use crate::rhoapi::{EPathMap, Var};
 
@@ -6197,6 +6383,18 @@ mod fast_key_tests {
         assert_eq!(protobuf_encoder::encode_to_vec(&imported), protobuf);
         assert_eq!(imported.locally_free(), expected.locally_free());
         assert_eq!(imported.connective_used(), expected.connective_used());
+
+        let mut owned = None;
+        imported.visit_encoded::<Expr>(|entry| {
+            owned = Some(entry.to_owned_canonical());
+        });
+        let owned = owned.expect("the singleton Expr endpoint is retained after its zipper exits");
+        assert_eq!(owned.multiplicity(), Multiplicity::ONE);
+        let canonical_payload = owned.payload().to_vec();
+        let decoded = owned
+            .decode()
+            .expect("the proof-carrying component uses trusted deferred decoding");
+        assert_eq!(protobuf_encoder::encode_to_vec(&decoded), canonical_payload);
 
         let mut measured = None;
         imported.visit_encoded::<Expr>(|entry| {
@@ -6248,9 +6446,62 @@ mod fast_key_tests {
         );
         duplicate_snapshot_expr.extend_from_slice(&duplicate_snapshot_body);
         assert!(canonical_epathmap_snapshot_from_expr(&duplicate_snapshot_expr).is_none());
+        assert!(canonical_epathmap_root_view(&duplicate_snapshot_expr).is_none());
 
         let mut malformed_snapshot = snapshot;
         malformed_snapshot[0] ^= 0xff;
         assert!(canonical_singleton_epathmap_chain_parts(&malformed_snapshot).is_none());
+    }
+
+    #[test]
+    fn epathmap_root_view_does_not_promote_a_route_hint_to_validation() {
+        use crate::rhoapi::EPathMap;
+
+        let key = Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::GString("key".to_owned())),
+        }]);
+        let value = Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::GInt(7)),
+        }]);
+        let expr = Expr {
+            expr_instance: Some(ExprInstance::EPathmapBody(EPathMap::new_map(
+                [(key, value)],
+                Vec::new(),
+                false,
+                None,
+            ))),
+        };
+        let canonical_expr = protobuf_encoder::encode_to_vec(&expr);
+        let canonical_view =
+            canonical_epathmap_root_view(&canonical_expr).expect("canonical root view");
+        let canonical_hint = canonical_view.route_hint();
+        let body_start =
+            canonical_view.protobuf_body().as_ptr() as usize - canonical_expr.as_ptr() as usize;
+        let snapshot_start = canonical_view.snapshot().as_ptr() as usize
+            - canonical_view.protobuf_body().as_ptr() as usize;
+        let mut snapshot_at = 6usize; // EPM1 magic, version, and mode.
+        let arena_len = usize::try_from(
+            read_canonical_varint(canonical_view.snapshot(), &mut snapshot_at)
+                .expect("canonical ACT arena length"),
+        )
+        .expect("ACT arena length fits usize");
+        assert_ne!(arena_len, 0);
+
+        let mut malformed_expr = canonical_expr.clone();
+        malformed_expr[body_start + snapshot_start + snapshot_at] = 0xff;
+        let malformed_view = canonical_epathmap_root_view(&malformed_expr)
+            .expect("the shallow route still accepts the fixed EPM1 prefix");
+        assert_eq!(
+            malformed_view.route_hint(),
+            canonical_hint,
+            "ACT contents cannot affect shallow route selection"
+        );
+        assert!(
+            crate::rust::rholang::protobuf_decoder::decode_epath_map(
+                malformed_view.protobuf_body()
+            )
+            .is_err(),
+            "the complete generated decoder must reject the malformed ACT"
+        );
     }
 }

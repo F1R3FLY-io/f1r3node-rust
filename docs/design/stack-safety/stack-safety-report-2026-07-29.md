@@ -12,10 +12,11 @@
 
 **Repository** `f1r3node-rust-mettail`, branch `feature/mettail`
 **Companion repository** `mettail-rust`, branch `feature/rho-native-set-automata` (§5.6)
-**Report date** 2026-07-29, revised through 2026-08-21
+**Report date** 2026-07-29, revised through 2026-08-23
 **Measurement anchor** `f1r3node-rust-mettail@e67a6aaa` · `mettail-rust@b0aa4e09` (original measurement tree `8853f839`)
-**Living closure head** this checkpoint, based on `f1r3node-rust-mettail@d06006e07`
-(drive-local `FreeMap` journaling and byte-native exact FreeVar capture following complete byte-native
+**Living closure head** this checkpoint, based on `f1r3node-rust-mettail@c54a2354c`
+(presence-safe protobuf-region rendering and proof-carrying post-zipper EPathMap decode following
+drive-local `FreeMap` journaling and byte-native exact FreeVar capture following complete byte-native
 recursive matcher-family coverage, and complete transient `ParConstruction` planning across normalization, substitution, and evaluation,
 following canonical-protobuf `ParBag` keys with prepared typed lookup, direct trie-to-protobuf
 emission, canonical ACT import validation, and byte-native exact-key EPathMap
@@ -44,6 +45,19 @@ closure and SS-C14 records the dormant canonical `ParBag` successor in this repo
 `docs/design/audits/theta-depth-traversals-2026-07-26.md`,
 `docs/design/audits/four-quadrant-s0-baseline-2026-07-28.md`,
 `docs/design/audits/four-quadrant-s2-protobuf-encoder-2026-07-28.md`
+
+**Format and systems terms.**
+
+| Short form | Expansion |
+|---|---|
+| **RPB1** | *resident ParBag key format, version 1* |
+| **RPB2** | *resident ParBag key format, version 2* |
+| **RPB3** | *resident ParBag key format, version 3* |
+| **NUL** | *null byte* |
+| **AVL** | *Adelson-Velsky–Landis* tree balancing |
+| **URI** | *uniform resource identifier* |
+| **FFI** | *foreign function interface* |
+| **ABBA** | *alternating A-before-B / B-before-A* paired execution order, used to cancel measurement-window drift |
 
 **Verified living status.** The node gate contains **37 converted depth subjects + 8
 converted width subjects and zero production tripwire subjects**; the independent SS-B5 lifecycle
@@ -262,12 +276,14 @@ Abbreviations used throughout are ABI (application binary interface), CBR (conse
 | **SS-A9** | `e2cf939f`, `26d3e3b9` | f1r3node | node JSON boundary: `Par`/`Expr`/`Bundle`/`EPathMap` $`\rightarrow`$ `RhoExpr`, plus `RhoExpr` `Clone`, `Drop`, `Serialize`, and `Debug` | recursive calls/derives $`\rightarrow`$ explicit PDAs; depth 16,384 on a 256 KiB stack | **yes** | [5.13](#513-the-node-json-boundary-ss-a9) |
 | **SS-A10** | `78611b11`, `6799b406`, `fc497f94`, `98bb3d5e`, `acfd194f`, `714d618c`, `6f1412ee`, `3a3db311`, `4f022ad9b`, `efc48ab0d` | f1r3node | heterogeneous spatial-matcher SCC, including concrete binders, connective rollback, subset retry, sparse relational-row reuse, PathMap connective-domain algebra, `PathMap<()>` and `PathMap<Par>` | ~70,237 B/level debug on the recursive binding path $`\rightarrow`$ **0**; depth 4,096 and width 65,536; retained matcher RSS slope eliminated; the AND/OR depth-20,000 gate completes in 0.18 s on 256 KiB; the width-128 connective displacement witness falls from 699,263 nominal edge visits to 254 authoritative visits; width-4,096 rejecting-OR mean latency falls 97.44% | **yes** | [5.16](#516-spatial-matcher-and-pathmap-native-retry-pda-ss-a10) |
 | **SS-A11** | `8b81f223` | f1r3node | RSpace guarded candidate selector and enabled-rendezvous enumerator $`\rightarrow`$ one shared explicit-frame depth-first-search PDA | host recursion $`\Theta(b)`$ in receive-bind count $`b \rightarrow O(1)`$ native stack; **20,000 binds** on **256 KiB** in **2.61 s / 96,216 KiB RSS** | **yes** | [5.16.5](#5165-rspace-candidate-selection-and-enumeration-pda-ss-a11) |
-| **SS-A12** | this checkpoint | f1r3node | normalization, substitution, and evaluator recursive-result construction $`\rightarrow`$ one transient `ParConstruction` arena with planned score/protobuf graphs and persistent Bag occurrence roots | repeated resident ancestor materialization $`\Theta(d^2) \rightarrow \Theta(d)`$ bytes emitted for a depth-$`d`$ unary term; native stack remains $`O(1)`$; all eight recursive component families reach depth **8,192**, schema planning reaches **16,384**, and planned EPathMap value nesting reaches **4,096**, each on **256 KiB** | **yes**; recursive-oracle protobuf, stable-bincode, metadata, charge, and exact-PathMap-snapshot differentials | [5.28](#528-transient-par-construction-closure-ss-a12) |
+| **SS-A12** | this checkpoint | f1r3node | normalization, substitution, and evaluator recursive-result construction $`\rightarrow`$ one transient `ParConstruction` arena with planned score/protobuf graphs and persistent Bag occurrence roots | repeated resident ancestor materialization $`\Theta(d^2) \rightarrow \Theta(d)`$ bytes emitted for a depth-$`d`$ unary term; native stack remains $`O(1)`$; all eight recursive component families reach depth **8,192**, schema planning reaches **16,384**, and planned EPathMap value nesting reaches **4,096**, each on **256 KiB** | **yes**; recursive-oracle protobuf, stable-bincode, metadata, charge, and exact-PathMap-snapshot differentials | [5.28](#528-transient-parconstruction-closure-ss-a12) |
 | **SS-A13** | this checkpoint | f1r3node | complete the existing spatial-matcher PDA and its PathMap Bag algebra for the ninth `If` family; replace the artificial `ParCount` top 1,000 with the logical `u64::MAX` top intersected with the finite target | omitted family / cardinality ceiling $`\rightarrow`$ explicit three-child PDA and multiplicity-lazy eight-family partitions; depth **4,096** on **128 KiB** after SS-A14; compressed multiplicity **1,001** for every partitioned family | **no** — semantic and limit completeness on the existing PDA | [5.29](#529-parbag-family-and-count-domain-completeness-ss-a13-ss-a14-ss-y9) |
 | **SS-A14** | this checkpoint | f1r3node | nested `If` matching: repeated decoded suffix materialization $`\rightarrow`$ canonical-protobuf byte cursor over one shared immutable ParBag endpoint buffer | predecessor depth 128 match **4.277937 s** debug $`\rightarrow`$ release **55.002 µs**; treatment depth **4,096** **1.5387 ms**; allocated-byte and allocation-count ladders remain linear in encoded input; **128 KiB** native stack | **no** — heap/time repair inside the existing matcher PDA; exact verdict, complete `FreeMap`, rollback, schema, and unordered-`Par` semantics retained | [5.29](#529-parbag-family-and-count-domain-completeness-ss-a13-ss-a14-ss-y9) |
 | **SS-A15** | this checkpoint | f1r3node | generalize the shared canonical-protobuf matcher cursor through recursive New/Send/Receive/Match/Expr/Connective families and feed borrowed ESet/EMap members into the existing unordered Bag/PathMap ListPDA | all **15** named recursive families reach depth **4,096** on **128 KiB**; AND/OR additionally reach depth **20,000** on **256 KiB** in debug and release; allocation count and bytes remain subquadratic from depth 128 to 1,024; ESet depth-128 debug diagnostic **3.009 s $`\rightarrow`$ 0.825 ms**, EMap **1.609 s $`\rightarrow`$ 1.099 ms**; exact scalar children are **6.67×** faster than the decoder control at AND depth 4,096 | **no** — exact matcher verdict, complete `FreeMap`, rollback, unordered backtracking/remainders, canonical bytes, and parallel semantics retained | [5.30](#530-general-recursive-family-byte-cursor-and-unordered-collection-closure-ss-a15-ss-y10) |
 | **SS-A16** | this checkpoint | f1r3node | whole-`FreeMap` backtracking snapshots $`\rightarrow`$ one drive-local undo journal; sole-FreeVar eight-family reconstruction $`\rightarrow`$ one exact write; repeated target ownership in encoded Connective frames $`\rightarrow`$ one thread-local `Rc<Par>` | retained rollback state $`\Theta(d^2) \rightarrow \Theta(d)`$ on the depth-$`d`$ binding spine; depth **20,000** succeeds and deepest refusal restores the root on **256 KiB** with exactly one journal write per level; depth-1,024 allocations **168,188 $`\rightarrow`$ 240** and requested bytes **83,963,573 $`\rightarrow`$ 2,022,886** | **no** — the journal refines snapshots and the target owner is matcher-local only; CBR-065 records atomic root refusal as a corrective nonconsensus ruling | [5.31](#531-drive-local-freemap-undo-journal-and-exact-freevar-capture-compression-ss-a16) |
 | **SS-A17** | this checkpoint; pgmcp `accounting-demand-local-occurrence-linear-walk`; experiment 303 | f1r3node | accounting-demand traversal over resident `Par` suffixes $`\rightarrow`$ one borrowed canonical-protobuf-region PDA fed directly by the authoritative ParBag/PathMap endpoint visitor | exact suffix control **145.317 ms $`\rightarrow`$ 12.683 µs** at depth 128 and **8.210 s $`\rightarrow`$ 49.497 µs** at depth 512; treatment endpoint exponent **1.015** through depth 20,000; **20,000** levels on **128 KiB**; compressed scalar multiplicity 1 through $`2^{32}-1`$ remains **0.728–0.750 µs** | **no** — exact recursive trace, callback order, saturation, unknown propagation, schema, and lane differentials; Rocq/Verus/TLA+ closure; CBR-066 | [5.32](#532-accounting-demand-canonical-protobuf-region-pda-ss-a17-ss-y11) |
+| **SS-A18** | this checkpoint; pgmcp experiment 306 | f1r3node | wide recursive pretty-print planning $`\rightarrow`$ presence-safe compact protobuf shells, consumed cut storage, region-native Expr planning, and one n-ary output rope | native stack remains **0 B/level**; width 65,536 mean treatment/control ratio **0.984332**, one-sided 95% upper **0.998872** | **no** — exact recursive-oracle text, printer state, malformed-field disposition, and fallback semantics retained; CBR-068 | [5.33](#533-canonical-protobuf-width-refinement-for-the-printer-and-epathmap-matcher-ss-a18-ss-a19-ss-x2-ss-y12-ss-y13) |
+| **SS-A19** | this checkpoint; pgmcp experiment 309 | f1r3node | wide EPathMap route preparation $`\rightarrow`$ one proof-carrying owned canonical Expr per endpoint, zipper release, trusted deferred decode, and direct native PathMap PDA dispatch | native stack remains **0 B/level**; worst-subject ratio mean **0.885350**, one-sided 95% upper **0.904244**; allocations **7,674,833 rejected $`\rightarrow`$ 4,660,158 selected** | **no** — exact verdict, complete `FreeMap`, rollback, remainder, malformed-input precedence, EPM1, and PathMap semantics retained; CBR-067 | [5.33](#533-canonical-protobuf-width-refinement-for-the-printer-and-epathmap-matcher-ss-a18-ss-a19-ss-x2-ss-y12-ss-y13) |
 | **SS-B1** | `a929a2d6` | f1r3node | expression-evaluator SCC $`\rightarrow`$ `eval_drive` | overflow $`\approx`$ 1.5k $`\rightarrow`$ OK at 50,000 | **yes** | [5.2.1](#521-the-expression-evaluator-trampoline-a929a2d6) |
 | **SS-B2** | `29856679`, `55b97f84`, `a0a50473` | f1r3node | five async join sites detached | 300 s $`\rightarrow`$ **93.7 s CPU** | **yes** (heap chain) | [5.2.2](#522--the-tokio-fire-and-forget-driver--establishing-the-mechanism-not-assuming-it) |
 | **SS-B3** | `9843e4b6` | f1r3node | `StackGrowingFuture` + `stacker` **deleted** | — | dependency removed | [5.2.2](#522--the-tokio-fire-and-forget-driver--establishing-the-mechanism-not-assuming-it) |
@@ -345,6 +361,8 @@ Abbreviations used throughout are ABI (application binary interface), CBR (conse
 | **SS-Y7** | exposed by `mettail-rust@250f0929`; repaired by `c95d9e73`; pgmcp task 5101 | mettail | the stack-safe generated $`k`$-shift continuation repeated growing byte-per-index `locally_free` prefixes | **before:** depth 20,000 fit 256 KiB but peaked at **1,395,560 KiB RSS / 2.04 s**, $`\Theta(k^2)`$ metadata; **after:** **85 B / 17 allocations / 4,164 allocated B**, depth-independent, direct-test process **15,380 KiB RSS** | ✅ **repaired by SS-G41**; no cap, enlarged stack, stack switch, or repeated-COMM substitution | [5.18.43](#51843-one-pass-native-shift-fusion-and-constant-size-carrier-closure-ss-g41-ss-y7) |
 | **SS-G6** | `3276c1ee`; closed by `26876b65` | cross-repository | **#174's hash-keyed collection cost, ATTRIBUTED then converted** — `par_hash` / `par_hashmap` isolated `models`' `impl Hash for Par`; the schema-generated trait PDA removed the mechanism | 625 / 113 recorded historically with ceilings $`\rightarrow`$ **0**; the two ceilings are deleted | **yes**, by SS-Y2; the mettail integration gate now requires zero slope too | [5.6.6](#566--174-attributed-to-models-impl-hash-for-par-3276c1ee) |
 | **SS-Y2** | named `3276c1ee`; repaired `26876b65` | f1r3node | The hand-written host-recursive `impl Hash for Par` / `impl PartialEq for Par` defect named by SS-G6 on a consensus-adjacent canonical-sort path | 625 debug / 113 release B/level $`\rightarrow`$ **0** | ★ **repaired** by schema-generated Eq/Hash PDAs and independent PathMap set/map hash gates | [5.6.6](#566--174-attributed-to-models-impl-hash-for-par-3276c1ee) |
+| **SS-Y12** | exposed after `efa9aaa0b`; repaired by SS-A18; pgmcp experiment 306 | f1r3node | the first protobuf-region printer retained per-child planning/projection and binary concatenation work on the width axis | diagnostic smoke ~0.28 s control / ~0.33 s treatment; selected n=30 ratio upper bound **0.998872** | ✅ **REPAIRED** — one compact shell, consumed cuts, region-native planning, and one bounded n-ary rope | [5.33](#533-canonical-protobuf-width-refinement-for-the-printer-and-epathmap-matcher-ss-a18-ss-a19-ss-x2-ss-y12-ss-y13) |
+| **SS-Y13** | exposed by experiments 307–308; repaired by SS-A19; pgmcp experiment 309 | f1r3node | the nominally width-independent EPathMap matcher first built proportional cut plans, then redundantly rebuilt every canonical path after ParBag had already validated the resident endpoint | rejected treatment allocations **7,674,833** versus **5,222,542** control; selected treatment **4,660,158**, with no `validate_canonical_path` frame beneath endpoint preparation | ✅ **REPAIRED** — admission proof crosses the zipper boundary and trusted decoding starts only after both borrowed cursors are released | [5.33](#533-canonical-protobuf-width-refinement-for-the-printer-and-epathmap-matcher-ss-a18-ss-a19-ss-x2-ss-y12-ss-y13) |
 | **SS-E1** | `5a744c66`, `ad468163`, `08e876fd`, `6a264e05` | f1r3node | ★ **Phase 3b's PREREQUISITE instrument** — the identical-total-order argument, the sorter golden's first depth-$`\geq 2`$ rows, and the re-entry ladder probe. ⚠ **No traversal was converted**, so this is deliberately not a class change | ⌀ — an instrument, not a traversal | **no** — by construction | [5.6.7](#567-ss-e1--3bs-prerequisite-instrument-and-the-two-checks-that-were-blind) |
 | **SS-E2** | `26876b65`, `87e514b6` | f1r3node | generated traversal registry $`\leftrightarrow`$ proof/oracle manifest; Rocq generic PDA equivalence, EPathMap algebra, and structural EPM1 framing/value-table laws; SMT mode dispatch; TLA+ transition model | 30 depth + 6 width production subjects, **zero tripwire subjects** | enabling and closure evidence | [5.12](#512-generated-par-pda-closure-ss-a8-ss-e2) |
 | **SS-E3** | `b2d84064`, `68e8290d` | f1r3node | Phase 7 resource closure: independent PathMap set/map hash and `Message::clear` ladders; derived-register Cachegrind axis; matched-control Massif axis | **40** converted subjects, all subquadratic; four stack-to-heap transfers measured linear | enabling and closure evidence | [5.14](#514-resource-closure--heap-and-deterministic-time-ss-e3); PathMap slice: [PathMap §5.6](../pathmap/pathmap-report-2026-08-03.md#56-hash-and-clear-ladders) |
@@ -363,7 +381,7 @@ Abbreviations used throughout are ABI (application binary interface), CBR (conse
 
 ★ **`SS-Y2` is the strongest available argument for the derived call-graph census**, and it arrived before the census was built. `DERIVE_DISPOSITIONS` closes over derive **tokens** and these impls are hand-written; `GENERATED_FILE_CENSUS` closes over generated **files** and these are not generated. Neither could ever have seen them — which is exactly the three-way split [§5.7.8](#578-the-read-ceiling-registry-and-a-fifth-site-it-can-detect) argues the third leg of. `models/build.rs`'s own fail-on-`None` message already carries the lesson in one line: *"a hand-picked list of four missed `Hash` entirely."*
 
-**Rejected candidates** (kept in the register so they are not re-proposed): **SS-X1** `cf35ab53` — exhaustive `PartialEq`/`Hash`; not stack safety, see [§5.8](#58-the-rejected-candidate).
+**Rejected candidates** (kept in the register so they are not re-proposed): **SS-X1** `cf35ab53` — exhaustive `PartialEq`/`Hash`; not stack safety, see [§5.8](#58-the-rejected-candidate). **SS-X2** — experiments 307 and 308: route-hint-only and decode-inside-zipper EPathMap treatments; both failed the locked width noninferiority guard, see [§5.33](#533-canonical-protobuf-width-refinement-for-the-printer-and-epathmap-matcher-ss-a18-ss-a19-ss-x2-ss-y12-ss-y13).
 
 ⚠★ **Read `SS-D3` and `SS-D5` correctly.** Both eliminate a **call to** `<Par as Clone>::clone`; **neither converts the impl**. The campaign's strategy at those two sites is **call-site elimination**, argued in [§5.10.5a](#5101-the-strategy-and-the-figures-it-retired). Two one-line task summaries read otherwise and are corrected in [§5.10.5](#5101-the-strategy-and-the-figures-it-retired).
 
@@ -495,11 +513,12 @@ register rows (SS-C5…SS-C14, SS-Y6) and the stack-safety consequences.
   - [5.25 Positional AC remainder reconstruction and co-install progress closure [SS-G48]](#525-positional-ac-remainder-reconstruction-and-co-install-progress-closure-ss-g48)
   - [5.26 Retained FLT candidate-matcher integration [SS-G49]](#526-retained-flt-candidate-matcher-integration-ss-g49)
   - [5.27 Canonical-protobuf-key `ParBag` and prepared-key closure [SS-C14]](#527-canonical-protobuf-key-parbag-and-prepared-key-closure-ss-c14)
-  - [5.28 Transient `ParConstruction` closure [SS-A12]](#528-transient-par-construction-closure-ss-a12)
+  - [5.28 Transient `ParConstruction` closure [SS-A12]](#528-transient-parconstruction-closure-ss-a12)
   - [5.29 ParBag family and count-domain completeness [SS-A13, SS-A14, SS-Y9]](#529-parbag-family-and-count-domain-completeness-ss-a13-ss-a14-ss-y9)
   - [5.30 General recursive-family byte cursor and unordered-collection closure [SS-A15, SS-Y10]](#530-general-recursive-family-byte-cursor-and-unordered-collection-closure-ss-a15-ss-y10)
   - [5.31 Drive-local `FreeMap` undo journal and exact FreeVar capture compression [SS-A16]](#531-drive-local-freemap-undo-journal-and-exact-freevar-capture-compression-ss-a16)
   - [5.32 Accounting-demand canonical protobuf-region PDA [SS-A17, SS-Y11]](#532-accounting-demand-canonical-protobuf-region-pda-ss-a17-ss-y11)
+  - [5.33 Canonical-protobuf width refinement for the printer and EPathMap matcher [SS-A18, SS-A19, SS-X2, SS-Y12, SS-Y13]](#533-canonical-protobuf-width-refinement-for-the-printer-and-epathmap-matcher-ss-a18-ss-a19-ss-x2-ss-y12-ss-y13)
 - [6. Discussion](#6-discussion)
   - [6.1 Why the explicit-worklist shape, and why it is *smaller* than what it replaces](#61-why-the-explicit-worklist-shape-and-why-it-is-smaller-than-what-it-replaces)
   - [6.2 Why the SCC is the unit of conversion](#62-why-the-scc-is-the-unit-of-conversion)
@@ -928,6 +947,22 @@ both columns; only one narrowed, which identifies the design rather than the hos
 term. The decision rule this yields: **whether a wall-clock figure is quotable is decided by effect
 size against instrument spread** — an effect smaller than the spread can still be *signed* when two
 instruments agree on direction, but its magnitude is a bracket, not a number.
+
+Experiments 306–309 use the corresponding ratio-form noninferiority statistic. For paired
+treatment/control times $`T_i`$ and $`C_i`$, define
+
+```math
+R_i = \frac{T_i}{C_i},
+\qquad
+U_{0.95}=\bar R+t_{0.95,n-1}\frac{s_R}{\sqrt n}.
+```
+
+The locked acceptance rule is $`U_{0.95}<1.05`$. Matcher experiments first compute
+$`\max(R_{\mathrm{set},i},R_{\mathrm{map},i})`$ inside each pair, so a fast map cell cannot hide a
+set regression. Each run uses three discarded warmups, odd AB/even BA ordering, width 65,536,
+`GATE_STACK=262144`, one pinned physical core, an 8 GiB cgroup ceiling, zero swap, and no optional
+stopping. Experiments 306/307 retained 30 pairs fixed by their original locked protocols;
+experiments 308/309 retained the later prescribed 51 pairs.
 
 ![Blocked versus paired design](figures/blocked-vs-paired.svg)
 
@@ -3522,7 +3557,7 @@ cardinality two, while the complete focused differential passed **14/14**, inclu
 bounded oracle cases. The one-shot CPU-8 Criterion run used 82 samples per arm at 16, 256, and
 4,096 targets under 8 GiB and zero swap. At the 4,096-target primary, the mean changed from
 **80.921 ms** to **80.623 ms**, an improvement of only **0.369%**; Welch's one-sided p-value was
-**0.09776**, Cohen's effect size was **−0.203**, and the 95% treatment-minus-control interval
+**0.09776**, Cohen's effect size was $`-0.203`$, and the 95% treatment-minus-control interval
 **[-0.751 ms, 0.155 ms]** cross zero. The 16-target cell regressed **2.140%** and the 256-target
 cell improved **1.269%**. This fails the preregistered primary requirement of at least 5% and is
 rejected. Checkpoint `facfedf15` preserves the exact falsified implementation; `eb5d4c580`
@@ -8546,7 +8581,7 @@ resident matching. The root direct-match shortcut has a second, independent admi
 The legacy `ParCount`/`sub_pars` relation projects only the eight concrete families, drops the
 `Connective` family, and clears both root summaries. Bypassing it is therefore proven equivalent
 only when the target has zero Connective occurrences, `connective_used = false`, and empty
-`locally_free`. Those are three O(1) cached `Par`/`ParBag` queries. Every other target enters the
+`locally_free`. Those are three $`O(1)`$ cached `Par`/`ParBag` queries. Every other target enters the
 complete candidate-selecting machine; cursor refusal never becomes a semantic refusal.
 
 An exact terminal route removes the remaining dominant constant factor without widening the byte
@@ -8778,8 +8813,11 @@ the first journaled application, so refusal cannot publish a prefix. The public 
 `FreeMap` type, list ordering witness, PathMap membership authority, and rollback equations remain
 unchanged.
 
+**Algorithm 34 (JOURNALLED-ATTEMPT).** *Commit only the final binding delta of a successful
+matcher attempt and restore the entry map on every other exit.*
+
 ```pseudocode
-ALGORITHM JournalledAttempt(checkpoint, operation)
+procedure JOURNALLED-ATTEMPT(checkpoint, operation)
   result := operation()
   IF result is success THEN
     delta := final values written since checkpoint
@@ -9198,6 +9236,118 @@ reduction-rule tests. The matrix and rule-suite log digests are respectively
 `919bfd027debb3623813827542624bfe9ae9d8eb97fad5b2d37a894a52a054fe` and
 `3edad2b44996a837e0173755e12c7fef8b167b03c1b336882c572bcc85f5a30b`.
 
+### 5.33 Canonical-protobuf width refinement for the printer and EPathMap matcher [SS-A18, SS-A19, SS-X2, SS-Y12, SS-Y13]
+
+This section closes two width-axis costs left after the native-stack conversions. Neither repair
+changes the authoritative representation: `Par` remains a `ParBag`, and EPathMap remains its
+homogeneous `PathMap<()>` set or `PathMap<Par>` map. The treatments operate on the canonical
+protobuf body already stored in each trie key; neither projects a `Vec<Par>`, enumerates an
+EPathMap into entries, sorts resident elements, nor changes PathMap.
+
+#### 5.33.1 The rejected matcher sequence is part of the result
+
+The first EPathMap route treatment (experiment 307) replaced proportional `ProtobufRegion` cuts
+with a shallow route hint. It passed for maps but missed the locked worst-cell noninferiority bound:
+$`U_{0.95}=1.061408`$. The second treatment (experiment 308) reduced each endpoint to one ParBag
+zipper visit, but called the public EPathMap decoder while that zipper was still live. It too was
+rejected: $`U_{0.95}=1.101163`$.
+
+The failure was not inherent to PathMap. Headless Heaptrack and deterministic `perf stat`
+identified the boundary violation: ParBag admission had already proved every resident canonical
+path and its canonical protobuf body, but the public decoder revalidated and rebuilt all those paths.
+The rejected treatment made **7,674,833** whole-process allocation calls versus **5,222,542** for
+the control; its instruction count rose **5,290,661,275 $`\rightarrow`$ 6,420,958,934**, branch
+count **782,070,612 $`\rightarrow`$ 1,023,637,552**, and cache references
+**97,269,152 $`\rightarrow`$ 191,637,211**. Keeping the zipper live across that work was secondary;
+repeating already-discharged validation was the causal defect. Both rejected designs remain SS-X2
+so neither can be mistaken for a completed optimization later.
+
+#### 5.33.2 Presence-safe protobuf regions and the printer rope
+
+`ProtobufRegion` now builds a compact shell only for repeated fields proven nonempty by canonical
+admission. A genuinely present empty repeated message remains present, so an empty `KeyValuePair`
+still reaches the same missing-key error rather than disappearing. Singular and oneof presence,
+unknown fields, malformed input disposition, and exact fallback behavior are unchanged.
+
+The printer consumes region cuts instead of retaining a second proportional cut plan, plans Expr
+children directly from their canonical regions, and emits a single bounded n-ary `Joined` rope for
+wide output. `byte_at` and the exact owned fallback remain iterative. The recursive printer oracle
+and malformed-message witnesses compare the complete output and printer state, not only successful
+text. Experiment 306 accepted the treatment at width 65,536: mean ratio **0.984332**, median
+**0.977731**, one-sided 95% upper bound **0.998872**.
+
+#### 5.33.3 Proof-carrying ownership crosses the zipper boundary
+
+`OwnedCanonicalParComponent<T>` is an unforgeable internal witness created only from an admitted
+`EncodedParComponent<T>`. It owns exactly one canonical component body and its nonzero
+multiplicity. Its trusted deferred decoder can therefore check protobuf framing, EPM1 and ACT
+content without rebuilding the canonical ParBag key that admission already proved.
+
+**Algorithm 36 (OWN-EPathMap-ENDPOINT).** *Keep the borrowed zipper callback constant-work and
+enter the existing native PathMap matcher only after both cursors are released.*
+
+```pseudocode
+procedure OWN-EPATHMAP-ENDPOINT(par_bag)
+    visit the sole Expr endpoint once
+    route_hint <- SHALLOW-EPATHMAP-ROOT-VIEW(endpoint.bytes)
+    component <- OWN-ADMITTED-CANONICAL-COMPONENT(endpoint)
+    leave callback and release both PathMap zippers
+
+    if route_hint proves a recursive singleton map then
+        region <- MOVE-BYTES-INTO-PROTOBUF-REGION(component)
+        schedule shared descendant cuts
+    else
+        expr <- TRUSTED-DEFERRED-DECODE(component)
+        epathmap <- EXTRACT-EPATHMAP(expr)
+        enter existing PathMap set/map PDA(epathmap)
+```
+
+Target preparation remains before pattern preparation, preserving malformed-input precedence.
+`RestoreOnFailure` still owns every matcher attempt, so a late refusal restores the complete entry
+`FreeMap`; set/map remainder and rollback behavior are unchanged. The recursive singleton-map case
+moves the owned byte vector into `ProtobufRegion` without another proportional copy. Every other
+case decodes only after cursor release and dispatches to the existing native PathMap set or map PDA,
+retaining zipper, algebraic, lattice, and persistent copy-on-write behavior.
+
+#### 5.33.4 Locked experiment and causal profile
+
+All rows below use §4.5's preregistered paired protocol. The matcher decision is the per-pair maximum
+of set and map ratios.
+
+| experiment | treatment | n | subject | mean ratio | median ratio | one-sided 95% upper | verdict |
+|---:|---|---:|---|---:|---:|---:|---|
+| 306 | presence-safe printer regions + n-ary rope | 30 | printer | 0.984332 | 0.977731 | **0.998872** | accepted |
+| 307 | shallow EPathMap route hint | 30 | worst(set,map) | 1.047655 | 1.041358 | **1.061408** | rejected |
+| 308 | one endpoint visit, public decode inside zipper | 51 | worst(set,map) | 1.089095 | 1.079148 | **1.101163** | rejected |
+| 309 | proof-carrying ownership + post-zipper decode | 51 | set | 0.850396 | 0.843164 | **0.875510** | accepted cell |
+| 309 | proof-carrying ownership + post-zipper decode | 51 | map | 0.832353 | 0.833882 | **0.842800** | accepted cell |
+| 309 | proof-carrying ownership + post-zipper decode | 51 | worst(set,map) | 0.885350 | 0.864701 | **0.904244** | **accepted** |
+
+Experiment 309's mean wall times are 0.666921 s control / 0.562314 s treatment for sets and
+1.436862 s / 1.193852 s for maps. The final headless Heaptrack capture (`heaptrack --record-only`,
+analysed by `heaptrack_print`) records **4,660,158** allocation calls, **1,179,822** temporary
+allocations, **34.28 MiB** peak heap, and **55.93 MiB** profiler RSS. Only **52** allocation calls
+have singleton-endpoint preparation on their backtrace; the two owned payload copies peak at
+**223.63 KiB**, and no `validate_canonical_path` frame occurs below that endpoint. This is the
+predicted mechanism change, not merely a favorable timing sample.
+
+#### 5.33.5 Equivalence, resource closure, and data
+
+The affected gates pass **45/45** matcher recursive-oracle cases, **1/1** proof-carrying component
+test, **8/8** protobuf-region differentials, and **22/22** focused EPathMap model tests. The release
+stack binary lists **16 tests and zero benchmarks**, with every list line ending in `: test`; its
+complete active matrix passes **12/12** with four intentional ignores. The native-stack slope
+therefore remains zero without `RUST_MIN_STACK`, `stacker`, a depth limit, or a recursive fallback.
+The converted-subject census remains **45 = 37 depth + 8 width**: these are width-complexity repairs
+to already-counted subjects, not newly discovered recursive traversals.
+
+All 630 warmup and retained observations, exact binary/source hashes, pgmcp run identifiers and
+digests, confidence bounds, causal counters, and gate totals are committed in
+[`measurements/protobuf-region-width-experiments-306-309-2026-08-23.tsv`](measurements/protobuf-region-width-experiments-306-309-2026-08-23.tsv)
+and
+[`measurements/protobuf-region-width-experiments-306-309-analysis-2026-08-23.json`](measurements/protobuf-region-width-experiments-306-309-analysis-2026-08-23.json).
+CBR-067 and CBR-068 record the measured-neutral consensus disposition.
+
 ---
 
 ## 6. Discussion
@@ -9356,6 +9506,20 @@ $`\Rightarrow`$ ★★ **An archived HEAD does not compile, by design.** `git ar
 ⚠ In `mettail-rust` the mirror hazard is worse in one respect: the build pin lives in a **harness-wipeable scratchpad** and can vanish on its own, intermittently breaking every build with no local change to explain it.
 
 $`\Rightarrow`$ **A B/level figure is a property of (source, toolchain, profile, *overlay*).** This report's figures were taken with the overlay in place; a re-run that strips it will not reproduce them, and will fail to build rather than disagree.
+
+**Experiments 306–309 provenance (2026-08-23).** The source base is
+`c54a2354c99bd504ff42e20793ddd13972f6f49c`; the frozen control is
+`0c27a7c878e1c8382197cd2c53f1493ca3270c39`. Experiment 309's release treatment binary has
+SHA-256 `b5109de3bb0c79b8297745e08d7f973b8f8fa7582a4ef1ac6e581bf90c8dac76`; the control binary is
+`3df98025a0cdb1c60e6fcf12a45340da447d8821919fb455de6895b1b6920e42`. The compiler is
+`rustc 1.95.0-nightly (6efa357bf 2026-02-08)`, LLVM 22.1.0, targeting
+`x86_64-unknown-linux-gnu`; Cargo is `1.95.0-nightly (fe2f314ae 2026-01-30)`. The host runs Linux
+7.1.9 on x86-64. Immediately before the run, no Cargo or rustc process was live and physical cores
+0–15 sampled approximately 95–99% idle; cores 16–23 were excluded because another process occupied
+them. The experiment was pinned to CPU 1 inside an 8 GiB, zero-swap user scope. The complete raw
+source hashes, overlay identity, paired analyses, pgmcp run digests, and headless Heaptrack capture
+hash are the durable JSON/TSV records linked in §5.33 and Appendix B; nothing was inferred from a
+later rebuild.
 
 ### 7.5b ★★ When a premise looks refuted, suspect the instrument ONCE before suspecting the claim
 
@@ -9969,6 +10133,21 @@ for f in *.svg; do
 done
 ```
 
+**A.10 — canonical-protobuf width experiment 309 and headless heap profile.** The committed TSV and
+JSON carry experiments 306–309; this is the selected matcher's exact execution shape.
+
+```bash
+systemd-run --user --scope -p MemoryMax=8G -p MemorySwapMax=0 -p AllowedCPUs=1 \
+  /tmp/f1r3node-exp309-abba.zsh
+
+systemd-run --user --scope -p MemoryMax=8G -p MemorySwapMax=0 -p AllowedCPUs=1 \
+  heaptrack --record-only -o /tmp/heaptrack-exp309-treatment-set.zst \
+  target/release/deps/stack_depth_gate-debfe204a00783ff \
+  matcher_wide_epathmap_set --exact --nocapture --test-threads=1
+heaptrack_print /tmp/heaptrack-exp309-treatment-set.zst.zst \
+  > /tmp/heaptrack-exp309-treatment-set-report.txt
+```
+
 ---
 
 ## Appendix B — raw data locations
@@ -9981,6 +10160,8 @@ done
 | [`measurements/phase7-massif-2026-08-03.tsv`](measurements/phase7-massif-2026-08-03.tsv) | matched-control heap peaks at depths 256/1,024 and B/level for the four core conversions (§5.14.2) |
 | [`measurements/phase7-depth-histograms-2026-08-03.tsv`](measurements/phase7-depth-histograms-2026-08-03.tsv) | subject/root-kind depth histograms (§5.15.1) |
 | [`measurements/phase7-depth-corpora-2026-08-03.tsv`](measurements/phase7-depth-corpora-2026-08-03.tsv) | corpus denominators for the histograms (§5.15.1) |
+| [`measurements/protobuf-region-width-experiments-306-309-2026-08-23.tsv`](measurements/protobuf-region-width-experiments-306-309-2026-08-23.tsv) | all 630 warmup/retained ABBA observations for the printer and EPathMap width treatments, including both rejected matcher candidates (§5.33) |
+| [`measurements/protobuf-region-width-experiments-306-309-analysis-2026-08-23.json`](measurements/protobuf-region-width-experiments-306-309-analysis-2026-08-23.json) | locked protocol, source/binary hashes, confidence bounds, pgmcp identifiers/digests, causal profile counters, and equivalence/resource gates for experiments 306–309 (§5.33) |
 | [`measurements/spatial-matcher-heap-2026-08-04.tsv`](measurements/spatial-matcher-heap-2026-08-04.tsv) | matched matcher/control allocator, peak-heap, profiler-RSS, unprofiled-RSS, and runtime rows before `714d618c`, after it, and after the final singleton refinement `6f1412ee` (§5.16.4) |
 | [`measurements/e8b-native-pathmap-par-e6a-2026-08-04.tsv`](measurements/e8b-native-pathmap-par-e6a-2026-08-04.tsv) | the 51 submitted samples per arm, treatment phase splits, finalized digests, and locked E-8b decision metadata (§5.17.3) |
 | [`measurements/epathmap-canonical-worklist-2026-08-08.tsv`](measurements/epathmap-canonical-worklist-2026-08-08.tsv) | the SS-C12 quadratic predecessor, reproducible linear ladder, depth-20,000 worklist, malformed-gate allocator lifetime, and formal-equivalence aggregate (§5.19) |
@@ -10088,11 +10269,14 @@ manual doc-guideline gate (`mettail-rust`'s `docs/languages/validate.sh`, 17 mec
 accepting this file as a positional extra page):
 
 ```bash
-DOCLINT_DOI=on ../mettail-rust/docs/languages/validate.sh \
-  docs/design/stack-safety/stack-safety-report-2026-07-29.md
+DOCLINT_DOI=off ../mettail-rust/docs/languages/validate.sh \
+  docs/design/stack-safety/stack-safety-report-2026-07-29.md \
+  docs/consensus/consensus-change-register.md
 ```
 
-The run of record for this revision (2026-08-16) passes **16 of 17** mechanised checks with the
+The run of record for this revision (2026-08-23), SHA-256
+`82a355c1708648d8563ef0b5b691091c48246c4ff94288735818dca6a45ac9df`, passes **16 of 17**
+mechanised checks over both living reports with the
 network-dependent DOI-resolution check explicitly skipped (`DOCLINT_DOI=off`); the four
 editorially-judged guidelines are dispositioned in §E.3. This is a timestamped measurement, not a
 standing property — re-run the command after any edit, and do not count the skip as a pass.

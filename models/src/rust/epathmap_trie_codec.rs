@@ -178,6 +178,36 @@ struct CanonicalSnapshotFraming<'a> {
     value_bodies: Vec<Range<usize>>,
 }
 
+/// Constant-auxiliary-space routing information from the fixed EPM1 prefix.
+///
+/// This is deliberately *not* a canonicality proof. It skips the compact ACT
+/// arena by its declared byte length and reads the following map-value count;
+/// callers may use it only to decide whether a more specialized parser is
+/// worth attempting. Every accepted route must still pass the complete value
+/// framing and ACT topology validation in [`inspect_canonical_snapshot`] or
+/// [`inspect_canonical_snapshot_value_regions`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct EPathMapSnapshotRouteHint {
+    mode: EPathMapMode,
+    map_value_count: usize,
+}
+
+impl EPathMapSnapshotRouteHint {
+    #[inline]
+    pub(crate) const fn mode(self) -> EPathMapMode { self.mode }
+
+    #[inline]
+    pub(crate) const fn map_value_count(self) -> usize { self.map_value_count }
+}
+
+struct CanonicalSnapshotPrefix<'a> {
+    mode: EPathMapMode,
+    arena_start: usize,
+    arena: &'a [u8],
+    value_count: usize,
+    value_table_start: usize,
+}
+
 /// The PathMap-native, value-independent prefix of an `EPM1` snapshot.
 ///
 /// It contains the mode, compact ACTree03 arena, and value count. Map values
@@ -648,9 +678,9 @@ fn visit_canonical_value_paths(
     Ok(())
 }
 
-fn parse_canonical_snapshot_framing(
+fn parse_canonical_snapshot_prefix(
     bytes: &[u8],
-) -> Result<CanonicalSnapshotFraming<'_>, TrieCodecError> {
+) -> Result<CanonicalSnapshotPrefix<'_>, TrieCodecError> {
     let mut cursor = 0usize;
     if take(bytes, &mut cursor, EPM_MAGIC.len(), "EPM1 magic")? != EPM_MAGIC {
         return Err(TrieCodecError::new("invalid EPM1 magic"));
@@ -673,6 +703,42 @@ fn parse_canonical_snapshot_framing(
             "map value count {value_count} exceeds the {remaining}-byte payload lower bound"
         )));
     }
+
+    Ok(CanonicalSnapshotPrefix {
+        mode,
+        arena_start,
+        arena,
+        value_count,
+        value_table_start,
+    })
+}
+
+/// Peek only at the EPM1 prefix needed to select an implementation route.
+///
+/// No ACT node, key, map value, or proportional collection is traversed or
+/// materialized. A successful hint is therefore not validation; consumers
+/// selecting the hinted route must subsequently run the full canonical parser.
+pub(crate) fn snapshot_route_hint(
+    bytes: &[u8],
+) -> Result<EPathMapSnapshotRouteHint, TrieCodecError> {
+    let prefix = parse_canonical_snapshot_prefix(bytes)?;
+    Ok(EPathMapSnapshotRouteHint {
+        mode: prefix.mode,
+        map_value_count: prefix.value_count,
+    })
+}
+
+fn parse_canonical_snapshot_framing(
+    bytes: &[u8],
+) -> Result<CanonicalSnapshotFraming<'_>, TrieCodecError> {
+    let CanonicalSnapshotPrefix {
+        mode,
+        arena_start,
+        arena,
+        value_count,
+        value_table_start,
+    } = parse_canonical_snapshot_prefix(bytes)?;
+    let mut cursor = value_table_start;
     let mut value_bodies = Vec::with_capacity(value_count);
     for _ in 0..value_count {
         let len = read_len(bytes, &mut cursor, "map value length")?;
@@ -949,6 +1015,69 @@ mod tests {
             error.to_string(),
             "map value count 128 exceeds the 0-byte payload lower bound"
         );
+    }
+
+    #[test]
+    fn route_hint_reads_only_mode_and_map_cardinality_without_claiming_validation() {
+        let empty = encode(&EPathMapRepr::Empty);
+        let empty_hint = snapshot_route_hint(&empty).expect("empty EPM1 prefix");
+        assert_eq!(empty_hint.mode(), EPathMapMode::Empty);
+        assert_eq!(empty_hint.map_value_count(), 0);
+
+        let mut set = PathMap::new();
+        set.insert(b"a", ());
+        set.insert(b"b", ());
+        let set = encode(&EPathMapRepr::Set(set));
+        let set_hint = snapshot_route_hint(&set).expect("set EPM1 prefix");
+        assert_eq!(set_hint.mode(), EPathMapMode::Set);
+        assert_eq!(set_hint.map_value_count(), 0);
+
+        let mut singleton = PathMap::new();
+        singleton.insert(b"one", int(1));
+        let singleton = encode(&EPathMapRepr::Map(singleton));
+        let singleton_hint = snapshot_route_hint(&singleton).expect("singleton map EPM1 prefix");
+        assert_eq!(singleton_hint.mode(), EPathMapMode::Map);
+        assert_eq!(singleton_hint.map_value_count(), 1);
+
+        let mut wide = PathMap::new();
+        wide.insert(b"one", int(1));
+        wide.insert(b"two", int(2));
+        let wide = encode(&EPathMapRepr::Map(wide));
+        let wide_hint = snapshot_route_hint(&wide).expect("multi-value map EPM1 prefix");
+        assert_eq!(wide_hint.mode(), EPathMapMode::Map);
+        assert_eq!(wide_hint.map_value_count(), 2);
+
+        let malformed_act = [
+            b'E',
+            b'P',
+            b'M',
+            b'1',
+            EPM_VERSION,
+            EPathMapMode::Map as u8,
+            1,
+            0xff,
+            1,
+            0,
+        ];
+        let malformed_hint =
+            snapshot_route_hint(&malformed_act).expect("route hint does not validate ACT topology");
+        assert_eq!(malformed_hint.mode(), EPathMapMode::Map);
+        assert_eq!(malformed_hint.map_value_count(), 1);
+        assert!(inspect_canonical_snapshot_value_regions(&malformed_act).is_err());
+
+        assert!(snapshot_route_hint(b"EPM").is_err());
+        let impossible_count = [
+            b'E',
+            b'P',
+            b'M',
+            b'1',
+            EPM_VERSION,
+            EPathMapMode::Map as u8,
+            0,
+            0x80,
+            0x01,
+        ];
+        assert!(snapshot_route_hint(&impossible_count).is_err());
     }
 
     #[test]

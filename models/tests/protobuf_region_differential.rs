@@ -1,6 +1,10 @@
 mod par_corpus;
 
-use models::rhoapi::{Bundle, Connective, Expr, GUnforgeable, If, Match, New, Par, Receive, Send};
+use models::rhoapi::expr::ExprInstance;
+use models::rhoapi::{
+    Bundle, Connective, EList, EMap, Expr, GUnforgeable, If, KeyValuePair, Match, New, Par,
+    Receive, Send, Var,
+};
 use models::rust::par_bag::ParBagComponent;
 use models::rust::rholang::match_schema::RhoMatchProgram;
 use models::rust::rholang::match_schema_tables::{
@@ -122,6 +126,118 @@ fn present_empty_par_fields_remain_distinct_from_absence() {
         .expect("present-empty shell decodes");
     assert_eq!(shell.chan, Some(Par::default()));
     assert_eq!(shell.data, vec![Par::default()]);
+}
+
+#[test]
+fn compact_shell_omits_repeated_par_placeholders_but_retains_metadata() {
+    const WIDTH: usize = 4_096;
+    let expression = Expr {
+        expr_instance: Some(ExprInstance::EListBody(EList {
+            ps: (0..WIDTH)
+                .map(|value| par_corpus::gint(value as i64))
+                .collect(),
+            remainder: Some(Var::default()),
+            locally_free: vec![1, 3, 5],
+            connective_used: true,
+        })),
+    };
+    let encoded = protobuf_encoder::encode_to_vec(&expression);
+    let plan = cut_at_par(
+        ProtobufRegion::copy_from_slice(&encoded),
+        &EXPR_RHO_MATCH_PROGRAM,
+    )
+    .expect("wide EList region cuts");
+    assert_eq!(plan.cuts().len(), WIDTH);
+    assert_eq!(plan.reconstructed_bytes().as_ref(), encoded);
+
+    let shallow = models::rust::rholang::protobuf_decoder::decode_expr(plan.shallow_bytes())
+        .expect("placeholder-preserving shell decodes");
+    let compact = models::rust::rholang::protobuf_decoder::decode_expr(plan.compact_shell_bytes())
+        .expect("compact shell decodes");
+    let (Some(ExprInstance::EListBody(shallow)), Some(ExprInstance::EListBody(compact))) =
+        (shallow.expr_instance, compact.expr_instance)
+    else {
+        panic!("both shells must retain the EList oneof discriminant")
+    };
+    assert_eq!(shallow.ps.len(), WIDTH);
+    assert!(compact.ps.is_empty());
+    assert_eq!(compact.remainder, Some(Var::default()));
+    assert_eq!(compact.locally_free, vec![1, 3, 5]);
+    assert!(compact.connective_used);
+    assert!(plan.compact_shell_bytes().len() < plan.shallow_bytes().len());
+}
+
+#[test]
+fn compact_shell_elides_repeated_cut_only_message_envelopes() {
+    const ENTRIES: usize = 1_024;
+    let expression = Expr {
+        expr_instance: Some(ExprInstance::EMapBody(EMap {
+            kvs: (0..ENTRIES)
+                .map(|value| KeyValuePair {
+                    key: Some(par_corpus::gint(value as i64)),
+                    value: Some(par_corpus::gint(-(value as i64))),
+                })
+                .collect(),
+            remainder: Some(Var::default()),
+            locally_free: vec![2, 4],
+            connective_used: true,
+        })),
+    };
+    let encoded = protobuf_encoder::encode_to_vec(&expression);
+    let plan = cut_at_par(
+        ProtobufRegion::copy_from_slice(&encoded),
+        &EXPR_RHO_MATCH_PROGRAM,
+    )
+    .expect("wide EMap region cuts");
+    assert_eq!(plan.cuts().len(), ENTRIES * 2);
+    assert_eq!(plan.reconstructed_bytes().as_ref(), encoded);
+    let compact = models::rust::rholang::protobuf_decoder::decode_expr(plan.compact_shell_bytes())
+        .expect("compact map shell decodes");
+    let Some(ExprInstance::EMapBody(compact)) = compact.expr_instance else {
+        panic!("the compact shell must retain the EMap oneof discriminant")
+    };
+    assert!(compact.kvs.is_empty());
+    assert_eq!(compact.remainder, Some(Var::default()));
+    assert_eq!(compact.locally_free, vec![2, 4]);
+    assert!(compact.connective_used);
+}
+
+#[test]
+fn compact_shell_retains_genuinely_empty_repeated_messages() {
+    let valid = KeyValuePair {
+        key: Some(par_corpus::gint(1)),
+        value: Some(par_corpus::gint(2)),
+    };
+    for (case, kvs, expected_cuts) in [
+        ("sole empty entry", vec![KeyValuePair::default()], 0),
+        (
+            "trailing empty entry",
+            vec![valid.clone(), KeyValuePair::default()],
+            2,
+        ),
+    ] {
+        let expression = Expr {
+            expr_instance: Some(ExprInstance::EMapBody(EMap {
+                kvs,
+                ..Default::default()
+            })),
+        };
+        let encoded = protobuf_encoder::encode_to_vec(&expression);
+        let plan = cut_at_par(
+            ProtobufRegion::copy_from_slice(&encoded),
+            &EXPR_RHO_MATCH_PROGRAM,
+        )
+        .unwrap_or_else(|error| panic!("{case} cuts: {error}"));
+        assert_eq!(plan.cuts().len(), expected_cuts, "{case}");
+        assert_eq!(plan.reconstructed_bytes().as_ref(), encoded, "{case}");
+        let compact =
+            models::rust::rholang::protobuf_decoder::decode_expr(plan.compact_shell_bytes())
+                .unwrap_or_else(|error| panic!("{case} compact shell decodes: {error}"));
+        let Some(ExprInstance::EMapBody(compact)) = compact.expr_instance else {
+            panic!("{case} lost the EMap oneof discriminant")
+        };
+        assert_eq!(compact.kvs, vec![KeyValuePair::default()], "{case}");
+    }
 }
 
 #[test]

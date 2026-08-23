@@ -19,14 +19,18 @@ use models::rust::par_set_type_mapper::ParSetTypeMapper;
 use models::rust::pathmap_integration::render_cursor_position;
 use models::rust::rholang::match_schema::RhoMatchProgram;
 use models::rust::rholang::match_schema_tables::{
-    BUNDLE_RHO_MATCH_PROGRAM, CONNECTIVE_RHO_MATCH_PROGRAM, EXPR_RHO_MATCH_PROGRAM,
-    IF_RHO_MATCH_PROGRAM,
+    BUNDLE_RHO_MATCH_PROGRAM, CONNECTIVE_RHO_MATCH_PROGRAM, ELIST_RHO_MATCH_PROGRAM,
+    EMAP_RHO_MATCH_PROGRAM, EMETHOD_RHO_MATCH_PROGRAM, ESET_RHO_MATCH_PROGRAM,
+    ETUPLE_RHO_MATCH_PROGRAM, EXPR_RHO_MATCH_PROGRAM, IF_RHO_MATCH_PROGRAM,
+    KEYVALUEPAIR_RHO_MATCH_PROGRAM,
 };
 use models::rust::rholang::protobuf_cursor::{
     CanonicalByteRange, CanonicalParRegionIndex, CanonicalRegionDelimitedRun, ProtobufRegion,
 };
 use models::rust::rholang::protobuf_decoder;
-use models::rust::rholang::protobuf_region::cut_at_par;
+use models::rust::rholang::protobuf_region::{
+    cut_at_par, ProtobufCutPlan, ProtobufParCut, ProtobufRegionStep, ProtobufRegionStepKind,
+};
 use shared::rust::shared::printer::{Audience, Printer};
 use typed_arena::Arena;
 
@@ -1450,6 +1454,14 @@ mod drive {
             base_end: u128,
             dots: u128,
         },
+        /// One ordered sibling sequence with one shared separator. A wide
+        /// collection therefore owns one child-id buffer and one rope node,
+        /// rather than one separator allocation plus two concat nodes per
+        /// sibling.
+        Joined {
+            children: Box<[RenderId]>,
+            separator: RenderId,
+        },
         RepeatJoined {
             child: RenderId,
             separator: RenderId,
@@ -1501,16 +1513,32 @@ mod drive {
         }
 
         fn join(&mut self, parts: Vec<RenderId>, separator: &str) -> RenderId {
-            let mut parts = parts.into_iter();
-            let Some(mut result) = parts.next() else {
+            if parts.is_empty() {
                 return self.empty();
-            };
-            for part in parts {
-                let separator = self.text(separator);
-                result = self.concat(result, separator);
-                result = self.concat(result, part);
             }
-            result
+            if parts.len() == 1 {
+                return parts[0];
+            }
+            let separator = self.text(separator);
+            let separator_count = (parts.len() - 1) as u128;
+            let byte_len = parts
+                .iter()
+                .try_fold(0u128, |total, part| total.checked_add(self.len(*part)))
+                .and_then(|children| {
+                    self.len(separator)
+                        .checked_mul(separator_count)
+                        .and_then(|separators| children.checked_add(separators))
+                })
+                .expect("protobuf-length preflight bounds joined rendered output length");
+            let id = RenderId(self.nodes.len());
+            self.nodes.push(RenderNode {
+                byte_len,
+                kind: RenderKind::Joined {
+                    children: parts.into_boxed_slice(),
+                    separator,
+                },
+            });
+            id
         }
 
         fn repeat_joined(&mut self, child: RenderId, separator: RenderId, count: u64) -> RenderId {
@@ -1569,6 +1597,32 @@ mod drive {
                         } else {
                             return b'.';
                         }
+                    }
+                    RenderKind::Joined {
+                        children,
+                        separator,
+                    } => {
+                        let separator_len = self.len(*separator);
+                        let mut selected = None;
+                        for (child_index, child) in children.iter().enumerate() {
+                            let child_len = self.len(*child);
+                            if index < child_len {
+                                selected = Some((*child, index));
+                                break;
+                            }
+                            index -= child_len;
+                            if child_index + 1 != children.len() {
+                                if index < separator_len {
+                                    selected = Some((*separator, index));
+                                    break;
+                                }
+                                index -= separator_len;
+                            }
+                        }
+                        let (next, offset) =
+                            selected.expect("a joined byte offset lies in one child or separator");
+                        id = next;
+                        index = offset;
                     }
                     RenderKind::RepeatJoined {
                         child,
@@ -1701,6 +1755,11 @@ mod drive {
                     budget: u128,
                     first: bool,
                 },
+                Joined {
+                    joined: RenderId,
+                    child: usize,
+                    budget: u128,
+                },
             }
 
             let capacity = usize::try_from(self.len(root))
@@ -1771,6 +1830,19 @@ mod drive {
                             }
                             work.push(Piece::Node(*base, kept_base));
                         }
+                        RenderKind::Joined {
+                            children,
+                            separator,
+                        } => {
+                            if !children.is_empty() && budget != 0 {
+                                work.push(Piece::Joined {
+                                    joined: id,
+                                    child: 0,
+                                    budget,
+                                });
+                            }
+                            let _ = separator;
+                        }
                         RenderKind::RepeatJoined {
                             child,
                             separator,
@@ -1783,6 +1855,46 @@ mod drive {
                             first: true,
                         }),
                     },
+                    Piece::Joined {
+                        joined,
+                        child,
+                        budget,
+                    } => {
+                        let RenderKind::Joined {
+                            children,
+                            separator,
+                        } = &self.nodes[joined.0].kind
+                        else {
+                            unreachable!("a joined flatten frame references a non-join node")
+                        };
+                        if child >= children.len() || budget == 0 {
+                            continue;
+                        }
+                        let child_id = children[child];
+                        let child_budget = budget.min(self.len(child_id));
+                        let mut consumed = child_budget;
+                        let separator_budget = if child + 1 == children.len() {
+                            0
+                        } else {
+                            budget.saturating_sub(consumed).min(self.len(*separator))
+                        };
+                        consumed = consumed
+                            .checked_add(separator_budget)
+                            .expect("a joined render cannot consume more than its budget");
+                        if child + 1 < children.len() && budget > consumed {
+                            work.push(Piece::Joined {
+                                joined,
+                                child: child + 1,
+                                budget: budget - consumed,
+                            });
+                        }
+                        if separator_budget != 0 {
+                            work.push(Piece::Node(*separator, separator_budget));
+                        }
+                        if child_budget != 0 {
+                            work.push(Piece::Node(child_id, child_budget));
+                        }
+                    }
                 }
             }
             output
@@ -1860,6 +1972,37 @@ mod drive {
 
     struct EncodedParPlan {
         endpoints: Vec<EncodedEndpoint>,
+    }
+
+    #[derive(Clone, Copy)]
+    enum EncodedChildOrder {
+        Forward,
+        /// EMethod renders arguments before its target even though protobuf
+        /// stores the target field first.
+        MethodArgumentsThenTarget,
+    }
+
+    struct EncodedExprChildren {
+        cuts: Vec<ProtobufParCut>,
+        order: EncodedChildOrder,
+    }
+
+    impl EncodedExprChildren {
+        fn len(&self) -> usize { self.cuts.len() }
+
+        fn region(&self, execution_index: usize) -> &ProtobufRegion {
+            let cut_index = match self.order {
+                EncodedChildOrder::Forward => execution_index,
+                EncodedChildOrder::MethodArgumentsThenTarget => {
+                    if execution_index + 1 == self.cuts.len() {
+                        0
+                    } else {
+                        execution_index + 1
+                    }
+                }
+            };
+            self.cuts[cut_index].region()
+        }
     }
 
     /// Which entry point a lazily-projected [`PpWork::OptPar`] child feeds.
@@ -2052,6 +2195,12 @@ mod drive {
         /// ranges before the shallow shell is decoded.
         EncodedExpr(ProtobufRegion),
         EncodedComponent(EncodedFamily, ProtobufRegion, usize),
+        /// Execute one arena-owned cut sequence a child at a time. No region or
+        /// shared-backing handle is cloned merely to queue a wide collection.
+        EncodedChildren {
+            children: &'a EncodedExprChildren,
+            next: usize,
+        },
         /// A resident PathMap-backed `Par` whose protobuf length has already
         /// been checked. The public root uses this variant so an overflow is
         /// rejected before the drive allocates any traversal state.
@@ -2225,6 +2374,26 @@ mod drive {
             remainder: Option<Var>,
             entry_count: usize,
         },
+        EncodedUnaryK {
+            prefix: &'static str,
+        },
+        EncodedBinaryK {
+            op: &'static str,
+        },
+        EncodedMatchesK,
+        EncodedBracketedK {
+            remainder: Option<Var>,
+            open: &'static str,
+            close: &'static str,
+            child_count: usize,
+        },
+        EncodedTupleK {
+            child_count: usize,
+        },
+        EncodedMethodK {
+            method_name: String,
+            argument_count: usize,
+        },
         ResidentParOccurrenceK {
             plan: &'a EncodedParPlan,
             endpoint: usize,
@@ -2352,9 +2521,13 @@ mod drive {
         pub cut_field_visits: usize,
         pub distinct_endpoint_copies: usize,
         pub repeat_nodes: usize,
+        pub joined_nodes: usize,
         pub occurrence_renders: u64,
         pub render_nodes: usize,
         pub output_bytes: usize,
+        pub reconstructed_expr_bodies: usize,
+        pub max_work_items: usize,
+        pub max_value_items: usize,
     }
 
     #[cfg(not(test))]
@@ -2435,6 +2608,7 @@ mod drive {
         let decoded_entries = Arena::new();
         let decoded_components = Arena::new();
         let encoded_plans = Arena::new();
+        let encoded_expr_children = Arena::new();
         let mut stats = PrettyDriveStats::default();
         run_with_arena(
             pp,
@@ -2442,6 +2616,7 @@ mod drive {
             &decoded_entries,
             &decoded_components,
             &encoded_plans,
+            &encoded_expr_children,
             &mut stats,
             finish,
         )
@@ -2468,6 +2643,7 @@ mod drive {
         let decoded_entries = Arena::new();
         let decoded_components = Arena::new();
         let encoded_plans = Arena::new();
+        let encoded_expr_children = Arena::new();
         let rendered = run_with_arena(
             pp,
             PpWork::PreflightedPar {
@@ -2478,6 +2654,7 @@ mod drive {
             &decoded_entries,
             &decoded_components,
             &encoded_plans,
+            &encoded_expr_children,
             &mut stats,
             FinishPolicy::Capped,
         );
@@ -2492,6 +2669,7 @@ mod drive {
         let decoded_entries = Arena::new();
         let decoded_components = Arena::new();
         let encoded_plans = Arena::new();
+        let encoded_expr_children = Arena::new();
         let mut stats = PrettyDriveStats::default();
         let rendered = run_with_arena(
             pp,
@@ -2499,10 +2677,24 @@ mod drive {
             &decoded_entries,
             &decoded_components,
             &encoded_plans,
+            &encoded_expr_children,
             &mut stats,
             FinishPolicy::Capped,
         )?;
         Ok((rendered, stats))
+    }
+
+    #[cfg(test)]
+    pub(super) fn drive_encoded_expr_for_test(
+        pp: &mut PrettyPrinter,
+        expression: &Expr,
+    ) -> Result<String, InterpreterError> {
+        let bytes = models::rust::rholang::protobuf_encoder::encode_to_vec(expression);
+        run(
+            pp,
+            PpWork::EncodedExpr(ProtobufRegion::copy_from_slice(&bytes)),
+            FinishPolicy::Capped,
+        )
     }
 
     #[cfg(test)]
@@ -2514,6 +2706,7 @@ mod drive {
         let decoded_entries = Arena::new();
         let decoded_components = Arena::new();
         let encoded_plans = Arena::new();
+        let encoded_expr_children = Arena::new();
         let mut stats = PrettyDriveStats::default();
         let rendered = run_with_arena(
             pp,
@@ -2525,6 +2718,7 @@ mod drive {
             &decoded_entries,
             &decoded_components,
             &encoded_plans,
+            &encoded_expr_children,
             &mut stats,
             FinishPolicy::Capped,
         )?;
@@ -2537,6 +2731,7 @@ mod drive {
         decoded_entries: &'a Arena<Par>,
         decoded_components: &'a Arena<OwnedPpNode>,
         encoded_plans: &'a Arena<EncodedParPlan>,
+        encoded_expr_children: &'a Arena<EncodedExprChildren>,
         stats: &mut PrettyDriveStats,
         finish: FinishPolicy,
     ) -> Result<String, InterpreterError> {
@@ -2552,6 +2747,7 @@ mod drive {
                 decoded_entries,
                 decoded_components,
                 encoded_plans,
+                encoded_expr_children,
                 &mut work,
                 &mut vals,
                 &mut renders,
@@ -2571,6 +2767,11 @@ mod drive {
                     }
                     None => return Err(err),
                 }
+            }
+            #[cfg(test)]
+            {
+                stats.max_work_items = stats.max_work_items.max(work.len());
+                stats.max_value_items = stats.max_value_items.max(vals.len());
             }
         }
 
@@ -2595,6 +2796,11 @@ mod drive {
         #[cfg(test)]
         {
             stats.render_nodes = renders.nodes.len();
+            stats.joined_nodes = renders
+                .nodes
+                .iter()
+                .filter(|node| matches!(&node.kind, RenderKind::Joined { .. }))
+                .count();
             stats.output_bytes = rendered.len();
         }
         Ok(rendered)
@@ -2608,6 +2814,7 @@ mod drive {
         decoded_entries: &'a Arena<Par>,
         decoded_components: &'a Arena<OwnedPpNode>,
         encoded_plans: &'a Arena<EncodedParPlan>,
+        encoded_expr_children: &'a Arena<EncodedExprChildren>,
         work: &mut Vec<PpWork<'a>>,
         vals: &mut Vec<RenderId>,
         renders: &mut RenderArena,
@@ -2661,14 +2868,35 @@ mod drive {
                 descend_encoded_par(region, indent, work, stats)?;
             }
 
-            PpWork::EncodedExpr(region) => {
-                descend_encoded_expr(region, decoded_components, work, vals, renders, stats)?
-            }
+            PpWork::EncodedExpr(region) => descend_encoded_expr(
+                pp,
+                region,
+                decoded_components,
+                encoded_expr_children,
+                work,
+                vals,
+                renders,
+                stats,
+            )?,
 
             PpWork::EncodedComponent(family, region, indent) => {
                 let value = decode_component(family, &region)?;
                 let value = decoded_components.alloc(value);
                 work.push(PpWork::Node(value.as_node(), indent));
+            }
+
+            PpWork::EncodedChildren { children, next } => {
+                if next < children.len() {
+                    work.push(PpWork::EncodedChildren {
+                        children,
+                        next: next + 1,
+                    });
+                    push_catch(
+                        work,
+                        CatchKind::Message,
+                        PpWork::EncodedPar(children.region(next).clone(), 0),
+                    );
+                }
             }
 
             PpWork::PreflightedPar {
@@ -3731,6 +3959,13 @@ mod drive {
             .and_then(|n| n.checked_add(connectives.len()))
             .and_then(|n| n.checked_add(conditionals.len()))
             .expect("Par cardinality exceeds the addressable printer range");
+        if child_count == 0 {
+            // A cut protobuf `Par` can be the canonical empty message.  Its
+            // resident twin is `Par::default()`, which the printer renders as
+            // `Nil`; an empty join would incorrectly erase that child.
+            work.push(PpWork::Literal(String::from("Nil")));
+            return Ok(());
+        }
         work.push(PpWork::Combine(PpKont::EncodedParK {
             child_count,
             indent,
@@ -3801,12 +4036,117 @@ mod drive {
         Ok(())
     }
 
+    fn schema_field_tag(program: &RhoMatchProgram, name: &str) -> Option<u32> {
+        program
+            .fields
+            .iter()
+            .find(|field| field.name == name)
+            .map(|field| field.tag)
+    }
+
+    fn direct_cut_sequence(
+        plan: &ProtobufCutPlan,
+        owner: &RhoMatchProgram,
+        field_name: &str,
+    ) -> bool {
+        let Some(field_tag) = schema_field_tag(owner, field_name) else {
+            return false;
+        };
+        plan.cuts().iter().enumerate().all(|(cut, _region)| {
+            let occurrence = cut;
+            let Ok(occurrence) = u32::try_from(occurrence) else {
+                return false;
+            };
+            plan.cut_step_from_leaf(cut, 0)
+                == Some(ProtobufRegionStep {
+                    owner_type_id: owner.type_id,
+                    field_tag,
+                    occurrence,
+                    kind: ProtobufRegionStepKind::Message,
+                })
+        })
+    }
+
+    fn map_cut_sequence(plan: &ProtobufCutPlan) -> bool {
+        if plan.cuts().len() % 2 != 0 {
+            return false;
+        }
+        let Some(entries_tag) = schema_field_tag(&EMAP_RHO_MATCH_PROGRAM, "kvs") else {
+            return false;
+        };
+        let Some(key_tag) = schema_field_tag(&KEYVALUEPAIR_RHO_MATCH_PROGRAM, "key") else {
+            return false;
+        };
+        let Some(value_tag) = schema_field_tag(&KEYVALUEPAIR_RHO_MATCH_PROGRAM, "value") else {
+            return false;
+        };
+        (0..plan.cuts().len() / 2).all(|entry| {
+            let Ok(occurrence) = u32::try_from(entry) else {
+                return false;
+            };
+            let entry_step = ProtobufRegionStep {
+                owner_type_id: EMAP_RHO_MATCH_PROGRAM.type_id,
+                field_tag: entries_tag,
+                occurrence,
+                kind: ProtobufRegionStepKind::Message,
+            };
+            let key = entry * 2;
+            let value = key + 1;
+            plan.cut_step_from_leaf(key, 0)
+                == Some(ProtobufRegionStep {
+                    owner_type_id: KEYVALUEPAIR_RHO_MATCH_PROGRAM.type_id,
+                    field_tag: key_tag,
+                    occurrence: 0,
+                    kind: ProtobufRegionStepKind::Message,
+                })
+                && plan.cut_step_from_leaf(value, 0)
+                    == Some(ProtobufRegionStep {
+                        owner_type_id: KEYVALUEPAIR_RHO_MATCH_PROGRAM.type_id,
+                        field_tag: value_tag,
+                        occurrence: 0,
+                        kind: ProtobufRegionStepKind::Message,
+                    })
+                && plan.cut_step_from_leaf(key, 1) == Some(entry_step)
+                && plan.cut_step_from_leaf(value, 1) == Some(entry_step)
+        })
+    }
+
+    fn method_cut_sequence(plan: &ProtobufCutPlan) -> bool {
+        let Some(target_tag) = schema_field_tag(&EMETHOD_RHO_MATCH_PROGRAM, "target") else {
+            return false;
+        };
+        let Some(arguments_tag) = schema_field_tag(&EMETHOD_RHO_MATCH_PROGRAM, "arguments") else {
+            return false;
+        };
+        plan.cut_step_from_leaf(0, 0)
+            == Some(ProtobufRegionStep {
+                owner_type_id: EMETHOD_RHO_MATCH_PROGRAM.type_id,
+                field_tag: target_tag,
+                occurrence: 0,
+                kind: ProtobufRegionStepKind::Message,
+            })
+            && (1..plan.cuts().len()).all(|cut| {
+                let Ok(occurrence) = u32::try_from(cut - 1) else {
+                    return false;
+                };
+                plan.cut_step_from_leaf(cut, 0)
+                    == Some(ProtobufRegionStep {
+                        owner_type_id: EMETHOD_RHO_MATCH_PROGRAM.type_id,
+                        field_tag: arguments_tag,
+                        occurrence,
+                        kind: ProtobufRegionStepKind::Message,
+                    })
+            })
+    }
+
     fn descend_encoded_expr<'a>(
+        pp: &mut PrettyPrinter,
         region: ProtobufRegion,
         decoded_components: &'a Arena<OwnedPpNode>,
+        encoded_expr_children: &'a Arena<EncodedExprChildren>,
         work: &mut Vec<PpWork<'a>>,
-        _vals: &mut Vec<RenderId>,
-        _renders: &mut RenderArena,
+        vals: &mut Vec<RenderId>,
+        renders: &mut RenderArena,
         _stats: &mut PrettyDriveStats,
     ) -> Result<(), InterpreterError> {
         #[cfg(test)]
@@ -3822,65 +4162,158 @@ mod drive {
                 .checked_add(plan.stats().field_visits)
                 .expect("pretty-printer test counter overflow");
         }
-        let shell = protobuf_decoder::decode_expr(plan.shallow_bytes())
+        let shell = protobuf_decoder::decode_expr(plan.compact_shell_bytes())
             .map_err(|error| InterpreterError::DecodeError(error.to_string()))?;
-        match shell.expr_instance {
-            Some(ExprInstance::ESetBody(set)) => {
-                if plan.cuts().len() != set.ps.len() {
-                    return Err(InterpreterError::DecodeError(format!(
-                        "ESet protobuf cut count {} did not match {} shallow children",
-                        plan.cuts().len(),
-                        set.ps.len()
-                    )));
-                }
+        let cut_count = plan.cuts().len();
+
+        fn schedule<'a>(
+            plan: ProtobufCutPlan,
+            order: EncodedChildOrder,
+            arena: &'a Arena<EncodedExprChildren>,
+            work: &mut Vec<PpWork<'a>>,
+        ) {
+            let children = arena.alloc(EncodedExprChildren {
+                cuts: plan.into_cuts(),
+                order,
+            });
+            work.push(PpWork::EncodedChildren { children, next: 0 });
+        }
+
+        fn reconstruct<'a>(
+            plan: &ProtobufCutPlan,
+            decoded_components: &'a Arena<OwnedPpNode>,
+            work: &mut Vec<PpWork<'a>>,
+            _stats: &mut PrettyDriveStats,
+        ) -> Result<(), InterpreterError> {
+            #[cfg(test)]
+            {
+                _stats.reconstructed_expr_bodies += 1;
+            }
+            let expression = protobuf_decoder::decode_expr(plan.reconstructed_bytes())
+                .map_err(|error| InterpreterError::DecodeError(error.to_string()))?;
+            let value = decoded_components.alloc(OwnedPpNode::Expr(expression));
+            let PpNode::Expr(expression) = value.as_node() else {
+                unreachable!()
+            };
+            work.push(PpWork::ExprBody(expression));
+            Ok(())
+        }
+
+        match expr_plan(&shell) {
+            ExprPlan::Inline if cut_count == 0 => {
+                vals.push(renders.text(inline_expr(pp, &shell)?));
+            }
+            ExprPlan::Unary { prefix, .. } if cut_count == 1 => {
+                work.push(PpWork::Combine(PpKont::EncodedUnaryK { prefix }));
+                schedule(
+                    plan,
+                    EncodedChildOrder::Forward,
+                    encoded_expr_children,
+                    work,
+                );
+            }
+            ExprPlan::Binary { op, .. } if cut_count == 2 => {
+                work.push(PpWork::Combine(PpKont::EncodedBinaryK { op }));
+                schedule(
+                    plan,
+                    EncodedChildOrder::Forward,
+                    encoded_expr_children,
+                    work,
+                );
+            }
+            ExprPlan::Matches { .. } if cut_count == 2 => {
+                work.push(PpWork::Combine(PpKont::EncodedMatchesK));
+                schedule(
+                    plan,
+                    EncodedChildOrder::Forward,
+                    encoded_expr_children,
+                    work,
+                );
+            }
+            ExprPlan::Bracketed {
+                remainder,
+                open,
+                close,
+                ..
+            } if direct_cut_sequence(&plan, &ELIST_RHO_MATCH_PROGRAM, "ps") => {
+                work.push(PpWork::Combine(PpKont::EncodedBracketedK {
+                    remainder: remainder.clone(),
+                    open,
+                    close,
+                    child_count: cut_count,
+                }));
+                schedule(
+                    plan,
+                    EncodedChildOrder::Forward,
+                    encoded_expr_children,
+                    work,
+                );
+            }
+            ExprPlan::Set { set } if direct_cut_sequence(&plan, &ESET_RHO_MATCH_PROGRAM, "ps") => {
                 work.push(PpWork::Combine(PpKont::EncodedSetK {
-                    remainder: set.remainder,
-                    child_count: set.ps.len(),
+                    remainder: set.remainder.clone(),
+                    child_count: cut_count,
                 }));
-                for cut in plan.cuts().iter().rev() {
-                    push_catch(
-                        work,
-                        CatchKind::Message,
-                        PpWork::EncodedPar(cut.region().clone(), 0),
-                    );
-                }
+                schedule(
+                    plan,
+                    EncodedChildOrder::Forward,
+                    encoded_expr_children,
+                    work,
+                );
             }
-            Some(ExprInstance::EMapBody(map)) => {
-                let child_count = map
-                    .kvs
-                    .len()
-                    .checked_mul(2)
-                    .expect("an addressable map cannot overflow its child count");
-                if plan.cuts().len() != child_count {
-                    return Err(InterpreterError::DecodeError(format!(
-                        "EMap protobuf cut count {} did not match {} shallow children",
-                        plan.cuts().len(),
-                        child_count
-                    )));
-                }
+            ExprPlan::Map { map } if map.kvs.is_empty() && map_cut_sequence(&plan) => {
                 work.push(PpWork::Combine(PpKont::EncodedMapK {
-                    remainder: map.remainder,
-                    entry_count: map.kvs.len(),
+                    remainder: map.remainder.clone(),
+                    entry_count: cut_count / 2,
                 }));
-                for cut in plan.cuts().iter().rev() {
-                    push_catch(
-                        work,
-                        CatchKind::Message,
-                        PpWork::EncodedPar(cut.region().clone(), 0),
-                    );
-                }
+                schedule(
+                    plan,
+                    EncodedChildOrder::Forward,
+                    encoded_expr_children,
+                    work,
+                );
             }
-            _ => {
-                // Only Set/Map shells have a region-native printer arm today.
-                // Reconstruct every other Expr exactly, so its existing PDA
-                // sees the real Par children rather than the empty cut slots.
-                let expression = protobuf_decoder::decode_expr(plan.reconstructed_bytes())
-                    .map_err(|error| InterpreterError::DecodeError(error.to_string()))?;
-                let value = decoded_components.alloc(OwnedPpNode::Expr(expression));
-                let PpNode::Expr(expression) = value.as_node() else {
-                    unreachable!()
-                };
-                work.push(PpWork::ExprBody(expression));
+            ExprPlan::Tuple { .. }
+                if direct_cut_sequence(&plan, &ETUPLE_RHO_MATCH_PROGRAM, "ps") =>
+            {
+                work.push(PpWork::Combine(PpKont::EncodedTupleK {
+                    child_count: cut_count,
+                }));
+                schedule(
+                    plan,
+                    EncodedChildOrder::Forward,
+                    encoded_expr_children,
+                    work,
+                );
+            }
+            ExprPlan::Method { m } if cut_count != 0 && method_cut_sequence(&plan) => {
+                work.push(PpWork::Combine(PpKont::EncodedMethodK {
+                    method_name: m.method_name.clone(),
+                    argument_count: cut_count - 1,
+                }));
+                schedule(
+                    plan,
+                    EncodedChildOrder::MethodArgumentsThenTarget,
+                    encoded_expr_children,
+                    work,
+                );
+            }
+            // EPathMap and zipper shells require their native key/cursor plans,
+            // and malformed required-child layouts must preserve the legacy
+            // panic/fallback position. They take the exact reconstructed path;
+            // ordinary recursive Exprs never do.
+            ExprPlan::PathMap { .. }
+            | ExprPlan::Zipper { .. }
+            | ExprPlan::Inline
+            | ExprPlan::Unary { .. }
+            | ExprPlan::Binary { .. }
+            | ExprPlan::Matches { .. }
+            | ExprPlan::Bracketed { .. }
+            | ExprPlan::Set { .. }
+            | ExprPlan::Map { .. }
+            | ExprPlan::Tuple { .. }
+            | ExprPlan::Method { .. } => {
+                reconstruct(&plan, decoded_components, work, _stats)?;
             }
         }
         Ok(())
@@ -4709,39 +5142,36 @@ mod drive {
             PpKont::ExprK { expr } => combine_expr(pp, expr, vals, renders),
 
             PpKont::SetK { set, child_count } => {
-                let elements = take_strings(renders, vals, child_count).join(", ");
+                let elements = renders.join(take(vals, child_count), ", ");
                 let remainder = &set.remainder;
-                let remainder_string = pp.build_remainder_string(remainder);
-                let rendered = if remainder.is_some() && !elements.is_empty() {
-                    format!("Set({}{})", elements, remainder_string)
-                } else if remainder.is_some() {
-                    format!("Set({})", remainder_string)
-                } else {
-                    format!("Set({})", elements)
-                };
-                vals.push(renders.text(rendered));
+                let open = renders.text("Set(");
+                let mut rendered = renders.concat(open, elements);
+                let remainder = renders.text(pp.build_remainder_string(remainder));
+                rendered = renders.concat(rendered, remainder);
+                let close = renders.text(")");
+                vals.push(renders.concat(rendered, close));
             }
 
             PpKont::MapK { map, entry_count } => {
-                let rendered = take_strings(
-                    renders,
+                let children = take(
                     vals,
                     entry_count
                         .checked_mul(2)
                         .expect("an addressable map cannot overflow its child count"),
                 );
-                let mut result = String::from("{");
-                for (index, pair) in rendered.chunks_exact(2).enumerate() {
-                    if index != 0 {
-                        result.push_str(", ");
-                    }
-                    result.push_str(&pair[0]);
-                    result.push_str(" : ");
-                    result.push_str(&pair[1]);
+                let mut entries = Vec::with_capacity(entry_count);
+                for pair in children.chunks_exact(2) {
+                    let separator = renders.text(" : ");
+                    let entry = renders.concat(pair[0], separator);
+                    entries.push(renders.concat(entry, pair[1]));
                 }
-                result.push_str(&pp.build_remainder_string(&map.remainder));
-                result.push('}');
-                vals.push(renders.text(result));
+                let entries = renders.join(entries, ", ");
+                let open = renders.text("{");
+                let mut rendered = renders.concat(open, entries);
+                let remainder = renders.text(pp.build_remainder_string(&map.remainder));
+                rendered = renders.concat(rendered, remainder);
+                let close = renders.text("}");
+                vals.push(renders.concat(rendered, close));
             }
 
             PpKont::EncodedSetK {
@@ -4773,36 +5203,82 @@ mod drive {
                 let child_count = entry_count
                     .checked_mul(2)
                     .expect("an addressable map cannot overflow its child count");
-                let open = renders.text("{");
-                let mut rendered = open;
-                if entry_count == 1 {
-                    let value = one(vals);
-                    let key = one(vals);
-                    rendered = renders.concat(rendered, key);
+                let children = take(vals, child_count);
+                let mut entries = Vec::with_capacity(entry_count);
+                for pair in children.chunks_exact(2) {
                     let separator = renders.text(" : ");
-                    rendered = renders.concat(rendered, separator);
-                    rendered = renders.concat(rendered, value);
-                } else {
-                    let children = take(vals, child_count);
-                    let mut children = children.into_iter();
-                    for index in 0..entry_count {
-                        if index != 0 {
-                            let separator = renders.text(", ");
-                            rendered = renders.concat(rendered, separator);
-                        }
-                        let key = children.next().expect("map key render");
-                        let value = children.next().expect("map value render");
-                        rendered = renders.concat(rendered, key);
-                        let separator = renders.text(" : ");
-                        rendered = renders.concat(rendered, separator);
-                        rendered = renders.concat(rendered, value);
-                    }
+                    let entry = renders.concat(pair[0], separator);
+                    entries.push(renders.concat(entry, pair[1]));
                 }
+                let entries = renders.join(entries, ", ");
+                let open = renders.text("{");
+                let mut rendered = renders.concat(open, entries);
                 let remainder = renders.text(pp.build_remainder_string(&remainder));
                 rendered = renders.concat(rendered, remainder);
                 let close = renders.text("}");
                 rendered = renders.concat(rendered, close);
                 vals.push(rendered);
+            }
+
+            PpKont::EncodedUnaryK { prefix } => {
+                let child = renders.wrap_with_braces(one(vals));
+                let prefix = renders.text(prefix);
+                vals.push(renders.concat(prefix, child));
+            }
+
+            PpKont::EncodedBinaryK { op } => {
+                let right = renders.wrap_with_braces(one(vals));
+                let left = one(vals);
+                let operator = renders.text(format!(" {} ", op));
+                let rendered = renders.concat(left, operator);
+                vals.push(renders.concat(rendered, right));
+            }
+
+            PpKont::EncodedMatchesK => {
+                let pattern = one(vals);
+                let target = one(vals);
+                let separator = renders.text(" matches ");
+                let rendered = renders.concat(target, separator);
+                let rendered = renders.concat(rendered, pattern);
+                vals.push(renders.wrap_with_braces(rendered));
+            }
+
+            PpKont::EncodedBracketedK {
+                remainder,
+                open,
+                close,
+                child_count,
+            } => {
+                let elements = renders.join(take(vals, child_count), ", ");
+                let open = renders.text(open);
+                let close = renders.text(close);
+                let mut rendered = renders.concat(open, elements);
+                let remainder = renders.text(pp.build_remainder_string(&remainder));
+                rendered = renders.concat(rendered, remainder);
+                vals.push(renders.concat(rendered, close));
+            }
+
+            PpKont::EncodedTupleK { child_count } => {
+                let elements = renders.join(take(vals, child_count), ", ");
+                let open = renders.text("(");
+                let close = renders.text(")");
+                let rendered = renders.concat(open, elements);
+                vals.push(renders.concat(rendered, close));
+            }
+
+            PpKont::EncodedMethodK {
+                method_name,
+                argument_count,
+            } => {
+                let target = one(vals);
+                let arguments = renders.join(take(vals, argument_count), ", ");
+                let open = renders.text("(");
+                let target = renders.concat(open, target);
+                let middle = renders.text(format!(").{}(", method_name));
+                let rendered = renders.concat(target, middle);
+                let rendered = renders.concat(rendered, arguments);
+                let close = renders.text(")");
+                vals.push(renders.concat(rendered, close));
             }
 
             #[cfg(test)]
@@ -4827,30 +5303,25 @@ mod drive {
                 .checked_mul(2)
                 .expect("an addressable EPathMap cannot overflow its child count"),
         };
-        let rendered = take_strings(renders, vals, child_count);
+        let rendered = take(vals, child_count);
         let elements = match pathmap.mode() {
-            EPathMapMode::Empty | EPathMapMode::Set => rendered.join(", "),
+            EPathMapMode::Empty | EPathMapMode::Set => renders.join(rendered, ", "),
             EPathMapMode::Map => {
-                let mut result = String::new();
-                for (index, pair) in rendered.chunks_exact(2).enumerate() {
-                    if index != 0 {
-                        result.push_str(", ");
-                    }
-                    result.push_str(&pair[0]);
-                    result.push_str(" : ");
-                    result.push_str(&pair[1]);
+                let mut entries = Vec::with_capacity(pathmap.len());
+                for pair in rendered.chunks_exact(2) {
+                    let separator = renders.text(" : ");
+                    let entry = renders.concat(pair[0], separator);
+                    entries.push(renders.concat(entry, pair[1]));
                 }
-                result
+                renders.join(entries, ", ")
             }
         };
-        let remainder_string = pp.build_remainder_string(&pathmap.remainder);
-        if pathmap.remainder.is_some() && !elements.is_empty() {
-            renders.text(format!("{{|{}{}|}}", elements, remainder_string))
-        } else if pathmap.remainder.is_some() {
-            renders.text(format!("{{|{}|}}", remainder_string))
-        } else {
-            renders.text(format!("{{|{}|}}", elements))
-        }
+        let open = renders.text("{|");
+        let mut rendered = renders.concat(open, elements);
+        let remainder = renders.text(pp.build_remainder_string(&pathmap.remainder));
+        rendered = renders.concat(rendered, remainder);
+        let close = renders.text("|}");
+        renders.concat(rendered, close)
     }
 
     fn combine_expr(
@@ -4896,18 +5367,15 @@ mod drive {
                 open,
                 close,
             } => {
-                let elements = take_strings(renders, vals, ps.len()).join(", ");
+                let elements = renders.join(take(vals, ps.len()), ", ");
                 // ⚠ Reads `free_shift` / `bound_shift` AFTER the elements have
                 // been rendered — which is where the recursive form reads them.
-                let remainder_string = pp.build_remainder_string(remainder);
-                let full_result = if remainder.is_some() && !elements.is_empty() {
-                    format!("{}{}{}{}", open, elements, remainder_string, close)
-                } else if remainder.is_some() {
-                    format!("{}{}{}", open, remainder_string, close)
-                } else {
-                    format!("{}{}{}", open, elements, close)
-                };
-                vals.push(renders.text(full_result));
+                let open = renders.text(open);
+                let mut rendered = renders.concat(open, elements);
+                let remainder = renders.text(pp.build_remainder_string(remainder));
+                rendered = renders.concat(rendered, remainder);
+                let close = renders.text(close);
+                vals.push(renders.concat(rendered, close));
             }
 
             ExprPlan::PathMap { pathmap } => {
@@ -4938,19 +5406,23 @@ mod drive {
             }
 
             ExprPlan::Tuple { ps } => {
-                let elements = take_strings(renders, vals, ps.len()).join(", ");
-                vals.push(renders.text(format!("({})", elements)));
+                let elements = renders.join(take(vals, ps.len()), ", ");
+                let open = renders.text("(");
+                let rendered = renders.concat(open, elements);
+                let close = renders.text(")");
+                vals.push(renders.concat(rendered, close));
             }
 
             ExprPlan::Method { m } => {
-                let target = one_string(renders, vals);
-                let args = take_strings(renders, vals, m.arguments.len());
-                vals.push(renders.text(format!(
-                    "({}).{}({})",
-                    target,
-                    m.method_name,
-                    args.join(", ")
-                )));
+                let target = one(vals);
+                let arguments = renders.join(take(vals, m.arguments.len()), ", ");
+                let open = renders.text("(");
+                let target = renders.concat(open, target);
+                let middle = renders.text(format!(").{}(", m.method_name));
+                let rendered = renders.concat(target, middle);
+                let rendered = renders.concat(rendered, arguments);
+                let close = renders.text(")");
+                vals.push(renders.concat(rendered, close));
             }
         }
     }
@@ -6332,6 +6804,76 @@ mod differential {
         assert!(map_stats.render_nodes <= DEPTH * 16 + 32);
         assert_eq!(map_stats.output_bytes, map_rendered.len());
         assert!(map_stats.root_protobuf_bytes > map_rendered.len());
+    }
+
+    #[test]
+    fn wide_list_moves_cut_storage_and_builds_one_joined_rope() {
+        const WIDTH: usize = 4_096;
+        let list = expr_par(ExprInstance::EListBody(EList {
+            ps: (0..WIDTH).map(|value| gint(value as i64)).collect(),
+            locally_free: Vec::new(),
+            connective_used: false,
+            remainder: None,
+        }));
+
+        let mut driven = PrettyPrinter::new();
+        let (rendered, stats) = super::drive::drive_message_stats(&mut driven, &list)
+            .expect("the compact-shell wide-list render");
+        let mut oracle = PrettyPrinter::new();
+        assert_eq!(rendered, oracle.oracle_build_string_from_message(&list));
+        assert_eq!(rendered.matches(", ").count() + 1, WIDTH);
+        assert_eq!(stats.root_protobuf_buffers, 1);
+        assert_eq!(stats.distinct_endpoint_copies, 1);
+        assert_eq!(stats.encoded_pars, WIDTH + 1);
+        assert_eq!(stats.encoded_exprs, WIDTH + 1);
+        assert_eq!(stats.reconstructed_expr_bodies, 0);
+        assert_eq!(stats.joined_nodes, 1);
+        assert!(stats.cut_field_visits <= WIDTH * 4 + 16, "{stats:?}");
+        assert!(stats.render_nodes <= WIDTH + 16, "{stats:?}");
+        assert!(stats.max_work_items < 32, "{stats:?}");
+        assert_eq!(stats.max_value_items, WIDTH);
+        assert_eq!(stats.output_bytes, rendered.len());
+
+        models::rust::rholang::par_children::dismantle(list);
+    }
+
+    fn assert_empty_map_entry_disposition(case: &str, kvs: Vec<KeyValuePair>) {
+        let expression = Expr {
+            expr_instance: Some(ExprInstance::EMapBody(EMap {
+                kvs,
+                ..Default::default()
+            })),
+        };
+        let driven = quietly(|| {
+            super::drive::drive_encoded_expr_for_test(&mut PrettyPrinter::new(), &expression)
+                .expect("a canonical encoded Expr should not produce a decode error")
+        });
+        let oracle = quietly(|| PrettyPrinter::new().oracle_build_string_from_expr(&expression));
+        assert_eq!(driven, oracle, "{case}: encoded route and oracle diverged");
+        assert_eq!(
+            driven,
+            Err(String::from("KeyValuePair.key")),
+            "{case}: a present empty entry no longer takes the legacy required-field panic"
+        );
+    }
+
+    #[test]
+    fn encoded_map_with_a_sole_empty_entry_preserves_oracle_disposition() {
+        assert_empty_map_entry_disposition(
+            "sole empty KeyValuePair",
+            vec![KeyValuePair::default()],
+        );
+    }
+
+    #[test]
+    fn encoded_map_with_a_trailing_empty_entry_preserves_oracle_disposition() {
+        assert_empty_map_entry_disposition("trailing empty KeyValuePair", vec![
+            KeyValuePair {
+                key: Some(gint(1)),
+                value: Some(gint(2)),
+            },
+            KeyValuePair::default(),
+        ]);
     }
 
     #[test]
