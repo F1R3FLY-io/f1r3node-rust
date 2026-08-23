@@ -114,16 +114,27 @@ pub(crate) fn guard_deferral(
 /// this node's restore, not about the block.
 ///
 /// Each condition closes a distinct attack; see the truth-table test.
+///
+/// `seq_below_senders_latest` requires the block's sequence number to sit
+/// strictly below the sender's current latest message. Genuine settled
+/// stragglers always do — settled history predates the anchor's
+/// justification frontier — while a block at-or-above that frontier is
+/// live-chain material wearing a sub-anchor height (the CI run 32588262605
+/// pollution shape: shared validator keys, foreign seq 40 against a live
+/// seq-5 head). A sender with no latest message fails the condition and
+/// takes the judged path, which defers safely.
 pub(crate) fn admit_as_settled(
     block_number: i64,
     approved_block_number: i64,
     solicited_by_bonded: bool,
     budget_remaining: bool,
+    seq_below_senders_latest: bool,
 ) -> bool {
     approved_block_number > 0
         && block_number <= approved_block_number
         && solicited_by_bonded
         && budget_remaining
+        && seq_below_senders_latest
 }
 
 /// Classify a validation outcome for post-processing.
@@ -1171,10 +1182,9 @@ impl<T: TransportLayer + Send + Sync> BlockProcessorDependencies<T> {
     /// whether the block was admitted; a `false` sends it down the ordinary
     /// judged path.
     ///
-    /// Insertion cannot regress consensus state: the DAG's latest-message
-    /// update is sequence-monotone, so an old block never moves a validator's
-    /// latest message backward, and every verdict channel is untouched because
-    /// the block never enters validation.
+    /// Insertion cannot touch consensus state: `InsertMode::SettledHistory`
+    /// leaves latest messages exactly as they were, and every verdict channel
+    /// is untouched because the block never enters validation.
     pub async fn try_admit_settled(
         &self,
         casper: Arc<dyn Casper + Send + Sync + 'static>,
@@ -1187,18 +1197,29 @@ impl<T: TransportLayer + Send + Sync> BlockProcessorDependencies<T> {
             .get_approved_block()
             .map(|approved| proto_util::block_number(approved))?;
         let admitted_so_far = self.settled_admissions.load(Ordering::Relaxed);
+        let seq_below_senders_latest = {
+            let representation = self.block_dag_storage.get_representation()?;
+            match representation.latest_message_hash(&block.sender) {
+                Some(latest_hash) => match representation.lookup(&latest_hash)? {
+                    Some(latest_meta) => block.seq_num < latest_meta.sequence_number,
+                    None => false,
+                },
+                None => false,
+            }
+        };
         if !admit_as_settled(
             proto_util::block_number(block),
             approved_block_number,
             true,
             admitted_so_far < SETTLED_ADMISSION_BUDGET,
+            seq_below_senders_latest,
         ) {
             return Ok(false);
         }
 
         self.block_dag_storage.insert(
             block,
-            block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Normal,
+            block_storage::rust::dag::block_dag_key_value_storage::InsertMode::SettledHistory,
         )?;
         let admitted = self.settled_admissions.fetch_add(1, Ordering::Relaxed) + 1;
         if admitted == SETTLED_ADMISSION_BUDGET / 2 {
@@ -1435,32 +1456,39 @@ mod tests {
     ///     (an unbonded attacker's citations open nothing);
     ///   - only within budget (a staked attacker buys bounded, alarmed storage,
     ///     never unbounded growth — past the budget the node degrades to
-    ///     today's deferral, loudly).
+    ///     today's deferral, loudly);
+    ///   - only seq-strictly-below the sender's latest message (settled
+    ///     history predates the anchor's justification frontier; a higher
+    ///     seq is live-chain material wearing a sub-anchor height).
     #[test]
-    fn settled_history_admission_has_four_conditions() {
+    fn settled_history_admission_has_five_conditions() {
         assert!(
-            admit_as_settled(9, 87, true, true),
+            admit_as_settled(9, 87, true, true, true),
             "a below-anchor block solicited by a bonded citer on a truncated node is settled history"
         );
         assert!(
-            admit_as_settled(87, 87, true, true),
+            admit_as_settled(87, 87, true, true, true),
             "the anchor's own height is inside the settled cut"
         );
         assert!(
-            !admit_as_settled(88, 87, true, true),
+            !admit_as_settled(88, 87, true, true, true),
             "above the anchor is live consensus and must be judged"
         );
         assert!(
-            !admit_as_settled(9, 0, true, true),
+            !admit_as_settled(9, 0, true, true, true),
             "a genesis-rooted node judges everything — same discriminator as guard_deferral"
         );
         assert!(
-            !admit_as_settled(9, 87, false, true),
+            !admit_as_settled(9, 87, false, true, true),
             "a citation from an unbonded sender opens no door"
         );
         assert!(
-            !admit_as_settled(9, 87, true, false),
+            !admit_as_settled(9, 87, true, false, true),
             "budget exhausted falls back to deferral, never silent growth"
+        );
+        assert!(
+            !admit_as_settled(9, 87, true, true, false),
+            "a seq at-or-above the sender's latest message is not settled history"
         );
     }
 

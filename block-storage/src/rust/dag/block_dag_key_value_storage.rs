@@ -83,6 +83,13 @@ pub enum InsertMode {
     /// Genesis / approved-block insertion. Marks the block as the
     /// initial finalization root.
     Approved,
+    /// Settled-history insertion: a hash-checked, unjudged block below the
+    /// node's sync anchor, admitted the way LFS restore admitted its
+    /// neighbours. Identical to `Normal` except that latest messages are
+    /// untouched — settled history predates the anchor's justification
+    /// frontier, so it is never anyone's latest message, and letting it
+    /// advance one hands fork choice a frontier this node does not hold.
+    SettledHistory,
 }
 
 // Phase 8 (A-6): `InsertMode::flags()` projection deleted; `insert_internal`
@@ -1073,6 +1080,7 @@ impl BlockDagKeyValueStorage {
         // shim survived a Phase-4 transition; it is no longer needed.
         let invalid = matches!(mode, InsertMode::Invalid);
         let approved = matches!(mode, InsertMode::Approved);
+        let settled_history = matches!(mode, InsertMode::SettledHistory);
         let sender_is_empty = block.sender.is_empty();
         let sender_has_invalid_format =
             !sender_is_empty && (block.sender.len() != validator::LENGTH);
@@ -1263,39 +1271,44 @@ impl BlockDagKeyValueStorage {
                     .put_one(block_hash.clone().into(), block_metadata)?;
             }
 
-            let new_latest_from_sender = if !sender_is_empty {
-                // Add LM either if there is no existing message for the sender, or if sequence number advances
-                // - assumes block sender is not valid hash
-                if match self
-                    .latest_messages_index
-                    .get_one(&block.sender.clone().into())
-                {
-                    Ok(Some(latest_message_hash)) => {
-                        let block_metadata_index_guard = self.block_metadata_index.read();
-                        match block_metadata_index_guard.get(&latest_message_hash.into()) {
-                            Ok(Some(metadata)) => block.seq_num >= metadata.sequence_number,
-                            _ => true,
+            // Settled-history blocks never touch latest messages: neither the
+            // sender advance below, nor the newly-bonded seeding above —
+            // a sub-anchor block's bond set is stale testimony.
+            if !settled_history {
+                let new_latest_from_sender = if !sender_is_empty {
+                    // Add LM either if there is no existing message for the sender, or if sequence number advances
+                    // - assumes block sender is not valid hash
+                    if match self
+                        .latest_messages_index
+                        .get_one(&block.sender.clone().into())
+                    {
+                        Ok(Some(latest_message_hash)) => {
+                            let block_metadata_index_guard = self.block_metadata_index.read();
+                            match block_metadata_index_guard.get(&latest_message_hash.into()) {
+                                Ok(Some(metadata)) => block.seq_num >= metadata.sequence_number,
+                                _ => true,
+                            }
                         }
+                        _ => true,
+                    } {
+                        HashMap::from([senders_new_lm])
+                    } else {
+                        HashMap::new()
                     }
-                    _ => true,
-                } {
-                    HashMap::from([senders_new_lm])
                 } else {
                     HashMap::new()
-                }
-            } else {
-                HashMap::new()
-            };
+                };
 
-            let mut new_latest_to_add = new_latest_messages()?;
-            new_latest_to_add.extend(new_latest_from_sender);
+                let mut new_latest_to_add = new_latest_messages()?;
+                new_latest_to_add.extend(new_latest_from_sender);
 
-            self.latest_messages_index.put(
-                new_latest_to_add
-                    .into_iter()
-                    .map(|(k, v)| (k.into(), v.into()))
-                    .collect(),
-            )?;
+                self.latest_messages_index.put(
+                    new_latest_to_add
+                        .into_iter()
+                        .map(|(k, v)| (k.into(), v.into()))
+                        .collect(),
+                )?;
+            }
 
             if approved {
                 let mut block_metadata_guard = self.block_metadata_index.write();

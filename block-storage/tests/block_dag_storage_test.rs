@@ -7,10 +7,10 @@ use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStora
 use models::rust::block_hash::BlockHash;
 use models::rust::block_implicits::{
     block_element_gen, block_elements_with_parents_gen, block_hash_gen, block_with_new_hashes_gen,
-    get_random_block, validator_gen,
+    get_random_block, get_random_block_default, validator_gen,
 };
 use models::rust::block_metadata::BlockMetadata;
-use models::rust::casper::protocol::casper_message::BlockMessage;
+use models::rust::casper::protocol::casper_message::{BlockMessage, Bond};
 use models::rust::equivocation_record::EquivocationRecord;
 use models::rust::validator::Validator;
 use once_cell::sync::Lazy;
@@ -641,6 +641,85 @@ fn dag_storage_keeps_latest_message_when_an_older_block_arrives() {
         dag.latest_message_hash(&newer.sender),
         Some(newer.block_hash.clone()),
         "an old block arriving late must not regress its sender's latest message"
+    );
+}
+
+/// A `SettledHistory` insert leaves latest messages untouched entirely: the
+/// sender's slot does not advance even for a HIGHER sequence number (the
+/// cross-shard pollution shape — a foreign block wearing a shared validator
+/// key), and the block's bond set seeds no newly-bonded slots (a sub-anchor
+/// bond set is stale testimony).
+#[test]
+fn dag_storage_settled_history_insert_never_touches_latest_messages() {
+    let genesis = genesis_block();
+    let dag_storage = RUNTIME.block_on(create_dag_storage(&genesis));
+
+    let live_head = get_random_block(
+        Some(39),
+        Some(5),
+        None,
+        None,
+        None,
+        None,
+        None,
+        Some(vec![genesis.block_hash.clone()]),
+        None,
+        None,
+        None,
+        Some(vec![]),
+        None,
+        None,
+    );
+    dag_storage
+        .insert(
+            &live_head,
+            block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Normal,
+        )
+        .unwrap();
+
+    let unseen_validator = get_random_block_default().sender;
+    let settled = get_random_block(
+        Some(6),
+        Some(live_head.seq_num + 35),
+        None,
+        None,
+        Some(live_head.sender.clone()),
+        None,
+        None,
+        Some(vec![genesis.block_hash.clone()]),
+        None,
+        None,
+        None,
+        Some(vec![Bond {
+            validator: unseen_validator.clone(),
+            stake: 100,
+        }]),
+        None,
+        None,
+    );
+    dag_storage
+        .insert(
+            &settled,
+            block_storage::rust::dag::block_dag_key_value_storage::InsertMode::SettledHistory,
+        )
+        .unwrap();
+
+    let dag = dag_storage
+        .get_representation()
+        .expect("dag representation");
+    assert!(
+        dag.contains(&settled.block_hash),
+        "the settled block itself must be in the DAG"
+    );
+    assert_eq!(
+        dag.latest_message_hash(&live_head.sender),
+        Some(live_head.block_hash.clone()),
+        "a settled-history insert must not advance its sender's latest message"
+    );
+    assert_eq!(
+        dag.latest_message_hash(&unseen_validator),
+        None,
+        "a settled-history insert must not seed newly-bonded latest-message slots"
     );
 }
 
