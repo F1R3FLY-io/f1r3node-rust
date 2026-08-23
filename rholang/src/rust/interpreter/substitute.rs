@@ -321,6 +321,44 @@ impl SubstituteTrait<Par> for Substitute {
         depth: i32,
         env: &Env<Par>,
     ) -> Result<Par, InterpreterError> {
+        // Canonical-path-stable Pars contain no variable, binder, remainder,
+        // or mutable root metadata.  The same exact grammar therefore proves
+        // both substitution and canonical sorting are identities for every
+        // environment and depth.  Return the owned input before the region
+        // cutter/ParConstruction PDA copies its recursive protobuf body.
+        //
+        // Do not substitute `reducer_eval_identity` here: that deliberately
+        // admits process-only Pars because eval_expr ignores their families,
+        // whereas substitution must traverse them.
+        if models::rust::pathmap_crate_type_mapper::substitution_identity(&term) {
+            return Ok(term);
+        }
+        self.substitute_par_no_sort_unchecked(term, depth, env)
+    }
+
+    fn substitute(&self, term: Par, depth: i32, env: &Env<Par>) -> Result<Par, InterpreterError> {
+        // Check once at the sorted entry. Calling `substitute_no_sort` here
+        // would repeat the byte classifier on an uncached near miss.
+        if models::rust::pathmap_crate_type_mapper::substitution_identity(&term) {
+            return Ok(term);
+        }
+        let unsorted = self.substitute_par_no_sort_unchecked(term, depth, env)?;
+        let sorted = ParSortMatcher::sort_match(&unsorted).term;
+        dismantle(unsorted);
+        Ok(sorted)
+    }
+}
+
+impl Substitute {
+    /// Complete Par substitution after the root identity certificate has
+    /// returned false. Keeping this boundary private prevents the sorted
+    /// entry point from evaluating the certificate twice.
+    fn substitute_par_no_sort_unchecked(
+        &self,
+        term: Par,
+        depth: i32,
+        env: &Env<Par>,
+    ) -> Result<Par, InterpreterError> {
         // `SubWork::Par` carries an `Option` so that a missing required child
         // raises `unwrap_option_safe`'s error in position; the root is always
         // present.
@@ -328,20 +366,6 @@ impl SubstituteTrait<Par> for Substitute {
             SubVal::Par(p) => Ok(p),
             _ => unreachable!("Par::substitute_no_sort: the drive produced a non-Par"),
         }
-    }
-
-    /// Substitute, then sort into canonical form.
-    ///
-    /// ⚠ See the macro above for why the un-sorted intermediate is released
-    /// iteratively. This is the instance the measurement came from: after
-    /// Stage C-2 the sorted entry point's slope was 437 B/level (debug) /
-    /// 140 (release), and `drop_in_place::<Par>` measures 470 / 219 — the
-    /// residual *was* the teardown of `unsorted`, nothing else.
-    fn substitute(&self, term: Par, depth: i32, env: &Env<Par>) -> Result<Par, InterpreterError> {
-        let unsorted = self.substitute_no_sort(term, depth, env)?;
-        let sorted = ParSortMatcher::sort_match(&unsorted).term;
-        dismantle(unsorted);
-        Ok(sorted)
     }
 }
 

@@ -47,9 +47,49 @@ pub fn reducer_eval_identity_epathmap(e_pathmap: &EPathMap) -> bool {
 /// only the expression family. Both checks are independent of the environment
 /// and require no semantic projection of the PathMap-backed component bag.
 #[inline]
-pub fn reducer_eval_identity(par: &Par) -> bool {
-    reducer_eval_identity_par(par, eval_stable_par(par))
+pub fn reducer_eval_identity(par: &Par) -> bool { reducer_eval_identity_class(par).is_some() }
+
+/// The proof carried by a reducer-identity result.
+///
+/// Both variants certify byte-identical `eval_expr` output, but only
+/// [`StableGround`](Self::StableGround) also proves that the structural
+/// locally-free fold is empty.  Keeping that distinction in the type prevents
+/// the evaluator from accidentally trusting root metadata on a reflected
+/// process merely because it has no top-level expression.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReducerEvalIdentityClass {
+    StableGround,
+    ExpressionFree,
 }
+
+/// Classify a complete `Par` whose reducer evaluation is the identity and
+/// retain the strongest proof the PathMap-backed representation provides.
+///
+/// The stable-ground check is first because an empty-expression `GPrivate`
+/// singleton belongs to the codec grammar and carries the stronger empty-fold
+/// proof.  The `ParBag` memoizes that verdict in its CoW-shared auxiliary root.
+#[inline]
+pub fn reducer_eval_identity_class(par: &Par) -> Option<ReducerEvalIdentityClass> {
+    if eval_stable_par(par) {
+        Some(ReducerEvalIdentityClass::StableGround)
+    } else if reducer_eval_identity_par(par, false) {
+        Some(ReducerEvalIdentityClass::ExpressionFree)
+    } else {
+        None
+    }
+}
+
+/// Certify that substitution and the following canonical sort are both the
+/// identity for this complete `Par`, independently of environment and depth.
+///
+/// This deliberately exposes the canonical-path ground grammar rather than
+/// [`reducer_eval_identity`].  The reducer may preserve a process-only `Par`
+/// because `eval_expr` ignores process families; substitution must descend
+/// into those same families and therefore cannot use that broader proof.
+/// Resident `ParBag` values memoize this exact verdict in their CoW-shared
+/// stability cell, so an admitted value reaches this boundary in O(1).
+#[inline]
+pub fn substitution_identity(par: &Par) -> bool { eval_stable_par(par) }
 
 /// A sufficient, byte-exact certificate for one EPathMap key or value.
 ///

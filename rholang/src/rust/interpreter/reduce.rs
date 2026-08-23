@@ -508,6 +508,15 @@ impl EvPar {
             structural_locally_free: None,
         }
     }
+
+    /// Retain a structural locally-free result already proved by the boundary
+    /// that admitted this resident value.
+    fn resident_with_structural_locally_free(value: Par, structural_locally_free: Vec<u8>) -> Self {
+        Self {
+            storage: EvParStorage::Resident(value),
+            structural_locally_free: Some(structural_locally_free),
+        }
+    }
 }
 
 /// An `Expr` produced by the evaluator. A planned expression is represented by
@@ -2834,9 +2843,28 @@ impl DebruijnInterpreter {
         // PathMap root directly instead of decoding and rebuilding a certified
         // normal form through the PDA. A false certificate always falls through
         // to the complete evaluating path below.
-        if models::rust::pathmap_crate_type_mapper::reducer_eval_identity(par) {
-            vals.push(EvVal::Par(EvPar::resident(par.clone())));
-            return Ok(());
+        use models::rust::pathmap_crate_type_mapper::ReducerEvalIdentityClass;
+        match models::rust::pathmap_crate_type_mapper::reducer_eval_identity_class(par) {
+            Some(ReducerEvalIdentityClass::StableGround) => {
+                // The canonical-path grammar proves more than reducer
+                // identity: every concrete component's structural
+                // locally-free fold is empty. Carry that proof with the
+                // resident CoW root so a parent Join/collection never decodes
+                // its recursive protobuf body merely to rediscover `[]`.
+                vals.push(EvVal::Par(EvPar::resident_with_structural_locally_free(
+                    par.clone(),
+                    Vec::new(),
+                )));
+                return Ok(());
+            }
+            Some(ReducerEvalIdentityClass::ExpressionFree) => {
+                // Evaluation ignores a process-only Par, but a structural
+                // parent must still recompute the component fold rather than
+                // trust arbitrary root metadata.
+                vals.push(EvVal::Par(EvPar::resident(par.clone())));
+                return Ok(());
+            }
+            None => {}
         }
         let expressions = decoded_exprs.alloc_extend(par.decode_occurrences::<Expr>());
         work.push(EvWork::Combine(EvKont::Join {
@@ -3584,9 +3612,47 @@ impl DebruijnInterpreter {
     ) -> Result<(), InterpreterError> {
         match k {
             EvKont::Join { par, n } => {
-                let children = ev_pop_n_par(vals, n);
+                let mut children = ev_pop_n_par(vals, n);
                 let mut shell = par.clone();
                 shell.replace_exprs(Vec::new());
+
+                // `eval_expr` is a Bag fold: the expression-free shell is its
+                // left operand and each evaluated expression is joined into
+                // it. For exactly one resident child and an additive-zero
+                // component shell, retain the child's PathMap root instead of
+                // importing its complete RPB3 endpoint into a transient
+                // construction arena and rebuilding the same root. The child
+                // is already the completed result of its nested `EEval`; this
+                // is component-Bag algebra, not an EVar semantic shortcut.
+                //
+                // Root metadata is not part of the Bag identity, so merge it
+                // in the same child-then-shell order as the recursive
+                // `concatenate_pars(shell, child) == child.parallel(shell)`.
+                // The separately carried structural fold remains the child's
+                // existing proof: an empty component shell contributes no
+                // structural locally-free bits even when its wire-authoritative
+                // root summary is non-empty.
+                if n == 1
+                    && shell.components_is_empty()
+                    && matches!(&children[0].storage, EvParStorage::Resident(_))
+                {
+                    let child = children.pop().expect("one Join child was checked");
+                    let structural_locally_free = child.structural_locally_free;
+                    if let EvParStorage::Resident(mut value) = child.storage {
+                        let connective_used = value.connective_used() || shell.connective_used();
+                        let child_locally_free = value.take_locally_free();
+                        let shell_locally_free = shell.take_locally_free();
+                        value.replace_locally_free(union(child_locally_free, shell_locally_free));
+                        value.replace_connective_used(connective_used);
+                        vals.push(EvVal::Par(EvPar {
+                            storage: EvParStorage::Resident(value),
+                            structural_locally_free,
+                        }));
+                        return Ok(());
+                    }
+                    unreachable!("the sole Join child was checked as resident")
+                }
+
                 let mut structural_locally_free = self.computed_locally_free_par(&shell);
                 let mut result = construction.import_par(&shell)?;
                 for child in children {
@@ -9859,7 +9925,7 @@ mod differential_trampoline {
         TaggedContinuation,
     };
     use models::rust::pathmap_integration::par_to_path;
-    use models::rust::utils::{new_gbool_par, new_gint_par, new_gstring_par};
+    use models::rust::utils::{new_boundvar_par, new_gbool_par, new_gint_par, new_gstring_par};
     use proptest::prelude::*;
     use rspace_plus_plus::rspace::rspace::RSpace;
 
@@ -10052,11 +10118,9 @@ mod differential_trampoline {
 
     /// Evaluate `term` through BOTH paths (fresh reducer/budget each) and assert
     /// byte-identical result + identical charge trace + identical total cost.
-    async fn assert_agree(term: &Par) {
-        let env: Env<Par> = Env::new();
-
+    async fn assert_agree_in_env(term: &Par, env: &Env<Par>) {
         let r_rec = build().await;
-        let res_rec = r_rec.eval_expr_recursive(term, &env);
+        let res_rec = r_rec.eval_expr_recursive(term, env);
         let (charges_rec, total_rec) = charge_trace(&r_rec);
         let stable_hash_bytes_rec = res_rec
             .as_ref()
@@ -10072,7 +10136,7 @@ mod differential_trampoline {
         };
 
         let r_tr = build().await;
-        let res_tr = r_tr.eval_expr(term, &env);
+        let res_tr = r_tr.eval_expr(term, env);
         let (charges_tr, total_tr) = charge_trace(&r_tr);
         let stable_hash_bytes_tr = res_tr
             .as_ref()
@@ -10092,6 +10156,64 @@ mod differential_trampoline {
             "TRAMPOLINE DIVERGENCE on term {:?}\n recursive={:?}\n trampoline={:?}",
             term, trace_rec, trace_tr
         );
+    }
+
+    async fn assert_agree(term: &Par) { assert_agree_in_env(term, &Env::new()).await; }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn sole_resident_join_preserves_pathmap_root_and_recursive_semantics() {
+        // A deliberately non-canonical root summary proves that the shortcut
+        // executes the historical root `union`/OR formulas instead of
+        // replacing them with the child's neutral metadata. The recursive
+        // oracle remains shallow so this is a semantic/charge differential,
+        // not a contest with the stack-unsafe reference implementation.
+        let mut source = new_boundvar_par(0, Vec::new(), false);
+        source.replace_locally_free(vec![1, 0, 0]);
+        source.replace_connective_used(true);
+        let shallow_binding = Par::wrap_unary_elist(4, new_gint_par(7, Vec::new(), false))
+            .expect("shallow stable binding");
+        assert_agree_in_env(&source, &Env::new().put(shallow_binding)).await;
+
+        // Anti-vacuity/performance witness: on a 256 KiB stack the production
+        // drive resolves and re-evaluates the full depth, returns the expected
+        // wire value, and retains the exact authoritative PathMap/aux root.
+        // The pre-repair Join reimported the resident child and failed the CoW
+        // assertion even when it survived this depth.
+        const DEPTH: usize = 8_192;
+        let binding = Par::wrap_unary_elist(DEPTH, new_gint_par(7, Vec::new(), false))
+            .expect("deep stable binding");
+        assert_eq!(
+            models::rust::pathmap_crate_type_mapper::reducer_eval_identity_class(&binding),
+            Some(models::rust::pathmap_crate_type_mapper::ReducerEvalIdentityClass::StableGround)
+        );
+        let storage_witness = binding.clone();
+        let mut expected = binding.clone();
+        let binding_locally_free = expected.take_locally_free();
+        expected.replace_locally_free(union(binding_locally_free, source.locally_free().to_vec()));
+        expected.replace_connective_used(expected.connective_used() || source.connective_used());
+
+        let reducer = build().await;
+        let actual = std::thread::Builder::new()
+            .name("stable-resident-neutral-join".to_owned())
+            .stack_size(256 * 1024)
+            .spawn(move || reducer.eval_expr(&source, &Env::new().put(binding)))
+            .expect("spawn fixed-stack evaluator")
+            .join()
+            .expect("fixed-stack evaluator did not panic")
+            .expect("bound stable value evaluates");
+
+        assert_eq!(actual.encode_to_vec(), expected.encode_to_vec());
+        assert_eq!(
+            models::rust::rholang::bincode_encoder::encode(&actual),
+            models::rust::rholang::bincode_encoder::encode(&expected)
+        );
+        assert!(
+            actual
+                .components()
+                .shares_storage_with(storage_witness.components()),
+            "the additive-zero Join must retain the resident PathMap root"
+        );
+        assert_eq!(actual.family_cardinality::<Expr>(), 1);
     }
 
     // ---- hand-written arm coverage (incl. error paths) ----

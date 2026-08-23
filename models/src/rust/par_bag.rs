@@ -41,7 +41,13 @@ use crate::rhoapi::expr::ExprInstance;
 use crate::rhoapi::g_unforgeable::UnfInstance;
 use crate::rhoapi::var::VarInstance;
 use crate::rhoapi::{Bundle, Connective, Expr, GUnforgeable, If, Match, New, Par, Receive, Send};
+use crate::rust::rholang::match_schema::RhoMatchFieldKind;
+use crate::rust::rholang::match_schema_tables::{
+    PAR_PROTOBUF_REGION_PROGRAM, SEND_RHO_MATCH_PROGRAM,
+};
+use crate::rust::rholang::protobuf_cursor::ProtobufRegion;
 use crate::rust::rholang::protobuf_encoder;
+use crate::rust::rholang::protobuf_region::{cut_at_par, ProtobufRegionStepKind};
 use crate::rust::rholang::protobuf_schema::{ProtobufDescent, ProtobufNode, ProtobufWireType};
 use crate::rust::rholang::protobuf_schema_tables::expr_instance_protobuf_kind_by_tag;
 use crate::rust::rholang::sorter::bundle_sort_matcher::BundleSortMatcher;
@@ -231,14 +237,128 @@ fn if_semantic_shape_is_complete(value: &If) -> bool {
 
 fn connective_semantic_shape_is_complete(_value: &Connective) -> bool { true }
 
-impl_par_bag_component!(
-    Send,
-    Send,
-    SendSortMatcher,
-    decode_send,
-    decode_send_deferred_epathmap_validation,
-    send_semantic_shape_is_complete
-);
+fn resident_send_par_field_tags() -> Option<(u32, u32)> {
+    let mut chan = None;
+    let mut data = None;
+    for field in SEND_RHO_MATCH_PROGRAM.fields {
+        match field.kind {
+            RhoMatchFieldKind::OptionalMessage(type_id)
+                if type_id == PAR_PROTOBUF_REGION_PROGRAM.type_id && chan.is_none() =>
+            {
+                chan = Some(field.tag);
+            }
+            RhoMatchFieldKind::MessageSequence(type_id)
+                if type_id == PAR_PROTOBUF_REGION_PROGRAM.type_id && data.is_none() =>
+            {
+                data = Some(field.tag);
+            }
+            RhoMatchFieldKind::OptionalMessage(type_id)
+            | RhoMatchFieldKind::MessageSequence(type_id)
+                if type_id == PAR_PROTOBUF_REGION_PROGRAM.type_id =>
+            {
+                return None;
+            }
+            _ => {}
+        }
+    }
+    Some((chan?, data?))
+}
+
+fn decode_resident_send_projection(payload: &[u8]) -> Option<Result<Send, prost::DecodeError>> {
+    let (chan_tag, data_tag) = resident_send_par_field_tags()?;
+    let plan = cut_at_par(
+        ProtobufRegion::copy_from_slice(payload),
+        &SEND_RHO_MATCH_PROGRAM,
+    )
+    .ok()?;
+    let mut chan_count = 0usize;
+    let mut data_count = 0usize;
+    for index in 0..plan.cuts().len() {
+        let step = plan.cut_step_from_leaf(index, 0)?;
+        if step.owner_type_id != SEND_RHO_MATCH_PROGRAM.type_id
+            || step.kind != ProtobufRegionStepKind::Message
+            || plan.cut_step_from_leaf(index, 1).is_some()
+        {
+            return None;
+        }
+        if step.field_tag == chan_tag {
+            chan_count = chan_count.checked_add(1)?;
+        } else if step.field_tag == data_tag {
+            data_count = data_count.checked_add(1)?;
+        } else {
+            return None;
+        }
+    }
+    if chan_count > 1 {
+        return None;
+    }
+
+    Some((|| {
+        let mut send =
+            crate::rust::rholang::protobuf_decoder::decode_send_deferred_epathmap_validation(
+                plan.compact_shell_bytes(),
+            )?;
+        send.chan = None;
+        send.data = Vec::with_capacity(data_count);
+        for index in 0..plan.cuts().len() {
+            let step = plan
+                .cut_step_from_leaf(index, 0)
+                .expect("the complete resident Send cut topology was checked");
+            let cut = plan
+                .cuts()
+                .get(index)
+                .expect("the checked resident Send cut index remains present");
+            let child =
+                crate::rust::rholang::protobuf_decoder::decode_par_deferred_epathmap_validation(
+                    cut.region().as_bytes(),
+                )
+                .map_err(|mut error| {
+                    error.push(
+                        SEND_RHO_MATCH_PROGRAM.type_name,
+                        if step.field_tag == chan_tag {
+                            "chan"
+                        } else {
+                            "data"
+                        },
+                    );
+                    error
+                })?;
+            if step.field_tag == chan_tag {
+                send.chan = Some(child);
+            } else {
+                send.data.push(child);
+            }
+        }
+        Ok(send)
+    })())
+}
+
+fn decode_resident_send(payload: &[u8]) -> Result<Send, prost::DecodeError> {
+    decode_resident_send_projection(payload).unwrap_or_else(|| {
+        crate::rust::rholang::protobuf_decoder::decode_send_deferred_epathmap_validation(payload)
+    })
+}
+
+impl sealed::Sealed for Send {}
+impl ParBagComponent for Send {
+    const TAG: ParComponentTag = ParComponentTag::Send;
+
+    fn canonicalize(value: &Self) -> ScoredTerm<Self> {
+        <SendSortMatcher as Sortable<Send>>::sort_match(value)
+    }
+
+    fn semantic_shape_is_complete(value: &Self) -> bool { send_semantic_shape_is_complete(value) }
+
+    fn decode_protobuf(payload: &[u8]) -> Result<Self, prost::DecodeError> {
+        crate::rust::rholang::protobuf_decoder::decode_send(payload)
+    }
+
+    fn decode_protobuf_deferred_epathmap_validation(
+        payload: &[u8],
+    ) -> Result<Self, prost::DecodeError> {
+        decode_resident_send(payload)
+    }
+}
 impl_par_bag_component!(
     Receive,
     Receive,
@@ -5049,6 +5169,10 @@ impl<'de> Deserialize<'de> for ParBag {
         Self::try_from_bag(components).map_err(serde::de::Error::custom)
     }
 }
+
+#[cfg(test)]
+#[path = "../../tests/support/resident_send_projection.rs"]
+mod resident_send_projection_tests;
 
 #[cfg(test)]
 mod fast_key_tests {
