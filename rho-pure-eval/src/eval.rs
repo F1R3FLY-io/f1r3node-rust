@@ -9,7 +9,6 @@ use models::rhoapi::{
 };
 #[cfg(test)]
 use models::rust::par_bag::ParBagVisitError;
-use models::rust::par_bag::ParComponentItem;
 #[cfg(test)]
 use models::rust::par_construction::ParConstruction;
 use models::rust::rholang::drive::{drive, Outcome, Step, Traversal};
@@ -17,6 +16,7 @@ use models::rust::rholang::drive::{drive, Outcome, Step, Traversal};
 use crate::decidable::{decode_encoded_enot_terminal, EncodedEnotTerminal};
 use crate::env::Env;
 use crate::error::EvalError;
+use crate::nan::par_contains_nan_double;
 use crate::oracle::{NoSpatialMatch, SpatialMatch};
 
 /// Evaluates the `exprs` slot of a Par against the given environment.
@@ -401,105 +401,13 @@ fn eq_binop_recursive(
     let lhs = eval_with_recursive(&require_par(p1)?, env, matcher)?;
     let rhs = eval_with_recursive(&require_par(p2)?, env, matcher)?;
     // IEEE 754: any comparison involving NaN is false (so == is false and
-    // != is true). Mirrors `par_contains_nan_double` in the full reducer.
+    // != is true). The full reducer calls this same shared predicate.
     let eq = if par_contains_nan_double(&lhs) || par_contains_nan_double(&rhs) {
         false
     } else {
         lhs == rhs
     };
     Ok(par_with_bool(if expect_eq { eq } else { !eq }))
-}
-
-fn par_contains_nan_double(par: &Par) -> bool {
-    use models::rhoapi::expr::ExprInstance::{EListBody, EMapBody, ESetBody, ETupleBody, GDouble};
-
-    // Keep borrowed and owned work in homogeneous stacks. A single mixed enum
-    // would be as wide as `Expr` (currently 504 bytes) even for borrowed
-    // entries; boxing each PathMap-decoded endpoint would instead add an
-    // allocation per distinct expression. Four contiguous stacks avoid both
-    // costs, and visitation order is unobservable for this pure predicate.
-    let mut borrowed_pars = vec![par];
-    let mut owned_pars = Vec::<Par>::new();
-    let mut borrowed_exprs = Vec::<&Expr>::new();
-    let mut owned_exprs = Vec::<Expr>::new();
-
-    loop {
-        if let Some(expr) = borrowed_exprs.pop() {
-            match expr.expr_instance.as_ref() {
-                Some(GDouble(bits)) if f64::from_bits(*bits).is_nan() => return true,
-                Some(EListBody(list)) => {
-                    borrowed_pars.extend(list.ps.iter());
-                }
-                Some(ETupleBody(tuple)) => {
-                    borrowed_pars.extend(tuple.ps.iter());
-                }
-                Some(ESetBody(set)) => {
-                    borrowed_pars.extend(set.ps.iter());
-                }
-                Some(EMapBody(map)) => {
-                    for pair in &map.kvs {
-                        if let Some(key) = pair.key.as_ref() {
-                            borrowed_pars.push(key);
-                        }
-                        if let Some(value) = pair.value.as_ref() {
-                            borrowed_pars.push(value);
-                        }
-                    }
-                }
-                _ => {}
-            }
-            continue;
-        }
-
-        if let Some(par) = borrowed_pars.pop() {
-            par.try_visit_components::<Expr, std::convert::Infallible>(|expr, _multiplicity| {
-                match expr {
-                    ParComponentItem::Borrowed(expr) => borrowed_exprs.push(expr),
-                    ParComponentItem::Owned(expr) => owned_exprs.push(expr),
-                }
-                Ok(())
-            })
-            .expect("Par invariant: expression endpoints are canonical");
-            continue;
-        }
-
-        if let Some(expr) = owned_exprs.pop() {
-            match expr.expr_instance {
-                Some(GDouble(bits)) if f64::from_bits(bits).is_nan() => return true,
-                Some(EListBody(list)) => {
-                    owned_pars.extend(list.ps);
-                }
-                Some(ETupleBody(tuple)) => {
-                    owned_pars.extend(tuple.ps);
-                }
-                Some(ESetBody(set)) => {
-                    owned_pars.extend(set.ps);
-                }
-                Some(EMapBody(map)) => {
-                    for pair in map.kvs {
-                        if let Some(key) = pair.key {
-                            owned_pars.push(key);
-                        }
-                        if let Some(value) = pair.value {
-                            owned_pars.push(value);
-                        }
-                    }
-                }
-                _ => {}
-            }
-            continue;
-        }
-
-        let Some(par) = owned_pars.pop() else {
-            break;
-        };
-        par.try_into_components::<Expr, std::convert::Infallible>(|expr, _multiplicity| {
-            owned_exprs.push(expr);
-            Ok(())
-        })
-        .expect("Par invariant: expression endpoints are canonical");
-    }
-    false
 }
 
 #[cfg(test)]
@@ -1061,7 +969,7 @@ fn combine_bool(
 
 fn combine_eq(expect_eq: bool, lhs: Par, rhs: Par) -> Result<Par, EvalError> {
     // IEEE 754: any comparison involving NaN is false (so == is false and
-    // != is true). Mirrors `par_contains_nan_double` in the full reducer.
+    // != is true). The full reducer calls this same shared predicate.
     let eq = if par_contains_nan_double(&lhs) || par_contains_nan_double(&rhs) {
         false
     } else {

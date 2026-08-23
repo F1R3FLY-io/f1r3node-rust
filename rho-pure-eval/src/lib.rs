@@ -42,6 +42,7 @@ mod decidable;
 mod env;
 mod error;
 mod eval;
+mod nan;
 mod oracle;
 
 pub use decidable::{
@@ -50,6 +51,7 @@ pub use decidable::{
 pub use env::Env;
 pub use error::EvalError;
 pub use eval::{eval, eval_with};
+pub use nan::par_contains_nan_double;
 pub use oracle::{NoSpatialMatch, SpatialMatch};
 
 #[cfg(test)]

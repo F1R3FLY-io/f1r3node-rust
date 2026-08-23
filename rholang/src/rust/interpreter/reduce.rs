@@ -41,6 +41,7 @@ use models::rust::utils::{
     new_elist_par, new_emap_par, new_gint_expr, new_gint_par, new_gstring_par, union,
 };
 use prost::Message;
+use rho_pure_eval::par_contains_nan_double;
 use rspace_plus_plus::rspace::logging::ReductionKind;
 use rspace_plus_plus::rspace::merger::merging_logic::MergeType;
 use rspace_plus_plus::rspace::util::unpack_option_with_peek;
@@ -2909,6 +2910,37 @@ impl DebruijnInterpreter {
     }
 
     // eval_single_expr.
+    fn decode_single_expr<'e>(
+        p: &Par,
+        decoded_exprs: &'e Arena<Expr>,
+        cardinality_error: &'static str,
+    ) -> Result<&'e Expr, InterpreterError> {
+        // Purity precedes arity deliberately: an Expr endpoint at a saturated
+        // multiplicity plus one foreign endpoint is still a parallel value,
+        // not merely a multiple-expression value.
+        if !p.all_components_are::<Expr>() {
+            return Err(InterpreterError::ReduceError(String::from(
+                "Error: parallel or non expression found where expression expected.",
+            )));
+        }
+        // `decode_occurrences` expands logical multiplicity. Reject every
+        // non-singleton count before decoding so one compressed endpoint at
+        // `u64::MAX` remains constant-space rather than attempting that many
+        // Vec pushes. Cardinality one proves there is exactly one endpoint
+        // with multiplicity one, so the prefix cursor decodes it once.
+        if p.family_cardinality::<Expr>() != 1 {
+            return Err(InterpreterError::ReduceError(String::from(
+                cardinality_error,
+            )));
+        }
+        let expression = p
+            .first::<Expr>()
+            .expect("resident Par Expr endpoints are canonical")
+            .expect("Expr cardinality one has exactly one endpoint")
+            .0;
+        Ok(decoded_exprs.alloc(expression))
+    }
+
     fn descend_single<'e>(
         &self,
         p: &'e Par,
@@ -2926,22 +2958,11 @@ impl DebruijnInterpreter {
             work.push(EvWork::ESingle(decoded_entries.alloc(reentry.terminal)));
             return Ok(());
         }
-        if !p.all_components_are::<Expr>() {
-            return Err(InterpreterError::ReduceError(String::from(
-                "Error: parallel or non expression found where expression expected.",
-            )));
-        }
-        let expressions = decoded_exprs.alloc_extend(p.decode_occurrences::<Expr>());
-        match expressions {
-            [e] => {
-                // The EToExpr value IS the eval_single_expr result (identity).
-                work.push(EvWork::EToExpr(e));
-                Ok(())
-            }
-            _ => Err(InterpreterError::ReduceError(
-                "Error: Multiple expressions given.".to_string(),
-            )),
-        }
+        let expression =
+            Self::decode_single_expr(p, decoded_exprs, "Error: Multiple expressions given.")?;
+        // The EToExpr value IS the eval_single_expr result (identity).
+        work.push(EvWork::EToExpr(expression));
+        Ok(())
     }
 
     /// Return the method's historical *second-pass* operand schedule.  An
@@ -3081,34 +3102,27 @@ impl DebruijnInterpreter {
         work: &mut Vec<EvWork<'e>>,
         vals: &mut Vec<EvVal>,
     ) -> Result<(), InterpreterError> {
-        if !p.all_components_are::<Expr>() {
-            return Err(InterpreterError::ReduceError(String::from(
-                "Error: parallel or non expression found where expression expected.",
-            )));
-        }
-        let expressions = decoded_exprs.alloc_extend(p.decode_occurrences::<Expr>());
-        match expressions {
-            [Expr {
+        let expression =
+            Self::decode_single_expr(p, decoded_exprs, "Error: Multiple expressions given.")?;
+        match expression {
+            Expr {
                 expr_instance: Some(ExprInstance::GBool(b)),
-            }] => {
+            } => {
                 vals.push(EvVal::Bool(*b));
                 Ok(())
             }
-            [Expr {
+            Expr {
                 expr_instance: Some(ExprInstance::EVarBody(EVar { v })),
-            }] => {
+            } => {
                 let pv = self.eval_var(&unwrap_option_safe(v.clone())?, env)?;
                 work.push(EvWork::EBool(decoded_entries.alloc(pv)));
                 Ok(())
             }
-            [e] => {
+            e => {
                 work.push(EvWork::Combine(EvKont::BoolExtract));
                 work.push(EvWork::EToExpr(e));
                 Ok(())
             }
-            _ => Err(InterpreterError::ReduceError(
-                "Error: Multiple expressions given.".to_string(),
-            )),
         }
     }
 
@@ -3122,34 +3136,30 @@ impl DebruijnInterpreter {
         work: &mut Vec<EvWork<'e>>,
         vals: &mut Vec<EvVal>,
     ) -> Result<(), InterpreterError> {
-        if !p.all_components_are::<Expr>() {
-            return Err(InterpreterError::ReduceError(String::from(
-                "Error: parallel or non expression found where expression expected.",
-            )));
-        }
-        let expressions = decoded_exprs.alloc_extend(p.decode_occurrences::<Expr>());
-        match expressions {
-            [Expr {
+        let expression = Self::decode_single_expr(
+            p,
+            decoded_exprs,
+            "Error: Integer expected, or unimplemented expression.",
+        )?;
+        match expression {
+            Expr {
                 expr_instance: Some(ExprInstance::GInt(v)),
-            }] => {
+            } => {
                 vals.push(EvVal::I64(*v));
                 Ok(())
             }
-            [Expr {
+            Expr {
                 expr_instance: Some(ExprInstance::EVarBody(EVar { v })),
-            }] => {
+            } => {
                 let pv = self.eval_var(&unwrap_option_safe(v.clone())?, env)?;
                 work.push(EvWork::EI64(decoded_entries.alloc(pv)));
                 Ok(())
             }
-            [e] => {
+            e => {
                 work.push(EvWork::Combine(EvKont::I64Extract));
                 work.push(EvWork::EToExpr(e));
                 Ok(())
             }
-            _ => Err(InterpreterError::ReduceError(
-                "Error: Integer expected, or unimplemented expression.".to_string(),
-            )),
         }
     }
 
@@ -9581,22 +9591,6 @@ fn get_unforgeable_type(inf_instance: &UnfInstance) -> String {
     }
 }
 
-fn par_contains_nan_double(par: &Par) -> bool {
-    par.decode_occurrences::<Expr>()
-        .iter()
-        .any(|e| match &e.expr_instance {
-            Some(ExprInstance::GDouble(bits)) => f64::from_bits(*bits).is_nan(),
-            Some(ExprInstance::EListBody(list)) => list.ps.iter().any(par_contains_nan_double),
-            Some(ExprInstance::ETupleBody(tuple)) => tuple.ps.iter().any(par_contains_nan_double),
-            Some(ExprInstance::ESetBody(set)) => set.ps.iter().any(par_contains_nan_double),
-            Some(ExprInstance::EMapBody(map)) => map.kvs.iter().any(|kv| {
-                kv.key.as_ref().is_some_and(par_contains_nan_double)
-                    || kv.value.as_ref().is_some_and(par_contains_nan_double)
-            }),
-            _ => false,
-        })
-}
-
 fn bytes_to_bigint(bytes: &[u8]) -> num_bigint::BigInt {
     if bytes.is_empty() {
         num_bigint::BigInt::from(0)
@@ -10397,14 +10391,97 @@ mod differential_trampoline {
             .insert_component(&Send::default(), Vec::new(), false)
             .expect("one foreign endpoint remains independently visible");
         assert!(saturated_mixed.cardinality_is_saturated());
+        let recursive_integer = recursive.eval_to_i64_recursive(&saturated_mixed, &env);
+        let driven_integer = driven.eval_to_i64(&saturated_mixed, &env);
         assert!(matches!(
-            driven.eval_to_i64(&saturated_mixed, &env),
-            Err(InterpreterError::ReduceError(ref message)) if message == PARALLEL_ERROR
+            &driven_integer,
+            Err(InterpreterError::ReduceError(message)) if message == PARALLEL_ERROR
         ));
+        assert_eq!(
+            recursive_integer.map_err(|error| format!("{error:?}")),
+            driven_integer.map_err(|error| format!("{error:?}")),
+        );
+        let recursive_single = recursive.eval_single_expr_recursive(&saturated_mixed, &env);
+        let driven_single = driven.eval_single_expr(&saturated_mixed, &env);
         assert!(matches!(
-            driven.eval_single_expr(&saturated_mixed, &env),
-            Err(InterpreterError::ReduceError(ref message)) if message == PARALLEL_ERROR
+            &driven_single,
+            Err(InterpreterError::ReduceError(message)) if message == PARALLEL_ERROR
         ));
+        assert_eq!(
+            recursive_single.map_err(|error| format!("{error:?}")),
+            driven_single.map_err(|error| format!("{error:?}")),
+        );
+        let recursive_boolean = recursive.eval_to_bool_recursive(&saturated_mixed, &env);
+        let driven_boolean = driven.eval_to_bool(&saturated_mixed, &env);
+        assert!(matches!(
+            &driven_boolean,
+            Err(InterpreterError::ReduceError(message)) if message == PARALLEL_ERROR
+        ));
+        assert_eq!(
+            recursive_boolean.map_err(|error| format!("{error:?}")),
+            driven_boolean.map_err(|error| format!("{error:?}")),
+        );
+
+        // A pure compressed endpoint is a multiple-expression value when its
+        // multiplicity exceeds one. Reject it from the O(1) cardinality
+        // certificate before either implementation expands semantic
+        // occurrences. The small witness kills a missing-gate mutation
+        // cheaply; the maximum witness proves cost is multiplicity-independent.
+        for multiplicity in [2, u64::MAX] {
+            let mut repeated = Par::default();
+            repeated
+                .insert_component_many(
+                    &Expr {
+                        expr_instance: Some(ExprInstance::GInt(7)),
+                    },
+                    Multiplicity::new(multiplicity).expect("positive multiplicity"),
+                    Vec::new(),
+                    false,
+                )
+                .expect("one compressed Expr endpoint stores its multiplicity");
+            assert!(repeated.all_components_are::<Expr>());
+            assert_eq!(repeated.family_distinct_len::<Expr>(), 1);
+            assert_eq!(repeated.family_cardinality::<Expr>(), multiplicity);
+
+            let recursive_integer = recursive.eval_to_i64_recursive(&repeated, &env);
+            let driven_integer = driven.eval_to_i64(&repeated, &env);
+            assert!(matches!(
+                &driven_integer,
+                Err(InterpreterError::ReduceError(message))
+                    if message == "Error: Integer expected, or unimplemented expression."
+            ));
+            assert_eq!(
+                recursive_integer.map_err(|error| format!("{error:?}")),
+                driven_integer.map_err(|error| format!("{error:?}")),
+                "integer projection parity failed at multiplicity {multiplicity}"
+            );
+
+            let recursive_single = recursive.eval_single_expr_recursive(&repeated, &env);
+            let driven_single = driven.eval_single_expr(&repeated, &env);
+            assert!(matches!(
+                &driven_single,
+                Err(InterpreterError::ReduceError(message))
+                    if message == "Error: Multiple expressions given."
+            ));
+            assert_eq!(
+                recursive_single.map_err(|error| format!("{error:?}")),
+                driven_single.map_err(|error| format!("{error:?}")),
+                "single-expression projection parity failed at multiplicity {multiplicity}"
+            );
+
+            let recursive_boolean = recursive.eval_to_bool_recursive(&repeated, &env);
+            let driven_boolean = driven.eval_to_bool(&repeated, &env);
+            assert!(matches!(
+                &driven_boolean,
+                Err(InterpreterError::ReduceError(message))
+                    if message == "Error: Multiple expressions given."
+            ));
+            assert_eq!(
+                recursive_boolean.map_err(|error| format!("{error:?}")),
+                driven_boolean.map_err(|error| format!("{error:?}")),
+                "boolean projection parity failed at multiplicity {multiplicity}"
+            );
+        }
 
         let two_integers = Par::default().with_exprs(vec![
             Expr {

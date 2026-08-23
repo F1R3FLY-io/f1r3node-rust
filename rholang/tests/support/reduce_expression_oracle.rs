@@ -546,45 +546,53 @@ macro_rules! reducer_expression_oracle_methods {
             env: &Env<Par>,
         ) -> Result<Expr, InterpreterError> {
             if !p.all_components_are::<Expr>() {
-                Err(InterpreterError::ReduceError(String::from(
+                return Err(InterpreterError::ReduceError(String::from(
                     "Error: parallel or non expression found where expression expected.",
-                )))
-            } else {
-                let expressions = p.decode_occurrences::<Expr>();
-                match expressions.as_slice() {
-                    [e] => self.eval_expr_to_expr_recursive(e, env),
-                    _ => Err(InterpreterError::ReduceError(
-                        "Error: Multiple expressions given.".to_string(),
-                    )),
-                }
+                )));
             }
+            if p.family_cardinality::<Expr>() != 1 {
+                return Err(InterpreterError::ReduceError(
+                    "Error: Multiple expressions given.".to_string(),
+                ));
+            }
+            let expression = p
+                .first::<Expr>()
+                .expect("resident Par Expr endpoints are canonical")
+                .expect("Expr cardinality one has exactly one endpoint")
+                .0;
+            self.eval_expr_to_expr_recursive(&expression, env)
         }
 
         #[cfg(test)]
         fn eval_to_i64_recursive(&self, p: &Par, env: &Env<Par>) -> Result<i64, InterpreterError> {
             if !p.all_components_are::<Expr>() {
-                Err(InterpreterError::ReduceError(String::from(
+                return Err(InterpreterError::ReduceError(String::from(
                     "Error: parallel or non expression found where expression expected.",
-                )))
-            } else {
-                let expressions = p.decode_occurrences::<Expr>();
-                match expressions.as_slice() {
-                    [Expr {
-                        expr_instance: Some(ExprInstance::GInt(v)),
-                    }] => Ok(*v),
-                    [Expr {
-                        expr_instance: Some(ExprInstance::EVarBody(EVar { v })),
-                    }] => {
-                        let p = self.eval_var(&unwrap_option_safe(v.clone())?, env)?;
-                        self.eval_to_i64_recursive(&p, env)
-                    }
-                    [e] => {
-                        let evaled = self.eval_expr_to_expr_recursive(e, env)?;
-                        Self::extract_i64(evaled)
-                    }
-                    _ => Err(InterpreterError::ReduceError(
-                        "Error: Integer expected, or unimplemented expression.".to_string(),
-                    )),
+                )));
+            }
+            if p.family_cardinality::<Expr>() != 1 {
+                return Err(InterpreterError::ReduceError(
+                    "Error: Integer expected, or unimplemented expression.".to_string(),
+                ));
+            }
+            let expression = p
+                .first::<Expr>()
+                .expect("resident Par Expr endpoints are canonical")
+                .expect("Expr cardinality one has exactly one endpoint")
+                .0;
+            match &expression {
+                Expr {
+                    expr_instance: Some(ExprInstance::GInt(v)),
+                } => Ok(*v),
+                Expr {
+                    expr_instance: Some(ExprInstance::EVarBody(EVar { v })),
+                } => {
+                    let p = self.eval_var(&unwrap_option_safe(v.clone())?, env)?;
+                    self.eval_to_i64_recursive(&p, env)
+                }
+                e => {
+                    let evaled = self.eval_expr_to_expr_recursive(e, env)?;
+                    Self::extract_i64(evaled)
                 }
             }
         }
@@ -596,28 +604,33 @@ macro_rules! reducer_expression_oracle_methods {
             env: &Env<Par>,
         ) -> Result<bool, InterpreterError> {
             if !p.all_components_are::<Expr>() {
-                Err(InterpreterError::ReduceError(String::from(
+                return Err(InterpreterError::ReduceError(String::from(
                     "Error: parallel or non expression found where expression expected.",
-                )))
-            } else {
-                let expressions = p.decode_occurrences::<Expr>();
-                match expressions.as_slice() {
-                    [Expr {
-                        expr_instance: Some(ExprInstance::GBool(b)),
-                    }] => Ok(*b),
-                    [Expr {
-                        expr_instance: Some(ExprInstance::EVarBody(EVar { v })),
-                    }] => {
-                        let p = self.eval_var(&unwrap_option_safe(v.clone())?, env)?;
-                        self.eval_to_bool_recursive(&p, env)
-                    }
-                    [e] => {
-                        let evaled = self.eval_expr_to_expr_recursive(e, env)?;
-                        Self::extract_bool(evaled)
-                    }
-                    _ => Err(InterpreterError::ReduceError(
-                        "Error: Multiple expressions given.".to_string(),
-                    )),
+                )));
+            }
+            if p.family_cardinality::<Expr>() != 1 {
+                return Err(InterpreterError::ReduceError(
+                    "Error: Multiple expressions given.".to_string(),
+                ));
+            }
+            let expression = p
+                .first::<Expr>()
+                .expect("resident Par Expr endpoints are canonical")
+                .expect("Expr cardinality one has exactly one endpoint")
+                .0;
+            match &expression {
+                Expr {
+                    expr_instance: Some(ExprInstance::GBool(b)),
+                } => Ok(*b),
+                Expr {
+                    expr_instance: Some(ExprInstance::EVarBody(EVar { v })),
+                } => {
+                    let p = self.eval_var(&unwrap_option_safe(v.clone())?, env)?;
+                    self.eval_to_bool_recursive(&p, env)
+                }
+                e => {
+                    let evaled = self.eval_expr_to_expr_recursive(e, env)?;
+                    Self::extract_bool(evaled)
                 }
             }
         }
