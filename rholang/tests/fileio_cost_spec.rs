@@ -104,6 +104,28 @@ fn fs_entries_setup_is_pinned_at_50() {
     );
 }
 
+/// **Design-intent pin.**  `FS_PATH_MUTATION_CONST` is *intended* to
+/// be exactly 2× `FS_SYSCALL_CONST` — path mutations touch two
+/// endpoints so they cost twice a single-endpoint syscall.  Pinning
+/// each side independently would let a future change to
+/// `FS_SYSCALL_CONST` silently break the ratio (e.g. lowering
+/// `FS_SYSCALL_CONST` to 50 while leaving `FS_PATH_MUTATION_CONST`
+/// at 200 would make the mutation class 4× the syscall class,
+/// contradicting the design rationale).  This pin makes the design
+/// intent load-bearing.
+#[test]
+fn fs_path_mutation_is_2x_syscall_const() {
+    assert_eq!(
+        FS_PATH_MUTATION_CONST,
+        2 * FS_SYSCALL_CONST,
+        "design-intent regression: FS_PATH_MUTATION_CONST must be exactly \
+         2x FS_SYSCALL_CONST because path mutations touch two endpoints \
+         (source unlink + destination create).  If you intended to change \
+         the ratio, update this pin AND the docstring on \
+         FS_PATH_MUTATION_CONST in costs.rs."
+    );
+}
+
 // -------- Constant-work syscalls -----------------------------------
 
 #[test]
@@ -304,6 +326,152 @@ fn fs_remove_dir_weight_at_zero_entries_is_pinned() {
     assert_eq!(fs_remove_dir_cost(0), Cost::create(200, "fs_remove_dir"));
 }
 
+// -------- u64::MAX saturation pins ---------------------------------
+//
+// Pins the overflow-safety property of `saturate_linear` in
+// costs.rs.  Under D3 a validator MUST NOT crash on adversarial
+// syscall arguments; every length-parameterized helper must clamp
+// to `i64::MAX` under `u64::MAX` input.  A regression that reverts
+// the helper to naive `base + argument as i64` would produce a
+// negative value at `argument ≈ 2^63` and crash the deploy with
+// `BugFoundError("Billable metering cost must be positive")`.
+// These pins catch the revert locally.
+
+#[test]
+fn fs_read_cost_saturates_at_u64_max() {
+    assert_eq!(fs_read_cost(u64::MAX), Cost::create(i64::MAX, "fs_read"));
+}
+
+#[test]
+fn fs_read_at_cost_saturates_at_u64_max() {
+    assert_eq!(
+        fs_read_at_cost(u64::MAX),
+        Cost::create(i64::MAX, "fs_read_at")
+    );
+}
+
+#[test]
+fn fs_write_cost_saturates_at_u64_max() {
+    assert_eq!(fs_write_cost(u64::MAX), Cost::create(i64::MAX, "fs_write"));
+}
+
+#[test]
+fn fs_write_at_cost_saturates_at_u64_max() {
+    assert_eq!(
+        fs_write_at_cost(u64::MAX),
+        Cost::create(i64::MAX, "fs_write_at")
+    );
+}
+
+#[test]
+fn fs_entries_cost_saturates_at_u64_max() {
+    assert_eq!(
+        fs_entries_cost(u64::MAX),
+        Cost::create(i64::MAX, "fs_entries")
+    );
+}
+
+#[test]
+fn fs_entries_stream_cost_saturates_at_u64_max() {
+    assert_eq!(
+        fs_entries_stream_cost(u64::MAX),
+        Cost::create(i64::MAX, "fs_entries_stream")
+    );
+}
+
+#[test]
+fn fs_remove_dir_cost_saturates_at_u64_max() {
+    assert_eq!(
+        fs_remove_dir_cost(u64::MAX),
+        Cost::create(i64::MAX, "fs_remove_dir")
+    );
+}
+
+// -------- Monotonicity / linearity pins -----------------------------
+//
+// Hard-lock the linear-shape assumption of every length-
+// parameterized helper.  A regression that introduces non-linearity
+// (e.g. Θ(n²) accidental substitution) or non-monotonicity would
+// slip past the two sample-point pins above (0 and 1024) if the
+// substituted shape happens to agree at those two points.
+// Sweeping the small-integer range (0..64) catches such regressions
+// cheaply.
+
+fn assert_strictly_monotone(cost_fn: impl Fn(u64) -> Cost, name: &str) {
+    let mut prev = cost_fn(0).value;
+    for k in 1..64u64 {
+        let curr = cost_fn(k).value;
+        assert!(
+            curr > prev,
+            "monotonicity regression on {name}: cost({k}) = {curr} must be \
+             strictly greater than cost({}) = {prev}.  A non-monotone helper \
+             lets a caller pay less for MORE work, which is a soft-DoS + \
+             pricing-fairness bug.",
+            k - 1
+        );
+        prev = curr;
+    }
+}
+
+fn assert_linear_shape(cost_fn: impl Fn(u64) -> Cost, coefficient: i64, name: &str) {
+    let base = cost_fn(0).value;
+    for k in 1..64u64 {
+        let expected = base + coefficient * k as i64;
+        let actual = cost_fn(k).value;
+        assert_eq!(
+            actual, expected,
+            "linearity regression on {name}: cost({k}) = {actual} but a \
+             linear extrapolation from cost(0) = {base} with coefficient \
+             {coefficient} predicts {expected}.  A helper that deviates \
+             from linearity within [0, 64) has introduced quadratic or \
+             higher-order growth (e.g. accidental n*n substitution) or \
+             per-argument branching that is not consensus-portable."
+        );
+    }
+}
+
+#[test]
+fn fs_read_cost_is_strictly_monotone_and_linear() {
+    assert_strictly_monotone(fs_read_cost, "fs_read_cost");
+    assert_linear_shape(fs_read_cost, 1, "fs_read_cost");
+}
+
+#[test]
+fn fs_read_at_cost_is_strictly_monotone_and_linear() {
+    assert_strictly_monotone(fs_read_at_cost, "fs_read_at_cost");
+    assert_linear_shape(fs_read_at_cost, 1, "fs_read_at_cost");
+}
+
+#[test]
+fn fs_write_cost_is_strictly_monotone_and_linear() {
+    assert_strictly_monotone(fs_write_cost, "fs_write_cost");
+    assert_linear_shape(fs_write_cost, 2, "fs_write_cost");
+}
+
+#[test]
+fn fs_write_at_cost_is_strictly_monotone_and_linear() {
+    assert_strictly_monotone(fs_write_at_cost, "fs_write_at_cost");
+    assert_linear_shape(fs_write_at_cost, 2, "fs_write_at_cost");
+}
+
+#[test]
+fn fs_entries_cost_is_strictly_monotone_and_linear() {
+    assert_strictly_monotone(fs_entries_cost, "fs_entries_cost");
+    assert_linear_shape(fs_entries_cost, 32, "fs_entries_cost");
+}
+
+#[test]
+fn fs_entries_stream_cost_is_strictly_monotone_and_linear() {
+    assert_strictly_monotone(fs_entries_stream_cost, "fs_entries_stream_cost");
+    assert_linear_shape(fs_entries_stream_cost, 32, "fs_entries_stream_cost");
+}
+
+#[test]
+fn fs_remove_dir_cost_is_strictly_monotone_and_linear() {
+    assert_strictly_monotone(fs_remove_dir_cost, "fs_remove_dir_cost");
+    assert_linear_shape(fs_remove_dir_cost, 32, "fs_remove_dir_cost");
+}
+
 #[test]
 fn fs_remove_dir_weight_at_10_entries_is_pinned() {
     assert_eq!(
@@ -319,10 +487,14 @@ fn fs_remove_dir_weight_at_10_entries_is_pinned() {
 /// (a) add a `<name>_cost()` helper AND (b) add a golden-value test
 /// for it here — otherwise this coverage pin fails.
 ///
-/// Implementation: string-scan the compiled binary's cost helper
-/// source for every `pub fn ...` and verify each name appears in
-/// this test file.  This catches the class-of-regression where a
-/// new handler ships with an unpinned weight.
+/// Implementation: string-scan the cost helper source for every
+/// `pub fn fs_*_cost(...)` and verify each name appears in this
+/// test file **as a call site** (`<name>(`), not merely as a
+/// `use`-import identifier.  Requiring the call-site pattern
+/// closes the hole where a helper is imported but the golden
+/// `#[test] fn <name>_weight_is_pinned()` is subsequently deleted:
+/// the identifier still appears in the `use` block but no
+/// `<name>(` call site remains, so the meta-pin fails.
 #[test]
 fn every_cost_helper_has_a_golden_pin() {
     let costs_src = include_str!("../src/rust/interpreter/io/costs.rs");
@@ -347,9 +519,13 @@ fn every_cost_helper_has_a_golden_pin() {
             if !name.ends_with("_cost") {
                 continue;
             }
-            // The spec must reference the helper by name (either as a
-            // function call in a test body OR as an import).
-            if !spec_src.contains(name) {
+            // Require the call-site pattern `<name>(` — the trailing
+            // `(` excludes bare identifier presence in the `use`
+            // import block.  A deleted golden test that leaves the
+            // stale import behind would fail this check because the
+            // `<name>(` invocation site would be gone.
+            let call_pattern = format!("{name}(");
+            if !spec_src.contains(&call_pattern) {
                 missing.push(name.to_string());
             }
         }
@@ -358,9 +534,10 @@ fn every_cost_helper_has_a_golden_pin() {
     assert!(
         missing.is_empty(),
         "coverage regression: the following per-handler cost helpers exist in \
-         io/costs.rs but have no golden-value pin in this spec: {missing:?}. \
-         Every new native handler MUST ship with a golden-value pin so silent \
-         weight drift trips CI.  Add a `#[test] fn <name>_weight_is_pinned()` \
-         and update the import block at the top of this file."
+         io/costs.rs but have no golden-value call site (`<name>(...)`) in this \
+         spec: {missing:?}.  Every new native handler MUST ship with a golden \
+         `#[test] fn <name>_weight_is_pinned()` that invokes the helper by \
+         name; a bare `use`-import does NOT count.  Add the test and update \
+         the import block at the top of this file."
     );
 }

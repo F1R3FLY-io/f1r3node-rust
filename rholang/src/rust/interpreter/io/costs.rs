@@ -130,6 +130,48 @@ pub fn fs_remove_file_cost() -> Cost { Cost::create(FS_PATH_MUTATION_CONST, "fs_
 
 // -------- Length-parameterized syscalls --------
 
+/// Compute `base + coefficient * argument` with saturating
+/// arithmetic and clamp to `i64::MAX`.  Every length-parameterized
+/// cost helper delegates here so the overflow-safety property is
+/// enforced in one place.
+///
+/// # Why saturating
+///
+/// `argument` is derived from user-controlled Rholang input (a byte
+/// count or entry count in a syscall request).  A naive `base +
+/// coefficient * argument as i64` wraps to a negative value at
+/// `argument ≈ 2^63 / coefficient` — which then trips
+/// `reserve_primitive`'s `amount.value <= 0` guard and crashes the
+/// deploy with `BugFoundError("Billable metering cost must be
+/// positive")`.  That is a *soft* DoS (controlled crash, no state
+/// corruption) but still an unnecessary exposure; the MVP defense
+/// (per-call size caps in `mod.rs::MAX_READ_BYTES` etc.) requires
+/// caller discipline that is easy to miss during slice 9b handler
+/// wiring.
+///
+/// By saturating at `i64::MAX`, an adversarial length simply
+/// produces the maximum billable cost — which any finite budget
+/// rejects — without going through the crash path.  Callers may
+/// (and should) still enforce per-call byte caps upstream for
+/// spec-conformance reasons, but the cost helper is defense-in-
+/// depth: it stays valid under any `u64` input.
+///
+/// # Consensus discipline
+///
+/// The saturation ceiling (`i64::MAX`) is a consensus parameter.
+/// Two validators MUST agree on it byte-for-byte; using the Rust
+/// stdlib constant makes this trivially portable.  The `debug_assert`
+/// on `base >= 0` is a construction-time invariant on the compile-
+/// time constants declared above, not on runtime input, so it
+/// cannot cause validator divergence.
+#[inline]
+fn saturate_linear(base: i64, coefficient: u64, argument: u64) -> i64 {
+    debug_assert!(base >= 0, "base weight must be non-negative");
+    let scaled = coefficient.saturating_mul(argument);
+    let sum = (base as u64).saturating_add(scaled);
+    sum.min(i64::MAX as u64) as i64
+}
+
 /// `fs_read(len)` and `fs_read_at(offset, len)` — dispatch cost
 /// plus one unit per byte read.  Byte-return values can legitimately
 /// be zero (end-of-file), so callers MUST charge via
@@ -143,11 +185,14 @@ pub fn fs_remove_file_cost() -> Cost { Cost::create(FS_PATH_MUTATION_CONST, "fs_
 /// vector where a caller requests megabytes at zero cost by
 /// pre-seeking past EOF.
 pub fn fs_read_cost(bytes_read: u64) -> Cost {
-    Cost::create(FS_SYSCALL_CONST + bytes_read as i64, "fs_read")
+    Cost::create(saturate_linear(FS_SYSCALL_CONST, 1, bytes_read), "fs_read")
 }
 
 pub fn fs_read_at_cost(bytes_read: u64) -> Cost {
-    Cost::create(FS_SYSCALL_CONST + bytes_read as i64, "fs_read_at")
+    Cost::create(
+        saturate_linear(FS_SYSCALL_CONST, 1, bytes_read),
+        "fs_read_at",
+    )
 }
 
 /// `fs_write(bytes)` and `fs_write_at(offset, bytes)` — dispatch
@@ -157,11 +202,17 @@ pub fn fs_read_at_cost(bytes_read: u64) -> Cost {
 /// non-consensus (oracular) caps still charge the same weight to
 /// keep consensus and oracular deploys byte-for-byte comparable.
 pub fn fs_write_cost(bytes_written: u64) -> Cost {
-    Cost::create(FS_SYSCALL_CONST + 2 * bytes_written as i64, "fs_write")
+    Cost::create(
+        saturate_linear(FS_SYSCALL_CONST, 2, bytes_written),
+        "fs_write",
+    )
 }
 
 pub fn fs_write_at_cost(bytes_written: u64) -> Cost {
-    Cost::create(FS_SYSCALL_CONST + 2 * bytes_written as i64, "fs_write_at")
+    Cost::create(
+        saturate_linear(FS_SYSCALL_CONST, 2, bytes_written),
+        "fs_write_at",
+    )
 }
 
 /// `fs_entries(dir)` — setup cost plus per-entry cost.  Charge via
@@ -171,7 +222,7 @@ pub fn fs_write_at_cost(bytes_written: u64) -> Cost {
 /// `FS_ENTRIES_SETUP` could hit zero).
 pub fn fs_entries_cost(n_entries: u64) -> Cost {
     Cost::create(
-        FS_ENTRIES_SETUP + FS_ENTRIES_PER_ENTRY * n_entries as i64,
+        saturate_linear(FS_ENTRIES_SETUP, FS_ENTRIES_PER_ENTRY as u64, n_entries),
         "fs_entries",
     )
 }
@@ -184,7 +235,7 @@ pub fn fs_entries_cost(n_entries: u64) -> Cost {
 /// when the stream-methods layer is wired.
 pub fn fs_entries_stream_cost(n_entries: u64) -> Cost {
     Cost::create(
-        FS_ENTRIES_SETUP + FS_ENTRIES_PER_ENTRY * n_entries as i64,
+        saturate_linear(FS_ENTRIES_SETUP, FS_ENTRIES_PER_ENTRY as u64, n_entries),
         "fs_entries_stream",
     )
 }
@@ -197,7 +248,11 @@ pub fn fs_entries_stream_cost(n_entries: u64) -> Cost {
 /// the charge deterministic and byte-identical across validators.
 pub fn fs_remove_dir_cost(subtree_entry_count: u64) -> Cost {
     Cost::create(
-        FS_PATH_MUTATION_CONST + FS_ENTRIES_PER_ENTRY * subtree_entry_count as i64,
+        saturate_linear(
+            FS_PATH_MUTATION_CONST,
+            FS_ENTRIES_PER_ENTRY as u64,
+            subtree_entry_count,
+        ),
         "fs_remove_dir",
     )
 }
