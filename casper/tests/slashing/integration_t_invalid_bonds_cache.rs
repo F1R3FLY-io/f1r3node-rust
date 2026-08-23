@@ -85,8 +85,8 @@ async fn integration_t_invalid_bonds_cache() {
 
     let has_v0 = (0..=10).any(|b| <_ as SlashingObserver>::has_record(&snapshot, "v0", b));
     assert!(
-        has_v0,
-        "post-fix #3 catch-all: dispatcher mints record for v0 \
-         on InvalidBondsCache"
+        !has_v0,
+        "demoted: InvalidBondsCache is judged against local state and \
+         mints no slash evidence"
     );
 }

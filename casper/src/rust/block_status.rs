@@ -237,8 +237,64 @@ impl InvalidBlock {
         // about whether the new variant is slashable. This is the
         // future-correctness footgun protection T-9.3 depends on at the
         // dispatcher catch-all.
+        // Slash evidence demands a fault every honest node attributes
+        // identically from the signed block alone. Equivocation is the one
+        // verdict with that property: two signed blocks at the same seq are
+        // proof wherever they are examined, in any order. Every other verdict
+        // is judged against the receiver's own state — its invalid records,
+        // its equivocation tracker, its parents' replay, its admission order
+        // — so two honest nodes can disagree on it, and minting evidence
+        // from it lets whoever shapes message delivery burn honest stake
+        // (CI run 32588262605: JustificationRegression verdicts issued by
+        // one mid-catch-up node, UnauthorizedSlashDeploy verdicts on the
+        // resulting carriers, recursive evidence, FT −18.55 of honest
+        // weight). A demoted verdict still drops the block — invalidity is
+        // untouched; only the economic layer narrows to provable faults.
         match self {
-            InvalidBlock::AdmissibleEquivocation
+            // IgnorableEquivocation is slashable per Bug #1 (§9.1). On
+            // dev this variant was a known DOS-vector TODO — equivocations
+            // observed via someone else's justification produced no on-chain
+            // evidence. The dispatcher (`engine::multi_parent_casper::handle_*`)
+            // mints an EquivocationRecord whenever this branch fires.
+            InvalidBlock::AdmissibleEquivocation | InvalidBlock::IgnorableEquivocation => true,
+
+            // Non-slashable variants — listed explicitly so the compiler
+            // catches new additions to the enum, forcing a deliberate
+            // decision instead of a wildcard default.
+            //   • InvalidFormat/Signature/Sender/Version/Timestamp: malformed
+            //     wire data; the sender is not identifiable (Signature) or
+            //     the sender's identity can't be verified (Sender).
+            //   • JustificationRegression / UnauthorizedSlashDeploy /
+            //     NeglectedInvalidBlock / NeglectedEquivocation: judged
+            //     against the receiver's own records or tracker — the
+            //     view-relative family observed diverging across honest
+            //     nodes in the run above.
+            //   • InvalidTransaction / InvalidBondsCache / InvalidParents /
+            //     InvalidFollows / InvalidRepeatDeploy / InvalidBlockNumber /
+            //     InvalidSequenceNumber / InvalidShardId / InvalidBlockHash /
+            //     DeployNotSigned / ContainsExpiredDeploy /
+            //     ContainsTimeExpiredDeploy / ContainsFutureDeploy: judged
+            //     against local replay state or dependency availability;
+            //     several are admission-order-sensitive in practice.
+            //     Individually provable ones can be promoted onto the
+            //     slashable list once their checks are shown
+            //     admission-order-free — demotion costs only economics,
+            //     never validity.
+            //   • InvalidRejectedDeploy: rejected-deploy tracking; not a
+            //     consensus offense.
+            //   • PrematureDeployRetry: a retry ahead of the gate. The gate
+            //     is a pure function of the block, so every honest node
+            //     declines the block identically — admission does all the
+            //     enforcement, and a gate rule in its proving phase must
+            //     never be able to burn honest stake through its own bugs.
+            //   • NotOfInterest: local node filtering decision.
+            //   • LowDeployCost: per-deploy cost threshold; rejected at
+            //     admission, not on-chain accountable.
+            InvalidBlock::InvalidFormat
+            | InvalidBlock::InvalidSignature
+            | InvalidBlock::InvalidSender
+            | InvalidBlock::InvalidVersion
+            | InvalidBlock::InvalidTimestamp
             | InvalidBlock::DeployNotSigned
             | InvalidBlock::InvalidBlockNumber
             | InvalidBlock::InvalidRepeatDeploy
@@ -256,35 +312,6 @@ impl InvalidBlock {
             | InvalidBlock::ContainsExpiredDeploy
             | InvalidBlock::ContainsTimeExpiredDeploy
             | InvalidBlock::ContainsFutureDeploy
-            // IgnorableEquivocation is now slashable per Bug #1 (§9.1). On
-            // dev this variant was a known DOS-vector TODO — equivocations
-            // observed via someone else's justification produced no on-chain
-            // evidence. The dispatcher (`engine::multi_parent_casper::handle_*`)
-            // now mints an EquivocationRecord whenever this branch fires.
-            | InvalidBlock::IgnorableEquivocation => true,
-
-            // Non-slashable variants — listed explicitly so the compiler
-            // catches new additions to the enum. Each represents a failure
-            // attributable to the block's wire format or local node state,
-            // NOT to Byzantine behavior the network can attribute and slash:
-            //   • InvalidFormat/Signature/Sender/Version/Timestamp: malformed
-            //     wire data; the sender is not identifiable (Signature) or
-            //     the sender's identity can't be verified (Sender).
-            //   • InvalidRejectedDeploy: rejected-deploy tracking; not a
-            //     consensus offense.
-            //   • PrematureDeployRetry: a retry ahead of the gate. The gate
-            //     is a pure function of the block, so every honest node
-            //     declines the block identically — admission does all the
-            //     enforcement, and a gate rule in its proving phase must
-            //     never be able to burn honest stake through its own bugs.
-            //   • NotOfInterest: local node filtering decision.
-            //   • LowDeployCost: per-deploy cost threshold; rejected at
-            //     admission, not on-chain accountable.
-            InvalidBlock::InvalidFormat
-            | InvalidBlock::InvalidSignature
-            | InvalidBlock::InvalidSender
-            | InvalidBlock::InvalidVersion
-            | InvalidBlock::InvalidTimestamp
             | InvalidBlock::InvalidRejectedDeploy
             | InvalidBlock::PrematureDeployRetry
             | InvalidBlock::NotOfInterest

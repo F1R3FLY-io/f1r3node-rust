@@ -495,9 +495,29 @@ fn checked_sequence_arithmetic_rejects_boundaries() {
     assert_eq!(checked_next_seq(41), Some(42));
 }
 
+/// CI run 32588262605 shard16: joiner7 judged five foreign bonding-era
+/// blocks JustificationRegression — verdicts no other node issued — then
+/// peers judged the resulting DOA slash carriers UnauthorizedSlashDeploy,
+/// the catch-all minted evidence for every one, and the recursive slashes
+/// burned honest stake to FT −18.55. A verdict two honest nodes can
+/// disagree on — anything relative to the receiver's own records or
+/// admission order — must never mint slash evidence. The dispatcher's
+/// invalid-record and evidence minting both key off `is_slashable`, so
+/// this classification is the single point the whole slashing pipeline
+/// (candidates, neglect obligation, receive-side authorization) follows.
 #[test]
-fn unauthorized_slash_status_is_slashable() {
-    assert!(InvalidBlock::UnauthorizedSlashDeploy.is_slashable());
+fn view_relative_verdicts_are_not_slash_worthy() {
+    assert!(!InvalidBlock::JustificationRegression.is_slashable());
+    assert!(!InvalidBlock::UnauthorizedSlashDeploy.is_slashable());
+    assert!(!InvalidBlock::NeglectedInvalidBlock.is_slashable());
+    assert!(!InvalidBlock::NeglectedEquivocation.is_slashable());
+    assert!(!InvalidBlock::InvalidTransaction.is_slashable());
+}
+
+#[test]
+fn equivocation_class_remains_slash_worthy() {
+    assert!(InvalidBlock::AdmissibleEquivocation.is_slashable());
+    assert!(InvalidBlock::IgnorableEquivocation.is_slashable());
 }
 
 proptest! {

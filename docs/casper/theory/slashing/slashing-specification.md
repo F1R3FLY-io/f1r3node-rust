@@ -747,6 +747,29 @@ The 19-element post-fix slashable set is
   ContainsExpiredDeploy, ContainsTimeExpiredDeploy, ContainsFutureDeploy }
 ```
 
+> **Amendment (2026-08, after CI run 32588262605).** The normative
+> slashable set is narrowed to the equivocation class:
+>
+> ```
+> { AdmissibleEquivocation, IgnorableEquivocation }
+> ```
+>
+> Slash evidence demands a fault every honest node attributes identically
+> from the signed block alone; equivocation is the only verdict with that
+> property. The other 17 variants are judged against the receiver's own
+> records, replay state, or admission order — the run above demonstrated
+> `JustificationRegression` and `UnauthorizedSlashDeploy` verdicts
+> diverging across honest nodes, and the recursive evidence they minted
+> destroyed honest stake (fault tolerance driven to −18.55). A demoted
+> verdict still drops the block; only the economic layer narrows.
+> Individually provable variants can be re-promoted once their checks are
+> shown admission-order-free. The normative source is
+> `InvalidBlock::is_slashable` (`block_status.rs`), pinned by
+> `slashing::prop_t_3_slashable_taxonomy` and
+> `slashing::dispatch_routes_demoted_variants_to_the_drop_arm`. The T-3
+> statement above and the T-9.3 catch-all narrative describe the
+> bug-fix-era taxonomy and are historical relative to this amendment.
+
 ---
 
 ## 5 · The PoS slash transition
