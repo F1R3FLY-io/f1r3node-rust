@@ -142,15 +142,19 @@ tasks:
       - "One live promotion of a Phase 3 candidate publishes a stable tag, release, and image whose digest equals the candidate index"
   - id: TASK-013-6
     title: "Phase 5: Deployment Trains"
-    status: pending
+    status: in_progress
     branch: feature/release-phase5-deployment-trains
     blocked_by: [TASK-013-4]
     notes:
+      - "2026-08-22: release-train.sh validates schema 1 and 2 manifests, the member chain (bottom member targets integration_branch, each later member targets the preceding member), head ancestry from compare documents, merged-member merge-commit topology, the source version and publishing-only reservation, and picks or dispatches the ci.yml run for head_sha. deployment-train.yml runs Section 13.2 steps 1 to 9 from the default branch with actions:write only for the ci.yml dispatch and uploads the train-record artifact. test-release-train.sh covers 18 rejections; test-release-workflows.sh guards the workflow; ci.yml validates every manifest under .github/deployment-trains/."
+      - ".github/deployment-trains/key-contention.yml is the non-publishing rehearsal for #299 -> #312 -> #319 -> #311 at the heads observed 2026-08-22. The live stack currently fails the ancestry check: #311's head 6c70d818a predates #319's last two commits (325bbb28b, 80f0a3b6a). The rehearsal will reject until #311 is re-based on #319 and the manifest head_sha is updated."
+      - "Remaining for this task: train canary creation through canary-publish.yml (Section 4.2 tag format, train_id in evidence), train_gates evaluation in release-gates.sh from manifest required_gates, recorded-member-head reachability in promote-release.sh, and the Section 13.3 re-validation trigger after a member merge."
       - "2026-08-22: release-process.md Section 13.1.1 adds schema_version 2 stack manifests. A stack train binds the top-of-stack head as its one candidate; members merge bottom-up with true merge commits. Setup steps 4 to 6 (member chain, head ancestry, merged-member topology) and the validator depend on no earlier phase; canary, digest-bound gates, and promotion depend on Phases 2 to 4."
       - "2026-08-22 multi-agent review of PR #321: Section 13.2 is one numbered sequence; the member base rule points to the preceding member; merge method is re-validated after each member merge and every recorded member head is verified at promotion, which closes the force-push window; the CI filter text matches ci.yml."
       - "blocked_by encodes the stack merge order PR #322 -> #323 (Phase 4) -> #325 (Phase 3) -> #321 (Phase 5), which is also the code-dependency order: Phase 3 implements the Section 8.1 contract Phase 4 defines. Phase 4 becomes operational end to end only after Phase 3 publishes gate documents; that is a runtime dependency, not a merge dependency."
       - "ci.yml runs pull-request CI for bases dev, master, staging, trying, and feature/**. A member whose base is outside that set (fix/**, formal/**) gets no pull-request run; train setup requires one successful ci.yml run for head_sha from any event and dispatches one when none exists (Section 13.2 step 9)."
       - "Rehearsal candidate for the stack-train step: the key-contention stack PR #299 -> #312 -> #319 -> #311 (EPIC-016), non-publishing, no version reservation."
+      - "2026-08-23 multi-agent review of PR #328: plan-ci also requires head_repository.full_name to match (the run list reports the base repository for every run); a merged member proves merge-commit reachability from integration_branch through a reach-<N>.json compare document; a member whose predecessor has merged may target integration_branch, because GitHub retargets the pull request when the merged branch is deleted; setup fails fast on a member head outside this repository. 23 rejection cases plus merged and retargeted acceptance paths."
     acceptance:
       - "deployment-train.yml validates manifests under .github/deployment-trains/ and starts trains"
       - "The validator accepts schema_version 1 and 2, and rejects a stack member with a foreign base, broken head ancestry, or a squash or rebase merge"
@@ -630,6 +634,22 @@ tasks:
       - "Nodes parse both legacy rnode:// and new f1r3fly:// addresses during a documented transition window"
       - "Nodes emit the new scheme only when compatibility permits"
       - "Mixed-version discovery, bootstrap configuration, CLI parsing, and eventual legacy-removal criteria are tested and documented"
+  - id: TASK-012-30
+    title: "Bind ephemeral CI runners to the run that launched them"
+    status: pending
+    issues: []
+    base_branch: dev
+    branch: fix/ci-ephemeral-runner-run-binding
+    proposed_pr_title: "fix(ci): bind ephemeral runners to their launching run"
+    claimed_by: null
+    blocked_by: []
+    notes:
+      - "2026-08-23: three Heavy Pipelines overlapped (#316 re-run, #328, #329). Launch Ephemeral Runners starts exactly two amd64 and two arm64 VMs per run, but GitHub assigns queued jobs to runners by label only, so the pool is shared. PR #328's amd64-docker job took PR #329's second amd64 VM (ci-eph-...-042856-6d1807) five minutes before #329's integration jobs queued; #329's amd64-subprocess then waited with no runner until the run was cancelled and re-run in full. Same symptom as the re-run-failed-jobs trap, different cause."
+      - "The per-run label is the minimal fix: launch-runner.sh registers each VM with an extra label run-<GITHUB_RUN_ID>, and the ephemeral jobs add that label to runs-on. Idle VMs from another run then never match."
+    acceptance:
+      - "Each ephemeral runner registers with a label that names the run that launched it, and every ephemeral job in _integration-pipeline.yml requires that label"
+      - "Two Heavy Pipelines started within one minute of each other both complete without a job waiting on a runner that another run consumed"
+      - "An idle ephemeral VM that its run no longer needs still self-terminates on the idle timeout"
 ---
 ```
 

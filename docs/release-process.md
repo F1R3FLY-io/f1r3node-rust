@@ -450,18 +450,20 @@ The setup workflow performs these actions. Steps marked *stack* apply only to a 
 1. Load the manifest from the default branch.
 2. Validate the schema and train identifier.
 3. Verify the pull request and exact head SHA. For a stack, `pull_request` and `head_sha` are the top member.
-4. *Stack:* verify the member chain. Members are listed bottom to top. The bottom member must target `integration_branch`. Every later member must target the branch of the member immediately before it in the list. Each member must be open or merged. Reject any other base or state.
+4. *Stack:* verify the member chain. Members are listed bottom to top. The bottom member must target `integration_branch`. Every later member must target the branch of the member immediately before it in the list. When that preceding member has merged, the member may instead target `integration_branch`, because GitHub retargets a pull request when its base branch is deleted. Each member must be open or merged, and every member head must live in this repository. Reject any other base, state, or head repository.
 5. *Stack:* verify the head ancestry. The head of each member must be an ancestor of the head of the member immediately after it in the list, and `head_sha` must equal the head of the top member. Record every member head in the train record. This step proves that the top branch contains the whole stack at setup time.
-6. *Stack:* verify merged members. A member that has already merged must have a true merge commit on `integration_branch` whose second parent is the recorded member head. Setup cannot know how an open member *will* merge. That condition is enforced later: Section 13.3 re-validates the chain after every member merge and the promotion controller verifies every recorded member head at promotion time.
+6. *Stack:* verify merged members. A member that has already merged must have a true merge commit whose second parent is the recorded member head, and that merge commit must be reachable from `integration_branch`. The setup workflow proves reachability with a compare of the merge commit against the `integration_branch` tip (status `ahead` or `identical`). Setup cannot know how an open member *will* merge. That condition is enforced later: Section 13.3 re-validates the chain after every member merge and the promotion controller verifies every recorded member head at promotion time.
 7. Verify the source version against `target_version`.
 8. Verify that the version has no active reservation. Skip this step when `publishing` is `false`.
-9. Verify a successful full CI run for the exact head SHA. `ci.yml` runs pull-request CI for bases `dev`, `master`, `staging`, `trying`, and `feature/**`. A member whose base is outside that set (for example a `fix/**` or `formal/**` branch) gets no pull-request run. Setup therefore requires one successful `ci.yml` run for `head_sha` from any event. When none exists, setup dispatches `ci.yml` on `head_sha`, waits, and records that run identifier as the train's CI evidence.
+9. Verify a successful full CI run for the exact head SHA. `ci.yml` runs pull-request CI for bases `dev`, `master`, `staging`, `trying`, and `feature/**`. A member whose base is outside that set (for example a `fix/**` or `formal/**` branch) gets no pull-request run. Setup therefore requires one successful `ci.yml` run for `head_sha` from any event. A run whose head commit lives in a fork is not accepted, because the run list reports the base repository for every run and only the head repository reveals the fork. When none exists, setup dispatches `ci.yml` on `head_sha`, waits, and records that run identifier as the train's CI evidence.
 10. Create the train canary from that CI run.
 11. Start standard gates for the candidate.
 12. Start each mandatory feature-specific gate.
 13. Start the on-demand `weekend-60h` soak.
 
 Multiple trains can run at the same time. Workflow concurrency keys include the train identifier and target version.
+
+`deployment-train.yml` implements steps 1 to 9 with `release-train.sh`: manifest validation (schema 1 and 2), the member chain, head ancestry, merged-member topology, the source version and reservation, and the CI evidence. The workflow produces a `train-record` artifact (manifest, train record with every member head, and the API documents it verified). A non-publishing train completes at step 9. A publishing train holds at step 9 until the train canary path (steps 10 to 13) lands.
 
 ### 13.3 Merge requirement
 
@@ -601,7 +603,7 @@ This table defines the target state after the Section 17 workflow changes are co
 | `release-evidence.yml` | `workflow_dispatch` (ci_run_id) | Manual | 10–20 min *estimated* (30-min cap) | Exact-run candidate evidence |
 | `release.yml` | `workflow_dispatch` (candidate_tag); `workflow_run` on completion of Full OCI Validation, the slashing suite, and the soak (resume after a missing gate) | Manual start, automatic resume | 5–15 min *estimated* (no builds; copy and verify only) | Exact-candidate stable promotion |
 | `soak-in.yml` | `release` (stable tag published), `workflow_dispatch` | Event (one enrollment per stable release) + manual | Enrollment takes minutes; the soak-in period itself runs in the test net, not in Actions | Shard soak-in enrollment |
-| `deployment-train.yml` | `workflow_dispatch` (manifest path) | Manual | Minutes for setup *estimated*; the started gates run in their own workflows | Train validation and setup |
+| `deployment-train.yml` | `workflow_dispatch` (`manifest_path`, `wait_for_ci`) | Manual | Minutes for setup; up to the CI duration when it dispatches `ci.yml` for the head | Train validation and setup (Section 13.2 steps 1 to 9) |
 | `testbed-quality-gate.yml` | `workflow_dispatch`, including dispatch from train manifest gates | Manual + tooling | No measured runs | Feature-specific train gate |
 | `deny-schedule.yml` | `schedule` Mondays 06:00 UTC, `workflow_dispatch` | Time + manual | About 1 min *measured* | Weekly advisory sweep |
 | `ci-runner-reaper.yml` | `schedule` every 30 min, `workflow_dispatch` | Time + manual | 1–2 min *measured* | Ephemeral-runner leak reaper |
