@@ -1663,6 +1663,10 @@ impl FsProcesses {
         &self,
         contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
     ) -> Result<Vec<Par>, InterpreterError> {
+        // Phase 9 slice 9b-iii: charge fs_rename weight at handler entry.
+        // See fs_open for the rationale on placement before unapply.
+        // Path-mutation constant (2x FS_SYSCALL_CONST: two-endpoint work).
+        self.metering.reserve_primitive(costs::fs_rename_cost())?;
         let Some((produce, is_replay, previous, args)) =
             self.is_contract_call().unapply(contract_args)
         else {
@@ -1764,6 +1768,11 @@ impl FsProcesses {
         &self,
         contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
     ) -> Result<Vec<Par>, InterpreterError> {
+        // Phase 9 slice 9b-iii: charge fs_copy_file weight at handler entry.
+        // See fs_open for the rationale on placement before unapply.
+        // Path-mutation constant (2x FS_SYSCALL_CONST: two-endpoint work).
+        self.metering
+            .reserve_primitive(costs::fs_copy_file_cost())?;
         let Some((produce, is_replay, previous, args)) =
             self.is_contract_call().unapply(contract_args)
         else {
@@ -1849,6 +1858,11 @@ impl FsProcesses {
         &self,
         contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
     ) -> Result<Vec<Par>, InterpreterError> {
+        // Phase 9 slice 9b-iii: charge fs_remove_file weight at handler entry.
+        // See fs_open for the rationale on placement before unapply.
+        // Path-mutation constant (2x FS_SYSCALL_CONST: two-endpoint work).
+        self.metering
+            .reserve_primitive(costs::fs_remove_file_cost())?;
         let Some((produce, is_replay, previous, args)) =
             self.is_contract_call().unapply(contract_args)
         else {
