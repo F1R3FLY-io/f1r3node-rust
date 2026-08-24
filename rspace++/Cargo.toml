@@ -16,6 +16,12 @@ default = []
 # production suffix-checkpoint path. Ordinary builds compile neither the
 # facade nor its legacy control.
 candidate-checkpoint-experiment = []
+# Measurement-only access to the accepted-match transaction and its frozen
+# pre-transaction split-call control. Neither arm is compiled by default.
+accepted-match-transition-experiment = []
+# Adds counters around the measurement-only transition runner. Keep this
+# separate so Criterion timing builds carry no instrumentation overhead.
+accepted-match-transition-instrumentation = ["accepted-match-transition-experiment"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -97,3 +103,13 @@ harness = false
 name = "rspace_candidate_suffix_checkpoint"
 harness = false
 required-features = ["candidate-checkpoint-experiment"]
+
+[[bench]]
+name = "rspace_accepted_match"
+harness = false
+required-features = ["accepted-match-transition-experiment"]
+
+[[bench]]
+name = "rspace_accepted_match_profile"
+harness = false
+required-features = ["accepted-match-transition-instrumentation"]

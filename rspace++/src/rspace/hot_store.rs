@@ -352,6 +352,57 @@ where
     history_reader_base: Box<dyn HistoryReaderBase<C, P, A, K>>,
 }
 
+#[cfg(not(feature = "accepted-match-transition-instrumentation"))]
+type HotStateWriteGuard<'a, T> = std::sync::RwLockWriteGuard<'a, T>;
+
+#[cfg(feature = "accepted-match-transition-instrumentation")]
+struct HotStateWriteGuard<'a, T> {
+    guard: std::sync::RwLockWriteGuard<'a, T>,
+    hold_started: std::time::Instant,
+    measured: bool,
+}
+
+#[cfg(feature = "accepted-match-transition-instrumentation")]
+impl<T> std::ops::Deref for HotStateWriteGuard<'_, T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target { &self.guard }
+}
+
+#[cfg(feature = "accepted-match-transition-instrumentation")]
+impl<T> std::ops::DerefMut for HotStateWriteGuard<'_, T> {
+    fn deref_mut(&mut self) -> &mut Self::Target { &mut self.guard }
+}
+
+#[cfg(feature = "accepted-match-transition-instrumentation")]
+impl<T> Drop for HotStateWriteGuard<'_, T> {
+    fn drop(&mut self) {
+        if self.measured {
+            accepted_match_transition_experiment::record_write_hold(self.hold_started.elapsed());
+        }
+    }
+}
+
+#[cfg(not(feature = "accepted-match-transition-instrumentation"))]
+#[inline(always)]
+fn hot_state_write<T>(lock: &std::sync::RwLock<T>) -> HotStateWriteGuard<'_, T> {
+    lock.write().expect("hot store state write lock")
+}
+
+#[cfg(feature = "accepted-match-transition-instrumentation")]
+#[inline(always)]
+fn hot_state_write<T>(lock: &std::sync::RwLock<T>) -> HotStateWriteGuard<'_, T> {
+    let wait_started = std::time::Instant::now();
+    let guard = lock.write().expect("hot store state write lock");
+    let measured =
+        accepted_match_transition_experiment::record_write_acquisition(wait_started.elapsed());
+    HotStateWriteGuard {
+        guard,
+        hold_started: std::time::Instant::now(),
+        measured,
+    }
+}
+
 // See rspace/src/main/scala/coop/rchain/rspace/HotStore.scala
 impl<C, P, A, K> HotStore<C, P, A, K> for InMemHotStore<C, P, A, K>
 where
@@ -486,7 +537,7 @@ where
     }
 
     fn remove_continuation(&self, channels: &[C], index: i32) -> Option<()> {
-        let mut state = self.state.write().expect("hot store state write lock");
+        let mut state = hot_state_write(&self.state);
         let is_installed = state.installed_continuations.get(channels).is_some();
         let removing_installed = is_installed && index == 0;
         let removed_index = if is_installed { index - 1 } else { index };
@@ -593,7 +644,7 @@ where
             Some(self.get_data_from_history_store(channel))
         };
 
-        let mut state = self.state.write().expect("hot store state write lock");
+        let mut state = hot_state_write(&self.state);
         if state.data.is_loaded(channel) {
             state
                 .data
@@ -658,9 +709,7 @@ where
     }
 
     fn apply_datum_delta(&self, delta: &BagDelta) -> Result<(), RSpaceError> {
-        self.state
-            .write()
-            .expect("hot store state write lock")
+        hot_state_write(&self.state)
             .data
             .apply_delta(delta)
             .map_err(Into::into)
@@ -690,7 +739,7 @@ where
             })
             .collect::<Vec<_>>();
 
-        let mut state = self.state.write().expect("hot store state write lock");
+        let mut state = hot_state_write(&self.state);
 
         let mut authoritative_continuation = None;
         let mut ordinary_removal_index = None;
@@ -890,7 +939,7 @@ where
     }
 
     fn remove_join(&self, channel: &C, join: &[C]) -> Option<()> {
-        let mut state = self.state.write().expect("hot store state write lock");
+        let mut state = hot_state_write(&self.state);
         let has_join_in_state = state.joins.get(channel).is_some();
         let current_continuations = {
             let mut conts = state
@@ -1387,6 +1436,11 @@ where
         result
     }
 }
+
+#[cfg(feature = "accepted-match-transition-experiment")]
+#[doc(hidden)]
+#[path = "../../tests/hot_store/accepted_match_transition_experiment.rs"]
+pub mod accepted_match_transition_experiment;
 
 pub struct HotStoreInstances;
 

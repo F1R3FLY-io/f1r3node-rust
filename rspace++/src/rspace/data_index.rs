@@ -1153,6 +1153,8 @@ impl<C, A: Clone> RSpaceDataStore<C, A> {
         if self.loaded_channels.insert(&marker, ()).is_none() {
             self.loaded_channel_count += 1;
         }
+        #[cfg(feature = "accepted-match-transition-instrumentation")]
+        crate::rspace::hot_store::accepted_match_transition_experiment::record_pathmap_root_publication();
         Ok(multiplicity)
     }
 
@@ -1176,6 +1178,8 @@ impl<C, A: Clone> RSpaceDataStore<C, A> {
         }
 
         delta.apply_to(&mut self.index.bag)?;
+        #[cfg(feature = "accepted-match-transition-instrumentation")]
+        crate::rspace::hot_store::accepted_match_transition_experiment::record_pathmap_root_publication();
         let bag = &self.index.bag;
         let loaded_channels = &mut self.loaded_channels;
         let loaded_channel_count = &mut self.loaded_channel_count;
