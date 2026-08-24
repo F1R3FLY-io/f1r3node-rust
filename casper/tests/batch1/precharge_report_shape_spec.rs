@@ -5,12 +5,11 @@
 // not a coincidence, so it is asserted here in the crate that produces it
 // rather than worked around in the web layer.
 
-use casper::rust::api::block_report_api::to_proto_phase;
 use casper::rust::genesis::contracts::standard_deploys::{
     to_public, SYSTEM_VAULT_PK, SYSTEM_VAULT_TIMESTAMP,
 };
 use casper::rust::reporting_casper;
-use casper::rust::reporting_proto_transformer::ReportingProtoTransformer;
+use casper::rust::reporting_proto_transformer::{to_proto_phase, ReportingProtoTransformer};
 use casper::rust::util::construct_deploy;
 use casper::rust::util::rholang::tools::Tools;
 use models::casper::{ReportPhase, ReportProto, SingleReport};
@@ -216,16 +215,16 @@ async fn cost_accounted_user_deploy_report_starts_with_precharge_batch() {
     );
 
     // Marker assertions: the reporting rspace tags each segment at the
-    // phase boundary. The precharge is first and tagged PRECHARGE. The
-    // user and refund segments are tagged USER and REFUND. This pins
-    // the marker that the web layer's marked path relies on, alongside
-    // the positional invariant asserted below.
-    assert_eq!(
-        batches[0].phase,
-        ReportPhase::Precharge as i32,
-        "the first batch must carry the PRECHARGE marker"
-    );
+    // phase boundary. The report must contain segments tagged
+    // PRECHARGE, USER, and REFUND. The pre-deploy setup events (reset,
+    // bootstrap) are flushed as an Unspecified segment before the first
+    // phase boundary, so the precharge is not necessarily batches[0].
     let phases: Vec<i32> = batches.iter().map(|b| b.phase).collect();
+    assert!(
+        phases.contains(&(ReportPhase::Precharge as i32)),
+        "the report must contain a PRECHARGE-tagged segment; got phases {:?}",
+        phases
+    );
     assert!(
         phases.contains(&(ReportPhase::User as i32)),
         "the report must contain a USER-tagged segment; got phases {:?}",
@@ -238,26 +237,33 @@ async fn cost_accounted_user_deploy_report_starts_with_precharge_batch() {
     );
 
     let transfer_channel = transfer_unforgeable_channel();
-    let first_batch_transfers = transfers_in_batch(&batches[0], &transfer_channel);
     let expected_deployer_vault = VaultAddress::from_public_key(&construct_deploy::DEFAULT_PUB)
         .expect("DEFAULT_PUB must derive a vault address")
         .to_base58();
 
-    // Positional invariant (kept): report[0] is the precharge — exactly
-    // one transfer on the transfer channel, from the deployer's vault,
-    // for total_phlo_charge(). Both the invariant and the marker are
-    // pinned so a regression in either is caught.
+    // Find the precharge batch by marker, not by position. The marker is
+    // authoritative; the pre-deploy Unspecified segment may precede it.
+    let precharge_batch = batches
+        .iter()
+        .find(|b| b.phase == ReportPhase::Precharge as i32)
+        .expect("a PRECHARGE-tagged segment must exist");
+    let precharge_transfers = transfers_in_batch(precharge_batch, &transfer_channel);
+
+    // The precharge segment holds exactly one transfer on the transfer
+    // channel, from the deployer's vault, for total_phlo_charge(). Both
+    // the invariant and the marker are pinned so a regression in either
+    // is caught.
     assert_eq!(
-        first_batch_transfers.len(),
+        precharge_transfers.len(),
         1,
-        "report[0] must be the precharge: exactly one transfer on the transfer channel"
+        "the PRECHARGE segment must hold exactly one transfer on the transfer channel"
     );
     assert_eq!(
-        first_batch_transfers[0].0, expected_deployer_vault,
+        precharge_transfers[0].0, expected_deployer_vault,
         "precharge sender must be the deployer's vault address"
     );
     assert_eq!(
-        first_batch_transfers[0].1, expected_precharge,
+        precharge_transfers[0].1, expected_precharge,
         "precharge amount must equal total_phlo_charge()"
     );
 }
@@ -295,9 +301,9 @@ async fn genesis_deploys_carry_zero_phlo_price_so_no_precharge() {
 
 /// Genesis replays run with `with_cost_accounting == false` (no parents),
 /// so `process_deploy_without_cost_accounting` runs and the only phase
-/// marker set is `USER`. Every deploy's report must therefore contain
-/// only `USER` segments and no `PRECHARGE` or `REFUND` segment. This is
-/// the mirror of the cost-accounted assertion above.
+/// marker set is `USER`. Every deploy's report must therefore contain no
+/// `PRECHARGE` or `REFUND` segment. Segments may be `USER` or
+/// `UNSPECIFIED`.
 #[tokio::test]
 async fn genesis_report_carries_only_user_markers() {
     let genesis = GenesisBuilder::new()
@@ -335,13 +341,23 @@ async fn genesis_report_carries_only_user_markers() {
     for (i, deploy_result) in replay.deploy_report_result.iter().enumerate() {
         let batches = report_batches(&deploy_result.events);
         for (j, batch) in batches.iter().enumerate() {
-            assert_eq!(
-                batch.phase,
-                ReportPhase::User as i32,
-                "genesis deploy {} batch {} must carry the USER marker, got phase {}",
+            assert!(
+                batch.phase == ReportPhase::User as i32
+                    || batch.phase == ReportPhase::Unspecified as i32,
+                "genesis deploy {} batch {} must carry USER or UNSPECIFIED, got phase {}",
                 i,
                 j,
                 batch.phase
+            );
+            assert_ne!(
+                batch.phase,
+                ReportPhase::Precharge as i32,
+                "genesis must never produce a PRECHARGE segment"
+            );
+            assert_ne!(
+                batch.phase,
+                ReportPhase::Refund as i32,
+                "genesis must never produce a REFUND segment"
             );
         }
     }

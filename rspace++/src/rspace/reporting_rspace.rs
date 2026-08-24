@@ -185,8 +185,14 @@ where
     }
 
     fn collect_report(&self) -> Result<(), RSpaceError> {
-        let mut soft_report_guard = self.soft_report.lock().unwrap();
+        let soft_report_guard = self.soft_report.lock().unwrap();
+        self.collect_report_locked(soft_report_guard)
+    }
 
+    fn collect_report_locked(
+        &self,
+        mut soft_report_guard: std::sync::MutexGuard<'_, Vec<ReportingEvent<C, P, A, K>>>,
+    ) -> Result<(), RSpaceError> {
         if !soft_report_guard.is_empty() {
             let soft_report_content = std::mem::take(&mut *soft_report_guard);
             let phase = *self.current_phase.lock().unwrap();
@@ -382,24 +388,13 @@ where
         self.replay_rspace.update_produce(produce).await
     }
 
-    /// Flush the current soft buffer (tagging the segment with the phase
-    /// in force until now) and then record the new phase for subsequent
-    /// events. Called by the shared replay path at each phase boundary.
-    /// The trait default is a no-op, so plain replay spaces are
-    /// unaffected.
-    ///
-    /// When the phase in force until now is `Unspecified` — i.e. setup
-    /// noise (reset, bootstrap, registry) that accumulated before any
-    /// deploy phase was set — the soft buffer is discarded rather than
-    /// emitted as an `Unspecified` segment. In the old positional shape
-    /// this noise sat in the first batch alongside the precharge and was
-    /// dropped by the consumer's positional skip, so discarding it here
-    /// preserves the observable transfer set.
+    /// Flush the current segment (tagged with the phase in force until
+    /// now) and then record the new phase for subsequent events. Called
+    /// by the shared replay path at each phase boundary. The trait
+    /// default is a no-op, so plain replay spaces are unaffected.
     async fn set_report_phase(&self, phase: ReportPhase) {
-        let prev = *self.current_phase.lock().unwrap();
-        if prev == ReportPhase::Unspecified {
-            self.soft_report.lock().unwrap().clear();
-        } else if let Err(err) = self.collect_report() {
+        let soft_report_guard = self.soft_report.lock().unwrap();
+        if let Err(err) = self.collect_report_locked(soft_report_guard) {
             tracing::warn!(
                 target: "f1r3fly.rspace.reporting",
                 error = %err,

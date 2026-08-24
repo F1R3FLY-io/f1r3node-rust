@@ -217,8 +217,11 @@ impl ReplayRuntimeOps {
         // (rigged) events are tagged with the deploy's first phase,
         // matching the old positional batch shape where rig and
         // precharge shared the first segment. Cost-accounted deploys
-        // start in Precharge. Genesis (no cost accounting) starts in
-        // User. The trait default is a no-op on plain replay spaces.
+        // start in Precharge, so the rig segment is tagged PRECHARGE
+        // and dropped wholesale by the marked path in
+        // `extract_transfers_from_report`. Genesis (no cost accounting)
+        // starts in User. The trait default is a no-op on plain replay
+        // spaces.
         let initial_phase = if with_cost_accounting {
             ReportPhase::Precharge
         } else {

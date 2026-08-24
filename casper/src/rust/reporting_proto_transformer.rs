@@ -1,13 +1,27 @@
 // See casper/src/main/scala/coop/rchain/casper/ReportingProtoTransformer.scala
 
 use models::casper::{
-    report_proto, PeekProto, ReportCommProto, ReportConsumeProto, ReportProduceProto, ReportProto,
+    report_proto, PeekProto, ReportCommProto, ReportConsumeProto, ReportPhase as ProtoReportPhase,
+    ReportProduceProto, ReportProto,
 };
 use models::rhoapi::{BindPattern, ListParWithRandom, Par, TaggedContinuation};
 use rspace_plus_plus::rspace::reporting_rspace::{
-    ReportingComm, ReportingConsume, ReportingProduce,
+    ReportPhase as RspaceReportPhase, ReportingComm, ReportingConsume, ReportingProduce,
 };
 use rspace_plus_plus::rspace::reporting_transformer::ReportingTransformer;
+
+/// Map the rspace-level `ReportPhase` to the protobuf `ReportPhase`
+/// discriminant. The proto enum is the single source of truth for
+/// consumers. The default on both sides is `Unspecified`, which is what
+/// reports predating the marker decode as.
+pub fn to_proto_phase(phase: RspaceReportPhase) -> i32 {
+    match phase {
+        RspaceReportPhase::Unspecified => ProtoReportPhase::Unspecified as i32,
+        RspaceReportPhase::Precharge => ProtoReportPhase::Precharge as i32,
+        RspaceReportPhase::User => ProtoReportPhase::User as i32,
+        RspaceReportPhase::Refund => ProtoReportPhase::Refund as i32,
+    }
+}
 
 pub struct ReportingProtoTransformer;
 

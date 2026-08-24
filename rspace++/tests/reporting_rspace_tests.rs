@@ -4,7 +4,7 @@ use std::sync::Arc;
 use rspace_plus_plus::rspace::history::history_repository::HistoryRepositoryInstances;
 use rspace_plus_plus::rspace::hot_store::{HotStoreInstances, HotStoreState};
 use rspace_plus_plus::rspace::r#match::Match;
-use rspace_plus_plus::rspace::reporting_rspace::{ReportingEvent, ReportingRspace};
+use rspace_plus_plus::rspace::reporting_rspace::{ReportPhase, ReportingEvent, ReportingRspace};
 use rspace_plus_plus::rspace::rspace::RSpace;
 use rspace_plus_plus::rspace::rspace_interface::ISpace;
 use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
@@ -231,4 +231,125 @@ async fn reporting_rspace_should_capture_peeks_in_comm_event() {
         _ => false,
     });
     assert!(has_peek);
+}
+
+// === Phase machinery tests ===
+//
+// These test the ReportPhase tagging directly against ReportingRspace,
+// independent of the casper replay path.
+
+/// Emit one produce event. The soft buffer receives one ReportingProduce.
+async fn emit_one_event(reporting: &ReportingRspace<String, Pattern, String, String>) {
+    let _ = reporting
+        .produce("ch1".to_string(), "d".to_string(), false)
+        .await;
+}
+
+/// Events emitted after `set_report_phase(Precharge)` / `(User)` /
+/// `(Refund)` land in segments tagged with the respective phase, in
+/// that order.
+#[tokio::test]
+async fn set_report_phase_tags_segments_in_order() {
+    let (_space, reporting) = build_reporting_rspace();
+
+    reporting.set_report_phase(ReportPhase::Precharge).await;
+    emit_one_event(&reporting).await;
+
+    reporting.set_report_phase(ReportPhase::User).await;
+    emit_one_event(&reporting).await;
+
+    reporting.set_report_phase(ReportPhase::Refund).await;
+    emit_one_event(&reporting).await;
+
+    let report = reporting.get_report().unwrap();
+    assert_eq!(report.len(), 3, "three phase boundaries, three segments");
+    assert_eq!(report[0].phase, ReportPhase::Precharge);
+    assert_eq!(report[1].phase, ReportPhase::User);
+    assert_eq!(report[2].phase, ReportPhase::Refund);
+    for batch in &report {
+        assert_eq!(batch.events.len(), 1, "each segment holds exactly one event");
+    }
+}
+
+/// `set_report_phase` with an empty soft buffer produces no segment
+/// (`collect_report` skips empties).
+#[tokio::test]
+async fn set_report_phase_with_empty_soft_buffer_produces_no_segment() {
+    let (_space, reporting) = build_reporting_rspace();
+
+    reporting.set_report_phase(ReportPhase::Precharge).await;
+    reporting.set_report_phase(ReportPhase::User).await;
+
+    let report = reporting.get_report().unwrap();
+    assert!(report.is_empty(), "no events emitted, so no segments should be produced");
+}
+
+/// Events emitted before any `set_report_phase` call survive and are
+/// tagged `Unspecified`. Regression test.
+#[tokio::test]
+async fn events_before_first_phase_call_survive_as_unspecified() {
+    let (_space, reporting) = build_reporting_rspace();
+
+    emit_one_event(&reporting).await;
+
+    reporting.set_report_phase(ReportPhase::Precharge).await;
+    emit_one_event(&reporting).await;
+
+    let report = reporting.get_report().unwrap();
+    assert_eq!(report.len(), 2, "one Unspecified segment, one Precharge segment");
+    assert_eq!(
+        report[0].phase,
+        ReportPhase::Unspecified,
+        "events before the first phase call are tagged Unspecified, not discarded"
+    );
+    assert_eq!(report[0].events.len(), 1);
+    assert_eq!(report[1].phase, ReportPhase::Precharge);
+    assert_eq!(report[1].events.len(), 1);
+}
+
+/// `get_report()` resets the phase to `Unspecified`, so a subsequent
+/// segment with no phase call is tagged `Unspecified`.
+#[tokio::test]
+async fn get_report_resets_phase_to_unspecified() {
+    let (_space, reporting) = build_reporting_rspace();
+
+    reporting.set_report_phase(ReportPhase::User).await;
+    emit_one_event(&reporting).await;
+
+    let first = reporting.get_report().unwrap();
+    assert_eq!(first.len(), 1);
+    assert_eq!(first[0].phase, ReportPhase::User);
+
+    emit_one_event(&reporting).await;
+    let second = reporting.get_report().unwrap();
+    assert_eq!(second.len(), 1);
+    assert_eq!(
+        second[0].phase,
+        ReportPhase::Unspecified,
+        "get_report resets the phase, so the next segment is Unspecified"
+    );
+}
+
+/// `create_checkpoint()` clears both buffers and resets the phase.
+#[tokio::test]
+async fn create_checkpoint_clears_buffers_and_resets_phase() {
+    let (_space, reporting) = build_reporting_rspace();
+
+    reporting.set_report_phase(ReportPhase::Precharge).await;
+    emit_one_event(&reporting).await;
+
+    reporting.create_checkpoint().await.unwrap();
+
+    emit_one_event(&reporting).await;
+    let report = reporting.get_report().unwrap();
+    assert_eq!(
+        report.len(),
+        1,
+        "checkpoint cleared the report buffer; only the post-checkpoint segment remains"
+    );
+    assert_eq!(
+        report[0].phase,
+        ReportPhase::Unspecified,
+        "checkpoint reset the phase to Unspecified"
+    );
 }

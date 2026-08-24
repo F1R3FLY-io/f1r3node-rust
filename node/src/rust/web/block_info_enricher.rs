@@ -23,6 +23,14 @@ use super::transaction::helpers;
 /// path. The `to_addr` is not checked because the precharge pays to an
 /// unforgeable-derived vault that is not knowable in the web layer.
 ///
+/// The rig (recorded-COMM) events are replayed before the first phase
+/// emits anything, and `replay_deploy_e` sets the initial phase before
+/// `rig`, so for a cost-accounted deploy the rig segment is tagged
+/// `PRECHARGE` and dropped wholesale on the marked path. The fallback
+/// path only dropped `report[0]` when the shape check passed, so this
+/// is a deliberate difference between the two paths: the marker is
+/// authoritative and does not depend on the precharge amount.
+///
 /// Genesis (`with_cost_accounting == false`) emits only `USER`
 /// segments. System deploys emit only `UNSPECIFIED` segments.
 ///
@@ -103,13 +111,20 @@ pub fn extract_transfers_from_report(
             // UNSPECIFIED (treated as USER). Drop PRECHARGE and REFUND
             // wholesale. No positional skip, no shape check, no amount
             // arithmetic on this path.
-            for single_report in &deploy.report {
-                let drop = matches!(
-                    single_report.phase,
-                    p if p == ReportPhase::Precharge as i32
-                        || p == ReportPhase::Refund as i32
+            let has_unspecified = deploy
+                .report
+                .iter()
+                .any(|b| b.phase == ReportPhase::Unspecified as i32);
+            if has_unspecified {
+                tracing::debug!(
+                    target: "f1r3fly.node.web.enricher",
+                    deploy_sig = %deploy_sig,
+                    "marked report also contains UNSPECIFIED segments; \
+                     treating them as USER"
                 );
-                if !drop {
+            }
+            for single_report in &deploy.report {
+                if !is_system_phase(single_report.phase) {
                     user_transfers.extend(find_transfers_in_report(
                         single_report,
                         transfer_unforgeable,
@@ -181,6 +196,13 @@ pub fn extract_transfers_from_report(
     }
 
     transfers_by_deploy
+}
+
+/// A segment is "system" when its phase is `PRECHARGE` or `REFUND`.
+/// Used by both the `any_marked` check and the per-segment drop test so
+/// the two stay in sync.
+fn is_system_phase(phase: i32) -> bool {
+    phase == ReportPhase::Precharge as i32 || phase == ReportPhase::Refund as i32
 }
 
 /// Scan a single report for user transfer events on the transfer_unforgeable
@@ -1085,5 +1107,41 @@ mod tests {
         assert_eq!(transfers[0].amount, 100);
         assert_eq!(transfers[1].to_addr, "receiver_b");
         assert_eq!(transfers[1].amount, 200);
+    }
+
+    // Marked report with only a PRECHARGE segment -> entry present,
+    // empty vector, no warning.
+    #[test]
+    fn marked_report_with_only_precharge_yields_empty_entry() {
+        let transfer_unforgeable = make_transfer_unforgeable();
+        let (deployer_hex, deployer_addr) = make_deployer();
+
+        let precharge = make_transfer_report_phase(
+            &transfer_unforgeable,
+            &deployer_addr,
+            "pos_vault_addr",
+            100,
+            ReportPhase::Precharge,
+        );
+        let report = make_block_event(DeployInfoWithEventData {
+            deploy_info: Some(make_deploy_info_with_charge(
+                "deploy_marked_precharge_only",
+                &deployer_hex,
+                100,
+                1,
+            ))
+            .into(),
+            report: vec![precharge],
+        });
+
+        let result = extract_transfers_from_report(&report, &transfer_unforgeable);
+
+        let transfers = result
+            .get("deploy_marked_precharge_only")
+            .expect("precharge-only marked deploy with non-empty report must receive a map entry");
+        assert!(
+            transfers.is_empty(),
+            "PRECHARGE dropped by marker; no user transfers remain"
+        );
     }
 }
