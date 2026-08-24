@@ -3,7 +3,7 @@ name: Deployment Train
 # Train setup (docs/release-process.md section 13.2). Validates a reviewed
 # manifest, verifies the member chain of a stack through the GitHub API,
 # verifies the source version, and secures a successful full CI run for the
-# exact head SHA. The train record it produces is the reviewed intent plus
+# exact top synthetic merge SHA. The train record is the reviewed intent plus
 # every member head observed at setup; later re-validation and promotion
 # compare against it.
 #
@@ -23,7 +23,7 @@ on:
         required: true
         type: string
       wait_for_ci:
-        description: When no successful ci.yml run exists for head_sha, dispatch one and wait for it (up to the job timeout)
+        description: When no successful exact-merge ci.yml run exists, dispatch one and wait for it
         required: false
         default: true
         type: boolean
@@ -47,6 +47,7 @@ jobs:
     outputs:
       train_id: ${{ steps.manifest.outputs.train_id }}
       head_sha: ${{ steps.manifest.outputs.head_sha }}
+      merge_sha: ${{ steps.exact.outputs.merge_sha }}
       publishing: ${{ steps.manifest.outputs.publishing }}
       ci_run_id: ${{ steps.ci.outputs.ci_run_id }}
     steps:
@@ -125,6 +126,27 @@ jobs:
             fi
             lower="$upper"
           done <<<"$members"
+          top="$(jq -r '.pull_request' "$manifest")"
+          for _ in $(seq 1 10); do
+            merge_sha="$(jq -r '.merge_commit_sha // empty' "$inputs/pull-$top.json")"
+            [[ "$merge_sha" =~ ^[0-9a-f]{40}$ ]] && break
+            sleep 2
+            gh api "repos/${GITHUB_REPOSITORY}/pulls/${top}" > "$inputs/pull-$top.json"
+          done
+          [[ "$merge_sha" =~ ^[0-9a-f]{40}$ ]] || {
+            echo "::error::top pull request #${top} has no available synthetic merge commit"
+            exit 1
+          }
+          gh api "repos/${GITHUB_REPOSITORY}/commits/${merge_sha}" \
+            --jq '{sha: .sha, parents: [.parents[] | {sha: .sha}]}' > "$inputs/top-merge.json"
+          base_sha="$(jq -r '.base.sha' "$inputs/pull-$top.json")"
+          merge_base_sha="$(jq -r '.parents[0].sha' "$inputs/top-merge.json")"
+          gh api "repos/${GITHUB_REPOSITORY}/compare/${base_sha}...${merge_base_sha}" \
+            --jq '{status: .status}' > "$inputs/top-base.json"
+          root="$(jq -r '.stack.members[0].pull_request // .pull_request' "$manifest")"
+          integration_base_sha="$(jq -r '.base.sha' "$inputs/pull-$root.json")"
+          gh api "repos/${GITHUB_REPOSITORY}/compare/${integration_base_sha}...${merge_base_sha}" \
+            --jq '{status: .status}' > "$inputs/integration-base.json"
           ls -1 "$inputs"
 
       - name: Verify the stack chain
@@ -140,27 +162,33 @@ jobs:
         run: |
           manifest="$RUNNER_TEMP/train/manifest.json"
           n="$(jq -r '.pull_request' "$manifest")"
-          head="$(jq -r '.head.sha' "$RUNNER_TEMP/train/inputs/pull-$n.json")"
-          [ "$head" = "$(jq -r '.head_sha' "$manifest")" ] || {
-            echo "::error::pull request #${n} head ${head} differs from manifest head_sha"
-            exit 1
-          }
-          jq -e '.state == "open" or .merged == true' "$RUNNER_TEMP/train/inputs/pull-$n.json" >/dev/null || {
+          pull="$RUNNER_TEMP/train/inputs/pull-$n.json"
+          jq -e '.state == "open" or .merged == true' "$pull" >/dev/null || {
             echo "::error::pull request #${n} is neither open nor merged"
             exit 1
           }
-          jq --arg head "$head" --arg base "$(jq -r '.base.ref' "$RUNNER_TEMP/train/inputs/pull-$n.json")" \
-            --argjson merged "$(jq -r '.merged' "$RUNNER_TEMP/train/inputs/pull-$n.json")" '
+          ci-control/.github/scripts/release-train.sh validate-top-merge \
+            "$manifest" "$RUNNER_TEMP/train/inputs" "$RUNNER_TEMP/train/top-record.json"
+          jq --slurpfile top "$RUNNER_TEMP/train/top-record.json" \
+            --arg base "$(jq -r '.base.ref' "$pull")" \
+            --argjson merged "$(jq -r '.merged' "$pull")" '
             {schema_version: 1, train_id: .id, state: .state, target_version: .target_version,
              publishing: .publishing, base_branch: .base_branch, integration_branch: null,
              head_sha: .head_sha, head_pull_request: .pull_request,
-             members: [{pull_request: .pull_request, head_sha: $head, base: $base, merged: $merged}],
+             base_sha: $top[0].base_sha, integration_base_sha: $top[0].base_sha,
+             merge_base_sha: $top[0].merge_base_sha, merge_sha: $top[0].merge_sha,
+             members: [{pull_request: .pull_request, head_sha: .head_sha, base: $base, merged: $merged}],
              required_gates: .required_gates}' "$manifest" > "$RUNNER_TEMP/train/train-record.json"
 
-      - name: Checkout exact head source
+      - name: Read exact merge
+        id: exact
+        shell: bash -euo pipefail {0}
+        run: echo "merge_sha=$(jq -r '.merge_sha' "$RUNNER_TEMP/train/train-record.json")" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout exact merge source
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
-          ref: ${{ steps.manifest.outputs.head_sha }}
+          ref: ${{ steps.exact.outputs.merge_sha }}
           path: head
           fetch-depth: 0
           persist-credentials: false
@@ -172,48 +200,124 @@ jobs:
           ci-control/.github/scripts/release-train.sh validate-version \
             "$RUNNER_TEMP/train/manifest.json" head ci-control/.github/deployment-trains
 
-      - name: Secure a successful CI run for the head
+      - name: Secure exact-merge CI evidence
         id: ci
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          HEAD_SHA: ${{ steps.manifest.outputs.head_sha }}
           WAIT_FOR_CI: ${{ inputs.wait_for_ci }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         shell: bash -euo pipefail {0}
         run: |
+          record="$RUNNER_TEMP/train/train-record.json"
+          merge_sha="$(jq -r '.merge_sha' "$record")"
+          top="$(jq -r '.head_pull_request' "$record")"
+          head_sha="$(jq -r '.head_sha' "$record")"
+          base_sha="$(jq -r '.base_sha' "$record")"
+          integration_base_sha="$(jq -r '.integration_base_sha' "$record")"
+          merge_base_sha="$(jq -r '.merge_base_sha' "$record")"
+          control_sha="$(git -C ci-control rev-parse HEAD)"
+          title="CI [exact merge ${merge_sha}]"
           list_runs() {
-            gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?head_sha=${HEAD_SHA}&per_page=50" \
+            gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?per_page=100" \
               > "$RUNNER_TEMP/train/ci-runs.json"
           }
           list_runs
-          run_id="$(ci-control/.github/scripts/release-train.sh plan-ci "$RUNNER_TEMP/train/ci-runs.json" "$HEAD_SHA" "$GITHUB_REPOSITORY")"
-          if [ "$run_id" = dispatch ]; then
-            [ "$WAIT_FOR_CI" = true ] || { echo "::error::no successful ci.yml run exists for ${HEAD_SHA} and wait_for_ci is false"; exit 1; }
-            # workflow_dispatch needs a ref. The top member's branch is the
-            # ref; the run's head_sha is then checked against the manifest so
-            # a branch that moved after setup cannot substitute its tip.
-            top="$(jq -r '.head_pull_request' "$RUNNER_TEMP/train/train-record.json")"
-            ref="$(jq -r '.head.ref' "$RUNNER_TEMP/train/inputs/pull-$top.json")"
+          decision="$(ci-control/.github/scripts/release-train.sh plan-ci \
+            "$RUNNER_TEMP/train/ci-runs.json" "$merge_sha" "$GITHUB_REPOSITORY" "$DEFAULT_BRANCH" "$control_sha")"
+          if [ "$decision" = dispatch ]; then
+            [ "$WAIT_FOR_CI" = true ] || {
+              echo "::error::no successful exact-merge ci.yml run exists for ${merge_sha} and wait_for_ci is false"
+              exit 1
+            }
             before="$(date -u +%s)"
-            gh workflow run ci.yml --ref "$ref"
-            echo "Dispatched ci.yml on ${ref}; waiting for a run at ${HEAD_SHA}."
+            gh workflow run ci.yml --ref "$DEFAULT_BRANCH" \
+              -f target_sha="$merge_sha" -f top_pull_request="$top"
+            echo "Dispatched trusted ci.yml for exact merge ${merge_sha}."
+            run_id=""
             for _ in $(seq 1 30); do
               sleep 20
               list_runs
-              run_id="$(jq -r --arg sha "$HEAD_SHA" --argjson before "$before" '
-                [.workflow_runs[] | select(.head_sha == $sha and .event == "workflow_dispatch"
+              run_id="$(jq -r --arg title "$title" --arg branch "$DEFAULT_BRANCH" --arg control "$control_sha" --argjson before "$before" '
+                [.workflow_runs[] | select(.display_title == $title
+                  and .event == "workflow_dispatch"
+                  and .head_branch == $branch
+                  and .head_sha == $control
                   and ((.created_at | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601) >= $before))]
                 | sort_by(.run_number) | last | .id // empty' "$RUNNER_TEMP/train/ci-runs.json")"
               [ -n "$run_id" ] && break
             done
-            [ -n "$run_id" ] || { echo "::error::ci.yml did not start at ${HEAD_SHA} on ${ref}; the branch may have moved"; exit 1; }
-            gh run watch "$run_id" --exit-status
+            [ -n "$run_id" ] || { echo "::error::exact-merge ci.yml did not start"; exit 1; }
+            gh run watch "$run_id" --repo "$GITHUB_REPOSITORY" --exit-status
+          elif [[ "$decision" == wait:* ]]; then
+            [ "$WAIT_FOR_CI" = true ] || {
+              echo "::error::exact-merge ci.yml run ${decision#wait:} is still active and wait_for_ci is false"
+              exit 1
+            }
+            run_id="${decision#wait:}"
+            gh run watch "$run_id" --repo "$GITHUB_REPOSITORY" --exit-status
+          else
+            run_id="$decision"
           fi
           gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}" > "$RUNNER_TEMP/train/ci-run.json"
-          jq -e --arg sha "$HEAD_SHA" '.head_sha == $sha and .conclusion == "success" and .path == ".github/workflows/ci.yml"' \
-            "$RUNNER_TEMP/train/ci-run.json" >/dev/null || { echo "::error::run ${run_id} is not a successful ci.yml run at ${HEAD_SHA}"; exit 1; }
-          jq --argjson run "$(jq '{run_id: .id, run_number: .run_number, run_attempt: .run_attempt, event: .event}' "$RUNNER_TEMP/train/ci-run.json")" \
-            '. + {ci: $run}' "$RUNNER_TEMP/train/train-record.json" > "$RUNNER_TEMP/train/train-record.with-ci.json"
-          mv "$RUNNER_TEMP/train/train-record.with-ci.json" "$RUNNER_TEMP/train/train-record.json"
+          run_attempt="$(jq -r '.run_attempt' "$RUNNER_TEMP/train/ci-run.json")"
+          jq -e --arg title "$title" --arg branch "$DEFAULT_BRANCH" --arg control "$control_sha" '
+            .display_title == $title
+            and .head_branch == $branch
+            and .head_sha == $control
+            and .event == "workflow_dispatch"
+            and .conclusion == "success"
+            and .path == ".github/workflows/ci.yml"' "$RUNNER_TEMP/train/ci-run.json" >/dev/null || {
+            echo "::error::run ${run_id} is not successful trusted CI evidence for ${merge_sha}"
+            exit 1
+          }
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/attempts/${run_attempt}/jobs?per_page=100" \
+            > "$RUNNER_TEMP/train/ci-jobs.json"
+          rm -rf "$RUNNER_TEMP/train/ci-target"
+          gh run download "$run_id" --repo "$GITHUB_REPOSITORY" \
+            --name "ci-target-${run_attempt}" --dir "$RUNNER_TEMP/train/ci-target"
+          target="$RUNNER_TEMP/train/ci-target/ci-target.json"
+          ci-control/.github/scripts/release-train.sh validate-ci-evidence \
+            "$target" "$RUNNER_TEMP/train/ci-jobs.json" "$merge_sha" "$top" "$head_sha" "$base_sha" \
+            "$merge_base_sha" "$run_id" "$run_attempt" "$GITHUB_REPOSITORY"
+          current="$RUNNER_TEMP/train/current"
+          mkdir -p "$current"
+          gh api "repos/${GITHUB_REPOSITORY}/pulls/${top}" > "$current/pull-$top.json"
+          current_merge="$(jq -r '.merge_commit_sha // empty' "$current/pull-$top.json")"
+          [[ "$current_merge" =~ ^[0-9a-f]{40}$ ]] || {
+            echo "::error::top pull request #${top} no longer has a synthetic merge"
+            exit 1
+          }
+          gh api "repos/${GITHUB_REPOSITORY}/commits/${current_merge}" \
+            --jq '{sha: .sha, parents: [.parents[] | {sha: .sha}]}' > "$current/top-merge.json"
+          current_base="$(jq -r '.base.sha' "$current/pull-$top.json")"
+          current_merge_base="$(jq -r '.parents[0].sha' "$current/top-merge.json")"
+          gh api "repos/${GITHUB_REPOSITORY}/compare/${current_base}...${current_merge_base}" \
+            --jq '{status: .status}' > "$current/top-base.json"
+          root="$(jq -r '.stack.members[0].pull_request // .pull_request' "$RUNNER_TEMP/train/manifest.json")"
+          if [ "$root" != "$top" ]; then
+            gh api "repos/${GITHUB_REPOSITORY}/pulls/${root}" > "$current/pull-$root.json"
+          fi
+          current_integration_base="$(jq -r '.base.sha' "$current/pull-$root.json")"
+          gh api "repos/${GITHUB_REPOSITORY}/compare/${current_integration_base}...${current_merge_base}" \
+            --jq '{status: .status}' > "$current/integration-base.json"
+          jq -e '.status == "ahead" or .status == "identical"' "$current/integration-base.json" >/dev/null || {
+            echo "::error::current top synthetic merge does not contain the integration base"
+            exit 1
+          }
+          ci-control/.github/scripts/release-train.sh validate-top-merge \
+            "$RUNNER_TEMP/train/manifest.json" "$current" "$current/top-record.json"
+          jq -e --arg integration_base "$current_integration_base" --slurpfile current "$current/top-record.json" '
+            .head_sha == $current[0].head_sha
+            and .base_sha == $current[0].base_sha
+            and .integration_base_sha == $integration_base
+            and .merge_base_sha == $current[0].merge_base_sha
+            and .merge_sha == $current[0].merge_sha' "$record" >/dev/null || {
+            echo "::error::top pull request changed while exact-merge CI ran"
+            exit 1
+          }
+          jq --arg target "$merge_sha" --argjson run "$(jq '{run_id: .id, run_number: .run_number, run_attempt: .run_attempt, event: .event}' "$RUNNER_TEMP/train/ci-run.json")" \
+            '. + {ci: ($run + {target_sha: $target})}' "$record" > "$RUNNER_TEMP/train/train-record.with-ci.json"
+          mv "$RUNNER_TEMP/train/train-record.with-ci.json" "$record"
           echo "ci_run_id=$run_id" >> "$GITHUB_OUTPUT"
 
       - name: Upload train record

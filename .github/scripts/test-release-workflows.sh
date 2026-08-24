@@ -9,6 +9,7 @@ ruby -ryaml - \
 	"$ROOT/.github/workflows/canary-publish.yml" \
 	"$ROOT/.github/workflows/oci-validation.yml" \
 	"$ROOT/.github/workflows/merge-recovery-soak.yml" \
+	"$ROOT/.github/workflows/ci.yml" \
 	"$ROOT/.github/workflows/deployment-train.yml" <<'RUBY'
 def trigger(document)
   document["on"] || document[true]
@@ -18,7 +19,7 @@ def fail_if(condition, message)
   abort(message) if condition
 end
 
-release_path, evidence_path, soakin_path, canary_path, oci_path, soak_path, train_path = ARGV
+release_path, evidence_path, soakin_path, canary_path, oci_path, soak_path, ci_path, train_path = ARGV
 release = YAML.load_file(release_path)
 evidence = YAML.load_file(evidence_path)
 soakin = YAML.load_file(soakin_path)
@@ -162,6 +163,23 @@ fail_if(!reusable_text.match?(/Build Docker Image\n\s+if: inputs\.candidate_tag 
 soak_text = File.read(soak_path)
 fail_if(!soak_text.match?(/docker pull --platform [^\n]*@\$\{amd64_digest\}/), "soak candidate mode must pull the image by digest")
 fail_if(!soak_text.match?(/Build node image\n\s+if: needs\.schedule_gate\.outputs\.candidate_tag == ''/m), "soak must skip the source build in candidate mode")
+ci = YAML.load_file(ci_path)
+ci_trigger = trigger(ci)
+fail_if(!ci_trigger.key?("pull_request") || !ci_trigger["pull_request"].nil?, "CI must run lightweight checks for every pull request base")
+fail_if(ci_trigger.dig("workflow_dispatch", "inputs", "target_sha", "default") != "", "CI dispatch must accept an optional exact target SHA")
+fail_if(ci_trigger.dig("workflow_dispatch", "inputs", "top_pull_request", "default") != "", "CI dispatch must accept an optional top pull request")
+build_base = ci.dig("jobs", "build_base")
+fail_if(build_base.dig("outputs", "TARGET_SHA") != "${{ steps.target.outputs.target_sha }}", "Build Base must export the validated target SHA")
+fail_if(build_base.dig("outputs", "RUN_HEAVY") != "${{ steps.target.outputs.run_heavy }}", "Build Base must export the Heavy Pipeline decision")
+pipeline = ci.dig("jobs", "pipeline")
+fail_if(pipeline["if"] != "needs.build_base.outputs.RUN_HEAVY == 'true'", "Heavy Pipeline must use the validated stack decision")
+fail_if(pipeline.dig("with", "checkout_ref") != "${{ needs.build_base.outputs.TARGET_SHA }}", "Heavy Pipeline must check out the validated target SHA")
+ci_text = File.read(ci_path)
+fail_if(!ci_text.include?("merge_commit_sha"), "CI must validate the current pull request synthetic merge")
+fail_if(!ci_text.include?('-f base="$PR_HEAD_REF"'), "CI must detect open pull requests stacked on the current head")
+fail_if(!ci_text.include?('run_heavy=$run_heavy'), "CI must persist the Heavy Pipeline decision")
+fail_if(!ci_text.include?("ci-target-${{ github.run_attempt }}"), "CI must upload attempt-specific target evidence")
+
 # Deployment train setup (Phase 5): manual, default-branch only, one job
 # whose only write permission is actions (the optional ci.yml dispatch), no
 # protected environment, pinned actions, and never a tag, release, image,
@@ -183,8 +201,13 @@ train_text = File.read(train_path)
 fail_if(train_text.match?(/docker\s+(build|push|login)|buildx|gh release|git push|refs\/tags|secrets\.(?!GITHUB_TOKEN)/), "deployment train setup must not publish or use secrets beyond GITHUB_TOKEN")
 fail_if(!train_text.include?("release-train.sh validate-manifest"), "deployment train must validate the manifest with release-train.sh")
 fail_if(!train_text.include?("release-train.sh validate-stack"), "deployment train must verify the stack chain with release-train.sh")
+fail_if(!train_text.include?("release-train.sh validate-top-merge"), "deployment train must verify the top synthetic merge")
 fail_if(!train_text.include?("release-train.sh validate-version"), "deployment train must verify the source version with release-train.sh")
 fail_if(!train_text.include?("release-train.sh plan-ci"), "deployment train must plan CI evidence with release-train.sh")
+fail_if(!train_text.include?("release-train.sh validate-ci-evidence"), "deployment train must validate exact CI target and Heavy Pipeline evidence")
+fail_if(!train_text.include?('gh workflow run ci.yml --ref "$DEFAULT_BRANCH"'), "deployment train must dispatch the trusted default-branch CI workflow")
+fail_if(!train_text.include?('-f target_sha="$merge_sha" -f top_pull_request="$top"'), "deployment train must dispatch CI for the exact top merge")
+fail_if(!train_text.include?('/attempts/${run_attempt}/jobs'), "deployment train must read jobs from the selected run attempt")
 fail_if(!train_text.match?(/\.github\/deployment-trains\/\*\.yml\)/), "deployment train must constrain manifest_path to .github/deployment-trains/")
 puts "release workflow tests passed"
 RUBY

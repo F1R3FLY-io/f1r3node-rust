@@ -124,9 +124,9 @@ EOF
 done
 ok "both pipeline callers pass secrets down"
 
-# 5. Fast checks use ref-and-SHA push groups. Heavy branch work keeps only the
-#    current head, while each version tag has an independent release group.
-#    A branch publisher must also reject a stale SHA after it gets its lock.
+# 5. Fast checks use ref-and-SHA push groups. Exact merge runs use the merge SHA.
+#    Heavy branch work keeps only the current head. Each version tag has a release group.
+#    A branch publisher must reject a stale SHA after it gets its lock.
 ci_concurrency_errors=""
 if ! ci_concurrency_errors="$(ruby -ryaml - .github/workflows/ci.yml 2>&1 <<'RUBY'
 def environment_name(job)
@@ -140,15 +140,15 @@ end
 
 doc = YAML.load_file(ARGV[0])
 jobs = doc.fetch("jobs")
-expected_group = "${{ github.workflow }}-${{ github.event_name == 'push' && format('{0}-{1}', github.ref, github.sha) || github.ref }}"
-expected_cancel = "${{ github.event_name == 'pull_request' }}"
+expected_group = "${{ github.workflow }}-${{ github.event_name == 'workflow_dispatch' && inputs.target_sha != '' && format('exact-{0}', inputs.target_sha) || (github.event_name == 'push' && format('{0}-{1}', github.ref, github.sha) || github.ref) }}"
+expected_cancel = "${{ github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && inputs.target_sha != '') }}"
 concurrency = doc.fetch("concurrency", {})
-puts "workflow concurrency must separate branch and tag pushes at the same SHA" unless normalized(concurrency["group"]) == normalized(expected_group)
-puts "workflow concurrency must cancel only superseded PR runs" unless normalized(concurrency["cancel-in-progress"]) == normalized(expected_cancel)
+puts "workflow concurrency must separate push and exact-merge work" unless normalized(concurrency["group"]) == normalized(expected_group)
+puts "workflow concurrency must replace superseded PR and exact-merge runs" unless normalized(concurrency["cancel-in-progress"]) == normalized(expected_cancel)
 
 pipeline = jobs.fetch("pipeline", {})
 pipeline_concurrency = pipeline.fetch("concurrency", {})
-expected_pipeline_group = "ci-heavy-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.ref }}"
+expected_pipeline_group = "ci-heavy-${{ github.event_name == 'workflow_dispatch' && inputs.target_sha != '' && format('exact-{0}', inputs.target_sha) || (github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.ref) }}"
 expected_pipeline_cancel = "${{ !startsWith(github.ref, 'refs/tags/') }}"
 puts "heavy pipeline must use a PR-or-ref queue" unless normalized(pipeline_concurrency["group"]) == normalized(expected_pipeline_group)
 puts "heavy branch and PR work must replace obsolete heads without cancelling version tags" unless normalized(pipeline_concurrency["cancel-in-progress"]) == normalized(expected_pipeline_cancel)
