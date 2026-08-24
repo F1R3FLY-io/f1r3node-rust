@@ -10,6 +10,7 @@ use proptest_derive::Arbitrary;
 
 use super::bag::{BagDelta, BagError, Multiplicity};
 use super::hashing::stable_hash_provider::StableHashSerialize;
+use super::hot_store::ContinuationAddress;
 use super::trace::event::{Consume, Produce};
 
 // Reference-shaped RSpace transport: the payload fields of the hot-store
@@ -146,10 +147,20 @@ pub fn stored_datum_removal_delta<C, A: Clone>(
 /// caller could only fire the rendezvous it happened to own outright.
 #[derive(Clone, Debug)]
 pub struct ProduceCandidate<C, P: Clone, A: Clone, K: Clone> {
-    pub channels: Vec<C>,
-    pub continuation: WaitingContinuation<P, K>,
-    pub continuation_index: i32,
-    pub data_candidates: Vec<ConsumeCandidate<C, A>>,
+    pub(crate) channels: Vec<C>,
+    pub(crate) continuation: WaitingContinuation<P, K>,
+    pub(crate) continuation_address: ContinuationAddress,
+    pub(crate) data_candidates: Vec<ConsumeCandidate<C, A>>,
+}
+
+impl<C, P: Clone, A: Clone, K: Clone> ProduceCandidate<C, P, A, K> {
+    pub fn channels(&self) -> &[C] { &self.channels }
+
+    pub fn continuation(&self) -> &WaitingContinuation<P, K> { &self.continuation }
+
+    pub fn continuation_index(&self) -> i32 { self.continuation_address.index() }
+
+    pub fn data_candidates(&self) -> &[ConsumeCandidate<C, A>] { &self.data_candidates }
 }
 
 // Eq and PartialEq is needed here for reduce_spec tests

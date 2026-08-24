@@ -1,7 +1,8 @@
-use std::collections::HashMap;
 use std::collections::hash_map::Entry;
+use std::collections::{BTreeSet, HashMap};
 use std::fmt::Debug;
 use std::hash::Hash;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -12,7 +13,7 @@ use rand::{Rng, thread_rng};
 use serde::Serialize;
 use tracing::warn;
 
-use super::bag::BagDelta;
+use super::bag::{BagDelta, BagError};
 use super::data_index::{CandidatePool, DataIndexError, RSpaceDataStore};
 use super::errors::RSpaceError;
 use crate::rspace::history::history_reader::HistoryReaderBase;
@@ -45,6 +46,7 @@ use crate::rspace::metrics_constants::{
 };
 use crate::rspace::rho_path::RhoPathEncode;
 use crate::rspace::serializers::cold_store_decode::ColdStoreDecode;
+use crate::rspace::trace::event::Consume;
 
 const MAX_HISTORY_STORE_CACHE_ENTRIES: usize = 512;
 const MAX_HISTORY_STORE_CACHE_CONT_ITEMS: usize = 8192;
@@ -72,6 +74,10 @@ pub trait HotStore<C: Clone + Hash + Eq, P: Clone, A: Clone, K: Clone>: Sync + S
     fn remove_datum(&self, channel: &C, index: i32) -> Result<(), RSpaceError>;
     fn remove_datum_path(&self, path: &[u8]) -> Result<(), RSpaceError>;
     fn apply_datum_delta(&self, delta: &BagDelta) -> Result<(), RSpaceError>;
+    fn apply_accepted_match(
+        &self,
+        transition: AcceptedMatch<C>,
+    ) -> Result<AcceptedMatchOutcome<P, K>, RSpaceError>;
 
     fn get_joins(&self, channel: &C) -> Vec<Vec<C>>;
     fn put_join(&self, channel: &C, join: &[C]) -> Option<()>;
@@ -91,10 +97,64 @@ pub trait HotStore<C: Clone + Hash + Eq, P: Clone, A: Clone, K: Clone>: Sync + S
     fn set_state(&self, state: HotStoreState<C, P, A, K>);
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ContinuationVersion {
-    generation: u64,
-    group_revision: u64,
+/// Opaque, limit-free freshness capability for one continuation group.
+///
+/// Equality is allocation identity, not payload equality. Replacing the
+/// group's epoch invalidates every held address while those addresses keep the
+/// old allocation alive, so allocator-address reuse cannot make a stale
+/// candidate current again.
+#[derive(Debug)]
+struct ContinuationEpoch;
+
+#[derive(Clone, Debug)]
+pub struct ContinuationVersion(Arc<ContinuationEpoch>);
+
+impl PartialEq for ContinuationVersion {
+    fn eq(&self, other: &Self) -> bool { Arc::ptr_eq(&self.0, &other.0) }
+}
+
+impl Eq for ContinuationVersion {}
+
+#[derive(Clone, Debug)]
+pub struct ContinuationAddress {
+    pub(crate) version: Option<ContinuationVersion>,
+    pub(crate) index: i32,
+}
+
+impl ContinuationAddress {
+    pub(crate) fn new(version: Option<ContinuationVersion>, index: i32) -> Self {
+        Self { version, index }
+    }
+
+    pub fn index(&self) -> i32 { self.index }
+}
+
+#[derive(Clone, Debug)]
+pub struct StoredContinuationCommit {
+    pub(crate) address: ContinuationAddress,
+    pub(crate) source: Consume,
+    pub(crate) persist: bool,
+    pub(crate) peeks: BTreeSet<i32>,
+}
+
+#[derive(Clone, Debug)]
+pub struct AcceptedMatch<C> {
+    pub(crate) channels: Vec<C>,
+    pub(crate) continuation: Option<StoredContinuationCommit>,
+    pub(crate) datum_delta: BagDelta,
+    pub(crate) required_persistent_paths: Vec<Arc<[u8]>>,
+    pub(crate) join_channels: Vec<C>,
+}
+
+#[derive(Clone, Debug)]
+pub enum AcceptedMatchOutcome<P: Clone, K: Clone> {
+    Committed {
+        /// The authoritative stored continuation, when this transaction named
+        /// one. Callers use it instead of trusting public-facing candidate
+        /// payloads after the commit boundary.
+        continuation: Option<WaitingContinuation<P, K>>,
+    },
+    Stale,
 }
 
 fn with_installed<P: Clone, K: Clone>(
@@ -139,8 +199,8 @@ where
     data: RSpaceDataStore<C, A>,
     joins: HashMap<C, Vec<Vec<C>>>,
     installed_joins: HashMap<C, Vec<Vec<C>>>,
-    continuation_generation: u64,
-    continuation_revisions: HashMap<Vec<C>, u64>,
+    continuation_base_epoch: Arc<ContinuationEpoch>,
+    continuation_epochs: HashMap<Vec<C>, Arc<ContinuationEpoch>>,
 }
 
 impl<C, P, A, K> InMemHotStoreState<C, P, A, K>
@@ -161,8 +221,8 @@ where
             data,
             joins: snapshot.joins,
             installed_joins: snapshot.installed_joins,
-            continuation_generation: 0,
-            continuation_revisions: HashMap::new(),
+            continuation_base_epoch: Arc::new(ContinuationEpoch),
+            continuation_epochs: HashMap::new(),
         })
     }
 
@@ -191,8 +251,8 @@ where
             data: RSpaceDataStore::new(),
             joins: HashMap::new(),
             installed_joins: HashMap::new(),
-            continuation_generation: 0,
-            continuation_revisions: HashMap::new(),
+            continuation_base_epoch: Arc::new(ContinuationEpoch),
+            continuation_epochs: HashMap::new(),
         }
     }
 }
@@ -205,30 +265,21 @@ where
     K: Clone,
 {
     fn continuation_version(&self, channels: &[C]) -> Option<ContinuationVersion> {
-        let group_revision = self
-            .continuation_revisions
+        let epoch = self
+            .continuation_epochs
             .get(channels)
-            .copied()
-            .unwrap_or(0);
-        (self.continuation_generation != u64::MAX && group_revision != u64::MAX).then_some(
-            ContinuationVersion {
-                generation: self.continuation_generation,
-                group_revision,
-            },
-        )
+            .unwrap_or(&self.continuation_base_epoch);
+        Some(ContinuationVersion(Arc::clone(epoch)))
     }
 
     fn bump_continuation_revision(&mut self, channels: &[C]) {
-        let revision = self
-            .continuation_revisions
-            .entry(channels.to_vec())
-            .or_insert(0);
-        *revision = revision.saturating_add(1);
+        self.continuation_epochs
+            .insert(channels.to_vec(), Arc::new(ContinuationEpoch));
     }
 
     fn bump_continuation_generation(&mut self) {
-        self.continuation_generation = self.continuation_generation.saturating_add(1);
-        self.continuation_revisions.clear();
+        self.continuation_base_epoch = Arc::new(ContinuationEpoch);
+        self.continuation_epochs.clear();
     }
 }
 
@@ -615,6 +666,137 @@ where
             .map_err(Into::into)
     }
 
+    fn apply_accepted_match(
+        &self,
+        transition: AcceptedMatch<C>,
+    ) -> Result<AcceptedMatchOutcome<P, K>, RSpaceError> {
+        // History reads are completed before the linearization lock. They are
+        // proposals only: a stale transition returns without installing them
+        // into the hot cache, so rejection is observably non-mutating.
+        let missing_join_channels = {
+            let state = self.state.read().expect("hot store state read lock");
+            transition
+                .join_channels
+                .iter()
+                .filter(|channel| !state.joins.contains_key(*channel))
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+        let mut prepared_joins = missing_join_channels
+            .into_iter()
+            .map(|channel| {
+                let joins = self.get_joins_from_history_store(&channel);
+                (channel, joins)
+            })
+            .collect::<Vec<_>>();
+
+        let mut state = self.state.write().expect("hot store state write lock");
+
+        let mut authoritative_continuation = None;
+        let mut ordinary_removal_index = None;
+        if let Some(expected) = &transition.continuation {
+            let current_version = state.continuation_version(&transition.channels);
+            if expected.address.version.is_none() || expected.address.version != current_version {
+                return Ok(AcceptedMatchOutcome::Stale);
+            }
+
+            let installed = state.installed_continuations.get(&transition.channels);
+            let (current, ordinary_index, is_installed) =
+                if installed.is_some() && expected.address.index == 0 {
+                    (installed, None, true)
+                } else {
+                    let adjusted = if installed.is_some() {
+                        expected.address.index.checked_sub(1)
+                    } else {
+                        Some(expected.address.index)
+                    };
+                    let Some(index) = adjusted.and_then(|index| usize::try_from(index).ok()) else {
+                        return Ok(AcceptedMatchOutcome::Stale);
+                    };
+                    (
+                        state
+                            .continuations
+                            .get(&transition.channels)
+                            .and_then(|continuations| continuations.get(index)),
+                        Some(index),
+                        false,
+                    )
+                };
+            let Some(current) = current else {
+                return Ok(AcceptedMatchOutcome::Stale);
+            };
+            if current.source != expected.source ||
+                current.persist != expected.persist ||
+                current.peeks != expected.peeks ||
+                (is_installed && !current.persist)
+            {
+                return Ok(AcceptedMatchOutcome::Stale);
+            }
+            authoritative_continuation = Some(current.clone());
+            if !current.persist && !is_installed {
+                ordinary_removal_index = ordinary_index;
+            }
+        }
+
+        if transition
+            .required_persistent_paths
+            .iter()
+            .any(|path| state.data.index().count_path(path) == 0)
+        {
+            return Ok(AcceptedMatchOutcome::Stale);
+        }
+
+        match state.data.apply_delta(&transition.datum_delta) {
+            Ok(()) => {}
+            Err(DataIndexError::Bag(BagError::InsufficientMultiplicity { .. })) => {
+                return Ok(AcceptedMatchOutcome::Stale);
+            }
+            Err(error) => return Err(error.into()),
+        }
+
+        if let Some(index) = ordinary_removal_index {
+            state
+                .continuations
+                .get_mut(&transition.channels)
+                .expect("a validated continuation group must remain loaded")
+                .remove(index);
+            state.bump_continuation_revision(&transition.channels);
+
+            let group_remains = state
+                .installed_continuations
+                .contains_key(&transition.channels) ||
+                state
+                    .continuations
+                    .get(&transition.channels)
+                    .is_some_and(|continuations| !continuations.is_empty());
+            if !group_remains {
+                for channel in transition.join_channels {
+                    let joins = match state.joins.entry(channel) {
+                        Entry::Occupied(occupied) => occupied.into_mut(),
+                        Entry::Vacant(vacant) => {
+                            let prepared = prepared_joins
+                                .iter_mut()
+                                .find(|(prepared_channel, _)| prepared_channel == vacant.key())
+                                .map(|(_, joins)| std::mem::take(joins))
+                                .unwrap_or_default();
+                            vacant.insert(prepared)
+                        }
+                    };
+                    if let Some(index) = joins
+                        .iter()
+                        .position(|join| join.as_slice() == transition.channels.as_slice())
+                    {
+                        joins.remove(index);
+                    }
+                }
+            }
+        }
+
+        Ok(AcceptedMatchOutcome::Committed {
+            continuation: authoritative_continuation,
+        })
+    }
+
     // Joins
 
     fn get_joins(&self, channel: &C) -> Vec<Vec<C>> {
@@ -986,10 +1168,8 @@ where
             .state
             .write()
             .expect("hot store state write lock for set_state");
-        let generation = state.continuation_generation.saturating_add(1);
-        let mut replacement = InMemHotStoreState::from_snapshot(new_state)
+        let replacement = InMemHotStoreState::from_snapshot(new_state)
             .expect("snapshot data must fit the PathMap multiplicity model");
-        replacement.continuation_generation = generation;
         *state = replacement;
     }
 }

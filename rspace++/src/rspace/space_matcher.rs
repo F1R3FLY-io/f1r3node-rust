@@ -10,7 +10,7 @@ use super::r#match::Match;
 use super::rspace_interface::ISpace;
 use crate::rspace::candidate_order::order_candidates_with_index;
 use crate::rspace::hashing::stable_hash_provider::StableHashSerialize;
-use crate::rspace::hot_store::HotStore;
+use crate::rspace::hot_store::{ContinuationAddress, ContinuationVersion, HotStore};
 use crate::rspace::internal::{ConsumeCandidate, Datum, ProduceCandidate, WaitingContinuation};
 use crate::rspace::metrics_constants::{
     RSPACE_MATCHER_EXTRACT_FIRST_MATCH_CALLS_METRIC,
@@ -616,6 +616,7 @@ where
         &self,
         matcher: &Box<dyn Match<P, A, K>>,
         channels: Vec<C>,
+        continuation_version: Option<ContinuationVersion>,
         match_candidates: Vec<(WaitingContinuation<P, K>, i32)>,
         mut channel_to_index_data: HashMap<C, CandidatePool<A>>,
     ) -> Option<ProduceCandidate<C, P, A, K>> {
@@ -655,7 +656,10 @@ where
                     return Some(ProduceCandidate {
                         channels,
                         continuation: cont.clone(),
-                        continuation_index: *index,
+                        continuation_address: ContinuationAddress::new(
+                            continuation_version.clone(),
+                            *index,
+                        ),
                         data_candidates,
                     });
                 }
@@ -818,7 +822,8 @@ where
 
         let mut enabled: Vec<ProduceCandidate<C, P, A, K>> = Vec::new();
         for channels in groups.iter() {
-            let candidates = order_candidates_with_index(store.get_continuations(channels));
+            let (version, continuations) = store.get_continuations_versioned(channels);
+            let candidates = order_candidates_with_index(continuations);
             for (cont, continuation_index) in candidates.iter() {
                 let channel_pattern_pairs: Vec<(&C, &P)> =
                     channels.iter().zip(cont.patterns.iter()).collect();
@@ -852,7 +857,10 @@ where
                     enabled.push(ProduceCandidate {
                         channels: channels.clone(),
                         continuation: cont.clone(),
-                        continuation_index: *continuation_index,
+                        continuation_address: ContinuationAddress::new(
+                            version.clone(),
+                            *continuation_index,
+                        ),
                         data_candidates,
                     });
                 }

@@ -580,8 +580,8 @@ async fn two_identical_occurrences_fill_two_binds_without_expansion() {
     assert!(resting(&space, "ch").await.is_empty());
 }
 
-/// The same, on the produce path (`remove_matched_datum_and_join`), where the
-/// arriving datum is one of the two the receive takes.
+/// The same on the produce path, where the arriving datum is one of the two
+/// inputs committed by the accepted-match transaction.
 #[tokio::test]
 async fn a_produce_completing_a_same_channel_join_removes_both() {
     let (space, _replay, _matcher) = fixture().await;
@@ -621,6 +621,50 @@ async fn a_produce_completing_a_same_channel_join_removes_both() {
         resting(&space, "ch").await.is_empty(),
         "neither datum may survive the COMM that consumed it"
     );
+}
+
+/// A historical/pre-repair checkpoint can contain an already-enabled resting
+/// datum beside its continuation. A later, non-matching produce must fire that
+/// resting rendezvous without losing the arrival. Removal of `"7"`, insertion
+/// of `"99"`, and continuation/join removal are one store transaction; the
+/// caller no longer performs a second `put_datum` after publishing the COMM.
+#[tokio::test]
+async fn a_resting_only_comm_atomically_preserves_the_unconsumed_arrival() {
+    let (space, _replay, _matcher) = fixture().await;
+    assert!(
+        space
+            .produce("ch".to_string(), "7".to_string(), false)
+            .await
+            .expect("rest initial datum")
+            .is_none()
+    );
+
+    let channels = vec!["ch".to_string()];
+    space.get_store().put_continuation(
+        &channels,
+        WaitingContinuation::create(
+            &channels,
+            &vec![Pattern::StringMatch("7".to_string())],
+            &GuardedContinuation::unguarded("stranded"),
+            false,
+            BTreeSet::new(),
+        ),
+    );
+    space.get_store().put_join(&"ch".to_string(), &channels);
+
+    let fired = space
+        .produce("ch".to_string(), "99".to_string(), false)
+        .await
+        .expect("produce against historical stranded state")
+        .expect("the resting datum already satisfies the waiting continuation");
+    assert_eq!(fired.1[0].matched_datum, "7");
+    assert_eq!(
+        resting(&space, "ch").await,
+        vec![99],
+        "the selected resting datum is gone and the unconsumed arrival is present"
+    );
+    assert_eq!(waiting(&space, &["ch"]).await, 0);
+    assert!(space.get_store().get_joins(&"ch".to_string()).is_empty());
 }
 
 // ════════════════════════════════════════════════════════════════════════════════════════════
@@ -1274,7 +1318,7 @@ async fn selector_and_enumerator_are_stack_safe_at_twenty_thousand_binds() {
 
             let selections = enumeration_space.enabled_rendezvous();
             assert_eq!(selections.len(), 1);
-            assert_eq!(selections[0].data_candidates.len(), BINDS);
+            assert_eq!(selections[0].data_candidates().len(), BINDS);
         })
         .expect("spawn small-stack candidate-walk thread")
         .join()

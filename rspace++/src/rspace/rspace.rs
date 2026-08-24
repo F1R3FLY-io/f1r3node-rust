@@ -21,13 +21,15 @@ use tracing::{Level, event};
 
 use super::candidate_order::order_candidates_with_index;
 use super::checkpoint::SoftCheckpoint;
-use super::data_index::CandidatePool;
+use super::data_index::{CandidatePool, RSpaceDataIndex};
 use super::errors::{HistoryRepositoryError, RSpaceError};
 use super::hashing::blake2b256_hash::Blake2b256Hash;
 use super::hashing::stable_hash_provider::StableHashSerialize;
 use super::history::history_reader::HistoryReader;
 use super::history::instances::radix_history::RadixHistory;
-use super::hot_store::ContinuationVersion;
+use super::hot_store::{
+    AcceptedMatch, AcceptedMatchOutcome, ContinuationVersion, StoredContinuationCommit,
+};
 use super::logging::{BasicLogger, StepCommObserver};
 use super::r#match::Match;
 use super::metrics_constants::{
@@ -788,31 +790,6 @@ where
         metrics::counter!("rspace.consume.log_ns", "source" => RSPACE_METRICS_SOURCE)
             .increment(t0.elapsed().as_nanos() as u64);
 
-        let t1 = Instant::now();
-        let mut channel_to_indexed_data = self.fetch_channel_to_index_data(channels);
-        metrics::counter!("rspace.consume.fetch_data_ns", "source" => RSPACE_METRICS_SOURCE)
-            .increment(t1.elapsed().as_nanos() as u64);
-
-        let t2 = Instant::now();
-        // Borrow-zip: no per-consume channel/pattern clones.
-        let zipped: Vec<(&C, &P)> = channels.iter().zip(patterns.iter()).collect();
-        // The complete, guard-aware candidate search (plan §7.12 / defect D1).
-        // A `where` guard on this consume participates in SELECTION, not only
-        // in approval: when it rejects the datum the spatial matcher offered
-        // first, the search advances to the next resting datum instead of
-        // abandoning the rendezvous. It returns `None` only when NO selection
-        // of resting data satisfies both the spatial patterns and the guard —
-        // and then the continuation is installed and the data left alone,
-        // exactly as a spatial miss always did.
-        let options: Option<Vec<ConsumeCandidate<C, A>>> = self.extract_guarded_data_candidates(
-            &self.matcher,
-            &zipped,
-            continuation,
-            &mut channel_to_indexed_data,
-        );
-        metrics::counter!("rspace.consume.match_ns", "source" => RSPACE_METRICS_SOURCE)
-            .increment(t2.elapsed().as_nanos() as u64);
-
         let wk = WaitingContinuation {
             patterns: Arc::new(patterns.to_vec()),
             continuation: Arc::new(continuation.clone()),
@@ -821,37 +798,64 @@ where
             source: consume_ref.clone(),
         };
 
-        match options {
-            Some(data_candidates) => {
-                let t3 = Instant::now();
-                let produce_counters_closure =
-                    |produces: &[Produce]| self.produce_counters(produces);
+        loop {
+            let t1 = Instant::now();
+            let mut channel_to_indexed_data = self.fetch_channel_to_index_data(channels);
+            metrics::counter!("rspace.consume.fetch_data_ns", "source" => RSPACE_METRICS_SOURCE)
+                .increment(t1.elapsed().as_nanos() as u64);
 
-                self.log_comm(
-                    channels,
-                    &wk,
-                    &data_candidates,
-                    COMM::new(
-                        &data_candidates,
-                        consume_ref.clone(),
-                        peeks.clone(),
-                        produce_counters_closure,
-                    ),
-                    "comm.consume",
+            let t2 = Instant::now();
+            // Borrow-zip: no per-consume channel/pattern clones.
+            let zipped: Vec<(&C, &P)> = channels.iter().zip(patterns.iter()).collect();
+            // The complete, guard-aware candidate search (plan §7.12 / defect D1).
+            // A `where` guard participates in SELECTION, not only approval.
+            let options: Option<Vec<ConsumeCandidate<C, A>>> = self
+                .extract_guarded_data_candidates(
+                    &self.matcher,
+                    &zipped,
+                    continuation,
+                    &mut channel_to_indexed_data,
                 );
-                self.store_persistent_data(&data_candidates, peeks);
-                metrics::counter!("rspace.consume.process_match_ns", "source" => RSPACE_METRICS_SOURCE)
-                    .increment(t3.elapsed().as_nanos() as u64);
-                event!(Level::DEBUG, mark = "finished-locked-consume", "locked_consume");
-                Ok(self.wrap_result(channels, &wk, consume_ref, &data_candidates))
-            }
-            None => {
-                let t3 = Instant::now();
-                self.store_waiting_continuation(channels.to_vec(), wk);
-                metrics::counter!("rspace.consume.store_continuation_ns", "source" => RSPACE_METRICS_SOURCE)
-                    .increment(t3.elapsed().as_nanos() as u64);
-                event!(Level::DEBUG, mark = "finished-locked-consume", "locked_consume");
-                Ok(None)
+            metrics::counter!("rspace.consume.match_ns", "source" => RSPACE_METRICS_SOURCE)
+                .increment(t2.elapsed().as_nanos() as u64);
+
+            match options {
+                Some(data_candidates) => {
+                    let t3 = Instant::now();
+                    if !self.try_commit_data_match(&data_candidates)? {
+                        // A checkpoint/reset or a concurrent accepted ticket
+                        // changed the exact trie multiplicities after selection.
+                        // Re-select from the current CoW root; never publish a
+                        // COMM for the refused proposal and never cap retries.
+                        continue;
+                    }
+                    let produce_counters_closure =
+                        |produces: &[Produce]| self.produce_counters(produces);
+                    self.log_comm(
+                        channels,
+                        &wk,
+                        &data_candidates,
+                        COMM::new(
+                            &data_candidates,
+                            consume_ref.clone(),
+                            peeks.clone(),
+                            produce_counters_closure,
+                        ),
+                        "comm.consume",
+                    );
+                    metrics::counter!("rspace.consume.process_match_ns", "source" => RSPACE_METRICS_SOURCE)
+                        .increment(t3.elapsed().as_nanos() as u64);
+                    event!(Level::DEBUG, mark = "finished-locked-consume", "locked_consume");
+                    return Ok(self.wrap_result(channels, &wk, consume_ref, &data_candidates));
+                }
+                None => {
+                    let t3 = Instant::now();
+                    self.store_waiting_continuation(channels.to_vec(), wk);
+                    metrics::counter!("rspace.consume.store_continuation_ns", "source" => RSPACE_METRICS_SOURCE)
+                        .increment(t3.elapsed().as_nanos() as u64);
+                    event!(Level::DEBUG, mark = "finished-locked-consume", "locked_consume");
+                    return Ok(None);
+                }
             }
         }
     }
@@ -884,11 +888,6 @@ where
         let _span = tracing::info_span!(target: "f1r3fly.rspace", LOCKED_PRODUCE_SPAN).entered();
         event!(Level::DEBUG, mark = "started-locked-produce", "locked_produce");
 
-        let t0 = Instant::now();
-        let grouped_channels = self.get_store().get_joins(&channel);
-        metrics::counter!("rspace.produce.get_joins_ns", "source" => RSPACE_METRICS_SOURCE)
-            .increment(t0.elapsed().as_nanos() as u64);
-
         self.log_produce(produce_ref, &channel, &data, persist);
 
         // Wrap the produced payload in an `Arc` once — the speculative
@@ -896,80 +895,99 @@ where
         // refcount (previously each took a deep copy).
         let data = Arc::new(data);
 
-        let t1 = Instant::now();
-        let extracted = self.extract_produce_candidate(grouped_channels, channel.clone(), Datum {
+        let arrival = Datum {
             a: Arc::clone(&data),
             persist,
             source: produce_ref.clone(),
-        });
-        metrics::counter!("rspace.produce.extract_candidate_ns", "source" => RSPACE_METRICS_SOURCE)
-            .increment(t1.elapsed().as_nanos() as u64);
+        };
 
-        match extracted {
-            Some(produce_candidate) => {
-                let t2 = Instant::now();
-                // ★ The produced datum must be either CONSUMED or STORED —
-                // never neither. It rides in its own candidate pool under the
-                // distinct fresh address, so the fired COMM consumed it exactly
-                // when a candidate carries that address.
-                //
-                // With the guard-aware selector this is unreachable from any
-                // state the fixed matcher itself produced, and the reasoning is
-                // worth writing down because it is what makes the selector safe
-                // on this path: at quiescence no selection of RESTING data
-                // satisfies any waiting continuation (else the consume or
-                // produce that created that state would have fired it), and
-                // admissibility is monotone in the data — adding this datum can
-                // only create selections that CONTAIN it. So every selection
-                // available here contains the fresh datum.
-                //
-                // It is reachable from a state some OTHER matcher produced: a
-                // hot store restored from a checkpoint written before this fix
-                // can hold a resting datum stranded by defect D1 next to the
-                // continuation it satisfies, and a later produce of a datum
-                // that does not match spatially would then fire on the stranded
-                // pair. Dropping the produced message there would be silent
-                // message loss — no rule of the rho calculus discards a
-                // message — so it is stored instead. AFTER `process_match_found`,
-                // which removes resting data by exact trie path.
-                let comm_consumed_the_produced_datum = produce_candidate
-                    .data_candidates
-                    .iter()
-                    .any(|candidate| candidate.address.is_fresh());
+        loop {
+            let t0 = Instant::now();
+            let grouped_channels = self.get_store().get_joins(&channel);
+            metrics::counter!("rspace.produce.get_joins_ns", "source" => RSPACE_METRICS_SOURCE)
+                .increment(t0.elapsed().as_nanos() as u64);
 
-                let result =
-                    Ok(self
-                        .process_match_found(produce_candidate)
-                        .map(|consume_result| {
-                            (consume_result.0, consume_result.1, produce_ref.clone())
-                        }));
+            let t1 = Instant::now();
+            let extracted =
+                self.extract_produce_candidate(grouped_channels, channel.clone(), arrival.clone());
+            metrics::counter!("rspace.produce.extract_candidate_ns", "source" => RSPACE_METRICS_SOURCE)
+                .increment(t1.elapsed().as_nanos() as u64);
 
-                if !comm_consumed_the_produced_datum {
-                    tracing::debug!(
-                        target: "f1r3fly.rspace",
-                        "a COMM fired on resting data only; storing the produced datum rather \
-                         than dropping it (pre-fix stranded pair — see locked_produce)"
-                    );
-                    metrics::counter!(
-                        RSPACE_PRODUCE_UNCONSUMED_DATUM_STORED_METRIC,
-                        "source" => RSPACE_METRICS_SOURCE
-                    )
-                    .increment(1);
-                    let _ = self.store_data(channel, data, persist, produce_ref.clone());
+            match extracted {
+                Some(produce_candidate) => {
+                    let t2 = Instant::now();
+                    // ★ The produced datum must be either CONSUMED or STORED —
+                    // never neither. It rides in its own candidate pool under the
+                    // distinct fresh address, so the fired COMM consumed it exactly
+                    // when a candidate carries that address.
+                    //
+                    // With the guard-aware selector this is unreachable from any
+                    // state the fixed matcher itself produced, and the reasoning is
+                    // worth writing down because it is what makes the selector safe
+                    // on this path: at quiescence no selection of RESTING data
+                    // satisfies any waiting continuation (else the consume or
+                    // produce that created that state would have fired it), and
+                    // admissibility is monotone in the data — adding this datum can
+                    // only create selections that CONTAIN it. So every selection
+                    // available here contains the fresh datum.
+                    //
+                    // It is reachable from a state some OTHER matcher produced: a
+                    // hot store restored from a checkpoint written before this fix
+                    // can hold a resting datum stranded by defect D1 next to the
+                    // continuation it satisfies, and a later produce of a datum
+                    // that does not match spatially would then fire on the stranded
+                    // pair. Dropping the produced message there would be silent
+                    // message loss — no rule of the rho calculus discards a
+                    // message — so it is stored instead. AFTER `process_match_found`,
+                    // which removes resting data by exact trie path.
+                    let comm_consumed_the_produced_datum = produce_candidate
+                        .data_candidates
+                        .iter()
+                        .any(|candidate| candidate.address.is_fresh());
+
+                    let Some(consume_result) = self.try_process_match_found(
+                        produce_candidate,
+                        Some((channel.clone(), arrival.clone())),
+                    )?
+                    else {
+                        // The opaque continuation epoch or exact datum paths
+                        // went stale between selection and publication. Retry
+                        // against the current store; the arrival is still only
+                        // an Arc-backed proposal and has not been lost.
+                        continue;
+                    };
+
+                    if !comm_consumed_the_produced_datum {
+                        tracing::debug!(
+                            target: "f1r3fly.rspace",
+                            "a COMM fired on resting data only; the arriving datum was added in \
+                             the same PathMap transaction"
+                        );
+                        metrics::counter!(
+                            RSPACE_PRODUCE_UNCONSUMED_DATUM_STORED_METRIC,
+                            "source" => RSPACE_METRICS_SOURCE
+                        )
+                        .increment(1);
+                    }
+
+                    metrics::counter!("rspace.produce.process_match_ns", "source" => RSPACE_METRICS_SOURCE)
+                        .increment(t2.elapsed().as_nanos() as u64);
+                    event!(Level::DEBUG, mark = "finished-locked-produce", "locked_produce");
+                    return Ok(Some((consume_result.0, consume_result.1, produce_ref.clone())));
                 }
-
-                metrics::counter!("rspace.produce.process_match_ns", "source" => RSPACE_METRICS_SOURCE)
-                    .increment(t2.elapsed().as_nanos() as u64);
-                event!(Level::DEBUG, mark = "finished-locked-produce", "locked_produce");
-                result
-            }
-            None => {
-                let t2 = Instant::now();
-                let result = Ok(self.store_data(channel, data, persist, produce_ref.clone()));
-                metrics::counter!("rspace.produce.store_data_ns", "source" => RSPACE_METRICS_SOURCE)
-                    .increment(t2.elapsed().as_nanos() as u64);
-                event!(Level::DEBUG, mark = "finished-locked-produce", "locked_produce");
-                result
+                None => {
+                    let t2 = Instant::now();
+                    let result = self.store_data(
+                        channel.clone(),
+                        Arc::clone(&data),
+                        persist,
+                        produce_ref.clone(),
+                    );
+                    metrics::counter!("rspace.produce.store_data_ns", "source" => RSPACE_METRICS_SOURCE)
+                        .increment(t2.elapsed().as_nanos() as u64);
+                    event!(Level::DEBUG, mark = "finished-locked-produce", "locked_produce");
+                    return Ok(result);
+                }
             }
         }
     }
@@ -993,35 +1011,34 @@ where
         // pruning or the spatial matcher actually requests it, and share the
         // one immutable pool across repeated occurrences of the same channel.
         let bat_channel_pool: OnceLock<CandidatePool<A>> = OnceLock::new();
-        let fetch_matching_continuations =
-            |channels: Vec<C>| -> Vec<(WaitingContinuation<P, K>, i32)> {
-                let (version, continuations) = store.get_continuations_versioned(&channels);
-                if continuations.is_empty() {
-                    self.retained_set_automata.remove(&channels);
-                    return Vec::new();
-                }
-                let resting_data =
-                    bat_channel_pool.get_or_init(|| store.get_candidate_pool(&bat_channel));
-                let selection = self.retained_candidate_selection(
-                    &channels,
-                    &continuations,
-                    version,
-                    &bat_channel,
-                    &data.a,
-                    resting_data,
-                );
-                let mut ordered = self.shuffle_with_index(continuations);
-                if let Some(selection) = selection {
-                    ordered.retain(|(_, index)| {
-                        usize::try_from(*index)
-                            .ok()
-                            .and_then(|index| selection.get(index))
-                            .copied()
-                            .unwrap_or(false)
-                    });
-                }
-                ordered
-            };
+        let fetch_matching_continuations = |channels: Vec<C>| {
+            let (version, continuations) = store.get_continuations_versioned(&channels);
+            if continuations.is_empty() {
+                self.retained_set_automata.remove(&channels);
+                return (version, Vec::new());
+            }
+            let resting_data =
+                bat_channel_pool.get_or_init(|| store.get_candidate_pool(&bat_channel));
+            let selection = self.retained_candidate_selection(
+                &channels,
+                &continuations,
+                version.clone(),
+                &bat_channel,
+                &data.a,
+                resting_data,
+            );
+            let mut ordered = self.shuffle_with_index(continuations);
+            if let Some(selection) = selection {
+                ordered.retain(|(_, index)| {
+                    usize::try_from(*index)
+                        .ok()
+                        .and_then(|index| selection.get(index))
+                        .copied()
+                        .unwrap_or(false)
+                });
+            }
+            (version, ordered)
+        };
 
         /*
          * Here, we create a cache of the data at each channel as
@@ -1188,12 +1205,36 @@ where
         &self,
         pc: ProduceCandidate<C, P, A, K>,
     ) -> MaybeConsumeResult<C, P, A, K> {
+        match self.try_process_match_found(pc, None) {
+            Ok(result) => result,
+            Err(error) => {
+                tracing::error!(
+                    target: "f1r3fly.rspace",
+                    %error,
+                    "named rendezvous commit failed before publication"
+                );
+                None
+            }
+        }
+    }
+
+    fn try_process_match_found(
+        &self,
+        pc: ProduceCandidate<C, P, A, K>,
+        arrival: Option<(C, Datum<A>)>,
+    ) -> Result<MaybeConsumeResult<C, P, A, K>, RSpaceError> {
         let ProduceCandidate {
             channels,
             continuation,
-            continuation_index,
+            continuation_address,
             data_candidates,
         } = pc;
+
+        if continuation_address.version.is_none() {
+            return Err(RSpaceError::BugFoundError(
+                "named rendezvous has no continuation freshness capability".to_string(),
+            ));
+        }
 
         let WaitingContinuation {
             patterns: _patterns,
@@ -1203,10 +1244,68 @@ where
             source: consume_ref,
         } = &continuation;
 
+        let selected_fresh = data_candidates
+            .iter()
+            .any(|candidate| candidate.address.is_fresh());
+        if selected_fresh && arrival.is_none() {
+            // `enabled_rendezvous` never manufactures Fresh addresses. Refuse
+            // a forged or cross-regime ticket rather than consuming a waiting
+            // continuation without the arriving datum it names.
+            return Ok(None);
+        }
+
+        let mut datum_delta = stored_datum_removal_delta(&data_candidates)
+            .map_err(super::data_index::DataIndexError::from)?;
+        if !selected_fresh {
+            if let Some((arrival_channel, arrival_datum)) = &arrival {
+                let path = RSpaceDataIndex::datum_path(arrival_channel, arrival_datum);
+                datum_delta
+                    .record_addition(&path, super::bag::Multiplicity::ONE)
+                    .map_err(super::data_index::DataIndexError::from)?;
+            }
+        }
+        let required_persistent_paths = data_candidates
+            .iter()
+            .filter_map(|candidate| {
+                (candidate.datum.persist).then(|| match &candidate.address {
+                    DatumAddress::Stored(path) => Some(Arc::clone(path)),
+                    DatumAddress::Fresh => None,
+                })?
+            })
+            .collect();
+        let join_channels = data_candidates
+            .iter()
+            .map(|candidate| candidate.channel.clone())
+            .collect();
+        let expected = StoredContinuationCommit {
+            address: continuation_address,
+            source: continuation.source.clone(),
+            persist: *persist,
+            peeks: peeks.clone(),
+        };
+        let transition = AcceptedMatch {
+            channels: channels.clone(),
+            continuation: Some(expected),
+            datum_delta,
+            required_persistent_paths,
+            join_channels,
+        };
+        let authoritative_continuation = match self.get_store().apply_accepted_match(transition)? {
+            AcceptedMatchOutcome::Committed {
+                continuation: Some(continuation),
+            } => continuation,
+            AcceptedMatchOutcome::Committed { continuation: None } => {
+                return Err(RSpaceError::BugFoundError(
+                    "accepted named match returned no authoritative continuation".to_string(),
+                ));
+            }
+            AcceptedMatchOutcome::Stale => return Ok(None),
+        };
+
         let produce_counters_closure = |produces: &[Produce]| self.produce_counters(produces);
         self.log_comm(
             &channels,
-            &continuation,
+            &authoritative_continuation,
             &data_candidates,
             COMM::new(
                 &data_candidates,
@@ -1217,14 +1316,7 @@ where
             "comm.produce",
         );
 
-        if !persist {
-            self.get_store()
-                .remove_continuation(&channels, continuation_index);
-        }
-
-        self.remove_matched_datum_and_join(&channels, &data_candidates);
-
-        self.wrap_result(&channels, &continuation, consume_ref, &data_candidates)
+        Ok(self.wrap_result(&channels, &authoritative_continuation, consume_ref, &data_candidates))
     }
 
     fn log_comm(
@@ -1358,14 +1450,37 @@ where
         None
     }
 
-    fn store_persistent_data(
+    fn try_commit_data_match(
         &self,
-        data_candidates: &Vec<ConsumeCandidate<C, A>>,
-        _peeks: &BTreeSet<i32>,
-    ) -> Option<Vec<()>> {
-        let delta = stored_datum_removal_delta(data_candidates).ok()?;
-        self.get_store().apply_datum_delta(&delta).ok()?;
-        Some(vec![(); data_candidates.len()])
+        data_candidates: &[ConsumeCandidate<C, A>],
+    ) -> Result<bool, RSpaceError> {
+        let delta = stored_datum_removal_delta(data_candidates)
+            .map_err(super::data_index::DataIndexError::from)?;
+        let required_persistent_paths = data_candidates
+            .iter()
+            .filter_map(|candidate| {
+                (candidate.datum.persist).then(|| match &candidate.address {
+                    DatumAddress::Stored(path) => Some(Arc::clone(path)),
+                    DatumAddress::Fresh => None,
+                })?
+            })
+            .collect();
+        let transition = AcceptedMatch {
+            channels: Vec::new(),
+            continuation: None,
+            datum_delta: delta,
+            required_persistent_paths,
+            join_channels: Vec::new(),
+        };
+        match self.get_store().apply_accepted_match(transition)? {
+            AcceptedMatchOutcome::Committed { continuation: None } => Ok(true),
+            AcceptedMatchOutcome::Committed {
+                continuation: Some(_),
+            } => Err(RSpaceError::BugFoundError(
+                "data-only accepted match returned a continuation".to_string(),
+            )),
+            AcceptedMatchOutcome::Stale => Ok(false),
+        }
     }
 
     fn restore_installs(&self) {
@@ -1505,24 +1620,15 @@ where
         Some((cont_result, rspace_results))
     }
 
-    fn remove_matched_datum_and_join(
-        &self,
-        channels: &[C],
-        data_candidates: &[ConsumeCandidate<C, A>],
-    ) -> Option<Vec<()>> {
-        let delta = stored_datum_removal_delta(data_candidates).ok()?;
-        let store = self.get_store();
-        store.apply_datum_delta(&delta).ok()?;
-        for consume_candidate in data_candidates {
-            store.remove_join(&consume_candidate.channel, channels);
-        }
-        Some(vec![(); data_candidates.len()])
-    }
-
     fn run_matcher_for_channels(
         &self,
         grouped_channels: Vec<Vec<C>>,
-        fetch_matching_continuations: impl Fn(Vec<C>) -> Vec<(WaitingContinuation<P, K>, i32)>,
+        fetch_matching_continuations: impl Fn(
+            Vec<C>,
+        ) -> (
+            Option<ContinuationVersion>,
+            Vec<(WaitingContinuation<P, K>, i32)>,
+        ),
         fetch_matching_data: impl Fn(C) -> (C, CandidatePool<A>),
     ) -> MaybeProduceCandidate<C, P, A, K> {
         let mut remaining = grouped_channels;
@@ -1531,7 +1637,8 @@ where
             match remaining.split_first() {
                 Some((channels, rest)) => {
                     let t_cont = Instant::now();
-                    let match_candidates = fetch_matching_continuations(channels.to_vec());
+                    let (continuation_version, match_candidates) =
+                        fetch_matching_continuations(channels.to_vec());
                     metrics::counter!("rspace.matcher.fetch_continuations_ns", "source" => RSPACE_METRICS_SOURCE)
                         .increment(t_cont.elapsed().as_nanos() as u64);
                     metrics::counter!("rspace.matcher.continuations_returned", "source" => RSPACE_METRICS_SOURCE)
@@ -1554,6 +1661,7 @@ where
                     let first_match = self.extract_first_match(
                         &self.matcher,
                         channels.to_vec(),
+                        continuation_version,
                         match_candidates,
                         channel_to_indexed_data,
                     );

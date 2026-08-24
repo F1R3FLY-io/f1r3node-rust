@@ -14,7 +14,7 @@
 //! | export | what it does |
 //! |---|---|
 //! | [`SpaceMatcher::enumerate_enabled_rendezvous`] (bound as `RSpace::enabled_rendezvous` / `ReplayRSpace::enabled_rendezvous`) | read-only: every (continuation × admissible selection) pair the current hot store admits |
-//! | `RSpace::process_match_found` | fire one named rendezvous: remove data by exact trie path, remove the continuation by vector index, drop the joins, emit the `COMM` |
+//! | `RSpace::process_match_found` | fire one opaque, versioned rendezvous ticket: validate and publish its exact PathMap datum delta plus continuation/join changes atomically, then emit the `COMM` |
 //!
 //! Both are consensus surfaces, so this file pins them the way a consensus
 //! surface has to be pinned — by measurement against the production selector,
@@ -34,9 +34,13 @@
 //! | [`t7_teeth_an_unsatisfiable_state_enumerates_to_nothing`] | the query can say NO |
 //! | [`t8_a_join_enumerates_its_cross_product`] | multi-bind selections, and the guard filtering them |
 //! | [`t9_identical_multiset_occurrences_form_one_normalized_rendezvous`] | indistinguishable Bag occurrences do not create duplicate rendezvous permutations |
+//! | [`t10_a_same_group_change_refuses_a_stale_ticket_without_effects`] | a held ticket cannot name a shifted/replaced continuation, and refusal mutates neither store nor log |
+//! | [`t11_a_byte_equal_state_replacement_still_invalidates_old_tickets`] | freshness is state identity, not byte equality, so checkpoint/reset cannot create ABA |
+//! | [`t12_an_unrelated_group_change_does_not_invalidate_the_ticket`] | freshness is scoped to the named continuation group rather than one global generation |
+//! | [`t13_two_concurrent_firings_of_one_ticket_have_exactly_one_winner`] | duplicate speculative firings cannot double-consume one datum or publish two COMMs |
 
 use std::collections::BTreeSet;
-use std::sync::Arc;
+use std::sync::{Arc, Barrier};
 
 use rspace_plus_plus::rspace::history::history_repository::HistoryRepositoryInstances;
 use rspace_plus_plus::rspace::hot_store::{HotStoreInstances, HotStoreState};
@@ -222,9 +226,9 @@ fn selected(enabled: &[TestRendezvous]) -> Vec<(String, Vec<i64>)> {
         .iter()
         .map(|rendezvous| {
             (
-                rendezvous.continuation.continuation.name.clone(),
+                rendezvous.continuation().continuation.name.clone(),
                 rendezvous
-                    .data_candidates
+                    .data_candidates()
                     .iter()
                     .map(|candidate| as_int(&candidate.datum.a))
                     .collect(),
@@ -239,6 +243,14 @@ fn resting_ints(state: &TestState, channel: &str) -> Vec<i64> {
         .get(channel)
         .map(|data| data.iter().map(|datum| as_int(&datum.a)).collect())
         .unwrap_or_default()
+}
+
+fn assert_same_hot_state(actual: &TestState, expected: &TestState) {
+    assert_eq!(actual.continuations, expected.continuations);
+    assert_eq!(actual.installed_continuations, expected.installed_continuations);
+    assert_eq!(actual.data, expected.data);
+    assert_eq!(actual.joins, expected.joins);
+    assert_eq!(actual.installed_joins, expected.installed_joins);
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -331,7 +343,7 @@ async fn t1_the_enumeration_head_is_the_selector_choice() {
         let enabled = staged.enabled_rendezvous();
         assert!(!enabled.is_empty(), "{label}: the staged state must admit a rendezvous");
         let head: Vec<i64> = enabled[0]
-            .data_candidates
+            .data_candidates()
             .iter()
             .map(|candidate| as_int(&candidate.datum.a))
             .collect();
@@ -576,8 +588,8 @@ async fn t5_a_named_non_least_selection_fires_exactly_itself() {
 
     // Name the LAST selection — by construction not the one a search returns.
     let chosen = enabled[2].clone();
-    let named = as_int(&chosen.data_candidates[0].datum.a);
-    let head = as_int(&enabled[0].data_candidates[0].datum.a);
+    let named = as_int(&chosen.data_candidates()[0].datum.a);
+    let head = as_int(&enabled[0].data_candidates()[0].datum.a);
     assert_ne!(
         named, head,
         "teeth: the named selection must differ from the head, or the test proves nothing"
@@ -813,6 +825,152 @@ async fn t9_identical_multiset_occurrences_form_one_normalized_rendezvous() {
             .is_some()
     );
     assert!(resting_ints(&space.get_store().snapshot(), "c").is_empty());
+}
+
+#[tokio::test]
+async fn t10_a_same_group_change_refuses_a_stale_ticket_without_effects() {
+    let space = play_space().await;
+    rest_data(&space, "c", &["7"]).await;
+    let channels = vec!["c".to_string()];
+    space.get_store().put_continuation(
+        &channels,
+        rspace_plus_plus::rspace::internal::WaitingContinuation::create(
+            &channels,
+            &vec![Pattern::Wildcard],
+            &GuardedContinuation::unguarded("held"),
+            false,
+            BTreeSet::new(),
+        ),
+    );
+    space.get_store().put_join(&"c".to_string(), &channels);
+    let held = space.enabled_rendezvous().into_iter().next().unwrap();
+
+    // Insert at the head of the SAME vector. An index-only ticket would now
+    // silently fire the wrong continuation.
+    space.get_store().put_continuation(
+        &channels,
+        rspace_plus_plus::rspace::internal::WaitingContinuation::create(
+            &channels,
+            &vec![Pattern::Wildcard],
+            &GuardedContinuation::unguarded("new-head"),
+            false,
+            BTreeSet::new(),
+        ),
+    );
+    let expected = space.get_store().snapshot();
+    let _ = space.take_event_log().await;
+
+    assert!(space.process_match_found(held).is_none());
+    assert_same_hot_state(&space.get_store().snapshot(), &expected);
+    assert!(space.take_event_log().await.is_empty(), "a stale ticket must not publish a COMM");
+}
+
+#[tokio::test]
+async fn t11_a_byte_equal_state_replacement_still_invalidates_old_tickets() {
+    let space = play_space().await;
+    rest_data(&space, "c", &["11"]).await;
+    let channels = vec!["c".to_string()];
+    space.get_store().put_continuation(
+        &channels,
+        rspace_plus_plus::rspace::internal::WaitingContinuation::create(
+            &channels,
+            &vec![Pattern::Wildcard],
+            &GuardedContinuation::unguarded("held"),
+            false,
+            BTreeSet::new(),
+        ),
+    );
+    space.get_store().put_join(&"c".to_string(), &channels);
+    let held = space.enabled_rendezvous().into_iter().next().unwrap();
+    let byte_equal_replacement = space.get_store().snapshot();
+    space.get_store().set_state(byte_equal_replacement.clone());
+    assert_same_hot_state(&space.get_store().snapshot(), &byte_equal_replacement);
+    let _ = space.take_event_log().await;
+
+    assert!(space.process_match_found(held).is_none());
+    assert_same_hot_state(&space.get_store().snapshot(), &byte_equal_replacement);
+    assert!(space.take_event_log().await.is_empty());
+}
+
+#[tokio::test]
+async fn t12_an_unrelated_group_change_does_not_invalidate_the_ticket() {
+    let space = play_space().await;
+    rest_data(&space, "c", &["13"]).await;
+    let channels = vec!["c".to_string()];
+    space.get_store().put_continuation(
+        &channels,
+        rspace_plus_plus::rspace::internal::WaitingContinuation::create(
+            &channels,
+            &vec![Pattern::Wildcard],
+            &GuardedContinuation::unguarded("held"),
+            false,
+            BTreeSet::new(),
+        ),
+    );
+    space.get_store().put_join(&"c".to_string(), &channels);
+    let held = space.enabled_rendezvous().into_iter().next().unwrap();
+
+    let unrelated = vec!["other".to_string()];
+    space.get_store().put_continuation(
+        &unrelated,
+        rspace_plus_plus::rspace::internal::WaitingContinuation::create(
+            &unrelated,
+            &vec![Pattern::Wildcard],
+            &GuardedContinuation::unguarded("unrelated"),
+            false,
+            BTreeSet::new(),
+        ),
+    );
+
+    assert!(space.process_match_found(held).is_some());
+    assert!(resting_ints(&space.get_store().snapshot(), "c").is_empty());
+    assert_eq!(space.get_store().get_continuations(&unrelated).len(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn t13_two_concurrent_firings_of_one_ticket_have_exactly_one_winner() {
+    let space = play_space().await;
+    rest_data(&space, "c", &["17"]).await;
+    let channels = vec!["c".to_string()];
+    space.get_store().put_continuation(
+        &channels,
+        rspace_plus_plus::rspace::internal::WaitingContinuation::create(
+            &channels,
+            &vec![Pattern::Wildcard],
+            &GuardedContinuation::unguarded("one-winner"),
+            false,
+            BTreeSet::new(),
+        ),
+    );
+    space.get_store().put_join(&"c".to_string(), &channels);
+    let ticket = space.enabled_rendezvous().into_iter().next().unwrap();
+    let _ = space.take_event_log().await;
+    let barrier = Arc::new(Barrier::new(2));
+
+    let first_space = space.clone();
+    let first_ticket = ticket.clone();
+    let first_barrier = Arc::clone(&barrier);
+    let first = std::thread::spawn(move || {
+        first_barrier.wait();
+        first_space.process_match_found(first_ticket).is_some()
+    });
+    let second_space = space.clone();
+    let second_barrier = Arc::clone(&barrier);
+    let second = std::thread::spawn(move || {
+        second_barrier.wait();
+        second_space.process_match_found(ticket).is_some()
+    });
+    let winners = usize::from(first.join().unwrap()) + usize::from(second.join().unwrap());
+
+    assert_eq!(winners, 1, "one opaque ticket has exactly one accepted commit");
+    assert!(resting_ints(&space.get_store().snapshot(), "c").is_empty());
+    let comms = space
+        .take_event_log()
+        .await
+        .into_iter()
+        .filter(|event| matches!(event, rspace_plus_plus::rspace::trace::event::Event::Comm(_)))
+        .count();
+    assert_eq!(comms, 1, "only the accepted ticket may publish a COMM");
 }
 
 // ───────────────────────────────────────────────────────────────────────────

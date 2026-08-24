@@ -19,7 +19,7 @@ use tracing::{Level, event};
 
 use super::candidate_order::order_candidates_with_index;
 use super::checkpoint::SoftCheckpoint;
-use super::data_index::CandidatePool;
+use super::data_index::{CandidatePool, RSpaceDataIndex};
 use super::errors::RSpaceError;
 use super::hashing::blake2b256_hash::Blake2b256Hash;
 use super::hashing::stable_hash_provider::StableHashSerialize;
@@ -43,7 +43,10 @@ use super::trace::event::{COMM, Consume, Event, IOEvent, Produce};
 use super::util::unpack_option;
 use crate::rspace::checkpoint::Checkpoint;
 use crate::rspace::history::history_repository::HistoryRepository;
-use crate::rspace::hot_store::{HotStore, HotStoreInstances};
+use crate::rspace::hot_store::{
+    AcceptedMatch, AcceptedMatchOutcome, ContinuationVersion, HotStore, HotStoreInstances,
+    StoredContinuationCommit,
+};
 use crate::rspace::internal::*;
 use crate::rspace::serializers::cold_store_decode::ColdStoreDecode;
 use crate::rspace::space_matcher::SpaceMatcher;
@@ -765,16 +768,16 @@ where
             .get_distinct_values_sorted(&IOEvent::Consume(consume_ref.clone()));
         match comms_option {
             None => Ok(self.store_waiting_continuation(channels, wk)),
-            Some(comms_list) => {
+            Some(comms_list) => loop {
                 match self.get_comm_and_consume_candidates(
                     channels.clone(),
-                    patterns,
+                    patterns.clone(),
                     // The continuation the commit guard is evaluated against.
                     // `wk` already owns it behind the `Arc` built above.
                     &wk.continuation,
                     comms_list.clone(),
                 ) {
-                    None => Ok(self.store_waiting_continuation(channels, wk)),
+                    None => return Ok(self.store_waiting_continuation(channels, wk)),
                     Some((_, data_candidates)) => {
                         let produce_counters_closure =
                             |produces: &[Produce]| self.produce_counters(produces);
@@ -786,6 +789,18 @@ where
                             produce_counters_closure,
                         );
 
+                        if !comms_list.contains(&comm_ref) {
+                            return Err(RSpaceError::BugFoundError(format!(
+                                "COMM Event {:?} was not contained in the trace {:?}",
+                                comm_ref, comms_list
+                            )));
+                        }
+                        if !self.try_commit_data_match(&data_candidates)? {
+                            // Refused proposals have no store, log, binding, or
+                            // replay-counter effects. Re-select against the
+                            // current PathMap root without an artificial cap.
+                            continue;
+                        }
                         self.log_comm(
                             &data_candidates,
                             &channels,
@@ -793,22 +808,11 @@ where
                             comm_ref.clone(),
                             "comm.consume",
                         );
-
-                        assert!(
-                            comms_list.contains(&comm_ref),
-                            "{}",
-                            format!(
-                                "COMM Event {:?} was not contained in the trace {:?}",
-                                comm_ref, comms_list
-                            )
-                        );
-
-                        let _ = self.store_persistent_data(data_candidates.clone(), &peeks);
                         self.remove_bindings_for(comm_ref);
-                        Ok(self.wrap_result(channels, wk, consume_ref, data_candidates))
+                        return Ok(self.wrap_result(channels, wk, consume_ref, data_candidates));
                     }
                 }
-            }
+            },
         }
     }
 
@@ -909,9 +913,14 @@ where
         let _span = tracing::info_span!(target: "f1r3fly.rspace", "locked-produce").entered();
         event!(Level::DEBUG, mark = "started-locked-produce", "locked_produce");
 
-        let grouped_channels = self.get_store().get_joins(&channel);
-
         self.log_produce(produce_ref.clone(), &channel, &data, persist);
+
+        let data = Arc::new(data);
+        let arrival = Datum {
+            a: Arc::clone(&data),
+            persist,
+            source: produce_ref.clone(),
+        };
 
         // O(1) hash lookup. `IOEvent` derives `Hash`/`Eq`, and `Produce`'s
         // manual impls hash/compare on `self.hash` only — the metadata
@@ -925,10 +934,11 @@ where
             .get_distinct_values_sorted(&IOEvent::Produce(produce_ref.clone()));
         match comms_option {
             None => Ok(self.store_data(channel, data, persist, produce_ref)),
-            Some(comms) => {
+            Some(comms) => loop {
+                let grouped_channels = self.get_store().get_joins(&channel);
                 match self.get_comm_or_produce_candidate(
                     channel.clone(),
-                    data.clone(),
+                    Arc::clone(&data),
                     persist,
                     comms.clone(),
                     produce_ref.clone(),
@@ -947,7 +957,15 @@ where
                             .iter()
                             .any(|candidate| candidate.address.is_fresh());
 
-                        let result = self.handle_match(pc, comms).map(|consume_result| {
+                        let Some(consume_result) = self.try_handle_match(
+                            pc,
+                            &comms,
+                            Some((channel.clone(), arrival.clone())),
+                        )?
+                        else {
+                            continue;
+                        };
+                        let result = Some(consume_result).map(|consume_result| {
                             let p = comm
                                 .produces
                                 .into_iter()
@@ -955,22 +973,27 @@ where
                             (consume_result.0, consume_result.1, p.unwrap_or(produce_ref.clone()))
                         });
 
-                        if !comm_consumed_the_produced_datum {
-                            let _ = self.store_data(channel, data, persist, produce_ref);
-                        }
-
-                        Ok(result)
+                        debug_assert!(
+                            comm_consumed_the_produced_datum ||
+                                self.get_store().get_data(&channel).iter().any(|datum| {
+                                    datum.source == produce_ref && datum.persist == persist
+                                }),
+                            "an unconsumed replay arrival must be published by the accepted match"
+                        );
+                        return Ok(result);
                     }
-                    None => Ok(self.store_data(channel, data, persist, produce_ref)),
+                    None => {
+                        return Ok(self.store_data(channel, data, persist, produce_ref));
+                    }
                 }
-            }
+            },
         }
     }
 
     fn get_comm_or_produce_candidate(
         &self,
         channel: C,
-        data: A,
+        data: Arc<A>,
         persist: bool,
         comms: Vec<COMM>,
         produce_ref: Produce,
@@ -993,15 +1016,12 @@ where
     fn run_matcher_produce(
         &self,
         channel: C,
-        data: A,
+        data: Arc<A>,
         persist: bool,
         comm: COMM,
         produce_ref: Produce,
         grouped_channels: Vec<Vec<C>>,
     ) -> Option<ProduceCandidate<C, P, A, K>> {
-        // Wrap once — the per-channel speculative candidates below
-        // share the payload by refcount.
-        let data = Arc::new(data);
         self.run_matcher_for_channels(
             grouped_channels,
             |channels| {
@@ -1009,11 +1029,13 @@ where
                 // `extract_first_match` this feeds now makes a guard-aware
                 // selection, so the two sides must enumerate alike (see
                 // `run_matcher_consume`).
-                let continuations = self.get_store().get_continuations(&channels);
-                order_candidates_with_index(continuations)
+                let (version, continuations) =
+                    self.get_store().get_continuations_versioned(&channels);
+                let candidates = order_candidates_with_index(continuations)
                     .into_iter()
                     .filter(|(wc, _)| comm.consume == wc.source)
-                    .collect::<Vec<_>>()
+                    .collect::<Vec<_>>();
+                (version, candidates)
             },
             |c| {
                 let mut result = self.get_store().get_candidate_pool(&c);
@@ -1052,17 +1074,24 @@ where
         }
     }
 
-    fn handle_match(
+    fn try_handle_match(
         &self,
         pc: ProduceCandidate<C, P, A, K>,
-        comms: Vec<COMM>,
-    ) -> MaybeConsumeResult<C, P, A, K> {
+        comms: &[COMM],
+        arrival: Option<(C, Datum<A>)>,
+    ) -> Result<MaybeConsumeResult<C, P, A, K>, RSpaceError> {
         let ProduceCandidate {
             channels,
             continuation,
-            continuation_index,
+            continuation_address,
             data_candidates,
         } = pc;
+
+        if continuation_address.version.is_none() {
+            return Err(RSpaceError::BugFoundError(
+                "replay rendezvous has no continuation freshness capability".to_string(),
+            ));
+        }
 
         let WaitingContinuation {
             patterns: _patterns,
@@ -1080,32 +1109,81 @@ where
             produce_counters_closure,
         );
 
+        if !comms.contains(&comm_ref) {
+            return Err(RSpaceError::BugFoundError(format!(
+                "COMM Event {:?} was not contained in the trace {:?}",
+                comm_ref, comms
+            )));
+        }
+
+        let selected_fresh = data_candidates
+            .iter()
+            .any(|candidate| candidate.address.is_fresh());
+        if selected_fresh && arrival.is_none() {
+            return Ok(None);
+        }
+        let mut datum_delta = stored_datum_removal_delta(&data_candidates)
+            .map_err(super::data_index::DataIndexError::from)?;
+        if !selected_fresh {
+            if let Some((arrival_channel, arrival_datum)) = &arrival {
+                let path = RSpaceDataIndex::datum_path(arrival_channel, arrival_datum);
+                datum_delta
+                    .record_addition(&path, super::bag::Multiplicity::ONE)
+                    .map_err(super::data_index::DataIndexError::from)?;
+            }
+        }
+        let required_persistent_paths = data_candidates
+            .iter()
+            .filter_map(|candidate| {
+                (candidate.datum.persist).then(|| match &candidate.address {
+                    DatumAddress::Stored(path) => Some(Arc::clone(path)),
+                    DatumAddress::Fresh => None,
+                })?
+            })
+            .collect();
+        let join_channels = data_candidates
+            .iter()
+            .map(|candidate| candidate.channel.clone())
+            .collect();
+        let transition = AcceptedMatch {
+            channels: channels.clone(),
+            continuation: Some(StoredContinuationCommit {
+                address: continuation_address,
+                source: continuation.source.clone(),
+                persist: *persist,
+                peeks: peeks.clone(),
+            }),
+            datum_delta,
+            required_persistent_paths,
+            join_channels,
+        };
+        let authoritative_continuation = match self.get_store().apply_accepted_match(transition)? {
+            AcceptedMatchOutcome::Committed {
+                continuation: Some(continuation),
+            } => continuation,
+            AcceptedMatchOutcome::Committed { continuation: None } => {
+                return Err(RSpaceError::BugFoundError(
+                    "accepted replay match returned no authoritative continuation".to_string(),
+                ));
+            }
+            AcceptedMatchOutcome::Stale => return Ok(None),
+        };
+
         self.log_comm(
             &data_candidates,
             &channels,
-            continuation.clone(),
+            authoritative_continuation.clone(),
             comm_ref.clone(),
             "comm.produce",
         );
-
-        assert!(
-            comms.contains(&comm_ref),
-            "COMM Event {:?} was not contained in the trace {:?}",
-            comm_ref,
-            comms
-        );
-
-        if !persist {
-            self.get_store()
-                .remove_continuation(&channels, continuation_index);
-            self.mark_replay_waiting_continuation_match();
-        } else {
-            self.mark_replay_waiting_continuation_match();
-        }
-
-        let _ = self.remove_matched_datum_and_join(channels.clone(), data_candidates.clone());
+        self.mark_replay_waiting_continuation_match();
         self.remove_bindings_for(comm_ref);
-        self.wrap_result(channels, continuation.clone(), consume_ref.clone(), data_candidates)
+        Ok(self.wrap_result(
+            channels,
+            authoritative_continuation,
+            consume_ref.clone(),
+            data_candidates,
+        ))
     }
 
     fn remove_bindings_for(&self, comm_ref: COMM) {
@@ -1245,12 +1323,12 @@ where
     fn store_data(
         &self,
         channel: C,
-        data: A,
+        data: Arc<A>,
         persist: bool,
         produce_ref: Produce,
     ) -> MaybeProduceResult<C, P, A, K> {
         self.get_store().put_datum(&channel, Datum {
-            a: Arc::new(data),
+            a: data,
             persist,
             source: produce_ref,
         });
@@ -1258,14 +1336,37 @@ where
         None
     }
 
-    fn store_persistent_data(
+    fn try_commit_data_match(
         &self,
-        data_candidates: Vec<ConsumeCandidate<C, A>>,
-        _peeks: &BTreeSet<i32>,
-    ) -> Option<Vec<()>> {
-        let delta = stored_datum_removal_delta(&data_candidates).ok()?;
-        self.get_store().apply_datum_delta(&delta).ok()?;
-        Some(vec![(); data_candidates.len()])
+        data_candidates: &[ConsumeCandidate<C, A>],
+    ) -> Result<bool, RSpaceError> {
+        let delta = stored_datum_removal_delta(data_candidates)
+            .map_err(super::data_index::DataIndexError::from)?;
+        let required_persistent_paths = data_candidates
+            .iter()
+            .filter_map(|candidate| {
+                (candidate.datum.persist).then(|| match &candidate.address {
+                    DatumAddress::Stored(path) => Some(Arc::clone(path)),
+                    DatumAddress::Fresh => None,
+                })?
+            })
+            .collect();
+        let transition = AcceptedMatch {
+            channels: Vec::new(),
+            continuation: None,
+            datum_delta: delta,
+            required_persistent_paths,
+            join_channels: Vec::new(),
+        };
+        match self.get_store().apply_accepted_match(transition)? {
+            AcceptedMatchOutcome::Committed { continuation: None } => Ok(true),
+            AcceptedMatchOutcome::Committed {
+                continuation: Some(_),
+            } => Err(RSpaceError::BugFoundError(
+                "data-only replay match returned a continuation".to_string(),
+            )),
+            AcceptedMatchOutcome::Stale => Ok(false),
+        }
     }
 
     fn restore_installs(&self) {
@@ -1380,24 +1481,15 @@ where
         Some((cont_result, rspace_results))
     }
 
-    fn remove_matched_datum_and_join(
-        &self,
-        channels: Vec<C>,
-        data_candidates: Vec<ConsumeCandidate<C, A>>,
-    ) -> Option<Vec<()>> {
-        let delta = stored_datum_removal_delta(&data_candidates).ok()?;
-        let store = self.get_store();
-        store.apply_datum_delta(&delta).ok()?;
-        for consume_candidate in &data_candidates {
-            store.remove_join(&consume_candidate.channel, &channels);
-        }
-        Some(vec![(); data_candidates.len()])
-    }
-
     fn run_matcher_for_channels(
         &self,
         grouped_channels: Vec<Vec<C>>,
-        fetch_matching_continuations: impl Fn(Vec<C>) -> Vec<(WaitingContinuation<P, K>, i32)>,
+        fetch_matching_continuations: impl Fn(
+            Vec<C>,
+        ) -> (
+            Option<ContinuationVersion>,
+            Vec<(WaitingContinuation<P, K>, i32)>,
+        ),
         fetch_matching_data: impl Fn(C) -> (C, CandidatePool<A>),
     ) -> MaybeProduceCandidate<C, P, A, K> {
         let mut remaining = grouped_channels;
@@ -1405,7 +1497,8 @@ where
         loop {
             match remaining.split_first() {
                 Some((channels, rest)) => {
-                    let match_candidates = fetch_matching_continuations(channels.to_vec());
+                    let (continuation_version, match_candidates) =
+                        fetch_matching_continuations(channels.to_vec());
                     let channel_to_indexed_data: HashMap<C, CandidatePool<A>> = channels
                         .iter()
                         .map(|c| fetch_matching_data(c.clone()))
@@ -1414,6 +1507,7 @@ where
                     let first_match = self.extract_first_match(
                         &self.matcher,
                         channels.to_vec(),
+                        continuation_version,
                         match_candidates,
                         channel_to_indexed_data,
                     );
