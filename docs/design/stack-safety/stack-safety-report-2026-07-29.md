@@ -9828,9 +9828,40 @@ mCRL2, and mutant gate passes under an 8 GiB `MemoryMax`, zero-swap scope. Its l
 The proof boundary is explicit. The models verify the reviewed state-transition and scheduler
 relations; they do not verify Rust's mutex implementation, `Arc` allocator behavior, compiler, or
 every external RSpace schedule. The adversarial Rust cases bind the concrete identity and locking
-boundary. This checkpoint makes no latency, allocation, or RSS improvement claim; it is a
-correctness repair after an iterative traversal, not a measured PathMap optimization. CBR-072
-records the consensus ruling.
+boundary. CBR-072 records the consensus ruling.
+
+Checkpoint `281c1698a` subsequently measures this boundary without changing production semantics.
+Its non-default control freezes the former split store-call sequence; every comparable arm must
+produce the same post-state digest and stale refusal must remain nonmutating. Criterion uses 51
+samples and 99% confidence. The conservative atomic-upper/control-lower CI ratios are 1.0442 for
+singleton and 1.0351 for join-2, below the preregistered 1.05 guards. Repeated-16 improves from
+8.4383–8.4692 to 6.0909–6.1725 microseconds, join-32 from 64.820–65.786 to 55.952–59.312
+microseconds, and unconsumed-arrival publication from 3.4042–3.5157 to 3.0465–3.1512
+microseconds. Persistent continuation is approximately 4–7% slower and the fixed singleton p99 is
+5.4% higher; these adverse observations remain part of the verdict.
+
+Pgmcp experiment 313 requires a powered join-32 primary cell in addition to the task-frozen
+matrix. One complete replication raises that cell to 102 observations per arm. The locked Welch
+guard accepts with $`p=4.0138\times10^{-68}`$, Cohen's $`d=-4.2261`$, and a 95%
+treatment-minus-control CI of $`[-8{,}770.689,-7{,}693.311]`$ ns/op. Both arms are nonnormal; the
+parallel Mann–Whitney test and Cliff's $`\delta=-0.980392`$ agree. No observation was selected or
+discarded, and the replication does not replace the original ten-cell populations.
+
+The uninstrumented and instrumented subjects are separate binaries. Exact counters show one lock
+and one PathMap-root publication for every accepted atomic cell, zero transition allocation/root
+publication for stale rejection, and split-control lock counts reaching 18 at repeated-16 and 34
+at join-32. Atomic allocation calls fall by 15, approximately 31, and 11 per operation for
+repeated-16, join-32, and unconsumed arrival. Unprofiled fresh-process RSS stays between 4,088 and
+4,216 KiB in every arm, so no peak-memory improvement is claimed.
+
+Independent whole-process profiles corroborate the mechanism. Eleven `perf stat` repetitions at
+join-32 show approximately 4.3% fewer cycles, 6.6% fewer instructions, and 5.8% fewer branches but
+more cache references/misses. Headless uProf reports approximately 3.9% fewer sampled cycles and
+6.4% fewer instructions. Heaptrack was run strictly with `--record-only` and rendered with
+`heaptrack_print`: over 1,000 join-32 operations atomic records 30,762 fewer allocation calls, and
+over 1,000 unconsumed-arrival operations it records 11,000 fewer, with equal displayed peak heap.
+The complete protocol, all ten cells, qualifications, commands, and evidence hashes are retained in
+[`measurements/accepted-match-transaction-profiles-2026-08-24.md`](measurements/accepted-match-transaction-profiles-2026-08-24.md).
 
 ---
 
@@ -10686,6 +10717,7 @@ It passes 4,502/4,502 tests with 53 skipped in 139.111 seconds. The log SHA-256 
 
 | file | contents |
 |---|---|
+| [`measurements/accepted-match-transaction-profiles-2026-08-24.md`](measurements/accepted-match-transaction-profiles-2026-08-24.md) | SS-Y18's frozen split-call control, ten-cell Criterion and percentile matrix, exact lock/root/allocation counters, RSS, report-only Heaptrack, `perf stat`, headless uProf, negative cells, commands, and evidence hashes (§5.38) |
 | [`measurements/phase7-cachegrind-fits-2026-08-03.tsv`](measurements/phase7-cachegrind-fits-2026-08-03.tsv) | per-subject Ir/Dr/Dw exponents and verdicts for all 40 converted subjects (§5.14.3) |
 | [`measurements/phase7-massif-2026-08-03.tsv`](measurements/phase7-massif-2026-08-03.tsv) | matched-control heap peaks at depths 256/1,024 and B/level for the four core conversions (§5.14.2) |
 | [`measurements/phase7-depth-histograms-2026-08-03.tsv`](measurements/phase7-depth-histograms-2026-08-03.tsv) | subject/root-kind depth histograms (§5.15.1) |
@@ -10812,15 +10844,16 @@ accepting this file as a positional extra page):
 DOCLINT_DOI=off ../mettail-rust/docs/languages/validate.sh \
   docs/design/pathmap/pathmap-engineering-journal-2026-08-23.md \
   docs/design/stack-safety/stack-safety-report-2026-07-29.md \
+  docs/design/stack-safety/measurements/accepted-match-transaction-profiles-2026-08-24.md \
   docs/design/stack-safety/measurements/spatial-matcher-candidate-group-mask-2026-08-23.md \
   docs/design/rspace/pathmap-bag-rspace-integration.md \
   docs/consensus/consensus-change-register.md
 ```
 
 The run of record for this revision (2026-08-24), SHA-256
-`4b4735c4643a53a02d5fb2b830797d46135d8859179660c6e1ccde3dc13097aa`, passes **16 of 17**
+`434cfa838a7870c4129ab584fecbe49f8a4f552402b05bb1c2a59076d77a8928`, passes **16 of 17**
 mechanised checks over the stack-safety and consensus living reports, the PathMap journal, the
-RSpace integration report, and the SS-Y16 measurement record, with the
+RSpace integration report, and the SS-Y16/SS-Y18 measurement records, with the
 network-dependent DOI-resolution check explicitly skipped (`DOCLINT_DOI=off`); the four
 editorially-judged guidelines are dispositioned in §E.3. This is a timestamped measurement, not a
 standing property — re-run the command after any edit, and do not count the skip as a pass.

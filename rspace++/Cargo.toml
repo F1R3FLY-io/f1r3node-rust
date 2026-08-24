@@ -112,4 +112,4 @@ required-features = ["accepted-match-transition-experiment"]
 [[bench]]
 name = "rspace_accepted_match_profile"
 harness = false
-required-features = ["accepted-match-transition-instrumentation"]
+required-features = ["accepted-match-transition-experiment"]

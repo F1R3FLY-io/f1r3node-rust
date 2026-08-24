@@ -7,9 +7,11 @@
 //! `heaptrack --record-only`; Heaptrack reports are rendered with
 //! `heaptrack_print`, never a GUI.
 
+#[cfg(feature = "accepted-match-transition-instrumentation")]
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::env;
 use std::hint::black_box;
+#[cfg(feature = "accepted-match-transition-instrumentation")]
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Instant;
 
@@ -20,17 +22,25 @@ use rspace_plus_plus::rspace::hot_store::accepted_match_transition_experiment::{
 
 const SCHEMA: &str = "accepted-match-transition-v1";
 
+#[cfg(feature = "accepted-match-transition-instrumentation")]
 struct CountingAllocator;
 
+#[cfg(feature = "accepted-match-transition-instrumentation")]
 static ALLOCATION_ACTIVE: AtomicBool = AtomicBool::new(false);
+#[cfg(feature = "accepted-match-transition-instrumentation")]
 static ALLOCATION_CALLS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "accepted-match-transition-instrumentation")]
 static ALLOCATION_BYTES: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "accepted-match-transition-instrumentation")]
 static DEALLOCATION_CALLS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "accepted-match-transition-instrumentation")]
 static DEALLOCATION_BYTES: AtomicU64 = AtomicU64::new(0);
 
+#[cfg(feature = "accepted-match-transition-instrumentation")]
 #[global_allocator]
 static ALLOCATOR: CountingAllocator = CountingAllocator;
 
+#[cfg(feature = "accepted-match-transition-instrumentation")]
 unsafe impl GlobalAlloc for CountingAllocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         if ALLOCATION_ACTIVE.load(Ordering::Relaxed) {
@@ -75,6 +85,7 @@ struct AllocationMeasurement {
     deallocation_bytes: u64,
 }
 
+#[cfg(feature = "accepted-match-transition-instrumentation")]
 fn allocation_begin() {
     ALLOCATION_CALLS.store(0, Ordering::Relaxed);
     ALLOCATION_BYTES.store(0, Ordering::Relaxed);
@@ -83,6 +94,7 @@ fn allocation_begin() {
     assert!(!ALLOCATION_ACTIVE.swap(true, Ordering::SeqCst));
 }
 
+#[cfg(feature = "accepted-match-transition-instrumentation")]
 fn allocation_end() -> AllocationMeasurement {
     assert!(ALLOCATION_ACTIVE.swap(false, Ordering::SeqCst));
     AllocationMeasurement {
@@ -92,6 +104,12 @@ fn allocation_end() -> AllocationMeasurement {
         deallocation_bytes: DEALLOCATION_BYTES.load(Ordering::Relaxed),
     }
 }
+
+#[cfg(not(feature = "accepted-match-transition-instrumentation"))]
+fn allocation_begin() {}
+
+#[cfg(not(feature = "accepted-match-transition-instrumentation"))]
+fn allocation_end() -> AllocationMeasurement { AllocationMeasurement::default() }
 
 fn main() {
     let case = parse_case(&required("ACCEPTED_MATCH_PROFILE_CASE"));
@@ -151,7 +169,7 @@ fn main() {
     let outcome = last_outcome.expect("a positive iteration count produces an outcome");
     println!(
         concat!(
-            "PROFILE\t{}\tcase={}\tarm={}\titerations={}\tstatus={}",
+            "PROFILE\t{}\tcase={}\tarm={}\titerations={}\tstatus={}\tinstrumented={}",
             "\tp50_ns={}\tp95_ns={}\tp99_ns={}\tmean_ns={}",
             "\tallocation_calls={}\tallocation_bytes={}",
             "\tdeallocation_calls={}\tdeallocation_bytes={}",
@@ -163,6 +181,7 @@ fn main() {
         arm.label(),
         iterations,
         expected_status.label(),
+        cfg!(feature = "accepted-match-transition-instrumentation"),
         quantile(&durations, 50),
         quantile(&durations, 95),
         quantile(&durations, 99),

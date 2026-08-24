@@ -132,6 +132,7 @@ justifies each rule.
 | Exact-encode only fields that the authoritative matcher compares. | Exact constraints on matcher-ignored fields can reject a legal match. A derived query must project those fields semantically or decline pruning and scan the authoritative domain. | J-011 |
 | Keep immutable membership authority separate from speculative multiplicity demand. | Mutating the same Bag for both roles obscures the subset invariant and pays CoW mutation on authoritative trie state; a second `PathMap<Multiplicity>` Bag represents demand without flattening or changing the value algebra. | J-018 |
 | Treat a selected match as a revocable proposal until one authority validates and publishes it. | A PathMap delta can be exact while its continuation address or persistent witness has become stale. One group-scoped opaque epoch and one hot-store transaction prevent a valid trie operation from committing against the wrong state. | J-019 |
+| Normalize the complete accepted transition into one private CoW root and publish it once. | One root publication turns width-dependent lock and allocation churn into private trie work; narrow cells stay within the preregistered guard while repeated identities, wide joins, and unconsumed arrivals improve. | J-020 |
 
 Provisional rule—not accepted evidence: J-005 proposes fingerprinting a Bag as self-delimiting
 endpoint records plus multiplicities rather than an occurrence-expanded digest stream. H-001 must
@@ -1538,6 +1539,71 @@ Rust's mutex implementation, `Arc` allocator behavior, compiler correctness, or 
 RSpace schedule. The executable adversarial and release gates bind those concrete boundaries. No
 latency, allocation, or RSS improvement is inferred from this correctness repair.
 
+### J-020 — 2026-08-24: one validated root publication scales with transition width
+
+Question: Does the J-019 transaction pay an unacceptable fixed cost for narrow accepted matches, or
+does one normalized `BagDelta` and one PathMap root publication reduce work as a rendezvous touches
+more repeated identities, channels, and arrival state?
+
+Status: ACCEPTED MEASURED ENGINEERING RULE. The immutable harness checkpoint is
+`f1r3node-rust-mettail@281c1698a`; the complete protocol, tables, profiler qualifications, command
+digests, and negative cells are retained in
+[`accepted-match-transaction-profiles-2026-08-24.md`](../stack-safety/measurements/accepted-match-transaction-profiles-2026-08-24.md).
+The work remains reachable through pgmcp `rspace-atomic-versioned-accepted-match` and its linked
+experiment 313, `rspace-accepted-match-atomic-transition`.
+
+The control freezes the actual pre-J-019 git-history sequence: optional continuation removal, one
+datum-delta application, one join removal per selected candidate, and a separate datum insertion
+when an arrival remains unconsumed. Both arms prepare the same exact identities and must produce
+the same deterministic post-state digest. Stale rejection has no fabricated control because the
+predecessor had no freshness contract; it must instead leave its before/after digest equal.
+
+Measurement and mechanism are separated. The uninstrumented feature contains no counting
+allocator or lock/root counter and supplies Criterion plus fixed p50/p95/p99 populations. A second
+instrumentation feature measures transition-scoped allocation calls, write-lock acquisition and
+hold time, and successful authoritative Bag-root publication. The ten cells cover singleton,
+repeated multiplicity 2/16, joins 2/8/32, persistent continuation, stale rejection, named nonleast
+continuation, and an unconsumed arrival. Criterion uses 51 samples and 99% confidence under a pinned
+physical core and no-swap RSS cap.
+
+The preregistered hard guards pass. Atomic singleton's pessimistic upper-CI/control-lower-CI ratio
+is 1.0442 and join-2's is 1.0351, both below 1.05. The larger transition shapes show the predicted
+scaling: repeated-16 changes from 8.4383–8.4692 to 6.0909–6.1725 microseconds, join-32 from
+64.820–65.786 to 55.952–59.312 microseconds, and unconsumed arrival from 3.4042–3.5157 to
+3.0465–3.1512 microseconds. Repeated-2 is neutral. Persistent continuation is approximately 4–7%
+slower, named nonleast is neutral/slightly adverse, and the fixed singleton p99 is 5.4% higher;
+these negative cells remain first-class evidence rather than being averaged away.
+
+The structured ledger requested a powered primary-cell replication after the original task-frozen
+matrix. One complete additional join-32 run brings that cell to 102 observations per arm. Its
+locked Welch guard accepts with $`p=4.0138\times10^{-68}`$, Cohen's $`d=-4.2261`$, and a 95%
+treatment-minus-control CI of $`[-8{,}770.689,-7{,}693.311]`$ ns/op. Both arms are nonnormal under
+the omnibus diagnostic; the parallel Mann–Whitney result and Cliff's $`\delta=-0.980392`$ agree.
+This replication strengthens join-32 only and does not overwrite the ten-cell matrix.
+
+Every successful atomic cell takes exactly one hot-state write lock and publishes exactly one
+`PathMap<Multiplicity>` root; stale rejection publishes none and allocates nothing inside the
+transition. The split control takes 3 locks at singleton, 18 at repeated-16, 34 at join-32, and 4
+plus two root publications for the unconsumed-arrival cell. Atomic allocation-call reductions per
+operation are 15 at repeated-16, approximately 31 at join-32, and 11 at unconsumed arrival. Fresh-
+process RSS remains 4,088–4,216 KiB in every arm, so no peak-RSS improvement is claimed.
+
+Independent profiles preserve the same qualification. Eleven `perf stat` repetitions at join-32
+show approximately 4.3% fewer cycles, 6.6% fewer instructions, and 5.8% fewer branches, while cache
+references/misses rise; this is not called a universal locality win. Headless AMD uProf reports
+approximately 3.9% fewer sampled cycles and 6.4% fewer instructions. Report-only Heaptrack—captured
+with `--record-only` and rendered with `heaptrack_print`, never a graphical analyzer—records 30,762
+fewer allocation calls over 1,000 join-32 operations and 11,000 fewer over 1,000 unconsumed-arrival
+operations. Equal displayed peak heap prevents a retained-memory claim.
+
+Decision: keep the single transaction boundary. A normalized exact-key delta should own one private
+copy-on-write root; all continuation and persistent-witness authority should be validated before
+that root and related metadata become visible; the root should then be published once. Do not split
+the singleton path merely to chase its narrow fixed effect. Profile the shared datum-prefix,
+serialization, hashing, allocator, zipper-navigation, and `make_unique` costs instead. At no point
+may this optimization occurrence-expand the Bag, project it to `Vec<Par>`, or serialize an ACT
+snapshot.
+
 ## Open hypotheses and required closure evidence
 
 | ID | Hypothesis | Required evidence before acceptance | Status |
@@ -1552,6 +1618,7 @@ latency, allocation, or RSS improvement is inferred from this correctness repair
 | H-008 | Semantic projection or a fail-closed `All` fallback restores dynamic AC candidate-query soundness for matcher-ignored `New`, `ReceiveBind`, and `MatchCase` fields. | Per-field counterexamples; oracle-success-implies-query-accept property; ground exact, malformed, candidate/binding, COMM, play/replay, and post-state gates from pgmcp 5982. | Focused semantic gates passed; COMM/replay/release open |
 | H-009 | Group-compressed candidate masks plus retention-pressure scheduling remove the conditional depth×duplicate-width endpoint slope without changing ordered candidate or matcher semantics. | Frozen occurrence control; exact ordered-domain oracle; depth×width/source-orientation matrix; mixed `FreeMap`/remainder differential; randomized expansion modes; 51-sample locked experiment; headless allocation, peak-heap, instruction/cache, and CPU attribution; full release gate. | **Accepted** at `e3f3b4831`, with experiment 312 accepted and the repaired exact 4,502/4,502 release lifecycle gate closed at `8035ba826` |
 | H-010 | Immutable candidate authority plus a separate reservation Bag reduces speculative CoW mutation without a material regression from availability filtering under high reservation pressure. | Frozen decrement/reinsert control; equal exact selections and rollback states; distinct/repeated identities; single/repeated channels; low/high reservation pressure; Criterion confidence decision; allocation and RSS attribution; report-only Heaptrack plus instruction/cache profile; exact release lifecycle. | Open; representation and semantic invariants accepted at `173bf4e07`/`39bc0d999`, performance verdict deliberately not inferred |
+| H-011 | One validated accepted-match publication removes width-dependent split-store overhead without an unacceptable narrow-cell regression. | Frozen git-history control; exact post-state/stale nonmutation; singleton and join-2 99% CI guards; repeated/join/arrival matrix; exact lock/root/allocation attribution; RSS, report-only Heaptrack, and instruction/cache profiles. | **Accepted** at `281c1698a` and pgmcp experiment 313; singleton/join-2 conservative ratios pass 1.05, the powered join-32 replication and wide/repeated/arrival cells improve, and persistent/named/singleton-tail negatives remain documented |
 
 ## Threats to validity
 

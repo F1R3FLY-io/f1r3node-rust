@@ -538,6 +538,12 @@ pub fn instrumentation_begin() { instrumentation::begin(); }
 #[cfg(feature = "accepted-match-transition-instrumentation")]
 pub fn instrumentation_end() -> TransitionInstrumentation { instrumentation::end() }
 
+#[cfg(not(feature = "accepted-match-transition-instrumentation"))]
+pub fn instrumentation_begin() {}
+
+#[cfg(not(feature = "accepted-match-transition-instrumentation"))]
+pub fn instrumentation_end() -> TransitionInstrumentation { TransitionInstrumentation::default() }
+
 #[cfg(feature = "accepted-match-transition-instrumentation")]
 pub(super) fn record_write_acquisition(wait: std::time::Duration) -> bool {
     instrumentation::record_acquisition(wait)
