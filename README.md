@@ -89,7 +89,7 @@ Ubuntu or Debian:
 ```bash
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 sudo apt-get update
-sudo apt-get install -y protobuf-compiler libprotobuf-dev pkg-config libssl-dev liblmdb-dev build-essential gcc
+sudo apt-get install -y protobuf-compiler libprotobuf-dev pkg-config libssl-dev liblmdb-dev build-essential gcc ruby jq
 cargo install just
 ```
 
@@ -107,7 +107,7 @@ cargo install cargo-deny --locked   # one-time, required by the pre-commit deny 
 | Hook | When | Checks |
 | --- | --- | --- |
 | `pre-commit` | Every commit | `cargo fmt --check`, `cargo clippy -D warnings`, `cargo deny check` |
-| `pre-push` | Every push | `cargo clippy` (re-check), `cargo test --release` (per-crate) |
+| `pre-push` | Every push | CI script tests, `cargo clippy`, `cargo test --release` (per-crate) |
 
 Both hooks auto-skip in CI environments (the same gates run server-side in `.github/workflows/ci.yml`).
 
@@ -116,7 +116,7 @@ Both hooks auto-skip in CI environments (the same gates run server-side in `.git
 - All three pre-commit checks (fmt, clippy, deny) must pass.
 - The pre-push test suite must pass.
 - Do **not** use `git commit --no-verify` or `git push --no-verify`. The same checks run in CI; bypassing locally only defers the failure.
-- The `SKIP_FMT` / `SKIP_CLIPPY` / `SKIP_DENY` / `SKIP_TESTS` / `QUICK` / `TEST_CRATES` env-var skips are for local in-progress experimentation only. Every commit and push that reaches the remote must pass without skips.
+- The `SKIP_FMT` / `SKIP_CLIPPY` / `SKIP_DENY` / `SKIP_TESTS` / `SKIP_CI_TESTS` / `QUICK` / `TEST_CRATES` env-var skips are for local experiments only. Every remote commit must pass without skips.
 
 See [DEVELOPER.md](DEVELOPER.md#git-hooks) for the full skip-flag reference and `setup-hooks.sh --status` / `--remove` management commands.
 

@@ -12,7 +12,7 @@ This repository is built with Cargo, Docker, and system packages only.
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 source ~/.cargo/env
 
-brew install protobuf openssl pkg-config lmdb just grpcurl
+brew install protobuf openssl pkg-config lmdb just grpcurl ruby jq
 ```
 
 Optional:
@@ -35,7 +35,9 @@ sudo apt-get install -y \
   libssl-dev \
   liblmdb-dev \
   build-essential \
-  gcc
+  gcc \
+  ruby \
+  jq
 
 cargo install just
 ```
@@ -58,7 +60,9 @@ sudo dnf install -y \
   pkg-config \
   openssl-devel \
   lmdb-devel \
-  gcc
+  gcc \
+  ruby \
+  jq
 
 cargo install just
 ```
@@ -73,12 +77,12 @@ Install hooks after cloning:
 
 This sets `core.hooksPath` to `.githooks/`, which provides:
 
-| Hook | Runs | Checks |
-|------|------|--------|
-| `pre-commit` | On every commit | `cargo fmt --check`, `cargo clippy -D warnings` |
-| `pre-push` | On every push | `cargo clippy`, `cargo test --release` |
+| Hook         | Runs            | Checks                                                         |
+|--------------|-----------------|----------------------------------------------------------------|
+| `pre-commit` | On every commit | `cargo fmt --check`, `cargo clippy -D warnings`                 |
+| `pre-push`   | On every push   | CI script tests, `cargo clippy`, `cargo test --release`         |
 
-Both hooks skip automatically in CI environments.
+Both hooks skip automatically in CI environments. The pre-push hook gives Casper tests 1800 seconds and gives other commands 600 seconds.
 
 ### Hook Options
 
@@ -89,9 +93,11 @@ SKIP_CLIPPY=1 git commit -m "wip"
 
 # Push with skips
 QUICK=1 git push                           # Debug-mode tests (faster compile)
-SKIP_TESTS=1 git push                      # Skip tests entirely
+SKIP_TESTS=1 git push                      # Skip Cargo tests
+SKIP_CI_TESTS=1 git push                   # Skip CI script tests
 TEST_CRATES="casper rholang" git push      # Test specific crates only
-TEST_TIMEOUT=300 git push                  # Adjust timeout
+TEST_TIMEOUT=900 git push                  # Adjust the general timeout
+CASPER_TEST_TIMEOUT=2400 git push          # Adjust the Casper timeout
 
 # Bypass entirely (not recommended)
 git commit --no-verify
