@@ -16,33 +16,56 @@ use std::fmt;
 
 use pathmap::PathMap;
 
+use super::canonical_bytes_arena::CanonicalByteProvenance;
+use super::canonical_path_admission::{
+    CanonicalPathObligationId, CanonicalPathObligationKind, CanonicalPathObligationResolution,
+    CanonicalPathSource, CanonicalPathTopologyAdmission, LocatedPathByte, NestedEpmMode,
+};
 use super::canonical_score_bytes::{
     CanonicalScoreArena, CanonicalScoreArenaError, CanonicalScoreHandle,
 };
 use super::canonical_semantics::{
-    self as semantics, CanonicalScoreAlgebra, ParComponentTag, Score,
+    self as semantics, CanonicalScoreAlgebra, ParComponentTag, PreScoredGroundScore,
+    PreScoredUnforgeableScore, Score,
+};
+use super::indexed_protobuf::{
+    IndexedBytePosition, IndexedByteRegion, IndexedCanonicalField, IndexedCanonicalFieldCursor,
+    IndexedCanonicalFieldValue, LocatedCanonicalProtobufError, OwnedIndexedByteRegion,
 };
 use super::match_schema::{
     resolve_protobuf_field, wire_program_by_type_id, ResolvedProtobufField,
     ResolvedProtobufPayload, RhoMatchFieldKind, RhoMatchPayloadKind, RhoMatchProgram,
 };
 use super::match_schema_tables::*;
-use super::protobuf_cursor::{
-    CanonicalProtobufError, CanonicalRegionField, CanonicalRegionFieldCursor,
-    CanonicalRegionFieldValue, CanonicalWireType, ProtobufRegion,
-};
+#[cfg(test)]
+use super::protobuf_cursor::ProtobufRegion;
+use super::protobuf_cursor::{CanonicalByteRange, CanonicalProtobufError, CanonicalWireType};
 use super::protobuf_schema::{ProtobufKind, ProtobufWireType};
 use crate::rust::epathmap_trie_codec::{
-    OwnedCanonicalEpm1TopologyCursor, OwnedCanonicalEpm1TopologyEvent, TrieCodecError,
+    EPathMapMode, IndexedCanonicalEpm1TopologyCursor, IndexedCanonicalEpm1TopologyEvent,
+    TrieCodecError,
 };
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct CanonicalProtobufAdmissionStats {
+    pub(crate) input_bytes: usize,
+    pub(crate) protobuf_bytes_read: usize,
+    pub(crate) protobuf_bytes_traversed: usize,
+    pub(crate) protobuf_bytes_fast_forwarded: usize,
     pub(crate) fields: usize,
     pub(crate) messages: usize,
     pub(crate) map_entries: usize,
     pub(crate) epathmaps: usize,
+    pub(crate) epathmap_events: usize,
+    pub(crate) canonical_path_obligations: usize,
+    pub(crate) canonical_path_payload_bytes: usize,
     pub(crate) max_frames: usize,
+    pub(crate) frame_variant_bytes: usize,
+    pub(crate) max_frame_storage_bytes: usize,
+    pub(crate) reconstructed_key_bytes: usize,
+    pub(crate) legacy_endpoint_replays: usize,
+    pub(crate) typed_decodes: usize,
+    pub(crate) byte_native_validations: usize,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -54,16 +77,19 @@ pub(crate) struct CanonicalProtobufAdmission {
 }
 
 impl CanonicalProtobufAdmission {
+    #[cfg(test)]
     pub(crate) const fn stats(self) -> CanonicalProtobufAdmissionStats { self.stats }
 
     /// `Some(true)` means the admitted root is a raw protobuf `Par` equal to
     /// `Par::default()`. Root `locally_free` is intentionally ignored, exactly
     /// as `Par::PartialEq` ignores it and Prost's map-value default test does.
+    #[cfg(test)]
     pub(crate) const fn semantic_default_par(self) -> Option<bool> { self.semantic_default_par }
 
     /// `Some(stable)` is the exact canonical-path stability verdict for an
     /// admitted raw `Par`.  Nested path admission uses this to resolve an
     /// escape payload without constructing a rhoapi value.
+    #[cfg(test)]
     pub(crate) const fn canonical_path_stable_par(self) -> Option<bool> {
         self.canonical_path_stable_par
     }
@@ -82,33 +108,34 @@ pub(crate) struct CanonicalComponentAdmission {
 pub(crate) enum CanonicalProtobufAdmissionError {
     Framing {
         type_name: &'static str,
-        region_offset: usize,
+        region_start: CanonicalByteProvenance,
+        physical: IndexedBytePosition,
         source: CanonicalProtobufError,
     },
     Schema {
         type_name: &'static str,
         field: u32,
-        region_offset: usize,
+        position: CanonicalByteProvenance,
         detail: &'static str,
     },
     EPathMap {
         type_name: &'static str,
         field: u32,
-        region_offset: usize,
+        position: CanonicalByteProvenance,
         source: TrieCodecError,
     },
     CanonicalPath {
         type_name: &'static str,
         field: u32,
-        region_offset: usize,
-        source_offset: usize,
+        position: CanonicalPathSource,
         detail: String,
     },
     ScoreMismatch {
         type_name: &'static str,
-        region_offset: usize,
+        region_start: CanonicalByteProvenance,
         first_difference: usize,
     },
+    CutoverInvariant(&'static str),
     SizeOverflow,
 }
 
@@ -121,50 +148,62 @@ impl fmt::Display for CanonicalProtobufAdmissionError {
         match self {
             Self::Framing {
                 type_name,
-                region_offset,
+                region_start,
+                physical,
                 source,
             } => write!(
                 formatter,
-                "{type_name} protobuf region at byte {region_offset}: {source}"
+                "{type_name} protobuf region beginning at source {} byte {}, failure at source {} byte {}: {source}",
+                region_start.source,
+                region_start.offset,
+                physical.physical.source,
+                physical.physical.offset,
             ),
             Self::Schema {
                 type_name,
                 field,
-                region_offset,
+                position,
                 detail,
             } => write!(
                 formatter,
-                "{type_name} protobuf field {field} in region at byte {region_offset}: {detail}"
+                "{type_name} protobuf field {field} at source {} byte {}: {detail}",
+                position.source, position.offset,
             ),
             Self::EPathMap {
                 type_name,
                 field,
-                region_offset,
+                position,
                 source,
             } => write!(
                 formatter,
-                "{type_name} protobuf field {field} EPM1 region at byte {region_offset}: {source}"
+                "{type_name} protobuf field {field} EPM1 at source {} byte {}: {source}",
+                position.source, position.offset,
             ),
             Self::CanonicalPath {
                 type_name,
                 field,
-                region_offset,
-                source_offset,
+                position,
                 detail,
             } => write!(
                 formatter,
-                "{type_name} protobuf field {field} canonical path near snapshot byte {}: {detail}",
-                region_offset.saturating_add(*source_offset),
+                "{type_name} protobuf field {field} canonical path at source {} byte {}: {detail}",
+                position.source, position.offset,
             ),
             Self::ScoreMismatch {
                 type_name,
-                region_offset,
+                region_start,
                 first_difference,
             } => write!(
                 formatter,
-                "{type_name} canonical score differs at byte {}",
-                region_offset.saturating_add(*first_difference),
+                "{type_name} canonical score for source {} region beginning at byte {} differs at score byte {first_difference}",
+                region_start.source, region_start.offset,
             ),
+            Self::CutoverInvariant(detail) => {
+                write!(
+                    formatter,
+                    "byte-native protobuf cutover invariant failed: {detail}"
+                )
+            }
             Self::SizeOverflow => formatter.write_str("canonical protobuf admission size overflow"),
         }
     }
@@ -178,6 +217,7 @@ impl std::error::Error for CanonicalProtobufAdmissionError {
             Self::Schema { .. }
             | Self::CanonicalPath { .. }
             | Self::ScoreMismatch { .. }
+            | Self::CutoverInvariant(_)
             | Self::SizeOverflow => None,
         }
     }
@@ -338,29 +378,35 @@ fn semantic_kind(program: &'static RhoMatchProgram) -> Option<SemanticKind> {
     Some(kind)
 }
 
+type AdmissionRegion<'src> = IndexedByteRegion<'src>;
+
+/// Safely shorten an ownership-independent frozen region to the admission
+/// source lifetime before it enters invariant mutable frame storage.
+fn shorten_frozen_region<'src>(region: OwnedIndexedByteRegion) -> AdmissionRegion<'src> { region }
+
 #[derive(Clone)]
-enum SemanticScalar {
+enum SemanticScalar<'src> {
     Bool(bool),
     I32(i32),
     U32(u32),
     I64(i64),
     U64(u64),
-    String(ProtobufRegion),
-    Bytes(ProtobufRegion),
+    String(AdmissionRegion<'src>),
+    Bytes(AdmissionRegion<'src>),
 }
 
-struct SemanticOccurrence {
+struct SemanticOccurrence<'src> {
     variant: Option<&'static str>,
-    body: Option<ProtobufRegion>,
-    value: SemanticValue,
-    field_offset: usize,
+    body: Option<AdmissionRegion<'src>>,
+    value: SemanticValue<'src>,
+    field_position: CanonicalByteProvenance,
 }
 
-enum SemanticValue {
-    Scalar(SemanticScalar),
-    Message(Box<MessageSummary>),
-    Map(Box<MapSummary>),
-    EPathMap(Box<EPathMapSummary>),
+enum SemanticValue<'src> {
+    Scalar(SemanticScalar<'src>),
+    Message(Box<MessageSummary<'src>>),
+    Map(Box<MapSummary<'src>>),
+    EPathMap(Box<EPathMapSummary<'src>>),
 }
 
 #[derive(Clone)]
@@ -372,25 +418,25 @@ struct ComponentSummary {
 }
 
 #[derive(Clone)]
-struct ParSummary {
+struct ParSummary<'src> {
     score: CanonicalScoreHandle,
     semantic_default: bool,
     canonical_path_stable: bool,
-    identity_prefix: ProtobufRegion,
-    identity_suffix: ProtobufRegion,
+    identity_prefix: AdmissionRegion<'src>,
+    identity_suffix: AdmissionRegion<'src>,
 }
 
 #[derive(Clone)]
-struct ExprPayloadSummary {
+struct ExprPayloadSummary<'src> {
     score: Option<CanonicalScoreHandle>,
     canonical_path_stable: bool,
     canonical_fixed_point: bool,
-    pathmap_snapshot: Option<ProtobufRegion>,
+    pathmap_snapshot: Option<AdmissionRegion<'src>>,
 }
 
 #[derive(Clone)]
-enum SemanticSummary {
-    Par(ParSummary),
+enum SemanticSummary<'src> {
+    Par(ParSummary<'src>),
     Component(ComponentSummary),
     Var(CanonicalScoreHandle),
     ReceiveBind {
@@ -402,85 +448,89 @@ enum SemanticSummary {
         required_present: bool,
         canonical_fixed_point: bool,
     },
-    ExprPayload(ExprPayloadSummary),
+    ExprPayload(ExprPayloadSummary<'src>),
     KeyValuePair {
-        key: Option<ParSummary>,
-        value: Option<ParSummary>,
+        key: Option<ParSummary<'src>>,
+        value: Option<ParSummary<'src>>,
     },
     BigRational {
-        numerator: ProtobufRegion,
-        denominator: ProtobufRegion,
+        numerator: AdmissionRegion<'src>,
+        denominator: AdmissionRegion<'src>,
     },
     FixedPoint {
-        unscaled: ProtobufRegion,
+        unscaled: AdmissionRegion<'src>,
         scale: u32,
     },
-    ConnectiveBody(Vec<ParSummary>),
+    ConnectiveBody(Vec<ParSummary<'src>>),
     VarRef {
         index: i32,
         depth: i32,
     },
-    Bytes(ProtobufRegion),
+    Bytes(AdmissionRegion<'src>),
     Unit,
 }
 
 #[derive(Clone)]
-struct EPathMapSummary {
-    snapshot: ProtobufRegion,
+struct EPathMapSummary<'src> {
+    mode: EPathMapMode,
+    snapshot: AdmissionRegion<'src>,
     entries_canonical_path_stable: bool,
 }
 
-struct MessageFrame {
+struct MessageFrame<'src> {
     program: &'static RhoMatchProgram,
-    body: ProtobufRegion,
-    region_offset: usize,
-    cursor: CanonicalRegionFieldCursor,
+    body: AdmissionRegion<'src>,
+    region_start: CanonicalByteProvenance,
+    cursor: IndexedCanonicalFieldCursor<'src>,
     last_slot: Option<usize>,
     seen: Vec<bool>,
-    previous_map_keys: Vec<Option<ProtobufRegion>>,
-    previous_par_components: Vec<Option<(CanonicalScoreHandle, ProtobufRegion)>>,
-    semantic_slots: Vec<Vec<SemanticOccurrence>>,
-    waiting: Option<MessageWait>,
+    previous_map_keys: Vec<Option<AdmissionRegion<'src>>>,
+    previous_par_components: Vec<Option<(CanonicalScoreHandle, AdmissionRegion<'src>)>>,
+    semantic_slots: Vec<Vec<SemanticOccurrence<'src>>>,
+    waiting: Option<MessageWait<'src>>,
     par_components: u64,
     par_locally_free_range: Option<super::protobuf_cursor::CanonicalByteRange>,
 }
 
-enum MessageWait {
+enum MessageWait<'src> {
     Child {
         slot: usize,
         variant: Option<&'static str>,
-        body: ProtobufRegion,
-        field_offset: usize,
+        body: AdmissionRegion<'src>,
+        field_position: CanonicalByteProvenance,
     },
     Map {
         slot: usize,
-        field_offset: usize,
+        field_position: CanonicalByteProvenance,
     },
     EPathMap {
         slot: usize,
-        field_offset: usize,
+        field_position: CanonicalByteProvenance,
     },
 }
 
-impl MessageFrame {
+impl<'src> MessageFrame<'src> {
     fn new(
-        region: ProtobufRegion,
+        region: AdmissionRegion<'src>,
         program: &'static RhoMatchProgram,
     ) -> Result<Self, CanonicalProtobufAdmissionError> {
-        let region_offset = region.absolute_range().start;
-        Self::new_at(region, program, region_offset)
+        let region_start = region
+            .position_at(0)
+            .expect("indexed regions own their start")
+            .physical;
+        Self::new_at(region, program, region_start)
     }
 
     fn new_at(
-        region: ProtobufRegion,
+        region: AdmissionRegion<'src>,
         program: &'static RhoMatchProgram,
-        region_offset: usize,
+        region_start: CanonicalByteProvenance,
     ) -> Result<Self, CanonicalProtobufAdmissionError> {
         if program.fields.len() != program.protobuf_fields.len() {
             return Err(CanonicalProtobufAdmissionError::Schema {
                 type_name: program.type_name,
                 field: 0,
-                region_offset,
+                position: region_start,
                 detail: "wire program field tables have different lengths",
             });
         }
@@ -492,7 +542,7 @@ impl MessageFrame {
             return Err(CanonicalProtobufAdmissionError::Schema {
                 type_name: program.type_name,
                 field: 0,
-                region_offset,
+                position: region_start,
                 detail: "native ParBag program cannot validate protobuf wire bytes",
             });
         }
@@ -500,8 +550,8 @@ impl MessageFrame {
         Ok(Self {
             program,
             body: region.clone(),
-            region_offset,
-            cursor: CanonicalRegionFieldCursor::in_prost_slot_order(region),
+            region_start,
+            cursor: IndexedCanonicalFieldCursor::in_prost_slot_order(region),
             last_slot: None,
             seen: vec![false; slots],
             previous_map_keys: vec![None; slots],
@@ -516,39 +566,35 @@ impl MessageFrame {
     fn is_raw_par(&self) -> bool { std::ptr::eq(self.program, &PAR_PROTOBUF_REGION_PROGRAM) }
 
     fn schema_error(&self, field: u32, detail: &'static str) -> CanonicalProtobufAdmissionError {
-        self.schema_error_at(field, self.region_offset, detail)
+        self.schema_error_at(field, self.region_start, detail)
     }
 
     fn schema_error_at(
         &self,
         field: u32,
-        region_offset: usize,
+        position: CanonicalByteProvenance,
         detail: &'static str,
     ) -> CanonicalProtobufAdmissionError {
         CanonicalProtobufAdmissionError::Schema {
             type_name: self.program.type_name,
             field,
-            region_offset,
+            position,
             detail,
         }
     }
 
     fn field_error(
         &self,
-        field: &CanonicalRegionField,
+        field: &IndexedCanonicalField<'src>,
         detail: &'static str,
     ) -> CanonicalProtobufAdmissionError {
-        let absolute = self
-            .region_offset
-            .checked_add(field.encoded_range.start)
-            .expect("a field relative offset remains inside its protobuf backing");
-        self.schema_error_at(field.number, absolute, detail)
+        self.schema_error_at(field.number, field.field_start.physical, detail)
     }
 
     fn accept(
         &mut self,
-        summary: FrameSummary,
-        scores: &CanonicalScoreArena,
+        summary: FrameSummary<'src>,
+        scores: &CanonicalScoreArena<'src>,
     ) -> Result<(), CanonicalProtobufAdmissionError> {
         match (self.waiting.take(), summary) {
             (
@@ -556,7 +602,7 @@ impl MessageFrame {
                     slot,
                     variant,
                     body,
-                    field_offset,
+                    field_position,
                 }),
                 FrameSummary::Message(summary),
             ) => {
@@ -564,7 +610,9 @@ impl MessageFrame {
                     let SemanticSummary::Component(component) = &summary.semantic else {
                         return Err(self.schema_error_at(
                             self.program.fields[slot].tag,
-                            body.absolute_range().start,
+                            body.position_at(0)
+                                .expect("child bodies own their start")
+                                .physical,
                             "raw Par component child returned the wrong semantic summary",
                         ));
                     };
@@ -573,11 +621,13 @@ impl MessageFrame {
                     {
                         let order = scores
                             .compare(*previous_score, component.score)
-                            .then_with(|| previous_body.as_bytes().cmp(body.as_bytes()));
+                            .then_with(|| previous_body.compare(&body));
                         if order.is_gt() {
                             return Err(self.schema_error_at(
                                 self.program.fields[slot].tag,
-                                body.absolute_range().start,
+                                body.position_at(0)
+                                    .expect("child bodies own their start")
+                                    .physical,
                                 "raw Par components are outside canonical score/body order",
                             ));
                         }
@@ -588,16 +638,22 @@ impl MessageFrame {
                     variant,
                     body: Some(body),
                     value: SemanticValue::Message(Box::new(summary)),
-                    field_offset,
+                    field_position,
                 });
                 Ok(())
             }
-            (Some(MessageWait::Map { slot, field_offset }), FrameSummary::Map(entry)) => {
+            (
+                Some(MessageWait::Map {
+                    slot,
+                    field_position,
+                }),
+                FrameSummary::Map(entry),
+            ) => {
                 if let Some(previous) = &self.previous_map_keys[slot] {
-                    if previous.as_bytes() >= entry.key.as_bytes() {
+                    if !previous.compare(&entry.key).is_lt() {
                         return Err(self.schema_error_at(
                             self.program.fields[slot].tag,
-                            entry.key_offset,
+                            entry.key_position,
                             "protobuf map keys are not strictly ascending",
                         ));
                     }
@@ -607,19 +663,22 @@ impl MessageFrame {
                     variant: None,
                     body: None,
                     value: SemanticValue::Map(Box::new(entry)),
-                    field_offset,
+                    field_position,
                 });
                 Ok(())
             }
             (
-                Some(MessageWait::EPathMap { slot, field_offset }),
+                Some(MessageWait::EPathMap {
+                    slot,
+                    field_position,
+                }),
                 FrameSummary::EPathMap(summary),
             ) => {
                 self.semantic_slots[slot].push(SemanticOccurrence {
                     variant: None,
                     body: Some(summary.snapshot.clone()),
                     value: SemanticValue::EPathMap(Box::new(summary)),
-                    field_offset,
+                    field_position,
                 });
                 Ok(())
             }
@@ -636,8 +695,8 @@ impl MessageFrame {
 
     fn finish(
         &mut self,
-        scores: &mut CanonicalScoreArena,
-    ) -> Result<MessageSummary, CanonicalProtobufAdmissionError> {
+        scores: &mut CanonicalScoreArena<'src>,
+    ) -> Result<MessageSummary<'src>, CanonicalProtobufAdmissionError> {
         if self.waiting.is_some() {
             return Err(self.schema_error(0, "protobuf message completed with a pending child"));
         }
@@ -652,10 +711,10 @@ impl MessageFrame {
     }
 }
 
-fn semantic_slot<'a>(
-    frame: &'a MessageFrame,
+fn semantic_slot<'frame, 'src>(
+    frame: &'frame MessageFrame<'src>,
     name: &'static str,
-) -> Result<&'a [SemanticOccurrence], CanonicalProtobufAdmissionError> {
+) -> Result<&'frame [SemanticOccurrence<'src>], CanonicalProtobufAdmissionError> {
     let slot = frame
         .program
         .fields
@@ -665,10 +724,10 @@ fn semantic_slot<'a>(
     Ok(&frame.semantic_slots[slot])
 }
 
-fn sole_occurrence<'a>(
-    frame: &'a MessageFrame,
+fn sole_occurrence<'frame, 'src>(
+    frame: &'frame MessageFrame<'src>,
     name: &'static str,
-) -> Result<Option<&'a SemanticOccurrence>, CanonicalProtobufAdmissionError> {
+) -> Result<Option<&'frame SemanticOccurrence<'src>>, CanonicalProtobufAdmissionError> {
     let values = semantic_slot(frame, name)?;
     if values.len() > 1 {
         return Err(frame.schema_error(0, "semantic singular field has multiple occurrences"));
@@ -676,10 +735,13 @@ fn sole_occurrence<'a>(
     Ok(values.first())
 }
 
-fn scalar_value<'a>(
-    frame: &'a MessageFrame,
+fn scalar_value<'frame, 'src>(
+    frame: &'frame MessageFrame<'src>,
     name: &'static str,
-) -> Result<Option<(&'a SemanticScalar, Option<&'static str>)>, CanonicalProtobufAdmissionError> {
+) -> Result<
+    Option<(&'frame SemanticScalar<'src>, Option<&'static str>)>,
+    CanonicalProtobufAdmissionError,
+> {
     let Some(occurrence) = sole_occurrence(frame, name)? else {
         return Ok(None);
     };
@@ -689,8 +751,8 @@ fn scalar_value<'a>(
     Ok(Some((value, occurrence.variant)))
 }
 
-fn bool_value(
-    frame: &MessageFrame,
+fn bool_value<'src>(
+    frame: &MessageFrame<'src>,
     name: &'static str,
 ) -> Result<bool, CanonicalProtobufAdmissionError> {
     match scalar_value(frame, name)? {
@@ -700,8 +762,8 @@ fn bool_value(
     }
 }
 
-fn i32_value(
-    frame: &MessageFrame,
+fn i32_value<'src>(
+    frame: &MessageFrame<'src>,
     name: &'static str,
 ) -> Result<i32, CanonicalProtobufAdmissionError> {
     match scalar_value(frame, name)? {
@@ -711,8 +773,8 @@ fn i32_value(
     }
 }
 
-fn u32_value(
-    frame: &MessageFrame,
+fn u32_value<'src>(
+    frame: &MessageFrame<'src>,
     name: &'static str,
 ) -> Result<u32, CanonicalProtobufAdmissionError> {
     match scalar_value(frame, name)? {
@@ -722,10 +784,10 @@ fn u32_value(
     }
 }
 
-fn bytes_value(
-    frame: &MessageFrame,
+fn bytes_value<'src>(
+    frame: &MessageFrame<'src>,
     name: &'static str,
-) -> Result<Option<ProtobufRegion>, CanonicalProtobufAdmissionError> {
+) -> Result<Option<AdmissionRegion<'src>>, CanonicalProtobufAdmissionError> {
     match scalar_value(frame, name)? {
         None => Ok(None),
         Some((SemanticScalar::Bytes(value), _)) => Ok(Some(value.clone())),
@@ -733,10 +795,10 @@ fn bytes_value(
     }
 }
 
-fn string_value(
-    frame: &MessageFrame,
+fn string_value<'src>(
+    frame: &MessageFrame<'src>,
     name: &'static str,
-) -> Result<Option<ProtobufRegion>, CanonicalProtobufAdmissionError> {
+) -> Result<Option<AdmissionRegion<'src>>, CanonicalProtobufAdmissionError> {
     match scalar_value(frame, name)? {
         None => Ok(None),
         Some((SemanticScalar::String(value), _)) => Ok(Some(value.clone())),
@@ -744,20 +806,23 @@ fn string_value(
     }
 }
 
-fn message_summary<'a>(
-    occurrence: &'a SemanticOccurrence,
-    frame: &MessageFrame,
-) -> Result<&'a MessageSummary, CanonicalProtobufAdmissionError> {
+fn message_summary<'frame, 'src>(
+    occurrence: &'frame SemanticOccurrence<'src>,
+    frame: &MessageFrame<'src>,
+) -> Result<&'frame MessageSummary<'src>, CanonicalProtobufAdmissionError> {
     let SemanticValue::Message(summary) = &occurrence.value else {
         return Err(frame.schema_error(0, "semantic message field returned a scalar summary"));
     };
     Ok(summary)
 }
 
-fn par_occurrence<'a>(
-    occurrence: &'a SemanticOccurrence,
-    frame: &MessageFrame,
-) -> Result<(&'a ParSummary, &'a ProtobufRegion), CanonicalProtobufAdmissionError> {
+fn par_occurrence<'frame, 'src>(
+    occurrence: &'frame SemanticOccurrence<'src>,
+    frame: &MessageFrame<'src>,
+) -> Result<
+    (&'frame ParSummary<'src>, &'frame AdmissionRegion<'src>),
+    CanonicalProtobufAdmissionError,
+> {
     let summary = message_summary(occurrence, frame)?;
     let SemanticSummary::Par(par) = &summary.semantic else {
         return Err(frame.schema_error(0, "semantic Par field returned a different message kind"));
@@ -769,17 +834,20 @@ fn par_occurrence<'a>(
     Ok((par, body))
 }
 
-fn optional_par<'a>(
-    frame: &'a MessageFrame,
+fn optional_par<'frame, 'src>(
+    frame: &'frame MessageFrame<'src>,
     name: &'static str,
-) -> Result<Option<(&'a ParSummary, &'a ProtobufRegion)>, CanonicalProtobufAdmissionError> {
+) -> Result<
+    Option<(&'frame ParSummary<'src>, &'frame AdmissionRegion<'src>)>,
+    CanonicalProtobufAdmissionError,
+> {
     sole_occurrence(frame, name)?
         .map(|occurrence| par_occurrence(occurrence, frame))
         .transpose()
 }
 
-fn optional_var(
-    frame: &MessageFrame,
+fn optional_var<'src>(
+    frame: &MessageFrame<'src>,
     name: &'static str,
 ) -> Result<Option<CanonicalScoreHandle>, CanonicalProtobufAdmissionError> {
     let Some(occurrence) = sole_occurrence(frame, name)? else {
@@ -792,46 +860,44 @@ fn optional_var(
     Ok(Some(score))
 }
 
-fn empty_par_score(
-    scores: &mut CanonicalScoreArena,
+fn empty_par_score<'src>(
+    scores: &mut CanonicalScoreArena<'src>,
 ) -> Result<CanonicalScoreHandle, CanonicalProtobufAdmissionError> {
     Ok(semantics::par_score(scores, Vec::new(), false)?)
 }
 
-fn nonsemantic_score(
-    scores: &mut CanonicalScoreArena,
+fn nonsemantic_score<'src>(
+    scores: &mut CanonicalScoreArena<'src>,
 ) -> Result<CanonicalScoreHandle, CanonicalProtobufAdmissionError> {
     Ok(semantics::nonsemantic_score(scores)?)
 }
 
-fn reduce_message(
-    frame: &mut MessageFrame,
-    scores: &mut CanonicalScoreArena,
-) -> Result<MessageSummary, CanonicalProtobufAdmissionError> {
+fn reduce_message<'src>(
+    frame: &mut MessageFrame<'src>,
+    scores: &mut CanonicalScoreArena<'src>,
+) -> Result<MessageSummary<'src>, CanonicalProtobufAdmissionError> {
     let kind = semantic_kind(frame.program)
         .ok_or_else(|| frame.schema_error(0, "message has no canonical semantic reducer"))?;
     let semantic = reduce_semantic_kind(frame, scores, kind)?;
     Ok(MessageSummary { semantic })
 }
 
-fn insert_semantic_par_identity(seen: &mut PathMap<()>, par: &ParSummary) -> bool {
+fn insert_semantic_par_identity<'src>(seen: &mut PathMap<()>, par: &ParSummary<'src>) -> bool {
     super::canonical_par_identity::replace_semantic_par_identity(
         seen,
         par.identity_prefix
-            .as_bytes()
-            .iter()
-            .chain(par.identity_suffix.as_bytes())
-            .copied(),
+            .bytes()
+            .chain(par.identity_suffix.bytes()),
         (),
     )
     .is_none()
 }
 
-fn reduce_semantic_kind(
-    frame: &MessageFrame,
-    scores: &mut CanonicalScoreArena,
+fn reduce_semantic_kind<'src>(
+    frame: &MessageFrame<'src>,
+    scores: &mut CanonicalScoreArena<'src>,
     kind: SemanticKind,
-) -> Result<SemanticSummary, CanonicalProtobufAdmissionError> {
+) -> Result<SemanticSummary<'src>, CanonicalProtobufAdmissionError> {
     match kind {
         SemanticKind::RawPar => reduce_raw_par(frame, scores),
         SemanticKind::Component(family) => reduce_component(frame, scores, family),
@@ -894,26 +960,26 @@ fn reduce_semantic_kind(
     }
 }
 
-fn empty_region(region: &ProtobufRegion) -> ProtobufRegion {
+fn empty_region<'src>(region: &AdmissionRegion<'src>) -> AdmissionRegion<'src> {
     region
-        .subregion(super::protobuf_cursor::CanonicalByteRange::default())
+        .subview(CanonicalByteRange::default())
         .expect("an empty subregion is inside every protobuf region")
 }
 
-fn occurrence_scalar<'a>(
-    frame: &MessageFrame,
-    occurrence: &'a SemanticOccurrence,
-) -> Result<&'a SemanticScalar, CanonicalProtobufAdmissionError> {
+fn occurrence_scalar<'frame, 'src>(
+    frame: &MessageFrame<'src>,
+    occurrence: &'frame SemanticOccurrence<'src>,
+) -> Result<&'frame SemanticScalar<'src>, CanonicalProtobufAdmissionError> {
     let SemanticValue::Scalar(value) = &occurrence.value else {
         return Err(frame.schema_error(0, "oneof scalar arm returned a message summary"));
     };
     Ok(value)
 }
 
-fn reduce_var(
-    frame: &MessageFrame,
-    scores: &mut CanonicalScoreArena,
-) -> Result<SemanticSummary, CanonicalProtobufAdmissionError> {
+fn reduce_var<'src>(
+    frame: &MessageFrame<'src>,
+    scores: &mut CanonicalScoreArena<'src>,
+) -> Result<SemanticSummary<'src>, CanonicalProtobufAdmissionError> {
     let score = match sole_occurrence(frame, "var_instance")? {
         None => semantics::VarScore::Absent,
         Some(occurrence) => match occurrence.variant {
@@ -936,10 +1002,10 @@ fn reduce_var(
     Ok(SemanticSummary::Var(semantics::var_score(scores, score)?))
 }
 
-fn reduce_receive_bind(
-    frame: &MessageFrame,
-    scores: &mut CanonicalScoreArena,
-) -> Result<SemanticSummary, CanonicalProtobufAdmissionError> {
+fn reduce_receive_bind<'src>(
+    frame: &MessageFrame<'src>,
+    scores: &mut CanonicalScoreArena<'src>,
+) -> Result<SemanticSummary<'src>, CanonicalProtobufAdmissionError> {
     let source = optional_par(frame, "source")?;
     let source_present = source.is_some();
     let score = if let Some((source, _)) = source {
@@ -964,10 +1030,10 @@ fn reduce_receive_bind(
     })
 }
 
-fn reduce_match_case(
-    frame: &MessageFrame,
-    scores: &mut CanonicalScoreArena,
-) -> Result<SemanticSummary, CanonicalProtobufAdmissionError> {
+fn reduce_match_case<'src>(
+    frame: &MessageFrame<'src>,
+    scores: &mut CanonicalScoreArena<'src>,
+) -> Result<SemanticSummary<'src>, CanonicalProtobufAdmissionError> {
     let pattern = optional_par(frame, "pattern")?;
     let source = optional_par(frame, "source")?;
     let guard = optional_par(frame, "guard")?;
@@ -995,10 +1061,10 @@ fn reduce_match_case(
     })
 }
 
-fn reduce_expr_var(
-    frame: &MessageFrame,
-    scores: &mut CanonicalScoreArena,
-) -> Result<SemanticSummary, CanonicalProtobufAdmissionError> {
+fn reduce_expr_var<'src>(
+    frame: &MessageFrame<'src>,
+    scores: &mut CanonicalScoreArena<'src>,
+) -> Result<SemanticSummary<'src>, CanonicalProtobufAdmissionError> {
     let score = optional_var(frame, "v")?
         .map(|var| semantics::unary_score(scores, Score::EVAR, var))
         .transpose()?;
@@ -1010,11 +1076,11 @@ fn reduce_expr_var(
     }))
 }
 
-fn reduce_expr_unary(
-    frame: &MessageFrame,
-    scores: &mut CanonicalScoreArena,
+fn reduce_expr_unary<'src>(
+    frame: &MessageFrame<'src>,
+    scores: &mut CanonicalScoreArena<'src>,
     constructor: i32,
-) -> Result<SemanticSummary, CanonicalProtobufAdmissionError> {
+) -> Result<SemanticSummary<'src>, CanonicalProtobufAdmissionError> {
     let score = optional_par(frame, "p")?
         .map(|(par, _)| semantics::unary_score(scores, constructor, par.score))
         .transpose()?;
@@ -1026,11 +1092,11 @@ fn reduce_expr_unary(
     }))
 }
 
-fn reduce_expr_binary(
-    frame: &MessageFrame,
-    scores: &mut CanonicalScoreArena,
+fn reduce_expr_binary<'src>(
+    frame: &MessageFrame<'src>,
+    scores: &mut CanonicalScoreArena<'src>,
     constructor: i32,
-) -> Result<SemanticSummary, CanonicalProtobufAdmissionError> {
+) -> Result<SemanticSummary<'src>, CanonicalProtobufAdmissionError> {
     let first_name = if frame.program.type_name == "EMatches" {
         "target"
     } else {
@@ -1060,19 +1126,19 @@ fn reduce_expr_binary(
     }))
 }
 
-fn reduce_key_value_pair(
-    frame: &MessageFrame,
-) -> Result<SemanticSummary, CanonicalProtobufAdmissionError> {
+fn reduce_key_value_pair<'src>(
+    frame: &MessageFrame<'src>,
+) -> Result<SemanticSummary<'src>, CanonicalProtobufAdmissionError> {
     Ok(SemanticSummary::KeyValuePair {
         key: optional_par(frame, "key")?.map(|(par, _)| par.clone()),
         value: optional_par(frame, "value")?.map(|(par, _)| par.clone()),
     })
 }
 
-fn reduce_raw_par(
-    frame: &MessageFrame,
-    scores: &mut CanonicalScoreArena,
-) -> Result<SemanticSummary, CanonicalProtobufAdmissionError> {
+fn reduce_raw_par<'src>(
+    frame: &MessageFrame<'src>,
+    scores: &mut CanonicalScoreArena<'src>,
+) -> Result<SemanticSummary<'src>, CanonicalProtobufAdmissionError> {
     let mut family_scores = Vec::new();
     let mut only_component = None;
     for family in semantics::PAR_SCORE_TAGS {
@@ -1087,14 +1153,14 @@ fn reduce_raw_par(
             let SemanticSummary::Component(component) = &summary.semantic else {
                 return Err(frame.schema_error_at(
                     u32::from(family.byte()),
-                    occurrence.field_offset,
+                    occurrence.field_position,
                     "raw Par family returned a different semantic component",
                 ));
             };
             if component.family != family {
                 return Err(frame.schema_error_at(
                     u32::from(family.byte()),
-                    occurrence.field_offset,
+                    occurrence.field_position,
                     "raw Par component family disagrees with its field",
                 ));
             }
@@ -1136,11 +1202,11 @@ fn reduce_raw_par(
     };
     let identity_prefix = frame
         .body
-        .subregion(prefix_range)
+        .subview(prefix_range)
         .ok_or(CanonicalProtobufAdmissionError::SizeOverflow)?;
     let identity_suffix = frame
         .body
-        .subregion(suffix_range)
+        .subview(suffix_range)
         .ok_or(CanonicalProtobufAdmissionError::SizeOverflow)?;
 
     Ok(SemanticSummary::Par(ParSummary {
@@ -1155,12 +1221,12 @@ fn reduce_raw_par(
     }))
 }
 
-fn component_summary(
+fn component_summary<'src>(
     family: ParComponentTag,
     score: CanonicalScoreHandle,
     complete: bool,
     canonical_path_stable: bool,
-) -> SemanticSummary {
+) -> SemanticSummary<'src> {
     SemanticSummary::Component(ComponentSummary {
         family,
         score,
@@ -1169,18 +1235,18 @@ fn component_summary(
     })
 }
 
-fn fixed_point_error(
-    frame: &MessageFrame,
+fn fixed_point_error<'src>(
+    frame: &MessageFrame<'src>,
     detail: &'static str,
 ) -> CanonicalProtobufAdmissionError {
-    frame.schema_error_at(0, frame.region_offset, detail)
+    frame.schema_error_at(0, frame.region_start, detail)
 }
 
-fn reduce_component(
-    frame: &MessageFrame,
-    scores: &mut CanonicalScoreArena,
+fn reduce_component<'src>(
+    frame: &MessageFrame<'src>,
+    scores: &mut CanonicalScoreArena<'src>,
     family: ParComponentTag,
-) -> Result<SemanticSummary, CanonicalProtobufAdmissionError> {
+) -> Result<SemanticSummary<'src>, CanonicalProtobufAdmissionError> {
     let (complete, score) = match family {
         ParComponentTag::Send => {
             let channel = optional_par(frame, "chan")?;
@@ -1217,7 +1283,7 @@ fn reduce_component(
                 else {
                     return Err(frame.schema_error_at(
                         1,
-                        occurrence.field_offset,
+                        occurrence.field_position,
                         "Receive bind returned a different semantic summary",
                     ));
                 };
@@ -1263,27 +1329,28 @@ fn reduce_component(
             } else {
                 let uris = semantic_slot(frame, "uri")?;
                 let mut uri_scores = Vec::new();
-                let mut previous_uri: Option<&str> = None;
+                let mut previous_uri: Option<AdmissionRegion<'src>> = None;
                 for occurrence in uris {
                     let SemanticValue::Scalar(SemanticScalar::String(uri)) = &occurrence.value
                     else {
                         return Err(frame.schema_error_at(
                             3,
-                            occurrence.field_offset,
+                            occurrence.field_position,
                             "New URI returned a different semantic scalar",
                         ));
                     };
-                    let uri = std::str::from_utf8(uri.as_bytes())
-                        .expect("protobuf string validation precedes semantic reduction");
-                    if previous_uri.is_some_and(|previous| previous > uri) {
+                    if previous_uri
+                        .as_ref()
+                        .is_some_and(|previous| previous.compare(uri).is_gt())
+                    {
                         return Err(frame.schema_error_at(
                             3,
-                            occurrence.field_offset,
+                            occurrence.field_position,
                             "New URIs are outside canonical string order",
                         ));
                     }
-                    previous_uri = Some(uri);
-                    uri_scores.push(scores.string(uri)?);
+                    previous_uri = Some(uri.clone());
+                    uri_scores.push(scores.indexed_string(uri.clone())?.into_score());
                 }
                 if uri_scores.is_empty() {
                     uri_scores.push(scores.integer(i64::from(Score::ABSENT))?);
@@ -1294,17 +1361,20 @@ fn reduce_component(
                     let SemanticValue::Map(entry) = &occurrence.value else {
                         return Err(frame.schema_error_at(
                             4,
-                            occurrence.field_offset,
+                            occurrence.field_position,
                             "New injection returned a different semantic summary",
                         ));
                     };
-                    let key = std::str::from_utf8(entry.key.as_bytes())
-                        .expect("protobuf map-key validation precedes semantic reduction");
                     let value_score = match &entry.value {
                         Some(value) => value.score,
                         None => empty_par_score(scores)?,
                     };
-                    injection_scores.push(semantics::injection_score(scores, key, value_score)?);
+                    let key = scores.indexed_string(entry.key.clone())?;
+                    injection_scores.push(semantics::injection_score_pre_scored(
+                        scores,
+                        key,
+                        value_score,
+                    )?);
                 }
                 if injection_scores.is_empty() {
                     injection_scores.push(scores.integer(i64::from(Score::ABSENT))?);
@@ -1336,7 +1406,7 @@ fn reduce_component(
                 else {
                     return Err(frame.schema_error_at(
                         2,
-                        occurrence.field_offset,
+                        occurrence.field_position,
                         "Match case returned a different semantic summary",
                     ));
                 };
@@ -1414,10 +1484,10 @@ fn reduce_component(
     Ok(component_summary(family, score, complete, false))
 }
 
-fn reduce_expr(
-    frame: &MessageFrame,
-    scores: &mut CanonicalScoreArena,
-) -> Result<SemanticSummary, CanonicalProtobufAdmissionError> {
+fn reduce_expr<'src>(
+    frame: &MessageFrame<'src>,
+    scores: &mut CanonicalScoreArena<'src>,
+) -> Result<SemanticSummary<'src>, CanonicalProtobufAdmissionError> {
     let occurrence = sole_occurrence(frame, "expr_instance")?;
     let (score, complete, stable, fixed) = match occurrence {
         None => (
@@ -1440,46 +1510,56 @@ fn reduce_expr(
                 true,
             ),
             (Some("GString"), SemanticValue::Scalar(SemanticScalar::String(value))) => {
-                let value = std::str::from_utf8(value.as_bytes())
-                    .expect("protobuf string validation precedes semantic reduction");
+                let value = scores.indexed_string(value.clone())?;
                 (
-                    semantics::ground_score(scores, semantics::GroundScore::String(value))?,
+                    semantics::ground_score_pre_scored(
+                        scores,
+                        PreScoredGroundScore::String(value),
+                    )?,
                     true,
                     true,
                     true,
                 )
             }
             (Some("GUri"), SemanticValue::Scalar(SemanticScalar::String(value))) => {
-                let value = std::str::from_utf8(value.as_bytes())
-                    .expect("protobuf string validation precedes semantic reduction");
+                let value = scores.indexed_string(value.clone())?;
                 (
-                    semantics::ground_score(scores, semantics::GroundScore::Uri(value))?,
+                    semantics::ground_score_pre_scored(scores, PreScoredGroundScore::Uri(value))?,
                     true,
                     true,
                     true,
                 )
             }
-            (Some("GByteArray"), SemanticValue::Scalar(SemanticScalar::Bytes(value))) => (
-                semantics::ground_score(
-                    scores,
-                    semantics::GroundScore::ByteArray(value.as_bytes()),
-                )?,
-                true,
-                true,
-                true,
-            ),
+            (Some("GByteArray"), SemanticValue::Scalar(SemanticScalar::Bytes(value))) => {
+                let value = scores.indexed_bytes(value.clone())?;
+                (
+                    semantics::ground_score_pre_scored(
+                        scores,
+                        PreScoredGroundScore::ByteArray(value),
+                    )?,
+                    true,
+                    true,
+                    true,
+                )
+            }
             (Some("GDouble"), SemanticValue::Scalar(SemanticScalar::U64(value))) => (
                 semantics::ground_score(scores, semantics::GroundScore::Double(*value))?,
                 true,
                 true,
                 true,
             ),
-            (Some("GBigInt"), SemanticValue::Scalar(SemanticScalar::Bytes(value))) => (
-                semantics::ground_score(scores, semantics::GroundScore::BigInt(value.as_bytes()))?,
-                true,
-                true,
-                true,
-            ),
+            (Some("GBigInt"), SemanticValue::Scalar(SemanticScalar::Bytes(value))) => {
+                let value = scores.indexed_bytes(value.clone())?;
+                (
+                    semantics::ground_score_pre_scored(
+                        scores,
+                        PreScoredGroundScore::BigInt(value),
+                    )?,
+                    true,
+                    true,
+                    true,
+                )
+            }
             (Some("GBigRat"), SemanticValue::Message(summary)) => {
                 let SemanticSummary::BigRational {
                     numerator,
@@ -1488,14 +1568,16 @@ fn reduce_expr(
                 else {
                     return Err(frame.schema_error_at(
                         36,
-                        occurrence.field_offset,
+                        occurrence.field_position,
                         "GBigRat returned a different semantic summary",
                     ));
                 };
+                let numerator = scores.indexed_bytes(numerator.clone())?;
+                let denominator = scores.indexed_bytes(denominator.clone())?;
                 (
-                    semantics::ground_score(scores, semantics::GroundScore::BigRat {
-                        numerator: numerator.as_bytes(),
-                        denominator: denominator.as_bytes(),
+                    semantics::ground_score_pre_scored(scores, PreScoredGroundScore::BigRat {
+                        numerator,
+                        denominator,
                     })?,
                     true,
                     true,
@@ -1506,13 +1588,14 @@ fn reduce_expr(
                 let SemanticSummary::FixedPoint { unscaled, scale } = &summary.semantic else {
                     return Err(frame.schema_error_at(
                         37,
-                        occurrence.field_offset,
+                        occurrence.field_position,
                         "GFixedPoint returned a different semantic summary",
                     ));
                 };
+                let unscaled = scores.indexed_bytes(unscaled.clone())?;
                 (
-                    semantics::ground_score(scores, semantics::GroundScore::FixedPoint {
-                        unscaled: unscaled.as_bytes(),
+                    semantics::ground_score_pre_scored(scores, PreScoredGroundScore::FixedPoint {
+                        unscaled,
                         scale: *scale,
                     })?,
                     true,
@@ -1524,7 +1607,7 @@ fn reduce_expr(
                 let SemanticSummary::ExprPayload(payload) = &summary.semantic else {
                     return Err(frame.schema_error_at(
                         1,
-                        occurrence.field_offset,
+                        occurrence.field_position,
                         "Expr payload returned a different semantic summary",
                     ));
                 };
@@ -1541,7 +1624,7 @@ fn reduce_expr(
             _ => {
                 return Err(frame.schema_error_at(
                     1,
-                    occurrence.field_offset,
+                    occurrence.field_position,
                     "Expr oneof arm and semantic payload disagree",
                 ));
             }
@@ -1561,10 +1644,10 @@ fn reduce_expr(
     ))
 }
 
-fn reduce_connective(
-    frame: &MessageFrame,
-    scores: &mut CanonicalScoreArena,
-) -> Result<SemanticSummary, CanonicalProtobufAdmissionError> {
+fn reduce_connective<'src>(
+    frame: &MessageFrame<'src>,
+    scores: &mut CanonicalScoreArena<'src>,
+) -> Result<SemanticSummary<'src>, CanonicalProtobufAdmissionError> {
     let score = match sole_occurrence(frame, "connective_instance")? {
         None => semantics::connective_score(scores, semantics::ConnectiveScore::Absent)?,
         Some(occurrence) => match occurrence.variant {
@@ -1573,7 +1656,7 @@ fn reduce_connective(
                 let SemanticSummary::ConnectiveBody(pars) = &summary.semantic else {
                     return Err(frame.schema_error_at(
                         1,
-                        occurrence.field_offset,
+                        occurrence.field_position,
                         "connective collection returned a different semantic summary",
                     ));
                 };
@@ -1593,7 +1676,7 @@ fn reduce_connective(
                 let SemanticSummary::VarRef { index, depth } = summary.semantic else {
                     return Err(frame.schema_error_at(
                         4,
-                        occurrence.field_offset,
+                        occurrence.field_position,
                         "VarRef returned a different semantic summary",
                     ));
                 };
@@ -1610,7 +1693,7 @@ fn reduce_connective(
                 let SemanticScalar::Bool(value) = occurrence_scalar(frame, occurrence)? else {
                     return Err(frame.schema_error_at(
                         1,
-                        occurrence.field_offset,
+                        occurrence.field_position,
                         "connective scalar arm is not boolean",
                     ));
                 };
@@ -1635,35 +1718,38 @@ fn reduce_connective(
     ))
 }
 
-fn reduce_unforgeable(
-    frame: &MessageFrame,
-    scores: &mut CanonicalScoreArena,
-) -> Result<SemanticSummary, CanonicalProtobufAdmissionError> {
+fn reduce_unforgeable<'src>(
+    frame: &MessageFrame<'src>,
+    scores: &mut CanonicalScoreArena<'src>,
+) -> Result<SemanticSummary<'src>, CanonicalProtobufAdmissionError> {
     let (descriptor, stable) = match sole_occurrence(frame, "unf_instance")? {
-        None => (semantics::UnforgeableScore::Absent, false),
+        None => (PreScoredUnforgeableScore::Absent, false),
         Some(occurrence) => match occurrence.variant {
             Some("GPrivateBody") => {
                 let summary = message_summary(occurrence, frame)?;
                 let SemanticSummary::Bytes(value) = &summary.semantic else {
                     return Err(frame.schema_error_at(
                         1,
-                        occurrence.field_offset,
+                        occurrence.field_position,
                         "GPrivate returned a different semantic summary",
                     ));
                 };
-                (semantics::UnforgeableScore::Private(value.as_bytes()), true)
+                (
+                    PreScoredUnforgeableScore::Private(scores.indexed_bytes(value.clone())?),
+                    true,
+                )
             }
             Some("GDeployIdBody") => {
                 let summary = message_summary(occurrence, frame)?;
                 let SemanticSummary::Bytes(value) = &summary.semantic else {
                     return Err(frame.schema_error_at(
                         2,
-                        occurrence.field_offset,
+                        occurrence.field_position,
                         "GDeployId returned a different semantic summary",
                     ));
                 };
                 (
-                    semantics::UnforgeableScore::DeployId(value.as_bytes()),
+                    PreScoredUnforgeableScore::DeployId(scores.indexed_bytes(value.clone())?),
                     false,
                 )
             }
@@ -1672,20 +1758,20 @@ fn reduce_unforgeable(
                 let SemanticSummary::Bytes(value) = &summary.semantic else {
                     return Err(frame.schema_error_at(
                         3,
-                        occurrence.field_offset,
+                        occurrence.field_position,
                         "GDeployerId returned a different semantic summary",
                     ));
                 };
                 (
-                    semantics::UnforgeableScore::DeployerId(value.as_bytes()),
+                    PreScoredUnforgeableScore::DeployerId(scores.indexed_bytes(value.clone())?),
                     false,
                 )
             }
-            Some("GSysAuthTokenBody") => (semantics::UnforgeableScore::SysAuthToken, false),
+            Some("GSysAuthTokenBody") => (PreScoredUnforgeableScore::SysAuthToken, false),
             _ => return Err(frame.schema_error(1, "unknown GUnforgeable oneof arm")),
         },
     };
-    let score = semantics::unforgeable_score(scores, descriptor)?;
+    let score = semantics::unforgeable_score_pre_scored(scores, descriptor)?;
     Ok(component_summary(
         ParComponentTag::GUnforgeable,
         score,
@@ -1694,18 +1780,18 @@ fn reduce_unforgeable(
     ))
 }
 
-fn reduce_ordered_collection(
-    frame: &MessageFrame,
-    scores: &mut CanonicalScoreArena,
+fn reduce_ordered_collection<'src>(
+    frame: &MessageFrame<'src>,
+    scores: &mut CanonicalScoreArena<'src>,
     constructor: i32,
     has_remainder: bool,
     canonical_set: bool,
-) -> Result<SemanticSummary, CanonicalProtobufAdmissionError> {
+) -> Result<SemanticSummary<'src>, CanonicalProtobufAdmissionError> {
     let occurrences = semantic_slot(frame, "ps")?;
     let mut element_scores = Vec::with_capacity(occurrences.len());
     let mut all_stable = true;
     let mut canonical_fixed_point = true;
-    let mut previous: Option<(&ParSummary, &ProtobufRegion)> = None;
+    let mut previous: Option<(&ParSummary<'src>, &AdmissionRegion<'src>)> = None;
     let mut identities = canonical_set.then(PathMap::new);
     for occurrence in occurrences {
         let (par, body) = par_occurrence(occurrence, frame)?;
@@ -1715,7 +1801,7 @@ fn reduce_ordered_collection(
             if let Some((previous_par, previous_body)) = previous {
                 let order = scores
                     .compare(previous_par.score, par.score)
-                    .then_with(|| previous_body.as_bytes().cmp(body.as_bytes()));
+                    .then_with(|| previous_body.compare(body));
                 canonical_fixed_point &= order.is_lt();
             }
             canonical_fixed_point &= insert_semantic_par_identity(
@@ -1754,15 +1840,15 @@ fn reduce_ordered_collection(
     }))
 }
 
-fn reduce_emap(
-    frame: &MessageFrame,
-    scores: &mut CanonicalScoreArena,
-) -> Result<SemanticSummary, CanonicalProtobufAdmissionError> {
+fn reduce_emap<'src>(
+    frame: &MessageFrame<'src>,
+    scores: &mut CanonicalScoreArena<'src>,
+) -> Result<SemanticSummary<'src>, CanonicalProtobufAdmissionError> {
     let occurrences = semantic_slot(frame, "kvs")?;
     let mut pair_scores = Vec::with_capacity(occurrences.len());
     let mut complete = true;
     let mut canonical_fixed_point = true;
-    let mut previous: Option<(&ParSummary, &ProtobufRegion)> = None;
+    let mut previous: Option<(&ParSummary<'src>, &AdmissionRegion<'src>)> = None;
     let mut identities = PathMap::new();
 
     for occurrence in occurrences {
@@ -1785,7 +1871,7 @@ fn reduce_emap(
         if let Some((previous_key, previous_pair_body)) = previous {
             let order = scores
                 .compare(previous_key.score, key.score)
-                .then_with(|| previous_pair_body.as_bytes().cmp(pair_body.as_bytes()));
+                .then_with(|| previous_pair_body.compare(pair_body));
             canonical_fixed_point &= order.is_lt();
         }
         canonical_fixed_point &= insert_semantic_par_identity(&mut identities, key);
@@ -1813,16 +1899,18 @@ fn reduce_emap(
     }))
 }
 
-fn reduce_epathmap(
-    frame: &MessageFrame,
-    scores: &mut CanonicalScoreArena,
-) -> Result<SemanticSummary, CanonicalProtobufAdmissionError> {
+fn reduce_epathmap<'src>(
+    frame: &MessageFrame<'src>,
+    scores: &mut CanonicalScoreArena<'src>,
+) -> Result<SemanticSummary<'src>, CanonicalProtobufAdmissionError> {
     let occurrence = sole_occurrence(frame, "entries")?
         .ok_or_else(|| frame.schema_error(9, "EPathMap snapshot semantic summary is absent"))?;
     let SemanticValue::EPathMap(snapshot) = &occurrence.value else {
         return Err(frame.schema_error(9, "EPathMap snapshot returned the wrong semantic summary"));
     };
-    let snapshot_score = scores.shared_region(snapshot.snapshot.clone())?;
+    let snapshot_score = scores
+        .indexed_bytes(snapshot.snapshot.clone())?
+        .into_score();
     let score = semantics::rpb3_pathmap_score(
         scores,
         false,
@@ -1840,10 +1928,10 @@ fn reduce_epathmap(
     }))
 }
 
-fn reduce_ezipper(
-    frame: &MessageFrame,
-    scores: &mut CanonicalScoreArena,
-) -> Result<SemanticSummary, CanonicalProtobufAdmissionError> {
+fn reduce_ezipper<'src>(
+    frame: &MessageFrame<'src>,
+    scores: &mut CanonicalScoreArena<'src>,
+) -> Result<SemanticSummary<'src>, CanonicalProtobufAdmissionError> {
     let Some(occurrence) = sole_occurrence(frame, "pathmap")? else {
         return Ok(SemanticSummary::ExprPayload(ExprPayloadSummary {
             score: None,
@@ -1863,7 +1951,7 @@ fn reduce_ezipper(
         .pathmap_snapshot
         .as_ref()
         .ok_or_else(|| frame.schema_error(0, "EZipper pathmap summary has no EPathMap snapshot"))?;
-    let snapshot_score = scores.shared_region(snapshot.clone())?;
+    let snapshot_score = scores.indexed_bytes(snapshot.clone())?.into_score();
     let zipper_score = semantics::rpb3_pathmap_score(
         scores,
         true,
@@ -1878,10 +1966,10 @@ fn reduce_ezipper(
     }))
 }
 
-fn reduce_emethod(
-    frame: &MessageFrame,
-    scores: &mut CanonicalScoreArena,
-) -> Result<SemanticSummary, CanonicalProtobufAdmissionError> {
+fn reduce_emethod<'src>(
+    frame: &MessageFrame<'src>,
+    scores: &mut CanonicalScoreArena<'src>,
+) -> Result<SemanticSummary<'src>, CanonicalProtobufAdmissionError> {
     let target = optional_par(frame, "target")?;
     let score = if let Some((target, _)) = target {
         let mut arguments = Vec::new();
@@ -1890,9 +1978,8 @@ fn reduce_emethod(
         }
         let method =
             string_value(frame, "method_name")?.unwrap_or_else(|| empty_region(&frame.body));
-        let method = std::str::from_utf8(method.as_bytes())
-            .expect("protobuf string validation precedes semantic reduction");
-        Some(semantics::method_score(
+        let method = scores.indexed_string(method)?;
+        Some(semantics::method_score_pre_scored(
             scores,
             method,
             target.score,
@@ -1910,76 +1997,78 @@ fn reduce_emethod(
     }))
 }
 
-struct MapFrame {
+struct MapFrame<'src> {
     owner: &'static RhoMatchProgram,
     outer_field: u32,
     value_type_id: u16,
-    region: ProtobufRegion,
-    region_offset: usize,
-    cursor: CanonicalRegionFieldCursor,
-    key: Option<ProtobufRegion>,
-    key_offset: Option<usize>,
+    region: AdmissionRegion<'src>,
+    region_start: CanonicalByteProvenance,
+    cursor: IndexedCanonicalFieldCursor<'src>,
+    key: Option<AdmissionRegion<'src>>,
+    key_position: Option<CanonicalByteProvenance>,
     saw_value: bool,
-    value_offset: Option<usize>,
-    value: Option<ParSummary>,
+    value_position: Option<CanonicalByteProvenance>,
+    value: Option<ParSummary<'src>>,
     waiting_value: bool,
 }
 
-impl MapFrame {
+impl<'src> MapFrame<'src> {
     fn new(
         owner: &'static RhoMatchProgram,
         outer_field: u32,
         value_type_id: u16,
-        region: ProtobufRegion,
+        region: AdmissionRegion<'src>,
     ) -> Self {
-        let region_offset = region.absolute_range().start;
+        let region_start = region
+            .position_at(0)
+            .expect("indexed regions own their start")
+            .physical;
         Self {
             owner,
             outer_field,
             value_type_id,
-            cursor: CanonicalRegionFieldCursor::new(region.clone()),
+            cursor: IndexedCanonicalFieldCursor::new(region.clone()),
             region,
-            region_offset,
+            region_start,
             key: None,
-            key_offset: None,
+            key_position: None,
             saw_value: false,
-            value_offset: None,
+            value_position: None,
             value: None,
             waiting_value: false,
         }
     }
 
     fn schema_error(&self, detail: &'static str) -> CanonicalProtobufAdmissionError {
-        self.schema_error_at(self.outer_field, self.region_offset, detail)
+        self.schema_error_at(self.outer_field, self.region_start, detail)
     }
 
     fn schema_error_at(
         &self,
         field: u32,
-        region_offset: usize,
+        position: CanonicalByteProvenance,
         detail: &'static str,
     ) -> CanonicalProtobufAdmissionError {
         CanonicalProtobufAdmissionError::Schema {
             type_name: "protobuf map entry",
             field,
-            region_offset,
+            position,
             detail,
         }
     }
 
     fn field_error(
         &self,
-        field: &CanonicalRegionField,
+        field: &IndexedCanonicalField<'src>,
         detail: &'static str,
     ) -> CanonicalProtobufAdmissionError {
-        let absolute = self
-            .region_offset
-            .checked_add(field.encoded_range.start)
-            .expect("a map-entry field offset remains inside its protobuf backing");
-        self.schema_error_at(field.number, absolute, detail)
+        self.schema_error_at(field.number, field.field_start.physical, detail)
     }
 
-    fn accept(&mut self, summary: FrameSummary) -> Result<(), CanonicalProtobufAdmissionError> {
+    fn accept(
+        &mut self,
+        summary: FrameSummary<'src>,
+    ) -> Result<(), CanonicalProtobufAdmissionError> {
         if !self.waiting_value {
             return Err(self.schema_error("map value returned without a continuation"));
         }
@@ -1993,7 +2082,7 @@ impl MapFrame {
         if value.semantic_default {
             return Err(self.schema_error_at(
                 2,
-                self.value_offset.unwrap_or(self.region_offset),
+                self.value_position.unwrap_or(self.region_start),
                 "explicit protobuf map value equals the omitted default",
             ));
         }
@@ -2001,89 +2090,186 @@ impl MapFrame {
         Ok(())
     }
 
-    fn finish(&mut self) -> Result<MapSummary, CanonicalProtobufAdmissionError> {
+    fn finish(&mut self) -> Result<MapSummary<'src>, CanonicalProtobufAdmissionError> {
         if self.waiting_value {
             return Err(self.schema_error("map entry completed with a pending value"));
         }
         let key = self.key.clone().unwrap_or_else(|| {
             self.region
-                .subregion(super::protobuf_cursor::CanonicalByteRange::default())
+                .subview(CanonicalByteRange::default())
                 .expect("an empty range is inside every map entry")
         });
         Ok(MapSummary {
             key,
-            key_offset: self.key_offset.unwrap_or(self.region_offset),
+            key_position: self.key_position.unwrap_or(self.region_start),
             value: self.value.take(),
         })
     }
 }
 
-struct EPathMapFrame {
+struct EPathMapFrame<'src> {
     owner: &'static RhoMatchProgram,
     field: u32,
-    region_offset: usize,
-    snapshot: ProtobufRegion,
-    cursor: OwnedCanonicalEpm1TopologyCursor,
-    path: Vec<u8>,
+    region_start: CanonicalByteProvenance,
+    snapshot: AdmissionRegion<'src>,
+    cursor: IndexedCanonicalEpm1TopologyCursor<'src>,
+    path: CanonicalPathTopologyAdmission,
+    mode: EPathMapMode,
     entries_canonical_path_stable: bool,
-    waiting_value: bool,
+    waiting: Option<EPathMapWait>,
+    last_source: CanonicalPathSource,
 }
 
-impl EPathMapFrame {
-    fn accept(&mut self, summary: FrameSummary) -> Result<(), CanonicalProtobufAdmissionError> {
-        if !self.waiting_value {
-            return Err(CanonicalProtobufAdmissionError::Schema {
-                type_name: self.owner.type_name,
-                field: self.field,
-                region_offset: self.region_offset,
-                detail: "EPM1 value returned without a continuation",
-            });
+enum EPathMapWait {
+    MapValue,
+    Obligation {
+        id: CanonicalPathObligationId,
+        kind: CanonicalPathObligationKind,
+    },
+}
+
+impl<'src> EPathMapFrame<'src> {
+    fn new(
+        owner: &'static RhoMatchProgram,
+        field: u32,
+        snapshot: AdmissionRegion<'src>,
+    ) -> Result<Self, CanonicalProtobufAdmissionError> {
+        let start = snapshot
+            .position_at(0)
+            .expect("indexed EPM1 owns its start");
+        let region_start = start.physical;
+        let cursor =
+            IndexedCanonicalEpm1TopologyCursor::new(snapshot.clone()).map_err(|source| {
+                CanonicalProtobufAdmissionError::EPathMap {
+                    type_name: owner.type_name,
+                    field,
+                    position: region_start,
+                    source,
+                }
+            })?;
+        let mode = cursor.mode();
+        Ok(Self {
+            owner,
+            field,
+            region_start,
+            snapshot,
+            cursor,
+            path: CanonicalPathTopologyAdmission::new(),
+            mode,
+            entries_canonical_path_stable: true,
+            waiting: None,
+            last_source: CanonicalPathSource::in_source(
+                start.physical.source,
+                start.physical.offset,
+            ),
+        })
+    }
+
+    fn path_error(
+        &self,
+        source: super::canonical_path_admission::CanonicalPathAdmissionError,
+    ) -> CanonicalProtobufAdmissionError {
+        CanonicalProtobufAdmissionError::CanonicalPath {
+            type_name: self.owner.type_name,
+            field: self.field,
+            position: source.source,
+            detail: source.to_string(),
         }
-        self.waiting_value = false;
-        let FrameSummary::Message(MessageSummary {
-            semantic: SemanticSummary::Par(par),
-        }) = summary
-        else {
-            return Err(CanonicalProtobufAdmissionError::Schema {
-                type_name: self.owner.type_name,
-                field: self.field,
-                region_offset: self.region_offset,
-                detail: "EPM1 value did not return a raw Par summary",
-            });
-        };
-        self.entries_canonical_path_stable &= par.canonical_path_stable;
-        Ok(())
     }
 }
 
-enum Frame {
-    Message(MessageFrame),
-    Map(MapFrame),
-    EPathMap(EPathMapFrame),
+impl<'src> EPathMapFrame<'src> {
+    fn accept(
+        &mut self,
+        summary: FrameSummary<'src>,
+    ) -> Result<(), CanonicalProtobufAdmissionError> {
+        let Some(waiting) = self.waiting.take() else {
+            return Err(CanonicalProtobufAdmissionError::Schema {
+                type_name: self.owner.type_name,
+                field: self.field,
+                position: self.region_start,
+                detail: "EPM1 value returned without a continuation",
+            });
+        };
+        match (waiting, summary) {
+            (
+                EPathMapWait::MapValue,
+                FrameSummary::Message(MessageSummary {
+                    semantic: SemanticSummary::Par(par),
+                }),
+            ) => {
+                self.entries_canonical_path_stable &= par.canonical_path_stable;
+                Ok(())
+            }
+            (
+                EPathMapWait::Obligation {
+                    id,
+                    kind: CanonicalPathObligationKind::RawParEscape,
+                },
+                FrameSummary::Message(MessageSummary {
+                    semantic: SemanticSummary::Par(par),
+                }),
+            ) => self
+                .path
+                .resolve_obligation(id, CanonicalPathObligationResolution::RawPar {
+                    canonical_path_stable: par.canonical_path_stable,
+                })
+                .map_err(|source| self.path_error(source)),
+            (
+                EPathMapWait::Obligation {
+                    id,
+                    kind: CanonicalPathObligationKind::NestedEpm1,
+                },
+                FrameSummary::EPathMap(epm),
+            ) => self
+                .path
+                .resolve_obligation(id, CanonicalPathObligationResolution::NestedEpm1 {
+                    mode: match epm.mode {
+                        EPathMapMode::Empty => NestedEpmMode::Empty,
+                        EPathMapMode::Set => NestedEpmMode::Set,
+                        EPathMapMode::Map => NestedEpmMode::Map,
+                    },
+                    entries_stable: epm.entries_canonical_path_stable,
+                })
+                .map_err(|source| self.path_error(source)),
+            _ => Err(CanonicalProtobufAdmissionError::Schema {
+                type_name: self.owner.type_name,
+                field: self.field,
+                position: self.region_start,
+                detail: "EPM1 child returned the wrong summary for its continuation",
+            }),
+        }
+    }
+}
+
+enum Frame<'src> {
+    Message(MessageFrame<'src>),
+    Map(MapFrame<'src>),
+    EPathMap(EPathMapFrame<'src>),
 }
 
 #[derive(Clone)]
-struct MessageSummary {
-    semantic: SemanticSummary,
+struct MessageSummary<'src> {
+    semantic: SemanticSummary<'src>,
 }
 
 #[derive(Clone)]
-struct MapSummary {
-    key: ProtobufRegion,
-    key_offset: usize,
-    value: Option<ParSummary>,
+struct MapSummary<'src> {
+    key: AdmissionRegion<'src>,
+    key_position: CanonicalByteProvenance,
+    value: Option<ParSummary<'src>>,
 }
 
-enum FrameSummary {
-    Message(MessageSummary),
-    Map(MapSummary),
-    EPathMap(EPathMapSummary),
+enum FrameSummary<'src> {
+    Message(MessageSummary<'src>),
+    Map(MapSummary<'src>),
+    EPathMap(EPathMapSummary<'src>),
 }
 
-enum FrameAction {
+enum FrameAction<'src> {
     Continue,
-    Push(Frame),
-    Complete(FrameSummary),
+    Push(Frame<'src>),
+    Complete(FrameSummary<'src>),
 }
 
 fn canonical_wire_type(kind: ProtobufWireType) -> CanonicalWireType {
@@ -2095,9 +2281,9 @@ fn canonical_wire_type(kind: ProtobufWireType) -> CanonicalWireType {
     }
 }
 
-fn verify_wire(
-    frame: &MessageFrame,
-    field: &CanonicalRegionField,
+fn verify_wire<'src>(
+    frame: &MessageFrame<'src>,
+    field: &IndexedCanonicalField<'src>,
     resolved: ResolvedProtobufField,
 ) -> Result<(), CanonicalProtobufAdmissionError> {
     let expected = resolved
@@ -2123,35 +2309,61 @@ impl ScalarPresence {
     fn permits_default(self) -> bool { matches!(self, Self::Repeated | Self::Oneof) }
 }
 
-fn scalar_error(
-    frame: &MessageFrame,
-    field: &CanonicalRegionField,
+fn scalar_error<'src>(
+    frame: &MessageFrame<'src>,
+    field: &IndexedCanonicalField<'src>,
     detail: &'static str,
 ) -> CanonicalProtobufAdmissionError {
     CanonicalProtobufAdmissionError::Schema {
         type_name: frame.program.type_name,
         field: field.number,
-        region_offset: frame
-            .region_offset
-            .checked_add(field.encoded_range.start)
-            .expect("a field relative offset remains inside its protobuf backing"),
+        position: field.field_start.physical,
         detail,
     }
 }
 
-fn fixed_is_zero(region: &ProtobufRegion) -> bool {
-    region.as_bytes().iter().all(|&byte| byte == 0)
+fn framing_error(
+    type_name: &'static str,
+    region_start: CanonicalByteProvenance,
+    source: LocatedCanonicalProtobufError,
+) -> CanonicalProtobufAdmissionError {
+    CanonicalProtobufAdmissionError::Framing {
+        type_name,
+        region_start,
+        physical: source.failure,
+        source: source.error,
+    }
 }
 
-fn validate_scalar(
-    frame: &MessageFrame,
-    field: &CanonicalRegionField,
+fn fixed_is_zero(region: &AdmissionRegion<'_>) -> bool { region.bytes().all(|byte| byte == 0) }
+
+fn fixed_array<const N: usize>(region: &AdmissionRegion<'_>) -> [u8; N] {
+    let mut bytes = [0u8; N];
+    for (destination, source) in bytes.iter_mut().zip(region.bytes()) {
+        *destination = source;
+    }
+    bytes
+}
+
+fn length_delimited<'src>(
+    frame: &MessageFrame<'src>,
+    field: &IndexedCanonicalField<'src>,
+) -> Result<AdmissionRegion<'src>, CanonicalProtobufAdmissionError> {
+    match &field.value {
+        IndexedCanonicalFieldValue::LengthDelimited(value) => Ok(value.clone()),
+        _ => Err(frame.field_error(field, "protobuf field is not length-delimited")),
+    }
+}
+
+fn validate_scalar<'src>(
+    frame: &MessageFrame<'src>,
+    field: &IndexedCanonicalField<'src>,
     kind: ProtobufKind,
     presence: ScalarPresence,
 ) -> Result<(), CanonicalProtobufAdmissionError> {
     let default_forbidden = !presence.permits_default();
     match (kind, &field.value) {
-        (ProtobufKind::Bool, CanonicalRegionFieldValue::Varint(value)) => {
+        (ProtobufKind::Bool, IndexedCanonicalFieldValue::Varint(value)) => {
             if *value > 1 {
                 return Err(scalar_error(
                     frame,
@@ -2167,7 +2379,7 @@ fn validate_scalar(
                 ));
             }
         }
-        (ProtobufKind::Int32, CanonicalRegionFieldValue::Varint(value)) => {
+        (ProtobufKind::Int32, IndexedCanonicalFieldValue::Varint(value)) => {
             if (*value as u32 as i32) as u64 != *value {
                 return Err(scalar_error(
                     frame,
@@ -2183,7 +2395,10 @@ fn validate_scalar(
                 ));
             }
         }
-        (ProtobufKind::Sint32 | ProtobufKind::Uint32, CanonicalRegionFieldValue::Varint(value)) => {
+        (
+            ProtobufKind::Sint32 | ProtobufKind::Uint32,
+            IndexedCanonicalFieldValue::Varint(value),
+        ) => {
             if u32::try_from(*value).is_err() {
                 return Err(scalar_error(
                     frame,
@@ -2201,7 +2416,7 @@ fn validate_scalar(
         }
         (
             ProtobufKind::Int64 | ProtobufKind::Sint64 | ProtobufKind::Uint64,
-            CanonicalRegionFieldValue::Varint(value),
+            IndexedCanonicalFieldValue::Varint(value),
         ) => {
             if default_forbidden && *value == 0 {
                 return Err(scalar_error(
@@ -2213,11 +2428,11 @@ fn validate_scalar(
         }
         (
             ProtobufKind::Sfixed32 | ProtobufKind::Fixed32,
-            CanonicalRegionFieldValue::Fixed32(value),
+            IndexedCanonicalFieldValue::Fixed32(value),
         )
-        | (ProtobufKind::Float, CanonicalRegionFieldValue::Fixed32(value)) => {
+        | (ProtobufKind::Float, IndexedCanonicalFieldValue::Fixed32(value)) => {
             let zero = if kind == ProtobufKind::Float {
-                let bits = u32::from_le_bytes(value.as_bytes().try_into().expect("fixed32 length"));
+                let bits = u32::from_le_bytes(fixed_array(value));
                 bits & 0x7fff_ffff == 0
             } else {
                 fixed_is_zero(value)
@@ -2232,11 +2447,11 @@ fn validate_scalar(
         }
         (
             ProtobufKind::Sfixed64 | ProtobufKind::Fixed64,
-            CanonicalRegionFieldValue::Fixed64(value),
+            IndexedCanonicalFieldValue::Fixed64(value),
         )
-        | (ProtobufKind::Double, CanonicalRegionFieldValue::Fixed64(value)) => {
+        | (ProtobufKind::Double, IndexedCanonicalFieldValue::Fixed64(value)) => {
             let zero = if kind == ProtobufKind::Double {
-                let bits = u64::from_le_bytes(value.as_bytes().try_into().expect("fixed64 length"));
+                let bits = u64::from_le_bytes(fixed_array(value));
                 bits & 0x7fff_ffff_ffff_ffff == 0
             } else {
                 fixed_is_zero(value)
@@ -2251,9 +2466,10 @@ fn validate_scalar(
         }
         (
             ProtobufKind::String | ProtobufKind::RepeatedString,
-            CanonicalRegionFieldValue::LengthDelimited(value),
+            IndexedCanonicalFieldValue::LengthDelimited(value),
         ) => {
-            std::str::from_utf8(value.as_bytes())
+            value
+                .validate_utf8()
                 .map_err(|_| scalar_error(frame, field, "protobuf string is not UTF-8"))?;
             if default_forbidden && value.is_empty() {
                 return Err(scalar_error(
@@ -2265,7 +2481,7 @@ fn validate_scalar(
         }
         (
             ProtobufKind::Bytes | ProtobufKind::RepeatedBytes,
-            CanonicalRegionFieldValue::LengthDelimited(value),
+            IndexedCanonicalFieldValue::LengthDelimited(value),
         ) => {
             if default_forbidden && value.is_empty() {
                 return Err(scalar_error(
@@ -2286,99 +2502,77 @@ fn validate_scalar(
     Ok(())
 }
 
-fn semantic_scalar(
-    field: &CanonicalRegionField,
+fn semantic_scalar<'src>(
+    field: &IndexedCanonicalField<'src>,
     kind: ProtobufKind,
-) -> Result<SemanticScalar, CanonicalProtobufAdmissionError> {
+) -> Result<SemanticScalar<'src>, CanonicalProtobufAdmissionError> {
     let scalar = match (kind, &field.value) {
-        (ProtobufKind::Bool, CanonicalRegionFieldValue::Varint(value)) => {
+        (ProtobufKind::Bool, IndexedCanonicalFieldValue::Varint(value)) => {
             SemanticScalar::Bool(*value != 0)
         }
-        (ProtobufKind::Int32, CanonicalRegionFieldValue::Varint(value)) => {
+        (ProtobufKind::Int32, IndexedCanonicalFieldValue::Varint(value)) => {
             SemanticScalar::I32(*value as u32 as i32)
         }
-        (ProtobufKind::Sint32, CanonicalRegionFieldValue::Varint(value)) => {
+        (ProtobufKind::Sint32, IndexedCanonicalFieldValue::Varint(value)) => {
             let encoded = *value as u32;
             SemanticScalar::I32(((encoded >> 1) as i32) ^ -((encoded & 1) as i32))
         }
-        (ProtobufKind::Sfixed32, CanonicalRegionFieldValue::Fixed32(value)) => {
-            SemanticScalar::I32(i32::from_le_bytes(
-                value
-                    .as_bytes()
-                    .try_into()
-                    .expect("a fixed32 region has four bytes"),
-            ))
+        (ProtobufKind::Sfixed32, IndexedCanonicalFieldValue::Fixed32(value)) => {
+            SemanticScalar::I32(i32::from_le_bytes(fixed_array(value)))
         }
         (
             ProtobufKind::Uint32 | ProtobufKind::Fixed32 | ProtobufKind::Float,
-            CanonicalRegionFieldValue::Varint(value),
+            IndexedCanonicalFieldValue::Varint(value),
         ) if kind == ProtobufKind::Uint32 => SemanticScalar::U32(*value as u32),
         (
             ProtobufKind::Fixed32 | ProtobufKind::Float,
-            CanonicalRegionFieldValue::Fixed32(value),
-        ) => SemanticScalar::U32(u32::from_le_bytes(
-            value
-                .as_bytes()
-                .try_into()
-                .expect("a fixed32 region has four bytes"),
-        )),
-        (ProtobufKind::Int64, CanonicalRegionFieldValue::Varint(value)) => {
+            IndexedCanonicalFieldValue::Fixed32(value),
+        ) => SemanticScalar::U32(u32::from_le_bytes(fixed_array(value))),
+        (ProtobufKind::Int64, IndexedCanonicalFieldValue::Varint(value)) => {
             SemanticScalar::I64(*value as i64)
         }
-        (ProtobufKind::Sint64, CanonicalRegionFieldValue::Varint(value)) => {
+        (ProtobufKind::Sint64, IndexedCanonicalFieldValue::Varint(value)) => {
             SemanticScalar::I64(((value >> 1) as i64) ^ -((value & 1) as i64))
         }
-        (ProtobufKind::Sfixed64, CanonicalRegionFieldValue::Fixed64(value)) => {
-            SemanticScalar::I64(i64::from_le_bytes(
-                value
-                    .as_bytes()
-                    .try_into()
-                    .expect("a fixed64 region has eight bytes"),
-            ))
+        (ProtobufKind::Sfixed64, IndexedCanonicalFieldValue::Fixed64(value)) => {
+            SemanticScalar::I64(i64::from_le_bytes(fixed_array(value)))
         }
-        (ProtobufKind::Uint64, CanonicalRegionFieldValue::Varint(value)) => {
+        (ProtobufKind::Uint64, IndexedCanonicalFieldValue::Varint(value)) => {
             SemanticScalar::U64(*value)
         }
         (
             ProtobufKind::Fixed64 | ProtobufKind::Double,
-            CanonicalRegionFieldValue::Fixed64(value),
-        ) => SemanticScalar::U64(u64::from_le_bytes(
-            value
-                .as_bytes()
-                .try_into()
-                .expect("a fixed64 region has eight bytes"),
-        )),
+            IndexedCanonicalFieldValue::Fixed64(value),
+        ) => SemanticScalar::U64(u64::from_le_bytes(fixed_array(value))),
         (
             ProtobufKind::String | ProtobufKind::RepeatedString,
-            CanonicalRegionFieldValue::LengthDelimited(value),
+            IndexedCanonicalFieldValue::LengthDelimited(value),
         ) => SemanticScalar::String(value.clone()),
         (
             ProtobufKind::Bytes | ProtobufKind::RepeatedBytes,
-            CanonicalRegionFieldValue::LengthDelimited(value),
+            IndexedCanonicalFieldValue::LengthDelimited(value),
         ) => SemanticScalar::Bytes(value.clone()),
         _ => return Err(CanonicalProtobufAdmissionError::SizeOverflow),
     };
     Ok(scalar)
 }
 
-fn field_absolute_offset(
-    frame: &MessageFrame,
-    field: &CanonicalRegionField,
-) -> Result<usize, CanonicalProtobufAdmissionError> {
-    frame
-        .region_offset
-        .checked_add(field.encoded_range.start)
-        .ok_or(CanonicalProtobufAdmissionError::SizeOverflow)
+fn field_absolute_offset<'src>(
+    frame: &MessageFrame<'src>,
+    field: &IndexedCanonicalField<'src>,
+) -> Result<CanonicalByteProvenance, CanonicalProtobufAdmissionError> {
+    let _ = frame;
+    Ok(field.field_start.physical)
 }
 
-fn record_scalar(
-    frame: &mut MessageFrame,
-    field: &CanonicalRegionField,
+fn record_scalar<'src>(
+    frame: &mut MessageFrame<'src>,
+    field: &IndexedCanonicalField<'src>,
     slot: usize,
     variant: Option<&'static str>,
     kind: ProtobufKind,
 ) -> Result<(), CanonicalProtobufAdmissionError> {
-    let field_offset = field_absolute_offset(frame, field)?;
+    let field_position = field_absolute_offset(frame, field)?;
     let value = semantic_scalar(field, kind)?;
     if frame.is_raw_par() && frame.program.fields[slot].name == "locally_free" {
         frame.par_locally_free_range = Some(field.encoded_range.clone());
@@ -2387,37 +2581,41 @@ fn record_scalar(
         variant,
         body: None,
         value: SemanticValue::Scalar(value),
-        field_offset,
+        field_position,
     });
     Ok(())
 }
 
-fn child_program(
-    frame: &MessageFrame,
-    field: &CanonicalRegionField,
+fn child_program<'src>(
+    frame: &MessageFrame<'src>,
+    field: &IndexedCanonicalField<'src>,
     type_id: u16,
 ) -> Result<&'static RhoMatchProgram, CanonicalProtobufAdmissionError> {
     wire_program_by_type_id(type_id).map_err(|error| frame.field_error(field, error.detail()))
 }
 
-fn message_step(
-    frame: &mut MessageFrame,
+fn message_step<'src>(
+    frame: &mut MessageFrame<'src>,
     stats: &mut CanonicalProtobufAdmissionStats,
-    scores: &mut CanonicalScoreArena,
-) -> Result<FrameAction, CanonicalProtobufAdmissionError> {
+    scores: &mut CanonicalScoreArena<'src>,
+) -> Result<FrameAction<'src>, CanonicalProtobufAdmissionError> {
     if frame.waiting.is_some() {
         return Err(frame.schema_error(0, "protobuf message resumed before its child returned"));
     }
-    let field =
-        frame
-            .cursor
-            .next_field()
-            .map_err(|source| CanonicalProtobufAdmissionError::Framing {
-                type_name: frame.program.type_name,
-                region_offset: frame.region_offset,
-                source,
-            })?;
+    let field = frame
+        .cursor
+        .next_field()
+        .map_err(|source| framing_error(frame.program.type_name, frame.region_start, source))?;
     let Some(field) = field else {
+        let cursor_stats = frame.cursor.stats();
+        stats.protobuf_bytes_read = stats
+            .protobuf_bytes_read
+            .checked_add(cursor_stats.bytes_read)
+            .ok_or(CanonicalProtobufAdmissionError::SizeOverflow)?;
+        stats.protobuf_bytes_traversed = stats
+            .protobuf_bytes_traversed
+            .checked_add(cursor_stats.bytes_traversed)
+            .ok_or(CanonicalProtobufAdmissionError::SizeOverflow)?;
         return Ok(FrameAction::Complete(FrameSummary::Message(
             frame.finish(scores)?,
         )));
@@ -2439,7 +2637,7 @@ fn message_step(
     }
     frame.last_slot = Some(slot);
     frame.seen[slot] = true;
-    let field_offset = field_absolute_offset(frame, &field)?;
+    let field_position = field_absolute_offset(frame, &field)?;
 
     let schema_field = resolved.field();
     if frame.is_raw_par() && matches!(schema_field.kind, RhoMatchFieldKind::MessageSequence(_)) {
@@ -2453,18 +2651,12 @@ fn message_step(
         ResolvedProtobufPayload::Oneof(variant) => match variant.payload {
             RhoMatchPayloadKind::Message(type_id) => {
                 let child = child_program(frame, &field, type_id)?;
-                let body = field.into_length_delimited().map_err(|source| {
-                    CanonicalProtobufAdmissionError::Framing {
-                        type_name: frame.program.type_name,
-                        region_offset: frame.region_offset,
-                        source,
-                    }
-                })?;
+                let body = length_delimited(frame, &field)?;
                 frame.waiting = Some(MessageWait::Child {
                     slot,
                     variant: Some(variant.name),
                     body: body.clone(),
-                    field_offset,
+                    field_position,
                 });
                 Ok(FrameAction::Push(Frame::Message(MessageFrame::new(
                     body, child,
@@ -2502,18 +2694,12 @@ fn message_step(
             RhoMatchFieldKind::OptionalMessage(type_id)
             | RhoMatchFieldKind::MessageSequence(type_id) => {
                 let child = child_program(frame, &field, type_id)?;
-                let body = field.into_length_delimited().map_err(|source| {
-                    CanonicalProtobufAdmissionError::Framing {
-                        type_name: frame.program.type_name,
-                        region_offset: frame.region_offset,
-                        source,
-                    }
-                })?;
+                let body = length_delimited(frame, &field)?;
                 frame.waiting = Some(MessageWait::Child {
                     slot,
                     variant: None,
                     body: body.clone(),
-                    field_offset,
+                    field_position,
                 });
                 Ok(FrameAction::Push(Frame::Message(MessageFrame::new(
                     body, child,
@@ -2521,14 +2707,11 @@ fn message_step(
             }
             RhoMatchFieldKind::StringMessageMap(type_id) => {
                 let field_number = field.number;
-                let body = field.into_length_delimited().map_err(|source| {
-                    CanonicalProtobufAdmissionError::Framing {
-                        type_name: frame.program.type_name,
-                        region_offset: frame.region_offset,
-                        source,
-                    }
-                })?;
-                frame.waiting = Some(MessageWait::Map { slot, field_offset });
+                let body = length_delimited(frame, &field)?;
+                frame.waiting = Some(MessageWait::Map {
+                    slot,
+                    field_position,
+                });
                 Ok(FrameAction::Push(Frame::Map(MapFrame::new(
                     frame.program,
                     field_number,
@@ -2538,36 +2721,16 @@ fn message_step(
             }
             RhoMatchFieldKind::PathMap => {
                 let field_number = field.number;
-                let body = field.into_length_delimited().map_err(|source| {
-                    CanonicalProtobufAdmissionError::Framing {
-                        type_name: frame.program.type_name,
-                        region_offset: frame.region_offset,
-                        source,
-                    }
-                })?;
-                let region_offset = body.absolute_range().start;
-                let cursor = OwnedCanonicalEpm1TopologyCursor::new(body.clone().into_bytes())
-                    .map_err(|source| CanonicalProtobufAdmissionError::EPathMap {
-                        type_name: frame.program.type_name,
-                        field: field_number,
-                        region_offset,
-                        source,
-                    })?;
-                stats.epathmaps = stats
-                    .epathmaps
-                    .checked_add(1)
-                    .ok_or(CanonicalProtobufAdmissionError::SizeOverflow)?;
-                frame.waiting = Some(MessageWait::EPathMap { slot, field_offset });
-                Ok(FrameAction::Push(Frame::EPathMap(EPathMapFrame {
-                    owner: frame.program,
-                    field: field_number,
-                    region_offset,
-                    snapshot: body,
-                    cursor,
-                    path: Vec::new(),
-                    entries_canonical_path_stable: true,
-                    waiting_value: false,
-                })))
+                let body = length_delimited(frame, &field)?;
+                frame.waiting = Some(MessageWait::EPathMap {
+                    slot,
+                    field_position,
+                });
+                Ok(FrameAction::Push(Frame::EPathMap(EPathMapFrame::new(
+                    frame.program,
+                    field_number,
+                    body,
+                )?)))
             }
             RhoMatchFieldKind::Oneof(_) => {
                 Err(frame.field_error(&field, "unresolved oneof marker reached admission"))
@@ -2580,68 +2743,63 @@ fn message_step(
     }
 }
 
-fn map_step(
-    frame: &mut MapFrame,
+fn map_step<'src>(
+    frame: &mut MapFrame<'src>,
     stats: &mut CanonicalProtobufAdmissionStats,
-) -> Result<FrameAction, CanonicalProtobufAdmissionError> {
+) -> Result<FrameAction<'src>, CanonicalProtobufAdmissionError> {
     if frame.waiting_value {
         return Err(frame.schema_error("map entry resumed before its value returned"));
     }
-    let field =
-        frame
-            .cursor
-            .next_field()
-            .map_err(|source| CanonicalProtobufAdmissionError::Framing {
-                type_name: frame.owner.type_name,
-                region_offset: frame.region_offset,
-                source,
-            })?;
+    let field = frame
+        .cursor
+        .next_field()
+        .map_err(|source| framing_error(frame.owner.type_name, frame.region_start, source))?;
     let Some(field) = field else {
+        let cursor_stats = frame.cursor.stats();
+        stats.protobuf_bytes_read = stats
+            .protobuf_bytes_read
+            .checked_add(cursor_stats.bytes_read)
+            .ok_or(CanonicalProtobufAdmissionError::SizeOverflow)?;
+        stats.protobuf_bytes_traversed = stats
+            .protobuf_bytes_traversed
+            .checked_add(cursor_stats.bytes_traversed)
+            .ok_or(CanonicalProtobufAdmissionError::SizeOverflow)?;
         return Ok(FrameAction::Complete(FrameSummary::Map(frame.finish()?)));
     };
     stats.fields = stats
         .fields
         .checked_add(1)
         .ok_or(CanonicalProtobufAdmissionError::SizeOverflow)?;
-    let field_offset = frame
-        .region_offset
-        .checked_add(field.encoded_range.start)
-        .ok_or(CanonicalProtobufAdmissionError::SizeOverflow)?;
+    let field_position = field.field_start.physical;
     match field.number {
         1 if frame.key.is_none() => {
-            let value = field.into_length_delimited().map_err(|source| {
-                CanonicalProtobufAdmissionError::Framing {
-                    type_name: frame.owner.type_name,
-                    region_offset: frame.region_offset,
-                    source,
-                }
-            })?;
-            std::str::from_utf8(value.as_bytes()).map_err(|_| {
-                frame.schema_error_at(1, field_offset, "protobuf map key is not UTF-8")
+            let value = match &field.value {
+                IndexedCanonicalFieldValue::LengthDelimited(value) => value.clone(),
+                _ => return Err(frame.field_error(&field, "protobuf map key is not a string")),
+            };
+            value.validate_utf8().map_err(|_| {
+                frame.schema_error_at(1, field_position, "protobuf map key is not UTF-8")
             })?;
             if value.is_empty() {
                 return Err(frame.schema_error_at(
                     1,
-                    field_offset,
+                    field_position,
                     "explicit protobuf map key equals the omitted default",
                 ));
             }
             frame.key = Some(value);
-            frame.key_offset = Some(field_offset);
+            frame.key_position = Some(field_position);
             Ok(FrameAction::Continue)
         }
         2 if !frame.saw_value => {
-            let value = field.into_length_delimited().map_err(|source| {
-                CanonicalProtobufAdmissionError::Framing {
-                    type_name: frame.owner.type_name,
-                    region_offset: frame.region_offset,
-                    source,
-                }
-            })?;
+            let value = match &field.value {
+                IndexedCanonicalFieldValue::LengthDelimited(value) => value.clone(),
+                _ => return Err(frame.field_error(&field, "protobuf map value is not a message")),
+            };
             let program = wire_program_by_type_id(frame.value_type_id)
-                .map_err(|error| frame.schema_error_at(2, field_offset, error.detail()))?;
+                .map_err(|error| frame.schema_error_at(2, field_position, error.detail()))?;
             frame.saw_value = true;
-            frame.value_offset = Some(field_offset);
+            frame.value_position = Some(field_position);
             frame.waiting_value = true;
             Ok(FrameAction::Push(Frame::Message(MessageFrame::new(
                 value, program,
@@ -2655,70 +2813,130 @@ fn map_step(
     }
 }
 
-fn epathmap_step(
-    frame: &mut EPathMapFrame,
-) -> Result<FrameAction, CanonicalProtobufAdmissionError> {
-    if frame.waiting_value {
+fn epathmap_step<'src>(
+    frame: &mut EPathMapFrame<'src>,
+    stats: &mut CanonicalProtobufAdmissionStats,
+) -> Result<FrameAction<'src>, CanonicalProtobufAdmissionError> {
+    if frame.waiting.is_some() {
         return Err(CanonicalProtobufAdmissionError::Schema {
             type_name: frame.owner.type_name,
             field: frame.field,
-            region_offset: frame.region_offset,
+            position: frame.region_start,
             detail: "EPM1 cursor resumed before its value returned",
         });
     }
     loop {
-        let Some(event) = frame.cursor.next_event() else {
+        let Some(event) = frame.cursor.next_event().map_err(|source| {
+            CanonicalProtobufAdmissionError::EPathMap {
+                type_name: frame.owner.type_name,
+                field: frame.field,
+                position: frame.region_start,
+                source,
+            }
+        })?
+        else {
+            frame
+                .path
+                .finish(frame.last_source)
+                .map_err(|source| frame.path_error(source))?;
+            let cursor_stats = frame.cursor.stats();
+            stats.protobuf_bytes_read = stats
+                .protobuf_bytes_read
+                .checked_add(cursor_stats.prefix_bytes_read)
+                .and_then(|count| count.checked_add(cursor_stats.value_table_bytes_read))
+                .ok_or(CanonicalProtobufAdmissionError::SizeOverflow)?;
+            stats.protobuf_bytes_traversed = stats
+                .protobuf_bytes_traversed
+                .checked_add(cursor_stats.prefix_bytes_traversed)
+                .and_then(|count| count.checked_add(cursor_stats.value_table_bytes_traversed))
+                .ok_or(CanonicalProtobufAdmissionError::SizeOverflow)?;
+            stats.epathmap_events = stats
+                .epathmap_events
+                .checked_add(cursor_stats.topology_events)
+                .ok_or(CanonicalProtobufAdmissionError::SizeOverflow)?;
             return Ok(FrameAction::Complete(FrameSummary::EPathMap(
                 EPathMapSummary {
+                    mode: frame.mode,
                     snapshot: frame.snapshot.clone(),
                     entries_canonical_path_stable: frame.entries_canonical_path_stable,
                 },
             )));
         };
         match event {
-            OwnedCanonicalEpm1TopologyEvent::Edge { byte, .. } => frame.path.push(byte),
-            OwnedCanonicalEpm1TopologyEvent::Leave { .. } => {
-                let _ = frame.path.pop();
+            IndexedCanonicalEpm1TopologyEvent::Edge { byte, provenance } => {
+                let source = CanonicalPathSource::in_source(provenance.source, provenance.offset);
+                frame.last_source = source;
+                frame
+                    .path
+                    .edge(LocatedPathByte::in_source(
+                        byte,
+                        provenance.source,
+                        provenance.offset,
+                    ))
+                    .map_err(|source| frame.path_error(source))?;
+                if let Some(completed) = frame
+                    .path
+                    .freeze_completed_obligation()
+                    .map_err(|source| frame.path_error(source))?
+                {
+                    let payload_len = completed.payload.len();
+                    let end = CanonicalByteProvenance::new(
+                        completed.payload_end.source,
+                        completed.payload_end.offset,
+                    );
+                    let body = shorten_frozen_region(OwnedIndexedByteRegion::from_frozen(
+                        completed.payload,
+                        end,
+                    ));
+                    stats.canonical_path_obligations = stats
+                        .canonical_path_obligations
+                        .checked_add(1)
+                        .ok_or(CanonicalProtobufAdmissionError::SizeOverflow)?;
+                    stats.canonical_path_payload_bytes = stats
+                        .canonical_path_payload_bytes
+                        .checked_add(payload_len)
+                        .ok_or(CanonicalProtobufAdmissionError::SizeOverflow)?;
+                    frame.waiting = Some(EPathMapWait::Obligation {
+                        id: completed.obligation.id,
+                        kind: completed.obligation.kind,
+                    });
+                    return match completed.obligation.kind {
+                        CanonicalPathObligationKind::RawParEscape => Ok(FrameAction::Push(
+                            Frame::Message(MessageFrame::new(body, &PAR_PROTOBUF_REGION_PROGRAM)?),
+                        )),
+                        CanonicalPathObligationKind::NestedEpm1 => Ok(FrameAction::Push(
+                            Frame::EPathMap(EPathMapFrame::new(frame.owner, frame.field, body)?),
+                        )),
+                    };
+                }
             }
-            OwnedCanonicalEpm1TopologyEvent::Value {
-                has_value: false, ..
-            } => {}
-            OwnedCanonicalEpm1TopologyEvent::Value {
-                has_value: true,
-                value_body_range,
-                source_offset,
+            IndexedCanonicalEpm1TopologyEvent::Leave { provenance } => {
+                let source = CanonicalPathSource::in_source(provenance.source, provenance.offset);
+                frame.last_source = source;
+                frame
+                    .path
+                    .leave(source)
+                    .map_err(|source| frame.path_error(source))?;
+            }
+            IndexedCanonicalEpm1TopologyEvent::Value {
+                has_value,
+                value_body,
+                provenance,
                 ..
             } => {
-                let metadata = crate::rust::canonical_path::validate_canonical_path(&frame.path)
-                    .map_err(|source| CanonicalProtobufAdmissionError::CanonicalPath {
-                        type_name: frame.owner.type_name,
-                        field: frame.field,
-                        region_offset: frame.region_offset,
-                        source_offset,
-                        detail: source.to_string(),
-                    })?;
-                frame.entries_canonical_path_stable &= metadata.stable;
-
-                let Some(range) = value_body_range else {
-                    continue;
-                };
-                let value_offset = frame
-                    .region_offset
-                    .checked_add(range.start)
-                    .ok_or(CanonicalProtobufAdmissionError::SizeOverflow)?;
-                let value = frame
-                    .snapshot
-                    .subregion(super::protobuf_cursor::CanonicalByteRange {
-                        start: range.start,
-                        end: range.end,
-                    })
-                    .ok_or(CanonicalProtobufAdmissionError::SizeOverflow)?;
-                frame.waiting_value = true;
-                return Ok(FrameAction::Push(Frame::Message(MessageFrame::new_at(
-                    value,
-                    &PAR_PROTOBUF_REGION_PROGRAM,
-                    value_offset,
-                )?)));
+                let source = CanonicalPathSource::in_source(provenance.source, provenance.offset);
+                frame.last_source = source;
+                if let Some(summary) = frame.path.value(has_value, source) {
+                    let summary = summary.map_err(|source| frame.path_error(source))?;
+                    frame.entries_canonical_path_stable &= summary.canonical_path_stable;
+                }
+                if let Some(value) = value_body {
+                    frame.waiting = Some(EPathMapWait::MapValue);
+                    return Ok(FrameAction::Push(Frame::Message(MessageFrame::new(
+                        value,
+                        &PAR_PROTOBUF_REGION_PROGRAM,
+                    )?)));
+                }
             }
         }
     }
@@ -2727,8 +2945,8 @@ fn epathmap_step(
 /// Validate one exact canonical protobuf encoder image without constructing a
 /// rhoapi value. The returned statistics are operational evidence only; the
 /// admission proof is represented by successful completion.
-fn first_score_difference(
-    scores: &CanonicalScoreArena,
+fn first_score_difference<'src>(
+    scores: &CanonicalScoreArena<'src>,
     score: CanonicalScoreHandle,
     claimed: &[u8],
 ) -> Option<usize> {
@@ -2743,18 +2961,28 @@ fn first_score_difference(
     }
 }
 
-fn validate_canonical_protobuf_inner(
-    input: ProtobufRegion,
+fn validate_canonical_protobuf_inner<'src>(
+    input: AdmissionRegion<'src>,
     root: &'static RhoMatchProgram,
     claimed_component: Option<(ParComponentTag, &[u8])>,
 ) -> Result<CanonicalProtobufAdmission, CanonicalProtobufAdmissionError> {
-    let mut scores = CanonicalScoreArena::for_region(&input)?;
+    let input_bytes = input.len();
+    let root_start = input
+        .position_at(0)
+        .expect("indexed protobuf roots own their start")
+        .physical;
+    let frame_variant_bytes = std::mem::size_of::<Frame>();
+    let mut scores: CanonicalScoreArena<'src> = CanonicalScoreArena::new();
     let mut stats = CanonicalProtobufAdmissionStats {
+        input_bytes,
         messages: 1,
         max_frames: 1,
+        frame_variant_bytes,
+        max_frame_storage_bytes: frame_variant_bytes,
+        byte_native_validations: 1,
         ..CanonicalProtobufAdmissionStats::default()
     };
-    let mut frames = vec![Frame::Message(MessageFrame::new(input, root)?)];
+    let mut frames: Vec<Frame<'src>> = vec![Frame::Message(MessageFrame::new(input, root)?)];
     loop {
         let action = match frames
             .last_mut()
@@ -2762,7 +2990,7 @@ fn validate_canonical_protobuf_inner(
         {
             Frame::Message(frame) => message_step(frame, &mut stats, &mut scores)?,
             Frame::Map(frame) => map_step(frame, &mut stats)?,
-            Frame::EPathMap(frame) => epathmap_step(frame)?,
+            Frame::EPathMap(frame) => epathmap_step(frame, &mut stats)?,
         };
         match action {
             FrameAction::Continue => {}
@@ -2780,10 +3008,21 @@ fn validate_canonical_protobuf_inner(
                             .checked_add(1)
                             .ok_or(CanonicalProtobufAdmissionError::SizeOverflow)?
                     }
-                    Frame::EPathMap(_) => {}
+                    Frame::EPathMap(_) => {
+                        stats.epathmaps = stats
+                            .epathmaps
+                            .checked_add(1)
+                            .ok_or(CanonicalProtobufAdmissionError::SizeOverflow)?
+                    }
                 }
                 frames.push(frame);
                 stats.max_frames = stats.max_frames.max(frames.len());
+                stats.max_frame_storage_bytes = stats.max_frame_storage_bytes.max(
+                    frames
+                        .len()
+                        .checked_mul(frame_variant_bytes)
+                        .ok_or(CanonicalProtobufAdmissionError::SizeOverflow)?,
+                );
             }
             FrameAction::Complete(summary) => {
                 frames.pop();
@@ -2798,7 +3037,7 @@ fn validate_canonical_protobuf_inner(
                         return Err(CanonicalProtobufAdmissionError::Schema {
                             type_name: root.type_name,
                             field: 0,
-                            region_offset: 0,
+                            position: root_start,
                             detail: "canonical protobuf root returned the wrong summary kind",
                         });
                     };
@@ -2820,12 +3059,36 @@ fn validate_canonical_protobuf_inner(
                         }
                         _ => None,
                     };
+                    stats.protobuf_bytes_fast_forwarded = stats
+                        .protobuf_bytes_read
+                        .checked_sub(stats.protobuf_bytes_traversed)
+                        .ok_or(CanonicalProtobufAdmissionError::SizeOverflow)?;
+                    if stats.reconstructed_key_bytes != 0 {
+                        return Err(CanonicalProtobufAdmissionError::CutoverInvariant(
+                            "reconstructed key bytes are nonzero",
+                        ));
+                    }
+                    if stats.legacy_endpoint_replays != 0 {
+                        return Err(CanonicalProtobufAdmissionError::CutoverInvariant(
+                            "legacy endpoint replays are nonzero",
+                        ));
+                    }
+                    if stats.typed_decodes != 0 {
+                        return Err(CanonicalProtobufAdmissionError::CutoverInvariant(
+                            "typed decodes are nonzero",
+                        ));
+                    }
+                    if stats.byte_native_validations != 1 {
+                        return Err(CanonicalProtobufAdmissionError::CutoverInvariant(
+                            "byte-native validation count is not exactly one",
+                        ));
+                    }
                     if let Some((family, claimed_score)) = claimed_component {
                         let SemanticSummary::Component(root_component) = &summary.semantic else {
                             return Err(CanonicalProtobufAdmissionError::Schema {
                                 type_name: root.type_name,
                                 field: 0,
-                                region_offset: 0,
+                                position: root_start,
                                 detail:
                                     "claimed component score was supplied for a non-component root",
                             });
@@ -2834,7 +3097,7 @@ fn validate_canonical_protobuf_inner(
                             return Err(CanonicalProtobufAdmissionError::Schema {
                                 type_name: root.type_name,
                                 field: u32::from(family.byte()),
-                                region_offset: 0,
+                                position: root_start,
                                 detail: "claimed component family disagrees with the schema root",
                             });
                         }
@@ -2843,7 +3106,7 @@ fn validate_canonical_protobuf_inner(
                         {
                             return Err(CanonicalProtobufAdmissionError::ScoreMismatch {
                                 type_name: root.type_name,
-                                region_offset: 0,
+                                region_start: root_start,
                                 first_difference,
                             });
                         }
@@ -2860,25 +3123,45 @@ fn validate_canonical_protobuf_inner(
     }
 }
 
+#[cfg(test)]
 pub(crate) fn validate_canonical_protobuf(
     input: ProtobufRegion,
     root: &'static RhoMatchProgram,
 ) -> Result<CanonicalProtobufAdmission, CanonicalProtobufAdmissionError> {
-    validate_canonical_protobuf_inner(input, root, None)
+    let indexed = IndexedByteRegion::from_protobuf_region(input, 0);
+    validate_canonical_protobuf_inner(indexed, root, None)
 }
 
+#[cfg(test)]
 pub(crate) fn validate_canonical_component_protobuf(
     input: ProtobufRegion,
     root: &'static RhoMatchProgram,
     family: ParComponentTag,
     claimed_score: &[u8],
 ) -> Result<CanonicalComponentAdmission, CanonicalProtobufAdmissionError> {
+    let indexed = IndexedByteRegion::from_protobuf_region(input, 0);
+    validate_canonical_component_protobuf_indexed(indexed, root, family, claimed_score)
+}
+
+/// Validate one component directly from an indexed source. Borrowed resident
+/// RPB3 keys use this entry point so admission neither copies the protobuf
+/// payload nor decodes and re-encodes an AST merely to prove canonicality.
+pub(crate) fn validate_canonical_component_protobuf_indexed<'src>(
+    input: IndexedByteRegion<'src>,
+    root: &'static RhoMatchProgram,
+    family: ParComponentTag,
+    claimed_score: &[u8],
+) -> Result<CanonicalComponentAdmission, CanonicalProtobufAdmissionError> {
+    let root_start = input
+        .position_at(0)
+        .expect("indexed protobuf component owns its start")
+        .physical;
     validate_canonical_protobuf_inner(input, root, Some((family, claimed_score)))?
         .component()
         .ok_or(CanonicalProtobufAdmissionError::Schema {
             type_name: root.type_name,
             field: u32::from(family.byte()),
-            region_offset: 0,
+            position: root_start,
             detail: "component admission root did not produce component metadata",
         })
 }
@@ -2922,6 +3205,50 @@ mod tests {
             validate_canonical_protobuf(ProtobufRegion::from(bytes), program).is_err(),
             "noncanonical protobuf image was admitted"
         );
+    }
+
+    #[test]
+    fn borrowed_and_owned_roots_have_identical_admission_and_error_semantics() {
+        let send = Send {
+            chan: Some(gint(7)),
+            data: vec![gint(11), gint(13)],
+            persistent: true,
+            ..Send::default()
+        };
+        let bytes = protobuf_encoder::encode_to_vec(&send);
+        let owned = validate_canonical_protobuf(
+            ProtobufRegion::copy_from_slice(&bytes),
+            &SEND_RHO_MATCH_PROGRAM,
+        );
+        let borrowed = validate_canonical_protobuf_inner(
+            IndexedByteRegion::from_borrowed(&bytes, 0, 0),
+            &SEND_RHO_MATCH_PROGRAM,
+            None,
+        );
+        assert_eq!(borrowed, owned);
+
+        let malformed = [0x18, 0x81, 0x00];
+        let owned_error = validate_canonical_protobuf(
+            ProtobufRegion::copy_from_slice(&malformed),
+            &SEND_RHO_MATCH_PROGRAM,
+        )
+        .unwrap_err();
+        let borrowed_error = validate_canonical_protobuf_inner(
+            IndexedByteRegion::from_borrowed(&malformed, 0, 0),
+            &SEND_RHO_MATCH_PROGRAM,
+            None,
+        )
+        .unwrap_err();
+        assert_eq!(borrowed_error, owned_error);
+
+        let shifted_error = validate_canonical_protobuf_inner(
+            IndexedByteRegion::from_borrowed(&malformed, 41, 17_000),
+            &SEND_RHO_MATCH_PROGRAM,
+            None,
+        )
+        .unwrap_err();
+        assert!(shifted_error.to_string().contains("source 41"));
+        assert!(shifted_error.to_string().contains("17000"));
     }
 
     fn assert_component_score_state<T: ParBagComponent>(

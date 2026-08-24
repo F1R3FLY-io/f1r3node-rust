@@ -15,10 +15,11 @@ use pathmap::zipper::ZipperReadOnlyIteration;
 use pathmap::zipper::{ZipperIteration, ZipperMoving};
 use pathmap::PathMap;
 use prost::bytes::Bytes;
+#[cfg(test)]
+use rspace_plus_plus::rspace::pathmap_codec::CanonicalCompactTrieCursor;
 use rspace_plus_plus::rspace::pathmap_codec::{
-    CanonicalCompactTrieCursor, CanonicalCompactTrieTopologyEvent,
-    CanonicalCompactTrieTopologyState, CompactPath, CompactTrie, CompactTrieError,
-    CompactTrieTopologyEvent,
+    CanonicalCompactTrieIndexedTopologyCursor, CanonicalCompactTrieTopologyEvent, CompactPath,
+    CompactTrie, CompactTrieError, CompactTrieTopologyEvent,
 };
 
 use crate::rhoapi::Par;
@@ -27,7 +28,9 @@ use crate::rust::rholang::indexed_protobuf::{
     IndexedByteReadError, IndexedByteReadErrorKind, IndexedByteReadOperation, IndexedByteReader,
     IndexedByteRegion,
 };
-use crate::rust::rholang::protobuf_cursor::{CanonicalByteRange, ProtobufRegion};
+use crate::rust::rholang::protobuf_cursor::CanonicalByteRange;
+#[cfg(test)]
+use crate::rust::rholang::protobuf_cursor::ProtobufRegion;
 use crate::rust::rholang::{protobuf_decoder, protobuf_encoder};
 
 const EPM_MAGIC: &[u8; 4] = b"EPM1";
@@ -145,10 +148,12 @@ impl TrieCodecError {
         }
     }
 
+    #[cfg(test)]
     pub(crate) const fn reported_provenance(&self) -> Option<CanonicalByteProvenance> {
         self.reported
     }
 
+    #[cfg(test)]
     pub(crate) const fn failure_provenance(&self) -> Option<CanonicalByteProvenance> {
         self.failure
     }
@@ -250,18 +255,20 @@ struct CanonicalSnapshotPrefix<'a> {
     value_table_start: usize,
 }
 
-#[allow(dead_code)]
+#[cfg(test)]
 pub(crate) struct CanonicalEpm1Entry<'a> {
     key: &'a [u8],
     value_body: Option<Range<usize>>,
 }
 
+#[cfg(test)]
 impl CanonicalEpm1Entry<'_> {
     pub(crate) fn key(&self) -> &[u8] { self.key }
 
     pub(crate) fn value_body(&self) -> Option<Range<usize>> { self.value_body.clone() }
 }
 
+#[cfg(test)]
 fn validate_epm1_value_table(
     bytes: &[u8],
     value_count: usize,
@@ -278,6 +285,7 @@ fn validate_epm1_value_table(
     Ok(())
 }
 
+#[cfg(test)]
 fn validate_typed_epm1_trie<B>(
     mode: EPathMapMode,
     value_count: usize,
@@ -327,7 +335,7 @@ where
     Ok(())
 }
 
-#[allow(dead_code)]
+#[cfg(test)]
 pub(crate) struct CanonicalEpm1Cursor<'a> {
     bytes: &'a [u8],
     mode: EPathMapMode,
@@ -337,6 +345,7 @@ pub(crate) struct CanonicalEpm1Cursor<'a> {
     trie: Option<CanonicalCompactTrieCursor<&'a [u8]>>,
 }
 
+#[cfg(test)]
 impl<'a> CanonicalEpm1Cursor<'a> {
     pub(crate) fn new(bytes: &'a [u8]) -> Result<Self, TrieCodecError> {
         let prefix = parse_canonical_snapshot_prefix(bytes)?;
@@ -396,13 +405,14 @@ impl<'a> CanonicalEpm1Cursor<'a> {
     }
 }
 
-#[allow(dead_code)]
+#[cfg(test)]
 pub(crate) struct OwnedCanonicalEpm1Entry<'a> {
     key: &'a [u8],
     value_body_range: Option<Range<usize>>,
     value_body: Option<Bytes>,
 }
 
+#[cfg(test)]
 impl OwnedCanonicalEpm1Entry<'_> {
     pub(crate) fn key(&self) -> &[u8] { self.key }
 
@@ -411,7 +421,7 @@ impl OwnedCanonicalEpm1Entry<'_> {
     pub(crate) fn value_body(&self) -> Option<Bytes> { self.value_body.clone() }
 }
 
-#[allow(dead_code)]
+#[cfg(test)]
 pub(crate) struct OwnedCanonicalEpm1Cursor {
     bytes: Bytes,
     mode: EPathMapMode,
@@ -421,6 +431,7 @@ pub(crate) struct OwnedCanonicalEpm1Cursor {
     trie: Option<CanonicalCompactTrieCursor<Bytes>>,
 }
 
+#[cfg(test)]
 impl OwnedCanonicalEpm1Cursor {
     pub(crate) fn new(bytes: Bytes) -> Result<Self, TrieCodecError> {
         let (mode, arena, value_count, value_table_start) = {
@@ -677,6 +688,7 @@ fn parse_indexed_canonical_snapshot_prefix<'a>(
 pub(crate) enum IndexedCanonicalEpm1TopologyEvent<'a> {
     Value {
         has_value: bool,
+        #[cfg(test)]
         value_body_range: Option<Range<usize>>,
         value_body: Option<IndexedByteRegion<'a>>,
         provenance: CanonicalByteProvenance,
@@ -708,7 +720,6 @@ enum IndexedCanonicalEpm1Terminal {
     Failed(TrieCodecError),
 }
 
-#[allow(dead_code)]
 pub(crate) struct IndexedCanonicalEpm1TopologyCursor<'a> {
     mode: EPathMapMode,
     value_count: usize,
@@ -719,8 +730,7 @@ pub(crate) struct IndexedCanonicalEpm1TopologyCursor<'a> {
     value_count_provenance: CanonicalByteProvenance,
     empty_state: u8,
     empty_provenance: CanonicalByteProvenance,
-    arena: Option<IndexedByteRegion<'a>>,
-    trie: Option<CanonicalCompactTrieTopologyState>,
+    trie: Option<CanonicalCompactTrieIndexedTopologyCursor<IndexedByteRegion<'a>>>,
     prefix_bytes_read: usize,
     prefix_bytes_traversed: usize,
     topology_events: usize,
@@ -739,7 +749,7 @@ impl<'a> IndexedCanonicalEpm1TopologyCursor<'a> {
             })
             .expect("an EPM1 value table starts inside its snapshot");
 
-        let (arena, trie) = match prefix.mode {
+        let trie = match prefix.mode {
             EPathMapMode::Empty => {
                 if !prefix.arena.is_empty() || prefix.value_count != 0 {
                     let failure = if !prefix.arena.is_empty() {
@@ -761,7 +771,7 @@ impl<'a> IndexedCanonicalEpm1TopologyCursor<'a> {
                         provenance,
                     ));
                 }
-                (None, None)
+                None
             }
             EPathMapMode::Set => {
                 if prefix.value_count != 0 {
@@ -779,30 +789,32 @@ impl<'a> IndexedCanonicalEpm1TopologyCursor<'a> {
                         provenance,
                     ));
                 }
-                let trie = CanonicalCompactTrieTopologyState::new(&prefix.arena)
-                    .map_err(|error| indexed_act_error(&prefix.arena, error))?;
+                let arena = prefix.arena;
+                let trie = CanonicalCompactTrieIndexedTopologyCursor::from_source(arena.clone())
+                    .map_err(|error| indexed_act_error(&arena, error))?;
                 if trie.is_empty() {
-                    let provenance = prefix.arena.end_position().physical;
+                    let provenance = arena.end_position().physical;
                     return Err(TrieCodecError::located(
                         "typed EPathMap mode has empty ACTree topology; use neutral empty mode",
                         provenance,
                         provenance,
                     ));
                 }
-                (Some(prefix.arena), Some(trie))
+                Some(trie)
             }
             EPathMapMode::Map => {
-                let trie = CanonicalCompactTrieTopologyState::new(&prefix.arena)
-                    .map_err(|error| indexed_act_error(&prefix.arena, error))?;
+                let arena = prefix.arena;
+                let trie = CanonicalCompactTrieIndexedTopologyCursor::from_source(arena.clone())
+                    .map_err(|error| indexed_act_error(&arena, error))?;
                 if trie.is_empty() {
-                    let provenance = prefix.arena.end_position().physical;
+                    let provenance = arena.end_position().physical;
                     return Err(TrieCodecError::located(
                         "typed EPathMap mode has empty ACTree topology; use neutral empty mode",
                         provenance,
                         provenance,
                     ));
                 }
-                (Some(prefix.arena), Some(trie))
+                Some(trie)
             }
         };
         let value_reader = value_table.reader();
@@ -817,7 +829,6 @@ impl<'a> IndexedCanonicalEpm1TopologyCursor<'a> {
             value_count_provenance: prefix.value_count_provenance,
             empty_state: 0,
             empty_provenance: prefix.mode_provenance,
-            arena,
             trie,
             prefix_bytes_read: prefix.bytes_read,
             prefix_bytes_traversed: prefix.bytes_traversed,
@@ -830,8 +841,10 @@ impl<'a> IndexedCanonicalEpm1TopologyCursor<'a> {
 
     pub(crate) const fn mode(&self) -> EPathMapMode { self.mode }
 
+    #[cfg(test)]
     pub(crate) const fn value_count(&self) -> usize { self.value_count }
 
+    #[cfg(test)]
     pub(crate) const fn length(&self) -> usize { self.length }
 
     pub(crate) fn stats(&self) -> IndexedCanonicalEpm1TopologyStats {
@@ -894,6 +907,7 @@ impl<'a> IndexedCanonicalEpm1TopologyCursor<'a> {
             let event = match self.empty_state {
                 0 => IndexedCanonicalEpm1TopologyEvent::Value {
                     has_value: false,
+                    #[cfg(test)]
                     value_body_range: None,
                     value_body: None,
                     provenance: self.empty_provenance,
@@ -909,15 +923,14 @@ impl<'a> IndexedCanonicalEpm1TopologyCursor<'a> {
         }
 
         let event = {
-            let arena = self
-                .arena
-                .as_ref()
-                .expect("a typed EPM1 cursor retains its indexed ACT arena");
-            self.trie
+            let trie = self
+                .trie
                 .as_mut()
-                .expect("a typed EPM1 cursor retains its ACT state")
-                .next_event(arena)
-                .map_err(|error| indexed_act_error(arena, error))
+                .expect("a typed EPM1 cursor owns its indexed ACT cursor");
+            match trie.next_event() {
+                Ok(event) => Ok(event),
+                Err(error) => Err(indexed_act_error(trie.source(), error)),
+            }
         };
         let Some(event) = (match event {
             Ok(event) => event,
@@ -928,9 +941,10 @@ impl<'a> IndexedCanonicalEpm1TopologyCursor<'a> {
         self.topology_events += 1;
 
         let event_provenance = |source_offset| {
-            self.arena
+            self.trie
                 .as_ref()
-                .expect("a typed EPM1 cursor retains its indexed ACT arena")
+                .expect("a typed EPM1 cursor owns its indexed ACT cursor")
+                .source()
                 .position_at(source_offset)
                 .expect("an ACT topology event belongs to its indexed arena")
                 .physical
@@ -941,7 +955,7 @@ impl<'a> IndexedCanonicalEpm1TopologyCursor<'a> {
                 source_offset,
             } => {
                 let provenance = event_provenance(source_offset);
-                let (value_body_range, value_body) =
+                let (_value_body_range, value_body) =
                     if self.mode == EPathMapMode::Map && value.is_some() {
                         let ordinal = value.expect("the map value branch checked presence");
                         if ordinal != self.length as u64 {
@@ -1024,7 +1038,8 @@ impl<'a> IndexedCanonicalEpm1TopologyCursor<'a> {
                     };
                 IndexedCanonicalEpm1TopologyEvent::Value {
                     has_value: value.is_some(),
-                    value_body_range,
+                    #[cfg(test)]
+                    value_body_range: _value_body_range,
                     value_body,
                     provenance,
                 }
@@ -1045,6 +1060,7 @@ impl<'a> IndexedCanonicalEpm1TopologyCursor<'a> {
     }
 }
 
+#[cfg(test)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum OwnedCanonicalEpm1TopologyEvent {
     Value {
@@ -1062,12 +1078,13 @@ pub(crate) enum OwnedCanonicalEpm1TopologyEvent {
     },
 }
 
-#[allow(dead_code)]
+#[cfg(test)]
 pub(crate) struct OwnedCanonicalEpm1TopologyCursor {
     bytes: Bytes,
     indexed: IndexedCanonicalEpm1TopologyCursor<'static>,
 }
 
+#[cfg(test)]
 impl OwnedCanonicalEpm1TopologyCursor {
     pub(crate) fn new(bytes: Bytes) -> Result<Self, TrieCodecError> {
         let view = IndexedByteRegion::from_protobuf_region(ProtobufRegion::from(bytes.clone()), 0);

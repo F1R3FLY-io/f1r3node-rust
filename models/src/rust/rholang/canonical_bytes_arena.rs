@@ -2,25 +2,21 @@
 //!
 //! Obligation bytes arrive while an ACT trie is being walked. A branch shares
 //! every byte above it, and `Leave` must restore that prefix without copying or
-//! replaying an endpoint. This arena stores immutable sequence DAG nodes and
-//! hands callers small [`CanonicalBytesHandle`] values that are safe to copy as
-//! checkpoints.
+//! replaying an endpoint. Constant-size [`CanonicalBytesHandle`] spans point
+//! into an append-log rope. Descriptor nodes are arena-owned while byte and
+//! provenance payloads occupy separate, fixed-capacity `Arc` pages.
 //!
-//! Ordinary append-only construction uses normalized fixed-size tail blocks.
-//! Extending a partial block copies at most [`BLOCK_BYTES`] entries and never
-//! points at the superseded partial block; a complete block becomes the parent
-//! of the next block. Thus append copies O(1) data and, including exact-key
-//! interning table maintenance, is amortized O(1) for a full sequence. It
-//! allocates at most one content node and one provenance node. Appending to an
-//! arbitrary slice/concatenation allocates a singleton plus one concatenation,
-//! also amortized O(1). Slices are O(1) views and concatenation is one immutable
-//! DAG node per stream (with amortized O(1) content interning).
+//! A linear append mutates a uniquely owned page only after every byte visible
+//! to existing handles, so checkpoints remain immutable without copying a
+//! partial page. A divergent append, concat continuation, full page, or frozen
+//! page starts one new segment. Slices are O(1) spans, concat adds one descriptor,
+//! and page allocation is amortized across many appends. Freezing resolves the
+//! descriptor DAG iteratively and retains each intersected page pair once; it
+//! never copies byte or provenance payloads.
 //!
-//! Content nodes are interned by their complete structural key. `HashMap` is
-//! only an index: Rust still compares the full key after a hash collision, and
-//! [`CanonicalBytesArena::content_eq`] falls back to an exact byte cursor when
-//! two equal strings have different DAG shapes. No digest is ever accepted as
-//! evidence of byte equality.
+//! Exact comparison walks chunks and never accepts a digest as equality
+//! evidence. Frozen single-leaf ranges expose their underlying byte slice so
+//! ACT hashing can keep its contiguous hardware path without flattening.
 //!
 //! There is deliberately no production flattening API. Forward byte and
 //! located-byte cursors use explicit heap worklists and have no recursion or
@@ -33,6 +29,10 @@ use std::ops::Range;
 use std::sync::Arc;
 
 const BLOCK_BYTES: usize = 32;
+/// Initial production page-capacity hypothesis. Focused probes instantiate the
+/// private const-generic backend at 32, 64, 128, and 256 without adding a
+/// runtime branch to production construction.
+const DEFAULT_PAGE_BYTES: usize = 64;
 
 /// Ultimate physical origin of one logical obligation byte.
 ///
@@ -63,37 +63,31 @@ impl CanonicalLocatedByte {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-struct ContentNodeId(usize);
+struct SequenceNodeId(usize);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-struct ProvenanceNodeId(usize);
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-struct ContentSpan {
-    root: ContentNodeId,
+struct SequenceSpan {
+    root: SequenceNodeId,
     start: usize,
     len: usize,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-struct ProvenanceSpan {
-    root: ProvenanceNodeId,
-    start: usize,
-    len: usize,
-}
-
-/// An immutable O(1)-size checkpoint into the content/provenance DAG.
+/// An immutable O(1)-size checkpoint into the append-log rope.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct CanonicalBytesHandle {
-    content: Option<ContentSpan>,
-    provenance: Option<ProvenanceSpan>,
-    len: usize,
+    sequence: Option<SequenceSpan>,
 }
 
 impl CanonicalBytesHandle {
-    pub(crate) const fn len(self) -> usize { self.len }
+    pub(crate) const fn len(self) -> usize {
+        match self.sequence {
+            Some(span) => span.len,
+            None => 0,
+        }
+    }
 
-    pub(crate) const fn is_empty(self) -> bool { self.len == 0 }
+    #[cfg(test)]
+    pub(crate) const fn is_empty(self) -> bool { self.sequence.is_none() }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -120,134 +114,545 @@ impl fmt::Display for CanonicalBytesArenaError {
 
 impl std::error::Error for CanonicalBytesArenaError {}
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-enum ContentNodeKind {
-    Block {
-        previous: Option<ContentNodeId>,
-        used: u8,
-        bytes: [u8; BLOCK_BYTES],
+// Sequence spans bound visibility: extending a page only appends after every
+// previously returned span, so old handles remain immutable without tail copy.
+
+#[derive(Debug)]
+struct CanonicalBytePage {
+    bytes: Vec<u8>,
+}
+
+#[derive(Debug)]
+struct CanonicalProvenancePage {
+    values: Vec<CanonicalByteProvenance>,
+}
+
+#[derive(Clone, Copy)]
+enum SequenceNodeKind {
+    Segment {
+        previous: Option<SequenceSpan>,
+        page: usize,
+        page_start: usize,
+        used: usize,
     },
+    #[cfg(test)]
     Concat {
-        left: ContentSpan,
-        right: ContentSpan,
+        left: SequenceSpan,
+        right: SequenceSpan,
     },
 }
 
-struct ContentNode {
+struct SequenceNode {
     len: usize,
-    kind: ContentNodeKind,
+    kind: SequenceNodeKind,
 }
 
-#[derive(Clone)]
-enum ProvenanceNodeKind {
-    Block {
-        previous: Option<ProvenanceNodeId>,
-        used: u8,
-        values: [CanonicalByteProvenance; BLOCK_BYTES],
-    },
-    Concat {
-        left: ProvenanceSpan,
-        right: ProvenanceSpan,
-    },
-}
-
-struct ProvenanceNode {
-    len: usize,
-    kind: ProvenanceNodeKind,
+#[derive(Clone, Copy)]
+enum SequenceCursorTask {
+    Span(SequenceSpan),
+    Page { page: usize, at: usize, end: usize },
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct CanonicalBytesArenaStats {
-    pub(crate) content_nodes: usize,
-    pub(crate) provenance_nodes: usize,
-    pub(crate) content_blocks: usize,
-    pub(crate) content_concats: usize,
-    pub(crate) provenance_blocks: usize,
-    pub(crate) provenance_concats: usize,
+struct PageBackedArenaStats {
+    segments: usize,
+    concats: usize,
+    byte_pages: usize,
+    provenance_pages: usize,
+    payload_slots: usize,
+    divergent_segments: usize,
+    page_rollovers: usize,
 }
 
-#[derive(Clone)]
-struct FrozenContentLeaf {
-    node: Arc<ContentNode>,
-    block_start: usize,
+/// Append-log backend. Descriptor nodes are arena-owned; only immutable
+/// payload pages cross the ownership boundary when a value is frozen.
+struct PageBackedArena<const CAPACITY: usize> {
+    nodes: Vec<SequenceNode>,
+    byte_pages: Vec<Arc<CanonicalBytePage>>,
+    provenance_pages: Vec<Arc<CanonicalProvenancePage>>,
+    stats: PageBackedArenaStats,
+}
+
+impl<const CAPACITY: usize> PageBackedArena<CAPACITY> {
+    fn new() -> Self {
+        Self {
+            nodes: Vec::new(),
+            byte_pages: Vec::new(),
+            provenance_pages: Vec::new(),
+            stats: PageBackedArenaStats::default(),
+        }
+    }
+
+    fn empty(&self) -> CanonicalBytesHandle { CanonicalBytesHandle { sequence: None } }
+
+    fn span(value: CanonicalBytesHandle) -> Option<SequenceSpan> { value.sequence }
+
+    fn handle(span: SequenceSpan) -> CanonicalBytesHandle {
+        CanonicalBytesHandle {
+            sequence: Some(span),
+        }
+    }
+
+    fn append(
+        &mut self,
+        prefix: CanonicalBytesHandle,
+        byte: CanonicalLocatedByte,
+    ) -> Result<CanonicalBytesHandle, CanonicalBytesArenaError> {
+        prefix
+            .len()
+            .checked_add(1)
+            .ok_or(CanonicalBytesArenaError::LengthOverflow)?;
+        let Some(prefix_span) = Self::span(prefix) else {
+            return self.push_segment(None, byte, false);
+        };
+        if let Some(span) = self.try_extend(prefix_span, byte)? {
+            return Ok(Self::handle(span));
+        }
+        self.push_segment(Some(prefix_span), byte, true)
+    }
+
+    fn try_extend(
+        &mut self,
+        span: SequenceSpan,
+        byte: CanonicalLocatedByte,
+    ) -> Result<Option<SequenceSpan>, CanonicalBytesArenaError> {
+        let node = &self.nodes[span.root.0];
+        let (page, page_start, used) = match node.kind {
+            SequenceNodeKind::Segment {
+                page,
+                page_start,
+                used,
+                ..
+            } => (page, page_start, used),
+            #[cfg(test)]
+            SequenceNodeKind::Concat { .. } => return Ok(None),
+        };
+        if span.start != 0 || span.len != node.len || used == CAPACITY {
+            return Ok(None);
+        }
+        let page_end = page_start
+            .checked_add(used)
+            .ok_or(CanonicalBytesArenaError::LengthOverflow)?;
+        if page_end >= CAPACITY
+            || self.byte_pages[page].bytes.len() != page_end
+            || self.provenance_pages[page].values.len() != page_end
+            || Arc::strong_count(&self.byte_pages[page]) != 1
+            || Arc::strong_count(&self.provenance_pages[page]) != 1
+        {
+            return Ok(None);
+        }
+        Arc::get_mut(&mut self.byte_pages[page])
+            .expect("a uniquely owned byte page is mutable")
+            .bytes
+            .push(byte.byte);
+        Arc::get_mut(&mut self.provenance_pages[page])
+            .expect("a uniquely owned provenance page is mutable")
+            .values
+            .push(byte.provenance);
+        let len = span
+            .len
+            .checked_add(1)
+            .ok_or(CanonicalBytesArenaError::LengthOverflow)?;
+        match &mut self.nodes[span.root.0].kind {
+            SequenceNodeKind::Segment { used, .. } => *used += 1,
+            #[cfg(test)]
+            SequenceNodeKind::Concat { .. } => {
+                unreachable!("the inspected sequence node remains a segment")
+            }
+        }
+        self.nodes[span.root.0].len = len;
+        self.stats.payload_slots += 1;
+        Ok(Some(SequenceSpan {
+            root: span.root,
+            start: 0,
+            len,
+        }))
+    }
+
+    fn push_segment(
+        &mut self,
+        previous: Option<SequenceSpan>,
+        byte: CanonicalLocatedByte,
+        divergent: bool,
+    ) -> Result<CanonicalBytesHandle, CanonicalBytesArenaError> {
+        let len = previous
+            .map_or(0, |span| span.len)
+            .checked_add(1)
+            .ok_or(CanonicalBytesArenaError::LengthOverflow)?;
+        self.nodes
+            .try_reserve(1)
+            .map_err(|_| CanonicalBytesArenaError::LengthOverflow)?;
+        let page = self.writable_page()?;
+        let page_start = self.byte_pages[page].bytes.len();
+        Arc::get_mut(&mut self.byte_pages[page])
+            .expect("a selected byte page is uniquely owned")
+            .bytes
+            .push(byte.byte);
+        Arc::get_mut(&mut self.provenance_pages[page])
+            .expect("a selected provenance page is uniquely owned")
+            .values
+            .push(byte.provenance);
+        let root = SequenceNodeId(self.nodes.len());
+        self.nodes.push(SequenceNode {
+            len,
+            kind: SequenceNodeKind::Segment {
+                previous,
+                page,
+                page_start,
+                used: 1,
+            },
+        });
+        self.stats.segments += 1;
+        self.stats.payload_slots += 1;
+        self.stats.divergent_segments += usize::from(divergent);
+        Ok(Self::handle(SequenceSpan {
+            root,
+            start: 0,
+            len,
+        }))
+    }
+
+    fn writable_page(&mut self) -> Result<usize, CanonicalBytesArenaError> {
+        if let Some(page) = self.byte_pages.len().checked_sub(1) {
+            if self.byte_pages[page].bytes.len() < CAPACITY
+                && self.byte_pages[page].bytes.len() == self.provenance_pages[page].values.len()
+                && Arc::strong_count(&self.byte_pages[page]) == 1
+                && Arc::strong_count(&self.provenance_pages[page]) == 1
+            {
+                return Ok(page);
+            }
+        }
+        let had_page = !self.byte_pages.is_empty();
+        self.byte_pages
+            .try_reserve(1)
+            .map_err(|_| CanonicalBytesArenaError::LengthOverflow)?;
+        self.provenance_pages
+            .try_reserve(1)
+            .map_err(|_| CanonicalBytesArenaError::LengthOverflow)?;
+        let mut bytes = Vec::new();
+        bytes
+            .try_reserve_exact(CAPACITY)
+            .map_err(|_| CanonicalBytesArenaError::LengthOverflow)?;
+        let mut values = Vec::new();
+        values
+            .try_reserve_exact(CAPACITY)
+            .map_err(|_| CanonicalBytesArenaError::LengthOverflow)?;
+        self.byte_pages.push(Arc::new(CanonicalBytePage { bytes }));
+        self.provenance_pages
+            .push(Arc::new(CanonicalProvenancePage { values }));
+        self.stats.byte_pages = self.byte_pages.len();
+        self.stats.provenance_pages = self.provenance_pages.len();
+        self.stats.page_rollovers += usize::from(had_page);
+        Ok(self.byte_pages.len() - 1)
+    }
+
+    fn slice(
+        &self,
+        value: CanonicalBytesHandle,
+        range: Range<usize>,
+    ) -> Result<CanonicalBytesHandle, CanonicalBytesArenaError> {
+        if range.start > range.end || range.end > value.len() {
+            return Err(CanonicalBytesArenaError::SliceOutsideSequence {
+                start: range.start,
+                end: range.end,
+                len: value.len(),
+            });
+        }
+        if range.is_empty() {
+            return Ok(self.empty());
+        }
+        let span = Self::span(value).expect("a non-empty value has a sequence span");
+        let start = span
+            .start
+            .checked_add(range.start)
+            .ok_or(CanonicalBytesArenaError::LengthOverflow)?;
+        Ok(Self::handle(SequenceSpan {
+            root: span.root,
+            start,
+            len: range.end - range.start,
+        }))
+    }
+
+    #[cfg(test)]
+    fn concat(
+        &mut self,
+        left: CanonicalBytesHandle,
+        right: CanonicalBytesHandle,
+    ) -> Result<CanonicalBytesHandle, CanonicalBytesArenaError> {
+        if left.is_empty() {
+            return Ok(right);
+        }
+        if right.is_empty() {
+            return Ok(left);
+        }
+        let len = left
+            .len()
+            .checked_add(right.len())
+            .ok_or(CanonicalBytesArenaError::LengthOverflow)?;
+        self.nodes
+            .try_reserve(1)
+            .map_err(|_| CanonicalBytesArenaError::LengthOverflow)?;
+        let root = SequenceNodeId(self.nodes.len());
+        self.nodes.push(SequenceNode {
+            len,
+            kind: SequenceNodeKind::Concat {
+                left: Self::span(left).expect("a non-empty left value has a span"),
+                right: Self::span(right).expect("a non-empty right value has a span"),
+            },
+        });
+        self.stats.concats += 1;
+        Ok(Self::handle(SequenceSpan {
+            root,
+            start: 0,
+            len,
+        }))
+    }
+
+    fn expand(&self, work: &mut Vec<SequenceCursorTask>, span: SequenceSpan) {
+        let node = &self.nodes[span.root.0];
+        let end = span.start + span.len;
+        match node.kind {
+            SequenceNodeKind::Segment {
+                previous,
+                page,
+                page_start,
+                used,
+            } => {
+                let previous_len = previous.map_or(0, |value| value.len);
+                if end > previous_len {
+                    work.push(SequenceCursorTask::Page {
+                        page,
+                        at: page_start + span.start.max(previous_len) - previous_len,
+                        end: page_start + (end - previous_len).min(used),
+                    });
+                }
+                if span.start < previous_len {
+                    let previous = previous.expect("a positive previous range has a predecessor");
+                    work.push(SequenceCursorTask::Span(SequenceSpan {
+                        root: previous.root,
+                        start: previous.start + span.start,
+                        len: end.min(previous_len) - span.start,
+                    }));
+                }
+            }
+            #[cfg(test)]
+            SequenceNodeKind::Concat { left, right } => {
+                if end > left.len {
+                    work.push(SequenceCursorTask::Span(SequenceSpan {
+                        root: right.root,
+                        start: right.start + span.start.saturating_sub(left.len),
+                        len: end.min(left.len + right.len) - span.start.max(left.len),
+                    }));
+                }
+                if span.start < left.len {
+                    work.push(SequenceCursorTask::Span(SequenceSpan {
+                        root: left.root,
+                        start: left.start + span.start,
+                        len: end.min(left.len) - span.start,
+                    }));
+                }
+            }
+        }
+    }
+
+    fn leaves(&self, value: CanonicalBytesHandle) -> Vec<PageBackedLeaf> {
+        let mut work: Vec<_> = Self::span(value)
+            .into_iter()
+            .map(SequenceCursorTask::Span)
+            .collect();
+        let mut leaves = Vec::new();
+        let mut logical_start = 0usize;
+        while let Some(task) = work.pop() {
+            match task {
+                SequenceCursorTask::Span(span) => self.expand(&mut work, span),
+                SequenceCursorTask::Page { page, at, end } => {
+                    let len = end - at;
+                    leaves.push(PageBackedLeaf {
+                        page,
+                        page_start: at,
+                        len,
+                        logical_start,
+                    });
+                    logical_start += len;
+                }
+            }
+        }
+        leaves
+    }
+}
+
+#[derive(Clone, Copy)]
+struct PageBackedLeaf {
+    page: usize,
+    page_start: usize,
     len: usize,
     logical_start: usize,
 }
 
-impl FrozenContentLeaf {
-    fn logical_end(&self) -> usize { self.logical_start + self.len }
+struct PageBackedByteCursor<'a> {
+    arena: &'a PageBackedArena<DEFAULT_PAGE_BYTES>,
+    work: Vec<SequenceCursorTask>,
+}
 
-    fn byte_at(&self, logical_offset: usize) -> u8 {
-        let ContentNodeKind::Block { bytes, .. } = &self.node.kind else {
-            unreachable!("a frozen content leaf retains a block node")
-        };
-        bytes[self.block_start + logical_offset - self.logical_start]
+impl<'a> PageBackedByteCursor<'a> {
+    fn new(arena: &'a PageBackedArena<DEFAULT_PAGE_BYTES>, value: CanonicalBytesHandle) -> Self {
+        Self {
+            arena,
+            work: PageBackedArena::<DEFAULT_PAGE_BYTES>::span(value)
+                .into_iter()
+                .map(SequenceCursorTask::Span)
+                .collect(),
+        }
+    }
+}
+
+impl Iterator for PageBackedByteCursor<'_> {
+    type Item = u8;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            match self.work.pop()? {
+                SequenceCursorTask::Span(span) => self.arena.expand(&mut self.work, span),
+                SequenceCursorTask::Page { page, at, end } => {
+                    let byte = self.arena.byte_pages[page].bytes[at];
+                    if at + 1 < end {
+                        self.work.push(SequenceCursorTask::Page {
+                            page,
+                            at: at + 1,
+                            end,
+                        });
+                    }
+                    return Some(byte);
+                }
+            }
+        }
+    }
+}
+
+struct PageBackedProvenanceCursor<'a> {
+    arena: &'a PageBackedArena<DEFAULT_PAGE_BYTES>,
+    work: Vec<SequenceCursorTask>,
+}
+
+impl<'a> PageBackedProvenanceCursor<'a> {
+    fn new(arena: &'a PageBackedArena<DEFAULT_PAGE_BYTES>, value: CanonicalBytesHandle) -> Self {
+        Self {
+            arena,
+            work: PageBackedArena::<DEFAULT_PAGE_BYTES>::span(value)
+                .into_iter()
+                .map(SequenceCursorTask::Span)
+                .collect(),
+        }
+    }
+}
+
+impl Iterator for PageBackedProvenanceCursor<'_> {
+    type Item = CanonicalByteProvenance;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            match self.work.pop()? {
+                SequenceCursorTask::Span(span) => self.arena.expand(&mut self.work, span),
+                SequenceCursorTask::Page { page, at, end } => {
+                    let provenance = self.arena.provenance_pages[page].values[at];
+                    if at + 1 < end {
+                        self.work.push(SequenceCursorTask::Page {
+                            page,
+                            at: at + 1,
+                            end,
+                        });
+                    }
+                    return Some(provenance);
+                }
+            }
+        }
     }
 }
 
 #[derive(Clone)]
-struct FrozenProvenanceLeaf {
-    node: Arc<ProvenanceNode>,
-    block_start: usize,
+struct FrozenPagePair {
+    bytes: Arc<CanonicalBytePage>,
+    provenance: Arc<CanonicalProvenancePage>,
+}
+
+#[derive(Clone, Copy)]
+struct FrozenPageLeaf {
+    page: usize,
+    page_start: usize,
     len: usize,
     logical_start: usize,
 }
 
-impl FrozenProvenanceLeaf {
-    fn logical_end(&self) -> usize { self.logical_start + self.len }
-
-    fn provenance_at(&self, logical_offset: usize) -> CanonicalByteProvenance {
-        let ProvenanceNodeKind::Block { values, .. } = &self.node.kind else {
-            unreachable!("a frozen provenance leaf retains a block node")
-        };
-        values[self.block_start + logical_offset - self.logical_start]
-    }
+impl FrozenPageLeaf {
+    fn logical_end(self) -> usize { self.logical_start + self.len }
 }
 
-struct FrozenCanonicalBytesData {
+struct PageFrozenData {
     len: usize,
-    content_leaves: Box<[FrozenContentLeaf]>,
-    provenance_leaves: Box<[FrozenProvenanceLeaf]>,
-    content_pages: Box<[usize]>,
-    provenance_pages: Box<[usize]>,
+    pages: Box<[FrozenPagePair]>,
+    leaves: Box<[FrozenPageLeaf]>,
+    logical_pages: Box<[usize]>,
 }
 
-/// Immutable, ownership-independent bytes frozen from one persistent handle.
-///
-/// Freezing copies only leaf/index metadata. Byte and provenance payload arrays
-/// remain in the immutable arena nodes retained by `Arc`, so the originating
-/// arena may be appended to or dropped after this value is created. A view and
-/// each of its subviews are constant-size clones.
 #[derive(Clone)]
-pub(crate) struct FrozenCanonicalBytes {
-    data: Arc<FrozenCanonicalBytesData>,
+struct PageFrozenBytes {
+    data: Arc<PageFrozenData>,
     start: usize,
     len: usize,
 }
 
-impl fmt::Debug for FrozenCanonicalBytes {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("FrozenCanonicalBytes")
-            .field("len", &self.len)
-            .finish()
+impl<const CAPACITY: usize> PageBackedArena<CAPACITY> {
+    fn freeze(&self, value: CanonicalBytesHandle) -> PageFrozenBytes {
+        let source_leaves = self.leaves(value);
+        let mut page_ordinals = HashMap::new();
+        let mut pages = Vec::new();
+        let mut leaves = Vec::with_capacity(source_leaves.len());
+        for leaf in source_leaves {
+            let page = *page_ordinals.entry(leaf.page).or_insert_with(|| {
+                let ordinal = pages.len();
+                pages.push(FrozenPagePair {
+                    bytes: Arc::clone(&self.byte_pages[leaf.page]),
+                    provenance: Arc::clone(&self.provenance_pages[leaf.page]),
+                });
+                ordinal
+            });
+            leaves.push(FrozenPageLeaf {
+                page,
+                page_start: leaf.page_start,
+                len: leaf.len,
+                logical_start: leaf.logical_start,
+            });
+        }
+        let value_len = value.len();
+        let page_count = value_len / BLOCK_BYTES + usize::from(value_len % BLOCK_BYTES != 0);
+        let mut logical_pages = Vec::with_capacity(page_count);
+        let mut leaf = 0usize;
+        for logical_page in 0..page_count {
+            let logical_start = logical_page * BLOCK_BYTES;
+            while leaves[leaf].logical_end() <= logical_start {
+                leaf += 1;
+            }
+            logical_pages.push(leaf);
+        }
+        PageFrozenBytes {
+            data: Arc::new(PageFrozenData {
+                len: value_len,
+                pages: pages.into_boxed_slice(),
+                leaves: leaves.into_boxed_slice(),
+                logical_pages: logical_pages.into_boxed_slice(),
+            }),
+            start: 0,
+            len: value_len,
+        }
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct FrozenCanonicalBytesStats {
-    pub(crate) content_leaves: usize,
-    pub(crate) provenance_leaves: usize,
-    pub(crate) page_entries: usize,
-}
+impl PageFrozenBytes {
+    fn len(&self) -> usize { self.len }
 
-impl FrozenCanonicalBytes {
-    pub(crate) const fn len(&self) -> usize { self.len }
+    fn is_empty(&self) -> bool { self.len == 0 }
 
-    pub(crate) const fn is_empty(&self) -> bool { self.len == 0 }
-
-    /// Form an O(1) owned subview without copying payload or index metadata.
-    pub(crate) fn subview(&self, range: Range<usize>) -> Option<Self> {
+    fn subview(&self, range: Range<usize>) -> Option<Self> {
         if range.start > range.end || range.end > self.len {
             return None;
         }
@@ -263,35 +668,191 @@ impl FrozenCanonicalBytes {
         })
     }
 
-    /// Random byte lookup. At most `BLOCK_BYTES` leaf records are inspected.
-    pub(crate) fn byte_at(&self, logical_offset: usize) -> Option<u8> {
+    fn leaf_at(&self, absolute: usize) -> Option<usize> {
+        let mut leaf = *self.data.logical_pages.get(absolute / BLOCK_BYTES)?;
+        while self.data.leaves.get(leaf)?.logical_end() <= absolute {
+            leaf += 1;
+        }
+        Some(leaf)
+    }
+
+    fn byte_at(&self, logical_offset: usize) -> Option<u8> {
         if logical_offset >= self.len {
             return None;
         }
         let absolute = self.start.checked_add(logical_offset)?;
-        let leaf = Self::leaf_at(
-            absolute,
-            &self.data.content_pages,
-            &self.data.content_leaves,
-            FrozenContentLeaf::logical_end,
-        )?;
-        Some(self.data.content_leaves[leaf].byte_at(absolute))
+        let leaf = self.data.leaves[self.leaf_at(absolute)?];
+        let at = leaf.page_start + absolute - leaf.logical_start;
+        self.data.pages[leaf.page].bytes.bytes.get(at).copied()
+    }
+
+    fn provenance_at(&self, logical_offset: usize) -> Option<CanonicalByteProvenance> {
+        if logical_offset >= self.len {
+            return None;
+        }
+        let absolute = self.start.checked_add(logical_offset)?;
+        let leaf = self.data.leaves[self.leaf_at(absolute)?];
+        let at = leaf.page_start + absolute - leaf.logical_start;
+        self.data.pages[leaf.page]
+            .provenance
+            .values
+            .get(at)
+            .copied()
+    }
+
+    /// Borrow bytes directly when the complete logical range is held by one
+    /// page leaf. Crossing a rope boundary deliberately returns `None`.
+    fn contiguous_bytes(&self, range: Range<usize>) -> Option<&[u8]> {
+        if range.start > range.end || range.end > self.len {
+            return None;
+        }
+        if range.is_empty() {
+            return Some(&[]);
+        }
+        let absolute_start = self.start.checked_add(range.start)?;
+        let absolute_end = self.start.checked_add(range.end)?;
+        let leaf = self.data.leaves[self.leaf_at(absolute_start)?];
+        if absolute_end > leaf.logical_end() {
+            return None;
+        }
+        let start = leaf.page_start + absolute_start - leaf.logical_start;
+        let end = start.checked_add(range.end - range.start)?;
+        self.data.pages[leaf.page].bytes.bytes.get(start..end)
+    }
+
+    fn copy_exact(&self, start: usize, output: &mut [u8]) -> bool {
+        let Some(end) = start.checked_add(output.len()) else {
+            return false;
+        };
+        if end > self.len {
+            return false;
+        }
+        let mut destination = 0usize;
+        let mut absolute = self.start + start;
+        let absolute_end = self.start + end;
+        while absolute < absolute_end {
+            let Some(leaf_index) = self.leaf_at(absolute) else {
+                return false;
+            };
+            let leaf = self.data.leaves[leaf_index];
+            let width = (absolute_end - absolute).min(leaf.logical_end() - absolute);
+            let page_start = leaf.page_start + absolute - leaf.logical_start;
+            let page_end = page_start + width;
+            output[destination..destination + width]
+                .copy_from_slice(&self.data.pages[leaf.page].bytes.bytes[page_start..page_end]);
+            destination += width;
+            absolute += width;
+        }
+        true
+    }
+
+    fn content_eq(&self, other: &Self) -> bool {
+        if self.len != other.len {
+            return false;
+        }
+        let mut left_absolute = self.start;
+        let mut right_absolute = other.start;
+        let mut remaining = self.len;
+        while remaining != 0 {
+            let Some(left_leaf) = self.leaf_at(left_absolute) else {
+                return false;
+            };
+            let Some(right_leaf) = other.leaf_at(right_absolute) else {
+                return false;
+            };
+            let left_leaf = self.data.leaves[left_leaf];
+            let right_leaf = other.data.leaves[right_leaf];
+            let width = remaining
+                .min(left_leaf.logical_end() - left_absolute)
+                .min(right_leaf.logical_end() - right_absolute);
+            let left_start = left_leaf.page_start + left_absolute - left_leaf.logical_start;
+            let right_start = right_leaf.page_start + right_absolute - right_leaf.logical_start;
+            if self.data.pages[left_leaf.page].bytes.bytes[left_start..left_start + width]
+                != other.data.pages[right_leaf.page].bytes.bytes[right_start..right_start + width]
+            {
+                return false;
+            }
+            left_absolute += width;
+            right_absolute += width;
+            remaining -= width;
+        }
+        true
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct CanonicalBytesArenaStats {
+    pub(crate) content_nodes: usize,
+    pub(crate) provenance_nodes: usize,
+    pub(crate) segments: usize,
+    pub(crate) concats: usize,
+    pub(crate) byte_pages: usize,
+    pub(crate) provenance_pages: usize,
+    pub(crate) payload_slots: usize,
+    pub(crate) divergent_segments: usize,
+    pub(crate) page_rollovers: usize,
+}
+
+/// Immutable, ownership-independent bytes frozen from one persistent handle.
+///
+/// Freezing copies only leaf/index metadata. Byte and provenance payload arrays
+/// remain in the immutable arena nodes retained by `Arc`, so the originating
+/// arena may be appended to or dropped after this value is created. A view and
+/// each of its subviews are constant-size clones.
+#[derive(Clone)]
+pub(crate) struct FrozenCanonicalBytes {
+    inner: PageFrozenBytes,
+}
+
+impl fmt::Debug for FrozenCanonicalBytes {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("FrozenCanonicalBytes")
+            .field("len", &self.inner.len)
+            .finish()
+    }
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct FrozenCanonicalBytesStats {
+    pub(crate) content_leaves: usize,
+    pub(crate) provenance_leaves: usize,
+    pub(crate) page_entries: usize,
+}
+
+impl FrozenCanonicalBytes {
+    pub(crate) fn len(&self) -> usize { self.inner.len() }
+
+    pub(crate) fn is_empty(&self) -> bool { self.inner.is_empty() }
+
+    /// Form an O(1) owned subview without copying payload or index metadata.
+    pub(crate) fn subview(&self, range: Range<usize>) -> Option<Self> {
+        self.inner.subview(range).map(|inner| Self { inner })
+    }
+
+    /// Random byte lookup. At most `BLOCK_BYTES` leaf records are inspected.
+    pub(crate) fn byte_at(&self, logical_offset: usize) -> Option<u8> {
+        self.inner.byte_at(logical_offset)
     }
 
     /// Random physical-provenance lookup with the same bounded index walk.
     pub(crate) fn provenance_at(&self, logical_offset: usize) -> Option<CanonicalByteProvenance> {
-        if logical_offset >= self.len {
-            return None;
-        }
-        let absolute = self.start.checked_add(logical_offset)?;
-        let leaf = Self::leaf_at(
-            absolute,
-            &self.data.provenance_pages,
-            &self.data.provenance_leaves,
-            FrozenProvenanceLeaf::logical_end,
-        )?;
-        Some(self.data.provenance_leaves[leaf].provenance_at(absolute))
+        self.inner.provenance_at(logical_offset)
     }
+
+    /// Return a borrowed contiguous range when it lies within one page leaf.
+    pub(crate) fn contiguous_bytes(&self, range: Range<usize>) -> Option<&[u8]> {
+        self.inner.contiguous_bytes(range)
+    }
+
+    /// Copy directly from page chunks without flattening an intermediate value.
+    pub(crate) fn copy_exact(&self, start: usize, output: &mut [u8]) -> bool {
+        self.inner.copy_exact(start, output)
+    }
+
+    /// Exact chunk-wise equality across independently fragmented frozen values.
+    pub(crate) fn content_eq(&self, other: &Self) -> bool { self.inner.content_eq(&other.inner) }
 
     pub(crate) fn bytes(&self) -> FrozenCanonicalByteCursor {
         FrozenCanonicalByteCursor::new(self.clone())
@@ -304,33 +865,19 @@ impl FrozenCanonicalBytes {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn stats(&self) -> FrozenCanonicalBytesStats {
         FrozenCanonicalBytesStats {
-            content_leaves: self.data.content_leaves.len(),
-            provenance_leaves: self.data.provenance_leaves.len(),
-            page_entries: self.data.content_pages.len() + self.data.provenance_pages.len(),
+            content_leaves: self.inner.data.leaves.len(),
+            provenance_leaves: self.inner.data.leaves.len(),
+            page_entries: self.inner.data.logical_pages.len() * 2,
         }
-    }
-
-    fn leaf_at<T>(
-        logical_offset: usize,
-        pages: &[usize],
-        leaves: &[T],
-        logical_end: fn(&T) -> usize,
-    ) -> Option<usize> {
-        let mut leaf = *pages.get(logical_offset / BLOCK_BYTES)?;
-        while logical_end(leaves.get(leaf)?) <= logical_offset {
-            leaf += 1;
-        }
-        Some(leaf)
     }
 }
 
 /// Append-only ownership arena for persistent canonical byte strings.
 pub(crate) struct CanonicalBytesArena {
-    content_nodes: Vec<Arc<ContentNode>>,
-    provenance_nodes: Vec<Arc<ProvenanceNode>>,
-    content_intern: HashMap<ContentNodeKind, ContentNodeId>,
+    backend: PageBackedArena<DEFAULT_PAGE_BYTES>,
     stats: CanonicalBytesArenaStats,
 }
 
@@ -341,21 +888,16 @@ impl Default for CanonicalBytesArena {
 impl CanonicalBytesArena {
     pub(crate) fn new() -> Self {
         Self {
-            content_nodes: Vec::new(),
-            provenance_nodes: Vec::new(),
-            content_intern: HashMap::new(),
+            backend: PageBackedArena::<DEFAULT_PAGE_BYTES>::new(),
             stats: CanonicalBytesArenaStats::default(),
         }
     }
 
     pub(crate) const fn empty(&self) -> CanonicalBytesHandle {
-        CanonicalBytesHandle {
-            content: None,
-            provenance: None,
-            len: 0,
-        }
+        CanonicalBytesHandle { sequence: None }
     }
 
+    #[cfg(test)]
     pub(crate) const fn stats(&self) -> CanonicalBytesArenaStats { self.stats }
 
     /// Append one located byte. The returned handle does not mutate or
@@ -365,30 +907,9 @@ impl CanonicalBytesArena {
         prefix: CanonicalBytesHandle,
         byte: CanonicalLocatedByte,
     ) -> Result<CanonicalBytesHandle, CanonicalBytesArenaError> {
-        let len = prefix
-            .len
-            .checked_add(1)
-            .ok_or(CanonicalBytesArenaError::LengthOverflow)?;
-        if prefix.is_empty() {
-            return self.singleton(byte);
-        }
-
-        let content = prefix.content.expect("a non-empty handle has content");
-        let provenance = prefix
-            .provenance
-            .expect("a non-empty handle has provenance");
-        if self.extendable_content_block(content) && self.extendable_provenance_block(provenance) {
-            let content = self.extend_content_block(content, byte.byte)?;
-            let provenance = self.extend_provenance_block(provenance, byte.provenance)?;
-            return Ok(CanonicalBytesHandle {
-                content: Some(content),
-                provenance: Some(provenance),
-                len,
-            });
-        }
-
-        let suffix = self.singleton(byte)?;
-        self.concat(prefix, suffix)
+        let value = self.backend.append(prefix, byte)?;
+        self.sync_page_stats();
+        Ok(value)
     }
 
     /// O(1) persistent slice. No byte or provenance entry is copied.
@@ -397,107 +918,32 @@ impl CanonicalBytesArena {
         value: CanonicalBytesHandle,
         range: Range<usize>,
     ) -> Result<CanonicalBytesHandle, CanonicalBytesArenaError> {
-        if range.start > range.end || range.end > value.len {
-            return Err(CanonicalBytesArenaError::SliceOutsideSequence {
-                start: range.start,
-                end: range.end,
-                len: value.len,
-            });
-        }
-        let len = range.end - range.start;
-        if len == 0 {
-            return Ok(self.empty());
-        }
-        let content = value.content.expect("a non-empty slice source has content");
-        let provenance = value
-            .provenance
-            .expect("a non-empty slice source has provenance");
-        let content_start = content
-            .start
-            .checked_add(range.start)
-            .ok_or(CanonicalBytesArenaError::LengthOverflow)?;
-        let provenance_start = provenance
-            .start
-            .checked_add(range.start)
-            .ok_or(CanonicalBytesArenaError::LengthOverflow)?;
-        Ok(CanonicalBytesHandle {
-            content: Some(ContentSpan {
-                root: content.root,
-                start: content_start,
-                len,
-            }),
-            provenance: Some(ProvenanceSpan {
-                root: provenance.root,
-                start: provenance_start,
-                len,
-            }),
-            len,
-        })
+        self.backend.slice(value, range)
     }
 
     /// O(1) structural concatenation. Both operands remain valid checkpoints.
+    #[cfg(test)]
     pub(crate) fn concat(
         &mut self,
         left: CanonicalBytesHandle,
         right: CanonicalBytesHandle,
     ) -> Result<CanonicalBytesHandle, CanonicalBytesArenaError> {
-        if left.is_empty() {
-            return Ok(right);
-        }
-        if right.is_empty() {
-            return Ok(left);
-        }
-        let len = left
-            .len
-            .checked_add(right.len)
-            .ok_or(CanonicalBytesArenaError::LengthOverflow)?;
-        let left_content = left.content.expect("a non-empty left value has content");
-        let right_content = right.content.expect("a non-empty right value has content");
-        let content = self.intern_content(
-            ContentNodeKind::Concat {
-                left: left_content,
-                right: right_content,
-            },
-            len,
-        )?;
-        let left_provenance = left
-            .provenance
-            .expect("a non-empty left value has provenance");
-        let right_provenance = right
-            .provenance
-            .expect("a non-empty right value has provenance");
-        let provenance = self.push_provenance(
-            ProvenanceNodeKind::Concat {
-                left: left_provenance,
-                right: right_provenance,
-            },
-            len,
-        )?;
-        Ok(CanonicalBytesHandle {
-            content: Some(ContentSpan {
-                root: content,
-                start: 0,
-                len,
-            }),
-            provenance: Some(ProvenanceSpan {
-                root: provenance,
-                start: 0,
-                len,
-            }),
-            len,
-        })
+        let value = self.backend.concat(left, right)?;
+        self.sync_page_stats();
+        Ok(value)
     }
 
     /// Exact byte equality. Hashes are never equality evidence.
+    #[cfg(test)]
     pub(crate) fn content_eq(
         &self,
         left: CanonicalBytesHandle,
         right: CanonicalBytesHandle,
     ) -> bool {
-        if left.len != right.len {
+        if left.len() != right.len() {
             return false;
         }
-        if left.content == right.content {
+        if left.sequence == right.sequence {
             return true;
         }
         self.bytes(left).eq(self.bytes(right))
@@ -512,13 +958,14 @@ impl CanonicalBytesArena {
     }
 
     pub(crate) fn bytes(&self, value: CanonicalBytesHandle) -> CanonicalByteCursor<'_> {
-        CanonicalByteCursor::new(self, value.content)
+        CanonicalByteCursor::new(&self.backend, value)
     }
 
     /// Compatibility random lookup for a live borrowed arena. Frozen views
     /// provide the bounded indexed implementation used by production parsers.
+    #[cfg(test)]
     pub(crate) fn byte_at(&self, value: CanonicalBytesHandle, logical_offset: usize) -> Option<u8> {
-        if logical_offset >= value.len {
+        if logical_offset >= value.len() {
             return None;
         }
         let one = self.slice(value, logical_offset..logical_offset + 1).ok()?;
@@ -530,111 +977,20 @@ impl CanonicalBytesArena {
         value: CanonicalBytesHandle,
     ) -> CanonicalLocatedByteCursor<'_> {
         CanonicalLocatedByteCursor {
-            bytes: CanonicalByteCursor::new(self, value.content),
-            provenance: CanonicalProvenanceCursor::new(self, value.provenance),
+            bytes: CanonicalByteCursor::new(&self.backend, value),
+            provenance: CanonicalProvenanceCursor::new(&self.backend, value),
         }
     }
 
     /// Freeze one handle into ownership-independent indexed metadata.
     ///
-    /// The retained block nodes own the original fixed-size payload arrays.
-    /// Only one leaf record per intersected block fragment and one index entry
-    /// per fixed-size logical page are allocated here.
+    /// Retained immutable pages own the original payload vectors. Freezing
+    /// allocates only leaf/index metadata and clones each intersected page
+    /// pair once; no byte or provenance payload is copied.
     pub(crate) fn freeze(&self, value: CanonicalBytesHandle) -> FrozenCanonicalBytes {
-        let content_leaves = self.freeze_content_leaves(value.content);
-        let provenance_leaves = self.freeze_provenance_leaves(value.provenance);
-        debug_assert_eq!(
-            content_leaves
-                .last()
-                .map_or(0, FrozenContentLeaf::logical_end),
-            value.len
-        );
-        debug_assert_eq!(
-            provenance_leaves
-                .last()
-                .map_or(0, FrozenProvenanceLeaf::logical_end),
-            value.len
-        );
-        let content_pages =
-            Self::freeze_page_index(value.len, &content_leaves, FrozenContentLeaf::logical_end);
-        let provenance_pages = Self::freeze_page_index(
-            value.len,
-            &provenance_leaves,
-            FrozenProvenanceLeaf::logical_end,
-        );
         FrozenCanonicalBytes {
-            data: Arc::new(FrozenCanonicalBytesData {
-                len: value.len,
-                content_leaves: content_leaves.into_boxed_slice(),
-                provenance_leaves: provenance_leaves.into_boxed_slice(),
-                content_pages: content_pages.into_boxed_slice(),
-                provenance_pages: provenance_pages.into_boxed_slice(),
-            }),
-            start: 0,
-            len: value.len,
+            inner: self.backend.freeze(value),
         }
-    }
-
-    fn freeze_content_leaves(&self, root: Option<ContentSpan>) -> Vec<FrozenContentLeaf> {
-        let mut work: Vec<_> = root.into_iter().map(ContentCursorTask::Span).collect();
-        let mut leaves = Vec::new();
-        let mut logical_start = 0usize;
-        while let Some(task) = work.pop() {
-            match task {
-                ContentCursorTask::Span(span) => {
-                    expand_content_span(&self.content_nodes, &mut work, span)
-                }
-                ContentCursorTask::Block { root, at, end } => {
-                    let len = end - at;
-                    leaves.push(FrozenContentLeaf {
-                        node: Arc::clone(&self.content_nodes[root.0]),
-                        block_start: at,
-                        len,
-                        logical_start,
-                    });
-                    logical_start += len;
-                }
-            }
-        }
-        leaves
-    }
-
-    fn freeze_provenance_leaves(&self, root: Option<ProvenanceSpan>) -> Vec<FrozenProvenanceLeaf> {
-        let mut work: Vec<_> = root.into_iter().map(ProvenanceCursorTask::Span).collect();
-        let mut leaves = Vec::new();
-        let mut logical_start = 0usize;
-        while let Some(task) = work.pop() {
-            match task {
-                ProvenanceCursorTask::Span(span) => {
-                    expand_provenance_span(&self.provenance_nodes, &mut work, span)
-                }
-                ProvenanceCursorTask::Block { root, at, end } => {
-                    let len = end - at;
-                    leaves.push(FrozenProvenanceLeaf {
-                        node: Arc::clone(&self.provenance_nodes[root.0]),
-                        block_start: at,
-                        len,
-                        logical_start,
-                    });
-                    logical_start += len;
-                }
-            }
-        }
-        leaves
-    }
-
-    fn freeze_page_index<T>(len: usize, leaves: &[T], logical_end: fn(&T) -> usize) -> Vec<usize> {
-        let page_count = len / BLOCK_BYTES + usize::from(len % BLOCK_BYTES != 0);
-        let mut pages = Vec::with_capacity(page_count);
-        let mut leaf = 0usize;
-        for page in 0..page_count {
-            let logical_start = page * BLOCK_BYTES;
-            while logical_end(&leaves[leaf]) <= logical_start {
-                leaf += 1;
-            }
-            pages.push(leaf);
-        }
-        pages
     }
 
     pub(crate) fn provenance_at(
@@ -642,399 +998,60 @@ impl CanonicalBytesArena {
         value: CanonicalBytesHandle,
         logical_offset: usize,
     ) -> Option<CanonicalByteProvenance> {
-        if logical_offset >= value.len {
+        if logical_offset >= value.len() {
             return None;
         }
         let one = self.slice(value, logical_offset..logical_offset + 1).ok()?;
         self.located_bytes(one).next().map(|byte| byte.provenance)
     }
 
-    fn singleton(
-        &mut self,
-        byte: CanonicalLocatedByte,
-    ) -> Result<CanonicalBytesHandle, CanonicalBytesArenaError> {
-        let mut bytes = [0; BLOCK_BYTES];
-        bytes[0] = byte.byte;
-        let content = self.intern_content(
-            ContentNodeKind::Block {
-                previous: None,
-                used: 1,
-                bytes,
-            },
-            1,
-        )?;
-        let mut values = [CanonicalByteProvenance::default(); BLOCK_BYTES];
-        values[0] = byte.provenance;
-        let provenance = self.push_provenance(
-            ProvenanceNodeKind::Block {
-                previous: None,
-                used: 1,
-                values,
-            },
-            1,
-        )?;
-        Ok(CanonicalBytesHandle {
-            content: Some(ContentSpan {
-                root: content,
-                start: 0,
-                len: 1,
-            }),
-            provenance: Some(ProvenanceSpan {
-                root: provenance,
-                start: 0,
-                len: 1,
-            }),
-            len: 1,
-        })
-    }
-
-    fn extendable_content_block(&self, span: ContentSpan) -> bool {
-        span.start == 0
-            && span.len == self.content_nodes[span.root.0].len
-            && matches!(
-                self.content_nodes[span.root.0].kind,
-                ContentNodeKind::Block { .. }
-            )
-    }
-
-    fn extendable_provenance_block(&self, span: ProvenanceSpan) -> bool {
-        span.start == 0
-            && span.len == self.provenance_nodes[span.root.0].len
-            && matches!(
-                self.provenance_nodes[span.root.0].kind,
-                ProvenanceNodeKind::Block { .. }
-            )
-    }
-
-    fn extend_content_block(
-        &mut self,
-        span: ContentSpan,
-        byte: u8,
-    ) -> Result<ContentSpan, CanonicalBytesArenaError> {
-        let (previous, used, mut bytes) = match &self.content_nodes[span.root.0].kind {
-            ContentNodeKind::Block {
-                previous,
-                used,
-                bytes,
-            } => (*previous, usize::from(*used), *bytes),
-            ContentNodeKind::Concat { .. } => unreachable!("extendability checks block kind"),
-        };
-        let (previous, used, bytes) = if used == BLOCK_BYTES {
-            let mut next = [0; BLOCK_BYTES];
-            next[0] = byte;
-            (Some(span.root), 1usize, next)
-        } else {
-            bytes[used] = byte;
-            (previous, used + 1, bytes)
-        };
-        let len = span
-            .len
-            .checked_add(1)
-            .ok_or(CanonicalBytesArenaError::LengthOverflow)?;
-        let root = self.intern_content(
-            ContentNodeKind::Block {
-                previous,
-                used: used as u8,
-                bytes,
-            },
-            len,
-        )?;
-        Ok(ContentSpan {
-            root,
-            start: 0,
-            len,
-        })
-    }
-
-    fn extend_provenance_block(
-        &mut self,
-        span: ProvenanceSpan,
-        provenance: CanonicalByteProvenance,
-    ) -> Result<ProvenanceSpan, CanonicalBytesArenaError> {
-        let (previous, used, mut values) = match &self.provenance_nodes[span.root.0].kind {
-            ProvenanceNodeKind::Block {
-                previous,
-                used,
-                values,
-            } => (*previous, usize::from(*used), *values),
-            ProvenanceNodeKind::Concat { .. } => {
-                unreachable!("extendability checks provenance block kind")
-            }
-        };
-        let (previous, used, values) = if used == BLOCK_BYTES {
-            let mut next = [CanonicalByteProvenance::default(); BLOCK_BYTES];
-            next[0] = provenance;
-            (Some(span.root), 1usize, next)
-        } else {
-            values[used] = provenance;
-            (previous, used + 1, values)
-        };
-        let len = span
-            .len
-            .checked_add(1)
-            .ok_or(CanonicalBytesArenaError::LengthOverflow)?;
-        let root = self.push_provenance(
-            ProvenanceNodeKind::Block {
-                previous,
-                used: used as u8,
-                values,
-            },
-            len,
-        )?;
-        Ok(ProvenanceSpan {
-            root,
-            start: 0,
-            len,
-        })
-    }
-
-    fn intern_content(
-        &mut self,
-        kind: ContentNodeKind,
-        len: usize,
-    ) -> Result<ContentNodeId, CanonicalBytesArenaError> {
-        if let Some(id) = self.content_intern.get(&kind) {
-            debug_assert_eq!(self.content_nodes[id.0].len, len);
-            return Ok(*id);
-        }
-        self.content_nodes
-            .try_reserve(1)
-            .map_err(|_| CanonicalBytesArenaError::LengthOverflow)?;
-        self.content_intern
-            .try_reserve(1)
-            .map_err(|_| CanonicalBytesArenaError::LengthOverflow)?;
-        let id = ContentNodeId(self.content_nodes.len());
-        match &kind {
-            ContentNodeKind::Block { .. } => self.stats.content_blocks += 1,
-            ContentNodeKind::Concat { .. } => self.stats.content_concats += 1,
-        }
-        self.content_nodes.push(Arc::new(ContentNode {
-            len,
-            kind: kind.clone(),
-        }));
-        self.content_intern.insert(kind, id);
-        self.stats.content_nodes = self.content_nodes.len();
-        Ok(id)
-    }
-
-    fn push_provenance(
-        &mut self,
-        kind: ProvenanceNodeKind,
-        len: usize,
-    ) -> Result<ProvenanceNodeId, CanonicalBytesArenaError> {
-        self.provenance_nodes
-            .try_reserve(1)
-            .map_err(|_| CanonicalBytesArenaError::LengthOverflow)?;
-        let id = ProvenanceNodeId(self.provenance_nodes.len());
-        match &kind {
-            ProvenanceNodeKind::Block { .. } => self.stats.provenance_blocks += 1,
-            ProvenanceNodeKind::Concat { .. } => self.stats.provenance_concats += 1,
-        }
-        self.provenance_nodes
-            .push(Arc::new(ProvenanceNode { len, kind }));
-        self.stats.provenance_nodes = self.provenance_nodes.len();
-        Ok(id)
-    }
-}
-
-#[derive(Clone, Copy)]
-enum ContentCursorTask {
-    Span(ContentSpan),
-    Block {
-        root: ContentNodeId,
-        at: usize,
-        end: usize,
-    },
-}
-
-fn expand_content_span(
-    nodes: &[Arc<ContentNode>],
-    work: &mut Vec<ContentCursorTask>,
-    span: ContentSpan,
-) {
-    let node = &nodes[span.root.0];
-    let end = span.start + span.len;
-    match &node.kind {
-        ContentNodeKind::Block { previous, used, .. } => {
-            let previous_len = previous.map_or(0, |id| nodes[id.0].len);
-            if end > previous_len {
-                work.push(ContentCursorTask::Block {
-                    root: span.root,
-                    at: span.start.max(previous_len) - previous_len,
-                    end: (end - previous_len).min(usize::from(*used)),
-                });
-            }
-            if span.start < previous_len {
-                work.push(ContentCursorTask::Span(ContentSpan {
-                    root: previous.expect("a positive previous range has a previous block"),
-                    start: span.start,
-                    len: end.min(previous_len) - span.start,
-                }));
-            }
-        }
-        ContentNodeKind::Concat { left, right } => {
-            if end > left.len {
-                work.push(ContentCursorTask::Span(ContentSpan {
-                    root: right.root,
-                    start: right.start + span.start.saturating_sub(left.len),
-                    len: end.min(left.len + right.len) - span.start.max(left.len),
-                }));
-            }
-            if span.start < left.len {
-                work.push(ContentCursorTask::Span(ContentSpan {
-                    root: left.root,
-                    start: left.start + span.start,
-                    len: end.min(left.len) - span.start,
-                }));
-            }
-        }
+    fn sync_page_stats(&mut self) {
+        self.stats.content_nodes = self.backend.nodes.len();
+        self.stats.provenance_nodes = self.backend.nodes.len();
+        self.stats.segments = self.backend.stats.segments;
+        self.stats.concats = self.backend.stats.concats;
+        self.stats.byte_pages = self.backend.stats.byte_pages;
+        self.stats.provenance_pages = self.backend.stats.provenance_pages;
+        self.stats.payload_slots = self.backend.stats.payload_slots;
+        self.stats.divergent_segments = self.backend.stats.divergent_segments;
+        self.stats.page_rollovers = self.backend.stats.page_rollovers;
     }
 }
 
 pub(crate) struct CanonicalByteCursor<'a> {
-    arena: &'a CanonicalBytesArena,
-    work: Vec<ContentCursorTask>,
+    inner: PageBackedByteCursor<'a>,
 }
 
 impl<'a> CanonicalByteCursor<'a> {
-    fn new(arena: &'a CanonicalBytesArena, root: Option<ContentSpan>) -> Self {
+    fn new(arena: &'a PageBackedArena<DEFAULT_PAGE_BYTES>, value: CanonicalBytesHandle) -> Self {
         Self {
-            arena,
-            work: root.into_iter().map(ContentCursorTask::Span).collect(),
+            inner: PageBackedByteCursor::new(arena, value),
         }
-    }
-
-    fn expand(&mut self, span: ContentSpan) {
-        expand_content_span(&self.arena.content_nodes, &mut self.work, span);
     }
 }
 
 impl Iterator for CanonicalByteCursor<'_> {
     type Item = u8;
 
-    fn next(&mut self) -> Option<Self::Item> {
-        loop {
-            match self.work.pop()? {
-                ContentCursorTask::Span(span) => self.expand(span),
-                ContentCursorTask::Block { root, at, end } => {
-                    let ContentNodeKind::Block { bytes, .. } =
-                        &self.arena.content_nodes[root.0].kind
-                    else {
-                        unreachable!("a block cursor points at a block node")
-                    };
-                    let byte = bytes[at];
-                    if at + 1 < end {
-                        self.work.push(ContentCursorTask::Block {
-                            root,
-                            at: at + 1,
-                            end,
-                        });
-                    }
-                    return Some(byte);
-                }
-            }
-        }
-    }
-}
-
-#[derive(Clone, Copy)]
-enum ProvenanceCursorTask {
-    Span(ProvenanceSpan),
-    Block {
-        root: ProvenanceNodeId,
-        at: usize,
-        end: usize,
-    },
-}
-
-fn expand_provenance_span(
-    nodes: &[Arc<ProvenanceNode>],
-    work: &mut Vec<ProvenanceCursorTask>,
-    span: ProvenanceSpan,
-) {
-    let node = &nodes[span.root.0];
-    let end = span.start + span.len;
-    match &node.kind {
-        ProvenanceNodeKind::Block { previous, used, .. } => {
-            let previous_len = previous.map_or(0, |id| nodes[id.0].len);
-            if end > previous_len {
-                work.push(ProvenanceCursorTask::Block {
-                    root: span.root,
-                    at: span.start.max(previous_len) - previous_len,
-                    end: (end - previous_len).min(usize::from(*used)),
-                });
-            }
-            if span.start < previous_len {
-                work.push(ProvenanceCursorTask::Span(ProvenanceSpan {
-                    root: previous.expect("a positive previous range has a previous block"),
-                    start: span.start,
-                    len: end.min(previous_len) - span.start,
-                }));
-            }
-        }
-        ProvenanceNodeKind::Concat { left, right } => {
-            if end > left.len {
-                work.push(ProvenanceCursorTask::Span(ProvenanceSpan {
-                    root: right.root,
-                    start: right.start + span.start.saturating_sub(left.len),
-                    len: end.min(left.len + right.len) - span.start.max(left.len),
-                }));
-            }
-            if span.start < left.len {
-                work.push(ProvenanceCursorTask::Span(ProvenanceSpan {
-                    root: left.root,
-                    start: left.start + span.start,
-                    len: end.min(left.len) - span.start,
-                }));
-            }
-        }
-    }
+    fn next(&mut self) -> Option<Self::Item> { self.inner.next() }
 }
 
 struct CanonicalProvenanceCursor<'a> {
-    arena: &'a CanonicalBytesArena,
-    work: Vec<ProvenanceCursorTask>,
+    inner: PageBackedProvenanceCursor<'a>,
 }
 
 impl<'a> CanonicalProvenanceCursor<'a> {
-    fn new(arena: &'a CanonicalBytesArena, root: Option<ProvenanceSpan>) -> Self {
+    fn new(arena: &'a PageBackedArena<DEFAULT_PAGE_BYTES>, value: CanonicalBytesHandle) -> Self {
         Self {
-            arena,
-            work: root.into_iter().map(ProvenanceCursorTask::Span).collect(),
+            inner: PageBackedProvenanceCursor::new(arena, value),
         }
-    }
-
-    fn expand(&mut self, span: ProvenanceSpan) {
-        expand_provenance_span(&self.arena.provenance_nodes, &mut self.work, span);
     }
 }
 
 impl Iterator for CanonicalProvenanceCursor<'_> {
     type Item = CanonicalByteProvenance;
 
-    fn next(&mut self) -> Option<Self::Item> {
-        loop {
-            match self.work.pop()? {
-                ProvenanceCursorTask::Span(span) => self.expand(span),
-                ProvenanceCursorTask::Block { root, at, end } => {
-                    let ProvenanceNodeKind::Block { values, .. } =
-                        &self.arena.provenance_nodes[root.0].kind
-                    else {
-                        unreachable!("a provenance block cursor points at a block node")
-                    };
-                    let provenance = values[at];
-                    if at + 1 < end {
-                        self.work.push(ProvenanceCursorTask::Block {
-                            root,
-                            at: at + 1,
-                            end,
-                        });
-                    }
-                    return Some(provenance);
-                }
-            }
-        }
-    }
+    fn next(&mut self) -> Option<Self::Item> { self.inner.next() }
 }
 
 pub(crate) struct CanonicalLocatedByteCursor<'a> {
@@ -1065,18 +1082,15 @@ pub(crate) struct FrozenCanonicalByteCursor {
 
 impl FrozenCanonicalByteCursor {
     fn new(value: FrozenCanonicalBytes) -> Self {
-        let absolute = value.start;
-        let end = absolute + value.len;
+        let absolute = value.inner.start;
+        let end = absolute + value.inner.len;
         let leaf = if value.is_empty() {
-            value.data.content_leaves.len()
+            value.inner.data.leaves.len()
         } else {
-            FrozenCanonicalBytes::leaf_at(
-                absolute,
-                &value.data.content_pages,
-                &value.data.content_leaves,
-                FrozenContentLeaf::logical_end,
-            )
-            .expect("a non-empty frozen view starts in one content leaf")
+            value
+                .inner
+                .leaf_at(absolute)
+                .expect("a non-empty frozen view starts in one content leaf")
         };
         Self {
             value,
@@ -1097,15 +1111,12 @@ impl FrozenCanonicalByteCursor {
         );
         self.absolute = absolute;
         self.leaf = if absolute == self.end {
-            self.value.data.content_leaves.len()
+            self.value.inner.data.leaves.len()
         } else {
-            FrozenCanonicalBytes::leaf_at(
-                absolute,
-                &self.value.data.content_pages,
-                &self.value.data.content_leaves,
-                FrozenContentLeaf::logical_end,
-            )
-            .expect("a frozen cursor seek lands in one content leaf")
+            self.value
+                .inner
+                .leaf_at(absolute)
+                .expect("a frozen cursor seek lands in one content leaf")
         };
     }
 }
@@ -1117,10 +1128,12 @@ impl Iterator for FrozenCanonicalByteCursor {
         if self.absolute == self.end {
             return None;
         }
-        while self.value.data.content_leaves[self.leaf].logical_end() <= self.absolute {
+        while self.value.inner.data.leaves[self.leaf].logical_end() <= self.absolute {
             self.leaf += 1;
         }
-        let byte = self.value.data.content_leaves[self.leaf].byte_at(self.absolute);
+        let leaf = self.value.inner.data.leaves[self.leaf];
+        let at = leaf.page_start + self.absolute - leaf.logical_start;
+        let byte = self.value.inner.data.pages[leaf.page].bytes.bytes[at];
         self.absolute += 1;
         Some(byte)
     }
@@ -1143,18 +1156,15 @@ struct FrozenCanonicalProvenanceCursor {
 
 impl FrozenCanonicalProvenanceCursor {
     fn new(value: FrozenCanonicalBytes) -> Self {
-        let absolute = value.start;
-        let end = absolute + value.len;
+        let absolute = value.inner.start;
+        let end = absolute + value.inner.len;
         let leaf = if value.is_empty() {
-            value.data.provenance_leaves.len()
+            value.inner.data.leaves.len()
         } else {
-            FrozenCanonicalBytes::leaf_at(
-                absolute,
-                &value.data.provenance_pages,
-                &value.data.provenance_leaves,
-                FrozenProvenanceLeaf::logical_end,
-            )
-            .expect("a non-empty frozen view starts in one provenance leaf")
+            value
+                .inner
+                .leaf_at(absolute)
+                .expect("a non-empty frozen view starts in one provenance leaf")
         };
         Self {
             value,
@@ -1175,15 +1185,12 @@ impl FrozenCanonicalProvenanceCursor {
         );
         self.absolute = absolute;
         self.leaf = if absolute == self.end {
-            self.value.data.provenance_leaves.len()
+            self.value.inner.data.leaves.len()
         } else {
-            FrozenCanonicalBytes::leaf_at(
-                absolute,
-                &self.value.data.provenance_pages,
-                &self.value.data.provenance_leaves,
-                FrozenProvenanceLeaf::logical_end,
-            )
-            .expect("a frozen provenance seek lands in one leaf")
+            self.value
+                .inner
+                .leaf_at(absolute)
+                .expect("a frozen provenance seek lands in one leaf")
         };
     }
 }
@@ -1195,10 +1202,12 @@ impl Iterator for FrozenCanonicalProvenanceCursor {
         if self.absolute == self.end {
             return None;
         }
-        while self.value.data.provenance_leaves[self.leaf].logical_end() <= self.absolute {
+        while self.value.inner.data.leaves[self.leaf].logical_end() <= self.absolute {
             self.leaf += 1;
         }
-        let provenance = self.value.data.provenance_leaves[self.leaf].provenance_at(self.absolute);
+        let leaf = self.value.inner.data.leaves[self.leaf];
+        let at = leaf.page_start + self.absolute - leaf.logical_start;
+        let provenance = self.value.inner.data.pages[leaf.page].provenance.values[at];
         self.absolute += 1;
         Some(provenance)
     }
@@ -1303,29 +1312,21 @@ mod tests {
             assert_eq!(to_vec(&arena, checkpoint), prefix_bytes);
         }
 
-        let delta = CanonicalBytesArenaStats {
-            content_nodes: arena.stats().content_nodes - before.content_nodes,
-            provenance_nodes: arena.stats().provenance_nodes - before.provenance_nodes,
-            content_blocks: arena.stats().content_blocks - before.content_blocks,
-            content_concats: arena.stats().content_concats - before.content_concats,
-            provenance_blocks: arena.stats().provenance_blocks - before.provenance_blocks,
-            provenance_concats: arena.stats().provenance_concats - before.provenance_concats,
-        };
+        let after = arena.stats();
         let suffix_bytes = branches.len() * 8;
-        assert!(delta.content_nodes <= suffix_bytes);
-        assert_eq!(delta.provenance_nodes, suffix_bytes);
+        assert!(after.content_nodes - before.content_nodes <= branches.len());
+        assert_eq!(after.content_nodes, after.provenance_nodes);
+        assert_eq!(after.payload_slots - before.payload_slots, suffix_bytes);
     }
 
     #[test]
-    fn equal_content_with_different_provenance_reuses_content_but_not_sources() {
+    fn equal_content_with_different_provenance_compares_exactly_and_keeps_sources() {
         let mut arena = CanonicalBytesArena::new();
         let first = append_bytes(&mut arena, b"canonical", 7, 100);
-        let content_after_first = arena.stats().content_nodes;
         let second = append_bytes(&mut arena, b"canonical", 9, 900);
 
         assert!(arena.content_eq(first, second));
         assert_eq!(arena.compare(first, second), Ordering::Equal);
-        assert_eq!(arena.stats().content_nodes, content_after_first);
         assert_eq!(
             arena.provenance_at(first, 3),
             Some(CanonicalByteProvenance::new(7, 103))
@@ -1456,10 +1457,10 @@ mod tests {
 
         let small = measure(4_000);
         let large = measure(8_000);
-        assert!(small.content_nodes <= 4_000 + 64 + 1);
-        assert!(small.provenance_nodes <= 4_000 + 64 + 1);
-        assert!(large.content_nodes <= 8_000 + 64 + 1);
-        assert!(large.provenance_nodes <= 8_000 + 64 + 1);
+        assert!(small.content_nodes <= 4_000_usize.div_ceil(DEFAULT_PAGE_BYTES) + 64 + 1);
+        assert!(small.provenance_nodes <= 4_000_usize.div_ceil(DEFAULT_PAGE_BYTES) + 64 + 1);
+        assert!(large.content_nodes <= 8_000_usize.div_ceil(DEFAULT_PAGE_BYTES) + 64 + 1);
+        assert!(large.provenance_nodes <= 8_000_usize.div_ceil(DEFAULT_PAGE_BYTES) + 64 + 1);
         assert!(large.content_nodes <= small.content_nodes * 2 + 2);
         assert!(large.provenance_nodes <= small.provenance_nodes * 2 + 2);
     }
@@ -1560,6 +1561,90 @@ mod tests {
             })
             .unwrap();
         thread.join().unwrap();
+    }
+
+    #[test]
+    fn page_capacity_probe_exposes_static_32_64_128_256_policies() {
+        fn probe<const CAPACITY: usize>() {
+            const LEN: usize = 1_025;
+            let mut arena = PageBackedArena::<CAPACITY>::new();
+            let mut value = arena.empty();
+            for offset in 0..LEN {
+                value = arena
+                    .append(value, located((offset % 251) as u8, 31, offset))
+                    .unwrap();
+            }
+            assert_eq!(arena.stats.payload_slots, LEN);
+            assert_eq!(arena.stats.byte_pages, LEN.div_ceil(CAPACITY));
+            assert_eq!(arena.stats.provenance_pages, LEN.div_ceil(CAPACITY));
+            assert_eq!(arena.stats.segments, LEN.div_ceil(CAPACITY));
+            let frozen = arena.freeze(value);
+            assert_eq!(frozen.len(), LEN);
+            for offset in (0..LEN).step_by(37) {
+                assert_eq!(frozen.byte_at(offset), Some((offset % 251) as u8));
+                assert_eq!(frozen.provenance_at(offset).unwrap().offset, offset);
+            }
+        }
+
+        probe::<32>();
+        probe::<64>();
+        probe::<128>();
+        probe::<256>();
+    }
+
+    #[test]
+    fn handle_retains_one_span_without_parallel_legacy_metadata() {
+        assert_eq!(
+            std::mem::size_of::<CanonicalBytesHandle>(),
+            std::mem::size_of::<Option<SequenceSpan>>()
+        );
+        #[cfg(target_pointer_width = "64")]
+        assert_eq!(std::mem::size_of::<CanonicalBytesHandle>(), 32);
+        // The removed representation held two 32-byte optional spans plus an
+        // eight-byte duplicate length on 64-bit targets: 72 bytes per handle.
+    }
+
+    #[test]
+    fn frozen_chunks_support_contiguous_borrow_copy_and_fragment_independent_equality() {
+        let bytes: Vec<_> = (0..130).map(|offset| (offset % 251) as u8).collect();
+        let mut linear_arena = CanonicalBytesArena::new();
+        let linear = append_bytes(&mut linear_arena, &bytes, 41, 1_000);
+        let linear = linear_arena.freeze(linear);
+
+        assert_eq!(linear.contiguous_bytes(3..20), Some(&bytes[3..20]));
+        assert_eq!(linear.contiguous_bytes(60..68), None);
+        let mut copied = [0u8; 72];
+        assert!(linear.copy_exact(37, &mut copied));
+        assert_eq!(copied, bytes[37..109]);
+        assert!(!linear.copy_exact(100, &mut copied));
+
+        let mut fragmented_arena = CanonicalBytesArena::new();
+        let mut fragmented = fragmented_arena.empty();
+        for (offset, byte) in bytes.iter().copied().enumerate() {
+            let singleton = fragmented_arena
+                .append(fragmented_arena.empty(), located(byte, 42, 8_000 + offset))
+                .unwrap();
+            fragmented = fragmented_arena.concat(fragmented, singleton).unwrap();
+        }
+        let fragmented = fragmented_arena.freeze(fragmented);
+        assert!(linear.content_eq(&fragmented));
+        assert!(fragmented.content_eq(&linear));
+    }
+
+    #[test]
+    fn freezing_seals_pages_without_invalidating_prefix_or_copying_payload() {
+        let mut arena = CanonicalBytesArena::new();
+        let prefix = append_bytes(&mut arena, b"persistent-prefix", 51, 100);
+        let before = arena.stats();
+        let frozen = arena.freeze(prefix);
+        assert_eq!(arena.stats(), before);
+
+        let extended = arena.append(prefix, located(b'!', 52, 900)).unwrap();
+        assert_eq!(to_vec(&arena, prefix), b"persistent-prefix");
+        assert_eq!(to_vec(&arena, extended), b"persistent-prefix!");
+        assert_eq!(frozen.bytes().collect::<Vec<_>>(), b"persistent-prefix");
+        assert_eq!(arena.stats().payload_slots, before.payload_slots + 1);
+        assert_eq!(arena.stats().segments, before.segments + 1);
     }
 
     #[test]

@@ -22,6 +22,9 @@ accepted-match-transition-experiment = []
 # Adds counters around the measurement-only transition runner. Keep this
 # separate so Criterion timing builds carry no instrumentation overhead.
 accepted-match-transition-instrumentation = ["accepted-match-transition-experiment"]
+# Measurement-only ACT admission/source-access accounting. The ordinary codec
+# omits per-byte counters and counter storage from its production hot path.
+act-codec-instrumentation = []
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 

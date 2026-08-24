@@ -83,9 +83,11 @@ impl ProtobufRegion {
     pub fn into_bytes(self) -> Bytes { self.backing.slice(self.range) }
 
     #[inline]
+    #[cfg(test)]
     pub(crate) fn backing_bytes(&self) -> Bytes { self.backing.clone() }
 
     #[inline]
+    #[cfg(test)]
     pub(crate) fn shares_backing_with(&self, backing: &Bytes) -> bool {
         self.backing.as_ptr() == backing.as_ptr() && self.backing.len() == backing.len()
     }

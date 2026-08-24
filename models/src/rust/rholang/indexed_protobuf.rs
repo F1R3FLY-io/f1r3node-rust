@@ -9,14 +9,17 @@
 use std::cmp::Ordering;
 use std::fmt;
 
+#[cfg(test)]
 use super::canonical_bytes_arena::{
-    CanonicalByteCursor, CanonicalByteProvenance, CanonicalBytesArena, CanonicalBytesHandle,
-    CanonicalLocatedByte, CanonicalLocatedByteCursor, FrozenCanonicalByteCursor,
-    FrozenCanonicalBytes, FrozenCanonicalLocatedByteCursor,
+    CanonicalByteCursor, CanonicalBytesArena, CanonicalBytesHandle, CanonicalLocatedByteCursor,
 };
-use super::protobuf_cursor::{
-    CanonicalByteRange, CanonicalProtobufError, CanonicalWireType, ProtobufRegion,
+use super::canonical_bytes_arena::{
+    CanonicalByteProvenance, CanonicalLocatedByte, FrozenCanonicalByteCursor, FrozenCanonicalBytes,
+    FrozenCanonicalLocatedByteCursor,
 };
+#[cfg(test)]
+use super::protobuf_cursor::ProtobufRegion;
+use super::protobuf_cursor::{CanonicalByteRange, CanonicalProtobufError, CanonicalWireType};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum IndexedBytePositionKind {
@@ -39,10 +42,14 @@ pub(crate) struct IndexedBytePosition {
 
 #[derive(Clone)]
 enum IndexedByteBacking<'a> {
-    Contiguous {
-        region: ProtobufRegion,
+    Borrowed {
+        bytes: &'a [u8],
         source: u32,
+        absolute_start: usize,
     },
+    #[cfg(test)]
+    Contiguous { region: ProtobufRegion, source: u32 },
+    #[cfg(test)]
     Arena {
         arena: &'a CanonicalBytesArena,
         root: CanonicalBytesHandle,
@@ -69,7 +76,10 @@ pub(crate) struct IndexedByteRegion<'a> {
 impl fmt::Debug for IndexedByteRegion<'_> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let backing = match self.backing {
+            IndexedByteBacking::Borrowed { .. } => "borrowed",
+            #[cfg(test)]
             IndexedByteBacking::Contiguous { .. } => "contiguous",
+            #[cfg(test)]
             IndexedByteBacking::Arena { .. } => "arena",
             IndexedByteBacking::Frozen { .. } => "frozen",
         };
@@ -82,6 +92,20 @@ impl fmt::Debug for IndexedByteRegion<'_> {
 }
 
 impl<'a> IndexedByteRegion<'a> {
+    /// Borrow one contiguous input without copying it. `absolute_start`
+    /// identifies the first byte in the caller's physical source, so nested
+    /// framing errors retain whole-source rather than submessage offsets.
+    pub(crate) fn from_borrowed(bytes: &'a [u8], source: u32, absolute_start: usize) -> Self {
+        Self {
+            backing: IndexedByteBacking::Borrowed {
+                bytes,
+                source,
+                absolute_start,
+            },
+        }
+    }
+
+    #[cfg(test)]
     pub(crate) fn from_protobuf_region(region: ProtobufRegion, source: u32) -> Self {
         Self {
             backing: IndexedByteBacking::Contiguous { region, source },
@@ -91,6 +115,7 @@ impl<'a> IndexedByteRegion<'a> {
     /// Construct a persistent view. `root_end` is the exact physical boundary
     /// immediately after `root`; it is required even for an empty root because
     /// no logical byte exists from which that boundary could be inferred.
+    #[cfg(test)]
     pub(crate) fn from_arena(
         arena: &'a CanonicalBytesArena,
         root: CanonicalBytesHandle,
@@ -109,7 +134,10 @@ impl<'a> IndexedByteRegion<'a> {
 
     pub(crate) fn len(&self) -> usize {
         match &self.backing {
+            IndexedByteBacking::Borrowed { bytes, .. } => bytes.len(),
+            #[cfg(test)]
             IndexedByteBacking::Contiguous { region, .. } => region.len(),
+            #[cfg(test)]
             IndexedByteBacking::Arena { len, .. } => *len,
             IndexedByteBacking::Frozen { len, .. } => *len,
         }
@@ -123,12 +151,25 @@ impl<'a> IndexedByteRegion<'a> {
             return None;
         }
         match &self.backing {
+            IndexedByteBacking::Borrowed {
+                bytes,
+                source,
+                absolute_start,
+            } => Some(Self {
+                backing: IndexedByteBacking::Borrowed {
+                    bytes: bytes.get(range.start..range.end)?,
+                    source: *source,
+                    absolute_start: absolute_start.checked_add(range.start)?,
+                },
+            }),
+            #[cfg(test)]
             IndexedByteBacking::Contiguous { region, source } => Some(Self {
                 backing: IndexedByteBacking::Contiguous {
                     region: region.subregion(range)?,
                     source: *source,
                 },
             }),
+            #[cfg(test)]
             IndexedByteBacking::Arena {
                 arena,
                 root,
@@ -166,10 +207,17 @@ impl<'a> IndexedByteRegion<'a> {
             return None;
         }
         let physical = match &self.backing {
+            IndexedByteBacking::Borrowed {
+                source,
+                absolute_start,
+                ..
+            } => CanonicalByteProvenance::new(*source, absolute_start.checked_add(logical_offset)?),
+            #[cfg(test)]
             IndexedByteBacking::Contiguous { region, source } => {
                 let absolute = region.absolute_range().start.checked_add(logical_offset)?;
                 CanonicalByteProvenance::new(*source, absolute)
             }
+            #[cfg(test)]
             IndexedByteBacking::Arena {
                 arena,
                 root,
@@ -220,10 +268,15 @@ impl<'a> IndexedByteRegion<'a> {
 
     pub(crate) fn bytes(&self) -> IndexedByteCursor<'a> {
         let inner = match &self.backing {
+            IndexedByteBacking::Borrowed { bytes, .. } => {
+                IndexedByteCursorInner::Borrowed { bytes, at: 0 }
+            }
+            #[cfg(test)]
             IndexedByteBacking::Contiguous { region, .. } => IndexedByteCursorInner::Contiguous {
                 region: region.clone(),
                 at: 0,
             },
+            #[cfg(test)]
             IndexedByteBacking::Arena {
                 arena,
                 root,
@@ -256,6 +309,17 @@ impl<'a> IndexedByteRegion<'a> {
 
     pub(crate) fn located_bytes(&self) -> IndexedLocatedByteCursor<'a> {
         let inner = match &self.backing {
+            IndexedByteBacking::Borrowed {
+                bytes,
+                source,
+                absolute_start,
+            } => IndexedLocatedByteCursorInner::Borrowed {
+                bytes,
+                source: *source,
+                absolute_start: *absolute_start,
+                at: 0,
+            },
+            #[cfg(test)]
             IndexedByteBacking::Contiguous { region, source } => {
                 IndexedLocatedByteCursorInner::Contiguous {
                     region: region.clone(),
@@ -264,6 +328,7 @@ impl<'a> IndexedByteRegion<'a> {
                     at: 0,
                 }
             }
+            #[cfg(test)]
             IndexedByteBacking::Arena {
                 arena,
                 root,
@@ -308,9 +373,12 @@ impl<'a> IndexedByteRegion<'a> {
             return None;
         }
         match &self.backing {
+            IndexedByteBacking::Borrowed { bytes, .. } => bytes.get(logical_offset).copied(),
+            #[cfg(test)]
             IndexedByteBacking::Contiguous { region, .. } => {
                 region.as_bytes().get(logical_offset).copied()
             }
+            #[cfg(test)]
             IndexedByteBacking::Arena {
                 arena, root, start, ..
             } => arena.byte_at(*root, start.checked_add(logical_offset)?),
@@ -321,7 +389,39 @@ impl<'a> IndexedByteRegion<'a> {
     }
 
     pub(crate) fn content_eq(&self, other: &IndexedByteRegion<'_>) -> bool {
-        self.len() == other.len() && self.bytes().eq(other.bytes())
+        if self.len() != other.len() {
+            return false;
+        }
+        match (&self.backing, &other.backing) {
+            (
+                IndexedByteBacking::Frozen {
+                    root: left,
+                    start: left_start,
+                    len,
+                    ..
+                },
+                IndexedByteBacking::Frozen {
+                    root: right,
+                    start: right_start,
+                    ..
+                },
+            ) => {
+                let left_end = left_start
+                    .checked_add(*len)
+                    .expect("a validated frozen region cannot overflow");
+                let right_end = right_start
+                    .checked_add(*len)
+                    .expect("a validated frozen region cannot overflow");
+                let left = left
+                    .subview(*left_start..left_end)
+                    .expect("an indexed frozen region stays inside its root");
+                let right = right
+                    .subview(*right_start..right_end)
+                    .expect("an indexed frozen region stays inside its root");
+                left.content_eq(&right)
+            }
+            _ => self.bytes().eq(other.bytes()),
+        }
     }
 
     pub(crate) fn compare(&self, other: &IndexedByteRegion<'_>) -> Ordering {
@@ -341,8 +441,21 @@ impl rspace_plus_plus::rspace::pathmap_codec::IndexedByteSource for IndexedByteR
 
     fn contiguous_range(&self, range: std::ops::Range<usize>) -> Option<&[u8]> {
         match &self.backing {
+            IndexedByteBacking::Borrowed { bytes, .. } => bytes.get(range),
+            #[cfg(test)]
             IndexedByteBacking::Contiguous { region, .. } => region.as_bytes().get(range),
-            IndexedByteBacking::Arena { .. } | IndexedByteBacking::Frozen { .. } => None,
+            #[cfg(test)]
+            IndexedByteBacking::Arena { .. } => None,
+            IndexedByteBacking::Frozen {
+                root, start, len, ..
+            } => {
+                if range.start > range.end || range.end > *len {
+                    return None;
+                }
+                let absolute_start = start.checked_add(range.start)?;
+                let absolute_end = start.checked_add(range.end)?;
+                root.contiguous_bytes(absolute_start..absolute_end)
+            }
         }
     }
 
@@ -350,13 +463,46 @@ impl rspace_plus_plus::rspace::pathmap_codec::IndexedByteSource for IndexedByteR
         let Some(end) = start.checked_add(output.len()) else {
             return false;
         };
-        let Some(view) = self.subview(CanonicalByteRange { start, end }) else {
+        if end > self.len() {
             return false;
-        };
-        for (destination, source) in output.iter_mut().zip(view.bytes()) {
-            *destination = source;
         }
-        true
+        match &self.backing {
+            IndexedByteBacking::Borrowed { bytes, .. } => {
+                let Some(source) = bytes.get(start..end) else {
+                    return false;
+                };
+                output.copy_from_slice(source);
+                true
+            }
+            #[cfg(test)]
+            IndexedByteBacking::Contiguous { region, .. } => {
+                let Some(source) = region.as_bytes().get(start..end) else {
+                    return false;
+                };
+                output.copy_from_slice(source);
+                true
+            }
+            IndexedByteBacking::Frozen {
+                root,
+                start: root_start,
+                ..
+            } => {
+                let Some(absolute_start) = root_start.checked_add(start) else {
+                    return false;
+                };
+                root.copy_exact(absolute_start, output)
+            }
+            #[cfg(test)]
+            IndexedByteBacking::Arena { .. } => {
+                let Some(view) = self.subview(CanonicalByteRange { start, end }) else {
+                    return false;
+                };
+                for (destination, source) in output.iter_mut().zip(view.bytes()) {
+                    *destination = source;
+                }
+                true
+            }
+        }
     }
 
     fn ranges_equal(&self, left: std::ops::Range<usize>, right: std::ops::Range<usize>) -> bool {
@@ -397,7 +543,16 @@ impl IndexedByteRegion<'static> {
 }
 
 enum IndexedByteCursorInner<'a> {
-    Contiguous { region: ProtobufRegion, at: usize },
+    Borrowed {
+        bytes: &'a [u8],
+        at: usize,
+    },
+    #[cfg(test)]
+    Contiguous {
+        region: ProtobufRegion,
+        at: usize,
+    },
+    #[cfg(test)]
     Arena(CanonicalByteCursor<'a>),
     Frozen(FrozenCanonicalByteCursor),
 }
@@ -413,11 +568,18 @@ impl Iterator for IndexedByteCursor<'_> {
 
     fn next(&mut self) -> Option<Self::Item> {
         let byte = match &mut self.inner {
+            IndexedByteCursorInner::Borrowed { bytes, at } => {
+                let byte = bytes.get(*at).copied();
+                *at += usize::from(byte.is_some());
+                byte
+            }
+            #[cfg(test)]
             IndexedByteCursorInner::Contiguous { region, at } => {
                 let byte = region.as_bytes().get(*at).copied();
                 *at += usize::from(byte.is_some());
                 byte
             }
+            #[cfg(test)]
             IndexedByteCursorInner::Arena(cursor) => cursor.next(),
             IndexedByteCursorInner::Frozen(cursor) => cursor.next(),
         };
@@ -426,12 +588,20 @@ impl Iterator for IndexedByteCursor<'_> {
 }
 
 enum IndexedLocatedByteCursorInner<'a> {
+    Borrowed {
+        bytes: &'a [u8],
+        source: u32,
+        absolute_start: usize,
+        at: usize,
+    },
+    #[cfg(test)]
     Contiguous {
         region: ProtobufRegion,
         source: u32,
         absolute_start: usize,
         at: usize,
     },
+    #[cfg(test)]
     Arena(CanonicalLocatedByteCursor<'a>),
     Frozen(FrozenCanonicalLocatedByteCursor),
 }
@@ -449,11 +619,18 @@ impl IndexedLocatedByteCursor<'_> {
 
     fn fast_forward(&mut self, width: usize) -> bool {
         let advanced = match &mut self.inner {
+            IndexedLocatedByteCursorInner::Borrowed { bytes, at, .. } => {
+                debug_assert!(*at + width <= bytes.len());
+                *at += width;
+                true
+            }
+            #[cfg(test)]
             IndexedLocatedByteCursorInner::Contiguous { region, at, .. } => {
                 debug_assert!(*at + width <= region.len());
                 *at += width;
                 true
             }
+            #[cfg(test)]
             IndexedLocatedByteCursorInner::Arena(_) => false,
             IndexedLocatedByteCursorInner::Frozen(cursor) => {
                 cursor.fast_forward(width);
@@ -472,6 +649,23 @@ impl Iterator for IndexedLocatedByteCursor<'_> {
 
     fn next(&mut self) -> Option<Self::Item> {
         let byte = match &mut self.inner {
+            IndexedLocatedByteCursorInner::Borrowed {
+                bytes,
+                source,
+                absolute_start,
+                at,
+            } => {
+                let logical = *at;
+                let byte = bytes.get(logical).copied();
+                *at += usize::from(byte.is_some());
+                byte.map(|byte| {
+                    CanonicalLocatedByte::new(
+                        byte,
+                        CanonicalByteProvenance::new(*source, *absolute_start + logical),
+                    )
+                })
+            }
+            #[cfg(test)]
             IndexedLocatedByteCursorInner::Contiguous {
                 region,
                 source,
@@ -488,6 +682,7 @@ impl Iterator for IndexedLocatedByteCursor<'_> {
                     )
                 })
             }
+            #[cfg(test)]
             IndexedLocatedByteCursorInner::Arena(cursor) => cursor.next(),
             IndexedLocatedByteCursorInner::Frozen(cursor) => cursor.next(),
         };
@@ -649,6 +844,7 @@ impl<'a> IndexedByteReader<'a> {
         Ok(())
     }
 
+    #[cfg(test)]
     pub(crate) fn read_fixed32(&mut self) -> Result<u32, IndexedByteReadError> {
         self.require(4, IndexedByteReadOperation::Fixed32)?;
         let mut bytes = [0u8; 4];
@@ -662,6 +858,7 @@ impl<'a> IndexedByteReader<'a> {
         Ok(u32::from_le_bytes(bytes))
     }
 
+    #[cfg(test)]
     pub(crate) fn read_fixed64(&mut self) -> Result<u64, IndexedByteReadError> {
         self.require(8, IndexedByteReadOperation::Fixed64)?;
         let mut bytes = [0u8; 8];
@@ -853,11 +1050,13 @@ pub(crate) struct IndexedCanonicalField<'a> {
     pub(crate) wire_type: CanonicalWireType,
     pub(crate) value: IndexedCanonicalFieldValue<'a>,
     pub(crate) encoded_range: CanonicalByteRange,
+    #[cfg(test)]
     pub(crate) payload_range: CanonicalByteRange,
     pub(crate) field_start: IndexedBytePosition,
 }
 
 impl<'a> IndexedCanonicalField<'a> {
+    #[cfg(test)]
     pub(crate) fn expect_length_delimited(
         &self,
     ) -> Result<&IndexedByteRegion<'a>, LocatedCanonicalProtobufError> {
@@ -876,6 +1075,7 @@ impl<'a> IndexedCanonicalField<'a> {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn expect_varint(&self) -> Result<u64, LocatedCanonicalProtobufError> {
         match self.value {
             IndexedCanonicalFieldValue::Varint(value) => Ok(value),
@@ -1065,7 +1265,7 @@ impl<'a> IndexedCanonicalFieldCursor<'a> {
         };
 
         let payload_start = self.reader.offset();
-        let (value, payload_range) = match wire_type {
+        let (value, _payload_range) = match wire_type {
             CanonicalWireType::Varint => {
                 let value = self
                     .reader
@@ -1217,7 +1417,8 @@ impl<'a> IndexedCanonicalFieldCursor<'a> {
                 start: field_offset,
                 end: self.reader.offset(),
             },
-            payload_range,
+            #[cfg(test)]
+            payload_range: _payload_range,
             field_start,
         })
     }
@@ -1821,6 +2022,88 @@ mod tests {
         );
         assert_eq!(nested.end_position().physical, expected[168].provenance);
         assert_eq!(root.end_position().physical, root_end);
+    }
+
+    #[test]
+    fn frozen_indexed_source_borrows_and_copies_page_chunks_without_flattening() {
+        use rspace_plus_plus::rspace::pathmap_codec::IndexedByteSource;
+
+        let bytes: Vec<_> = (0..193).map(|offset| (offset % 97) as u8).collect();
+        let mut arena = CanonicalBytesArena::new();
+        let handle = append_bytes(&mut arena, &bytes, BASE);
+        let root = frozen_view(&arena, handle, BASE + bytes.len());
+
+        assert_eq!(
+            IndexedByteSource::contiguous_range(&root, 3..17),
+            Some(&bytes[3..17])
+        );
+        assert_eq!(
+            IndexedByteSource::contiguous_range(&root, 0..bytes.len()),
+            None,
+            "a multi-page range must not pretend to be contiguous"
+        );
+        let mut copied = [0u8; 101];
+        assert!(IndexedByteSource::copy_exact(&root, 37, &mut copied));
+        assert_eq!(copied, bytes[37..138]);
+        assert!(!IndexedByteSource::copy_exact(&root, 100, &mut copied));
+
+        let cloned = root.clone();
+        assert!(root.content_eq(&cloned));
+        assert!(IndexedByteSource::ranges_equal(&root, 1..65, 98..162));
+        assert!(!IndexedByteSource::ranges_equal(&root, 0..64, 1..65));
+    }
+
+    #[test]
+    fn borrowed_contiguous_regions_preserve_offsets_and_all_fast_paths_without_copying() {
+        use rspace_plus_plus::rspace::pathmap_codec::IndexedByteSource;
+
+        let storage: Vec<_> = (0..257).map(|offset| (offset % 113) as u8).collect();
+        let root = IndexedByteRegion::from_borrowed(&storage[17..241], 37, 9_001);
+        assert_eq!(root.len(), 224);
+        assert_eq!(
+            root.position_at(0).unwrap().physical,
+            CanonicalByteProvenance::new(37, 9_001)
+        );
+        assert_eq!(
+            root.end_position().physical,
+            CanonicalByteProvenance::new(37, 9_225)
+        );
+
+        let nested = root
+            .subview(CanonicalByteRange {
+                start: 13,
+                end: 199,
+            })
+            .unwrap();
+        assert_eq!(nested.bytes().collect::<Vec<_>>(), storage[30..216]);
+        assert_eq!(
+            nested.position_at(0).unwrap().physical,
+            CanonicalByteProvenance::new(37, 9_014)
+        );
+        assert_eq!(
+            nested.end_position().physical,
+            CanonicalByteProvenance::new(37, 9_200)
+        );
+        assert_eq!(
+            IndexedByteSource::contiguous_range(&nested, 7..61),
+            Some(&storage[37..91])
+        );
+
+        let mut copied = [0u8; 73];
+        assert!(IndexedByteSource::copy_exact(&nested, 41, &mut copied));
+        assert_eq!(copied, storage[71..144]);
+        assert!(IndexedByteSource::ranges_equal(&nested, 0..32, 113..145));
+        assert!(!IndexedByteSource::ranges_equal(&nested, 0..32, 1..33));
+
+        let located = nested.located_bytes().collect::<Vec<_>>();
+        assert_eq!(located.len(), nested.len());
+        for (logical, byte) in located.iter().enumerate() {
+            assert_eq!(byte.byte, storage[30 + logical]);
+            assert_eq!(
+                byte.provenance,
+                CanonicalByteProvenance::new(37, 9_014 + logical)
+            );
+        }
     }
 
     #[test]

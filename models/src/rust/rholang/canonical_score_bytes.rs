@@ -9,10 +9,12 @@
 use std::cmp::Ordering;
 use std::fmt;
 
+#[cfg(test)]
 use prost::bytes::Bytes;
 
 use super::canonical_semantics::{CanonicalScoreAlgebra, PreScoredBytes, PreScoredString};
 use super::indexed_protobuf::{IndexedByteCursor, IndexedByteRegion};
+#[cfg(test)]
 use super::protobuf_cursor::ProtobufRegion;
 
 const INTEGER_PREFIX: &[u8] = &[1, 1];
@@ -44,7 +46,9 @@ impl std::error::Error for CanonicalScoreArenaError {}
 
 enum ScoreBytes<'backing> {
     Owned(Box<[u8]>),
+    #[cfg(test)]
     Shared(Bytes),
+    #[cfg(test)]
     Region(ProtobufRegion),
     Indexed(IndexedByteRegion<'backing>),
 }
@@ -53,7 +57,9 @@ impl ScoreBytes<'_> {
     fn as_slice(&self) -> Option<&[u8]> {
         match self {
             Self::Owned(bytes) => Some(bytes),
+            #[cfg(test)]
             Self::Shared(bytes) => Some(bytes),
+            #[cfg(test)]
             Self::Region(region) => Some(region.as_bytes()),
             Self::Indexed(_) => None,
         }
@@ -74,21 +80,27 @@ struct ScoreEntry<'backing> {
 
 pub(crate) struct CanonicalScoreArena<'backing> {
     entries: Vec<ScoreEntry<'backing>>,
+    #[cfg(test)]
     backing: Option<Bytes>,
+    #[cfg(test)]
     zero_prefix: Vec<usize>,
 }
 
 impl<'backing> CanonicalScoreArena<'backing> {
+    #[cfg(test)]
     const ZERO_BLOCK_BYTES: usize = 256;
 
     pub(crate) fn new() -> Self {
         Self {
             entries: Vec::new(),
+            #[cfg(test)]
             backing: None,
+            #[cfg(test)]
             zero_prefix: Vec::new(),
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn for_region(root: &ProtobufRegion) -> Result<Self, CanonicalScoreArenaError> {
         let backing = root.backing_bytes();
         let blocks = backing
@@ -157,6 +169,7 @@ impl<'backing> CanonicalScoreArena<'backing> {
     /// Retain an already-owned byte region as one canonical byte-array score
     /// atom. `Bytes::slice` makes this O(1), including an EPM1 snapshot cut from
     /// the owning protobuf image.
+    #[cfg(test)]
     pub(crate) fn shared_bytes(
         &mut self,
         bytes: Bytes,
@@ -165,6 +178,7 @@ impl<'backing> CanonicalScoreArena<'backing> {
         self.push(ScoreNode::Bytes(ScoreBytes::Shared(bytes)), encoded_len)
     }
 
+    #[cfg(test)]
     fn region_zero_count(
         &self,
         region: &ProtobufRegion,
@@ -214,6 +228,7 @@ impl<'backing> CanonicalScoreArena<'backing> {
     /// Reference one subregion of the admission root without copying it or
     /// rescanning the complete region to derive its escaped score length. The
     /// rank index scans at most two fixed 256-byte boundary fragments.
+    #[cfg(test)]
     pub(crate) fn shared_region(
         &mut self,
         region: ProtobufRegion,
@@ -267,6 +282,7 @@ impl<'backing> CanonicalScoreArena<'backing> {
         self.cursor(left).cmp(self.cursor(right))
     }
 
+    #[cfg(test)]
     pub(crate) fn equals_bytes(&self, score: CanonicalScoreHandle, expected: &[u8]) -> bool {
         self.cursor(score).eq(expected.iter().copied())
     }

@@ -61,6 +61,7 @@ pub(crate) struct LocatedPathByte {
 }
 
 impl LocatedPathByte {
+    #[cfg(test)]
     pub(crate) const fn new(byte: u8, offset: usize) -> Self { Self::in_source(byte, 0, offset) }
 
     pub(crate) const fn in_source(byte: u8, source: u32, offset: usize) -> Self {
@@ -427,6 +428,7 @@ pub(crate) struct CanonicalPathReducerHandle {
 }
 
 impl CanonicalPathReducerHandle {
+    #[cfg(test)]
     pub(crate) const fn bytes(self) -> CanonicalBytesHandle { self.bytes }
 }
 
@@ -457,6 +459,7 @@ impl CanonicalPathReducer {
         }
     }
 
+    #[cfg(test)]
     pub(crate) const fn stats(&self) -> CanonicalPathAdmissionStats { self.stats }
 
     pub(crate) fn active_obligation(
@@ -592,6 +595,7 @@ impl CanonicalPathReducer {
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn reject_obligation(
         &mut self,
         arena: &CanonicalBytesArena,
@@ -1350,6 +1354,7 @@ impl CanonicalPathReducer {
         Ok(())
     }
 
+    #[cfg(test)]
     fn reject_path_obligation(
         &mut self,
         arena: &CanonicalBytesArena,
@@ -1574,6 +1579,7 @@ impl CanonicalPathTopologyAdmission {
         }
     }
 
+    #[cfg(test)]
     pub(crate) const fn stats(&self) -> CanonicalPathAdmissionStats { self.reducer.stats() }
 
     pub(crate) fn active_obligation(&self) -> Option<CanonicalPathObligationProgress> {
@@ -1674,6 +1680,7 @@ impl CanonicalPathTopologyAdmission {
         Ok(())
     }
 
+    #[cfg(test)]
     pub(crate) fn reject_obligation(
         &mut self,
         id: CanonicalPathObligationId,
@@ -1706,21 +1713,17 @@ mod tests {
 
     fn linear_result(bytes: &[u8]) -> Result<CanonicalPathSummary, CanonicalPathAdmissionError> {
         let mut admission = CanonicalPathTopologyAdmission::new();
-        assert!(
-            admission
-                .value(false, CanonicalPathSource::new(0))
-                .is_none()
-        );
+        assert!(admission
+            .value(false, CanonicalPathSource::new(0))
+            .is_none());
         for (offset, byte) in bytes.iter().copied().enumerate() {
             let transition = admission
                 .edge(LocatedPathByte::new(byte, offset))
                 .expect("obligation-free driver use");
             assert_eq!(transition, CanonicalPathTransition::Continue);
-            assert!(
-                admission
-                    .value(false, CanonicalPathSource::new(offset))
-                    .is_none()
-            );
+            assert!(admission
+                .value(false, CanonicalPathSource::new(offset))
+                .is_none());
         }
         admission
             .value(true, CanonicalPathSource::new(bytes.len()))
@@ -1919,18 +1922,14 @@ mod tests {
                 },
             )
             .unwrap();
-        assert!(
-            reducer
-                .value(left, true, CanonicalPathSource::new(13))
-                .unwrap()
-                .is_ok()
-        );
-        assert!(
-            reducer
-                .value(right, true, CanonicalPathSource::new(23))
-                .unwrap()
-                .is_ok()
-        );
+        assert!(reducer
+            .value(left, true, CanonicalPathSource::new(13))
+            .unwrap()
+            .is_ok());
+        assert!(reducer
+            .value(right, true, CanonicalPathSource::new(23))
+            .unwrap()
+            .is_ok());
     }
 
     #[test]
@@ -2025,12 +2024,10 @@ mod tests {
                         ),
                     )
                     .unwrap();
-                assert!(
-                    reducer
-                        .value(state, true, CanonicalPathSource::new(offset + 1))
-                        .unwrap()
-                        .is_ok()
-                );
+                assert!(reducer
+                    .value(state, true, CanonicalPathSource::new(offset + 1))
+                    .unwrap()
+                    .is_ok());
                 let edges = offset + 1;
                 let reducer_stats = reducer.stats();
                 let arena_stats = arena.stats();
@@ -2081,23 +2078,19 @@ mod tests {
         admission.edge(LocatedPathByte::new(GINT, 15)).unwrap();
         admission.edge(LocatedPathByte::new(0, 16)).unwrap();
         admission.edge(LocatedPathByte::new(TERM, 17)).unwrap();
-        assert!(
-            admission
-                .value(true, CanonicalPathSource::new(18))
-                .unwrap()
-                .is_ok()
-        );
+        assert!(admission
+            .value(true, CanonicalPathSource::new(18))
+            .unwrap()
+            .is_ok());
     }
 
     #[test]
     fn malformed_value_free_topology_is_retained_but_not_admitted_as_a_value() {
         let mut admission = CanonicalPathTopologyAdmission::new();
         admission.edge(LocatedPathByte::new(0xff, 41)).unwrap();
-        assert!(
-            admission
-                .value(false, CanonicalPathSource::new(42))
-                .is_none()
-        );
+        assert!(admission
+            .value(false, CanonicalPathSource::new(42))
+            .is_none());
         let error = admission
             .value(true, CanonicalPathSource::new(42))
             .unwrap()
@@ -2111,12 +2104,10 @@ mod tests {
         admission
             .edge(LocatedPathByte::new(GBOOL_TRUE, 44))
             .unwrap();
-        assert!(
-            admission
-                .value(true, CanonicalPathSource::new(45))
-                .unwrap()
-                .is_ok()
-        );
+        assert!(admission
+            .value(true, CanonicalPathSource::new(45))
+            .unwrap()
+            .is_ok());
     }
 
     #[test]
@@ -2238,11 +2229,10 @@ mod tests {
             },
         )
         .unwrap();
-        assert!(
-            map.value(true, CanonicalPathSource::new(22))
-                .unwrap()
-                .is_ok()
-        );
+        assert!(map
+            .value(true, CanonicalPathSource::new(22))
+            .unwrap()
+            .is_ok());
     }
 
     #[test]
@@ -2269,12 +2259,10 @@ mod tests {
                 },
             )
             .unwrap();
-        assert!(
-            admission
-                .value(true, CanonicalPathSource::new(5))
-                .unwrap()
-                .is_ok()
-        );
+        assert!(admission
+            .value(true, CanonicalPathSource::new(5))
+            .unwrap()
+            .is_ok());
 
         let mut wrong_mode = CanonicalPathTopologyAdmission::new();
         wrong_mode
@@ -2318,11 +2306,9 @@ mod tests {
         // A rejected branch is dead rather than structurally fatal: topology
         // below it may still be traversed when it has no value endpoint.
         rejected.edge(LocatedPathByte::new(GBOOL_TRUE, 23)).unwrap();
-        assert!(
-            rejected
-                .value(false, CanonicalPathSource::new(24))
-                .is_none()
-        );
+        assert!(rejected
+            .value(false, CanonicalPathSource::new(24))
+            .is_none());
 
         // Exercise the other non-Map discriminator independently.
         let _ = NestedEpmMode::Set;
