@@ -62,6 +62,24 @@ BODY="$(jq -r \
   | flatten | join("\n")
 ' "$REPORT_DIR/verdict.json")"
 
+# Advisory docs link sweep (weekend runs): append a warning line when the
+# sweep artifact reports broken external links. The sweep never gates the
+# soak; absence of the file means the sweep did not run or was not fetched.
+if [ -n "${LINK_SWEEP_JSON:-}" ] && [ -s "$LINK_SWEEP_JSON" ]; then
+  LINK_BROKEN="$(jq -r '.broken // 0' "$LINK_SWEEP_JSON" 2>/dev/null || echo 0)"
+  if [ "$LINK_BROKEN" -gt 0 ] 2>/dev/null; then
+    BODY="$BODY
+
+WARNING: the advisory docs link sweep found $LINK_BROKEN broken external link(s).
+This warning does not gate the soak or the release. Details: the
+docs-link-sweep artifact on the workflow run."
+  else
+    BODY="$BODY
+
+Docs external link sweep: OK (advisory)."
+  fi
+fi
+
 oci ons message publish \
   --auth instance_principal \
   --topic-id "$ONS_TOPIC_OCID" \

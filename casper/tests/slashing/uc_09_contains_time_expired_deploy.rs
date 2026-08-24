@@ -1,7 +1,7 @@
 // UC-09 — ContainsTimeExpiredDeploy variant flows through the
 // post-fix dispatcher's catch-all.
 //
-// Maps to: docs/theory/slashing/slashing-specification.md §12 UC-09.
+// Maps to: docs/casper/theory/slashing/slashing-specification.md §12 UC-09.
 // Theorem: T-9.3.
 
 use super::harness::SlashingTestHarness;

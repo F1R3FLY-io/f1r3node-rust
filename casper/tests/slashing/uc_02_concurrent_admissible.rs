@@ -1,11 +1,11 @@
 // References below to `formal/{rocq,tlaplus,sage}/slashing/`,
 // `FINDINGS.md`, `slashing-search-horizon.{md,sh}`, `slashing-traceability.md`,
-// `docs/theory/slashing/methodology/`, and `.mutants.toml` point at
+// `docs/casper/theory/slashing/methodology/`, and `.mutants.toml` point at
 // audit-corpus artifacts preserved on the `analysis/slashing` branch.
 //
 // UC-02 — Sequential simulation of concurrent admissible equivocations.
 //
-// Maps to: docs/theory/slashing/slashing-specification.md §12 UC-02.
+// Maps to: docs/casper/theory/slashing/slashing-specification.md §12 UC-02.
 // Theorem: T-9.2 (atomic record insert under concurrent dispatch),
 // formal/rocq/slashing/theories/BugFixAtomicTracker.v.
 // Reference: design/05-storage-and-records.md.

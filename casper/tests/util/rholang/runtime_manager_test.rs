@@ -3509,3 +3509,384 @@ async fn strict_exploratory_query_propagates_execution_failure() {
     .await
     .expect("with_runtime_manager");
 }
+
+/// Probe: does the mergeable-entry recompute actually materialize the entry?
+///
+/// `ensure_scope_mergeable_present` treats a missing mergeable entry as
+/// recoverable — a deterministic full replay reconstructs it. This exercises
+/// that remedy on the one shape where the replay cache can answer first: a
+/// block this node computed itself.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn recompute_materializes_mergeable_entry_for_own_block() {
+    use models::rust::casper::protocol::casper_message::{
+        BlockMessage, Body, F1r3flyState, Header,
+    };
+
+    use crate::util::rholang::resources::{
+        mk_runtime_manager_with_history_at, mk_test_rnode_store_manager_from_genesis,
+    };
+
+    crate::init_logger();
+    let genesis_context = crate::util::rholang::resources::genesis_context()
+        .await
+        .unwrap();
+    let genesis_post_state = genesis_context
+        .genesis_block
+        .body
+        .state
+        .post_state_hash
+        .clone();
+
+    let mut kvm = mk_test_rnode_store_manager_from_genesis(&genesis_context);
+    let (rm, _) = mk_runtime_manager_with_history_at(&mut *kvm).await;
+
+    let sender = genesis_context.validator_pks()[0].clone();
+    let seq_num: i32 = 7;
+    let deploy = construct_deploy::source_deploy_now_full(
+        r#"@"probe"!(1)"#.to_string(),
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+    .unwrap();
+
+    // Propose-side compute: persists the mergeable entry AND populates the
+    // replay cache under (pre_state, sender, seq, payload).
+    let (post_state, processed_deploys, processed_system_deploys) = rm
+        .compute_state(
+            &genesis_post_state,
+            vec![deploy],
+            Vec::new(),
+            BlockData {
+                time_stamp: SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_millis() as i64,
+                block_number: 1,
+                sender: sender.clone(),
+                seq_num,
+            },
+            None,
+        )
+        .await
+        .unwrap();
+
+    let block = BlockMessage {
+        block_hash: prost::bytes::Bytes::from(vec![9u8; 32]),
+        header: Header {
+            // Non-empty so the block is not treated as genesis, matching the
+            // `is_genesis = false` the compute path hashed into the cache key.
+            parents_hash_list: vec![prost::bytes::Bytes::from(vec![1u8; 32])],
+            timestamp: 1,
+            version: 1,
+            extra_bytes: prost::bytes::Bytes::new(),
+        },
+        body: Body {
+            state: F1r3flyState {
+                pre_state_hash: genesis_post_state.clone(),
+                post_state_hash: post_state.clone(),
+                bonds: vec![],
+                block_number: 1,
+            },
+            deploys: processed_deploys,
+            rejected_deploys: vec![],
+            system_deploys: processed_system_deploys,
+            extra_bytes: prost::bytes::Bytes::new(),
+            applied_from_scope: vec![],
+            merge_base: prost::bytes::Bytes::new(),
+        },
+        justifications: vec![],
+        sender: sender.bytes.clone(),
+        seq_num,
+        sig: prost::bytes::Bytes::new(),
+        sig_algorithm: "secp256k1".to_string(),
+        shard_id: "root".to_string(),
+        extra_bytes: prost::bytes::Bytes::new(),
+    };
+
+    // Step 1: the compute path's write is visible under the key the block declares.
+    assert!(
+        rm.has_mergeable_entry(&block).unwrap(),
+        "compute_state must persist the mergeable entry under the block's own key"
+    );
+
+    // Step 2: erase it, standing in for whatever removed it in production.
+    let deleted = rm
+        .delete_mergeable_channels(&post_state, sender.bytes.clone(), seq_num)
+        .unwrap();
+    assert!(deleted, "entry must exist before deletion");
+    assert!(!rm.has_mergeable_entry(&block).unwrap());
+
+    // Step 3: the documented remedy must actually restore it.
+    rm.ensure_mergeable_entry(&block, HashMap::new())
+        .await
+        .expect("recompute must materialize the mergeable entry");
+    assert!(
+        rm.has_mergeable_entry(&block).unwrap(),
+        "after recompute the entry must be present under the block's declared key"
+    );
+}
+
+/// The CI failure, end to end, from the production components.
+///
+/// `mergeable_channels_gc` measures its retention window below the node's LIVE
+/// floor. A merge, however, reads mergeable data for the blocks above the floor
+/// carried by the block being VALIDATED, which lags whenever its proposer
+/// lagged. The two are independent, so GC collects data a lagging merge still
+/// needs — and the recompute meant to rebuild it returns without persisting
+/// anything whenever the replay cache answers first, which is exactly the case
+/// for a block this node proposed itself.
+///
+/// Both halves run as production code here: the real `collect_garbage` makes
+/// the deletion decision and performs it, and the real `ensure_mergeable_entry`
+/// attempts the repair. The failure this reproduces is classified as
+/// `BlockException` -> `InvalidTransaction`, which `is_slashable`, so it records
+/// evidence against the proposer of the block being validated.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn gc_collects_mergeable_data_that_the_recompute_cannot_rebuild() {
+    use std::collections::BTreeMap as StdBTreeMap;
+    use std::sync::Arc;
+
+    use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
+    use block_storage::rust::dag::block_metadata_store::BlockMetadataStore;
+    use block_storage::rust::key_value_block_store::KeyValueBlockStore;
+    use casper::rust::casper::CasperShardConf;
+    use casper::rust::util::mergeable_channels_gc;
+    use models::rust::block_metadata::BlockMetadata;
+    use models::rust::casper::protocol::casper_message::{
+        BlockMessage, Body, F1r3flyState, Header,
+    };
+    use parking_lot::RwLock as PlRwLock;
+    use rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore;
+    use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
+
+    use crate::util::rholang::resources::{
+        mk_runtime_manager_with_history_at, mk_test_rnode_store_manager_from_genesis,
+    };
+
+    /// Synthetic chain hash. The real block replaces the entry at LAGGING_HEIGHT.
+    fn chain_hash(n: u8) -> prost::bytes::Bytes { prost::bytes::Bytes::from(vec![n; 32]) }
+
+    // The node's live floor sits at the tip of a finalized chain; the block the
+    // lagging merge still needs sits far below it.
+    const TIP: u8 = 20;
+    const LAGGING_HEIGHT: u8 = 5;
+
+    crate::init_logger();
+    let genesis_context = crate::util::rholang::resources::genesis_context()
+        .await
+        .unwrap();
+    let genesis_post_state = genesis_context
+        .genesis_block
+        .body
+        .state
+        .post_state_hash
+        .clone();
+
+    let mut kvm = mk_test_rnode_store_manager_from_genesis(&genesis_context);
+    let (rm, _) = mk_runtime_manager_with_history_at(&mut *kvm).await;
+    let rm = Arc::new(rm);
+    let block_store = KeyValueBlockStore::create_from_kvm(&mut *kvm)
+        .await
+        .expect("block store");
+
+    let sender = genesis_context.validator_pks()[0].clone();
+    let seq_num: i32 = 7;
+    let deploy = construct_deploy::source_deploy_now_full(
+        r#"@"gc-horizon"!(1)"#.to_string(),
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+    .unwrap();
+
+    // The propose-side path: persists the mergeable entry AND warms the replay
+    // cache under (pre_state, sender, seq, payload) — the shape that makes the
+    // later recompute a no-op.
+    let (post_state, processed_deploys, processed_system_deploys) = rm
+        .compute_state(
+            &genesis_post_state,
+            vec![deploy],
+            Vec::new(),
+            BlockData {
+                time_stamp: SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_millis() as i64,
+                block_number: LAGGING_HEIGHT as i64,
+                sender: sender.clone(),
+                seq_num,
+            },
+            None,
+        )
+        .await
+        .unwrap();
+
+    let lagging_block = BlockMessage {
+        block_hash: chain_hash(LAGGING_HEIGHT),
+        header: Header {
+            parents_hash_list: vec![chain_hash(LAGGING_HEIGHT - 1)],
+            timestamp: 1,
+            version: 1,
+            extra_bytes: prost::bytes::Bytes::new(),
+        },
+        body: Body {
+            state: F1r3flyState {
+                pre_state_hash: genesis_post_state.clone(),
+                post_state_hash: post_state.clone(),
+                bonds: vec![],
+                block_number: LAGGING_HEIGHT as i64,
+            },
+            deploys: processed_deploys,
+            rejected_deploys: vec![],
+            system_deploys: processed_system_deploys,
+            extra_bytes: prost::bytes::Bytes::new(),
+            applied_from_scope: vec![],
+            merge_base: prost::bytes::Bytes::new(),
+        },
+        justifications: vec![],
+        sender: sender.bytes.clone(),
+        seq_num,
+        sig: prost::bytes::Bytes::new(),
+        sig_algorithm: "secp256k1".to_string(),
+        shard_id: "root".to_string(),
+        extra_bytes: prost::bytes::Bytes::new(),
+    };
+    block_store
+        .put(lagging_block.block_hash.clone(), &lagging_block)
+        .expect("store the lagging block");
+
+    assert!(
+        rm.has_mergeable_entry(&lagging_block).unwrap(),
+        "precondition: the propose path persisted the entry under the block's key"
+    );
+
+    // A linear finalized chain 0..=TIP by one validator. The block at
+    // LAGGING_HEIGHT is the real one above; the rest are synthetic and absent
+    // from the block store, so GC skips them.
+    let metadata_store = KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new()));
+    let mut bms = BlockMetadataStore::new(metadata_store);
+    let chain_validator = prost::bytes::Bytes::from(vec![0xEEu8; 65]);
+
+    let mut dag_set = imbl::HashSet::new();
+    let mut block_number_map = imbl::HashMap::new();
+    let mut main_parent_map = imbl::HashMap::new();
+    let mut child_map: imbl::HashMap<prost::bytes::Bytes, imbl::HashSet<prost::bytes::Bytes>> =
+        imbl::HashMap::new();
+    let mut height_map: imbl::OrdMap<i64, imbl::HashSet<prost::bytes::Bytes>> = imbl::OrdMap::new();
+    let mut finalized_blocks_set = imbl::HashSet::new();
+
+    for n in 0..=TIP {
+        let h = chain_hash(n);
+        dag_set.insert(h.clone());
+        block_number_map.insert(h.clone(), n as i64);
+        finalized_blocks_set.insert(h.clone());
+        let mut at_height = imbl::HashSet::new();
+        at_height.insert(h.clone());
+        height_map.insert(n as i64, at_height);
+
+        let parents = if n == 0 {
+            Vec::new()
+        } else {
+            let parent = chain_hash(n - 1);
+            main_parent_map.insert(h.clone(), parent.clone());
+            let mut kids = child_map.get(&parent).cloned().unwrap_or_default();
+            kids.insert(h.clone());
+            child_map.insert(parent.clone(), kids);
+            vec![parent]
+        };
+
+        // The block at LAGGING_HEIGHT carries the REAL sender and seq, so the
+        // key GC derives for deletion is the key the propose path wrote.
+        let (meta_sender, meta_seq) = if n == LAGGING_HEIGHT {
+            (sender.bytes.clone(), seq_num)
+        } else {
+            (chain_validator.clone(), n as i32)
+        };
+
+        bms.add(BlockMetadata {
+            block_hash: h.clone(),
+            parents,
+            sender: meta_sender,
+            justifications: vec![],
+            weight_map: StdBTreeMap::new(),
+            block_number: n as i64,
+            sequence_number: meta_seq,
+            invalid: false,
+            directly_finalized: true,
+            finalized: true,
+            fault_tolerance_value: 1.0,
+            merge_base: prost::bytes::Bytes::new(),
+        })
+        .expect("add metadata");
+    }
+
+    let mut latest_messages_map = imbl::HashMap::new();
+    latest_messages_map.insert(chain_validator, chain_hash(TIP));
+
+    let dag = KeyValueDagRepresentation {
+        dag_set,
+        latest_messages_map,
+        child_map,
+        height_map,
+        block_number_map,
+        main_parent_map,
+        self_justification_map: imbl::HashMap::new(),
+        invalid_blocks_set: imbl::HashSet::new(),
+        last_finalized_block_hash: chain_hash(TIP),
+        finalized_blocks_set,
+        block_metadata_index: Arc::new(PlRwLock::new(bms)),
+        floor_index: KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
+        frontier_index: KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
+        lifecycle: Arc::new(PlRwLock::new(
+            block_storage::rust::dag::deploy_lifecycle_types::DeployLifecycleTables::in_memory(),
+        )),
+    };
+
+    // The node's live floor is the chain tip. Seeding the persisted floor cache
+    // is how a node that already derived this floor answers — GC reads it
+    // through the same door.
+    dag.put_cached_floor(chain_hash(TIP), chain_hash(TIP))
+        .expect("seed the live floor");
+
+    let mut conf = CasperShardConf::new();
+    conf.max_parent_depth = 3;
+    conf.mergeable_channels_gc_depth_buffer = 1;
+
+    // Production GC: the block sits 15 below the live floor, past the 4-block
+    // allowance, so its data is released.
+    let mut gc_sweep = mergeable_channels_gc::GcSweep::new();
+    let deleted =
+        mergeable_channels_gc::collect_garbage(&mut gc_sweep, &dag, &block_store, &rm, &conf)
+            .await
+            .expect("collect_garbage");
+    assert_eq!(
+        deleted,
+        1,
+        "GC must collect the lagging block's mergeable data (it is {} below the \
+         live floor, past the {}-block allowance)",
+        TIP - LAGGING_HEIGHT,
+        conf.max_parent_depth + conf.mergeable_channels_gc_depth_buffer,
+    );
+    assert!(
+        !rm.has_mergeable_entry(&lagging_block).unwrap(),
+        "GC deleted the entry a merge anchored on the block's own floor still needs"
+    );
+
+    // Production repair. A merge that reaches this block calls exactly this,
+    // and it must materialize the entry.
+    rm.ensure_mergeable_entry(&lagging_block, HashMap::new())
+        .await
+        .expect(
+            "the recompute must rebuild what GC collected; failing here is the CI \
+             error, which becomes a slashable InvalidTransaction",
+        );
+    assert!(
+        rm.has_mergeable_entry(&lagging_block).unwrap(),
+        "after the recompute the entry must be present under the block's declared key"
+    );
+}
