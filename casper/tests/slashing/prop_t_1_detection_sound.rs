@@ -1,6 +1,6 @@
 // References below to `formal/{rocq,tlaplus,sage}/slashing/`,
 // `FINDINGS.md`, `slashing-search-horizon.{md,sh}`, `slashing-traceability.md`,
-// `docs/theory/slashing/methodology/`, and `.mutants.toml` point at
+// `docs/casper/theory/slashing/methodology/`, and `.mutants.toml` point at
 // audit-corpus artifacts preserved on the `analysis/slashing` branch.
 //
 // Property-based test for T-1 (detection soundness): no honest
@@ -8,7 +8,7 @@
 //
 // Theorem: T-1 (`t_1_detection_sound`,
 // formal/rocq/slashing/theories/EquivocationDetector.v).
-// Reference: docs/theory/slashing/slashing-specification.md §4
+// Reference: docs/casper/theory/slashing/slashing-specification.md §4
 // (Theorem 4.2), design/04-detection-and-pipeline.md §4.4.
 //
 // Property: a validator that publishes a single block per sequence

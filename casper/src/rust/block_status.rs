@@ -78,7 +78,7 @@ pub enum InvalidBlock {
     // IgnorableEquivocation: an equivocating block we observe via someone
     // else's justification but did not pull in as a dependency. Slashable —
     // the dispatcher mints an EquivocationRecord so the proposer can issue a
-    // SlashDeploy. See docs/theory/slashing/design/09-bug-fixes-and-rationale.md §9.1.
+    // SlashDeploy. See docs/casper/theory/slashing/design/09-bug-fixes-and-rationale.md §9.1.
     IgnorableEquivocation,
 
     InvalidFormat,

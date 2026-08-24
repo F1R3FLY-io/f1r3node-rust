@@ -1,11 +1,11 @@
 // References below to `formal/{rocq,tlaplus,sage}/slashing/`,
 // `FINDINGS.md`, `slashing-search-horizon.{md,sh}`, `slashing-traceability.md`,
-// `docs/theory/slashing/methodology/`, and `.mutants.toml` point at
+// `docs/casper/theory/slashing/methodology/`, and `.mutants.toml` point at
 // audit-corpus artifacts preserved on the `analysis/slashing` branch.
 //
 // UC-37 — DAG-level self-regression with a witness block.
 //
-// Maps to: docs/theory/slashing/slashing-specification.md §12 UC-37.
+// Maps to: docs/casper/theory/slashing/slashing-specification.md §12 UC-37.
 // Theorem: T-9.6 (DAG-level), `t_9_6_self_regression_in_dag`,
 // formal/rocq/slashing/theories/BugFixSelfRegression.v.
 // Reference: design/09-bug-fixes-and-rationale.md §9.7.

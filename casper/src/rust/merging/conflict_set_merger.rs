@@ -424,7 +424,7 @@ pub fn resolve_conflicts<R: Clone + Eq + std::hash::Hash + PartialOrd + Ord>(
     })
 }
 
-/// Finding-A runtime guard (docs/theory/merge-algebra/merge-algebra-verification.md §6).
+/// Finding-A runtime guard (docs/casper/theory/merge-algebra/merge-algebra-verification.md §6).
 /// The shipped merge operator `ChannelChange::combine` (max-union) is
 /// non-associative, yet the merged root is node-identical because survivors are
 /// folded in canonical sorted order AND no order-dependent survivor pair reaches
@@ -649,7 +649,7 @@ where
             false,
             "order-dependent survivor pair reached apply on channel {} — the \
              max-union merge fold is not order-independent here (Finding A; \
-             docs/theory/merge-algebra/merge-algebra-verification.md §6)",
+             docs/casper/theory/merge-algebra/merge-algebra-verification.md §6)",
             hex::encode(channel.bytes())
         );
         tracing::error!(target: "f1r3fly.merge.step",

@@ -177,7 +177,7 @@ Items that need investigation before they can become actionable tasks.
 ```yaml
 ---
 backlog_id: BACKLOG-DOC-001
-title: "Fold docs/theory/slashing/design/02-glossary-and-notation.md into docs/Glossary.md"
+title: "Fold docs/casper/theory/slashing/design/02-glossary-and-notation.md into docs/Glossary.md"
 category: documentation
 priority: p3
 added_at: 2026-08-05
@@ -188,7 +188,7 @@ requested_by: human-jeff (2026-08-05, during /review-codebase --glossary-only)
 
 **Description:** `docs/Glossary.md` (created 2026-08-05, 12 canonical terms in
 the load-bearing Preferred-usage format) and
-`docs/theory/slashing/design/02-glossary-and-notation.md` (acronyms, symbol
+`docs/casper/theory/slashing/design/02-glossary-and-notation.md` (acronyms, symbol
 tables, LTS labels, InvalidBlock taxonomy, theorem-naming conventions) should
 become one document at `docs/Glossary.md`. Until then, `docs/Glossary.md`
 links to `02` as authoritative for mathematical notation, and `02` remains

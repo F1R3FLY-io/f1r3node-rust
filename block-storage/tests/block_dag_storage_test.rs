@@ -456,9 +456,9 @@ fn dag_storage_should_be_able_to_restore_equivocations_tracker_on_startup() {
         }
 
         let equivocation_record = EquivocationRecord::new(equivocator, 0, BTreeSet::from([block_hash]));
-        dag_storage.insert_equivocation_record(equivocation_record.clone()).unwrap();
+        dag_storage.access_equivocations_tracker(|tracker| tracker.add(equivocation_record.clone())).unwrap();
 
-        let records = dag_storage.equivocation_records().unwrap();
+        let records = dag_storage.access_equivocations_tracker(|tracker| tracker.data()).unwrap();
         assert_eq!(records, HashSet::from([equivocation_record]));
 
         let result = lookup_elements(&block_elements, &dag_storage, None);
@@ -475,12 +475,16 @@ fn dag_storage_should_be_able_to_modify_equivocation_records() {
         let dag_storage = RUNTIME.block_on(create_dag_storage(&genesis));
 
         let equivocation_record = EquivocationRecord::new(equivocator.clone(), 0, BTreeSet::from([block_hash1.clone()]));
-        dag_storage.insert_equivocation_record(equivocation_record.clone()).unwrap();
+        dag_storage.access_equivocations_tracker(|tracker| tracker.add(equivocation_record.clone())).unwrap();
 
-        dag_storage.update_equivocation_record(equivocation_record, block_hash2.clone()).unwrap();
+        dag_storage.access_equivocations_tracker(|tracker| {
+            let mut updated = equivocation_record.clone();
+            updated.equivocation_detected_block_hashes.insert(block_hash2.clone());
+            tracker.add(updated)
+        }).unwrap();
 
         let updated_equivocation_record = EquivocationRecord::new(equivocator, 0, BTreeSet::from([block_hash1, block_hash2]));
-        let records = dag_storage.equivocation_records().unwrap();
+        let records = dag_storage.access_equivocations_tracker(|tracker| tracker.data()).unwrap();
         assert_eq!(records, HashSet::from([updated_equivocation_record]));
     });
 }
@@ -1233,4 +1237,88 @@ fn insert_projects_lifecycle_events_from_valid_bodies_only() {
             "an invalid block's body must contribute no lifecycle events"
         );
     });
+}
+
+// The bound has to follow blocks admitted at a LOWER value back down: tracking
+// the highest value seen instead would skip a scan those blocks still need.
+#[tokio::test]
+async fn a_lower_finalization_round_does_not_block_a_later_raise() {
+    init_logger();
+
+    let genesis = genesis_block();
+    let dag_storage = create_dag_storage(&genesis).await;
+
+    let mut chain = vec![genesis.clone()];
+    for n in 1..=3 {
+        let parent = chain.last().unwrap().block_hash.clone();
+        let block = get_random_block(
+            Some(n),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(vec![parent]),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        dag_storage
+            .insert(
+                &block,
+                block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Normal,
+            )
+            .unwrap();
+        chain.push(block);
+    }
+
+    let ft_of = |storage: &BlockDagKeyValueStorage, hash: &BlockHash| {
+        storage
+            .get_representation()
+            .expect("dag representation")
+            .lookup_unsafe(hash)
+            .expect("metadata")
+            .fault_tolerance_value
+    };
+
+    // Round 1: a high value. Every finalized block ends at or above it.
+    dag_storage
+        .record_directly_finalized(chain[1].block_hash.clone(), 0.9, |_| async { Ok(()) })
+        .await
+        .unwrap();
+    assert_eq!(ft_of(&dag_storage, &chain[1].block_hash), 0.9);
+
+    // Round 2: a lower value. It admits b2 at 0.4 and must not drag b1 down.
+    dag_storage
+        .record_directly_finalized(chain[2].block_hash.clone(), 0.4, |_| async { Ok(()) })
+        .await
+        .unwrap();
+    assert_eq!(
+        ft_of(&dag_storage, &chain[1].block_hash),
+        0.9,
+        "a lower round must never lower an already-higher value"
+    );
+    assert_eq!(ft_of(&dag_storage, &chain[2].block_hash), 0.4);
+
+    // Round 3: above round 2 but below round 1. b2 sits at 0.4 and must be
+    // raised — this is the scan that a highest-value-seen bound would skip.
+    dag_storage
+        .record_directly_finalized(chain[3].block_hash.clone(), 0.5, |_| async { Ok(()) })
+        .await
+        .unwrap();
+    assert_eq!(
+        ft_of(&dag_storage, &chain[2].block_hash),
+        0.5,
+        "the block admitted at 0.4 must be raised to 0.5"
+    );
+    assert_eq!(ft_of(&dag_storage, &chain[3].block_hash), 0.5);
+    assert_eq!(
+        ft_of(&dag_storage, &chain[1].block_hash),
+        0.9,
+        "the highest value still stands"
+    );
 }

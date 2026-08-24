@@ -1,4 +1,29 @@
-> Last updated: 2026-04-29
+> Last updated: 2026-08-20
+
+# Casper Consensus Documentation
+
+This directory is the consolidated home of the Casper consensus
+documentation. The tree travels with the Casper consensus when the
+consensus code moves to an independent repository. The f1r3node-rust
+platform itself stays neutral about consensus and state-machine
+replication.
+
+## Documentation Map
+
+| Area | Documents |
+|---|---|
+| Protocol | [Consensus Protocol](./CONSENSUS_PROTOCOL.md) (11-stage walkthrough) · the implementation walkthrough below |
+| Safety | [Byzantine Fault Tolerance](./BYZANTINE_FAULT_TOLERANCE.md) · [Synchrony Constraint](./SYNC_CONSTRAINT.md) |
+| Philosophy | [Consensus Philosophy](./CONSENSUS_PHILOSOPHY.md) (principles P1–P6, remedy ladder, CBC relation) |
+| Vocabulary | [Casper Glossary](./GLOSSARY.md) (canonical casper-domain terms; repo-wide terms stay in [docs/Glossary.md](../Glossary.md)) |
+| Theory dossiers | [theory/](./theory/README.md) — fork choice, finalized floor, merge algebra, slashing |
+| Validation | [validation/](./validation/) — FV campaign gap analysis, merge-recovery validation plan, PR-280 FV review |
+| Design analyses | [design/](./design/) — LFS Block Requester translation analysis |
+| Economic layer | `casper/src/main/resources/PoS.rhox` — the Rholang bond/slash/reward contract (see [Rholang macro docs](../rholang/16-rhox-macros.md)) |
+
+Related documentation that stays platform-owned: [formal-verification.md](../formal-verification.md) (umbrella for `formal/**` artifacts), [data-flows](../data-flows/README.md), [docs index](../README.md).
+
+---
 
 # Crate: casper (Consensus Layer)
 
@@ -236,6 +261,6 @@ All interpreter-level tests use `#[tokio::test(flavor = "multi_thread", worker_t
 to match the production multi-threaded runtime, ensuring parallel `tokio::spawn` evaluation
 of Rholang Par branches is exercised during testing.
 
-**See also:** [casper/ crate README](../../casper/README.md) | [Consensus Protocol](./CONSENSUS_PROTOCOL.md) | [Byzantine Fault Tolerance](./BYZANTINE_FAULT_TOLERANCE.md) | [Synchrony Constraint](./SYNC_CONSTRAINT.md)
+**See also:** [casper/ crate README](../../casper/README.md) | [Consensus Protocol](./CONSENSUS_PROTOCOL.md) | [Byzantine Fault Tolerance](./BYZANTINE_FAULT_TOLERANCE.md) | [Synchrony Constraint](./SYNC_CONSTRAINT.md) | [Consensus Philosophy](./CONSENSUS_PHILOSOPHY.md)
 
 [← Back to docs index](../README.md)
