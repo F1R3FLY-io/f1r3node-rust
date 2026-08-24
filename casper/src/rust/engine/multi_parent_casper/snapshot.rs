@@ -197,7 +197,7 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
     // every branch in its cone — the property the finality oracle rests on,
     // since it infers "cannot be orphaned" from an agreement pattern that
     // only holds while validators follow the estimator. Parent selection
-    // therefore only ORDERS the frontier (the deploy-support sort above);
+    // therefore only ORDERS the frontier (the ghost-first sort above);
     // it never drops tips to pick a main parent. A recovery-context
     // collapse to the single top-sorted tip used to live here: under load
     // it fired on essentially every proposal, the DAG stopped re-merging,

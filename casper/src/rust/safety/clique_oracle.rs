@@ -59,8 +59,9 @@ impl FtThreshold {
 
 /// Exact rational finalization test: θ = num/den.
 ///
-/// `strict=false` ⇒ (2q−S)/S ≥ θ (floor path); `strict=true` ⇒ > θ (LFB
-/// finalizer). Cleared of denominators (S, den > 0), the test is
+/// `strict=false` ⇒ (2q−S)/S ≥ θ — every production decision site (the LFB
+/// is the floor of the live view, one clock); `strict=true` ⇒ > θ, retained
+/// in the API and its unit pins only. Cleared of denominators (S, den > 0), the test is
 /// `2·q·den ⋛ S·(den+num)`. `i128` so `2·q·den` and `S·(den+num)` (≤ ~2^84 for
 /// S ≤ i64::MAX, den = 10^6) never overflow, and `2·agreeing` near i64::MAX
 /// stays exact.
@@ -568,8 +569,8 @@ impl CliqueOracle {
     /// EXACT deterministic finalization DECISION over a FROZEN snapshot — the
     /// integer-exact analog of [`CliqueOracle::ft_witnessed`]. Returns `true` iff
     /// the clique oracle certifies `target_msg` finalized at threshold `ftt` under
-    /// the exact rule `2·q·den ⋛ S·(den+num)` (see [`ft_decides_exact`]); `strict`
-    /// selects ≥ (floor path) vs > (LFB finalizer). Mirrors `ft_witnessed`'s
+    /// the exact rule `2·q·den ⋛ S·(den+num)` (see [`ft_decides_exact`]); every
+    /// production caller passes `strict=false` (≥). Mirrors `ft_witnessed`'s
     /// contains / zero-stake / `agreeing ≤ S/2` short-circuits so the two agree
     /// everywhere except at the `f32` rounding boundary this replaces.
     pub async fn ft_witnessed_exact(

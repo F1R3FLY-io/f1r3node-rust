@@ -325,8 +325,8 @@ pub enum FloorOfView {
 
 impl FloorOfView {
     /// The adopted floor, if any — for callers that only care whether the
-    /// LFB advanced (the API read path, tests). The runner matches all
-    /// three arms so containment holds reach the `DivergenceMonitor`.
+    /// LFB advanced (the API read path, tests). The runner matches every
+    /// arm itself so containment holds reach the `DivergenceMonitor`.
     pub fn advanced(self) -> Option<Floor> {
         match self {
             FloorOfView::Advance(floor) => Some(floor),
