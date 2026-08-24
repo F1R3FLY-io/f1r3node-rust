@@ -30,6 +30,7 @@ Neither a `Vec<Par>` nor a hash table is an authoritative substitute for a trie 
 | Term | Meaning in this report |
 |---|---|
 | Bag | A multiset: each distinct element has a strictly positive multiplicity. |
+| ACT | Arena Compact Tree: PathMap's compact physical trie snapshot family. |
 | CAS | Compare-and-swap: an atomic conditional update that publishes a new value only when the observed old value is unchanged. |
 | CBR | Consensus-Breaking Register: the stable identifier series in the living consensus-change report. |
 | COMM | A Rholang communication event pairing a compatible produce with a waiting consume. |
@@ -40,6 +41,8 @@ Neither a `Vec<Par>` nor a hash table is an authoritative substitute for a trie 
 | RMP | Rholang Match Path: the generated structural token format used by matcher queries. |
 | RMP1 | Rholang Match Path format version 1: the self-delimiting structural token stream used by generated matcher queries. |
 | RMP2 | Rholang Match Path format version 2: the current derived structural token stream, whose ParBag token hashes semantic constructor-tag/multiplicity/canonical-protobuf records rather than an ACT snapshot. |
+| RPB3 | Rholang Par Bag key format version 3: one canonical PathMap endpoint containing a component-family tag, canonical score, canonical protobuf body, and big-endian score-length trailer. |
+| RCI2 | Rholang Channel Image format version 2, represented in Rust by `ChannelImageV2`: the canonical logical image of one channel's RPB3 component Bag and root `connective_used` flag. |
 | RSS | Resident set size: the physical-memory footprint attributed to a process by the operating system. |
 | RSpace | The tuple-space implementation that stores Rholang data and waiting continuations and selects COMMs. |
 | SHA | Secure Hash Algorithm: SHA-256 identifies the exact retained log bytes cited by this report. |
@@ -454,6 +457,87 @@ native EPathMap/spatial matcher remains the sole acceptance authority. PathMap's
 architecture-dependent hash is not used.
 
 Identical records share one trie value whose `Multiplicity` counts occurrences. No tie breaker can distinguish identical record bytes semantically: choosing and removing any occurrence leaves the same record and decremented multiplicity. Unequal candidates retain the existing ordering by the Blake2b-256 digest of canonical candidate bytes, with the complete trie path providing a deterministic collision tie breaker. The vector candidate hot path is retired at `5329b27a3`; the bounded duplicate, exact-removal, and play/replay witnesses pass, while the campaign's exhaustive generated differential and formal quotient proof remain required before closure.
+
+### ChannelImageV2 logical channel identity
+
+`ChannelImageV2`, abbreviated RCI2, is the versioned logical image proposed for channel-key
+integration. Its version number is a format-domain discriminator, not a claim that a public
+`ChannelImageV1` Rust type shipped: it prevents an earlier design sketch or the legacy bincode
+identity from being silently accepted as the new language. The image is emitted from borrowed RPB3
+PathMap zipper endpoints and has this exact grammar:
+
+```text
+ChannelImageV2 :=
+    "RCI" 0x02
+    endpoint*
+    0x00 0x00
+    distinct_count:u64-BE
+    flags:u8
+
+endpoint := zero_escape(rpb3_relative_key)
+            0x00 0x00
+            multiplicity:u64-BE
+
+zero_escape(0x00) := 0x00 0xFF
+flags.bit0         := connective_used
+flags.bits1..7     := 0
+```
+
+An RPB3-relative key omits only the common `"RPB" 0x03` prefix. Its first byte is a nonzero
+component-family tag, so `0x00 0x00` is an unambiguous endpoint-sequence terminator. The decoder
+prepends the common prefix into one reusable key buffer, invokes the existing exact RPB3 validator,
+requires strictly ascending endpoints and positive multiplicities, and inserts the validated key
+directly into the authoritative `ParBag` through one monotone write zipper. It never creates
+`Vec<Par>`, expands occurrences, sorts projected entries, or serializes ACT topology. The encoder
+does not decode component bodies. The current exact external-admission bridge does: for general
+RPB3 families it decodes the typed protobuf value, applies the authoritative canonical
+sorter/normalizer, and re-encodes it to prove that the supplied score and body agree. This is an
+honest compatibility oracle, not the final optimized boundary. Production admission requires the
+generated-schema byte cursor and shared canonical-summary rules to prove the same property without
+materializing an AST, including nested EPathMap/canonical-path fields.
+
+Let $`B(p)`$ be the RPB3 `PathMap<Multiplicity>` component Bag of a `Par` value $`p`$, let $`c(p)`$
+be its root `connective_used` flag, and let $`\ell(p)`$ be its root `locally_free` summary. Current
+`Par` equality deliberately ignores $`\ell`$:
+
+```math
+p = q \quad\Longleftrightarrow\quad B(p)=B(q)\;\land\;c(p)=c(q).
+```
+
+RCI2 therefore excludes top-level `locally_free` but retains nested locally-free bytes inside each
+canonical RPB3 component body. Its required identity and order laws are:
+
+```math
+\operatorname{RCI2}(p)=\operatorname{RCI2}(q)
+\quad\Longleftrightarrow\quad p=q,
+```
+
+```math
+\operatorname{cmp}_{\mathrm{bytes}}(\operatorname{RCI2}(p),\operatorname{RCI2}(q))
+=\operatorname{cmp}_{\mathrm{Par}}(p,q).
+```
+
+Zero escaping is lexicographically order-preserving. The endpoint terminator sorts before every
+continuation of a longer key, the fixed-width big-endian counter preserves unsigned multiplicity
+order, and the sequence terminator sorts before another nonzero family tag. The distinct count is a
+trailer rather than a header precisely so cardinality metadata cannot precede and perturb content
+order or shared prefixes.
+
+ACT remains valuable for compact PathMap serialization and later persistence experiments, but its
+arena offsets, line compression, node layout, and writer version are physical topology. Using ACT
+bytes as the primary channel image would couple semantic channel equality to one physical writer
+and make a logically neutral PathMap upgrade potentially change every channel key. RCI2 instead
+commits to the logical endpoint sequence; a compact snapshot and an insertion-order-different CoW
+root must produce the same image.
+
+This codec checkpoint is deliberately a shadow boundary. It does not change `StableHashSerialize`,
+event hashes, protobuf, legacy bincode, RhoPathV1, history keys, state roots, replay, or candidate
+selection. Production activation requires a new RhoPath version and paired identity decoder. It
+also requires the structural channel frame to factor through the same equality quotient: the
+current reversible canonical-path encoder observes root `locally_free`, so replacing only the
+identity suffix would still assign different complete RhoPath prefixes to equal `Par` channels.
+That repair must be channel-specific; the public reversible canonical-path codec must continue to
+round-trip root metadata.
 
 ## Matching architecture
 

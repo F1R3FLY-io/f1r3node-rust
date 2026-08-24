@@ -7,7 +7,9 @@ use pathmap::arena_compact::ArenaCompactTree;
 use pathmap::ring::{AlgebraicResult, DistributiveLattice, Lattice, SELF_IDENT};
 use proptest::collection::vec;
 use proptest::prelude::*;
-use rspace_plus_plus::rspace::bag::{Bag, BagCodecError, BagDelta, BagError, Multiplicity};
+use rspace_plus_plus::rspace::bag::{
+    Bag, BagCodecError, BagDelta, BagError, Multiplicity, SortedUniqueBagError,
+};
 
 fn bag(entries: &[(&[u8], u64)]) -> Bag {
     let mut result = Bag::new();
@@ -43,6 +45,36 @@ fn multiplicity_rejects_zero_and_detects_overflow() {
             requested: 3,
         })
     );
+}
+
+#[test]
+fn sorted_unique_stream_builds_one_exact_prefix_sharing_bag() {
+    let expected = bag(&[(b"", 1), (b"a", 2), (b"ab", 3), (b"b", 4)]);
+    let actual = Bag::try_from_sorted_unique(|writer| {
+        for (path, count) in [(&b""[..], 1), (&b"a"[..], 2), (&b"ab"[..], 3), (&b"b"[..], 4)] {
+            writer.push(path, Multiplicity::new(count).unwrap())?;
+        }
+        Ok::<(), SortedUniqueBagError>(())
+    })
+    .unwrap();
+
+    assert_eq!(actual, expected);
+    assert_eq!(actual.distinct_len(), 4);
+    assert_eq!(actual.cardinality(), 10);
+    assert_eq!(actual.compact_bytes(), expected.compact_bytes());
+}
+
+#[test]
+fn sorted_unique_stream_rejects_duplicates_and_reversal_without_publication() {
+    for paths in [[&b"a"[..], &b"a"[..]], [&b"b"[..], &b"a"[..]], [&b""[..], &b""[..]]] {
+        let result = Bag::try_from_sorted_unique(|writer| {
+            for path in paths {
+                writer.push(path, Multiplicity::ONE)?;
+            }
+            Ok::<(), SortedUniqueBagError>(())
+        });
+        assert_eq!(result.unwrap_err(), SortedUniqueBagError::NonAscending);
+    }
 }
 
 #[test]

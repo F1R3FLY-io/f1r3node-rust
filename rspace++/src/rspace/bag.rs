@@ -6,7 +6,10 @@ use pathmap::PathMap;
 use pathmap::arena_compact::ArenaCompactTree;
 use pathmap::merkleization::MerkleizeResult;
 use pathmap::ring::{AlgebraicResult, COUNTER_IDENT, DistributiveLattice, Lattice, SELF_IDENT};
-use pathmap::zipper::{Zipper, ZipperMoving, ZipperReadOnlyIteration, ZipperValues, ZipperWriting};
+use pathmap::zipper::{
+    WriteZipperUntracked, Zipper, ZipperMoving, ZipperReadOnlyIteration, ZipperValues,
+    ZipperWriting,
+};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use super::pathmap_codec::{CompactTrie, CompactTrieError};
@@ -41,6 +44,32 @@ impl fmt::Display for BagError {
 }
 
 impl std::error::Error for BagError {}
+
+/// Failure at the checked, strictly ascending bulk-construction boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SortedUniqueBagError {
+    NonAscending,
+    DistinctCountOverflow,
+    CardinalityOverflow,
+}
+
+impl fmt::Display for SortedUniqueBagError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NonAscending => {
+                formatter.write_str("Bag bulk input is duplicated or not strictly ascending")
+            }
+            Self::DistinctCountOverflow => {
+                formatter.write_str("Bag distinct endpoint count exceeds usize::MAX")
+            }
+            Self::CardinalityOverflow => {
+                formatter.write_str("Bag exact cardinality exceeds u128::MAX")
+            }
+        }
+    }
+}
+
+impl std::error::Error for SortedUniqueBagError {}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BagCodecError {
@@ -182,6 +211,51 @@ pub struct Bag {
     exact_cardinality: u128,
 }
 
+/// Checked sink for a strictly ascending stream of unique Bag endpoints.
+///
+/// The sink retains one write zipper and moves it between consecutive paths,
+/// so a canonical stream shares each adjacent longest common prefix instead
+/// of performing a root-to-leaf `contains`/`get`/`insert` sequence per key.
+/// The zipper's current path is also the previous-key order witness, so no
+/// copied key or entry collection is materialized.
+pub struct SortedUniqueBagWriter<'a> {
+    cursor: WriteZipperUntracked<'a, 'static, Multiplicity>,
+    has_previous: bool,
+    distinct_len: usize,
+    exact_cardinality: u128,
+}
+
+impl SortedUniqueBagWriter<'_> {
+    pub fn push(
+        &mut self,
+        path: &[u8],
+        multiplicity: Multiplicity,
+    ) -> Result<(), SortedUniqueBagError> {
+        if self.has_previous && self.cursor.path() >= path {
+            return Err(SortedUniqueBagError::NonAscending);
+        }
+        let distinct_len = self
+            .distinct_len
+            .checked_add(1)
+            .ok_or(SortedUniqueBagError::DistinctCountOverflow)?;
+        let exact_cardinality = self
+            .exact_cardinality
+            .checked_add(u128::from(multiplicity.get()))
+            .ok_or(SortedUniqueBagError::CardinalityOverflow)?;
+
+        self.cursor.move_to_path(path);
+        debug_assert!(
+            self.cursor.val().is_none(),
+            "strictly ascending bulk input cannot revisit an endpoint"
+        );
+        self.cursor.set_val(multiplicity);
+        self.has_previous = true;
+        self.distinct_len = distinct_len;
+        self.exact_cardinality = exact_cardinality;
+        Ok(())
+    }
+}
+
 impl Bag {
     fn move_to_next_value(cursor: &mut impl ZipperMoving) -> bool {
         loop {
@@ -218,6 +292,34 @@ impl Bag {
     }
 
     pub fn new() -> Self { Self::default() }
+
+    /// Construct directly from a producer of strictly ascending unique paths.
+    ///
+    /// The producer can parse an external stream into a reusable key buffer
+    /// and call [`SortedUniqueBagWriter::push`] immediately. This keeps the
+    /// complete construction on one moving PathMap zipper and avoids an
+    /// intermediate entry vector. If the producer or sink rejects, the private
+    /// partial trie is dropped and no Bag is published.
+    pub fn try_from_sorted_unique<E>(
+        producer: impl FnOnce(&mut SortedUniqueBagWriter<'_>) -> Result<(), E>,
+    ) -> Result<Self, E> {
+        let mut entries = PathMap::new();
+        let (distinct_len, exact_cardinality) = {
+            let mut writer = SortedUniqueBagWriter {
+                cursor: entries.write_zipper(),
+                has_previous: false,
+                distinct_len: 0,
+                exact_cardinality: 0,
+            };
+            producer(&mut writer)?;
+            (writer.distinct_len, writer.exact_cardinality)
+        };
+        Ok(Self {
+            entries,
+            distinct_len,
+            exact_cardinality,
+        })
+    }
 
     pub fn from_pathmap(entries: PathMap<Multiplicity>) -> Self {
         let mut distinct_len = 0usize;

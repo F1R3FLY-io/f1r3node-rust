@@ -8,3 +8,4 @@ theories/RMP2.v
 theories/SpatialMatcher.v
 theories/FreeMapJournal.v
 theories/AccountingDemand.v
+theories/ChannelImage.v

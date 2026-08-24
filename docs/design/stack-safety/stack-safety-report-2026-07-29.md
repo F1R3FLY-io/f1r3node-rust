@@ -9863,6 +9863,69 @@ over 1,000 unconsumed-arrival operations it records 11,000 fewer, with equal dis
 The complete protocol, all ten cells, qualifications, commands, and evidence hashes are retained in
 [`measurements/accepted-match-transaction-profiles-2026-08-24.md`](measurements/accepted-match-transaction-profiles-2026-08-24.md).
 
+### 5.39 RCI2 channel-image cursor and canonical ParBag reconstruction [SS-Y19]
+
+SS-Y19 introduces a shadow codec for the complete logical identity of one Rholang channel. It does
+not activate a new RSpace key or consensus lane. The encoder visits borrowed, strictly ordered RPB3
+endpoints through `ParBag::try_visit_canonical_key_parts`; it does not decode a component, expand a
+multiplicity, project `Vec<Par>`, sort entries, or serialize ACT topology. Each relative key is
+zero-escaped into the output, followed by one fixed-width `Multiplicity(u64)`. A sequence terminator,
+exact distinct count, and one root `connective_used` bit complete the image. Top-level
+`locally_free` is absent because current `Par::{Eq, Ord, Hash}` excludes it.
+
+The RCI2 decoder is one forward cursor. It restores the four-byte RPB3 domain into one reused key
+buffer, checks every cursor advance and fixed-width read, delegates exact endpoint admission to the
+existing RPB3 validator, requires positive multiplicity and strict lexical ascent, and feeds one
+moving `WriteZipperUntracked`. Its own native control stack is constant in both endpoint depth and
+channel width, and the completed Bag is published only after the producer succeeds. Encoding uses
+$`O(I)`$ output for retained image length $`I`$ and constant zipper control state. The RCI2 cursor
+and generated RPB3 decoder use neither `RUST_MIN_STACK`, `stacker`, recursive traversal, nor an
+artificial depth limit.
+
+The transient-heap claim must include the delegated validator. An adversarial audit found that the
+general exact RPB3 path currently materializes a typed component, canonicalizes it, and re-encodes
+it to compare the claimed score/body pair. Thus the present end-to-end admission bound is reusable
+$`O(L)`$ key scratch plus the stack-safe decoded component, regenerated key, canonicalization
+workspace, and output Bag—not merely key scratch plus output. A generated-schema byte-admission PDA
+that computes the authoritative canonical summary without an AST is required before claiming the
+intended $`O(L + K + D + W)`$ heap bound for key scratch, canonical summaries, PDA work, and output.
+
+The focused executable gate contains twelve tests. It covers every schema family, the root-
+`locally_free` quotient, empty false/true connective separation, pairwise image/`Par` ordering,
+identity-normalized round trip, maximum `u64` multiplicity, insertion-history and CoW invariance,
+compact-PathMap round-trip invariance, exact stream-prefix consumption, all truncation points,
+invalid domains/versions/escapes/families/counts/flags, duplicate and reversed endpoints, arbitrary
+byte inputs, and depth 192 plus width 1,024 on a 256 KiB worker stack. This is a fixed-small-stack
+survival result, not a byte-per-level bisection; the constant-stack claim follows additionally from
+the cursor implementation's absence of a recursive call edge.
+
+The formal bundle separates the semantic and executable arithmetic boundaries. Rocq proves prefix
+and exact parser left inverses, semantic-image uniqueness, root-summary quotienting, connective
+separation, exact multiplicity preservation, admitted-sequence canonicality, and negative controls
+for duplicates, reversal, noncanonical RPB3 keys, and zero multiplicity, with every printed capstone
+closed under the global context. Verus verifies 33 production-shaped obligations with
+`--no-cheating`: checked cursor arithmetic, exact big-endian reads, each escaped-frame transition,
+strict count handling, byte-stuffing round trip, endpoint-sequence refinement, and a concrete
+non-vacuity witness. The explicit boundary is the production RPB3 canonical-key validator; neither
+formalization claims to prove generated protobuf parsing, PathMap internals, BLAKE2b, allocator
+behavior, or Rust memory semantics.
+
+The post-audit 2026-08-24 rerun is reproducible from two zero-swap scopes. The 16 GiB focused scope
+`run-p2164546-i22984890` passes 12/12 RCI2 cases, 28/28 Bag cases, and the RCI2 formal-manifest
+gate. The 8 GiB outer scope `run-p2172202-i22838040` passes the complete repository Rocq, Verus, Z3,
+TLC, and mCRL2 runner; RCI2's eleven Rocq assumption prints are closed and Verus reports 33 verified,
+zero errors. Captured-log SHA-256 values are recorded in PathMap journal J-021 rather than duplicated
+here.
+
+No latency, allocation, RSS, cache, or throughput verdict is inferred from this correctness gate.
+The codec intentionally adds no retained image cache. H-012 in the PathMap engineering journal
+requires a frozen RhoPathV1 control, complete RSpace lifecycle differential, geometric prefix/key
+matrix, allocations, peak heap, RSS, instruction/cache profiles, and report-only Heaptrack before
+RCI2 plus RhoPathV2 can receive a performance or production-activation verdict. The current
+RhoPathV1 structural channel frame still observes root `locally_free`; that equality mismatch must
+be repaired at the channel-specific RhoPathV2 boundary without weakening the reversible public
+canonical-`Par` codec.
+
 ---
 
 ## 6. Discussion

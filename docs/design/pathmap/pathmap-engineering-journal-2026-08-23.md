@@ -1604,6 +1604,89 @@ serialization, hashing, allocator, zipper-navigation, and `make_unique` costs in
 may this optimization occurrence-expand the Bag, project it to `Vec<Par>`, or serialize an ACT
 snapshot.
 
+### J-021 — 2026-08-24: channel identity is a logical RPB3 endpoint transcript, not ACT topology
+
+Question: What byte language lets an RSpace channel use the complete PathMap-backed `Par` identity
+without converting the trie to entries, coupling identity to a physical ACT writer, or losing the
+existing `Par::{Eq, Ord, Hash}` contract?
+
+Status: IMPLEMENTED SHADOW CODEC WITH FOCUSED EXECUTABLE VERIFICATION; PRODUCTION ACTIVATION AND
+PERFORMANCE VERDICT OPEN. The work is reachable through pgmcp `rspace-canonical-channel-image`.
+
+The authority audit found three constraints that an apparently convenient encoding misses. First,
+the resident component language is RPB3, not the retired RPB2 design. Second, current `Par` equality
+is exactly `(ParBag, connective_used)` and excludes only the top-level `locally_free` summary. Third,
+the complete RhoPathV1 prefix has a separate structural frame that currently observes that excluded
+summary; changing an identity suffix alone would not make the complete channel key equality-
+invariant.
+
+The selected `ChannelImageV2` format streams each strictly ascending RPB3 endpoint directly from
+`ParBag::try_visit_canonical_key_parts`. It strips only the common four-byte RPB3 domain, escapes
+zero as `00 FF`, terminates each key with `00 00`, writes one positive fixed-width big-endian
+`Multiplicity(u64)`, terminates the sequence, and trails the distinct count plus a one-bit
+`connective_used` flag. The decoder restores one complete key in reusable scratch space, delegates
+canonicality to the existing RPB3 validator, and feeds validated, strictly ascending keys to one
+moving `WriteZipperUntracked`; this removes the former contains/get/insert triple navigation and
+publishes the completed `ParBag` only after the full stream succeeds. Root `locally_free`
+normalizes to empty on decode because it is not identity; nested metadata remains in the canonical
+protobuf endpoint body.
+
+An adversarial transitive-call audit corrected an earlier overclaim: encoding is byte-native, but
+the current exact validator for a general externally supplied RPB3 endpoint still decodes its typed
+protobuf body, applies the authoritative canonical sorter/normalizer, and re-encodes it to reject a
+forged score/body pair. `ChannelImageV2::decode_bytes` avoids a second complete validation pass and
+the moving writer avoids entry projection, but these improvements do not make external admission
+zero-AST. Final byte-native admission therefore remains an explicit requirement: a generated-
+schema cursor must check canonical protobuf wire form and produce the same score/normalization
+summary as the authoritative sorter, including nested EPathMap/canonical-path fields, before RCI2
+can receive its intended time/space verdict.
+
+Two designs are rejected:
+
+1. An ACT snapshot is a compact physical PathMap serialization, not a stable logical channel
+   language. Arena layout, line compression, offsets, or writer-version changes must not rename a
+   semantically equal channel.
+2. Placing a distinct count or key length before endpoint content makes raw byte comparison observe
+   lengths before the PathMap key sequence. The selected terminator grammar keeps content prefixes
+   adjacent and makes validated raw-image order equal `Par::Ord`.
+
+The focused executable matrix covers the complete schema corpus, root-locally-free invariance,
+connective separation including the two empty values, raw-image/`Par` pairwise order equivalence,
+maximum `u64` multiplicity, insertion-order and CoW invariance, ACT round-trip invariance, exact
+prefix consumption, every truncation point, invalid domains/escapes/families/counts/flags,
+duplicate and permuted endpoints, arbitrary hostile bytes, and deep/wide operation on a 256 KiB
+stack. A source gate rejects occurrence traversal, sorting, `trie_snapshot`, ACT serialization, or
+replacement of the monotone writer in the channel-image path. Hostile score/body, nonminimal
+varint, duplicate-oneof, and unknown-field cases additionally pin the present exact validator
+boundary while the byte-native replacement is implemented.
+
+No latency, allocation, RSS, cache, or throughput claim is made from those correctness gates. The
+format deliberately adds no clone-family cache: the existing `ParBagAux` retained-space budget and
+the uncertainty of repeated channel-image demand require measurement before another memoized byte
+array is justified. The monotone writer is a structural improvement rather than an empirical
+cardinality heuristic: an already validated strictly ascending stream requires one cursor and one
+copy-on-write publication, and duplicate/reversed/error paths prove that no partial Bag escapes.
+Performance measurement must still quantify the complete operation after byte-native admission
+removes the remaining typed decode/re-encode boundary.
+
+The 2026-08-24 checkpoint was re-run under zero-swap systemd scopes after that audit and writer
+repair. Scope `run-p2164546-i22984890` passed 12/12 channel-image tests, 28/28 Bag tests, and the
+focused formal-manifest gate under a 16 GiB cap; their captured-log SHA-256 values are respectively
+`0e275f780ad7790365f11ff38b980d6641378578ce911a3b61b3712cc8cdbdb0`,
+`3d0d1baeeac271a5e7ec34ffd8b1b23486a932a3ed7dd2597426424f7ae5453a`, and
+`dd8e315d4956739fbfdc966ceb68681eafc641b073fc5672afaf6c57bf1f2212`.
+Scope `run-p2172202-i22838040` then passed the complete Rocq, Verus, Z3, TLC, and mCRL2 runner
+under an 8 GiB outer cap with nested 1 GiB model-checker caps; the log SHA-256 is
+`3e869d4160c9c5607e5c76006350858e916a60310e0135b3964630429963e21b`. RCI2 contributes eleven
+Rocq capstones closed under the global context and 33 Verus obligations with no cheating or
+implicit-trigger warning.
+
+Decision: keep PathMap logical endpoints authoritative and ACT as an optional compact persistence
+image. Before RSpace activation, introduce an explicit channel-identity trait and RhoPathV2 paired
+decoder, normalize only the structural channel frame's root metadata, preserve every legacy event/
+history/bincode hash through an explicit bridge, and prove the complete-channel theorem rather than
+only the identity-suffix theorem.
+
 ## Open hypotheses and required closure evidence
 
 | ID | Hypothesis | Required evidence before acceptance | Status |
@@ -1619,6 +1702,7 @@ snapshot.
 | H-009 | Group-compressed candidate masks plus retention-pressure scheduling remove the conditional depth×duplicate-width endpoint slope without changing ordered candidate or matcher semantics. | Frozen occurrence control; exact ordered-domain oracle; depth×width/source-orientation matrix; mixed `FreeMap`/remainder differential; randomized expansion modes; 51-sample locked experiment; headless allocation, peak-heap, instruction/cache, and CPU attribution; full release gate. | **Accepted** at `e3f3b4831`, with experiment 312 accepted and the repaired exact 4,502/4,502 release lifecycle gate closed at `8035ba826` |
 | H-010 | Immutable candidate authority plus a separate reservation Bag reduces speculative CoW mutation without a material regression from availability filtering under high reservation pressure. | Frozen decrement/reinsert control; equal exact selections and rollback states; distinct/repeated identities; single/repeated channels; low/high reservation pressure; Criterion confidence decision; allocation and RSS attribution; report-only Heaptrack plus instruction/cache profile; exact release lifecycle. | Open; representation and semantic invariants accepted at `173bf4e07`/`39bc0d999`, performance verdict deliberately not inferred |
 | H-011 | One validated accepted-match publication removes width-dependent split-store overhead without an unacceptable narrow-cell regression. | Frozen git-history control; exact post-state/stale nonmutation; singleton and join-2 99% CI guards; repeated/join/arrival matrix; exact lock/root/allocation attribution; RSS, report-only Heaptrack, and instruction/cache profiles. | **Accepted** at `281c1698a` and pgmcp experiment 313; singleton/join-2 conservative ratios pass 1.05, the powered join-32 replication and wide/repeated/arrival cells improve, and persistent/named/singleton-tail negatives remain documented |
+| H-012 | A logical RCI2 endpoint transcript plus an equality-invariant RhoPathV2 channel frame improves channel-key construction and matching without changing any selected COMM or legacy hash. | Frozen RhoPathV1/canonical-bincode control; complete equality/order/hash corpus; root-LF and connective counterexamples; repeated/ordered channel groups; play/replay/checkpoint/reset/export/import differential; geometric key-size/prefix-sharing matrix; allocations, peak heap, RSS, instructions/cache, and report-only Heaptrack; explicit legacy bridge and epoch proof. | Open; shadow codec and focused correctness matrix implemented, production activation and performance experiment not yet authorized by those results |
 
 ## Threats to validity
 

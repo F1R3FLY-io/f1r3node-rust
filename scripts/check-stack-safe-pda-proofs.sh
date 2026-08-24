@@ -67,6 +67,17 @@ if [[ "$accounting_demand_closed_capstones" != "4" ]]; then
   echo "stack-safe-pda: expected all four accounting-demand Rocq capstones to be closed; got $accounting_demand_closed_capstones" >&2
   exit 1
 fi
+channel_image_rocq_output="$(
+  tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/ChannelImage.v 2>&1
+)"
+printf '%s\n' "$channel_image_rocq_output"
+channel_image_closed_capstones="$({
+  printf '%s\n' "$channel_image_rocq_output" | grep -c '^Closed under the global context$'
+} || true)"
+if [[ "$channel_image_closed_capstones" != "11" ]]; then
+  echo "stack-safe-pda: expected all eleven ChannelImage Rocq capstones to be closed; got $channel_image_closed_capstones" >&2
+  exit 1
+fi
 popd >/dev/null
 
 verus_bin="${VERUS:-$(command -v verus || true)}"
@@ -84,6 +95,8 @@ tlc_bounded "$verus_bin" --no-cheating --num-threads 1 \
   "$repo_root/formal/verus/free_map_transaction.rs"
 tlc_bounded "$verus_bin" --no-cheating --num-threads 1 \
   "$repo_root/formal/verus/accounting_demand.rs"
+tlc_bounded "$verus_bin" --no-cheating --num-threads 1 \
+  "$repo_root/formal/verus/channel_image_cursor.rs"
 
 z3_output="$(tlc_bounded z3 "$repo_root/formal/smt/stack_safe_pda_modes.smt2")"
 if [[ "$z3_output" != "unsat" ]]; then

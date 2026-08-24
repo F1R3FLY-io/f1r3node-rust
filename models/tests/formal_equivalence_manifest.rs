@@ -214,6 +214,7 @@ fn rocq_kernel_contains_no_unproved_declarations() {
         "formal/rocq/stack_safe_pda/theories/SpatialMatcher.v",
         "formal/rocq/stack_safe_pda/theories/FreeMapJournal.v",
         "formal/rocq/stack_safe_pda/theories/AccountingDemand.v",
+        "formal/rocq/stack_safe_pda/theories/ChannelImage.v",
     ] {
         let source = read_repository_file(relative);
         for forbidden in ["Admitted.", "admit.", "Axiom "] {
@@ -222,6 +223,123 @@ fn rocq_kernel_contains_no_unproved_declarations() {
                 "{relative} contains an unproved declaration marker `{forbidden}`"
             );
         }
+    }
+}
+
+#[test]
+fn channel_image_v2_codec_proof_and_executable_boundaries_are_manifested() {
+    let rocq = read_repository_file("formal/rocq/stack_safe_pda/theories/ChannelImage.v");
+    for marker in [
+        "Theorem channel_prefix_parser_is_left_inverse",
+        "Theorem channel_exact_parser_is_left_inverse",
+        "Theorem canonical_channel_image_is_unique_iff_semantic_par_equality",
+        "Theorem root_locally_free_is_quotiented_out",
+        "Theorem connective_flag_separates_otherwise_equal_channels",
+        "Theorem endpoint_multiplicities_are_preserved_exactly",
+        "Theorem every_successfully_decoded_channel_has_canonical_endpoints",
+        "Theorem duplicate_endpoint_fails_strict_order_check",
+        "Theorem permuted_endpoint_fails_strict_order_check",
+        "Theorem noncanonical_rpb3_endpoint_fails_admission_check",
+        "Theorem zero_multiplicity_fails_admission_check",
+        "Print Assumptions channel_prefix_parser_is_left_inverse.",
+        "Print Assumptions channel_exact_parser_is_left_inverse.",
+        "Print Assumptions canonical_channel_image_is_unique_iff_semantic_par_equality.",
+        "Print Assumptions root_locally_free_is_quotiented_out.",
+        "Print Assumptions connective_flag_separates_otherwise_equal_channels.",
+        "Print Assumptions endpoint_multiplicities_are_preserved_exactly.",
+        "Print Assumptions every_successfully_decoded_channel_has_canonical_endpoints.",
+        "Print Assumptions duplicate_endpoint_fails_strict_order_check.",
+        "Print Assumptions permuted_endpoint_fails_strict_order_check.",
+        "Print Assumptions noncanonical_rpb3_endpoint_fails_admission_check.",
+        "Print Assumptions zero_multiplicity_fails_admission_check.",
+    ] {
+        assert!(
+            rocq.contains(marker),
+            "ChannelImageV2 Rocq proof is missing `{marker}`"
+        );
+    }
+
+    let verus = read_repository_file("formal/verus/channel_image_cursor.rs");
+    for marker in [
+        "pub fn checked_cursor_add(",
+        "pub fn checked_bounded_advance(",
+        "pub fn checked_cursor_increment(",
+        "pub fn executable_u64_from_be_bytes(",
+        "pub fn checked_fixed_u64_read(",
+        "pub fn checked_escaped_frame_step(",
+        "pub fn checked_distinct_increment(",
+        "pub fn exact_distinct_count(",
+        "proof fn admitted_endpoint_encoder_decoder_refinement(",
+        "proof fn admitted_endpoints_encoder_decoder_refinement(",
+        "proof fn admitted_channel_encoder_decoder_refinement(",
+        "proof fn admitted_channel_boundary_is_non_vacuous(",
+    ] {
+        assert!(
+            verus.contains(marker),
+            "ChannelImageV2 Verus proof is missing `{marker}`"
+        );
+    }
+    for forbidden in ["assume(", "admit(", "external_body"] {
+        assert!(
+            !verus.contains(forbidden),
+            "ChannelImageV2 Verus proof contains forbidden escape `{forbidden}`"
+        );
+    }
+
+    let codec = read_repository_file("models/src/rust/channel_image.rs");
+    for marker in [
+        "try_visit_canonical_key_parts",
+        "take_escaped_frame",
+        "validate_canonical_key",
+        "DistinctCountMismatch",
+        "NonAscendingEndpoint",
+    ] {
+        assert!(
+            codec.contains(marker),
+            "ChannelImageV2 codec is missing executable boundary `{marker}`"
+        );
+    }
+    for forbidden in [
+        "visit_decoded",
+        "decode_occurrences",
+        ".sort(",
+        ".sort_by",
+        "compact_snapshot(",
+        "trie_snapshot(",
+    ] {
+        assert!(
+            !codec.contains(forbidden),
+            "ChannelImageV2 codec contains forbidden projection `{forbidden}`"
+        );
+    }
+
+    let oracle = read_repository_file("models/tests/channel_image_v2.rs");
+    for marker in [
+        "image_is_exactly_a_function_of_par_equality",
+        "raw_image_order_matches_par_order_over_the_complete_schema_corpus",
+        "decode_reconstructs_the_identity_normalized_par_without_entry_projection",
+        "malformed_images_fail_closed_at_every_scalar_and_trie_boundary",
+        "deep_and_wide_images_use_the_same_iterative_cursor_on_a_small_stack",
+        "arbitrary_bytes_never_escape_the_checked_cursor",
+    ] {
+        assert!(
+            oracle.contains(marker),
+            "ChannelImageV2 executable oracle is missing `{marker}`"
+        );
+    }
+
+    let coq_project = read_repository_file("formal/rocq/stack_safe_pda/_CoqProject");
+    assert!(coq_project.contains("theories/ChannelImage.v"));
+    let runner = read_repository_file("scripts/check-stack-safe-pda-proofs.sh");
+    for marker in [
+        "theories/ChannelImage.v",
+        "channel_image_closed_capstones",
+        "formal/verus/channel_image_cursor.rs",
+    ] {
+        assert!(
+            runner.contains(marker),
+            "ChannelImageV2 formal runner is missing `{marker}`"
+        );
     }
 }
 

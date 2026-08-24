@@ -4,6 +4,7 @@ pub mod block_implicits;
 pub mod block_metadata;
 pub mod bundle_ops;
 pub mod casper;
+pub mod channel_image;
 pub mod equivocation_record;
 pub mod normalizer_env;
 pub mod par;

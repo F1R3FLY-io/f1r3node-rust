@@ -86,6 +86,10 @@ name = "bit_vector_canonicity"
 path = "tests/bit_vector_canonicity.rs"
 
 [[test]]
+name = "channel_image_v2"
+path = "tests/channel_image_v2.rs"
+
+[[test]]
 name = "cold_store_records"
 path = "tests/cold_store_records.rs"
 

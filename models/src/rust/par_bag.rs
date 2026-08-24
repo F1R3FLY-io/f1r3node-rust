@@ -3777,6 +3777,32 @@ fn validate_key(path: &[u8]) -> Result<(ParComponentTag, usize, bool), ParBagCod
     Ok((tag, payload.len(), stable))
 }
 
+/// Metadata established by exact validation of one complete RPB3 endpoint.
+pub(crate) struct CanonicalKeyMetadata {
+    pub(crate) tag: ParComponentTag,
+    pub(crate) body_len: usize,
+    pub(crate) canonical_path_stable: bool,
+}
+
+/// Validate one complete canonical RPB3 endpoint for a sibling repository
+/// codec.
+///
+/// Keeping the complete validator here ensures a ChannelImage decoder cannot
+/// drift into a second RPB3 grammar. The current general validator decodes and
+/// re-encodes the typed body to prove that its claimed order key is exact;
+/// resident-key encoders do not call this external-admission boundary.
+pub(crate) fn validate_canonical_key(
+    path: &[u8],
+) -> Result<CanonicalKeyMetadata, ParBagCodecError> {
+    validate_key(path).map(
+        |(tag, body_len, canonical_path_stable)| CanonicalKeyMetadata {
+            tag,
+            body_len,
+            canonical_path_stable,
+        },
+    )
+}
+
 /// A borrowed, byte-native typed occurrence visited directly from the trie.
 /// Decode only when an operation actually needs the Rust AST value.
 #[derive(Clone, Copy)]
@@ -4121,6 +4147,61 @@ pub struct ParBag {
     /// are shared by CoW clones. A successful mutation detaches this compact
     /// metadata/cache block exactly once.
     aux: Arc<ParBagAux>,
+}
+
+/// Metric and singleton-cache accumulator paired with a streamed Bag writer.
+///
+/// The authoritative keys are inserted by `Bag::try_from_sorted_unique` on
+/// one moving zipper. This sidecar records the O(1) family metrics during that
+/// same pass, avoiding both generic insertion lookups and a repair traversal.
+pub(crate) struct CanonicalParBagAccumulator {
+    metrics: ParFamilyMetrics,
+    singleton_stable: Option<bool>,
+    distinct: usize,
+}
+
+impl CanonicalParBagAccumulator {
+    pub(crate) fn new() -> Self {
+        Self {
+            metrics: ParFamilyMetrics::default(),
+            singleton_stable: None,
+            distinct: 0,
+        }
+    }
+
+    pub(crate) fn record_prevalidated(
+        &mut self,
+        multiplicity: Multiplicity,
+        metadata: &CanonicalKeyMetadata,
+    ) -> Result<(), ParBagCodecError> {
+        self.metrics
+            .add_decoded(metadata.tag, multiplicity, metadata.body_len)?;
+        self.distinct = self
+            .distinct
+            .checked_add(1)
+            .expect("a streamed endpoint count already fits usize");
+        self.singleton_stable = if self.distinct == 1 && multiplicity == Multiplicity::ONE {
+            Some(metadata.canonical_path_stable)
+        } else {
+            None
+        };
+        Ok(())
+    }
+
+    pub(crate) fn finish(self, components: Bag) -> ParBag {
+        debug_assert_eq!(self.distinct, components.distinct_len());
+        let bag = ParBag {
+            components,
+            aux: Arc::new(ParBagAux::new(self.metrics)),
+        };
+        if let Some(stable) = self.singleton_stable {
+            bag.aux
+                .canonical_path_singleton_stable
+                .set(stable)
+                .expect("newly streamed ParBag stability cell is empty");
+        }
+        bag
+    }
 }
 
 /// Lazy unique partitions of one Par component family.
@@ -4857,6 +4938,26 @@ impl ParBag {
         &self,
         mut visitor: impl FnMut(ParComponentTag, &[u8], &[u8], Multiplicity),
     ) {
+        let result = self.try_visit_canonical_key_parts(|tag, score, protobuf, multiplicity| {
+            visitor(tag, score, protobuf, multiplicity);
+            Ok::<(), std::convert::Infallible>(())
+        });
+        match result {
+            Ok(()) => {}
+            Err(error) => match error {},
+        }
+    }
+
+    /// Fallible zero-decode traversal of every authoritative RPB3 endpoint.
+    ///
+    /// Returning the visitor's error stops the active borrowed zipper in the
+    /// same family immediately. This is the streaming boundary for encoders:
+    /// they can propagate checked-size failures without retaining a key or
+    /// completing an otherwise unusable traversal.
+    pub(crate) fn try_visit_canonical_key_parts<E>(
+        &self,
+        mut visitor: impl FnMut(ParComponentTag, &[u8], &[u8], Multiplicity) -> Result<(), E>,
+    ) -> Result<(), E> {
         for tag in [
             ParComponentTag::Send,
             ParComponentTag::Receive,
@@ -4868,15 +4969,16 @@ impl ParBag {
             ParComponentTag::Bundle,
             ParComponentTag::If,
         ] {
-            self.components.visit_relative_prefix(
+            self.components.try_visit_relative_prefix(
                 &component_prefix(tag),
                 |suffix, multiplicity| {
                     let (score, protobuf) = split_key_suffix(tag, suffix)
                         .expect("ParBag invariant: every component has a valid RPB3 key");
-                    visitor(tag, score, protobuf, multiplicity);
+                    visitor(tag, score, protobuf, multiplicity)
                 },
-            );
+            )?;
         }
+        Ok(())
     }
 
     /// Append one family's canonical score trees in the exact order encoded by

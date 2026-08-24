@@ -2653,6 +2653,26 @@ authority, candidate order, or metering rule. It strengthens the inner associati
 superset and stack/resource evidence within CBR-053. It does not yet prove every generated
 associative-commutative play/replay schedule and post-state, so CBR-053 remains `UNVERIFIED`.
 
+The 2026-08-24 RCI2 checkpoint adds a shadow, storage-independent image of current `Par` channel
+identity without activating it in any production key. It streams the authoritative RPB3
+`PathMap<Multiplicity>` endpoints and root `connective_used` bit; it excludes only top-level
+`locally_free`, exactly as current `Par` equality does. Focused executable and formal gates pin
+image uniqueness, raw ordering, exact multiplicity, malformed-input refusal, and iterative
+reconstruction. ACT is deliberately not the semantic image because physical arena layout and
+writer versions must not rename a logically equal channel.
+
+This checkpoint leaves `StableHashSerialize`, legacy bincode and protobuf bytes, event digests,
+COMM ordering, RhoPathV1, data-index keys, history leaves, state roots, replay, merger identity,
+state sync, CLI/REPL rendering, and matcher selection byte-for-byte on their prior paths. It is
+therefore evidence and preparatory code under CBR-053, not a new active consensus change. Production
+activation is explicitly forbidden until a channel-specific RhoPathV2 removes root
+`locally_free` from its structural identity frame, a collision-checked legacy-digest/image bridge
+is complete, ordered matcher groups remain distinct from unordered history group identity, and the
+complete play/replay/checkpoint/reset/export/import differential proves the selected COMM, event
+trace, and post-state root. Migrating history or event identity additionally requires an explicit
+consensus epoch and replay/preimage-complete state migration; a digest-only historical leaf cannot
+reconstruct an RCI2 image by itself. CBR-053 consequently remains `UNVERIFIED`.
+
 #### (b) How it may break consensus
 
 | Axis | Verdict |
