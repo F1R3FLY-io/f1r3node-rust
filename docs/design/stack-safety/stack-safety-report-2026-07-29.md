@@ -367,6 +367,7 @@ Abbreviations used throughout are ABI (application binary interface), CBR (conse
 | **SS-Y13** | exposed by experiments 307–308; repaired by SS-A19; pgmcp experiment 309 | f1r3node | the nominally width-independent EPathMap matcher first built proportional cut plans, then redundantly rebuilt every canonical path after ParBag had already validated the resident endpoint | rejected treatment allocations **7,674,833** versus **5,222,542** control; selected treatment **4,660,158**, with no `validate_canonical_path` frame beneath endpoint preparation | ✅ **REPAIRED** — admission proof crosses the zipper boundary and trusted decoding starts only after both borrowed cursors are released | [5.33](#533-canonical-protobuf-width-refinement-for-the-printer-and-epathmap-matcher-ss-a18-ss-a19-ss-x2-ss-y12-ss-y13) |
 | **SS-Y14** | exposed by pgmcp experiment 5990 v1; repaired by SS-A21 | f1r3node | creating a bounded CoW suffix checkpoint after every deterministic exact or already-bound-capture atom removed clone slope but doubled ordinary exact/repeated-query latency | v1 exact median control/treatment ratio about **0.487** and repeated about **0.536**; the negative 3,000-observation matrix is retained | ✅ **REPAIRED** — one paired cursor consumes maximal deterministic runs and checkpoints only branch ownership | [5.34](#534-rmp2-byte-native-projection-cache-and-candidate-product-continuations-ss-a20-ss-a21-ss-y14) |
 | **SS-Y15** | exposed by the exact release workspace gate after `253d17545`; repaired `1afd4791e`; pgmcp bugs 5994/5995 and experiment 311 | f1r3node | two stack-safe boundaries still rebuilt every recursively shorter resident suffix: generated nested-`Send` child attachment before evaluation, then loss of the stable-ground structural proof and PathMap CoW root at reducer `Join` | `plain_deploy` control **2.91 / 10.79 / 44.21 s** at depths 8,192/16,384/32,768; pre-Join `env_get_deploy` **2.59 / 9.94 s** at 8,192/16,384 and >146.9 s at 131,072; depth-8,192 environment profile **53,747,932 $`\rightarrow`$ 963,802** allocation calls | ✅ **REPAIRED** — generated-schema immediate-child regions, typed stable-ground proof, substitution CoW identity, and the general additive-zero resident Bag Join; selected times **0.13 / 0.25 / 0.48 / 2.03 s** through depth 131,072; unchanged 2 MiB/120 s gate and exact 4,495-test release workspace pass | [5.35](#535-resident-send-projection-and-proof-preserving-reducer-join-ss-y15) |
+| **SS-Y16** | exposed by pgmcp task 5907; repaired `e3f3b4831`; experiment 312 | f1r3node | candidate algebra expanded every byte-identical target occurrence into every query leaf and fixed postorder retained all sibling masks, giving $`\Theta(dw)`$ live endpoints at connective depth $`d`$ and duplicate width $`w`$ | primary width-4,096 OR median **5,513,777.071 $`\rightarrow`$ 18,869.671 ns**; opposing depth-8/width-256 OR **9,277,837.667 $`\rightarrow`$ 548,836.738 ns**; opposing Heaptrack peak **3.57 MiB $`\rightarrow`$ 742.19 KiB** | ✅ **REPAIRED** — semantic-group `PathMap<()>` masks, native join/meet, Sethi–Ullman retention-pressure scheduling, and one adaptive root expansion; 57/57 debug and release differentials preserve exact ordered domains, verdicts, complete `FreeMap`, and remainder | [5.36](#536-semantic-group-candidate-masks-and-retention-pressure-ss-y16) |
 | **SS-E1** | `5a744c66`, `ad468163`, `08e876fd`, `6a264e05` | f1r3node | ★ **Phase 3b's PREREQUISITE instrument** — the identical-total-order argument, the sorter golden's first depth-$`\geq 2`$ rows, and the re-entry ladder probe. ⚠ **No traversal was converted**, so this is deliberately not a class change | ⌀ — an instrument, not a traversal | **no** — by construction | [5.6.7](#567-ss-e1--3bs-prerequisite-instrument-and-the-two-checks-that-were-blind) |
 | **SS-E2** | `26876b65`, `87e514b6` | f1r3node | generated traversal registry $`\leftrightarrow`$ proof/oracle manifest; Rocq generic PDA equivalence, EPathMap algebra, and structural EPM1 framing/value-table laws; SMT mode dispatch; TLA+ transition model | 30 depth + 6 width production subjects, **zero tripwire subjects** | enabling and closure evidence | [5.12](#512-generated-par-pda-closure-ss-a8-ss-e2) |
 | **SS-E3** | `b2d84064`, `68e8290d` | f1r3node | Phase 7 resource closure: independent PathMap set/map hash and `Message::clear` ladders; derived-register Cachegrind axis; matched-control Massif axis | **40** converted subjects, all subquadratic; four stack-to-heap transfers measured linear | enabling and closure evidence | [5.14](#514-resource-closure--heap-and-deterministic-time-ss-e3); PathMap slice: [PathMap §5.6](../pathmap/pathmap-report-2026-08-03.md#56-hash-and-clear-ladders) |
@@ -525,6 +526,7 @@ register rows (SS-C5…SS-C14, SS-Y6) and the stack-safety consequences.
   - [5.33 Canonical-protobuf width refinement for the printer and EPathMap matcher [SS-A18, SS-A19, SS-X2, SS-Y12, SS-Y13]](#533-canonical-protobuf-width-refinement-for-the-printer-and-epathmap-matcher-ss-a18-ss-a19-ss-x2-ss-y12-ss-y13)
   - [5.34 RMP2 byte-native projection, cache, and candidate-product continuations [SS-A20, SS-A21, SS-Y14]](#534-rmp2-byte-native-projection-cache-and-candidate-product-continuations-ss-a20-ss-a21-ss-y14)
   - [5.35 Resident Send projection and proof-preserving reducer Join [SS-Y15]](#535-resident-send-projection-and-proof-preserving-reducer-join-ss-y15)
+  - [5.36 Semantic-group candidate masks and retention pressure [SS-Y16]](#536-semantic-group-candidate-masks-and-retention-pressure-ss-y16)
 - [6. Discussion](#6-discussion)
   - [6.1 Why the explicit-worklist shape, and why it is *smaller* than what it replaces](#61-why-the-explicit-worklist-shape-and-why-it-is-smaller-than-what-it-replaces)
   - [6.2 Why the SCC is the unit of conversion](#62-why-the-scc-is-the-unit-of-conversion)
@@ -9617,6 +9619,78 @@ does not reopen the exact semantic, stack, or release gates.
 
 ---
 
+### 5.36 Semantic-group candidate masks and retention pressure [SS-Y16]
+
+SS-Y16 is a heap/work-slope correction inside the already stack-safe spatial-matcher PDA. It does
+not identify native-stack recursion. The predecessor represented a candidate query by one
+`PathMap<()>` endpoint per matching target **occurrence**, even when thousands of occurrences had
+identical authoritative canonical identity bytes. Its fixed postorder evaluator also retained all
+sibling results until their parent reduced them. An opposing connective plan of depth $`d`$ over a
+duplicate group of width $`w`$ could therefore keep $`\Theta(dw)`$ endpoints live while expressing
+only one semantic choice.
+
+#### 5.36.1 The authority is a semantic group, not an occurrence
+
+The selected representation assigns each canonical-identity equivalence class a fixed-width
+nonzero `u64` group identifier and stores only those identifiers in a prefix-compressed
+`PathMap<()>`. Leaves discover matching groups through the existing Bag/catalog read zipper.
+Conjunction and disjunction use native PathMap `meet` and `join`; `Empty` and `All` remain absorbing
+fast paths. No target `Par` is decoded or projected into a shadow vector, set, or hash map.
+
+The root mask is expanded exactly once. A read zipper decodes each selected group identifier once,
+then chooses among already-ordered concatenation, sparse position sorting, and a dense membership
+bit-vector scan. The resulting ascending `Vec<u64>` is solely the existing ListMachine's
+random-access position witness. It is neither the membership authority nor a `Vec<Par>`.
+
+#### 5.36.2 The continuation stores scalar work, not retained maps
+
+The plan compiler computes a Sethi–Ullman-style retention pressure. A leaf has pressure one; an
+n-ary node evaluates children in descending pressure and uses
+
+```math
+P_{\mathrm{nary}} = \max\!\left(P_0,\;1 + \max_{i>0} P_i,\;3\right).
+```
+
+Work weight breaks unequal-pressure ties, while exact ties preserve source order. Capture
+discovery remains source ordered. The explicit `Work` PDA therefore holds scalar indices and
+continuations; retained immutable PathMap roots live in a separate LIFO accumulator and are
+released as soon as a parent consumes them. This is still an iterative traversal with $`O(1)`$
+native-stack use and no depth cap, recursive fallback, enlarged stack, or stack-switching crate.
+
+#### 5.36.3 Accepted experiment and physical attribution
+
+Pgmcp experiment 312 compared the frozen occurrence-mask/postorder control with the production
+group-mask/pressure treatment across 13 fixtures and 51 retained Criterion observations per arm
+per fixture (1,326 observations). The preregistered primary width-4,096 OR median fell from
+5,513,777.071 to 18,869.671 ns per evaluation (treatment/control 0.003422), with $`U=0`$,
+$`p=1.6518407509198735\times10^{-18}`$, Cliff's delta $`-1.0`$, and relative median improvement
+0.9966. The distinct sparse guard also improved, from 2,330.140 to 1,441.165 ns.
+
+Headless Heaptrack (`--record-only` plus `heaptrack_print`) reduces the duplicate fixture's
+allocation calls from 159,590 to 30,304 and the opposing fixture's modeled peak heap from 3.57 MiB
+to 742.19 KiB. Equal-three-warmup Cachegrind profiles reduce instruction references by 90.60% and
+data references by 88.64%; paired Massif reduces modeled peak bytes from 3,292,888 to 1,778,424.
+Headless AMD uProf moves the hot path from PathMap mutation/CoW uniqueness to read-only prefix and
+zipper traversal. The first Heaptrack recording accidentally opened its GUI and is explicitly
+rejected; every accepted trace was recollected in report-only mode.
+
+#### 5.36.4 Equivalence and assurance boundary
+
+The complete 57-case matcher-equivalence module passes in both debug and release. It covers
+opposing depth/width matrices, both source orientations, encoded and resident inputs, mixed
+duplicates, empty/all/sparse/dense expansion, deterministic randomized layouts, and the adverse
+scheduler control. Each case preserves the exact ordered candidate domain, matcher verdict,
+complete `FreeMap`, remainder, and original position order. The non-default frozen control,
+benchmark fixture, Criterion target, and probe cannot enter default production.
+
+Candidate filtering remains conservative; the spatial matcher retains authority for acceptance
+and publication. This local representation and scheduling result therefore does not close the
+broader CBR-053 generated-schedule and AC-lifecycle obligations. The complete method, raw samples,
+commands, hashes, rejected protocols, and validity threats are in
+[`measurements/spatial-matcher-candidate-group-mask-2026-08-23.md`](measurements/spatial-matcher-candidate-group-mask-2026-08-23.md).
+
+---
+
 ## 6. Discussion
 
 ### 6.1 Why the explicit-worklist shape, and why it is *smaller* than what it replaces
@@ -10431,6 +10505,24 @@ systemd-run --user --scope \
   > /tmp/campaign-4131-full-release-nextest-1afd4791e.log 2>&1
 ```
 
+**A.12 — SS-Y16 semantic-group masks.** The committed measurement record contains the complete
+Criterion, Cachegrind, Massif, headless Heaptrack, and headless AMD uProf commands and artifact
+hashes. The focused equivalence command is:
+
+```bash
+systemd-run --user --scope \
+  -p MemoryHigh=8G -p MemoryMax=12G -p MemorySwapMax=0 \
+  env RUST_BACKTRACE=1 cargo test --release -p rholang \
+  interpreter::matcher::spatial_matcher_pda_equivalence -- --test-threads=1
+```
+
+Heaptrack reproduction must remain report-only:
+
+```bash
+heaptrack --record-only -o /tmp/candidate-group-mask.zst PROGRAM ARGUMENTS
+heaptrack_print /tmp/candidate-group-mask.zst.zst
+```
+
 ---
 
 ## Appendix B — raw data locations
@@ -10453,6 +10545,8 @@ systemd-run --user --scope \
 | [`measurements/rspace-candidate-suffix-checkpoint-v2-heaptrack-2026-08-23.md`](measurements/rspace-candidate-suffix-checkpoint-v2-heaptrack-2026-08-23.md) | SS-A21's headless allocation-mechanism attribution (§5.34) |
 | [`measurements/rspace-candidate-suffix-checkpoint-v2-callgrind-2026-08-23.md`](measurements/rspace-candidate-suffix-checkpoint-v2-callgrind-2026-08-23.md) | SS-A21's deterministic instruction ladder and exact result digests (§5.34) |
 | [`measurements/resident-send-reducer-join-2026-08-23.md`](measurements/resident-send-reducer-join-2026-08-23.md) | SS-Y15's generated-region and proof-preserving Join ladders, headless allocation attribution, exact 131,072-depth gate, full release result, commands, hashes, and threats (§5.35) |
+| [`measurements/spatial-matcher-candidate-group-mask-2026-08-23.md`](measurements/spatial-matcher-candidate-group-mask-2026-08-23.md) | SS-Y16/experiment 312 protocol, group-mask and retention-pressure algorithm, exact timing table, report-only Heaptrack, paired Cachegrind/Massif, headless uProf, equivalence gates, rejected protocols, hashes, and threats (§5.36) |
+| [`measurements/spatial-matcher-candidate-group-mask-2026-08-23.tsv`](measurements/spatial-matcher-candidate-group-mask-2026-08-23.tsv) | all 1,326 normalized Criterion observations: 13 fixtures × 2 arms × 51 retained samples, with aggregate elapsed nanoseconds and iteration counts (§5.36) |
 | [`measurements/spatial-matcher-heap-2026-08-04.tsv`](measurements/spatial-matcher-heap-2026-08-04.tsv) | matched matcher/control allocator, peak-heap, profiler-RSS, unprofiled-RSS, and runtime rows before `714d618c`, after it, and after the final singleton refinement `6f1412ee` (§5.16.4) |
 | [`measurements/e8b-native-pathmap-par-e6a-2026-08-04.tsv`](measurements/e8b-native-pathmap-par-e6a-2026-08-04.tsv) | the 51 submitted samples per arm, treatment phase splits, finalized digests, and locked E-8b decision metadata (§5.17.3) |
 | [`measurements/epathmap-canonical-worklist-2026-08-08.tsv`](measurements/epathmap-canonical-worklist-2026-08-08.tsv) | the SS-C12 quadratic predecessor, reproducible linear ladder, depth-20,000 worklist, malformed-gate allocator lifetime, and formal-equivalence aggregate (§5.19) |
@@ -10563,14 +10657,15 @@ accepting this file as a positional extra page):
 DOCLINT_DOI=off ../mettail-rust/docs/languages/validate.sh \
   docs/design/pathmap/pathmap-engineering-journal-2026-08-23.md \
   docs/design/stack-safety/stack-safety-report-2026-07-29.md \
-  docs/design/stack-safety/measurements/resident-send-reducer-join-2026-08-23.md \
+  docs/design/stack-safety/measurements/spatial-matcher-candidate-group-mask-2026-08-23.md \
+  docs/design/rspace/pathmap-bag-rspace-integration.md \
   docs/consensus/consensus-change-register.md
 ```
 
 The run of record for this revision (2026-08-23), SHA-256
-`53f7a604c5f80c54c590fd91e45782286b048f340ea192a8b88a27e1f1028f54`, passes **16 of 17**
-mechanised checks over the two living reports, the PathMap journal, and the SS-Y15 measurement
-record, with the
+`4b4735c4643a53a02d5fb2b830797d46135d8859179660c6e1ccde3dc13097aa`, passes **16 of 17**
+mechanised checks over the stack-safety and consensus living reports, the PathMap journal, the
+RSpace integration report, and the SS-Y16 measurement record, with the
 network-dependent DOI-resolution check explicitly skipped (`DOCLINT_DOI=off`); the four
 editorially-judged guidelines are dispositioned in §E.3. This is a timestamped measurement, not a
 standing property — re-run the command after any edit, and do not count the skip as a pass.

@@ -1299,6 +1299,87 @@ The timing ladders remain PRELIMINARY one-observation attribution evidence. Expe
 registered 30-sample statistical magnitude decision remains pending and must not be inferred from
 these rows. That pending magnitude estimate does not reopen the repaired correctness/resource gate.
 
+### J-017 — 2026-08-23: candidate algebra stays group-compressed until ordered witness extraction
+
+Question: How should an associative/commutative candidate plan use PathMap when many target
+occurrences share one canonical identity and adversarial connective shape retains intermediate
+domains?
+
+Status: MEASURED DEFECT, ACCEPTED REPRESENTATION/ALGORITHM DECISION, and ACCEPTED
+PREREGISTERED EXPERIMENT. The implementation is
+`f1r3node-rust-mettail@e3f3b4831329ec8863d33af7ae0790d930efa041`; the reachable record is pgmcp
+bug `spatial-matcher-candidate-mask-depth-width-retention`; experiment 312 is accepted; pgmcp
+artifacts 384–390 and the
+[`candidate-group-mask measurement record`](../stack-safety/measurements/spatial-matcher-candidate-group-mask-2026-08-23.md)
+retain the raw/profiler provenance.
+
+The predecessor represented each Query result as a `PathMap<()>` of target occurrence positions.
+That relation was correct, but it discarded the target Bag's existing quotient: $`w`$ byte-identical
+occurrences are one semantic group with multiplicity $`w`$. A fixed postorder evaluator could retain
+one $`w`$-endpoint map per connective level, so an opposing depth-$`d`$, width-$`w`$ construction
+retained $`\Theta(d w)`$ endpoints before final matching.
+
+The selected representation is `All` or a `PathMap<()>` of fixed-width, big-endian `u64` group
+identifiers. Those eight-byte keys are prefix-free, so PathMap's native `join` and `meet` implement
+exact set union and intersection at this boundary. Each candidate leaf visits the authoritative Bag
+prefix with a read zipper and inserts each reached group once. The evaluator applies the following
+rules:
+
+1. compile capture discovery in source order;
+2. schedule only pure lattice operands by Sethi–Ullman/Ershov retention pressure, breaking unequal
+   pressure by work and exact ties by source order;
+3. keep work frames scalar and retained maps in a separate LIFO accumulator;
+4. consume native immutable `join`/`meet` results with early `All` and empty absorbers;
+5. traverse the root group mask once, decoding each group ID once; and
+6. expand to ascending original positions through an already-ordered, sparse-sort, or dense-bitset
+   lane chosen by explicit cost estimates.
+
+The final `Vec<u64>` is deliberately retained. It is neither a membership authority nor a
+`Vec<Par>` projection: the existing ListMachine requires random access to original target-position
+witnesses. Removing it would change a different matcher schedule and requires its own equivalence
+proof. No PathMap source, feature, value algebra, or compact format changed.
+
+The pressure recurrence for a scheduled n-ary node is:
+
+```math
+P_{\mathrm{nary}} = \max\!\left(P_0,\; 1 + \max_{i>0} P_i,\; 3\right).
+```
+
+An adverse node-count control proves why work alone is insufficient: at depth 8, the control retains
+10 masks/endpoints and an accumulator depth of 8, while pressure scheduling retains 4/4 and depth 2.
+The complete depth 1/4/8 × width 2/8/32 × AND/OR × encoded/resident × source-orientation matrix
+preserves exact ordered domains. Mixed duplicates additionally preserve verdict, complete `FreeMap`,
+and remainder; 48 deterministic randomized layouts force and equate ordered, sparse, dense, and
+adaptive expansion.
+
+Experiment 312 measured 51 samples per arm in all 13 fixtures. The primary width-4,096 OR medians are
+5,513,777.071 ns for the frozen occurrence control and 18,869.671 ns for the group treatment. The
+locked decision accepts with Mann–Whitney $`U=0`$, $`p=1.6518407509198735\times10^{-18}`$, Cliff's
+delta $`-1.0`$, and relative median improvement 0.9966. The distinct-sparse guard also improves.
+
+Physical profiles agree on the mechanism:
+
+- headless Heaptrack records 159,590 $`\rightarrow`$ 30,304 allocation calls and 3.36 MiB
+  $`\rightarrow`$ 1.85 MiB peak heap for the duplicate fixture; the opposing fixture reaches
+  3.57 MiB $`\rightarrow`$ 742.19 KiB;
+- paired Massif records 3,292,888 $`\rightarrow`$ 1,778,424 peak modeled bytes;
+- paired Cachegrind records 310,627,559 $`\rightarrow`$ 29,198,834 instructions, 548,844
+  $`\rightarrow`$ 56,222 L1-data misses, and 73,562 $`\rightarrow`$ 28,274 last-level misses; and
+- headless AMD uProf moves the hot path from `node_set_val`, `make_unique`, mutable child traversal,
+  and `pjoin_dyn` to read-zipper traversal and one ordered expansion.
+
+Decision: preserve semantic-group compression through all candidate lattice operations, use
+prefix-free fixed-width keys whenever exact set algebra is intended, and cross to occurrence
+positions only once at the consumer boundary. CoW is valuable here because immutable native
+`join`/`meet` can share structure, but the larger win is avoiding repeated construction of
+occurrence-wide maps; CoW is not permission to clone and mutate one trie per leaf.
+
+Negative protocols remain part of the decision. Massif `detailed-freq=1` and uProf `assess` each
+required roughly ten minutes for one control arm and are excluded. The accepted paired Massif uses
+bounded sparse snapshots; the accepted uProf evidence uses low-overhead Hotspots. An initial
+Heaptrack invocation that omitted `--record-only` opened its GUI and was superseded; every accepted
+trace is explicitly record-only and analyzed by `heaptrack_print`.
+
 ## Open hypotheses and required closure evidence
 
 | ID | Hypothesis | Required evidence before acceptance | Status |
@@ -1311,6 +1392,7 @@ these rows. That pending magnitude estimate does not reopen the repaired correct
 | H-006 | A clone-family-shared `OnceLock<[u8; 32]>` removes repeated resident RMP2 transcript walks with fixed retained space and no material cold regression. | Exact bytes/oracle; one initialization per clone family; mutation/no-op/metadata/concurrency matrix; zero warm endpoint visits; preregistered cold/warm/clone/post-mutation time, allocation, instructions, and headless Heaptrack RSS gates from pgmcp 5983/5984. | Resource and focused semantic hypotheses accepted; COMM/replay/full-release lifecycle gates open |
 | H-007 | Retained `CandidateProductCursor` clones copy depth-growing zipper path/ancestor state and, if that slope is confirmed, a bounded CoW suffix checkpoint removes it without changing candidate or binding semantics. | Clone/allocation anti-vacuity; geometric depth/width resource ladder; old/new candidate and binding differential; focus-endpoint preservation; malformed, COMM, replay/post-state, and small-stack gates from pgmcp 5985 and experiment 5990. | Deterministic-run hybrid passed semantic, focus-root, paired resource, allocation, instruction, and 256 KiB small-stack gates; full release open |
 | H-008 | Semantic projection or a fail-closed `All` fallback restores dynamic AC candidate-query soundness for matcher-ignored `New`, `ReceiveBind`, and `MatchCase` fields. | Per-field counterexamples; oracle-success-implies-query-accept property; ground exact, malformed, candidate/binding, COMM, play/replay, and post-state gates from pgmcp 5982. | Focused semantic gates passed; COMM/replay/release open |
+| H-009 | Group-compressed candidate masks plus retention-pressure scheduling remove the conditional depth×duplicate-width endpoint slope without changing ordered candidate or matcher semantics. | Frozen occurrence control; exact ordered-domain oracle; depth×width/source-orientation matrix; mixed `FreeMap`/remainder differential; randomized expansion modes; 51-sample locked experiment; headless allocation, peak-heap, instruction/cache, and CPU attribution; full release gate. | **Resource and focused semantic hypotheses accepted at `e3f3b4831`; experiment 312 accepted**; current exact full-release rerun remains the lifecycle gate |
 
 ## Threats to validity
 
@@ -1350,6 +1432,9 @@ these rows. That pending magnitude estimate does not reopen the repaired correct
 - J-014's zero-hash result is an exact work counter for one unmatched-produce shape, not a
   throughput distribution. Retained-pruning, matched-produce, and concurrent workloads remain in
   the broader resource gates.
+- J-017 isolates candidate-plan evaluation after index/plan construction. Its accepted timing and
+  profiler results establish the named retention mechanism; they do not measure complete RSpace
+  rendezvous throughput or retire CBR-053's generated-schedule and AC-lifecycle obligations.
 
 ## Update rules
 
