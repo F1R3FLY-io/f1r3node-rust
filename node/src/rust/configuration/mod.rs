@@ -439,7 +439,9 @@ mod embedded_defaults_tests {
         cfg.casper.fault_tolerance_threshold = 0.0;
         let warnings = builder::validate_config(&cfg).expect("validate");
         assert!(
-            !warnings.iter().any(|w| w.contains("fault-tolerance-threshold")),
+            !warnings
+                .iter()
+                .any(|w| w.contains("fault-tolerance-threshold")),
             "non-negative ftt must not warn, got {warnings:?}"
         );
     }

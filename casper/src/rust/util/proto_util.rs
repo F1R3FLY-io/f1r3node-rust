@@ -173,23 +173,23 @@ pub fn weight_from_validator_by_dag(
     // fetch-and-retry, where a `KeyNotFound` hard-failed admission (the #306
     // storm on restored joiners and observers). No backtrace in the context —
     // this is a hot path with exactly one caller (`estimator::build_scores_map`).
-    let block_metadata = dag.lookup(block_hash)?.ok_or_else(|| {
-        KvStoreError::MissingBlock {
+    let block_metadata = dag
+        .lookup(block_hash)?
+        .ok_or_else(|| KvStoreError::MissingBlock {
             hash: block_hash.clone(),
             context: " [weight_from_validator_by_dag: traversed block]".to_string(),
-        }
-    })?;
+        })?;
 
     // Try to get parent's weight for this validator
     match block_metadata.parents.first() {
         Some(parent_hash) => {
             // Look up parent
-            let parent_metadata = dag.lookup(parent_hash)?.ok_or_else(|| {
-                KvStoreError::MissingBlock {
-                    hash: parent_hash.clone(),
-                    context: " [weight_from_validator_by_dag: main parent]".to_string(),
-                }
-            })?;
+            let parent_metadata =
+                dag.lookup(parent_hash)?
+                    .ok_or_else(|| KvStoreError::MissingBlock {
+                        hash: parent_hash.clone(),
+                        context: " [weight_from_validator_by_dag: main parent]".to_string(),
+                    })?;
             // Return validator's weight from parent or 0 if not found
             Ok(parent_metadata
                 .weight_map

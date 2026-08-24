@@ -2069,9 +2069,14 @@ mod frontier_determinism_tests {
             hash: g_a,
             block_number: 0,
         };
-        let out = floor_of_view(&dag, &mk_store(), &current, FtThreshold::from_f32_lossy(-1.0))
-            .await
-            .expect("negative-ftt agreement flip must hold the cycle, not error");
+        let out = floor_of_view(
+            &dag,
+            &mk_store(),
+            &current,
+            FtThreshold::from_f32_lossy(-1.0),
+        )
+        .await
+        .expect("negative-ftt agreement flip must hold the cycle, not error");
         assert!(
             matches!(out, FloorOfView::IncompatibilityHold { .. }),
             "expected IncompatibilityHold, got {out:?}"
@@ -2087,7 +2092,13 @@ mod frontier_determinism_tests {
             hash: g_a,
             block_number: 0,
         };
-        let out = floor_of_view(&dag, &mk_store(), &current, FtThreshold::from_f32_lossy(0.1)).await;
+        let out = floor_of_view(
+            &dag,
+            &mk_store(),
+            &current,
+            FtThreshold::from_f32_lossy(0.1),
+        )
+        .await;
         assert!(
             matches!(out, Err(CasperError::IncompatibleFinalizedFork(_))),
             "expected the loud typed error under BFT ftt, got {out:?}"
