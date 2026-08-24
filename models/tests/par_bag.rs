@@ -135,6 +135,45 @@ fn detached_connective_cursor_refuses_a_different_or_truncated_body() {
         Ok(None),
         "exhaustion is distinct from a body mismatch"
     );
+
+    assert!(matches!(
+        first_children.bind_owned(second_children.message()),
+        Err(CanonicalConnectiveCursorError::BodyMismatch)
+    ));
+    assert!(matches!(
+        first_children.bind_owned(truncated),
+        Err(CanonicalConnectiveCursorError::BodyMismatch)
+    ));
+    let copied_body = first_children.message().to_vec();
+    assert!(matches!(
+        first_children.bind_owned(copied_body),
+        Err(CanonicalConnectiveCursorError::BodyMismatch)
+    ));
+
+    let message = first_children.message();
+    let mut owned = first_children
+        .bind_owned(message)
+        .expect("the exact borrowed body becomes its immutable owner");
+    assert_eq!(owned.len(), expected.len());
+    for expected_child in &expected {
+        let range = owned.next().expect("owned cursor retains every child");
+        assert_eq!(&owned.body()[range], *expected_child);
+    }
+    assert!(owned.is_empty());
+    assert_eq!(owned.next(), None);
+
+    let mut partial = first_children;
+    let skipped = partial
+        .next()
+        .expect("the borrowed cursor has a first child");
+    assert_eq!(skipped, expected[0]);
+    let mut owned = partial
+        .bind_owned(message)
+        .expect("an advanced cursor transfers its exact current position");
+    assert_eq!(owned.len(), 1);
+    let range = owned.next().expect("the remaining child survives transfer");
+    assert_eq!(&owned.body()[range], expected[1]);
+    assert!(owned.is_empty());
 }
 
 #[test]

@@ -104,8 +104,9 @@ fn main() {
         ),
         _ => panic!("fixture must be duplicates4096 or opposing256"),
     };
-    let prepared = CandidateMaskBenchmarkFixture::new(targets, pattern, optimized)
-        .expect("probe target index is representable");
+    let prepared =
+        CandidateMaskBenchmarkFixture::from_targets_and_pattern(targets, pattern, optimized)
+            .expect("probe target index is representable");
     for _ in 0..3 {
         assert_eq!(prepared.positions().len(), expected);
     }

@@ -32,8 +32,8 @@ use models::rust::par_bag::{
     canonical_receive_parts, canonical_send_parts, canonical_single_connective_from_par,
     canonical_single_expr_from_par, canonical_single_if_from_par, canonical_single_match_from_par,
     canonical_single_new_from_par, canonical_single_receive_from_par,
-    canonical_single_send_from_par, CanonicalConnectiveChildCursor, CanonicalConnectiveChildren,
-    CanonicalConnectiveParts, CanonicalEPathMapRootRouteHint, CanonicalExprParts,
+    canonical_single_send_from_par, CanonicalConnectiveChildren, CanonicalConnectiveParts,
+    CanonicalEPathMapRootRouteHint, CanonicalExprParts, CanonicalOwnedConnectiveChildren,
     OwnedCanonicalParComponent, ParBagComponent,
 };
 use models::rust::par_map_type_mapper::ParMapTypeMapper;
@@ -469,7 +469,11 @@ pub struct CandidateMaskBenchmarkFixture {
 
 #[cfg(feature = "spatial-matcher-candidate-mask-differential")]
 impl CandidateMaskBenchmarkFixture {
-    pub fn new(targets: Vec<Par>, pattern: Par, optimized: bool) -> Option<Self> {
+    pub fn from_targets_and_pattern(
+        targets: Vec<Par>,
+        pattern: Par,
+        optimized: bool,
+    ) -> Option<Self> {
         with_candidate_mask_mode(optimized, || {
             let target_count = targets.len();
             let targets = targets.into_iter().map(MatchValue::Par).collect::<Vec<_>>();
@@ -760,6 +764,7 @@ pda_entry!(match_case, MatchCase, MatchCase);
 /// an `Arc<Par>` would add atomic traffic without enabling a cross-thread
 /// boundary. `ParBag` and PathMap retain their own thread-safe CoW ownership.
 type EncodedTarget = Rc<Par>;
+type EncodedConnectiveChildren = CanonicalOwnedConnectiveChildren<EncodedRegion>;
 
 enum Job {
     Match(Box<MatchPair>),
@@ -803,13 +808,11 @@ enum Frame {
     },
     EncodedAndBranch {
         target: EncodedTarget,
-        body: EncodedRegion,
-        cursor: CanonicalConnectiveChildCursor,
+        children: EncodedConnectiveChildren,
     },
     EncodedOrBranch {
         target: Option<EncodedTarget>,
-        body: EncodedRegion,
-        cursor: CanonicalConnectiveChildCursor,
+        children: EncodedConnectiveChildren,
         checkpoint: FreeMapCheckpoint,
     },
     Not {
@@ -940,6 +943,21 @@ impl EncodedRegion {
             end,
         })
     }
+
+    fn child_range(&self, child: std::ops::Range<usize>) -> Option<Self> {
+        (child.start <= child.end).then_some(())?;
+        let start = self.start.checked_add(child.start)?;
+        let end = self.start.checked_add(child.end)?;
+        (start >= self.start && end <= self.end).then(|| Self {
+            bytes: Arc::clone(&self.bytes),
+            start,
+            end,
+        })
+    }
+}
+
+impl AsRef<[u8]> for EncodedRegion {
+    fn as_ref(&self) -> &[u8] { self.as_slice() }
 }
 
 fn drive(context: &mut SpatialMatcherContext, root: MatchPair) -> Option<()> {
@@ -1043,30 +1061,25 @@ fn resume(
                 Job::Return(false)
             }
         }
-        Frame::EncodedAndBranch {
-            target,
-            body,
-            cursor,
-        } => {
+        Frame::EncodedAndBranch { target, children } => {
             if result {
-                start_encoded_and_branch(context, target, body, cursor, frames)
+                start_encoded_and_branch(context, target, children, frames)
             } else {
                 Job::Return(false)
             }
         }
         Frame::EncodedOrBranch {
             target,
-            body,
-            cursor,
+            children,
             checkpoint,
         } => {
             context.rollback(checkpoint);
             if result {
                 Job::Return(true)
             } else if let Some(target) = target {
-                start_encoded_or_branch(context, target, body, cursor, frames)
+                start_encoded_or_branch(context, target, children, frames)
             } else {
-                debug_assert!(cursor.is_empty());
+                debug_assert!(children.is_empty());
                 Job::Return(false)
             }
         }
@@ -3138,22 +3151,26 @@ fn evaluate_encoded_connective(
 
     match parts {
         CanonicalConnectiveParts::And(children) => {
-            let cursor = children.cursor();
             let body = pattern
                 .child(children.message())
                 .expect("canonical AND body is a subrange of its endpoint");
+            let children = children
+                .bind_owned(body)
+                .expect("canonical AND children bind to their exact owned body");
             let checkpoint = context.checkpoint();
             frames.push(Frame::RestoreOnFailure { checkpoint });
             #[cfg(test)]
             record_authoritative_frame_depth(frames);
-            start_encoded_and_branch(context, target, body, cursor, frames)
+            start_encoded_and_branch(context, target, children, frames)
         }
         CanonicalConnectiveParts::Or(children) => {
-            let cursor = children.cursor();
             let body = pattern
                 .child(children.message())
                 .expect("canonical OR body is a subrange of its endpoint");
-            start_encoded_or_branch(context, target, body, cursor, frames)
+            let children = children
+                .bind_owned(body)
+                .expect("canonical OR children bind to their exact owned body");
+            start_encoded_or_branch(context, target, children, frames)
         }
         CanonicalConnectiveParts::Not(child) => {
             let child = pattern
@@ -3295,28 +3312,24 @@ fn exact_scalar_par_matches(target: &Par, pattern_expr: &[u8]) -> Option<bool> {
 fn start_encoded_and_branch(
     context: &mut FreeMapTransaction<'_>,
     target: EncodedTarget,
-    body: EncodedRegion,
-    mut cursor: CanonicalConnectiveChildCursor,
+    mut children: EncodedConnectiveChildren,
     frames: &mut FrameStack,
 ) -> Job {
-    let Some(pattern) = cursor
-        .next_in(body.as_slice())
-        .expect("encoded AND cursor remains paired with its owned body")
-    else {
+    let Some(pattern) = children.next() else {
         return Job::Return(true);
     };
-    let pattern = body
-        .child(pattern)
+    let pattern = children
+        .body()
+        .child_range(pattern)
         .expect("canonical AND child is a subrange of its body");
-    if cursor.is_empty() {
+    if children.is_empty() {
         encoded_connective_child_job(context, target, pattern)
     } else {
         #[cfg(test)]
         update_list_relation_stats(|stats| stats.authoritative_and_frames += 1);
         frames.push(Frame::EncodedAndBranch {
             target: Rc::clone(&target),
-            body,
-            cursor,
+            children,
         });
         #[cfg(test)]
         record_authoritative_frame_depth(frames);
@@ -3327,27 +3340,23 @@ fn start_encoded_and_branch(
 fn start_encoded_or_branch(
     context: &mut FreeMapTransaction<'_>,
     target: EncodedTarget,
-    body: EncodedRegion,
-    mut cursor: CanonicalConnectiveChildCursor,
+    mut children: EncodedConnectiveChildren,
     frames: &mut FrameStack,
 ) -> Job {
-    let Some(pattern) = cursor
-        .next_in(body.as_slice())
-        .expect("encoded OR cursor remains paired with its owned body")
-    else {
+    let Some(pattern) = children.next() else {
         return Job::Return(false);
     };
-    let pattern = body
-        .child(pattern)
+    let pattern = children
+        .body()
+        .child_range(pattern)
         .expect("canonical OR child is a subrange of its body");
     let checkpoint = context.checkpoint();
-    let retained_target = (!cursor.is_empty()).then(|| Rc::clone(&target));
+    let retained_target = (!children.is_empty()).then(|| Rc::clone(&target));
     #[cfg(test)]
     update_list_relation_stats(|stats| stats.authoritative_or_frames += 1);
     frames.push(Frame::EncodedOrBranch {
         target: retained_target,
-        body,
-        cursor,
+        children,
         checkpoint,
     });
     #[cfg(test)]
@@ -6605,6 +6614,12 @@ mod layout_tests {
             std::mem::size_of::<Frame>() <= 64,
             "Frame grew to {} bytes",
             std::mem::size_of::<Frame>()
+        );
+        #[cfg(target_pointer_width = "64")]
+        assert!(
+            std::mem::size_of::<EncodedConnectiveChildren>() <= 40,
+            "owned encoded-connective children grew to {} bytes",
+            std::mem::size_of::<EncodedConnectiveChildren>()
         );
     }
 }

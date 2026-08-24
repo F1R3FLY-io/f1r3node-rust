@@ -29,6 +29,7 @@ use std::cmp::Ordering;
 use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::marker::PhantomData;
+use std::ops::Range;
 use std::sync::{Arc, OnceLock};
 
 use prost::bytes::BufMut;
@@ -1450,6 +1451,20 @@ pub struct CanonicalConnectiveChildCursor {
     remaining: usize,
 }
 
+/// Validated canonical connective children paired with their immutable owner.
+///
+/// A detached [`CanonicalConnectiveChildCursor`] carries pointer and length so
+/// every call can reject a different body. A PDA that already owns the body
+/// can establish that identity once and keep the relationship in the type
+/// instead. The resulting continuation stores only the body and relative
+/// parser state: no duplicate address/length, self-reference, allocation, or
+/// narrower platform-dependent offset is required.
+pub struct CanonicalOwnedConnectiveChildren<B> {
+    body: B,
+    at: usize,
+    remaining: usize,
+}
+
 /// Pairing error for a detached canonical [`ConnectiveBody`] child cursor.
 ///
 /// The cursor carries only the ephemeral address and length of the validated
@@ -1494,6 +1509,75 @@ impl<'a> CanonicalConnectiveChildren<'a> {
 
     /// Export the slice-independent continuation for an owned PDA frame.
     pub const fn cursor(&self) -> CanonicalConnectiveChildCursor { self.cursor }
+
+    /// Pair the current cursor position with an immutable owner of the exact
+    /// validated body.
+    ///
+    /// Pointer and length are checked before the redundant identity fields are
+    /// removed. After this transition, [`CanonicalOwnedConnectiveChildren`]
+    /// never accepts a second body, so a mismatched resumption is
+    /// unrepresentable through its API.
+    pub fn bind_owned<B: AsRef<[u8]>>(
+        self,
+        body: B,
+    ) -> Result<CanonicalOwnedConnectiveChildren<B>, CanonicalConnectiveCursorError> {
+        let owned = body.as_ref();
+        if owned.as_ptr() as usize != self.cursor.message_addr
+            || owned.len() != self.cursor.message_len
+        {
+            return Err(CanonicalConnectiveCursorError::BodyMismatch);
+        }
+        Ok(CanonicalOwnedConnectiveChildren {
+            body,
+            at: self.cursor.at,
+            remaining: self.cursor.remaining,
+        })
+    }
+}
+
+impl<B: AsRef<[u8]>> CanonicalOwnedConnectiveChildren<B> {
+    pub const fn len(&self) -> usize { self.remaining }
+
+    pub const fn is_empty(&self) -> bool { self.remaining == 0 }
+
+    pub const fn body(&self) -> &B { &self.body }
+
+    /// Advance over one already-validated child and return its range relative
+    /// to the owned body.
+    ///
+    /// An owned range avoids a lending-iterator/self-borrow problem in PDA
+    /// frames. Bounds and varints are still checked in release builds; the
+    /// constructor's complete validation is the reason a failure here is an
+    /// internal invariant violation rather than malformed-input handling.
+    pub fn next(&mut self) -> Option<Range<usize>> {
+        const CHILD_KEY: u64 = (1 << 3) | 2;
+
+        if self.remaining == 0 {
+            return None;
+        }
+        let message = self.body.as_ref();
+        let key = read_canonical_varint(message, &mut self.at)
+            .expect("validated owned ConnectiveBody child key remains present");
+        assert_eq!(
+            key, CHILD_KEY,
+            "validated owned ConnectiveBody cursor remains aligned to a child key"
+        );
+        let len = usize::try_from(
+            read_canonical_varint(message, &mut self.at)
+                .expect("validated owned ConnectiveBody child length remains present"),
+        )
+        .expect("validated owned ConnectiveBody child length fits usize");
+        let start = self.at;
+        let end = start
+            .checked_add(len)
+            .expect("validated owned ConnectiveBody child end fits usize");
+        message
+            .get(start..end)
+            .expect("validated owned ConnectiveBody child range remains in bounds");
+        self.at = end;
+        self.remaining -= 1;
+        Some(start..end)
+    }
 }
 
 impl CanonicalConnectiveChildCursor {

@@ -100,12 +100,18 @@ fn bench_fixture(
     fixture: &Fixture,
 ) {
     group.throughput(Throughput::Elements(fixture.targets.len() as u64));
-    let control =
-        CandidateMaskBenchmarkFixture::new(fixture.targets.clone(), fixture.pattern.clone(), false)
-            .expect("control target index is representable");
-    let treatment =
-        CandidateMaskBenchmarkFixture::new(fixture.targets.clone(), fixture.pattern.clone(), true)
-            .expect("treatment target index is representable");
+    let control = CandidateMaskBenchmarkFixture::from_targets_and_pattern(
+        fixture.targets.clone(),
+        fixture.pattern.clone(),
+        false,
+    )
+    .expect("control target index is representable");
+    let treatment = CandidateMaskBenchmarkFixture::from_targets_and_pattern(
+        fixture.targets.clone(),
+        fixture.pattern.clone(),
+        true,
+    )
+    .expect("treatment target index is representable");
     let control_preflight = control.positions();
     let treatment_preflight = treatment.positions();
     assert_eq!(
