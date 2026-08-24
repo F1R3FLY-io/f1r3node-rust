@@ -195,9 +195,15 @@ pub trait MultiParentCasper: Casper + Send + Sync {
     /// merge conflict). Each entry is paired with an `is_rejected` flag
     /// (`true` = recovery backlog, `false` = fresh).
     ///
-    /// Default returns an empty Vec — used by `NoopCasper` and read-only
-    /// engine states where Casper is not initialised.
-    fn list_pending_deploys(&self) -> Result<Vec<(Signed<DeployData>, bool)>, CasperError> {
+    /// The queue is **node-local**: deploys never gossip, so an observer
+    /// node always answers empty (it rejects `doDeploy`). For cross-node
+    /// deploy status, use `deployFinalizationStatus` — it is DAG-derived
+    /// and consistent across nodes. This API is for validator-side
+    /// introspection of the local proposer pool.
+    ///
+    /// Default returns an empty Vec — used by `NoopEngine` and other
+    /// engine states where `with_casper()` returns `None`.
+    async fn list_pending_deploys(&self) -> Result<Vec<(Signed<DeployData>, bool)>, CasperError> {
         Ok(Vec::new())
     }
 }

@@ -79,16 +79,16 @@ async fn create_engine_cell(node: &TestNode) -> EngineCell {
 
 /// Read-only nodes (Casper not initialised) get an empty snapshot, not an
 /// error. Matches the trait's default and the `with_casper` None branch.
+/// A bootstrapping node (`with_casper()` returns `None`) errors like the
+/// other sixteen BlockAPI methods — an empty snapshot would read as
+/// "nothing pending".
 #[tokio::test]
-async fn no_casper_returns_empty_snapshot_not_error() {
+async fn no_casper_returns_error() {
     let engine_cell = EngineCell::init();
 
-    let snapshot = BlockAPI::list_pending_deploys(&engine_cell, None)
-        .await
-        .expect("read-only must not error");
+    let result = BlockAPI::list_pending_deploys(&engine_cell, None).await;
 
-    assert!(snapshot.deploys.is_empty());
-    assert_eq!(snapshot.total_available, 0);
+    assert!(result.is_err(), "bootstrapping node must error");
 }
 
 /// A fresh deploy in `deploy_storage` is returned with `is_rejected = false`.
@@ -150,6 +150,59 @@ async fn rejected_deploy_buffer_returns_is_rejected_true() {
         "rejected deploy must be is_rejected=true"
     );
     assert_eq!(snapshot.deploys[0].0.sig, deploy.sig);
+}
+
+/// A signature that sits in BOTH pools is emitted exactly once, with
+/// `is_rejected = true` — the fresh-pool predicate excludes buffered sigs,
+/// so `total_available` does not double-count.
+#[tokio::test]
+async fn sig_in_both_pools_emitted_once_as_rejected() {
+    let ctx = TestContext::new().await;
+    let nodes = TestNode::create_network(ctx.genesis.clone(), 1, None, None, None, None)
+        .await
+        .unwrap();
+    let engine_cell = create_engine_cell(&nodes[0]).await;
+
+    let duplicated = construct_deploy::basic_deploy_data(7, None, None).expect("duplicated");
+    // Distinct key so only_fresh is not a duplicate of duplicated.
+    let only_fresh =
+        construct_deploy::basic_deploy_data(8, Some(construct_deploy::DEFAULT_SEC2.clone()), None)
+            .expect("only fresh");
+    nodes[0]
+        .casper
+        .deploy_storage
+        .lock()
+        .add(vec![duplicated.clone(), only_fresh.clone()])
+        .expect("add storage deploys");
+    nodes[0]
+        .casper
+        .rejected_deploy_buffer
+        .lock()
+        .expect("buffer lock")
+        .add(vec![duplicated.clone()])
+        .expect("add buffered deploy");
+
+    let snapshot = BlockAPI::list_pending_deploys(&engine_cell, None)
+        .await
+        .expect("snapshot");
+
+    assert_eq!(
+        snapshot.deploys.len(),
+        2,
+        "duplicated sig must be emitted once"
+    );
+    assert_eq!(snapshot.total_available, 2);
+    let by_sig: HashMap<_, _> = snapshot
+        .deploys
+        .iter()
+        .map(|(d, r)| (d.sig.clone(), *r))
+        .collect();
+    assert_eq!(
+        by_sig.get(&duplicated.sig),
+        Some(&true),
+        "sig in both pools must surface as rejected"
+    );
+    assert_eq!(by_sig.get(&only_fresh.sig), Some(&false));
 }
 
 /// Both pools are read in one snapshot: fresh + rejected deploys coexist.
@@ -224,7 +277,9 @@ async fn deployer_filter_returns_only_matching() {
 
 /// When more than `PENDING_DEPLOYS_MAX_RESULTS` deploys match, the result
 /// is capped and `total_available` reports the pre-cap count so callers
-/// can detect truncation.
+/// can detect truncation. The truncation keeps the smallest
+/// `(timestamp, sig)` entries: deploys are inserted in descending
+/// timestamp order and the result must come back sorted ascending.
 #[tokio::test]
 async fn cap_truncates_and_reports_total_available() {
     let ctx = TestContext::new().await;
@@ -234,14 +289,28 @@ async fn cap_truncates_and_reports_total_available() {
     let engine_cell = create_engine_cell(&nodes[0]).await;
 
     let total = PENDING_DEPLOYS_MAX_RESULTS + 50;
-    let deploys: Vec<_> = (0..total)
-        .map(|i| construct_deploy::basic_deploy_data(100 + i as i32, None, None).expect("deploy"))
+    // Insert in DESCENDING timestamp order to prove the API sorts before
+    // truncating rather than relying on storage order.
+    let mut deploys: Vec<_> = (0..total)
+        .map(|i| {
+            construct_deploy::source_deploy(
+                format!("@{}!({})", i, i),
+                1_700_000_000_000 + i as i64,
+                None,
+                None,
+                None,
+                Some(0),
+                None,
+            )
+            .expect("deploy")
+        })
         .collect();
+    deploys.reverse();
     nodes[0]
         .casper
         .deploy_storage
         .lock()
-        .add(deploys.clone())
+        .add(deploys)
         .expect("add deploys");
 
     let snapshot = BlockAPI::list_pending_deploys(&engine_cell, None)
@@ -250,6 +319,25 @@ async fn cap_truncates_and_reports_total_available() {
 
     assert_eq!(snapshot.deploys.len(), PENDING_DEPLOYS_MAX_RESULTS);
     assert_eq!(snapshot.total_available, total as u32);
+
+    // The result must be sorted by (timestamp, sig): the first entry is
+    // the oldest deploy inserted (timestamp base), and every next entry's
+    // timestamp is greater or equal.
+    let mut prev = (
+        snapshot.deploys[0].0.data.time_stamp,
+        snapshot.deploys[0].0.sig.as_ref().to_vec(),
+    );
+    assert_eq!(prev.0, 1_700_000_000_000, "oldest deploy kept first");
+    for (d, _) in &snapshot.deploys[1..] {
+        let cur = (d.data.time_stamp, d.sig.as_ref().to_vec());
+        assert!(
+            prev < cur,
+            "deploys must be sorted by (timestamp, sig): {:?} then {:?}",
+            prev,
+            cur
+        );
+        prev = cur;
+    }
 }
 
 /// `PendingDeploysSnapshot::empty()` is a convenience for the no-casper

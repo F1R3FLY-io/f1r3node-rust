@@ -177,10 +177,7 @@ pub struct PendingDeployJson {
     pub sig: String,
     #[serde(rename = "sigAlgorithm")]
     pub sig_algorithm: String,
-    #[serde(
-        rename = "expirationTimestamp",
-        skip_serializing_if = "Option::is_none"
-    )]
+    #[serde(rename = "expirationTimestamp")]
     pub expiration_timestamp: Option<i64>,
     /// `true` when the deploy is in the rejected-recovery buffer
     /// (recovering after a merge conflict); `false` when it is fresh in

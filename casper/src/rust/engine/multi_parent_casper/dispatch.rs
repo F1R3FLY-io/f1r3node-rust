@@ -237,7 +237,7 @@ impl<T: TransportLayer + Send + Sync> MultiParentCasper for MultiParentCasperImp
             .await
     }
 
-    fn list_pending_deploys(&self) -> Result<Vec<(Signed<DeployData>, bool)>, CasperError> {
-        super::block_admission::admit_list_pending_deploys(self)
+    async fn list_pending_deploys(&self) -> Result<Vec<(Signed<DeployData>, bool)>, CasperError> {
+        super::block_admission::admit_list_pending_deploys(self).await
     }
 }

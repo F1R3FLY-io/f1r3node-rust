@@ -1795,8 +1795,14 @@ impl BlockAPI {
     /// truncation, so callers can detect truncation by comparing
     /// `deploys.len() < total_available`.
     ///
-    /// Read-only nodes (Casper not initialised) return an empty snapshot,
-    /// matching the trait's default — this is not an error.
+    /// The queue is **node-local**: deploys never gossip, so an observer
+    /// node always answers empty (it rejects `doDeploy`). For cross-node
+    /// deploy status, use `deployFinalizationStatus` — it is DAG-derived
+    /// and consistent across nodes. This API is for validator-side
+    /// introspection of the local proposer pool.
+    ///
+    /// Returns an error on bootstrapping nodes where Casper is not yet
+    /// initialised (`with_casper()` returns `None`).
     pub async fn list_pending_deploys(
         engine_cell: &EngineCell,
         deployer: Option<&[u8]>,
@@ -1805,12 +1811,15 @@ impl BlockAPI {
             PendingDeploysSnapshot, PENDING_DEPLOYS_MAX_RESULTS,
         };
 
+        let error_message =
+            "Could not list pending deploys, casper instance was not available yet.";
         let eng = engine_cell.get().await;
         let Some(casper) = eng.with_casper() else {
-            return Ok(PendingDeploysSnapshot::empty());
+            tracing::warn!("{}", error_message);
+            return Err(eyre::eyre!("Error: {}", error_message));
         };
 
-        let mut deploys = casper.list_pending_deploys()?;
+        let mut deploys = casper.list_pending_deploys().await?;
 
         if let Some(pk) = deployer {
             deploys.retain(|(d, _)| d.pk.bytes.as_ref() == pk);

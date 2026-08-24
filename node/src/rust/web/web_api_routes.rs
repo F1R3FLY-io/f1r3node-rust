@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use axum::extract::State;
 use axum::response::{IntoResponse, Json, Response};
 use axum::routing::{get, post};
@@ -7,6 +9,7 @@ use serde::Deserialize;
 use crate::rust::api::serde_types::block_info::BlockInfoSerde;
 use crate::rust::api::web_api::{
     DataAtNameByBlockHashRequest, DeployResponse, PrepareRequest, PrepareResponse, RhoDataResponse,
+    WebApi,
 };
 use crate::rust::web::shared_handlers::{
     self, offload, ApiErrorResponse, AppError, AppJson, AppPath, AppQuery, AppState,
@@ -333,7 +336,7 @@ pub async fn deploy_finalization_status_handler(
     responses(
         (
             status = 200,
-            description = "Bulk snapshot of pending deploys from deploy_storage (fresh) and rejected_deploy_buffer (recovering after merge conflict)",
+            description = "Bulk snapshot of the node-local pending-deploy queue (deploy_storage + rejected_deploy_buffer). Observers always answer empty",
             body = PendingDeploysJson,
         ),
         (status = 400, description = "Invalid deployer hex (`invalid_public_key`)", body = ApiErrorResponse),
@@ -345,7 +348,15 @@ pub async fn pending_deploys_handler(
     State(app_state): State<AppState>,
     AppQuery(query): AppQuery<DeployerQuery>,
 ) -> Response {
-    let web_api = app_state.web_api.clone();
+    pending_deploys_logic(app_state.web_api.clone(), query).await
+}
+
+/// Core of `pending_deploys_handler`, split out so tests can exercise the
+/// exact handler path without constructing a full `AppState`.
+async fn pending_deploys_logic(
+    web_api: Arc<dyn WebApi + Send + Sync>,
+    query: DeployerQuery,
+) -> Response {
     match offload(move || async move { web_api.get_pending_deploys(query.deployer).await }).await {
         Ok(response) => Json(response).into_response(),
         Err(e) => AppError(e).into_response(),
@@ -818,21 +829,19 @@ mod tests {
         }
     }
 
-    async fn test_pending_deploys_handler(
-        State(web_api): State<Arc<dyn WebApi + Send + Sync>>,
-        AppQuery(query): AppQuery<DeployerQuery>,
-    ) -> Response {
-        match web_api.get_pending_deploys(query.deployer).await {
-            Ok(response) => Json(response).into_response(),
-            Err(e) => AppError(e).into_response(),
-        }
-    }
-
     fn test_router() -> Router {
         let web_api: Arc<dyn WebApi + Send + Sync> = Arc::new(StubWebApi);
         Router::new()
             .route("/deploy/{deploy_id}", get(test_find_deploy_handler))
-            .route("/pending-deploys", get(test_pending_deploys_handler))
+            .route(
+                "/pending-deploys",
+                get(
+                    move |State(web_api): State<Arc<dyn WebApi + Send + Sync>>,
+                          AppQuery(query): AppQuery<DeployerQuery>| {
+                        pending_deploys_logic(web_api, query)
+                    },
+                ),
+            )
             .with_state(web_api)
     }
 

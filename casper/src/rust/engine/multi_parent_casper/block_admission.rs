@@ -4,6 +4,8 @@
 //! function takes the casper instance as a `&MultiParentCasperImpl<T>`
 //! reference; the trait method is a one-line delegate in `traits.rs`.
 
+use std::collections::HashSet;
+
 use block_storage::rust::dag::block_dag_key_value_storage::{
     DeployId, InsertMode, KeyValueDagRepresentation,
 };
@@ -13,11 +15,12 @@ use models::rust::block_hash::{BlockHash, BlockHashSerde};
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{BlockMessage, DeployData};
 use models::rust::normalizer_env::normalizer_env_from_deploy;
+use prost::bytes::Bytes;
 use rspace_plus_plus::rspace::history::Either;
 
 use super::snapshot::record_dag_cardinality_metrics;
 use super::types::MultiParentCasperImpl;
-use crate::rust::casper::{CasperSnapshot, DeployError};
+use crate::rust::casper::{Casper, CasperSnapshot, DeployError};
 use crate::rust::errors::CasperError;
 use crate::rust::util::rholang::interpreter_util;
 
@@ -339,15 +342,32 @@ pub(crate) async fn admit_has_pending_deploys_in_storage_for_snapshot<
 /// (fresh, not yet proposed) and `rejected_deploy_buffer` (recovering
 /// after a merge conflict). Each entry is paired with an `is_rejected`
 /// flag: `false` for fresh, `true` for the recovery backlog.
-pub(crate) fn admit_list_pending_deploys<T: TransportLayer + Send + Sync>(
+///
+/// Fresh deploys are filtered by the same predicate as
+/// `fresh_local_deploy_stats` and `has_pending_deploys_in_storage_for_snapshot`:
+/// a deploy already in a block, one whose `valid_after_block_number` is
+/// ahead of the tip, a block-expired one, and a time-expired one are each
+/// excluded. A signature that sits in both pools is emitted once, with
+/// `is_rejected = true` (the buffer dedups storage in its first clause).
+pub(crate) async fn admit_list_pending_deploys<T: TransportLayer + Send + Sync>(
     this: &MultiParentCasperImpl<T>,
 ) -> Result<Vec<(Signed<DeployData>, bool)>, CasperError> {
-    let mut out: Vec<(Signed<DeployData>, bool)> = Vec::new();
-
-    let fresh = this.deploy_storage.lock().read_all().map_err(|e| {
-        CasperError::RuntimeError(format!("Failed to read deploy storage: {:?}", e))
-    })?;
-    out.extend(fresh.into_iter().map(|d| (d, false)));
+    let snapshot = this.get_snapshot().await?;
+    let latest_block_number = snapshot.dag.latest_block_number();
+    let earliest_block_number = crate::rust::util::deploy_window::earliest_valid_after(
+        latest_block_number,
+        snapshot.on_chain_state.shard_conf.deploy_lifespan,
+    )?;
+    let current_time_millis = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .map_err(|e| {
+            CasperError::RuntimeError(format!(
+                "system clock is before UNIX_EPOCH ({}); cannot evaluate \
+                 deploy expiration",
+                e
+            ))
+        })?;
 
     let rejected = this
         .rejected_deploy_buffer
@@ -357,7 +377,31 @@ pub(crate) fn admit_list_pending_deploys<T: TransportLayer + Send + Sync>(
         .map_err(|e| {
             CasperError::RuntimeError(format!("Failed to read rejected deploy buffer: {:?}", e))
         })?;
-    out.extend(rejected.into_iter().map(|d| (d, true)));
+    let buffered_sigs: HashSet<Bytes> = rejected.iter().map(|d| d.sig.clone()).collect();
+
+    let mut out: Vec<(Signed<DeployData>, bool)> = Vec::with_capacity(rejected.len());
+
+    let fresh = this.deploy_storage.lock().read_all().map_err(|e| {
+        CasperError::RuntimeError(format!("Failed to read deploy storage: {:?}", e))
+    })?;
+    for deploy in fresh {
+        if buffered_sigs.contains(&deploy.sig) {
+            continue;
+        }
+        if stored_deploy_is_pending_for_snapshot(
+            &snapshot,
+            latest_block_number,
+            earliest_block_number,
+            current_time_millis,
+            &deploy,
+        ) {
+            out.push((deploy, false));
+        }
+    }
+
+    for deploy in rejected {
+        out.push((deploy, true));
+    }
 
     Ok(out)
 }
