@@ -1043,7 +1043,10 @@ where
                 store.get_candidate_pool(&channel)
             };
             if channel == bat_channel {
-                pool.prepend_fresh(data.clone());
+                assert!(
+                    pool.prepend_fresh(data.clone()),
+                    "a produced candidate must be prepended before selection"
+                );
             }
             (channel, pool)
         };

@@ -626,13 +626,13 @@ impl<A: Clone> CandidatePool<A> {
         }
     }
 
-    pub fn prepend_fresh(&mut self, datum: Datum<A>) {
-        assert!(
-            self.reserved.is_empty() && (self.fresh.is_none() || self.fresh_available),
-            "a fresh candidate cannot be prepended during an active selection"
-        );
+    pub fn prepend_fresh(&mut self, datum: Datum<A>) -> bool {
+        if !self.reserved.is_empty() || self.fresh.as_ref().is_some_and(|_| !self.fresh_available) {
+            return false;
+        }
         self.fresh = Some(datum);
         self.fresh_available = true;
+        true
     }
 
     pub fn len(&self) -> usize { self.ordered.len() + usize::from(self.fresh.is_some()) }
@@ -795,11 +795,13 @@ impl<A: Clone> CandidatePool<A> {
     /// Filtering an active selection would invalidate the subset relation
     /// between `reserved` and `authority`, so make that misuse impossible to
     /// overlook rather than trying to repair it after the fact.
-    pub fn retain_before_selection(&mut self, mut predicate: impl FnMut(&Datum<A>) -> bool) {
-        assert!(
-            self.reserved.is_empty() && (self.fresh.is_none() || self.fresh_available),
-            "candidate authority cannot be filtered during an active selection"
-        );
+    pub fn retain_before_selection(
+        &mut self,
+        mut predicate: impl FnMut(&Datum<A>) -> bool,
+    ) -> bool {
+        if !self.reserved.is_empty() || self.fresh.as_ref().is_some_and(|_| !self.fresh_available) {
+            return false;
+        }
         if self.fresh.as_ref().is_some_and(|datum| !predicate(datum)) {
             self.fresh = None;
             self.fresh_available = false;
@@ -809,6 +811,7 @@ impl<A: Clone> CandidatePool<A> {
                 self.authority.set_count(entry.relative_path(), None);
             }
         }
+        true
     }
 
     pub(crate) fn is_available(&self, position: usize) -> bool {

@@ -877,7 +877,10 @@ where
 
         for c in &channels {
             let mut pool = self.get_store().get_candidate_pool(c);
-            pool.retain_before_selection(|datum| self.matches(&comm, datum));
+            assert!(
+                pool.retain_before_selection(|datum| self.matches(&comm, datum)),
+                "replay candidates must be filtered before selection"
+            );
             channel_to_indexed_data_list.push((c.clone(), pool));
         }
 
@@ -1015,13 +1018,19 @@ where
             |c| {
                 let mut result = self.get_store().get_candidate_pool(&c);
                 if c == channel {
-                    result.prepend_fresh(Datum {
-                        a: Arc::clone(&data),
-                        persist,
-                        source: produce_ref.clone(),
-                    });
+                    assert!(
+                        result.prepend_fresh(Datum {
+                            a: Arc::clone(&data),
+                            persist,
+                            source: produce_ref.clone(),
+                        }),
+                        "a replay produce must be prepended before selection"
+                    );
                 }
-                result.retain_before_selection(|datum| self.matches(&comm, datum));
+                assert!(
+                    result.retain_before_selection(|datum| self.matches(&comm, datum)),
+                    "replay candidates must be filtered before selection"
+                );
                 (c.clone(), result)
             },
         )

@@ -548,7 +548,7 @@ fn fresh_candidate_reservation_is_reversible_and_not_stored() {
     let mut store = RSpaceDataStore::new();
     store.set_channel(channel.clone(), []).unwrap();
     let mut pool = store.channel_pool(&channel).unwrap().unwrap();
-    pool.prepend_fresh(datum("fresh", false, 9));
+    assert!(pool.prepend_fresh(datum("fresh", false, 9)));
     assert!(matches!(pool.candidate(0), Some((_, DatumAddress::Fresh))));
     assert!(pool.reserve(0));
     assert!(pool.is_empty());

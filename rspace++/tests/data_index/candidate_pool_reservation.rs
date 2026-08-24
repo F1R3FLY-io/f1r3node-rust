@@ -86,17 +86,15 @@ fn reservations_are_isolated_by_exact_identity_and_fully_reversible() {
 }
 
 #[test]
-#[should_panic(expected = "candidate authority cannot be filtered during an active selection")]
-fn replay_filter_cannot_rewrite_authority_during_selection() {
+fn replay_filter_refuses_to_rewrite_authority_during_selection() {
     let mut pool = pool(&[(&[1, 2, 3], 1)]);
     assert!(pool.reserve(0));
-    pool.retain_before_selection(|_| true);
+    assert!(!pool.retain_before_selection(|_| true));
 }
 
 #[test]
-#[should_panic(expected = "a fresh candidate cannot be prepended during an active selection")]
-fn fresh_prepend_cannot_shift_positions_during_selection() {
+fn fresh_prepend_refuses_to_shift_positions_during_selection() {
     let mut pool = pool(&[(&[1, 2, 3], 1)]);
     assert!(pool.reserve(0));
-    pool.prepend_fresh(Datum::default());
+    assert!(!pool.prepend_fresh(Datum::default()));
 }
