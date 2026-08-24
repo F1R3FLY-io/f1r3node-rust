@@ -130,6 +130,7 @@ justifies each rule.
 | Keep upstream PathMap unmodified unless an invariant cannot be enforced locally. | Local adapters can validate ACT input, avoid unsupported reverse moves, and preserve upgradeability without maintaining a fork. | J-001, J-003 |
 | Validate canonical writer images by logical trie semantics, not by assuming that every value-free childless node is absent. | A reached childless node may be an explicit observable endpoint. Redundant value-free unary nodes and malformed ACT graph/framing shapes remain invalid. | J-008 |
 | Exact-encode only fields that the authoritative matcher compares. | Exact constraints on matcher-ignored fields can reject a legal match. A derived query must project those fields semantically or decline pruning and scan the authoritative domain. | J-011 |
+| Keep immutable membership authority separate from speculative multiplicity demand. | Mutating the same Bag for both roles obscures the subset invariant and pays CoW mutation on authoritative trie state; a second `PathMap<Multiplicity>` Bag represents demand without flattening or changing the value algebra. | J-018 |
 
 Provisional rule—not accepted evidence: J-005 proposes fingerprinting a Bag as self-delimiting
 endpoint records plus multiplicities rather than an occurrence-expanded digest stream. H-001 must
@@ -1397,6 +1398,74 @@ The exact release lifecycle command passed 4,502/4,502 tests with 53 skipped in 
 under a 24 GiB no-swap cap. Its log SHA-256 is
 `cc4cf12ae290fce055b73ddcc1e2041788242fe2cb0af7d2f92fc4bae56122c4`.
 
+### J-018 — 2026-08-24: selection demand is not membership authority
+
+Question: Should speculative multichannel selection remove multiplicity from the same
+`PathMap<Multiplicity>` Bag that candidate products treat as authoritative channel membership?
+
+Status: ACCEPTED REPRESENTATION AND INVARIANT DECISION; PERFORMANCE HYPOTHESIS OPEN. The
+implementation spans `f1r3node-rust-mettail@173bf4e07` and `39bc0d999`. The work remains reachable through pgmcp
+`rspace-multichannel-reservation-replay`; the reservation-pressure comparison is H-010 below and
+is tracked by its reachable child
+`rspace-candidate-authority-reservation-pressure-experiment`.
+
+The predecessor's reversible decrement/reinsert protocol preserved results, but one Bag had two
+meanings. During selection it was simultaneously:
+
+1. the authoritative channel-local snapshot traversed by the synchronized candidate-query zipper;
+   and
+2. the mutable residual produced by speculative bind choices.
+
+The selected design preserves the authority root and records only demand in a second Bag with the
+same exact-key and `Multiplicity(u64)` algebra. Let $`A`$ denote authoritative multiplicity and
+$`R`$ denote reserved demand. For an identity path $`k`$, the invariant and transition laws are:
+
+```math
+0 \le R(k) \le A(k),\qquad
+\operatorname{available}(k) \iff R(k) < A(k).
+```
+
+```text
+reserve(k): require R(k) < A(k); R(k) := R(k) + 1
+release(k): require R(k) > 0;    R(k) := R(k) - 1
+```
+
+This is not a `PathMap<()>` membership mask, a `(key,value)` path pair, a positional vector, or a
+hash map. Exact repeated records remain one trie endpoint with multiplicity. The authority Bag feeds
+read-only zipper products and retained automata; the reservation Bag is initially empty, bounded by
+the live selected-bind frontier, and discarded with the candidate pool. Accepted exact identities
+still enter the existing atomic `BagDelta` commit. Persistent candidates do not reserve; fresh
+produce retains its separate one-bit slot; peeks reserve capacity while searching without deciding
+their later commit semantics.
+
+Two explicit phase refusals follow from the representation. Replay may filter authority only before the first
+reservation. Fresh prepend must also precede selection because it inserts position zero and shifts
+every stored positional witness. Invalid and double releases return `false`; the matcher asserts a
+successful phase operation and reservation release at production call sites. The exact internal
+`u128` Bag cardinalities give an $`O(1)`$
+empty test without confusing two publicly saturated `u64` cardinalities.
+
+The accepted correctness evidence is:
+
+- four private invariant tests keep authority byte/count-equal across every reserve/release, isolate
+  two exact identities, restore the complete pool, and reject both phase violations;
+- 21 data-index cases preserve exact multiplicity, addresses, fresh capacity, lazy decode, and CoW
+  behavior;
+- 17 guarded/multichannel cases preserve failed-search rollback, repeated-channel joins, play/replay
+  permutation, cost, and the 20,000-bind small-stack gate;
+- 3 canonical replay-order and 24 replay/peek/persistence cases pass;
+- all 61 release library cases pass, the measurement feature builds, and production-library strict
+  Clippy is clean; and
+- the exact release workspace lifecycle passes all 4,506 tests, with 53 intentionally skipped, in
+  144.491 seconds under a 24 GiB no-swap cap. Its retained log SHA-256 is
+  `b8a8dea9e0fe94c62d67f9f85ce56b2521b33997dcf6a2f846cb9d46a8dd8037`.
+
+Decision: use one homogeneous Bag per semantic role. CoW authority is valuable only if speculative
+work does not rewrite it; reversible demand belongs in its own multiplicity trie. Do not infer a
+throughput win yet. The authority/query product can now enumerate a fully reserved endpoint before
+the scan rejects it, so H-010 must compare high-pressure shapes against the frozen mutable-residual
+control and attribute CoW writes, availability lookups, allocations, and peak RSS independently.
+
 ## Open hypotheses and required closure evidence
 
 | ID | Hypothesis | Required evidence before acceptance | Status |
@@ -1410,6 +1479,7 @@ under a 24 GiB no-swap cap. Its log SHA-256 is
 | H-007 | Retained `CandidateProductCursor` clones copy depth-growing zipper path/ancestor state and, if that slope is confirmed, a bounded CoW suffix checkpoint removes it without changing candidate or binding semantics. | Clone/allocation anti-vacuity; geometric depth/width resource ladder; old/new candidate and binding differential; focus-endpoint preservation; malformed, COMM, replay/post-state, and small-stack gates from pgmcp 5985 and experiment 5990. | Deterministic-run hybrid passed semantic, focus-root, paired resource, allocation, instruction, and 256 KiB small-stack gates; full release open |
 | H-008 | Semantic projection or a fail-closed `All` fallback restores dynamic AC candidate-query soundness for matcher-ignored `New`, `ReceiveBind`, and `MatchCase` fields. | Per-field counterexamples; oracle-success-implies-query-accept property; ground exact, malformed, candidate/binding, COMM, play/replay, and post-state gates from pgmcp 5982. | Focused semantic gates passed; COMM/replay/release open |
 | H-009 | Group-compressed candidate masks plus retention-pressure scheduling remove the conditional depth×duplicate-width endpoint slope without changing ordered candidate or matcher semantics. | Frozen occurrence control; exact ordered-domain oracle; depth×width/source-orientation matrix; mixed `FreeMap`/remainder differential; randomized expansion modes; 51-sample locked experiment; headless allocation, peak-heap, instruction/cache, and CPU attribution; full release gate. | **Accepted** at `e3f3b4831`, with experiment 312 accepted and the repaired exact 4,502/4,502 release lifecycle gate closed at `8035ba826` |
+| H-010 | Immutable candidate authority plus a separate reservation Bag reduces speculative CoW mutation without a material regression from availability filtering under high reservation pressure. | Frozen decrement/reinsert control; equal exact selections and rollback states; distinct/repeated identities; single/repeated channels; low/high reservation pressure; Criterion confidence decision; allocation and RSS attribution; report-only Heaptrack plus instruction/cache profile; exact release lifecycle. | Open; representation and semantic invariants accepted at `173bf4e07`/`39bc0d999`, performance verdict deliberately not inferred |
 
 ## Threats to validity
 

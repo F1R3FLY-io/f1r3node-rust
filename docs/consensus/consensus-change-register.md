@@ -466,7 +466,7 @@ conversions proven equivalent to their recursive counterparts definitely do not 
 while **data-model, wire-format, and deliberate semantic changes** (the EPathMap representation and
 EPM1 being the named exemplar) are what this register exists to carry. Every entry was re-classified
 under that criterion; the 46 that no longer qualified at re-scope—and later classified findings
-through CBR-070—are retired to typed rows in
+through CBR-071—are retired to typed rows in
 [Appendix B.1](#b1-retired-register-entries), and their full bodies remain in git history at the
 pre-refactor revision.
 
@@ -4155,6 +4155,7 @@ material now lives.
 | `CBR-068` | this checkpoint; pgmcp experiment 306 | The pretty printer consumes presence-safe compact protobuf regions and emits wide children through one bounded n-ary rope instead of retaining proportional child plans and binary concatenation chains | `OPTIMIZATION_MEASURED_NEUTRAL` | exact recursive-oracle text/state, malformed `KeyValuePair` disposition, oneof/singular/repeated-field presence, and owned fallback behavior are preserved. At width 65,536 the locked treatment/control ratio has mean **0.984332** and one-sided 95% upper **0.998872**. The printer operates on canonical protobuf regions without projecting or sorting resident ParBag/PathMap elements. No accepted program, normalized value, protobuf/bincode/EPM1 byte, hash, COMM schedule, charge, EPathMap mode, PathMap operation, or Rholang parallel execution order moves. Stack-safety report §5.33. |
 | `CBR-069` | `1afd4791e`; pgmcp bugs 5994/5995 and experiment 311 | Admitted resident `Send` endpoints project immediate `Par` children through generated protobuf regions, stable substitution retains its CoW `ParBag` root, and a one-child empty-shell reducer `Join` applies the native Bag identity instead of reconstructing the same PathMap | `OPTIMIZATION_MEASURED_NEUTRAL` | 5 release projection cases preserve optional presence, repeated order, metadata/unknown-field disposition, malformed EPathMap errors, and complete-decoder fallback; 3 substitution cases pin identity and variable/process near misses; 15 evaluator recursive differentials preserve exact value, protobuf, bincode, error, and charge traces. A noncanonical trailing-zero locally-free witness pins historical child-then-shell `union`, and the fixed-stack gate proves the exact PathMap root remains shared. The unchanged depth-131,072/2 MiB/120 s gate and exact 4,495-test release workspace pass. Depth-8,192 headless Heaptrack records **53,747,932 $`\rightarrow`$ 963,802** allocation calls. No accepted program, normalized value, successful binding, protobuf/bincode/EPM1 byte, score, hash, COMM schedule, charge, EPathMap mode, PathMap algebra, RSpace multiplicity, or Rholang parallel execution order moves. Stack-safety report §5.35. |
 | `CBR-070` | `e3f3b4831`; pgmcp task 5907 and experiment 312 | Spatial-matcher candidate masks retain one endpoint per canonical-identity group, evaluate pure connective operands in retention-pressure order, and expand selected groups to original positions once at the root | `OPTIMIZATION_MEASURED_NEUTRAL` | The complete 57-case debug and release differential preserves exact ascending candidate domains, matcher verdicts, complete `FreeMap`, remainder, and source-position order over opposing depth/width, encoded/resident, mixed-duplicate, universal, sparse, dense, and randomized layouts. The frozen occurrence control is non-default and cannot enter production. Experiment 312 accepts the primary width-4,096 OR result at **5,513,777.071 $`\rightarrow`$ 18,869.671 ns**, $`U=0`$, $`p=1.6518407509198735\times10^{-18}`$, Cliff's delta $`-1.0`$; report-only Heaptrack, paired Cachegrind/Massif, and headless uProf attribute the eliminated mutation and retention. No accepted program, successful binding, normalized value, protobuf/bincode/EPM1 byte, score, hash, COMM schedule, charge, EPathMap mode, PathMap algebra, RSpace multiplicity, candidate order, or Rholang parallel execution order moves. Stack-safety report §5.36. |
+| `CBR-071` | `173bf4e07`, `39bc0d999`; pgmcp `rspace-multichannel-reservation-replay` | Candidate selection preserves the channel-local `PathMap<Multiplicity>` authority and records speculative nonpersistent demand in a separate multiplicity Bag | `OPTIMIZATION_MEASURED_NEUTRAL` | Four private invariant cases keep authority identical through reserve/release, prove exact repeated multiplicity and identity isolation, restore the complete pool, and observe both phase refusals without panic-expecting tests. The 21 data-index, 17 guarded/multichannel, 3 replay-order, 24 replay/persistence, and 61 library cases pass; the 20,000-bind stack gate, measurement-feature build, production-library strict Clippy, and repository panic-policy gate remain green. The exact release lifecycle passes 4,506/4,506 tests with 53 skipped under the no-swap cap. Persistent and fresh semantics, exact-path atomic commit, canonical order, bindings, COMM, replay, and post-state behavior remain unchanged. H-010 deliberately leaves throughput under high reservation pressure open; this row classifies semantic neutrality, not a speedup. Stack-safety report §5.37. |
 | `CBR-L01` | `3ff1c98b`, `f586e138` | Equal operator precedence becomes representable; Rholang's ladder corrected | `BUG_FIX_RULED_NONCONSENSUS` | entry body at the pre-refactor revision (git history) |
 | `CBR-L02` | `0f3d298c` | The substrate lane stops answering "false" for a guard it could not decide | `BUG_FIX_RULED_NONCONSENSUS` | entry body at the pre-refactor revision (git history) |
 | `CBR-L03` | `69c66cd1` | A residual binder rests the COMM, whatever the formula collapsed to | `BUG_FIX_RULED_NONCONSENSUS` | entry body at the pre-refactor revision (git history) |
@@ -4521,6 +4522,33 @@ protobuf/bincode/EPM1 bytes, PathMap keys and values, COMM trace, charge, and st
 unchanged. The repaired exact workspace gate passes 4,502/4,502 tests with 53 skipped; log SHA-256
 `cc4cf12ae290fce055b73ddcc1e2041788242fe2cb0af7d2f92fc4bae56122c4`. CBR-070 therefore remains
 retired as `OPTIMIZATION_MEASURED_NEUTRAL`.
+
+**CBR-071 classification continuation (2026-08-24).** The authoritative datum Bag, canonical
+catalog order, fixed-width positional index, and exact accepted-match `BagDelta` are unchanged.
+Only speculative state moves: instead of decrementing and reinserting authority during the
+explicit-frame selector, one separate `PathMap<Multiplicity>` Bag records selected demand. For
+every exact identity path $`k`$, the checked invariant is $`0 \le R(k) \le A(k)`$, where $`A`$ is
+authoritative multiplicity and $`R`$ is reserved demand. A candidate is available exactly when
+$`R(k)<A(k)`$. Exhaustive search returns $`R`$ to empty; accepted search retains only derived pool
+state while the same exact identities enter the existing atomic commit.
+
+Persistent candidates still bypass reservation. Fresh produce retains one-bit capacity and still
+occupies position zero. Replay filtering and fresh prepending now return explicit refusal if
+selection has begun, and every production caller asserts the pre-existing phase contract. Invalid
+or double release cannot manufacture capacity. The spatial matcher remains the verdict authority,
+and query products may add only conservative work by visiting a fully reserved authority endpoint
+before the availability check rejects it.
+
+The invariant, data-index, guarded multichannel, replay-order, replay/persistence, small-stack,
+feature-build, production-Clippy, and panic-policy gates establish representation neutrality. They
+are followed by an exact 4,506/4,506 release-workspace pass with 53 intentionally skipped in
+144.491 seconds under a 24 GiB no-swap cap. The retained log SHA-256 is
+`b8a8dea9e0fe94c62d67f9f85ce56b2521b33997dcf6a2f846cb9d46a8dd8037`. These gates do
+not establish that avoiding CoW authority mutation is faster in every reservation-pressure
+shape; PathMap journal H-010 preserves that as a preregistered open hypothesis. No PathMap source,
+compact image, channel or datum identity, candidate order, binding, COMM, event, post-state, charge,
+or Rholang parallel execution rule moves. CBR-071 is therefore retired as
+`OPTIMIZATION_MEASURED_NEUTRAL`, not added to the active may-change-consensus register.
 
 **CBR-033 living evidence continuation (2026-08-11; pgmcp #5301).** `7983bf4b` makes the
 read-only hot-store snapshot total over the union of datum and continuation key domains. A datum
@@ -5262,6 +5290,6 @@ is the point: the derivation's surplus is real, and it is small and classifiable
 ---
 
 *The register's identifiers are stable and never reused. The 2026-08-03 re-scope retired 46 entries
-to B.1; subsequent classified findings through CBR-070 and CBR-L24 bring the living appendix to 71. The re-scope also removed
+to B.1; subsequent classified findings through CBR-071 and CBR-L24 bring the living appendix to 72. The re-scope also removed
 the mechanised drift gate with its machine index; the pre-refactor revision, with every then-retired
 body and the gate's specification, remains in git history.*

@@ -150,7 +150,7 @@ The layout experiment remains open until the preregistered A/B/C comparison sele
 | Canonical framed `RhoPathV1` | `651f278aa` | exact-channel isolation, structural-prefix pruning, malformed-key refusal | implemented |
 | Multiplicity-aware datum index | `5d4c5eca9` | one trie key per identical complete record; one decode per distinct key | implemented |
 | Authoritative hot-store datum trie | `ccec9b730`, `bd55758e4` | history fill, loaded-empty state, snapshots, indexed compatibility removal, and package tests | implemented |
-| Multiplicity-native matching pools | `5329b27a3` | exact-path firing; reversible Bag reservations; fresh-datum addressing; repeated-channel duplicate tests | implemented |
+| Multiplicity-native matching pools | `5329b27a3`, `173bf4e07`, `39bc0d999` | exact-path firing; immutable authority plus a separate multiplicity-aware reservation Bag; fresh-datum addressing; repeated-channel duplicate tests; explicit invalid/double-release and phase-boundary refusal | implemented; reservation-pressure performance comparison remains open |
 | Atomic accepted-match commit | `cd01ea721`, `21ece399d`, `0f9beb5f0`, `87679597d`, `9a746f2bf` | play and replay normalize every nonpersistent stored identity into one exact-key `BagDelta`; repeated identities become multiplicity; one hot-store write lock delegates the sole private COW root to `BagDelta` and publishes only after validation; multi-key deltas reuse one moving write-zipper focus while singleton deltas avoid its setup cost; underflow and malformed-path controls leave the complete data store unchanged; 23/23 Bag, 18/18 data-index, 17/17 guarded play/replay, and 146/146 broad RSpace tests pass; Rocq proves the candidate-to-delta projection and atomic publication equations, TLC checks 2,628 reachable states, and mCRL2 proves branching bisimulation plus unreachability of partial publication; pgmcp experiments 218 and 219 characterize root-fork and cursor costs | implemented for datum consumption; join removal remains the unchanged subsequent operation and the complete generated schedule/post-state campaign remains open |
 | Shared canonical candidate catalogs | `2eb0d3871` | one canonical order and one lazy decode cell per distinct record across channel-pool snapshots; multiplicity-only updates do not rebuild the catalog | implemented |
 | Single-lookup hot-store reads | `d50b1183d` | one encoded prefix and one loaded-store read lock per hot pool/data lookup; final performance verdict remains pending | implemented |
@@ -163,17 +163,20 @@ The layout experiment remains open until the preregistered A/B/C comparison sele
 | Retained-automaton/Bag product walk | `ad395c357`, `61accc170`; pgmcp `rspace-retained-set-automaton`; experiments 224, 225, 226, and 229; replication artifact 320 | an iterative synchronized zipper product intersects every retained-transition segment with the authoritative `PathMap<Multiplicity>` Bag in the same escaped byte domain; the unrelated fresh datum remains a zero-allocation byte stream; one distinct Bag key and at most one eligible non-root terminal depth use zero or one exact PathMap lookup, while multi-depth and multi-key cases retain the linear zipper product; no datum decode, Bag flattening, or occurrence expansion occurs; artifact 320 confirms 4.476× and 13.338× wins at shared/256 and shared/4,096, and records diverse-prefix wins of 1.059× and 7.803× at the same cardinalities; both cardinality-16 causal-selector cells retain fixed-cost losses, while existing end-to-end COMM measurements win at 16 because they include avoided spatial work | implemented and measured; shape-sensitive causal fixed costs and allocation/RSS comparison remain visible; no empirical cutoff is inferred from the selector-only microbenchmark |
 | Layout selection and performance verdict | pgmcp experiments 208, 224, 225, 226, and 229 | retained-receive slice passes its preregistered five-percent throughput threshold at 99% confidence; resting-data pruning is non-regressing at one entry after the structural base-case repair and passes from 16 through 4,096; the direct datum-first product wins at the preregistered shared/256 and large cells after two rejected designs; full workload matrix, allocations, and final layout selection remain open | partial measurement accepted |
 
-At `f43858ec2`, each exact channel produces a `CandidatePool`. Its semantic residual is a
-channel-local `Bag`, obtained as a copy-on-write PathMap subtrie through a read zipper. Pools share a
+At `f43858ec2`, each exact channel produces a `CandidatePool`. Since `173bf4e07` and `39bc0d999`, its semantic
+membership authority is a channel-local `Bag`, obtained as a copy-on-write PathMap subtrie through a
+read zipper, while a second initially empty Bag records only speculative nonpersistent demand. Pools share a
 derived `CandidateCatalog`: its `Arc` order table contains one lazy decode cell per distinct trie
 key, not one record per occurrence. A single `PathMap<CandidatePosition>` maps the complete relative
 RhoPathV1 key of every catalog entry to a fixed-width `u64` position. The same trie supplies both
 known-path membership for persistent zero-to-one reactivation and structural-prefix candidate
 positions; there is no duplicate unit-valued membership trie and no platform-width trie payload.
 The position trie is built with the catalog, not against every lookup; it is non-authoritative and
-is refreshed after a permanent membership change. The `PathMap<Multiplicity>` Bag remains the sole
-membership authority.
-The explicit matcher PDA decrements and restores Bag multiplicities during descent and rollback.
+is refreshed after a permanent membership change. The authority `PathMap<Multiplicity>` Bag remains
+the sole membership authority.
+The explicit matcher PDA increments and decrements the reservation Bag during descent and rollback;
+it never rewrites authority during selection. Availability is the pointwise inequality
+`authority.count(path) > reserved.count(path)`.
 An accepted stored candidate carries its complete trie path; an arriving produce carries the
 separate `Fresh` address. Firing therefore removes by exact path and cannot suffer positional-index
 shifts.
@@ -911,22 +914,25 @@ neither scope-wide peak is an allocation-per-COMM measurement.
 | Rust | Verus proofs for arithmetic and PDA invariants where supported; SMT obligations otherwise |
 | Robustness | Mutation tests demonstrating that equivalence and non-vacuity gates reject representative faults |
 
-**Algorithm 1 (Reversible Bag reservation).** The selector temporarily removes a nonpersistent,
-non-peek occurrence while descending. Keeping the removed key on an explicit rollback stack makes a
-failed branch restore exactly the multiplicity it observed, without expanding the Bag into repeated
-values.
+**Algorithm 1 (Reversible Bag demand).** The selector records one unit of speculative demand for a
+nonpersistent occurrence while descending. Keeping the selected position on the explicit PDA frame
+makes a failed branch remove exactly that demand, without mutating authority or expanding either Bag
+into repeated values. Peeks reserve capacity during search; their accepted-commit consumption rule
+remains a separate consensus decision.
 
 ```pseudocode
-reserve(key, persistent, peek):
-    require bag.count(key) > 0
-    if not persistent and not peek:
-        bag.decrement(key)
-        rollback.push(key)
+reserve(position, key, persistent):
+    if not persistent:
+        require reserved.count(key) < authority.count(key)
+        reserved.increment(key)
+        frame.reserved_position = position
     return candidate(key)
 
 rollback_all():
-    while rollback is not empty:
-        bag.increment(rollback.pop())
+    while a frame has reserved_position:
+        key = catalog.key_at(frame.reserved_position)
+        require reserved.count(key) > 0
+        reserved.decrement(key)
 ```
 
 The procedure notation specifies the transaction law rather than a second implementation. Nested

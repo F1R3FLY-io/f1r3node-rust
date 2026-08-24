@@ -3300,17 +3300,18 @@ accepted selection and continues. Thus the enumeration head is the selector resu
 not by coordination between sibling algorithms.
 
 Each channel has one `CandidatePool`: a copy-on-write `PathMap<Multiplicity>` Bag subtrie is the
-residual authority, while a derived `CandidateCatalog` shares canonical order and one lazy decode
-cell per distinct trie key across pool snapshots. A catalog-local
+immutable selection authority, and a separate initially empty `PathMap<Multiplicity>` Bag records
+only speculative nonpersistent demand. A derived `CandidateCatalog` shares canonical order and one
+lazy decode cell per distinct trie key across pool snapshots. A catalog-local
 `PathMap<CandidatePosition>` maps each complete relative RhoPathV1 key to a fixed-width `u64`
 position. That one trie serves known-path membership for persistent zero-to-one reactivation and
 indexed structural-prefix scans; no duplicate `PathMap<()>` and no platform-width trie value remain.
 It is constructed once with the catalog, refreshed after permanent membership changes, and never
-substitutes for the `PathMap<Multiplicity>` authority. The chosen-candidate stack and Bag
-reservations obey the transaction law: an
-accepted early stop leaves nonpersistent decrements installed; an exhausted subtree releases its
-parent's multiplicity; exhaustive enumeration restores the entry state. Persistent records are never
-decremented. A `Vec<Par>`, expanded occurrence list, per-frame pool clone, traversal-depth cap,
+substitutes for the `PathMap<Multiplicity>` authority. The chosen-candidate stack and reservation
+Bag obey the transaction law: an accepted early stop leaves nonpersistent demand recorded; an
+exhausted subtree removes its parent's demand; exhaustive enumeration restores the entry state.
+The authority is never decremented by selection, and persistent records never enter the reservation
+Bag. A `Vec<Par>`, expanded occurrence list, per-frame pool clone, traversal-depth cap,
 enlarged `RUST_MIN_STACK`, `stacker`, and a second enumerator were rejected.
 
 ##### 5.16.5.3 How the fix was made
@@ -3319,10 +3320,13 @@ The former `search_candidate_selection` and `enumerate_admissible_selections` re
 replaced by calls to private `walk_candidate_selections`. The machine preserves pool order, advances a
 parent cursor only after the selected child returns, and emits the pre-existing
 `GuardRejected`/`NoSpatialMatch` backtrack counters at the same return boundary. Refinement
-`5329b27a3` removes expanded datum pools and per-frame residual copies: descent decrements the
-channel-local Bag, return increments it, and accepted candidates carry either an exact stored trie
-path or the distinct `Fresh` address. Firing removes exact paths, so same-channel batches cannot shift
-one another. `2eb0d3871` shares the canonical catalog and decode cells across pool construction;
+`5329b27a3` removes expanded datum pools and per-frame residual copies: descent originally
+decremented the channel-local Bag, return incremented it, and accepted candidates carried either an
+exact stored trie path or the distinct `Fresh` address. Firing removes exact paths, so same-channel
+batches cannot shift one another. `173bf4e07` then separates that overloaded residual into immutable
+authority plus a multiplicity-aware reservation Bag: descent increments demand, return decrements
+demand, and exact cardinality makes the empty test constant-time without the public `u64` saturation
+boundary. `2eb0d3871` shares the canonical catalog and decode cells across pool construction;
 `d50b1183d` encodes the channel prefix once and holds one loaded-store read lock across the hot
 PathMap lookup. Retained-automaton checkpoints `a89cbc294`, `f149cef2b`, and `ea8c39f92` add one
 `PathMap<TerminalId>` transition segment per receive-bind position. `TerminalId` and `CandidateId`
@@ -3913,8 +3917,10 @@ Native-stack complexity changes from $`\Theta(b)`$ to $`O(1)`$. Explicit control
 $`O(b)`$, which is the irreducible selected-candidate/frame frontier. Search time and output storage
 remain proportional to the candidate combinations actually visited and, for enumeration, emitted.
 The machine creates one frame per live bind, one chosen-candidate entry per selected bind, and one
-copy-on-write Bag pool per distinct channel. A frame records only an optional reservation position;
-it does not clone the pool. The derived catalog is linear in distinct records rather than total
+copy-on-write authority Bag plus one initially empty reservation Bag per distinct channel. A frame
+records only an optional reservation position; it does not clone either trie. Reservation space is
+linear in the number of distinct identities simultaneously demanded, bounded by the live bind
+frontier, rather than channel cardinality. The derived catalog is linear in distinct records rather than total
 multiplicity. Its path topology and lazy decode cells are shared across pool snapshots;
 multiplicity-only changes update derived counts without rebuilding it. The traversal does not
 materialize a Cartesian product or expand duplicate trie keys. The retained automaton adds one trie
@@ -9700,6 +9706,63 @@ target, the 57-case release matcher differential, both depth-20,000 connective g
 layout gate, and the current-source census pass. The exact workspace command closes at 4,502 passed,
 0 failed, and 53 skipped in 139.111 seconds under a 24 GiB no-swap cap; the captured log SHA-256 is
 `cc4cf12ae290fce055b73ddcc1e2041788242fe2cb0af7d2f92fc4bae56122c4`.
+
+---
+
+### 5.37 Immutable candidate authority and multiplicity-aware reservation demand [SS-Y17]
+
+SS-Y17, implemented by `173bf4e07` and the explicit-refusal refinement `39bc0d999`, is an ownership
+and heap-work refinement inside the already iterative multichannel selector.
+It adds no recursion conversion and changes no traversal ceiling. Before `173bf4e07`, one
+`CandidatePool` Bag played two incompatible roles: it was the authoritative channel-local
+`PathMap<Multiplicity>` snapshot supplied to synchronized query products, and speculative descent
+mutated that same snapshot by decrementing and reinserting multiplicity. The selector was correct,
+but the representation obscured the invariant that search demand is derived, reversible state—not
+RSpace membership—and forced copy-on-write mutation of the authority root.
+
+The selected representation keeps two specialized tries:
+
+```text
+authority : PathMap<Multiplicity>  // immutable during one selection
+reserved  : PathMap<Multiplicity>  // speculative nonpersistent demand
+```
+
+Let $`A`$ denote authority multiplicity and $`R`$ denote reserved demand. For each exact relative
+datum path $`k`$, availability is
+$`A(k) > R(k)`$. Reservation requires that inequality and sets
+$`R(k) := R(k)+1`$; rollback requires $`R(k)>0`$ and sets
+$`R(k) := R(k)-1`$. The public `u64` Bag cardinality may saturate, so the constant-time empty test
+uses the Bags' exact internal `u128` sums: under the checked pointwise-subset invariant,
+$`A=R`$ in cardinality if and only if no stored occurrence remains available. Fresh produce retains
+its separate one-bit capacity, and persistent data still bypasses reservation.
+
+The authoritative Bag remains the read-only zipper input to candidate products and retained set
+automata. A derived query can therefore enumerate an authority endpoint whose complete multiplicity
+is currently reserved; `CandidateScan::next_available` applies $`A(k)>R(k)`$ before the spatial
+oracle observes it. This preserves canonical candidate order and avoids mutating or flattening the
+authority. It also identifies a measurement boundary: avoiding authority CoW mutation may trade
+against extra availability checks under high reservation pressure. No throughput conclusion is
+drawn until that shape receives a preregistered comparison.
+
+Phase guards reject replay filtering or fresh prepending after selection begins. The latter matters
+because prepending shifts every stored positional witness by one; permitting it after a reservation
+would make rollback address the wrong slot. Invalid and double releases return `false`, and the
+selector asserts that every rollback releases exactly one live reservation. An exhausted search
+therefore restores both Bags to entry equality, while an accepted search leaves only derived demand
+inside a pool that is subsequently discarded; accepted exact paths still enter the existing atomic
+`BagDelta` commit.
+
+The focused release evidence passes 4 private invariant cases, 21 data-index cases, 17 guarded and
+multichannel cases (including the 20,000-bind stack gate), 3 canonical replay-order cases, 24 replay
+and peek/persistence cases, and all 61 library cases. The measurement-only checkpoint feature builds,
+and strict release Clippy passes for the production library. The package-wide all-target Clippy
+probe reaches unrelated pre-existing integration-test lints; it is not reported as a green gate and
+did not authorize orthogonal cleanup. The exact release workspace lifecycle passes all 4,506 tests,
+with 53 intentionally skipped, in 144.491 seconds under a 24 GiB no-swap cap. The retained log's
+SHA-256 is `b8a8dea9e0fe94c62d67f9f85ce56b2521b33997dcf6a2f846cb9d46a8dd8037`.
+No PathMap source, feature, compact image, channel identity,
+datum identity, candidate order, spatial verdict, binding, COMM, event, post-state, charge, or
+Rholang parallel execution rule changes.
 
 ---
 
