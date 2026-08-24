@@ -239,7 +239,8 @@ impl ProductFixture {
         }
         Self {
             pool: CandidatePool {
-                availability: Bag::from_pathmap(availability),
+                authority: Bag::from_pathmap(availability),
+                reserved: Bag::new(),
                 ordered: Vec::<CandidatePoolEntry<()>>::new().into(),
                 positions: Arc::new(positions),
                 fresh: None,
@@ -265,7 +266,7 @@ impl ProductFixture {
             })
             .collect::<Vec<_>>();
         let (legacy, legacy_metrics) = legacy_positions_matching_query(
-            self.pool.availability.as_pathmap(),
+            self.pool.authority.as_pathmap(),
             &self.pool.positions,
             query,
         );
@@ -387,7 +388,8 @@ fn terminal_endpoint_is_scanned_without_a_root_value_losing_checkpoint() {
     availability.insert(&terminator_endpoint, Multiplicity::ONE);
     positions.insert(&terminator_endpoint, CandidatePosition::from_index(0));
     let pool = CandidatePool {
-        availability: Bag::from_pathmap(availability),
+        authority: Bag::from_pathmap(availability),
+        reserved: Bag::new(),
         ordered: Vec::<CandidatePoolEntry<()>>::new().into(),
         positions: Arc::new(positions),
         fresh: None,
@@ -397,7 +399,7 @@ fn terminal_endpoint_is_scanned_without_a_root_value_losing_checkpoint() {
     let query = RhoPathQuery::structural_sequence([], false);
     assert_eq!(pool.positions_matching_query(&query, false), vec![0]);
     let (legacy, _) =
-        legacy_positions_matching_query(pool.availability.as_pathmap(), &pool.positions, &query);
+        legacy_positions_matching_query(pool.authority.as_pathmap(), &pool.positions, &query);
     assert_eq!(legacy, vec![0]);
 }
 
@@ -492,8 +494,8 @@ fn rejected_nested_frames_do_not_create_suffix_checkpoints() {
 fn asymmetric_failed_descent_restores_both_product_zippers() {
     let mut availability = PathMap::new();
     let mut positions = PathMap::new();
-    availability.insert(&[1, 2], Multiplicity::ONE);
-    positions.insert(&[1, 2, 3], CandidatePosition::from_index(0));
+    availability.insert([1, 2], Multiplicity::ONE);
+    positions.insert([1, 2, 3], CandidatePosition::from_index(0));
     let mut cursor = CandidateProductCursor::new(&availability, &positions);
 
     assert!(!cursor.descend_to_existing(&[1, 2, 3]));
@@ -508,10 +510,10 @@ fn asymmetric_failed_descent_restores_both_product_zippers() {
 fn checkpoint_preserves_focus_endpoints_and_descendant_values() {
     let mut availability = PathMap::new();
     let mut positions = PathMap::new();
-    availability.insert(&[7], Multiplicity::ONE);
-    availability.insert(&[7, 9], Multiplicity::new(2).unwrap());
-    positions.insert(&[7], CandidatePosition::from_index(3));
-    positions.insert(&[7, 9], CandidatePosition::from_index(5));
+    availability.insert([7], Multiplicity::ONE);
+    availability.insert([7, 9], Multiplicity::new(2).unwrap());
+    positions.insert([7], CandidatePosition::from_index(3));
+    positions.insert([7, 9], CandidatePosition::from_index(5));
     let mut cursor = CandidateProductCursor::new(&availability, &positions);
     assert!(cursor.descend_to_existing(&[7]));
 

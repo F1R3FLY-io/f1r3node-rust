@@ -185,7 +185,8 @@ impl CandidateCheckpointExperiment {
             query_kind,
             depth,
             pool: CandidatePool {
-                availability: Bag::from_pathmap(availability),
+                authority: Bag::from_pathmap(availability),
+                reserved: Bag::new(),
                 ordered: Vec::<CandidatePoolEntry<()>>::new().into(),
                 positions: Arc::new(positions),
                 fresh: None,
@@ -209,7 +210,7 @@ impl CandidateCheckpointExperiment {
         let positions = match arm {
             ExperimentArm::LegacyClone => {
                 legacy_positions_matching_query::<false>(
-                    self.pool.availability.as_pathmap(),
+                    self.pool.authority.as_pathmap(),
                     &self.pool.positions,
                     &self.query,
                 )
@@ -232,7 +233,7 @@ impl CandidateCheckpointExperiment {
                 .collect(),
         );
         let (legacy_positions, legacy_metrics) = legacy_positions_matching_query::<true>(
-            self.pool.availability.as_pathmap(),
+            self.pool.authority.as_pathmap(),
             &self.pool.positions,
             &self.query,
         );

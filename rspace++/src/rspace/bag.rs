@@ -259,6 +259,11 @@ impl Bag {
     /// case with [`Self::cardinality_is_saturated`].
     pub const fn cardinality(&self) -> u64 { Self::project_cardinality(self.exact_cardinality) }
 
+    /// Exact cardinality for internal algorithms that compare Bag demand with
+    /// Bag authority without losing information to the public `u64` saturation
+    /// boundary.
+    pub(crate) const fn exact_cardinality(&self) -> u128 { self.exact_cardinality }
+
     pub const fn cardinality_is_saturated(&self) -> bool {
         self.exact_cardinality > u64::MAX as u128
     }

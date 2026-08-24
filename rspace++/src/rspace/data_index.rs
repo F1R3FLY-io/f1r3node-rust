@@ -265,7 +265,13 @@ impl<A: Clone> CandidateCatalog<A> {
 
 #[derive(Debug, Clone)]
 pub struct CandidatePool<A: Clone> {
-    availability: Bag,
+    /// Authoritative stored multiplicities after any replay preselection
+    /// filter. Candidate search never mutates this PathMap-backed Bag.
+    authority: Bag,
+    /// Speculative, non-persistent demand placed against `authority`.
+    /// Repeated-channel joins share one pool, so multiplicity is reserved once
+    /// per selected occurrence without copying or rewriting the authority trie.
+    reserved: Bag,
     ordered: Arc<[CandidatePoolEntry<A>]>,
     positions: Arc<PathMap<CandidatePosition>>,
     fresh: Option<Datum<A>>,
@@ -337,10 +343,10 @@ impl<'a> CandidateProductCursor<'a> {
         let mut availability = ZipperSubtries::make_map(&self.availability).unwrap_or_default();
         let mut positions = ZipperSubtries::make_map(&self.positions).unwrap_or_default();
         if let Some(value) = availability_root {
-            availability.insert(&[], value);
+            availability.insert([], value);
         }
         if let Some(value) = positions_root {
-            positions.insert(&[], value);
+            positions.insert([], value);
         }
         if availability.is_empty() || positions.is_empty() {
             return None;
@@ -596,7 +602,8 @@ mod candidate_product_test_metrics {
 
 impl<A: Clone + PartialEq> PartialEq for CandidatePool<A> {
     fn eq(&self, other: &Self) -> bool {
-        self.availability == other.availability &&
+        self.authority == other.authority &&
+            self.reserved == other.reserved &&
             self.ordered == other.ordered &&
             self.fresh == other.fresh &&
             self.fresh_available == other.fresh_available
@@ -606,10 +613,11 @@ impl<A: Clone + PartialEq> PartialEq for CandidatePool<A> {
 impl<A: Clone + Eq> Eq for CandidatePool<A> {}
 
 impl<A: Clone> CandidatePool<A> {
-    fn from_catalog(availability: Bag, catalog: &CandidateCatalog<A>) -> Self
+    fn from_catalog(authority: Bag, catalog: &CandidateCatalog<A>) -> Self
     where A: ColdStoreDecode {
         Self {
-            availability,
+            authority,
+            reserved: Bag::new(),
             ordered: Arc::clone(&catalog.ordered),
             positions: Arc::clone(&catalog.positions),
             fresh: None,
@@ -619,20 +627,27 @@ impl<A: Clone> CandidatePool<A> {
     }
 
     pub fn prepend_fresh(&mut self, datum: Datum<A>) {
+        assert!(
+            self.reserved.is_empty() && (self.fresh.is_none() || self.fresh_available),
+            "a fresh candidate cannot be prepended during an active selection"
+        );
         self.fresh = Some(datum);
         self.fresh_available = true;
     }
 
     pub fn len(&self) -> usize { self.ordered.len() + usize::from(self.fresh.is_some()) }
 
-    pub fn is_empty(&self) -> bool { !self.fresh_available && self.availability.is_empty() }
+    pub fn is_empty(&self) -> bool {
+        !self.fresh_available &&
+            self.authority.exact_cardinality() == self.reserved.exact_cardinality()
+    }
 
     /// Authoritative multiplicities for the stored (non-fresh) candidates.
     ///
     /// Retained receive automata use this borrowed root for a read-only zipper
     /// product. The Bag remains owned by the pool; callers cannot mutate it or
     /// flatten it into a positional collection.
-    pub(crate) fn stored_availability(&self) -> &Bag { &self.availability }
+    pub(crate) fn stored_availability(&self) -> &Bag { &self.authority }
 
     pub fn next_available(&self, start: usize) -> Option<usize> {
         (start..self.len()).find(|position| self.is_available(*position))
@@ -673,7 +688,7 @@ impl<A: Clone> CandidatePool<A> {
             result.push(0);
         }
         let stored_offset = usize::from(self.fresh.is_some());
-        let mut root = CandidateProductCursor::new(self.availability.as_pathmap(), &self.positions);
+        let mut root = CandidateProductCursor::new(self.authority.as_pathmap(), &self.positions);
         if !root.descend_to_existing(&[1]) {
             return result;
         }
@@ -739,48 +754,59 @@ impl<A: Clone> CandidatePool<A> {
             let Some(entry) = self.ordered.get(position - 1) else {
                 return false;
             };
-            if self.availability.count(entry.relative_path()) == 0 {
-                return false;
-            }
-            self.availability.remove(entry.relative_path());
-            return true;
+            return Self::reserve_stored(
+                &self.authority,
+                &mut self.reserved,
+                entry.relative_path(),
+            );
         }
         let Some(entry) = self.ordered.get(position) else {
             return false;
         };
-        if self.availability.count(entry.relative_path()) == 0 {
-            return false;
-        }
-        self.availability.remove(entry.relative_path());
-        true
+        Self::reserve_stored(&self.authority, &mut self.reserved, entry.relative_path())
     }
 
-    pub fn release(&mut self, position: usize) {
+    /// Release one successful speculative reservation.
+    ///
+    /// `false` identifies an invalid position or a double release instead of
+    /// silently manufacturing multiplicity that is absent from the authority.
+    pub fn release(&mut self, position: usize) -> bool {
         if self.fresh.is_some() {
             if position == 0 {
+                if self.fresh_available {
+                    return false;
+                }
                 self.fresh_available = true;
-                return;
+                return true;
             }
-            let entry = &self.ordered[position - 1];
-            self.availability
-                .insert(entry.relative_path())
-                .expect("candidate reservation release cannot overflow");
-            return;
+            let Some(entry) = self.ordered.get(position - 1) else {
+                return false;
+            };
+            return Self::release_stored(&mut self.reserved, entry.relative_path());
         }
-        let entry = &self.ordered[position];
-        self.availability
-            .insert(entry.relative_path())
-            .expect("candidate reservation release cannot overflow");
+        let Some(entry) = self.ordered.get(position) else {
+            return false;
+        };
+        Self::release_stored(&mut self.reserved, entry.relative_path())
     }
 
-    pub fn retain(&mut self, mut predicate: impl FnMut(&Datum<A>) -> bool) {
+    /// Apply replay's COMM filter before candidate selection begins.
+    ///
+    /// Filtering an active selection would invalidate the subset relation
+    /// between `reserved` and `authority`, so make that misuse impossible to
+    /// overlook rather than trying to repair it after the fact.
+    pub fn retain_before_selection(&mut self, mut predicate: impl FnMut(&Datum<A>) -> bool) {
+        assert!(
+            self.reserved.is_empty() && (self.fresh.is_none() || self.fresh_available),
+            "candidate authority cannot be filtered during an active selection"
+        );
         if self.fresh.as_ref().is_some_and(|datum| !predicate(datum)) {
             self.fresh = None;
             self.fresh_available = false;
         }
         for entry in self.ordered.iter() {
             if !predicate(entry.datum(self.decode)) {
-                self.availability.set_count(entry.relative_path(), None);
+                self.authority.set_count(entry.relative_path(), None);
             }
         }
     }
@@ -793,11 +819,43 @@ impl<A: Clone> CandidatePool<A> {
             return self
                 .ordered
                 .get(position - 1)
-                .is_some_and(|entry| self.availability.contains(entry.relative_path()));
+                .is_some_and(|entry| self.unreserved_count(entry) != 0);
         }
         self.ordered
             .get(position)
-            .is_some_and(|entry| self.availability.contains(entry.relative_path()))
+            .is_some_and(|entry| self.unreserved_count(entry) != 0)
+    }
+
+    fn unreserved_count(&self, entry: &CandidatePoolEntry<A>) -> u64 {
+        self.authority
+            .count(entry.relative_path())
+            .checked_sub(self.reserved.count(entry.relative_path()))
+            .expect("candidate reservations must remain a subset of authority")
+    }
+
+    fn reserve_stored(authority: &Bag, reservations: &mut Bag, path: &[u8]) -> bool {
+        let authoritative = authority.count(path);
+        let reserved = reservations.count(path);
+        if reserved >= authoritative {
+            return false;
+        }
+        let next = Multiplicity::new(reserved + 1)
+            .expect("a reservation bounded by authoritative multiplicity cannot overflow");
+        reservations.set_count(path, Some(next));
+        true
+    }
+
+    fn release_stored(reservations: &mut Bag, path: &[u8]) -> bool {
+        let reserved = reservations.count(path);
+        if reserved == 0 {
+            return false;
+        }
+        let next = (reserved > 1).then(|| {
+            Multiplicity::new(reserved - 1)
+                .expect("a positive reservation predecessor must be representable")
+        });
+        reservations.set_count(path, next);
+        true
     }
 }
 
@@ -1403,6 +1461,10 @@ mod candidate_identity_order_tests {
 #[cfg(test)]
 #[path = "../../tests/data_index/candidate_product_checkpoint.rs"]
 mod candidate_product_checkpoint_tests;
+
+#[cfg(test)]
+#[path = "../../tests/data_index/candidate_pool_reservation.rs"]
+mod candidate_pool_reservation_tests;
 
 #[cfg(test)]
 #[path = "../../tests/data_index/digest_collision_replay.rs"]

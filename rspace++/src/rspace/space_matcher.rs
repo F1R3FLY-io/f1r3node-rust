@@ -290,10 +290,13 @@ where
                     .pop()
                     .expect("candidate walk returned without a parent choice");
                 if let Some(position) = parent.reserved_position.take() {
-                    channel_to_indexed_data
-                        .get_mut(parent.channel)
-                        .expect("candidate channel disappeared during rollback")
-                        .release(position);
+                    assert!(
+                        channel_to_indexed_data
+                            .get_mut(parent.channel)
+                            .expect("candidate channel disappeared during rollback")
+                            .release(position),
+                        "candidate rollback must release exactly one active reservation"
+                    );
                 }
                 let outcome = if result.any_leaf_reached {
                     SelectionOutcome::GuardRejected

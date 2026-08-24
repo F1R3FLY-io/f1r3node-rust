@@ -877,7 +877,7 @@ where
 
         for c in &channels {
             let mut pool = self.get_store().get_candidate_pool(c);
-            pool.retain(|datum| self.matches(&comm, datum));
+            pool.retain_before_selection(|datum| self.matches(&comm, datum));
             channel_to_indexed_data_list.push((c.clone(), pool));
         }
 
@@ -1021,7 +1021,7 @@ where
                         source: produce_ref.clone(),
                     });
                 }
-                result.retain(|datum| self.matches(&comm, datum));
+                result.retain_before_selection(|datum| self.matches(&comm, datum));
                 (c.clone(), result)
             },
         )

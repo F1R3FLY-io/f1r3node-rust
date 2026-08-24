@@ -300,7 +300,7 @@ fn repeated_exact_identity_is_one_ordered_position_with_reservable_multiplicity(
     assert!(pool.candidate(0).is_none(), "all three copies are now reserved");
     assert!(!pool.reserve(0), "a fourth reservation must fail");
 
-    pool.release(0);
+    assert!(pool.release(0));
     let (_, restored_address) = pool.candidate(0).expect("release restores one copy");
     assert_eq!(restored_address, original_address, "multiplicity shares one exact removal address");
 }
@@ -432,9 +432,9 @@ fn candidate_pool_keeps_multiplicity_in_the_subtrie() {
     assert!(pool.reserve(repeated_position));
     assert_ne!(pool.next_available(repeated_position), Some(repeated_position));
     assert!(!pool.reserve(repeated_position));
-    pool.release(repeated_position);
-    pool.release(repeated_position);
-    pool.release(repeated_position);
+    assert!(pool.release(repeated_position));
+    assert!(pool.release(repeated_position));
+    assert!(pool.release(repeated_position));
     assert_eq!(pool.next_available(repeated_position), Some(repeated_position));
 }
 
@@ -553,6 +553,7 @@ fn fresh_candidate_reservation_is_reversible_and_not_stored() {
     assert!(pool.reserve(0));
     assert!(pool.is_empty());
     assert_eq!(pool.candidate(0), None);
-    pool.release(0);
+    assert!(pool.release(0));
     assert!(matches!(pool.candidate(0), Some((_, DatumAddress::Fresh))));
+    assert!(!pool.release(0), "a double fresh release must not create capacity");
 }
