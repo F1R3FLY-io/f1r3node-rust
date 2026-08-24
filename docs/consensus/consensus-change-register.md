@@ -10,7 +10,7 @@
 | **Companion surface** | `mettail-rust`, branch `feature/rho-native-set-automata`. |
 | **Companion reports** | the [stack-safety report](../design/stack-safety/stack-safety-report-2026-07-29.md) and the [PathMap report](../design/pathmap/pathmap-report-2026-08-03.md), which carry the equivalence evidence this register's retirements cite. |
 | **Audience** | F1r3node consensus reviewers deciding whether to accept the fork risk of a coordinated protocol-version bump. |
-| **Date** | 2026-07-29, re-scoped to the final criterion 2026-08-03, revised through 2026-08-23 |
+| **Date** | 2026-07-29, re-scoped to the final criterion 2026-08-03, revised through 2026-08-24 |
 | **Maintenance** | [§7](#7-maintenance). Adding an entry is filling the form in [Appendix A](#appendix-a--the-entry-template). |
 
 ---
@@ -4508,6 +4508,19 @@ the resource mechanism. The broader CBR-053 generated-schedule and AC-lifecycle 
 `UNVERIFIED`; this local candidate representation does not claim to close them. CBR-070 is
 therefore retired as `OPTIMIZATION_MEASURED_NEUTRAL`, not added to the active
 may-change-consensus register.
+
+**CBR-070 lifecycle continuation (2026-08-24).** The exact release gate initially exposed a
+continuation-layout regression and a recursion-census naming collision, neither of which changes
+the classified candidate algebra. Commit `8035ba826` pairs each validated canonical connective
+cursor with the exact immutable protobuf region it already traverses, replacing repeated
+pointer/length identity with relative state and restoring the 64-byte `Frame` contract without
+allocation. It also renames only the non-default benchmark fixture constructor so conservative
+same-file name resolution no longer invents a 131-member strongly connected component. The
+production candidate domain, root expansion, source order, bindings, rollback, matcher verdict,
+protobuf/bincode/EPM1 bytes, PathMap keys and values, COMM trace, charge, and state root remain
+unchanged. The repaired exact workspace gate passes 4,502/4,502 tests with 53 skipped; log SHA-256
+`cc4cf12ae290fce055b73ddcc1e2041788242fe2cb0af7d2f92fc4bae56122c4`. CBR-070 therefore remains
+retired as `OPTIMIZATION_MEASURED_NEUTRAL`.
 
 **CBR-033 living evidence continuation (2026-08-11; pgmcp #5301).** `7983bf4b` makes the
 read-only hot-store snapshot total over the union of datum and continuation key domains. A datum

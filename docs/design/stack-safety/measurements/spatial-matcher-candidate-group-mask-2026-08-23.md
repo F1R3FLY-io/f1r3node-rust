@@ -4,6 +4,8 @@ This scientific and engineering record supports stack-safety report §5.36, Path
 journal J-017, Consensus-Breaking Register (CBR) classification CBR-070, pgmcp bug
 `spatial-matcher-candidate-mask-depth-width-retention`, and pgmcp experiment 312. The selected
 implementation is `f1r3node-rust-mettail@e3f3b4831329ec8863d33af7ae0790d930efa041`.
+Lifecycle repairs and final workspace acceptance are at
+`f1r3node-rust-mettail@8035ba82659f9630be15e714a675047c536e5cac`.
 
 ## 1. Terms and question
 
@@ -198,6 +200,9 @@ No PathMap mutation routine appears in the treatment's ten hottest functions.
 | expansion differential | empty, all, single-group, ordered sparse, sort-required sparse, and dense lanes; 48 deterministic randomized/interleaved layouts forced through all three expansion modes |
 | mixed duplicates | exact candidate domain, verdict, complete `FreeMap`, and remainder agree with the independent oracle |
 | feature boundary | frozen control, benchmark fixture, Criterion target, and probe require one non-default feature; default production cannot execute them |
+| encoded-continuation layout | an owner-bound canonical protobuf child cursor removes duplicate pointer/length state without allocation; the release `Frame` layout gate returns to 64 bytes, the complete 30-case `ParBag` test target passes, and the 20,000-level encoded AND/OR cases remain stack safe |
+| recursion census | 660 recursive components, 108 over the term family and 33 mutually recursive; all 108 retain exact dispositions after the benchmark-only constructor is renamed from the analyzer-ambiguous `new` to `from_targets_and_pattern` |
+| exact release workspace | `RUST_BACKTRACE=1 cargo nextest run --release --no-fail-fast --workspace`: 4,502 passed, 0 failed, 53 skipped in 139.111 seconds under `MemoryHigh=20G`, `MemoryMax=24G`, and `MemorySwapMax=0` |
 | final reviewer | no blocker in production equivalence, ordering, stack safety, control fidelity, benchmark preflight, or feature isolation |
 
 The final ordered `Vec<u64>` is not a membership authority and is not a `Vec<Par>`. It is the
@@ -217,6 +222,13 @@ Negative results are retained because they constrain future reproduction:
    with `--record-only` and analyzed only through `heaptrack_print`.
 4. Valgrind rejects native Massif `detailed-freq=0`; the corrected paired protocol uses the maximum
    accepted interval, 1,000,000.
+5. The first exact release-workspace lifecycle run found two defects outside the measured group-mask
+   algorithm: an 80-byte encoded-OR frame violated the 64-byte layout gate, and a feature-only
+   generic `new` constructor caused the conservative recursion census to merge three previously
+   exact components into a false 131-member strongly connected component. Commit `8035ba826`
+   repairs the former with an owner-bound, zero-allocation cursor and the latter with a precise
+   benchmark-only constructor name. Neither repair changes candidate membership, ordering, matcher
+   acceptance, or any wire representation.
 
 ## 8. Artifact integrity
 
@@ -235,6 +247,7 @@ experiment's named metric runs.
 | Massif treatment output | `f1482e5f846ba8828409f74a4ad1166f2204057bc96911ad6a67c0ef3dcd2a46` |
 | uProf control CSV | `033faf0156dd993a067322751e787c77627f1f9aa99b0115610c12e72ac21061` |
 | uProf treatment CSV | `4e3403eb28ec5fe6fc76e33011dc27f424b37c97faf669dbc6cfebda0675a603` |
+| exact release-workspace lifecycle log at `8035ba826` | `cc4cf12ae290fce055b73ddcc1e2041788242fe2cb0af7d2f92fc4bae56122c4` |
 
 ## 9. Threats to validity
 

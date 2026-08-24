@@ -6,7 +6,7 @@ Campaign: `campaign-root-4131`
 
 Started: 2026-08-23
 
-Last updated: 2026-08-23
+Last updated: 2026-08-24
 
 ## Purpose
 
@@ -1380,6 +1380,23 @@ bounded sparse snapshots; the accepted uProf evidence uses low-overhead Hotspots
 Heaptrack invocation that omitted `--record-only` opened its GUI and was superseded; every accepted
 trace is explicitly record-only and analyzed by `heaptrack_print`.
 
+Lifecycle closure at `8035ba826` exposed two useful engineering rules without changing the accepted
+PathMap result. First, an encoded connective continuation must own the exact immutable protobuf
+region to which its validated cursor refers. `CanonicalOwnedConnectiveChildren<EncodedRegion>`
+checks pointer and length once, then retains only the region, relative offset, and remaining count.
+This removes duplicate identity state without one heap allocation per PDA level: the release
+matcher `Frame` returns from 80 to 64 bytes, and every 20,000-level encoded AND/OR gate remains
+stack safe. Second, benchmark-only APIs participate in the conservative source census even when
+feature gated. The generic name `CandidateMaskBenchmarkFixture::new` manufactured a false return
+edge and a 131-member strongly connected component; the precise name
+`from_targets_and_pattern` restores all 108 exact term-family dispositions without weakening the
+analyzer or registering noise as recursion. These are representation and evidence-harness repairs,
+not changes to PathMap keys, lattice operations, candidate domains, or Rholang semantics.
+
+The exact release lifecycle command passed 4,502/4,502 tests with 53 skipped in 139.111 seconds
+under a 24 GiB no-swap cap. Its log SHA-256 is
+`cc4cf12ae290fce055b73ddcc1e2041788242fe2cb0af7d2f92fc4bae56122c4`.
+
 ## Open hypotheses and required closure evidence
 
 | ID | Hypothesis | Required evidence before acceptance | Status |
@@ -1392,7 +1409,7 @@ trace is explicitly record-only and analyzed by `heaptrack_print`.
 | H-006 | A clone-family-shared `OnceLock<[u8; 32]>` removes repeated resident RMP2 transcript walks with fixed retained space and no material cold regression. | Exact bytes/oracle; one initialization per clone family; mutation/no-op/metadata/concurrency matrix; zero warm endpoint visits; preregistered cold/warm/clone/post-mutation time, allocation, instructions, and headless Heaptrack RSS gates from pgmcp 5983/5984. | Resource and focused semantic hypotheses accepted; COMM/replay/full-release lifecycle gates open |
 | H-007 | Retained `CandidateProductCursor` clones copy depth-growing zipper path/ancestor state and, if that slope is confirmed, a bounded CoW suffix checkpoint removes it without changing candidate or binding semantics. | Clone/allocation anti-vacuity; geometric depth/width resource ladder; old/new candidate and binding differential; focus-endpoint preservation; malformed, COMM, replay/post-state, and small-stack gates from pgmcp 5985 and experiment 5990. | Deterministic-run hybrid passed semantic, focus-root, paired resource, allocation, instruction, and 256 KiB small-stack gates; full release open |
 | H-008 | Semantic projection or a fail-closed `All` fallback restores dynamic AC candidate-query soundness for matcher-ignored `New`, `ReceiveBind`, and `MatchCase` fields. | Per-field counterexamples; oracle-success-implies-query-accept property; ground exact, malformed, candidate/binding, COMM, play/replay, and post-state gates from pgmcp 5982. | Focused semantic gates passed; COMM/replay/release open |
-| H-009 | Group-compressed candidate masks plus retention-pressure scheduling remove the conditional depth×duplicate-width endpoint slope without changing ordered candidate or matcher semantics. | Frozen occurrence control; exact ordered-domain oracle; depth×width/source-orientation matrix; mixed `FreeMap`/remainder differential; randomized expansion modes; 51-sample locked experiment; headless allocation, peak-heap, instruction/cache, and CPU attribution; full release gate. | **Resource and focused semantic hypotheses accepted at `e3f3b4831`; experiment 312 accepted**; current exact full-release rerun remains the lifecycle gate |
+| H-009 | Group-compressed candidate masks plus retention-pressure scheduling remove the conditional depth×duplicate-width endpoint slope without changing ordered candidate or matcher semantics. | Frozen occurrence control; exact ordered-domain oracle; depth×width/source-orientation matrix; mixed `FreeMap`/remainder differential; randomized expansion modes; 51-sample locked experiment; headless allocation, peak-heap, instruction/cache, and CPU attribution; full release gate. | **Accepted** at `e3f3b4831`, with experiment 312 accepted and the repaired exact 4,502/4,502 release lifecycle gate closed at `8035ba826` |
 
 ## Threats to validity
 

@@ -12,9 +12,9 @@
 
 **Repository** `f1r3node-rust-mettail`, branch `feature/mettail`
 **Companion repository** `mettail-rust`, branch `feature/rho-native-set-automata` (§5.6)
-**Report date** 2026-07-29, revised through 2026-08-23
+**Report date** 2026-07-29, revised through 2026-08-24
 **Measurement anchor** `f1r3node-rust-mettail@e67a6aaa` · `mettail-rust@b0aa4e09` (original measurement tree `8853f839`)
-**Living closure head** this checkpoint, based on `f1r3node-rust-mettail@c54a2354c`
+**Living closure head** this checkpoint, based on `f1r3node-rust-mettail@8035ba826`
 (presence-safe protobuf-region rendering and proof-carrying post-zipper EPathMap decode following
 drive-local `FreeMap` journaling and byte-native exact FreeVar capture following complete byte-native
 recursive matcher-family coverage, and complete transient `ParConstruction` planning across normalization, substitution, and evaluation,
@@ -9689,6 +9689,18 @@ broader CBR-053 generated-schedule and AC-lifecycle obligations. The complete me
 commands, hashes, rejected protocols, and validity threats are in
 [`measurements/spatial-matcher-candidate-group-mask-2026-08-23.md`](measurements/spatial-matcher-candidate-group-mask-2026-08-23.md).
 
+The first exact release-workspace lifecycle run then exposed an 80-byte encoded-OR continuation,
+above the existing 64-byte `Frame` contract, and a false 131-member census component caused by a
+feature-only benchmark constructor named `new`. Commit `8035ba826` binds the already-validated
+canonical child cursor to its exact immutable `EncodedRegion`, storing relative parser state with
+no allocation or repeated pointer/length identity; `Frame` is again 64 bytes. The same commit gives
+the benchmark constructor the analyzer-specific name `from_targets_and_pattern`, restoring the
+three prior exact components rather than weakening the census. The complete 30-case `ParBag` test
+target, the 57-case release matcher differential, both depth-20,000 connective gates, the compact
+layout gate, and the current-source census pass. The exact workspace command closes at 4,502 passed,
+0 failed, and 53 skipped in 139.111 seconds under a 24 GiB no-swap cap; the captured log SHA-256 is
+`cc4cf12ae290fce055b73ddcc1e2041788242fe2cb0af7d2f92fc4bae56122c4`.
+
 ---
 
 ## 6. Discussion
@@ -10523,6 +10535,18 @@ heaptrack --record-only -o /tmp/candidate-group-mask.zst PROGRAM ARGUMENTS
 heaptrack_print /tmp/candidate-group-mask.zst.zst
 ```
 
+The final lifecycle gate at `8035ba826` is:
+
+```bash
+systemd-run --user --scope \
+  -p MemoryHigh=20G -p MemoryMax=24G -p MemorySwapMax=0 \
+  env RUST_BACKTRACE=1 cargo nextest run --release --no-fail-fast --workspace \
+  > /tmp/campaign-4131-full-release-nextest-8035ba826.log 2>&1
+```
+
+It passes 4,502/4,502 tests with 53 skipped in 139.111 seconds. The log SHA-256 is
+`cc4cf12ae290fce055b73ddcc1e2041788242fe2cb0af7d2f92fc4bae56122c4`.
+
 ---
 
 ## Appendix B — raw data locations
@@ -10662,7 +10686,7 @@ DOCLINT_DOI=off ../mettail-rust/docs/languages/validate.sh \
   docs/consensus/consensus-change-register.md
 ```
 
-The run of record for this revision (2026-08-23), SHA-256
+The run of record for this revision (2026-08-24), SHA-256
 `4b4735c4643a53a02d5fb2b830797d46135d8859179660c6e1ccde3dc13097aa`, passes **16 of 17**
 mechanised checks over the stack-safety and consensus living reports, the PathMap journal, the
 RSpace integration report, and the SS-Y16 measurement record, with the
