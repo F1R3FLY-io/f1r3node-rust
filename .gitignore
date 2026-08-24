@@ -126,5 +126,4 @@ MC_TE.out
 *~
 docs/discoveries/*.md
 .tmp/
-docs/work-logs/*.md
 .pi/

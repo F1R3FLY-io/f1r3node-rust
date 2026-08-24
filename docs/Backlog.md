@@ -1,7 +1,7 @@
 ---
 doc_type: backlog
 version: "1.1"
-last_updated: 2026-08-13
+last_updated: 2026-08-24
 ---
 
 # Backlog
@@ -66,6 +66,38 @@ depth — either a node-side test under a fixed burst-deploy schedule
 system-integration harness test with a fixed seed/schedule — so the soak
 stops being the only detector. The 45s assertion itself lives in
 system-integration's `test_load.py`; node-side work belongs in `casper`.
+
+---
+
+#### BACKLOG-TD-002: Load-sensitive wall-clock thresholds in local test guards
+
+```yaml
+---
+backlog_id: BACKLOG-TD-002
+title: "Make wall-clock-threshold tests robust to a loaded host"
+category: technical_debt
+priority: p3
+added_at: 2026-08-24
+blocked_by: none
+repo_scope: rspace++ tests and .github/scripts test harnesses
+---
+```
+
+**Evidence:** On 2026-08-24 the pre-push gate failed on
+`concurrent_rspace_test::soft_checkpoint_cost_does_not_scale_with_accumulated_store_size`
+at a 9.4x time ratio against the fixed 8x threshold, while the parallel
+release-mode suite loaded the host. The same test passed in isolation in
+0.04s. The threshold guards the issue-43 O(store-size)
+`HotStore::snapshot()` regression, so the guard itself is load-sensitive,
+not wrong. The 2026-08-24 multi-agent review of PR #334 flagged the same
+class in `test-pre-push-hook.sh` (timing-based assertions on loaded CI
+runners).
+
+**Direction:** Replace fixed wall-clock ratios with a load-robust signal.
+Options: repeat the measurement N times and take the minimum, compare
+against a same-run baseline measured under identical load, raise the
+ratio only under detected contention, or count operations instead of
+time. Keep the regression sensitivity (100x store must not cost ~100x).
 
 ### Feature Ideas
 
@@ -177,7 +209,7 @@ Items that need investigation before they can become actionable tasks.
 ```yaml
 ---
 backlog_id: BACKLOG-DOC-001
-title: "Fold docs/theory/slashing/design/02-glossary-and-notation.md into docs/Glossary.md"
+title: "Fold docs/casper/theory/slashing/design/02-glossary-and-notation.md into docs/Glossary.md"
 category: documentation
 priority: p3
 added_at: 2026-08-05
@@ -188,7 +220,7 @@ requested_by: human-jeff (2026-08-05, during /review-codebase --glossary-only)
 
 **Description:** `docs/Glossary.md` (created 2026-08-05, 12 canonical terms in
 the load-bearing Preferred-usage format) and
-`docs/theory/slashing/design/02-glossary-and-notation.md` (acronyms, symbol
+`docs/casper/theory/slashing/design/02-glossary-and-notation.md` (acronyms, symbol
 tables, LTS labels, InvalidBlock taxonomy, theorem-naming conventions) should
 become one document at `docs/Glossary.md`. Until then, `docs/Glossary.md`
 links to `02` as authoritative for mathematical notation, and `02` remains

@@ -626,7 +626,7 @@ pub fn justification_to_justification_info(justification: &Justification) -> Jus
 // metadata index — a sync / prune window — previously panicked via
 // `.expect("Parent metadata should exist")`; it now surfaces a typed
 // `KvStoreError::KeyNotFound`. This test asserts that typed error.
-// See docs/theory/fork-choice/fork-choice-verification.md (B1).
+// See docs/casper/theory/fork-choice/fork-choice-verification.md (B1).
 // ---------------------------------------------------------------------------
 #[cfg(test)]
 mod fork_choice_b1_repro_tests {

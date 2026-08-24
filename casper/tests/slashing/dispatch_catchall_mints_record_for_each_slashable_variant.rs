@@ -30,7 +30,7 @@
 //
 // Plan reference: Commit 12 / Test-5 of the second-pass review plan.
 //
-// Maps to: docs/theory/slashing/design/09-bug-fixes-and-rationale.md
+// Maps to: docs/casper/theory/slashing/design/09-bug-fixes-and-rationale.md
 // §9.3 (Bug #3: dispatcher catch-all). The catch-all originally
 // silently skipped record-minting; the bug-fix commits land
 // sequentially, so reverting to the parent of Bug #3 reproduces the

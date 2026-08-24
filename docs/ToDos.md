@@ -1,7 +1,7 @@
 ---
 doc_type: todos
 version: "1.1"
-last_updated: 2026-08-13
+last_updated: 2026-08-19
 mr_status:
   ready: false
   target_branch: master
@@ -69,100 +69,143 @@ mr_status:
 
 ---
 
-### EPIC-011: TLA+ Exhaustive Tier Red→Green (3-Validator Detector Coverage)
+### EPIC-013: Release Process and Deployment Trains
 
 ```yaml
 ---
-epic_id: EPIC-011
-title: "TLA+ Exhaustive Tier Red→Green (3-Validator Detector Coverage)"
+epic_id: EPIC-013
+title: "Release Process and Deployment Trains"
 status: in_progress
-priority: p0
+priority: p1
 user_story: null
 blocked_by: []
-created_at: 2026-08-05
-claimed_by: claude-session-917f64e8
-claimed_at: 2026-08-05T00:00:00Z
+created_at: 2026-08-19
+claimed_by: claude-session-838e6241
+claimed_at: 2026-08-19T00:00:00Z
 tasks:
-  - id: TASK-011-1
-    title: "Add run_exhaustive workflow_dispatch input to slashing-tests.yml"
+  - id: TASK-013-1
+    title: "Specify and ratify the release process (docs/release-process.md)"
     status: complete
-    claimed_by: claude-session-917f64e8
-    completed_at: 2026-08-05T13:20:00Z
-    branch: fix/tla-3v-liveness-split
+    completed_at: 2026-08-19T00:00:00Z
+    branch: feature/release-process-implementation
     notes:
-      - "Implemented in commit 7e38ab1f; YAML validated, all 9 check-workflow-invariants.sh invariants pass. Local-only for now per maintainer — branch not pushed."
-    acceptance:
-      - "workflow_dispatch gains a boolean input run_exhaustive (default false)"
-      - "tla-model-check job sets RUN_EXHAUSTIVE_TLA=1 only when the input is true; push/pull_request/schedule behavior is unchanged (nightly keeps gating on the 8 fast configs)"
-      - "Change lives on a feature branch from dev (fix/tla-3v-liveness-split) so the exhaustive tier can be dispatched against the branch before anything merges"
-
-  - id: TASK-011-2
-    title: "Dispatch the exhaustive tier and capture the red run"
+      - "All 13 Section 19 items ratified 2026-08-19. Two amendments: the regression verdict is advisory with maintainer review plus an OCI Notifications alert, and one infra-failure restart is permitted when 60h coverage is preserved."
+      - "Includes the soak terminology rename (60h stability soak, dev integration soak, Shard soak-in), the Section 17.1 trigger and duration table, and glossary entries."
+  - id: TASK-013-2
+    title: "Phase 1: evidence-only release automation"
     status: complete
-    claimed_by: claude-session-917f64e8
-    completed_at: 2026-08-05T13:58:00Z
-    blocked_by: [TASK-011-1]
+    completed_at: 2026-08-19T00:00:00Z
+    branch: feature/release-process-implementation
     notes:
-      - "RESCOPED to local-only per maintainer (2026-08-05): red baseline captured via RUN_EXHAUSTIVE_TLA=1 TLC_PER_CONFIG_TIMEOUT=6m locally instead of CI dispatch. Result: 8 fast configs OK; MC_EquivocationDetector, MC_EquivocationDetectorEager_3v, MC_EquivocationDetector_safety each distinctly labeled TIMEOUT at the cap; run failed (red for the right reason). Full-45m evidence: 11 nightlies 2026-07-25..08-04 + 2026-08-04 local repro. CI-dispatch red baseline deferred to push time. Full log in TDD plan cycle_log (B1)."
-      - "DISCOVERED: script roll-up says 'FAILED: N config(s) violated invariants' for cap timeouts — mislabels timeout as violation; candidate fix tracked as TDD plan B7 pending ratification."
-    acceptance:
-      - "gh workflow run slashing-tests.yml --ref <branch> -f run_exhaustive=true executed (env -u GITHUB_TOKEN)"
-      - "Run goes red with all three exhaustive-tier configs (MC_EquivocationDetector, MC_EquivocationDetectorEager_3v, MC_EquivocationDetector_safety) reported as TIMEOUT at the 45m per-config cap — distinctly labeled as timeouts, not invariant violations"
-      - "Run URL and per-config outcomes recorded in the epic work log as the red baseline"
-
-  - id: TASK-011-3
-    title: "Split MC_EquivocationDetectorEager_3v into safety + bounded liveness configs"
-    status: complete
-    claimed_by: claude-session-917f64e8
-    completed_at: 2026-08-05T14:50:00Z
-    blocked_by: [TASK-011-2]
+      - "release-evidence.yml generates exact-run evidence; release.yml and soak-in.yml are held-state stubs; release-evidence.sh plus unit tests and the test-release-workflows.sh contract guard are in place."
+  - id: TASK-013-3
+    title: "Phase 2: canary publication (canary-publish.yml)"
+    status: in_progress
+    branch: feature/release-phase2-canary-publication
+    blocked_by: []
     notes:
-      - "PREMISE CORRECTED 2026-08-05 (maintainer-ratified; supersedes the title and first acceptance line): MC_EquivocationDetectorEager_3v is already safety-only — the Eager rewrite checks liveness as the Inv_LivenessAsSafety invariant and the .cfg has no PROPERTY line, so its 45m timeouts are state-space cost (3v×3s×2b), not liveness-graph blowup. There is no split to make. Fix = bound-tightening: new MC_EquivocationDetectorEager_3v2s (3 validators × 2 seqnums × 2 blocks, full _3v invariant list, symmetry) for the nightly tier; full 3v×3s×2b stays exhaustive. The liveness/safety split remains valid for MC_EquivocationDetector (its .cfg has PROPERTY Live_DetectionComplete) — that is TASK-011-5's scope. TDD plan B2 (merged with B3) tracks execution."
-      - "GREEN 2026-08-05T14:48Z: MC_EquivocationDetectorEager_3v2s completes in 2m08s (57.2M states generated, 5.72M distinct, depth 37) with ZERO violations — first-ever completed detector check at 3 validators; the stop-on-violation contingency did not fire. Fast-tier regression suite clean (8/8 OK). Model files created; tier-list wiring is TASK-011-4."
+      - "Implemented as canary-publish.yml: workflow_run on CI completion publishes the immutable canary tag, prerelease, and Docker Hub images by digest from the run's own artifacts; ineligible runs skip cleanly. Evidence upgrades to publication_mode: canary via release-evidence.sh record-images. OCIR canary deferred to Phase 3 (registry location is secret material). Remains in_progress until the first live master run proves it."
     acceptance:
-      - "formal/tlaplus/slashing/ gains MC_EquivocationDetectorEager_3v_safety.{tla,cfg} (INVARIANTS only) and MC_EquivocationDetectorEager_3v_liveness.{tla,cfg} (PROPERTIES, constants bounded to complete under the cap), mirroring the existing MC_EquivocationDetector_liveness pattern (~3s where the combined config times out)"
-      - "Both new configs still model 3 validators — bounding must not reduce validator count, or the coverage-gap fix is illusory"
-      - "Both complete locally well under TLC_PER_CONFIG_TIMEOUT=45m via scripts/ci/check-tla-invariants.sh"
-      - "CONTINGENCY: if the liveness config, completing for the first time at 3 validators, reports a genuine counterexample, this task stops and the trace is reported — green then comes from an algorithm/model fix investigated under a new task, not from tuning the model until it passes"
-
-  - id: TASK-011-4
-    title: "Restore _3v coverage to the nightly tier, sync docs, capture the green run"
-    status: complete
-    claimed_by: claude-session-917f64e8
-    completed_at: 2026-08-05T15:12:00Z
-    blocked_by: [TASK-011-3]
+      - "canary-publish.yml publishes immutable canary tags, prereleases, and images from tested artifacts on release-eligible master runs"
+  - id: TASK-013-4
+    title: "Phase 3: artifact-based validation (candidate digest modes)"
+    status: in_progress
+    branch: feature/release-phase3-candidate-digest-validation
+    blocked_by: [TASK-013-5]
     notes:
-      - "MC_EquivocationDetectorEager_3v2s added to POST_FIX_CONFIGS (one line); 14-test-plan §14.6/§14.9 synced to the corrected diagnosis. Local green run: 9/9 OK, _3v2s 128s, ~4.2 min total. Per the local-only rescope, the CI-dispatch green run is deferred to push time (TASK-011-5 / plan B6)."
+      - "2026-08-22: stacked on Phase 4 (feature/release-phase4-promotion-controller). Registry decision ratified by the maintainer: OCIR is canonical for candidate gates, Docker Hub stays as the dual-published public mirror, no sync service."
+      - "canary-publish.yml pushes the same index to OCIR; evidence records images.ocir_index_digest, which the validator requires to equal the Docker Hub index digest. The OCIR repository path never enters evidence."
+      - "oci-validation.yml gains candidate_tag (exact-candidate mode); reusable-oci-validation.yml pulls each architecture image from OCIR by digest instead of building. merge-recovery-soak.yml gains candidate_tag, pulls the amd64 image by digest, and carries the tag through an in-window restart."
+      - "Both gate workflows publish Section 8.1 documents with release-gate-evidence.sh from a publish_candidate_evidence job under release-credentials, plus the release-candidate marker that resumes release.yml. test-release-gate-evidence.sh proves the writer against release-gates.sh."
+      - "promote-release.sh and release.yml copy the stable tag and latest into OCIR as well as Docker Hub."
+      - "The regress alert reuses the soak's existing ONS verdict email; promotion holds until maintainer-review.json is uploaded."
+      - "2026-08-22 multi-agent review of PR #325: gate documents carry candidate_evidence_sha256 and are written from the evidence file the run kept as a same-run artifact, never a re-downloaded release asset; release-gates.sh requires that digest to equal the evidence under evaluation. A candidate soak restart must name restart_of_run_id and match the original run's soak-window artifact (candidate, attempt 0, weekend, end epoch); coverage_preserved is true only for a verified restart."
     acceptance:
-      - "scripts/ci/check-tla-invariants.sh adds the two new _3v configs to the default (nightly-gating) tier; combined MC_EquivocationDetectorEager_3v stays in the exhaustive tier as the unbounded reference"
-      - "docs/theory/slashing/design/14-test-plan.md §14.6/§14.9 updated to match the new tier membership"
-      - "Default-tier dispatch (or PR run) goes green with the _3v configs included; run URL recorded next to the red baseline"
-      - "Edits to check-tla-invariants.sh stay minimal to keep the pending PR #198 reconciliation conflict (namespaced entries + fail-on-missing) tractable"
-
-  - id: TASK-011-5
-    title: "Apply the same split to MC_EquivocationDetector"
-    status: complete
-    claimed_by: claude-session-917f64e8
-    completed_at: 2026-08-05T19:40:00Z
-    blocked_by: [TASK-011-4]
+      - "merge-recovery-soak.yml and oci-validation.yml consume the candidate image digest without rebuilding"
+      - "The canary publisher publishes the same index digest to OCIR and Docker Hub, and evidence records the OCIR digest"
+      - "One exact-candidate OCI validation run and one candidate weekend soak publish Section 8.1 documents that release-gates.sh evaluates as pass"
+      - "Optional hardening: a read-only OCIR pull token replaces OCIR_AUTH_TOKEN in the soak and OCI validation pull steps (the OCIR_* secrets are repository-scoped and already readable there, verified 2026-08-22)"
+  - id: TASK-013-5
+    title: "Phase 4: stable promotion controller"
+    status: in_progress
+    branch: feature/release-phase4-promotion-controller
+    blocked_by: [TASK-013-3]
     notes:
-      - "Split treatment landed 2026-08-05: MC_EquivocationDetector_liveness_2v (2v×1s×2b) verifies Live_DetectionComplete at 2 validators in 8s, wired into the nightly tier (10/10 green, ~4.3 min). Safety half (MC_EquivocationDetector_safety) already existed."
-      - "Exhaustive-dispatch acceptance resolved via the DOCUMENTED arm (CI run 31027278093 at 36ea59b8): 10 fast configs OK in CI, 3 unbounded references TIMEOUT at 45m with the corrected roll-up ('3 cap timeout(s), 0 violation-or-error(s)'); accepted-unbounded status documented in 14-test-plan §14.6 and the run_exhaustive input description. Green-on-schedule exhaustive coverage is the ratified follow-up (profile → measured caps → schedule), outside EPIC-011."
+      - "2026-08-22: release-gates.sh evaluates the eight Section 8 gates from JSON documents only (pass, hold, or fail; exit 0, 10, or 20) and promote-release.sh plans Section 11 steps 4 to 14 from observed stable state, verifies binaries, emits stable-release-evidence.json, and bumps the next version. release.yml replaces the held stub: a read-only gates job, then a promote job under release-credentials that copies the image by digest with imagetools create, creates the verified stable tag and release, moves latest, and opens the next-version pull request. test-release-gates.sh, test-promote-release.sh, and the updated test-release-workflows.sh contract guard run in CI."
+      - "Section 8.1 defines the gate-evidence contract that Phase 3 must publish as candidate prerelease assets. Until Phase 3 lands, the OCI, soak, and verdict gates hold, so no candidate is promotable end to end."
+      - "The regress-verdict OCI Notifications alert belongs to the soak workflow (Phase 3); the controller holds on regress until maintainer-review.json accepts it."
+      - "2026-08-22 multi-agent review of PR #323: fail-closed gate evaluation (a malformed document fails its gate, the report always holds all eight gates), API-verified run identity for the OCI and soak documents, API-verified reviewer permission for maintainer-review.json, resume verifies existing release assets and refuses when a newer stable exists, latest is verified after the move, the next-version step is idempotent and keeps the token out of the remote URL, and the workflow_run resume is bound to a default-branch dispatch of a gate workflow whose marker names the evidence source. Concurrency was already serialized by the concurrency group; documented in Section 11.1."
     acceptance:
-      - "MC_EquivocationDetector gets the same safety/liveness split treatment once the _3v recipe is proven (its safety half, MC_EquivocationDetector_safety, already exists — the liveness half is the new work)"
-      - "Exhaustive tier dispatch goes fully green, or remaining timeouts are explicitly accepted and documented as unbounded-reference runs"
+      - "release.yml performs exact-candidate promotion via release-gates.sh and promote-release.sh"
+      - "A regress verdict publishes an OCI Notifications alert to the soak-report list and holds promotion for documented maintainer review"
+      - "The release-credentials environment exists with DOCKERHUB_USERNAME and DOCKERHUB_TOKEN and required reviewers"
+      - "One live promotion of a Phase 3 candidate publishes a stable tag, release, and image whose digest equals the candidate index"
+  - id: TASK-013-6
+    title: "Phase 5: Deployment Trains"
+    status: in_progress
+    branch: feature/release-phase5-deployment-trains
+    blocked_by: [TASK-013-4]
+    notes:
+      - "2026-08-22: release-train.sh validates schema 1 and 2 manifests, the member chain (bottom member targets integration_branch, each later member targets the preceding member), head ancestry from compare documents, merged-member merge-commit topology, the source version and publishing-only reservation, and picks or dispatches the ci.yml run for head_sha. deployment-train.yml runs Section 13.2 steps 1 to 9 from the default branch with actions:write only for the ci.yml dispatch and uploads the train-record artifact. test-release-train.sh covers 18 rejections; test-release-workflows.sh guards the workflow; ci.yml validates every manifest under .github/deployment-trains/."
+      - ".github/deployment-trains/key-contention.yml is the non-publishing rehearsal for #299 -> #312 -> #319 -> #311 at the heads observed 2026-08-22. The live stack currently fails the ancestry check: #311's head 6c70d818a predates #319's last two commits (325bbb28b, 80f0a3b6a). The rehearsal will reject until #311 is re-based on #319 and the manifest head_sha is updated."
+      - "Remaining for this task: train canary creation through canary-publish.yml (Section 4.2 tag format, train_id in evidence), train_gates evaluation in release-gates.sh from manifest required_gates, recorded-member-head reachability in promote-release.sh, and the Section 13.3 re-validation trigger after a member merge."
+      - "2026-08-22: release-process.md Section 13.1.1 adds schema_version 2 stack manifests. A stack train binds the top-of-stack head as its one candidate; members merge bottom-up with true merge commits. Setup steps 4 to 6 (member chain, head ancestry, merged-member topology) and the validator depend on no earlier phase; canary, digest-bound gates, and promotion depend on Phases 2 to 4."
+      - "2026-08-22 multi-agent review of PR #321: Section 13.2 is one numbered sequence; the member base rule points to the preceding member; merge method is re-validated after each member merge and every recorded member head is verified at promotion, which closes the force-push window; the CI filter text matches ci.yml."
+      - "blocked_by encodes the stack merge order PR #322 -> #323 (Phase 4) -> #325 (Phase 3) -> #321 (Phase 5), which is also the code-dependency order: Phase 3 implements the Section 8.1 contract Phase 4 defines. Phase 4 becomes operational end to end only after Phase 3 publishes gate documents; that is a runtime dependency, not a merge dependency."
+      - "ci.yml runs pull-request CI for bases dev, master, staging, trying, and feature/**. A member whose base is outside that set (fix/**, formal/**) gets no pull-request run; train setup requires one successful ci.yml run for head_sha from any event and dispatches one when none exists (Section 13.2 step 9)."
+      - "Rehearsal candidate for the stack-train step: the key-contention stack PR #299 -> #312 -> #319 -> #311 (EPIC-016), non-publishing, no version reservation."
+      - "2026-08-23 multi-agent review of PR #328: plan-ci also requires head_repository.full_name to match (the run list reports the base repository for every run); a merged member proves merge-commit reachability from integration_branch through a reach-<N>.json compare document; a member whose predecessor has merged may target integration_branch, because GitHub retargets the pull request when the merged branch is deleted; setup fails fast on a member head outside this repository. 23 rejection cases plus merged and retargeted acceptance paths."
+    acceptance:
+      - "deployment-train.yml validates manifests under .github/deployment-trains/ and starts trains"
+      - "The validator accepts schema_version 1 and 2, and rejects a stack member with a foreign base, broken head ancestry, or a squash or rebase merge"
+      - "Setup dispatches ci.yml on head_sha when no successful run exists for that SHA and records the run identifier as CI evidence"
+      - "One non-publishing single-train rehearsal completes"
+      - "One non-publishing stack-train rehearsal completes on a stacked pull-request set"
+      - "The cost-accounting train (PR #216) publishes first"
+  - id: TASK-013-7
+    title: "Phase 6: Shard soak-in scheduling"
+    status: in_progress
+    blocked_by: [EPIC-014]
+    notes:
+      - "The release trigger is implemented: soak-in.yml fires on stable release publication (prereleases gate out) while enrollment stays held until the EPIC-014 test net exists."
+    acceptance:
+      - "soak-in.yml gains a release trigger: one enrollment per stable release tag"
+      - "The deferred parameters (soak-in period length, Anchor criteria, test net composition) are set and ratified"
 ---
 ```
 
-**Context:** The "TLA+ invariant check" nightly job was red on every run from its start (2026-07-25) until hotfix PR #201 — not from invariant violations, but because `MC_EquivocationDetector` and `MC_EquivocationDetectorEager_3v` hit the 45-minute per-config cap (interleaved liveness checking goes superlinear; locally reproduced over a 106M-state graph). PR #201 parked them behind `RUN_EXHAUSTIVE_TLA=1`, but no CI path sets that variable, so the exhaustive tier currently never runs anywhere. Meanwhile the nightly tier checks the inherently multi-validator equivocation property at ≤2 validators, because `_3v` is the only 3-validator detector model (flagged by spreston8 in the PR #201 review).
+**Context:** `docs/release-process.md` is the ratified specification. This PR (feature/release-process-implementation, PR #279) delivers TASK-013-1 and TASK-013-2; later phases follow the Section 18 migration plan on follow-on branches.
 
-**Plan (confirmed with maintainer 2026-08-05):** make the exhaustive tier dispatchable, run it **red** (honest timeout-red — TLC has never found a violation in these models; every config that completes, passes), then make it **green** via the causal liveness/safety split — not by raising the cap (see the causal-diagnosis-before-resources rule). The one open risk is deliberate: these liveness properties have never completed at 3 validators, so the split may surface a real counterexample, in which case the green path becomes an algorithm/model fix (TASK-011-3 contingency).
+---
 
-**Scope:**
+### EPIC-014: Test Net (Continuously Running Shards)
 
-- Included: dispatch input, red baseline run, `_3v` safety/liveness split, nightly-tier restoration, docs sync, follow-on `MC_EquivocationDetector` split
-- Excluded: raising `TLC_PER_CONFIG_TIMEOUT`; reducing validator count to make models cheap; the cargo-mutants nightly deadline overrun (separate, second independent nightly red — still untracked)
-- Coordination: touches `scripts/ci/check-tla-invariants.sh`, which the pending PR #198 reconciliation also modifies — keep tier-list edits minimal
+```yaml
+---
+epic_id: EPIC-014
+title: "Test Net (Continuously Running Shards)"
+status: pending
+priority: p2
+user_story: null
+blocked_by: [EPIC-013]
+created_at: 2026-08-19
+tasks:
+  - id: TASK-014-1
+    title: "Design the test net (topology, lifecycle, upgrade path)"
+    status: pending
+  - id: TASK-014-2
+    title: "Stand up the test net on OCI from existing fleet tooling"
+    status: pending
+  - id: TASK-014-3
+    title: "Wire Shard soak-in enrollment and Anchor promotion into the test net"
+    status: pending
+  - id: TASK-014-4
+    title: "Open selected test net shards to partners and customers"
+    status: pending
+---
+```
+
+**Context:** Unlike the soaks, which create a fresh shard per iteration, this epic delivers the test net: shards that run continuously. **Mechanism sketch (brief by intent — a follow-on branch/PR carries the design):** long-lived OCI instances run stable releases as test net members, reusing the existing fleet tooling (runner launch, monitoring, ONS alerts, soak dashboard) as the foundation. Each weekly stable release enrolls new nodes through the Shard soak-in (`docs/release-process.md` Section 12); nodes that complete the soak period gain the Anchor role. The test net is primarily internal release-validation infrastructure and also serves select partners and customers. This epic delivers the test net that release-process Phase 6 requires; the deferred Shard soak-in parameters are set here.
 
 ---
 
@@ -591,6 +634,22 @@ tasks:
       - "Nodes parse both legacy rnode:// and new f1r3fly:// addresses during a documented transition window"
       - "Nodes emit the new scheme only when compatibility permits"
       - "Mixed-version discovery, bootstrap configuration, CLI parsing, and eventual legacy-removal criteria are tested and documented"
+  - id: TASK-012-30
+    title: "Bind ephemeral CI runners to the run that launched them"
+    status: pending
+    issues: []
+    base_branch: dev
+    branch: fix/ci-ephemeral-runner-run-binding
+    proposed_pr_title: "fix(ci): bind ephemeral runners to their launching run"
+    claimed_by: null
+    blocked_by: []
+    notes:
+      - "2026-08-23: three Heavy Pipelines overlapped (#316 re-run, #328, #329). Launch Ephemeral Runners starts exactly two amd64 and two arm64 VMs per run, but GitHub assigns queued jobs to runners by label only, so the pool is shared. PR #328's amd64-docker job took PR #329's second amd64 VM (ci-eph-...-042856-6d1807) five minutes before #329's integration jobs queued; #329's amd64-subprocess then waited with no runner until the run was cancelled and re-run in full. Same symptom as the re-run-failed-jobs trap, different cause."
+      - "The per-run label is the minimal fix: launch-runner.sh registers each VM with an extra label run-<GITHUB_RUN_ID>, and the ephemeral jobs add that label to runs-on. Idle VMs from another run then never match."
+    acceptance:
+      - "Each ephemeral runner registers with a label that names the run that launched it, and every ephemeral job in _integration-pipeline.yml requires that label"
+      - "Two Heavy Pipelines started within one minute of each other both complete without a job waiting on a runner that another run consumed"
+      - "An idle ephemeral VM that its run no longer needs still self-terminates on the idle timeout"
 ---
 ```
 
@@ -616,115 +675,6 @@ tasks:
 
 - Included: branch/PR-sized implementation work for open issues lacking an addressing PR as of the audit.
 - Excluded: the 19 issues already addressed by open PRs; issue closure before promotion to `master`; unrelated cleanup discovered while implementing a task.
-
----
-
-### EPIC-001: System-Integration Alignment
-
-```yaml
----
-epic_id: EPIC-001
-title: "System-Integration Alignment"
-status: in_progress
-priority: p1
-user_story: US-001
-blocked_by: []
-created_at: 2026-03-19
-claimed_by: null
-claimed_at: null
-tasks:
-  - id: TASK-001-1
-    title: "Align genesis wallets.txt with system-integration (20 wallets, validator3=500T)"
-    status: complete
-    acceptance:
-      - "docker/genesis/wallets.txt matches system-integration/genesis/wallets.txt (20 lines)"
-      - "Validator3 balance is 500000000000000000 (500T)"
-      - "All 12 additional test wallets present"
-
-  - id: TASK-001-2
-    title: "Standardize compose env var naming (F1R3FLY_RUST_IMAGE -> F1R3FLY_IMAGE)"
-    status: complete
-    acceptance:
-      - "All compose files use F1R3FLY_IMAGE instead of F1R3FLY_RUST_IMAGE"
-      - "DEVELOPER.md and docker/README.md updated"
-
-  - id: TASK-001-3
-    title: "Standardize Docker network name to f1r3fly-shard"
-    status: complete
-    acceptance:
-      - "shard.yml network named f1r3fly-shard"
-      - "observer.yml and validator4.yml reference f1r3fly-shard as external network"
-
-  - id: TASK-001-4
-    title: "Verify shard starts with updated genesis and network config"
-    status: complete
-    claimed_by: claude-session-epic009
-    completed_at: 2026-04-13T20:55:00Z
-    blocked_by: []
-    acceptance:
-      - "docker compose -f docker/shard.yml up succeeds"
-      - "Genesis ceremony completes with 20-wallet wallets.txt"
-      - "Observer and validator4 can join via f1r3fly-shard network"
-    notes:
-      - "All 3 written ACs verified end-to-end with locally built f1r3fly-rust:local image"
-      - "Bonding extension also verified: added validator4's REV address (1111La6tHaCt...jtEi3M) to wallets.txt as genesis funding, then deployed bond.rho signed by validator4, propose included in block with errored=false and cost=167749 phlo, bond-status flipped to 'Validator is bonded', validator4 proceeded to produce 6+ blocks via heartbeat"
-      - "Root cause of earlier insufficient-funds error: validator4.yml was designed for runtime bonding but validator4's REV address was never added to genesis wallets.txt. Fix is a single-line addition."
-      - "REV-address computation done via `node eval` on 1.know_ones_vaultaddress.rho (output in docker stdout of the evaluating node)"
----
-```
-
-**Context:** The `system-integration` repo orchestrates this node via Docker Compose and shardctl. It has a 6-phase migration plan (see `system-integration/docs/migration-to-rust-node.md`) to make f1r3node-rust the sole node implementation. Phase 1 requires genesis and compose alignment in this repo.
-
-**Scope:**
-
-- Genesis wallets.txt sync (critical blocker for system-integration Phase 1)
-- Compose env var and network name standardization
-- Validation that shard starts correctly
-
-**Notes:**
-
-- system-integration currently targets branch `dev` in its services.yml, but this repo uses `master` as its working branch. system-integration will need to update its branch reference.
-- standalone.yml keeps its own network name (`f1r3fly-standalone`) since it's isolated by design.
-
----
-
-### EPIC-002: Separate Monitoring from Shard Compose
-
-```yaml
----
-epic_id: EPIC-002
-title: "Separate Monitoring from Shard Compose"
-status: pending
-priority: p2
-user_story: US-001
-blocked_by: []
-created_at: 2026-03-19
-claimed_by: null
-claimed_at: null
-tasks:
-  - id: TASK-002-1
-    title: "Extract Prometheus and Grafana into docker/monitoring.yml"
-    status: complete
-    claimed_by: claude-session-epic009
-    completed_at: 2026-04-13T21:35:00Z
-    acceptance:
-      - "docker/monitoring.yml contains prometheus and grafana services"
-      - "monitoring.yml joins f1r3fly-shard as external network"
-      - "shard.yml no longer contains prometheus/grafana services"
-      - "docker/README.md updated to reflect new file"
-    notes:
-      - "Verbatim service-block move; same container names, ports, volumes, env"
-      - "Also updated Justfile shard-down to include monitoring.yml teardown"
-      - "Also updated docker/vps-cloud-testing.md Part A to reflect opt-in monitoring"
----
-```
-
-**Context:** system-integration manages monitoring as a separate compose file (`compose/monitoring.yml`). Aligning this repo's structure makes compose files directly usable as upstream sources during the migration (Phase 3).
-
-**Scope:**
-
-- Move prometheus and grafana service definitions from `docker/shard.yml` to `docker/monitoring.yml`
-- Update documentation
 
 ---
 
@@ -891,59 +841,6 @@ tasks:
 - Docker image renamed from `f1r3fly-rust-node` to `f1r3fly-rust`
 - Version drops the `rust-` tag prefix (no longer needed in a Rust-only repo)
 - Run tests per-crate to avoid LMDB lock contention (see commit f2b4b5f)
-
----
-
-### EPIC-005: Issue Migration
-
-```yaml
----
-epic_id: EPIC-005
-title: "Issue Migration"
-status: complete
-priority: p1
-user_story: US-002
-blocked_by: [EPIC-004]
-created_at: 2026-04-09
-claimed_by: claude-session-migrate
-claimed_at: 2026-04-17T19:35:00Z
-completed_at: 2026-04-17T19:35:00Z
-tasks:
-  - id: TASK-005-1
-    title: "Migrate 22 Rust-relevant issues to f1r3node-rust"
-    status: complete
-    claimed_by: claude-session-migrate
-    completed_at: 2026-04-17T19:35:00Z
-    acceptance:
-      - "22 Rust-relevant issues created on f1r3node-rust as #5-#26 with original context"
-      - "Each new issue has migration header with source #, author, filed date, and link"
-      - "Original labels (bug/enhancement/question) preserved where applicable"
-      - "Original issues on f1r3node received redirect comments pointing to new issue numbers"
-    notes:
-      - "Spec called for 22 total (16 Rust-specific + 6 triage/design); actual open count was 22"
-      - "#437 excluded from migration — already fixed on rust/staging by commit 89ac4a7a, closed with reference"
-      - "Mapping table: /tmp/issue-migration/issue-map.tsv"
-
-  - id: TASK-005-2
-    title: "Close 5 Scala-only issues on f1r3node"
-    status: complete
-    claimed_by: claude-session-migrate
-    completed_at: 2026-04-17T19:35:00Z
-    acceptance:
-      - "Issues #452, #366, #321, #221 closed with deprecation comment (reason: not planned)"
-      - "Comment directs reporter to f1r3node-rust if bug still reproduces there"
-      - "phase_3_issues.status set to 'complete' in /tmp/migrationPlan.md"
-    notes:
-      - "#184 from the original spec was already closed pre-migration (unrelated genesis refactor), so effective count is 4 Scala + 1 already-fixed (#437) = 5 closures"
----
-```
-
-**Context:** Transfer the 27 open issues from f1r3node to their appropriate destinations. 22 issues migrate to f1r3node-rust, 5 Scala-only issues are closed.
-
-**Scope:**
-
-- Included: Issue creation, cross-referencing, closing Scala issues
-- Excluded: Fixing any of the migrated issues
 
 ---
 
@@ -1332,10 +1229,60 @@ tasks:
 
 ---
 
+### EPIC-015: Casper Test Infrastructure Congruence
+
+```yaml
+---
+epic_id: EPIC-015
+title: "Casper Test Infrastructure Congruence"
+status: pending
+priority: p2
+user_story: US-005
+blocked_by: []
+created_at: 2026-08-11
+claimed_by: null
+claimed_at: null
+tasks:
+  - id: TASK-015-1
+    title: "Deepen the Casper test node"
+    status: pending
+    priority: p2
+    discovered_in: docs/work-logs/casper-test-node-congruence-baseline-2026-08-19.md
+    notes:
+      - "Baseline 2026-08-19: the duplicate casper/tests helper tree and the canonical casper/src/rust/test_utils tree diverged by roughly 1,000 lines; the duplicate tree holds create_network_with_deploy_lifespan and the MultiParentCasper-typed accessor, which the canonical tree lacks. The first consolidation attempt (976b7a252, PR #230) is superseded. See the discovered_in work log for the full baseline and provenance."
+    glossary_terms:
+      - docs/Glossary.md#test-node
+      - docs/Glossary.md#block-proposal
+      - docs/Glossary.md#block-validation
+    dependency_category: local-substitutable
+    accepted_design: common-caller
+    tdd_plan: docs/tdd-plans/casper-test-node-2026-08-11T02-59-57Z.md
+    acceptance:
+      - "Standalone and network scenarios exercise production-shaped behavior through the test node interface documented at docs/Glossary.md#test-node"
+      - "The common caller can create a standalone test node or a configured test network without learning storage, runtime, transport, or consensus-construction details"
+      - "The test network interface exercises block proposal, publication, propagation, synchronization, and block validation while preserving existing observable outcomes"
+      - "Empty-block behavior, bootstrap selection, parent limits, synchrony settings, and read-only nodes remain expressible as explicit configuration with behavior tests"
+      - "Focused inspection required by tests crosses named test node accessors; tests do not initialize or copy fields of the consensus implementation"
+      - "Local storage, runtime, and transport stand-ins remain at internal seams; tests do not mock internal collaborators"
+      - "Features that exist only in the duplicate tree (at minimum create_network_with_deploy_lifespan and the MultiParentCasper-typed accessor) are ported to the canonical fixtures before the duplicate tree collapses to re-exports"
+      - "Old duplicate fixture tests are replaced rather than layered, and removing the duplicate helper tree does not move construction complexity into callers"
+      - "Each TDD cycle covers one behavior at a time, and test names cite docs/Glossary.md#test-node plus any applicable block-proposal or block-validation anchor"
+---
+```
+
+**Context:** Candidate C1 from the Casper architecture regression diagnosis was accepted with the common-caller design. Two independently evolving helper trees currently expose overlapping test-node behavior, while integration tests retain direct access to consensus implementation fields.
+
+**Scope:**
+
+- Included: one canonical test-node module, standalone and configured-network entry points, network scenario operations, focused inspection accessors, caller migration, and duplicate-tree removal
+- Excluded: changing consensus semantics, reopening settled slashing decisions, introducing remote ports, or implementing deploy-admission and block-validation candidates C2 and C3
+
+---
+
 ## Epic Dependency Graph
 
 ```text
-EPIC-011 (TLA exhaustive baseline) ────────> EPIC-012 / TASK-012-22
+EPIC-011 (TLA exhaustive baseline, complete) ─> EPIC-012 / TASK-012-22
 EPIC-012 (open-issue PR queue)              (all other lanes start independently)
 
 EPIC-001 (system-integration alignment)    EPIC-003 (f1r3node: merge critical PRs)

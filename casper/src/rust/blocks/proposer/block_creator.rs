@@ -1,6 +1,6 @@
 // References below to `formal/{rocq,tlaplus,sage}/slashing/`,
 // `FINDINGS.md`, `slashing-search-horizon.{md,sh}`, `slashing-traceability.md`,
-// `docs/theory/slashing/methodology/`, and `.mutants.toml` point at
+// `docs/casper/theory/slashing/methodology/`, and `.mutants.toml` point at
 // audit-corpus artifacts preserved on the `analysis/slashing` branch.
 //
 // See casper/src/main/scala/coop/rchain/casper/blocks/proposer/BlockCreator.scala
@@ -1594,7 +1594,7 @@ async fn prepare_slashing_deploys(
     // An unbonded proposer cannot effect a slash (the PoS contract rejects
     // the deploy at replay time). Skip emission to avoid wasted work and to
     // satisfy the proven-correct theorem T-9.8 — see
-    // docs/theory/slashing/design/09-bug-fixes-and-rationale.md §9.8.
+    // docs/casper/theory/slashing/design/09-bug-fixes-and-rationale.md §9.8.
     //
     // Symmetry note: the receive-side predicate
     // `validate_received_slash_deploys` does NOT require the block sender to
@@ -1672,7 +1672,7 @@ async fn prepare_slashing_deploys(
     //     deploys are crash-recovery state; system deploys are
     //     deterministically replayable from the persisted DAG.
     //
-    // See docs/theory/slashing/design/06-proposing-and-effect.md for
+    // See docs/casper/theory/slashing/design/06-proposing-and-effect.md for
     // the full rationale.
 
     // Create SlashDeploy objects

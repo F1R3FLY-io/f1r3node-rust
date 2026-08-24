@@ -1,7 +1,7 @@
 // Pre-fix regression backstop for bug #2 (lock-free RMW on the
 // equivocation tracker).
 //
-// Reference: docs/theory/slashing/design/09-bug-fixes-and-rationale.md §9.2.
+// Reference: docs/casper/theory/slashing/design/09-bug-fixes-and-rationale.md §9.2.
 // Out-of-band approach per design/14-test-plan.md §14.7.
 //
 // Post-fix invariant: routing every read-modify-write on the

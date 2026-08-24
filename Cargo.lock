@@ -799,7 +799,6 @@ dependencies = [
  "metrics 0.23.1",
  "metrics-util 0.17.0",
  "models",
- "num_cpus",
  "parking_lot",
  "proptest",
  "prost 0.14.4",
@@ -3563,7 +3562,7 @@ dependencies = [
 
 [[package]]
 name = "node"
-version = "0.4.45"
+version = "0.4.46"
 dependencies = [
  "async-trait",
  "axum 0.8.9",

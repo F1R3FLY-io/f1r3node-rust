@@ -33,7 +33,7 @@ Complete the active work in this order:
 
 1. Close the remaining work in `EPIC-011`.
 2. Complete the prioritized issue-remediation tasks in `EPIC-012`.
-3. Obtain a successful weekend soak result for the release candidate.
+3. Obtain a successful 60h stability soak result for the release candidate.
 4. Publish the release from the validated `master` commit.
 
 The release includes consensus recovery, checkpoint recovery, observer fixes, soak telemetry, and sustained-load performance improvements. It excludes tasks that remain pending after the release candidate is validated.

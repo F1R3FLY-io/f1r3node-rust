@@ -1,12 +1,12 @@
 // References below to `formal/{rocq,tlaplus,sage}/slashing/`,
 // `FINDINGS.md`, `slashing-search-horizon.{md,sh}`, `slashing-traceability.md`,
-// `docs/theory/slashing/methodology/`, and `.mutants.toml` point at
+// `docs/casper/theory/slashing/methodology/`, and `.mutants.toml` point at
 // audit-corpus artifacts preserved on the `analysis/slashing` branch.
 //
 // UC-59 — Duplicate neglect edges are idempotent and produce the
 // same closure.
 //
-// Maps to: docs/theory/slashing/slashing-specification.md §12 UC-59.
+// Maps to: docs/casper/theory/slashing/slashing-specification.md §12 UC-59.
 // Theorem: T-12 graph equivalence (`slash_iter_graph_equiv`,
 // formal/rocq/slashing/theories/TwoLevelSlashing.v).
 // Reference: formal/sage/slashing/FINDINGS.md row 7 — "duplicate

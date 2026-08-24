@@ -144,7 +144,7 @@ Qed.
    receiver-local state (storage error, non-deterministic replay), two nodes may
    disagree on whether the sender is slashable — a divergence risk in the same
    family as the LIVE Tier-0 pollution finding (see
-   docs/theory/slashing/design/12-failure-modes.md §12.2.1a). The
+   docs/casper/theory/slashing/design/12-failure-modes.md §12.2.1a). The
    dispatch-completeness theorem below does NOT establish that premise. *)
 
 Inductive BlockOutcome : Type :=

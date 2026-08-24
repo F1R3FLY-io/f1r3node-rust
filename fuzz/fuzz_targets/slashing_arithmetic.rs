@@ -1,6 +1,6 @@
 //! `slashing_arithmetic` — boundary fuzz for the three sequence/epoch helpers.
 //!
-//! Reference: docs/theory/slashing/slashing-specification.md §9.7 + §9.8.
+//! Reference: docs/casper/theory/slashing/slashing-specification.md §9.7 + §9.8.
 //! Production code under test: `checked_base_seq`, `checked_next_seq`,
 //! `epoch_for_block_number` in `slashing_authorization.rs`.
 //!
