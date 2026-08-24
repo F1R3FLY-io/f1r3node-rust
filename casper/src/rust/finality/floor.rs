@@ -321,6 +321,17 @@ pub enum FloorOfView {
     /// missing, and the next run derives cleanly. Deeper walks keep
     /// R-DET's contract — absence still refuses to become a verdict.
     AbsenceHold { missing: BlockHash },
+    /// Under a NEGATIVE fault-tolerance threshold "finalized" is bare
+    /// majority agreement per snapshot, so incompatible same-height
+    /// certificates are an expected transient (concurrent siblings each
+    /// clearing >S/2 in different views; CI run 32775081650). The
+    /// derivation still refuses to pick a base — that refusal is
+    /// regime-independent — but the live clock holds the cycle quietly:
+    /// the next merge spanning both branches restores compatibility.
+    /// Under θ ≥ 0 the same shape stays the loud
+    /// [`CasperError::IncompatibleFinalizedFork`] error, because there it
+    /// is impossible without a protocol breach.
+    IncompatibilityHold { detail: String },
 }
 
 impl FloorOfView {
@@ -332,7 +343,8 @@ impl FloorOfView {
             FloorOfView::Advance(floor) => Some(floor),
             FloorOfView::NoAdvance
             | FloorOfView::ContainmentHold { .. }
-            | FloorOfView::AbsenceHold { .. } => None,
+            | FloorOfView::AbsenceHold { .. }
+            | FloorOfView::IncompatibilityHold { .. } => None,
         }
     }
 }
@@ -376,6 +388,12 @@ pub async fn floor_of_view(
     let derived = match finalized_floor(dag, block_store, &tips, &live_snapshot, ftt).await {
         Ok(derived) => derived,
         Err(CasperError::BlockNotHeld(missing)) => return Ok(FloorOfView::AbsenceHold { missing }),
+        // Under a negative threshold, incompatible majority-agreement
+        // candidates are an expected transient — hold the cycle. Under
+        // θ ≥ 0 the same error is a genuine safety alarm and stays loud.
+        Err(CasperError::IncompatibleFinalizedFork(detail)) if ftt.num < 0 => {
+            return Ok(FloorOfView::IncompatibilityHold { detail })
+        }
         Err(other) => return Err(other),
     };
     if derived.hash == current.hash || derived.block_number <= current.block_number {
@@ -647,7 +665,7 @@ async fn derive_floor(
     }
 
     let floor = chosen.ok_or_else(|| {
-        CasperError::Other(format!(
+        CasperError::IncompatibleFinalizedFork(format!(
             "finalized-floor safety violation: no finalized candidate is a sound merge base over \
              parents [{}] (candidates [{}]) — incompatible finalized fork",
             parents
@@ -2012,12 +2030,68 @@ mod frontier_determinism_tests {
         )
         .await;
         match result {
-            Err(CasperError::Other(msg)) => assert!(
+            Err(CasperError::IncompatibleFinalizedFork(msg)) => assert!(
                 msg.contains("incompatible finalized fork"),
                 "expected the incompatible-fork safety error, got: {msg}"
             ),
-            other => panic!("expected Err(incompatible fork), got {other:?}"),
+            other => panic!("expected Err(IncompatibleFinalizedFork), got {other:?}"),
         }
+    }
+
+    /// Two disconnected roots, each certified by its own single-validator
+    /// committee, with both tips on the live frontier — the live derivation's
+    /// candidate set holds incompatible finalized candidates.
+    fn mk_agreement_flip_dag() -> (KeyValueDagRepresentation, Bytes, Bytes) {
+        let v = h(50);
+        let w = h(51);
+        let (g_a, a1, g_b, b1) = (h(0), h(1), h(5), h(6));
+        let mut dag = build_dag(vec![
+            md_wm(g_a.clone(), vec![], 0, &v, vec![(v.clone(), 1)]),
+            md_wm(a1.clone(), vec![g_a.clone()], 1, &v, vec![(v.clone(), 1)]),
+            md_wm(g_b.clone(), vec![], 0, &w, vec![(w.clone(), 1)]),
+            md_wm(b1.clone(), vec![g_b.clone()], 1, &w, vec![(w.clone(), 1)]),
+        ]);
+        dag.latest_messages_map.insert(v, a1);
+        dag.latest_messages_map.insert(w, b1);
+        (dag, g_a, g_b)
+    }
+
+    /// Under a NEGATIVE fault-tolerance threshold, "finalized" is bare
+    /// majority agreement per snapshot, so incompatible same-height
+    /// certificates are an expected transient (CI run 32775081650: three
+    /// concurrent siblings at #7 under ftt=-1, one cycle refused, healed by
+    /// the next merge). The live clock must HOLD the cycle quietly, never
+    /// surface a safety violation the regime cannot promise.
+    #[tokio::test]
+    async fn an_agreement_flip_under_negative_ftt_holds_the_cycle() {
+        let (dag, g_a, _g_b) = mk_agreement_flip_dag();
+        let current = Floor {
+            hash: g_a,
+            block_number: 0,
+        };
+        let out = floor_of_view(&dag, &mk_store(), &current, FtThreshold::from_f32_lossy(-1.0))
+            .await
+            .expect("negative-ftt agreement flip must hold the cycle, not error");
+        assert!(
+            matches!(out, FloorOfView::IncompatibilityHold { .. }),
+            "expected IncompatibilityHold, got {out:?}"
+        );
+    }
+
+    /// Under a BFT threshold the same shape is impossible without a protocol
+    /// breach: the live clock keeps surfacing the loud typed error.
+    #[tokio::test]
+    async fn an_incompatible_fork_under_bft_ftt_stays_loud() {
+        let (dag, g_a, _g_b) = mk_agreement_flip_dag();
+        let current = Floor {
+            hash: g_a,
+            block_number: 0,
+        };
+        let out = floor_of_view(&dag, &mk_store(), &current, FtThreshold::from_f32_lossy(0.1)).await;
+        assert!(
+            matches!(out, Err(CasperError::IncompatibleFinalizedFork(_))),
+            "expected the loud typed error under BFT ftt, got {out:?}"
+        );
     }
 
     /// A shared Case-A DAG: `g <- t <- c`, with BOTH parents `p1` (v) and `p2` (w)

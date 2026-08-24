@@ -442,6 +442,15 @@ pub(crate) async fn compute_last_finalized_block(
                 );
                 None
             }
+            crate::rust::finality::floor::FloorOfView::IncompatibilityHold { detail } => {
+                tracing::debug!(
+                    detail,
+                    "finalizer holds this cycle: incompatible majority-agreement \
+                     candidates under a negative fault-tolerance threshold; the \
+                     next merge spanning both branches reconciles them"
+                );
+                None
+            }
         };
 
     let new_lfb_found = new_lfb_opt.is_some();

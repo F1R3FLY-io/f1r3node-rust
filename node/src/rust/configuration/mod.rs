@@ -122,7 +122,7 @@ pub mod builder {
 
     /// Validate configuration parameters. Returns non-fatal warning
     /// messages; fatal errors are returned via `Err`.
-    fn validate_config(node_conf: &NodeConf) -> eyre::Result<Vec<String>> {
+    pub(crate) fn validate_config(node_conf: &NodeConf) -> eyre::Result<Vec<String>> {
         let mut warnings = Vec::new();
         let pos_multi_sig_quorum = node_conf.casper.genesis_block_data.pos_multi_sig_quorum;
         let pos_multi_sig_public_keys_length = node_conf
@@ -170,6 +170,22 @@ pub mod builder {
                 pending-deploy-max-lag ({}); the recovery knob has no effect under this \
                 configuration. Set deploy-recovery-max-lag >= pending-deploy-max-lag.",
                 deploy_recovery_max_lag, pending_deploy_max_lag,
+            ));
+        }
+
+        // A negative threshold weakens "finalized" from a BFT certificate
+        // (mutual-witnessing clique; revert requires >= theta equivocating
+        // stake) to bare majority agreement per snapshot, which can flip
+        // between views under concurrent proposal. Legitimate for test/dev
+        // shards that want instant finalization; a production shard should
+        // run theta >= 0 — make the choice visible, never accidental.
+        let ftt = node_conf.casper.fault_tolerance_threshold;
+        if ftt < 0.0 {
+            warnings.push(format!(
+                "casper.fault-tolerance-threshold ({}) is negative: finalization is bare \
+                majority agreement per snapshot, not a BFT certificate. This is a test/dev \
+                regime; production shards should use a threshold >= 0.",
+                ftt,
             ));
         }
 
@@ -396,6 +412,35 @@ mod embedded_defaults_tests {
         assert_eq!(
             cfg.api_server.exploratory_deploy_execution_timeout,
             Duration::from_secs(15)
+        );
+    }
+
+    /// A negative fault-tolerance threshold weakens "finalized" from a BFT
+    /// certificate to bare majority agreement per snapshot — a legitimate
+    /// test/dev sentinel, but one an operator must choose with eyes open.
+    /// Startup surfaces it as a warning; non-negative thresholds stay silent.
+    #[test]
+    fn a_negative_fault_tolerance_threshold_warns_at_startup() {
+        let mut cfg: NodeConf = hocon::HoconLoader::new()
+            .load_str(EMBEDDED_DEFAULTS)
+            .expect("load defaults.conf")
+            .resolve()
+            .expect("deserialize NodeConf");
+
+        cfg.casper.fault_tolerance_threshold = -1.0;
+        let warnings = builder::validate_config(&cfg).expect("validate");
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.contains("fault-tolerance-threshold") && w.contains("majority")),
+            "negative ftt must warn that finalization is majority-agreement, got {warnings:?}"
+        );
+
+        cfg.casper.fault_tolerance_threshold = 0.0;
+        let warnings = builder::validate_config(&cfg).expect("validate");
+        assert!(
+            !warnings.iter().any(|w| w.contains("fault-tolerance-threshold")),
+            "non-negative ftt must not warn, got {warnings:?}"
         );
     }
 
