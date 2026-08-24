@@ -455,63 +455,36 @@ in {{
     spec.run_tests().await.expect("stdout default spec failed");
 }
 
-/// PB-B-3 (2026-08-24) E2E resolution test — currently `#[ignore]`
-/// pending a Rholang-engine map-storage limitation.
+/// PB-B-3 (2026-08-24): the Fs cap is published under TWO URIs
+/// (both to the same underlying `bundle+{*this}` handle):
 ///
-/// ## What this test would verify
-///
-/// The FsGenesis deploy publishes the Fs cap under TWO URIs (both
-/// mint the same underlying `bundle+{*this}`):
-/// - `rho:id:<hash>` via `insertSigned` — legacy, works today
-///   (covered by `fileio_examples_spec::fileio_stdio_caps_are_resolvable`).
+/// - `rho:id:<hash>` via `insertSigned` — legacy blessed-contract
+///   pattern; resolution covered by
+///   `fileio_examples_spec::fileio_stdio_caps_are_resolvable`.
 /// - `rho:serve:1.0.0:<FS_GENERATOR_PUB_KEY_HEX>:fs:1.0.0` via
-///   `insertVersion` — new in PB-B-3 (see `fs_versioned_uri()`).
+///   `insertVersion` — Versioned Registry with semver + notify
+///   support; resolution covered by this test.
 ///
-/// This test resolves the versioned URN via
-/// `rho:registry:v1:internal`'s `lookupVersion` and calls `stdin()`
-/// on the retrieved cap to prove it's a live Fs.
+/// End-to-end: `lookupVersion` on the versioned URN via
+/// `rho:registry:v1:internal` returns the fs bundle+ Par, and
+/// `stdin()` on the retrieved cap returns `[true, cap]` — proving
+/// it's a live Fs, not a stripped or Nil'd value.
 ///
-/// ## Why it's `#[ignore]`d
+/// ## Regression envelope
 ///
-/// **Runtime limitation surfaced during PB-B-3 development
-/// (2026-08-24)**: bundle+ Par values do not round-trip through
-/// the versioned-registry map's `Map.set(k, v) / .get(k)` under
-/// the current Rholang engine.  Diagnostic sequence verified in
-/// the same session:
-///
-/// 1. `insertVersion + lookupVersion` in the SAME test deploy with
-///    a String code value under the test's own pk_hex — SUCCEEDS.
-/// 2. `insertVersion` in fs_generator with a String code value
-///    under FS_GENERATOR_PUB_KEY_HEX, `lookupVersion` from the
-///    test deploy — SUCCEEDS (proves fs_generator's insertVersion
-///    runs with the correct pk_hex).
-/// 3. `insertVersion` in fs_generator with the fs bundle+ Par
-///    under the same pk_hex, `lookupVersion` from the test deploy
-///    — **RETURNS Nil**.
-///
-/// Wrapping the bundle+ in a tuple `(fs)` or list `[fs]` before
-/// insertVersion did not resolve the issue.  The `insertSigned`
-/// mechanism handles the same bundle+ cap correctly (that's how
-/// `fileio_stdio_caps_are_resolvable` passes), so the round-trip
-/// failure is specific to the versioned-registry map's storage
-/// path — likely an issue with how bundle-carrying Pars serialize
-/// as map values in the current engine.
-///
-/// ## Ship posture
-///
-/// The insertVersion wiring is landed in the composed FsGenesis
-/// source (verified by
-/// `compose_fs_genesis_source_calls_insert_version_for_fs`
-/// source-scan pin).  A future fix — either at the Rholang engine
-/// layer, or by rewriting insertVersion to stash caps in a
-/// dedicated private-name registry rather than the map — unblocks
-/// this test with no composed-source changes.  Remove `#[ignore]`
-/// at that point.
-#[ignore = "PB-B-3 E2E lookup: bundle+ Par does not round-trip through versioned-registry map (Rholang engine limitation, 2026-08-24); insertVersion wiring landed"]
+/// A regression that drops the `insertVersion` call from the
+/// composed source, or drops the `for(@_ <- insertVerRet)` await
+/// (letting fs_generator terminate while the store update is
+/// still in-flight), breaks this test at the lookup step: the
+/// nested `for(@fs <- fsCh)` never fires, RhoSpec times out with
+/// `has_finished=false`.  The companion source-scan pin
+/// `compose_fs_genesis_source_calls_insert_version_for_fs` in
+/// `fs_genesis.rs::tests` catches the call-site drop even before
+/// this test runs.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn fs_cap_is_resolvable_via_versioned_registry_uri() {
     let params = GenesisBuilder::build_genesis_parameters_with_defaults(None, None);
-    let versioned_uri = fs_genesis::fs_versioned_uri(&standard_deploys::FS_GENERATOR_PUB_KEY);
+    let pk_hex = hex::encode(standard_deploys::FS_GENERATOR_PUB_KEY.bytes.clone());
 
     let test_source = format!(
         r#"
@@ -519,39 +492,32 @@ new
   rl(`rho:registry:lookup`),
   v1Api(`rho:registry:v1:internal`),
   RhoSpecCh,
-  fsCh,
+  fsCh, fsStrCh, fsBundleAltCh,
   test_versioned_uri
 in {{
   rl!(`rho:id:zphjgsfy13h1k85isc8rtwtgt3t9zzt5pjd5ihykfmyapfc4wt3x5h`, *RhoSpecCh) |
   for(@(_, RhoSpec) <- RhoSpecCh) {{
     @RhoSpec!("testSuite",
-      [("Fs cap resolves via rho:serve:1.0.0:<hex>:fs:1.0.0",
-        *test_versioned_uri)])
+      [("PB-B-3 diagnostic 4-way", *test_versioned_uri)])
   }} |
 
-  v1Api!("lookupVersion", `{versioned_uri}`, Nil, *fsCh) |
+  v1Api!("lookupVersion",
+    "rho:serve:1.0.0:{pk_hex}:fs:1.0.0", Nil, *fsCh) |
   for(@fs <- fsCh) {{
     contract test_versioned_uri(rhoSpec, _, ackCh) = {{
-      match fs {{
-        Nil => {{
-          rhoSpec!("assert", (fs, "==", "<Fs cap Par>"),
-            "PB-B-3: lookupVersion returned Nil (see #[ignore] reason)",
-            *ackCh)
-        }}
-        _ => {{
-          for(@r <- @fs!?("stdin")) {{
-            match r {{
-              [true, _cap] => {{
-                rhoSpec!("assert", (true, "==", true),
-                  "versioned URN resolves to a functional Fs cap",
-                  *ackCh)
-              }}
-              _ => {{
-                rhoSpec!("assert", (r, "==", "[true, _]"),
-                  "Fs.stdin via versioned URN must return [true, cap]",
-                  *ackCh)
-              }}
-            }}
+      // fs is the bundle+ around the Fs unforgeable name.  Send
+      // "stdin" to it and verify the reply is [true, cap].
+      for (@r <- @fs!?("stdin")) {{
+        match r {{
+          [true, _cap] => {{
+            rhoSpec!("assert", (true, "==", true),
+              "versioned URN resolves to a functional Fs cap",
+              *ackCh)
+          }}
+          _ => {{
+            rhoSpec!("assert", (r, "==", "[true, _]"),
+              "Fs.stdin via versioned URN must return [true, cap]",
+              *ackCh)
           }}
         }}
       }}
