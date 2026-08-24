@@ -153,6 +153,7 @@ enum SequenceCursorTask {
     Page { page: usize, at: usize, end: usize },
 }
 
+#[cfg(test)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct PageBackedArenaStats {
     segments: usize,
@@ -170,6 +171,7 @@ struct PageBackedArena<const CAPACITY: usize> {
     nodes: Vec<SequenceNode>,
     byte_pages: Vec<Arc<CanonicalBytePage>>,
     provenance_pages: Vec<Arc<CanonicalProvenancePage>>,
+    #[cfg(test)]
     stats: PageBackedArenaStats,
 }
 
@@ -179,6 +181,7 @@ impl<const CAPACITY: usize> PageBackedArena<CAPACITY> {
             nodes: Vec::new(),
             byte_pages: Vec::new(),
             provenance_pages: Vec::new(),
+            #[cfg(test)]
             stats: PageBackedArenaStats::default(),
         }
     }
@@ -236,19 +239,17 @@ impl<const CAPACITY: usize> PageBackedArena<CAPACITY> {
         if page_end >= CAPACITY
             || self.byte_pages[page].bytes.len() != page_end
             || self.provenance_pages[page].values.len() != page_end
-            || Arc::strong_count(&self.byte_pages[page]) != 1
-            || Arc::strong_count(&self.provenance_pages[page]) != 1
         {
             return Ok(None);
         }
-        Arc::get_mut(&mut self.byte_pages[page])
-            .expect("a uniquely owned byte page is mutable")
-            .bytes
-            .push(byte.byte);
-        Arc::get_mut(&mut self.provenance_pages[page])
-            .expect("a uniquely owned provenance page is mutable")
-            .values
-            .push(byte.provenance);
+        let (Some(byte_page), Some(provenance_page)) = (
+            Arc::get_mut(&mut self.byte_pages[page]),
+            Arc::get_mut(&mut self.provenance_pages[page]),
+        ) else {
+            return Ok(None);
+        };
+        byte_page.bytes.push(byte.byte);
+        provenance_page.values.push(byte.provenance);
         let len = span
             .len
             .checked_add(1)
@@ -261,7 +262,10 @@ impl<const CAPACITY: usize> PageBackedArena<CAPACITY> {
             }
         }
         self.nodes[span.root.0].len = len;
-        self.stats.payload_slots += 1;
+        #[cfg(test)]
+        {
+            self.stats.payload_slots += 1;
+        }
         Ok(Some(SequenceSpan {
             root: span.root,
             start: 0,
@@ -273,7 +277,7 @@ impl<const CAPACITY: usize> PageBackedArena<CAPACITY> {
         &mut self,
         previous: Option<SequenceSpan>,
         byte: CanonicalLocatedByte,
-        divergent: bool,
+        _divergent: bool,
     ) -> Result<CanonicalBytesHandle, CanonicalBytesArenaError> {
         let len = previous
             .map_or(0, |span| span.len)
@@ -282,16 +286,7 @@ impl<const CAPACITY: usize> PageBackedArena<CAPACITY> {
         self.nodes
             .try_reserve(1)
             .map_err(|_| CanonicalBytesArenaError::LengthOverflow)?;
-        let page = self.writable_page()?;
-        let page_start = self.byte_pages[page].bytes.len();
-        Arc::get_mut(&mut self.byte_pages[page])
-            .expect("a selected byte page is uniquely owned")
-            .bytes
-            .push(byte.byte);
-        Arc::get_mut(&mut self.provenance_pages[page])
-            .expect("a selected provenance page is uniquely owned")
-            .values
-            .push(byte.provenance);
+        let (page, page_start) = self.push_payload(byte)?;
         let root = SequenceNodeId(self.nodes.len());
         self.nodes.push(SequenceNode {
             len,
@@ -302,9 +297,12 @@ impl<const CAPACITY: usize> PageBackedArena<CAPACITY> {
                 used: 1,
             },
         });
-        self.stats.segments += 1;
-        self.stats.payload_slots += 1;
-        self.stats.divergent_segments += usize::from(divergent);
+        #[cfg(test)]
+        {
+            self.stats.segments += 1;
+            self.stats.payload_slots += 1;
+            self.stats.divergent_segments += usize::from(_divergent);
+        }
         Ok(Self::handle(SequenceSpan {
             root,
             start: 0,
@@ -312,16 +310,26 @@ impl<const CAPACITY: usize> PageBackedArena<CAPACITY> {
         }))
     }
 
-    fn writable_page(&mut self) -> Result<usize, CanonicalBytesArenaError> {
+    fn push_payload(
+        &mut self,
+        byte: CanonicalLocatedByte,
+    ) -> Result<(usize, usize), CanonicalBytesArenaError> {
         if let Some(page) = self.byte_pages.len().checked_sub(1) {
             if self.byte_pages[page].bytes.len() < CAPACITY
                 && self.byte_pages[page].bytes.len() == self.provenance_pages[page].values.len()
-                && Arc::strong_count(&self.byte_pages[page]) == 1
-                && Arc::strong_count(&self.provenance_pages[page]) == 1
             {
-                return Ok(page);
+                let page_start = self.byte_pages[page].bytes.len();
+                if let (Some(byte_page), Some(provenance_page)) = (
+                    Arc::get_mut(&mut self.byte_pages[page]),
+                    Arc::get_mut(&mut self.provenance_pages[page]),
+                ) {
+                    byte_page.bytes.push(byte.byte);
+                    provenance_page.values.push(byte.provenance);
+                    return Ok((page, page_start));
+                }
             }
         }
+        #[cfg(test)]
         let had_page = !self.byte_pages.is_empty();
         self.byte_pages
             .try_reserve(1)
@@ -333,17 +341,22 @@ impl<const CAPACITY: usize> PageBackedArena<CAPACITY> {
         bytes
             .try_reserve_exact(CAPACITY)
             .map_err(|_| CanonicalBytesArenaError::LengthOverflow)?;
+        bytes.push(byte.byte);
         let mut values = Vec::new();
         values
             .try_reserve_exact(CAPACITY)
             .map_err(|_| CanonicalBytesArenaError::LengthOverflow)?;
+        values.push(byte.provenance);
         self.byte_pages.push(Arc::new(CanonicalBytePage { bytes }));
         self.provenance_pages
             .push(Arc::new(CanonicalProvenancePage { values }));
-        self.stats.byte_pages = self.byte_pages.len();
-        self.stats.provenance_pages = self.provenance_pages.len();
-        self.stats.page_rollovers += usize::from(had_page);
-        Ok(self.byte_pages.len() - 1)
+        #[cfg(test)]
+        {
+            self.stats.byte_pages = self.byte_pages.len();
+            self.stats.provenance_pages = self.provenance_pages.len();
+            self.stats.page_rollovers += usize::from(had_page);
+        }
+        Ok((self.byte_pages.len() - 1, 0))
     }
 
     fn slice(
@@ -780,6 +793,7 @@ impl PageFrozenBytes {
     }
 }
 
+#[cfg(test)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct CanonicalBytesArenaStats {
     pub(crate) content_nodes: usize,
@@ -878,6 +892,7 @@ impl FrozenCanonicalBytes {
 /// Append-only ownership arena for persistent canonical byte strings.
 pub(crate) struct CanonicalBytesArena {
     backend: PageBackedArena<DEFAULT_PAGE_BYTES>,
+    #[cfg(test)]
     stats: CanonicalBytesArenaStats,
 }
 
@@ -889,6 +904,7 @@ impl CanonicalBytesArena {
     pub(crate) fn new() -> Self {
         Self {
             backend: PageBackedArena::<DEFAULT_PAGE_BYTES>::new(),
+            #[cfg(test)]
             stats: CanonicalBytesArenaStats::default(),
         }
     }
@@ -908,6 +924,7 @@ impl CanonicalBytesArena {
         byte: CanonicalLocatedByte,
     ) -> Result<CanonicalBytesHandle, CanonicalBytesArenaError> {
         let value = self.backend.append(prefix, byte)?;
+        #[cfg(test)]
         self.sync_page_stats();
         Ok(value)
     }
@@ -1005,6 +1022,7 @@ impl CanonicalBytesArena {
         self.located_bytes(one).next().map(|byte| byte.provenance)
     }
 
+    #[cfg(test)]
     fn sync_page_stats(&mut self) {
         self.stats.content_nodes = self.backend.nodes.len();
         self.stats.provenance_nodes = self.backend.nodes.len();
@@ -1410,17 +1428,18 @@ mod tests {
         let thread = std::thread::Builder::new()
             .stack_size(64 * 1024)
             .spawn(|| {
+                const LEN: usize = 100_000;
                 let mut arena = CanonicalBytesArena::new();
                 let mut value = arena.empty();
-                for offset in 0..20_000usize {
+                for offset in 0..LEN {
                     let singleton = arena
                         .append(arena.empty(), located((offset % 251) as u8, 4, offset))
                         .unwrap();
                     value = arena.concat(value, singleton).unwrap();
                 }
-                assert_eq!(arena.bytes(value).count(), 20_000);
-                assert_eq!(arena.located_bytes(value).count(), 20_000);
-                assert_eq!(arena.provenance_at(value, 19_999).unwrap().offset, 19_999);
+                assert_eq!(arena.bytes(value).count(), LEN);
+                assert_eq!(arena.located_bytes(value).count(), LEN);
+                assert_eq!(arena.provenance_at(value, LEN - 1).unwrap().offset, LEN - 1);
             })
             .unwrap();
         thread.join().unwrap();
@@ -1565,31 +1584,267 @@ mod tests {
 
     #[test]
     fn page_capacity_probe_exposes_static_32_64_128_256_policies() {
-        fn probe<const CAPACITY: usize>() {
-            const LEN: usize = 1_025;
+        use std::hint::black_box;
+        use std::time::Instant;
+
+        #[derive(Clone, Copy)]
+        enum Workload {
+            Linear,
+            Forked,
+            FreezeThenExtend,
+        }
+
+        impl Workload {
+            fn name(self) -> &'static str {
+                match self {
+                    Self::Linear => "linear",
+                    Self::Forked => "forked",
+                    Self::FreezeThenExtend => "freeze_then_extend",
+                }
+            }
+        }
+
+        fn probe<const CAPACITY: usize>(len: usize, workload: Workload, report: bool) {
             let mut arena = PageBackedArena::<CAPACITY>::new();
             let mut value = arena.empty();
-            for offset in 0..LEN {
+            let started = Instant::now();
+            for offset in 0..len {
                 value = arena
                     .append(value, located((offset % 251) as u8, 31, offset))
                     .unwrap();
             }
-            assert_eq!(arena.stats.payload_slots, LEN);
-            assert_eq!(arena.stats.byte_pages, LEN.div_ceil(CAPACITY));
-            assert_eq!(arena.stats.provenance_pages, LEN.div_ceil(CAPACITY));
-            assert_eq!(arena.stats.segments, LEN.div_ceil(CAPACITY));
-            let frozen = arena.freeze(value);
-            assert_eq!(frozen.len(), LEN);
-            for offset in (0..LEN).step_by(37) {
+            match workload {
+                Workload::Linear => {}
+                Workload::Forked => {
+                    let checkpoint = value;
+                    for branch in 0..len / 16 {
+                        let mut suffix = checkpoint;
+                        for offset in 0..16 {
+                            suffix = arena
+                                .append(
+                                    suffix,
+                                    located(
+                                        (branch.wrapping_add(offset) % 251) as u8,
+                                        32,
+                                        branch * 16 + offset,
+                                    ),
+                                )
+                                .unwrap();
+                        }
+                        black_box(suffix);
+                    }
+                }
+                Workload::FreezeThenExtend => {
+                    let frozen = arena.freeze(value);
+                    let mut extension = value;
+                    for offset in 0..len {
+                        extension = arena
+                            .append(extension, located((offset % 239) as u8, 33, len + offset))
+                            .unwrap();
+                    }
+                    assert_eq!(frozen.len(), len);
+                    assert_eq!(frozen.byte_at(len - 1), Some(((len - 1) % 251) as u8));
+                    black_box(extension);
+                }
+            }
+            let build_elapsed = started.elapsed();
+            let frozen = FrozenCanonicalBytes {
+                inner: arena.freeze(value),
+            };
+            let scan_started = Instant::now();
+            let checksum = frozen
+                .bytes()
+                .fold(0u64, |sum, byte| sum.wrapping_add(u64::from(byte)));
+            let scan_elapsed = scan_started.elapsed();
+            black_box(checksum);
+
+            assert_eq!(frozen.len(), len);
+            for offset in (0..len).step_by(37) {
                 assert_eq!(frozen.byte_at(offset), Some((offset % 251) as u8));
                 assert_eq!(frozen.provenance_at(offset).unwrap().offset, offset);
             }
+            if matches!(workload, Workload::Linear) {
+                assert_eq!(arena.stats.payload_slots, len);
+                assert_eq!(arena.stats.byte_pages, len.div_ceil(CAPACITY));
+                assert_eq!(arena.stats.provenance_pages, len.div_ceil(CAPACITY));
+                assert_eq!(arena.stats.segments, len.div_ceil(CAPACITY));
+            }
+            if report {
+                println!(
+                    "canonical_bytes_arena,{},{},{},{},{},{},{},{},{},{}",
+                    CAPACITY,
+                    workload.name(),
+                    len,
+                    build_elapsed.as_nanos(),
+                    scan_elapsed.as_nanos(),
+                    arena.stats.segments,
+                    arena.stats.byte_pages,
+                    arena.stats.provenance_pages,
+                    arena.stats.payload_slots,
+                    frozen.inner.data.leaves.len(),
+                );
+            }
         }
 
-        probe::<32>();
-        probe::<64>();
-        probe::<128>();
-        probe::<256>();
+        let report = std::env::var_os("CANONICAL_BYTES_ARENA_EXPERIMENT").is_some();
+        let len = if report {
+            std::env::var("CANONICAL_BYTES_ARENA_LEN")
+                .ok()
+                .and_then(|value| value.parse().ok())
+                .unwrap_or(65_536)
+                .max(1)
+        } else {
+            1_025
+        };
+        if report {
+            println!(
+                "subject,page_capacity,workload,base_length,build_ns,scan_ns,segments,byte_pages,provenance_pages,payload_slots,frozen_leaves"
+            );
+        }
+        let selected_capacity = std::env::var("CANONICAL_BYTES_ARENA_CAPACITY")
+            .ok()
+            .map(|value| {
+                value
+                    .parse::<usize>()
+                    .expect("CANONICAL_BYTES_ARENA_CAPACITY must be 32, 64, 128, or 256")
+            });
+        let selected_workload = std::env::var("CANONICAL_BYTES_ARENA_WORKLOAD").ok();
+        for workload in [
+            Workload::Linear,
+            Workload::Forked,
+            Workload::FreezeThenExtend,
+        ] {
+            if selected_workload
+                .as_deref()
+                .is_some_and(|selected| selected != workload.name())
+            {
+                continue;
+            }
+            if selected_capacity.is_none_or(|selected| selected == 32) {
+                probe::<32>(len, workload, report);
+            }
+            if selected_capacity.is_none_or(|selected| selected == 64) {
+                probe::<64>(len, workload, report);
+            }
+            if selected_capacity.is_none_or(|selected| selected == 128) {
+                probe::<128>(len, workload, report);
+            }
+            if selected_capacity.is_none_or(|selected| selected == 256) {
+                probe::<256>(len, workload, report);
+            }
+        }
+        assert!(
+            selected_capacity.is_none_or(|selected| [32, 64, 128, 256].contains(&selected)),
+            "CANONICAL_BYTES_ARENA_CAPACITY must be 32, 64, 128, or 256"
+        );
+        assert!(
+            selected_workload.as_deref().is_none_or(|selected| [
+                Workload::Linear.name(),
+                Workload::Forked.name(),
+                Workload::FreezeThenExtend.name(),
+            ]
+            .contains(&selected)),
+            "CANONICAL_BYTES_ARENA_WORKLOAD must be linear, forked, or freeze_then_extend"
+        );
+    }
+
+    #[test]
+    fn randomized_persistent_operations_match_a_flat_located_byte_oracle() {
+        #[derive(Clone)]
+        struct OracleValue {
+            handle: CanonicalBytesHandle,
+            bytes: Vec<CanonicalLocatedByte>,
+        }
+
+        fn next_random(state: &mut u64) -> u64 {
+            *state ^= *state << 13;
+            *state ^= *state >> 7;
+            *state ^= *state << 17;
+            *state
+        }
+
+        fn check(arena: &CanonicalBytesArena, value: &OracleValue) {
+            assert_eq!(
+                arena.located_bytes(value.handle).collect::<Vec<_>>(),
+                value.bytes
+            );
+            assert_eq!(
+                arena.bytes(value.handle).collect::<Vec<_>>(),
+                value.bytes.iter().map(|byte| byte.byte).collect::<Vec<_>>()
+            );
+        }
+
+        let mut arena = CanonicalBytesArena::new();
+        let mut values = vec![OracleValue {
+            handle: arena.empty(),
+            bytes: Vec::new(),
+        }];
+        let mut frozen = Vec::new();
+        let mut random = 0x9e37_79b9_7f4a_7c15u64;
+
+        for step in 0..20_000usize {
+            let choice = next_random(&mut random) as usize;
+            let left = choice % values.len();
+            let operation = choice % 4;
+            let next = match operation {
+                0 => {
+                    let byte = CanonicalLocatedByte::new(
+                        (next_random(&mut random) % 251) as u8,
+                        CanonicalByteProvenance::new(
+                            (next_random(&mut random) % 17) as u32,
+                            step * 31 + choice % 29,
+                        ),
+                    );
+                    let mut bytes = values[left].bytes.clone();
+                    bytes.push(byte);
+                    OracleValue {
+                        handle: arena.append(values[left].handle, byte).unwrap(),
+                        bytes,
+                    }
+                }
+                1 if !values[left].bytes.is_empty() => {
+                    let len = values[left].bytes.len();
+                    let first = next_random(&mut random) as usize % (len + 1);
+                    let second = next_random(&mut random) as usize % (len + 1);
+                    let range = first.min(second)..first.max(second);
+                    OracleValue {
+                        handle: arena.slice(values[left].handle, range.clone()).unwrap(),
+                        bytes: values[left].bytes[range].to_vec(),
+                    }
+                }
+                2 if values[left].bytes.len() < 4_096 => {
+                    let right = next_random(&mut random) as usize % values.len();
+                    if values[left].bytes.len() + values[right].bytes.len() > 4_096 {
+                        values[left].clone()
+                    } else {
+                        let mut bytes = values[left].bytes.clone();
+                        bytes.extend_from_slice(&values[right].bytes);
+                        OracleValue {
+                            handle: arena
+                                .concat(values[left].handle, values[right].handle)
+                                .unwrap(),
+                            bytes,
+                        }
+                    }
+                }
+                _ => values[left].clone(),
+            };
+            check(&arena, &next);
+            if step % 97 == 0 {
+                let snapshot = arena.freeze(next.handle);
+                assert_eq!(snapshot.located_bytes().collect::<Vec<_>>(), next.bytes);
+                frozen.push((snapshot, next.bytes.clone()));
+            }
+            values.push(next);
+            if values.len() > 512 {
+                values.swap_remove(next_random(&mut random) as usize % values.len());
+            }
+        }
+
+        drop(arena);
+        for (snapshot, expected) in frozen {
+            assert_eq!(snapshot.located_bytes().collect::<Vec<_>>(), expected);
+        }
     }
 
     #[test]
