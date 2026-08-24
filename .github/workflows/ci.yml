@@ -286,6 +286,10 @@ jobs:
         shell: bash -euo pipefail {0}
         run: bash .github/scripts/check-workflow-invariants.sh
 
+      - name: Verify pre-push hook
+        shell: bash -euo pipefail {0}
+        run: .github/scripts/test-pre-push-hook.sh
+
       - name: Verify stack CI gate
         shell: bash -euo pipefail {0}
         run: bash .github/scripts/test-ci-stack-gate.sh

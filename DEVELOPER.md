@@ -82,7 +82,7 @@ This sets `core.hooksPath` to `.githooks/`, which provides:
 | `pre-commit` | On every commit | `cargo fmt --check`, `cargo clippy -D warnings`                 |
 | `pre-push`   | On every push   | CI script tests, `cargo clippy`, `cargo test --release`         |
 
-Both hooks skip automatically in CI environments.
+Both hooks skip automatically in CI environments. The pre-push hook gives Casper tests 1800 seconds and gives other commands 600 seconds.
 
 ### Hook Options
 
@@ -96,7 +96,8 @@ QUICK=1 git push                           # Debug-mode tests (faster compile)
 SKIP_TESTS=1 git push                      # Skip Cargo tests
 SKIP_CI_TESTS=1 git push                   # Skip CI script tests
 TEST_CRATES="casper rholang" git push      # Test specific crates only
-TEST_TIMEOUT=300 git push                  # Adjust timeout
+TEST_TIMEOUT=900 git push                  # Adjust the general timeout
+CASPER_TEST_TIMEOUT=2400 git push          # Adjust the Casper timeout
 
 # Bypass entirely (not recommended)
 git commit --no-verify

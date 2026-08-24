@@ -194,6 +194,7 @@ fail_if(!ci_text.include?("ci-target-${{ github.run_attempt }}"), "CI must uploa
   fail_if(checkout&.dig("with", "ref") != "${{ needs.build_base.outputs.TARGET_SHA }}", "#{job_name} must check out the validated target SHA")
 end
 lint_steps = ci.dig("jobs", "lint", "steps")
+fail_if(lint_steps.none? { |step| step["run"].to_s.include?("test-pre-push-hook.sh") }, "Lint must test pre-push hook behavior")
 fail_if(lint_steps.none? { |step| step["run"].to_s.include?("test-ci-stack-gate.sh") }, "Lint must run CI stack gate tests")
 %w[integration_tests_amd64 integration_tests_arm64].each do |job_name|
   condition = ci.dig("jobs", job_name, "if").to_s
