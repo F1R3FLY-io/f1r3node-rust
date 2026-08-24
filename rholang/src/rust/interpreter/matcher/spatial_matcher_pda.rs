@@ -9,6 +9,7 @@
 
 #[cfg(any(
     test,
+    feature = "spatial-matcher-candidate-mask-differential",
     feature = "spatial-matcher-connective-domain-differential",
     feature = "spatial-matcher-exact-scalar-differential"
 ))]
@@ -118,6 +119,55 @@ thread_local! {
         Cell::new(RelationalMatchStats::default());
     static CONCRETE_REGION_STATS: Cell<ConcreteRegionMatchStats> =
         Cell::new(ConcreteRegionMatchStats::default());
+    static FORCE_CANDIDATE_NODE_COUNT_ORDER: Cell<bool> = const { Cell::new(false) };
+    static CANDIDATE_EXPANSION_MODE: Cell<CandidateExpansionMode> =
+        const { Cell::new(CandidateExpansionMode::Adaptive) };
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum CandidateExpansionMode {
+    Adaptive,
+    Sparse,
+    Dense,
+}
+
+#[cfg(test)]
+struct CandidateTestModeGuard<'a, T: Copy> {
+    cell: &'a Cell<T>,
+    previous: T,
+}
+
+#[cfg(test)]
+impl<T: Copy> Drop for CandidateTestModeGuard<'_, T> {
+    fn drop(&mut self) { self.cell.set(self.previous) }
+}
+
+#[cfg(test)]
+fn with_candidate_node_count_order<T>(body: impl FnOnce() -> T) -> T {
+    FORCE_CANDIDATE_NODE_COUNT_ORDER.with(|mode| {
+        let previous = mode.replace(true);
+        let _guard = CandidateTestModeGuard {
+            cell: mode,
+            previous,
+        };
+        body()
+    })
+}
+
+#[cfg(test)]
+fn with_candidate_expansion_mode<T>(
+    selected: CandidateExpansionMode,
+    body: impl FnOnce() -> T,
+) -> T {
+    CANDIDATE_EXPANSION_MODE.with(|mode| {
+        let previous = mode.replace(selected);
+        let _guard = CandidateTestModeGuard {
+            cell: mode,
+            previous,
+        };
+        body()
+    })
 }
 
 /// Test-visible evidence that the concrete route performs bounded byte-region
@@ -261,6 +311,37 @@ thread_local! {
     static FORCE_EXACT_SCALAR_DECODE: Cell<bool> = const { Cell::new(false) };
 }
 
+#[cfg(feature = "spatial-matcher-candidate-mask-differential")]
+thread_local! {
+    /// Benchmark-only causal control for the former occurrence-expanded,
+    /// postorder candidate-mask evaluator.  The branch is absent from every
+    /// default/production build.
+    static FORCE_OCCURRENCE_CANDIDATE_MASKS: Cell<bool> = const { Cell::new(false) };
+}
+
+#[cfg(feature = "spatial-matcher-candidate-mask-differential")]
+struct CandidateMaskModeGuard<'a> {
+    cell: &'a Cell<bool>,
+    previous: bool,
+}
+
+#[cfg(feature = "spatial-matcher-candidate-mask-differential")]
+impl Drop for CandidateMaskModeGuard<'_> {
+    fn drop(&mut self) { self.cell.set(self.previous) }
+}
+
+#[cfg(feature = "spatial-matcher-candidate-mask-differential")]
+fn with_candidate_mask_mode<T>(optimized: bool, body: impl FnOnce() -> T) -> T {
+    FORCE_OCCURRENCE_CANDIDATE_MASKS.with(|force_occurrence| {
+        let previous = force_occurrence.replace(!optimized);
+        let _guard = CandidateMaskModeGuard {
+            cell: force_occurrence,
+            previous,
+        };
+        body()
+    })
+}
+
 #[cfg(feature = "spatial-matcher-connective-domain-differential")]
 struct ConnectiveDomainModeGuard<'a> {
     cell: &'a Cell<bool>,
@@ -371,6 +452,58 @@ pub fn benchmark_match_par_exact_scalar(target: Par, pattern: Par, optimized: bo
     })
 }
 
+/// Prebuilt benchmark-only candidate-domain fixture.
+///
+/// Index and plan construction are deliberately outside timed evaluation: the
+/// control freezes the pre-fix occurrence-expanded/postorder evaluator while
+/// the treatment uses group masks, pressure scheduling and adaptive ordered
+/// expansion.  Charging the new builder sidecars to both arms would neither be
+/// a frozen end-to-end control nor isolate the retained-mask mechanism.
+#[cfg(feature = "spatial-matcher-candidate-mask-differential")]
+pub struct CandidateMaskBenchmarkFixture {
+    index: ListTargetIndex,
+    plan: ListCandidatePlan,
+    target_count: usize,
+    optimized: bool,
+}
+
+#[cfg(feature = "spatial-matcher-candidate-mask-differential")]
+impl CandidateMaskBenchmarkFixture {
+    pub fn new(targets: Vec<Par>, pattern: Par, optimized: bool) -> Option<Self> {
+        with_candidate_mask_mode(optimized, || {
+            let target_count = targets.len();
+            let targets = targets.into_iter().map(MatchValue::Par).collect::<Vec<_>>();
+            let index = ListTargetIndex::from_targets(&targets)?;
+            let mut captures = PathMap::new();
+            let plan = compile_par_candidate_plan(&pattern, &mut captures);
+            Some(Self {
+                index,
+                plan,
+                target_count,
+                optimized,
+            })
+        })
+    }
+
+    pub fn positions(&self) -> Box<[u64]> {
+        with_candidate_mask_mode(self.optimized, || {
+            if self.plan.is_empty() {
+                return Vec::new().into_boxed_slice();
+            }
+            self.index
+                .positions_matching_plan(&self.plan)
+                .unwrap_or_else(|| {
+                    (0..self.target_count)
+                        .map(|position| {
+                            u64::try_from(position).expect("benchmark target position fits u64")
+                        })
+                        .collect::<Vec<_>>()
+                        .into_boxed_slice()
+                })
+        })
+    }
+}
+
 #[cfg(test)]
 fn update_list_relation_stats(update: impl FnOnce(&mut RelationalMatchStats)) {
     LIST_RELATION_STATS.with(|stats| {
@@ -465,6 +598,29 @@ pub(super) fn connective_candidate_positions_with_stats(
     };
     let stats = LIST_RELATION_STATS.with(Cell::get);
     (positions, stats)
+}
+
+#[cfg(test)]
+pub(super) fn connective_candidate_positions_with_node_count_order_stats(
+    targets: Vec<Par>,
+    pattern: Par,
+    encoded_compiler: bool,
+) -> (Box<[u64]>, RelationalMatchStats) {
+    with_candidate_node_count_order(|| {
+        connective_candidate_positions_with_stats(targets, pattern, encoded_compiler)
+    })
+}
+
+#[cfg(test)]
+pub(super) fn connective_candidate_positions_with_expansion_mode_stats(
+    targets: Vec<Par>,
+    pattern: Par,
+    encoded_compiler: bool,
+    mode: CandidateExpansionMode,
+) -> (Box<[u64]>, RelationalMatchStats) {
+    with_candidate_expansion_mode(mode, || {
+        connective_candidate_positions_with_stats(targets, pattern, encoded_compiler)
+    })
 }
 
 #[cfg(test)]
@@ -4058,10 +4214,20 @@ struct CandidatePlanNode {
 
 struct CandidatePlanBuilder {
     nodes: Vec<CandidatePlanNode>,
+    // Scheduling metadata is builder-only.  The finished plan retains only
+    // semantic nodes; evaluation and long-lived caches never pay for it.
+    retention_pressure: Vec<usize>,
+    work_weight: Vec<usize>,
 }
 
 impl CandidatePlanBuilder {
-    fn new() -> Self { Self { nodes: Vec::new() } }
+    fn new() -> Self {
+        Self {
+            nodes: Vec::new(),
+            retention_pressure: Vec::new(),
+            work_weight: Vec::new(),
+        }
+    }
 
     fn push(&mut self, kind: CandidatePlanNodeKind) -> CandidatePlanNodeId {
         let needs_target_index = match &kind {
@@ -4072,11 +4238,45 @@ impl CandidatePlanBuilder {
                 .iter()
                 .any(|child| self.nodes[child.0].needs_target_index),
         };
+        let work_weight = match &kind {
+            CandidatePlanNodeKind::All
+            | CandidatePlanNodeKind::Empty
+            | CandidatePlanNodeKind::Query(_) => 1,
+            CandidatePlanNodeKind::Union(children)
+            | CandidatePlanNodeKind::Intersection(children) => {
+                children.iter().fold(1usize, |sum, child| {
+                    sum.saturating_add(self.work_weight[child.0])
+                })
+            }
+        };
+        // Ershov/Sethi-Ullman pressure for the streaming one-accumulator
+        // evaluator.  The greatest-pressure child is already first when an
+        // n-ary node reaches `push`: the first child has no retained parent
+        // accumulator, every later child has one, and a finite/finite lattice
+        // operation can transiently own left, right and result.
+        let retention_pressure = match &kind {
+            CandidatePlanNodeKind::All => 0,
+            CandidatePlanNodeKind::Empty => 1,
+            CandidatePlanNodeKind::Query(_) => 1,
+            CandidatePlanNodeKind::Union(children)
+            | CandidatePlanNodeKind::Intersection(children) => {
+                debug_assert!(children.len() >= 2);
+                let first = self.retention_pressure[children[0].0];
+                let rest = children[1..]
+                    .iter()
+                    .map(|child| self.retention_pressure[child.0])
+                    .max()
+                    .unwrap_or(0);
+                first.max(rest.saturating_add(1)).max(3)
+            }
+        };
         let id = CandidatePlanNodeId(self.nodes.len());
         self.nodes.push(CandidatePlanNode {
             kind,
             needs_target_index,
         });
+        self.retention_pressure.push(retention_pressure);
+        self.work_weight.push(work_weight);
         #[cfg(test)]
         update_list_relation_stats(|stats| stats.candidate_plan_nodes += 1);
         id
@@ -4087,7 +4287,15 @@ impl CandidatePlanBuilder {
     fn empty(&mut self) -> CandidatePlanNodeId { self.push(CandidatePlanNodeKind::Empty) }
 
     fn query(&mut self, query: RhoPathQuery) -> CandidatePlanNodeId {
-        self.push(CandidatePlanNodeKind::Query(query))
+        #[cfg(feature = "spatial-matcher-candidate-mask-differential")]
+        if FORCE_OCCURRENCE_CANDIDATE_MASKS.with(Cell::get) {
+            return self.push(CandidatePlanNodeKind::Query(query));
+        }
+        if query.retained_prefix().len() <= 1 {
+            self.all()
+        } else {
+            self.push(CandidatePlanNodeKind::Query(query))
+        }
     }
 
     fn is_all(&self, id: CandidatePlanNodeId) -> bool {
@@ -4098,6 +4306,46 @@ impl CandidatePlanBuilder {
         matches!(self.nodes[id.0].kind, CandidatePlanNodeKind::Empty)
     }
 
+    /// Put only the greatest-pressure child first.  Selecting one maximum is
+    /// linear in arity and is sufficient for a one-accumulator fold; every
+    /// later child necessarily runs under exactly one retained accumulator.
+    /// Work breaks pressure ties to reduce time-integrated retention.  A
+    /// strict comparison preserves source order on an exact tie.
+    fn place_pressure_first(&self, operands: &mut [CandidatePlanNodeId]) {
+        #[cfg(feature = "spatial-matcher-candidate-mask-differential")]
+        if FORCE_OCCURRENCE_CANDIDATE_MASKS.with(Cell::get) {
+            return;
+        }
+        #[cfg(test)]
+        if FORCE_CANDIDATE_NODE_COUNT_ORDER.with(Cell::get) {
+            let mut heaviest = 0;
+            for candidate in 1..operands.len() {
+                if self.work_weight[operands[candidate].0] > self.work_weight[operands[heaviest].0]
+                {
+                    heaviest = candidate;
+                }
+            }
+            operands.swap(0, heaviest);
+            return;
+        }
+
+        let mut greatest = 0;
+        for candidate in 1..operands.len() {
+            let candidate_id = operands[candidate].0;
+            let greatest_id = operands[greatest].0;
+            if (
+                self.retention_pressure[candidate_id],
+                self.work_weight[candidate_id],
+            ) > (
+                self.retention_pressure[greatest_id],
+                self.work_weight[greatest_id],
+            ) {
+                greatest = candidate;
+            }
+        }
+        operands.swap(0, greatest);
+    }
+
     fn union(&mut self, mut operands: Vec<CandidatePlanNodeId>) -> CandidatePlanNodeId {
         if operands.iter().copied().any(|operand| self.is_all(operand)) {
             return self.all();
@@ -4106,7 +4354,10 @@ impl CandidatePlanBuilder {
         match operands.len() {
             0 => self.empty(),
             1 => operands.pop().expect("one union operand remains"),
-            _ => self.push(CandidatePlanNodeKind::Union(operands.into_boxed_slice())),
+            _ => {
+                self.place_pressure_first(&mut operands);
+                self.push(CandidatePlanNodeKind::Union(operands.into_boxed_slice()))
+            }
         }
     }
 
@@ -4122,9 +4373,12 @@ impl CandidatePlanBuilder {
         match operands.len() {
             0 => self.all(),
             1 => operands.pop().expect("one intersection operand remains"),
-            _ => self.push(CandidatePlanNodeKind::Intersection(
-                operands.into_boxed_slice(),
-            )),
+            _ => {
+                self.place_pressure_first(&mut operands);
+                self.push(CandidatePlanNodeKind::Intersection(
+                    operands.into_boxed_slice(),
+                ))
+            }
         }
     }
 
@@ -4536,6 +4790,15 @@ impl ListCandidateDomain {
 #[derive(Clone, Copy)]
 struct ListTargetGroupId(NonZeroU64);
 
+impl ListTargetGroupId {
+    fn path(self) -> [u8; 8] { self.0.get().to_be_bytes() }
+
+    fn index(self) -> usize {
+        usize::try_from(self.0.get() - 1)
+            .expect("a target group id originated as an addressable Vec index")
+    }
+}
+
 struct ListTargetGroup {
     key: Vec<u8>,
     structure: Vec<u8>,
@@ -4627,12 +4890,10 @@ impl ListTargetIndex {
 
     fn group_at_position(&self, position: usize) -> &ListTargetGroup {
         let id = self.position_groups[position];
-        let group_index = usize::try_from(id.0.get() - 1)
-            .expect("a target group id originated as an addressable Vec index");
-        &self.groups[group_index]
+        &self.groups[id.index()]
     }
 
-    fn position_mask_matching(&self, query: &RhoPathQuery) -> Option<PathMap<()>> {
+    fn group_mask_matching(&self, query: &RhoPathQuery) -> Option<PathMap<()>> {
         let structural_prefix = query.retained_prefix();
         if structural_prefix.len() <= 1 {
             return None;
@@ -4645,9 +4906,33 @@ impl ListTargetIndex {
                 .get(key)
                 .copied()
                 .expect("every Bag identity has a target group");
-            let group_index = usize::try_from(id.0.get() - 1)
-                .expect("a target group id originated as an addressable Vec index");
-            let group = &self.groups[group_index];
+            let group = &self.groups[id.index()];
+            debug_assert_eq!(
+                usize::try_from(multiplicity.get()).ok(),
+                Some(group.positions.len())
+            );
+            if query.matches_structure(&group.structure) {
+                result.insert(id.path(), ());
+            }
+        });
+        Some(result)
+    }
+
+    #[cfg(feature = "spatial-matcher-candidate-mask-differential")]
+    fn occurrence_mask_matching_control(&self, query: &RhoPathQuery) -> Option<PathMap<()>> {
+        let structural_prefix = query.retained_prefix();
+        if structural_prefix.len() <= 1 {
+            return None;
+        }
+        let prefix = RhoPathV1::relative_datum_structure_prefix(&structural_prefix);
+        let mut result = PathMap::new();
+        self.bag.visit_prefix(&prefix, |key, multiplicity| {
+            let id = self
+                .group_ids
+                .get(key)
+                .copied()
+                .expect("every Bag identity has a target group");
+            let group = &self.groups[id.index()];
             debug_assert_eq!(
                 usize::try_from(multiplicity.get()).ok(),
                 Some(group.positions.len())
@@ -4661,12 +4946,14 @@ impl ListTargetIndex {
         Some(result)
     }
 
-    /// Evaluate candidate union/intersection directly as PathMap lattice
-    /// operations. Fixed-width big-endian position keys are prefix-free, so
-    /// the generic trie lattice is exactly finite-set union/intersection here.
-    /// `None` denotes the universal domain and remains an algebraic identity
-    /// for intersection / annihilator for union.
-    fn positions_matching_plan(&self, root: &ListCandidatePlan) -> Option<Box<[u64]>> {
+    /// Immutable benchmark-only reconstruction of the pre-fix evaluator.
+    /// It expands duplicate occurrences into every leaf mask, retains all
+    /// sibling masks through postorder, and sorts materialized positions.
+    #[cfg(feature = "spatial-matcher-candidate-mask-differential")]
+    fn positions_matching_plan_occurrence_control(
+        &self,
+        root: &ListCandidatePlan,
+    ) -> Option<Box<[u64]>> {
         enum Work {
             Enter(CandidatePlanNodeId),
             FinishUnion(usize),
@@ -4681,7 +4968,7 @@ impl ListTargetIndex {
                     CandidatePlanNodeKind::All => values.push(None),
                     CandidatePlanNodeKind::Empty => values.push(Some(PathMap::new())),
                     CandidatePlanNodeKind::Query(query) => {
-                        values.push(self.position_mask_matching(query));
+                        values.push(self.occurrence_mask_matching_control(query));
                     }
                     CandidatePlanNodeKind::Union(operands) => {
                         work.push(Work::FinishUnion(operands.len()));
@@ -4742,6 +5029,443 @@ impl ListTargetIndex {
             })
             .collect::<Vec<_>>();
         positions.sort_unstable();
+        Some(positions.into_boxed_slice())
+    }
+
+    /// Evaluate candidate union/intersection directly as PathMap lattice
+    /// operations. Fixed-width big-endian group-id keys are prefix-free, so
+    /// the generic trie lattice is exactly finite-set union/intersection here.
+    /// `None` denotes the universal domain and remains an algebraic identity
+    /// for intersection / annihilator for union. Duplicate occurrences remain
+    /// compressed to one group endpoint throughout the plan and expand exactly
+    /// once, in original target order, after the root mask is known.
+    fn positions_matching_plan(&self, root: &ListCandidatePlan) -> Option<Box<[u64]>> {
+        #[cfg(feature = "spatial-matcher-candidate-mask-differential")]
+        if FORCE_OCCURRENCE_CANDIDATE_MASKS.with(Cell::get) {
+            return self.positions_matching_plan_occurrence_control(root);
+        }
+
+        enum GroupMaskKind {
+            All,
+            Finite(PathMap<()>),
+        }
+
+        struct GroupMask {
+            kind: GroupMaskKind,
+            // Observational only.  Cache the count once when a lattice result
+            // is born instead of repeatedly walking the trie in test builds.
+            #[cfg(test)]
+            endpoints: usize,
+        }
+
+        impl GroupMask {
+            fn all() -> Self {
+                Self {
+                    kind: GroupMaskKind::All,
+                    #[cfg(test)]
+                    endpoints: 0,
+                }
+            }
+
+            fn finite(mask: PathMap<()>) -> Self {
+                #[cfg(test)]
+                let endpoints = mask.val_count();
+                Self {
+                    kind: GroupMaskKind::Finite(mask),
+                    #[cfg(test)]
+                    endpoints,
+                }
+            }
+
+            #[cfg(test)]
+            fn is_finite(&self) -> bool { matches!(&self.kind, GroupMaskKind::Finite(_)) }
+
+            fn is_absorbing(&self, kind: CandidateNary) -> bool {
+                match (kind, &self.kind) {
+                    (CandidateNary::Union, GroupMaskKind::All) => true,
+                    (CandidateNary::Intersection, GroupMaskKind::Finite(mask)) => mask.is_empty(),
+                    _ => false,
+                }
+            }
+        }
+
+        #[derive(Default)]
+        struct Retention {
+            #[cfg(test)]
+            live_masks: usize,
+            #[cfg(test)]
+            live_endpoints: usize,
+        }
+
+        impl Retention {
+            fn retain(&mut self, mask: &GroupMask) {
+                #[cfg(not(test))]
+                let _ = mask;
+                #[cfg(test)]
+                {
+                    if !mask.is_finite() {
+                        return;
+                    }
+                    self.live_masks += 1;
+                    self.live_endpoints += mask.endpoints;
+                    #[cfg(test)]
+                    update_list_relation_stats(|stats| {
+                        stats.candidate_peak_live_masks =
+                            stats.candidate_peak_live_masks.max(self.live_masks);
+                        stats.candidate_peak_live_mask_endpoints = stats
+                            .candidate_peak_live_mask_endpoints
+                            .max(self.live_endpoints);
+                    });
+                }
+            }
+
+            fn release(&mut self, mask: &GroupMask) {
+                #[cfg(not(test))]
+                let _ = mask;
+                #[cfg(test)]
+                {
+                    if !mask.is_finite() {
+                        return;
+                    }
+                    self.live_masks -= 1;
+                    self.live_endpoints -= mask.endpoints;
+                }
+            }
+
+            #[cfg(test)]
+            fn release_counts(&mut self, finite: bool, endpoints: usize) {
+                if finite {
+                    self.live_masks -= 1;
+                    self.live_endpoints -= endpoints;
+                }
+            }
+
+            fn combine(
+                &mut self,
+                kind: CandidateNary,
+                left: GroupMask,
+                right: GroupMask,
+            ) -> GroupMask {
+                #[cfg(test)]
+                let left_finite = left.is_finite();
+                #[cfg(test)]
+                let right_finite = right.is_finite();
+                #[cfg(test)]
+                let left_endpoints = left.endpoints;
+                #[cfg(test)]
+                let right_endpoints = right.endpoints;
+                #[cfg(test)]
+                let moved_identity =
+                    matches!(kind, CandidateNary::Intersection) && (left_finite ^ right_finite);
+
+                let result = match (left.kind, right.kind, kind) {
+                    (GroupMaskKind::All, _, CandidateNary::Union)
+                    | (_, GroupMaskKind::All, CandidateNary::Union) => GroupMask::all(),
+                    (GroupMaskKind::All, right, CandidateNary::Intersection) => GroupMask {
+                        kind: right,
+                        #[cfg(test)]
+                        endpoints: right_endpoints,
+                    },
+                    (left, GroupMaskKind::All, CandidateNary::Intersection) => GroupMask {
+                        kind: left,
+                        #[cfg(test)]
+                        endpoints: left_endpoints,
+                    },
+                    (
+                        GroupMaskKind::Finite(left),
+                        GroupMaskKind::Finite(right),
+                        CandidateNary::Union,
+                    ) => GroupMask::finite(left.join(&right)),
+                    (
+                        GroupMaskKind::Finite(left),
+                        GroupMaskKind::Finite(right),
+                        CandidateNary::Intersection,
+                    ) => GroupMask::finite(left.meet(&right)),
+                };
+
+                // Moving one finite identity through `All ∩ X` retains the
+                // same logical mask. Every other arm creates a new logical
+                // result (or drops all finite inputs), so update the test-only
+                // retention instrument around the actual ownership change.
+                #[cfg(test)]
+                if !moved_identity {
+                    self.retain(&result);
+                    self.release_counts(left_finite, left_endpoints);
+                    self.release_counts(right_finite, right_endpoints);
+                }
+                result
+            }
+        }
+
+        enum Work {
+            Enter(CandidatePlanNodeId),
+            // First-child descents carry no PathMap-sized optional payload.
+            ResumeFirst {
+                node: CandidatePlanNodeId,
+                kind: CandidateNary,
+                next_operand: usize,
+            },
+            ResumeRest {
+                node: CandidatePlanNodeId,
+                kind: CandidateNary,
+                next_operand: usize,
+            },
+        }
+        #[cfg(test)]
+        update_list_relation_stats(|stats| {
+            stats.candidate_plan_work_frame_bytes = stats
+                .candidate_plan_work_frame_bytes
+                .max(std::mem::size_of::<Work>());
+        });
+
+        let mut work = vec![Work::Enter(root.root)];
+        // Keep PathMap-bearing values out of `Work`: a Rust enum is as large
+        // as its largest variant, so an inline accumulator would make every
+        // first-descent frame PathMap-sized even when that variant is absent.
+        let mut accumulators: Vec<GroupMask> = Vec::new();
+        let mut returned: Option<GroupMask> = None;
+        let mut retention = Retention::default();
+        while let Some(next) = work.pop() {
+            match next {
+                Work::Enter(id) => match &root.node(id).kind {
+                    CandidatePlanNodeKind::All => returned = Some(GroupMask::all()),
+                    CandidatePlanNodeKind::Empty => {
+                        let mask = GroupMask::finite(PathMap::new());
+                        retention.retain(&mask);
+                        returned = Some(mask);
+                    }
+                    CandidatePlanNodeKind::Query(query) => {
+                        let mask = self
+                            .group_mask_matching(query)
+                            .map_or_else(GroupMask::all, GroupMask::finite);
+                        retention.retain(&mask);
+                        returned = Some(mask);
+                    }
+                    CandidatePlanNodeKind::Union(operands)
+                    | CandidatePlanNodeKind::Intersection(operands) => {
+                        let kind = match &root.node(id).kind {
+                            CandidatePlanNodeKind::Union(_) => CandidateNary::Union,
+                            CandidatePlanNodeKind::Intersection(_) => CandidateNary::Intersection,
+                            _ => unreachable!(),
+                        };
+                        debug_assert!(operands.len() >= 2);
+                        work.push(Work::ResumeFirst {
+                            node: id,
+                            kind,
+                            next_operand: 1,
+                        });
+                        work.push(Work::Enter(operands[0]));
+                    }
+                },
+                Work::ResumeFirst {
+                    node,
+                    kind,
+                    next_operand,
+                } => {
+                    let accumulator = returned
+                        .take()
+                        .expect("candidate child returns one group mask");
+                    if accumulator.is_absorbing(kind) {
+                        returned = Some(accumulator);
+                        continue;
+                    }
+                    let operands = match &root.node(node).kind {
+                        CandidatePlanNodeKind::Union(operands)
+                        | CandidatePlanNodeKind::Intersection(operands) => operands,
+                        _ => unreachable!("candidate resume belongs to an n-ary node"),
+                    };
+                    if next_operand == operands.len() {
+                        returned = Some(accumulator);
+                    } else {
+                        accumulators.push(accumulator);
+                        #[cfg(test)]
+                        update_list_relation_stats(|stats| {
+                            stats.candidate_peak_accumulator_stack = stats
+                                .candidate_peak_accumulator_stack
+                                .max(accumulators.len());
+                        });
+                        work.push(Work::ResumeRest {
+                            node,
+                            kind,
+                            next_operand: next_operand + 1,
+                        });
+                        work.push(Work::Enter(operands[next_operand]));
+                    }
+                }
+                Work::ResumeRest {
+                    node,
+                    kind,
+                    next_operand,
+                } => {
+                    let child = returned
+                        .take()
+                        .expect("candidate child returns one group mask");
+                    let accumulator = accumulators
+                        .pop()
+                        .expect("candidate continuation retains one group mask");
+                    let accumulator = retention.combine(kind, accumulator, child);
+                    if accumulator.is_absorbing(kind) {
+                        returned = Some(accumulator);
+                        continue;
+                    }
+                    let operands = match &root.node(node).kind {
+                        CandidatePlanNodeKind::Union(operands)
+                        | CandidatePlanNodeKind::Intersection(operands) => operands,
+                        _ => unreachable!("candidate resume belongs to an n-ary node"),
+                    };
+                    if next_operand == operands.len() {
+                        returned = Some(accumulator);
+                    } else {
+                        accumulators.push(accumulator);
+                        #[cfg(test)]
+                        update_list_relation_stats(|stats| {
+                            stats.candidate_peak_accumulator_stack = stats
+                                .candidate_peak_accumulator_stack
+                                .max(accumulators.len());
+                        });
+                        work.push(Work::ResumeRest {
+                            node,
+                            kind,
+                            next_operand: next_operand + 1,
+                        });
+                        work.push(Work::Enter(operands[next_operand]));
+                    }
+                }
+            }
+        }
+        debug_assert!(accumulators.is_empty());
+
+        let root_mask = returned.expect("candidate plan emits its root domain");
+        let GroupMaskKind::Finite(mask) = &root_mask.kind else {
+            return None;
+        };
+
+        // Decode each fixed-width group id once.  This avoids the former
+        // O(target occurrences) series of duplicate trie lookups and gives the
+        // extraction policy the exact sparse/dense cardinalities.
+        use pathmap::zipper::{ZipperIteration, ZipperMoving};
+        let mut matched_groups = Vec::new();
+        let mut matched_occurrences = 0usize;
+        let mut groups_already_ordered = true;
+        let mut previous_group_last = None;
+        let mut zipper = mask.read_zipper();
+        while zipper.to_next_val() {
+            let bytes: [u8; 8] = zipper
+                .path()
+                .try_into()
+                .expect("candidate group-mask paths are fixed-width u64 identifiers");
+            let raw = u64::from_be_bytes(bytes);
+            let id = ListTargetGroupId(
+                NonZeroU64::new(raw).expect("candidate group identifiers are nonzero"),
+            );
+            let positions = &self.groups[id.index()].positions;
+            if let (Some(previous), Some(first)) = (previous_group_last, positions.first().copied())
+            {
+                groups_already_ordered &= previous < first;
+            }
+            previous_group_last = positions.last().copied().or(previous_group_last);
+            matched_occurrences = matched_occurrences
+                .checked_add(positions.len())
+                .expect("matched occurrences cannot exceed target cardinality");
+            matched_groups.push(id);
+        }
+        debug_assert!(matched_occurrences <= self.position_groups.len());
+
+        #[cfg(test)]
+        update_list_relation_stats(|stats| {
+            stats.candidate_root_group_endpoints = stats
+                .candidate_root_group_endpoints
+                .max(matched_groups.len());
+        });
+
+        let total_occurrences = self.position_groups.len();
+        let positions = if matched_occurrences == 0 {
+            #[cfg(test)]
+            update_list_relation_stats(|stats| stats.candidate_root_empty_expansions += 1);
+            Vec::new()
+        } else if matched_occurrences == total_occurrences {
+            #[cfg(test)]
+            update_list_relation_stats(|stats| stats.candidate_root_all_expansions += 1);
+            (0..total_occurrences)
+                .map(|position| {
+                    u64::try_from(position).expect("a target position fits the Bag cardinality")
+                })
+                .collect()
+        } else if matched_groups.len() == 1 {
+            #[cfg(test)]
+            update_list_relation_stats(|stats| stats.candidate_root_single_group_expansions += 1);
+            self.groups[matched_groups[0].index()].positions.clone()
+        } else {
+            // Output copying is common to both lanes.  Compare the remaining
+            // portable work units: sparse sorting K log K versus one dense T
+            // scan plus a bit-packed G membership witness and M marks.  The
+            // coefficient-free crossover is benchmarked independently and is
+            // semantic-neutral: both lanes emit identical ordered positions.
+            let sort_levels = usize::BITS as usize
+                - matched_occurrences.saturating_sub(1).leading_zeros() as usize;
+            let sparse_units = matched_occurrences.saturating_mul(sort_levels.max(1));
+            let dense_units = total_occurrences
+                .saturating_add(self.groups.len().div_ceil(usize::BITS as usize))
+                .saturating_add(matched_groups.len());
+            let use_dense = {
+                #[cfg(test)]
+                {
+                    match CANDIDATE_EXPANSION_MODE.with(Cell::get) {
+                        CandidateExpansionMode::Adaptive => {
+                            !groups_already_ordered && dense_units <= sparse_units
+                        }
+                        CandidateExpansionMode::Sparse => false,
+                        CandidateExpansionMode::Dense => true,
+                    }
+                }
+                #[cfg(not(test))]
+                {
+                    !groups_already_ordered && dense_units <= sparse_units
+                }
+            };
+            if use_dense {
+                #[cfg(test)]
+                update_list_relation_stats(|stats| stats.candidate_root_dense_expansions += 1);
+                let mut selected = vec![false; self.groups.len()];
+                for id in matched_groups {
+                    selected[id.index()] = true;
+                }
+                self.position_groups
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(position, id)| {
+                        selected[id.index()].then(|| {
+                            u64::try_from(position)
+                                .expect("a target position fits the Bag cardinality")
+                        })
+                    })
+                    .collect()
+            } else {
+                #[cfg(test)]
+                update_list_relation_stats(|stats| stats.candidate_root_sparse_expansions += 1);
+                let mut positions = Vec::with_capacity(matched_occurrences);
+                for id in matched_groups {
+                    let group_positions = &self.groups[id.index()].positions;
+                    positions.extend_from_slice(group_positions);
+                }
+                if !groups_already_ordered {
+                    positions.sort_unstable();
+                }
+                positions
+            }
+        };
+        #[cfg(test)]
+        update_list_relation_stats(|stats| {
+            stats.candidate_final_expanded_positions = stats
+                .candidate_final_expanded_positions
+                .max(positions.len());
+        });
+        retention.release(&root_mask);
+        #[cfg(test)]
+        {
+            debug_assert_eq!(retention.live_masks, 0);
+            debug_assert_eq!(retention.live_endpoints, 0);
+        }
         Some(positions.into_boxed_slice())
     }
 }

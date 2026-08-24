@@ -44,11 +44,13 @@ use super::recursive_oracle::spatial_matcher::{
 };
 use super::spatial_matcher::{SpatialMatcher, SpatialMatcherContext};
 use super::spatial_matcher_pda::{
-    apply_update_deltas, connective_candidate_positions_with_stats, encoded_expr_outer_route,
-    if_target_index_shape, match_ac_query_acceptance, match_par_list_with_stats,
-    match_par_with_concrete_region_stats, match_par_with_stats, match_par_with_transaction_stats,
-    match_send_list_with_remainder_stats, match_send_list_with_stats, new_ac_query_acceptance,
-    receive_bind_ac_query_acceptance, send_target_index_shape, EncodedExprOuterRoute,
+    apply_update_deltas, connective_candidate_positions_with_expansion_mode_stats,
+    connective_candidate_positions_with_node_count_order_stats,
+    connective_candidate_positions_with_stats, encoded_expr_outer_route, if_target_index_shape,
+    match_ac_query_acceptance, match_par_list_with_stats, match_par_with_concrete_region_stats,
+    match_par_with_stats, match_par_with_transaction_stats, match_send_list_with_remainder_stats,
+    match_send_list_with_stats, new_ac_query_acceptance, receive_bind_ac_query_acceptance,
+    send_target_index_shape, CandidateExpansionMode, EncodedExprOuterRoute,
 };
 
 #[test]
@@ -2062,6 +2064,115 @@ fn planned_skewed_connective(depth: usize, conjunction: bool) -> Par {
     construction.finish(nested).expect("finish connective plan")
 }
 
+fn planned_shallow_first_skewed_connective(depth: usize, conjunction: bool) -> Par {
+    let mut construction = ParConstruction::new();
+    let terminal = new_gint_par(1, Vec::new(), false);
+    let mut nested = construction
+        .import_par(&terminal)
+        .expect("import connective terminal");
+    let sibling = nested;
+    let shell = Connective {
+        connective_instance: Some(if conjunction {
+            ConnAndBody(ConnectiveBody {
+                ps: vec![Par::default(), Par::default()],
+            })
+        } else {
+            ConnOrBody(ConnectiveBody {
+                ps: vec![Par::default(), Par::default()],
+            })
+        }),
+    };
+    for _ in 0..depth {
+        let component = construction
+            .connective_component(&shell, &[sibling, nested])
+            .expect("plan shallow-first skewed binary connective");
+        nested = construction
+            .singleton_component(component, Vec::new(), true)
+            .expect("plan connective carrier");
+    }
+    construction
+        .finish(nested)
+        .expect("finish shallow-first connective plan")
+}
+
+/// At each level the shallow sibling contains more plan nodes than the entire
+/// nested child.  A subtree-size scheduler therefore chooses the shallow side
+/// first at every level and retains one ancestor mask per descent.  Its
+/// retention pressure remains only three, however, so Ershov ordering chooses
+/// the nested side once its pressure reaches four.
+fn planned_opposing_width_connective(depth: usize, conjunction: bool, nested_first: bool) -> Par {
+    planned_opposing_width_connective_with_terminal(
+        depth,
+        conjunction,
+        nested_first,
+        new_gint_par(1, Vec::new(), false),
+        1,
+    )
+}
+
+fn planned_opposing_width_connective_with_terminal(
+    depth: usize,
+    conjunction: bool,
+    nested_first: bool,
+    terminal_par: Par,
+    terminal_work: usize,
+) -> Par {
+    assert!(terminal_work > 0);
+    let mut construction = ParConstruction::new();
+    let terminal = construction
+        .import_par(&terminal_par)
+        .expect("import opposing-width terminal");
+    let mut nested = terminal;
+    let mut nested_work = terminal_work;
+    let outer_shell = Connective {
+        connective_instance: Some(if conjunction {
+            ConnAndBody(ConnectiveBody {
+                ps: vec![Par::default(), Par::default()],
+            })
+        } else {
+            ConnOrBody(ConnectiveBody {
+                ps: vec![Par::default(), Par::default()],
+            })
+        }),
+    };
+    for _ in 0..depth {
+        let shallow_arity = nested_work / terminal_work + 1;
+        let shallow_children = vec![terminal; shallow_arity];
+        let shallow_shell = Connective {
+            connective_instance: Some(if conjunction {
+                ConnAndBody(ConnectiveBody {
+                    ps: vec![Par::default(); shallow_arity],
+                })
+            } else {
+                ConnOrBody(ConnectiveBody {
+                    ps: vec![Par::default(); shallow_arity],
+                })
+            }),
+        };
+        let shallow_component = construction
+            .connective_component(&shallow_shell, &shallow_children)
+            .expect("plan wider shallow sibling");
+        let shallow = construction
+            .singleton_component(shallow_component, Vec::new(), true)
+            .expect("plan shallow connective carrier");
+        let children = if nested_first {
+            [nested, shallow]
+        } else {
+            [shallow, nested]
+        };
+        let outer_component = construction
+            .connective_component(&outer_shell, &children)
+            .expect("plan opposing-width outer connective");
+        nested = construction
+            .singleton_component(outer_component, Vec::new(), true)
+            .expect("plan opposing-width carrier");
+        nested_work = 1 + nested_work + (1 + shallow_arity * terminal_work);
+    }
+    construction
+        .finish(nested)
+        .expect("finish opposing-width connective")
+}
+
 fn planned_skewed_failing_or(depth: usize) -> Par {
     let mut construction = ParConstruction::new();
     let mut nested = construction
@@ -2306,6 +2417,402 @@ fn byte_native_and_resident_candidate_compilers_emit_identical_domains() {
             assert_eq!(resident_stats.candidate_resident_connective_decodes, depth);
         }
     }
+}
+
+#[test]
+fn duplicate_occurrences_remain_one_group_endpoint_until_the_root_expansion() {
+    const DEPTH: usize = 64;
+    const WIDTH: usize = 128;
+
+    let targets = vec![new_gint_par(1, Vec::new(), false); WIDTH];
+    let expected = (0..WIDTH)
+        .map(|position| u64::try_from(position).expect("test position fits u64"))
+        .collect::<Vec<_>>()
+        .into_boxed_slice();
+
+    for conjunction in [false, true] {
+        let connective = if conjunction { "and" } else { "or" };
+        let pattern = planned_shallow_first_skewed_connective(DEPTH, conjunction);
+        let (encoded, encoded_stats) =
+            connective_candidate_positions_with_stats(targets.clone(), pattern.clone(), true);
+        let (resident, resident_stats) =
+            connective_candidate_positions_with_stats(targets.clone(), pattern, false);
+
+        assert_eq!(encoded, expected);
+        assert_eq!(resident, expected);
+        for (compiler, stats) in [("encoded", encoded_stats), ("resident", resident_stats)] {
+            println!(
+                "D_GROUP_MASK_DUPLICATES compiler={compiler} connective={connective} \
+                 depth={DEPTH} width={WIDTH} \
+                 peak_masks={} peak_endpoints={} root_groups={} expanded_positions={}",
+                stats.candidate_peak_live_masks,
+                stats.candidate_peak_live_mask_endpoints,
+                stats.candidate_root_group_endpoints,
+                stats.candidate_final_expanded_positions,
+            );
+            assert_eq!(stats.candidate_root_group_endpoints, 1);
+            assert_eq!(stats.candidate_final_expanded_positions, WIDTH);
+            assert!(
+                stats.candidate_peak_live_masks <= 3,
+                "largest-first streaming retained {} logical masks",
+                stats.candidate_peak_live_masks
+            );
+            assert!(
+                stats.candidate_peak_live_mask_endpoints <= 3,
+                "one duplicate group widened to {} retained endpoints",
+                stats.candidate_peak_live_mask_endpoints
+            );
+        }
+    }
+}
+
+#[test]
+fn retention_pressure_defeats_recursively_opposing_width_and_source_order() {
+    const DEPTH: usize = 8;
+    let targets = vec![
+        new_gint_par(1, Vec::new(), false),
+        new_gint_par(2, Vec::new(), false),
+    ];
+    let expected = vec![0].into_boxed_slice();
+
+    for conjunction in [false, true] {
+        for nested_first in [false, true] {
+            let pattern = planned_opposing_width_connective(DEPTH, conjunction, nested_first);
+            for encoded in [false, true] {
+                let (positions, stats) = connective_candidate_positions_with_stats(
+                    targets.clone(),
+                    pattern.clone(),
+                    encoded,
+                );
+                let (control_positions, control_stats) =
+                    connective_candidate_positions_with_node_count_order_stats(
+                        targets.clone(),
+                        pattern.clone(),
+                        encoded,
+                    );
+                assert_eq!(positions, expected);
+                assert_eq!(control_positions, expected);
+                println!(
+                    "D_GROUP_MASK_OPPOSING_WIDTH compiler={} connective={} nested_first={} \
+                     depth={DEPTH} treatment_peak_masks={} treatment_peak_endpoints={} \
+                     treatment_accumulators={} node_count_peak_masks={} \
+                     node_count_peak_endpoints={} node_count_accumulators={} frame_bytes={}",
+                    if encoded { "encoded" } else { "resident" },
+                    if conjunction { "and" } else { "or" },
+                    nested_first,
+                    stats.candidate_peak_live_masks,
+                    stats.candidate_peak_live_mask_endpoints,
+                    stats.candidate_peak_accumulator_stack,
+                    control_stats.candidate_peak_live_masks,
+                    control_stats.candidate_peak_live_mask_endpoints,
+                    control_stats.candidate_peak_accumulator_stack,
+                    stats.candidate_plan_work_frame_bytes,
+                );
+                assert!(
+                    stats.candidate_peak_live_masks <= 4,
+                    "pressure scheduling retained {} masks on an opposing-width plan",
+                    stats.candidate_peak_live_masks
+                );
+                assert!(
+                    stats.candidate_peak_live_mask_endpoints <= 4,
+                    "one matched group widened to {} retained endpoints",
+                    stats.candidate_peak_live_mask_endpoints
+                );
+                assert!(stats.candidate_peak_accumulator_stack <= 2);
+                assert!(
+                    stats.candidate_plan_work_frame_bytes <= 4 * std::mem::size_of::<usize>(),
+                    "the work frame contains more than scalar continuation state: {stats:?}"
+                );
+                assert!(
+                    control_stats.candidate_peak_live_masks >= DEPTH,
+                    "the adverse node-count control did not retain a depth slope: {control_stats:?}"
+                );
+                assert!(
+                    control_stats.candidate_peak_live_mask_endpoints >= DEPTH,
+                    "the adverse node-count control did not retain endpoint depth: {control_stats:?}"
+                );
+                assert!(control_stats.candidate_peak_accumulator_stack >= DEPTH);
+            }
+        }
+    }
+}
+
+#[test]
+fn opposing_depth_width_matrix_retains_distinct_group_domains_by_pressure() {
+    for depth in [1usize, 4, 8] {
+        for width in [2usize, 8, 32] {
+            let terminal = connective(ConnOrBody(ConnectiveBody {
+                ps: (0..width)
+                    .map(|value| new_gint_par(value as i64, Vec::new(), false))
+                    .collect(),
+            }));
+            let targets = (0..=width)
+                .map(|value| new_gint_par(value as i64, Vec::new(), false))
+                .collect::<Vec<_>>();
+            let expected = (0..width)
+                .map(|position| position as u64)
+                .collect::<Vec<_>>()
+                .into_boxed_slice();
+            for conjunction in [false, true] {
+                for nested_first in [false, true] {
+                    let pattern = planned_opposing_width_connective_with_terminal(
+                        depth,
+                        conjunction,
+                        nested_first,
+                        terminal.clone(),
+                        width + 1,
+                    );
+                    for encoded in [false, true] {
+                        let (positions, stats) = connective_candidate_positions_with_stats(
+                            targets.clone(),
+                            pattern.clone(),
+                            encoded,
+                        );
+                        assert_eq!(positions, expected);
+                        assert_eq!(stats.candidate_root_group_endpoints, width);
+                        assert_eq!(stats.candidate_final_expanded_positions, width);
+                        assert!(
+                            stats.candidate_peak_live_masks <= 5,
+                            "depth={depth} width={width} retained {} masks",
+                            stats.candidate_peak_live_masks
+                        );
+                        assert!(
+                            stats.candidate_peak_live_mask_endpoints <= width * 5,
+                            "depth={depth} width={width} retained {} endpoints",
+                            stats.candidate_peak_live_mask_endpoints
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn adaptive_group_expansion_covers_empty_single_sparse_dense_and_all_lanes() {
+    let integer = |value| new_gint_par(value, Vec::new(), false);
+    let distinct_targets = (0..128).map(integer).collect::<Vec<_>>();
+    let cases = [
+        (
+            "empty",
+            connective(ConnOrBody(ConnectiveBody {
+                ps: vec![integer(1_000), integer(1_001)],
+            })),
+            Vec::new(),
+            [1, 0, 0, 0, 0],
+        ),
+        (
+            "sparse",
+            connective(ConnOrBody(ConnectiveBody {
+                ps: vec![integer(3), integer(97)],
+            })),
+            vec![3, 97],
+            [0, 0, 0, 1, 0],
+        ),
+        (
+            "ordered sparse",
+            connective(ConnOrBody(ConnectiveBody {
+                ps: (0..96).map(integer).collect(),
+            })),
+            (0..96).map(|position| position as u64).collect(),
+            [0, 0, 0, 1, 0],
+        ),
+        (
+            "all",
+            connective(ConnOrBody(ConnectiveBody {
+                ps: (0..128).map(integer).collect(),
+            })),
+            (0..128).map(|position| position as u64).collect(),
+            [0, 0, 1, 0, 0],
+        ),
+    ];
+    for (name, pattern, expected, lanes) in cases {
+        for encoded in [false, true] {
+            let (positions, stats) = connective_candidate_positions_with_stats(
+                distinct_targets.clone(),
+                pattern.clone(),
+                encoded,
+            );
+            assert_eq!(positions.as_ref(), expected.as_slice(), "{name}");
+            assert_eq!(
+                [
+                    stats.candidate_root_empty_expansions,
+                    stats.candidate_root_single_group_expansions,
+                    stats.candidate_root_all_expansions,
+                    stats.candidate_root_sparse_expansions,
+                    stats.candidate_root_dense_expansions,
+                ],
+                lanes,
+                "{name} compiler={}",
+                if encoded { "encoded" } else { "resident" }
+            );
+        }
+    }
+
+    let duplicate_targets = vec![integer(1), integer(2), integer(1), integer(1), integer(3)];
+    for encoded in [false, true] {
+        let (positions, stats) = connective_candidate_positions_with_stats(
+            duplicate_targets.clone(),
+            connective(ConnOrBody(ConnectiveBody {
+                ps: vec![integer(1), integer(99)],
+            })),
+            encoded,
+        );
+        assert_eq!(positions.as_ref(), &[0, 2, 3]);
+        assert_eq!(stats.candidate_root_single_group_expansions, 1);
+    }
+
+    let interleaved_targets = (0..2)
+        .flat_map(|_| (0..128).map(integer))
+        .collect::<Vec<_>>();
+    let dense_pattern = connective(ConnOrBody(ConnectiveBody {
+        ps: (0..96).map(integer).collect(),
+    }));
+    let dense_expected = (0..256)
+        .filter(|position| position % 128 < 96)
+        .map(|position| position as u64)
+        .collect::<Vec<_>>();
+    for encoded in [false, true] {
+        let (positions, stats) = connective_candidate_positions_with_stats(
+            interleaved_targets.clone(),
+            dense_pattern.clone(),
+            encoded,
+        );
+        assert_eq!(positions.as_ref(), dense_expected.as_slice());
+        assert_eq!(stats.candidate_root_dense_expansions, 1);
+    }
+}
+
+#[test]
+fn sparse_dense_and_adaptive_expansion_are_differentially_order_equivalent() {
+    let mut state = 0x8a5c_d789_635d_2dffu64;
+    let mut next = || {
+        state = state
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        state
+    };
+
+    for case in 0..48 {
+        let group_count = 4 + usize::try_from(next() % 29).expect("small group count");
+        let target_count = group_count * 2 + usize::try_from(next() % 97).expect("small width");
+        let target_ids = (0..target_count)
+            .map(|_| usize::try_from(next() % group_count as u64).expect("group id fits usize"))
+            .collect::<Vec<_>>();
+        let mut selected = (0..group_count)
+            .map(|_| next() & 3 != 0)
+            .collect::<Vec<_>>();
+        if selected.iter().filter(|selected| **selected).count() < 2 {
+            selected[0] = true;
+            selected[1] = true;
+        }
+        if selected.iter().all(|selected| *selected) {
+            selected[group_count - 1] = false;
+        }
+
+        let targets = target_ids
+            .iter()
+            .map(|id| new_gint_par(*id as i64, Vec::new(), false))
+            .collect::<Vec<_>>();
+        let pattern = connective(ConnOrBody(ConnectiveBody {
+            ps: selected
+                .iter()
+                .enumerate()
+                .filter_map(|(id, selected)| {
+                    selected.then(|| new_gint_par(id as i64, Vec::new(), false))
+                })
+                .collect(),
+        }));
+        let expected = target_ids
+            .iter()
+            .enumerate()
+            .filter_map(|(position, id)| selected[*id].then_some(position as u64))
+            .collect::<Vec<_>>();
+        let encoded = case % 2 == 0;
+        let (adaptive, _) = connective_candidate_positions_with_expansion_mode_stats(
+            targets.clone(),
+            pattern.clone(),
+            encoded,
+            CandidateExpansionMode::Adaptive,
+        );
+        let (sparse, _) = connective_candidate_positions_with_expansion_mode_stats(
+            targets.clone(),
+            pattern.clone(),
+            encoded,
+            CandidateExpansionMode::Sparse,
+        );
+        let (dense, _) = connective_candidate_positions_with_expansion_mode_stats(
+            targets,
+            pattern,
+            encoded,
+            CandidateExpansionMode::Dense,
+        );
+        assert_eq!(
+            adaptive.as_ref(),
+            expected.as_slice(),
+            "adaptive case {case}"
+        );
+        assert_eq!(sparse, adaptive, "sparse case {case}");
+        assert_eq!(dense, adaptive, "dense case {case}");
+    }
+}
+
+#[test]
+fn mixed_duplicate_groups_preserve_ordered_domains_verdict_and_complete_freemap() {
+    let integer = |value| new_gint_par(value, Vec::new(), false);
+    let targets = vec![
+        integer(1),
+        integer(1),
+        integer(2),
+        integer(1),
+        integer(2),
+        integer(3),
+    ];
+    let pattern = connective(ConnOrBody(ConnectiveBody {
+        ps: vec![integer(1), integer(2)],
+    }));
+    let expected = vec![0, 1, 2, 3, 4].into_boxed_slice();
+
+    let (encoded, encoded_stats) =
+        connective_candidate_positions_with_stats(targets.clone(), pattern.clone(), true);
+    let (resident, resident_stats) =
+        connective_candidate_positions_with_stats(targets.clone(), pattern.clone(), false);
+    assert_eq!(encoded, expected);
+    assert_eq!(resident, expected);
+    for (compiler, stats) in [("encoded", encoded_stats), ("resident", resident_stats)] {
+        println!(
+            "D_GROUP_MASK_MIXED compiler={compiler} groups=3 matched_groups={} \
+             expanded_positions={} peak_masks={} peak_endpoints={}",
+            stats.candidate_root_group_endpoints,
+            stats.candidate_final_expanded_positions,
+            stats.candidate_peak_live_masks,
+            stats.candidate_peak_live_mask_endpoints,
+        );
+        assert_eq!(stats.candidate_root_group_endpoints, 2);
+        assert_eq!(stats.candidate_final_expanded_positions, 5);
+    }
+
+    let target = new_eset_par(targets, Vec::new(), false, None, Vec::new(), false);
+    let pattern = new_eset_par(
+        vec![
+            pattern,
+            new_freevar_par(0, Vec::new()),
+            new_wildcard_par(Vec::new(), true),
+            new_wildcard_par(Vec::new(), true),
+            new_wildcard_par(Vec::new(), true),
+            new_wildcard_par(Vec::new(), true),
+        ],
+        Vec::new(),
+        true,
+        None,
+        Vec::new(),
+        true,
+    );
+    compare(
+        "group-mask expansion preserves mixed-duplicate verdict and complete FreeMap",
+        target,
+        pattern,
+    );
 }
 
 #[test]

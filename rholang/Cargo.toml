@@ -14,6 +14,11 @@ unexpected_cfgs = { level = "warn", check-cfg = ["cfg(kani)"] }
 name = "rholang-cli"
 path = "src/rholang_cli.rs"
 
+[[bin]]
+name = "spatial-matcher-candidate-mask-probe"
+path = "benches/support/spatial_matcher_candidate_mask_probe.rs"
+required-features = ["spatial-matcher-candidate-mask-differential"]
+
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
@@ -91,6 +96,10 @@ spatial-matcher-connective-domain-differential = []
 # Compiles the BENCHMARK-ONLY validated-scalar decoder control into the
 # matcher. The default build has neither the toggle nor its branch.
 spatial-matcher-exact-scalar-differential = []
+# Compiles the BENCHMARK-ONLY occurrence-expanded/postorder candidate-mask
+# control into the matcher. The default build has neither the toggle nor the
+# deprecated control evaluator.
+spatial-matcher-candidate-mask-differential = []
 # Pass the Phase 7 measurement-only hooks through to `models` while running the
 # interpreter corpus. Disabled in every production/default build.
 phase7-depth-histograms = ["models/phase7-depth-histograms"]
@@ -122,6 +131,11 @@ harness = false
 name = "spatial_matcher_exact_scalar"
 harness = false
 required-features = ["spatial-matcher-exact-scalar-differential"]
+
+[[bench]]
+name = "spatial_matcher_candidate_masks"
+harness = false
+required-features = ["spatial-matcher-candidate-mask-differential"]
 
 [[bench]]
 name = "accounting_demand"
