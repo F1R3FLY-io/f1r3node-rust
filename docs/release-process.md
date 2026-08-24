@@ -462,13 +462,19 @@ The setup workflow performs these actions. Steps marked *stack* apply only to a 
 8. Verify that the version has no active reservation. Skip this step when `publishing` is `false`.
 9. Verify one successful trusted CI run for the current top synthetic merge.
 
-Pull-request CI runs lightweight checks for all base branches. A lower stack layer has an open child pull request and skips Heavy Pipeline.
+Pull-request CI runs checks for all base branches. Each same-repository pull request into `dev` or `master` must run Heavy Pipeline.
 
-Deployment Train dispatches one Heavy Pipeline from the default branch controls. The dispatch checks out the exact top synthetic merge.
+Intermediate stack layers remain lightweight while they target another feature branch. A base change reruns CI before the layer merges into an integration branch.
+
+Deployment Train dispatches one additional Heavy Pipeline from the default branch controls. The dispatch checks out the exact top synthetic merge.
 
 The CI artifact records the top pull request, head SHA, logical base SHA, synthetic base SHA, and merge SHA. Setup rejects missing or skipped architecture aggregators.
 
-Setup checks the top pull request again after CI completes. Setup rejects evidence if the head, base, or synthetic merge changed.
+Setup accepts a run only when its control SHA equals the current default branch tip. A later default branch change requires a new run.
+
+This strict control binding is intentional. It prevents older workflow controls from supplying evidence, but it can repeat Heavy Pipeline.
+
+Setup checks the complete stack again after CI completes. Setup rejects evidence if a member, base, or synthetic merge changed.
 10. Create the train canary from that CI run.
 11. Start standard gates for the candidate.
 12. Start each mandatory feature-specific gate.
@@ -485,6 +491,8 @@ A non-publishing train completes at step 9. A publishing train holds at step 9 u
 ### 13.3 Merge requirement
 
 The train pull request must merge before stable publication.
+
+Each stack layer must pass the protected integration-branch Heavy Pipeline before it merges. The top exact-merge run does not replace this gate.
 
 The promotion controller verifies that `head_sha` is reachable from `master`. A normal merge preserves this relationship. Train pull requests must therefore use a true merge commit in practice: a squash or rebase costs a full re-candidacy, including a new 60h stability soak.
 
@@ -554,6 +562,10 @@ A maintainer can cancel a candidate or train. Cancellation does not delete tags,
 
 Secret-bearing workflows always use trusted workflow files from the default branch.
 
+Exact-merge run metadata identifies that default branch and a `workflow_dispatch` event. The `ci-target` artifact identifies the candidate synthetic merge.
+
+The trusted workflow checks out candidate code as test input. The resolver rejects fork heads before Heavy Pipeline receives inherited secrets.
+
 A pull-request head cannot change release workflow code for its own privileged run.
 
 Candidate workflows use least-privilege permissions. Release publication uses the protected `release-credentials` environment.
@@ -606,7 +618,7 @@ This table defines the target state after the Section 17 workflow changes are co
 
 | Workflow | Trigger | Basis | Typical duration | Role |
 |---|---|---|---|---|
-| `ci.yml` | `push` (dev, master, tags), all `pull_request` bases, `workflow_dispatch` | Event + manual | 25–65 min *measured*; runner queues can extend wall time | Lightweight PR checks and one exact-merge Heavy Pipeline |
+| `ci.yml` | `push` (dev, master, tags), all `pull_request` bases, `workflow_dispatch` | Event + manual | 25–65 min *measured*; runner queues can extend wall time | PR checks with protected-base and exact-merge Heavy Pipelines |
 | `canary-publish.yml` | `workflow_run` (CI completed, master push, success), `workflow_dispatch` (ci_run_id) | Event + manual | 10–20 min *estimated* | Publishes the immutable canary when the source is release-eligible; skips cleanly otherwise |
 | `ci-fork-pr.yml` | `pull_request_target` (dev, master) | Event | Seconds, then the gated pipeline after maintainer approval | Fork lane into the gated pipeline |
 | `_integration-pipeline.yml` | `workflow_call` | Called by ci.yml and ci-fork-pr.yml | 35–50 min *measured* | Heavy pipeline: image build, ephemeral runners, integration matrix, smoke tests |

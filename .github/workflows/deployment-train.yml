@@ -218,7 +218,11 @@ jobs:
           control_sha="$(git -C ci-control rev-parse HEAD)"
           title="CI [exact merge ${merge_sha}]"
           list_runs() {
-            gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?per_page=100" \
+            gh api --method GET --paginate \
+              "repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs" \
+              -f event=workflow_dispatch -f branch="$DEFAULT_BRANCH" -f per_page=100 \
+              --jq '.workflow_runs[]' \
+              | jq -s '{workflow_runs: .}' \
               > "$RUNNER_TEMP/train/ci-runs.json"
           }
           list_runs

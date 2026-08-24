@@ -11,6 +11,7 @@ sha() { printf '%s' "$1" | sha256sum | awk '{print substr($1, 1, 40)}'; }
 S299="$(sha 299)"
 S312="$(sha 312)"
 S319="$(sha 319)"
+S331="$(sha 331)"
 S311="$(sha 311)"
 OTHER="$(sha other)"
 CONTROL="$(sha control)"
@@ -54,12 +55,13 @@ stack:
     - pull_request: 299
     - pull_request: 312
     - pull_request: 319
+    - pull_request: 331
     - pull_request: 311
 required_gates: []
 EOF
 "$TOOL" validate-manifest "$TMP/single.yml" | jq -e '.publishing == true and (has("stack") | not)' >/dev/null
 "$TOOL" validate-manifest "$TMP/stack.yml" >"$TMP/stack.json"
-jq -e '.publishing == false and .stack.integration_branch == "dev" and (.stack.members | length) == 4' "$TMP/stack.json" >/dev/null
+jq -e '.publishing == false and .stack.integration_branch == "dev" and (.stack.members | length) == 5' "$TMP/stack.json" >/dev/null
 
 bad_manifest() {
 	local label="$1" filter="$2"
@@ -78,7 +80,7 @@ bad_manifest 'gate without job' '.required_gates = [{id: "x", workflow: "x.yml",
 printf 'not: [valid\n' >"$TMP/broken.yml"
 expect_failure 'broken yaml' "$TOOL" validate-manifest "$TMP/broken.yml"
 
-# --- Stack inputs: a valid chain 299 -> 312 -> 319 -> 311 ---------------------
+# --- Stack inputs: a valid chain 299 -> 312 -> 319 -> 331 -> 311 --------------
 IN="$TMP/inputs"
 mkdir -p "$IN"
 pull() { # number state merged base head_ref head_sha [merge_sha]
@@ -93,7 +95,8 @@ reach() { jq -n --arg s "$2" '{status: $s}' >"$IN/reach-$1.json"; }
 pull 299 open false dev fix/key-contention-starvation "$S299"
 pull 312 open false fix/key-contention-starvation feat/key-contention-phase2 "$S312"
 pull 319 open false feat/key-contention-phase2 fix/key-contention-base-bias "$S319"
-pull 311 open false fix/key-contention-base-bias formal/enhance-cbc-design "$S311" "$M311"
+pull 331 open false fix/key-contention-base-bias fix/fork-choice-missing-history-availability "$S331"
+pull 311 open false fix/fork-choice-missing-history-availability formal/enhance-cbc-design "$S311" "$M311"
 B311="$(jq -r '.base.sha' "$IN/pull-311.json")"
 MB311="$(sha synthetic-base)"
 jq -n --arg sha "$M311" --arg base "$MB311" --arg head "$S311" \
@@ -102,7 +105,8 @@ jq -n '{status: "ahead"}' >"$IN/top-base.json"
 jq -n '{status: "ahead"}' >"$IN/integration-base.json"
 compare "$S299" "$S312" ahead
 compare "$S312" "$S319" ahead
-compare "$S319" "$S311" identical
+compare "$S319" "$S331" ahead
+compare "$S331" "$S311" ahead
 "$TOOL" validate-stack "$TMP/stack.json" "$IN" "$TMP/train-record.json" 2>/dev/null
 IBASE="$(jq -r '.base.sha' "$IN/pull-299.json")"
 jq -e --arg top "$S311" --arg s299 "$S299" --arg merge "$M311" --arg base "$B311" --arg merge_base "$MB311" --arg integration_base "$IBASE" '
@@ -110,9 +114,9 @@ jq -e --arg top "$S311" --arg s299 "$S299" --arg merge "$M311" --arg base "$B311
 	and .head_sha == $top and .head_pull_request == 311 and .integration_branch == "dev"
 	and .merge_sha == $merge and .base_sha == $base and .merge_base_sha == $merge_base
 	and .integration_base_sha == $integration_base
-	and (.members | length) == 4
+	and (.members | length) == 5
 	and .members[0] == {pull_request: 299, head_sha: $s299, base: "dev", merged: false}
-	and .members[3].base == "fix/key-contention-base-bias"' "$TMP/train-record.json" >/dev/null
+	and .members[4].base == "fix/fork-choice-missing-history-availability"' "$TMP/train-record.json" >/dev/null
 "$TOOL" summarize "$TMP/train-record.json" | grep -q 'rehearsal, non-publishing'
 "$TOOL" validate-current-stack "$TMP/train-record.json" "$TMP/train-record.json"
 current_stack_case() {
@@ -151,7 +155,7 @@ stack_case 'member head is not an ancestor of the following head' \
 stack_case 'member closed without merge' \
 	'pull 319 closed false feat/key-contention-phase2 fix/key-contention-base-bias "$S319"'
 stack_case 'manifest head_sha differs from the top member head' \
-	'pull 311 open false fix/key-contention-base-bias formal/enhance-cbc-design "$OTHER"; compare "$S319" "$OTHER" ahead'
+	'pull 311 open false fix/fork-choice-missing-history-availability formal/enhance-cbc-design "$OTHER"; compare "$S331" "$OTHER" ahead'
 stack_case 'merged member without a merge commit' \
 	'pull 299 closed true dev fix/key-contention-starvation "$S299"'
 stack_case 'merged member squashed (single parent)' \
@@ -167,7 +171,7 @@ stack_case 'member retargeted to the integration branch while its predecessor is
 stack_case 'empty pull request document' \
 	': >"$IN/pull-312.json"'
 stack_case 'top synthetic merge changed after observation' \
-	'pull 311 open false fix/key-contention-base-bias formal/enhance-cbc-design "$S311" "$OTHER"'
+	'pull 311 open false fix/fork-choice-missing-history-availability formal/enhance-cbc-design "$S311" "$OTHER"'
 stack_case 'top synthetic merge base does not contain the logical base' \
 	'jq -n --arg sha "$M311" --arg base "$OTHER" --arg head "$S311" "{sha: \$sha, parents: [{sha: \$base}, {sha: \$head}]}" >"$IN/top-merge.json"; jq -n "{status: \"diverged\"}" >"$IN/top-base.json"'
 stack_case 'top synthetic merge job input is missing' \

@@ -1,6 +1,8 @@
 name: CI
 run-name: ${{ inputs.target_sha != '' && format('CI [exact merge {0}]', inputs.target_sha) || github.event.pull_request.title || github.event.head_commit.message || github.ref_name }}
 
+# Exact-merge dispatch metadata names the trusted default branch. The ci-target artifact names the candidate merge that the trusted workflow tests.
+
 on:
   workflow_dispatch:
     inputs:
@@ -23,6 +25,7 @@ on:
     tags:
       - "**"
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review, edited]
 
 # GitHub keeps one running item and one pending item in each concurrency group.
 # Issue #267 showed that one shared push group can discard a pending test run.
@@ -133,10 +136,7 @@ jobs:
             && [ "$PR_HEAD_REPOSITORY" = "$GITHUB_REPOSITORY" ] \
             && { [ "$PR_BASE_REF" = dev ] || [ "$PR_BASE_REF" = master ]; } \
             && [ "$PR_HEAD_REF" != dev ] && [ "$PR_HEAD_REF" != master ]; then
-            children="$RUNNER_TEMP/stack-children.json"
-            gh api --method GET "repos/${GITHUB_REPOSITORY}/pulls" \
-              -f state=open -f base="$PR_HEAD_REF" -f per_page=100 > "$children"
-            [ "$(jq 'length' "$children")" -gt 0 ] || run_heavy=true
+            run_heavy=true
           fi
           {
             echo "target_sha=$target"
@@ -406,6 +406,10 @@ jobs:
   markdown_link_check:
     name: Markdown Link Check
     needs: build_base
+    if: >-
+      github.event_name != 'pull_request'
+      || contains(fromJSON('["dev", "master", "staging", "trying"]'), github.base_ref)
+      || startsWith(github.base_ref, 'feature/')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:

@@ -166,7 +166,9 @@ fail_if(!soak_text.match?(/docker pull --platform [^\n]*@\$\{amd64_digest\}/), "
 fail_if(!soak_text.match?(/Build node image\n\s+if: needs\.schedule_gate\.outputs\.candidate_tag == ''/m), "soak must skip the source build in candidate mode")
 ci = YAML.load_file(ci_path)
 ci_trigger = trigger(ci)
-fail_if(!ci_trigger.key?("pull_request") || !ci_trigger["pull_request"].nil?, "CI must run lightweight checks for every pull request base")
+pull_request_trigger = ci_trigger["pull_request"]
+fail_if(!pull_request_trigger.is_a?(Hash) || pull_request_trigger.key?("branches"), "CI must run checks for every pull request base")
+fail_if(!pull_request_trigger.fetch("types", []).include?("edited"), "CI must rerun when a stacked pull request base changes")
 fail_if(ci_trigger.dig("workflow_dispatch", "inputs", "target_sha", "default") != "", "CI dispatch must accept an optional exact target SHA")
 fail_if(ci_trigger.dig("workflow_dispatch", "inputs", "top_pull_request", "default") != "", "CI dispatch must accept an optional top pull request")
 build_base = ci.dig("jobs", "build_base")
@@ -175,7 +177,9 @@ fail_if(build_base.dig("outputs", "MERGE_BASE_SHA") != "${{ steps.target.outputs
 fail_if(build_base.dig("outputs", "RUN_HEAVY") != "${{ steps.target.outputs.run_heavy }}", "Build Base must export the Heavy Pipeline decision")
 build_steps = build_base.fetch("steps")
 target_step = build_steps.find { |step| step["id"] == "target" }
-fail_if(!target_step&.dig("run")&.include?('compare/${base}...${merge_base}'), "CI must verify synthetic base ancestry")
+target_body = target_step&.dig("run").to_s
+fail_if(!target_body.include?('compare/${base}...${merge_base}'), "CI must verify synthetic base ancestry")
+fail_if(target_body.include?("stack-children"), "an open child pull request must not bypass protected-branch Heavy Pipeline")
 target_upload = build_steps.find { |step| step["name"] == "Upload exact target evidence" }
 fail_if(target_upload&.dig("uses").to_s !~ /\Aactions\/upload-artifact@[0-9a-f]{40}\z/, "CI target evidence upload must use a full action SHA")
 pipeline = ci.dig("jobs", "pipeline")
@@ -183,7 +187,6 @@ fail_if(pipeline["if"] != "needs.build_base.outputs.RUN_HEAVY == 'true'", "Heavy
 fail_if(pipeline.dig("with", "checkout_ref") != "${{ needs.build_base.outputs.TARGET_SHA }}", "Heavy Pipeline must check out the validated target SHA")
 ci_text = File.read(ci_path)
 fail_if(!ci_text.include?("merge_commit_sha"), "CI must validate the current pull request synthetic merge")
-fail_if(!ci_text.include?('-f base="$PR_HEAD_REF"'), "CI must detect open pull requests stacked on the current head")
 fail_if(!ci_text.include?('run_heavy=$run_heavy'), "CI must persist the Heavy Pipeline decision")
 fail_if(!ci_text.include?("ci-target-${{ github.run_attempt }}"), "CI must upload attempt-specific target evidence")
 %w[lint deny markdown_link_check test].each do |job_name|
@@ -196,6 +199,9 @@ fail_if(lint_steps.none? { |step| step["run"].to_s.include?("test-ci-stack-gate.
   condition = ci.dig("jobs", job_name, "if").to_s
   fail_if(!condition.include?("needs.pipeline.result != 'skipped'"), "#{job_name} must fail closed when Heavy Pipeline runs")
 end
+link_condition = ci.dig("jobs", "markdown_link_check", "if").to_s
+fail_if(!link_condition.include?("github.event_name != 'pull_request'"), "Markdown link checks must run outside pull requests")
+fail_if(!link_condition.include?("github.base_ref"), "Markdown link checks must limit pull-request bases")
 
 # Deployment train setup (Phase 5): manual, default-branch only, one job
 # whose only write permission is actions (the optional ci.yml dispatch), no
@@ -225,6 +231,10 @@ fail_if(!train_text.include?("release-train.sh validate-ci-evidence"), "deployme
 fail_if(train_text.scan("release-train.sh validate-stack").length != 2, "deployment train must validate the full stack before and after CI")
 fail_if(!train_text.include?("release-train.sh validate-current-stack"), "deployment train must compare the post-CI stack record")
 fail_if(!train_text.include?(".stack.members[].pull_request"), "deployment train must refresh every stack member after CI")
+fail_if(!train_text.include?("--paginate"), "deployment train must read every matching CI run page")
+fail_if(!train_text.include?("--jq '.workflow_runs[]'"), "deployment train must combine paginated CI runs")
+fail_if(!train_text.include?("-f event=workflow_dispatch"), "deployment train must filter CI runs by event")
+fail_if(!train_text.include?('-f branch="$DEFAULT_BRANCH"'), "deployment train must filter CI runs by trusted branch")
 fail_if(!train_text.include?('gh workflow run ci.yml --ref "$DEFAULT_BRANCH"'), "deployment train must dispatch the trusted default-branch CI workflow")
 fail_if(!train_text.include?('-f target_sha="$merge_sha" -f top_pull_request="$top"'), "deployment train must dispatch CI for the exact top merge")
 fail_if(!train_text.include?('/attempts/${run_attempt}/jobs'), "deployment train must read jobs from the selected run attempt")

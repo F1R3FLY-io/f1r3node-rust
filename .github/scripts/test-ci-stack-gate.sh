@@ -73,7 +73,7 @@ run_case() {
 }
 
 run_case standalone pull_request refs/pull/1/merge dev feature/one example/repository '[]' '' '' true
-run_case lower-stack pull_request refs/pull/1/merge dev feature/one example/repository '[{}]' '' '' false
+run_case bottom-stack-with-child pull_request refs/pull/1/merge dev feature/one example/repository '[{}]' '' '' true
 run_case upper-stack pull_request refs/pull/2/merge feature/one feature/two example/repository '[]' '' '' false
 run_case fork pull_request refs/pull/3/merge dev feature/three fork/repository '[]' '' '' false
 run_case dev-push push refs/heads/dev '' '' '' '[]' '' '' true
