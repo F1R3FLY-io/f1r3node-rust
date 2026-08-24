@@ -9934,12 +9934,46 @@ The clean checkpoint reruns have SHA-256 values
 `5b648d88c53e24da00d32ce97ce64e032ac87a10f10034dc59b6c43d7238ab10`
 (semantic identity).
 
-A persistent content/provenance arena is also implemented and passes 8/8 focused tests plus
-`cargo check -p models`. Its immutable handles make checkpoints, slices, and concatenations
-constant-size; byte and provenance traversal uses explicit heap worklists. This is prerequisite
-evidence, not production activation: pgmcp progress rows 4824 and 4825 record the remaining
-indexed nested reducers, zero-replay counter gate, production swap, formal proof, and performance
-experiment as open P0 work.
+A persistent content/provenance arena now freezes a suspended payload without copying its byte or
+provenance arrays. Frozen views retain immutable block ownership, support constant-size subviews,
+and remain valid after the mutable arena is extended or dropped. The indexed protobuf cursor uses
+the same grammar over contiguous, borrowed-arena, and frozen storage; parents fast-forward
+length-delimited bodies while child frames perform the one physical traversal. The depth-20,000
+gate proves aggregate physical traversal equals encoded input length rather than the sum of every
+enclosing logical extent.
+
+The canonical-path reducer freezes each completed `RawParEscape` or `NestedEpm1` obligation with an
+explicit physical end anchor. It never derives that anchor by incrementing a possibly discontinuous
+trie-edge offset. A terminal check additionally requires the ACT stream to return through the root
+with no suspended child. The indexed EPM1 cursor performs no EPM-specific endpoint or value-table
+prewalk: ordinal validation and one constant-size value-body subview advance with each event, and
+count/trailing checks execute once before the first terminal `None`. Errors are latched. These are
+the ownership and continuation properties needed to schedule all alternating Par/EPathMap nesting
+on the protobuf driver's existing heap frame vector.
+
+The updated zero-swap gates pass 11/11 frozen-arena cases, 11/11 indexed-protobuf cases, 6/6 indexed
+score cases, 12/12 canonical-path cases, 24/24 indexed EPM1 cases, and 3/3 indexed ACT
+hash/event/error-parity cases. Their captured-log SHA-256 values are, respectively,
+`d1168a14919bdc5fd509909d2c5e2fc967dabb379a3bed5de1761af2001c78ba`,
+`f1c86693c02b567aedb218b78bb3bee3098a55432393274ddf7f0bd3df457b14`,
+`e4ac6d700b654bac39f04b2148b0c4d176be025af327fe7324937d8efca5c7f8`,
+`2a224a04ee3120496446df13616cfd3d87d94720e7a4f6862b83b9e7d2bf7727`,
+`9862e7f0b14fe158c0ddc35f9eb2c5a663c29fdd0d907fcf8fd60e188edbf2c6`, and
+`aeff25cbf3076616f4a2cfe4e73be2bc8c36734690f9b7fd9d9c6a1bfd64cd9b`.
+
+This checkpoint does not yet close the physical-ACT replay slope. Construction of
+`CanonicalCompactTrieTopologyState` performs one complete stack-safe canonicality DFS and event
+emission later reparses node metadata. For $`S`$ semantic nodes and $`W`$ folded line wrappers,
+construction plus one walk parses primary records $`4S - 2`$ times and wrappers $`2W`$ times.
+The validation barrier preserves fail-before-use and error precedence, but repeated parsing is not
+required. Pgmcp #6023 specifies one eager DFS that retains a compact preorder validated traversal
+plan; its hard targets are zero node reparses and zero event-time metadata reads. The arena's
+immutable-node allocation rate and freeze metadata slope also remain hypotheses for headless
+Heaptrack and geometric depth/width measurement.
+
+This remains prerequisite evidence, not production activation: pgmcp children 6018 and 6023 retain
+the ACT plan, indexed nested reducer cutover, source-level zero-reconstruction/zero-decode gates,
+formal proof, and performance experiment as open P0 work.
 
 The focused executable gate contains twelve tests. It covers every schema family, the root-
 `locally_free` quotient, empty false/true connective separation, pairwise image/`Par` ordering,

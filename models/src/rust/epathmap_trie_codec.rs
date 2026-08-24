@@ -16,12 +16,18 @@ use pathmap::zipper::{ZipperIteration, ZipperMoving};
 use pathmap::PathMap;
 use prost::bytes::Bytes;
 use rspace_plus_plus::rspace::pathmap_codec::{
-    CanonicalCompactTrieCursor, CanonicalCompactTrieTopologyCursor,
-    CanonicalCompactTrieTopologyEvent, CompactPath, CompactTrie, CompactTrieError,
+    CanonicalCompactTrieCursor, CanonicalCompactTrieTopologyEvent,
+    CanonicalCompactTrieTopologyState, CompactPath, CompactTrie, CompactTrieError,
     CompactTrieTopologyEvent,
 };
 
 use crate::rhoapi::Par;
+use crate::rust::rholang::canonical_bytes_arena::CanonicalByteProvenance;
+use crate::rust::rholang::indexed_protobuf::{
+    IndexedByteReadError, IndexedByteReadErrorKind, IndexedByteReadOperation, IndexedByteReader,
+    IndexedByteRegion,
+};
+use crate::rust::rholang::protobuf_cursor::{CanonicalByteRange, ProtobufRegion};
 use crate::rust::rholang::{protobuf_decoder, protobuf_encoder};
 
 const EPM_MAGIC: &[u8; 4] = b"EPM1";
@@ -114,13 +120,37 @@ impl TryFrom<u8> for EPathMapMode {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TrieCodecError {
     message: String,
+    reported: Option<CanonicalByteProvenance>,
+    failure: Option<CanonicalByteProvenance>,
 }
 
 impl TrieCodecError {
     fn new(message: impl Into<String>) -> Self {
         Self {
             message: message.into(),
+            reported: None,
+            failure: None,
         }
+    }
+
+    fn located(
+        message: impl Into<String>,
+        reported: CanonicalByteProvenance,
+        failure: CanonicalByteProvenance,
+    ) -> Self {
+        Self {
+            message: message.into(),
+            reported: Some(reported),
+            failure: Some(failure),
+        }
+    }
+
+    pub(crate) const fn reported_provenance(&self) -> Option<CanonicalByteProvenance> {
+        self.reported
+    }
+
+    pub(crate) const fn failure_provenance(&self) -> Option<CanonicalByteProvenance> {
+        self.failure
     }
 }
 
@@ -295,59 +325,6 @@ where
     }
     trie.rewind();
     Ok(())
-}
-
-fn validate_typed_epm1_topology<B>(
-    mode: EPathMapMode,
-    value_count: usize,
-    trie: &mut CanonicalCompactTrieTopologyCursor<B>,
-) -> Result<usize, TrieCodecError>
-where
-    B: AsRef<[u8]>,
-{
-    if trie.is_empty() {
-        return Err(TrieCodecError::new(
-            "typed EPathMap mode has empty ACTree topology; use neutral empty mode",
-        ));
-    }
-    let mut referenced_values = 0usize;
-    while let Some(event) = trie.next_event() {
-        let CanonicalCompactTrieTopologyEvent::Value {
-            value: Some(ordinal),
-            ..
-        } = event
-        else {
-            continue;
-        };
-        match mode {
-            EPathMapMode::Set => {
-                if ordinal != 0 {
-                    return Err(TrieCodecError::new("set ACTree value ordinal is not zero"));
-                }
-            }
-            EPathMapMode::Map => {
-                if ordinal != referenced_values as u64 {
-                    return Err(TrieCodecError::new(format!(
-                        "map ACTree value ordinal {ordinal} is not canonical ordinal {referenced_values}"
-                    )));
-                }
-            }
-            EPathMapMode::Empty => unreachable!("empty mode has no ACT arena"),
-        }
-        referenced_values = referenced_values
-            .checked_add(1)
-            .ok_or_else(|| TrieCodecError::new("EPathMap length overflows usize"))?;
-    }
-    if mode == EPathMapMode::Set && value_count != 0 {
-        return Err(TrieCodecError::new("set EPathMap carries map values"));
-    }
-    if mode == EPathMapMode::Map && referenced_values != value_count {
-        return Err(TrieCodecError::new(format!(
-            "map ACTree references {referenced_values} values but EPM1 declares {value_count}"
-        )));
-    }
-    trie.rewind();
-    Ok(referenced_values)
 }
 
 #[allow(dead_code)]
@@ -528,6 +505,546 @@ impl OwnedCanonicalEpm1Cursor {
     }
 }
 
+fn indexed_read_error(label: &str, error: IndexedByteReadError) -> TrieCodecError {
+    let message = match error.kind {
+        IndexedByteReadErrorKind::UnexpectedEof { .. }
+        | IndexedByteReadErrorKind::TruncatedVarint => format!("truncated {label}"),
+        IndexedByteReadErrorKind::NonMinimalVarint => format!("non-canonical {label}"),
+        IndexedByteReadErrorKind::VarintOverflow => format!("overflowing {label}"),
+        IndexedByteReadErrorKind::InvalidUtf8 | IndexedByteReadErrorKind::TruncatedUtf8 => {
+            format!("invalid {label}")
+        }
+    };
+    TrieCodecError::located(message, error.start.physical, error.failure.physical)
+}
+
+fn read_indexed_len(
+    view: &IndexedByteRegion<'_>,
+    reader: &mut IndexedByteReader<'_>,
+    label: &str,
+) -> Result<usize, TrieCodecError> {
+    let start = reader.offset();
+    let value = reader
+        .read_canonical_varint()
+        .map_err(|error| indexed_read_error(label, error))?;
+    usize::try_from(value).map_err(|_| {
+        let reported = view
+            .position_at(start)
+            .expect("an indexed varint start belongs to its view")
+            .physical;
+        let failure = view
+            .position_at(reader.offset())
+            .expect("an indexed varint end belongs to its view")
+            .physical;
+        TrieCodecError::located(format!("{label} overflows usize"), reported, failure)
+    })
+}
+
+fn take_indexed_region<'a>(
+    view: &IndexedByteRegion<'a>,
+    reader: &mut IndexedByteReader<'a>,
+    len: usize,
+    label: &str,
+) -> Result<IndexedByteRegion<'a>, TrieCodecError> {
+    let start = reader.offset();
+    let Some(end) = start.checked_add(len) else {
+        let provenance = view
+            .position_at(start)
+            .expect("an indexed region start belongs to its view")
+            .physical;
+        return Err(TrieCodecError::located(
+            format!("{label} length overflow"),
+            provenance,
+            provenance,
+        ));
+    };
+    reader
+        .skip_exact(len, IndexedByteReadOperation::Byte)
+        .map_err(|error| indexed_read_error(label, error))?;
+    view.subview(CanonicalByteRange { start, end })
+        .ok_or_else(|| {
+            let provenance = view
+                .position_at(start)
+                .expect("an indexed region start belongs to its view")
+                .physical;
+            TrieCodecError::located(format!("truncated {label}"), provenance, provenance)
+        })
+}
+
+fn indexed_act_error(arena: &IndexedByteRegion<'_>, error: CompactTrieError) -> TrieCodecError {
+    let logical_offset = error.source_offset().unwrap_or(arena.len());
+    let position = arena
+        .position_at(logical_offset.min(arena.len()))
+        .expect("a bounded ACT error position belongs to its indexed arena");
+    TrieCodecError::located(error.to_string(), position.physical, position.physical)
+}
+
+struct IndexedCanonicalSnapshotPrefix<'a> {
+    mode: EPathMapMode,
+    mode_provenance: CanonicalByteProvenance,
+    arena: IndexedByteRegion<'a>,
+    value_count: usize,
+    value_count_provenance: CanonicalByteProvenance,
+    value_table_start: usize,
+    bytes_read: usize,
+    bytes_traversed: usize,
+}
+
+fn parse_indexed_canonical_snapshot_prefix<'a>(
+    snapshot: &IndexedByteRegion<'a>,
+) -> Result<IndexedCanonicalSnapshotPrefix<'a>, TrieCodecError> {
+    let mut reader = snapshot.reader();
+    for (index, expected) in EPM_MAGIC.iter().copied().enumerate() {
+        let byte = reader
+            .read_byte()
+            .map_err(|error| indexed_read_error("EPM1 magic", error))?;
+        if byte != expected {
+            let provenance = snapshot
+                .position_at(index)
+                .expect("an EPM1 magic byte belongs to its snapshot")
+                .physical;
+            return Err(TrieCodecError::located(
+                "invalid EPM1 magic",
+                provenance,
+                provenance,
+            ));
+        }
+    }
+
+    let version_offset = reader.offset();
+    let version = reader
+        .read_byte()
+        .map_err(|error| indexed_read_error("EPM1 version", error))?;
+    if version != EPM_VERSION {
+        let provenance = snapshot
+            .position_at(version_offset)
+            .expect("the EPM1 version belongs to its snapshot")
+            .physical;
+        return Err(TrieCodecError::located(
+            format!("unsupported EPM1 version {version}"),
+            provenance,
+            provenance,
+        ));
+    }
+
+    let mode_offset = reader.offset();
+    let mode_byte = reader
+        .read_byte()
+        .map_err(|error| indexed_read_error("EPM1 mode", error))?;
+    let mode_provenance = snapshot
+        .position_at(mode_offset)
+        .expect("the EPM1 mode belongs to its snapshot")
+        .physical;
+    let mode = EPathMapMode::try_from(mode_byte).map_err(|error| {
+        TrieCodecError::located(error.to_string(), mode_provenance, mode_provenance)
+    })?;
+
+    let arena_len = read_indexed_len(snapshot, &mut reader, "ACTree03 length")?;
+    let arena = take_indexed_region(snapshot, &mut reader, arena_len, "ACTree03 payload")?;
+    let value_count_offset = reader.offset();
+    let value_count = read_indexed_len(snapshot, &mut reader, "map value count")?;
+    let value_count_provenance = snapshot
+        .position_at(value_count_offset)
+        .expect("the EPM1 value count belongs to its snapshot")
+        .physical;
+    let value_table_start = reader.offset();
+    let remaining = snapshot.len() - value_table_start;
+    if value_count > remaining {
+        return Err(TrieCodecError::located(
+            format!(
+                "map value count {value_count} exceeds the {remaining}-byte payload lower bound"
+            ),
+            value_count_provenance,
+            value_count_provenance,
+        ));
+    }
+    let bytes_read = reader.bytes_read();
+    let bytes_traversed = reader.bytes_traversed();
+
+    Ok(IndexedCanonicalSnapshotPrefix {
+        mode,
+        mode_provenance,
+        arena,
+        value_count,
+        value_count_provenance,
+        value_table_start,
+        bytes_read,
+        bytes_traversed,
+    })
+}
+
+#[derive(Clone, Debug)]
+pub(crate) enum IndexedCanonicalEpm1TopologyEvent<'a> {
+    Value {
+        has_value: bool,
+        value_body_range: Option<Range<usize>>,
+        value_body: Option<IndexedByteRegion<'a>>,
+        provenance: CanonicalByteProvenance,
+    },
+    Edge {
+        byte: u8,
+        provenance: CanonicalByteProvenance,
+    },
+    Leave {
+        provenance: CanonicalByteProvenance,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct IndexedCanonicalEpm1TopologyStats {
+    pub(crate) prefix_bytes_read: usize,
+    pub(crate) prefix_bytes_traversed: usize,
+    pub(crate) value_table_bytes_read: usize,
+    pub(crate) value_table_bytes_traversed: usize,
+    pub(crate) topology_events: usize,
+    pub(crate) value_records: usize,
+    pub(crate) terminal_checks: usize,
+}
+
+#[derive(Clone)]
+enum IndexedCanonicalEpm1Terminal {
+    Active,
+    Done,
+    Failed(TrieCodecError),
+}
+
+#[allow(dead_code)]
+pub(crate) struct IndexedCanonicalEpm1TopologyCursor<'a> {
+    mode: EPathMapMode,
+    value_count: usize,
+    length: usize,
+    value_table_start: usize,
+    value_table: IndexedByteRegion<'a>,
+    value_reader: IndexedByteReader<'a>,
+    value_count_provenance: CanonicalByteProvenance,
+    empty_state: u8,
+    empty_provenance: CanonicalByteProvenance,
+    arena: Option<IndexedByteRegion<'a>>,
+    trie: Option<CanonicalCompactTrieTopologyState>,
+    prefix_bytes_read: usize,
+    prefix_bytes_traversed: usize,
+    topology_events: usize,
+    value_records: usize,
+    terminal_checks: usize,
+    terminal: IndexedCanonicalEpm1Terminal,
+}
+
+impl<'a> IndexedCanonicalEpm1TopologyCursor<'a> {
+    pub(crate) fn new(snapshot: IndexedByteRegion<'a>) -> Result<Self, TrieCodecError> {
+        let prefix = parse_indexed_canonical_snapshot_prefix(&snapshot)?;
+        let value_table = snapshot
+            .subview(CanonicalByteRange {
+                start: prefix.value_table_start,
+                end: snapshot.len(),
+            })
+            .expect("an EPM1 value table starts inside its snapshot");
+
+        let (arena, trie) = match prefix.mode {
+            EPathMapMode::Empty => {
+                if !prefix.arena.is_empty() || prefix.value_count != 0 {
+                    let failure = if !prefix.arena.is_empty() {
+                        prefix.arena.position_at(0).unwrap().physical
+                    } else {
+                        prefix.value_count_provenance
+                    };
+                    return Err(TrieCodecError::located(
+                        "neutral empty EPathMap carries trie or values",
+                        prefix.mode_provenance,
+                        failure,
+                    ));
+                }
+                if !value_table.is_empty() {
+                    let provenance = value_table.position_at(0).unwrap().physical;
+                    return Err(TrieCodecError::located(
+                        "trailing bytes after EPM1 payload",
+                        provenance,
+                        provenance,
+                    ));
+                }
+                (None, None)
+            }
+            EPathMapMode::Set => {
+                if prefix.value_count != 0 {
+                    return Err(TrieCodecError::located(
+                        "set EPathMap carries map values",
+                        prefix.value_count_provenance,
+                        prefix.value_count_provenance,
+                    ));
+                }
+                if !value_table.is_empty() {
+                    let provenance = value_table.position_at(0).unwrap().physical;
+                    return Err(TrieCodecError::located(
+                        "trailing bytes after EPM1 payload",
+                        provenance,
+                        provenance,
+                    ));
+                }
+                let trie = CanonicalCompactTrieTopologyState::new(&prefix.arena)
+                    .map_err(|error| indexed_act_error(&prefix.arena, error))?;
+                if trie.is_empty() {
+                    let provenance = prefix.arena.end_position().physical;
+                    return Err(TrieCodecError::located(
+                        "typed EPathMap mode has empty ACTree topology; use neutral empty mode",
+                        provenance,
+                        provenance,
+                    ));
+                }
+                (Some(prefix.arena), Some(trie))
+            }
+            EPathMapMode::Map => {
+                let trie = CanonicalCompactTrieTopologyState::new(&prefix.arena)
+                    .map_err(|error| indexed_act_error(&prefix.arena, error))?;
+                if trie.is_empty() {
+                    let provenance = prefix.arena.end_position().physical;
+                    return Err(TrieCodecError::located(
+                        "typed EPathMap mode has empty ACTree topology; use neutral empty mode",
+                        provenance,
+                        provenance,
+                    ));
+                }
+                (Some(prefix.arena), Some(trie))
+            }
+        };
+        let value_reader = value_table.reader();
+
+        Ok(Self {
+            mode: prefix.mode,
+            value_count: prefix.value_count,
+            length: 0,
+            value_table_start: prefix.value_table_start,
+            value_table,
+            value_reader,
+            value_count_provenance: prefix.value_count_provenance,
+            empty_state: 0,
+            empty_provenance: prefix.mode_provenance,
+            arena,
+            trie,
+            prefix_bytes_read: prefix.bytes_read,
+            prefix_bytes_traversed: prefix.bytes_traversed,
+            topology_events: 0,
+            value_records: 0,
+            terminal_checks: 0,
+            terminal: IndexedCanonicalEpm1Terminal::Active,
+        })
+    }
+
+    pub(crate) const fn mode(&self) -> EPathMapMode { self.mode }
+
+    pub(crate) const fn value_count(&self) -> usize { self.value_count }
+
+    pub(crate) const fn length(&self) -> usize { self.length }
+
+    pub(crate) fn stats(&self) -> IndexedCanonicalEpm1TopologyStats {
+        IndexedCanonicalEpm1TopologyStats {
+            prefix_bytes_read: self.prefix_bytes_read,
+            prefix_bytes_traversed: self.prefix_bytes_traversed,
+            value_table_bytes_read: self.value_reader.bytes_read(),
+            value_table_bytes_traversed: self.value_reader.bytes_traversed(),
+            topology_events: self.topology_events,
+            value_records: self.value_records,
+            terminal_checks: self.terminal_checks,
+        }
+    }
+
+    fn latch_error<T>(&mut self, error: TrieCodecError) -> Result<T, TrieCodecError> {
+        self.terminal = IndexedCanonicalEpm1Terminal::Failed(error.clone());
+        Err(error)
+    }
+
+    fn finish_stream(
+        &mut self,
+    ) -> Result<Option<IndexedCanonicalEpm1TopologyEvent<'a>>, TrieCodecError> {
+        self.terminal_checks += 1;
+        if self.mode == EPathMapMode::Map && self.length != self.value_count {
+            return self.latch_error(TrieCodecError::located(
+                format!(
+                    "map ACTree references {} values but EPM1 declares {}",
+                    self.length, self.value_count
+                ),
+                self.value_count_provenance,
+                self.value_count_provenance,
+            ));
+        }
+        if !self.value_reader.is_empty() {
+            let provenance = self
+                .value_table
+                .position_at(self.value_reader.offset())
+                .expect("the first trailing EPM1 byte belongs to its value table")
+                .physical;
+            return self.latch_error(TrieCodecError::located(
+                "trailing bytes after EPM1 payload",
+                provenance,
+                provenance,
+            ));
+        }
+        self.terminal = IndexedCanonicalEpm1Terminal::Done;
+        Ok(None)
+    }
+
+    pub(crate) fn next_event(
+        &mut self,
+    ) -> Result<Option<IndexedCanonicalEpm1TopologyEvent<'a>>, TrieCodecError> {
+        match self.terminal.clone() {
+            IndexedCanonicalEpm1Terminal::Done => return Ok(None),
+            IndexedCanonicalEpm1Terminal::Failed(error) => return Err(error),
+            IndexedCanonicalEpm1Terminal::Active => {}
+        }
+
+        if self.mode == EPathMapMode::Empty {
+            let event = match self.empty_state {
+                0 => IndexedCanonicalEpm1TopologyEvent::Value {
+                    has_value: false,
+                    value_body_range: None,
+                    value_body: None,
+                    provenance: self.empty_provenance,
+                },
+                1 => IndexedCanonicalEpm1TopologyEvent::Leave {
+                    provenance: self.empty_provenance,
+                },
+                _ => return self.finish_stream(),
+            };
+            self.empty_state += 1;
+            self.topology_events += 1;
+            return Ok(Some(event));
+        }
+
+        let event = {
+            let arena = self
+                .arena
+                .as_ref()
+                .expect("a typed EPM1 cursor retains its indexed ACT arena");
+            self.trie
+                .as_mut()
+                .expect("a typed EPM1 cursor retains its ACT state")
+                .next_event(arena)
+                .map_err(|error| indexed_act_error(arena, error))
+        };
+        let Some(event) = (match event {
+            Ok(event) => event,
+            Err(error) => return self.latch_error(error),
+        }) else {
+            return self.finish_stream();
+        };
+        self.topology_events += 1;
+
+        let event_provenance = |source_offset| {
+            self.arena
+                .as_ref()
+                .expect("a typed EPM1 cursor retains its indexed ACT arena")
+                .position_at(source_offset)
+                .expect("an ACT topology event belongs to its indexed arena")
+                .physical
+        };
+        Ok(Some(match event {
+            CanonicalCompactTrieTopologyEvent::Value {
+                value,
+                source_offset,
+            } => {
+                let provenance = event_provenance(source_offset);
+                let (value_body_range, value_body) =
+                    if self.mode == EPathMapMode::Map && value.is_some() {
+                        let ordinal = value.expect("the map value branch checked presence");
+                        if ordinal != self.length as u64 {
+                            return self.latch_error(TrieCodecError::located(
+                                format!(
+                                "map ACTree value ordinal {ordinal} is not canonical ordinal {}",
+                                self.length
+                            ),
+                                provenance,
+                                provenance,
+                            ));
+                        }
+                        if self.length == self.value_count {
+                            return self.latch_error(TrieCodecError::located(
+                                format!(
+                                    "map ACTree references {} values but EPM1 declares {}",
+                                    self.length + 1,
+                                    self.value_count,
+                                ),
+                                provenance,
+                                provenance,
+                            ));
+                        }
+                        let len = match read_indexed_len(
+                            &self.value_table,
+                            &mut self.value_reader,
+                            "map value length",
+                        ) {
+                            Ok(len) => len,
+                            Err(error) => return self.latch_error(error),
+                        };
+                        let relative_start = self.value_reader.offset();
+                        let body = match take_indexed_region(
+                            &self.value_table,
+                            &mut self.value_reader,
+                            len,
+                            "map value payload",
+                        ) {
+                            Ok(body) => body,
+                            Err(error) => return self.latch_error(error),
+                        };
+                        let Some(start) = self.value_table_start.checked_add(relative_start) else {
+                            return self.latch_error(TrieCodecError::located(
+                                "EPM1 value range overflows usize",
+                                provenance,
+                                provenance,
+                            ));
+                        };
+                        let Some(end) = start.checked_add(len) else {
+                            return self.latch_error(TrieCodecError::located(
+                                "EPM1 value range overflows usize",
+                                provenance,
+                                provenance,
+                            ));
+                        };
+                        self.length += 1;
+                        self.value_records += 1;
+                        (Some(start..end), Some(body))
+                    } else {
+                        if self.mode == EPathMapMode::Set {
+                            if let Some(ordinal) = value {
+                                if ordinal != 0 {
+                                    return self.latch_error(TrieCodecError::located(
+                                        "set ACTree value ordinal is not zero",
+                                        provenance,
+                                        provenance,
+                                    ));
+                                }
+                                let Some(length) = self.length.checked_add(1) else {
+                                    return self.latch_error(TrieCodecError::located(
+                                        "EPathMap length overflows usize",
+                                        provenance,
+                                        provenance,
+                                    ));
+                                };
+                                self.length = length;
+                            }
+                        }
+                        (None, None)
+                    };
+                IndexedCanonicalEpm1TopologyEvent::Value {
+                    has_value: value.is_some(),
+                    value_body_range,
+                    value_body,
+                    provenance,
+                }
+            }
+            CanonicalCompactTrieTopologyEvent::Edge {
+                byte,
+                source_offset,
+            } => IndexedCanonicalEpm1TopologyEvent::Edge {
+                byte,
+                provenance: event_provenance(source_offset),
+            },
+            CanonicalCompactTrieTopologyEvent::Leave { source_offset } => {
+                IndexedCanonicalEpm1TopologyEvent::Leave {
+                    provenance: event_provenance(source_offset),
+                }
+            }
+        }))
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum OwnedCanonicalEpm1TopologyEvent {
     Value {
@@ -548,142 +1065,55 @@ pub(crate) enum OwnedCanonicalEpm1TopologyEvent {
 #[allow(dead_code)]
 pub(crate) struct OwnedCanonicalEpm1TopologyCursor {
     bytes: Bytes,
-    mode: EPathMapMode,
-    value_count: usize,
-    length: usize,
-    arena_start: usize,
-    value_cursor: usize,
-    remaining_values: usize,
-    empty_state: u8,
-    trie: Option<CanonicalCompactTrieTopologyCursor<Bytes>>,
+    indexed: IndexedCanonicalEpm1TopologyCursor<'static>,
 }
 
 impl OwnedCanonicalEpm1TopologyCursor {
     pub(crate) fn new(bytes: Bytes) -> Result<Self, TrieCodecError> {
-        let (mode, arena, value_count, value_table_start) = {
-            let prefix = parse_canonical_snapshot_prefix(bytes.as_ref())?;
-            let arena_end = prefix
-                .arena_start
-                .checked_add(prefix.arena.len())
-                .ok_or_else(|| TrieCodecError::new("EPM1 arena range overflows usize"))?;
-            (
-                prefix.mode,
-                prefix.arena_start..arena_end,
-                prefix.value_count,
-                prefix.value_table_start,
-            )
-        };
-        validate_epm1_value_table(bytes.as_ref(), value_count, value_table_start)?;
-
-        let (trie, length) = match mode {
-            EPathMapMode::Empty => {
-                if !arena.is_empty() || value_count != 0 {
-                    return Err(TrieCodecError::new(
-                        "neutral empty EPathMap carries trie or values",
-                    ));
-                }
-                (None, 0)
-            }
-            EPathMapMode::Set | EPathMapMode::Map => {
-                let mut trie =
-                    CanonicalCompactTrieTopologyCursor::from_backing(bytes.slice(arena.clone()))?;
-                let length = validate_typed_epm1_topology(mode, value_count, &mut trie)?;
-                (Some(trie), length)
-            }
-        };
-
-        Ok(Self {
-            bytes,
-            mode,
-            value_count,
-            length,
-            arena_start: arena.start,
-            value_cursor: value_table_start,
-            remaining_values: value_count,
-            empty_state: 0,
-            trie,
-        })
+        let view = IndexedByteRegion::from_protobuf_region(ProtobufRegion::from(bytes.clone()), 0);
+        let mut validator = IndexedCanonicalEpm1TopologyCursor::new(view.clone())?;
+        while validator.next_event()?.is_some() {}
+        let indexed = IndexedCanonicalEpm1TopologyCursor::new(view)?;
+        Ok(Self { bytes, indexed })
     }
 
-    pub(crate) const fn mode(&self) -> EPathMapMode { self.mode }
+    pub(crate) const fn mode(&self) -> EPathMapMode { self.indexed.mode() }
 
-    pub(crate) const fn value_count(&self) -> usize { self.value_count }
+    pub(crate) const fn value_count(&self) -> usize { self.indexed.value_count() }
 
-    pub(crate) const fn length(&self) -> usize { self.length }
+    pub(crate) const fn length(&self) -> usize { self.indexed.length() }
 
     pub(crate) fn next_event(&mut self) -> Option<OwnedCanonicalEpm1TopologyEvent> {
-        if self.mode == EPathMapMode::Empty {
-            let event = match self.empty_state {
-                0 => OwnedCanonicalEpm1TopologyEvent::Value {
-                    has_value: false,
-                    value_body_range: None,
-                    value_body: None,
-                    source_offset: EPM_MAGIC.len() + 1,
-                },
-                1 => OwnedCanonicalEpm1TopologyEvent::Leave {
-                    source_offset: EPM_MAGIC.len() + 1,
-                },
-                _ => return None,
-            };
-            self.empty_state += 1;
-            return Some(event);
-        }
-
-        let event = self.trie.as_mut()?.next_event()?;
+        let event = self
+            .indexed
+            .next_event()
+            .expect("the indexed constructor validated the immutable owned EPM1 bytes")?;
         Some(match event {
-            CanonicalCompactTrieTopologyEvent::Value {
-                value,
-                source_offset,
+            IndexedCanonicalEpm1TopologyEvent::Value {
+                has_value,
+                value_body_range,
+                value_body: _,
+                provenance,
             } => {
-                let value_body_range = if self.mode == EPathMapMode::Map && value.is_some() {
-                    let len = read_len(
-                        self.bytes.as_ref(),
-                        &mut self.value_cursor,
-                        "map value length",
-                    )
-                    .expect("constructor validated every map value length");
-                    let start = self.value_cursor;
-                    take(
-                        self.bytes.as_ref(),
-                        &mut self.value_cursor,
-                        len,
-                        "map value payload",
-                    )
-                    .expect("constructor validated every map value body");
-                    self.remaining_values -= 1;
-                    Some(start..self.value_cursor)
-                } else {
-                    None
-                };
                 let value_body = value_body_range
                     .as_ref()
                     .map(|range| self.bytes.slice(range.clone()));
                 OwnedCanonicalEpm1TopologyEvent::Value {
-                    has_value: value.is_some(),
+                    has_value,
                     value_body_range,
                     value_body,
-                    source_offset: self
-                        .arena_start
-                        .checked_add(source_offset)
-                        .expect("validated EPM1 arena offset remains in the snapshot"),
+                    source_offset: provenance.offset,
                 }
             }
-            CanonicalCompactTrieTopologyEvent::Edge {
-                byte,
-                source_offset,
-            } => OwnedCanonicalEpm1TopologyEvent::Edge {
-                byte,
-                source_offset: self
-                    .arena_start
-                    .checked_add(source_offset)
-                    .expect("validated EPM1 arena offset remains in the snapshot"),
-            },
-            CanonicalCompactTrieTopologyEvent::Leave { source_offset } => {
+            IndexedCanonicalEpm1TopologyEvent::Edge { byte, provenance } => {
+                OwnedCanonicalEpm1TopologyEvent::Edge {
+                    byte,
+                    source_offset: provenance.offset,
+                }
+            }
+            IndexedCanonicalEpm1TopologyEvent::Leave { provenance } => {
                 OwnedCanonicalEpm1TopologyEvent::Leave {
-                    source_offset: self
-                        .arena_start
-                        .checked_add(source_offset)
-                        .expect("validated EPM1 arena offset remains in the snapshot"),
+                    source_offset: provenance.offset,
                 }
             }
         })
@@ -1455,9 +1885,30 @@ mod tests {
     use super::*;
     use crate::rhoapi::expr::ExprInstance;
     use crate::rhoapi::{Expr, Par};
+    use crate::rust::rholang::canonical_bytes_arena::{CanonicalBytesArena, CanonicalLocatedByte};
 
     const ACT_VALUE_FLAG: u8 = 0x40;
     const ACT_LINE_FLAG: u8 = 0x80;
+
+    fn frozen_snapshot(bytes: &[u8], source: u32, base: usize) -> IndexedByteRegion<'static> {
+        let mut arena = CanonicalBytesArena::new();
+        let mut handle = arena.empty();
+        for (index, byte) in bytes.iter().copied().enumerate() {
+            handle = arena
+                .append(
+                    handle,
+                    CanonicalLocatedByte::new(
+                        byte,
+                        CanonicalByteProvenance::new(source, base + index),
+                    ),
+                )
+                .unwrap();
+        }
+        IndexedByteRegion::from_frozen(
+            arena.freeze(handle),
+            CanonicalByteProvenance::new(source, base + bytes.len()),
+        )
+    }
 
     fn int(value: i64) -> Par {
         Par::default().with_exprs(vec![Expr {
@@ -1913,7 +2364,248 @@ mod tests {
     }
 
     #[test]
-    fn owned_topology_cursor_visits_a_shared_prefix_comb_in_linear_events() {
+    fn indexed_topology_cursor_matches_owned_events_on_contiguous_and_frozen_sources() {
+        fn assert_indexed(snapshot: Vec<u8>) {
+            const SOURCE: u32 = 73;
+            const BASE: usize = 4_096;
+
+            let mut owned = OwnedCanonicalEpm1TopologyCursor::new(Bytes::from(snapshot.clone()))
+                .expect("owned topology");
+            let frozen = frozen_snapshot(&snapshot, SOURCE, BASE);
+            let mut indexed =
+                IndexedCanonicalEpm1TopologyCursor::new(frozen).expect("frozen topology");
+            assert_eq!(indexed.mode(), owned.mode());
+            assert_eq!(indexed.value_count(), owned.value_count());
+            assert_eq!(indexed.length(), owned.length());
+
+            loop {
+                match (
+                    owned.next_event(),
+                    indexed.next_event().expect("validated frozen event"),
+                ) {
+                    (
+                        Some(OwnedCanonicalEpm1TopologyEvent::Value {
+                            has_value: owned_has_value,
+                            value_body_range: owned_range,
+                            value_body: owned_body,
+                            source_offset,
+                        }),
+                        Some(IndexedCanonicalEpm1TopologyEvent::Value {
+                            has_value,
+                            value_body_range,
+                            value_body,
+                            provenance,
+                        }),
+                    ) => {
+                        assert_eq!(has_value, owned_has_value);
+                        assert_eq!(value_body_range, owned_range);
+                        assert_eq!(provenance.source, SOURCE);
+                        assert_eq!(provenance.offset, BASE + source_offset);
+                        match (value_body, owned_body, value_body_range) {
+                            (Some(indexed_body), Some(owned_body), Some(range)) => {
+                                assert!(indexed_body.content_eq(
+                                    &IndexedByteRegion::from_protobuf_region(
+                                        ProtobufRegion::copy_from_slice(owned_body.as_ref()),
+                                        0,
+                                    )
+                                ));
+                                let body_start = indexed_body.position_at(0).unwrap().physical;
+                                assert_eq!(body_start.source, SOURCE);
+                                assert_eq!(body_start.offset, BASE + range.start);
+                            }
+                            (None, None, None) => {}
+                            _ => panic!("indexed and owned value bodies differ"),
+                        }
+                    }
+                    (
+                        Some(OwnedCanonicalEpm1TopologyEvent::Edge {
+                            byte: owned_byte,
+                            source_offset,
+                        }),
+                        Some(IndexedCanonicalEpm1TopologyEvent::Edge { byte, provenance }),
+                    ) => {
+                        assert_eq!(byte, owned_byte);
+                        assert_eq!(provenance.source, SOURCE);
+                        assert_eq!(provenance.offset, BASE + source_offset);
+                    }
+                    (
+                        Some(OwnedCanonicalEpm1TopologyEvent::Leave { source_offset }),
+                        Some(IndexedCanonicalEpm1TopologyEvent::Leave { provenance }),
+                    ) => {
+                        assert_eq!(provenance.source, SOURCE);
+                        assert_eq!(provenance.offset, BASE + source_offset);
+                    }
+                    (None, None) => break,
+                    _ => panic!("indexed and owned topology events differ"),
+                }
+            }
+        }
+
+        assert_indexed(encode(&EPathMapRepr::<Par>::Empty));
+
+        let mut set = PathMap::new();
+        set.insert(b"indexed/set/a", ());
+        set.insert(b"indexed/set/b", ());
+        set.create_path(b"indexed/value-free");
+        assert_indexed(encode(&EPathMapRepr::<Par>::Set(set)));
+
+        let mut map = PathMap::new();
+        map.insert(b"indexed/map/a", int(1));
+        map.insert(b"indexed/map/b", int(2));
+        map.create_path(b"indexed/value-free");
+        assert_indexed(encode(&EPathMapRepr::Map(map)));
+    }
+
+    #[test]
+    fn indexed_topology_errors_match_contiguous_and_retain_physical_provenance() {
+        const SOURCE: u32 = 91;
+        const BASE: usize = 8_192;
+
+        fn frozen_error(bytes: &[u8]) -> (TrieCodecError, bool) {
+            let snapshot = frozen_snapshot(bytes, SOURCE, BASE);
+            let mut cursor = match IndexedCanonicalEpm1TopologyCursor::new(snapshot) {
+                Ok(cursor) => cursor,
+                Err(error) => return (error, false),
+            };
+            loop {
+                match cursor.next_event() {
+                    Ok(Some(_)) => {}
+                    Ok(None) => panic!("malformed indexed EPM1 reached end of stream"),
+                    Err(error) => {
+                        let stats = cursor.stats();
+                        let repeated = cursor
+                            .next_event()
+                            .expect_err("an indexed terminal error remains latched");
+                        assert_eq!(repeated, error);
+                        assert_eq!(cursor.stats(), stats);
+                        return (error, true);
+                    }
+                }
+            }
+        }
+
+        let mut invalid_magic = encode(&EPathMapRepr::<Par>::Empty);
+        invalid_magic[0] ^= 1;
+
+        let mut trailing = encode(&EPathMapRepr::<Par>::Empty);
+        trailing.push(0);
+
+        let mut set = PathMap::new();
+        set.insert(b"set/value", ());
+        let mut set_with_value = encode(&EPathMapRepr::<Par>::Set(set));
+        *set_with_value.last_mut().unwrap() = 1;
+        set_with_value.push(0);
+
+        let mut map = PathMap::new();
+        map.insert(b"map/value", int(1));
+        let mut map_count_mismatch = encode(&EPathMapRepr::Map(map));
+        let count_offset = parse_canonical_snapshot_prefix(&map_count_mismatch)
+            .unwrap()
+            .value_table_start
+            - 1;
+        map_count_mismatch[count_offset] = 2;
+        map_count_mismatch.push(0);
+
+        for (bytes, deferred_to_stream) in [
+            (invalid_magic, false),
+            (trailing, false),
+            (set_with_value, false),
+            (map_count_mismatch, true),
+        ] {
+            let contiguous = OwnedCanonicalEpm1TopologyCursor::new(Bytes::from(bytes.clone()))
+                .err()
+                .expect("contiguous malformed snapshot");
+            let (frozen, was_deferred) = frozen_error(&bytes);
+            assert_eq!(was_deferred, deferred_to_stream);
+            assert_eq!(frozen.to_string(), contiguous.to_string());
+            let reported = frozen
+                .reported_provenance()
+                .expect("indexed EPM1 errors report physical provenance");
+            let failure = frozen
+                .failure_provenance()
+                .expect("indexed EPM1 errors retain physical failure provenance");
+            assert_eq!(reported.source, SOURCE);
+            assert_eq!(failure.source, SOURCE);
+            assert!((BASE..=BASE + bytes.len()).contains(&reported.offset));
+            assert!((BASE..=BASE + bytes.len()).contains(&failure.offset));
+        }
+    }
+
+    #[test]
+    fn indexed_topology_cursor_is_a_single_pass_over_epm1_topology_and_values() {
+        const VALUES: usize = 128;
+        let mut map = PathMap::new();
+        for index in 0..VALUES {
+            let key = format!("one-pass/shared-prefix/{index:04}");
+            map.insert(key.as_bytes(), int(index as i64));
+        }
+        map.create_path(b"one-pass/shared-prefix/value-free");
+
+        let snapshot = encode(&EPathMapRepr::Map(map));
+        let prefix = parse_canonical_snapshot_prefix(&snapshot).expect("canonical prefix");
+        let value_table_start = prefix.value_table_start;
+        let value_table_len = snapshot.len() - value_table_start;
+        let frozen = frozen_snapshot(&snapshot, 97, 12_288);
+        let mut cursor =
+            IndexedCanonicalEpm1TopologyCursor::new(frozen).expect("indexed topology framing");
+
+        let initial = cursor.stats();
+        assert_eq!(initial.prefix_bytes_read, value_table_start);
+        assert!(initial.prefix_bytes_traversed <= initial.prefix_bytes_read);
+        assert_eq!(initial.value_table_bytes_read, 0);
+        assert_eq!(initial.value_table_bytes_traversed, 0);
+        assert_eq!(initial.topology_events, 0);
+        assert_eq!(initial.value_records, 0);
+        assert_eq!(initial.terminal_checks, 0);
+        assert_eq!(cursor.length(), 0);
+
+        let mut events = 0usize;
+        let mut records = 0usize;
+        while let Some(event) = cursor.next_event().expect("single-pass indexed event") {
+            events += 1;
+            if matches!(event, IndexedCanonicalEpm1TopologyEvent::Value {
+                value_body: Some(_),
+                ..
+            }) {
+                records += 1;
+            }
+            let progress = cursor.stats();
+            assert_eq!(progress.topology_events, events);
+            assert_eq!(progress.value_records, records);
+            assert!(progress.value_table_bytes_read <= value_table_len);
+            assert!(
+                progress.value_table_bytes_traversed <= progress.value_table_bytes_read,
+                "the indexed reader may fast-forward payload bodies but never revisits them"
+            );
+        }
+
+        let complete = cursor.stats();
+        assert_eq!(records, VALUES);
+        assert_eq!(cursor.length(), VALUES);
+        assert_eq!(complete.topology_events, events);
+        assert_eq!(complete.value_records, VALUES);
+        assert_eq!(complete.value_table_bytes_read, value_table_len);
+        assert!(complete.value_table_bytes_traversed <= value_table_len);
+        assert_eq!(
+            complete.prefix_bytes_read + complete.value_table_bytes_read,
+            snapshot.len()
+        );
+        assert!(
+            complete.prefix_bytes_traversed + complete.value_table_bytes_traversed
+                <= snapshot.len(),
+            "sequential EPM1 readers perform at most one physical traversal per snapshot byte"
+        );
+        assert_eq!(complete.terminal_checks, 1);
+
+        assert!(cursor
+            .next_event()
+            .expect("completed cursor stays done")
+            .is_none());
+        assert_eq!(cursor.stats(), complete);
+    }
+
+    #[test]
+    fn indexed_topology_cursor_visits_a_shared_prefix_comb_in_linear_events() {
         const DEPTH: usize = 1_024;
         let mut set = PathMap::new();
         let mut spine = Vec::with_capacity(DEPTH + 1);
@@ -1926,20 +2618,21 @@ mod tests {
         spine.push(0);
         set.insert(&spine, ());
 
-        let snapshot = Bytes::from(encode(&EPathMapRepr::<Par>::Set(set)));
-        let mut cursor = OwnedCanonicalEpm1TopologyCursor::new(snapshot).expect("comb topology");
+        let snapshot = encode(&EPathMapRepr::<Par>::Set(set));
+        let snapshot = frozen_snapshot(&snapshot, 101, 16_384);
+        let mut cursor = IndexedCanonicalEpm1TopologyCursor::new(snapshot).expect("comb topology");
         let mut values = 0usize;
         let mut value_nodes = 0usize;
         let mut edges = 0usize;
         let mut leaves = 0usize;
-        while let Some(event) = cursor.next_event() {
+        while let Some(event) = cursor.next_event().expect("validated comb event") {
             match event {
-                OwnedCanonicalEpm1TopologyEvent::Value { has_value, .. } => {
+                IndexedCanonicalEpm1TopologyEvent::Value { has_value, .. } => {
                     value_nodes += 1;
                     values += usize::from(has_value);
                 }
-                OwnedCanonicalEpm1TopologyEvent::Edge { .. } => edges += 1,
-                OwnedCanonicalEpm1TopologyEvent::Leave { .. } => leaves += 1,
+                IndexedCanonicalEpm1TopologyEvent::Edge { .. } => edges += 1,
+                IndexedCanonicalEpm1TopologyEvent::Leave { .. } => leaves += 1,
             }
         }
 
@@ -1984,7 +2677,7 @@ mod tests {
     }
 
     #[test]
-    fn owned_topology_cursor_is_stack_safe_for_a_depth_4096_comb() {
+    fn indexed_topology_cursor_is_stack_safe_for_a_frozen_depth_4096_comb() {
         const DEPTH: usize = 4_096;
         const STACK: usize = 256 * 1024;
 
@@ -1998,16 +2691,17 @@ mod tests {
         }
         spine.push(0);
         set.insert(&spine, ());
-        let snapshot = Bytes::from(encode(&EPathMapRepr::<Par>::Set(set)));
+        let snapshot = encode(&EPathMapRepr::<Par>::Set(set));
+        let snapshot = frozen_snapshot(&snapshot, 103, 32_768);
 
         std::thread::Builder::new()
-            .name("owned-epm1-topology-depth".to_owned())
+            .name("indexed-epm1-topology-depth".to_owned())
             .stack_size(STACK)
             .spawn(move || {
                 let mut cursor =
-                    OwnedCanonicalEpm1TopologyCursor::new(snapshot).expect("deep topology");
+                    IndexedCanonicalEpm1TopologyCursor::new(snapshot).expect("deep topology");
                 let mut events = 0usize;
-                while cursor.next_event().is_some() {
+                while cursor.next_event().expect("validated deep event").is_some() {
                     events += 1;
                 }
                 assert_eq!(events, 6 * DEPTH + 5);

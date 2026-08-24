@@ -15,6 +15,7 @@
 use crate::rust::canonical_path::CanonicalTopLevelPathForm;
 use crate::rust::rholang::canonical_bytes_arena::{
     CanonicalByteProvenance, CanonicalBytesArena, CanonicalBytesHandle, CanonicalLocatedByte,
+    FrozenCanonicalBytes,
 };
 
 const TERM: u8 = 0x00;
@@ -94,6 +95,7 @@ pub(crate) enum CanonicalPathAdmissionErrorKind {
     UnresolvedObligation,
     TopologyUnderflow,
     TopologyAfterRootLeave,
+    TopologyIncomplete,
     SizeOverflow,
 }
 
@@ -149,6 +151,19 @@ pub(crate) struct CanonicalPathObligationProgress {
 pub(crate) struct CanonicalPathCompletedObligation {
     pub(crate) obligation: CanonicalPathObligation,
     pub(crate) payload: CanonicalBytesHandle,
+    /// Exact physical anchor at which the opaque payload became complete.
+    ///
+    /// Provenance can be discontinuous, so consumers must not synthesize this
+    /// by incrementing the final payload byte's offset.
+    pub(crate) payload_end: CanonicalPathSource,
+}
+
+/// Ownership-independent completed payload for a suspended nested validator.
+#[derive(Clone, Debug)]
+pub(crate) struct FrozenCanonicalPathObligation {
+    pub(crate) obligation: CanonicalPathObligation,
+    pub(crate) payload: FrozenCanonicalBytes,
+    pub(crate) payload_end: CanonicalPathSource,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -336,7 +351,7 @@ enum RegionPhase {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ObligationStatus {
     Payload { remaining: u64 },
-    AwaitingResolution,
+    AwaitingResolution { payload_end: CanonicalPathSource },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -467,7 +482,7 @@ impl CanonicalPathReducer {
             match &self.frames[top.0] {
                 Frame::Obligation {
                     obligation,
-                    status: ObligationStatus::AwaitingResolution,
+                    status: ObligationStatus::AwaitingResolution { payload_end },
                     payload_start,
                     ..
                 } => {
@@ -482,6 +497,7 @@ impl CanonicalPathReducer {
                     return Ok(Some(CanonicalPathCompletedObligation {
                         obligation: *obligation,
                         payload,
+                        payload_end: *payload_end,
                     }));
                 }
                 Frame::Region {
@@ -491,6 +507,22 @@ impl CanonicalPathReducer {
                 _ => return Ok(None),
             }
         }
+    }
+
+    /// Freeze a completed opaque payload so a child PDA can own its indexed
+    /// input while this reducer and arena continue accepting later trie edges.
+    pub(crate) fn freeze_completed_obligation(
+        &self,
+        arena: &CanonicalBytesArena,
+        handle: CanonicalPathReducerHandle,
+    ) -> Result<Option<FrozenCanonicalPathObligation>, CanonicalPathAdmissionError> {
+        Ok(self.completed_obligation(arena, handle)?.map(|completed| {
+            FrozenCanonicalPathObligation {
+                obligation: completed.obligation,
+                payload: arena.freeze(completed.payload),
+                payload_end: completed.payload_end,
+            }
+        }))
     }
 
     pub(crate) fn edge(
@@ -896,7 +928,9 @@ impl CanonicalPathReducer {
                     path.stack = Some(self.push_frame(Frame::Obligation {
                         obligation,
                         status: if remaining == 0 {
-                            ObligationStatus::AwaitingResolution
+                            ObligationStatus::AwaitingResolution {
+                                payload_end: byte.source,
+                            }
                         } else {
                             ObligationStatus::Payload { remaining }
                         },
@@ -909,7 +943,9 @@ impl CanonicalPathReducer {
                         last: remaining == 0,
                     }
                 }
-                ObligationStatus::AwaitingResolution => unreachable!("edge checks this state"),
+                ObligationStatus::AwaitingResolution { .. } => {
+                    unreachable!("edge checks this state")
+                }
             },
         }
     }
@@ -1066,7 +1102,9 @@ impl CanonicalPathReducer {
                 path.stack = Some(self.push_frame(Frame::Obligation {
                     obligation,
                     status: if value == 0 {
-                        ObligationStatus::AwaitingResolution
+                        ObligationStatus::AwaitingResolution {
+                            payload_end: source,
+                        }
                     } else {
                         ObligationStatus::Payload { remaining: value }
                     },
@@ -1174,9 +1212,12 @@ impl CanonicalPathReducer {
                         obligation: *obligation,
                         remaining: match status {
                             ObligationStatus::Payload { remaining } => *remaining,
-                            ObligationStatus::AwaitingResolution => 0,
+                            ObligationStatus::AwaitingResolution { .. } => 0,
                         },
-                        awaiting_resolution: *status == ObligationStatus::AwaitingResolution,
+                        awaiting_resolution: matches!(
+                            status,
+                            ObligationStatus::AwaitingResolution { .. }
+                        ),
                     });
                 }
                 Frame::Region {
@@ -1223,7 +1264,7 @@ impl CanonicalPathReducer {
                 }
                 Frame::Obligation {
                     obligation,
-                    status: ObligationStatus::AwaitingResolution,
+                    status: ObligationStatus::AwaitingResolution { .. },
                     next,
                     ..
                 } if obligation.id == id => {
@@ -1539,6 +1580,13 @@ impl CanonicalPathTopologyAdmission {
         self.reducer.active_obligation(self.current)
     }
 
+    pub(crate) fn freeze_completed_obligation(
+        &self,
+    ) -> Result<Option<FrozenCanonicalPathObligation>, CanonicalPathAdmissionError> {
+        self.reducer
+            .freeze_completed_obligation(&self.arena, self.current)
+    }
+
     pub(crate) fn edge(
         &mut self,
         byte: LocatedPathByte,
@@ -1593,6 +1641,28 @@ impl CanonicalPathTopologyAdmission {
         self.reducer.value(self.current, has_value, source)
     }
 
+    /// Verify that the ACT event stream returned through the root and left no
+    /// nested validator suspended. This is called exactly once when the
+    /// topology cursor reaches its terminal event.
+    pub(crate) fn finish(
+        &self,
+        source: CanonicalPathSource,
+    ) -> Result<(), CanonicalPathAdmissionError> {
+        if let Some(obligation) = self.active_obligation() {
+            return Err(CanonicalPathAdmissionError::new(
+                CanonicalPathAdmissionErrorKind::UnresolvedObligation,
+                obligation.obligation.tag_source,
+            ));
+        }
+        if !self.root_left || !self.restore.is_empty() {
+            return Err(CanonicalPathAdmissionError::new(
+                CanonicalPathAdmissionErrorKind::TopologyIncomplete,
+                source,
+            ));
+        }
+        Ok(())
+    }
+
     pub(crate) fn resolve_obligation(
         &mut self,
         id: CanonicalPathObligationId,
@@ -1636,17 +1706,21 @@ mod tests {
 
     fn linear_result(bytes: &[u8]) -> Result<CanonicalPathSummary, CanonicalPathAdmissionError> {
         let mut admission = CanonicalPathTopologyAdmission::new();
-        assert!(admission
-            .value(false, CanonicalPathSource::new(0))
-            .is_none());
+        assert!(
+            admission
+                .value(false, CanonicalPathSource::new(0))
+                .is_none()
+        );
         for (offset, byte) in bytes.iter().copied().enumerate() {
             let transition = admission
                 .edge(LocatedPathByte::new(byte, offset))
                 .expect("obligation-free driver use");
             assert_eq!(transition, CanonicalPathTransition::Continue);
-            assert!(admission
-                .value(false, CanonicalPathSource::new(offset))
-                .is_none());
+            assert!(
+                admission
+                    .value(false, CanonicalPathSource::new(offset))
+                    .is_none()
+            );
         }
         admission
             .value(true, CanonicalPathSource::new(bytes.len()))
@@ -1845,14 +1919,18 @@ mod tests {
                 },
             )
             .unwrap();
-        assert!(reducer
-            .value(left, true, CanonicalPathSource::new(13))
-            .unwrap()
-            .is_ok());
-        assert!(reducer
-            .value(right, true, CanonicalPathSource::new(23))
-            .unwrap()
-            .is_ok());
+        assert!(
+            reducer
+                .value(left, true, CanonicalPathSource::new(13))
+                .unwrap()
+                .is_ok()
+        );
+        assert!(
+            reducer
+                .value(right, true, CanonicalPathSource::new(23))
+                .unwrap()
+                .is_ok()
+        );
     }
 
     #[test]
@@ -1869,28 +1947,47 @@ mod tests {
             (state, _) = reducer.edge(&mut arena, state, located).unwrap();
         }
         let completed = reducer
-            .completed_obligation(&arena, state)
+            .freeze_completed_obligation(&arena, state)
             .unwrap()
             .unwrap();
         assert_eq!(
             completed.obligation.kind,
             CanonicalPathObligationKind::NestedEpm1
         );
-        assert_eq!(
-            arena.located_bytes(completed.payload).collect::<Vec<_>>(),
-            vec![
-                CanonicalLocatedByte::new(0x31, CanonicalByteProvenance::new(9, 3)),
-                CanonicalLocatedByte::new(0x32, CanonicalByteProvenance::new(9, 7)),
-            ]
-        );
-        let frozen = completed.payload;
+        assert_eq!(completed.payload.located_bytes().collect::<Vec<_>>(), vec![
+            CanonicalLocatedByte::new(0x31, CanonicalByteProvenance::new(9, 3)),
+            CanonicalLocatedByte::new(0x32, CanonicalByteProvenance::new(9, 7)),
+        ]);
+        assert_eq!(completed.payload_end, CanonicalPathSource::in_source(9, 7));
         let _ = arena
             .append(
                 state.bytes(),
                 CanonicalLocatedByte::new(0xff, CanonicalByteProvenance::new(10, 1)),
             )
             .unwrap();
-        assert_eq!(arena.bytes(frozen).collect::<Vec<_>>(), vec![0x31, 0x32]);
+        drop(arena);
+        assert_eq!(completed.payload.bytes().collect::<Vec<_>>(), vec![
+            0x31, 0x32
+        ]);
+    }
+
+    #[test]
+    fn empty_obligation_retains_the_length_field_as_its_eof_anchor() {
+        let mut arena = CanonicalBytesArena::new();
+        let mut reducer = CanonicalPathReducer::new();
+        let mut state = reducer.root(&arena);
+        for located in [
+            CanonicalLocatedByte::new(ESCAPE, CanonicalByteProvenance::new(3, 20)),
+            CanonicalLocatedByte::new(0, CanonicalByteProvenance::new(4, 99)),
+        ] {
+            (state, _) = reducer.edge(&mut arena, state, located).unwrap();
+        }
+        let completed = reducer
+            .freeze_completed_obligation(&arena, state)
+            .unwrap()
+            .unwrap();
+        assert!(completed.payload.is_empty());
+        assert_eq!(completed.payload_end, CanonicalPathSource::in_source(4, 99));
     }
 
     #[test]
@@ -1928,10 +2025,12 @@ mod tests {
                         ),
                     )
                     .unwrap();
-                assert!(reducer
-                    .value(state, true, CanonicalPathSource::new(offset + 1))
-                    .unwrap()
-                    .is_ok());
+                assert!(
+                    reducer
+                        .value(state, true, CanonicalPathSource::new(offset + 1))
+                        .unwrap()
+                        .is_ok()
+                );
                 let edges = offset + 1;
                 let reducer_stats = reducer.stats();
                 let arena_stats = arena.stats();
@@ -1982,19 +2081,23 @@ mod tests {
         admission.edge(LocatedPathByte::new(GINT, 15)).unwrap();
         admission.edge(LocatedPathByte::new(0, 16)).unwrap();
         admission.edge(LocatedPathByte::new(TERM, 17)).unwrap();
-        assert!(admission
-            .value(true, CanonicalPathSource::new(18))
-            .unwrap()
-            .is_ok());
+        assert!(
+            admission
+                .value(true, CanonicalPathSource::new(18))
+                .unwrap()
+                .is_ok()
+        );
     }
 
     #[test]
     fn malformed_value_free_topology_is_retained_but_not_admitted_as_a_value() {
         let mut admission = CanonicalPathTopologyAdmission::new();
         admission.edge(LocatedPathByte::new(0xff, 41)).unwrap();
-        assert!(admission
-            .value(false, CanonicalPathSource::new(42))
-            .is_none());
+        assert!(
+            admission
+                .value(false, CanonicalPathSource::new(42))
+                .is_none()
+        );
         let error = admission
             .value(true, CanonicalPathSource::new(42))
             .unwrap()
@@ -2008,10 +2111,37 @@ mod tests {
         admission
             .edge(LocatedPathByte::new(GBOOL_TRUE, 44))
             .unwrap();
-        assert!(admission
-            .value(true, CanonicalPathSource::new(45))
-            .unwrap()
-            .is_ok());
+        assert!(
+            admission
+                .value(true, CanonicalPathSource::new(45))
+                .unwrap()
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn terminal_check_requires_the_topology_to_return_through_the_root() {
+        let mut admission = CanonicalPathTopologyAdmission::new();
+        assert_eq!(
+            admission
+                .finish(CanonicalPathSource::new(40))
+                .unwrap_err()
+                .kind,
+            CanonicalPathAdmissionErrorKind::TopologyIncomplete
+        );
+        admission
+            .edge(LocatedPathByte::new(GBOOL_TRUE, 41))
+            .unwrap();
+        admission.leave(CanonicalPathSource::new(42)).unwrap();
+        assert_eq!(
+            admission
+                .finish(CanonicalPathSource::new(43))
+                .unwrap_err()
+                .kind,
+            CanonicalPathAdmissionErrorKind::TopologyIncomplete
+        );
+        admission.leave(CanonicalPathSource::new(44)).unwrap();
+        admission.finish(CanonicalPathSource::new(45)).unwrap();
     }
 
     #[test]
@@ -2108,10 +2238,11 @@ mod tests {
             },
         )
         .unwrap();
-        assert!(map
-            .value(true, CanonicalPathSource::new(22))
-            .unwrap()
-            .is_ok());
+        assert!(
+            map.value(true, CanonicalPathSource::new(22))
+                .unwrap()
+                .is_ok()
+        );
     }
 
     #[test]
@@ -2138,10 +2269,12 @@ mod tests {
                 },
             )
             .unwrap();
-        assert!(admission
-            .value(true, CanonicalPathSource::new(5))
-            .unwrap()
-            .is_ok());
+        assert!(
+            admission
+                .value(true, CanonicalPathSource::new(5))
+                .unwrap()
+                .is_ok()
+        );
 
         let mut wrong_mode = CanonicalPathTopologyAdmission::new();
         wrong_mode
@@ -2185,9 +2318,11 @@ mod tests {
         // A rejected branch is dead rather than structurally fatal: topology
         // below it may still be traversed when it has no value endpoint.
         rejected.edge(LocatedPathByte::new(GBOOL_TRUE, 23)).unwrap();
-        assert!(rejected
-            .value(false, CanonicalPathSource::new(24))
-            .is_none());
+        assert!(
+            rejected
+                .value(false, CanonicalPathSource::new(24))
+                .is_none()
+        );
 
         // Exercise the other non-Map discriminator independently.
         let _ = NestedEpmMode::Set;

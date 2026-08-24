@@ -155,6 +155,28 @@ pub trait CanonicalScoreAlgebra {
     }
 }
 
+/// A canonical string atom that has already been admitted and scored by an
+/// algebra. Keeping the atom type distinct from [`PreScoredBytes`] prevents a
+/// byte-native reducer from accidentally using the byte-array score prefix for
+/// a protobuf string (or vice versa).
+pub struct PreScoredString<S>(S);
+
+impl<S> PreScoredString<S> {
+    pub const fn new(score: S) -> Self { Self(score) }
+
+    pub fn into_score(self) -> S { self.0 }
+}
+
+/// A canonical byte-array atom that has already been admitted and scored by
+/// an algebra.
+pub struct PreScoredBytes<S>(S);
+
+impl<S> PreScoredBytes<S> {
+    pub const fn new(score: S) -> Self { Self(score) }
+
+    pub fn into_score(self) -> S { self.0 }
+}
+
 pub fn flag(value: bool) -> i64 { i64::from(value) }
 
 pub fn nonsemantic_score<A: CanonicalScoreAlgebra>(algebra: &mut A) -> Result<A::Score, A::Error> {
@@ -194,22 +216,48 @@ pub enum UnforgeableScore<'a> {
     SysAuthToken,
 }
 
+pub enum PreScoredUnforgeableScore<S> {
+    Absent,
+    Private(PreScoredBytes<S>),
+    DeployerId(PreScoredBytes<S>),
+    DeployId(PreScoredBytes<S>),
+    SysAuthToken,
+}
+
+pub fn unforgeable_score_pre_scored<A: CanonicalScoreAlgebra>(
+    algebra: &mut A,
+    score: PreScoredUnforgeableScore<A::Score>,
+) -> Result<A::Score, A::Error> {
+    let (constructor, bytes) = match score {
+        PreScoredUnforgeableScore::Absent => (Score::ABSENT, None),
+        PreScoredUnforgeableScore::Private(bytes) => (Score::PRIVATE, Some(bytes.into_score())),
+        PreScoredUnforgeableScore::DeployerId(bytes) => {
+            (Score::DEPLOYER_AUTH, Some(bytes.into_score()))
+        }
+        PreScoredUnforgeableScore::DeployId(bytes) => (Score::DEPLOY_ID, Some(bytes.into_score())),
+        PreScoredUnforgeableScore::SysAuthToken => (Score::SYS_AUTH_TOKEN, None),
+    };
+    algebra.constructor(constructor, bytes.into_iter().collect())
+}
+
 pub fn unforgeable_score<A: CanonicalScoreAlgebra>(
     algebra: &mut A,
     score: UnforgeableScore<'_>,
 ) -> Result<A::Score, A::Error> {
-    let (constructor, bytes) = match score {
-        UnforgeableScore::Absent => (Score::ABSENT, None),
-        UnforgeableScore::Private(bytes) => (Score::PRIVATE, Some(bytes)),
-        UnforgeableScore::DeployerId(bytes) => (Score::DEPLOYER_AUTH, Some(bytes)),
-        UnforgeableScore::DeployId(bytes) => (Score::DEPLOY_ID, Some(bytes)),
-        UnforgeableScore::SysAuthToken => (Score::SYS_AUTH_TOKEN, None),
+    let score = match score {
+        UnforgeableScore::Absent => PreScoredUnforgeableScore::Absent,
+        UnforgeableScore::Private(bytes) => {
+            PreScoredUnforgeableScore::Private(PreScoredBytes::new(algebra.bytes(bytes)?))
+        }
+        UnforgeableScore::DeployerId(bytes) => {
+            PreScoredUnforgeableScore::DeployerId(PreScoredBytes::new(algebra.bytes(bytes)?))
+        }
+        UnforgeableScore::DeployId(bytes) => {
+            PreScoredUnforgeableScore::DeployId(PreScoredBytes::new(algebra.bytes(bytes)?))
+        }
+        UnforgeableScore::SysAuthToken => PreScoredUnforgeableScore::SysAuthToken,
     };
-    let children = match bytes {
-        Some(bytes) => vec![algebra.bytes(bytes)?],
-        None => Vec::new(),
-    };
-    algebra.constructor(constructor, children)
+    unforgeable_score_pre_scored(algebra, score)
 }
 
 pub enum GroundScore<'a> {
@@ -231,55 +279,104 @@ pub enum GroundScore<'a> {
     },
 }
 
+pub enum PreScoredGroundScore<S> {
+    AbsentExpr,
+    Bool(bool),
+    Int(i64),
+    String(PreScoredString<S>),
+    Uri(PreScoredString<S>),
+    ByteArray(PreScoredBytes<S>),
+    Double(u64),
+    BigInt(PreScoredBytes<S>),
+    BigRat {
+        numerator: PreScoredBytes<S>,
+        denominator: PreScoredBytes<S>,
+    },
+    FixedPoint {
+        unscaled: PreScoredBytes<S>,
+        scale: u32,
+    },
+}
+
+pub fn ground_score_pre_scored<A: CanonicalScoreAlgebra>(
+    algebra: &mut A,
+    score: PreScoredGroundScore<A::Score>,
+) -> Result<A::Score, A::Error> {
+    match score {
+        PreScoredGroundScore::AbsentExpr => algebra.constructor(Score::ABSENT, Vec::new()),
+        PreScoredGroundScore::Bool(value) => {
+            let value = algebra.integer(if value { 0 } else { 1 })?;
+            algebra.constructor(Score::BOOL, vec![value])
+        }
+        PreScoredGroundScore::Int(value) => {
+            let value = algebra.integer(value)?;
+            algebra.constructor(Score::INT, vec![value])
+        }
+        PreScoredGroundScore::String(value) => {
+            algebra.constructor(Score::STRING, vec![value.into_score()])
+        }
+        PreScoredGroundScore::Uri(value) => {
+            algebra.constructor(Score::URI, vec![value.into_score()])
+        }
+        PreScoredGroundScore::ByteArray(value) => {
+            algebra.constructor(Score::EBYTEARR, vec![value.into_score()])
+        }
+        PreScoredGroundScore::Double(bits) => {
+            let bits = algebra.integer(bits as i64)?;
+            algebra.constructor(Score::DOUBLE, vec![bits])
+        }
+        PreScoredGroundScore::BigInt(value) => {
+            algebra.constructor(Score::BIG_INT, vec![value.into_score()])
+        }
+        PreScoredGroundScore::BigRat {
+            numerator,
+            denominator,
+        } => algebra.constructor(Score::BIG_RAT, vec![
+            numerator.into_score(),
+            denominator.into_score(),
+        ]),
+        PreScoredGroundScore::FixedPoint { unscaled, scale } => {
+            let scale = algebra.integer(i64::from(scale))?;
+            let scale = algebra.node(vec![scale])?;
+            algebra.constructor(Score::FIXED_POINT, vec![unscaled.into_score(), scale])
+        }
+    }
+}
+
 pub fn ground_score<A: CanonicalScoreAlgebra>(
     algebra: &mut A,
     score: GroundScore<'_>,
 ) -> Result<A::Score, A::Error> {
-    match score {
-        GroundScore::AbsentExpr => algebra.constructor(Score::ABSENT, Vec::new()),
-        GroundScore::Bool(value) => {
-            let value = algebra.integer(if value { 0 } else { 1 })?;
-            algebra.constructor(Score::BOOL, vec![value])
-        }
-        GroundScore::Int(value) => {
-            let value = algebra.integer(value)?;
-            algebra.constructor(Score::INT, vec![value])
-        }
+    let score = match score {
+        GroundScore::AbsentExpr => PreScoredGroundScore::AbsentExpr,
+        GroundScore::Bool(value) => PreScoredGroundScore::Bool(value),
+        GroundScore::Int(value) => PreScoredGroundScore::Int(value),
         GroundScore::String(value) => {
-            let value = algebra.string(value)?;
-            algebra.constructor(Score::STRING, vec![value])
+            PreScoredGroundScore::String(PreScoredString::new(algebra.string(value)?))
         }
         GroundScore::Uri(value) => {
-            let value = algebra.string(value)?;
-            algebra.constructor(Score::URI, vec![value])
+            PreScoredGroundScore::Uri(PreScoredString::new(algebra.string(value)?))
         }
         GroundScore::ByteArray(value) => {
-            let value = algebra.bytes(value)?;
-            algebra.constructor(Score::EBYTEARR, vec![value])
+            PreScoredGroundScore::ByteArray(PreScoredBytes::new(algebra.bytes(value)?))
         }
-        GroundScore::Double(bits) => {
-            let bits = algebra.integer(bits as i64)?;
-            algebra.constructor(Score::DOUBLE, vec![bits])
-        }
+        GroundScore::Double(bits) => PreScoredGroundScore::Double(bits),
         GroundScore::BigInt(value) => {
-            let value = algebra.bytes(value)?;
-            algebra.constructor(Score::BIG_INT, vec![value])
+            PreScoredGroundScore::BigInt(PreScoredBytes::new(algebra.bytes(value)?))
         }
         GroundScore::BigRat {
             numerator,
             denominator,
-        } => {
-            let numerator = algebra.bytes(numerator)?;
-            let denominator = algebra.bytes(denominator)?;
-            algebra.constructor(Score::BIG_RAT, vec![numerator, denominator])
-        }
-        GroundScore::FixedPoint { unscaled, scale } => {
-            let unscaled = algebra.bytes(unscaled)?;
-            let scale = algebra.integer(i64::from(scale))?;
-            let scale = algebra.node(vec![scale])?;
-            algebra.constructor(Score::FIXED_POINT, vec![unscaled, scale])
-        }
-    }
+        } => PreScoredGroundScore::BigRat {
+            numerator: PreScoredBytes::new(algebra.bytes(numerator)?),
+            denominator: PreScoredBytes::new(algebra.bytes(denominator)?),
+        },
+        GroundScore::FixedPoint { unscaled, scale } => PreScoredGroundScore::FixedPoint {
+            unscaled: PreScoredBytes::new(algebra.bytes(unscaled)?),
+            scale,
+        },
+    };
+    ground_score_pre_scored(algebra, score)
 }
 
 pub const fn expr_constructor(instance: &ExprInstance) -> i32 {
@@ -396,8 +493,16 @@ pub fn injection_score<A: CanonicalScoreAlgebra>(
     key: &str,
     value: A::Score,
 ) -> Result<A::Score, A::Error> {
-    let key = algebra.string(key)?;
-    algebra.node(vec![key, value])
+    let key = PreScoredString::new(algebra.string(key)?);
+    injection_score_pre_scored(algebra, key, value)
+}
+
+pub fn injection_score_pre_scored<A: CanonicalScoreAlgebra>(
+    algebra: &mut A,
+    key: PreScoredString<A::Score>,
+    value: A::Score,
+) -> Result<A::Score, A::Error> {
+    algebra.node(vec![key.into_score(), value])
 }
 
 pub fn match_case_score<A: CanonicalScoreAlgebra>(
@@ -551,10 +656,20 @@ pub fn method_score<A: CanonicalScoreAlgebra>(
     arguments: Vec<A::Score>,
     connective_used: bool,
 ) -> Result<A::Score, A::Error> {
-    let method_name = algebra.string(method_name)?;
+    let method_name = PreScoredString::new(algebra.string(method_name)?);
+    method_score_pre_scored(algebra, method_name, target, arguments, connective_used)
+}
+
+pub fn method_score_pre_scored<A: CanonicalScoreAlgebra>(
+    algebra: &mut A,
+    method_name: PreScoredString<A::Score>,
+    target: A::Score,
+    arguments: Vec<A::Score>,
+    connective_used: bool,
+) -> Result<A::Score, A::Error> {
     let connective_used = algebra.integer(flag(connective_used))?;
     let mut children = Vec::with_capacity(arguments.len() + 3);
-    children.extend([method_name, target]);
+    children.extend([method_name.into_score(), target]);
     children.extend(arguments);
     children.push(connective_used);
     algebra.constructor(Score::EMETHOD, children)

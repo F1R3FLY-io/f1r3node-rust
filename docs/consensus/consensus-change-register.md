@@ -4891,6 +4891,33 @@ PathMap topology/zipper/algebra operation moves. The stack-safety report §5.19 
 record the quadratic predecessor, linear successor ladder, proof aggregate, and explicit
 not-measured axes.
 
+**CBR-044 living implementation continuation (2026-08-24, indexed RPB3 admission foundation;
+pgmcp 6014/6018/6023).** A shadow canonical-protobuf admission path now retains nested path bytes in
+a persistent content/provenance arena, freezes an opaque `RawParEscape` or `NestedEpm1` payload
+without copying its payload arrays, and presents contiguous, borrowed-arena, and frozen bytes through
+one indexed cursor grammar. Canonical-path reducer states are immutable fork/restore checkpoints;
+their terminal rule requires the ACT topology to return through its root with no unresolved child.
+The indexed EPM1 cursor no longer prewalks endpoint events or value-table records. It checks one
+ordinal and consumes one constant-size value-body subview as each endpoint event is delivered, then
+latches count/trailing success or failure before exposing terminal exhaustion.
+
+The focused zero-swap evidence passes 11 frozen-arena, 11 indexed-protobuf, 6 indexed-score, 12
+canonical-path, 24 indexed-EPM1, and 3 indexed-ACT parity cases. It includes discontinuous physical
+provenance, EPM1 Empty/Set/Map distinctions, malformed deferred terminal errors, source-access
+accounting, depth 4,096 on a 256 KiB stack, and depth 20,000 on 64–256 KiB stacks. This is not the
+production RPB3 validator yet: the current `CanonicalCompactTrieTopologyState` still performs a
+complete physical ACT proof at construction and later reparses node metadata for event emission,
+and the public RPB3 boundary still uses its typed exact validator. Pgmcp 6023 requires one eager
+validated compressed traversal plan with zero node reparses; 6018 retains the global nested-frame
+cutover, zero typed decodes/reconstructed paths, formal equivalence, and resource experiment.
+
+Accordingly this continuation changes no active acceptance rule or byte authority. EPM1 version,
+mode, ACTree03 arena, value ordinals/table, protobuf and bincode images, RPB3 score/body keys,
+PathMap state, normalized `Par`, error boundary, hashes, COMM schedule, charge, and Rholang parallel
+order remain unchanged. The work is classified as shadow implementation and executable evidence;
+no consensus-neutrality or production-performance verdict is inferred before the named cutover and
+equivalence gates close.
+
 **CBR-023 living-set continuation (2026-08-09, comparison exhaustiveness; pgmcp #5282).** The full
 models gate found catch-all mismatch arms in the already-iterative `Sig`, `Token`, `SignedProcess`,
 and `InterpreterError` equality machines. Each arm returned `false` for every currently representable

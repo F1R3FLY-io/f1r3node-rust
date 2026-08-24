@@ -1724,6 +1724,54 @@ tail block, slices and concatenations do not copy bytes, and traversal is iterat
 focused tests include branch restore, distinct provenance over shared content, linear node growth,
 20,000-element left-deep traversal on a 64 KiB stack, and cross-block nested slicing.
 
+The next foundation checkpoint makes those handles ownership-independent at a suspension boundary.
+`freeze` retains immutable block nodes and copies only bounded leaf/page metadata; it does not copy
+the byte or provenance payload arrays. A frozen payload supports constant-size subviews and remains
+valid after the mutable arena is extended or dropped. `IndexedByteRegion` now presents contiguous,
+borrowed-arena, and frozen storage through one forward cursor, and protobuf framing distinguishes
+logical bytes from physically traversed and fast-forwarded bytes. The depth-20,000 protobuf gate
+therefore traverses each physical input byte once rather than rescanning every enclosing
+length-delimited payload.
+
+The canonical-path reducer now freezes a completed `RawParEscape` or `NestedEpm1` obligation with
+an explicit physical end anchor. It never infers that anchor by adding one to the last byte's
+offset, because trie-edge provenance can be discontinuous. The topology wrapper also refuses
+terminal success until the event stream has returned through the ACT root with no suspended child
+validator. These two properties allow the production protobuf driver to schedule a nested Par or
+EPathMap as an ordinary frame on its existing heap worklist; no recursive validator call,
+self-reference, lock, or unsafe lifetime extension is required.
+
+The indexed EPM1 cursor now performs no EPM-specific endpoint-event or value-table prepass.
+Construction validates only framing and the ACT authority supplied by `rspace++`; `next_event`
+checks each Set/Map ordinal and consumes exactly one constant-size value-body subview when that
+endpoint is reached. Count and trailing-byte checks run once at exhaustion, and a terminal error is
+latched before any `None` can escape. The 24-case focused gate proves zero initial EPM event/table
+consumption, monotone single-pass table reads, exact byte accounting, deferred malformed-Map
+failure, repeated-error identity, frozen/contiguous parity, source provenance, and depth 4,096 on a
+256 KiB stack.
+
+A second replay was found rather than hidden: `CanonicalCompactTrieTopologyState::new` still runs
+one complete stack-safe physical ACT canonicality proof and later reparses node metadata to emit
+logical events. For $`S`$ semantic nodes and $`W`$ folded line wrappers, construction plus one
+complete walk parses primary node records $`4S - 2`$ times and wrappers $`2W`$ times. This barrier is needed to
+preserve fail-before-use semantics and current cross-layer error precedence; repeated metadata
+parsing is not. Pgmcp child `rpb3-single-parse-act-traversal-plan` (#6023) therefore requires one
+eager physical proof that retains a compact preorder `ValidatedActPlan`, followed by event emission
+from that plan. Its hard counters are zero node reparses and zero event-time ACT metadata reads;
+compressed line-suffix bytes may still be read when their logical edge events are emitted.
+
+The clean checkpoint evidence is: frozen arena 11/11
+(`d1168a14919bdc5fd509909d2c5e2fc967dabb379a3bed5de1761af2001c78ba`), indexed protobuf 11/11
+(`f1c86693c02b567aedb218b78bb3bee3098a55432393274ddf7f0bd3df457b14`), indexed score 6/6
+(`e4ac6d700b654bac39f04b2148b0c4d176be025af327fe7324937d8efca5c7f8`), canonical path 12/12
+(`2a224a04ee3120496446df13616cfd3d87d94720e7a4f6862b83b9e7d2bf7727`), single-pass EPM1 24/24
+(`9862e7f0b14fe158c0ddc35f9eb2c5a663c29fdd0d907fcf8fd60e188edbf2c6`), and indexed ACT hash/event/error
+parity 3/3 (`aeff25cbf3076616f4a2cfe4e73be2bc8c36734690f9b7fd9d9c6a1bfd64cd9b`).
+These are correctness and resource-accounting prerequisites, not a latency, allocation, retained-
+heap, production-activation, or consensus-neutrality verdict. In particular, the arena's current
+immutable-node ownership introduces allocator work that must be measured with headless Heaptrack
+and geometric depth/width ladders before it can be accepted as the production optimum.
+
 Decision: do not activate the shadow validator and do not retain endpoint replay as a fallback.
 Production cutover requires zero reconstructed-key bytes and zero endpoint replays, byte-native
 nested obligations with exact physical provenance, complete legacy-validator differential and

@@ -11,7 +11,8 @@ use std::fmt;
 
 use super::canonical_bytes_arena::{
     CanonicalByteCursor, CanonicalByteProvenance, CanonicalBytesArena, CanonicalBytesHandle,
-    CanonicalLocatedByte, CanonicalLocatedByteCursor,
+    CanonicalLocatedByte, CanonicalLocatedByteCursor, FrozenCanonicalByteCursor,
+    FrozenCanonicalBytes, FrozenCanonicalLocatedByteCursor,
 };
 use super::protobuf_cursor::{
     CanonicalByteRange, CanonicalProtobufError, CanonicalWireType, ProtobufRegion,
@@ -49,6 +50,12 @@ enum IndexedByteBacking<'a> {
         len: usize,
         root_end: CanonicalByteProvenance,
     },
+    Frozen {
+        root: FrozenCanonicalBytes,
+        start: usize,
+        len: usize,
+        root_end: CanonicalByteProvenance,
+    },
 }
 
 /// A cloneable, constant-size window over contiguous or persistent bytes.
@@ -64,6 +71,7 @@ impl fmt::Debug for IndexedByteRegion<'_> {
         let backing = match self.backing {
             IndexedByteBacking::Contiguous { .. } => "contiguous",
             IndexedByteBacking::Arena { .. } => "arena",
+            IndexedByteBacking::Frozen { .. } => "frozen",
         };
         formatter
             .debug_struct("IndexedByteRegion")
@@ -103,6 +111,7 @@ impl<'a> IndexedByteRegion<'a> {
         match &self.backing {
             IndexedByteBacking::Contiguous { region, .. } => region.len(),
             IndexedByteBacking::Arena { len, .. } => *len,
+            IndexedByteBacking::Frozen { len, .. } => *len,
         }
     }
 
@@ -135,6 +144,19 @@ impl<'a> IndexedByteRegion<'a> {
                     root_end: *root_end,
                 },
             }),
+            IndexedByteBacking::Frozen {
+                root,
+                start,
+                root_end,
+                ..
+            } => Some(Self {
+                backing: IndexedByteBacking::Frozen {
+                    root: root.clone(),
+                    start: start.checked_add(range.start)?,
+                    len: range.end - range.start,
+                    root_end: *root_end,
+                },
+            }),
         }
     }
 
@@ -158,6 +180,21 @@ impl<'a> IndexedByteRegion<'a> {
                 let root_offset = start.checked_add(logical_offset)?;
                 if root_offset < root.len() {
                     arena.provenance_at(*root, root_offset)?
+                } else if root_offset == root.len() {
+                    *root_end
+                } else {
+                    return None;
+                }
+            }
+            IndexedByteBacking::Frozen {
+                root,
+                start,
+                root_end,
+                ..
+            } => {
+                let root_offset = start.checked_add(logical_offset)?;
+                if root_offset < root.len() {
+                    root.provenance_at(root_offset)?
                 } else if root_offset == root.len() {
                     *root_end
                 } else {
@@ -202,6 +239,17 @@ impl<'a> IndexedByteRegion<'a> {
                     .expect("an indexed arena view stays inside its root");
                 IndexedByteCursorInner::Arena(arena.bytes(handle))
             }
+            IndexedByteBacking::Frozen {
+                root, start, len, ..
+            } => {
+                let end = start
+                    .checked_add(*len)
+                    .expect("a validated frozen view range cannot overflow");
+                let view = root
+                    .subview(*start..end)
+                    .expect("an indexed frozen view stays inside its root");
+                IndexedByteCursorInner::Frozen(view.bytes())
+            }
         };
         IndexedByteCursor { inner }
     }
@@ -231,11 +279,46 @@ impl<'a> IndexedByteRegion<'a> {
                     .expect("an indexed arena view stays inside its root");
                 IndexedLocatedByteCursorInner::Arena(arena.located_bytes(handle))
             }
+            IndexedByteBacking::Frozen {
+                root, start, len, ..
+            } => {
+                let end = start
+                    .checked_add(*len)
+                    .expect("a validated frozen view range cannot overflow");
+                let view = root
+                    .subview(*start..end)
+                    .expect("an indexed frozen view stays inside its root");
+                IndexedLocatedByteCursorInner::Frozen(view.located_bytes())
+            }
         };
-        IndexedLocatedByteCursor { inner, yielded: 0 }
+        IndexedLocatedByteCursor {
+            inner,
+            yielded: 0,
+            traversed: 0,
+        }
     }
 
     pub(crate) fn reader(&self) -> IndexedByteReader<'a> { IndexedByteReader::new(self.clone()) }
+
+    /// Random access for schema-neutral indexed consumers. Frozen and
+    /// contiguous views are bounded O(1); the borrowed arena compatibility
+    /// backing may walk its persistent parent structure.
+    pub(crate) fn byte_at(&self, logical_offset: usize) -> Option<u8> {
+        if logical_offset >= self.len() {
+            return None;
+        }
+        match &self.backing {
+            IndexedByteBacking::Contiguous { region, .. } => {
+                region.as_bytes().get(logical_offset).copied()
+            }
+            IndexedByteBacking::Arena {
+                arena, root, start, ..
+            } => arena.byte_at(*root, start.checked_add(logical_offset)?),
+            IndexedByteBacking::Frozen { root, start, .. } => {
+                root.byte_at(start.checked_add(logical_offset)?)
+            }
+        }
+    }
 
     pub(crate) fn content_eq(&self, other: &IndexedByteRegion<'_>) -> bool {
         self.len() == other.len() && self.bytes().eq(other.bytes())
@@ -251,9 +334,72 @@ impl<'a> IndexedByteRegion<'a> {
     }
 }
 
+impl rspace_plus_plus::rspace::pathmap_codec::IndexedByteSource for IndexedByteRegion<'_> {
+    fn len(&self) -> usize { IndexedByteRegion::len(self) }
+
+    fn byte_at(&self, index: usize) -> Option<u8> { IndexedByteRegion::byte_at(self, index) }
+
+    fn contiguous_range(&self, range: std::ops::Range<usize>) -> Option<&[u8]> {
+        match &self.backing {
+            IndexedByteBacking::Contiguous { region, .. } => region.as_bytes().get(range),
+            IndexedByteBacking::Arena { .. } | IndexedByteBacking::Frozen { .. } => None,
+        }
+    }
+
+    fn copy_exact(&self, start: usize, output: &mut [u8]) -> bool {
+        let Some(end) = start.checked_add(output.len()) else {
+            return false;
+        };
+        let Some(view) = self.subview(CanonicalByteRange { start, end }) else {
+            return false;
+        };
+        for (destination, source) in output.iter_mut().zip(view.bytes()) {
+            *destination = source;
+        }
+        true
+    }
+
+    fn ranges_equal(&self, left: std::ops::Range<usize>, right: std::ops::Range<usize>) -> bool {
+        let Some(left) = self.subview(CanonicalByteRange {
+            start: left.start,
+            end: left.end,
+        }) else {
+            return false;
+        };
+        let Some(right) = self.subview(CanonicalByteRange {
+            start: right.start,
+            end: right.end,
+        }) else {
+            return false;
+        };
+        left.content_eq(&right)
+    }
+}
+
+/// An indexed region whose storage has no borrow from its originating arena.
+pub(crate) type OwnedIndexedByteRegion = IndexedByteRegion<'static>;
+
+impl IndexedByteRegion<'static> {
+    pub(crate) fn from_frozen(
+        root: FrozenCanonicalBytes,
+        root_end: CanonicalByteProvenance,
+    ) -> Self {
+        let len = root.len();
+        Self {
+            backing: IndexedByteBacking::Frozen {
+                root,
+                start: 0,
+                len,
+                root_end,
+            },
+        }
+    }
+}
+
 enum IndexedByteCursorInner<'a> {
     Contiguous { region: ProtobufRegion, at: usize },
     Arena(CanonicalByteCursor<'a>),
+    Frozen(FrozenCanonicalByteCursor),
 }
 
 /// A single forward traversal. Persistent parents are expanded by the arena's
@@ -273,6 +419,7 @@ impl Iterator for IndexedByteCursor<'_> {
                 byte
             }
             IndexedByteCursorInner::Arena(cursor) => cursor.next(),
+            IndexedByteCursorInner::Frozen(cursor) => cursor.next(),
         };
         byte
     }
@@ -286,15 +433,38 @@ enum IndexedLocatedByteCursorInner<'a> {
         at: usize,
     },
     Arena(CanonicalLocatedByteCursor<'a>),
+    Frozen(FrozenCanonicalLocatedByteCursor),
 }
 
 pub(crate) struct IndexedLocatedByteCursor<'a> {
     inner: IndexedLocatedByteCursorInner<'a>,
     yielded: usize,
+    traversed: usize,
 }
 
 impl IndexedLocatedByteCursor<'_> {
     pub(crate) const fn bytes_yielded(&self) -> usize { self.yielded }
+
+    pub(crate) const fn bytes_traversed(&self) -> usize { self.traversed }
+
+    fn fast_forward(&mut self, width: usize) -> bool {
+        let advanced = match &mut self.inner {
+            IndexedLocatedByteCursorInner::Contiguous { region, at, .. } => {
+                debug_assert!(*at + width <= region.len());
+                *at += width;
+                true
+            }
+            IndexedLocatedByteCursorInner::Arena(_) => false,
+            IndexedLocatedByteCursorInner::Frozen(cursor) => {
+                cursor.fast_forward(width);
+                true
+            }
+        };
+        if advanced {
+            self.yielded += width;
+        }
+        advanced
+    }
 }
 
 impl Iterator for IndexedLocatedByteCursor<'_> {
@@ -319,8 +489,10 @@ impl Iterator for IndexedLocatedByteCursor<'_> {
                 })
             }
             IndexedLocatedByteCursorInner::Arena(cursor) => cursor.next(),
+            IndexedLocatedByteCursorInner::Frozen(cursor) => cursor.next(),
         };
         self.yielded += usize::from(byte.is_some());
+        self.traversed += usize::from(byte.is_some());
         byte
     }
 }
@@ -391,6 +563,8 @@ impl<'a> IndexedByteReader<'a> {
     pub(crate) const fn offset(&self) -> usize { self.at }
 
     pub(crate) const fn bytes_read(&self) -> usize { self.cursor.bytes_yielded() }
+
+    pub(crate) const fn bytes_traversed(&self) -> usize { self.cursor.bytes_traversed() }
 
     pub(crate) fn is_empty(&self) -> bool { self.at == self.view.len() }
 
@@ -464,6 +638,10 @@ impl<'a> IndexedByteReader<'a> {
         operation: IndexedByteReadOperation,
     ) -> Result<(), IndexedByteReadError> {
         let end = self.require(width, operation)?;
+        if self.cursor.fast_forward(width) {
+            self.at = end;
+            return Ok(());
+        }
         while self.at < end {
             self.next_raw()
                 .expect("a range checked against the view has every requested byte");
@@ -734,6 +912,8 @@ impl std::error::Error for LocatedCanonicalProtobufError {
 pub(crate) struct IndexedCanonicalFieldCursorStats {
     pub(crate) fields_read: usize,
     pub(crate) bytes_read: usize,
+    pub(crate) bytes_traversed: usize,
+    pub(crate) bytes_fast_forwarded: usize,
 }
 
 /// Schema-neutral canonical protobuf framing over either indexed backing.
@@ -771,9 +951,13 @@ impl<'a> IndexedCanonicalFieldCursor<'a> {
     pub(crate) fn is_empty(&self) -> bool { self.reader.is_empty() }
 
     pub(crate) fn stats(&self) -> IndexedCanonicalFieldCursorStats {
+        let bytes_read = self.reader.bytes_read();
+        let bytes_traversed = self.reader.bytes_traversed();
         IndexedCanonicalFieldCursorStats {
             fields_read: self.fields_read,
-            bytes_read: self.reader.bytes_read(),
+            bytes_read,
+            bytes_traversed,
+            bytes_fast_forwarded: bytes_read - bytes_traversed,
         }
     }
 
@@ -1073,6 +1257,17 @@ mod tests {
         IndexedByteRegion::from_arena(arena, handle, CanonicalByteProvenance::new(SOURCE, end))
     }
 
+    fn frozen_view(
+        arena: &CanonicalBytesArena,
+        handle: CanonicalBytesHandle,
+        end: usize,
+    ) -> OwnedIndexedByteRegion {
+        IndexedByteRegion::from_frozen(
+            arena.freeze(handle),
+            CanonicalByteProvenance::new(SOURCE, end),
+        )
+    }
+
     fn bytes_of(view: &IndexedByteRegion<'_>) -> Vec<u8> { view.bytes().collect() }
 
     #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1316,6 +1511,31 @@ mod tests {
                         panic!("framing disagreement for {bytes:02x?}: {expected:?} vs {actual:?}")
                     }
                 }
+
+                let indexed_frozen = frozen_view(&arena, message, BASE + 7 + bytes.len());
+                let actual_frozen =
+                    indexed_summary(indexed_frozen.clone(), slot_order).map(|(fields, _)| fields);
+                match (&expected, actual_frozen) {
+                    (Ok(expected), Ok(actual)) => {
+                        assert_eq!(&actual, expected, "frozen bytes: {bytes:02x?}")
+                    }
+                    (Err(expected), Err(actual)) => {
+                        assert_eq!(&actual.error, expected, "frozen bytes: {bytes:02x?}");
+                        assert_eq!(actual.reported.physical.source, SOURCE);
+                        assert_eq!(
+                            actual.reported.physical.offset,
+                            BASE + 7 + actual.reported.logical_offset
+                        );
+                        assert_eq!(actual.failure.physical.source, SOURCE);
+                        assert_eq!(
+                            actual.failure.physical.offset,
+                            BASE + 7 + actual.failure.logical_offset
+                        );
+                    }
+                    (expected, actual) => panic!(
+                        "frozen framing disagreement for {bytes:02x?}: {expected:?} vs {actual:?}"
+                    ),
+                }
             }
         }
     }
@@ -1544,6 +1764,153 @@ mod tests {
     }
 
     #[test]
+    fn frozen_indexed_views_survive_arena_mutation_and_keep_discontinuous_locations() {
+        let mut arena = CanonicalBytesArena::new();
+        let mut handle = arena.empty();
+        let expected: Vec<_> = (0..193usize)
+            .map(|offset| {
+                CanonicalLocatedByte::new(
+                    (offset % 251) as u8,
+                    CanonicalByteProvenance::new((offset % 7) as u32, 50_000 + offset * 13),
+                )
+            })
+            .collect();
+        for located in &expected {
+            let singleton = arena.append(arena.empty(), *located).unwrap();
+            handle = arena.concat(handle, singleton).unwrap();
+        }
+        let frozen = arena.freeze(handle);
+        let root_end = CanonicalByteProvenance::new(99, 777_777);
+        let root = IndexedByteRegion::from_frozen(frozen, root_end);
+
+        for offset in 0..4_096usize {
+            let _ = arena
+                .append(
+                    handle,
+                    CanonicalLocatedByte::new(
+                        (offset % 239) as u8,
+                        CanonicalByteProvenance::new(55, offset),
+                    ),
+                )
+                .unwrap();
+        }
+        drop(arena);
+
+        let nested = root
+            .subview(CanonicalByteRange {
+                start: 17,
+                end: 181,
+            })
+            .unwrap()
+            .subview(CanonicalByteRange { start: 9, end: 151 })
+            .unwrap();
+        assert_eq!(nested.len(), 142);
+        for (logical, located) in expected[26..168].iter().enumerate() {
+            assert_eq!(nested.byte_at(logical), Some(located.byte));
+            assert_eq!(
+                nested.position_at(logical).unwrap().physical,
+                located.provenance
+            );
+        }
+        assert_eq!(
+            bytes_of(&nested),
+            expected[26..168]
+                .iter()
+                .map(|byte| byte.byte)
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(nested.end_position().physical, expected[168].provenance);
+        assert_eq!(root.end_position().physical, root_end);
+    }
+
+    #[test]
+    fn contiguous_and_frozen_length_payloads_fast_forward_with_logical_accounting() {
+        let mut bytes = vec![0x0a];
+        bytes.extend(encode_varint(8_192));
+        bytes.extend((0..8_192usize).map(|offset| (offset % 251) as u8));
+
+        let contiguous = IndexedByteRegion::from_protobuf_region(
+            ProtobufRegion::copy_from_slice(&bytes),
+            SOURCE,
+        );
+        let mut contiguous_cursor = IndexedCanonicalFieldCursor::new(contiguous);
+        assert!(contiguous_cursor.next_field().unwrap().is_some());
+        let contiguous_stats = contiguous_cursor.stats();
+        assert_eq!(contiguous_stats.bytes_read, bytes.len());
+        assert_eq!(contiguous_stats.bytes_fast_forwarded, 8_192);
+        assert_eq!(
+            contiguous_stats.bytes_traversed,
+            bytes.len() - contiguous_stats.bytes_fast_forwarded
+        );
+
+        let mut arena = CanonicalBytesArena::new();
+        let handle = append_bytes(&mut arena, &bytes, BASE);
+        let frozen = frozen_view(&arena, handle, BASE + bytes.len());
+        let mut frozen_cursor = IndexedCanonicalFieldCursor::new(frozen);
+        assert!(frozen_cursor.next_field().unwrap().is_some());
+        assert_eq!(frozen_cursor.stats(), contiguous_stats);
+
+        let borrowed = persistent_view(&arena, handle, BASE + bytes.len());
+        let mut borrowed_cursor = IndexedCanonicalFieldCursor::new(borrowed);
+        assert!(borrowed_cursor.next_field().unwrap().is_some());
+        let borrowed_stats = borrowed_cursor.stats();
+        assert_eq!(borrowed_stats.bytes_read, bytes.len());
+        assert_eq!(borrowed_stats.bytes_traversed, bytes.len());
+        assert_eq!(borrowed_stats.bytes_fast_forwarded, 0);
+    }
+
+    #[test]
+    fn deeply_nested_frozen_messages_traverse_each_physical_byte_once() {
+        let thread = std::thread::Builder::new()
+            .stack_size(64 * 1024)
+            .spawn(|| {
+                const DEPTH: usize = 20_000;
+                let mut lengths = Vec::with_capacity(DEPTH + 1);
+                lengths.push(0usize);
+                for depth in 1..=DEPTH {
+                    let child = lengths[depth - 1];
+                    lengths.push(1 + encode_varint(child as u64).len() + child);
+                }
+                let mut bytes = Vec::with_capacity(lengths[DEPTH]);
+                for child_len in lengths[..DEPTH].iter().rev().copied() {
+                    bytes.push(0x0a);
+                    bytes.extend(encode_varint(child_len as u64));
+                }
+                assert_eq!(bytes.len(), lengths[DEPTH]);
+
+                let mut arena = CanonicalBytesArena::new();
+                let handle = append_bytes(&mut arena, &bytes, BASE);
+                let mut body = frozen_view(&arena, handle, BASE + bytes.len());
+                drop(arena);
+
+                let mut levels = 0usize;
+                let mut logical_read = 0usize;
+                let mut physically_traversed = 0usize;
+                let mut fast_forwarded = 0usize;
+                while !body.is_empty() {
+                    let mut cursor = IndexedCanonicalFieldCursor::new(body);
+                    let field = cursor.next_field().unwrap().unwrap();
+                    assert_eq!(field.number, 1);
+                    let child = field.expect_length_delimited().unwrap().clone();
+                    assert!(cursor.next_field().unwrap().is_none());
+                    let stats = cursor.stats();
+                    logical_read += stats.bytes_read;
+                    physically_traversed += stats.bytes_traversed;
+                    fast_forwarded += stats.bytes_fast_forwarded;
+                    body = child;
+                    levels += 1;
+                }
+
+                assert_eq!(levels, DEPTH);
+                assert_eq!(physically_traversed, bytes.len());
+                assert!(logical_read > bytes.len() * 1_000);
+                assert_eq!(logical_read, physically_traversed + fast_forwarded);
+            })
+            .unwrap();
+        thread.join().unwrap();
+    }
+
+    #[test]
     fn deeply_persistent_framing_is_stack_safe_and_single_pass_linear() {
         let thread = std::thread::Builder::new()
             .stack_size(64 * 1024)
@@ -1570,6 +1937,8 @@ mod tests {
                 assert_eq!(cursor.stats(), IndexedCanonicalFieldCursorStats {
                     fields_read: 10_000,
                     bytes_read: 20_000,
+                    bytes_traversed: 20_000,
+                    bytes_fast_forwarded: 0,
                 });
             })
             .unwrap();

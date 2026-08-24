@@ -30,6 +30,7 @@ use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::fmt;
 use std::ops::Range;
+use std::sync::Arc;
 
 const BLOCK_BYTES: usize = 32;
 
@@ -165,10 +166,170 @@ pub(crate) struct CanonicalBytesArenaStats {
     pub(crate) provenance_concats: usize,
 }
 
+#[derive(Clone)]
+struct FrozenContentLeaf {
+    node: Arc<ContentNode>,
+    block_start: usize,
+    len: usize,
+    logical_start: usize,
+}
+
+impl FrozenContentLeaf {
+    fn logical_end(&self) -> usize { self.logical_start + self.len }
+
+    fn byte_at(&self, logical_offset: usize) -> u8 {
+        let ContentNodeKind::Block { bytes, .. } = &self.node.kind else {
+            unreachable!("a frozen content leaf retains a block node")
+        };
+        bytes[self.block_start + logical_offset - self.logical_start]
+    }
+}
+
+#[derive(Clone)]
+struct FrozenProvenanceLeaf {
+    node: Arc<ProvenanceNode>,
+    block_start: usize,
+    len: usize,
+    logical_start: usize,
+}
+
+impl FrozenProvenanceLeaf {
+    fn logical_end(&self) -> usize { self.logical_start + self.len }
+
+    fn provenance_at(&self, logical_offset: usize) -> CanonicalByteProvenance {
+        let ProvenanceNodeKind::Block { values, .. } = &self.node.kind else {
+            unreachable!("a frozen provenance leaf retains a block node")
+        };
+        values[self.block_start + logical_offset - self.logical_start]
+    }
+}
+
+struct FrozenCanonicalBytesData {
+    len: usize,
+    content_leaves: Box<[FrozenContentLeaf]>,
+    provenance_leaves: Box<[FrozenProvenanceLeaf]>,
+    content_pages: Box<[usize]>,
+    provenance_pages: Box<[usize]>,
+}
+
+/// Immutable, ownership-independent bytes frozen from one persistent handle.
+///
+/// Freezing copies only leaf/index metadata. Byte and provenance payload arrays
+/// remain in the immutable arena nodes retained by `Arc`, so the originating
+/// arena may be appended to or dropped after this value is created. A view and
+/// each of its subviews are constant-size clones.
+#[derive(Clone)]
+pub(crate) struct FrozenCanonicalBytes {
+    data: Arc<FrozenCanonicalBytesData>,
+    start: usize,
+    len: usize,
+}
+
+impl fmt::Debug for FrozenCanonicalBytes {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("FrozenCanonicalBytes")
+            .field("len", &self.len)
+            .finish()
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct FrozenCanonicalBytesStats {
+    pub(crate) content_leaves: usize,
+    pub(crate) provenance_leaves: usize,
+    pub(crate) page_entries: usize,
+}
+
+impl FrozenCanonicalBytes {
+    pub(crate) const fn len(&self) -> usize { self.len }
+
+    pub(crate) const fn is_empty(&self) -> bool { self.len == 0 }
+
+    /// Form an O(1) owned subview without copying payload or index metadata.
+    pub(crate) fn subview(&self, range: Range<usize>) -> Option<Self> {
+        if range.start > range.end || range.end > self.len {
+            return None;
+        }
+        let start = self.start.checked_add(range.start)?;
+        let end = self.start.checked_add(range.end)?;
+        if end > self.data.len {
+            return None;
+        }
+        Some(Self {
+            data: Arc::clone(&self.data),
+            start,
+            len: range.end - range.start,
+        })
+    }
+
+    /// Random byte lookup. At most `BLOCK_BYTES` leaf records are inspected.
+    pub(crate) fn byte_at(&self, logical_offset: usize) -> Option<u8> {
+        if logical_offset >= self.len {
+            return None;
+        }
+        let absolute = self.start.checked_add(logical_offset)?;
+        let leaf = Self::leaf_at(
+            absolute,
+            &self.data.content_pages,
+            &self.data.content_leaves,
+            FrozenContentLeaf::logical_end,
+        )?;
+        Some(self.data.content_leaves[leaf].byte_at(absolute))
+    }
+
+    /// Random physical-provenance lookup with the same bounded index walk.
+    pub(crate) fn provenance_at(&self, logical_offset: usize) -> Option<CanonicalByteProvenance> {
+        if logical_offset >= self.len {
+            return None;
+        }
+        let absolute = self.start.checked_add(logical_offset)?;
+        let leaf = Self::leaf_at(
+            absolute,
+            &self.data.provenance_pages,
+            &self.data.provenance_leaves,
+            FrozenProvenanceLeaf::logical_end,
+        )?;
+        Some(self.data.provenance_leaves[leaf].provenance_at(absolute))
+    }
+
+    pub(crate) fn bytes(&self) -> FrozenCanonicalByteCursor {
+        FrozenCanonicalByteCursor::new(self.clone())
+    }
+
+    pub(crate) fn located_bytes(&self) -> FrozenCanonicalLocatedByteCursor {
+        FrozenCanonicalLocatedByteCursor {
+            bytes: FrozenCanonicalByteCursor::new(self.clone()),
+            provenance: FrozenCanonicalProvenanceCursor::new(self.clone()),
+        }
+    }
+
+    pub(crate) fn stats(&self) -> FrozenCanonicalBytesStats {
+        FrozenCanonicalBytesStats {
+            content_leaves: self.data.content_leaves.len(),
+            provenance_leaves: self.data.provenance_leaves.len(),
+            page_entries: self.data.content_pages.len() + self.data.provenance_pages.len(),
+        }
+    }
+
+    fn leaf_at<T>(
+        logical_offset: usize,
+        pages: &[usize],
+        leaves: &[T],
+        logical_end: fn(&T) -> usize,
+    ) -> Option<usize> {
+        let mut leaf = *pages.get(logical_offset / BLOCK_BYTES)?;
+        while logical_end(leaves.get(leaf)?) <= logical_offset {
+            leaf += 1;
+        }
+        Some(leaf)
+    }
+}
+
 /// Append-only ownership arena for persistent canonical byte strings.
 pub(crate) struct CanonicalBytesArena {
-    content_nodes: Vec<ContentNode>,
-    provenance_nodes: Vec<ProvenanceNode>,
+    content_nodes: Vec<Arc<ContentNode>>,
+    provenance_nodes: Vec<Arc<ProvenanceNode>>,
     content_intern: HashMap<ContentNodeKind, ContentNodeId>,
     stats: CanonicalBytesArenaStats,
 }
@@ -354,6 +515,16 @@ impl CanonicalBytesArena {
         CanonicalByteCursor::new(self, value.content)
     }
 
+    /// Compatibility random lookup for a live borrowed arena. Frozen views
+    /// provide the bounded indexed implementation used by production parsers.
+    pub(crate) fn byte_at(&self, value: CanonicalBytesHandle, logical_offset: usize) -> Option<u8> {
+        if logical_offset >= value.len {
+            return None;
+        }
+        let one = self.slice(value, logical_offset..logical_offset + 1).ok()?;
+        self.bytes(one).next()
+    }
+
     pub(crate) fn located_bytes(
         &self,
         value: CanonicalBytesHandle,
@@ -362,6 +533,108 @@ impl CanonicalBytesArena {
             bytes: CanonicalByteCursor::new(self, value.content),
             provenance: CanonicalProvenanceCursor::new(self, value.provenance),
         }
+    }
+
+    /// Freeze one handle into ownership-independent indexed metadata.
+    ///
+    /// The retained block nodes own the original fixed-size payload arrays.
+    /// Only one leaf record per intersected block fragment and one index entry
+    /// per fixed-size logical page are allocated here.
+    pub(crate) fn freeze(&self, value: CanonicalBytesHandle) -> FrozenCanonicalBytes {
+        let content_leaves = self.freeze_content_leaves(value.content);
+        let provenance_leaves = self.freeze_provenance_leaves(value.provenance);
+        debug_assert_eq!(
+            content_leaves
+                .last()
+                .map_or(0, FrozenContentLeaf::logical_end),
+            value.len
+        );
+        debug_assert_eq!(
+            provenance_leaves
+                .last()
+                .map_or(0, FrozenProvenanceLeaf::logical_end),
+            value.len
+        );
+        let content_pages =
+            Self::freeze_page_index(value.len, &content_leaves, FrozenContentLeaf::logical_end);
+        let provenance_pages = Self::freeze_page_index(
+            value.len,
+            &provenance_leaves,
+            FrozenProvenanceLeaf::logical_end,
+        );
+        FrozenCanonicalBytes {
+            data: Arc::new(FrozenCanonicalBytesData {
+                len: value.len,
+                content_leaves: content_leaves.into_boxed_slice(),
+                provenance_leaves: provenance_leaves.into_boxed_slice(),
+                content_pages: content_pages.into_boxed_slice(),
+                provenance_pages: provenance_pages.into_boxed_slice(),
+            }),
+            start: 0,
+            len: value.len,
+        }
+    }
+
+    fn freeze_content_leaves(&self, root: Option<ContentSpan>) -> Vec<FrozenContentLeaf> {
+        let mut work: Vec<_> = root.into_iter().map(ContentCursorTask::Span).collect();
+        let mut leaves = Vec::new();
+        let mut logical_start = 0usize;
+        while let Some(task) = work.pop() {
+            match task {
+                ContentCursorTask::Span(span) => {
+                    expand_content_span(&self.content_nodes, &mut work, span)
+                }
+                ContentCursorTask::Block { root, at, end } => {
+                    let len = end - at;
+                    leaves.push(FrozenContentLeaf {
+                        node: Arc::clone(&self.content_nodes[root.0]),
+                        block_start: at,
+                        len,
+                        logical_start,
+                    });
+                    logical_start += len;
+                }
+            }
+        }
+        leaves
+    }
+
+    fn freeze_provenance_leaves(&self, root: Option<ProvenanceSpan>) -> Vec<FrozenProvenanceLeaf> {
+        let mut work: Vec<_> = root.into_iter().map(ProvenanceCursorTask::Span).collect();
+        let mut leaves = Vec::new();
+        let mut logical_start = 0usize;
+        while let Some(task) = work.pop() {
+            match task {
+                ProvenanceCursorTask::Span(span) => {
+                    expand_provenance_span(&self.provenance_nodes, &mut work, span)
+                }
+                ProvenanceCursorTask::Block { root, at, end } => {
+                    let len = end - at;
+                    leaves.push(FrozenProvenanceLeaf {
+                        node: Arc::clone(&self.provenance_nodes[root.0]),
+                        block_start: at,
+                        len,
+                        logical_start,
+                    });
+                    logical_start += len;
+                }
+            }
+        }
+        leaves
+    }
+
+    fn freeze_page_index<T>(len: usize, leaves: &[T], logical_end: fn(&T) -> usize) -> Vec<usize> {
+        let page_count = len / BLOCK_BYTES + usize::from(len % BLOCK_BYTES != 0);
+        let mut pages = Vec::with_capacity(page_count);
+        let mut leaf = 0usize;
+        for page in 0..page_count {
+            let logical_start = page * BLOCK_BYTES;
+            while logical_end(&leaves[leaf]) <= logical_start {
+                leaf += 1;
+            }
+            pages.push(leaf);
+        }
+        pages
     }
 
     pub(crate) fn provenance_at(
@@ -535,10 +808,10 @@ impl CanonicalBytesArena {
             ContentNodeKind::Block { .. } => self.stats.content_blocks += 1,
             ContentNodeKind::Concat { .. } => self.stats.content_concats += 1,
         }
-        self.content_nodes.push(ContentNode {
+        self.content_nodes.push(Arc::new(ContentNode {
             len,
             kind: kind.clone(),
-        });
+        }));
         self.content_intern.insert(kind, id);
         self.stats.content_nodes = self.content_nodes.len();
         Ok(id)
@@ -557,7 +830,8 @@ impl CanonicalBytesArena {
             ProvenanceNodeKind::Block { .. } => self.stats.provenance_blocks += 1,
             ProvenanceNodeKind::Concat { .. } => self.stats.provenance_concats += 1,
         }
-        self.provenance_nodes.push(ProvenanceNode { len, kind });
+        self.provenance_nodes
+            .push(Arc::new(ProvenanceNode { len, kind }));
         self.stats.provenance_nodes = self.provenance_nodes.len();
         Ok(id)
     }
@@ -571,6 +845,50 @@ enum ContentCursorTask {
         at: usize,
         end: usize,
     },
+}
+
+fn expand_content_span(
+    nodes: &[Arc<ContentNode>],
+    work: &mut Vec<ContentCursorTask>,
+    span: ContentSpan,
+) {
+    let node = &nodes[span.root.0];
+    let end = span.start + span.len;
+    match &node.kind {
+        ContentNodeKind::Block { previous, used, .. } => {
+            let previous_len = previous.map_or(0, |id| nodes[id.0].len);
+            if end > previous_len {
+                work.push(ContentCursorTask::Block {
+                    root: span.root,
+                    at: span.start.max(previous_len) - previous_len,
+                    end: (end - previous_len).min(usize::from(*used)),
+                });
+            }
+            if span.start < previous_len {
+                work.push(ContentCursorTask::Span(ContentSpan {
+                    root: previous.expect("a positive previous range has a previous block"),
+                    start: span.start,
+                    len: end.min(previous_len) - span.start,
+                }));
+            }
+        }
+        ContentNodeKind::Concat { left, right } => {
+            if end > left.len {
+                work.push(ContentCursorTask::Span(ContentSpan {
+                    root: right.root,
+                    start: right.start + span.start.saturating_sub(left.len),
+                    len: end.min(left.len + right.len) - span.start.max(left.len),
+                }));
+            }
+            if span.start < left.len {
+                work.push(ContentCursorTask::Span(ContentSpan {
+                    root: left.root,
+                    start: left.start + span.start,
+                    len: end.min(left.len) - span.start,
+                }));
+            }
+        }
+    }
 }
 
 pub(crate) struct CanonicalByteCursor<'a> {
@@ -587,43 +905,7 @@ impl<'a> CanonicalByteCursor<'a> {
     }
 
     fn expand(&mut self, span: ContentSpan) {
-        let node = &self.arena.content_nodes[span.root.0];
-        let end = span.start + span.len;
-        match &node.kind {
-            ContentNodeKind::Block { previous, used, .. } => {
-                let previous_len = previous.map_or(0, |id| self.arena.content_nodes[id.0].len);
-                if end > previous_len {
-                    self.work.push(ContentCursorTask::Block {
-                        root: span.root,
-                        at: span.start.max(previous_len) - previous_len,
-                        end: (end - previous_len).min(usize::from(*used)),
-                    });
-                }
-                if span.start < previous_len {
-                    self.work.push(ContentCursorTask::Span(ContentSpan {
-                        root: previous.expect("a positive previous range has a previous block"),
-                        start: span.start,
-                        len: end.min(previous_len) - span.start,
-                    }));
-                }
-            }
-            ContentNodeKind::Concat { left, right } => {
-                if end > left.len {
-                    self.work.push(ContentCursorTask::Span(ContentSpan {
-                        root: right.root,
-                        start: right.start + span.start.saturating_sub(left.len),
-                        len: end.min(left.len + right.len) - span.start.max(left.len),
-                    }));
-                }
-                if span.start < left.len {
-                    self.work.push(ContentCursorTask::Span(ContentSpan {
-                        root: left.root,
-                        start: left.start + span.start,
-                        len: end.min(left.len) - span.start,
-                    }));
-                }
-            }
-        }
+        expand_content_span(&self.arena.content_nodes, &mut self.work, span);
     }
 }
 
@@ -665,6 +947,50 @@ enum ProvenanceCursorTask {
     },
 }
 
+fn expand_provenance_span(
+    nodes: &[Arc<ProvenanceNode>],
+    work: &mut Vec<ProvenanceCursorTask>,
+    span: ProvenanceSpan,
+) {
+    let node = &nodes[span.root.0];
+    let end = span.start + span.len;
+    match &node.kind {
+        ProvenanceNodeKind::Block { previous, used, .. } => {
+            let previous_len = previous.map_or(0, |id| nodes[id.0].len);
+            if end > previous_len {
+                work.push(ProvenanceCursorTask::Block {
+                    root: span.root,
+                    at: span.start.max(previous_len) - previous_len,
+                    end: (end - previous_len).min(usize::from(*used)),
+                });
+            }
+            if span.start < previous_len {
+                work.push(ProvenanceCursorTask::Span(ProvenanceSpan {
+                    root: previous.expect("a positive previous range has a previous block"),
+                    start: span.start,
+                    len: end.min(previous_len) - span.start,
+                }));
+            }
+        }
+        ProvenanceNodeKind::Concat { left, right } => {
+            if end > left.len {
+                work.push(ProvenanceCursorTask::Span(ProvenanceSpan {
+                    root: right.root,
+                    start: right.start + span.start.saturating_sub(left.len),
+                    len: end.min(left.len + right.len) - span.start.max(left.len),
+                }));
+            }
+            if span.start < left.len {
+                work.push(ProvenanceCursorTask::Span(ProvenanceSpan {
+                    root: left.root,
+                    start: left.start + span.start,
+                    len: end.min(left.len) - span.start,
+                }));
+            }
+        }
+    }
+}
+
 struct CanonicalProvenanceCursor<'a> {
     arena: &'a CanonicalBytesArena,
     work: Vec<ProvenanceCursorTask>,
@@ -679,43 +1005,7 @@ impl<'a> CanonicalProvenanceCursor<'a> {
     }
 
     fn expand(&mut self, span: ProvenanceSpan) {
-        let node = &self.arena.provenance_nodes[span.root.0];
-        let end = span.start + span.len;
-        match &node.kind {
-            ProvenanceNodeKind::Block { previous, used, .. } => {
-                let previous_len = previous.map_or(0, |id| self.arena.provenance_nodes[id.0].len);
-                if end > previous_len {
-                    self.work.push(ProvenanceCursorTask::Block {
-                        root: span.root,
-                        at: span.start.max(previous_len) - previous_len,
-                        end: (end - previous_len).min(usize::from(*used)),
-                    });
-                }
-                if span.start < previous_len {
-                    self.work.push(ProvenanceCursorTask::Span(ProvenanceSpan {
-                        root: previous.expect("a positive previous range has a previous block"),
-                        start: span.start,
-                        len: end.min(previous_len) - span.start,
-                    }));
-                }
-            }
-            ProvenanceNodeKind::Concat { left, right } => {
-                if end > left.len {
-                    self.work.push(ProvenanceCursorTask::Span(ProvenanceSpan {
-                        root: right.root,
-                        start: right.start + span.start.saturating_sub(left.len),
-                        len: end.min(left.len + right.len) - span.start.max(left.len),
-                    }));
-                }
-                if span.start < left.len {
-                    self.work.push(ProvenanceCursorTask::Span(ProvenanceSpan {
-                        root: left.root,
-                        start: left.start + span.start,
-                        len: end.min(left.len) - span.start,
-                    }));
-                }
-            }
-        }
+        expand_provenance_span(&self.arena.provenance_nodes, &mut self.work, span);
     }
 }
 
@@ -763,6 +1053,193 @@ impl Iterator for CanonicalLocatedByteCursor<'_> {
             .map(|(byte, provenance)| CanonicalLocatedByte { byte, provenance })
     }
 }
+
+/// Lifetime-free forward cursor over frozen byte payloads.
+#[derive(Clone)]
+pub(crate) struct FrozenCanonicalByteCursor {
+    value: FrozenCanonicalBytes,
+    leaf: usize,
+    absolute: usize,
+    end: usize,
+}
+
+impl FrozenCanonicalByteCursor {
+    fn new(value: FrozenCanonicalBytes) -> Self {
+        let absolute = value.start;
+        let end = absolute + value.len;
+        let leaf = if value.is_empty() {
+            value.data.content_leaves.len()
+        } else {
+            FrozenCanonicalBytes::leaf_at(
+                absolute,
+                &value.data.content_pages,
+                &value.data.content_leaves,
+                FrozenContentLeaf::logical_end,
+            )
+            .expect("a non-empty frozen view starts in one content leaf")
+        };
+        Self {
+            value,
+            leaf,
+            absolute,
+            end,
+        }
+    }
+
+    fn fast_forward(&mut self, width: usize) {
+        let absolute = self
+            .absolute
+            .checked_add(width)
+            .expect("a checked frozen cursor seek cannot overflow");
+        assert!(
+            absolute <= self.end,
+            "a frozen cursor seek stays inside its view"
+        );
+        self.absolute = absolute;
+        self.leaf = if absolute == self.end {
+            self.value.data.content_leaves.len()
+        } else {
+            FrozenCanonicalBytes::leaf_at(
+                absolute,
+                &self.value.data.content_pages,
+                &self.value.data.content_leaves,
+                FrozenContentLeaf::logical_end,
+            )
+            .expect("a frozen cursor seek lands in one content leaf")
+        };
+    }
+}
+
+impl Iterator for FrozenCanonicalByteCursor {
+    type Item = u8;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.absolute == self.end {
+            return None;
+        }
+        while self.value.data.content_leaves[self.leaf].logical_end() <= self.absolute {
+            self.leaf += 1;
+        }
+        let byte = self.value.data.content_leaves[self.leaf].byte_at(self.absolute);
+        self.absolute += 1;
+        Some(byte)
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let remaining = self.end - self.absolute;
+        (remaining, Some(remaining))
+    }
+}
+
+impl ExactSizeIterator for FrozenCanonicalByteCursor {}
+
+#[derive(Clone)]
+struct FrozenCanonicalProvenanceCursor {
+    value: FrozenCanonicalBytes,
+    leaf: usize,
+    absolute: usize,
+    end: usize,
+}
+
+impl FrozenCanonicalProvenanceCursor {
+    fn new(value: FrozenCanonicalBytes) -> Self {
+        let absolute = value.start;
+        let end = absolute + value.len;
+        let leaf = if value.is_empty() {
+            value.data.provenance_leaves.len()
+        } else {
+            FrozenCanonicalBytes::leaf_at(
+                absolute,
+                &value.data.provenance_pages,
+                &value.data.provenance_leaves,
+                FrozenProvenanceLeaf::logical_end,
+            )
+            .expect("a non-empty frozen view starts in one provenance leaf")
+        };
+        Self {
+            value,
+            leaf,
+            absolute,
+            end,
+        }
+    }
+
+    fn fast_forward(&mut self, width: usize) {
+        let absolute = self
+            .absolute
+            .checked_add(width)
+            .expect("a checked frozen provenance seek cannot overflow");
+        assert!(
+            absolute <= self.end,
+            "a frozen provenance seek stays inside its view"
+        );
+        self.absolute = absolute;
+        self.leaf = if absolute == self.end {
+            self.value.data.provenance_leaves.len()
+        } else {
+            FrozenCanonicalBytes::leaf_at(
+                absolute,
+                &self.value.data.provenance_pages,
+                &self.value.data.provenance_leaves,
+                FrozenProvenanceLeaf::logical_end,
+            )
+            .expect("a frozen provenance seek lands in one leaf")
+        };
+    }
+}
+
+impl Iterator for FrozenCanonicalProvenanceCursor {
+    type Item = CanonicalByteProvenance;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.absolute == self.end {
+            return None;
+        }
+        while self.value.data.provenance_leaves[self.leaf].logical_end() <= self.absolute {
+            self.leaf += 1;
+        }
+        let provenance = self.value.data.provenance_leaves[self.leaf].provenance_at(self.absolute);
+        self.absolute += 1;
+        Some(provenance)
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let remaining = self.end - self.absolute;
+        (remaining, Some(remaining))
+    }
+}
+
+impl ExactSizeIterator for FrozenCanonicalProvenanceCursor {}
+
+/// Lifetime-free forward cursor over frozen bytes and their exact provenance.
+#[derive(Clone)]
+pub(crate) struct FrozenCanonicalLocatedByteCursor {
+    bytes: FrozenCanonicalByteCursor,
+    provenance: FrozenCanonicalProvenanceCursor,
+}
+
+impl FrozenCanonicalLocatedByteCursor {
+    pub(crate) fn fast_forward(&mut self, width: usize) {
+        self.bytes.fast_forward(width);
+        self.provenance.fast_forward(width);
+    }
+}
+
+impl Iterator for FrozenCanonicalLocatedByteCursor {
+    type Item = CanonicalLocatedByte;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let byte = self.bytes.next();
+        let provenance = self.provenance.next();
+        debug_assert_eq!(byte.is_some(), provenance.is_some());
+        byte.zip(provenance)
+            .map(|(byte, provenance)| CanonicalLocatedByte { byte, provenance })
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) { self.bytes.size_hint() }
+}
+
+impl ExactSizeIterator for FrozenCanonicalLocatedByteCursor {}
 
 #[cfg(test)]
 mod tests {
@@ -985,6 +1462,104 @@ mod tests {
         assert!(large.provenance_nodes <= 8_000 + 64 + 1);
         assert!(large.content_nodes <= small.content_nodes * 2 + 2);
         assert!(large.provenance_nodes <= small.provenance_nodes * 2 + 2);
+    }
+
+    #[test]
+    fn frozen_bytes_survive_origin_mutation_and_drop_without_payload_copying() {
+        let mut arena = CanonicalBytesArena::new();
+        let bytes: Vec<u8> = (0..160).map(|offset| (offset % 251) as u8).collect();
+        let value = append_bytes(&mut arena, &bytes, 11, 1_000);
+        let before = arena.stats();
+        let frozen = arena.freeze(value);
+        assert_eq!(
+            arena.stats(),
+            before,
+            "freezing does not add arena payload nodes"
+        );
+
+        let mut extended = value;
+        for offset in 0..4_096usize {
+            extended = arena
+                .append(extended, located((offset % 239) as u8, 12, 9_000 + offset))
+                .unwrap();
+        }
+        assert_eq!(frozen.bytes().collect::<Vec<_>>(), bytes);
+        for offset in 0..bytes.len() {
+            assert_eq!(frozen.byte_at(offset), Some(bytes[offset]));
+            assert_eq!(
+                frozen.provenance_at(offset),
+                Some(CanonicalByteProvenance::new(11, 1_000 + offset))
+            );
+        }
+
+        drop(arena);
+        assert_eq!(frozen.bytes().collect::<Vec<_>>(), bytes);
+        assert_eq!(frozen.byte_at(bytes.len()), None);
+        assert_eq!(frozen.provenance_at(bytes.len()), None);
+    }
+
+    #[test]
+    fn frozen_subviews_keep_discontinuous_provenance_and_bounded_random_lookup() {
+        let mut arena = CanonicalBytesArena::new();
+        let mut value = arena.empty();
+        let mut expected = Vec::new();
+        for offset in 0..257usize {
+            let byte = (offset % 251) as u8;
+            let provenance = CanonicalByteProvenance::new((offset % 5) as u32, offset * 17 + 3);
+            let singleton = arena
+                .append(arena.empty(), CanonicalLocatedByte::new(byte, provenance))
+                .unwrap();
+            value = arena.concat(value, singleton).unwrap();
+            expected.push(CanonicalLocatedByte::new(byte, provenance));
+        }
+        let frozen = arena.freeze(value);
+        let subview = frozen.subview(19..241).unwrap().subview(7..199).unwrap();
+        let expected = &expected[26..218];
+
+        assert_eq!(subview.len(), expected.len());
+        for (offset, located) in expected.iter().enumerate() {
+            assert_eq!(subview.byte_at(offset), Some(located.byte));
+            assert_eq!(subview.provenance_at(offset), Some(located.provenance));
+        }
+        assert_eq!(subview.located_bytes().collect::<Vec<_>>(), expected);
+    }
+
+    #[test]
+    fn frozen_metadata_and_cursors_are_linear_and_tiny_stack_safe() {
+        let thread = std::thread::Builder::new()
+            .stack_size(64 * 1024)
+            .spawn(|| {
+                const LEN: usize = 20_000;
+                let mut arena = CanonicalBytesArena::new();
+                let mut value = arena.empty();
+                for offset in 0..LEN {
+                    let singleton = arena
+                        .append(arena.empty(), located((offset % 251) as u8, 21, offset * 2))
+                        .unwrap();
+                    value = arena.concat(value, singleton).unwrap();
+                }
+
+                let frozen = arena.freeze(value);
+                let stats = frozen.stats();
+                assert!(stats.content_leaves <= LEN);
+                assert!(stats.provenance_leaves <= LEN);
+                assert_eq!(
+                    stats.page_entries,
+                    2 * (LEN / BLOCK_BYTES + usize::from(LEN % BLOCK_BYTES != 0))
+                );
+                assert!(
+                    stats.content_leaves + stats.provenance_leaves + stats.page_entries
+                        <= 2 * LEN + 2 * (LEN / BLOCK_BYTES + 1)
+                );
+                assert_eq!(frozen.bytes().count(), LEN);
+                assert_eq!(frozen.located_bytes().count(), LEN);
+                for offset in (0..LEN).step_by(97) {
+                    assert_eq!(frozen.byte_at(offset), Some((offset % 251) as u8));
+                    assert_eq!(frozen.provenance_at(offset).unwrap().offset, offset * 2);
+                }
+            })
+            .unwrap();
+        thread.join().unwrap();
     }
 
     #[test]
