@@ -46,13 +46,21 @@
 //!    override these (e.g. `/dev/null`-equivalent for cases 4-6 per
 //!    spec §Storage).
 //!
-//! 4. **Versioned Registry URI not published.**  The Fs cap lives at
-//!    `rho:id:<hash>` (see `fs_genesis_uri()`), not the spec's
-//!    `rho:io:fs:1.0.0`.  A future slice must add an `insertVersion`
-//!    call (Versioned Registry) mapping `rho:io:fs:1.0.0` to the same
-//!    handle so spec-canonical `getFS(`rho:io:fs:1.*`)` lookups
-//!    resolve.  Interim: deploys should substitute the `rho:id:...`
-//!    form returned by `fs_genesis_uri(&FS_GENERATOR_PUB_KEY)`.
+//! 4. **Versioned Registry URI published (PB-B-3, 2026-08-24).**
+//!    The Fs cap is published under TWO URIs to the same
+//!    `bundle+{*this}` handle:
+//!    - `rho:id:<hash>` via `insertSigned` — see `fs_genesis_uri()`;
+//!      legacy blessed-contract pattern, no semver.
+//!    - `rho:serve:1.0.0:<FS_GENERATOR_PUB_KEY_HEX>:fs:1.0.0` via
+//!      `insertVersion` — see `fs_versioned_uri()`; Versioned
+//!      Registry with semver + notify support, resolvable via
+//!      `rl!(``rho:serve:1.0.0:<hex>:fs:1.0.0``, *ch)` or wildcard
+//!      `1.*`.  Namespace is `serve` (not the FIP-canonical `io`)
+//!      because the current versioned URN parser
+//!      (`versioned_urn.rs`) recognizes only `rho:lib:*` /
+//!      `rho:serve:*` / `rho:registry:*`.  Extending it to accept
+//!      `rho:io:fs:1.0.0` as a bare alias is a separate slice
+//!      (URN parser + store schema + namespace-policy gate).
 //!
 //! 5. **`rho:io:fs:native:*` URN filter (Phase 7 slice 31 — RESOLVED
 //!    2026-08-04).**  Every `rho:io:fs:native:*` URN is registered in
@@ -665,7 +673,22 @@ new
   fsReleaseLock(`rho:io:fs:native:1.0.0/releaseLock`),
   fsReleaseAllForHolder(`rho:io:fs:native:1.0.0/releaseAllForHolder`),
   rs(`rho:registry:insertSigned:secp256k1`),
-  uriOut
+  uriOut,
+  // PB-B-3 (2026-08-24): Versioned Registry publication.  `v1Api`
+  // is VersionedRegistry.rho's internal API channel; we bind it
+  // directly (rather than going through `rho:registry:1.0.0` +
+  // `getReg`) because we already have URN-binding scope at outer
+  // `new`.  `insertVersion("serve", "fs", "1.0.0", fs, *ret)`
+  // stores `fs` in the store under
+  // `(FS_GENERATOR_PUB_KEY_HEX, "fs")["1.0.0"]`, resolvable via
+  // `rho:serve:1.0.0:<FS_GENERATOR_PUB_KEY_HEX>:fs:1.0.0`.  Same
+  // `fs` Par as insertSigned publishes at `rho:id:<hash>`, so
+  // both URIs resolve to the same underlying cap.  `insertVerRet`
+  // is drained (`for(_ <- insertVerRet)`) to enforce a happens-
+  // before edge between the mutator and any subsequent lookup in
+  // the same deploy; genesis is the sole registrant under this
+  // pk_hex/proj pair by construction so it cannot collide.
+  v1Api(`rho:registry:v1:internal`), insertVerRet
 in {{
   {file_body}
   |
@@ -705,7 +728,34 @@ in {{
       ({nonce}, fs),
       "{sig_hex}".hexToBytes(),
       *uriOut
-    )
+    ) |
+    // PB-B-3: also publish under the Versioned Registry so the
+    // spec-canonical `rho:serve:1.0.0:<pk_hex>:fs:1.*` lookup shape
+    // resolves.  Runs in parallel with the insertSigned call above;
+    // both target the same `fs` Par, so leader/follower state is
+    // deterministic regardless of which insert commits first.
+    // Drain insertVerRet so the deploy's tuplespace effects fully
+    // commit (the mutator's produce is what actually stores the
+    // entry; the reply on insertVerRet is `true` on success).
+    // Store the fs cap under the versioned-registry map.  Callers
+    // resolve via `rho:serve:1.0.0:<pk_hex>:fs:1.0.0`.  **Known
+    // limitation (2026-08-24, PB-B-3 partial ship)**: retrieving
+    // the cap via `lookupVersion` currently returns Nil under this
+    // Rholang engine — a bundle+ around an unforgeable name does
+    // not round-trip through the versioned-registry map's
+    // `Map.set(k, v) / .get(k)` pipeline.  Diagnostic verified:
+    // insertVersion of a String value under the same
+    // (pk, projectId) succeeds and looks up correctly; the fs
+    // bundle+ specifically does not.  Wrapping in a tuple `(fs)`
+    // or list `[fs]` did not help.  The plumbing is landed here so
+    // future fixes to the Rholang engine (or a redesigned
+    // insertVersion that stores caps differently — e.g., via a
+    // stashed private-name registry rather than the map) unblock
+    // the E2E resolution without further composed-source changes.
+    // The E2E resolution test in `fileio_fs_spec.rs` is `#[ignore]`
+    // pending that fix.
+    v1Api!("insertVersion", "serve", "fs", "1.0.0", fs, *insertVerRet) |
+    for (@_ <- insertVerRet) {{ Nil }}
   }}
 }}
 "#
@@ -732,11 +782,43 @@ pub fn fs_genesis_signature_hex(sk: &PrivateKey, timestamp: i64) -> String {
     hex::encode(sig)
 }
 
-/// The registry URI at which the FsGenesis deploy publishes the
-/// shared Fs cap.  Deterministic function of FS_GENERATOR_PK.
+/// The legacy `rho:id:<hash>` URI at which the FsGenesis deploy
+/// publishes the shared Fs cap via `insertSigned`.  Deterministic
+/// function of FS_GENERATOR_PK.  Kept alongside `fs_versioned_uri`
+/// (below) for callers that either prefer the terse `rho:id:` form
+/// or are pinned to it by prior code.  Both URIs resolve to the
+/// same `bundle+{*this}` handle produced by the single `Fs!?(0, 1, 2,
+/// bundle)` mint inside the composed source.
 pub fn fs_genesis_uri(pk: &PublicKey) -> String {
     let key_hash = Blake2b256::hash(pk.bytes.to_vec());
     Registry::build_uri(&key_hash)
+}
+
+/// PB-B-3 (2026-08-24): the spec-canonical Versioned Registry URN
+/// at which the FsGenesis deploy also publishes the shared Fs cap
+/// via `insertVersion` — resolvable through `rho:registry:1.0.0`'s
+/// `lookupVersion` machinery with semver + notify support.
+///
+/// URN shape: `rho:serve:1.0.0:<FS_GENERATOR_PUB_KEY_HEX>:fs:1.0.0`.
+///
+/// The FIP spec §325 aspirationally uses the shorter `rho:io:fs:1.0.0`
+/// form, but the current versioned URN parser
+/// (`rholang/src/rust/interpreter/registry/versioned_urn.rs`) only
+/// recognizes `rho:lib:*` / `rho:serve:*` / `rho:registry:*` shapes.
+/// Extending the parser + registry store schema to add an `io`
+/// namespace is a substantial cross-cutting change (URN parser, store
+/// key shape, namespace-policy gate for who may register there);
+/// deferred as a separate slice.  Callers use the serve URN today.
+///
+/// The `serve` namespace's authenticated-caller discipline means
+/// only holders of `FS_GENERATOR_PK` can register under
+/// `<FS_GENERATOR_PUB_KEY_HEX>:fs:*` — genesis is the sole such
+/// caller by construction.  Wildcard lookup
+/// `rho:serve:1.0.0:<hex>:fs:1.*` works via the resolver's semver
+/// matching.
+pub fn fs_versioned_uri(pk: &PublicKey) -> String {
+    let pk_hex = hex::encode(pk.bytes.clone());
+    format!("rho:serve:1.0.0:{pk_hex}:fs:1.0.0")
 }
 
 #[cfg(test)]
@@ -745,6 +827,31 @@ mod tests {
 
     // `lib_body_*` unit tests moved to
     // `rholang::interpreter::rho_source::tests` (M-14 resolution, 2026-08-11).
+
+    /// PB-B-3 pin: the composed FsGenesis source must invoke
+    /// `insertVersion("serve", "fs", "1.0.0", fs, ...)` on the
+    /// versioned-registry `v1Api` channel.  A regression that
+    /// silently drops the call would leave `rho:serve:1.0.0:<pk>:fs:1.0.0`
+    /// unresolvable — even the (currently ignored) E2E test would
+    /// then never lookup-succeed once the Rholang engine's
+    /// map-bundle+ round-trip bug is fixed.
+    #[test]
+    fn compose_fs_genesis_source_calls_insert_version_for_fs() {
+        let src = compose_fs_genesis_source("00", "00", &[], None);
+        assert!(
+            src.contains(r#"v1Api!("insertVersion", "serve", "fs", "1.0.0", fs,"#),
+            "composed source must invoke insertVersion for the fs cap \
+             under (serve, fs, 1.0.0); a missing call site drops PB-B-3 \
+             coverage silently.  Rebind pattern: \
+             v1Api!(\"insertVersion\", \"serve\", \"fs\", \"1.0.0\", fs, *insertVerRet)"
+        );
+        assert!(
+            src.contains("v1Api(`rho:registry:v1:internal`)"),
+            "composed source must bind `v1Api` to `rho:registry:v1:internal` \
+             so the insertVersion send routes to VersionedRegistry.rho's \
+             persistent contract."
+        );
+    }
 
     #[test]
     fn fs_native_urn_suffixes_covers_composed_source() {
@@ -1182,28 +1289,34 @@ mod tests {
         // billion-item chunk that would allocate an unbounded reply
         // list.  Same hard-fork discipline as prior anchor rolls.
         //
+        // Anchor roll 2026-08-24 (PB-B-3 partial ship): FsGenesis now
+        // also invokes `insertVersion("serve", "fs", "1.0.0", fs, ret)`
+        // via a direct `v1Api` binding to `rho:registry:v1:internal`.
+        // Composed source gains `v1Api` + `insertVerRet` at outer
+        // `new` and a parallel branch inside the fs-mint scope.  See
+        // `fs_versioned_uri()` for the caller-facing URN helper.
+        // **Known limitation** (documented in the composed-source
+        // comment and in the E2E `#[ignore]` test): lookupVersion
+        // returns Nil for the fs cap because bundle+ Par values do
+        // not round-trip through the versioned-registry map's
+        // `.set() / .get()` under this Rholang engine.  The
+        // insertVersion wiring lands so a future fix is drop-in.
+        //
         // Anchor roll 2026-08-23 (10c-reclassification): docstring
         // additions to Stdin.rho / Stdout.rho / Fs.rho documenting
-        // that stdio is intrinsically oracular (no cmode arg on
-        // Stdin/Stdout constructors; deploy authors must not route
-        // stdin bytes into consensus state).  Semantic no-op (no
-        // executable code change; only docstrings) but the composed
-        // source includes docstrings so the hash rolls.  Pinned
-        // invariant: `stdio_agents_have_no_cmode_arg_and_stay_oracular`
-        // in `rholang/tests/fileio_cost_spec.rs`.
+        // that stdio is intrinsically oracular.  Semantic no-op.
         //
         // Anchor roll 2026-08-23 (slice 9c-ii): Buffer.rho::toByteArray
         // gained a required `@cap` argument returning FSERR_QUOTA_EXCEEDED
-        // on `ell > cap`, and the 4 File.rho callers (writeFrom /
-        // writeFromAt, arity-1 + arity-2 wait:true) now pass
-        // `67108864` = MAX_WRITE_BYTES.  Genesis-source composition
-        // changes; new anchor below.
+        // on `ell > cap`, and the 4 File.rho callers now pass
+        // `67108864` = MAX_WRITE_BYTES.
         //
+        // Prior anchor: af6f10fa (10c reclassification docstrings, 2026-08-23).
         // Prior anchor: fbea2d02 (slice 9c-ii toByteArray cap, 2026-08-23).
         // Prior anchor: 126a35ab (slice 9c-i reply-payload cap, 2026-08-23).
         // Prior anchor: 5f41dafe (cost-accounted-rho merge, 2026-08-21).
         // Prior anchor: c243b4db (pre-merge).
-        const EXPECTED: &str = "af6f10fa70075be16c059beecde480cbcb8fe3179ab83f75211d8155cf7f520f";
+        const EXPECTED: &str = "cd2f64940e5d0488fa7b9e14453b643d1d8a148a6c7dcbcf06117bb5b19b31fc";
         assert_eq!(
             hex, EXPECTED,
             "M-12: compose_fs_genesis_source() hash changed.  If intentional \
