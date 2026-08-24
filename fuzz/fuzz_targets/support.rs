@@ -20,6 +20,7 @@ use std::sync::Arc;
 
 use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
 use block_storage::rust::dag::block_metadata_store::BlockMetadataStore;
+use block_storage::rust::dag::deploy_lifecycle_types::DeployLifecycleTables;
 use casper::rust::casper::{CasperShardConf, CasperSnapshot, OnChainCasperState};
 use crypto::rust::public_key::PublicKey;
 use dashmap::DashSet;
@@ -77,8 +78,6 @@ pub fn slash_deploy(
             issuer_public_key: PublicKey::from_bytes(&issuer),
             target_activation_epoch,
         },
-        pre_state_hash: Vec::<u8>::new().into(),
-        post_state_hash: Vec::<u8>::new().into(),
     }
 }
 
@@ -87,8 +86,6 @@ pub fn close_deploy() -> ProcessedSystemDeploy {
     ProcessedSystemDeploy::Succeeded {
         event_list: vec![],
         system_deploy: SystemDeployData::CloseBlockSystemDeployData,
-        pre_state_hash: Vec::<u8>::new().into(),
-        post_state_hash: Vec::<u8>::new().into(),
     }
 }
 
@@ -99,8 +96,6 @@ pub fn failed_deploy() -> ProcessedSystemDeploy {
     ProcessedSystemDeploy::Failed {
         event_list: vec![],
         error_msg: "fuzz".to_string(),
-        pre_state_hash: Vec::<u8>::new().into(),
-        post_state_hash: Vec::<u8>::new().into(),
     }
 }
 
@@ -135,9 +130,10 @@ pub fn block_with_system_deploys(
             },
             deploys: vec![],
             rejected_deploys: vec![],
-            rejected_state_effects: vec![],
             system_deploys,
             extra_bytes: Bytes::new(),
+            applied_from_scope: vec![],
+            merge_base: Bytes::new(),
         },
         justifications: vec![],
         sender,
@@ -156,8 +152,6 @@ pub fn block_with_system_deploys(
 /// lock, no per-iteration cleanup.
 fn empty_dag() -> KeyValueDagRepresentation {
     let metadata_store = KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new()));
-    let deploy_store = KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new()));
-    let occurrence_store = KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new()));
     let floor_store = KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new()));
     let frontier_store = KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new()));
     KeyValueDagRepresentation {
@@ -172,10 +166,9 @@ fn empty_dag() -> KeyValueDagRepresentation {
         last_finalized_block_hash: Bytes::new(),
         finalized_blocks_set: imbl::HashSet::new(),
         block_metadata_index: Arc::new(RwLock::new(BlockMetadataStore::new(metadata_store))),
-        deploy_index: Arc::new(RwLock::new(deploy_store)),
-        deploy_occurrence_index: Arc::new(RwLock::new(occurrence_store)),
         floor_index: floor_store,
         frontier_index: frontier_store,
+        lifecycle: Arc::new(RwLock::new(DeployLifecycleTables::in_memory())),
     }
 }
 
@@ -192,9 +185,7 @@ fn metadata(evidence: &Evidence) -> BlockMetadata {
         directly_finalized: false,
         finalized: false,
         fault_tolerance_value: 0.0,
-        successful_state_effect_indices: Default::default(),
-        rejected_state_effects: Default::default(),
-        protocol_version: casper::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION,
+        merge_base: Bytes::new(),
     }
 }
 

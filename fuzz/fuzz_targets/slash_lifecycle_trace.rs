@@ -94,7 +94,7 @@ fuzz_target!(|input: Input| {
     // proposer-side path succeeded. `slash_authorization_paths` covers
     // the candidate-side rejection rules directly.
     let Ok(candidates) =
-        authorized_slash_candidates(&snapshot, &snapshot.on_chain_state.bonds_map)
+        authorized_slash_candidates(&snapshot)
     else {
         return;
     };
@@ -113,11 +113,7 @@ fuzz_target!(|input: Input| {
     let block =
         support::block_with_system_deploys(input.proposer, proposer.clone(), block_number, deploys);
 
-    assert!(validate_received_slash_deploys(
-        &block,
-        &snapshot,
-        &snapshot.on_chain_state.bonds_map,
-    )
+    assert!(validate_received_slash_deploys(&block, &snapshot)
     .is_ok());
 
     if let Some(candidate) = candidates.first() {
@@ -138,11 +134,7 @@ fuzz_target!(|input: Input| {
                 ),
             ],
         );
-        assert!(validate_received_slash_deploys(
-            &duplicate_block,
-            &snapshot,
-            &snapshot.on_chain_state.bonds_map,
-        )
+        assert!(validate_received_slash_deploys(&duplicate_block, &snapshot)
         .is_err());
     }
 });

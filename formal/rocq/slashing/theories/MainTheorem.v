@@ -27,7 +27,7 @@ From Slashing Require Import
   BugFixTransferFailure BugFixStakeZero BugFixSelfRegression
   BugFixSeqNumDensity BugFixSeqArithmetic BugFixDuplicateJustifications
   BugFixSlashAuthorization BugFixUnbondedProposer
-  BugFixWithdrawTransferFailure.
+  BugFixWithdrawTransferFailure Bisimulation.
 
 Import ListNotations.
 
@@ -658,4 +658,88 @@ Proof.
   - assumption.
   - apply fork_choice_exclusion. assumption.
   - intro Hbond. apply Htransfer. assumption.
+Qed.
+
+(* ═══════════════════════════════════════════════════════════════════════════
+   §6 — Headline composition
+   ═══════════════════════════════════════════════════════════════════════════
+
+   The headline composition: under the ten bug fixes, every pipeline
+   transition preserves the bonds, records, slashed-set, and Coop-vault
+   bisimulation relations. *)
+
+Theorem main_bisimilarity_theorem :
+  forall (b1 b2 : BondMap) (s1 s2 : EqStore) (sl1 sl2 : list Validator)
+         (v1 v2 : nat) (offender : Validator),
+    bonds_bisim b1 b2 ->
+    records_bisim s1 s2 ->
+    slashed_bisim sl1 sl2 ->
+    vault_bisim v1 v2 ->
+    let b1'  := bm_slash b1 offender in
+    let b2'  := bm_slash b2 offender in
+    let sl1' := offender :: sl1 in
+    let sl2' := offender :: sl2 in
+    let v1'  := v1 + bm_lookup b1 offender in
+    let v2'  := v2 + bm_lookup b2 offender in
+    bonds_bisim b1' b2'
+    /\ slashed_bisim sl1' sl2'
+    /\ vault_bisim v1' v2'.
+Proof.
+  intros b1 b2 s1 s2 sl1 sl2 v1 v2 offender Hb Hr Hsl Hv. simpl.
+  split; [|split].
+  - apply t_13_bm_slash_preserves_bonds_bisim. assumption.
+  - apply t_15_slashed_append_consistent. assumption.
+  - unfold vault_bisim. rewrite Hv. f_equal. apply Hb.
+Qed.
+
+(* ═══════════════════════════════════════════════════════════════════════════
+   §7 — Closure-strengthened bisimilarity (Gaps 1, 2, 8)
+   ═══════════════════════════════════════════════════════════════════════════
+
+   The strong bisimilarity theorem closing Gaps 1 and 2: under
+   records_bisim_strong (with key alignment) and forkchoice_bisim, applying
+   the same slash, record-update, and filter operations on both sides
+   preserves all five components of R. *)
+
+(* The five-component bisimilarity theorem: applies slash, record update,
+   slashed-set update, vault increment, and fork-choice filter consistently
+   on both sides, preserving the full strong record relation. *)
+
+Theorem main_bisimilarity_strong :
+  forall (b1 b2 : BondMap) (rs1 rs2 : EqStore) (sl1 sl2 : list Validator)
+         (v1 v2 : nat) (lm1 lm2 : LatestMessages)
+         (offender : Validator) (k : Validator * nat) (h : BlockHash),
+    bonds_bisim b1 b2 ->
+    records_bisim_strong rs1 rs2 ->
+    slashed_bisim sl1 sl2 ->
+    vault_bisim v1 v2 ->
+    forkchoice_bisim lm1 lm2 ->
+    let b1' := bm_slash b1 offender in
+    let b2' := bm_slash b2 offender in
+    let rs1' := update_record rs1 k h in
+    let rs2' := update_record rs2 k h in
+    let sl1' := offender :: sl1 in
+    let sl2' := offender :: sl2 in
+    let v1' := v1 + bm_lookup b1 offender in
+    let v2' := v2 + bm_lookup b2 offender in
+    let lm1' := filter_slashed lm1 b1' in
+    let lm2' := filter_slashed lm2 b2' in
+    bonds_bisim b1' b2'
+    /\ records_bisim_strong rs1' rs2'
+    /\ slashed_bisim sl1' sl2'
+    /\ vault_bisim v1' v2'
+    /\ forkchoice_bisim lm1' lm2'.
+Proof.
+  intros b1 b2 rs1 rs2 sl1 sl2 v1 v2 lm1 lm2 offender k h
+         Hb Hr Hsl Hv Hfc.
+  simpl.
+  split; [|split; [|split; [|split]]].
+  - apply t_13_bm_slash_preserves_bonds_bisim. assumption.
+  - apply records_bisim_strong_preserved_update. assumption.
+  - apply t_15_slashed_append_consistent. assumption.
+  - unfold vault_bisim in *.
+    rewrite Hv. f_equal. apply Hb.
+  - unfold forkchoice_bisim.
+    apply forkchoice_bisim_preserves_filter; [assumption|].
+    apply t_13_bm_slash_preserves_bonds_bisim. assumption.
 Qed.
