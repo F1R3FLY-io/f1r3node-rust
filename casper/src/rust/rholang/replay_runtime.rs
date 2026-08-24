@@ -21,6 +21,7 @@ use rspace_plus_plus::rspace::errors::RSpaceError;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::history::Either;
 use rspace_plus_plus::rspace::merger::merging_logic::{MergeType, NumberChannelsEndVal};
+use rspace_plus_plus::rspace::reporting_rspace::ReportPhase;
 
 use super::runtime::{RuntimeOps, SysEvalResult};
 use crate::rust::errors::CasperError;
@@ -212,6 +213,21 @@ impl ReplayRuntimeOps {
         };
         tracing::debug!(target: "f1r3fly.casper.replay_rho_runtime", deploy = %dsig, "replay.deploy ENTER (rig recorded COMMs)");
         let rig_start = Instant::now();
+        // Set the initial reporting phase before rig so the recorded
+        // (rigged) events are tagged with the deploy's first phase,
+        // matching the old positional batch shape where rig and
+        // precharge shared the first segment. Cost-accounted deploys
+        // start in Precharge. Genesis (no cost accounting) starts in
+        // User. The trait default is a no-op on plain replay spaces.
+        let initial_phase = if with_cost_accounting {
+            ReportPhase::Precharge
+        } else {
+            ReportPhase::User
+        };
+        self.runtime_ops
+            .runtime
+            .set_report_phase(initial_phase)
+            .await;
         self.rig(processed_deploy).await?;
         metrics::histogram!(BLOCK_REPLAY_DEPLOY_RIG_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
             .record(rig_start.elapsed().as_secs_f64());
@@ -260,6 +276,8 @@ impl ReplayRuntimeOps {
 
         tracing::debug!(target: "f1r3fly.casper.replay_rho_runtime", "precharge-started");
         let precharge_start = Instant::now();
+        // The precharge phase was set before rig in `replay_deploy_e`.
+        // No marker call is needed here.
         let precharge_result = self
             .replay_system_deploy_internal(
                 &mut pre_charge_deploy,
@@ -287,6 +305,13 @@ impl ReplayRuntimeOps {
             .record(precharge_start.elapsed().as_secs_f64());
 
         let eval_successful = if processed_deploy.system_deploy_error.is_none() {
+            // Mark the user phase. This flushes the precharge segment
+            // (tagging it `Precharge`) and sets the phase for the user
+            // deploy's events.
+            self.runtime_ops
+                .runtime
+                .set_report_phase(ReportPhase::User)
+                .await;
             // Run the user deploy in a transaction
             let evaluate_start = Instant::now();
             let (_, successful) = self
@@ -305,6 +330,13 @@ impl ReplayRuntimeOps {
                 ),
             };
 
+            // Mark the refund phase. This flushes the user segment
+            // (tagging it `User`) and sets the phase for the refund's
+            // events.
+            self.runtime_ops
+                .runtime
+                .set_report_phase(ReportPhase::Refund)
+                .await;
             let refund_result = self
                 .replay_system_deploy_internal(&mut refund_deploy, &None)
                 .await;
@@ -343,6 +375,9 @@ impl ReplayRuntimeOps {
         processed_deploy: &ProcessedDeploy,
         mergeable_channels: &mut HashMap<Par, MergeType>,
     ) -> Result<bool, CasperError> {
+        // Genesis deploys run without cost accounting, so there is no
+        // precharge or refund phase. The user phase was set before rig
+        // in `replay_deploy_e`. No marker call is needed here.
         self.run_user_deploy(processed_deploy, mergeable_channels)
             .await
             .map(|(_, eval_successful)| eval_successful)

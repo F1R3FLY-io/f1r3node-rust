@@ -132,7 +132,7 @@ async fn reporting_rspace_should_capture_comm_event_in_soft_report() {
     // Ensure soft_report contains ReportingComm
     let report = reporting.get_report().unwrap();
     assert!(!report.is_empty());
-    let flat: Vec<_> = report.into_iter().flatten().collect();
+    let flat: Vec<_> = report.into_iter().flat_map(|b| b.events).collect();
     assert!(
         flat.iter()
             .any(|e| matches!(e, ReportingEvent::ReportingComm(_)))
@@ -156,7 +156,7 @@ async fn reporting_rspace_should_capture_consume_event_only() {
         .await;
 
     let report = reporting.get_report().unwrap();
-    let flat: Vec<_> = report.into_iter().flatten().collect();
+    let flat: Vec<_> = report.into_iter().flat_map(|b| b.events).collect();
     assert!(
         flat.iter()
             .any(|e| matches!(e, ReportingEvent::ReportingConsume(_)))
@@ -174,7 +174,7 @@ async fn reporting_rspace_should_capture_produce_event_only() {
         .await;
 
     let report = reporting.get_report().unwrap();
-    let flat: Vec<_> = report.into_iter().flatten().collect();
+    let flat: Vec<_> = report.into_iter().flat_map(|b| b.events).collect();
     assert!(
         flat.iter()
             .any(|e| matches!(e, ReportingEvent::ReportingProduce(_)))
@@ -225,7 +225,7 @@ async fn reporting_rspace_should_capture_peeks_in_comm_event() {
         .await;
 
     let report = reporting.get_report().unwrap();
-    let flat: Vec<_> = report.into_iter().flatten().collect();
+    let flat: Vec<_> = report.into_iter().flat_map(|b| b.events).collect();
     let has_peek = flat.iter().any(|e| match e {
         ReportingEvent::ReportingComm(comm) => comm.consume.peeks.contains(&0),
         _ => false,

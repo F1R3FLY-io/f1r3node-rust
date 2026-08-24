@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use crypto::rust::public_key::PublicKey;
-use models::casper::{BlockEventInfo, TransferInfo};
+use models::casper::{BlockEventInfo, ReportPhase, TransferInfo};
 use models::rhoapi::Par;
 use rholang::rust::interpreter::util::vault_address::VaultAddress;
 
@@ -72,55 +72,89 @@ pub fn extract_transfers_from_report(
             continue;
         }
 
-        let precharge_amount = deploy_info
-            .map(|info| info.phlo_limit.wrapping_mul(info.phlo_price))
-            .unwrap_or(0);
-
-        let batches: &[models::casper::SingleReport] = if precharge_amount == 0 {
-            &deploy.report
-        } else {
-            let first = &deploy.report[0];
-            let found =
-                find_transfers_in_report(first, transfer_unforgeable, deployer_addr.as_deref());
-            let precharge_consistent = found.len() == 1
-                && deployer_addr.as_deref() == Some(found[0].from_addr.as_str())
-                && found[0].amount == precharge_amount;
-
-            if precharge_consistent {
-                &deploy.report[1..]
-            } else {
-                if found.len() == 1 {
-                    tracing::warn!(
-                        target: "f1r3fly.node.web.enricher",
-                        deploy_sig = %deploy_sig,
-                        expected_amount = precharge_amount,
-                        found_transfers = 1,
-                        found_amount = found[0].amount,
-                        found_sender = %found[0].from_addr,
-                        "report[0] does not match the expected precharge shape; \
-                         not skipping it — the precharge may appear as a user transfer"
-                    );
-                } else {
-                    tracing::warn!(
-                        target: "f1r3fly.node.web.enricher",
-                        deploy_sig = %deploy_sig,
-                        expected_amount = precharge_amount,
-                        found_transfers = found.len(),
-                        "report[0] does not match the expected precharge shape; \
-                         not skipping it — the precharge may appear as a user transfer"
-                    );
-                }
-                &deploy.report
-            }
-        };
+        let any_marked = deploy
+            .report
+            .iter()
+            .any(|b| b.phase != ReportPhase::Unspecified as i32);
 
         let mut user_transfers = Vec::new();
-        for single_report in batches {
-            user_transfers.extend(find_transfers_in_report(
-                single_report,
-                transfer_unforgeable,
-                deployer_addr.as_deref(),
-            ));
+        if any_marked {
+            // Marked path (also covers mixed reports): keep USER and
+            // UNSPECIFIED (treated as USER). Drop PRECHARGE and REFUND
+            // wholesale. No positional skip, no shape check, no amount
+            // arithmetic on this path.
+            for single_report in &deploy.report {
+                let drop = matches!(
+                    single_report.phase,
+                    p if p == ReportPhase::Precharge as i32
+                        || p == ReportPhase::Refund as i32
+                );
+                if !drop {
+                    user_transfers.extend(find_transfers_in_report(
+                        single_report,
+                        transfer_unforgeable,
+                        deployer_addr.as_deref(),
+                    ));
+                }
+            }
+        } else {
+            // Fallback path: every segment is UNSPECIFIED. This is the
+            // expected shape during rollout, not a defect.
+            tracing::debug!(
+                target: "f1r3fly.node.web.enricher",
+                deploy_sig = %deploy_sig,
+                "report carries no phase marker; using positional precharge fallback"
+            );
+
+            let precharge_amount = deploy_info
+                .map(|info| info.phlo_limit.wrapping_mul(info.phlo_price))
+                .unwrap_or(0);
+
+            let batches: &[models::casper::SingleReport] = if precharge_amount == 0 {
+                &deploy.report
+            } else {
+                let first = &deploy.report[0];
+                let found =
+                    find_transfers_in_report(first, transfer_unforgeable, deployer_addr.as_deref());
+                let precharge_consistent = found.len() == 1
+                    && deployer_addr.as_deref() == Some(found[0].from_addr.as_str())
+                    && found[0].amount == precharge_amount;
+
+                if precharge_consistent {
+                    &deploy.report[1..]
+                } else {
+                    if found.len() == 1 {
+                        tracing::warn!(
+                            target: "f1r3fly.node.web.enricher",
+                            deploy_sig = %deploy_sig,
+                            expected_amount = precharge_amount,
+                            found_transfers = 1,
+                            found_amount = found[0].amount,
+                            found_sender = %found[0].from_addr,
+                            "report[0] does not match the expected precharge shape; \
+                             not skipping it — the precharge may appear as a user transfer"
+                        );
+                    } else {
+                        tracing::warn!(
+                            target: "f1r3fly.node.web.enricher",
+                            deploy_sig = %deploy_sig,
+                            expected_amount = precharge_amount,
+                            found_transfers = found.len(),
+                            "report[0] does not match the expected precharge shape; \
+                             not skipping it — the precharge may appear as a user transfer"
+                        );
+                    }
+                    &deploy.report
+                }
+            };
+
+            for single_report in batches {
+                user_transfers.extend(find_transfers_in_report(
+                    single_report,
+                    transfer_unforgeable,
+                    deployer_addr.as_deref(),
+                ));
+            }
         }
 
         transfers_by_deploy.insert(deploy_sig, user_transfers);

@@ -5,6 +5,7 @@
 // not a coincidence, so it is asserted here in the crate that produces it
 // rather than worked around in the web layer.
 
+use casper::rust::api::block_report_api::to_proto_phase;
 use casper::rust::genesis::contracts::standard_deploys::{
     to_public, SYSTEM_VAULT_PK, SYSTEM_VAULT_TIMESTAMP,
 };
@@ -12,12 +13,12 @@ use casper::rust::reporting_casper;
 use casper::rust::reporting_proto_transformer::ReportingProtoTransformer;
 use casper::rust::util::construct_deploy;
 use casper::rust::util::rholang::tools::Tools;
-use models::casper::{ReportProto, SingleReport};
+use models::casper::{ReportPhase, ReportProto, SingleReport};
 use models::rhoapi::g_unforgeable::UnfInstance;
 use models::rhoapi::{GPrivate, GUnforgeable};
 use rholang::rust::interpreter::external_services::ExternalServices;
 use rholang::rust::interpreter::util::vault_address::VaultAddress;
-use rspace_plus_plus::rspace::reporting_rspace::ReportingEvent;
+use rspace_plus_plus::rspace::reporting_rspace::ReportBatch;
 use rspace_plus_plus::rspace::reporting_transformer::ReportingTransformer;
 
 use crate::helper::test_node::TestNode;
@@ -45,16 +46,17 @@ fn transfer_unforgeable_channel() -> models::rhoapi::Par {
 }
 
 /// Build the per-batch `SingleReport` list (mirroring
-/// `BlockReportAPI::create_deploy_report`) from the reporting replay result,
-/// so the same batch notion the web layer consumes is inspected here.
+/// `BlockReportAPI::create_deploy_report`) from the reporting replay
+/// result, so the same batch notion the web layer consumes is inspected
+/// here. Each `ReportBatch` carries its phase marker. The marker is
+/// projected onto the proto `SingleReport.phase` field exactly as the
+/// production API does.
 fn report_batches(
-    events: &[Vec<
-        ReportingEvent<
-            models::rhoapi::Par,
-            models::rhoapi::BindPattern,
-            models::rhoapi::ListParWithRandom,
-            models::rhoapi::TaggedContinuation,
-        >,
+    events: &[ReportBatch<
+        models::rhoapi::Par,
+        models::rhoapi::BindPattern,
+        models::rhoapi::ListParWithRandom,
+        models::rhoapi::TaggedContinuation,
     >],
 ) -> Vec<SingleReport> {
     let transformer = ReportingProtoTransformer::new();
@@ -62,11 +64,13 @@ fn report_batches(
         .iter()
         .map(|batch| {
             let proto_events: Vec<ReportProto> = batch
+                .events
                 .iter()
                 .map(|ev| transformer.transform_event(ev))
                 .collect();
             SingleReport {
                 events: proto_events,
+                phase: to_proto_phase(batch.phase),
             }
         })
         .collect()

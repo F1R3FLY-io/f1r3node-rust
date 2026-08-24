@@ -84,6 +84,27 @@ where
     pub produces: Vec<ReportingProduce<C, A>>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum ReportPhase {
+    #[default]
+    Unspecified,
+    Precharge,
+    User,
+    Refund,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReportBatch<C, P, A, K>
+where
+    C: Clone + Debug,
+    P: Clone + Debug,
+    A: Clone + Debug,
+    K: Clone + Debug,
+{
+    pub phase: ReportPhase,
+    pub events: Vec<ReportingEvent<C, P, A, K>>,
+}
+
 #[derive(Clone)]
 pub struct ReportingRspace<C, P, A, K>
 where
@@ -93,12 +114,17 @@ where
     K: Clone + Debug + Default + Serialize + 'static + Sync + Send,
 {
     replay_rspace: ReplayRSpace<C, P, A, K>,
-    /// in order to distinguish the system deploy(precharge and refund) in the a
-    /// normal user deploy It might be more easily to analyse the report
-    /// with data structure Vec<Vec[ReportingEvent]>(Precharge, userDeploy,
-    /// Refund) It would be seperated by the softcheckpoint creation.
-    report: Arc<Mutex<Vec<Vec<ReportingEvent<C, P, A, K>>>>>,
+    /// The report buffer, segmented and phase-tagged at each soft
+    /// checkpoint / phase boundary.
+    report: Arc<Mutex<Vec<ReportBatch<C, P, A, K>>>>,
     soft_report: Arc<Mutex<Vec<ReportingEvent<C, P, A, K>>>>,
+    /// The phase currently in force for events accumulating in
+    /// `soft_report`. Set by `set_report_phase` at each phase boundary,
+    /// which first flushes the soft buffer (tagging it with the phase
+    /// that held until now). Reset to `Unspecified` by `get_report` so
+    /// each deploy starts unmarked, and system deploys (which never set
+    /// a phase) stay `Unspecified` end to end.
+    current_phase: Arc<Mutex<ReportPhase>>,
 }
 
 impl<C, P, A, K> ReportingRspace<C, P, A, K>
@@ -126,6 +152,7 @@ where
     ) -> ReportingRspace<C, P, A, K> {
         let report = Arc::new(Mutex::new(Vec::new()));
         let soft_report = Arc::new(Mutex::new(Vec::new()));
+        let current_phase = Arc::new(Mutex::new(ReportPhase::Unspecified));
 
         let logger = Box::new(ReportingLogger {
             report: report.clone(),
@@ -139,6 +166,7 @@ where
             replay_rspace,
             report,
             soft_report,
+            current_phase,
         }
     }
 
@@ -161,17 +189,29 @@ where
 
         if !soft_report_guard.is_empty() {
             let soft_report_content = std::mem::take(&mut *soft_report_guard);
-            self.report.lock().unwrap().push(soft_report_content);
+            let phase = *self.current_phase.lock().unwrap();
+            self.report.lock().unwrap().push(ReportBatch {
+                phase,
+                events: soft_report_content,
+            });
         }
 
         Ok(())
     }
 
-    pub fn get_report(&self) -> Result<Vec<Vec<ReportingEvent<C, P, A, K>>>, RSpaceError> {
+    pub fn get_report(&self) -> Result<Vec<ReportBatch<C, P, A, K>>, RSpaceError> {
         self.collect_report()?;
 
         let mut report_guard = self.report.lock().unwrap();
-        Ok(std::mem::take(&mut *report_guard))
+        let drained = std::mem::take(&mut *report_guard);
+
+        // Reset the phase so the next deploy starts unmarked. System
+        // deploys, which never call `set_report_phase`, therefore
+        // produce only `Unspecified` segments. User deploys set their
+        // own phases before each phase emits events.
+        *self.current_phase.lock().unwrap() = ReportPhase::Unspecified;
+
+        Ok(drained)
     }
 
     #[allow(unused)]
@@ -184,6 +224,7 @@ where
 
         self.soft_report.lock().unwrap().clear();
         self.report.lock().unwrap().clear();
+        *self.current_phase.lock().unwrap() = ReportPhase::Unspecified;
 
         Ok(checkpoint)
     }
@@ -340,6 +381,33 @@ where
     async fn update_produce(&self, produce: Produce) -> () {
         self.replay_rspace.update_produce(produce).await
     }
+
+    /// Flush the current soft buffer (tagging the segment with the phase
+    /// in force until now) and then record the new phase for subsequent
+    /// events. Called by the shared replay path at each phase boundary.
+    /// The trait default is a no-op, so plain replay spaces are
+    /// unaffected.
+    ///
+    /// When the phase in force until now is `Unspecified` — i.e. setup
+    /// noise (reset, bootstrap, registry) that accumulated before any
+    /// deploy phase was set — the soft buffer is discarded rather than
+    /// emitted as an `Unspecified` segment. In the old positional shape
+    /// this noise sat in the first batch alongside the precharge and was
+    /// dropped by the consumer's positional skip, so discarding it here
+    /// preserves the observable transfer set.
+    async fn set_report_phase(&self, phase: ReportPhase) {
+        let prev = *self.current_phase.lock().unwrap();
+        if prev == ReportPhase::Unspecified {
+            self.soft_report.lock().unwrap().clear();
+        } else if let Err(err) = self.collect_report() {
+            tracing::warn!(
+                target: "f1r3fly.rspace.reporting",
+                error = %err,
+                "collect_report failed at phase boundary; the segment may be lost"
+            );
+        }
+        *self.current_phase.lock().unwrap() = phase;
+    }
 }
 
 /// Logger used to collect reporting events from underlying replay space
@@ -350,7 +418,7 @@ where
     A: Clone + Debug + Send,
     K: Clone + Debug + Send,
 {
-    pub report: Arc<Mutex<Vec<Vec<ReportingEvent<C, P, A, K>>>>>,
+    pub report: Arc<Mutex<Vec<ReportBatch<C, P, A, K>>>>,
     pub soft_report: Arc<Mutex<Vec<ReportingEvent<C, P, A, K>>>>,
 }
 

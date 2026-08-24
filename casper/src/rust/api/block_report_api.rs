@@ -11,6 +11,7 @@ use models::rust::block_hash::BlockHash;
 use models::rust::casper::protocol::casper_message::{BlockMessage, SystemDeployData};
 use prost::bytes::Bytes;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+use rspace_plus_plus::rspace::reporting_rspace::ReportPhase as RspaceReportPhase;
 use rspace_plus_plus::rspace::reporting_transformer::ReportingTransformer;
 use shared::rust::store::key_value_typed_store::KeyValueTypedStore;
 use shared::rust::ByteString;
@@ -23,6 +24,16 @@ use crate::rust::reporting_casper::ReportingCasper;
 use crate::rust::reporting_proto_transformer::ReportingProtoTransformer;
 use crate::rust::safety_oracle::CliqueOracleImpl;
 use crate::rust::util::proto_util;
+
+pub fn to_proto_phase(phase: RspaceReportPhase) -> i32 {
+    use models::casper::ReportPhase as Proto;
+    match phase {
+        RspaceReportPhase::Unspecified => Proto::Unspecified as i32,
+        RspaceReportPhase::Precharge => Proto::Precharge as i32,
+        RspaceReportPhase::User => Proto::User as i32,
+        RspaceReportPhase::Refund => Proto::Refund as i32,
+    }
+}
 
 struct ReportQueueMetricGuard;
 
@@ -290,8 +301,9 @@ impl BlockReportAPI {
                 let report: Vec<SingleReport> = sd
                     .events
                     .iter()
-                    .map(|event_batch| {
-                        let events: Vec<ReportProto> = event_batch
+                    .map(|batch| {
+                        let events: Vec<ReportProto> = batch
+                            .events
                             .iter()
                             .map(|event| {
                                 ReportingTransformer::transform_event(
@@ -301,7 +313,10 @@ impl BlockReportAPI {
                             })
                             .collect();
 
-                        SingleReport { events }
+                        SingleReport {
+                            events,
+                            phase: to_proto_phase(batch.phase),
+                        }
                     })
                     .collect();
 
@@ -326,8 +341,9 @@ impl BlockReportAPI {
                 let report: Vec<SingleReport> = p
                     .events
                     .iter()
-                    .map(|event_batch| {
-                        let events: Vec<ReportProto> = event_batch
+                    .map(|batch| {
+                        let events: Vec<ReportProto> = batch
+                            .events
                             .iter()
                             .map(|event| {
                                 ReportingTransformer::transform_event(
@@ -337,7 +353,10 @@ impl BlockReportAPI {
                             })
                             .collect();
 
-                        SingleReport { events }
+                        SingleReport {
+                            events,
+                            phase: to_proto_phase(batch.phase),
+                        }
                     })
                     .collect();
 
