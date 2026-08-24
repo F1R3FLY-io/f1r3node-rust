@@ -9,38 +9,58 @@ use super::transaction::helpers;
 
 /// Extract user transfers from a report, keyed by deploy signature.
 ///
-/// Each cost-accounted deploy's execution report is produced by running the
-/// three phases precharge → user → refund in that fixed order, ending each
-/// with a soft checkpoint. Genesis replays run without cost accounting and
-/// produce no precharge batch at all. Genesis standard deploys are built with
-/// `phlo_price: 0`, so their charge is `0`.
+/// ## Marked path (authoritative when present)
 ///
-/// The precharge is excluded by position (`report[0]`) after a shape check:
-/// exactly one deployer-funded transfer of `phlo_limit * phlo_price`. The
-/// `to_addr` is NOT checked because the precharge pays to `posVaultAddr`, an
-/// unforgeable-derived address that is not knowable in the web layer (it is
-/// only exposed via `PoS(@"getInitialPosVault")` at runtime). The batch
-/// order invariant is pinned by
-/// `casper/tests/batch1/precharge_report_shape_spec.rs`. The refund is
-/// excluded automatically because its sender is the PoS vault, not the
-/// deployer, so the deployer-sender filter drops it.
+/// A cost-accounted deploy's execution report is produced by running the
+/// three phases precharge -> user -> refund in that fixed order. Each
+/// segment carries an explicit `ReportPhase` marker set by the
+/// reporting rspace at the phase boundary. When any segment of a
+/// deploy's report carries a marker other than `UNSPECIFIED`, the
+/// marker is authoritative: only `USER` segments are scanned for
+/// transfers where `from_addr == deployer_addr`, and `PRECHARGE` and
+/// `REFUND` segments are dropped wholesale. No positional skip, no
+/// shape check, and no `phlo_limit * phlo_price` arithmetic run on this
+/// path. The `to_addr` is not checked because the precharge pays to an
+/// unforgeable-derived vault that is not knowable in the web layer.
 ///
-/// If `report[0]` does not match the expected precharge shape (no transfer,
-/// wrong sender, wrong amount, or more than one transfer), the invariant is
-/// treated as violated: `report[0]` is *not* skipped, one warning per affected
-/// deploy is emitted, and all deployer-funded transfers are returned. This
-/// deliberately over-reports rather than silently dropping a genuine user
-/// transfer, and the warning keeps the case diagnosable.
+/// Genesis (`with_cost_accounting == false`) emits only `USER`
+/// segments. System deploys emit only `UNSPECIFIED` segments.
 ///
-/// If the deployer address cannot be derived from `DeployInfo.deployer` (bad
-/// hex, invalid public key, or missing info), a warning is emitted and the
-/// deploy's transfers are dropped — silently losing user data here would repeat
-/// the same shape of bug that the position-based precharge filter guards
+/// ## Mixed report
+///
+/// If some segments are marked and some are `UNSPECIFIED` (a report
+/// partly produced by a node on the new model and partly by an older
+/// one), the marked path is used and `UNSPECIFIED` segments are treated
+/// as `USER` rather than dropped. Losing data is the failure mode this
+/// whole line of work exists to prevent. The choice is recorded here so
+/// a future change does not silently narrow it.
+///
+/// ## Fallback path (compatibility)
+///
+/// When every segment is `UNSPECIFIED` (a node predating this change, or
+/// a report replayed from data written before it), the positional
+/// logic from the initial fix runs verbatim: `report[0]` is treated as
+/// the precharge after a shape check (one deployer-sent transfer of
+/// `phlo_limit * phlo_price`), and on mismatch it is not skipped plus a
+/// warning. An unmarked report is expected during rollout, not a
+/// defect, so the fallback is logged once per deploy at `debug!`.
+///
+/// The fallback and the `phlo_limit * phlo_price` shape check become
+/// removable once every report-producing node is on the new model. They
+/// are kept here for wire-compatibility both directions. Do not delete
+/// them in this change (tracked as a follow-up).
+///
+/// ## Deployer derivation
+///
+/// If the deployer address cannot be derived from `DeployInfo.deployer`
+/// (bad hex, invalid public key, or missing info), a warning is emitted
+/// and the deploy's transfers are dropped. Silently losing user data
+/// here would repeat the same shape of bug that the marker now guards
 /// against.
 ///
-/// Map-entry contract: a deploy with a non-empty `report` always receives a
-/// map entry (possibly with an empty vector); a deploy with an empty `report`
-/// receives no entry.
+/// Map-entry contract: a deploy with a non-empty `report` always
+/// receives a map entry (possibly with an empty vector). A deploy with
+/// an empty `report` receives no entry.
 pub fn extract_transfers_from_report(
     report: &BlockEventInfo,
     transfer_unforgeable: &Par,
@@ -247,7 +267,8 @@ mod tests {
     use crypto::rust::signatures::signatures_alg::SignaturesAlg;
     use models::casper::{
         report_proto, BlockEventInfo, DeployInfo, DeployInfoWithEventData, LightBlockInfo,
-        ReportCommProto, ReportConsumeProto, ReportProduceProto, ReportProto, SingleReport,
+        ReportCommProto, ReportConsumeProto, ReportPhase, ReportProduceProto, ReportProto,
+        SingleReport,
     };
     use models::rhoapi::expr::ExprInstance;
     use models::rhoapi::g_unforgeable::UnfInstance;
@@ -333,6 +354,25 @@ mod tests {
         to: &str,
         amount: i64,
     ) -> SingleReport {
+        make_transfer_report_phase(
+            transfer_unforgeable,
+            from,
+            to,
+            amount,
+            ReportPhase::Unspecified,
+        )
+    }
+
+    /// Same as `make_transfer_report` but lets the test pin the phase
+    /// marker on the batch. Marked-path tests use this so the batch is
+    /// not routed to the positional fallback.
+    fn make_transfer_report_phase(
+        transfer_unforgeable: &Par,
+        from: &str,
+        to: &str,
+        amount: i64,
+        phase: ReportPhase,
+    ) -> SingleReport {
         SingleReport {
             events: vec![ReportProto {
                 report: Some(report_proto::Report::Comm(make_comm_event(
@@ -342,6 +382,14 @@ mod tests {
                     amount,
                 ))),
             }],
+            phase: phase as i32,
+        }
+    }
+
+    fn make_empty_report(phase: ReportPhase) -> SingleReport {
+        SingleReport {
+            events: vec![],
+            phase: phase as i32,
         }
     }
 
@@ -443,7 +491,7 @@ mod tests {
         let transfer_unforgeable = make_transfer_unforgeable();
         let (deployer_hex, deployer_addr) = make_deployer();
 
-        let empty_precharge = SingleReport { events: vec![] };
+        let empty_precharge = make_empty_report(ReportPhase::Unspecified);
         let user_report =
             make_transfer_report(&transfer_unforgeable, &deployer_addr, "receiver_addr", 300);
         let report = make_block_event(DeployInfoWithEventData {
@@ -564,9 +612,10 @@ mod tests {
                 1,
             ))
             .into(),
-            report: vec![SingleReport { events: vec![] }, SingleReport {
-                events: vec![],
-            }],
+            report: vec![
+                make_empty_report(ReportPhase::Unspecified),
+                make_empty_report(ReportPhase::Unspecified),
+            ],
         });
 
         let result = extract_transfers_from_report(&report, &transfer_unforgeable);
@@ -632,6 +681,7 @@ mod tests {
                     ))),
                 },
             ],
+            phase: ReportPhase::Unspecified as i32,
         };
 
         // Second user batch holds one transfer.
@@ -818,5 +868,222 @@ mod tests {
         assert_eq!(transfers[0].to_addr, "receiver_addr");
         assert_eq!(transfers[0].amount, 456);
         assert_eq!(transfers[0].from_addr, deployer_addr);
+    }
+
+    // === Marked path (explicit ReportPhase on batches) ===
+    //
+    // The marker is authoritative when present: PRECHARGE and REFUND
+    // batches are dropped wholesale. USER batches are scanned for
+    // deployer-sent transfers. No positional skip, no shape check, no
+    // phlo_limit * phlo_price arithmetic.
+
+    // 1. Marked report, normal order [PRECHARGE, USER, REFUND] -> only
+    //    the user transfer. Precharge and refund dropped by marker.
+    #[test]
+    fn marked_report_normal_order_drops_precharge_and_refund() {
+        let transfer_unforgeable = make_transfer_unforgeable();
+        let (deployer_hex, deployer_addr) = make_deployer();
+
+        let precharge = make_transfer_report_phase(
+            &transfer_unforgeable,
+            &deployer_addr,
+            "pos_vault_addr",
+            100,
+            ReportPhase::Precharge,
+        );
+        let user = make_transfer_report_phase(
+            &transfer_unforgeable,
+            &deployer_addr,
+            "receiver_addr",
+            1000,
+            ReportPhase::User,
+        );
+        let refund = make_transfer_report_phase(
+            &transfer_unforgeable,
+            "pos_vault_addr",
+            &deployer_addr,
+            50,
+            ReportPhase::Refund,
+        );
+        let report = make_block_event(DeployInfoWithEventData {
+            deploy_info: Some(make_deploy_info_with_charge(
+                "deploy_marked_normal",
+                &deployer_hex,
+                100,
+                1,
+            ))
+            .into(),
+            report: vec![precharge, user, refund],
+        });
+
+        let result = extract_transfers_from_report(&report, &transfer_unforgeable);
+
+        let transfers = result
+            .get("deploy_marked_normal")
+            .expect("should have deploy entry");
+        assert_eq!(
+            transfers.len(),
+            1,
+            "marked path: only the USER transfer is kept"
+        );
+        assert_eq!(transfers[0].to_addr, "receiver_addr");
+        assert_eq!(transfers[0].amount, 1000);
+        assert_eq!(transfers[0].from_addr, deployer_addr);
+    }
+
+    // 2. Marked report, batches deliberately out of order
+    //    [USER, PRECHARGE, REFUND] -> the user transfer is returned,
+    //    the precharge is not, and no positional warning is emitted.
+    //    The marked path never runs the report[0] shape check, so the
+    //    "does not match the expected precharge shape" warning that the
+    //    fallback would fire (amount 700 != 100) cannot be reached.
+    //    Position no longer matters.
+    #[test]
+    fn marked_report_out_of_order_keeps_user_without_positional_warning() {
+        let transfer_unforgeable = make_transfer_unforgeable();
+        let (deployer_hex, deployer_addr) = make_deployer();
+
+        // report[0] is the USER transfer (amount 700, not the precharge
+        // amount 100). On the fallback path this would trigger the
+        // amount 100). On the fallback path this would trigger the
+        // shape-check warning. On the marked path it does not.
+        let user = make_transfer_report_phase(
+            &transfer_unforgeable,
+            &deployer_addr,
+            "receiver_addr",
+            700,
+            ReportPhase::User,
+        );
+        let precharge = make_transfer_report_phase(
+            &transfer_unforgeable,
+            &deployer_addr,
+            "pos_vault_addr",
+            100,
+            ReportPhase::Precharge,
+        );
+        let refund = make_transfer_report_phase(
+            &transfer_unforgeable,
+            "pos_vault_addr",
+            &deployer_addr,
+            50,
+            ReportPhase::Refund,
+        );
+        let report = make_block_event(DeployInfoWithEventData {
+            deploy_info: Some(make_deploy_info_with_charge(
+                "deploy_marked_ooo",
+                &deployer_hex,
+                100,
+                1,
+            ))
+            .into(),
+            report: vec![user, precharge, refund],
+        });
+
+        let result = extract_transfers_from_report(&report, &transfer_unforgeable);
+
+        let transfers = result
+            .get("deploy_marked_ooo")
+            .expect("should have deploy entry");
+        assert_eq!(
+            transfers.len(),
+            1,
+            "marked path is positional: only the USER batch is kept, \
+             even when it is not report[0]"
+        );
+        assert_eq!(transfers[0].to_addr, "receiver_addr");
+        assert_eq!(transfers[0].amount, 700);
+        assert_eq!(transfers[0].from_addr, deployer_addr);
+    }
+
+    // 3. Marked report with no PRECHARGE batch -> user transfers
+    //    returned, no warning. The marked path does not require a
+    //    precharge batch to be present.
+    #[test]
+    fn marked_report_without_precharge_keeps_user_transfers() {
+        let transfer_unforgeable = make_transfer_unforgeable();
+        let (deployer_hex, deployer_addr) = make_deployer();
+
+        let user = make_transfer_report_phase(
+            &transfer_unforgeable,
+            &deployer_addr,
+            "receiver_addr",
+            456,
+            ReportPhase::User,
+        );
+        let report = make_block_event(DeployInfoWithEventData {
+            deploy_info: Some(make_deploy_info_with_charge(
+                "deploy_marked_no_precharge",
+                &deployer_hex,
+                100,
+                1,
+            ))
+            .into(),
+            report: vec![user],
+        });
+
+        let result = extract_transfers_from_report(&report, &transfer_unforgeable);
+
+        let transfers = result
+            .get("deploy_marked_no_precharge")
+            .expect("should have deploy entry");
+        assert_eq!(
+            transfers.len(),
+            1,
+            "marked path: the single USER transfer is returned"
+        );
+        assert_eq!(transfers[0].to_addr, "receiver_addr");
+        assert_eq!(transfers[0].amount, 456);
+    }
+
+    // 5. Mixed marked/unmarked report -> marked path used. UNSPECIFIED
+    //    batches are treated as USER (data is never silently dropped).
+    #[test]
+    fn mixed_report_treats_unspecified_as_user() {
+        let transfer_unforgeable = make_transfer_unforgeable();
+        let (deployer_hex, deployer_addr) = make_deployer();
+
+        let user_marked = make_transfer_report_phase(
+            &transfer_unforgeable,
+            &deployer_addr,
+            "receiver_a",
+            100,
+            ReportPhase::User,
+        );
+        // An UNSPECIFIED batch in a mixed report is kept and scanned,
+        // not dropped, so a genuine user transfer is not lost.
+        let user_unmarked =
+            make_transfer_report(&transfer_unforgeable, &deployer_addr, "receiver_b", 200);
+        let precharge = make_transfer_report_phase(
+            &transfer_unforgeable,
+            &deployer_addr,
+            "pos_vault_addr",
+            50,
+            ReportPhase::Precharge,
+        );
+        let report = make_block_event(DeployInfoWithEventData {
+            deploy_info: Some(make_deploy_info_with_charge(
+                "deploy_mixed",
+                &deployer_hex,
+                50,
+                1,
+            ))
+            .into(),
+            report: vec![user_marked, user_unmarked, precharge],
+        });
+
+        let result = extract_transfers_from_report(&report, &transfer_unforgeable);
+
+        let transfers = result
+            .get("deploy_mixed")
+            .expect("should have deploy entry");
+        assert_eq!(
+            transfers.len(),
+            2,
+            "mixed report: USER and UNSPECIFIED (as USER) kept, PRECHARGE dropped"
+        );
+        assert_eq!(transfers[0].to_addr, "receiver_a");
+        assert_eq!(transfers[0].amount, 100);
+        assert_eq!(transfers[1].to_addr, "receiver_b");
+        assert_eq!(transfers[1].amount, 200);
     }
 }

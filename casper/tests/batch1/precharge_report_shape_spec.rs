@@ -215,12 +215,38 @@ async fn cost_accounted_user_deploy_report_starts_with_precharge_batch() {
         batches.len()
     );
 
+    // Marker assertions: the reporting rspace tags each segment at the
+    // phase boundary. The precharge is first and tagged PRECHARGE. The
+    // user and refund segments are tagged USER and REFUND. This pins
+    // the marker that the web layer's marked path relies on, alongside
+    // the positional invariant asserted below.
+    assert_eq!(
+        batches[0].phase,
+        ReportPhase::Precharge as i32,
+        "the first batch must carry the PRECHARGE marker"
+    );
+    let phases: Vec<i32> = batches.iter().map(|b| b.phase).collect();
+    assert!(
+        phases.contains(&(ReportPhase::User as i32)),
+        "the report must contain a USER-tagged segment; got phases {:?}",
+        phases
+    );
+    assert!(
+        phases.contains(&(ReportPhase::Refund as i32)),
+        "the report must contain a REFUND-tagged segment; got phases {:?}",
+        phases
+    );
+
     let transfer_channel = transfer_unforgeable_channel();
     let first_batch_transfers = transfers_in_batch(&batches[0], &transfer_channel);
     let expected_deployer_vault = VaultAddress::from_public_key(&construct_deploy::DEFAULT_PUB)
         .expect("DEFAULT_PUB must derive a vault address")
         .to_base58();
 
+    // Positional invariant (kept): report[0] is the precharge — exactly
+    // one transfer on the transfer channel, from the deployer's vault,
+    // for total_phlo_charge(). Both the invariant and the marker are
+    // pinned so a regression in either is caught.
     assert_eq!(
         first_batch_transfers.len(),
         1,
@@ -265,4 +291,62 @@ async fn genesis_deploys_carry_zero_phlo_price_so_no_precharge() {
             i
         );
     }
+}
+
+/// Genesis replays run with `with_cost_accounting == false` (no parents),
+/// so `process_deploy_without_cost_accounting` runs and the only phase
+/// marker set is `USER`. Every deploy's report must therefore contain
+/// only `USER` segments and no `PRECHARGE` or `REFUND` segment. This is
+/// the mirror of the cost-accounted assertion above.
+#[tokio::test]
+async fn genesis_report_carries_only_user_markers() {
+    let genesis = GenesisBuilder::new()
+        .build_genesis_with_parameters(None)
+        .await
+        .expect("Failed to build genesis");
+
+    let node = TestNode::standalone(genesis.clone())
+        .await
+        .expect("Failed to create standalone node");
+
+    let mut rspace_kvm = mk_test_rnode_store_manager_shared(genesis.rspace_scope_id.clone());
+    let rspace_store = rspace_kvm
+        .r_space_stores()
+        .await
+        .expect("Failed to open shared RSpace stores");
+
+    let reporter = reporting_casper::rho_reporter(
+        &rspace_store,
+        &node.block_dag_storage,
+        node.runtime_manager.replay_lock(),
+        ExternalServices::noop(),
+    );
+
+    let replay = reporter
+        .trace(&genesis.genesis_block)
+        .await
+        .expect("reporting replay of the genesis block failed");
+
+    assert!(
+        !replay.deploy_report_result.is_empty(),
+        "genesis block must replay at least one deploy"
+    );
+
+    for (i, deploy_result) in replay.deploy_report_result.iter().enumerate() {
+        let batches = report_batches(&deploy_result.events);
+        for (j, batch) in batches.iter().enumerate() {
+            assert_eq!(
+                batch.phase,
+                ReportPhase::User as i32,
+                "genesis deploy {} batch {} must carry the USER marker, got phase {}",
+                i,
+                j,
+                batch.phase
+            );
+        }
+    }
+
+    // The node is held until here to keep the DAG storage alive for the
+    // reporting replay above.
+    drop(node);
 }
