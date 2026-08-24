@@ -114,6 +114,21 @@ jq -e --arg top "$S311" --arg s299 "$S299" --arg merge "$M311" --arg base "$B311
 	and .members[0] == {pull_request: 299, head_sha: $s299, base: "dev", merged: false}
 	and .members[3].base == "fix/key-contention-base-bias"' "$TMP/train-record.json" >/dev/null
 "$TOOL" summarize "$TMP/train-record.json" | grep -q 'rehearsal, non-publishing'
+"$TOOL" validate-current-stack "$TMP/train-record.json" "$TMP/train-record.json"
+current_stack_case() {
+	local label="$1" filter="$2" current="$TMP/current-stack.json"
+	jq --arg other "$OTHER" "$filter" "$TMP/train-record.json" >"$current"
+	expect_failure "$label" "$TOOL" validate-current-stack "$TMP/train-record.json" "$current"
+}
+current_stack_case 'top head changed during CI' '.head_sha = $other'
+current_stack_case 'integration base changed during CI' '.integration_base_sha = $other'
+current_stack_case 'logical base changed during CI' '.base_sha = $other'
+current_stack_case 'synthetic base changed during CI' '.merge_base_sha = $other'
+current_stack_case 'synthetic merge changed during CI' '.merge_sha = $other'
+current_stack_case 'middle member head changed during CI' '.members[1].head_sha = $other'
+current_stack_case 'middle member base changed during CI' '.members[1].base = "other"'
+current_stack_case 'middle member merged during CI' '.members[1].merged = true'
+current_stack_case 'member order changed during CI' '.members |= reverse'
 
 # --- Section 15 rejections ------------------------------------------------------
 stack_case() { # label, then a shell snippet that mutates a copy of inputs

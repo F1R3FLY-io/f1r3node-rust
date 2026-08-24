@@ -170,7 +170,13 @@ fail_if(ci_trigger.dig("workflow_dispatch", "inputs", "target_sha", "default") !
 fail_if(ci_trigger.dig("workflow_dispatch", "inputs", "top_pull_request", "default") != "", "CI dispatch must accept an optional top pull request")
 build_base = ci.dig("jobs", "build_base")
 fail_if(build_base.dig("outputs", "TARGET_SHA") != "${{ steps.target.outputs.target_sha }}", "Build Base must export the validated target SHA")
+fail_if(build_base.dig("outputs", "MERGE_BASE_SHA") != "${{ steps.target.outputs.merge_base_sha }}", "Build Base must export the synthetic base SHA")
 fail_if(build_base.dig("outputs", "RUN_HEAVY") != "${{ steps.target.outputs.run_heavy }}", "Build Base must export the Heavy Pipeline decision")
+build_steps = build_base.fetch("steps")
+target_step = build_steps.find { |step| step["id"] == "target" }
+fail_if(!target_step&.dig("run")&.include?('compare/${base}...${merge_base}'), "CI must verify synthetic base ancestry")
+target_upload = build_steps.find { |step| step["name"] == "Upload exact target evidence" }
+fail_if(target_upload&.dig("uses").to_s !~ /\Aactions\/upload-artifact@[0-9a-f]{40}\z/, "CI target evidence upload must use a full action SHA")
 pipeline = ci.dig("jobs", "pipeline")
 fail_if(pipeline["if"] != "needs.build_base.outputs.RUN_HEAVY == 'true'", "Heavy Pipeline must use the validated stack decision")
 fail_if(pipeline.dig("with", "checkout_ref") != "${{ needs.build_base.outputs.TARGET_SHA }}", "Heavy Pipeline must check out the validated target SHA")
@@ -179,6 +185,16 @@ fail_if(!ci_text.include?("merge_commit_sha"), "CI must validate the current pul
 fail_if(!ci_text.include?('-f base="$PR_HEAD_REF"'), "CI must detect open pull requests stacked on the current head")
 fail_if(!ci_text.include?('run_heavy=$run_heavy'), "CI must persist the Heavy Pipeline decision")
 fail_if(!ci_text.include?("ci-target-${{ github.run_attempt }}"), "CI must upload attempt-specific target evidence")
+%w[lint deny markdown_link_check test].each do |job_name|
+  checkout = ci.dig("jobs", job_name, "steps").find { |step| step["name"] == "Checkout" }
+  fail_if(checkout&.dig("with", "ref") != "${{ needs.build_base.outputs.TARGET_SHA }}", "#{job_name} must check out the validated target SHA")
+end
+lint_steps = ci.dig("jobs", "lint", "steps")
+fail_if(lint_steps.none? { |step| step["run"].to_s.include?("test-ci-stack-gate.sh") }, "Lint must run CI stack gate tests")
+%w[integration_tests_amd64 integration_tests_arm64].each do |job_name|
+  condition = ci.dig("jobs", job_name, "if").to_s
+  fail_if(!condition.include?("needs.pipeline.result != 'skipped'"), "#{job_name} must fail closed when Heavy Pipeline runs")
+end
 
 # Deployment train setup (Phase 5): manual, default-branch only, one job
 # whose only write permission is actions (the optional ci.yml dispatch), no
@@ -205,6 +221,9 @@ fail_if(!train_text.include?("release-train.sh validate-top-merge"), "deployment
 fail_if(!train_text.include?("release-train.sh validate-version"), "deployment train must verify the source version with release-train.sh")
 fail_if(!train_text.include?("release-train.sh plan-ci"), "deployment train must plan CI evidence with release-train.sh")
 fail_if(!train_text.include?("release-train.sh validate-ci-evidence"), "deployment train must validate exact CI target and Heavy Pipeline evidence")
+fail_if(train_text.scan("release-train.sh validate-stack").length != 2, "deployment train must validate the full stack before and after CI")
+fail_if(!train_text.include?("release-train.sh validate-current-stack"), "deployment train must compare the post-CI stack record")
+fail_if(!train_text.include?(".stack.members[].pull_request"), "deployment train must refresh every stack member after CI")
 fail_if(!train_text.include?('gh workflow run ci.yml --ref "$DEFAULT_BRANCH"'), "deployment train must dispatch the trusted default-branch CI workflow")
 fail_if(!train_text.include?('-f target_sha="$merge_sha" -f top_pull_request="$top"'), "deployment train must dispatch CI for the exact top merge")
 fail_if(!train_text.include?('/attempts/${run_attempt}/jobs'), "deployment train must read jobs from the selected run attempt")

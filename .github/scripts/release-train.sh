@@ -275,6 +275,18 @@ plan_ci() {
 	if [ -n "$id" ]; then printf 'wait:%s\n' "$id"; else printf 'dispatch\n'; fi
 }
 
+validate_current_stack() {
+	local record="$1" current="$2"
+	require_file "$record"
+	require_file "$current"
+	jq -e --slurpfile current "$current" '
+		{train_id, target_version, head_sha, head_pull_request, integration_branch,
+		 integration_base_sha, base_sha, merge_base_sha, merge_sha, members}
+		== ($current[0] | {train_id, target_version, head_sha, head_pull_request, integration_branch,
+		 integration_base_sha, base_sha, merge_base_sha, merge_sha, members})' "$record" >/dev/null ||
+		fail "stack changed while exact-merge CI ran"
+}
+
 validate_ci_evidence() {
 	local target="$1" jobs="$2" merge="$3" top="$4" head="$5" base="$6" merge_base="$7" run_id="$8" run_attempt="$9" repository="${10}"
 	require_file "$target"
@@ -326,6 +338,7 @@ usage() {
 		"       $0 validate-stack MANIFEST_JSON_FILE INPUTS_DIR OUTPUT" \
 		"       $0 validate-top-merge MANIFEST_JSON_FILE INPUTS_DIR OUTPUT" \
 		"       $0 validate-version MANIFEST_JSON_FILE SOURCE_DIR MANIFESTS_DIR" \
+		"       $0 validate-current-stack TRAIN_RECORD CURRENT_RECORD" \
 		"       $0 plan-ci RUNS_JSON MERGE_SHA REPOSITORY DEFAULT_BRANCH CONTROL_SHA" \
 		"       $0 validate-ci-evidence TARGET_JSON JOBS_JSON MERGE_SHA TOP_PR HEAD_SHA BASE_SHA MERGE_BASE_SHA RUN_ID RUN_ATTEMPT REPOSITORY" \
 		"       $0 summarize TRAIN_RECORD" >&2
@@ -356,6 +369,10 @@ validate-version)
 	[ "$#" -eq 4 ] || usage
 	require_file "$2"
 	validate_version "$(cat "$2")" "$3" "$4"
+	;;
+validate-current-stack)
+	[ "$#" -eq 3 ] || usage
+	validate_current_stack "$2" "$3"
 	;;
 plan-ci)
 	[ "$#" -eq 6 ] || usage

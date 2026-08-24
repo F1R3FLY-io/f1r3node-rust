@@ -331,9 +331,8 @@ jobs:
           if [ "$is_stack" = true ]; then
             ci-control/.github/scripts/release-train.sh validate-stack \
               "$manifest" "$current" "$current/train-record.json"
-            jq -e --slurpfile current "$current/train-record.json" '
-              {head_sha, integration_base_sha, base_sha, merge_base_sha, merge_sha, members}
-              == ($current[0] | {head_sha, integration_base_sha, base_sha, merge_base_sha, merge_sha, members})' "$record" >/dev/null
+            ci-control/.github/scripts/release-train.sh validate-current-stack \
+              "$record" "$current/train-record.json"
           else
             jq -e '.status == "ahead" or .status == "identical"' "$current/integration-base.json" >/dev/null
             ci-control/.github/scripts/release-train.sh validate-top-merge \
