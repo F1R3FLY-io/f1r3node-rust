@@ -3,14 +3,14 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 ruby -ryaml - \
-	"$ROOT/.github/workflows/release.yml" \
-	"$ROOT/.github/workflows/release-evidence.yml" \
-	"$ROOT/.github/workflows/soak-in.yml" \
-	"$ROOT/.github/workflows/canary-publish.yml" \
-	"$ROOT/.github/workflows/oci-validation.yml" \
-	"$ROOT/.github/workflows/merge-recovery-soak.yml" \
-	"$ROOT/.github/workflows/ci.yml" \
-	"$ROOT/.github/workflows/deployment-train.yml" <<'RUBY'
+  "$ROOT/.github/workflows/release.yml" \
+  "$ROOT/.github/workflows/release-evidence.yml" \
+  "$ROOT/.github/workflows/soak-in.yml" \
+  "$ROOT/.github/workflows/canary-publish.yml" \
+  "$ROOT/.github/workflows/oci-validation.yml" \
+  "$ROOT/.github/workflows/merge-recovery-soak.yml" \
+  "$ROOT/.github/workflows/ci.yml" \
+  "$ROOT/.github/workflows/deployment-train.yml" <<'RUBY'
 def trigger(document)
   document["on"] || document[true]
 end

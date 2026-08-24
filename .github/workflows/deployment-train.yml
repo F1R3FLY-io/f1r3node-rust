@@ -280,8 +280,39 @@ jobs:
             "$target" "$RUNNER_TEMP/train/ci-jobs.json" "$merge_sha" "$top" "$head_sha" "$base_sha" \
             "$merge_base_sha" "$run_id" "$run_attempt" "$GITHUB_REPOSITORY"
           current="$RUNNER_TEMP/train/current"
+          manifest="$RUNNER_TEMP/train/manifest.json"
           mkdir -p "$current"
-          gh api "repos/${GITHUB_REPOSITORY}/pulls/${top}" > "$current/pull-$top.json"
+          is_stack="$(jq -r 'has("stack")' "$manifest")"
+          if [ "$is_stack" = true ]; then
+            members="$(jq -r '.stack.members[].pull_request' "$manifest")"
+            integration="$(jq -r '.stack.integration_branch' "$manifest")"
+          else
+            members="$top"
+            integration=""
+          fi
+          lower=""
+          while IFS= read -r n; do
+            gh api "repos/${GITHUB_REPOSITORY}/pulls/${n}" > "$current/pull-$n.json"
+            [ "$(jq -r '.head.repo.full_name // empty' "$current/pull-$n.json")" = "$GITHUB_REPOSITORY" ] || {
+              echo "::error::pull request #${n} head repository changed while exact-merge CI ran"
+              exit 1
+            }
+            upper="$(jq -r '.head.sha' "$current/pull-$n.json")"
+            if [ -n "$lower" ]; then
+              gh api "repos/${GITHUB_REPOSITORY}/compare/${lower}...${upper}" \
+                --jq '{status: .status}' > "$current/compare-$lower-$upper.json"
+            fi
+            if [ "$(jq -r '.merged // false' "$current/pull-$n.json")" = true ]; then
+              member_merge="$(jq -r '.merge_commit_sha' "$current/pull-$n.json")"
+              gh api "repos/${GITHUB_REPOSITORY}/commits/${member_merge}" \
+                --jq '{sha: .sha, parents: [.parents[] | {sha: .sha}]}' > "$current/merge-$n.json"
+              if [ -n "$integration" ]; then
+                gh api "repos/${GITHUB_REPOSITORY}/compare/${member_merge}...${integration}" \
+                  --jq '{status: .status}' > "$current/reach-$n.json"
+              fi
+            fi
+            lower="$upper"
+          done <<<"$members"
           current_merge="$(jq -r '.merge_commit_sha // empty' "$current/pull-$top.json")"
           [[ "$current_merge" =~ ^[0-9a-f]{40}$ ]] || {
             echo "::error::top pull request #${top} no longer has a synthetic merge"
@@ -293,26 +324,28 @@ jobs:
           current_merge_base="$(jq -r '.parents[0].sha' "$current/top-merge.json")"
           gh api "repos/${GITHUB_REPOSITORY}/compare/${current_base}...${current_merge_base}" \
             --jq '{status: .status}' > "$current/top-base.json"
-          root="$(jq -r '.stack.members[0].pull_request // .pull_request' "$RUNNER_TEMP/train/manifest.json")"
-          if [ "$root" != "$top" ]; then
-            gh api "repos/${GITHUB_REPOSITORY}/pulls/${root}" > "$current/pull-$root.json"
-          fi
+          root="$(jq -r '.stack.members[0].pull_request // .pull_request' "$manifest")"
           current_integration_base="$(jq -r '.base.sha' "$current/pull-$root.json")"
           gh api "repos/${GITHUB_REPOSITORY}/compare/${current_integration_base}...${current_merge_base}" \
             --jq '{status: .status}' > "$current/integration-base.json"
-          jq -e '.status == "ahead" or .status == "identical"' "$current/integration-base.json" >/dev/null || {
-            echo "::error::current top synthetic merge does not contain the integration base"
-            exit 1
-          }
-          ci-control/.github/scripts/release-train.sh validate-top-merge \
-            "$RUNNER_TEMP/train/manifest.json" "$current" "$current/top-record.json"
-          jq -e --arg integration_base "$current_integration_base" --slurpfile current "$current/top-record.json" '
-            .head_sha == $current[0].head_sha
-            and .base_sha == $current[0].base_sha
-            and .integration_base_sha == $integration_base
-            and .merge_base_sha == $current[0].merge_base_sha
-            and .merge_sha == $current[0].merge_sha' "$record" >/dev/null || {
-            echo "::error::top pull request changed while exact-merge CI ran"
+          if [ "$is_stack" = true ]; then
+            ci-control/.github/scripts/release-train.sh validate-stack \
+              "$manifest" "$current" "$current/train-record.json"
+            jq -e --slurpfile current "$current/train-record.json" '
+              {head_sha, integration_base_sha, base_sha, merge_base_sha, merge_sha, members}
+              == ($current[0] | {head_sha, integration_base_sha, base_sha, merge_base_sha, merge_sha, members})' "$record" >/dev/null
+          else
+            jq -e '.status == "ahead" or .status == "identical"' "$current/integration-base.json" >/dev/null
+            ci-control/.github/scripts/release-train.sh validate-top-merge \
+              "$manifest" "$current" "$current/top-record.json"
+            jq -e --arg integration_base "$current_integration_base" --slurpfile current "$current/top-record.json" '
+              .head_sha == $current[0].head_sha
+              and .base_sha == $current[0].base_sha
+              and .integration_base_sha == $integration_base
+              and .merge_base_sha == $current[0].merge_base_sha
+              and .merge_sha == $current[0].merge_sha' "$record" >/dev/null
+          fi || {
+            echo "::error::stack changed while exact-merge CI ran"
             exit 1
           }
           jq --arg target "$merge_sha" --argjson run "$(jq '{run_id: .id, run_number: .run_number, run_attempt: .run_attempt, event: .event}' "$RUNNER_TEMP/train/ci-run.json")" \

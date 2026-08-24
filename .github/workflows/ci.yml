@@ -212,7 +212,7 @@ jobs:
 
       - name: Upload exact target evidence
         if: inputs.target_sha != ''
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: ci-target-${{ github.run_attempt }}
           path: ${{ runner.temp }}/ci-target/ci-target.json

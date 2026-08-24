@@ -128,7 +128,8 @@ ok "both pipeline callers pass secrets down"
 #    Heavy branch work keeps only the current head. Each version tag has a release group.
 #    A branch publisher must reject a stale SHA after it gets its lock.
 ci_concurrency_errors=""
-if ! ci_concurrency_errors="$(ruby -ryaml - .github/workflows/ci.yml 2>&1 <<'RUBY'
+if ! ci_concurrency_errors="$(
+	ruby -ryaml - .github/workflows/ci.yml 2>&1 <<'RUBY'
 def environment_name(job)
   value = job["environment"]
   value.is_a?(Hash) ? value["name"] : value

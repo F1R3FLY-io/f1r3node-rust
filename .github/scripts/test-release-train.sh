@@ -8,8 +8,13 @@ trap 'rm -rf "$TMP"' EXIT
 REPOSITORY=example/repository
 
 sha() { printf '%s' "$1" | sha256sum | awk '{print substr($1, 1, 40)}'; }
-S299="$(sha 299)"; S312="$(sha 312)"; S319="$(sha 319)"; S311="$(sha 311)"
-OTHER="$(sha other)"; CONTROL="$(sha control)"; M311="$(sha merge311)"
+S299="$(sha 299)"
+S312="$(sha 312)"
+S319="$(sha 319)"
+S311="$(sha 311)"
+OTHER="$(sha other)"
+CONTROL="$(sha control)"
+M311="$(sha merge311)"
 
 expect_failure() {
 	local label="$1"
@@ -116,7 +121,10 @@ stack_case() { # label, then a shell snippet that mutates a copy of inputs
 	dir="$(mktemp -d "$TMP/case-XXXXXX")"
 	rmdir "$dir"
 	cp -R "$IN" "$dir"
-	( IN="$dir"; eval "$snippet" )
+	(
+		IN="$dir"
+		eval "$snippet"
+	)
 	expect_failure "$label" "$TOOL" validate-stack "$TMP/stack.json" "$dir" "$dir/record.json"
 }
 stack_case 'member base points at the following member (inverted)' \
@@ -160,9 +168,15 @@ stack_case 'integration base ancestry input is missing' \
 MERGED="$TMP/merged"
 cp -R "$IN" "$MERGED"
 M299="$(sha merge299)"
-( IN="$MERGED"; pull 299 closed true dev fix/key-contention-starvation "$S299" "$M299" )
+(
+	IN="$MERGED"
+	pull 299 closed true dev fix/key-contention-starvation "$S299" "$M299"
+)
 jq -n --arg sha "$M299" --arg p "$(sha devtip)" --arg q "$S299" '{sha: $sha, parents: [{sha: $p}, {sha: $q}]}' >"$MERGED/merge-299.json"
-( IN="$MERGED"; reach 299 ahead )
+(
+	IN="$MERGED"
+	reach 299 ahead
+)
 "$TOOL" validate-stack "$TMP/stack.json" "$MERGED" "$MERGED/record.json" 2>/dev/null
 jq -e '.members[0].merged == true and .members[1].base == "fix/key-contention-starvation"' "$MERGED/record.json" >/dev/null
 # After the merged member's branch is deleted, GitHub retargets the next
@@ -170,7 +184,10 @@ jq -e '.members[0].merged == true and .members[1].base == "fix/key-contention-st
 # recorded as observed.
 RETARGET="$TMP/retarget"
 cp -R "$MERGED" "$RETARGET"
-( IN="$RETARGET"; pull 312 open false dev feat/key-contention-phase2 "$S312" )
+(
+	IN="$RETARGET"
+	pull 312 open false dev feat/key-contention-phase2 "$S312"
+)
 "$TOOL" validate-stack "$TMP/stack.json" "$RETARGET" "$RETARGET/record.json" 2>/dev/null
 jq -e '.members[0].merged == true and .members[1].base == "dev" and .members[2].base == "feat/key-contention-phase2"' "$RETARGET/record.json" >/dev/null
 
