@@ -1,2 +1,3 @@
-% No observable execution can expose one key removal from the private COW root.
+% No observable execution can expose one key removal from the private COW root;
+% datum, continuation, and join state publish as one accepted store state.
 [ true* . partial_remove ] false

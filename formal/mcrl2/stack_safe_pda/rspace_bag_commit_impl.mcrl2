@@ -1,14 +1,33 @@
-% Observable model of cd01ea721. Candidate scanning, exact-key aggregation,
-% PathMap COW mutation, and root publication are internal tau steps. The only
-% visible outcome is one complete play/replay commit or rejection; the declared
-% partial_remove action is deliberately unreachable.
-act select, play_commit, play_reject, replay_commit, replay_reject, partial_remove;
+% Observable abstraction of the Rust accepted-match transaction.  Epoch,
+% metadata, persistent-witness, and exact BagDelta validation; private PathMap
+% COW construction; continuation/join publication; and logger preparation are
+% internal tau steps.  The visible store commit always precedes the visible
+% COMM log.  A stale proposal exposes neither action nor a partial key update.
+act select_ready, select_stale;
+act play_commit, play_log, play_reject;
+act replay_commit, replay_log, replay_reject;
+act partial_remove;
 
-proc Impl =
-  select .
-    (tau . tau . play_commit . tau . replay_commit . delta
-    +tau . tau . replay_commit . tau . play_commit . delta
-    +tau . tau . play_reject . tau . replay_reject . delta
-    +tau . tau . replay_reject . tau . play_reject . delta);
+proc AfterPlayCommitImpl = tau .
+    (play_log . tau . replay_commit . tau . replay_log . delta
+    +replay_commit . tau .
+      (play_log . tau . replay_log . delta
+      +replay_log . tau . play_log . delta));
+
+proc AfterReplayCommitImpl = tau .
+    (replay_log . tau . play_commit . tau . play_log . delta
+    +play_commit . tau .
+      (replay_log . tau . play_log . delta
+      +play_log . tau . replay_log . delta));
+
+proc ReadyImpl = tau . tau .
+    (play_commit . AfterPlayCommitImpl
+    +replay_commit . AfterReplayCommitImpl);
+
+proc StaleImpl = tau . tau .
+    (play_reject . tau . replay_reject . delta
+    +replay_reject . tau . play_reject . delta);
+
+proc Impl = select_ready . ReadyImpl + select_stale . StaleImpl;
 
 init Impl;

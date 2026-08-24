@@ -2,14 +2,20 @@
 EXTENDS Integers, Naturals, Sequences, FiniteSets, TLC
 
 (******************************************************************************
-Finite-state model of the live `cd01ea721` RSpace datum-commit boundary.
+Finite-state model of the `cd6099f50` RSpace accepted-match boundary.
 
-An accepted matcher result is a sequence because candidate order remains part
-of matching semantics.  Commit projects that sequence to an exact-key removal
-multiset: only stored, nonpersistent candidates contribute; two candidates at
-one key contribute multiplicity two.  Play and replay may commit in either
-scheduler order, but each publishes one complete Bag or the unchanged input.
-There is no state representing a partially published key prefix.
+The matcher returns an ordered candidate sequence, but an accepted commit
+projects it to a normalized exact-key BagDelta.  Stored nonpersistent data are
+removed, persistent stored data become presence witnesses, fresh data are not
+removed, and an arriving datum that the COMM did not select is added in the
+same delta.  An opaque continuation epoch plus immutable metadata validates
+the named continuation before the datum, continuation, and join state are
+published together.  A rejected proposal leaves every public component
+unchanged.  COMM logging is a later action enabled only by a complete commit.
+
+Play and replay may linearize independently in either scheduler order.  Each
+must reach the same accepted or rejected state and no execution contains a
+partially published key prefix or a log-before-state transition.
 ******************************************************************************)
 
 CONSTANTS Keys, MaxCount
@@ -27,8 +33,12 @@ Selections ==
               : first \in CandidateUniverse,
                 second \in CandidateUniverse}
 
+Arrivals == [present : BOOLEAN, key : Keys]
 Bags == [Keys -> 0..MaxCount]
-Statuses == {"pending", "committed", "rejected"}
+Statuses == {"pending", "committed-unlogged", "committed", "rejected"}
+
+SelectedFresh(selection) ==
+    \E index \in 1..Len(selection) : ~selection[index].stored
 
 Consumes(candidate, key) ==
     candidate.stored /\ ~candidate.persistent /\ candidate.key = key
@@ -36,92 +46,245 @@ Consumes(candidate, key) ==
 RemovalCount(selection, key) ==
     Cardinality({index \in 1..Len(selection) : Consumes(selection[index], key)})
 
-Delta(selection) == [key \in Keys |-> RemovalCount(selection, key)]
+AdditionCount(arrival, selection, key) ==
+    IF arrival.present /\ ~SelectedFresh(selection) /\ arrival.key = key
+    THEN 1
+    ELSE 0
 
-Applicable(subject, delta) ==
-    \A key \in Keys : delta[key] <= subject[key]
+NetRemoval(selection, arrival, key) ==
+    LET remove == RemovalCount(selection, key)
+        add == AdditionCount(arrival, selection, key)
+    IN IF remove >= add THEN remove - add ELSE 0
 
-Subtract(subject, delta) ==
-    [key \in Keys |-> subject[key] - delta[key]]
+NetAddition(selection, arrival, key) ==
+    LET remove == RemovalCount(selection, key)
+        add == AdditionCount(arrival, selection, key)
+    IN IF add >= remove THEN add - remove ELSE 0
 
-VARIABLES initial, selection, playBag, replayBag, playStatus, replayStatus
-vars == <<initial, selection, playBag, replayBag, playStatus, replayStatus>>
+PersistentWitnessesPresent(subject, selection) ==
+    \A index \in 1..Len(selection) :
+      (selection[index].stored /\ selection[index].persistent)
+        => subject[selection[index].key] > 0
+
+DeltaApplicable(subject, selection, arrival) ==
+    \A key \in Keys :
+      /\ NetRemoval(selection, arrival, key) <= subject[key]
+      /\ subject[key]
+           - NetRemoval(selection, arrival, key)
+           + NetAddition(selection, arrival, key) <= MaxCount
+
+ApplyDelta(subject, selection, arrival) ==
+    [key \in Keys |->
+      subject[key]
+        - NetRemoval(selection, arrival, key)
+        + NetAddition(selection, arrival, key)]
+
+VARIABLES initial, selection, arrival,
+          currentContinuation, currentPersistent, otherContinuation,
+          ticketPersistent, ticketFresh, ticketMetadataMatches,
+          playBag, playContinuation, playJoin, playStatus, playEvent,
+          replayBag, replayContinuation, replayJoin, replayStatus, replayEvent
+
+vars == <<initial, selection, arrival,
+          currentContinuation, currentPersistent, otherContinuation,
+          ticketPersistent, ticketFresh, ticketMetadataMatches,
+          playBag, playContinuation, playJoin, playStatus, playEvent,
+          replayBag, replayContinuation, replayJoin, replayStatus, replayEvent>>
+
+ContinuationValid ==
+    /\ currentContinuation
+    /\ ticketFresh
+    /\ ticketMetadataMatches
+    /\ ticketPersistent = currentPersistent
+
+CanCommit ==
+    /\ ContinuationValid
+    /\ PersistentWitnessesPresent(initial, selection)
+    /\ DeltaApplicable(initial, selection, arrival)
+
+CommittedBag == ApplyDelta(initial, selection, arrival)
+CommittedContinuation == currentPersistent
+CommittedJoin == currentPersistent \/ otherContinuation
 
 Init ==
     /\ initial \in Bags
     /\ selection \in Selections
+    /\ arrival \in Arrivals
+    /\ currentContinuation \in BOOLEAN
+    /\ currentPersistent \in BOOLEAN
+    /\ otherContinuation \in BOOLEAN
+    /\ ticketPersistent \in BOOLEAN
+    /\ ticketFresh \in BOOLEAN
+    /\ ticketMetadataMatches \in BOOLEAN
     /\ playBag = initial
+    /\ playContinuation = currentContinuation
+    /\ playJoin = TRUE
+    /\ playStatus = "pending"
+    /\ playEvent = FALSE
     /\ replayBag = initial
-    /\ playStatus = "pending"
+    /\ replayContinuation = currentContinuation
+    /\ replayJoin = TRUE
     /\ replayStatus = "pending"
+    /\ replayEvent = FALSE
 
-PlayCommit ==
+PlayDecide ==
     /\ playStatus = "pending"
-    /\ CASE Applicable(initial, Delta(selection)) ->
-                 /\ playBag' = Subtract(initial, Delta(selection))
-                 /\ playStatus' = "committed"
-            [] ~Applicable(initial, Delta(selection)) ->
-                 /\ playBag' = initial
-                 /\ playStatus' = "rejected"
-    /\ UNCHANGED <<initial, selection, replayBag, replayStatus>>
+    /\ IF CanCommit
+       THEN /\ playBag' = CommittedBag
+            /\ playContinuation' = CommittedContinuation
+            /\ playJoin' = CommittedJoin
+            /\ playStatus' = "committed-unlogged"
+       ELSE /\ playBag' = initial
+            /\ playContinuation' = currentContinuation
+            /\ playJoin' = TRUE
+            /\ playStatus' = "rejected"
+    /\ playEvent' = FALSE
+    /\ UNCHANGED <<initial, selection, arrival,
+                   currentContinuation, currentPersistent, otherContinuation,
+                   ticketPersistent, ticketFresh, ticketMetadataMatches,
+                   replayBag, replayContinuation, replayJoin,
+                   replayStatus, replayEvent>>
 
-ReplayCommit ==
+PlayLog ==
+    /\ playStatus = "committed-unlogged"
+    /\ playStatus' = "committed"
+    /\ playEvent' = TRUE
+    /\ UNCHANGED <<initial, selection, arrival,
+                   currentContinuation, currentPersistent, otherContinuation,
+                   ticketPersistent, ticketFresh, ticketMetadataMatches,
+                   playBag, playContinuation, playJoin,
+                   replayBag, replayContinuation, replayJoin,
+                   replayStatus, replayEvent>>
+
+ReplayDecide ==
     /\ replayStatus = "pending"
-    /\ CASE Applicable(initial, Delta(selection)) ->
-                 /\ replayBag' = Subtract(initial, Delta(selection))
-                 /\ replayStatus' = "committed"
-            [] ~Applicable(initial, Delta(selection)) ->
-                 /\ replayBag' = initial
-                 /\ replayStatus' = "rejected"
-    /\ UNCHANGED <<initial, selection, playBag, playStatus>>
+    /\ IF CanCommit
+       THEN /\ replayBag' = CommittedBag
+            /\ replayContinuation' = CommittedContinuation
+            /\ replayJoin' = CommittedJoin
+            /\ replayStatus' = "committed-unlogged"
+       ELSE /\ replayBag' = initial
+            /\ replayContinuation' = currentContinuation
+            /\ replayJoin' = TRUE
+            /\ replayStatus' = "rejected"
+    /\ replayEvent' = FALSE
+    /\ UNCHANGED <<initial, selection, arrival,
+                   currentContinuation, currentPersistent, otherContinuation,
+                   ticketPersistent, ticketFresh, ticketMetadataMatches,
+                   playBag, playContinuation, playJoin, playStatus, playEvent>>
 
-Done == playStatus # "pending" /\ replayStatus # "pending"
+ReplayLog ==
+    /\ replayStatus = "committed-unlogged"
+    /\ replayStatus' = "committed"
+    /\ replayEvent' = TRUE
+    /\ UNCHANGED <<initial, selection, arrival,
+                   currentContinuation, currentPersistent, otherContinuation,
+                   ticketPersistent, ticketFresh, ticketMetadataMatches,
+                   playBag, playContinuation, playJoin, playStatus, playEvent,
+                   replayBag, replayContinuation, replayJoin>>
 
-Next ==
-    PlayCommit
-    \/ ReplayCommit
-    \/ /\ Done
-       /\ UNCHANGED vars
+Done ==
+    /\ playStatus \in {"committed", "rejected"}
+    /\ replayStatus \in {"committed", "rejected"}
+
+Next == PlayDecide \/ PlayLog \/ ReplayDecide \/ ReplayLog
 
 TypeInvariant ==
     /\ initial \in Bags
     /\ selection \in Selections
+    /\ arrival \in Arrivals
+    /\ currentContinuation \in BOOLEAN
+    /\ currentPersistent \in BOOLEAN
+    /\ otherContinuation \in BOOLEAN
+    /\ ticketPersistent \in BOOLEAN
+    /\ ticketFresh \in BOOLEAN
+    /\ ticketMetadataMatches \in BOOLEAN
     /\ playBag \in Bags
-    /\ replayBag \in Bags
+    /\ playContinuation \in BOOLEAN
+    /\ playJoin \in BOOLEAN
     /\ playStatus \in Statuses
+    /\ playEvent \in BOOLEAN
+    /\ replayBag \in Bags
+    /\ replayContinuation \in BOOLEAN
+    /\ replayJoin \in BOOLEAN
     /\ replayStatus \in Statuses
+    /\ replayEvent \in BOOLEAN
 
-AtomicPublication(status, bag) ==
-    CASE status = "pending"   -> bag = initial
-      [] status = "rejected"  -> bag = initial
-      [] status = "committed" ->
-           /\ Applicable(initial, Delta(selection))
-           /\ bag = Subtract(initial, Delta(selection))
+AtomicPublication(status, bag, continuation, join) ==
+    CASE status = "pending" ->
+           /\ bag = initial
+           /\ continuation = currentContinuation
+           /\ join = TRUE
+      [] status = "rejected" ->
+           /\ ~CanCommit
+           /\ bag = initial
+           /\ continuation = currentContinuation
+           /\ join = TRUE
+      [] status \in {"committed-unlogged", "committed"} ->
+           /\ CanCommit
+           /\ bag = CommittedBag
+           /\ continuation = CommittedContinuation
+           /\ join = CommittedJoin
 
-PlayPublishesNoPartialState == AtomicPublication(playStatus, playBag)
-ReplayPublishesNoPartialState == AtomicPublication(replayStatus, replayBag)
+PlayPublishesOneCompleteState ==
+    AtomicPublication(playStatus, playBag, playContinuation, playJoin)
+
+ReplayPublishesOneCompleteState ==
+    AtomicPublication(replayStatus, replayBag, replayContinuation, replayJoin)
 
 RejectedTransitionIsNonMutating ==
-    /\ playStatus = "rejected" => playBag = initial
-    /\ replayStatus = "rejected" => replayBag = initial
+    /\ playStatus = "rejected" =>
+         /\ playBag = initial
+         /\ playContinuation = currentContinuation
+         /\ playJoin = TRUE
+         /\ ~playEvent
+    /\ replayStatus = "rejected" =>
+         /\ replayBag = initial
+         /\ replayContinuation = currentContinuation
+         /\ replayJoin = TRUE
+         /\ ~replayEvent
 
-CommittedMultiplicityIsExact ==
-    /\ playStatus = "committed" =>
-         \A key \in Keys : initial[key] = playBag[key] + Delta(selection)[key]
-    /\ replayStatus = "committed" =>
-         \A key \in Keys : initial[key] = replayBag[key] + Delta(selection)[key]
+EventPublicationFollowsCommit ==
+    /\ playEvent <=> playStatus = "committed"
+    /\ replayEvent <=> replayStatus = "committed"
+
+StaleOrForgedTicketNeverCommits ==
+    ~ContinuationValid =>
+      /\ playStatus \notin {"committed-unlogged", "committed"}
+      /\ replayStatus \notin {"committed-unlogged", "committed"}
+
+PersistentWitnessesAreRequired ==
+    ~PersistentWitnessesPresent(initial, selection) =>
+      /\ playStatus \notin {"committed-unlogged", "committed"}
+      /\ replayStatus \notin {"committed-unlogged", "committed"}
+
+CommittedMultiplicityAndArrivalAreExact ==
+    /\ playStatus \in {"committed-unlogged", "committed"} =>
+         \A key \in Keys :
+           playBag[key] = initial[key]
+             - NetRemoval(selection, arrival, key)
+             + NetAddition(selection, arrival, key)
+    /\ replayStatus \in {"committed-unlogged", "committed"} =>
+         \A key \in Keys :
+           replayBag[key] = initial[key]
+             - NetRemoval(selection, arrival, key)
+             + NetAddition(selection, arrival, key)
+
+ContinuationAndJoinCommitTogether ==
+    /\ playStatus \in {"committed-unlogged", "committed"} =>
+         /\ playContinuation = currentPersistent
+         /\ playJoin = (currentPersistent \/ otherContinuation)
+    /\ replayStatus \in {"committed-unlogged", "committed"} =>
+         /\ replayContinuation = currentPersistent
+         /\ replayJoin = (currentPersistent \/ otherContinuation)
 
 PlayReplayTraceEquivalent ==
-    Done => /\ playStatus = replayStatus
-            /\ playBag = replayBag
-
-PersistentAndFreshAreExcluded ==
-    \A key \in Keys :
-      Delta(selection)[key] =
-        Cardinality({index \in 1..Len(selection) :
-          selection[index].stored
-            /\ ~selection[index].persistent
-            /\ selection[index].key = key})
+    Done =>
+      /\ playStatus = replayStatus
+      /\ playBag = replayBag
+      /\ playContinuation = replayContinuation
+      /\ playJoin = replayJoin
+      /\ playEvent = replayEvent
 
 Spec == Init /\ [][Next]_vars
 

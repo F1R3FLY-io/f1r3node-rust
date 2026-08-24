@@ -21,6 +21,17 @@ pushd "$rocq_root" >/dev/null
 tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/StackSafePDA.v
 tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/EPathMap.v
 tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/Bag.v
+rspace_commit_rocq_output="$(
+  tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/RSpaceCommit.v 2>&1
+)"
+printf '%s\n' "$rspace_commit_rocq_output"
+rspace_commit_closed_capstones="$({
+  printf '%s\n' "$rspace_commit_rocq_output" | grep -c '^Closed under the global context$'
+} || true)"
+if [[ "$rspace_commit_closed_capstones" != "6" ]]; then
+  echo "stack-safe-pda: expected all six RSpace commit Rocq capstones to be closed; got $rspace_commit_closed_capstones" >&2
+  exit 1
+fi
 tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/EPM1.v
 rmp2_rocq_output="$(
   tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/RMP2.v 2>&1
@@ -128,6 +139,18 @@ if [[ "$no_partial" != "true" ]]; then
   echo "stack-safe-pda: expected no partial RSpace Bag publication; got: $no_partial" >&2
   exit 1
 fi
+
+for property in log_after_commit stale_refusal; do
+  tlc_bounded lps2pbes -f "$mcrl2_root/rspace_bag_${property}.mcf" \
+    "$mcrl2_tmp/impl.lps" "$mcrl2_tmp/${property}.pbes"
+  property_result="$(
+    tlc_bounded pbes2bool "$mcrl2_tmp/${property}.pbes" 2>&1 | tail -n 1
+  )"
+  if [[ "$property_result" != "true" ]]; then
+    echo "stack-safe-pda: expected RSpace Bag ${property} property; got: $property_result" >&2
+    exit 1
+  fi
+done
 
 tlc_bounded mcrl22lps \
   "$mcrl2_root/free_map_journal_impl.mcrl2" "$mcrl2_tmp/free-map-impl.lps"

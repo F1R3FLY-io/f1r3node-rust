@@ -1,0 +1,4 @@
+% Neither play nor replay can expose a COMM log before its complete store
+% transaction has linearized.
+[ (!play_commit)* . play_log ] false &&
+[ (!replay_commit)* . replay_log ] false

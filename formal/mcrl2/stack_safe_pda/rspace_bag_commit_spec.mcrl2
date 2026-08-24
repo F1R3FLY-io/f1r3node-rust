@@ -1,14 +1,31 @@
-% Atomic reference contract. The first tau chooses the deterministic outcome
-% of the selected (abstracted-away) input. Play and replay may linearize in
-% either order, but they must publish the same accepted/rejected outcome and
-% expose no intermediate per-key removal.
-act select, play_commit, play_reject, replay_commit, replay_reject, partial_remove;
+% Atomic accepted-match reference contract for cd6099f50.  A ready ticket may
+% linearize play and replay in any order, but each complete store commit must
+% precede its COMM publication.  A stale/forged ticket produces only the two
+% non-mutating refusal observations.  `partial_remove` is declared solely for
+% the independent safety formula and is unreachable.
+act select_ready, select_stale;
+act play_commit, play_log, play_reject;
+act replay_commit, replay_log, replay_reject;
+act partial_remove;
 
-proc Spec =
-  select .
-    (tau . play_commit . replay_commit . delta
-    +tau . replay_commit . play_commit . delta
-    +tau . play_reject . replay_reject . delta
-    +tau . replay_reject . play_reject . delta);
+proc AfterPlayCommit =
+    play_log . replay_commit . replay_log . delta
+  + replay_commit .
+      (play_log . replay_log . delta + replay_log . play_log . delta);
+
+proc AfterReplayCommit =
+    replay_log . play_commit . play_log . delta
+  + play_commit .
+      (replay_log . play_log . delta + play_log . replay_log . delta);
+
+proc Ready =
+    play_commit . AfterPlayCommit
+  + replay_commit . AfterReplayCommit;
+
+proc Stale =
+    play_reject . replay_reject . delta
+  + replay_reject . play_reject . delta;
+
+proc Spec = select_ready . Ready + select_stale . Stale;
 
 init Spec;

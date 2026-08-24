@@ -1,0 +1,3 @@
+% Once validation classifies the ticket as stale/forged, neither execution
+% mode can expose an accepted store commit later in that run.
+[ true* . select_stale . true* . (play_commit + replay_commit) ] false
