@@ -3,13 +3,15 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 ruby -ryaml - \
-	"$ROOT/.github/workflows/release.yml" \
-	"$ROOT/.github/workflows/release-evidence.yml" \
-	"$ROOT/.github/workflows/soak-in.yml" \
-	"$ROOT/.github/workflows/canary-publish.yml" \
-	"$ROOT/.github/workflows/oci-validation.yml" \
-	"$ROOT/.github/workflows/merge-recovery-soak.yml" \
-	"$ROOT/.github/workflows/deployment-train.yml" <<'RUBY'
+  "$ROOT/.github/workflows/release.yml" \
+  "$ROOT/.github/workflows/release-evidence.yml" \
+  "$ROOT/.github/workflows/soak-in.yml" \
+  "$ROOT/.github/workflows/canary-publish.yml" \
+  "$ROOT/.github/workflows/oci-validation.yml" \
+  "$ROOT/.github/workflows/merge-recovery-soak.yml" \
+  "$ROOT/.github/workflows/ci.yml" \
+  "$ROOT/.github/workflows/deployment-train.yml" \
+  "$ROOT/.githooks/pre-push" <<'RUBY'
 def trigger(document)
   document["on"] || document[true]
 end
@@ -18,7 +20,7 @@ def fail_if(condition, message)
   abort(message) if condition
 end
 
-release_path, evidence_path, soakin_path, canary_path, oci_path, soak_path, train_path = ARGV
+release_path, evidence_path, soakin_path, canary_path, oci_path, soak_path, ci_path, train_path, pre_push_path = ARGV
 release = YAML.load_file(release_path)
 evidence = YAML.load_file(evidence_path)
 soakin = YAML.load_file(soakin_path)
@@ -162,6 +164,46 @@ fail_if(!reusable_text.match?(/Build Docker Image\n\s+if: inputs\.candidate_tag 
 soak_text = File.read(soak_path)
 fail_if(!soak_text.match?(/docker pull --platform [^\n]*@\$\{amd64_digest\}/), "soak candidate mode must pull the image by digest")
 fail_if(!soak_text.match?(/Build node image\n\s+if: needs\.schedule_gate\.outputs\.candidate_tag == ''/m), "soak must skip the source build in candidate mode")
+ci = YAML.load_file(ci_path)
+ci_trigger = trigger(ci)
+pull_request_trigger = ci_trigger["pull_request"]
+fail_if(!pull_request_trigger.is_a?(Hash) || pull_request_trigger.key?("branches"), "CI must run checks for every pull request base")
+fail_if(!pull_request_trigger.fetch("types", []).include?("edited"), "CI must rerun when a stacked pull request base changes")
+fail_if(ci_trigger.dig("workflow_dispatch", "inputs", "target_sha", "default") != "", "CI dispatch must accept an optional exact target SHA")
+fail_if(ci_trigger.dig("workflow_dispatch", "inputs", "top_pull_request", "default") != "", "CI dispatch must accept an optional top pull request")
+build_base = ci.dig("jobs", "build_base")
+fail_if(build_base.dig("outputs", "TARGET_SHA") != "${{ steps.target.outputs.target_sha }}", "Build Base must export the validated target SHA")
+fail_if(build_base.dig("outputs", "MERGE_BASE_SHA") != "${{ steps.target.outputs.merge_base_sha }}", "Build Base must export the synthetic base SHA")
+fail_if(build_base.dig("outputs", "RUN_HEAVY") != "${{ steps.target.outputs.run_heavy }}", "Build Base must export the Heavy Pipeline decision")
+build_steps = build_base.fetch("steps")
+target_step = build_steps.find { |step| step["id"] == "target" }
+target_body = target_step&.dig("run").to_s
+fail_if(!target_body.include?('compare/${base}...${merge_base}'), "CI must verify synthetic base ancestry")
+fail_if(target_body.include?("stack-children"), "an open child pull request must not bypass protected-branch Heavy Pipeline")
+target_upload = build_steps.find { |step| step["name"] == "Upload exact target evidence" }
+fail_if(target_upload&.dig("uses").to_s !~ /\Aactions\/upload-artifact@[0-9a-f]{40}\z/, "CI target evidence upload must use a full action SHA")
+pipeline = ci.dig("jobs", "pipeline")
+fail_if(pipeline["if"] != "needs.build_base.outputs.RUN_HEAVY == 'true'", "Heavy Pipeline must use the validated stack decision")
+fail_if(pipeline.dig("with", "checkout_ref") != "${{ needs.build_base.outputs.TARGET_SHA }}", "Heavy Pipeline must check out the validated target SHA")
+ci_text = File.read(ci_path)
+fail_if(!ci_text.include?("merge_commit_sha"), "CI must validate the current pull request synthetic merge")
+fail_if(!ci_text.include?('run_heavy=$run_heavy'), "CI must persist the Heavy Pipeline decision")
+fail_if(!ci_text.include?("ci-target-${{ github.run_attempt }}"), "CI must upload attempt-specific target evidence")
+%w[lint deny markdown_link_check test].each do |job_name|
+  checkout = ci.dig("jobs", job_name, "steps").find { |step| step["name"] == "Checkout" }
+  fail_if(checkout&.dig("with", "ref") != "${{ needs.build_base.outputs.TARGET_SHA }}", "#{job_name} must check out the validated target SHA")
+end
+lint_steps = ci.dig("jobs", "lint", "steps")
+fail_if(lint_steps.none? { |step| step["run"].to_s.include?("test-pre-push-hook.sh") }, "Lint must test pre-push hook behavior")
+fail_if(lint_steps.none? { |step| step["run"].to_s.include?("test-ci-stack-gate.sh") }, "Lint must run CI stack gate tests")
+%w[integration_tests_amd64 integration_tests_arm64].each do |job_name|
+  condition = ci.dig("jobs", job_name, "if").to_s
+  fail_if(!condition.include?("needs.pipeline.result != 'skipped'"), "#{job_name} must fail closed when Heavy Pipeline runs")
+end
+link_condition = ci.dig("jobs", "markdown_link_check", "if").to_s
+fail_if(!link_condition.include?("github.event_name != 'pull_request'"), "Markdown link checks must run outside pull requests")
+fail_if(!link_condition.include?("github.base_ref"), "Markdown link checks must limit pull-request bases")
+
 # Deployment train setup (Phase 5): manual, default-branch only, one job
 # whose only write permission is actions (the optional ci.yml dispatch), no
 # protected environment, pinned actions, and never a tag, release, image,
@@ -183,8 +225,31 @@ train_text = File.read(train_path)
 fail_if(train_text.match?(/docker\s+(build|push|login)|buildx|gh release|git push|refs\/tags|secrets\.(?!GITHUB_TOKEN)/), "deployment train setup must not publish or use secrets beyond GITHUB_TOKEN")
 fail_if(!train_text.include?("release-train.sh validate-manifest"), "deployment train must validate the manifest with release-train.sh")
 fail_if(!train_text.include?("release-train.sh validate-stack"), "deployment train must verify the stack chain with release-train.sh")
+fail_if(!train_text.include?("release-train.sh validate-top-merge"), "deployment train must verify the top synthetic merge")
 fail_if(!train_text.include?("release-train.sh validate-version"), "deployment train must verify the source version with release-train.sh")
 fail_if(!train_text.include?("release-train.sh plan-ci"), "deployment train must plan CI evidence with release-train.sh")
+fail_if(!train_text.include?("release-train.sh validate-ci-evidence"), "deployment train must validate exact CI target and Heavy Pipeline evidence")
+fail_if(train_text.scan("release-train.sh validate-stack").length != 2, "deployment train must validate the full stack before and after CI")
+fail_if(!train_text.include?("release-train.sh validate-current-stack"), "deployment train must compare the post-CI stack record")
+fail_if(!train_text.include?(".stack.members[].pull_request"), "deployment train must refresh every stack member after CI")
+fail_if(!train_text.include?("--paginate"), "deployment train must read every matching CI run page")
+fail_if(!train_text.include?("--jq '.workflow_runs[]'"), "deployment train must combine paginated CI runs")
+fail_if(!train_text.include?("-f event=workflow_dispatch"), "deployment train must filter CI runs by event")
+fail_if(!train_text.include?('-f branch="$DEFAULT_BRANCH"'), "deployment train must filter CI runs by trusted branch")
+fail_if(!train_text.include?('gh workflow run ci.yml --ref "$DEFAULT_BRANCH"'), "deployment train must dispatch the trusted default-branch CI workflow")
+fail_if(!train_text.include?('-f target_sha="$merge_sha" -f top_pull_request="$top"'), "deployment train must dispatch CI for the exact top merge")
+fail_if(!train_text.include?('/attempts/${run_attempt}/jobs'), "deployment train must read jobs from the selected run attempt")
 fail_if(!train_text.match?(/\.github\/deployment-trains\/\*\.yml\)/), "deployment train must constrain manifest_path to .github/deployment-trains/")
+pre_push_text = File.read(pre_push_path)
+[
+  "check-workflow-invariants.sh",
+  "test-ci-stack-gate.sh",
+  "test-release-train.sh",
+  "test-release-workflows.sh",
+].each do |script|
+  fail_if(!pre_push_text.include?(script), "pre-push must run #{script}")
+end
+fail_if(!pre_push_text.include?('pid_ci'), "pre-push must wait for the CI unit test suite")
+fail_if(!pre_push_text.include?('SKIP_CI_TESTS'), "pre-push must expose the CI unit test skip control")
 puts "release workflow tests passed"
 RUBY
