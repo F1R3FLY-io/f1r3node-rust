@@ -164,28 +164,24 @@ pub fn weight_from_validator_by_dag(
     block_hash: &BlockHash,
     validator: &Validator,
 ) -> Result<i64, KvStoreError> {
-    // Get block metadata. B1: on the fork-choice BFS hot path a traversed block or
-    // its main parent may be momentarily absent from the metadata index (a sync /
-    // prune window). Surface a typed KvStoreError::KeyNotFound (as `snapshot.rs`
-    // already does for the sibling case) instead of panicking via `.expect`.
-    let block_metadata = dag.lookup(block_hash)?.ok_or_else(|| {
-        KvStoreError::KeyNotFound(format!(
-            "weight_from_validator_by_dag: block metadata missing from index: {}",
-            PrettyPrinter::build_string_no_limit(block_hash)
-        ))
-    })?;
+    let block_metadata = dag
+        .lookup(block_hash)?
+        .ok_or_else(|| KvStoreError::MissingBlock {
+            hash: block_hash.clone(),
+            context: " during weight_from_validator_by_dag block metadata lookup".to_string(),
+        })?;
 
     // Try to get parent's weight for this validator
     match block_metadata.parents.first() {
         Some(parent_hash) => {
             // Look up parent
-            let parent_metadata = dag.lookup(parent_hash)?.ok_or_else(|| {
-                KvStoreError::KeyNotFound(format!(
-                    "weight_from_validator_by_dag: main-parent metadata missing from index \
-                     (sync/prune window): {}",
-                    PrettyPrinter::build_string_no_limit(parent_hash)
-                ))
-            })?;
+            let parent_metadata =
+                dag.lookup(parent_hash)?
+                    .ok_or_else(|| KvStoreError::MissingBlock {
+                        hash: parent_hash.clone(),
+                        context: " during weight_from_validator_by_dag main-parent metadata lookup"
+                            .to_string(),
+                    })?;
             // Return validator's weight from parent or 0 if not found
             Ok(parent_metadata
                 .weight_map
@@ -617,17 +613,6 @@ pub fn justification_to_justification_info(justification: &Justification) -> Jus
     }
 }
 
-// ---------------------------------------------------------------------------
-// Fork-choice FV — Phase-0 reproduction of B1.
-//
-// `weight_from_validator_by_dag` (above) reads the traversed block's MAIN
-// PARENT weight map on the fork-choice BFS hot path (`estimator::build_scores_map`).
-// B1 (FIXED): a traversed block whose main parent is momentarily absent from the
-// metadata index — a sync / prune window — previously panicked via
-// `.expect("Parent metadata should exist")`; it now surfaces a typed
-// `KvStoreError::KeyNotFound`. This test asserts that typed error.
-// See docs/casper/theory/fork-choice/fork-choice-verification.md (B1).
-// ---------------------------------------------------------------------------
 #[cfg(test)]
 mod fork_choice_b1_repro_tests {
     use std::collections::BTreeMap;
@@ -677,7 +662,7 @@ mod fork_choice_b1_repro_tests {
             }
         }
         for b in blocks {
-            bms.add(b).unwrap();
+            assert!(bms.add(b).is_ok(), "test DAG metadata insert failed");
         }
         KeyValueDagRepresentation {
             dag_set,
@@ -701,17 +686,28 @@ mod fork_choice_b1_repro_tests {
     }
 
     #[test]
-    fn weight_from_validator_missing_parent_is_typed_err() {
+    fn weight_from_validator_missing_block_names_missing_block() {
+        let v = h(9);
+        let missing = h(1);
+        let mut dag = dag_with(vec![]);
+        let result = weight_from_validator_by_dag(&mut dag, &missing, &v);
+        assert!(
+            matches!(result, Err(KvStoreError::MissingBlock { ref hash, .. }) if *hash == missing),
+            "missing block metadata must name the unavailable block, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn weight_from_validator_missing_parent_defers_with_hash() {
         let v = h(9);
         let child = h(1);
-        let missing = h(2); // deliberately NOT added to the index (sync/prune window)
-        let mut dag = dag_with(vec![md(child.clone(), vec![missing], 1, &v)]);
-        // `child` resolves; its declared main parent is absent. After the B1 fix this
-        // surfaces a typed KvStoreError::KeyNotFound instead of panicking.
-        let result = weight_from_validator_by_dag(&mut dag, &child, &v);
+        let missing = h(2);
+        let mut dag = dag_with(vec![md(child.clone(), vec![missing.clone()], 1, &v)]);
+        let error = weight_from_validator_by_dag(&mut dag, &child, &v)
+            .expect_err("missing main-parent metadata must refuse a partial score");
         assert!(
-            matches!(result, Err(KvStoreError::KeyNotFound(_))),
-            "missing main-parent metadata must be a typed KeyNotFound, got {result:?}"
+            matches!(CasperError::from(error), CasperError::BlockNotHeld(hash) if hash == missing),
+            "missing main-parent metadata must enter the fetch-and-retry path"
         );
     }
 
