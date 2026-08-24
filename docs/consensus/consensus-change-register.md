@@ -466,7 +466,7 @@ conversions proven equivalent to their recursive counterparts definitely do not 
 while **data-model, wire-format, and deliberate semantic changes** (the EPathMap representation and
 EPM1 being the named exemplar) are what this register exists to carry. Every entry was re-classified
 under that criterion; the 46 that no longer qualified at re-scope—and later classified findings
-through CBR-071—are retired to typed rows in
+through CBR-072—are retired to typed rows in
 [Appendix B.1](#b1-retired-register-entries), and their full bodies remain in git history at the
 pre-refactor revision.
 
@@ -4091,7 +4091,7 @@ Quote actual numbers. The RED, the measurement, the acceptance matrix. Tag each 
 
 ### B.1 Retired register entries
 
-The 71 entries retired under the 2026-08-03 inclusion criterion (§3.2). Each keeps its **former
+The 72 entries retired under the 2026-08-03 inclusion criterion (§3.2). Each keeps its **former
 identifier forever** — identifiers are never reused, and a historical citation of any `CBR-*` below
 resolves to this table. Full bodies remain in git history at the pre-refactor revision of this file.
 Reasons are the closed retirement enum of §3.2; the evidence column points at where the discharging
@@ -4156,6 +4156,7 @@ material now lives.
 | `CBR-069` | `1afd4791e`; pgmcp bugs 5994/5995 and experiment 311 | Admitted resident `Send` endpoints project immediate `Par` children through generated protobuf regions, stable substitution retains its CoW `ParBag` root, and a one-child empty-shell reducer `Join` applies the native Bag identity instead of reconstructing the same PathMap | `OPTIMIZATION_MEASURED_NEUTRAL` | 5 release projection cases preserve optional presence, repeated order, metadata/unknown-field disposition, malformed EPathMap errors, and complete-decoder fallback; 3 substitution cases pin identity and variable/process near misses; 15 evaluator recursive differentials preserve exact value, protobuf, bincode, error, and charge traces. A noncanonical trailing-zero locally-free witness pins historical child-then-shell `union`, and the fixed-stack gate proves the exact PathMap root remains shared. The unchanged depth-131,072/2 MiB/120 s gate and exact 4,495-test release workspace pass. Depth-8,192 headless Heaptrack records **53,747,932 $`\rightarrow`$ 963,802** allocation calls. No accepted program, normalized value, successful binding, protobuf/bincode/EPM1 byte, score, hash, COMM schedule, charge, EPathMap mode, PathMap algebra, RSpace multiplicity, or Rholang parallel execution order moves. Stack-safety report §5.35. |
 | `CBR-070` | `e3f3b4831`; pgmcp task 5907 and experiment 312 | Spatial-matcher candidate masks retain one endpoint per canonical-identity group, evaluate pure connective operands in retention-pressure order, and expand selected groups to original positions once at the root | `OPTIMIZATION_MEASURED_NEUTRAL` | The complete 57-case debug and release differential preserves exact ascending candidate domains, matcher verdicts, complete `FreeMap`, remainder, and source-position order over opposing depth/width, encoded/resident, mixed-duplicate, universal, sparse, dense, and randomized layouts. The frozen occurrence control is non-default and cannot enter production. Experiment 312 accepts the primary width-4,096 OR result at **5,513,777.071 $`\rightarrow`$ 18,869.671 ns**, $`U=0`$, $`p=1.6518407509198735\times10^{-18}`$, Cliff's delta $`-1.0`$; report-only Heaptrack, paired Cachegrind/Massif, and headless uProf attribute the eliminated mutation and retention. No accepted program, successful binding, normalized value, protobuf/bincode/EPM1 byte, score, hash, COMM schedule, charge, EPathMap mode, PathMap algebra, RSpace multiplicity, candidate order, or Rholang parallel execution order moves. Stack-safety report §5.36. |
 | `CBR-071` | `173bf4e07`, `39bc0d999`; pgmcp `rspace-multichannel-reservation-replay` | Candidate selection preserves the channel-local `PathMap<Multiplicity>` authority and records speculative nonpersistent demand in a separate multiplicity Bag | `OPTIMIZATION_MEASURED_NEUTRAL` | Four private invariant cases keep authority identical through reserve/release, prove exact repeated multiplicity and identity isolation, restore the complete pool, and observe both phase refusals without panic-expecting tests. The 21 data-index, 17 guarded/multichannel, 3 replay-order, 24 replay/persistence, and 61 library cases pass; the 20,000-bind stack gate, measurement-feature build, production-library strict Clippy, and repository panic-policy gate remain green. The exact release lifecycle passes 4,506/4,506 tests with 53 skipped under the no-swap cap. Persistent and fresh semantics, exact-path atomic commit, canonical order, bindings, COMM, replay, and post-state behavior remain unchanged. H-010 deliberately leaves throughput under high reservation pressure open; this row classifies semantic neutrality, not a speedup. Stack-safety report §5.37. |
+| `CBR-072` | `cd6099f50`, `4127119ea`; pgmcp `rspace-atomic-versioned-accepted-match` | A selected rendezvous becomes a revocable authority ticket, and one hot-store transaction validates and publishes its complete accepted state before play or replay emits effects | `BUG_FIX_RULED_NONCONSENSUS` | Opaque group-scoped `Arc` epochs reject same-group mutation, byte-equal replacement, and competing-fire staleness without counters, wraparound, or ABA; unrelated groups preserve validity. The transaction validates continuation identity/metadata, persistent datum witnesses, and one exact normalized Bag delta, then publishes datum, continuation, epoch, and join state under one write lock. An unconsumed arrival is an addition in that same delta. Focused reset, race, history, and one-winner tests pass, as does every `rspace_plus_plus` target. Rocq closes six axiom-free capstones, TLC checks 710,528 distinct states, and mCRL2 proves branching bisimulation plus no partial publication, pre-commit logging, or stale commit. The exact release workspace passes 4,511/4,511 tests with 53 skipped under a 24 GiB, zero-swap cap. The repair changes only an invalidated proposal race that could address shifted state; current-state rescan is the pre-existing atomic RSpace contract. No protobuf, bincode, EPM1, channel/datum identity, PathMap algebra, charge, accepted-program, or user-facing Rholang API changes. Stack-safety report §5.38. |
 | `CBR-L01` | `3ff1c98b`, `f586e138` | Equal operator precedence becomes representable; Rholang's ladder corrected | `BUG_FIX_RULED_NONCONSENSUS` | entry body at the pre-refactor revision (git history) |
 | `CBR-L02` | `0f3d298c` | The substrate lane stops answering "false" for a guard it could not decide | `BUG_FIX_RULED_NONCONSENSUS` | entry body at the pre-refactor revision (git history) |
 | `CBR-L03` | `69c66cd1` | A residual binder rests the COMM, whatever the formula collapsed to | `BUG_FIX_RULED_NONCONSENSUS` | entry body at the pre-refactor revision (git history) |
@@ -4549,6 +4550,61 @@ shape; PathMap journal H-010 preserves that as a preregistered open hypothesis. 
 compact image, channel or datum identity, candidate order, binding, COMM, event, post-state, charge,
 or Rholang parallel execution rule moves. CBR-071 is therefore retired as
 `OPTIMIZATION_MEASURED_NEUTRAL`, not added to the active may-change-consensus register.
+
+**CBR-072 classification continuation (2026-08-24).** An accepted-match candidate was previously a
+snapshot of exact datum paths plus a continuation vector position. The exact PathMap paths made the
+datum delta safe against positional drift, but did not make the continuation position authoritative
+after another same-group mutation or a byte-equal state replacement. Firing that stale position
+could remove a different continuation, split datum/continuation/join publication, or emit a COMM
+for a proposal the current store no longer authorized. That is a violation of the pre-existing
+RSpace all-or-nothing transition contract, not an alternate language behavior to preserve.
+
+Checkpoint `cd6099f50` gives each continuation group an opaque epoch allocation. Equality is
+allocation identity; the production interface exposes neither an integer revision nor an ordering,
+increment, width, or wraparound rule. A group mutation replaces only that group's epoch. State
+replacement and clear replace the base epoch and discard every group override. Because a held
+ticket owns the old `Arc`, allocator-address reuse cannot recreate equality. `ProduceCandidate`
+keeps its authority-bearing fields crate-private and exposes only read-only observations.
+
+`HotStore::apply_accepted_match` is the sole linearization boundary. Under one state write lock it
+requires the current epoch, exact continuation source/persistence/peek metadata, every persistent
+datum witness, and an applicable normalized `BagDelta`. An underflow or stale witness returns the
+complete state unchanged. On acceptance it publishes the datum root, continuation removal, fresh
+group epoch, and affected join metadata as one state transition. A fresh datum not consumed by the
+COMM is an addition in that same delta rather than a later store operation. Play and replay publish
+their event/replay effects only after acceptance; rejection retries selection without a fixed depth
+or retry cap. The event logger is intentionally causally after the store commit, not a second
+participant inside the mutex.
+
+The observable-axis ruling is narrow:
+
+| Axis | Disposition |
+|---|---|
+| computed value and verdict | unchanged for every current ticket; an invalidated ticket is rescanned instead of being allowed to address shifted state |
+| protobuf, bincode, EPM1, signature, and event encoding | unchanged; no codec or schema is touched |
+| post-state and COMM choice | unchanged for current candidates; the repair deliberately excludes the stale-position race that violated atomicity |
+| accepted programs and Rholang API | unchanged |
+| metering | unchanged; retries and internal candidate attempts are not new charged language operations |
+
+Concrete adversarial cases establish same-group invalidation, byte-equal replacement invalidation,
+unrelated-group independence, exactly one winner from two concurrent firings, and atomic retention
+of an unconsumed arrival in a resting-only COMM. Every `rspace_plus_plus` test target passes under a
+12 GiB, zero-swap cap. The exact release workspace then passes 4,511/4,511 tests with 53 declared
+skips in 139.239 seconds under a 24 GiB, zero-swap scope; its retained log SHA-256 is
+`0a54810b516ed516f70ba9cf43a02ffe4db2f4ed8c27981d919add1fe1cf7bbe`.
+Formal checkpoint `4127119ea` models the epoch as abstract equality. Rocq
+proves deterministic acceptance, exact refusal, stale and missing-witness exclusion, complete
+accepted state, unrelated-group preservation, post-commit COMM publication, and play/replay
+agreement. TLC explores 901,376 generated and 710,528 distinct states through depth 5. mCRL2 proves
+branching bisimulation and separately excludes partial publication, pre-commit COMM logging, and a
+commit after stale selection. These claims do not pretend to verify Rust's mutex, `Arc` allocator,
+compiler, or every external schedule; the concrete race and lifecycle gates bind those boundaries.
+
+The only changed behavior requires a proposal whose own authority has already been revoked. Since
+the old outcome could target a different continuation and was outside the intended atomic RSpace
+contract, this is retired as `BUG_FIX_RULED_NONCONSENSUS`, not retained as a valid consensus
+alternative. PathMap remains unmodified and authoritative datum multiplicity remains
+`PathMap<Multiplicity>`.
 
 **CBR-033 living evidence continuation (2026-08-11; pgmcp #5301).** `7983bf4b` makes the
 read-only hot-store snapshot total over the union of datum and continuation key domains. A datum
@@ -5290,6 +5346,6 @@ is the point: the derivation's surplus is real, and it is small and classifiable
 ---
 
 *The register's identifiers are stable and never reused. The 2026-08-03 re-scope retired 46 entries
-to B.1; subsequent classified findings through CBR-071 and CBR-L24 bring the living appendix to 72. The re-scope also removed
+to B.1; subsequent classified findings through CBR-072 and CBR-L24 bring the living appendix to 73. The re-scope also removed
 the mechanised drift gate with its machine index; the pre-refactor revision, with every then-retired
 body and the gate's specification, remains in git history.*

@@ -131,6 +131,7 @@ justifies each rule.
 | Validate canonical writer images by logical trie semantics, not by assuming that every value-free childless node is absent. | A reached childless node may be an explicit observable endpoint. Redundant value-free unary nodes and malformed ACT graph/framing shapes remain invalid. | J-008 |
 | Exact-encode only fields that the authoritative matcher compares. | Exact constraints on matcher-ignored fields can reject a legal match. A derived query must project those fields semantically or decline pruning and scan the authoritative domain. | J-011 |
 | Keep immutable membership authority separate from speculative multiplicity demand. | Mutating the same Bag for both roles obscures the subset invariant and pays CoW mutation on authoritative trie state; a second `PathMap<Multiplicity>` Bag represents demand without flattening or changing the value algebra. | J-018 |
+| Treat a selected match as a revocable proposal until one authority validates and publishes it. | A PathMap delta can be exact while its continuation address or persistent witness has become stale. One group-scoped opaque epoch and one hot-store transaction prevent a valid trie operation from committing against the wrong state. | J-019 |
 
 Provisional rule—not accepted evidence: J-005 proposes fingerprinting a Bag as self-delimiting
 endpoint records plus multiplicities rather than an occurrence-expanded digest stream. H-001 must
@@ -1465,6 +1466,77 @@ work does not rewrite it; reversible demand belongs in its own multiplicity trie
 throughput win yet. The authority/query product can now enumerate a fully reserved endpoint before
 the scan rejects it, so H-010 must compare high-pressure shapes against the frozen mutable-residual
 control and attribute CoW writes, availability lookups, allocations, and peak RSS independently.
+
+### J-019 — 2026-08-24: an exact Bag delta is not authority to fire a stale candidate
+
+Question: Once an iterative multichannel search has selected exact PathMap identities, what must
+remain true before play or replay may publish their `BagDelta`, remove the continuation, update join
+metadata, and emit a COMM?
+
+Status: ACCEPTED CORRECTNESS AND TRANSACTION DECISION; NO PERFORMANCE CLAIM. The executable
+checkpoint is `f1r3node-rust-mettail@cd6099f50`; the formal checkpoint is `4127119ea`. The work is
+reachable through pgmcp `rspace-multichannel-reservation-replay` and its child
+`rspace-atomic-versioned-accepted-match`.
+
+The predecessor carried a vector position for the selected continuation and performed related
+state changes through separate store operations. Exact PathMap identities protected datum removal,
+but they could not prove that a continuation still occupied the same position after a same-group
+mutation. An ordinary integer revision would narrow that gap only until wraparound, reset, or
+accidental revision reuse. Byte-equal state replacement is an ABA case: equal payload does not make
+an address issued before replacement current again.
+
+The selected design gives every loaded continuation group an opaque `Arc<ContinuationEpoch>`
+capability. Equality is `Arc::ptr_eq`; no value, ordering, counter width, increment, or wraparound
+law is exposed. A group mutation installs a fresh allocation. Whole-state replacement installs a
+fresh base allocation and clears group epochs. Held candidates retain their old allocation, so
+allocator-address reuse cannot revive them. Mutation of an unrelated group leaves the selected
+group's capability unchanged.
+
+`ProduceCandidate` is now an opaque ticket with read-only accessors. The sole accepted-match
+transaction takes the hot-store state write lock and validates, in this order of authority:
+
+1. the ticket carries a current nonempty group epoch;
+2. the named installed or ordinary continuation exists at the addressed position and still has the
+   same source, persistence, and peek metadata;
+3. every persistent datum witness remains present in the authoritative Bag; and
+4. the normalized exact-key `BagDelta` is applicable without malformed paths, underflow, or
+   overflow.
+
+Only an accepted transition publishes the prepared data root, continuation removal, group epoch,
+and affected join metadata. A stale transition returns without changing hot state. If an arriving
+datum was not selected by the COMM, its insertion is an addition in the same normalized delta as
+the selected resting-data removals; there is no later split store write. Play and replay emit their
+COMM/replay effects only after the store accepts the transition. A stale proposal restarts
+selection without an artificial retry bound.
+
+This transaction does not flatten a Bag, project `Vec<Par>`, serialize an ACT snapshot, or alter
+PathMap. Datum membership and multiplicity remain one `PathMap<Multiplicity>` authority; the
+transaction gives one validated linearization point to the already-selected exact paths. The
+additional epoch `Arc` protects continuation identity, not a primitive multiplicity and not a trie
+node.
+
+MEASURED executable evidence includes same-group invalidation, byte-equal `set_state` invalidation,
+unrelated-group independence, two concurrent firings with exactly one winner and one COMM, and a
+resting-only COMM that atomically removes the historical datum while retaining its unconsumed
+arrival. The complete `rspace_plus_plus` test surface passes under a 12 GiB, zero-swap scope,
+including replay, persistence, joins, Bag, PathMap, and deep stack-safe targets.
+The exact release workspace lifecycle then passes 4,511/4,511 tests with 53 declared skips in
+139.239 seconds under a 24 GiB, zero-swap scope. Its retained log SHA-256 is
+`0a54810b516ed516f70ba9cf43a02ffe4db2f4ed8c27981d919add1fe1cf7bbe`.
+
+PROVEN evidence is deliberately layered. Rocq models the epoch as an abstract equality-only type
+and closes deterministic acceptance, exact refusal, stale and missing-witness exclusion, complete
+accepted state, unrelated-group preservation, post-commit COMM publication, and play/replay
+agreement without axioms or admitted goals. TLC explores 901,376 generated and 710,528 distinct
+states through depth 5 with no invariant violation. mCRL2 proves the implementation scheduler
+branching-bisimilar to its atomic reference and independently excludes partial publication,
+pre-commit COMM logging, and stale-ticket commit. The complete formal gate log has SHA-256
+`265ff3f7ad37f147adbb6808d134ed419a6c401725e7c90289d6f235a945b83e`.
+
+Proof boundary: these models verify the reviewed transition equations and finite scheduler, not
+Rust's mutex implementation, `Arc` allocator behavior, compiler correctness, or every external
+RSpace schedule. The executable adversarial and release gates bind those concrete boundaries. No
+latency, allocation, or RSS improvement is inferred from this correctness repair.
 
 ## Open hypotheses and required closure evidence
 

@@ -9764,6 +9764,74 @@ No PathMap source, feature, compact image, channel identity,
 datum identity, candidate order, spatial verdict, binding, COMM, event, post-state, charge, or
 Rholang parallel execution rule changes.
 
+### 5.38 Atomic accepted-match linearization after iterative selection [SS-Y18]
+
+SS-Y18 is the transaction closure for the already-stack-safe selector and Bag delta machine. It is
+not another recursion conversion and introduces no traversal ceiling. The defect was temporal:
+checkpoint `173bf4e07` correctly separated immutable candidate authority from speculative demand,
+but an accepted proposal still named its continuation by a vector position observed before the
+store mutation. Exact datum paths protected the `PathMap<Multiplicity>` delta; they did not prove
+that a continuation still occupied that position after a same-group mutation, whole-state
+replacement, or competing firing.
+
+Checkpoint `cd6099f50` replaces that address authority with an opaque group-scoped
+`Arc<ContinuationEpoch>`. Equality is allocation identity. There is no numeric revision, comparison,
+increment, width, wraparound, or artificial limit. Same-group mutation installs a fresh epoch;
+whole-state replacement installs a fresh base epoch and discards every group override; unrelated
+groups retain their capability. A held candidate owns the old allocation, so allocator-address
+reuse cannot create an ABA equality. `ProduceCandidate` is an opaque ticket with read-only
+accessors, preventing an external caller from manufacturing a different authority payload.
+
+One `HotStore::apply_accepted_match` call is now the state linearization boundary. Before publishing,
+it validates the continuation epoch, position, source, persistence, and peek metadata; requires
+every persistent datum witness; and applies the complete normalized exact-key `BagDelta`. One state
+write lock covers datum-root publication, ordinary continuation removal, the new epoch, and affected
+join removal. If an arriving datum is not selected, its insertion is an addition in the same delta
+as the resting-datum removals. Underflow or stale evidence returns the complete state unchanged.
+The four play/replay consume-first/produce-first callers emit COMM or replay effects only after
+acceptance and restart stale selection without a fixed retry count.
+
+The implementation remains PathMap-native. It neither decodes nor occurrence-expands the Bag,
+creates no `Vec<Par>` projection, and performs no ACT serialization. `BagDelta` retains its adaptive
+singleton exact lookup or multi-key moving zipper, one private CoW root, and exact
+`Multiplicity(u64)` arithmetic. The epoch `Arc` protects continuation identity; it is not a
+reference-counted multiplicity and is not a replacement for any PathMap node.
+
+The adversarial executable gates cover five distinct mechanisms:
+
+| Gate | Required observation |
+|---|---|
+| same-group mutation | a held ticket becomes stale and changes neither store nor log |
+| byte-equal `set_state` | equal payload cannot revive a pre-replacement ticket |
+| unrelated-group mutation | a ticket for the unchanged group remains valid |
+| concurrent double firing | exactly one transaction and one COMM win |
+| resting-only COMM with an unconsumed arrival | the selected historical datum is removed and the arrival is retained in the same accepted state |
+
+Every `rspace_plus_plus` test target passes under a 12 GiB `MemoryMax`, zero-swap scope. This includes
+the 62 library, 153 aggregate RSpace, 24 replay, 41 storage-action, and 51 hot-store cases, plus the
+Bag/PathMap and deep small-stack targets. No test uses `RUST_MIN_STACK`, `stacker`, or a traversal
+depth workaround. The exact release workspace lifecycle subsequently passes 4,511/4,511 tests with
+53 declared skips in 139.239 seconds under a 24 GiB `MemoryMax`, zero-swap scope. Its retained log
+SHA-256 is `0a54810b516ed516f70ba9cf43a02ffe4db2f4ed8c27981d919add1fe1cf7bbe`.
+
+Formal checkpoint `4127119ea` separates the proof obligations rather than overclaiming one model.
+`Bag.v` retains the exact-key multiplicity and candidate-projection algebra. The new axiom-free
+`RSpaceCommit.v` treats epochs as equality-only and proves deterministic acceptance, exact refusal,
+stale and missing-witness exclusion, complete accepted state, unrelated-group preservation,
+post-commit COMM publication, and equal play/replay results. TLC generates 901,376 states, retains
+710,528 distinct states, reaches depth 5, and violates no invariant. The mCRL2 implementation is
+branching-bisimilar to the atomic reference; independent modal checks exclude partial publication,
+pre-commit logging, and stale-ticket commit. The complete Rocq, Verus `--no-cheating`, Z3, TLC,
+mCRL2, and mutant gate passes under an 8 GiB `MemoryMax`, zero-swap scope. Its log SHA-256 is
+`265ff3f7ad37f147adbb6808d134ed419a6c401725e7c90289d6f235a945b83e`.
+
+The proof boundary is explicit. The models verify the reviewed state-transition and scheduler
+relations; they do not verify Rust's mutex implementation, `Arc` allocator behavior, compiler, or
+every external RSpace schedule. The adversarial Rust cases bind the concrete identity and locking
+boundary. This checkpoint makes no latency, allocation, or RSS improvement claim; it is a
+correctness repair after an iterative traversal, not a measured PathMap optimization. CBR-072
+records the consensus ruling.
+
 ---
 
 ## 6. Discussion
