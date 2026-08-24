@@ -167,6 +167,13 @@ jobs:
             echo "::error::pull request #${n} is neither open nor merged"
             exit 1
           }
+          # A single train merges its pull request directly into base_branch,
+          # so the observed base ref must be the reviewed base_branch.
+          base_branch="$(jq -r '.base_branch' "$manifest")"
+          jq -e --arg base_branch "$base_branch" '.base.ref == $base_branch' "$pull" >/dev/null || {
+            echo "::error::pull request #${n} targets $(jq -r '.base.ref' "$pull"), not the manifest base_branch ${base_branch}"
+            exit 1
+          }
           ci-control/.github/scripts/release-train.sh validate-top-merge \
             "$manifest" "$RUNNER_TEMP/train/inputs" "$RUNNER_TEMP/train/top-record.json"
           jq --slurpfile top "$RUNNER_TEMP/train/top-record.json" \
@@ -233,6 +240,16 @@ jobs:
               echo "::error::no successful exact-merge ci.yml run exists for ${merge_sha} and wait_for_ci is false"
               exit 1
             }
+            # The dispatched run executes the workflow at the live tip of the
+            # default branch, while the trust predicate binds evidence to the
+            # control SHA this job checked out. When the tip moved, the run
+            # could never match, so fail fast with a retry message instead of
+            # polling for an impossible match.
+            tip="$(gh api "repos/${GITHUB_REPOSITORY}/branches/${DEFAULT_BRANCH}" --jq '.commit.sha')"
+            [ "$tip" = "$control_sha" ] || {
+              echo "::error::${DEFAULT_BRANCH} moved from ${control_sha} to ${tip} after setup checked out its controls; re-run train setup"
+              exit 1
+            }
             before="$(date -u +%s)"
             gh workflow run ci.yml --ref "$DEFAULT_BRANCH" \
               -f target_sha="$merge_sha" -f top_pull_request="$top"
@@ -249,6 +266,17 @@ jobs:
                   and ((.created_at | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601) >= $before))]
                 | sort_by(.run_number) | last | .id // empty' "$RUNNER_TEMP/train/ci-runs.json")"
               [ -n "$run_id" ] && break
+              moved="$(jq -r --arg title "$title" --arg branch "$DEFAULT_BRANCH" --arg control "$control_sha" --argjson before "$before" '
+                [.workflow_runs[] | select(.display_title == $title
+                  and .event == "workflow_dispatch"
+                  and .head_branch == $branch
+                  and .head_sha != $control
+                  and ((.created_at | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601) >= $before))]
+                | length' "$RUNNER_TEMP/train/ci-runs.json")"
+              [ "$moved" = 0 ] || {
+                echo "::error::the dispatched exact-merge run started from a different ${DEFAULT_BRANCH} tip; ${DEFAULT_BRANCH} moved during setup — re-run train setup"
+                exit 1
+              }
             done
             [ -n "$run_id" ] || { echo "::error::exact-merge ci.yml did not start"; exit 1; }
             gh run watch "$run_id" --repo "$GITHUB_REPOSITORY" --exit-status
@@ -332,22 +360,52 @@ jobs:
           current_integration_base="$(jq -r '.base.sha' "$current/pull-$root.json")"
           gh api "repos/${GITHUB_REPOSITORY}/compare/${current_integration_base}...${current_merge_base}" \
             --jq '{status: .status}' > "$current/integration-base.json"
+          # Each validation below carries its own handler. A compound
+          # `if ... fi || { ... }` would suppress `set -e` inside both
+          # branches, so a failed early check could be masked by a later
+          # passing one.
           if [ "$is_stack" = true ]; then
             ci-control/.github/scripts/release-train.sh validate-stack \
-              "$manifest" "$current" "$current/train-record.json"
-            ci-control/.github/scripts/release-train.sh validate-current-stack \
-              "$record" "$current/train-record.json"
+              "$manifest" "$current" "$current/train-record.json" || {
+              echo "::error::stack changed while exact-merge CI ran"
+              exit 1
+            }
           else
-            jq -e '.status == "ahead" or .status == "identical"' "$current/integration-base.json" >/dev/null
+            # Rebuild the complete single-train record from the current
+            # documents — the same construction as setup — so PR state,
+            # base ref, merged flag, and every SHA are compared, not only
+            # the merge chain.
+            jq -e '.state == "open" or .merged == true' "$current/pull-$top.json" >/dev/null || {
+              echo "::error::pull request #${top} is neither open nor merged after exact-merge CI"
+              exit 1
+            }
+            jq -e --arg base_branch "$(jq -r '.base_branch' "$manifest")" \
+              '.base.ref == $base_branch' "$current/pull-$top.json" >/dev/null || {
+              echo "::error::pull request #${top} was retargeted while exact-merge CI ran"
+              exit 1
+            }
+            jq -e '.status == "ahead" or .status == "identical"' "$current/integration-base.json" >/dev/null || {
+              echo "::error::integration base is no longer an ancestor of the synthetic base"
+              exit 1
+            }
             ci-control/.github/scripts/release-train.sh validate-top-merge \
-              "$manifest" "$current" "$current/top-record.json"
-            jq -e --arg integration_base "$current_integration_base" --slurpfile current "$current/top-record.json" '
-              .head_sha == $current[0].head_sha
-              and .base_sha == $current[0].base_sha
-              and .integration_base_sha == $integration_base
-              and .merge_base_sha == $current[0].merge_base_sha
-              and .merge_sha == $current[0].merge_sha' "$record" >/dev/null
-          fi || {
+              "$manifest" "$current" "$current/top-record.json" || {
+              echo "::error::top synthetic merge changed while exact-merge CI ran"
+              exit 1
+            }
+            jq --slurpfile top "$current/top-record.json" \
+              --arg base "$(jq -r '.base.ref' "$current/pull-$top.json")" \
+              --argjson merged "$(jq -r '.merged // false' "$current/pull-$top.json")" '
+              {schema_version: 1, train_id: .id, state: .state, target_version: .target_version,
+               publishing: .publishing, base_branch: .base_branch, integration_branch: null,
+               head_sha: .head_sha, head_pull_request: .pull_request,
+               base_sha: $top[0].base_sha, integration_base_sha: $top[0].base_sha,
+               merge_base_sha: $top[0].merge_base_sha, merge_sha: $top[0].merge_sha,
+               members: [{pull_request: .pull_request, head_sha: .head_sha, base: $base, merged: $merged}],
+               required_gates: .required_gates}' "$manifest" > "$current/train-record.json"
+          fi
+          ci-control/.github/scripts/release-train.sh validate-current-stack \
+            "$record" "$current/train-record.json" || {
             echo "::error::stack changed while exact-merge CI ran"
             exit 1
           }
