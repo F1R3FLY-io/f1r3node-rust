@@ -131,7 +131,14 @@ env:
   # local mirror — full suite + bonding + lifecycle + ucc in one invocation,
   # 118 passed / 0 failed / 1h48m on the folded node branch. Re-pin to the
   # merged main SHA once #126 lands.
-  SYSTEM_INTEGRATION_REF: 147da81fcd69d05e044370609e66ec532f04282a
+  # 2026-08-24: 147da81 -> 5943837 (same PR #126 branch, NOT yet main):
+  # per-shard docker isolation (the CI run 32588262605 pollution root),
+  # joiner-boundary bonds guard polls out the header-lag window, ucc scalar
+  # rounds batched under the 1200s budget. Verified by two full CI
+  # simulations on CI-shaped OCI VMs against the node fix branch: main leg
+  # 107/107 + ucc 11/11 on both, plus a failure-free near-complete second
+  # iteration each. Re-pin to the merged main SHA once #126 lands.
+  SYSTEM_INTEGRATION_REF: 5943837b929728d71b984c70944ee3953028da70
   # Pinned OCI CLI installer (release tag + sha256). The checksum fails closed
   # if the tag is ever moved. Bump both together when upgrading.
   OCI_CLI_INSTALLER_URL: "https://raw.githubusercontent.com/oracle/oci-cli/v3.89.1/scripts/install/install.sh"
