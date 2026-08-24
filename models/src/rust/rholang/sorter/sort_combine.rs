@@ -62,6 +62,7 @@
 //! `docs/design/audits/theta-depth-traversals-2026-07-26.md`.
 
 use std::collections::{HashMap, HashSet};
+use std::convert::Infallible;
 use std::sync::OnceLock;
 
 use super::score_tree::{EmittedBytes, Score, ScoreAtom, ScoredTerm, Tree};
@@ -79,6 +80,39 @@ use crate::rust::canonical_path::encode_trie_path_with_stability;
 use crate::rust::epathmap_trie_codec::EPathMapMode;
 use crate::rust::pathmap_crate_type_mapper::eval_stable_epathmap;
 use crate::rust::rhoapi_ext::EntryTrie;
+use crate::rust::rholang::canonical_semantics::{self as semantics, CanonicalScoreAlgebra};
+
+struct TreeScoreAlgebra;
+
+impl CanonicalScoreAlgebra for TreeScoreAlgebra {
+    type Score = Tree<ScoreAtom>;
+    type Error = Infallible;
+
+    fn integer(&mut self, value: i64) -> Result<Self::Score, Self::Error> {
+        Ok(Tree::<ScoreAtom>::create_leaf_from_i64(value))
+    }
+
+    fn string(&mut self, value: &str) -> Result<Self::Score, Self::Error> {
+        Ok(Tree::<ScoreAtom>::create_leaf_from_string(value.to_owned()))
+    }
+
+    fn bytes(&mut self, value: &[u8]) -> Result<Self::Score, Self::Error> {
+        Ok(Tree::<ScoreAtom>::create_leaf_from_bytes(value.to_vec()))
+    }
+
+    fn node(&mut self, children: Vec<Self::Score>) -> Result<Self::Score, Self::Error> {
+        Ok(Tree::Node(children))
+    }
+}
+
+fn semantic_score(
+    build: impl FnOnce(&mut TreeScoreAlgebra) -> Result<Tree<ScoreAtom>, Infallible>,
+) -> Tree<ScoreAtom> {
+    match build(&mut TreeScoreAlgebra) {
+        Ok(score) => score,
+        Err(error) => match error {},
+    }
+}
 
 // ===========================================================================
 // small shared helpers
@@ -117,14 +151,6 @@ pub fn empty_par() -> &'static Par {
     EMPTY.get_or_init(Par::default)
 }
 
-fn flag_score(b: bool) -> i64 {
-    if b {
-        1
-    } else {
-        0
-    }
-}
-
 fn remainder_score(remainder: &Option<Var>) -> Tree<ScoreAtom> {
     match remainder {
         Some(v) => sort_var(v).score,
@@ -139,79 +165,39 @@ fn remainder_score(remainder: &Option<Var>) -> Tree<ScoreAtom> {
 /// `VarSortMatcher::sort_match`, verbatim. A `Var` has no sub-`Par`, so it is a
 /// leaf for every traversal in this family.
 pub fn sort_var(v: &Var) -> ScoredTerm<Var> {
-    match &v.var_instance {
-        Some(var) => match var {
-            VarInstance::BoundVar(level) => ScoredTerm {
-                term: v.clone(),
-                score: Tree::<ScoreAtom>::create_node_from_i64s(vec![
-                    Score::BOUND_VAR as i64,
-                    *level as i64,
-                ]),
-            },
-
-            VarInstance::FreeVar(level) => ScoredTerm {
-                term: v.clone(),
-                score: Tree::<ScoreAtom>::create_node_from_i64s(vec![
-                    Score::FREE_VAR as i64,
-                    *level as i64,
-                ]),
-            },
-
-            VarInstance::Wildcard(_) => ScoredTerm {
-                term: v.clone(),
-                score: Tree::<ScoreAtom>::create_node_from_i64s(vec![Score::WILDCARD as i64]),
-            },
+    let score = match &v.var_instance {
+        Some(VarInstance::BoundVar(level)) => semantics::VarScore::Bound(*level),
+        Some(VarInstance::FreeVar(level)) => semantics::VarScore::Free(*level),
+        Some(VarInstance::Wildcard(_)) => semantics::VarScore::Wildcard,
+        None => semantics::VarScore::Absent,
+    };
+    ScoredTerm {
+        term: if v.var_instance.is_some() {
+            v.clone()
+        } else {
+            Var::default()
         },
-        None => ScoredTerm {
-            term: Var::default(),
-            score: Tree::<ScoreAtom>::create_leaf_from_i64(Score::ABSENT as i64),
-        },
+        score: semantic_score(|algebra| semantics::var_score(algebra, score)),
     }
 }
 
 /// `UnforgeableSortMatcher::sort_match`, verbatim. Also a leaf: every arm
 /// carries bytes, never a `Par`.
 pub fn sort_unforgeable(unf: &GUnforgeable) -> ScoredTerm<GUnforgeable> {
-    match &unf.unf_instance {
-        Some(inner) => match inner {
-            UnfInstance::GPrivateBody(gpriv) => ScoredTerm {
-                term: GUnforgeable {
-                    unf_instance: Some(UnfInstance::GPrivateBody(gpriv.clone())),
-                },
-                score: Tree::<ScoreAtom>::create_node_from_i32(Score::PRIVATE, vec![
-                    Tree::<ScoreAtom>::create_leaf_from_bytes(gpriv.id.clone()),
-                ]),
-            },
-
-            UnfInstance::GDeployerIdBody(id) => ScoredTerm {
-                term: GUnforgeable {
-                    unf_instance: Some(UnfInstance::GDeployerIdBody(id.clone())),
-                },
-                score: Tree::<ScoreAtom>::create_node_from_i32(Score::DEPLOYER_AUTH, vec![
-                    Tree::<ScoreAtom>::create_leaf_from_bytes(id.public_key.clone()),
-                ]),
-            },
-
-            UnfInstance::GDeployIdBody(deploy_id) => ScoredTerm {
-                term: GUnforgeable {
-                    unf_instance: Some(UnfInstance::GDeployIdBody(deploy_id.clone())),
-                },
-                score: Tree::<ScoreAtom>::create_node_from_i32(Score::DEPLOY_ID, vec![
-                    Tree::<ScoreAtom>::create_leaf_from_bytes(deploy_id.sig.clone()),
-                ]),
-            },
-
-            UnfInstance::GSysAuthTokenBody(token) => ScoredTerm {
-                term: GUnforgeable {
-                    unf_instance: Some(UnfInstance::GSysAuthTokenBody(token.clone())),
-                },
-                score: Tree::<ScoreAtom>::create_node_from_i32(Score::SYS_AUTH_TOKEN, vec![]),
-            },
-        },
-        None => ScoredTerm {
-            term: unf.clone(),
-            score: Tree::<ScoreAtom>::create_node_from_i32(Score::ABSENT, Vec::new()),
-        },
+    let score = match &unf.unf_instance {
+        Some(UnfInstance::GPrivateBody(value)) => semantics::UnforgeableScore::Private(&value.id),
+        Some(UnfInstance::GDeployerIdBody(value)) => {
+            semantics::UnforgeableScore::DeployerId(&value.public_key)
+        }
+        Some(UnfInstance::GDeployIdBody(value)) => {
+            semantics::UnforgeableScore::DeployId(&value.sig)
+        }
+        Some(UnfInstance::GSysAuthTokenBody(_)) => semantics::UnforgeableScore::SysAuthToken,
+        None => semantics::UnforgeableScore::Absent,
+    };
+    ScoredTerm {
+        term: unf.clone(),
+        score: semantic_score(|algebra| semantics::unforgeable_score(algebra, score)),
     }
 }
 
@@ -375,11 +361,16 @@ fn extend_emap_children<'t>(emap: &'t crate::rhoapi::EMap, out: &mut Vec<&'t Par
                 // `Par` equality is canonical PathMap equality. Two source
                 // keys can therefore compare equal even when their former
                 // repeated-field spellings differed. Preserve the exact
-                // winner `combine_emap` obtains by sorting complete pairs by
-                // `(key score, KeyValuePair bytes)` and taking the last equal
-                // key: with equal key bytes, that is the value with greatest
-                // emitted bytes. Input order and HashMap seeding cannot affect
-                // the result, and bytes are allocated only on a real collision.
+                // winner the complete two-stage sorter obtains. This first
+                // stage retains the first equality-representative key and the
+                // value with greatest emitted bytes. The distinction matters
+                // for hostile decoded Pars whose keys differ only in the root
+                // `locally_free` cache ignored by `Par` equality: the key
+                // representative is still the first source occurrence. The
+                // second stage sorts the surviving complete pairs by `(key
+                // score, KeyValuePair bytes)`. HashMap seeding cannot affect
+                // either choice, and bytes are allocated only on a real
+                // collision.
                 if value.emitted_bytes() > current.emitted_bytes() {
                     *current = value;
                 }
@@ -465,19 +456,15 @@ pub fn combine_send(
         connective_used: s.connective_used,
     };
 
-    let send_score = Tree::<ScoreAtom>::create_node_from_i32(
-        Score::SEND,
-        vec![
-            Tree::<ScoreAtom>::create_leaf_from_i64(flag_score(s.persistent)),
+    let send_score = semantic_score(|algebra| {
+        semantics::send_score(
+            algebra,
+            s.persistent,
             chan.score,
-        ]
-        .into_iter()
-        .chain(data_scores)
-        .chain(std::iter::once(Tree::<ScoreAtom>::create_leaf_from_i64(
-            flag_score(s.connective_used),
-        )))
-        .collect(),
-    );
+            data_scores,
+            s.connective_used,
+        )
+    });
 
     ScoredTerm {
         term: sorted_send,
@@ -510,12 +497,14 @@ pub fn combine_bind(
             remainder: bind.remainder.clone(),
             free_count: bind.free_count,
         },
-        score: Tree::Node(
-            std::iter::once(channel.score)
-                .chain(pattern_scores)
-                .chain(std::iter::once(sorted_remainder_score))
-                .collect(),
-        ),
+        score: semantic_score(|algebra| {
+            semantics::receive_bind_score(
+                algebra,
+                channel.score,
+                pattern_scores,
+                sorted_remainder_score,
+            )
+        }),
     }
 }
 
@@ -557,22 +546,18 @@ pub fn combine_receive(
             connective_used: r.connective_used,
             condition: condition_term,
         },
-        score: Tree::<ScoreAtom>::create_node_from_i32(
-            Score::RECEIVE,
-            vec![
-                Tree::<ScoreAtom>::create_leaf_from_i64(flag_score(r.persistent)),
-                Tree::<ScoreAtom>::create_leaf_from_i64(flag_score(r.peek)),
-            ]
-            .into_iter()
-            .chain(bind_scores)
-            .chain(std::iter::once(body.score))
-            .chain(vec![
-                Tree::<ScoreAtom>::create_leaf_from_i64(r.bind_count as i64),
-                Tree::<ScoreAtom>::create_leaf_from_i64(flag_score(r.connective_used)),
+        score: semantic_score(|algebra| {
+            semantics::receive_score(
+                algebra,
+                r.persistent,
+                r.peek,
+                bind_scores,
+                body.score,
+                r.bind_count,
+                r.connective_used,
                 condition_score,
-            ])
-            .collect(),
-        ),
+            )
+        }),
     }
 }
 
@@ -602,7 +587,7 @@ pub fn combine_new(
             .keys()
             .zip(injections)
             .map(|(k, scored)| {
-                Tree::<ScoreAtom>::create_node_from_string(k.clone(), vec![scored.score])
+                semantic_score(|algebra| semantics::injection_score(algebra, k, scored.score))
             })
             .collect()
     } else {
@@ -619,16 +604,9 @@ pub fn combine_new(
             injections: n.injections.clone(),
             locally_free: n.locally_free.clone(),
         },
-        score: Tree::Node(
-            std::iter::once(Tree::<ScoreAtom>::create_leaf_from_i64(Score::NEW as i64))
-                .chain(std::iter::once(Tree::<ScoreAtom>::create_leaf_from_i64(
-                    n.bind_count as i64,
-                )))
-                .chain(uri_score)
-                .chain(injections_score)
-                .chain(std::iter::once(p.score))
-                .collect(),
-        ),
+        score: semantic_score(|algebra| {
+            semantics::new_score(algebra, n.bind_count, uri_score, injections_score, p.score)
+        }),
     }
 }
 
@@ -664,12 +642,15 @@ pub fn combine_case(
             free_count: match_case.free_count,
             guard: guard_term,
         },
-        score: Tree::Node(vec![
-            pattern.score,
-            source.score,
-            Tree::<ScoreAtom>::create_leaf_from_i64(match_case.free_count as i64),
-            guard_score,
-        ]),
+        score: semantic_score(|algebra| {
+            semantics::match_case_score(
+                algebra,
+                pattern.score,
+                source.score,
+                match_case.free_count,
+                guard_score,
+            )
+        }),
     }
 }
 
@@ -689,15 +670,9 @@ pub fn combine_match(
             locally_free: m.locally_free.clone(),
             connective_used: m.connective_used,
         },
-        score: Tree::<ScoreAtom>::create_node_from_i32(
-            Score::MATCH,
-            std::iter::once(target.score)
-                .chain(case_scores)
-                .chain(std::iter::once(Tree::<ScoreAtom>::create_leaf_from_i64(
-                    flag_score(m.connective_used),
-                )))
-                .collect(),
-        ),
+        score: semantic_score(|algebra| {
+            semantics::match_score(algebra, target.score, case_scores, m.connective_used)
+        }),
     }
 }
 
@@ -717,34 +692,29 @@ pub fn combine_if(
             locally_free: i.locally_free.clone(),
             connective_used: i.connective_used,
         },
-        score: Tree::<ScoreAtom>::create_node_from_i32(Score::IF, vec![
-            condition.score,
-            if_true.score,
-            if_false.score,
-            Tree::<ScoreAtom>::create_leaf_from_i64(flag_score(i.connective_used)),
-        ]),
+        score: semantic_score(|algebra| {
+            semantics::if_score(
+                algebra,
+                condition.score,
+                if_true.score,
+                if_false.score,
+                i.connective_used,
+            )
+        }),
     }
 }
 
 /// `BundleSortMatcher::sort_match`'s post-order half. One child: `body`.
 pub fn combine_bundle(b: &Bundle, body: ScoredTerm<Par>) -> ScoredTerm<Bundle> {
-    let score = if b.write_flag && b.read_flag {
-        Score::BUNDLE_READ_WRITE
-    } else if b.write_flag && !b.read_flag {
-        Score::BUNDLE_WRITE
-    } else if !b.write_flag && b.read_flag {
-        Score::BUNDLE_READ
-    } else {
-        Score::BUNDLE_EQUIV
-    };
-
     ScoredTerm {
         term: {
             let mut b_cloned = b.clone();
             b_cloned.body = Some(body.term);
             b_cloned
         },
-        score: Tree::<ScoreAtom>::create_node_from_i32(score, vec![body.score]),
+        score: semantic_score(|algebra| {
+            semantics::bundle_score(algebra, b.read_flag, b.write_flag, body.score)
+        }),
     }
 }
 
@@ -762,7 +732,9 @@ pub fn combine_connective(c: &Connective, kids: Vec<ScoredTerm<Par>>) -> ScoredT
                         cb_cloned
                     })),
                 },
-                score: Tree::<ScoreAtom>::create_node_from_i32(Score::CONNECTIVE_AND, scores),
+                score: semantic_score(|algebra| {
+                    semantics::connective_score(algebra, semantics::ConnectiveScore::And(scores))
+                }),
             }
         }
 
@@ -776,7 +748,9 @@ pub fn combine_connective(c: &Connective, kids: Vec<ScoredTerm<Par>>) -> ScoredT
                         cb_cloned
                     })),
                 },
-                score: Tree::<ScoreAtom>::create_node_from_i32(Score::CONNECTIVE_OR, scores),
+                score: semantic_score(|algebra| {
+                    semantics::connective_score(algebra, semantics::ConnectiveScore::Or(scores))
+                }),
             }
         }
 
@@ -789,9 +763,12 @@ pub fn combine_connective(c: &Connective, kids: Vec<ScoredTerm<Par>>) -> ScoredT
                 term: Connective {
                     connective_instance: Some(ConnectiveInstance::ConnNotBody(scored_par.term)),
                 },
-                score: Tree::<ScoreAtom>::create_node_from_i32(Score::CONNECTIVE_NOT, vec![
-                    scored_par.score,
-                ]),
+                score: semantic_score(|algebra| {
+                    semantics::connective_score(
+                        algebra,
+                        semantics::ConnectiveScore::Not(scored_par.score),
+                    )
+                }),
             }
         }
 
@@ -799,66 +776,64 @@ pub fn combine_connective(c: &Connective, kids: Vec<ScoredTerm<Par>>) -> ScoredT
             term: Connective {
                 connective_instance: Some(ConnectiveInstance::VarRefBody(v.clone())),
             },
-            score: Tree::<ScoreAtom>::create_node_from_i64s(vec![
-                Score::CONNECTIVE_VARREF as i64,
-                v.index as i64,
-                v.depth as i64,
-            ]),
+            score: semantic_score(|algebra| {
+                semantics::connective_score(algebra, semantics::ConnectiveScore::VarRef {
+                    index: v.index,
+                    depth: v.depth,
+                })
+            }),
         },
 
         Some(ConnectiveInstance::ConnBool(b)) => ScoredTerm {
             term: Connective {
                 connective_instance: Some(ConnectiveInstance::ConnBool(*b)),
             },
-            score: Tree::<ScoreAtom>::create_node_from_i64s(vec![
-                Score::CONNECTIVE_BOOL as i64,
-                flag_score(*b),
-            ]),
+            score: semantic_score(|algebra| {
+                semantics::connective_score(algebra, semantics::ConnectiveScore::Bool(*b))
+            }),
         },
 
         Some(ConnectiveInstance::ConnInt(b)) => ScoredTerm {
             term: Connective {
                 connective_instance: Some(ConnectiveInstance::ConnInt(*b)),
             },
-            score: Tree::<ScoreAtom>::create_node_from_i64s(vec![
-                Score::CONNECTIVE_INT as i64,
-                flag_score(*b),
-            ]),
+            score: semantic_score(|algebra| {
+                semantics::connective_score(algebra, semantics::ConnectiveScore::Int(*b))
+            }),
         },
 
         Some(ConnectiveInstance::ConnString(b)) => ScoredTerm {
             term: Connective {
                 connective_instance: Some(ConnectiveInstance::ConnString(*b)),
             },
-            score: Tree::<ScoreAtom>::create_node_from_i64s(vec![
-                Score::CONNECTIVE_STRING as i64,
-                flag_score(*b),
-            ]),
+            score: semantic_score(|algebra| {
+                semantics::connective_score(algebra, semantics::ConnectiveScore::String(*b))
+            }),
         },
 
         Some(ConnectiveInstance::ConnUri(b)) => ScoredTerm {
             term: Connective {
                 connective_instance: Some(ConnectiveInstance::ConnUri(*b)),
             },
-            score: Tree::<ScoreAtom>::create_node_from_i64s(vec![
-                Score::CONNECTIVE_URI as i64,
-                flag_score(*b),
-            ]),
+            score: semantic_score(|algebra| {
+                semantics::connective_score(algebra, semantics::ConnectiveScore::Uri(*b))
+            }),
         },
 
         Some(ConnectiveInstance::ConnByteArray(b)) => ScoredTerm {
             term: Connective {
                 connective_instance: Some(ConnectiveInstance::ConnByteArray(*b)),
             },
-            score: Tree::<ScoreAtom>::create_node_from_i64s(vec![
-                Score::CONNECTIVE_BYTEARRAY as i64,
-                flag_score(*b),
-            ]),
+            score: semantic_score(|algebra| {
+                semantics::connective_score(algebra, semantics::ConnectiveScore::ByteArray(*b))
+            }),
         },
 
         None => ScoredTerm {
             term: Connective::default(),
-            score: Tree::<ScoreAtom>::create_leaf_from_i64(Score::ABSENT as i64),
+            score: semantic_score(|algebra| {
+                semantics::connective_score(algebra, semantics::ConnectiveScore::Absent)
+            }),
         },
     }
 }
@@ -916,13 +891,13 @@ fn two(kids: Vec<ScoredTerm<Par>>) -> (ScoredTerm<Par>, ScoredTerm<Par>) {
 
 /// `-p` / `~p`: one child `Par`, scored `node_i32(tag, [child])`.
 macro_rules! unary_arm {
-    ($name:ident, $tag:ident, $variant:ident, $ctor:ident) => {
+    ($name:ident, $variant:ident, $ctor:ident) => {
         #[inline(never)]
-        fn $name(kids: Vec<ScoredTerm<Par>>) -> ScoredTerm<Expr> {
+        fn $name(constructor: i32, kids: Vec<ScoredTerm<Par>>) -> ScoredTerm<Expr> {
             let ScoredTerm { term, score } = one(kids);
             construct_expr(
                 ExprInstance::$variant($ctor { p: Some(term) }),
-                Tree::<ScoreAtom>::create_node_from_i32(Score::$tag, vec![score]),
+                semantic_score(|algebra| semantics::unary_score(algebra, constructor, score)),
             )
         }
     };
@@ -930,9 +905,9 @@ macro_rules! unary_arm {
 
 /// `p1 OP p2`: two child `Par`s in slot order, scored `node_i32(tag, [s1, s2])`.
 macro_rules! binary_arm {
-    ($name:ident, $tag:ident, $variant:ident, $ctor:ident) => {
+    ($name:ident, $variant:ident, $ctor:ident) => {
         #[inline(never)]
-        fn $name(kids: Vec<ScoredTerm<Par>>) -> ScoredTerm<Expr> {
+        fn $name(constructor: i32, kids: Vec<ScoredTerm<Par>>) -> ScoredTerm<Expr> {
             let (first, second) = two(kids);
             let ScoredTerm {
                 term: t1,
@@ -947,41 +922,35 @@ macro_rules! binary_arm {
                     p1: Some(t1),
                     p2: Some(t2),
                 }),
-                Tree::<ScoreAtom>::create_node_from_i32(Score::$tag, vec![s1, s2]),
+                semantic_score(|algebra| semantics::binary_score(algebra, constructor, s1, s2)),
             )
         }
     };
 }
 
-unary_arm!(combine_eneg, ENEG, ENegBody, ENeg);
-unary_arm!(combine_enot, ENOT, ENotBody, ENot);
+unary_arm!(combine_eneg, ENegBody, ENeg);
+unary_arm!(combine_enot, ENotBody, ENot);
 
-binary_arm!(combine_emult, EMULT, EMultBody, EMult);
-binary_arm!(combine_ediv, EDIV, EDivBody, EDiv);
-binary_arm!(combine_emod, EMOD, EModBody, EMod);
-binary_arm!(combine_eplus, EPLUS, EPlusBody, EPlus);
-binary_arm!(combine_eminus, EMINUS, EMinusBody, EMinus);
-binary_arm!(combine_elt, ELT, ELtBody, ELt);
-binary_arm!(combine_elte, ELTE, ELteBody, ELte);
-binary_arm!(combine_egt, EGT, EGtBody, EGt);
-binary_arm!(combine_egte, EGTE, EGteBody, EGte);
-binary_arm!(combine_eeq, EEQ, EEqBody, EEq);
-binary_arm!(combine_eneq, ENEQ, ENeqBody, ENeq);
-binary_arm!(combine_eand, EAND, EAndBody, EAnd);
-binary_arm!(combine_eor, EOR, EOrBody, EOr);
+binary_arm!(combine_emult, EMultBody, EMult);
+binary_arm!(combine_ediv, EDivBody, EDiv);
+binary_arm!(combine_emod, EModBody, EMod);
+binary_arm!(combine_eplus, EPlusBody, EPlus);
+binary_arm!(combine_eminus, EMinusBody, EMinus);
+binary_arm!(combine_elt, ELtBody, ELt);
+binary_arm!(combine_elte, ELteBody, ELte);
+binary_arm!(combine_egt, EGtBody, EGt);
+binary_arm!(combine_egte, EGteBody, EGte);
+binary_arm!(combine_eeq, EEqBody, EEq);
+binary_arm!(combine_eneq, ENeqBody, ENeq);
+binary_arm!(combine_eand, EAndBody, EAnd);
+binary_arm!(combine_eor, EOrBody, EOr);
 binary_arm!(
     combine_epercentpercent,
-    EPERCENT,
     EPercentPercentBody,
     EPercentPercent
 );
-binary_arm!(combine_eplusplus, EPLUSPLUS, EPlusPlusBody, EPlusPlus);
-binary_arm!(
-    combine_eminusminus,
-    EMINUSMINUS,
-    EMinusMinusBody,
-    EMinusMinus
-);
+binary_arm!(combine_eplusplus, EPlusPlusBody, EPlusPlus);
+binary_arm!(combine_eminusminus, EMinusMinusBody, EMinusMinus);
 
 /// `EVarBody`. Its child is a `Var` — a leaf — so it takes no worklist
 /// children and scores in place.
@@ -992,13 +961,13 @@ fn combine_evar(ev: &EVar) -> ScoredTerm<Expr> {
         ExprInstance::EVarBody(EVar {
             v: Some(sorted_var.term),
         }),
-        Tree::<ScoreAtom>::create_node_from_i32(Score::EVAR, vec![sorted_var.score]),
+        semantic_score(|algebra| semantics::unary_score(algebra, Score::EVAR, sorted_var.score)),
     )
 }
 
 /// `EMatchesBody`. Slot order is `target`, then `pattern`.
 #[inline(never)]
-fn combine_ematches(kids: Vec<ScoredTerm<Par>>) -> ScoredTerm<Expr> {
+fn combine_ematches(constructor: i32, kids: Vec<ScoredTerm<Par>>) -> ScoredTerm<Expr> {
     let (target, pattern) = two(kids);
     let ScoredTerm {
         term: target_term,
@@ -1013,7 +982,9 @@ fn combine_ematches(kids: Vec<ScoredTerm<Par>>) -> ScoredTerm<Expr> {
             target: Some(target_term),
             pattern: Some(pattern_term),
         }),
-        Tree::<ScoreAtom>::create_node_from_i32(Score::EMATCHES, vec![target_score, pattern_score]),
+        semantic_score(|algebra| {
+            semantics::binary_score(algebra, constructor, target_score, pattern_score)
+        }),
     )
 }
 
@@ -1021,7 +992,6 @@ fn combine_ematches(kids: Vec<ScoredTerm<Par>>) -> ScoredTerm<Expr> {
 #[inline(never)]
 fn combine_elist(list: &EList, kids: Vec<ScoredTerm<Par>>) -> ScoredTerm<Expr> {
     let remainder_score = remainder_score(&list.remainder);
-    let connective_used_score: i64 = flag_score(list.connective_used);
     let (element_terms, element_scores) = split_scored_terms(kids);
 
     construct_expr(
@@ -1031,42 +1001,36 @@ fn combine_elist(list: &EList, kids: Vec<ScoredTerm<Par>>) -> ScoredTerm<Expr> {
             connective_used: list.connective_used,
             remainder: list.remainder.clone(),
         }),
-        Tree::Node(
-            vec![
-                Tree::<ScoreAtom>::create_leaf_from_i64(Score::ELIST as i64),
-                remainder_score,
-            ]
-            .into_iter()
-            .chain(element_scores)
-            .chain(std::iter::once(Tree::<ScoreAtom>::create_leaf_from_i64(
-                connective_used_score,
-            )))
-            .collect(),
-        ),
+        semantic_score(|algebra| {
+            semantics::ordered_collection_score(
+                algebra,
+                Score::ELIST,
+                Some(remainder_score),
+                element_scores,
+                list.connective_used,
+            )
+        }),
     )
 }
 
 /// `ETupleBody`. ⚠ No remainder slot, unlike `EListBody`.
 #[inline(never)]
 fn combine_etuple(tuple: &ETuple, kids: Vec<ScoredTerm<Par>>) -> ScoredTerm<Expr> {
-    let connective_used_score: i64 = flag_score(tuple.connective_used);
     let (element_terms, element_scores) = split_scored_terms(kids);
     let mut tuple_cloned = tuple.clone();
     tuple_cloned.ps = element_terms;
 
     construct_expr(
         ExprInstance::ETupleBody(tuple_cloned),
-        Tree::Node(
-            vec![Tree::<ScoreAtom>::create_leaf_from_i64(
-                Score::ETUPLE as i64,
-            )]
-            .into_iter()
-            .chain(element_scores)
-            .chain(std::iter::once(Tree::<ScoreAtom>::create_leaf_from_i64(
-                connective_used_score,
-            )))
-            .collect(),
-        ),
+        semantic_score(|algebra| {
+            semantics::ordered_collection_score(
+                algebra,
+                Score::ETUPLE,
+                None,
+                element_scores,
+                tuple.connective_used,
+            )
+        }),
     )
 }
 /// Rebuild one homogeneous EPathMap from already-sorted PDA children and
@@ -1186,7 +1150,6 @@ fn canonicalize_scored_pathmap(
 #[inline(never)]
 fn combine_ezipper(zipper: &EZipper, kids: Vec<ScoredTerm<Par>>) -> ScoredTerm<Expr> {
     let pathmap = zipper.pathmap.as_ref().expect("zipper pathmap was None");
-    let connective_used_score: i64 = flag_score(zipper.connective_used);
     let (canonical, element_scores) = canonicalize_scored_pathmap(pathmap, kids, false);
 
     construct_expr(
@@ -1202,18 +1165,15 @@ fn combine_ezipper(zipper: &EZipper, kids: Vec<ScoredTerm<Par>>) -> ScoredTerm<E
             // its focus.
             cursor_kind: zipper.cursor_kind,
         }),
-        Tree::Node(
-            vec![
-                // Use EPATHMAP + 1 for zipper
-                Tree::<ScoreAtom>::create_leaf_from_i64(Score::EPATHMAP as i64 + 1),
-            ]
-            .into_iter()
-            .chain(element_scores)
-            .chain(std::iter::once(Tree::<ScoreAtom>::create_leaf_from_i64(
-                connective_used_score,
-            )))
-            .collect(),
-        ),
+        semantic_score(|algebra| {
+            semantics::ordered_collection_score(
+                algebra,
+                semantics::rpb3_pathmap_constructor(true),
+                None,
+                element_scores,
+                zipper.connective_used,
+            )
+        }),
     )
 }
 
@@ -1228,7 +1188,6 @@ fn combine_emethod(em: &EMethod, kids: Vec<ScoredTerm<Par>>) -> ScoredTerm<Expr>
     let sorted_target = kids
         .pop()
         .expect("combine_expr: EMethodBody must have a target child");
-    let connective_used_score: i64 = flag_score(em.connective_used);
     let (arg_terms, arg_scores) = split_scored_terms(kids);
 
     let mut em_cloned = em.clone();
@@ -1237,19 +1196,15 @@ fn combine_emethod(em: &EMethod, kids: Vec<ScoredTerm<Par>>) -> ScoredTerm<Expr>
 
     construct_expr(
         ExprInstance::EMethodBody(em_cloned),
-        Tree::Node(
-            vec![
-                Tree::<ScoreAtom>::create_leaf_from_i64(Score::EMETHOD as i64),
-                Tree::<ScoreAtom>::create_leaf_from_string(em.method_name.clone()),
+        semantic_score(|algebra| {
+            semantics::method_score(
+                algebra,
+                &em.method_name,
                 sorted_target.score,
-            ]
-            .into_iter()
-            .chain(arg_scores)
-            .chain(std::iter::once(Tree::<ScoreAtom>::create_leaf_from_i64(
-                connective_used_score,
-            )))
-            .collect(),
-        ),
+                arg_scores,
+                em.connective_used,
+            )
+        }),
     )
 }
 
@@ -1261,14 +1216,11 @@ fn combine_emethod(em: &EMethod, kids: Vec<ScoredTerm<Par>>) -> ScoredTerm<Expr>
 /// canonical form, and the canonical form is signed.
 #[inline(never)]
 fn combine_gbool(e: &Expr, gb: bool) -> ScoredTerm<Expr> {
-    let score = if gb {
-        Tree::<ScoreAtom>::create_node_from_i64s(vec![Score::BOOL as i64, 0])
-    } else {
-        Tree::<ScoreAtom>::create_node_from_i64s(vec![Score::BOOL as i64, 1])
-    };
     ScoredTerm {
         term: e.clone(),
-        score,
+        score: semantic_score(|algebra| {
+            semantics::ground_score(algebra, semantics::GroundScore::Bool(gb))
+        }),
     }
 }
 
@@ -1276,7 +1228,9 @@ fn combine_gbool(e: &Expr, gb: bool) -> ScoredTerm<Expr> {
 fn combine_gint(e: &Expr, gi: i64) -> ScoredTerm<Expr> {
     ScoredTerm {
         term: e.clone(),
-        score: Tree::<ScoreAtom>::create_node_from_i64s(vec![Score::INT as i64, gi]),
+        score: semantic_score(|algebra| {
+            semantics::ground_score(algebra, semantics::GroundScore::Int(gi))
+        }),
     }
 }
 
@@ -1284,9 +1238,9 @@ fn combine_gint(e: &Expr, gi: i64) -> ScoredTerm<Expr> {
 fn combine_gstring(e: &Expr, gs: &str) -> ScoredTerm<Expr> {
     ScoredTerm {
         term: e.clone(),
-        score: Tree::<ScoreAtom>::create_node_from_i32(Score::STRING, vec![
-            Tree::<ScoreAtom>::create_leaf_from_string(gs.to_string()),
-        ]),
+        score: semantic_score(|algebra| {
+            semantics::ground_score(algebra, semantics::GroundScore::String(gs))
+        }),
     }
 }
 
@@ -1294,9 +1248,9 @@ fn combine_gstring(e: &Expr, gs: &str) -> ScoredTerm<Expr> {
 fn combine_guri(e: &Expr, gu: &str) -> ScoredTerm<Expr> {
     ScoredTerm {
         term: e.clone(),
-        score: Tree::<ScoreAtom>::create_node_from_i32(Score::URI, vec![
-            Tree::<ScoreAtom>::create_leaf_from_string(gu.to_string()),
-        ]),
+        score: semantic_score(|algebra| {
+            semantics::ground_score(algebra, semantics::GroundScore::Uri(gu))
+        }),
     }
 }
 
@@ -1304,9 +1258,9 @@ fn combine_guri(e: &Expr, gu: &str) -> ScoredTerm<Expr> {
 fn combine_gbytearray(e: &Expr, ba: &[u8]) -> ScoredTerm<Expr> {
     ScoredTerm {
         term: e.clone(),
-        score: Tree::<ScoreAtom>::create_node_from_i32(Score::EBYTEARR, vec![
-            Tree::<ScoreAtom>::create_leaf_from_bytes(ba.to_vec()),
-        ]),
+        score: semantic_score(|algebra| {
+            semantics::ground_score(algebra, semantics::GroundScore::ByteArray(ba))
+        }),
     }
 }
 
@@ -1314,7 +1268,9 @@ fn combine_gbytearray(e: &Expr, ba: &[u8]) -> ScoredTerm<Expr> {
 fn combine_gdouble(e: &Expr, bits: u64) -> ScoredTerm<Expr> {
     ScoredTerm {
         term: e.clone(),
-        score: Tree::<ScoreAtom>::create_node_from_i64s(vec![Score::DOUBLE as i64, bits as i64]),
+        score: semantic_score(|algebra| {
+            semantics::ground_score(algebra, semantics::GroundScore::Double(bits))
+        }),
     }
 }
 
@@ -1322,9 +1278,9 @@ fn combine_gdouble(e: &Expr, bits: u64) -> ScoredTerm<Expr> {
 fn combine_gbigint(e: &Expr, bytes: &[u8]) -> ScoredTerm<Expr> {
     ScoredTerm {
         term: e.clone(),
-        score: Tree::<ScoreAtom>::create_node_from_i32(Score::BIG_INT, vec![
-            Tree::<ScoreAtom>::create_leaf_from_bytes(bytes.to_vec()),
-        ]),
+        score: semantic_score(|algebra| {
+            semantics::ground_score(algebra, semantics::GroundScore::BigInt(bytes))
+        }),
     }
 }
 
@@ -1332,10 +1288,12 @@ fn combine_gbigint(e: &Expr, bytes: &[u8]) -> ScoredTerm<Expr> {
 fn combine_gbigrat(e: &Expr, rat: &GBigRational) -> ScoredTerm<Expr> {
     ScoredTerm {
         term: e.clone(),
-        score: Tree::<ScoreAtom>::create_node_from_i32(Score::BIG_RAT, vec![
-            Tree::<ScoreAtom>::create_leaf_from_bytes(rat.numerator.clone()),
-            Tree::<ScoreAtom>::create_leaf_from_bytes(rat.denominator.clone()),
-        ]),
+        score: semantic_score(|algebra| {
+            semantics::ground_score(algebra, semantics::GroundScore::BigRat {
+                numerator: &rat.numerator,
+                denominator: &rat.denominator,
+            })
+        }),
     }
 }
 
@@ -1343,10 +1301,12 @@ fn combine_gbigrat(e: &Expr, rat: &GBigRational) -> ScoredTerm<Expr> {
 fn combine_gfixedpoint(e: &Expr, fp: &GFixedPoint) -> ScoredTerm<Expr> {
     ScoredTerm {
         term: e.clone(),
-        score: Tree::<ScoreAtom>::create_node_from_i32(Score::FIXED_POINT, vec![
-            Tree::<ScoreAtom>::create_leaf_from_bytes(fp.unscaled.clone()),
-            Tree::<ScoreAtom>::create_node_from_i64s(vec![fp.scale as i64]),
-        ]),
+        score: semantic_score(|algebra| {
+            semantics::ground_score(algebra, semantics::GroundScore::FixedPoint {
+                unscaled: &fp.unscaled,
+                scale: fp.scale,
+            })
+        }),
     }
 }
 
@@ -1355,7 +1315,9 @@ fn combine_gfixedpoint(e: &Expr, fp: &GFixedPoint) -> ScoredTerm<Expr> {
 fn combine_expr_absent(e: &Expr) -> ScoredTerm<Expr> {
     ScoredTerm {
         term: e.clone(),
-        score: Tree::<ScoreAtom>::create_node_from_i32(Score::ABSENT, Vec::new()),
+        score: semantic_score(|algebra| {
+            semantics::ground_score(algebra, semantics::GroundScore::AbsentExpr)
+        }),
     }
 }
 
@@ -1371,27 +1333,35 @@ fn combine_expr_absent(e: &Expr) -> ScoredTerm<Expr> {
 pub fn combine_expr(e: &Expr, kids: Vec<ScoredTerm<Par>>) -> ScoredTerm<Expr> {
     match &e.expr_instance {
         Some(expr) => match expr {
-            ExprInstance::ENegBody(_) => combine_eneg(kids),
-            ExprInstance::ENotBody(_) => combine_enot(kids),
+            ExprInstance::ENegBody(_) => combine_eneg(semantics::expr_constructor(expr), kids),
+            ExprInstance::ENotBody(_) => combine_enot(semantics::expr_constructor(expr), kids),
             ExprInstance::EVarBody(ev) => combine_evar(ev),
 
-            ExprInstance::EMultBody(_) => combine_emult(kids),
-            ExprInstance::EDivBody(_) => combine_ediv(kids),
-            ExprInstance::EModBody(_) => combine_emod(kids),
-            ExprInstance::EPlusBody(_) => combine_eplus(kids),
-            ExprInstance::EMinusBody(_) => combine_eminus(kids),
-            ExprInstance::ELtBody(_) => combine_elt(kids),
-            ExprInstance::ELteBody(_) => combine_elte(kids),
-            ExprInstance::EGtBody(_) => combine_egt(kids),
-            ExprInstance::EGteBody(_) => combine_egte(kids),
-            ExprInstance::EEqBody(_) => combine_eeq(kids),
-            ExprInstance::ENeqBody(_) => combine_eneq(kids),
-            ExprInstance::EAndBody(_) => combine_eand(kids),
-            ExprInstance::EOrBody(_) => combine_eor(kids),
-            ExprInstance::EMatchesBody(_) => combine_ematches(kids),
-            ExprInstance::EPercentPercentBody(_) => combine_epercentpercent(kids),
-            ExprInstance::EPlusPlusBody(_) => combine_eplusplus(kids),
-            ExprInstance::EMinusMinusBody(_) => combine_eminusminus(kids),
+            ExprInstance::EMultBody(_) => combine_emult(semantics::expr_constructor(expr), kids),
+            ExprInstance::EDivBody(_) => combine_ediv(semantics::expr_constructor(expr), kids),
+            ExprInstance::EModBody(_) => combine_emod(semantics::expr_constructor(expr), kids),
+            ExprInstance::EPlusBody(_) => combine_eplus(semantics::expr_constructor(expr), kids),
+            ExprInstance::EMinusBody(_) => combine_eminus(semantics::expr_constructor(expr), kids),
+            ExprInstance::ELtBody(_) => combine_elt(semantics::expr_constructor(expr), kids),
+            ExprInstance::ELteBody(_) => combine_elte(semantics::expr_constructor(expr), kids),
+            ExprInstance::EGtBody(_) => combine_egt(semantics::expr_constructor(expr), kids),
+            ExprInstance::EGteBody(_) => combine_egte(semantics::expr_constructor(expr), kids),
+            ExprInstance::EEqBody(_) => combine_eeq(semantics::expr_constructor(expr), kids),
+            ExprInstance::ENeqBody(_) => combine_eneq(semantics::expr_constructor(expr), kids),
+            ExprInstance::EAndBody(_) => combine_eand(semantics::expr_constructor(expr), kids),
+            ExprInstance::EOrBody(_) => combine_eor(semantics::expr_constructor(expr), kids),
+            ExprInstance::EMatchesBody(_) => {
+                combine_ematches(semantics::expr_constructor(expr), kids)
+            }
+            ExprInstance::EPercentPercentBody(_) => {
+                combine_epercentpercent(semantics::expr_constructor(expr), kids)
+            }
+            ExprInstance::EPlusPlusBody(_) => {
+                combine_eplusplus(semantics::expr_constructor(expr), kids)
+            }
+            ExprInstance::EMinusMinusBody(_) => {
+                combine_eminusminus(semantics::expr_constructor(expr), kids)
+            }
 
             ExprInstance::EListBody(list) => combine_elist(list, kids),
             ExprInstance::ETupleBody(tuple) => combine_etuple(tuple, kids),
@@ -1466,7 +1436,6 @@ fn combine_emap(emap: &crate::rhoapi::EMap, kids: Vec<ScoredTerm<Par>>) -> Score
     };
 
     let remainder_score = remainder_score(&emap.remainder);
-    let connective_used_score: i64 = flag_score(emap.connective_used);
     let (pair_terms, pair_scores) = split_scored_terms(canonical_pairs);
     let kvs = pair_terms
         .into_iter()
@@ -1483,18 +1452,15 @@ fn combine_emap(emap: &crate::rhoapi::EMap, kids: Vec<ScoredTerm<Par>>) -> Score
             connective_used: emap.connective_used,
             remainder: emap.remainder.clone(),
         }),
-        Tree::Node(
-            vec![
-                Tree::<ScoreAtom>::create_leaf_from_i64(Score::EMAP as i64),
-                remainder_score,
-            ]
-            .into_iter()
-            .chain(pair_scores)
-            .chain(std::iter::once(Tree::<ScoreAtom>::create_leaf_from_i64(
-                connective_used_score,
-            )))
-            .collect(),
-        ),
+        semantic_score(|algebra| {
+            semantics::ordered_collection_score(
+                algebra,
+                Score::EMAP,
+                Some(remainder_score),
+                pair_scores,
+                emap.connective_used,
+            )
+        }),
     )
 }
 
@@ -1523,7 +1489,6 @@ fn combine_eset(eset: &crate::rhoapi::ESet, mut kids: Vec<ScoredTerm<Par>>) -> S
     };
 
     let remainder_score = remainder_score(&eset.remainder);
-    let connective_used_score: i64 = flag_score(eset.connective_used);
     let (element_terms, element_scores) = split_scored_terms(canonical);
 
     construct_expr(
@@ -1533,18 +1498,15 @@ fn combine_eset(eset: &crate::rhoapi::ESet, mut kids: Vec<ScoredTerm<Par>>) -> S
             connective_used: eset.connective_used,
             remainder: eset.remainder.clone(),
         }),
-        Tree::Node(
-            vec![
-                Tree::<ScoreAtom>::create_leaf_from_i64(Score::ESET as i64),
-                remainder_score,
-            ]
-            .into_iter()
-            .chain(element_scores)
-            .chain(std::iter::once(Tree::<ScoreAtom>::create_leaf_from_i64(
-                connective_used_score,
-            )))
-            .collect(),
-        ),
+        semantic_score(|algebra| {
+            semantics::ordered_collection_score(
+                algebra,
+                Score::ESET,
+                Some(remainder_score),
+                element_scores,
+                eset.connective_used,
+            )
+        }),
     )
 }
 
@@ -1573,21 +1535,18 @@ fn combine_epathmap(pathmap: &EPathMap, kids: Vec<ScoredTerm<Par>>) -> ScoredTer
     // order to preserve.
     let (canonical, entry_scores) = canonicalize_scored_pathmap(pathmap, kids, true);
     let remainder_score = remainder_score(&canonical.remainder);
-    let connective_used_score: i64 = flag_score(canonical.connective_used);
+    let connective_used = canonical.connective_used;
 
     construct_expr(
         ExprInstance::EPathmapBody(canonical),
-        Tree::Node(
-            vec![
-                Tree::<ScoreAtom>::create_leaf_from_i64(Score::EPATHMAP as i64),
-                remainder_score,
-            ]
-            .into_iter()
-            .chain(entry_scores)
-            .chain(std::iter::once(Tree::<ScoreAtom>::create_leaf_from_i64(
-                connective_used_score,
-            )))
-            .collect(),
-        ),
+        semantic_score(|algebra| {
+            semantics::ordered_collection_score(
+                algebra,
+                Score::EPATHMAP,
+                Some(remainder_score),
+                entry_scores,
+                connective_used,
+            )
+        }),
     )
 }

@@ -99,6 +99,35 @@ fn owned_regions_slice_one_backing_allocation_and_match_borrowed_fields() {
 }
 
 #[test]
+fn owned_slot_order_cursor_matches_borrowed_slot_order_without_weakening_numeric_mode() {
+    // A generated oneof occupies the slot of its minimum arm tag, but an
+    // active arm may emit tag 3 before a later ordinary slot emits tag 1.
+    let message = vec![0x1a, 0x00, 0x0a, 0x00];
+
+    let mut borrowed = CanonicalFieldCursor::in_prost_slot_order(&message);
+    let mut owned =
+        CanonicalRegionFieldCursor::in_prost_slot_order(ProtobufRegion::from(message.clone()));
+    loop {
+        match (borrowed.next_field().unwrap(), owned.next_field().unwrap()) {
+            (Some(left), Some(right)) => assert_field_equivalent(left, right),
+            (None, None) => break,
+            (left, right) => panic!("slot-order cursor length mismatch: {left:?} {right:?}"),
+        }
+    }
+
+    let mut numeric = CanonicalRegionFieldCursor::new(ProtobufRegion::from(message));
+    assert_eq!(numeric.next_field().unwrap().unwrap().number, 3);
+    assert!(matches!(
+        numeric.next_field(),
+        Err(CanonicalProtobufError::DecreasingFieldOrder {
+            previous: 3,
+            current: 1,
+            ..
+        })
+    ));
+}
+
+#[test]
 fn cursor_rejects_every_representable_framing_and_order_failure_class() {
     let cases: &[(&[u8], fn(&CanonicalProtobufError) -> bool)] = &[
         (&[0x08, 0x80], |error| {

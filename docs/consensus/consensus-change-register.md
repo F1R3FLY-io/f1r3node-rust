@@ -2673,6 +2673,17 @@ trace, and post-state root. Migrating history or event identity additionally req
 consensus epoch and replay/preimage-complete state migration; a digest-only historical leaf cannot
 reconstruct an RCI2 image by itself. CBR-053 consequently remains `UNVERIFIED`.
 
+The subsequent byte-admission checkpoint is likewise preparatory. A generated-schema protobuf PDA
+now derives the same component scores and semantic defaults without constructing a typed AST, and
+focused differentials cover every component family and generated expression variant. Its
+PathMap-backed equality index also reproduces the existing collection rule for hostile keys that
+differ only in root `locally_free`: retain the first equal key representative and, for `EMap`, the
+greatest emitted value. No active validator, RhoPath key, history encoding, hash, COMM selector, or
+metering rule has changed. Nested EPathMap admission still replays reconstructed endpoint bytes, so
+neither byte-native production equivalence nor the intended resource bound is claimed. CBR-053
+remains `UNVERIFIED` until that replay is eliminated, the typed fallback is removed, and the full
+activation gates above pass.
+
 #### (b) How it may break consensus
 
 | Axis | Verdict |

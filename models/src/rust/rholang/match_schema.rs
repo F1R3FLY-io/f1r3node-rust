@@ -1,6 +1,8 @@
 use std::collections::BTreeMap;
 
-use super::match_schema_tables::{ParCursor, ParSequenceCursor};
+use super::match_schema_tables::{
+    ParCursor, ParSequenceCursor, PAR_PROTOBUF_REGION_PROGRAM, RHO_MATCH_REGISTRY,
+};
 use super::protobuf_schema::{ProtobufField, ProtobufKind};
 use crate::rhoapi::Par;
 use crate::rust::par_bag::ParBag;
@@ -58,6 +60,147 @@ pub struct RhoMatchProgram {
     pub type_name: &'static str,
     pub fields: &'static [RhoMatchField],
     pub protobuf_fields: &'static [ProtobufField],
+}
+
+/// The concrete protobuf payload selected for one generated field slot.
+///
+/// `Declared` is also used for an absent oneof slot, where the program carries
+/// the [`ProtobufKind::Oneof`] marker but no arm has appeared on the wire.
+/// `Oneof` records the selected arm and therefore its concrete protobuf kind.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ResolvedProtobufPayload {
+    Declared(ProtobufKind),
+    Oneof(&'static RhoMatchOneofVariant),
+}
+
+/// One actual protobuf tag resolved to its generated Prost field slot.
+///
+/// The fields stay private so callers cannot manufacture schema provenance;
+/// instances come only from [`resolve_protobuf_field`] or
+/// [`protobuf_field_at_slot`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ResolvedProtobufField {
+    slot: usize,
+    field: &'static RhoMatchField,
+    payload: ResolvedProtobufPayload,
+}
+
+impl ResolvedProtobufField {
+    #[inline]
+    pub(crate) const fn slot(self) -> usize { self.slot }
+
+    #[inline]
+    pub(crate) const fn field(self) -> &'static RhoMatchField { self.field }
+
+    #[inline]
+    pub(crate) const fn payload(self) -> ResolvedProtobufPayload { self.payload }
+
+    #[inline]
+    pub(crate) const fn protobuf_kind(self) -> ProtobufKind {
+        match self.payload {
+            ResolvedProtobufPayload::Declared(kind) => kind,
+            ResolvedProtobufPayload::Oneof(variant) => variant.protobuf_kind,
+        }
+    }
+
+    #[inline]
+    pub(crate) const fn repeated(self) -> bool {
+        matches!(
+            self.field.kind,
+            RhoMatchFieldKind::StringSequence
+                | RhoMatchFieldKind::BytesSequence
+                | RhoMatchFieldKind::MessageSequence(_)
+                | RhoMatchFieldKind::StringMessageMap(_)
+        )
+    }
+}
+
+/// Resolve one actual wire tag through the generated Prost slot program.
+///
+/// A oneof occupies the slot of its minimum declared tag, while the selected
+/// arm writes its own tag. Returning both the slot and selected arm keeps that
+/// distinction in one descriptor-derived authority.
+pub(crate) fn resolve_protobuf_field(
+    program: &'static RhoMatchProgram,
+    tag: u32,
+) -> Option<ResolvedProtobufField> {
+    debug_assert_eq!(program.fields.len(), program.protobuf_fields.len());
+    for (slot, (field, protobuf)) in program
+        .fields
+        .iter()
+        .zip(program.protobuf_fields)
+        .enumerate()
+    {
+        if let RhoMatchFieldKind::Oneof(variants) = field.kind {
+            if let Some(variant) = variants.iter().find(|variant| variant.tag == tag) {
+                return Some(ResolvedProtobufField {
+                    slot,
+                    field,
+                    payload: ResolvedProtobufPayload::Oneof(variant),
+                });
+            }
+        } else if protobuf.tag == tag {
+            return Some(ResolvedProtobufField {
+                slot,
+                field,
+                payload: ResolvedProtobufPayload::Declared(protobuf.kind),
+            });
+        }
+    }
+    None
+}
+
+/// Resolve one generated slot even when no field occurrence selected it.
+pub(crate) fn protobuf_field_at_slot(
+    program: &'static RhoMatchProgram,
+    slot: usize,
+) -> Option<ResolvedProtobufField> {
+    debug_assert_eq!(program.fields.len(), program.protobuf_fields.len());
+    Some(ResolvedProtobufField {
+        slot,
+        field: program.fields.get(slot)?,
+        payload: ResolvedProtobufPayload::Declared(program.protobuf_fields.get(slot)?.kind),
+    })
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum WireProgramLookupError {
+    ZeroTypeId,
+    OutsideRegistry,
+    DoesNotIndexSelf,
+}
+
+impl WireProgramLookupError {
+    pub(crate) const fn detail(self) -> &'static str {
+        match self {
+            Self::ZeroTypeId => "child type identifier is zero",
+            Self::OutsideRegistry => "child type identifier is outside the generated registry",
+            Self::DoesNotIndexSelf => "child type identifier does not index itself",
+        }
+    }
+}
+
+/// Resolve a generated type identifier to its raw-wire program.
+///
+/// The registry's `Par` row deliberately describes the resident native bag.
+/// Raw protobuf traversal must instead use the descriptor-accurate external
+/// program emitted from the same decoder field list.
+pub(crate) fn wire_program_by_type_id(
+    type_id: u16,
+) -> Result<&'static RhoMatchProgram, WireProgramLookupError> {
+    if type_id == 0 {
+        return Err(WireProgramLookupError::ZeroTypeId);
+    }
+    if type_id == PAR_PROTOBUF_REGION_PROGRAM.type_id {
+        return Ok(&PAR_PROTOBUF_REGION_PROGRAM);
+    }
+    let (_, program) = RHO_MATCH_REGISTRY
+        .get(usize::from(type_id) - 1)
+        .ok_or(WireProgramLookupError::OutsideRegistry)?;
+    if program.type_id != type_id {
+        return Err(WireProgramLookupError::DoesNotIndexSelf);
+    }
+    Ok(*program)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -252,5 +395,112 @@ impl<'a> Iterator for RhoPathCursor<'a> {
                 },
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod protobuf_resolution_tests {
+    use super::*;
+    use crate::rust::rholang::match_schema_tables::{
+        EXPR_RHO_MATCH_PROGRAM, PAR_RHO_MATCH_PROGRAM,
+    };
+
+    static ONEOF_VARIANTS: &[RhoMatchOneofVariant] = &[
+        RhoMatchOneofVariant {
+            tag: 3,
+            name: "boolean",
+            payload: RhoMatchPayloadKind::Bool,
+            protobuf_kind: ProtobufKind::Bool,
+        },
+        RhoMatchOneofVariant {
+            tag: 7,
+            name: "integer",
+            payload: RhoMatchPayloadKind::I32,
+            protobuf_kind: ProtobufKind::Int32,
+        },
+    ];
+    static MATCH_FIELDS: &[RhoMatchField] = &[
+        RhoMatchField {
+            tag: 1,
+            name: "items",
+            kind: RhoMatchFieldKind::BytesSequence,
+        },
+        RhoMatchField {
+            tag: 3,
+            name: "choice",
+            kind: RhoMatchFieldKind::Oneof(ONEOF_VARIANTS),
+        },
+    ];
+    static PROTOBUF_FIELDS: &[ProtobufField] = &[
+        ProtobufField {
+            tag: 1,
+            kind: ProtobufKind::RepeatedBytes,
+            name: "items",
+        },
+        ProtobufField {
+            tag: 3,
+            kind: ProtobufKind::Oneof,
+            name: "choice",
+        },
+    ];
+    static PROGRAM: RhoMatchProgram = RhoMatchProgram {
+        type_id: 999,
+        type_name: "ResolutionFixture",
+        fields: MATCH_FIELDS,
+        protobuf_fields: PROTOBUF_FIELDS,
+    };
+
+    #[test]
+    fn actual_tags_resolve_to_generated_slots_and_selected_oneof_payloads() {
+        let repeated = resolve_protobuf_field(&PROGRAM, 1).expect("ordinary field resolves");
+        assert_eq!(repeated.slot(), 0);
+        assert_eq!(repeated.field().name, "items");
+        assert_eq!(repeated.protobuf_kind(), ProtobufKind::RepeatedBytes);
+        assert!(repeated.repeated());
+
+        let oneof = resolve_protobuf_field(&PROGRAM, 7).expect("oneof arm resolves");
+        assert_eq!(oneof.slot(), 1);
+        assert_eq!(oneof.field().name, "choice");
+        assert_eq!(oneof.protobuf_kind(), ProtobufKind::Int32);
+        assert!(!oneof.repeated());
+        assert!(matches!(
+            oneof.payload(),
+            ResolvedProtobufPayload::Oneof(variant) if variant.name == "integer"
+        ));
+        assert!(resolve_protobuf_field(&PROGRAM, 2).is_none());
+    }
+
+    #[test]
+    fn absent_oneof_slot_retains_the_declared_marker_without_inventing_an_arm() {
+        let oneof = protobuf_field_at_slot(&PROGRAM, 1).expect("oneof slot exists");
+        assert_eq!(oneof.slot(), 1);
+        assert_eq!(oneof.protobuf_kind(), ProtobufKind::Oneof);
+        assert_eq!(
+            oneof.payload(),
+            ResolvedProtobufPayload::Declared(ProtobufKind::Oneof)
+        );
+        assert!(protobuf_field_at_slot(&PROGRAM, 2).is_none());
+    }
+
+    #[test]
+    fn type_lookup_substitutes_raw_wire_par_and_preserves_generated_registry_rows() {
+        let par = wire_program_by_type_id(PAR_RHO_MATCH_PROGRAM.type_id)
+            .expect("Par type identifier resolves");
+        assert!(std::ptr::eq(par, &PAR_PROTOBUF_REGION_PROGRAM));
+        assert!(!par.protobuf_fields.is_empty());
+        assert!(!std::ptr::eq(par, &PAR_RHO_MATCH_PROGRAM));
+
+        let expr = wire_program_by_type_id(EXPR_RHO_MATCH_PROGRAM.type_id)
+            .expect("generated Expr type identifier resolves");
+        assert!(std::ptr::eq(expr, &EXPR_RHO_MATCH_PROGRAM));
+
+        assert_eq!(
+            wire_program_by_type_id(0),
+            Err(WireProgramLookupError::ZeroTypeId)
+        );
+        assert_eq!(
+            wire_program_by_type_id(u16::MAX),
+            Err(WireProgramLookupError::OutsideRegistry)
+        );
     }
 }

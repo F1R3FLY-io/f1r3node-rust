@@ -9887,8 +9887,59 @@ general exact RPB3 path currently materializes a typed component, canonicalizes 
 it to compare the claimed score/body pair. Thus the present end-to-end admission bound is reusable
 $`O(L)`$ key scratch plus the stack-safe decoded component, regenerated key, canonicalization
 workspace, and output Bag—not merely key scratch plus output. A generated-schema byte-admission PDA
-that computes the authoritative canonical summary without an AST is required before claiming the
-intended $`O(L + K + D + W)`$ heap bound for key scratch, canonical summaries, PDA work, and output.
+now computes the authoritative canonical summary without an AST for the complete generated
+component schema, but it remains a shadow boundary. Its nested EPathMap arm still reconstructs each
+endpoint in a `Vec<u8>` and replays the endpoint through the legacy canonical-path validator. The
+production claim therefore remains withheld until a persistent path-state reducer and indexed
+EPM1/ACT/raw-protobuf continuations remove both endpoint reconstruction and replay. Only then can
+the intended $`O(L + K + D + W)`$ heap bound be claimed for key scratch, canonical summaries, PDA
+work, and output.
+
+The 2026-08-24 byte-admission continuation established the following measured foundation under
+zero-swap systemd scopes with `MemoryHigh=6G` and `MemoryMax=8G`:
+
+- 19/19 `ParConstruction` tests pass, including a 16,384-deep 256 KiB-stack construction gate;
+- 10/10 schema-driven protobuf-admission tests pass, including all nine component families, every
+  generated expression arm, hostile wire/default/oneof cases, nested map values, and depth 4,096;
+- 10/10 persistent canonical-path reducer tests pass, including depth 20,000 on a 64 KiB stack;
+- 8/8 persistent content/provenance-arena tests and 8/8 indexed-protobuf tests pass;
+- 21/21 EPM1/direct-ACT codec tests pass, including depth-4,096 topology walks and mutation
+  differentials against the reconstruction oracle; and
+- 2/2 semantic-`Par` identity tests pass.
+
+The differential exposed one previously unmodeled root-`locally_free` alias. Rholang `Par`
+equality ignores that root cache, while `ESet` and `EMap` canonicalization retain the first equal
+key representative; an `EMap` collision independently retains the greatest emitted value. The
+PathMap identity index now reproduces that two-stage behavior for every permutation and streams
+comparison bytes from the planned protobuf PDA. It does not build `Vec<Par>`, hash surrogates, or
+comparison buffers. The failed pre-repair log SHA-256 is
+`817cb19cbb5f9ec23b3a93dc390ec3d2cef72049e68d997b41437cf3d48bfb59`; the focused repair,
+19-test construction suite, and 19-case admission/identity logs have SHA-256 values
+`e805cbbdadbba05e27d497e70fc1f4f76a39a31500d2e9b2627f6b6f0cbf6d3d`,
+`1ea44d50dea02f97fedf87d1c1545b74f5ab5bf782a2615e72f163abaf46f8c2`, and
+`56cec93dfa8eba615cddddc3d8d1980fd7b952deaaeaeefec48ba8cfcc9b25e5`.
+The clean checkpoint reruns have SHA-256 values
+`55f17aabc6e32b9bccabd981bdcf91970ed8df1bf1cd3e9ec7494489b84eaede`
+(construction),
+`1aa4510a3babcb261813dbe69eb8b80c1b4d7d0556dfca332bdbb4de57303391`
+(protobuf admission),
+`08999c01dde38687dfad1832f0b001fcfca0b8634be47564cb376fbe704b8c6a`
+(path reducer),
+`6dcb012a0936b7412d698e9e092731f3c784e7dee7988280c82f8f5981526e0a`
+(persistent arena),
+`feb36a92660f0a95250d396f7eef070e74907a6b6ae2e928fc5141d1fe5d1397`
+(indexed protobuf),
+`ae26440db9d54f8e6bb4d83094593f312bf68805dc3753725d0dd5fbb7a6e529`
+(EPM1/direct ACT), and
+`5b648d88c53e24da00d32ce97ce64e032ac87a10f10034dc59b6c43d7238ab10`
+(semantic identity).
+
+A persistent content/provenance arena is also implemented and passes 8/8 focused tests plus
+`cargo check -p models`. Its immutable handles make checkpoints, slices, and concatenations
+constant-size; byte and provenance traversal uses explicit heap worklists. This is prerequisite
+evidence, not production activation: pgmcp progress rows 4824 and 4825 record the remaining
+indexed nested reducers, zero-replay counter gate, production swap, formal proof, and performance
+experiment as open P0 work.
 
 The focused executable gate contains twelve tests. It covers every schema family, the root-
 `locally_free` quotient, empty false/true connective separation, pairwise image/`Par` ordering,

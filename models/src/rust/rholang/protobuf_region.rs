@@ -24,9 +24,10 @@ use prost::bytes::Bytes;
 use prost::encoding::{encode_key, encode_varint, encoded_len_varint, key_len, WireType};
 
 use super::match_schema::{
-    RhoMatchField, RhoMatchFieldKind, RhoMatchOneofVariant, RhoMatchPayloadKind, RhoMatchProgram,
+    resolve_protobuf_field, wire_program_by_type_id, ResolvedProtobufPayload, RhoMatchFieldKind,
+    RhoMatchPayloadKind, RhoMatchProgram,
 };
-use super::match_schema_tables::{PAR_PROTOBUF_REGION_PROGRAM, RHO_MATCH_REGISTRY};
+use super::match_schema_tables::PAR_PROTOBUF_REGION_PROGRAM;
 use super::protobuf_cursor::{
     CanonicalByteRange, CanonicalProtobufError, CanonicalRegionField, CanonicalRegionFieldCursor,
     CanonicalWireType, ProtobufRegion,
@@ -214,8 +215,14 @@ impl Frame {
             FrameSchema::Message(program) => program.fields.len(),
             FrameSchema::MapEntry { .. } => 2,
         };
+        let fields = match schema {
+            FrameSchema::Message(_) => {
+                CanonicalRegionFieldCursor::in_prost_slot_order(region.clone())
+            }
+            FrameSchema::MapEntry { .. } => CanonicalRegionFieldCursor::new(region.clone()),
+        };
         Self {
-            fields: CanonicalRegionFieldCursor::new(region.clone()),
+            fields,
             region,
             schema,
             path_leaf,
@@ -333,70 +340,6 @@ impl ProtobufCutPlan {
     pub fn reconstructed_bytes(&self) -> Bytes { self.emit(EmitMode::Original) }
 }
 
-#[derive(Clone, Copy)]
-enum ResolvedField {
-    Regular {
-        index: usize,
-        field: &'static RhoMatchField,
-        protobuf_kind: ProtobufKind,
-    },
-    Oneof {
-        index: usize,
-        variant: &'static RhoMatchOneofVariant,
-    },
-}
-
-impl ResolvedField {
-    fn index(self) -> usize {
-        match self {
-            Self::Regular { index, .. } | Self::Oneof { index, .. } => index,
-        }
-    }
-
-    fn protobuf_kind(self) -> ProtobufKind {
-        match self {
-            Self::Regular { protobuf_kind, .. } => protobuf_kind,
-            Self::Oneof { variant, .. } => variant.protobuf_kind,
-        }
-    }
-
-    fn repeated(self) -> bool {
-        match self {
-            Self::Regular { field, .. } => matches!(
-                field.kind,
-                RhoMatchFieldKind::StringSequence
-                    | RhoMatchFieldKind::BytesSequence
-                    | RhoMatchFieldKind::MessageSequence(_)
-                    | RhoMatchFieldKind::StringMessageMap(_)
-            ),
-            Self::Oneof { .. } => false,
-        }
-    }
-}
-
-fn resolve_field(program: &'static RhoMatchProgram, tag: u32) -> Option<ResolvedField> {
-    debug_assert_eq!(program.fields.len(), program.protobuf_fields.len());
-    for (index, (field, protobuf)) in program
-        .fields
-        .iter()
-        .zip(program.protobuf_fields)
-        .enumerate()
-    {
-        if let RhoMatchFieldKind::Oneof(variants) = field.kind {
-            if let Some(variant) = variants.iter().find(|variant| variant.tag == tag) {
-                return Some(ResolvedField::Oneof { index, variant });
-            }
-        } else if protobuf.tag == tag {
-            return Some(ResolvedField::Regular {
-                index,
-                field,
-                protobuf_kind: protobuf.kind,
-            });
-        }
-    }
-    None
-}
-
 #[inline]
 const fn canonical_wire_type(wire: ProtobufWireType) -> CanonicalWireType {
     match wire {
@@ -407,9 +350,11 @@ const fn canonical_wire_type(wire: ProtobufWireType) -> CanonicalWireType {
     }
 }
 
-fn verify_wire(
+pub(crate) fn verify_protobuf_wire(
     type_name: &'static str,
-    field: &CanonicalRegionField,
+    field: u32,
+    offset: usize,
+    actual: CanonicalWireType,
     kind: ProtobufKind,
 ) -> Result<(), ProtobufRegionError> {
     let expected =
@@ -417,49 +362,31 @@ fn verify_wire(
             .map(canonical_wire_type)
             .ok_or(ProtobufRegionError::Schema {
                 type_name,
-                field: field.number,
+                field,
                 detail: "an unresolved oneof marker has no concrete wire type",
             })?;
-    if expected != field.wire_type {
+    if expected != actual {
         return Err(CanonicalProtobufError::UnexpectedWireType {
-            offset: field.encoded_range.start,
-            field: field.number,
+            offset,
+            field,
             expected,
-            actual: field.wire_type,
+            actual,
         }
         .into());
     }
     Ok(())
 }
 
-fn child_program(
+pub(crate) fn require_wire_program(
     owner: &'static RhoMatchProgram,
     field: u32,
     type_id: u16,
 ) -> Result<&'static RhoMatchProgram, ProtobufRegionError> {
-    let (_, program) = RHO_MATCH_REGISTRY
-        .get(
-            usize::from(type_id)
-                .checked_sub(1)
-                .ok_or(ProtobufRegionError::Schema {
-                    type_name: owner.type_name,
-                    field,
-                    detail: "child type identifier is zero",
-                })?,
-        )
-        .ok_or(ProtobufRegionError::Schema {
-            type_name: owner.type_name,
-            field,
-            detail: "child type identifier is outside the generated registry",
-        })?;
-    if program.type_id != type_id {
-        return Err(ProtobufRegionError::Schema {
-            type_name: owner.type_name,
-            field,
-            detail: "child type identifier does not index itself",
-        });
-    }
-    Ok(program)
+    wire_program_by_type_id(type_id).map_err(|error| ProtobufRegionError::Schema {
+        type_name: owner.type_name,
+        field,
+        detail: error.detail(),
+    })
 }
 
 struct Builder {
@@ -531,7 +458,7 @@ impl Builder {
                 .pieces
                 .push(Piece::Par { tag: wire_tag, cut });
         } else {
-            let program = child_program(owner, path_tag, type_id)?;
+            let program = require_wire_program(owner, path_tag, type_id)?;
             frames.push(Frame::new(
                 payload,
                 FrameSchema::Message(program),
@@ -632,7 +559,7 @@ fn process_message_field(
     occurrence: u32,
     field: CanonicalRegionField,
 ) -> Result<(), ProtobufRegionError> {
-    let Some(resolved) = resolve_field(program, field.number) else {
+    let Some(resolved) = resolve_protobuf_field(program, field.number) else {
         let piece = builder.borrowed(
             &frames
                 .last()
@@ -648,98 +575,103 @@ fn process_message_field(
         return Ok(());
     };
 
-    verify_wire(program.type_name, &field, resolved.protobuf_kind())?;
+    verify_protobuf_wire(
+        program.type_name,
+        field.number,
+        field.encoded_range.start,
+        field.wire_type,
+        resolved.protobuf_kind(),
+    )?;
     mark_singular(
         frames.last_mut().expect("the message owner frame exists"),
-        resolved.index(),
+        resolved.slot(),
         resolved.repeated(),
         field.number,
     )?;
 
-    match resolved {
-        ResolvedField::Regular {
-            field: schema_field,
-            protobuf_kind,
-            ..
-        } => match (schema_field.kind, protobuf_kind) {
-            (RhoMatchFieldKind::OptionalMessage(type_id), ProtobufKind::Message)
-            | (RhoMatchFieldKind::MessageSequence(type_id), ProtobufKind::RepeatedMessage) => {
-                let tag = field.number;
-                let payload = field.into_length_delimited()?;
-                let retain_empty_shell =
-                    matches!(schema_field.kind, RhoMatchFieldKind::OptionalMessage(_));
-                builder.add_child(
-                    frames,
-                    payload,
-                    program,
-                    tag,
-                    tag,
-                    occurrence,
-                    ProtobufRegionStepKind::Message,
-                    type_id,
-                    path_leaf,
-                    retain_empty_shell,
-                )?;
-            }
-            (
-                RhoMatchFieldKind::StringMessageMap(value_type_id),
-                ProtobufKind::MapStringMessage,
-            ) => {
-                let outer_tag = field.number;
-                let payload = field.into_length_delimited()?;
-                frames.push(Frame::new(
-                    payload,
-                    FrameSchema::MapEntry {
-                        owner_type_id: program.type_id,
-                        outer_tag,
+    match resolved.payload() {
+        ResolvedProtobufPayload::Declared(protobuf_kind) => {
+            let schema_field = resolved.field();
+            match (schema_field.kind, protobuf_kind) {
+                (RhoMatchFieldKind::OptionalMessage(type_id), ProtobufKind::Message)
+                | (RhoMatchFieldKind::MessageSequence(type_id), ProtobufKind::RepeatedMessage) => {
+                    let tag = field.number;
+                    let payload = field.into_length_delimited()?;
+                    let retain_empty_shell =
+                        matches!(schema_field.kind, RhoMatchFieldKind::OptionalMessage(_));
+                    builder.add_child(
+                        frames,
+                        payload,
+                        program,
+                        tag,
+                        tag,
                         occurrence,
-                        value_type_id,
-                    },
-                    path_leaf,
-                    Some(outer_tag),
-                    false,
-                ));
-                builder.stats.max_frames = builder.stats.max_frames.max(frames.len());
-            }
-            (RhoMatchFieldKind::PathMap, ProtobufKind::EPathMapSnapshot) => {
-                let tag = field.number;
-                let payload = field.into_length_delimited()?;
-                builder.add_epathmap(frames, payload, program, tag, occurrence, path_leaf)?;
-            }
-            (
-                RhoMatchFieldKind::Bool
-                | RhoMatchFieldKind::I32
-                | RhoMatchFieldKind::U32
-                | RhoMatchFieldKind::I64
-                | RhoMatchFieldKind::U64
-                | RhoMatchFieldKind::Bytes
-                | RhoMatchFieldKind::String
-                | RhoMatchFieldKind::StringSequence
-                | RhoMatchFieldKind::BytesSequence,
-                _,
-            ) => {
-                let piece = builder.borrowed(
-                    &frames
-                        .last()
+                        ProtobufRegionStepKind::Message,
+                        type_id,
+                        path_leaf,
+                        retain_empty_shell,
+                    )?;
+                }
+                (
+                    RhoMatchFieldKind::StringMessageMap(value_type_id),
+                    ProtobufKind::MapStringMessage,
+                ) => {
+                    let outer_tag = field.number;
+                    let payload = field.into_length_delimited()?;
+                    frames.push(Frame::new(
+                        payload,
+                        FrameSchema::MapEntry {
+                            owner_type_id: program.type_id,
+                            outer_tag,
+                            occurrence,
+                            value_type_id,
+                        },
+                        path_leaf,
+                        Some(outer_tag),
+                        false,
+                    ));
+                    builder.stats.max_frames = builder.stats.max_frames.max(frames.len());
+                }
+                (RhoMatchFieldKind::PathMap, ProtobufKind::EPathMapSnapshot) => {
+                    let tag = field.number;
+                    let payload = field.into_length_delimited()?;
+                    builder.add_epathmap(frames, payload, program, tag, occurrence, path_leaf)?;
+                }
+                (
+                    RhoMatchFieldKind::Bool
+                    | RhoMatchFieldKind::I32
+                    | RhoMatchFieldKind::U32
+                    | RhoMatchFieldKind::I64
+                    | RhoMatchFieldKind::U64
+                    | RhoMatchFieldKind::Bytes
+                    | RhoMatchFieldKind::String
+                    | RhoMatchFieldKind::StringSequence
+                    | RhoMatchFieldKind::BytesSequence,
+                    _,
+                ) => {
+                    let piece = builder.borrowed(
+                        &frames
+                            .last()
+                            .expect("the message owner frame exists")
+                            .region,
+                        field.encoded_range,
+                    );
+                    frames
+                        .last_mut()
                         .expect("the message owner frame exists")
-                        .region,
-                    field.encoded_range,
-                );
-                frames
-                    .last_mut()
-                    .expect("the message owner frame exists")
-                    .pieces
-                    .push(piece);
+                        .pieces
+                        .push(piece);
+                }
+                _ => {
+                    return Err(ProtobufRegionError::Schema {
+                        type_name: program.type_name,
+                        field: field.number,
+                        detail: "structural and protobuf field kinds disagree",
+                    });
+                }
             }
-            _ => {
-                return Err(ProtobufRegionError::Schema {
-                    type_name: program.type_name,
-                    field: field.number,
-                    detail: "structural and protobuf field kinds disagree",
-                });
-            }
-        },
-        ResolvedField::Oneof { variant, .. } => match variant.payload {
+        }
+        ResolvedProtobufPayload::Oneof(variant) => match variant.payload {
             RhoMatchPayloadKind::Message(type_id) => {
                 let tag = field.number;
                 let payload = field.into_length_delimited()?;
@@ -781,11 +713,6 @@ fn process_message_field(
     Ok(())
 }
 
-fn program_by_type_id(type_id: u16) -> Option<&'static RhoMatchProgram> {
-    let (_, program) = RHO_MATCH_REGISTRY.get(usize::from(type_id).checked_sub(1)?)?;
-    (program.type_id == type_id).then_some(*program)
-}
-
 fn process_map_entry_field(
     builder: &mut Builder,
     frames: &mut Vec<Frame>,
@@ -796,14 +723,21 @@ fn process_map_entry_field(
     parent_path: Option<usize>,
     field: CanonicalRegionField,
 ) -> Result<(), ProtobufRegionError> {
-    let owner = program_by_type_id(owner_type_id).ok_or(ProtobufRegionError::Schema {
-        type_name: "protobuf map entry",
-        field: field.number,
-        detail: "map owner type identifier is outside the generated registry",
-    })?;
+    let owner =
+        wire_program_by_type_id(owner_type_id).map_err(|_| ProtobufRegionError::Schema {
+            type_name: "protobuf map entry",
+            field: field.number,
+            detail: "map owner type identifier is outside the generated registry",
+        })?;
     match field.number {
         1 => {
-            verify_wire("protobuf map entry", &field, ProtobufKind::String)?;
+            verify_protobuf_wire(
+                "protobuf map entry",
+                field.number,
+                field.encoded_range.start,
+                field.wire_type,
+                ProtobufKind::String,
+            )?;
             mark_singular(
                 frames.last_mut().expect("the map entry frame exists"),
                 0,
@@ -821,7 +755,13 @@ fn process_map_entry_field(
                 .push(piece);
         }
         2 => {
-            verify_wire("protobuf map entry", &field, ProtobufKind::Message)?;
+            verify_protobuf_wire(
+                "protobuf map entry",
+                field.number,
+                field.encoded_range.start,
+                field.wire_type,
+                ProtobufKind::Message,
+            )?;
             mark_singular(
                 frames.last_mut().expect("the map entry frame exists"),
                 1,

@@ -1687,6 +1687,50 @@ decoder, normalize only the structural channel frame's root metadata, preserve e
 history/bincode hash through an explicit bridge, and prove the complete-channel theorem rather than
 only the identity-suffix theorem.
 
+### J-022 — 2026-08-24: byte-native RPB3 admission requires persistent obligation state
+
+Question: Can the RCI2 decoder replace its typed RPB3 admission bridge with generated-schema byte
+validation while retaining exact sorter semantics and linear shared-prefix behavior for nested
+EPathMap keys?
+
+Status: IMPLEMENTED AND MEASURED FOUNDATION; PRODUCTION CUTOVER OPEN. The work is reachable from
+pgmcp `rspace-canonical-channel-image` through child `rpb3-byte-native-canonical-admission` and
+grandchild `rpb3-persistent-nested-admission`; progress rows 4824 and 4825 record the exact open
+boundary.
+
+The shadow protobuf PDA now validates canonical Prost framing and derives canonical score,
+semantic-default, completeness, and canonical-path-stability summaries for all nine top-level
+component families and every generated `Expr` arm. Its algebra is shared with `ParConstruction`
+and the resident sorter rather than copied as a second table. Focused zero-swap scopes pass 10/10
+protobuf-admission tests, 19/19 construction tests, 10/10 canonical-path reducer tests, 8/8
+persistent-arena tests, 8/8 indexed-protobuf tests, 21/21 EPM1/direct-ACT codec tests, and 2/2
+semantic-identity tests.
+
+One adversarial differential falsified the first equality-index hypothesis. Sorting complete
+`EMap` pairs and keeping the last semantic-key alias is not equivalent when aliases differ only in
+root `locally_free`, because `Par` equality ignores that cache. The resident two-stage rule retains
+the first equal key representative, selects the greatest emitted value on an `EMap` collision, and
+then totally sorts surviving pairs. The corrected PathMap index reproduces that behavior for all
+six permutations. It streams semantic identity, value, and pair bytes from the planned protobuf
+PDA; no `Vec<Par>`, hash surrogate, comparison buffer, or occurrence expansion is introduced.
+
+The remaining slope is localized and measured by source inspection rather than concealed by the
+passing corpus. The EPathMap frame still keeps `path: Vec<u8>` and calls the legacy complete-path
+validator at every value endpoint. A shared-prefix comb can therefore copy and replay a
+quadratic number of path bytes. The selected replacement is a persistent, provenance-aware byte
+arena plus a pure canonical-path state reducer and indexed EPM1/ACT/raw-protobuf continuations.
+The arena's immutable handles are constant-size checkpoints; append copies at most one 32-byte
+tail block, slices and concatenations do not copy bytes, and traversal is iterative. Its 8/8
+focused tests include branch restore, distinct provenance over shared content, linear node growth,
+20,000-element left-deep traversal on a 64 KiB stack, and cross-block nested slicing.
+
+Decision: do not activate the shadow validator and do not retain endpoint replay as a fallback.
+Production cutover requires zero reconstructed-key bytes and zero endpoint replays, byte-native
+nested obligations with exact physical provenance, complete legacy-validator differential and
+hostile mutation corpus, formal cursor/equivalence proofs with failing mutants, and a capped
+geometric time/allocation/RSS experiment. Until those gates pass, RCI2 and RhoPathV2 remain shadow
+formats and no performance or consensus-neutrality conclusion is accepted.
+
 ## Open hypotheses and required closure evidence
 
 | ID | Hypothesis | Required evidence before acceptance | Status |

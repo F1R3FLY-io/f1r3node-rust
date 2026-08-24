@@ -2,6 +2,8 @@
 
 use shared::rust::ByteString;
 
+pub use crate::rust::rholang::canonical_semantics::Score;
+
 /**
  * Sorts the insides of the Par and ESet/EMap of the rholangADT
  *
@@ -696,89 +698,6 @@ impl<T: EmittedBytes> ScoredTerm<T> {
  *
  * The general order is ground, vars, arithmetic, comparisons, logical, and then others
  */
-pub struct Score;
-
-impl Score {
-    // For things that are truly optional
-    pub const ABSENT: i32 = 0;
-
-    // Ground types
-    pub const BOOL: i32 = 1;
-    pub const INT: i32 = 2;
-    pub const STRING: i32 = 3;
-    pub const URI: i32 = 4;
-    pub const PRIVATE: i32 = 5;
-    pub const ELIST: i32 = 6;
-    pub const ETUPLE: i32 = 7;
-    pub const ESET: i32 = 8;
-    pub const EMAP: i32 = 9;
-    pub const DEPLOYER_AUTH: i32 = 10;
-    pub const DEPLOY_ID: i32 = 11;
-    pub const SYS_AUTH_TOKEN: i32 = 12;
-    pub const EPATHMAP: i32 = 13;
-    pub const DOUBLE: i32 = 14;
-    pub const BIG_INT: i32 = 15;
-    pub const BIG_RAT: i32 = 16;
-    pub const FIXED_POINT: i32 = 17;
-
-    // Vars
-    pub const BOUND_VAR: i32 = 50;
-    pub const FREE_VAR: i32 = 51;
-    pub const WILDCARD: i32 = 52;
-    pub const REMAINDER: i32 = 53;
-
-    // Expr
-    pub const EVAR: i32 = 100;
-    pub const ENEG: i32 = 101;
-    pub const EMULT: i32 = 102;
-    pub const EDIV: i32 = 103;
-    pub const EPLUS: i32 = 104;
-    pub const EMINUS: i32 = 105;
-    pub const ELT: i32 = 106;
-    pub const ELTE: i32 = 107;
-    pub const EGT: i32 = 108;
-    pub const EGTE: i32 = 109;
-    pub const EEQ: i32 = 110;
-    pub const ENEQ: i32 = 111;
-    pub const ENOT: i32 = 112;
-    pub const EAND: i32 = 113;
-    pub const EOR: i32 = 114;
-    pub const EMETHOD: i32 = 115;
-    pub const EBYTEARR: i32 = 116;
-    pub const EEVAL: i32 = 117;
-    pub const EMATCHES: i32 = 118;
-    pub const EPERCENT: i32 = 119;
-    pub const EPLUSPLUS: i32 = 120;
-    pub const EMINUSMINUS: i32 = 121;
-    pub const EMOD: i32 = 122;
-
-    // Other
-    pub const QUOTE: i32 = 203;
-    pub const CHAN_VAR: i32 = 204;
-
-    pub const SEND: i32 = 300;
-    pub const RECEIVE: i32 = 301;
-    pub const NEW: i32 = 303;
-    pub const MATCH: i32 = 304;
-    pub const BUNDLE_EQUIV: i32 = 305;
-    pub const BUNDLE_READ: i32 = 306;
-    pub const BUNDLE_WRITE: i32 = 307;
-    pub const BUNDLE_READ_WRITE: i32 = 308;
-    pub const IF: i32 = 309;
-
-    pub const CONNECTIVE_NOT: i32 = 400;
-    pub const CONNECTIVE_AND: i32 = 401;
-    pub const CONNECTIVE_OR: i32 = 402;
-    pub const CONNECTIVE_VARREF: i32 = 403;
-    pub const CONNECTIVE_BOOL: i32 = 404;
-    pub const CONNECTIVE_INT: i32 = 405;
-    pub const CONNECTIVE_STRING: i32 = 406;
-    pub const CONNECTIVE_URI: i32 = 407;
-    pub const CONNECTIVE_BYTEARRAY: i32 = 408;
-
-    pub const PAR: i32 = 999;
-}
-
 #[cfg(test)]
 mod order_key_tests {
     use super::*;

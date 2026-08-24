@@ -633,19 +633,37 @@ impl Par {
     /// canonical Bag form and therefore needs only an O(1) CoW clone.
     pub(crate) fn canonical_score(&self) -> Tree<ScoreAtom> {
         let mut children = Vec::new();
-        self.components.append_family_scores::<Send>(&mut children);
-        self.components
-            .append_family_scores::<Receive>(&mut children);
-        self.components.append_family_scores::<Expr>(&mut children);
-        self.components.append_family_scores::<New>(&mut children);
-        self.components.append_family_scores::<Match>(&mut children);
-        self.components
-            .append_family_scores::<Bundle>(&mut children);
-        self.components
-            .append_family_scores::<Connective>(&mut children);
-        self.components
-            .append_family_scores::<GUnforgeable>(&mut children);
-        self.components.append_family_scores::<If>(&mut children);
+        for tag in crate::rust::rholang::canonical_semantics::PAR_SCORE_TAGS {
+            match tag {
+                super::par_bag::ParComponentTag::Send => {
+                    self.components.append_family_scores::<Send>(&mut children)
+                }
+                super::par_bag::ParComponentTag::Receive => self
+                    .components
+                    .append_family_scores::<Receive>(&mut children),
+                super::par_bag::ParComponentTag::Expr => {
+                    self.components.append_family_scores::<Expr>(&mut children)
+                }
+                super::par_bag::ParComponentTag::New => {
+                    self.components.append_family_scores::<New>(&mut children)
+                }
+                super::par_bag::ParComponentTag::Match => {
+                    self.components.append_family_scores::<Match>(&mut children)
+                }
+                super::par_bag::ParComponentTag::Bundle => self
+                    .components
+                    .append_family_scores::<Bundle>(&mut children),
+                super::par_bag::ParComponentTag::Connective => self
+                    .components
+                    .append_family_scores::<Connective>(&mut children),
+                super::par_bag::ParComponentTag::GUnforgeable => self
+                    .components
+                    .append_family_scores::<GUnforgeable>(&mut children),
+                super::par_bag::ParComponentTag::If => {
+                    self.components.append_family_scores::<If>(&mut children)
+                }
+            }
+        }
         children.push(Tree::<ScoreAtom>::create_leaf_from_i64(i64::from(
             self.connective_used,
         )));

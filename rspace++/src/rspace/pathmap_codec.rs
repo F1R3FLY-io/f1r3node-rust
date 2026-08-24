@@ -320,6 +320,796 @@ impl<'a> CompactTrie<'a> {
     }
 }
 
+#[derive(Clone)]
+enum DirectBranchBytes {
+    Sparse(Range<usize>),
+    Dense { range: Range<usize>, len: usize },
+}
+
+impl DirectBranchBytes {
+    fn len(&self) -> usize {
+        match self {
+            Self::Sparse(range) => range.len(),
+            Self::Dense { len, .. } => *len,
+        }
+    }
+
+    fn byte_with_source(&self, bytes: &[u8], index: usize) -> (u8, usize) {
+        match self {
+            Self::Sparse(range) => {
+                let offset = range.start + index;
+                (bytes[offset], offset)
+            }
+            Self::Dense { range, .. } => {
+                let mut remaining = index;
+                for (word, mask) in bytes[range.clone()].iter().copied().enumerate() {
+                    for bit in 0..8u8 {
+                        if mask & (1 << bit) == 0 {
+                            continue;
+                        }
+                        if remaining == 0 {
+                            return ((word * 8 + usize::from(bit)) as u8, range.start + word);
+                        }
+                        remaining -= 1;
+                    }
+                }
+                unreachable!("validated dense ACT branch index")
+            }
+        }
+    }
+
+    fn byte(&self, bytes: &[u8], index: usize) -> u8 { self.byte_with_source(bytes, index).0 }
+}
+
+#[derive(Clone)]
+enum DirectActEdge {
+    Branch {
+        first_child: Option<usize>,
+        child_bytes: DirectBranchBytes,
+    },
+    Line {
+        child: Option<usize>,
+        suffix: Range<usize>,
+        encoded_range: Range<usize>,
+    },
+}
+
+#[derive(Clone)]
+struct DirectActNode {
+    encoded_len: usize,
+    value: Option<u64>,
+    edge: DirectActEdge,
+}
+
+#[derive(Clone)]
+struct DirectChildren {
+    first_child: Option<usize>,
+    child_bytes: DirectBranchBytes,
+    parent_id: usize,
+}
+
+impl DirectChildren {
+    fn empty(parent_id: usize) -> Self {
+        Self {
+            first_child: None,
+            child_bytes: DirectBranchBytes::Sparse(0..0),
+            parent_id,
+        }
+    }
+
+    fn len(&self) -> usize { self.child_bytes.len() }
+}
+
+#[derive(Clone)]
+struct DirectSemanticNode {
+    id: usize,
+    encoded_len: usize,
+    value: Option<u64>,
+    children: DirectChildren,
+    line: Option<ActLineData>,
+    wrapper: Option<(usize, usize)>,
+}
+
+struct DirectReplayFrame {
+    node: DirectSemanticNode,
+    next_child: usize,
+    next_child_id: Option<usize>,
+}
+
+struct DirectWalkFrame {
+    node: DirectSemanticNode,
+    path_len: usize,
+    next_child: usize,
+    next_child_id: Option<usize>,
+    entered: bool,
+}
+
+#[derive(Clone, Copy)]
+enum DirectTopologyStage {
+    Value,
+    LineEdge,
+    LineValue,
+    Children,
+    Leave,
+}
+
+struct DirectTopologyFrame {
+    node: DirectSemanticNode,
+    next_child: usize,
+    next_child_id: Option<usize>,
+    line_index: usize,
+    leave_index: usize,
+    stage: DirectTopologyStage,
+}
+
+pub struct CanonicalCompactTrieEndpoint<'a> {
+    pub path: &'a [u8],
+    pub value: Option<u64>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CanonicalCompactTrieTopologyEvent {
+    Value {
+        value: Option<u64>,
+        source_offset: usize,
+    },
+    Edge {
+        byte: u8,
+        source_offset: usize,
+    },
+    Leave {
+        source_offset: usize,
+    },
+}
+
+pub struct CanonicalCompactTrieTopologyCursor<B> {
+    bytes: B,
+    root_id: usize,
+    empty: bool,
+    stack: Vec<DirectTopologyFrame>,
+}
+
+impl<'a> CanonicalCompactTrieTopologyCursor<&'a [u8]> {
+    pub fn new(bytes: &'a [u8]) -> Result<Self, CompactTrieError> { Self::from_backing(bytes) }
+}
+
+impl<B> CanonicalCompactTrieTopologyCursor<B>
+where B: AsRef<[u8]>
+{
+    pub fn from_backing(bytes: B) -> Result<Self, CompactTrieError> {
+        let (root_id, empty) = validate_direct_canonical_act(bytes.as_ref())?;
+        let mut cursor = Self {
+            bytes,
+            root_id,
+            empty,
+            stack: Vec::new(),
+        };
+        cursor.rewind();
+        Ok(cursor)
+    }
+
+    pub const fn is_empty(&self) -> bool { self.empty }
+
+    pub fn rewind(&mut self) {
+        self.stack.clear();
+        let root = direct_semantic_node(self.bytes.as_ref(), self.root_id)
+            .expect("canonical ACT root remains valid while borrowed");
+        self.stack.push(DirectTopologyFrame {
+            next_child_id: root.children.first_child,
+            node: root,
+            next_child: 0,
+            line_index: 0,
+            leave_index: 0,
+            stage: DirectTopologyStage::Value,
+        });
+    }
+
+    pub fn next_event(&mut self) -> Option<CanonicalCompactTrieTopologyEvent> {
+        enum Action {
+            Event(CanonicalCompactTrieTopologyEvent),
+            Descend {
+                event: CanonicalCompactTrieTopologyEvent,
+                child: DirectSemanticNode,
+            },
+            Pop(CanonicalCompactTrieTopologyEvent),
+            Continue,
+        }
+
+        loop {
+            let action = {
+                let frame = self.stack.last_mut()?;
+                match frame.stage {
+                    DirectTopologyStage::Value => {
+                        frame.stage = if frame.node.line.is_some() {
+                            DirectTopologyStage::LineEdge
+                        } else {
+                            DirectTopologyStage::Children
+                        };
+                        Action::Event(CanonicalCompactTrieTopologyEvent::Value {
+                            value: frame
+                                .node
+                                .line
+                                .is_none()
+                                .then_some(frame.node.value)
+                                .flatten(),
+                            source_offset: frame.node.id,
+                        })
+                    }
+                    DirectTopologyStage::LineEdge => {
+                        let line = frame
+                            .node
+                            .line
+                            .as_ref()
+                            .expect("line stage has canonical line data");
+                        let source_offset = line.suffix.start + frame.line_index;
+                        let byte = self.bytes.as_ref()[source_offset];
+                        frame.stage = DirectTopologyStage::LineValue;
+                        Action::Event(CanonicalCompactTrieTopologyEvent::Edge {
+                            byte,
+                            source_offset,
+                        })
+                    }
+                    DirectTopologyStage::LineValue => {
+                        let line = frame
+                            .node
+                            .line
+                            .as_ref()
+                            .expect("line stage has canonical line data");
+                        let line_offset = line.suffix.start + frame.line_index;
+                        let final_value = frame.line_index + 1 == line.suffix.len();
+                        let value = final_value.then_some(frame.node.value).flatten();
+                        let source_offset = if value.is_some() {
+                            frame.node.wrapper.map_or(frame.node.id, |(id, _)| id)
+                        } else {
+                            line_offset
+                        };
+                        frame.line_index += 1;
+                        frame.stage = if frame.line_index < line.suffix.len() {
+                            DirectTopologyStage::LineEdge
+                        } else {
+                            DirectTopologyStage::Children
+                        };
+                        Action::Event(CanonicalCompactTrieTopologyEvent::Value {
+                            value,
+                            source_offset,
+                        })
+                    }
+                    DirectTopologyStage::Children => {
+                        if frame.next_child == frame.node.children.len() {
+                            frame.stage = DirectTopologyStage::Leave;
+                            Action::Continue
+                        } else {
+                            let child_id = frame
+                                .next_child_id
+                                .expect("canonical ACT child sequence remains complete");
+                            let child = parse_direct_act_node(self.bytes.as_ref(), child_id)
+                                .expect("canonical ACT child remains valid while borrowed");
+                            let (byte, source_offset) = frame
+                                .node
+                                .children
+                                .child_bytes
+                                .byte_with_source(self.bytes.as_ref(), frame.next_child);
+                            frame.next_child += 1;
+                            frame.next_child_id = (frame.next_child < frame.node.children.len())
+                                .then(|| child_id + child.encoded_len);
+                            let child = direct_semantic_node(self.bytes.as_ref(), child_id)
+                                .expect("canonical ACT child remains valid while borrowed");
+                            Action::Descend {
+                                event: CanonicalCompactTrieTopologyEvent::Edge {
+                                    byte,
+                                    source_offset,
+                                },
+                                child,
+                            }
+                        }
+                    }
+                    DirectTopologyStage::Leave => {
+                        let line_len = frame.node.line.as_ref().map_or(0, |line| line.suffix.len());
+                        let source_offset = if frame.leave_index < line_len {
+                            frame
+                                .node
+                                .line
+                                .as_ref()
+                                .expect("line leave has canonical line data")
+                                .suffix
+                                .end -
+                                1 -
+                                frame.leave_index
+                        } else {
+                            frame.node.id
+                        };
+                        frame.leave_index += 1;
+                        let event = CanonicalCompactTrieTopologyEvent::Leave { source_offset };
+                        if frame.leave_index == line_len + 1 {
+                            Action::Pop(event)
+                        } else {
+                            Action::Event(event)
+                        }
+                    }
+                }
+            };
+
+            match action {
+                Action::Event(event) => return Some(event),
+                Action::Descend { event, child } => {
+                    self.stack.push(DirectTopologyFrame {
+                        next_child_id: child.children.first_child,
+                        node: child,
+                        next_child: 0,
+                        line_index: 0,
+                        leave_index: 0,
+                        stage: DirectTopologyStage::Value,
+                    });
+                    return Some(event);
+                }
+                Action::Pop(event) => {
+                    self.stack.pop();
+                    return Some(event);
+                }
+                Action::Continue => {}
+            }
+        }
+    }
+}
+
+pub struct CanonicalCompactTrieCursor<B> {
+    bytes: B,
+    root_id: usize,
+    empty: bool,
+    stack: Vec<DirectWalkFrame>,
+    path: Vec<u8>,
+}
+
+impl<'a> CanonicalCompactTrieCursor<&'a [u8]> {
+    pub fn new(bytes: &'a [u8]) -> Result<Self, CompactTrieError> { Self::from_backing(bytes) }
+}
+
+impl<B> CanonicalCompactTrieCursor<B>
+where B: AsRef<[u8]>
+{
+    pub fn from_backing(bytes: B) -> Result<Self, CompactTrieError> {
+        let (root_id, empty) = validate_direct_canonical_act(bytes.as_ref())?;
+        let mut cursor = Self {
+            bytes,
+            root_id,
+            empty,
+            stack: Vec::new(),
+            path: Vec::new(),
+        };
+        cursor.rewind();
+        Ok(cursor)
+    }
+
+    pub const fn is_empty(&self) -> bool { self.empty }
+
+    pub fn rewind(&mut self) {
+        self.path.clear();
+        self.stack.clear();
+        let root = direct_semantic_node(self.bytes.as_ref(), self.root_id)
+            .expect("canonical ACT root remains valid while borrowed");
+        let next_child_id = root.children.first_child;
+        self.stack.push(DirectWalkFrame {
+            node: root,
+            path_len: 0,
+            next_child: 0,
+            next_child_id,
+            entered: false,
+        });
+    }
+
+    pub fn next_endpoint(&mut self) -> Option<CanonicalCompactTrieEndpoint<'_>> {
+        self.next_endpoint_matching(false)
+    }
+
+    pub fn next_value_endpoint(&mut self) -> Option<CanonicalCompactTrieEndpoint<'_>> {
+        self.next_endpoint_matching(true)
+    }
+
+    fn next_endpoint_matching(
+        &mut self,
+        value_only: bool,
+    ) -> Option<CanonicalCompactTrieEndpoint<'_>> {
+        enum Action {
+            Yield(Option<u64>),
+            Pop(usize),
+            Push {
+                child_id: usize,
+                edge: u8,
+                path_len: usize,
+            },
+            Continue,
+        }
+
+        loop {
+            let action = {
+                let frame = self.stack.last_mut()?;
+                if !frame.entered {
+                    frame.entered = true;
+                    if let Some(line) = &frame.node.line {
+                        self.path
+                            .extend_from_slice(&self.bytes.as_ref()[line.suffix.clone()]);
+                    }
+                    if frame.node.value.is_some() || frame.node.children.len() == 0 {
+                        if !value_only || frame.node.value.is_some() {
+                            Action::Yield(frame.node.value)
+                        } else {
+                            Action::Continue
+                        }
+                    } else {
+                        Action::Continue
+                    }
+                } else if frame.next_child == frame.node.children.len() {
+                    Action::Pop(frame.path_len)
+                } else {
+                    let child_id = frame
+                        .next_child_id
+                        .expect("canonical ACT child sequence remains complete");
+                    let child = parse_direct_act_node(self.bytes.as_ref(), child_id)
+                        .expect("canonical ACT child remains valid while borrowed");
+                    let edge = frame
+                        .node
+                        .children
+                        .child_bytes
+                        .byte(self.bytes.as_ref(), frame.next_child);
+                    frame.next_child += 1;
+                    frame.next_child_id = (frame.next_child < frame.node.children.len())
+                        .then(|| child_id + child.encoded_len);
+                    Action::Push {
+                        child_id,
+                        edge,
+                        path_len: self.path.len(),
+                    }
+                }
+            };
+
+            match action {
+                Action::Yield(value) => {
+                    return Some(CanonicalCompactTrieEndpoint {
+                        path: &self.path,
+                        value,
+                    });
+                }
+                Action::Pop(path_len) => {
+                    self.stack.pop();
+                    self.path.truncate(path_len);
+                }
+                Action::Push {
+                    child_id,
+                    edge,
+                    path_len,
+                } => {
+                    self.path.push(edge);
+                    let child = direct_semantic_node(self.bytes.as_ref(), child_id)
+                        .expect("canonical ACT child remains valid while borrowed");
+                    let next_child_id = child.children.first_child;
+                    self.stack.push(DirectWalkFrame {
+                        node: child,
+                        path_len,
+                        next_child: 0,
+                        next_child_id,
+                        entered: false,
+                    });
+                }
+                Action::Continue => {}
+            }
+        }
+    }
+}
+
+fn parse_direct_act_node(bytes: &[u8], node_id: usize) -> Result<DirectActNode, CompactTrieError> {
+    let head = *bytes
+        .get(node_id)
+        .ok_or_else(|| CompactTrieError::new("ACTree03 node offset is outside the arena"))?;
+    let mut cursor = node_id + 1;
+    let value = if head & ACT_VALUE_FLAG != 0 {
+        Some(read_act_varint(bytes, &mut cursor, "ACTree03 node value")?)
+    } else {
+        None
+    };
+
+    let edge = if head & ACT_LINE_FLAG == 0 {
+        let encoded_count = (head & 0x3f) as usize;
+        if encoded_count > 32 {
+            return Err(CompactTrieError::new("ACTree03 branch child count exceeds 32 marker"));
+        }
+        let first_child = if encoded_count == 0 {
+            None
+        } else {
+            Some(relative_target(
+                node_id,
+                read_act_varint(bytes, &mut cursor, "ACTree03 first-child offset")?,
+                "ACTree03 first-child offset",
+            )?)
+        };
+        let child_bytes = if encoded_count < 32 {
+            let start = cursor;
+            let raw = take(bytes, &mut cursor, encoded_count, "ACTree03 child bytes")?;
+            if raw.windows(2).any(|pair| pair[0] >= pair[1]) {
+                return Err(CompactTrieError::new(
+                    "ACTree03 branch bytes are not strictly ascending",
+                ));
+            }
+            DirectBranchBytes::Sparse(start..cursor)
+        } else {
+            let start = cursor;
+            let mask = take(bytes, &mut cursor, 32, "ACTree03 child mask")?;
+            let len = mask.iter().map(|byte| byte.count_ones() as usize).sum();
+            if len < 32 {
+                return Err(CompactTrieError::new(
+                    "ACTree03 dense child mask contains fewer than 32 branches",
+                ));
+            }
+            DirectBranchBytes::Dense {
+                range: start..cursor,
+                len,
+            }
+        };
+        if (child_bytes.len() == 0) != first_child.is_none() {
+            return Err(CompactTrieError::new("ACTree03 branch child metadata disagrees"));
+        }
+        DirectActEdge::Branch {
+            first_child,
+            child_bytes,
+        }
+    } else {
+        if head & 0x3e != 0 {
+            return Err(CompactTrieError::new("ACTree03 line node has reserved header bits set"));
+        }
+        let child = if head & 1 != 0 {
+            Some(relative_target(
+                node_id,
+                read_act_varint(bytes, &mut cursor, "ACTree03 line-child offset")?,
+                "ACTree03 line-child offset",
+            )?)
+        } else {
+            None
+        };
+        let line_id = relative_target(
+            node_id,
+            read_act_varint(bytes, &mut cursor, "ACTree03 line-data offset")?,
+            "ACTree03 line-data offset",
+        )?;
+        let mut line_cursor = line_id;
+        let line_len = read_act_varint(bytes, &mut line_cursor, "ACTree03 line length")?;
+        let line_len = usize::try_from(line_len)
+            .map_err(|_| CompactTrieError::new("ACTree03 line length overflows usize"))?;
+        if line_len == 0 {
+            return Err(CompactTrieError::new("ACTree03 line suffix is empty"));
+        }
+        let suffix_start = line_cursor;
+        take(bytes, &mut line_cursor, line_len, "ACTree03 line suffix")?;
+        if line_cursor > node_id {
+            return Err(CompactTrieError::new("ACTree03 line data overlaps its node"));
+        }
+        DirectActEdge::Line {
+            child,
+            suffix: suffix_start..line_cursor,
+            encoded_range: line_id..line_cursor,
+        }
+    };
+
+    Ok(DirectActNode {
+        encoded_len: cursor - node_id,
+        value,
+        edge,
+    })
+}
+
+fn direct_semantic_node(bytes: &[u8], id: usize) -> Result<DirectSemanticNode, CompactTrieError> {
+    let node = parse_direct_act_node(bytes, id)?;
+    let encoded_len = node.encoded_len;
+    let semantic = match node.edge {
+        DirectActEdge::Branch {
+            first_child,
+            child_bytes,
+        } => DirectSemanticNode {
+            id,
+            encoded_len,
+            value: node.value,
+            children: DirectChildren {
+                first_child,
+                child_bytes,
+                parent_id: id,
+            },
+            line: None,
+            wrapper: None,
+        },
+        DirectActEdge::Line {
+            child: None,
+            suffix,
+            encoded_range,
+        } => DirectSemanticNode {
+            id,
+            encoded_len,
+            value: node.value,
+            children: DirectChildren::empty(id),
+            line: Some(ActLineData {
+                suffix,
+                encoded: encoded_range,
+            }),
+            wrapper: None,
+        },
+        DirectActEdge::Line {
+            child: Some(wrapper_id),
+            suffix,
+            encoded_range,
+        } => {
+            if node.value.is_some() {
+                return Err(CompactTrieError::new(
+                    "ACTree03 line node has both a value and a child",
+                ));
+            }
+            let wrapper = parse_direct_act_node(bytes, wrapper_id)?;
+            let wrapper_len = wrapper.encoded_len;
+            let DirectActEdge::Branch {
+                first_child,
+                child_bytes,
+            } = wrapper.edge
+            else {
+                return Err(CompactTrieError::new("ACTree03 line child is not a branch node"));
+            };
+            DirectSemanticNode {
+                id,
+                encoded_len,
+                value: wrapper.value,
+                children: DirectChildren {
+                    first_child,
+                    child_bytes,
+                    parent_id: wrapper_id,
+                },
+                line: Some(ActLineData {
+                    suffix,
+                    encoded: encoded_range,
+                }),
+                wrapper: Some((wrapper_id, wrapper_len)),
+            }
+        }
+    };
+
+    if semantic.value.is_none() && semantic.children.len() == 1 {
+        return Err(CompactTrieError::new(
+            "ACTree03 contains an uncompressed value-free unary branch",
+        ));
+    }
+    if semantic.wrapper.is_some() && semantic.children.len() == 0 {
+        return Err(CompactTrieError::new("ACTree03 line branch wrapper has no children"));
+    }
+    Ok(semantic)
+}
+
+fn register_direct_semantic_node(
+    seen: &mut HashSet<usize>,
+    node: &DirectSemanticNode,
+) -> Result<(), CompactTrieError> {
+    if !seen.insert(node.id) {
+        return Err(CompactTrieError::new("ACTree03 node is referenced by more than one edge"));
+    }
+    if let Some((wrapper, _)) = node.wrapper {
+        if !seen.insert(wrapper) {
+            return Err(CompactTrieError::new("ACTree03 node is referenced by more than one edge"));
+        }
+    }
+    Ok(())
+}
+
+fn validate_direct_canonical_act(bytes: &[u8]) -> Result<(usize, bool), CompactTrieError> {
+    if bytes.len() < ACT_HEADER_LEN + 9 {
+        return Err(CompactTrieError::new(
+            "ACTree03 payload is shorter than header, root, and trailer",
+        ));
+    }
+    if bytes[..COMPACT_TREE_MAGIC.len()] != COMPACT_TREE_MAGIC {
+        return Err(CompactTrieError::new("invalid ACTree03 magic"));
+    }
+    let root_id = usize::try_from(u64::from_le_bytes(
+        bytes[8..16]
+            .try_into()
+            .expect("the ACT header root slot is eight bytes"),
+    ))
+    .map_err(|_| CompactTrieError::new("ACTree03 root offset overflows usize"))?;
+    if !(ACT_HEADER_LEN..bytes.len()).contains(&root_id) {
+        return Err(CompactTrieError::new("ACTree03 root offset is outside the arena"));
+    }
+    let trailer_start = bytes.len() - 8;
+    if bytes[trailer_start..] != [0; 8] {
+        return Err(CompactTrieError::new("ACTree03 canonical varint trailer is not zero-filled"));
+    }
+
+    let root = direct_semantic_node(bytes, root_id)?;
+    let empty = root.line.is_none() && root.value.is_none() && root.children.len() == 0;
+    let root_len = root.encoded_len;
+    let mut seen = HashSet::with_capacity(bytes.len().min(1024));
+    register_direct_semantic_node(&mut seen, &root)?;
+    let mut frames = vec![DirectReplayFrame {
+        next_child_id: root.children.first_child,
+        node: root,
+        next_child: 0,
+    }];
+    let mut position = ACT_HEADER_LEN;
+    let mut lines = CanonicalLineReplay::new(bytes);
+
+    while let Some(frame) = frames.last_mut() {
+        if frame.next_child < frame.node.children.len() {
+            let child_id = frame
+                .next_child_id
+                .ok_or_else(|| CompactTrieError::new("ACTree03 child list ended early"))?;
+            if child_id >= frame.node.children.parent_id {
+                return Err(CompactTrieError::new("ACTree03 child does not precede its parent"));
+            }
+            let child = direct_semantic_node(bytes, child_id)?;
+            frame.next_child += 1;
+            frame.next_child_id = (frame.next_child < frame.node.children.len())
+                .then(|| {
+                    child_id
+                        .checked_add(child.encoded_len)
+                        .ok_or_else(|| CompactTrieError::new("ACTree03 sibling offset overflow"))
+                })
+                .transpose()?;
+            register_direct_semantic_node(&mut seen, &child)?;
+            let next_child_id = child.children.first_child;
+            frames.push(DirectReplayFrame {
+                node: child,
+                next_child: 0,
+                next_child_id,
+            });
+            continue;
+        }
+
+        let frame = frames.pop().expect("a checked replay frame exists");
+        let mut child_id = frame.node.children.first_child;
+        for index in 0..frame.node.children.len() {
+            let id =
+                child_id.ok_or_else(|| CompactTrieError::new("ACTree03 child list ended early"))?;
+            if id != position {
+                return Err(CompactTrieError::new(
+                    "ACTree03 child roots are not in producer order",
+                ));
+            }
+            let child = parse_direct_act_node(bytes, id)?;
+            position = position
+                .checked_add(child.encoded_len)
+                .ok_or_else(|| CompactTrieError::new("ACTree03 position overflow"))?;
+            child_id = (index + 1 < frame.node.children.len())
+                .then(|| {
+                    id.checked_add(child.encoded_len)
+                        .ok_or_else(|| CompactTrieError::new("ACTree03 sibling offset overflow"))
+                })
+                .transpose()?;
+        }
+        if let Some(line) = &frame.node.line {
+            let expected = lines.expected_line_id(line, &mut position)?;
+            if expected != line.encoded.start {
+                return Err(CompactTrieError::new(
+                    "ACTree03 line reuse differs from the canonical writer",
+                ));
+            }
+            if let Some((wrapper, wrapper_len)) = frame.node.wrapper {
+                if wrapper != position {
+                    return Err(CompactTrieError::new(
+                        "ACTree03 line branch wrapper is not in producer order",
+                    ));
+                }
+                position = position
+                    .checked_add(wrapper_len)
+                    .ok_or_else(|| CompactTrieError::new("ACTree03 position overflow"))?;
+            }
+        }
+    }
+
+    if root_id != position {
+        return Err(CompactTrieError::new("ACTree03 root is not in producer order"));
+    }
+    position = position
+        .checked_add(root_len)
+        .ok_or_else(|| CompactTrieError::new("ACTree03 position overflow"))?;
+    if position != trailer_start {
+        return Err(CompactTrieError::new(
+            "ACTree03 arena contains gaps, overlaps, or unreachable objects",
+        ));
+    }
+    Ok((root_id, empty))
+}
+
 enum KeyPiece {
     Slice(Range<usize>),
     Byte(u8),

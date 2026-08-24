@@ -489,12 +489,16 @@ prepends the common prefix into one reusable key buffer, invokes the existing ex
 requires strictly ascending endpoints and positive multiplicities, and inserts the validated key
 directly into the authoritative `ParBag` through one monotone write zipper. It never creates
 `Vec<Par>`, expands occurrences, sorts projected entries, or serializes ACT topology. The encoder
-does not decode component bodies. The current exact external-admission bridge does: for general
-RPB3 families it decodes the typed protobuf value, applies the authoritative canonical
-sorter/normalizer, and re-encodes it to prove that the supplied score and body agree. This is an
-honest compatibility oracle, not the final optimized boundary. Production admission requires the
-generated-schema byte cursor and shared canonical-summary rules to prove the same property without
-materializing an AST, including nested EPathMap/canonical-path fields.
+does not decode component bodies. The active exact external-admission bridge still does: for
+general RPB3 families it decodes the typed protobuf value, applies the authoritative canonical
+sorter/normalizer, and re-encodes it to prove that the supplied score and body agree. The
+replacement generated-schema admission PDA now exists in shadow form and shares canonical score,
+default, and semantic-shape rules with construction and sorting. Its focused corpus covers every
+component family and generated `Expr` arm without constructing an abstract syntax tree (AST).
+Production cutover is still prohibited because nested EPathMap keys currently retain and replay a
+complete endpoint for canonical-path validation. The remaining boundary must drive canonical-path,
+EPM1, ACT, and nested raw-`Par` obligations through persistent byte handles, then replace the typed
+fallback only after exact differential and resource gates pass.
 
 Let $`B(p)`$ be the RPB3 `PathMap<Multiplicity>` component Bag of a `Par` value $`p`$, let $`c(p)`$
 be its root `connective_used` flag, and let $`\ell(p)`$ be its root `locally_free` summary. Current

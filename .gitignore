@@ -92,6 +92,9 @@ run-local/data/
 # Logs
 *.log
 
+# Agent and developer scratch artifacts
+scratch/
+
 # Aider
 .aider*
 

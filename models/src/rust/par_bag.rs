@@ -42,6 +42,10 @@ use crate::rhoapi::expr::ExprInstance;
 use crate::rhoapi::g_unforgeable::UnfInstance;
 use crate::rhoapi::var::VarInstance;
 use crate::rhoapi::{Bundle, Connective, Expr, GUnforgeable, If, Match, New, Par, Receive, Send};
+pub use crate::rust::rholang::canonical_semantics::ParComponentTag;
+use crate::rust::rholang::canonical_semantics::{
+    self, NONSEMANTIC_SCORE_CONSTRUCTOR, PAR_SCORE_TAGS,
+};
 use crate::rust::rholang::match_schema::RhoMatchFieldKind;
 use crate::rust::rholang::match_schema_tables::{
     PAR_PROTOBUF_REGION_PROGRAM, SEND_RHO_MATCH_PROGRAM,
@@ -81,55 +85,6 @@ const fn project_cardinality(exact: u128) -> u64 {
         u64::MAX
     } else {
         exact as u64
-    }
-}
-
-/// Constructor-family tags, chosen to match the corresponding `Par` protobuf
-/// field numbers. Numeric trie order is consequently schema order.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[repr(u8)]
-pub enum ParComponentTag {
-    Send = 1,
-    Receive = 2,
-    New = 4,
-    Expr = 5,
-    Match = 6,
-    GUnforgeable = 7,
-    Connective = 8,
-    Bundle = 11,
-    If = 12,
-}
-
-impl ParComponentTag {
-    pub const fn byte(self) -> u8 { self as u8 }
-
-    const fn index(self) -> usize {
-        match self {
-            Self::Send => 0,
-            Self::Receive => 1,
-            Self::New => 2,
-            Self::Expr => 3,
-            Self::Match => 4,
-            Self::GUnforgeable => 5,
-            Self::Connective => 6,
-            Self::Bundle => 7,
-            Self::If => 8,
-        }
-    }
-
-    fn from_byte(byte: u8) -> Option<Self> {
-        match byte {
-            1 => Some(Self::Send),
-            2 => Some(Self::Receive),
-            4 => Some(Self::New),
-            5 => Some(Self::Expr),
-            6 => Some(Self::Match),
-            7 => Some(Self::GUnforgeable),
-            8 => Some(Self::Connective),
-            11 => Some(Self::Bundle),
-            12 => Some(Self::If),
-            _ => None,
-        }
     }
 }
 
@@ -190,7 +145,7 @@ pub trait ParBagComponent: sealed::Sealed + ProtobufNode + Sized + 'static {
 }
 
 macro_rules! impl_par_bag_component {
-    ($ty:ty, $tag:ident, $sorter:ty, $decoder:ident, $deferred_decoder:ident, $shape:ident) => {
+    ($ty:ty, $tag:ident, $sorter:ty, $decoder:ident, $deferred_decoder:ident, $shape:path) => {
         impl sealed::Sealed for $ty {}
         impl ParBagComponent for $ty {
             const TAG: ParComponentTag = ParComponentTag::$tag;
@@ -213,30 +168,6 @@ macro_rules! impl_par_bag_component {
         }
     };
 }
-
-fn send_semantic_shape_is_complete(value: &Send) -> bool { value.chan.is_some() }
-
-fn receive_semantic_shape_is_complete(value: &Receive) -> bool {
-    value.body.is_some() && value.binds.iter().all(|bind| bind.source.is_some())
-}
-
-fn new_semantic_shape_is_complete(value: &New) -> bool { value.p.is_some() }
-
-fn match_semantic_shape_is_complete(value: &Match) -> bool {
-    value.target.is_some()
-        && value
-            .cases
-            .iter()
-            .all(|case| case.pattern.is_some() && case.source.is_some())
-}
-
-fn bundle_semantic_shape_is_complete(value: &Bundle) -> bool { value.body.is_some() }
-
-fn if_semantic_shape_is_complete(value: &If) -> bool {
-    value.condition.is_some() && value.if_true.is_some() && value.if_false.is_some()
-}
-
-fn connective_semantic_shape_is_complete(_value: &Connective) -> bool { true }
 
 fn resident_send_par_field_tags() -> Option<(u32, u32)> {
     let mut chan = None;
@@ -348,7 +279,9 @@ impl ParBagComponent for Send {
         <SendSortMatcher as Sortable<Send>>::sort_match(value)
     }
 
-    fn semantic_shape_is_complete(value: &Self) -> bool { send_semantic_shape_is_complete(value) }
+    fn semantic_shape_is_complete(value: &Self) -> bool {
+        canonical_semantics::send_semantic_shape_is_complete(value)
+    }
 
     fn decode_protobuf(payload: &[u8]) -> Result<Self, prost::DecodeError> {
         crate::rust::rholang::protobuf_decoder::decode_send(payload)
@@ -366,7 +299,7 @@ impl_par_bag_component!(
     ReceiveSortMatcher,
     decode_receive,
     decode_receive_deferred_epathmap_validation,
-    receive_semantic_shape_is_complete
+    canonical_semantics::receive_semantic_shape_is_complete
 );
 impl_par_bag_component!(
     New,
@@ -374,7 +307,7 @@ impl_par_bag_component!(
     NewSortMatcher,
     decode_new,
     decode_new_deferred_epathmap_validation,
-    new_semantic_shape_is_complete
+    canonical_semantics::new_semantic_shape_is_complete
 );
 impl_par_bag_component!(
     Match,
@@ -382,7 +315,7 @@ impl_par_bag_component!(
     MatchSortMatcher,
     decode_match,
     decode_match_deferred_epathmap_validation,
-    match_semantic_shape_is_complete
+    canonical_semantics::match_semantic_shape_is_complete
 );
 impl_par_bag_component!(
     Connective,
@@ -390,7 +323,7 @@ impl_par_bag_component!(
     ConnectiveSortMatcher,
     decode_connective,
     decode_connective_deferred_epathmap_validation,
-    connective_semantic_shape_is_complete
+    canonical_semantics::connective_semantic_shape_is_complete
 );
 impl_par_bag_component!(
     Bundle,
@@ -398,7 +331,7 @@ impl_par_bag_component!(
     BundleSortMatcher,
     decode_bundle,
     decode_bundle_deferred_epathmap_validation,
-    bundle_semantic_shape_is_complete
+    canonical_semantics::bundle_semantic_shape_is_complete
 );
 impl_par_bag_component!(
     If,
@@ -406,7 +339,7 @@ impl_par_bag_component!(
     IfSortMatcher,
     decode_if,
     decode_if_deferred_epathmap_validation,
-    if_semantic_shape_is_complete
+    canonical_semantics::if_semantic_shape_is_complete
 );
 
 /// Append one score atom without first materializing `Tree<ScoreAtom>`.
@@ -523,55 +456,8 @@ fn append_ordered_collection_expr_score(value: &Expr, out: &mut Vec<u8>) -> bool
 /// the PathMap key, so malformed values still have a deterministic total order
 /// without being normalized or decoded into a shadow collection.
 fn append_nonsemantic_order_key(out: &mut Vec<u8>) {
-    begin_score_node(out, i32::MAX);
+    begin_score_node(out, NONSEMANTIC_SCORE_CONSTRUCTOR);
     end_score_node(out);
-}
-
-fn expr_semantic_shape_is_complete(value: &Expr) -> bool {
-    match value.expr_instance.as_ref() {
-        None
-        | Some(ExprInstance::GBool(_))
-        | Some(ExprInstance::GInt(_))
-        | Some(ExprInstance::GString(_))
-        | Some(ExprInstance::GUri(_))
-        | Some(ExprInstance::GByteArray(_))
-        | Some(ExprInstance::GDouble(_))
-        | Some(ExprInstance::GBigInt(_))
-        | Some(ExprInstance::GBigRat(_))
-        | Some(ExprInstance::GFixedPoint(_))
-        | Some(ExprInstance::EListBody(_))
-        | Some(ExprInstance::ETupleBody(_))
-        | Some(ExprInstance::ESetBody(_))
-        | Some(ExprInstance::EPathmapBody(_)) => true,
-        Some(ExprInstance::EVarBody(value)) => value.v.is_some(),
-        Some(ExprInstance::ENotBody(value)) => value.p.is_some(),
-        Some(ExprInstance::ENegBody(value)) => value.p.is_some(),
-        Some(ExprInstance::EMultBody(value)) => value.p1.is_some() && value.p2.is_some(),
-        Some(ExprInstance::EDivBody(value)) => value.p1.is_some() && value.p2.is_some(),
-        Some(ExprInstance::EModBody(value)) => value.p1.is_some() && value.p2.is_some(),
-        Some(ExprInstance::EPlusBody(value)) => value.p1.is_some() && value.p2.is_some(),
-        Some(ExprInstance::EMinusBody(value)) => value.p1.is_some() && value.p2.is_some(),
-        Some(ExprInstance::ELtBody(value)) => value.p1.is_some() && value.p2.is_some(),
-        Some(ExprInstance::ELteBody(value)) => value.p1.is_some() && value.p2.is_some(),
-        Some(ExprInstance::EGtBody(value)) => value.p1.is_some() && value.p2.is_some(),
-        Some(ExprInstance::EGteBody(value)) => value.p1.is_some() && value.p2.is_some(),
-        Some(ExprInstance::EEqBody(value)) => value.p1.is_some() && value.p2.is_some(),
-        Some(ExprInstance::ENeqBody(value)) => value.p1.is_some() && value.p2.is_some(),
-        Some(ExprInstance::EAndBody(value)) => value.p1.is_some() && value.p2.is_some(),
-        Some(ExprInstance::EOrBody(value)) => value.p1.is_some() && value.p2.is_some(),
-        Some(ExprInstance::EPercentPercentBody(value)) => value.p1.is_some() && value.p2.is_some(),
-        Some(ExprInstance::EPlusPlusBody(value)) => value.p1.is_some() && value.p2.is_some(),
-        Some(ExprInstance::EMinusMinusBody(value)) => value.p1.is_some() && value.p2.is_some(),
-        Some(ExprInstance::EMatchesBody(value)) => {
-            value.target.is_some() && value.pattern.is_some()
-        }
-        Some(ExprInstance::EMapBody(value)) => value
-            .kvs
-            .iter()
-            .all(|pair| pair.key.is_some() && pair.value.is_some()),
-        Some(ExprInstance::EMethodBody(value)) => value.target.is_some(),
-        Some(ExprInstance::EZipperBody(value)) => value.pathmap.is_some(),
-    }
 }
 
 /// Encode a schema node whose protobuf shape has at most one non-recursive
@@ -682,7 +568,7 @@ fn append_leaf_expr_score(value: &Expr, out: &mut Vec<u8>) -> bool {
 fn append_pathmap_expr_score(value: &Expr, out: &mut Vec<u8>) -> bool {
     let (constructor, snapshot, connective_used) = match value.expr_instance.as_ref() {
         Some(ExprInstance::EPathmapBody(pathmap)) => (
-            Score::EPATHMAP,
+            canonical_semantics::rpb3_pathmap_constructor(false),
             pathmap.trie_snapshot(),
             pathmap.connective_used,
         ),
@@ -691,7 +577,7 @@ fn append_pathmap_expr_score(value: &Expr, out: &mut Vec<u8>) -> bool {
                 return false;
             };
             (
-                Score::EPATHMAP + 1,
+                canonical_semantics::rpb3_pathmap_constructor(true),
                 pathmap.trie_snapshot(),
                 zipper.connective_used,
             )
@@ -714,7 +600,9 @@ impl ParBagComponent for Expr {
         <ExprSortMatcher as Sortable<Expr>>::sort_match(value)
     }
 
-    fn semantic_shape_is_complete(value: &Self) -> bool { expr_semantic_shape_is_complete(value) }
+    fn semantic_shape_is_complete(value: &Self) -> bool {
+        canonical_semantics::expr_semantic_shape_is_complete(value)
+    }
 
     fn canonical_path_stable(value: &Self) -> bool {
         match value.expr_instance.as_ref() {
@@ -5025,15 +4913,27 @@ impl ParBag {
             .score_components
             .get_or_init(|| {
                 let mut out = Vec::new();
-                self.append_family_score_keys::<Send>(&mut out);
-                self.append_family_score_keys::<Receive>(&mut out);
-                self.append_family_score_keys::<Expr>(&mut out);
-                self.append_family_score_keys::<New>(&mut out);
-                self.append_family_score_keys::<Match>(&mut out);
-                self.append_family_score_keys::<Bundle>(&mut out);
-                self.append_family_score_keys::<Connective>(&mut out);
-                self.append_family_score_keys::<GUnforgeable>(&mut out);
-                self.append_family_score_keys::<If>(&mut out);
+                for tag in PAR_SCORE_TAGS {
+                    match tag {
+                        ParComponentTag::Send => self.append_family_score_keys::<Send>(&mut out),
+                        ParComponentTag::Receive => {
+                            self.append_family_score_keys::<Receive>(&mut out)
+                        }
+                        ParComponentTag::Expr => self.append_family_score_keys::<Expr>(&mut out),
+                        ParComponentTag::New => self.append_family_score_keys::<New>(&mut out),
+                        ParComponentTag::Match => self.append_family_score_keys::<Match>(&mut out),
+                        ParComponentTag::Bundle => {
+                            self.append_family_score_keys::<Bundle>(&mut out)
+                        }
+                        ParComponentTag::Connective => {
+                            self.append_family_score_keys::<Connective>(&mut out)
+                        }
+                        ParComponentTag::GUnforgeable => {
+                            self.append_family_score_keys::<GUnforgeable>(&mut out)
+                        }
+                        ParComponentTag::If => self.append_family_score_keys::<If>(&mut out),
+                    }
+                }
                 Arc::from(out)
             })
             .as_ref()

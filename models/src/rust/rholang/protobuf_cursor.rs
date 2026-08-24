@@ -81,6 +81,14 @@ impl ProtobufRegion {
 
     #[inline]
     pub fn into_bytes(self) -> Bytes { self.backing.slice(self.range) }
+
+    #[inline]
+    pub(crate) fn backing_bytes(&self) -> Bytes { self.backing.clone() }
+
+    #[inline]
+    pub(crate) fn shares_backing_with(&self, backing: &Bytes) -> bool {
+        self.backing.as_ptr() == backing.as_ptr() && self.backing.len() == backing.len()
+    }
 }
 
 impl From<Bytes> for ProtobufRegion {
@@ -587,6 +595,7 @@ pub struct CanonicalRegionFieldCursor {
     message: ProtobufRegion,
     at: usize,
     last_field: u32,
+    enforce_numeric_order: bool,
 }
 
 impl CanonicalRegionFieldCursor {
@@ -595,6 +604,23 @@ impl CanonicalRegionFieldCursor {
             message,
             at: 0,
             last_field: 0,
+            enforce_numeric_order: true,
+        }
+    }
+
+    /// Frame owned regions in generated Prost slot order.
+    ///
+    /// This is the owned-region counterpart of
+    /// [`CanonicalFieldCursor::in_prost_slot_order`]. Schema-aware drivers
+    /// resolve each actual tag to its generated slot and enforce slot order;
+    /// the framing cursor must therefore permit a oneof arm whose actual tag
+    /// is followed by a numerically smaller ordinary-field tag.
+    pub fn in_prost_slot_order(message: ProtobufRegion) -> Self {
+        Self {
+            message,
+            at: 0,
+            last_field: 0,
+            enforce_numeric_order: false,
         }
     }
 
@@ -608,7 +634,7 @@ impl CanonicalRegionFieldCursor {
                     message: self.message.as_bytes(),
                     at: self.at,
                     last_field: self.last_field,
-                    enforce_numeric_order: true,
+                    enforce_numeric_order: self.enforce_numeric_order,
                 };
                 let field = borrowed.next_field()?;
                 Ok::<_, CanonicalProtobufError>(field.map(|field| {

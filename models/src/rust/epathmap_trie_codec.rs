@@ -16,7 +16,9 @@ use pathmap::zipper::{ZipperIteration, ZipperMoving};
 use pathmap::PathMap;
 use prost::bytes::Bytes;
 use rspace_plus_plus::rspace::pathmap_codec::{
-    CompactPath, CompactTrie, CompactTrieError, CompactTrieTopologyEvent,
+    CanonicalCompactTrieCursor, CanonicalCompactTrieTopologyCursor,
+    CanonicalCompactTrieTopologyEvent, CompactPath, CompactTrie, CompactTrieError,
+    CompactTrieTopologyEvent,
 };
 
 use crate::rhoapi::Par;
@@ -216,6 +218,476 @@ struct CanonicalSnapshotPrefix<'a> {
     arena: &'a [u8],
     value_count: usize,
     value_table_start: usize,
+}
+
+#[allow(dead_code)]
+pub(crate) struct CanonicalEpm1Entry<'a> {
+    key: &'a [u8],
+    value_body: Option<Range<usize>>,
+}
+
+impl CanonicalEpm1Entry<'_> {
+    pub(crate) fn key(&self) -> &[u8] { self.key }
+
+    pub(crate) fn value_body(&self) -> Option<Range<usize>> { self.value_body.clone() }
+}
+
+fn validate_epm1_value_table(
+    bytes: &[u8],
+    value_count: usize,
+    value_table_start: usize,
+) -> Result<(), TrieCodecError> {
+    let mut value_cursor = value_table_start;
+    for _ in 0..value_count {
+        let len = read_len(bytes, &mut value_cursor, "map value length")?;
+        take(bytes, &mut value_cursor, len, "map value payload")?;
+    }
+    if value_cursor != bytes.len() {
+        return Err(TrieCodecError::new("trailing bytes after EPM1 payload"));
+    }
+    Ok(())
+}
+
+fn validate_typed_epm1_trie<B>(
+    mode: EPathMapMode,
+    value_count: usize,
+    trie: &mut CanonicalCompactTrieCursor<B>,
+) -> Result<(), TrieCodecError>
+where
+    B: AsRef<[u8]>,
+{
+    if trie.is_empty() {
+        return Err(TrieCodecError::new(
+            "typed EPathMap mode has empty ACTree topology; use neutral empty mode",
+        ));
+    }
+    let mut referenced_values = 0usize;
+    while let Some(endpoint) = trie.next_value_endpoint() {
+        let ordinal = endpoint
+            .value
+            .expect("a value-endpoint cursor yields an ordinal");
+        match mode {
+            EPathMapMode::Set => {
+                if ordinal != 0 {
+                    return Err(TrieCodecError::new("set ACTree value ordinal is not zero"));
+                }
+            }
+            EPathMapMode::Map => {
+                if ordinal != referenced_values as u64 {
+                    return Err(TrieCodecError::new(format!(
+                        "map ACTree value ordinal {ordinal} is not canonical ordinal {referenced_values}"
+                    )));
+                }
+                referenced_values = referenced_values
+                    .checked_add(1)
+                    .ok_or_else(|| TrieCodecError::new("EPathMap value count overflows usize"))?;
+            }
+            EPathMapMode::Empty => unreachable!("empty mode has no ACT arena"),
+        }
+    }
+    if mode == EPathMapMode::Set && value_count != 0 {
+        return Err(TrieCodecError::new("set EPathMap carries map values"));
+    }
+    if mode == EPathMapMode::Map && referenced_values != value_count {
+        return Err(TrieCodecError::new(format!(
+            "map ACTree references {referenced_values} values but EPM1 declares {value_count}"
+        )));
+    }
+    trie.rewind();
+    Ok(())
+}
+
+fn validate_typed_epm1_topology<B>(
+    mode: EPathMapMode,
+    value_count: usize,
+    trie: &mut CanonicalCompactTrieTopologyCursor<B>,
+) -> Result<usize, TrieCodecError>
+where
+    B: AsRef<[u8]>,
+{
+    if trie.is_empty() {
+        return Err(TrieCodecError::new(
+            "typed EPathMap mode has empty ACTree topology; use neutral empty mode",
+        ));
+    }
+    let mut referenced_values = 0usize;
+    while let Some(event) = trie.next_event() {
+        let CanonicalCompactTrieTopologyEvent::Value {
+            value: Some(ordinal),
+            ..
+        } = event
+        else {
+            continue;
+        };
+        match mode {
+            EPathMapMode::Set => {
+                if ordinal != 0 {
+                    return Err(TrieCodecError::new("set ACTree value ordinal is not zero"));
+                }
+            }
+            EPathMapMode::Map => {
+                if ordinal != referenced_values as u64 {
+                    return Err(TrieCodecError::new(format!(
+                        "map ACTree value ordinal {ordinal} is not canonical ordinal {referenced_values}"
+                    )));
+                }
+            }
+            EPathMapMode::Empty => unreachable!("empty mode has no ACT arena"),
+        }
+        referenced_values = referenced_values
+            .checked_add(1)
+            .ok_or_else(|| TrieCodecError::new("EPathMap length overflows usize"))?;
+    }
+    if mode == EPathMapMode::Set && value_count != 0 {
+        return Err(TrieCodecError::new("set EPathMap carries map values"));
+    }
+    if mode == EPathMapMode::Map && referenced_values != value_count {
+        return Err(TrieCodecError::new(format!(
+            "map ACTree references {referenced_values} values but EPM1 declares {value_count}"
+        )));
+    }
+    trie.rewind();
+    Ok(referenced_values)
+}
+
+#[allow(dead_code)]
+pub(crate) struct CanonicalEpm1Cursor<'a> {
+    bytes: &'a [u8],
+    mode: EPathMapMode,
+    value_count: usize,
+    value_cursor: usize,
+    remaining_values: usize,
+    trie: Option<CanonicalCompactTrieCursor<&'a [u8]>>,
+}
+
+impl<'a> CanonicalEpm1Cursor<'a> {
+    pub(crate) fn new(bytes: &'a [u8]) -> Result<Self, TrieCodecError> {
+        let prefix = parse_canonical_snapshot_prefix(bytes)?;
+        validate_epm1_value_table(bytes, prefix.value_count, prefix.value_table_start)?;
+
+        let trie = match prefix.mode {
+            EPathMapMode::Empty => {
+                if !prefix.arena.is_empty() || prefix.value_count != 0 {
+                    return Err(TrieCodecError::new(
+                        "neutral empty EPathMap carries trie or values",
+                    ));
+                }
+                None
+            }
+            EPathMapMode::Set | EPathMapMode::Map => {
+                let mut trie = CanonicalCompactTrieCursor::new(prefix.arena)?;
+                validate_typed_epm1_trie(prefix.mode, prefix.value_count, &mut trie)?;
+                Some(trie)
+            }
+        };
+
+        Ok(Self {
+            bytes,
+            mode: prefix.mode,
+            value_count: prefix.value_count,
+            value_cursor: prefix.value_table_start,
+            remaining_values: prefix.value_count,
+            trie,
+        })
+    }
+
+    pub(crate) const fn mode(&self) -> EPathMapMode { self.mode }
+
+    pub(crate) const fn value_count(&self) -> usize { self.value_count }
+
+    pub(crate) fn next_entry(&mut self) -> Option<CanonicalEpm1Entry<'_>> {
+        let trie = self.trie.as_mut()?;
+        let value_body = if self.mode == EPathMapMode::Map {
+            if self.remaining_values == 0 {
+                return None;
+            }
+            let len = read_len(self.bytes, &mut self.value_cursor, "map value length")
+                .expect("constructor validated every map value length");
+            let start = self.value_cursor;
+            take(self.bytes, &mut self.value_cursor, len, "map value payload")
+                .expect("constructor validated every map value body");
+            self.remaining_values -= 1;
+            Some(start..self.value_cursor)
+        } else {
+            None
+        };
+        let endpoint = trie.next_value_endpoint()?;
+        Some(CanonicalEpm1Entry {
+            key: endpoint.path,
+            value_body,
+        })
+    }
+}
+
+#[allow(dead_code)]
+pub(crate) struct OwnedCanonicalEpm1Entry<'a> {
+    key: &'a [u8],
+    value_body_range: Option<Range<usize>>,
+    value_body: Option<Bytes>,
+}
+
+impl OwnedCanonicalEpm1Entry<'_> {
+    pub(crate) fn key(&self) -> &[u8] { self.key }
+
+    pub(crate) fn value_body_range(&self) -> Option<Range<usize>> { self.value_body_range.clone() }
+
+    pub(crate) fn value_body(&self) -> Option<Bytes> { self.value_body.clone() }
+}
+
+#[allow(dead_code)]
+pub(crate) struct OwnedCanonicalEpm1Cursor {
+    bytes: Bytes,
+    mode: EPathMapMode,
+    value_count: usize,
+    value_cursor: usize,
+    remaining_values: usize,
+    trie: Option<CanonicalCompactTrieCursor<Bytes>>,
+}
+
+impl OwnedCanonicalEpm1Cursor {
+    pub(crate) fn new(bytes: Bytes) -> Result<Self, TrieCodecError> {
+        let (mode, arena, value_count, value_table_start) = {
+            let prefix = parse_canonical_snapshot_prefix(bytes.as_ref())?;
+            let arena_end = prefix
+                .arena_start
+                .checked_add(prefix.arena.len())
+                .ok_or_else(|| TrieCodecError::new("EPM1 arena range overflows usize"))?;
+            (
+                prefix.mode,
+                prefix.arena_start..arena_end,
+                prefix.value_count,
+                prefix.value_table_start,
+            )
+        };
+        validate_epm1_value_table(bytes.as_ref(), value_count, value_table_start)?;
+
+        let trie = match mode {
+            EPathMapMode::Empty => {
+                if !arena.is_empty() || value_count != 0 {
+                    return Err(TrieCodecError::new(
+                        "neutral empty EPathMap carries trie or values",
+                    ));
+                }
+                None
+            }
+            EPathMapMode::Set | EPathMapMode::Map => {
+                let mut trie = CanonicalCompactTrieCursor::from_backing(bytes.slice(arena))?;
+                validate_typed_epm1_trie(mode, value_count, &mut trie)?;
+                Some(trie)
+            }
+        };
+
+        Ok(Self {
+            bytes,
+            mode,
+            value_count,
+            value_cursor: value_table_start,
+            remaining_values: value_count,
+            trie,
+        })
+    }
+
+    pub(crate) const fn mode(&self) -> EPathMapMode { self.mode }
+
+    pub(crate) const fn value_count(&self) -> usize { self.value_count }
+
+    pub(crate) fn next_entry(&mut self) -> Option<OwnedCanonicalEpm1Entry<'_>> {
+        let trie = self.trie.as_mut()?;
+        let value_body_range = if self.mode == EPathMapMode::Map {
+            if self.remaining_values == 0 {
+                return None;
+            }
+            let len = read_len(
+                self.bytes.as_ref(),
+                &mut self.value_cursor,
+                "map value length",
+            )
+            .expect("constructor validated every map value length");
+            let start = self.value_cursor;
+            take(
+                self.bytes.as_ref(),
+                &mut self.value_cursor,
+                len,
+                "map value payload",
+            )
+            .expect("constructor validated every map value body");
+            self.remaining_values -= 1;
+            Some(start..self.value_cursor)
+        } else {
+            None
+        };
+        let value_body = value_body_range
+            .as_ref()
+            .map(|range| self.bytes.slice(range.clone()));
+        let endpoint = trie.next_value_endpoint()?;
+        Some(OwnedCanonicalEpm1Entry {
+            key: endpoint.path,
+            value_body_range,
+            value_body,
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum OwnedCanonicalEpm1TopologyEvent {
+    Value {
+        has_value: bool,
+        value_body_range: Option<Range<usize>>,
+        value_body: Option<Bytes>,
+        source_offset: usize,
+    },
+    Edge {
+        byte: u8,
+        source_offset: usize,
+    },
+    Leave {
+        source_offset: usize,
+    },
+}
+
+#[allow(dead_code)]
+pub(crate) struct OwnedCanonicalEpm1TopologyCursor {
+    bytes: Bytes,
+    mode: EPathMapMode,
+    value_count: usize,
+    length: usize,
+    arena_start: usize,
+    value_cursor: usize,
+    remaining_values: usize,
+    empty_state: u8,
+    trie: Option<CanonicalCompactTrieTopologyCursor<Bytes>>,
+}
+
+impl OwnedCanonicalEpm1TopologyCursor {
+    pub(crate) fn new(bytes: Bytes) -> Result<Self, TrieCodecError> {
+        let (mode, arena, value_count, value_table_start) = {
+            let prefix = parse_canonical_snapshot_prefix(bytes.as_ref())?;
+            let arena_end = prefix
+                .arena_start
+                .checked_add(prefix.arena.len())
+                .ok_or_else(|| TrieCodecError::new("EPM1 arena range overflows usize"))?;
+            (
+                prefix.mode,
+                prefix.arena_start..arena_end,
+                prefix.value_count,
+                prefix.value_table_start,
+            )
+        };
+        validate_epm1_value_table(bytes.as_ref(), value_count, value_table_start)?;
+
+        let (trie, length) = match mode {
+            EPathMapMode::Empty => {
+                if !arena.is_empty() || value_count != 0 {
+                    return Err(TrieCodecError::new(
+                        "neutral empty EPathMap carries trie or values",
+                    ));
+                }
+                (None, 0)
+            }
+            EPathMapMode::Set | EPathMapMode::Map => {
+                let mut trie =
+                    CanonicalCompactTrieTopologyCursor::from_backing(bytes.slice(arena.clone()))?;
+                let length = validate_typed_epm1_topology(mode, value_count, &mut trie)?;
+                (Some(trie), length)
+            }
+        };
+
+        Ok(Self {
+            bytes,
+            mode,
+            value_count,
+            length,
+            arena_start: arena.start,
+            value_cursor: value_table_start,
+            remaining_values: value_count,
+            empty_state: 0,
+            trie,
+        })
+    }
+
+    pub(crate) const fn mode(&self) -> EPathMapMode { self.mode }
+
+    pub(crate) const fn value_count(&self) -> usize { self.value_count }
+
+    pub(crate) const fn length(&self) -> usize { self.length }
+
+    pub(crate) fn next_event(&mut self) -> Option<OwnedCanonicalEpm1TopologyEvent> {
+        if self.mode == EPathMapMode::Empty {
+            let event = match self.empty_state {
+                0 => OwnedCanonicalEpm1TopologyEvent::Value {
+                    has_value: false,
+                    value_body_range: None,
+                    value_body: None,
+                    source_offset: EPM_MAGIC.len() + 1,
+                },
+                1 => OwnedCanonicalEpm1TopologyEvent::Leave {
+                    source_offset: EPM_MAGIC.len() + 1,
+                },
+                _ => return None,
+            };
+            self.empty_state += 1;
+            return Some(event);
+        }
+
+        let event = self.trie.as_mut()?.next_event()?;
+        Some(match event {
+            CanonicalCompactTrieTopologyEvent::Value {
+                value,
+                source_offset,
+            } => {
+                let value_body_range = if self.mode == EPathMapMode::Map && value.is_some() {
+                    let len = read_len(
+                        self.bytes.as_ref(),
+                        &mut self.value_cursor,
+                        "map value length",
+                    )
+                    .expect("constructor validated every map value length");
+                    let start = self.value_cursor;
+                    take(
+                        self.bytes.as_ref(),
+                        &mut self.value_cursor,
+                        len,
+                        "map value payload",
+                    )
+                    .expect("constructor validated every map value body");
+                    self.remaining_values -= 1;
+                    Some(start..self.value_cursor)
+                } else {
+                    None
+                };
+                let value_body = value_body_range
+                    .as_ref()
+                    .map(|range| self.bytes.slice(range.clone()));
+                OwnedCanonicalEpm1TopologyEvent::Value {
+                    has_value: value.is_some(),
+                    value_body_range,
+                    value_body,
+                    source_offset: self
+                        .arena_start
+                        .checked_add(source_offset)
+                        .expect("validated EPM1 arena offset remains in the snapshot"),
+                }
+            }
+            CanonicalCompactTrieTopologyEvent::Edge {
+                byte,
+                source_offset,
+            } => OwnedCanonicalEpm1TopologyEvent::Edge {
+                byte,
+                source_offset: self
+                    .arena_start
+                    .checked_add(source_offset)
+                    .expect("validated EPM1 arena offset remains in the snapshot"),
+            },
+            CanonicalCompactTrieTopologyEvent::Leave { source_offset } => {
+                OwnedCanonicalEpm1TopologyEvent::Leave {
+                    source_offset: self
+                        .arena_start
+                        .checked_add(source_offset)
+                        .expect("validated EPM1 arena offset remains in the snapshot"),
+                }
+            }
+        })
+    }
 }
 
 /// The PathMap-native, value-independent prefix of an `EPM1` snapshot.
@@ -1247,6 +1719,334 @@ mod tests {
     }
 
     #[test]
+    fn canonical_epm1_cursor_lends_keys_and_value_regions_in_ordinal_order() {
+        let mut map = PathMap::new();
+        map.insert(b"same/prefix/a", int(1));
+        map.insert(b"same/prefix/b", int(2));
+        map.insert(b"other/branch/c", int(3));
+        map.create_path(b"value/free/endpoint");
+        let bytes = encode(&EPathMapRepr::Map(map));
+        let inspection = inspect_canonical_snapshot(&bytes).expect("collected oracle");
+        let mut cursor = CanonicalEpm1Cursor::new(&bytes).expect("streaming cursor");
+
+        assert_eq!(cursor.mode(), EPathMapMode::Map);
+        assert_eq!(cursor.value_count(), inspection.value_bodies.len());
+        for (expected_key, expected_body) in inspection.keys.iter().zip(&inspection.value_bodies) {
+            let entry = cursor.next_entry().expect("one streamed map entry");
+            let expected_key = match expected_key {
+                CanonicalSnapshotKey::Relative(range) => &bytes[range.clone()],
+                CanonicalSnapshotKey::Owned(key) => key,
+            };
+            assert_eq!(entry.key(), expected_key);
+            assert_eq!(entry.value_body(), Some(expected_body.clone()));
+        }
+        assert!(cursor.next_entry().is_none());
+
+        let mut set = PathMap::new();
+        set.insert(b"set/a", ());
+        set.insert(b"set/b", ());
+        set.create_path(b"set/value-free");
+        let expected_keys = paths(&set);
+        let bytes = encode(&EPathMapRepr::Set(set));
+        let mut cursor = CanonicalEpm1Cursor::new(&bytes).expect("set cursor");
+        assert_eq!(cursor.mode(), EPathMapMode::Set);
+        assert_eq!(cursor.value_count(), 0);
+        for expected_key in &expected_keys {
+            let entry = cursor.next_entry().expect("one streamed set entry");
+            assert_eq!(entry.key(), expected_key);
+            assert_eq!(entry.value_body(), None);
+        }
+        assert!(cursor.next_entry().is_none());
+    }
+
+    #[test]
+    fn owned_epm1_cursor_matches_borrowed_and_shares_value_bodies() {
+        fn assert_match(bytes: Vec<u8>) {
+            let shared = Bytes::from(bytes.clone());
+            let shared_start = shared.as_ptr() as usize;
+            let shared_end = shared_start + shared.len();
+            let mut borrowed = CanonicalEpm1Cursor::new(&bytes).expect("borrowed cursor");
+            let mut owned = OwnedCanonicalEpm1Cursor::new(shared.clone()).expect("owned cursor");
+            assert_eq!(owned.mode(), borrowed.mode());
+            assert_eq!(owned.value_count(), borrowed.value_count());
+
+            loop {
+                match (borrowed.next_entry(), owned.next_entry()) {
+                    (Some(borrowed), Some(owned)) => {
+                        assert_eq!(owned.key(), borrowed.key());
+                        let owned_body = owned.value_body();
+                        let borrowed_range = borrowed.value_body();
+                        assert_eq!(owned.value_body_range(), borrowed_range);
+                        match (borrowed_range, owned_body.as_ref()) {
+                            (Some(range), Some(body)) => {
+                                assert_eq!(body.as_ref(), &bytes[range]);
+                                let body_start = body.as_ptr() as usize;
+                                assert!(body_start >= shared_start);
+                                assert!(body_start + body.len() <= shared_end);
+                            }
+                            (None, None) => {}
+                            _ => panic!("borrowed and owned value regions differ"),
+                        }
+                    }
+                    (None, None) => break,
+                    _ => panic!("borrowed and owned entry counts differ"),
+                }
+            }
+        }
+
+        assert_match(encode(&EPathMapRepr::<Par>::Empty));
+
+        let mut set = PathMap::new();
+        set.insert(b"same/prefix/a", ());
+        set.insert(b"same/prefix/b", ());
+        set.create_path(b"value/free/endpoint");
+        assert_match(encode(&EPathMapRepr::<Par>::Set(set)));
+
+        let mut map = PathMap::new();
+        map.insert(b"same/prefix/a", int(1));
+        map.insert(b"same/prefix/b", int(2));
+        map.insert(b"other/branch/c", int(3));
+        map.create_path(b"value/free/endpoint");
+        assert_match(encode(&EPathMapRepr::Map(map)));
+    }
+
+    #[test]
+    fn owned_topology_cursor_matches_borrowed_events_and_reports_source_offsets() {
+        fn assert_match(snapshot: Vec<u8>) {
+            let prefix = parse_canonical_snapshot_prefix(&snapshot).expect("canonical prefix");
+            let arena_start = prefix.arena_start;
+            let arena_end = arena_start + prefix.arena.len();
+            let mut expected = Vec::new();
+            if prefix.mode == EPathMapMode::Empty {
+                expected.push(CompactTrieTopologyEvent::Value(false));
+                expected.push(CompactTrieTopologyEvent::Leave);
+            } else {
+                CompactTrie::parse_canonical(prefix.arena)
+                    .expect("canonical borrowed ACT")
+                    .visit_topology(|event| {
+                        expected.push(event);
+                        Ok::<(), ()>(())
+                    })
+                    .expect("infallible borrowed event collection");
+            }
+
+            let shared = Bytes::from(snapshot.clone());
+            let shared_start = shared.as_ptr() as usize;
+            let shared_end = shared_start + shared.len();
+            let mut cursor =
+                OwnedCanonicalEpm1TopologyCursor::new(shared.clone()).expect("owned topology");
+            assert_eq!(cursor.mode(), prefix.mode);
+            assert_eq!(cursor.value_count(), prefix.value_count);
+            let mut actual = Vec::new();
+            let mut length = 0usize;
+            while let Some(event) = cursor.next_event() {
+                let logical = match event {
+                    OwnedCanonicalEpm1TopologyEvent::Value {
+                        has_value,
+                        value_body_range,
+                        value_body,
+                        source_offset,
+                    } => {
+                        if prefix.mode == EPathMapMode::Empty {
+                            assert_eq!(source_offset, EPM_MAGIC.len() + 1);
+                        } else {
+                            assert!(source_offset >= arena_start + 16);
+                            assert!(source_offset < arena_end - 8);
+                        }
+                        if prefix.mode == EPathMapMode::Map && has_value {
+                            let range = value_body_range.expect("map value body range");
+                            let body = value_body.expect("shared map value body");
+                            assert_eq!(body.as_ref(), &snapshot[range]);
+                            let body_start = body.as_ptr() as usize;
+                            assert!(body_start >= shared_start);
+                            assert!(body_start + body.len() <= shared_end);
+                        } else {
+                            assert_eq!(value_body_range, None);
+                            assert_eq!(value_body, None);
+                        }
+                        if has_value {
+                            length += 1;
+                        }
+                        CompactTrieTopologyEvent::Value(has_value)
+                    }
+                    OwnedCanonicalEpm1TopologyEvent::Edge {
+                        byte,
+                        source_offset,
+                    } => {
+                        assert!(source_offset >= arena_start + 16);
+                        assert!(source_offset < arena_end - 8);
+                        CompactTrieTopologyEvent::Edge(byte)
+                    }
+                    OwnedCanonicalEpm1TopologyEvent::Leave { source_offset } => {
+                        if prefix.mode == EPathMapMode::Empty {
+                            assert_eq!(source_offset, EPM_MAGIC.len() + 1);
+                        } else {
+                            assert!(source_offset >= arena_start + 16);
+                            assert!(source_offset < arena_end - 8);
+                        }
+                        CompactTrieTopologyEvent::Leave
+                    }
+                };
+                actual.push(logical);
+            }
+            assert_eq!(actual, expected);
+            assert_eq!(cursor.length(), length);
+        }
+
+        assert_match(encode(&EPathMapRepr::<Par>::Empty));
+
+        let mut set = PathMap::new();
+        set.insert(b"shared/line/a", ());
+        set.insert(b"shared/line/b", ());
+        set.create_path(b"shared/dangling");
+        for byte in 0u8..=63 {
+            set.insert([b'd', byte], ());
+        }
+        assert_match(encode(&EPathMapRepr::<Par>::Set(set)));
+
+        let mut map = PathMap::new();
+        map.insert(b"same/suffix/x", int(1));
+        map.insert(b"other/suffix/x", int(2));
+        map.insert(b"same/suffix/y", int(3));
+        map.create_path(b"value/free/endpoint");
+        assert_match(encode(&EPathMapRepr::Map(map)));
+    }
+
+    #[test]
+    fn owned_topology_cursor_visits_a_shared_prefix_comb_in_linear_events() {
+        const DEPTH: usize = 1_024;
+        let mut set = PathMap::new();
+        let mut spine = Vec::with_capacity(DEPTH + 1);
+        for _ in 0..DEPTH {
+            spine.push(0);
+            let mut sibling = spine.clone();
+            sibling.push(1);
+            set.insert(&sibling, ());
+        }
+        spine.push(0);
+        set.insert(&spine, ());
+
+        let snapshot = Bytes::from(encode(&EPathMapRepr::<Par>::Set(set)));
+        let mut cursor = OwnedCanonicalEpm1TopologyCursor::new(snapshot).expect("comb topology");
+        let mut values = 0usize;
+        let mut value_nodes = 0usize;
+        let mut edges = 0usize;
+        let mut leaves = 0usize;
+        while let Some(event) = cursor.next_event() {
+            match event {
+                OwnedCanonicalEpm1TopologyEvent::Value { has_value, .. } => {
+                    value_nodes += 1;
+                    values += usize::from(has_value);
+                }
+                OwnedCanonicalEpm1TopologyEvent::Edge { .. } => edges += 1,
+                OwnedCanonicalEpm1TopologyEvent::Leave { .. } => leaves += 1,
+            }
+        }
+
+        let logical_nodes = 2 * DEPTH + 2;
+        assert_eq!(value_nodes, logical_nodes);
+        assert_eq!(edges, logical_nodes - 1);
+        assert_eq!(leaves, logical_nodes);
+        assert_eq!(values, DEPTH + 1);
+        assert_eq!(cursor.length(), DEPTH + 1);
+    }
+
+    #[test]
+    fn owned_topology_cursor_rejects_malformed_act_and_value_framing() {
+        let aliased = arena(22, &[
+            ACT_VALUE_FLAG,
+            0,
+            ACT_VALUE_FLAG | 1,
+            1,
+            2,
+            b'a',
+            2,
+            6,
+            b'a',
+            b'b',
+        ]);
+        let aliased = map_snapshot_from_arena(&aliased, &[int(1), int(2)]);
+        assert!(OwnedCanonicalEpm1TopologyCursor::new(Bytes::from(aliased)).is_err());
+
+        let mut map = PathMap::new();
+        map.insert(b"canonical/key", int(1));
+        let mut trailer = encode(&EPathMapRepr::Map(map));
+        let trailer_offset = {
+            let prefix = parse_canonical_snapshot_prefix(&trailer).expect("canonical prefix");
+            prefix.arena_start + prefix.arena.len() - 1
+        };
+        trailer[trailer_offset] = 1;
+        assert!(OwnedCanonicalEpm1TopologyCursor::new(Bytes::from(trailer)).is_err());
+
+        let mut trailing = encode(&EPathMapRepr::<Par>::Empty);
+        trailing.push(0);
+        assert!(OwnedCanonicalEpm1TopologyCursor::new(Bytes::from(trailing)).is_err());
+    }
+
+    #[test]
+    fn owned_topology_cursor_is_stack_safe_for_a_depth_4096_comb() {
+        const DEPTH: usize = 4_096;
+        const STACK: usize = 256 * 1024;
+
+        let mut set = PathMap::new();
+        let mut spine = Vec::with_capacity(DEPTH + 1);
+        for _ in 0..DEPTH {
+            spine.push(0);
+            let mut sibling = spine.clone();
+            sibling.push(1);
+            set.insert(&sibling, ());
+        }
+        spine.push(0);
+        set.insert(&spine, ());
+        let snapshot = Bytes::from(encode(&EPathMapRepr::<Par>::Set(set)));
+
+        std::thread::Builder::new()
+            .name("owned-epm1-topology-depth".to_owned())
+            .stack_size(STACK)
+            .spawn(move || {
+                let mut cursor =
+                    OwnedCanonicalEpm1TopologyCursor::new(snapshot).expect("deep topology");
+                let mut events = 0usize;
+                while cursor.next_event().is_some() {
+                    events += 1;
+                }
+                assert_eq!(events, 6 * DEPTH + 5);
+                assert_eq!(cursor.length(), DEPTH + 1);
+            })
+            .expect("spawn fixed small-stack topology probe")
+            .join()
+            .expect("topology cursor depth remains on the heap");
+    }
+
+    #[test]
+    fn direct_cursor_rejects_aliased_nodes_and_forward_edges() {
+        let aliased = arena(22, &[
+            ACT_VALUE_FLAG,
+            0,
+            ACT_VALUE_FLAG | 1,
+            1,
+            2,
+            b'a',
+            2,
+            6,
+            b'a',
+            b'b',
+        ]);
+        let aliased = map_snapshot_from_arena(&aliased, &[int(1), int(2)]);
+        let error = CanonicalEpm1Cursor::new(&aliased)
+            .err()
+            .expect("aliased ACT nodes are rejected");
+        assert_eq!(
+            error.to_string(),
+            "ACTree03 node is referenced by more than one edge"
+        );
+
+        let forward = arena(18, &[ACT_VALUE_FLAG, 0, 1, 2, b'a']);
+        let forward = map_snapshot_from_arena(&forward, &[int(1)]);
+        assert!(CanonicalEpm1Cursor::new(&forward).is_err());
+    }
+
+    #[test]
     fn decoder_rejects_noncanonical_and_malformed_snapshots() {
         let canonical = encode(&EPathMapRepr::Empty);
         let mut trailing = canonical.clone();
@@ -1398,10 +2198,21 @@ mod tests {
         for canonical in fixtures {
             assert!(reconstruction_oracle(&canonical));
             assert!(decode(&canonical).is_ok());
+            assert!(CanonicalEpm1Cursor::new(&canonical).is_ok());
             for index in 0..canonical.len() {
                 for bit in 0..8 {
                     let mut mutation = canonical.clone();
                     mutation[index] ^= 1 << bit;
+                    assert_eq!(
+                        OwnedCanonicalEpm1Cursor::new(Bytes::from(mutation.clone())).is_ok(),
+                        CanonicalEpm1Cursor::new(&mutation).is_ok(),
+                        "owned and borrowed EPM1 cursors diverged at byte {index}, bit {bit}"
+                    );
+                    assert_eq!(
+                        CanonicalEpm1Cursor::new(&mutation).is_ok(),
+                        inspect_canonical_snapshot(&mutation).is_ok(),
+                        "streaming ACT cursor diverged from the collected inspector at byte {index}, bit {bit}"
+                    );
                     assert_eq!(
                         decode(&mutation).is_ok(),
                         reconstruction_oracle(&mutation),
@@ -1410,5 +2221,45 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn streaming_cursor_is_stack_safe_for_a_depth_4096_branch_comb() {
+        const DEPTH: usize = 4_096;
+        const STACK: usize = 256 * 1024;
+
+        std::thread::Builder::new()
+            .name("canonical-epm1-cursor-depth".to_owned())
+            .stack_size(STACK)
+            .spawn(|| {
+                let mut map = PathMap::new();
+                let mut spine = Vec::with_capacity(DEPTH + 1);
+                for _ in 0..DEPTH {
+                    spine.push(0);
+                    let mut sibling = spine.clone();
+                    sibling.push(1);
+                    map.insert(&sibling, ());
+                }
+                spine.push(0);
+                map.insert(&spine, ());
+                let bytes = encode(&EPathMapRepr::Set(map));
+                let mut cursor = CanonicalEpm1Cursor::new(&bytes).expect("deep canonical ACT");
+                let mut entries = 0usize;
+                while cursor.next_entry().is_some() {
+                    entries += 1;
+                }
+                assert_eq!(entries, DEPTH + 1);
+
+                let mut cursor =
+                    OwnedCanonicalEpm1Cursor::new(Bytes::from(bytes)).expect("owned deep ACT");
+                let mut entries = 0usize;
+                while cursor.next_entry().is_some() {
+                    entries += 1;
+                }
+                assert_eq!(entries, DEPTH + 1);
+            })
+            .expect("spawn fixed small-stack ACT cursor probe")
+            .join()
+            .expect("ACT cursor depth remains on the heap");
     }
 }

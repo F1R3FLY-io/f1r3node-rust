@@ -1,4 +1,10 @@
 pub mod drive;
+pub(crate) mod canonical_bytes_arena;
+pub(crate) mod indexed_protobuf;
+pub(crate) mod canonical_par_identity;
+pub(crate) mod canonical_score_bytes;
+pub(crate) mod canonical_path_admission;
+pub mod canonical_semantics;
 pub mod grpc_client;
 pub mod implicits;
 pub mod match_schema;
@@ -8,6 +14,7 @@ pub mod match_path_cursor;
 pub mod par_children;
 pub mod pooled_stack;
 pub mod protobuf_cursor;
+pub(crate) mod protobuf_admission;
 pub mod bincode_decoder;
 pub mod protobuf_encoder;
 pub mod protobuf_region;

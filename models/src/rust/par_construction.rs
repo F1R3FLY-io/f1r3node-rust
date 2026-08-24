@@ -34,6 +34,10 @@ use super::par_bag::{
     canonical_ezipper_region_parts, CanonicalParBagKey, Multiplicity, OwnedCanonicalEzipper,
     ParBag, ParBagComponent, ParComponentTag, PAR_BAG_KEY_DOMAIN,
 };
+use super::rholang::canonical_par_identity::insert_semantic_par_identity;
+use super::rholang::canonical_semantics::{
+    self as semantics, CanonicalScoreAlgebra, PAR_SCORE_TAGS,
+};
 use super::rholang::protobuf_encoder;
 use super::rholang::protobuf_schema::{ProtobufDescent, ProtobufNode, ProtobufSeq, NO_RESUME};
 use super::rholang::sorter::expr_sort_matcher::ExprSortMatcher;
@@ -343,6 +347,8 @@ enum ProtoBuildOp<'a> {
 #[derive(Clone, Copy)]
 enum WireRoot {
     Par(PlannedPar),
+    ParSemanticIdentity(PlannedPar),
+    KeyValuePair(PlannedPar, PlannedPar),
     Proto(usize),
     EPathMapSnapshot(PlannedEPathMap),
 }
@@ -422,6 +428,12 @@ enum WireCursorOp<'a> {
         remaining: u64,
     },
     RootMetadata(PlannedPar),
+    RootConnective(PlannedPar),
+    ParSemanticIdentity(PlannedPar),
+    KeyValuePair {
+        key: PlannedPar,
+        value: PlannedPar,
+    },
     EPathMapSnapshot {
         map: PlannedEPathMap,
         prefix_emitted: bool,
@@ -448,6 +460,8 @@ impl<'a> WireByteCursor<'a> {
     fn new(arena: &'a ParConstruction, root: WireRoot) -> Self {
         let root = match root {
             WireRoot::Par(par) => WireCursorOp::Par(par),
+            WireRoot::ParSemanticIdentity(par) => WireCursorOp::ParSemanticIdentity(par),
+            WireRoot::KeyValuePair(key, value) => WireCursorOp::KeyValuePair { key, value },
             WireRoot::Proto(node) => WireCursorOp::Node { node, index: 0 },
             WireRoot::EPathMapSnapshot(map) => WireCursorOp::EPathMapSnapshot {
                 map,
@@ -535,6 +549,18 @@ impl Iterator for WireByteCursor<'_> {
                         after_metadata: true,
                     });
                     self.work.push(WireCursorOp::RootMetadata(par));
+                    self.work.push(WireCursorOp::Components {
+                        root: node.occurrence_root,
+                        after_metadata: false,
+                    });
+                }
+                WireCursorOp::ParSemanticIdentity(par) => {
+                    let node = &self.arena.pars[par.0];
+                    self.work.push(WireCursorOp::Components {
+                        root: node.occurrence_root,
+                        after_metadata: true,
+                    });
+                    self.work.push(WireCursorOp::RootConnective(par));
                     self.work.push(WireCursorOp::Components {
                         root: node.occurrence_root,
                         after_metadata: false,
@@ -636,6 +662,23 @@ impl Iterator for WireByteCursor<'_> {
                             InlineWireBytes::length_delimited_prefix(9, node.locally_free.len()),
                         ));
                     }
+                }
+                WireCursorOp::RootConnective(par) => {
+                    if self.arena.pars[par.0].connective_used {
+                        self.work
+                            .push(WireCursorOp::Inline(InlineWireBytes::protobuf_varints(&[
+                                10 << 3,
+                                1,
+                            ])));
+                    }
+                }
+                WireCursorOp::KeyValuePair { key, value } => {
+                    // `KeyValuePair { key: 1, value: 2 }` in exact protobuf
+                    // field order. `ChildPar` contributes each tag, length,
+                    // and planned Par body without allocating a pair node.
+                    self.work
+                        .push(WireCursorOp::ChildPar { tag: 2, par: value });
+                    self.work.push(WireCursorOp::ChildPar { tag: 1, par: key });
                 }
                 WireCursorOp::EPathMapSnapshot {
                     map,
@@ -762,21 +805,6 @@ struct Occurrence {
     multiplicity: Multiplicity,
 }
 
-/// Canonical score-family order is historical sorter order, which deliberately
-/// differs from protobuf field order (`Expr` precedes `New`, while metadata is
-/// emitted before `Bundle` and `If`).
-const PAR_SCORE_TAGS: [ParComponentTag; 9] = [
-    ParComponentTag::Send,
-    ParComponentTag::Receive,
-    ParComponentTag::Expr,
-    ParComponentTag::New,
-    ParComponentTag::Match,
-    ParComponentTag::Bundle,
-    ParComponentTag::Connective,
-    ParComponentTag::GUnforgeable,
-    ParComponentTag::If,
-];
-
 /// One immutable AVL node in the transient occurrence dictionary.
 ///
 /// `ParNode` roots share these nodes persistently. Appending a component copies
@@ -863,6 +891,33 @@ pub struct ParConstruction {
     components: Vec<ComponentNode>,
     occurrence_nodes: Vec<OccurrenceTreeNode>,
     pars: Vec<ParNode>,
+}
+
+impl CanonicalScoreAlgebra for ParConstruction {
+    type Score = PlannedScore;
+    type Error = ParConstructionError;
+
+    fn integer(&mut self, value: i64) -> Result<Self::Score, Self::Error> { self.score_i64(value) }
+
+    fn string(&mut self, value: &str) -> Result<Self::Score, Self::Error> {
+        self.score_string(value)
+    }
+
+    fn bytes(&mut self, value: &[u8]) -> Result<Self::Score, Self::Error> {
+        self.score_bytes(value)
+    }
+
+    fn node(&mut self, children: Vec<Self::Score>) -> Result<Self::Score, Self::Error> {
+        self.score_node(children)
+    }
+
+    fn constructor(
+        &mut self,
+        constructor: i32,
+        children: Vec<Self::Score>,
+    ) -> Result<Self::Score, Self::Error> {
+        self.score_constructor(constructor, children)
+    }
 }
 
 impl Default for ParConstruction {
@@ -1048,15 +1103,16 @@ impl ParConstruction {
 
     pub fn connective_used(&self, par: PlannedPar) -> bool { self.pars[par.0].connective_used }
 
-    /// Whether a planned value is exactly the canonical empty `Par`.
+    /// Whether a planned value is semantically equal to the canonical empty
+    /// `Par`. Root `locally_free` is deliberately ignored by `Par` equality.
     ///
     /// Optional receive conditions and match guards collapse an empty value to
     /// absence in the production sorter.  Planned construction must therefore
     /// decide presence from the planned child, not from the schema shell's
     /// deliberately empty placeholder.
-    pub fn is_empty(&self, par: PlannedPar) -> bool {
+    pub fn is_semantic_default(&self, par: PlannedPar) -> bool {
         let node = &self.pars[par.0];
-        node.occurrence_root.is_none() && node.locally_free.is_empty() && !node.connective_used
+        semantics::par_is_semantic_default(node.occurrence_root.is_some(), node.connective_used)
     }
 
     /// Multiplicity of one top-level constructor family without decoding any
@@ -1673,8 +1729,7 @@ impl ParConstruction {
             map_node.snapshot_len,
             map_node.snapshot_zero_count,
         )?;
-        let connective = self.score_i64(i64::from(connective_used))?;
-        let score = self.score_constructor(Score::EPATHMAP, [snapshot_score, connective])?;
+        let score = semantics::rpb3_pathmap_score(self, false, snapshot_score, connective_used)?;
         let expr_protobuf = self.wrap_proto_node(32, map_protobuf)?;
         let stable = remainder.is_none()
             && locally_free.is_empty()
@@ -1799,8 +1854,7 @@ impl ParConstruction {
         let locally_free = parts.locally_free.to_vec();
         let connective_used = parts.connective_used;
         let snapshot_score = self.score_bytes(parts.snapshot)?;
-        let connective = self.score_i64(i64::from(connective_used))?;
-        let score = self.score_constructor(Score::EPATHMAP + 1, [snapshot_score, connective])?;
+        let score = semantics::rpb3_pathmap_score(self, true, snapshot_score, connective_used)?;
         let protobuf = self.push_proto_node(if encoded_protobuf.is_empty() {
             Vec::new()
         } else {
@@ -1836,14 +1890,13 @@ impl ParConstruction {
         children: &[PlannedPar],
     ) -> Result<PlannedComponent, ParConstructionError> {
         Self::require_arity("Send", shell.data.len() + 1, children.len())?;
-        let persistent = self.score_i64(i64::from(shell.persistent))?;
-        let connective = self.score_i64(i64::from(shell.connective_used))?;
-        let scores: Vec<_> = std::iter::once(persistent)
-            .chain(std::iter::once(self.par_score(children[0])))
-            .chain(children[1..].iter().map(|child| self.par_score(*child)))
-            .chain(std::iter::once(connective))
+        let channel = self.par_score(children[0]);
+        let data = children[1..]
+            .iter()
+            .map(|child| self.par_score(*child))
             .collect();
-        let score = self.score_constructor(Score::SEND, scores)?;
+        let score =
+            semantics::send_score(self, shell.persistent, channel, data, shell.connective_used)?;
         self.component(shell, children, score, false)
     }
 
@@ -1854,13 +1907,8 @@ impl ParConstruction {
         children: &[PlannedPar],
     ) -> Result<PlannedComponent, ParConstructionError> {
         Self::require_arity("Bundle", 1, children.len())?;
-        let constructor = match (shell.write_flag, shell.read_flag) {
-            (true, true) => Score::BUNDLE_READ_WRITE,
-            (true, false) => Score::BUNDLE_WRITE,
-            (false, true) => Score::BUNDLE_READ,
-            (false, false) => Score::BUNDLE_EQUIV,
-        };
-        let score = self.score_constructor(constructor, [self.par_score(children[0])])?;
+        let body = self.par_score(children[0]);
+        let score = semantics::bundle_score(self, shell.read_flag, shell.write_flag, body)?;
         let component = self.component(shell, children, score, false)?;
         self.components[component.0].semantic_shape = ComponentSemanticShape::Bundle {
             body: children[0],
@@ -1877,13 +1925,10 @@ impl ParConstruction {
         children: &[PlannedPar],
     ) -> Result<PlannedComponent, ParConstructionError> {
         Self::require_arity("If", 3, children.len())?;
-        let connective = self.score_i64(i64::from(shell.connective_used))?;
-        let score = self.score_constructor(Score::IF, [
-            self.par_score(children[0]),
-            self.par_score(children[1]),
-            self.par_score(children[2]),
-            connective,
-        ])?;
+        let condition = self.par_score(children[0]);
+        let if_true = self.par_score(children[1]);
+        let if_false = self.par_score(children[2]);
+        let score = semantics::if_score(self, condition, if_true, if_false, shell.connective_used)?;
         self.component(shell, children, score, false)
     }
 
@@ -1931,60 +1976,59 @@ impl ParConstruction {
         let score = match shell.connective_instance.as_ref() {
             Some(ConnectiveInstance::ConnAndBody(and)) => {
                 Self::require_arity("Connective::And", and.ps.len(), children.len())?;
-                let scores: Vec<_> = children
-                    .iter()
-                    .map(|child| self.par_score(*child))
-                    .collect();
-                self.score_constructor(Score::CONNECTIVE_AND, scores)?
+                semantics::ConnectiveScore::And(
+                    children
+                        .iter()
+                        .map(|child| self.par_score(*child))
+                        .collect(),
+                )
             }
             Some(ConnectiveInstance::ConnOrBody(or)) => {
                 Self::require_arity("Connective::Or", or.ps.len(), children.len())?;
-                let scores: Vec<_> = children
-                    .iter()
-                    .map(|child| self.par_score(*child))
-                    .collect();
-                self.score_constructor(Score::CONNECTIVE_OR, scores)?
+                semantics::ConnectiveScore::Or(
+                    children
+                        .iter()
+                        .map(|child| self.par_score(*child))
+                        .collect(),
+                )
             }
             Some(ConnectiveInstance::ConnNotBody(_)) => {
                 Self::require_arity("Connective::Not", 1, children.len())?;
-                self.score_constructor(Score::CONNECTIVE_NOT, [self.par_score(children[0])])?
+                semantics::ConnectiveScore::Not(self.par_score(children[0]))
             }
             Some(ConnectiveInstance::VarRefBody(var)) => {
                 Self::require_arity("Connective::VarRef", 0, children.len())?;
-                let index = self.score_i64(i64::from(var.index))?;
-                let depth = self.score_i64(i64::from(var.depth))?;
-                self.score_constructor(Score::CONNECTIVE_VARREF, [index, depth])?
+                semantics::ConnectiveScore::VarRef {
+                    index: var.index,
+                    depth: var.depth,
+                }
             }
             Some(ConnectiveInstance::ConnBool(value)) => {
                 Self::require_arity("Connective::Bool", 0, children.len())?;
-                let value = self.score_i64(i64::from(*value))?;
-                self.score_constructor(Score::CONNECTIVE_BOOL, [value])?
+                semantics::ConnectiveScore::Bool(*value)
             }
             Some(ConnectiveInstance::ConnInt(value)) => {
                 Self::require_arity("Connective::Int", 0, children.len())?;
-                let value = self.score_i64(i64::from(*value))?;
-                self.score_constructor(Score::CONNECTIVE_INT, [value])?
+                semantics::ConnectiveScore::Int(*value)
             }
             Some(ConnectiveInstance::ConnString(value)) => {
                 Self::require_arity("Connective::String", 0, children.len())?;
-                let value = self.score_i64(i64::from(*value))?;
-                self.score_constructor(Score::CONNECTIVE_STRING, [value])?
+                semantics::ConnectiveScore::String(*value)
             }
             Some(ConnectiveInstance::ConnUri(value)) => {
                 Self::require_arity("Connective::Uri", 0, children.len())?;
-                let value = self.score_i64(i64::from(*value))?;
-                self.score_constructor(Score::CONNECTIVE_URI, [value])?
+                semantics::ConnectiveScore::Uri(*value)
             }
             Some(ConnectiveInstance::ConnByteArray(value)) => {
                 Self::require_arity("Connective::ByteArray", 0, children.len())?;
-                let value = self.score_i64(i64::from(*value))?;
-                self.score_constructor(Score::CONNECTIVE_BYTEARRAY, [value])?
+                semantics::ConnectiveScore::ByteArray(*value)
             }
             None => {
                 Self::require_arity("absent Connective", 0, children.len())?;
-                self.score_i64(Score::ABSENT as i64)?
+                semantics::ConnectiveScore::Absent
             }
         };
+        let score = semantics::connective_score(self, score)?;
         let component = self.component(shell, children, score, false)?;
         self.components[component.0].semantic_shape = match shell.connective_instance.as_ref() {
             Some(ConnectiveInstance::ConnAndBody(_)) => {
@@ -2009,25 +2053,26 @@ impl ParConstruction {
         let mut canonical_shell = shell.clone();
         canonical_shell.uri.sort();
 
-        let bind_count = self.score_i64(i64::from(shell.bind_count))?;
-        let mut scores = vec![bind_count];
+        let mut uri_scores = Vec::new();
         if canonical_shell.uri.is_empty() {
-            scores.push(self.score_i64(Score::ABSENT as i64)?);
+            uri_scores.push(self.score_i64(Score::ABSENT as i64)?);
         } else {
             for uri in &canonical_shell.uri {
-                scores.push(self.score_string(uri)?);
+                uri_scores.push(self.score_string(uri)?);
             }
         }
+        let mut injection_scores = Vec::new();
         if shell.injections.is_empty() {
-            scores.push(self.score_i64(Score::ABSENT as i64)?);
+            injection_scores.push(self.score_i64(Score::ABSENT as i64)?);
         } else {
             for ((key, _), value) in shell.injections.iter().zip(&children[1..]) {
-                let key = self.score_string(key)?;
-                scores.push(self.score_node([key, self.par_score(*value)])?);
+                let value = self.par_score(*value);
+                injection_scores.push(semantics::injection_score(self, key, value)?);
             }
         }
-        scores.push(self.par_score(children[0]));
-        let score = self.score_constructor(Score::NEW, scores)?;
+        let body = self.par_score(children[0]);
+        let score =
+            semantics::new_score(self, shell.bind_count, uri_scores, injection_scores, body)?;
         self.component(&canonical_shell, children, score, false)
     }
 
@@ -2051,8 +2096,8 @@ impl ParConstruction {
         Self::require_arity("Match", expected, children.len())?;
 
         let target = children[0];
-        let mut scores = Vec::with_capacity(shell.cases.len() + 2);
-        scores.push(self.par_score(target));
+        let target_score = self.par_score(target);
+        let mut case_scores = Vec::with_capacity(shell.cases.len());
         let mut wire_children = Vec::with_capacity(expected);
         wire_children.push(target);
         let mut canonical_shell = shell.clone();
@@ -2064,23 +2109,25 @@ impl ParConstruction {
             let source = children[cursor + 1];
             let guard = children[cursor + 2];
             cursor += 3;
-            let free_count = self.score_i64(i64::from(source_case.free_count))?;
-            scores.push(self.score_node([
-                self.par_score(pattern),
-                self.par_score(source),
-                free_count,
-                self.par_score(guard),
-            ])?);
+            let pattern_score = self.par_score(pattern);
+            let source_score = self.par_score(source);
+            let guard_score = self.par_score(guard);
+            case_scores.push(semantics::match_case_score(
+                self,
+                pattern_score,
+                source_score,
+                source_case.free_count,
+                guard_score,
+            )?);
             wire_children.extend([pattern, source]);
-            let guard_present = source_case.guard.is_some() && !self.is_empty(guard);
+            let guard_present = source_case.guard.is_some() && !self.is_semantic_default(guard);
             if guard_present {
                 wire_children.push(guard);
             } else {
                 canonical_case.guard = None;
             }
         }
-        scores.push(self.score_i64(i64::from(shell.connective_used))?);
-        let score = self.score_constructor(Score::MATCH, scores)?;
+        let score = semantics::match_score(self, target_score, case_scores, shell.connective_used)?;
         self.component(&canonical_shell, &wire_children, score, false)
     }
 
@@ -2100,9 +2147,7 @@ impl ParConstruction {
             .ok_or(ParConstructionError::LengthOverflow("Receive child arity"))?;
         Self::require_arity("Receive", expected, children.len())?;
 
-        let persistent = self.score_i64(i64::from(shell.persistent))?;
-        let peek = self.score_i64(i64::from(shell.peek))?;
-        let mut scores = vec![persistent, peek];
+        let mut bind_scores = Vec::with_capacity(shell.binds.len());
         let mut wire_children = Vec::with_capacity(expected);
         let mut cursor = 0usize;
         for bind in &shell.binds {
@@ -2115,11 +2160,17 @@ impl ParConstruction {
                 Some(var) => self.score_tree(&sort_var(var).score)?,
                 None => self.score_i64(Score::ABSENT as i64)?,
             };
-            let bind_scores: Vec<_> = std::iter::once(self.par_score(source))
-                .chain(patterns.iter().map(|pattern| self.par_score(*pattern)))
-                .chain(std::iter::once(remainder))
+            let source_score = self.par_score(source);
+            let pattern_scores = patterns
+                .iter()
+                .map(|pattern| self.par_score(*pattern))
                 .collect();
-            scores.push(self.score_node(bind_scores)?);
+            bind_scores.push(semantics::receive_bind_score(
+                self,
+                source_score,
+                pattern_scores,
+                remainder,
+            )?);
             wire_children.extend(patterns.iter().copied());
             wire_children.push(source);
         }
@@ -2127,20 +2178,25 @@ impl ParConstruction {
         let body = children[cursor];
         let condition = children[cursor + 1];
         wire_children.push(body);
-        let condition_present = shell.condition.is_some() && !self.is_empty(condition);
+        let condition_present = shell.condition.is_some() && !self.is_semantic_default(condition);
         let mut canonical_shell = shell.clone();
         if condition_present {
             wire_children.push(condition);
         } else {
             canonical_shell.condition = None;
         }
-        scores.extend([
-            self.par_score(body),
-            self.score_i64(i64::from(shell.bind_count))?,
-            self.score_i64(i64::from(shell.connective_used))?,
-            self.par_score(condition),
-        ]);
-        let score = self.score_constructor(Score::RECEIVE, scores)?;
+        let body_score = self.par_score(body);
+        let condition_score = self.par_score(condition);
+        let score = semantics::receive_score(
+            self,
+            shell.persistent,
+            shell.peek,
+            bind_scores,
+            body_score,
+            shell.bind_count,
+            shell.connective_used,
+            condition_score,
+        )?;
         self.component(&canonical_shell, &wire_children, score, false)
     }
 
@@ -2367,43 +2423,45 @@ impl ParConstruction {
             return self.schema_expr_component(shell, &[], score);
         };
 
-        let unary_tag = match instance {
-            ExprInstance::ENegBody(_) => Some(Score::ENEG),
-            ExprInstance::ENotBody(_) => Some(Score::ENOT),
-            _ => None,
-        };
-        if let Some(tag) = unary_tag {
+        if matches!(
+            instance,
+            ExprInstance::ENegBody(_) | ExprInstance::ENotBody(_)
+        ) {
             exact("unary Expr", 1, par_children.len())?;
-            let score = self.score_constructor(tag, [self.par_score(par_children[0])])?;
+            let child = self.par_score(par_children[0]);
+            let score = semantics::unary_score(self, semantics::expr_constructor(instance), child)?;
             return self.schema_expr_component(shell, par_children, score);
         }
 
-        let binary_tag = match instance {
-            ExprInstance::EMultBody(_) => Some(Score::EMULT),
-            ExprInstance::EDivBody(_) => Some(Score::EDIV),
-            ExprInstance::EModBody(_) => Some(Score::EMOD),
-            ExprInstance::EPlusBody(_) => Some(Score::EPLUS),
-            ExprInstance::EMinusBody(_) => Some(Score::EMINUS),
-            ExprInstance::ELtBody(_) => Some(Score::ELT),
-            ExprInstance::ELteBody(_) => Some(Score::ELTE),
-            ExprInstance::EGtBody(_) => Some(Score::EGT),
-            ExprInstance::EGteBody(_) => Some(Score::EGTE),
-            ExprInstance::EEqBody(_) => Some(Score::EEQ),
-            ExprInstance::ENeqBody(_) => Some(Score::ENEQ),
-            ExprInstance::EAndBody(_) => Some(Score::EAND),
-            ExprInstance::EOrBody(_) => Some(Score::EOR),
-            ExprInstance::EMatchesBody(_) => Some(Score::EMATCHES),
-            ExprInstance::EPercentPercentBody(_) => Some(Score::EPERCENT),
-            ExprInstance::EPlusPlusBody(_) => Some(Score::EPLUSPLUS),
-            ExprInstance::EMinusMinusBody(_) => Some(Score::EMINUSMINUS),
-            _ => None,
-        };
-        if let Some(tag) = binary_tag {
+        if matches!(
+            instance,
+            ExprInstance::EMultBody(_)
+                | ExprInstance::EDivBody(_)
+                | ExprInstance::EModBody(_)
+                | ExprInstance::EPlusBody(_)
+                | ExprInstance::EMinusBody(_)
+                | ExprInstance::ELtBody(_)
+                | ExprInstance::ELteBody(_)
+                | ExprInstance::EGtBody(_)
+                | ExprInstance::EGteBody(_)
+                | ExprInstance::EEqBody(_)
+                | ExprInstance::ENeqBody(_)
+                | ExprInstance::EAndBody(_)
+                | ExprInstance::EOrBody(_)
+                | ExprInstance::EMatchesBody(_)
+                | ExprInstance::EPercentPercentBody(_)
+                | ExprInstance::EPlusPlusBody(_)
+                | ExprInstance::EMinusMinusBody(_)
+        ) {
             exact("binary Expr", 2, par_children.len())?;
-            let score = self.score_constructor(tag, [
-                self.par_score(par_children[0]),
-                self.par_score(par_children[1]),
-            ])?;
+            let first = self.par_score(par_children[0]);
+            let second = self.par_score(par_children[1]);
+            let score = semantics::binary_score(
+                self,
+                semantics::expr_constructor(instance),
+                first,
+                second,
+            )?;
             return self.schema_expr_component(shell, par_children, score);
         }
 
@@ -2414,21 +2472,32 @@ impl ParConstruction {
                     Some(var) => self.score_tree(&sort_var(var).score)?,
                     None => self.score_i64(-1)?,
                 };
-                let connective = self.score_i64(i64::from(list.connective_used))?;
-                let mut children = Vec::with_capacity(par_children.len() + 2);
-                children.push(remainder);
-                children.extend(par_children.iter().map(|child| self.par_score(*child)));
-                children.push(connective);
-                let score = self.score_constructor(Score::ELIST, children)?;
+                let elements = par_children
+                    .iter()
+                    .map(|child| self.par_score(*child))
+                    .collect();
+                let score = semantics::ordered_collection_score(
+                    self,
+                    Score::ELIST,
+                    Some(remainder),
+                    elements,
+                    list.connective_used,
+                )?;
                 self.schema_expr_component(shell, par_children, score)
             }
             ExprInstance::ETupleBody(tuple) => {
                 exact("ETuple", tuple.ps.len(), par_children.len())?;
-                let connective = self.score_i64(i64::from(tuple.connective_used))?;
-                let mut children = Vec::with_capacity(par_children.len() + 1);
-                children.extend(par_children.iter().map(|child| self.par_score(*child)));
-                children.push(connective);
-                let score = self.score_constructor(Score::ETUPLE, children)?;
+                let elements = par_children
+                    .iter()
+                    .map(|child| self.par_score(*child))
+                    .collect();
+                let score = semantics::ordered_collection_score(
+                    self,
+                    Score::ETUPLE,
+                    None,
+                    elements,
+                    tuple.connective_used,
+                )?;
                 self.schema_expr_component(shell, par_children, score)
             }
             ExprInstance::EMethodBody(method) => {
@@ -2436,14 +2505,18 @@ impl ParConstruction {
                 let (&target, arguments) = par_children
                     .split_last()
                     .expect("EMethod arity proved one target");
-                let method_name = self.score_string(&method.method_name)?;
-                let connective = self.score_i64(i64::from(method.connective_used))?;
-                let mut children = Vec::with_capacity(par_children.len() + 2);
-                children.push(method_name);
-                children.push(self.par_score(target));
-                children.extend(arguments.iter().map(|child| self.par_score(*child)));
-                children.push(connective);
-                let score = self.score_constructor(Score::EMETHOD, children)?;
+                let target_score = self.par_score(target);
+                let argument_scores = arguments
+                    .iter()
+                    .map(|child| self.par_score(*child))
+                    .collect();
+                let score = semantics::method_score(
+                    self,
+                    &method.method_name,
+                    target_score,
+                    argument_scores,
+                    method.connective_used,
+                )?;
                 let wire_children: Vec<_> = std::iter::once(target)
                     .chain(arguments.iter().copied())
                     .collect();
@@ -2466,10 +2539,20 @@ impl ParConstruction {
             }
             ExprInstance::ESetBody(set) => {
                 exact("ESet", set.ps.len(), par_children.len())?;
-                let mut canonical = par_children.to_vec();
+                let mut identities = PathMap::new();
+                let mut canonical: Vec<_> = par_children
+                    .iter()
+                    .copied()
+                    .filter(|par| {
+                        insert_semantic_par_identity(
+                            &mut identities,
+                            WireByteCursor::new(self, WireRoot::ParSemanticIdentity(*par)),
+                            (),
+                        )
+                        .is_none()
+                    })
+                    .collect();
                 canonical.sort_by(|left, right| self.compare_pars(*left, *right));
-                canonical
-                    .dedup_by(|right, left| self.compare_pars(*left, *right) == Ordering::Equal);
 
                 let mut canonical_shell = shell.clone();
                 let ExprInstance::ESetBody(canonical_set) = canonical_shell
@@ -2485,12 +2568,17 @@ impl ParConstruction {
                     Some(var) => self.score_tree(&sort_var(var).score)?,
                     None => self.score_i64(-1)?,
                 };
-                let connective = self.score_i64(i64::from(set.connective_used))?;
-                let mut children = Vec::with_capacity(canonical.len() + 2);
-                children.push(remainder);
-                children.extend(canonical.iter().map(|child| self.par_score(*child)));
-                children.push(connective);
-                let score = self.score_constructor(Score::ESET, children)?;
+                let elements = canonical
+                    .iter()
+                    .map(|child| self.par_score(*child))
+                    .collect();
+                let score = semantics::ordered_collection_score(
+                    self,
+                    Score::ESET,
+                    Some(remainder),
+                    elements,
+                    set.connective_used,
+                )?;
                 self.schema_expr_component(&canonical_shell, &canonical, score)
             }
             ExprInstance::EMapBody(map) => {
@@ -2499,38 +2587,44 @@ impl ParConstruction {
                 struct Pair {
                     key: PlannedPar,
                     value: PlannedPar,
-                    protobuf: usize,
                 }
                 let pair_shell = crate::rhoapi::KeyValuePair {
                     key: Some(Par::default()),
                     value: Some(Par::default()),
                 };
-                let mut pairs = Vec::with_capacity(map.kvs.len());
+                let mut pairs: Vec<Pair> = Vec::with_capacity(map.kvs.len());
+                let mut identities = PathMap::new();
                 for children in par_children.chunks_exact(2) {
-                    pairs.push(Pair {
-                        key: children[0],
-                        value: children[1],
-                        protobuf: self.plan_protobuf(&pair_shell, children)?,
-                    });
+                    let key = children[0];
+                    let value = children[1];
+                    if let Some(resident) = insert_semantic_par_identity(
+                        &mut identities,
+                        WireByteCursor::new(self, WireRoot::ParSemanticIdentity(key)),
+                        pairs.len(),
+                    ) {
+                        if WireByteCursor::new(self, WireRoot::Par(value)).cmp(WireByteCursor::new(
+                            self,
+                            WireRoot::Par(pairs[resident].value),
+                        )) == Ordering::Greater
+                        {
+                            pairs[resident].value = value;
+                        }
+                    } else {
+                        pairs.push(Pair { key, value });
+                    }
                 }
                 pairs.sort_by(|left, right| {
                     ScoreByteCursor::new(self, self.par_score(left.key))
                         .cmp(ScoreByteCursor::new(self, self.par_score(right.key)))
                         .then_with(|| {
-                            WireByteCursor::new(self, WireRoot::Proto(left.protobuf))
-                                .cmp(WireByteCursor::new(self, WireRoot::Proto(right.protobuf)))
+                            WireByteCursor::new(self, WireRoot::KeyValuePair(left.key, left.value))
+                                .cmp(WireByteCursor::new(
+                                    self,
+                                    WireRoot::KeyValuePair(right.key, right.value),
+                                ))
                         })
                 });
-                let mut canonical: Vec<Pair> = Vec::with_capacity(pairs.len());
-                for pair in pairs {
-                    if let Some(previous) = canonical.last_mut() {
-                        if self.compare_pars(previous.key, pair.key) == Ordering::Equal {
-                            *previous = pair;
-                            continue;
-                        }
-                    }
-                    canonical.push(pair);
-                }
+                let canonical = pairs;
 
                 let mut canonical_shell = shell.clone();
                 let ExprInstance::EMapBody(canonical_map) = canonical_shell
@@ -2546,12 +2640,17 @@ impl ParConstruction {
                     Some(var) => self.score_tree(&sort_var(var).score)?,
                     None => self.score_i64(-1)?,
                 };
-                let connective = self.score_i64(i64::from(map.connective_used))?;
-                let mut scores = Vec::with_capacity(canonical.len() + 2);
-                scores.push(remainder);
-                scores.extend(canonical.iter().map(|pair| self.par_score(pair.key)));
-                scores.push(connective);
-                let score = self.score_constructor(Score::EMAP, scores)?;
+                let key_scores = canonical
+                    .iter()
+                    .map(|pair| self.par_score(pair.key))
+                    .collect();
+                let score = semantics::ordered_collection_score(
+                    self,
+                    Score::EMAP,
+                    Some(remainder),
+                    key_scores,
+                    map.connective_used,
+                )?;
                 let wire_children: Vec<_> = canonical
                     .iter()
                     .flat_map(|pair| [pair.key, pair.value])
@@ -2566,9 +2665,12 @@ impl ParConstruction {
                     map_node.snapshot_len,
                     map_node.snapshot_zero_count,
                 )?;
-                let connective = self.score_i64(i64::from(pathmap.connective_used))?;
-                let score =
-                    self.score_constructor(Score::EPATHMAP, [snapshot_score, connective])?;
+                let score = semantics::rpb3_pathmap_score(
+                    self,
+                    false,
+                    snapshot_score,
+                    pathmap.connective_used,
+                )?;
                 let expr_protobuf = self.wrap_proto_node(32, map_protobuf)?;
                 let stable = pathmap.remainder.is_none()
                     && pathmap.locally_free.is_empty()
@@ -2596,9 +2698,12 @@ impl ParConstruction {
                     map_node.snapshot_len,
                     map_node.snapshot_zero_count,
                 )?;
-                let connective = self.score_i64(i64::from(zipper.connective_used))?;
-                let score =
-                    self.score_constructor(Score::EPATHMAP + 1, [snapshot_score, connective])?;
+                let score = semantics::rpb3_pathmap_score(
+                    self,
+                    true,
+                    snapshot_score,
+                    zipper.connective_used,
+                )?;
 
                 let tail = EZipper {
                     pathmap: None,
@@ -3701,6 +3806,10 @@ mod tests {
         }])
     }
 
+    fn planned_semantic_identity_bytes(arena: &ParConstruction, par: PlannedPar) -> Vec<u8> {
+        WireByteCursor::new(arena, WireRoot::ParSemanticIdentity(par)).collect()
+    }
+
     #[test]
     fn schema_plan_is_byte_identical_to_repeated_enot_construction() {
         for depth in [0usize, 1, 4, 32, 128] {
@@ -3907,6 +4016,230 @@ mod tests {
 
         assert_eq!(actual, expected);
         assert_eq!(actual.compact_snapshot(), expected.compact_snapshot());
+    }
+
+    #[test]
+    fn semantic_default_and_outer_identity_match_resident_par_semantics() {
+        let lf_only = Par::default().with_locally_free(vec![7, 0, 9]);
+        let stable = resident_gint(3);
+        let nested_lf = Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::EListBody(EList {
+                ps: vec![stable.clone().with_locally_free(vec![5])],
+                locally_free: Vec::new(),
+                connective_used: false,
+                remainder: None,
+            })),
+        }]);
+        let corpus = [
+            lf_only.clone(),
+            Par::default().with_connective_used(true),
+            stable,
+            nested_lf,
+            Par::default().with_bundles(vec![Bundle {
+                body: Some(resident_gint(8)),
+                write_flag: true,
+                read_flag: false,
+            }]),
+            Par::default().with_conditionals(vec![If {
+                condition: Some(resident_gint(1)),
+                if_true: Some(resident_gint(2)),
+                if_false: Some(resident_gint(3)),
+                locally_free: Vec::new(),
+                connective_used: false,
+            }]),
+        ];
+
+        let mut arena = ParConstruction::new();
+        for resident in corpus {
+            let planned = arena.import_par(&resident).unwrap();
+            let expected = resident.clone().with_locally_free(Vec::new());
+            assert_eq!(
+                planned_semantic_identity_bytes(&arena, planned),
+                expected.protobuf_bytes().unwrap(),
+                "outer identity must omit only root locally_free"
+            );
+            assert_eq!(
+                arena.is_semantic_default(planned),
+                resident == Par::default()
+            );
+        }
+
+        let empty_lf = arena.import_par(&lf_only).unwrap();
+        assert!(arena.is_semantic_default(empty_lf));
+        let nonempty = planned_gint(&mut arena, 11).unwrap();
+        assert!(!arena.is_semantic_default(nonempty));
+    }
+
+    #[test]
+    fn lf_only_receive_condition_and_match_guard_collapse_like_the_resident_sorter() {
+        let body_r = resident_gint(10);
+        let pattern_r = resident_gint(11);
+        let source_r = resident_gint(12);
+        let target_r = resident_gint(13);
+        let lf_only_r = Par::default().with_locally_free(vec![1, 0, 1]);
+
+        let mut arena = ParConstruction::new();
+        let body = arena.import_par(&body_r).unwrap();
+        let pattern = arena.import_par(&pattern_r).unwrap();
+        let source = arena.import_par(&source_r).unwrap();
+        let target = arena.import_par(&target_r).unwrap();
+        let lf_only = arena.import_par(&lf_only_r).unwrap();
+
+        let receive = Receive {
+            binds: Vec::new(),
+            body: Some(body_r),
+            persistent: false,
+            peek: false,
+            bind_count: 0,
+            locally_free: Vec::new(),
+            connective_used: false,
+            condition: Some(lf_only_r.clone()),
+        };
+        let receive_component = arena.receive_component(&receive, &[body, lf_only]).unwrap();
+        let receive_plan = arena
+            .par([(receive_component, Multiplicity::ONE)], Vec::new(), false)
+            .unwrap();
+        let receive_expected = Par::default().with_receives(vec![receive]);
+        assert_eq!(
+            arena.protobuf_bytes(receive_plan),
+            receive_expected.protobuf_bytes().unwrap()
+        );
+
+        let match_term = Match {
+            target: Some(target_r),
+            cases: vec![MatchCase {
+                pattern: Some(pattern_r),
+                source: Some(source_r),
+                free_count: 0,
+                guard: Some(lf_only_r),
+            }],
+            locally_free: Vec::new(),
+            connective_used: false,
+        };
+        let match_component = arena
+            .match_component(&match_term, &[target, pattern, source, lf_only])
+            .unwrap();
+        let match_plan = arena
+            .par([(match_component, Multiplicity::ONE)], Vec::new(), false)
+            .unwrap();
+        let match_expected = Par::default().with_matches(vec![match_term]);
+        assert_eq!(
+            arena.protobuf_bytes(match_plan),
+            match_expected.protobuf_bytes().unwrap()
+        );
+    }
+
+    #[test]
+    fn ac_identity_is_global_and_root_lf_quotiented_for_every_permutation() {
+        const PERMUTATIONS: [[usize; 3]; 6] =
+            [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [
+                2, 1, 0,
+            ]];
+        let base = resident_gint(7);
+        let aliases = [
+            base.clone(),
+            base.clone().with_locally_free(vec![1]),
+            base.with_locally_free(vec![2]),
+        ];
+        let values = [resident_gint(20), resident_gint(10), resident_gint(30)];
+
+        for permutation in PERMUTATIONS {
+            let mut arena = ParConstruction::new();
+            let planned_aliases: Vec<_> = aliases
+                .iter()
+                .map(|par| arena.import_par(par).unwrap())
+                .collect();
+            let planned_values: Vec<_> = values
+                .iter()
+                .map(|par| arena.import_par(par).unwrap())
+                .collect();
+
+            let set_expr = Expr {
+                expr_instance: Some(ExprInstance::ESetBody(ESet {
+                    ps: permutation
+                        .iter()
+                        .map(|&index| aliases[index].clone())
+                        .collect(),
+                    locally_free: Vec::new(),
+                    connective_used: false,
+                    remainder: None,
+                })),
+            };
+            let set_children: Vec<_> = permutation
+                .iter()
+                .map(|&index| planned_aliases[index])
+                .collect();
+            let set_component = arena
+                .expr_component(&set_expr, &set_children, false)
+                .unwrap();
+            let set_plan = arena
+                .par([(set_component, Multiplicity::ONE)], Vec::new(), false)
+                .unwrap();
+            let set_expected =
+                Par::default().with_exprs(vec![ExprSortMatcher::sort_match(&set_expr).term]);
+            assert_eq!(
+                arena.protobuf_bytes(set_plan),
+                set_expected.protobuf_bytes().unwrap(),
+                "set permutation {permutation:?}"
+            );
+
+            let map_expr = Expr {
+                expr_instance: Some(ExprInstance::EMapBody(EMap {
+                    kvs: permutation
+                        .iter()
+                        .map(|&index| KeyValuePair {
+                            key: Some(aliases[index].clone()),
+                            value: Some(values[index].clone()),
+                        })
+                        .collect(),
+                    locally_free: Vec::new(),
+                    connective_used: false,
+                    remainder: None,
+                })),
+            };
+            let map_children: Vec<_> = permutation
+                .iter()
+                .flat_map(|&index| [planned_aliases[index], planned_values[index]])
+                .collect();
+            let map_component = arena
+                .expr_component(&map_expr, &map_children, false)
+                .unwrap();
+            let map_plan = arena
+                .par([(map_component, Multiplicity::ONE)], Vec::new(), false)
+                .unwrap();
+            let map_expected =
+                Par::default().with_exprs(vec![ExprSortMatcher::sort_match(&map_expr).term]);
+            assert_eq!(
+                arena.protobuf_bytes(map_plan),
+                map_expected.protobuf_bytes().unwrap(),
+                "map permutation {permutation:?}"
+            );
+        }
+
+        let nested = |lf| {
+            Par::default().with_exprs(vec![Expr {
+                expr_instance: Some(ExprInstance::EListBody(EList {
+                    ps: vec![resident_gint(9).with_locally_free(lf)],
+                    locally_free: Vec::new(),
+                    connective_used: false,
+                    remainder: None,
+                })),
+            }])
+        };
+        let distinct = [nested(vec![1]), nested(vec![2])];
+        let set_expr = Expr {
+            expr_instance: Some(ExprInstance::ESetBody(ESet {
+                ps: distinct.to_vec(),
+                locally_free: Vec::new(),
+                connective_used: false,
+                remainder: None,
+            })),
+        };
+        let canonical = ExprSortMatcher::sort_match(&set_expr).term;
+        let Some(ExprInstance::ESetBody(set)) = canonical.expr_instance else {
+            panic!("set sorter retains its constructor")
+        };
+        assert_eq!(set.ps.len(), 2, "nested locally_free remains semantic here");
     }
 
     #[test]
