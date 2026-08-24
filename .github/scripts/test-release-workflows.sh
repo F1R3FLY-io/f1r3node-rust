@@ -10,7 +10,8 @@ ruby -ryaml - \
   "$ROOT/.github/workflows/oci-validation.yml" \
   "$ROOT/.github/workflows/merge-recovery-soak.yml" \
   "$ROOT/.github/workflows/ci.yml" \
-  "$ROOT/.github/workflows/deployment-train.yml" <<'RUBY'
+  "$ROOT/.github/workflows/deployment-train.yml" \
+  "$ROOT/.githooks/pre-push" <<'RUBY'
 def trigger(document)
   document["on"] || document[true]
 end
@@ -19,7 +20,7 @@ def fail_if(condition, message)
   abort(message) if condition
 end
 
-release_path, evidence_path, soakin_path, canary_path, oci_path, soak_path, ci_path, train_path = ARGV
+release_path, evidence_path, soakin_path, canary_path, oci_path, soak_path, ci_path, train_path, pre_push_path = ARGV
 release = YAML.load_file(release_path)
 evidence = YAML.load_file(evidence_path)
 soakin = YAML.load_file(soakin_path)
@@ -228,5 +229,16 @@ fail_if(!train_text.include?('gh workflow run ci.yml --ref "$DEFAULT_BRANCH"'), 
 fail_if(!train_text.include?('-f target_sha="$merge_sha" -f top_pull_request="$top"'), "deployment train must dispatch CI for the exact top merge")
 fail_if(!train_text.include?('/attempts/${run_attempt}/jobs'), "deployment train must read jobs from the selected run attempt")
 fail_if(!train_text.match?(/\.github\/deployment-trains\/\*\.yml\)/), "deployment train must constrain manifest_path to .github/deployment-trains/")
+pre_push_text = File.read(pre_push_path)
+[
+  "check-workflow-invariants.sh",
+  "test-ci-stack-gate.sh",
+  "test-release-train.sh",
+  "test-release-workflows.sh",
+].each do |script|
+  fail_if(!pre_push_text.include?(script), "pre-push must run #{script}")
+end
+fail_if(!pre_push_text.include?('pid_ci'), "pre-push must wait for the CI unit test suite")
+fail_if(!pre_push_text.include?('SKIP_CI_TESTS'), "pre-push must expose the CI unit test skip control")
 puts "release workflow tests passed"
 RUBY
