@@ -72,6 +72,119 @@ use super::types::MultiParentCasperImpl;
 use crate::rust::errors::CasperError;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 
+/// Consecutive containment refusals of strictly rising derived floors
+/// against one pinned LFB before the hold is declared a finality
+/// divergence. Deliberately a constant, not configuration (the floor
+/// walk-depth report sets the precedent): there is no per-topology trade
+/// here — no operator wants detection later, and earlier than the
+/// transient-recovery bound is false positives for every deployment
+/// equally. The one legitimate transient — a rejected-then-recovered
+/// deploy whose re-homed carrier has not finalized yet — resolves within a
+/// few floor advances or not at all.
+const DIVERGENCE_ESCALATION_REFUSALS: u64 = 10;
+
+/// Detects a finality DIVERGENCE from the containment gate's refusals.
+///
+/// The gate itself is the last line of finality safety: it refuses to
+/// designate a state that is missing effects settled under the current
+/// LFB. This monitor makes a persistent refusal LOUD. The discriminator is
+/// structural, not temporal: refusals whose derived floors keep RISING
+/// against one pinned LFB mean the shard is finalizing without this node
+/// (in CI instance ucc-i6 a wedged node logged 399 such refusals, derived
+/// rising h294 -> h472, over 14.5 silent minutes). A class-A stall never
+/// trips it — its derivations do not rise — and a transient re-homing
+/// clears it by advancing. Escalation is one ERROR plus the
+/// `finality.divergence.detected` counter; proposing is deliberately NOT
+/// halted (a wedged node's proposals follow the estimator, not its LFB,
+/// and remained valid throughout the observed incident — halting would
+/// shrink the honest proposer set exactly when certification needs it).
+pub struct DivergenceMonitor {
+    state: std::sync::Mutex<HoldStreak>,
+    diverged: AtomicBool,
+}
+
+#[derive(Default)]
+struct HoldStreak {
+    pinned_lfb: Option<BlockHash>,
+    refusals: u64,
+    first_derived_number: i64,
+    latest_derived_number: i64,
+}
+
+impl Default for DivergenceMonitor {
+    fn default() -> Self {
+        Self {
+            state: std::sync::Mutex::new(HoldStreak::default()),
+            diverged: AtomicBool::new(false),
+        }
+    }
+}
+
+impl DivergenceMonitor {
+    /// Lock the streak state, recovering from poison: the monitor is
+    /// telemetry — a panic elsewhere while the lock was held must never
+    /// escalate into a finalizer panic. The recovered state is at worst a
+    /// stale streak, which the next advance or hold rewrites.
+    fn streak(&self) -> std::sync::MutexGuard<'_, HoldStreak> {
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// A containing floor was adopted: any streak is over. If the monitor
+    /// had escalated, the divergence resolved itself (a re-homed carrier
+    /// finalized and containment passed) — say so at INFO.
+    pub fn on_advance(&self) {
+        *self.streak() = HoldStreak::default();
+        if self.diverged.swap(false, Ordering::SeqCst) {
+            tracing::info!(
+                target: "f1r3fly.finalizer",
+                "containment hold cleared: a containing floor was adopted; \
+                 the finality divergence resolved"
+            );
+        }
+    }
+
+    /// The gate refused a strictly higher derived floor.
+    pub fn on_containment_hold(&self, current_lfb: &BlockHash, derived_number: i64) {
+        let escalate = {
+            let mut streak = self.streak();
+            if streak.pinned_lfb.as_ref() != Some(current_lfb) {
+                *streak = HoldStreak {
+                    pinned_lfb: Some(current_lfb.clone()),
+                    refusals: 0,
+                    first_derived_number: derived_number,
+                    latest_derived_number: derived_number,
+                };
+            }
+            streak.refusals += 1;
+            streak.latest_derived_number = streak.latest_derived_number.max(derived_number);
+            streak.refusals >= DIVERGENCE_ESCALATION_REFUSALS
+                && streak.latest_derived_number > streak.first_derived_number
+        };
+        if escalate && !self.diverged.swap(true, Ordering::SeqCst) {
+            metrics::counter!(
+                crate::rust::metrics_constants::FINALITY_DIVERGENCE_DETECTED_METRIC,
+                "source" => crate::rust::metrics_constants::CASPER_METRICS_SOURCE
+            )
+            .increment(1);
+            tracing::error!(
+                target: "f1r3fly.finalizer",
+                pinned_lfb = %PrettyPrinter::build_string_bytes(current_lfb),
+                latest_refused_floor = derived_number,
+                "FINALITY DIVERGENCE: the shard keeps finalizing floors whose \
+                 state is missing effects settled under this node's LFB. This \
+                 node's finalized read surface is frozen and will not recover \
+                 without operator action (resync from a peer snapshot); its \
+                 block production continues and remains valid"
+            );
+        }
+    }
+
+    /// True while an escalated divergence stands unresolved.
+    pub fn diverged(&self) -> bool { self.diverged.load(Ordering::SeqCst) }
+}
+
 /// RAII guard that ensures the finalization flag is reset on drop.
 /// This prevents the flag from being stuck in `true` state if the async block
 /// panics or returns early via `?` operator.
@@ -96,6 +209,7 @@ pub(crate) struct FinalizationContext {
     pub(crate) finalization_in_progress: Arc<AtomicBool>,
     pub(crate) enable_mergeable_channel_gc: bool,
     pub(crate) ftt: crate::rust::safety::clique_oracle::FtThreshold,
+    pub(crate) divergence_monitor: Arc<DivergenceMonitor>,
 }
 
 /// Build a `FinalizationContext` from a `MultiParentCasperImpl`. Single
@@ -119,6 +233,7 @@ pub(crate) fn build_finalization_context<
         ftt: crate::rust::safety::clique_oracle::FtThreshold::from_ppm(
             this.casper_shard_conf.fault_tolerance_threshold_ppm,
         ),
+        divergence_monitor: this.divergence_monitor.clone(),
     }
 }
 
@@ -174,6 +289,7 @@ pub(crate) async fn compute_last_finalized_block(
         finalization_in_progress,
         enable_mergeable_channel_gc,
         ftt,
+        divergence_monitor,
     } = ctx;
     let lfb_lookup_started = std::time::Instant::now();
     // Get current LFB hash and height
@@ -316,7 +432,37 @@ pub(crate) async fn compute_last_finalized_block(
         block_number: last_finalized_block_height,
     };
     let new_lfb_opt =
-        crate::rust::finality::floor::floor_of_view(&dag, &block_store, &current, ftt).await?;
+        match crate::rust::finality::floor::floor_of_view(&dag, &block_store, &current, ftt).await?
+        {
+            // `on_advance` is NOT called here: the alarm tracks the
+            // PERSISTED LFB, so the streak clears only after the adoption
+            // effect below succeeds. Clearing on derivation alone would let
+            // repeated effect failures suppress the divergence alarm.
+            crate::rust::finality::floor::FloorOfView::Advance(floor) => Some(floor),
+            crate::rust::finality::floor::FloorOfView::NoAdvance => None,
+            crate::rust::finality::floor::FloorOfView::ContainmentHold { derived } => {
+                divergence_monitor
+                    .on_containment_hold(&last_finalized_block_hash, derived.block_number);
+                None
+            }
+            crate::rust::finality::floor::FloorOfView::AbsenceHold { missing } => {
+                tracing::debug!(
+                    missing = %PrettyPrinter::build_string_bytes(&missing),
+                    "finalizer holds this cycle: the floor walk needs a block \
+                     this node does not hold; catch-up delivers it"
+                );
+                None
+            }
+            crate::rust::finality::floor::FloorOfView::IncompatibilityHold { detail } => {
+                tracing::debug!(
+                    detail,
+                    "finalizer holds this cycle: incompatible majority-agreement \
+                     candidates under a negative fault-tolerance threshold; the \
+                     next merge spanning both branches reconciles them"
+                );
+                None
+            }
+        };
 
     let new_lfb_found = new_lfb_opt.is_some();
     let final_lfb_hash = if let Some(new_lfb) = new_lfb_opt {
@@ -344,6 +490,7 @@ pub(crate) async fn compute_last_finalized_block(
         new_lfb_found_effect((new_lfb.hash.clone(), ft_value))
             .await
             .map_err(CasperError::KvStoreError)?;
+        divergence_monitor.on_advance();
         new_lfb.hash
     } else {
         last_finalized_block_hash
@@ -426,4 +573,103 @@ pub(crate) async fn update_last_finalized_block<T: TransportLayer + Send + Sync>
         });
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod divergence_monitor_tests {
+    use super::*;
+
+    fn lfb(byte: u8) -> BlockHash { BlockHash::from(vec![byte; 32]) }
+
+    /// The ucc-i6 shape in miniature: one pinned LFB, refusals with rising
+    /// derived floors — divergence at the threshold, not one tick sooner.
+    #[test]
+    fn rising_refusals_on_one_pin_escalate_at_the_threshold() {
+        let monitor = DivergenceMonitor::default();
+        let pin = lfb(1);
+        for round in 0..DIVERGENCE_ESCALATION_REFUSALS - 1 {
+            monitor.on_containment_hold(&pin, 294 + round as i64);
+            assert!(
+                !monitor.diverged(),
+                "must not escalate before the threshold"
+            );
+        }
+        monitor.on_containment_hold(&pin, 294 + DIVERGENCE_ESCALATION_REFUSALS as i64);
+        assert!(
+            monitor.diverged(),
+            "rising refusals past the threshold are a divergence"
+        );
+    }
+
+    /// A transient hold — a rejected-then-recovered deploy whose re-homed
+    /// carrier finalizes — advances before the threshold and never escalates.
+    #[test]
+    fn a_hold_that_advances_never_escalates() {
+        let monitor = DivergenceMonitor::default();
+        let pin = lfb(2);
+        for round in 0..DIVERGENCE_ESCALATION_REFUSALS - 1 {
+            monitor.on_containment_hold(&pin, 300 + round as i64);
+        }
+        monitor.on_advance();
+        assert!(!monitor.diverged());
+        monitor.on_containment_hold(&pin, 400);
+        assert!(
+            !monitor.diverged(),
+            "the advance must have reset the streak"
+        );
+    }
+
+    /// Refusals whose derived floor does NOT rise are not a divergence —
+    /// the shard is not finalizing without us, the derivation is just stuck
+    /// (a class-A stall surfaces through the heartbeat, not here).
+    #[test]
+    fn a_pinned_derivation_never_escalates() {
+        let monitor = DivergenceMonitor::default();
+        let pin = lfb(3);
+        for _ in 0..DIVERGENCE_ESCALATION_REFUSALS * 3 {
+            monitor.on_containment_hold(&pin, 294);
+        }
+        assert!(
+            !monitor.diverged(),
+            "a non-rising derivation is not a divergence"
+        );
+    }
+
+    /// The streak is keyed to the pinned LFB: an adoption through another
+    /// path re-pins and restarts the count.
+    #[test]
+    fn a_new_pin_restarts_the_streak() {
+        let monitor = DivergenceMonitor::default();
+        for round in 0..DIVERGENCE_ESCALATION_REFUSALS - 1 {
+            monitor.on_containment_hold(&lfb(4), 294 + round as i64);
+        }
+        for round in 0..DIVERGENCE_ESCALATION_REFUSALS - 1 {
+            monitor.on_containment_hold(&lfb(5), 294 + round as i64);
+            assert!(
+                !monitor.diverged(),
+                "the new pin must not inherit the old streak"
+            );
+        }
+    }
+
+    /// An escalated divergence that later heals (a containing floor is
+    /// adopted) clears the bit and can escalate again on a fresh streak.
+    #[test]
+    fn recovery_clears_the_divergence_and_rearms() {
+        let monitor = DivergenceMonitor::default();
+        let pin = lfb(6);
+        for round in 0..=DIVERGENCE_ESCALATION_REFUSALS {
+            monitor.on_containment_hold(&pin, 294 + round as i64);
+        }
+        assert!(monitor.diverged());
+        monitor.on_advance();
+        assert!(
+            !monitor.diverged(),
+            "adoption of a containing floor resolves it"
+        );
+        for round in 0..=DIVERGENCE_ESCALATION_REFUSALS {
+            monitor.on_containment_hold(&lfb(7), 500 + round as i64);
+        }
+        assert!(monitor.diverged(), "a fresh streak must escalate again");
+    }
 }
