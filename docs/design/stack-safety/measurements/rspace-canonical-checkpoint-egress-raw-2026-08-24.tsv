@@ -1,0 +1,517 @@
+   Compiling memchr v2.8.0
+   Compiling indexmap v2.14.0
+   Compiling num-traits v0.2.19
+   Compiling zerocopy-derive v0.8.48
+   Compiling generic-array v0.14.9
+   Compiling serde v1.0.228
+   Compiling subtle v2.6.1
+   Compiling raw-cpuid v11.6.0
+   Compiling itertools v0.10.5
+   Compiling nibble_vec v0.1.0
+   Compiling same-file v1.0.6
+   Compiling num_cpus v1.17.0
+   Compiling is-terminal v0.4.17
+   Compiling walkdir v2.5.0
+   Compiling radix_trie v0.2.1
+   Compiling aho-corasick v1.1.4
+   Compiling serde_json v1.0.150
+   Compiling crypto-common v0.1.6
+   Compiling block-buffer v0.10.4
+   Compiling serde_urlencoded v0.7.1
+   Compiling bincode v1.3.3
+   Compiling tracing-serde v0.2.0
+   Compiling tinytemplate v1.2.1
+   Compiling digest v0.10.7
+   Compiling pathmap v0.2.2
+   Compiling chrono v0.4.44
+   Compiling counter v0.5.7
+   Compiling ordered-float v4.6.0
+   Compiling plotters v0.3.7
+   Compiling tracing-subscriber v0.3.23
+   Compiling blake2 v0.10.6
+   Compiling h2 v0.4.14
+   Compiling tower v0.5.3
+   Compiling zerocopy v0.8.48
+   Compiling heed-types v0.21.0
+   Compiling heed v0.22.1
+   Compiling criterion-plot v0.5.0
+   Compiling regex-automata v0.4.14
+   Compiling tree-sitter v0.25.10
+   Compiling quanta v0.12.6
+   Compiling regex v1.12.3
+   Compiling rstest_macros v0.19.0
+   Compiling rholang-tree-sitter-proc-macro v0.1.2 (/home/dylon/Workspace/f1r3fly.io/rholang-rs-cost-accounting-transpiler/rholang-tree-sitter-proc-macro)
+   Compiling hyper v1.9.0
+   Compiling ppv-lite86 v0.2.21
+   Compiling ahash v0.8.12
+   Compiling half v2.7.1
+   Compiling rstest v0.19.0
+   Compiling metrics v0.23.1
+   Compiling hashbrown v0.14.5
+   Compiling ciborium-ll v0.2.2
+   Compiling rand_chacha v0.9.0
+   Compiling rand_chacha v0.3.1
+   Compiling ciborium v0.2.2
+   Compiling rand v0.9.4
+   Compiling rand v0.8.6
+   Compiling dashmap v6.2.1
+   Compiling metrics-util v0.17.0
+   Compiling criterion v0.5.1
+   Compiling proptest v1.11.0
+   Compiling hyper-util v0.1.20
+   Compiling hyper-timeout v0.5.2
+   Compiling axum v0.8.9
+   Compiling tonic v0.14.6
+   Compiling rholang-parser v0.1.0 (/home/dylon/Workspace/f1r3fly.io/rholang-rs-cost-accounting-transpiler/rholang-parser)
+   Compiling shared v0.1.0 (/home/dylon/Workspace/f1r3fly.io/f1r3node-rust-mettail/shared)
+   Compiling rspace_plus_plus v0.1.0 (/home/dylon/Workspace/f1r3fly.io/f1r3node-rust-mettail/rspace++)
+    Finished `bench` profile [optimized] target(s) in 14.16s
+     Running benches/rspace_canonical_egress.rs (target/release/deps/rspace_canonical_egress-420805de031b1e8f)
+CHECK	rspace-canonical-egress-v1	shared	1	1	1	179	e749425a0634fc779768dc385edbb136508f702893acec8cafbd4d67cd88d50c
+OBS	rspace-canonical-egress-v1	shared	1	1	1	0	AB	legacy_typed	2505	37	5392	179
+OBS	rspace-canonical-egress-v1	shared	1	1	1	0	AB	canonical_arena	972	14	2903	179
+OBS	rspace-canonical-egress-v1	shared	1	1	1	1	BA	canonical_arena	872	14	2903	179
+OBS	rspace-canonical-egress-v1	shared	1	1	1	1	BA	legacy_typed	2264	37	5392	179
+OBS	rspace-canonical-egress-v1	shared	1	1	1	2	BA	canonical_arena	982	14	2903	179
+OBS	rspace-canonical-egress-v1	shared	1	1	1	2	BA	legacy_typed	2274	37	5392	179
+OBS	rspace-canonical-egress-v1	shared	1	1	1	3	BA	canonical_arena	931	14	2903	179
+OBS	rspace-canonical-egress-v1	shared	1	1	1	3	BA	legacy_typed	2154	37	5392	179
+OBS	rspace-canonical-egress-v1	shared	1	1	1	4	AB	legacy_typed	2264	37	5392	179
+OBS	rspace-canonical-egress-v1	shared	1	1	1	4	AB	canonical_arena	902	14	2903	179
+OBS	rspace-canonical-egress-v1	shared	1	1	1	5	AB	legacy_typed	2104	37	5392	179
+OBS	rspace-canonical-egress-v1	shared	1	1	1	5	AB	canonical_arena	822	14	2903	179
+OBS	rspace-canonical-egress-v1	shared	1	1	1	6	BA	canonical_arena	762	14	2903	179
+OBS	rspace-canonical-egress-v1	shared	1	1	1	6	BA	legacy_typed	2014	37	5392	179
+OBS	rspace-canonical-egress-v1	shared	1	1	1	7	AB	legacy_typed	2054	37	5392	179
+OBS	rspace-canonical-egress-v1	shared	1	1	1	7	AB	canonical_arena	811	14	2903	179
+OBS	rspace-canonical-egress-v1	shared	1	1	1	8	BA	canonical_arena	771	14	2903	179
+OBS	rspace-canonical-egress-v1	shared	1	1	1	8	BA	legacy_typed	2054	37	5392	179
+OBS	rspace-canonical-egress-v1	shared	1	1	1	9	AB	legacy_typed	2084	37	5392	179
+OBS	rspace-canonical-egress-v1	shared	1	1	1	9	AB	canonical_arena	791	14	2903	179
+OBS	rspace-canonical-egress-v1	shared	1	1	1	10	BA	canonical_arena	762	14	2903	179
+OBS	rspace-canonical-egress-v1	shared	1	1	1	10	BA	legacy_typed	1984	37	5392	179
+OBS	rspace-canonical-egress-v1	shared	1	1	1	11	AB	legacy_typed	2184	37	5392	179
+OBS	rspace-canonical-egress-v1	shared	1	1	1	11	AB	canonical_arena	802	14	2903	179
+OBS	rspace-canonical-egress-v1	shared	1	1	1	12	BA	canonical_arena	811	14	2903	179
+OBS	rspace-canonical-egress-v1	shared	1	1	1	12	BA	legacy_typed	2164	37	5392	179
+OBS	rspace-canonical-egress-v1	shared	1	1	1	13	BA	canonical_arena	872	14	2903	179
+OBS	rspace-canonical-egress-v1	shared	1	1	1	13	BA	legacy_typed	2043	37	5392	179
+OBS	rspace-canonical-egress-v1	shared	1	1	1	14	AB	legacy_typed	2144	37	5392	179
+OBS	rspace-canonical-egress-v1	shared	1	1	1	14	AB	canonical_arena	781	14	2903	179
+OBS	rspace-canonical-egress-v1	shared	1	1	1	15	AB	legacy_typed	2034	37	5392	179
+OBS	rspace-canonical-egress-v1	shared	1	1	1	15	AB	canonical_arena	772	14	2903	179
+OBS	rspace-canonical-egress-v1	shared	1	1	1	16	BA	canonical_arena	772	14	2903	179
+OBS	rspace-canonical-egress-v1	shared	1	1	1	16	BA	legacy_typed	1994	37	5392	179
+OBS	rspace-canonical-egress-v1	shared	1	1	1	17	BA	canonical_arena	831	14	2903	179
+OBS	rspace-canonical-egress-v1	shared	1	1	1	17	BA	legacy_typed	2074	37	5392	179
+OBS	rspace-canonical-egress-v1	shared	1	1	1	18	AB	legacy_typed	2255	37	5392	179
+OBS	rspace-canonical-egress-v1	shared	1	1	1	18	AB	canonical_arena	832	14	2903	179
+OBS	rspace-canonical-egress-v1	shared	1	1	1	19	BA	canonical_arena	792	14	2903	179
+OBS	rspace-canonical-egress-v1	shared	1	1	1	19	BA	legacy_typed	2053	37	5392	179
+OBS	rspace-canonical-egress-v1	shared	1	1	1	20	AB	legacy_typed	2024	37	5392	179
+OBS	rspace-canonical-egress-v1	shared	1	1	1	20	AB	canonical_arena	792	14	2903	179
+OBS	rspace-canonical-egress-v1	shared	1	1	1	21	BA	canonical_arena	771	14	2903	179
+OBS	rspace-canonical-egress-v1	shared	1	1	1	21	BA	legacy_typed	2034	37	5392	179
+OBS	rspace-canonical-egress-v1	shared	1	1	1	22	AB	legacy_typed	2054	37	5392	179
+OBS	rspace-canonical-egress-v1	shared	1	1	1	22	AB	canonical_arena	781	14	2903	179
+OBS	rspace-canonical-egress-v1	shared	1	1	1	23	BA	canonical_arena	791	14	2903	179
+OBS	rspace-canonical-egress-v1	shared	1	1	1	23	BA	legacy_typed	2084	37	5392	179
+OBS	rspace-canonical-egress-v1	shared	1	1	1	24	BA	canonical_arena	772	14	2903	179
+OBS	rspace-canonical-egress-v1	shared	1	1	1	24	BA	legacy_typed	2074	37	5392	179
+OBS	rspace-canonical-egress-v1	shared	1	1	1	25	BA	canonical_arena	781	14	2903	179
+OBS	rspace-canonical-egress-v1	shared	1	1	1	25	BA	legacy_typed	2084	37	5392	179
+OBS	rspace-canonical-egress-v1	shared	1	1	1	26	AB	legacy_typed	2094	37	5392	179
+OBS	rspace-canonical-egress-v1	shared	1	1	1	26	AB	canonical_arena	832	14	2903	179
+OBS	rspace-canonical-egress-v1	shared	1	1	1	27	AB	legacy_typed	2054	37	5392	179
+OBS	rspace-canonical-egress-v1	shared	1	1	1	27	AB	canonical_arena	781	14	2903	179
+OBS	rspace-canonical-egress-v1	shared	1	1	1	28	BA	canonical_arena	791	14	2903	179
+OBS	rspace-canonical-egress-v1	shared	1	1	1	28	BA	legacy_typed	2014	37	5392	179
+OBS	rspace-canonical-egress-v1	shared	1	1	1	29	AB	legacy_typed	2084	37	5392	179
+OBS	rspace-canonical-egress-v1	shared	1	1	1	29	AB	canonical_arena	792	14	2903	179
+OBS	rspace-canonical-egress-v1	shared	1	1	1	30	AB	legacy_typed	2044	37	5392	179
+OBS	rspace-canonical-egress-v1	shared	1	1	1	30	AB	canonical_arena	811	14	2903	179
+measured shared distinct=1 multiplicity=1 (31 retained pairs)
+CHECK	rspace-canonical-egress-v1	shared	16	1	16	2744	a413f93d08e21dc4cab352900018acf7c7ddfcf4a2c4e0e025a19d51d4f86332
+OBS	rspace-canonical-egress-v1	shared	16	1	16	0	AB	legacy_typed	19548	176	26075	2744
+OBS	rspace-canonical-egress-v1	shared	16	1	16	0	AB	canonical_arena	3246	20	10934	2744
+OBS	rspace-canonical-egress-v1	shared	16	1	16	1	BA	canonical_arena	3076	20	10934	2744
+OBS	rspace-canonical-egress-v1	shared	16	1	16	1	BA	legacy_typed	19547	176	26075	2744
+OBS	rspace-canonical-egress-v1	shared	16	1	16	2	BA	canonical_arena	3317	20	10934	2744
+OBS	rspace-canonical-egress-v1	shared	16	1	16	2	BA	legacy_typed	20899	176	26075	2744
+OBS	rspace-canonical-egress-v1	shared	16	1	16	3	AB	legacy_typed	19287	176	26075	2744
+OBS	rspace-canonical-egress-v1	shared	16	1	16	3	AB	canonical_arena	3116	20	10934	2744
+OBS	rspace-canonical-egress-v1	shared	16	1	16	4	BA	canonical_arena	3126	20	10934	2744
+OBS	rspace-canonical-egress-v1	shared	16	1	16	4	BA	legacy_typed	19036	176	26075	2744
+OBS	rspace-canonical-egress-v1	shared	16	1	16	5	BA	canonical_arena	3196	20	10934	2744
+OBS	rspace-canonical-egress-v1	shared	16	1	16	5	BA	legacy_typed	20829	176	26075	2744
+OBS	rspace-canonical-egress-v1	shared	16	1	16	6	BA	canonical_arena	3126	20	10934	2744
+OBS	rspace-canonical-egress-v1	shared	16	1	16	6	BA	legacy_typed	19216	176	26075	2744
+OBS	rspace-canonical-egress-v1	shared	16	1	16	7	AB	legacy_typed	18865	176	26075	2744
+OBS	rspace-canonical-egress-v1	shared	16	1	16	7	AB	canonical_arena	3176	20	10934	2744
+OBS	rspace-canonical-egress-v1	shared	16	1	16	8	BA	canonical_arena	3106	20	10934	2744
+OBS	rspace-canonical-egress-v1	shared	16	1	16	8	BA	legacy_typed	23485	176	26075	2744
+OBS	rspace-canonical-egress-v1	shared	16	1	16	9	AB	legacy_typed	18755	176	26075	2744
+OBS	rspace-canonical-egress-v1	shared	16	1	16	9	AB	canonical_arena	3085	20	10934	2744
+OBS	rspace-canonical-egress-v1	shared	16	1	16	10	BA	canonical_arena	3015	20	10934	2744
+OBS	rspace-canonical-egress-v1	shared	16	1	16	10	BA	legacy_typed	19797	176	26075	2744
+OBS	rspace-canonical-egress-v1	shared	16	1	16	11	BA	canonical_arena	3186	20	10934	2744
+OBS	rspace-canonical-egress-v1	shared	16	1	16	11	BA	legacy_typed	19006	176	26075	2744
+OBS	rspace-canonical-egress-v1	shared	16	1	16	12	BA	canonical_arena	3156	20	10934	2744
+OBS	rspace-canonical-egress-v1	shared	16	1	16	12	BA	legacy_typed	22884	176	26075	2744
+OBS	rspace-canonical-egress-v1	shared	16	1	16	13	BA	canonical_arena	3216	20	10934	2744
+OBS	rspace-canonical-egress-v1	shared	16	1	16	13	BA	legacy_typed	18876	176	26075	2744
+OBS	rspace-canonical-egress-v1	shared	16	1	16	14	BA	canonical_arena	3076	20	10934	2744
+OBS	rspace-canonical-egress-v1	shared	16	1	16	14	BA	legacy_typed	18806	176	26075	2744
+OBS	rspace-canonical-egress-v1	shared	16	1	16	15	BA	canonical_arena	3056	20	10934	2744
+OBS	rspace-canonical-egress-v1	shared	16	1	16	15	BA	legacy_typed	18926	176	26075	2744
+OBS	rspace-canonical-egress-v1	shared	16	1	16	16	BA	canonical_arena	3196	20	10934	2744
+OBS	rspace-canonical-egress-v1	shared	16	1	16	16	BA	legacy_typed	18966	176	26075	2744
+OBS	rspace-canonical-egress-v1	shared	16	1	16	17	BA	canonical_arena	3116	20	10934	2744
+OBS	rspace-canonical-egress-v1	shared	16	1	16	17	BA	legacy_typed	18916	176	26075	2744
+OBS	rspace-canonical-egress-v1	shared	16	1	16	18	AB	legacy_typed	18746	176	26075	2744
+OBS	rspace-canonical-egress-v1	shared	16	1	16	18	AB	canonical_arena	3146	20	10934	2744
+OBS	rspace-canonical-egress-v1	shared	16	1	16	19	BA	canonical_arena	3166	20	10934	2744
+OBS	rspace-canonical-egress-v1	shared	16	1	16	19	BA	legacy_typed	19036	176	26075	2744
+OBS	rspace-canonical-egress-v1	shared	16	1	16	20	BA	canonical_arena	3075	20	10934	2744
+OBS	rspace-canonical-egress-v1	shared	16	1	16	20	BA	legacy_typed	18706	176	26075	2744
+OBS	rspace-canonical-egress-v1	shared	16	1	16	21	AB	legacy_typed	19006	176	26075	2744
+OBS	rspace-canonical-egress-v1	shared	16	1	16	21	AB	canonical_arena	3206	20	10934	2744
+OBS	rspace-canonical-egress-v1	shared	16	1	16	22	AB	legacy_typed	18626	176	26075	2744
+OBS	rspace-canonical-egress-v1	shared	16	1	16	22	AB	canonical_arena	3166	20	10934	2744
+OBS	rspace-canonical-egress-v1	shared	16	1	16	23	AB	legacy_typed	18595	176	26075	2744
+OBS	rspace-canonical-egress-v1	shared	16	1	16	23	AB	canonical_arena	3076	20	10934	2744
+OBS	rspace-canonical-egress-v1	shared	16	1	16	24	BA	canonical_arena	3086	20	10934	2744
+OBS	rspace-canonical-egress-v1	shared	16	1	16	24	BA	legacy_typed	18735	176	26075	2744
+OBS	rspace-canonical-egress-v1	shared	16	1	16	25	AB	legacy_typed	18856	176	26075	2744
+OBS	rspace-canonical-egress-v1	shared	16	1	16	25	AB	canonical_arena	3136	20	10934	2744
+OBS	rspace-canonical-egress-v1	shared	16	1	16	26	BA	canonical_arena	3076	20	10934	2744
+OBS	rspace-canonical-egress-v1	shared	16	1	16	26	BA	legacy_typed	18906	176	26075	2744
+OBS	rspace-canonical-egress-v1	shared	16	1	16	27	BA	canonical_arena	3096	20	10934	2744
+OBS	rspace-canonical-egress-v1	shared	16	1	16	27	BA	legacy_typed	18775	176	26075	2744
+OBS	rspace-canonical-egress-v1	shared	16	1	16	28	BA	canonical_arena	3156	20	10934	2744
+OBS	rspace-canonical-egress-v1	shared	16	1	16	28	BA	legacy_typed	18605	176	26075	2744
+OBS	rspace-canonical-egress-v1	shared	16	1	16	29	AB	legacy_typed	18715	176	26075	2744
+OBS	rspace-canonical-egress-v1	shared	16	1	16	29	AB	canonical_arena	3116	20	10934	2744
+OBS	rspace-canonical-egress-v1	shared	16	1	16	30	BA	canonical_arena	3055	20	10934	2744
+OBS	rspace-canonical-egress-v1	shared	16	1	16	30	BA	legacy_typed	20539	176	26075	2744
+measured shared distinct=16 multiplicity=1 (31 retained pairs)
+CHECK	rspace-canonical-egress-v1	shared	256	1	256	43784	00726e5f86b97a85d8d46e5d66c1cbae748ce43a4f3abfd2806faceffeaa7430
+OBS	rspace-canonical-egress-v1	shared	256	1	256	0	AB	legacy_typed	326168	2345	384779	43784
+OBS	rspace-canonical-egress-v1	shared	256	1	256	0	AB	canonical_arena	35467	28	141734	43784
+OBS	rspace-canonical-egress-v1	shared	256	1	256	1	AB	legacy_typed	331508	2345	384779	43784
+OBS	rspace-canonical-egress-v1	shared	256	1	256	1	AB	canonical_arena	35427	28	141734	43784
+OBS	rspace-canonical-egress-v1	shared	256	1	256	2	BA	canonical_arena	34575	28	141734	43784
+OBS	rspace-canonical-egress-v1	shared	256	1	256	2	BA	legacy_typed	325136	2345	384779	43784
+OBS	rspace-canonical-egress-v1	shared	256	1	256	3	BA	canonical_arena	35277	28	141734	43784
+OBS	rspace-canonical-egress-v1	shared	256	1	256	3	BA	legacy_typed	325517	2345	384779	43784
+OBS	rspace-canonical-egress-v1	shared	256	1	256	4	AB	legacy_typed	326649	2345	384779	43784
+OBS	rspace-canonical-egress-v1	shared	256	1	256	4	AB	canonical_arena	36540	28	141734	43784
+OBS	rspace-canonical-egress-v1	shared	256	1	256	5	AB	legacy_typed	333472	2345	384779	43784
+OBS	rspace-canonical-egress-v1	shared	256	1	256	5	AB	canonical_arena	35488	28	141734	43784
+OBS	rspace-canonical-egress-v1	shared	256	1	256	6	AB	legacy_typed	325257	2345	384779	43784
+OBS	rspace-canonical-egress-v1	shared	256	1	256	6	AB	canonical_arena	35097	28	141734	43784
+OBS	rspace-canonical-egress-v1	shared	256	1	256	7	BA	canonical_arena	34526	28	141734	43784
+OBS	rspace-canonical-egress-v1	shared	256	1	256	7	BA	legacy_typed	327311	2345	384779	43784
+OBS	rspace-canonical-egress-v1	shared	256	1	256	8	AB	legacy_typed	325668	2345	384779	43784
+OBS	rspace-canonical-egress-v1	shared	256	1	256	8	AB	canonical_arena	35527	28	141734	43784
+OBS	rspace-canonical-egress-v1	shared	256	1	256	9	BA	canonical_arena	34535	28	141734	43784
+OBS	rspace-canonical-egress-v1	shared	256	1	256	9	BA	legacy_typed	326178	2345	384779	43784
+OBS	rspace-canonical-egress-v1	shared	256	1	256	10	AB	legacy_typed	325137	2345	384779	43784
+OBS	rspace-canonical-egress-v1	shared	256	1	256	10	AB	canonical_arena	35276	28	141734	43784
+OBS	rspace-canonical-egress-v1	shared	256	1	256	11	BA	canonical_arena	34535	28	141734	43784
+OBS	rspace-canonical-egress-v1	shared	256	1	256	11	BA	legacy_typed	326098	2345	384779	43784
+OBS	rspace-canonical-egress-v1	shared	256	1	256	12	BA	canonical_arena	35066	28	141734	43784
+OBS	rspace-canonical-egress-v1	shared	256	1	256	12	BA	legacy_typed	325046	2345	384779	43784
+OBS	rspace-canonical-egress-v1	shared	256	1	256	13	BA	canonical_arena	35187	28	141734	43784
+OBS	rspace-canonical-egress-v1	shared	256	1	256	13	BA	legacy_typed	324305	2345	384779	43784
+OBS	rspace-canonical-egress-v1	shared	256	1	256	14	BA	canonical_arena	35317	28	141734	43784
+OBS	rspace-canonical-egress-v1	shared	256	1	256	14	BA	legacy_typed	323965	2345	384779	43784
+OBS	rspace-canonical-egress-v1	shared	256	1	256	15	AB	legacy_typed	332841	2345	384779	43784
+OBS	rspace-canonical-egress-v1	shared	256	1	256	15	AB	canonical_arena	35357	28	141734	43784
+OBS	rspace-canonical-egress-v1	shared	256	1	256	16	BA	canonical_arena	34325	28	141734	43784
+OBS	rspace-canonical-egress-v1	shared	256	1	256	16	BA	legacy_typed	325016	2345	384779	43784
+OBS	rspace-canonical-egress-v1	shared	256	1	256	17	AB	legacy_typed	337310	2345	384779	43784
+OBS	rspace-canonical-egress-v1	shared	256	1	256	17	AB	canonical_arena	35457	28	141734	43784
+OBS	rspace-canonical-egress-v1	shared	256	1	256	18	AB	legacy_typed	325607	2345	384779	43784
+OBS	rspace-canonical-egress-v1	shared	256	1	256	18	AB	canonical_arena	35257	28	141734	43784
+OBS	rspace-canonical-egress-v1	shared	256	1	256	19	AB	legacy_typed	332541	2345	384779	43784
+OBS	rspace-canonical-egress-v1	shared	256	1	256	19	AB	canonical_arena	35217	28	141734	43784
+OBS	rspace-canonical-egress-v1	shared	256	1	256	20	AB	legacy_typed	325006	2345	384779	43784
+OBS	rspace-canonical-egress-v1	shared	256	1	256	20	AB	canonical_arena	35287	28	141734	43784
+OBS	rspace-canonical-egress-v1	shared	256	1	256	21	BA	canonical_arena	34376	28	141734	43784
+OBS	rspace-canonical-egress-v1	shared	256	1	256	21	BA	legacy_typed	325477	2345	384779	43784
+OBS	rspace-canonical-egress-v1	shared	256	1	256	22	AB	legacy_typed	325307	2345	384779	43784
+OBS	rspace-canonical-egress-v1	shared	256	1	256	22	AB	canonical_arena	35057	28	141734	43784
+OBS	rspace-canonical-egress-v1	shared	256	1	256	23	BA	canonical_arena	34546	28	141734	43784
+OBS	rspace-canonical-egress-v1	shared	256	1	256	23	BA	legacy_typed	545614	2345	384779	43784
+OBS	rspace-canonical-egress-v1	shared	256	1	256	24	AB	legacy_typed	467206	2345	384779	43784
+OBS	rspace-canonical-egress-v1	shared	256	1	256	24	AB	canonical_arena	51107	28	141734	43784
+OBS	rspace-canonical-egress-v1	shared	256	1	256	25	BA	canonical_arena	44134	28	141734	43784
+OBS	rspace-canonical-egress-v1	shared	256	1	256	25	BA	legacy_typed	410379	2345	384779	43784
+OBS	rspace-canonical-egress-v1	shared	256	1	256	26	AB	legacy_typed	329905	2345	384779	43784
+OBS	rspace-canonical-egress-v1	shared	256	1	256	26	AB	canonical_arena	35577	28	141734	43784
+OBS	rspace-canonical-egress-v1	shared	256	1	256	27	BA	canonical_arena	34345	28	141734	43784
+OBS	rspace-canonical-egress-v1	shared	256	1	256	27	BA	legacy_typed	329645	2345	384779	43784
+OBS	rspace-canonical-egress-v1	shared	256	1	256	28	AB	legacy_typed	329515	2345	384779	43784
+OBS	rspace-canonical-egress-v1	shared	256	1	256	28	AB	canonical_arena	35407	28	141734	43784
+OBS	rspace-canonical-egress-v1	shared	256	1	256	29	AB	legacy_typed	328483	2345	384779	43784
+OBS	rspace-canonical-egress-v1	shared	256	1	256	29	AB	canonical_arena	35588	28	141734	43784
+OBS	rspace-canonical-egress-v1	shared	256	1	256	30	AB	legacy_typed	327611	2345	384779	43784
+OBS	rspace-canonical-egress-v1	shared	256	1	256	30	AB	canonical_arena	35237	28	141734	43784
+measured shared distinct=256 multiplicity=1 (31 retained pairs)
+CHECK	rspace-canonical-egress-v1	shared	4096	1	4096	700424	78f495ea78d3d40b8e0ac8e965c8a6937feb2482b6e73f479778fc62795c69d4
+OBS	rspace-canonical-egress-v1	shared	4096	1	4096	0	AB	legacy_typed	6583754	36913	6117899	700424
+OBS	rspace-canonical-egress-v1	shared	4096	1	4096	0	AB	canonical_arena	579078	36	2234534	700424
+OBS	rspace-canonical-egress-v1	shared	4096	1	4096	1	BA	canonical_arena	548810	36	2234534	700424
+OBS	rspace-canonical-egress-v1	shared	4096	1	4096	1	BA	legacy_typed	6598772	36913	6117899	700424
+OBS	rspace-canonical-egress-v1	shared	4096	1	4096	2	AB	legacy_typed	6584404	36913	6117899	700424
+OBS	rspace-canonical-egress-v1	shared	4096	1	4096	2	AB	canonical_arena	586242	36	2234534	700424
+OBS	rspace-canonical-egress-v1	shared	4096	1	4096	3	BA	canonical_arena	556015	36	2234534	700424
+OBS	rspace-canonical-egress-v1	shared	4096	1	4096	3	BA	legacy_typed	6628348	36913	6117899	700424
+OBS	rspace-canonical-egress-v1	shared	4096	1	4096	4	AB	legacy_typed	6659016	36913	6117899	700424
+OBS	rspace-canonical-egress-v1	shared	4096	1	4096	4	AB	canonical_arena	571043	36	2234534	700424
+OBS	rspace-canonical-egress-v1	shared	4096	1	4096	5	AB	legacy_typed	6606376	36913	6117899	700424
+OBS	rspace-canonical-egress-v1	shared	4096	1	4096	5	AB	canonical_arena	552077	36	2234534	700424
+OBS	rspace-canonical-egress-v1	shared	4096	1	4096	6	BA	canonical_arena	551425	36	2234534	700424
+OBS	rspace-canonical-egress-v1	shared	4096	1	4096	6	BA	legacy_typed	6587951	36913	6117899	700424
+OBS	rspace-canonical-egress-v1	shared	4096	1	4096	7	BA	canonical_arena	561826	36	2234534	700424
+OBS	rspace-canonical-egress-v1	shared	4096	1	4096	7	BA	legacy_typed	6604242	36913	6117899	700424
+OBS	rspace-canonical-egress-v1	shared	4096	1	4096	8	BA	canonical_arena	603775	36	2234534	700424
+OBS	rspace-canonical-egress-v1	shared	4096	1	4096	8	BA	legacy_typed	6639839	36913	6117899	700424
+OBS	rspace-canonical-egress-v1	shared	4096	1	4096	9	BA	canonical_arena	559270	36	2234534	700424
+OBS	rspace-canonical-egress-v1	shared	4096	1	4096	9	BA	legacy_typed	6581640	36913	6117899	700424
+OBS	rspace-canonical-egress-v1	shared	4096	1	4096	10	BA	canonical_arena	559891	36	2234534	700424
+OBS	rspace-canonical-egress-v1	shared	4096	1	4096	10	BA	legacy_typed	6599012	36913	6117899	700424
+OBS	rspace-canonical-egress-v1	shared	4096	1	4096	11	BA	canonical_arena	563048	36	2234534	700424
+OBS	rspace-canonical-egress-v1	shared	4096	1	4096	11	BA	legacy_typed	6617768	36913	6117899	700424
+OBS	rspace-canonical-egress-v1	shared	4096	1	4096	12	BA	canonical_arena	607702	36	2234534	700424
+OBS	rspace-canonical-egress-v1	shared	4096	1	4096	12	BA	legacy_typed	6607970	36913	6117899	700424
+OBS	rspace-canonical-egress-v1	shared	4096	1	4096	13	BA	canonical_arena	566635	36	2234534	700424
+OBS	rspace-canonical-egress-v1	shared	4096	1	4096	13	BA	legacy_typed	6619962	36913	6117899	700424
+OBS	rspace-canonical-egress-v1	shared	4096	1	4096	14	BA	canonical_arena	588876	36	2234534	700424
+OBS	rspace-canonical-egress-v1	shared	4096	1	4096	14	BA	legacy_typed	6611847	36913	6117899	700424
+OBS	rspace-canonical-egress-v1	shared	4096	1	4096	15	BA	canonical_arena	553780	36	2234534	700424
+OBS	rspace-canonical-egress-v1	shared	4096	1	4096	15	BA	legacy_typed	6571490	36913	6117899	700424
+OBS	rspace-canonical-egress-v1	shared	4096	1	4096	16	AB	legacy_typed	6593903	36913	6117899	700424
+OBS	rspace-canonical-egress-v1	shared	4096	1	4096	16	AB	canonical_arena	552728	36	2234534	700424
+OBS	rspace-canonical-egress-v1	shared	4096	1	4096	17	BA	canonical_arena	556385	36	2234534	700424
+OBS	rspace-canonical-egress-v1	shared	4096	1	4096	17	BA	legacy_typed	6619701	36913	6117899	700424
+OBS	rspace-canonical-egress-v1	shared	4096	1	4096	18	AB	legacy_typed	6636203	36913	6117899	700424
+OBS	rspace-canonical-egress-v1	shared	4096	1	4096	18	AB	canonical_arena	601069	36	2234534	700424
+OBS	rspace-canonical-egress-v1	shared	4096	1	4096	19	BA	canonical_arena	585810	36	2234534	700424
+OBS	rspace-canonical-egress-v1	shared	4096	1	4096	19	BA	legacy_typed	6658385	36913	6117899	700424
+OBS	rspace-canonical-egress-v1	shared	4096	1	4096	20	AB	legacy_typed	6684284	36913	6117899	700424
+OBS	rspace-canonical-egress-v1	shared	4096	1	4096	20	AB	canonical_arena	629143	36	2234534	700424
+OBS	rspace-canonical-egress-v1	shared	4096	1	4096	21	AB	legacy_typed	6677181	36913	6117899	700424
+OBS	rspace-canonical-egress-v1	shared	4096	1	4096	21	AB	canonical_arena	612071	36	2234534	700424
+OBS	rspace-canonical-egress-v1	shared	4096	1	4096	22	AB	legacy_typed	6657673	36913	6117899	700424
+OBS	rspace-canonical-egress-v1	shared	4096	1	4096	22	AB	canonical_arena	626218	36	2234534	700424
+OBS	rspace-canonical-egress-v1	shared	4096	1	4096	23	AB	legacy_typed	6729991	36913	6117899	700424
+OBS	rspace-canonical-egress-v1	shared	4096	1	4096	23	AB	canonical_arena	616940	36	2234534	700424
+OBS	rspace-canonical-egress-v1	shared	4096	1	4096	24	AB	legacy_typed	6731624	36913	6117899	700424
+OBS	rspace-canonical-egress-v1	shared	4096	1	4096	24	AB	canonical_arena	654722	36	2234534	700424
+OBS	rspace-canonical-egress-v1	shared	4096	1	4096	25	BA	canonical_arena	611369	36	2234534	700424
+OBS	rspace-canonical-egress-v1	shared	4096	1	4096	25	BA	legacy_typed	6697950	36913	6117899	700424
+OBS	rspace-canonical-egress-v1	shared	4096	1	4096	26	BA	canonical_arena	605317	36	2234534	700424
+OBS	rspace-canonical-egress-v1	shared	4096	1	4096	26	BA	legacy_typed	6635582	36913	6117899	700424
+OBS	rspace-canonical-egress-v1	shared	4096	1	4096	27	AB	legacy_typed	6694734	36913	6117899	700424
+OBS	rspace-canonical-egress-v1	shared	4096	1	4096	27	AB	canonical_arena	666684	36	2234534	700424
+OBS	rspace-canonical-egress-v1	shared	4096	1	4096	28	BA	canonical_arena	634693	36	2234534	700424
+OBS	rspace-canonical-egress-v1	shared	4096	1	4096	28	BA	legacy_typed	6702698	36913	6117899	700424
+OBS	rspace-canonical-egress-v1	shared	4096	1	4096	29	AB	legacy_typed	6706596	36913	6117899	700424
+OBS	rspace-canonical-egress-v1	shared	4096	1	4096	29	AB	canonical_arena	651936	36	2234534	700424
+OBS	rspace-canonical-egress-v1	shared	4096	1	4096	30	BA	canonical_arena	646566	36	2234534	700424
+OBS	rspace-canonical-egress-v1	shared	4096	1	4096	30	BA	legacy_typed	6724590	36913	6117899	700424
+measured shared distinct=4096 multiplicity=1 (31 retained pairs)
+CHECK	rspace-canonical-egress-v1	unshared	256	1	256	44040	580c07a6424808eaca6f8dc25da71dddc0f7b5d8c5ed56cbf24e42a751b5477c
+OBS	rspace-canonical-egress-v1	unshared	256	1	256	0	AB	legacy_typed	293096	2346	386669	44040
+OBS	rspace-canonical-egress-v1	unshared	256	1	256	0	AB	canonical_arena	45426	29	143109	44040
+OBS	rspace-canonical-egress-v1	unshared	256	1	256	1	BA	canonical_arena	43793	29	143109	44040
+OBS	rspace-canonical-egress-v1	unshared	256	1	256	1	BA	legacy_typed	292725	2346	386669	44040
+OBS	rspace-canonical-egress-v1	unshared	256	1	256	2	BA	canonical_arena	45026	29	143109	44040
+OBS	rspace-canonical-egress-v1	unshared	256	1	256	2	BA	legacy_typed	292404	2346	386669	44040
+OBS	rspace-canonical-egress-v1	unshared	256	1	256	3	AB	legacy_typed	292975	2346	386669	44040
+OBS	rspace-canonical-egress-v1	unshared	256	1	256	3	AB	canonical_arena	44835	29	143109	44040
+OBS	rspace-canonical-egress-v1	unshared	256	1	256	4	BA	canonical_arena	49173	29	143109	44040
+OBS	rspace-canonical-egress-v1	unshared	256	1	256	4	BA	legacy_typed	292745	2346	386669	44040
+OBS	rspace-canonical-egress-v1	unshared	256	1	256	5	AB	legacy_typed	293416	2346	386669	44040
+OBS	rspace-canonical-egress-v1	unshared	256	1	256	5	AB	canonical_arena	45126	29	143109	44040
+OBS	rspace-canonical-egress-v1	unshared	256	1	256	6	BA	canonical_arena	43523	29	143109	44040
+OBS	rspace-canonical-egress-v1	unshared	256	1	256	6	BA	legacy_typed	293056	2346	386669	44040
+OBS	rspace-canonical-egress-v1	unshared	256	1	256	7	BA	canonical_arena	45045	29	143109	44040
+OBS	rspace-canonical-egress-v1	unshared	256	1	256	7	BA	legacy_typed	292624	2346	386669	44040
+OBS	rspace-canonical-egress-v1	unshared	256	1	256	8	AB	legacy_typed	298846	2346	386669	44040
+OBS	rspace-canonical-egress-v1	unshared	256	1	256	8	AB	canonical_arena	46989	29	143109	44040
+OBS	rspace-canonical-egress-v1	unshared	256	1	256	9	BA	canonical_arena	43813	29	143109	44040
+OBS	rspace-canonical-egress-v1	unshared	256	1	256	9	BA	legacy_typed	294519	2346	386669	44040
+OBS	rspace-canonical-egress-v1	unshared	256	1	256	10	BA	canonical_arena	44574	29	143109	44040
+OBS	rspace-canonical-egress-v1	unshared	256	1	256	10	BA	legacy_typed	299147	2346	386669	44040
+OBS	rspace-canonical-egress-v1	unshared	256	1	256	11	AB	legacy_typed	292975	2346	386669	44040
+OBS	rspace-canonical-egress-v1	unshared	256	1	256	11	AB	canonical_arena	44604	29	143109	44040
+OBS	rspace-canonical-egress-v1	unshared	256	1	256	12	AB	legacy_typed	297985	2346	386669	44040
+OBS	rspace-canonical-egress-v1	unshared	256	1	256	12	AB	canonical_arena	45096	29	143109	44040
+OBS	rspace-canonical-egress-v1	unshared	256	1	256	13	AB	legacy_typed	291803	2346	386669	44040
+OBS	rspace-canonical-egress-v1	unshared	256	1	256	13	AB	canonical_arena	44845	29	143109	44040
+OBS	rspace-canonical-egress-v1	unshared	256	1	256	14	BA	canonical_arena	43373	29	143109	44040
+OBS	rspace-canonical-egress-v1	unshared	256	1	256	14	BA	legacy_typed	298626	2346	386669	44040
+OBS	rspace-canonical-egress-v1	unshared	256	1	256	15	BA	canonical_arena	47250	29	143109	44040
+OBS	rspace-canonical-egress-v1	unshared	256	1	256	15	BA	legacy_typed	294208	2346	386669	44040
+OBS	rspace-canonical-egress-v1	unshared	256	1	256	16	AB	legacy_typed	298636	2346	386669	44040
+OBS	rspace-canonical-egress-v1	unshared	256	1	256	16	AB	canonical_arena	45526	29	143109	44040
+OBS	rspace-canonical-egress-v1	unshared	256	1	256	17	AB	legacy_typed	293346	2346	386669	44040
+OBS	rspace-canonical-egress-v1	unshared	256	1	256	17	AB	canonical_arena	46247	29	143109	44040
+OBS	rspace-canonical-egress-v1	unshared	256	1	256	18	AB	legacy_typed	293927	2346	386669	44040
+OBS	rspace-canonical-egress-v1	unshared	256	1	256	18	AB	canonical_arena	45106	29	143109	44040
+OBS	rspace-canonical-egress-v1	unshared	256	1	256	19	BA	canonical_arena	43793	29	143109	44040
+OBS	rspace-canonical-egress-v1	unshared	256	1	256	19	BA	legacy_typed	293045	2346	386669	44040
+OBS	rspace-canonical-egress-v1	unshared	256	1	256	20	AB	legacy_typed	294298	2346	386669	44040
+OBS	rspace-canonical-egress-v1	unshared	256	1	256	20	AB	canonical_arena	51167	29	143109	44040
+OBS	rspace-canonical-egress-v1	unshared	256	1	256	21	BA	canonical_arena	43733	29	143109	44040
+OBS	rspace-canonical-egress-v1	unshared	256	1	256	21	BA	legacy_typed	293446	2346	386669	44040
+OBS	rspace-canonical-egress-v1	unshared	256	1	256	22	BA	canonical_arena	45666	29	143109	44040
+OBS	rspace-canonical-egress-v1	unshared	256	1	256	22	BA	legacy_typed	292665	2346	386669	44040
+OBS	rspace-canonical-egress-v1	unshared	256	1	256	23	AB	legacy_typed	293135	2346	386669	44040
+OBS	rspace-canonical-egress-v1	unshared	256	1	256	23	AB	canonical_arena	44945	29	143109	44040
+OBS	rspace-canonical-egress-v1	unshared	256	1	256	24	AB	legacy_typed	293807	2346	386669	44040
+OBS	rspace-canonical-egress-v1	unshared	256	1	256	24	AB	canonical_arena	44845	29	143109	44040
+OBS	rspace-canonical-egress-v1	unshared	256	1	256	25	BA	canonical_arena	45286	29	143109	44040
+OBS	rspace-canonical-egress-v1	unshared	256	1	256	25	BA	legacy_typed	294718	2346	386669	44040
+OBS	rspace-canonical-egress-v1	unshared	256	1	256	26	AB	legacy_typed	293116	2346	386669	44040
+OBS	rspace-canonical-egress-v1	unshared	256	1	256	26	AB	canonical_arena	44895	29	143109	44040
+OBS	rspace-canonical-egress-v1	unshared	256	1	256	27	AB	legacy_typed	298937	2346	386669	44040
+OBS	rspace-canonical-egress-v1	unshared	256	1	256	27	AB	canonical_arena	45185	29	143109	44040
+OBS	rspace-canonical-egress-v1	unshared	256	1	256	28	AB	legacy_typed	292475	2346	386669	44040
+OBS	rspace-canonical-egress-v1	unshared	256	1	256	28	AB	canonical_arena	44845	29	143109	44040
+OBS	rspace-canonical-egress-v1	unshared	256	1	256	29	AB	legacy_typed	298747	2346	386669	44040
+OBS	rspace-canonical-egress-v1	unshared	256	1	256	29	AB	canonical_arena	45086	29	143109	44040
+OBS	rspace-canonical-egress-v1	unshared	256	1	256	30	AB	legacy_typed	294107	2346	386669	44040
+OBS	rspace-canonical-egress-v1	unshared	256	1	256	30	AB	canonical_arena	44946	29	143109	44040
+measured unshared distinct=256 multiplicity=1 (31 retained pairs)
+CHECK	rspace-canonical-egress-v1	shared	16	2	32	5480	7dc10514f1f6db5986b55d94731cd513cdec274195ee69c7a2aaea2d079fa5ea
+OBS	rspace-canonical-egress-v1	shared	16	2	32	0	BA	canonical_arena	3346	20	13670	5480
+OBS	rspace-canonical-egress-v1	shared	16	2	32	0	BA	legacy_typed	29336	224	34363	5480
+OBS	rspace-canonical-egress-v1	shared	16	2	32	1	AB	legacy_typed	28735	224	34363	5480
+OBS	rspace-canonical-egress-v1	shared	16	2	32	1	AB	canonical_arena	3556	20	13670	5480
+OBS	rspace-canonical-egress-v1	shared	16	2	32	2	AB	legacy_typed	28744	224	34363	5480
+OBS	rspace-canonical-egress-v1	shared	16	2	32	2	AB	canonical_arena	3507	20	13670	5480
+OBS	rspace-canonical-egress-v1	shared	16	2	32	3	BA	canonical_arena	3487	20	13670	5480
+OBS	rspace-canonical-egress-v1	shared	16	2	32	3	BA	legacy_typed	28975	224	34363	5480
+OBS	rspace-canonical-egress-v1	shared	16	2	32	4	BA	canonical_arena	3647	20	13670	5480
+OBS	rspace-canonical-egress-v1	shared	16	2	32	4	BA	legacy_typed	28594	224	34363	5480
+OBS	rspace-canonical-egress-v1	shared	16	2	32	5	BA	canonical_arena	3577	20	13670	5480
+OBS	rspace-canonical-egress-v1	shared	16	2	32	5	BA	legacy_typed	29135	224	34363	5480
+OBS	rspace-canonical-egress-v1	shared	16	2	32	6	AB	legacy_typed	28574	224	34363	5480
+OBS	rspace-canonical-egress-v1	shared	16	2	32	6	AB	canonical_arena	3457	20	13670	5480
+OBS	rspace-canonical-egress-v1	shared	16	2	32	7	BA	canonical_arena	3386	20	13670	5480
+OBS	rspace-canonical-egress-v1	shared	16	2	32	7	BA	legacy_typed	28764	224	34363	5480
+OBS	rspace-canonical-egress-v1	shared	16	2	32	8	AB	legacy_typed	29396	224	34363	5480
+OBS	rspace-canonical-egress-v1	shared	16	2	32	8	AB	canonical_arena	3456	20	13670	5480
+OBS	rspace-canonical-egress-v1	shared	16	2	32	9	AB	legacy_typed	28694	224	34363	5480
+OBS	rspace-canonical-egress-v1	shared	16	2	32	9	AB	canonical_arena	3546	20	13670	5480
+OBS	rspace-canonical-egress-v1	shared	16	2	32	10	BA	canonical_arena	3426	20	13670	5480
+OBS	rspace-canonical-egress-v1	shared	16	2	32	10	BA	legacy_typed	28764	224	34363	5480
+OBS	rspace-canonical-egress-v1	shared	16	2	32	11	AB	legacy_typed	28754	224	34363	5480
+OBS	rspace-canonical-egress-v1	shared	16	2	32	11	AB	canonical_arena	3597	20	13670	5480
+OBS	rspace-canonical-egress-v1	shared	16	2	32	12	BA	canonical_arena	3407	20	13670	5480
+OBS	rspace-canonical-egress-v1	shared	16	2	32	12	BA	legacy_typed	28634	224	34363	5480
+OBS	rspace-canonical-egress-v1	shared	16	2	32	13	BA	canonical_arena	3577	20	13670	5480
+OBS	rspace-canonical-egress-v1	shared	16	2	32	13	BA	legacy_typed	28645	224	34363	5480
+OBS	rspace-canonical-egress-v1	shared	16	2	32	14	BA	canonical_arena	3506	20	13670	5480
+OBS	rspace-canonical-egress-v1	shared	16	2	32	14	BA	legacy_typed	28514	224	34363	5480
+OBS	rspace-canonical-egress-v1	shared	16	2	32	15	AB	legacy_typed	34355	224	34363	5480
+OBS	rspace-canonical-egress-v1	shared	16	2	32	15	AB	canonical_arena	3567	20	13670	5480
+OBS	rspace-canonical-egress-v1	shared	16	2	32	16	BA	canonical_arena	3386	20	13670	5480
+OBS	rspace-canonical-egress-v1	shared	16	2	32	16	BA	legacy_typed	28585	224	34363	5480
+OBS	rspace-canonical-egress-v1	shared	16	2	32	17	BA	canonical_arena	3387	20	13670	5480
+OBS	rspace-canonical-egress-v1	shared	16	2	32	17	BA	legacy_typed	28344	224	34363	5480
+OBS	rspace-canonical-egress-v1	shared	16	2	32	18	AB	legacy_typed	28143	224	34363	5480
+OBS	rspace-canonical-egress-v1	shared	16	2	32	18	AB	canonical_arena	3377	20	13670	5480
+OBS	rspace-canonical-egress-v1	shared	16	2	32	19	BA	canonical_arena	3377	20	13670	5480
+OBS	rspace-canonical-egress-v1	shared	16	2	32	19	BA	legacy_typed	28765	224	34363	5480
+OBS	rspace-canonical-egress-v1	shared	16	2	32	20	AB	legacy_typed	28304	224	34363	5480
+OBS	rspace-canonical-egress-v1	shared	16	2	32	20	AB	canonical_arena	3436	20	13670	5480
+OBS	rspace-canonical-egress-v1	shared	16	2	32	21	BA	canonical_arena	3376	20	13670	5480
+OBS	rspace-canonical-egress-v1	shared	16	2	32	21	BA	legacy_typed	28394	224	34363	5480
+OBS	rspace-canonical-egress-v1	shared	16	2	32	22	BA	canonical_arena	3437	20	13670	5480
+OBS	rspace-canonical-egress-v1	shared	16	2	32	22	BA	legacy_typed	28504	224	34363	5480
+OBS	rspace-canonical-egress-v1	shared	16	2	32	23	AB	legacy_typed	28815	224	34363	5480
+OBS	rspace-canonical-egress-v1	shared	16	2	32	23	AB	canonical_arena	3346	20	13670	5480
+OBS	rspace-canonical-egress-v1	shared	16	2	32	24	BA	canonical_arena	3196	20	13670	5480
+OBS	rspace-canonical-egress-v1	shared	16	2	32	24	BA	legacy_typed	28614	224	34363	5480
+OBS	rspace-canonical-egress-v1	shared	16	2	32	25	AB	legacy_typed	28394	224	34363	5480
+OBS	rspace-canonical-egress-v1	shared	16	2	32	25	AB	canonical_arena	3386	20	13670	5480
+OBS	rspace-canonical-egress-v1	shared	16	2	32	26	AB	legacy_typed	28143	224	34363	5480
+OBS	rspace-canonical-egress-v1	shared	16	2	32	26	AB	canonical_arena	3457	20	13670	5480
+OBS	rspace-canonical-egress-v1	shared	16	2	32	27	BA	canonical_arena	3336	20	13670	5480
+OBS	rspace-canonical-egress-v1	shared	16	2	32	27	BA	legacy_typed	28364	224	34363	5480
+OBS	rspace-canonical-egress-v1	shared	16	2	32	28	AB	legacy_typed	28323	224	34363	5480
+OBS	rspace-canonical-egress-v1	shared	16	2	32	28	AB	canonical_arena	3406	20	13670	5480
+OBS	rspace-canonical-egress-v1	shared	16	2	32	29	BA	canonical_arena	3227	20	13670	5480
+OBS	rspace-canonical-egress-v1	shared	16	2	32	29	BA	legacy_typed	28494	224	34363	5480
+OBS	rspace-canonical-egress-v1	shared	16	2	32	30	AB	legacy_typed	28594	224	34363	5480
+OBS	rspace-canonical-egress-v1	shared	16	2	32	30	AB	canonical_arena	3326	20	13670	5480
+measured shared distinct=16 multiplicity=2 (31 retained pairs)
+CHECK	rspace-canonical-egress-v1	shared	16	16	256	43784	fce298b3e9c8a85151fb2d676ff7223ace27edb330e871d4c2d31ae63d08587a
+OBS	rspace-canonical-egress-v1	shared	16	16	256	0	AB	legacy_typed	149493	897	156539	43784
+OBS	rspace-canonical-egress-v1	shared	16	16	256	0	AB	canonical_arena	5350	20	51974	43784
+OBS	rspace-canonical-egress-v1	shared	16	16	256	1	BA	canonical_arena	4869	20	51974	43784
+OBS	rspace-canonical-egress-v1	shared	16	16	256	1	BA	legacy_typed	143532	897	156539	43784
+OBS	rspace-canonical-egress-v1	shared	16	16	256	2	BA	canonical_arena	5160	20	51974	43784
+OBS	rspace-canonical-egress-v1	shared	16	16	256	2	BA	legacy_typed	142770	897	156539	43784
+OBS	rspace-canonical-egress-v1	shared	16	16	256	3	AB	legacy_typed	142700	897	156539	43784
+OBS	rspace-canonical-egress-v1	shared	16	16	256	3	AB	canonical_arena	5270	20	51974	43784
+OBS	rspace-canonical-egress-v1	shared	16	16	256	4	AB	legacy_typed	142741	897	156539	43784
+OBS	rspace-canonical-egress-v1	shared	16	16	256	4	AB	canonical_arena	5320	20	51974	43784
+OBS	rspace-canonical-egress-v1	shared	16	16	256	5	BA	canonical_arena	4799	20	51974	43784
+OBS	rspace-canonical-egress-v1	shared	16	16	256	5	BA	legacy_typed	142962	897	156539	43784
+OBS	rspace-canonical-egress-v1	shared	16	16	256	6	AB	legacy_typed	142631	897	156539	43784
+OBS	rspace-canonical-egress-v1	shared	16	16	256	6	AB	canonical_arena	5220	20	51974	43784
+OBS	rspace-canonical-egress-v1	shared	16	16	256	7	AB	legacy_typed	147690	897	156539	43784
+OBS	rspace-canonical-egress-v1	shared	16	16	256	7	AB	canonical_arena	5249	20	51974	43784
+OBS	rspace-canonical-egress-v1	shared	16	16	256	8	AB	legacy_typed	142150	897	156539	43784
+OBS	rspace-canonical-egress-v1	shared	16	16	256	8	AB	canonical_arena	5170	20	51974	43784
+OBS	rspace-canonical-egress-v1	shared	16	16	256	9	BA	canonical_arena	4860	20	51974	43784
+OBS	rspace-canonical-egress-v1	shared	16	16	256	9	BA	legacy_typed	142660	897	156539	43784
+OBS	rspace-canonical-egress-v1	shared	16	16	256	10	BA	canonical_arena	5200	20	51974	43784
+OBS	rspace-canonical-egress-v1	shared	16	16	256	10	BA	legacy_typed	146558	897	156539	43784
+OBS	rspace-canonical-egress-v1	shared	16	16	256	11	AB	legacy_typed	151758	897	156539	43784
+OBS	rspace-canonical-egress-v1	shared	16	16	256	11	AB	canonical_arena	5300	20	51974	43784
+OBS	rspace-canonical-egress-v1	shared	16	16	256	12	BA	canonical_arena	4789	20	51974	43784
+OBS	rspace-canonical-egress-v1	shared	16	16	256	12	BA	legacy_typed	142159	897	156539	43784
+OBS	rspace-canonical-egress-v1	shared	16	16	256	13	AB	legacy_typed	143352	897	156539	43784
+OBS	rspace-canonical-egress-v1	shared	16	16	256	13	AB	canonical_arena	5120	20	51974	43784
+OBS	rspace-canonical-egress-v1	shared	16	16	256	14	BA	canonical_arena	4819	20	51974	43784
+OBS	rspace-canonical-egress-v1	shared	16	16	256	14	BA	legacy_typed	142370	897	156539	43784
+OBS	rspace-canonical-egress-v1	shared	16	16	256	15	BA	canonical_arena	5350	20	51974	43784
+OBS	rspace-canonical-egress-v1	shared	16	16	256	15	BA	legacy_typed	142189	897	156539	43784
+OBS	rspace-canonical-egress-v1	shared	16	16	256	16	BA	canonical_arena	5250	20	51974	43784
+OBS	rspace-canonical-egress-v1	shared	16	16	256	16	BA	legacy_typed	142059	897	156539	43784
+OBS	rspace-canonical-egress-v1	shared	16	16	256	17	BA	canonical_arena	5090	20	51974	43784
+OBS	rspace-canonical-egress-v1	shared	16	16	256	17	BA	legacy_typed	155545	897	156539	43784
+OBS	rspace-canonical-egress-v1	shared	16	16	256	18	AB	legacy_typed	142170	897	156539	43784
+OBS	rspace-canonical-egress-v1	shared	16	16	256	18	AB	canonical_arena	5079	20	51974	43784
+OBS	rspace-canonical-egress-v1	shared	16	16	256	19	AB	legacy_typed	142690	897	156539	43784
+OBS	rspace-canonical-egress-v1	shared	16	16	256	19	AB	canonical_arena	5170	20	51974	43784
+OBS	rspace-canonical-egress-v1	shared	16	16	256	20	BA	canonical_arena	4759	20	51974	43784
+OBS	rspace-canonical-egress-v1	shared	16	16	256	20	BA	legacy_typed	142009	897	156539	43784
+OBS	rspace-canonical-egress-v1	shared	16	16	256	21	AB	legacy_typed	149253	897	156539	43784
+OBS	rspace-canonical-egress-v1	shared	16	16	256	21	AB	canonical_arena	5180	20	51974	43784
+OBS	rspace-canonical-egress-v1	shared	16	16	256	22	BA	canonical_arena	4809	20	51974	43784
+OBS	rspace-canonical-egress-v1	shared	16	16	256	22	BA	legacy_typed	142591	897	156539	43784
+OBS	rspace-canonical-egress-v1	shared	16	16	256	23	BA	canonical_arena	5150	20	51974	43784
+OBS	rspace-canonical-egress-v1	shared	16	16	256	23	BA	legacy_typed	142781	897	156539	43784
+OBS	rspace-canonical-egress-v1	shared	16	16	256	24	AB	legacy_typed	142621	897	156539	43784
+OBS	rspace-canonical-egress-v1	shared	16	16	256	24	AB	canonical_arena	5270	20	51974	43784
+OBS	rspace-canonical-egress-v1	shared	16	16	256	25	BA	canonical_arena	4799	20	51974	43784
+OBS	rspace-canonical-egress-v1	shared	16	16	256	25	BA	legacy_typed	141999	897	156539	43784
+OBS	rspace-canonical-egress-v1	shared	16	16	256	26	BA	canonical_arena	5120	20	51974	43784
+OBS	rspace-canonical-egress-v1	shared	16	16	256	26	BA	legacy_typed	142019	897	156539	43784
+OBS	rspace-canonical-egress-v1	shared	16	16	256	27	BA	canonical_arena	5971	20	51974	43784
+OBS	rspace-canonical-egress-v1	shared	16	16	256	27	BA	legacy_typed	141919	897	156539	43784
+OBS	rspace-canonical-egress-v1	shared	16	16	256	28	AB	legacy_typed	148161	897	156539	43784
+OBS	rspace-canonical-egress-v1	shared	16	16	256	28	AB	canonical_arena	5230	20	51974	43784
+OBS	rspace-canonical-egress-v1	shared	16	16	256	29	AB	legacy_typed	141979	897	156539	43784
+OBS	rspace-canonical-egress-v1	shared	16	16	256	29	AB	canonical_arena	5030	20	51974	43784
+OBS	rspace-canonical-egress-v1	shared	16	16	256	30	BA	canonical_arena	4849	20	51974	43784
+OBS	rspace-canonical-egress-v1	shared	16	16	256	30	BA	legacy_typed	141669	897	156539	43784
+measured shared distinct=16 multiplicity=16 (31 retained pairs)

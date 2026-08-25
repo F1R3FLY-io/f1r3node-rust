@@ -1,0 +1,8 @@
+shape	distinct	multiplicity	logical_cardinality	output_bytes	legacy_median_ns	canonical_median_ns	speedup_x	legacy_allocations	canonical_allocations	allocation_reduction_x	legacy_allocated_bytes	canonical_allocated_bytes	allocated_byte_reduction_x
+shared	1	1	1	179	2074	792	2.62	37	14	2.64	5392	2903	1.86
+shared	16	1	16	2744	18926	3126	6.05	176	20	8.80	26075	10934	2.38
+shared	16	2	32	5480	28614	3426	8.35	224	20	11.20	34363	13670	2.51
+shared	16	16	256	43784	142660	5160	27.65	897	20	44.85	156539	51974	3.01
+shared	256	1	256	43784	326178	35276	9.25	2345	28	83.75	384779	141734	2.71
+shared	4096	1	4096	700424	6628348	586242	11.31	36913	36	1025.36	6117899	2234534	2.74
+unshared	256	1	256	44040	293416	45026	6.52	2346	29	80.90	386669	143109	2.70

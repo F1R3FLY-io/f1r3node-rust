@@ -1779,6 +1779,45 @@ hostile mutation corpus, formal cursor/equivalence proofs with failing mutants, 
 geometric time/allocation/RSS experiment. Until those gates pass, RCI2 and RhoPathV2 remain shadow
 formats and no performance or consensus-neutrality conclusion is accepted.
 
+### J-023 — 2026-08-24: serialize a resident identity directly, but preserve its external order
+
+Question: When an RSpace Bag key already contains the exact canonical bincode `Datum` identity used
+by the cold-store DATA leaf, should checkpoint egress decode and re-encode it, or can the PathMap
+cursor feed the destination directly?
+
+Status: IMPLEMENTED, MEASURED, AND FORMALLY GATED FOR DATA. Checkpoint `abd915454` visits the
+authoritative `PathMap<Multiplicity>` with one read zipper and copies the resident identity suffix
+into one per-egress arena. It never creates a typed `Datum` or an occurrence vector. Lightweight
+descriptors retain arena range and multiplicity; after checked cardinality/output-size preflight,
+the bincode sequence framing and identity bytes stream directly into the final buffer.
+
+The first tempting hypothesis—emit raw PathMap visitation order—was rejected before activation.
+The existing cold-store contract orders entries by the complete canonical datum identity bytes,
+whereas the PathMap authority is keyed first by a derived structural prefix. Those orders can
+differ. The selected bridge therefore sorts descriptors by borrowed complete identity slices, not
+decoded values and not a digest. This is the minimum ordering work required to reproduce the
+legacy leaf; it does not flatten the Bag or make the arena authoritative.
+
+The release matrix records exact DATA bytes, leaf digests, and history roots for every arm. Median
+speedup is **2.62×–27.65×**; at 4,096 shared-prefix identities it is **11.31×**, allocations fall
+**36,913 $`\rightarrow`$ 36**, and allocated bytes fall
+**6,117,899 $`\rightarrow`$ 2,234,534**. Headless Heaptrack's ten-operation differential is exactly
+368,770 calls, or the same 36,877-call per-operation reduction as the benchmark counters. The
+durable raw matrix, decision summary, and attribution are linked from stack-safety report §5.40.
+
+Verus proves checked framing/cardinality and cursor/PDA occurrence-sequence equivalence to the
+frozen recursive definition. TLC proves validate/build-private/publish-once atomicity, and a
+premature-publication mutant reaches a visible partial image. These proofs cover the adapter's
+arithmetic and publication protocol; they do not claim to prove bincode, PathMap internals, or the
+cryptographic hash implementation.
+
+DECISION: If an authoritative PathMap endpoint already carries the destination's canonical bytes,
+stream those bytes through a cursor directly into the sink. If the destination format differs,
+compose a validated source cursor with the destination serializer; do not materialize the recursive
+AST as an intermediate. Preserve every external ordering contract explicitly. A retained encoded
+snapshot or a secondary identity-ordered PathMap is not justified by egress alone: it must repay
+its mutation, CoW, and retained-memory costs in a preregistered complete-lifecycle experiment.
+
 ## Open hypotheses and required closure evidence
 
 | ID | Hypothesis | Required evidence before acceptance | Status |
@@ -1795,6 +1834,7 @@ formats and no performance or consensus-neutrality conclusion is accepted.
 | H-010 | Immutable candidate authority plus a separate reservation Bag reduces speculative CoW mutation without a material regression from availability filtering under high reservation pressure. | Frozen decrement/reinsert control; equal exact selections and rollback states; distinct/repeated identities; single/repeated channels; low/high reservation pressure; Criterion confidence decision; allocation and RSS attribution; report-only Heaptrack plus instruction/cache profile; exact release lifecycle. | Open; representation and semantic invariants accepted at `173bf4e07`/`39bc0d999`, performance verdict deliberately not inferred |
 | H-011 | One validated accepted-match publication removes width-dependent split-store overhead without an unacceptable narrow-cell regression. | Frozen git-history control; exact post-state/stale nonmutation; singleton and join-2 99% CI guards; repeated/join/arrival matrix; exact lock/root/allocation attribution; RSS, report-only Heaptrack, and instruction/cache profiles. | **Accepted** at `281c1698a` and pgmcp experiment 313; singleton/join-2 conservative ratios pass 1.05, the powered join-32 replication and wide/repeated/arrival cells improve, and persistent/named/singleton-tail negatives remain documented |
 | H-012 | A logical RCI2 endpoint transcript plus an equality-invariant RhoPathV2 channel frame improves channel-key construction and matching without changing any selected COMM or legacy hash. | Frozen RhoPathV1/canonical-bincode control; complete equality/order/hash corpus; root-LF and connective counterexamples; repeated/ordered channel groups; play/replay/checkpoint/reset/export/import differential; geometric key-size/prefix-sharing matrix; allocations, peak heap, RSS, instructions/cache, and report-only Heaptrack; explicit legacy bridge and epoch proof. | Open; shadow codec and focused correctness matrix implemented, production activation and performance experiment not yet authorized by those results |
+| H-013 | Maintaining a second PathMap keyed by complete datum identity can remove DATA egress descriptor sorting without costing more across mutation, CoW cloning, checkpointing, and retained space. | Frozen J-023 arena-plus-sort control; exact leaf/root differential; insertion/removal/rollback and clone-family maintenance; checkpoint-frequency matrix; retained bytes/root sharing; allocations, RSS, instructions/cache, and headless Heaptrack. | Open; no secondary production index exists |
 
 ## Threats to validity
 

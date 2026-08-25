@@ -10011,6 +10011,69 @@ RhoPathV1 structural channel frame still observes root `locally_free`; that equa
 be repaired at the channel-specific RhoPathV2 boundary without weakening the reversible public
 canonical-`Par` codec.
 
+### 5.40 Canonical resident-byte RSpace DATA checkpoint egress [SS-Y20]
+
+Checkpoint `abd915454` removes the typed reconstruction boundary from the DATA leaf of an RSpace
+checkpoint. Each authoritative `PathMap<Multiplicity>` key already ends in the complete canonical
+bincode identity of its `Datum`; a read zipper now visits that borrowed suffix once, copies it into
+one contiguous byte arena, and retains only an offset/length descriptor plus multiplicity. The
+descriptors are ordered by the complete identity bytes because that is the frozen legacy
+`BTreeMap<Vec<u8>, _>` order. PathMap structural order is deliberately not substituted for that
+consensus-visible ordering. The final bincode `Vec<Vec<u8>>` framing is written directly into its
+destination and multiplicity is expanded there, without constructing a typed `Datum`, a
+`Vec<Datum>`, or a `Vec<Vec<u8>>` shadow.
+
+For distinct identities $`d_i`$ of byte lengths $`L_i`$ and positive multiplicities $`m_i`$, the
+logical cardinality and exact payload-byte contribution are checked before publication:
+
+```math
+C = \sum_i m_i,
+\qquad
+B = 8 + \sum_i m_i(8 + L_i).
+```
+
+Overflow in either sum refuses before the output image is published. One PathMap visit plus one
+descriptor sort gives $`O(\sum_i L_i + D\log D + B)`$ time for $`D`$ distinct identities and
+$`O(\sum_i L_i + D + B)`$ transient storage including the required output. The trie remains the
+membership and multiplicity authority; the arena is a per-egress borrowed-byte staging area, not a
+second data model or retained snapshot.
+
+The exact differential covers empty/singleton/shared-prefix/unshared identities, multiplicities,
+insertion histories, and 64 generated cases. It compares the complete DATA leaf bytes, leaf digest,
+and history root with the frozen typed route. Every case is identical. The complete 434-observation
+release matrix is retained in
+[`measurements/rspace-canonical-checkpoint-egress-raw-2026-08-24.tsv`](measurements/rspace-canonical-checkpoint-egress-raw-2026-08-24.tsv),
+and its decision summary in
+[`measurements/rspace-canonical-checkpoint-egress-2026-08-24.tsv`](measurements/rspace-canonical-checkpoint-egress-2026-08-24.tsv)
+records median speedups from **2.62×** at one identity through **11.31×** at 4,096 shared-prefix
+identities; multiplicity 16 at 16 distinct identities reaches **27.65×** because the treatment
+reuses each resident identity while writing its occurrences. At 4,096 identities, measured
+allocations fall **36,913 $`\rightarrow`$ 36** and requested bytes fall
+**6,117,899 $`\rightarrow`$ 2,234,534**.
+
+Report-only Heaptrack independently attributes exactly **36,877 fewer allocation calls per
+operation** to removal of typed bincode decoding, ordered-entry materialization, per-datum encoding,
+and nested-vector collection. Peak fixture heap is unchanged at displayed precision, so no
+whole-process peak-heap reduction is claimed. The commands, resource envelope, exclusions, and
+trace/report digests are preserved in
+[`measurements/rspace-canonical-checkpoint-egress-heaptrack-2026-08-24.md`](measurements/rspace-canonical-checkpoint-egress-heaptrack-2026-08-24.md).
+
+The formal gate separates sequence equivalence from publication atomicity. Verus verifies eleven
+obligations without cheating: checked bincode framing, cardinality/output-length preflight,
+strictly positive multiplicity, exact occurrence expansion, and equality between the explicit
+cursor/PDA sequence and the frozen recursive specification. TLC checks the private-build protocol:
+malformed input cannot publish, only a complete image becomes visible, and publication occurs at
+most once. An intentionally premature-publication configuration violates
+`VisibleImageIsAtomic`, providing the required non-vacuity witness. The complete Rocq, Verus, Z3,
+TLC, and mCRL2 runner passes; the captured runner log has SHA-256
+`483099d32f80375e9e1b01522639d6b4ce4344128fa4e530199c19621bffd56e`.
+
+This is a stack-safe and byte-neutral optimization. It introduces no native recursion, traversal
+limit, `RUST_MIN_STACK`, `stacker`, retained serialization cache, PathMap modification, or alternate
+cold-store format. Continuation and join egress remain on their existing authoritative layouts;
+their corresponding direct-byte treatment is dependency-gated on the planned PathMap-backed
+continuation/join migration rather than an ad hoc shadow index.
+
 ---
 
 ## 6. Discussion

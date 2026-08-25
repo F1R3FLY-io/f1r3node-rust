@@ -97,6 +97,8 @@ tlc_bounded "$verus_bin" --no-cheating --num-threads 1 \
   "$repo_root/formal/verus/accounting_demand.rs"
 tlc_bounded "$verus_bin" --no-cheating --num-threads 1 \
   "$repo_root/formal/verus/channel_image_cursor.rs"
+tlc_bounded "$verus_bin" --no-cheating --num-threads 1 \
+  "$repo_root/formal/verus/rspace_canonical_egress.rs"
 
 z3_output="$(tlc_bounded z3 "$repo_root/formal/smt/stack_safe_pda_modes.smt2")"
 if [[ "$z3_output" != "unsat" ]]; then
@@ -110,6 +112,21 @@ pushd "$tla_root" >/dev/null
 tlc_run "$tla_metadir" PDAEquivalence.cfg PDAEquivalence.tla -cleanup
 tlc_run "$tla_metadir" SpatialMatcherEquivalence.cfg SpatialMatcherEquivalence.tla -cleanup
 tlc_run "$tla_metadir" RSpaceBagCommit.cfg RSpaceBagCommit.tla -cleanup
+tlc_run "$tla_metadir" RSpaceCanonicalEgress.cfg RSpaceCanonicalEgress.tla -cleanup
+if canonical_egress_mutant="$({
+  tlc_run "$tla_metadir" \
+    RSpaceCanonicalEgressMutant.cfg RSpaceCanonicalEgress.tla -cleanup
+} 2>&1)"; then
+  printf '%s\n' "$canonical_egress_mutant"
+  echo "stack-safe-pda: premature canonical-egress publication mutant unexpectedly passed" >&2
+  exit 1
+fi
+printf '%s\n' "$canonical_egress_mutant"
+if ! grep -q 'Invariant VisibleImageIsAtomic is violated' \
+    <<<"$canonical_egress_mutant"; then
+  echo "stack-safe-pda: canonical-egress mutant failed without the expected invariant witness" >&2
+  exit 1
+fi
 tlc_run "$tla_metadir" FreeMapJournal.cfg FreeMapJournal.tla -cleanup
 tlc_run "$tla_metadir" AccountingDemand.cfg AccountingDemand.tla -cleanup
 popd >/dev/null
