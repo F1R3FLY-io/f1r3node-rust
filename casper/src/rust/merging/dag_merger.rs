@@ -788,6 +788,28 @@ fn split_window_closed_chains(
     })
 }
 
+/// Split the scope's chains against the base lineage's combined event log:
+/// `(kept, rejected)`. A scope chain conflicting with the base loses by
+/// construction — the base is committed and cannot be adjudicated away, so
+/// this is a decision, not a cost preference, and it needs no fallback.
+///
+/// The other direction is structural and load-bearing for finality: the
+/// base's own content is never among the adjudicated chains at all (the
+/// scope is filtered to the band ABOVE the base before this runs), so a
+/// merge can never reject content of its own base lineage. Certification
+/// pins fork choice to the certified branch (heaviest-subtree descent), the
+/// certified branch is every honest proposer's base, and this invariant is
+/// what makes that chain of custody mean "certified content cannot be
+/// merged away" — see tests/merging/base_protection_spec.rs.
+pub fn partition_base_conflicts(
+    scope_chains: Vec<DeployChainIndex>,
+    base_event_log: &rspace_plus_plus::rspace::merger::event_log_index::EventLogIndex,
+) -> (Vec<DeployChainIndex>, Vec<DeployChainIndex>) {
+    scope_chains
+        .into_iter()
+        .partition(|chain| !merging_logic::are_conflicting(&chain.event_log_index, base_event_log))
+}
+
 /// Merge the scope onto `base`.
 ///
 /// `base` is the merging block's state parent — its main parent, or the
@@ -1228,9 +1250,8 @@ pub fn merge(
     // base's matching consume can land side by side un-COMM'd: a state no
     // sequential execution reaches, and one that a later deploy can observe.
     //
-    // A scope chain conflicting with the base loses by construction. The base
-    // is committed — it cannot be adjudicated away — so this is a decision, not
-    // a preference, and it needs no fallback.
+    // A scope chain conflicting with the base loses by construction (see
+    // `partition_base_conflicts`).
     let mut base_event_log =
         rspace_plus_plus::rspace::merger::event_log_index::EventLogIndex::empty();
     let mut base_lineage_sorted: Vec<&BlockHash> = base_lineage_blocks.iter().collect();
@@ -1245,10 +1266,8 @@ pub fn merge(
                 .map_err(CasperError::HistoryError)?;
         }
     }
-    let (actual_seq_all, base_conflicting): (Vec<DeployChainIndex>, Vec<DeployChainIndex>) =
-        actual_seq_all.into_iter().partition(|chain| {
-            !merging_logic::are_conflicting(&chain.event_log_index, &base_event_log)
-        });
+    let (actual_seq_all, base_conflicting) =
+        partition_base_conflicts(actual_seq_all, &base_event_log);
     if !base_conflicting.is_empty() {
         tracing::debug!(
             target: "f1r3fly.merge.cpps",

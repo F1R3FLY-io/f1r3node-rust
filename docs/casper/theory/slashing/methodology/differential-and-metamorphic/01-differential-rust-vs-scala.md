@@ -59,6 +59,22 @@ The methodology forbids leaving any divergence in the `unexpected`
 class; it must be reduced to one of the other three or the audit
 cannot close.
 
+Standing `permitted_bug_fix` divergences in consensus code (Scala is the
+reference; Rust deliberately departs):
+
+- **Clique-oracle disagreement walk is two-sided by height**
+  (`clique_oracle.rs::never_eventually_see_disagreement`): below the
+  target's height only a block off the TARGET'S spine vetoes; Scala's
+  one-sided `isInMainChain(targetMsg, ...)` vetoes all below-target
+  blocks, conflating settled ancestry with rival prefixes (CI stall i5,
+  run 32397055615; pinned by `oracle_stall_replay_spec.rs`).
+- **Fork choice is a heaviest-subtree descent**
+  (`estimator.rs::rank_forkchoices`), not a flat tip re-sort (the ucc-i6
+  certificate revert; pinned by `heaviest_subtree_descent.rs`).
+- **The slashable set is the equivocation class** (`block_status.rs::
+  is_slashable`, 2 variants), not the broad taxonomy — see the
+  slashing-specification amendment.
+
 ---
 
 ## 2 · The slashing differential search engine
