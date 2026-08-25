@@ -1779,6 +1779,34 @@ hostile mutation corpus, formal cursor/equivalence proofs with failing mutants, 
 geometric time/allocation/RSS experiment. Until those gates pass, RCI2 and RhoPathV2 remain shadow
 formats and no performance or consensus-neutrality conclusion is accepted.
 
+**2026-08-25 generated-schema equivalence continuation.** The descriptor pass now emits a seventh,
+test-only adapter artifact. Its generated arithmetic covers 56 ordinary messages, the two explicit
+`Par`/`EPathMap` externs, five oneofs, and 54 arms. The current factory produces 329 canonical
+witnesses spanning every field, repeated cardinalities one and two, every oneof arm including
+default-valued presence, numeric boundaries, and all-fields-populated values; 48 additional
+ordinary-scalar witnesses prove explicit protobuf defaults are rejected.
+
+For every canonical witness the generated protobuf PDA, the untouched pre-rewrite Prost oracle,
+and the original witness are exact byte fixed points. The same decoded generated value produces
+identical bytes under the generated bincode PDA and derived serde/bincode oracle. Strict admission
+then succeeds with one byte-native validation and zero typed decodes, endpoint replays, or
+reconstructed-key bytes. Descriptor-known envelopes with no RPB3 score role carry an opaque
+summary only after their fields and recursive children have been validated; an unregistered or
+mismatched program still fails closed.
+
+The two extern adapters preserve representation specialization: `Par` remains an authoritative
+`PathMap<Multiplicity>`, while `EPathMap` remains neutral-empty, `PathMap<()>` set, or
+`PathMap<Par>` map. The gate never flattens either trie, never sorts decoded entries, and never uses
+an EPathMap snapshot as a traversal substitute. A 20,000-level iterative byte-built unary spine
+and a 4,096-element wide ParBag both validate on 256 KiB stacks. Five executable fallback mutants
+make reconstructed-key, endpoint-replay, typed-decode, skipped-validation, and repeated-validation
+routes turn the same production verdict red.
+
+This closes the descriptor-inventory and codec fixed-point portion of pgmcp #6019. It does **not**
+close the single-parse ACT plan (#6023), formal equivalence (#6020), production RPB3/RCI2 cutover,
+full RSpace lifecycle composition, or the preregistered resource experiment. No performance or
+consensus-neutrality conclusion is inferred from this correctness gate.
+
 ### J-023 — 2026-08-24: serialize a resident identity directly, but preserve its external order
 
 Question: When an RSpace Bag key already contains the exact canonical bincode `Datum` identity used

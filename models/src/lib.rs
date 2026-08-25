@@ -120,6 +120,15 @@ pub mod rhoapi {
     pub use crate::rust::rhoapi_ext::EPathMap;
 }
 
+/// Prost-build's untouched pre-rewrite message implementations. Production
+/// codecs use generated explicit-worklist PDAs; unit tests compile this module
+/// solely as an independent semantic/wire oracle.
+#[cfg(test)]
+#[allow(clippy::all, unused_imports)]
+pub(crate) mod rhoapi_recursive_oracle {
+    include!(concat!(env!("OUT_DIR"), "/rhoapi_recursive_oracle.rs"));
+}
+
 pub mod rholang_scala_rust_types {
     include!(concat!(env!("OUT_DIR"), "/rholang_scala_rust_types.rs"));
 }

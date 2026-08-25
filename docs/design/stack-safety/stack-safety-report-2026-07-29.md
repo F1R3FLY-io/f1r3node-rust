@@ -372,6 +372,7 @@ Abbreviations used throughout are ABI (application binary interface), CBR (conse
 | **SS-E2** | `26876b65`, `87e514b6` | f1r3node | generated traversal registry $`\leftrightarrow`$ proof/oracle manifest; Rocq generic PDA equivalence, EPathMap algebra, and structural EPM1 framing/value-table laws; SMT mode dispatch; TLA+ transition model | 30 depth + 6 width production subjects, **zero tripwire subjects** | enabling and closure evidence | [5.12](#512-generated-par-pda-closure-ss-a8-ss-e2) |
 | **SS-E3** | `b2d84064`, `68e8290d` | f1r3node | Phase 7 resource closure: independent PathMap set/map hash and `Message::clear` ladders; derived-register Cachegrind axis; matched-control Massif axis | **40** converted subjects, all subquadratic; four stack-to-heap transfers measured linear | enabling and closure evidence | [5.14](#514-resource-closure--heap-and-deterministic-time-ss-e3); PathMap slice: [PathMap §5.6](../pathmap/pathmap-report-2026-08-03.md#56-hash-and-clear-ladders) |
 | **SS-E4** | `0e487d4a` | f1r3node | Phase 7 subject-specific entry-depth histograms; production-shaped reverse PathMap zipper totality repair | four non-vacuous populations; allocation-free reverse walk preserved without a PathMap fork | enabling, measurement, and corrective evidence | [5.15](#515-subject-depth-distributions-ss-e4); PathMap slice: [PathMap §5.7](../pathmap/pathmap-report-2026-08-03.md#57-reverse-zipper-totality) |
+| **SS-E5** | this checkpoint; pgmcp #6019 | f1r3node | descriptor-derived protobuf/bincode equivalence and strict byte-native admission gate for the complete `rhoapi` message closure | 56 generated messages + 2 PathMap-backed externs; 5 oneofs / 54 arms; 329 canonical witnesses; 48 explicit-default mutants; depth 20,000 and width 4,096 on 256 KiB | enabling evidence, **not** a class change; no production PathMap projection or wire change | [5.41](#541-descriptor-complete-codec-and-byte-native-admission-equivalence-ss-e5) |
 | **SS-Y3** | measured `6a264e05`; repaired `26876b65` | f1r3node | The three collection arms formerly re-scored each element three times per nesting level on the canonical-form path | $`\Theta(3^d)`$; $`3.016\times`$/level $`\rightarrow`$ generated sorter PDA, **Ir exponent 1.0068 set / 1.0023 map** | ★ **repaired**; stack flat and linear observed | [5.6.8](#568-ss-y3--the-collection-arms-re-score-every-element-three-times-per-level) |
 | **SS-Y6** | `c0385b79` | f1r3node | ★★★ **DISSOLVED, not repaired** — the `TRIE_INTERN` LRU dropped a deep `Par` through the recursive destructor **inside a global mutex, on an arbitrary thread**. The store is deleted, so the site no longer exists | ⌀ — the fault has no site; the destructor itself was later converted by SS-A8 | **n/a** — discharged by deletion | [PathMap §5.8](../pathmap/pathmap-report-2026-08-03.md#58-the-dissolved-intern-store) |
 | **SS-Y4** | *(pre-existing; PINNED by `6bdd6ad7`, REPAIRED by `HEAD`)* | f1r3node | ⛔★★★ **A live consensus SAFETY FORK** — sibling order is not a total function of the term. `combine_emap` chains only the **key's** score, so distinct canonical terms share a score tree; `sort_vec` is **stable**, so tied siblings keep their input order | seeded: **20/20** split over 40 processes · deterministic: `{3:30} \| {3:90}` $`\neq`$ `{3:90} \| {3:30}` | ★ **repaired** — sibling order is now TOTAL | [5.6.9](#569-ss-y4--sibling-order-is-not-a-total-function-of-the-term) |
@@ -10108,6 +10109,80 @@ limit, `RUST_MIN_STACK`, `stacker`, retained serialization cache, PathMap modifi
 cold-store format. Continuation and join egress remain on their existing authoritative layouts;
 their corresponding direct-byte treatment is dependency-gated on the planned PathMap-backed
 continuation/join migration rather than an ad hoc shadow index.
+
+---
+
+### 5.41 Descriptor-complete codec and byte-native admission equivalence [SS-E5]
+
+#### 5.41.1 The evidence defect
+
+The schema generator already emitted a protobuf decoder entry point for every ordinary `rhoapi`
+message, but the executable differential selected only five non-`Par` roots. A new descriptor
+message, field, or oneof arm could therefore compile into the generated pushdown automaton without
+entering an independent recursive-oracle gate. This was an **evidence defect**, not a newly found
+recursive production traversal: the generated decoder and admission machines were already
+explicit-worklist implementations.
+
+#### 5.41.2 Architecture and rationale
+
+`models/codegen/schema.rs` now emits a seventh artifact, compiled only by unit tests. It is derived
+from the same resolved descriptor rows as the six production artifacts and contains no second
+message inventory. For each of the 56 generated messages it builds canonical witnesses for the
+default value, each field, repeated cardinalities one and two, every oneof arm with default-valued
+presence and a nondefault scalar witness, numeric boundaries, and the all-fields-populated shape.
+
+Each witness follows this executable differential:
+
+```text
+descriptor witness bytes
+  ├─ generated protobuf PDA ── generated re-encoder ──┐
+  └─ untouched Prost oracle ── Prost re-encoder ──────┼─ exact byte equality
+                                                     └─ strict byte admission
+decoded generated value
+  ├─ generated bincode PDA ───────────────────────────┐
+  └─ derived serde/bincode oracle ────────────────────┴─ exact byte equality
+```
+
+`Par` and `EPathMap` remain the only explicit extern adapters. Their fixtures construct the
+authoritative `ParBag`, neutral `EPathMap`, `PathMap<()>` set mode, and `PathMap<Par>` map mode
+directly. No fixture calls `trie_snapshot()` as a traversal surrogate, projects a trie to
+`Vec<Par>`, sorts decoded entries, or rebuilds PathMap from a flattened representation.
+
+Descriptor-known wrapper messages with no RPB3 scoring role use an opaque semantic summary after
+their complete recursive wire structure has been validated. Unknown or mismatched programs still
+fail closed; the generated registry is the closed authority that permits the opaque case.
+
+#### 5.41.3 Results and anti-vacuity
+
+The focused module passes 17 of 17 tests. Its generated arithmetic is 56 ordinary messages plus 2
+externs, 5 oneofs with 54 arms, 329 canonical witnesses, and 48 ordinary scalar fields whose
+explicit default presence must be rejected. Every canonical witness is byte-identical across both
+protobuf implementations and both bincode implementations. Successful admission reports exactly
+one byte-native validation and zero typed decodes, reconstructed-key bytes, and endpoint replays.
+
+The hostile matrix applies every truncation, duplicate complete image, unknown field, and
+nonminimal first key to descriptor-known opaque wrappers, then compares admission with independent
+decode-plus-canonical-reencode. Five test-only state mutants independently set reconstructed-key,
+endpoint-replay, typed-decode, skipped-validation, and repeated-validation counters; every mutant
+changes the observation and makes the production completion verdict red.
+
+The former depth-4,096 admission fixture was replaced by an iterative byte builder for a
+20,000-level `Par` / `Expr::ENot` spine. It and a 4,096-element wide `ParBag` complete on 256 KiB
+native stacks. The builder performs one bottom-up length pass and one root-down write pass; it does
+not retain every recursive AST suffix.
+
+#### 5.41.4 Resource and residual statement
+
+Wall-clock microbenchmark, allocator profile, and retained-heap deltas are **NOT MEASURED — SS-E5
+is a correctness/anti-vacuity instrument and changes no selected production algorithm**. The
+captured debug module run completes 17 tests in 0.32 s after compilation, but that number is a test
+runner observation, not a throughput claim.
+
+The single-parse ACT plan, production RPB3 cutover, full RSpace lifecycle composition, and formal
+equivalence task remain separate pgmcp dependencies. SS-E5 neither activates the shadow RCI2 path
+nor proves PathMap, bincode, Prost, or BLAKE2 internals. It proves that the generated adapters do not
+silently omit a descriptor root/field/arm and that the selected implementations agree on their
+observable byte languages for this exhaustive schema partition.
 
 ---
 

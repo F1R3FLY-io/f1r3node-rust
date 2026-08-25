@@ -187,6 +187,10 @@ pub const OUTPUT_SCHEMA_META: &str = "rhoapi_schema_meta.rs";
 pub const OUTPUT_PROTOBUF_DECODER: &str = "rhoapi_protobuf_decoder.rs";
 /// See [`OUTPUT_BINCODE_SCHEMA`].
 pub const OUTPUT_MATCH_SCHEMA: &str = "rhoapi_match_schema.rs";
+/// See [`OUTPUT_BINCODE_SCHEMA`]. This artifact is included only by test builds;
+/// it derives the exhaustive codec/admission fixture matrix from the same
+/// descriptor resolution as the production tables.
+pub const OUTPUT_SCHEMA_TEST_ADAPTERS: &str = "rhoapi_schema_test_adapters.rs";
 
 // ===========================================================================
 // §0  What one run produces
@@ -783,6 +787,7 @@ enum Shape {
 ///
 /// The vector these live in is produced once by [`resolve_message`]; the two
 /// emitters read it under two different sort keys. See the module header.
+#[derive(Clone)]
 struct Field {
     /// The Rust struct field identifier (already keyword-escaped).
     rust_name: String,
@@ -1088,15 +1093,26 @@ pub fn generate(fds: &FileDescriptorSet) -> Generated {
     // Parallel to `messages`, minus the extern ones: `(index into messages,
     // resolved fields)`. Preallocated: the length is known.
     let mut resolved: Vec<(usize, Vec<Field>)> = Vec::with_capacity(messages.len());
+    // Parallel to ALL messages, including the two explicit externs. Test
+    // adapters need the complete descriptor closure, but extern fields must not
+    // contribute to the generated-file/textual-rewrite cross-checks below.
+    let mut all_resolved: Vec<Vec<Field>> = Vec::with_capacity(messages.len());
     for (i, msg) in messages.iter().enumerate() {
-        if extern_set.contains(msg.leaf_name()) {
-            continue;
-        }
         let (fields, mut msg_oneofs, empties) =
             resolve_message(msg, &known, &extern_set, &programs, &map_entries);
-        empty_bytes_fields += empties;
-        oneofs.append(&mut msg_oneofs);
-        resolved.push((i, fields));
+        if extern_set.contains(msg.leaf_name()) {
+            assert!(
+                msg_oneofs.is_empty(),
+                "schema: external `{}` gained a oneof; widen its explicit adapter",
+                msg.leaf_name()
+            );
+            all_resolved.push(fields);
+        } else {
+            empty_bytes_fields += empties;
+            oneofs.append(&mut msg_oneofs);
+            all_resolved.push(fields.clone());
+            resolved.push((i, fields));
+        }
     }
 
     let extern_count = messages.len() - resolved.len();
@@ -1117,30 +1133,27 @@ pub fn generate(fds: &FileDescriptorSet) -> Generated {
     // schema-independent; the heterogeneous PDA is generated from the same
     // resolved descriptor walk as every other recursive driver. There is no
     // hand-maintained message/oneof list to drift from prost-build's derive.
-    let par_message = messages
+    let par_message_index = messages
         .iter()
-        .find(|message| message.leaf_name() == "Par")
+        .position(|message| message.leaf_name() == "Par")
         .expect("schema: rhoapi.Par must exist for the external decoder cutover");
-    let (par_decoder_fields, par_decoder_oneofs, _) =
-        resolve_message(par_message, &known, &extern_set, &programs, &map_entries);
-    assert!(
-        par_decoder_oneofs.is_empty(),
-        "schema: external Par gained a oneof; widen its explicit iterative decoder"
-    );
+    let par_decoder_fields = &all_resolved[par_message_index];
     let protobuf_decoder = emit_protobuf_decoder_source(
         &messages,
         &resolved,
         &oneofs,
         &extern_set,
-        &par_decoder_fields,
+        par_decoder_fields,
     );
     let match_schema = emit_match_schema_source(
         &messages,
         &resolved,
         &oneofs,
         &extern_set,
-        &par_decoder_fields,
+        par_decoder_fields,
     );
+    let schema_test_adapters =
+        emit_schema_test_adapters_source(&messages, &all_resolved, &oneofs, &extern_set);
 
     // ★ THE NON-VACUITY FLOOR, at the generator rather than only at the consumer.
     //
@@ -1204,6 +1217,7 @@ pub fn generate(fds: &FileDescriptorSet) -> Generated {
             (OUTPUT_SCHEMA_META, schema_meta),
             (OUTPUT_PROTOBUF_DECODER, protobuf_decoder),
             (OUTPUT_MATCH_SCHEMA, match_schema),
+            (OUTPUT_SCHEMA_TEST_ADAPTERS, schema_test_adapters),
         ],
     }
 }
@@ -8757,6 +8771,453 @@ fn emit_clone_join_tables(
 // ===========================================================================
 // §8  EMITTER D — the MATCHING CURSOR (`rhoapi_match_schema.rs`)
 // ===========================================================================
+
+/// Emit the descriptor-exhaustive, test-only protobuf equivalence adapter.
+///
+/// This deliberately emits raw canonical protobuf witnesses rather than an
+/// owning `Vec<Par>`-shaped corpus. Each witness is built with Prost's scalar or
+/// message encoder directly from the descriptor-resolved field shape, then fed
+/// independently to the generated whole-schema PDA and to the untouched
+/// pre-rewrite Prost oracle. The adapter therefore adds no production registry,
+/// reflection, AST projection, or PathMap flattening.
+fn emit_schema_test_adapters_source(
+    messages: &[Message<'_>],
+    all_resolved: &[Vec<Field>],
+    oneofs: &[Oneof],
+    extern_set: &BTreeSet<&str>,
+) -> String {
+    assert_eq!(
+        messages.len(),
+        all_resolved.len(),
+        "schema: test-adapter field rows drifted from descriptor messages"
+    );
+
+    let mut src = String::with_capacity(96 * 1024);
+    src.push_str(
+        "// @generated by models/codegen/schema.rs from the protobuf FileDescriptorSet.\n\
+         // DO NOT EDIT. Test-only exhaustive schema equivalence adapters.\n\
+         //\n\
+         // Every ordinary message, field, repeated cardinality, and oneof arm is\n\
+         // derived from the SAME resolved descriptor walk as the production codec\n\
+         // tables. Par and EPathMap are explicit externs and have hand-owned\n\
+         // PathMap-preserving fixtures in protobuf_admission.rs.\n\
+         \n\
+         use prost::Message as _;\n\
+         use prost::encoding::{self, WireType};\n\
+         use crate::rust::rholang::match_schema::RhoMatchProgram;\n\
+         use crate::rust::rholang::{bincode_encoder, protobuf_decoder, protobuf_encoder};\n\
+         use crate::rust::rholang::match_schema_tables::*;\n\
+         \n\
+         pub type SchemaRoundTrip = fn(&[u8]) -> Result<Vec<u8>, prost::DecodeError>;\n\
+         pub type SchemaBincodePair = fn(&[u8]) -> Result<(Vec<u8>, Vec<u8>), String>;\n\
+         \n\
+         pub struct SchemaFixture {\n\
+         \x20   pub message_name: &'static str,\n\
+         \x20   pub fixture_name: &'static str,\n\
+         \x20   pub bytes: Vec<u8>,\n\
+         \x20   pub program: &'static RhoMatchProgram,\n\
+         \x20   pub machine_round_trip: SchemaRoundTrip,\n\
+         \x20   pub oracle_round_trip: SchemaRoundTrip,\n\
+         \x20   pub bincode_pair: SchemaBincodePair,\n\
+         }\n\n",
+    );
+
+    for message in messages {
+        if extern_set.contains(message.leaf_name()) {
+            continue;
+        }
+        let method = message.leaf_name().to_snake_case();
+        let production_ty = format!("crate::rhoapi::{}", message.rust_path());
+        let oracle_ty = format!("crate::rhoapi_recursive_oracle::{}", message.rust_path());
+        writeln!(
+            src,
+            "fn machine_round_trip_{method}(bytes: &[u8]) -> Result<Vec<u8>, prost::DecodeError> {{\n    let value: {production_ty} = protobuf_decoder::decode_{method}(bytes)?;\n    Ok(protobuf_encoder::encode_to_vec(&value))\n}}\n\nfn oracle_round_trip_{method}(bytes: &[u8]) -> Result<Vec<u8>, prost::DecodeError> {{\n    let value = <{oracle_ty} as prost::Message>::decode(bytes)?;\n    Ok(value.encode_to_vec())\n}}\n\nfn bincode_pair_{method}(bytes: &[u8]) -> Result<(Vec<u8>, Vec<u8>), String> {{\n    let value: {production_ty} = protobuf_decoder::decode_{method}(bytes).map_err(|error| error.to_string())?;\n    let machine = bincode_encoder::encode(&value);\n    let oracle = bincode::serialize(&value).map_err(|error| error.to_string())?;\n    Ok((machine, oracle))\n}}\n"
+        )
+        .expect("write schema test-adapter round trips");
+    }
+
+    let generated_message_count = messages
+        .iter()
+        .filter(|message| !extern_set.contains(message.leaf_name()))
+        .count();
+    let oneof_arm_count: usize = oneofs.iter().map(|oneof| oneof.variants.len()).sum();
+    writeln!(
+        src,
+        "pub const GENERATED_SCHEMA_TEST_MESSAGE_COUNT: usize = {generated_message_count};\n\
+         pub const GENERATED_SCHEMA_TEST_EXTERN_COUNT: usize = {};\n\
+         pub const GENERATED_SCHEMA_TEST_ONEOF_COUNT: usize = {};\n\
+         pub const GENERATED_SCHEMA_TEST_ONEOF_ARM_COUNT: usize = {oneof_arm_count};\n\
+         pub const GENERATED_SCHEMA_TEST_EXTERN_NAMES: &[&str] = &{:?};\n",
+        extern_set.len(),
+        oneofs.len(),
+        EXTERN_OVERRIDES,
+    )
+    .expect("write schema test-adapter counts");
+
+    src.push_str(
+        "pub fn schema_fixtures() -> Vec<SchemaFixture> {\n    let mut fixtures = Vec::new();\n",
+    );
+    let mut expected_fixture_count = 0usize;
+    for (message_index, message) in messages.iter().enumerate() {
+        let leaf = message.leaf_name();
+        if extern_set.contains(leaf) {
+            continue;
+        }
+        let method = leaf.to_snake_case();
+        let program_ident = format!(
+            "{}_RHO_MATCH_PROGRAM",
+            message.program_ident().trim_end_matches("_PROGRAM")
+        );
+        let fields = &all_resolved[message_index];
+        writeln!(
+            src,
+            "    // {leaf}\n    {{\n        let program = &{program_ident};\n        let machine_round_trip: SchemaRoundTrip = machine_round_trip_{method};\n        let oracle_round_trip: SchemaRoundTrip = oracle_round_trip_{method};\n        let bincode_pair: SchemaBincodePair = bincode_pair_{method};"
+        )
+        .expect("write schema test-adapter message header");
+        emit_schema_fixture_push(&mut src, leaf, "default", "Vec::new()", 8);
+        expected_fixture_count += 1;
+
+        let mut ordered = fields.iter().collect::<Vec<_>>();
+        ordered.sort_by_key(|field| field.min_tag());
+        for field in &ordered {
+            let field_label = field.rust_name.trim_start_matches("r#");
+            match &field.shape {
+                Shape::Oneof => {
+                    let oneof = oneofs
+                        .iter()
+                        .find(|oneof| {
+                            oneof.module == message.oneof_module()
+                                && oneof.proto_name.to_snake_case() == field_label
+                        })
+                        .unwrap_or_else(|| {
+                            panic!(
+                                "schema: test adapter has no resolved oneof for {}.{field_label}",
+                                leaf
+                            )
+                        });
+                    for variant in &oneof.variants {
+                        let label = format!("{field_label}::{}::default", variant.rust_ident);
+                        let body = schema_test_variant_bytes_expr(variant, messages, true);
+                        emit_schema_fixture_push(&mut src, leaf, &label, &body, 8);
+                        expected_fixture_count += 1;
+                        if variant.ty != Type::Message {
+                            let label =
+                                format!("{field_label}::{}::nondefault", variant.rust_ident);
+                            let body = schema_test_variant_bytes_expr(variant, messages, false);
+                            emit_schema_fixture_push(&mut src, leaf, &label, &body, 8);
+                            expected_fixture_count += 1;
+                        }
+                    }
+                }
+                shape => {
+                    let body = schema_test_field_bytes_expr(field.min_tag(), shape, messages, 1);
+                    emit_schema_fixture_push(&mut src, leaf, field_label, &body, 8);
+                    expected_fixture_count += 1;
+                    if let Shape::Scalar(ty) = shape {
+                        if !matches!(ty, Type::Bool | Type::String | Type::Bytes) {
+                            let label = format!("{field_label}::boundary");
+                            let body = schema_test_scalar_bytes_expr(
+                                field.min_tag(),
+                                *ty,
+                                SchemaTestScalarWitness::Boundary,
+                            );
+                            emit_schema_fixture_push(&mut src, leaf, &label, &body, 8);
+                            expected_fixture_count += 1;
+                        }
+                    }
+                    if matches!(
+                        shape,
+                        Shape::RepeatedMessage { .. }
+                            | Shape::RepeatedString
+                            | Shape::RepeatedBytes
+                    ) {
+                        let label = format!("{field_label}::cardinality_2");
+                        let body =
+                            schema_test_field_bytes_expr(field.min_tag(), shape, messages, 2);
+                        emit_schema_fixture_push(&mut src, leaf, &label, &body, 8);
+                        expected_fixture_count += 1;
+                    }
+                }
+            }
+        }
+        if !ordered.is_empty() {
+            let mut all_fields = String::from("{ let mut bytes = Vec::new(); ");
+            for field in &ordered {
+                let field_bytes = match &field.shape {
+                    Shape::Oneof => {
+                        let field_label = field.rust_name.trim_start_matches("r#");
+                        let oneof = oneofs
+                            .iter()
+                            .find(|oneof| {
+                                oneof.module == message.oneof_module()
+                                    && oneof.proto_name.to_snake_case() == field_label
+                            })
+                            .unwrap_or_else(|| {
+                                panic!(
+                                    "schema: all-fields fixture has no oneof for {}.{field_label}",
+                                    leaf
+                                )
+                            });
+                        schema_test_variant_bytes_expr(
+                            oneof.variants.first().expect("resolved oneof is nonempty"),
+                            messages,
+                            true,
+                        )
+                    }
+                    shape => schema_test_field_bytes_expr(field.min_tag(), shape, messages, 1),
+                };
+                writeln!(all_fields, "bytes.extend({field_bytes});")
+                    .expect("write all-fields schema fixture");
+            }
+            all_fields.push_str("bytes }");
+            emit_schema_fixture_push(&mut src, leaf, "all_fields", &all_fields, 8);
+            expected_fixture_count += 1;
+        }
+        src.push_str("    }\n");
+    }
+    writeln!(
+        src,
+        "    assert_eq!(fixtures.len(), {expected_fixture_count}, \"generated schema fixture factory became vacuous\");\n    fixtures\n}}\n"
+    )
+    .expect("write schema test-adapter fixture floor");
+
+    src.push_str("pub fn explicit_default_mutants() -> Vec<SchemaFixture> {\n    let mut fixtures = Vec::new();\n");
+    let mut expected_default_mutants = 0usize;
+    for (message_index, message) in messages.iter().enumerate() {
+        let leaf = message.leaf_name();
+        if extern_set.contains(leaf) {
+            continue;
+        }
+        let method = leaf.to_snake_case();
+        let program_ident = format!(
+            "{}_RHO_MATCH_PROGRAM",
+            message.program_ident().trim_end_matches("_PROGRAM")
+        );
+        let scalar_fields = all_resolved[message_index]
+            .iter()
+            .filter(|field| matches!(field.shape, Shape::Scalar(_) | Shape::EmptyBytes))
+            .collect::<Vec<_>>();
+        if scalar_fields.is_empty() {
+            continue;
+        }
+        writeln!(
+            src,
+            "    // {leaf}\n    {{\n        let program = &{program_ident};\n        let machine_round_trip: SchemaRoundTrip = machine_round_trip_{method};\n        let oracle_round_trip: SchemaRoundTrip = oracle_round_trip_{method};\n        let bincode_pair: SchemaBincodePair = bincode_pair_{method};"
+        )
+        .expect("write explicit-default mutant header");
+        for field in scalar_fields {
+            let body = match &field.shape {
+                Shape::Scalar(ty) => schema_test_scalar_bytes_expr(
+                    field.min_tag(),
+                    *ty,
+                    SchemaTestScalarWitness::Default,
+                ),
+                Shape::EmptyBytes => schema_test_scalar_bytes_expr(
+                    field.min_tag(),
+                    Type::Bytes,
+                    SchemaTestScalarWitness::Default,
+                ),
+                _ => unreachable!("filtered explicit-default field changed shape"),
+            };
+            emit_schema_fixture_push(
+                &mut src,
+                leaf,
+                field.rust_name.trim_start_matches("r#"),
+                &body,
+                8,
+            );
+            expected_default_mutants += 1;
+        }
+        src.push_str("    }\n");
+    }
+    writeln!(
+        src,
+        "    assert_eq!(fixtures.len(), {expected_default_mutants}, \"generated explicit-default mutant matrix became vacuous\");\n    fixtures\n}}\n"
+    )
+    .expect("write explicit-default mutant floor");
+
+    assert!(
+        expected_fixture_count > generated_message_count + oneof_arm_count,
+        "schema: test adapter emitted too few fixtures to cover fields and oneof arms"
+    );
+    assert!(
+        src.len() > 32 * 1024,
+        "schema: test adapter source is only {} bytes for {} messages and {} oneof arms",
+        src.len(),
+        generated_message_count,
+        oneof_arm_count
+    );
+    src
+}
+
+fn emit_schema_fixture_push(
+    src: &mut String,
+    message_name: &str,
+    fixture_name: &str,
+    bytes_expr: &str,
+    indent: usize,
+) {
+    let pad = " ".repeat(indent);
+    writeln!(
+        src,
+        "{pad}fixtures.push(SchemaFixture {{ message_name: {message_name:?}, fixture_name: {fixture_name:?}, bytes: {bytes_expr}, program, machine_round_trip, oracle_round_trip, bincode_pair }});"
+    )
+    .expect("write schema fixture");
+}
+
+fn schema_test_field_bytes_expr(
+    tag: u32,
+    shape: &Shape,
+    messages: &[Message<'_>],
+    cardinality: usize,
+) -> String {
+    let mut body = String::from("{ let mut bytes = Vec::new(); ");
+    for _ in 0..cardinality {
+        match shape {
+            Shape::Scalar(ty) => schema_test_scalar_encode(&mut body, tag, *ty, false),
+            Shape::EmptyBytes => {
+                writeln!(
+                    body,
+                    "encoding::bytes::encode({tag}, &vec![0xa5u8], &mut bytes);"
+                )
+                .expect("write bytes fixture");
+            }
+            Shape::Message { leaf } | Shape::RepeatedMessage { leaf } => {
+                let child = messages
+                    .iter()
+                    .find(|message| message.leaf_name() == leaf)
+                    .unwrap_or_else(|| panic!("schema: fixture child `{leaf}` has no message"));
+                writeln!(
+                    body,
+                    "encoding::message::encode({tag}, &crate::rhoapi::{}::default(), &mut bytes);",
+                    child.rust_path()
+                )
+                .expect("write message fixture");
+            }
+            Shape::RepeatedString => {
+                writeln!(
+                    body,
+                    "encoding::string::encode({tag}, &String::from(\"schema\"), &mut bytes);"
+                )
+                .expect("write string fixture");
+            }
+            Shape::RepeatedBytes => {
+                writeln!(
+                    body,
+                    "encoding::bytes::encode({tag}, &vec![0xa5u8], &mut bytes);"
+                )
+                .expect("write bytes fixture");
+            }
+            Shape::Map { .. } => {
+                writeln!(
+                    body,
+                    "encoding::encode_key({tag}, WireType::LengthDelimited, &mut bytes); encoding::encode_varint(0, &mut bytes);"
+                )
+                .expect("write map fixture");
+            }
+            Shape::Oneof => unreachable!("oneof fixtures use their resolved variants"),
+        }
+    }
+    body.push_str("bytes }");
+    body
+}
+
+fn schema_test_variant_bytes_expr(
+    variant: &Variant,
+    messages: &[Message<'_>],
+    default_scalar: bool,
+) -> String {
+    let mut body = String::from("{ let mut bytes = Vec::new(); ");
+    if variant.ty == Type::Message {
+        let leaf = variant
+            .message_leaf
+            .as_deref()
+            .expect("schema: message oneof fixture has no payload leaf");
+        let child = messages
+            .iter()
+            .find(|message| message.leaf_name() == leaf)
+            .unwrap_or_else(|| panic!("schema: oneof fixture child `{leaf}` has no message"));
+        writeln!(
+            body,
+            "encoding::message::encode({}, &crate::rhoapi::{}::default(), &mut bytes);",
+            variant.tag,
+            child.rust_path()
+        )
+        .expect("write oneof message fixture");
+    } else {
+        schema_test_scalar_encode(&mut body, variant.tag, variant.ty, default_scalar);
+    }
+    body.push_str("bytes }");
+    body
+}
+
+fn schema_test_scalar_encode(src: &mut String, tag: u32, ty: Type, default: bool) {
+    let (module, _) = protobuf_scalar_module_and_default(ty);
+    let value = schema_test_scalar_value(ty, default);
+    writeln!(
+        src,
+        "encoding::{module}::encode({tag}, &{value}, &mut bytes);"
+    )
+    .expect("write scalar schema fixture");
+}
+
+#[derive(Clone, Copy)]
+enum SchemaTestScalarWitness {
+    Default,
+    Boundary,
+}
+
+fn schema_test_scalar_bytes_expr(tag: u32, ty: Type, witness: SchemaTestScalarWitness) -> String {
+    let mut body = String::from("{ let mut bytes = Vec::new(); ");
+    let (module, _) = protobuf_scalar_module_and_default(ty);
+    let value = match witness {
+        SchemaTestScalarWitness::Default => schema_test_scalar_value(ty, true),
+        SchemaTestScalarWitness::Boundary => schema_test_scalar_boundary_value(ty),
+    };
+    writeln!(
+        body,
+        "encoding::{module}::encode({tag}, &{value}, &mut bytes);"
+    )
+    .expect("write scalar schema witness");
+    body.push_str("bytes }");
+    body
+}
+
+fn schema_test_scalar_value(ty: Type, default: bool) -> &'static str {
+    match (ty, default) {
+        (Type::Bool, true) => "false",
+        (Type::Bool, false) => "true",
+        (Type::String, true) => "String::new()",
+        (Type::String, false) => "String::from(\"schema\")",
+        (Type::Bytes, true) => "Vec::<u8>::new()",
+        (Type::Bytes, false) => "vec![0xa5u8]",
+        (Type::Int32 | Type::Sint32 | Type::Sfixed32, true) => "0i32",
+        (Type::Int32 | Type::Sint32 | Type::Sfixed32, false) => "-1i32",
+        (Type::Uint32 | Type::Fixed32, true) => "0u32",
+        (Type::Uint32 | Type::Fixed32, false) => "1u32",
+        (Type::Int64 | Type::Sint64 | Type::Sfixed64, true) => "0i64",
+        (Type::Int64 | Type::Sint64 | Type::Sfixed64, false) => "-1i64",
+        (Type::Uint64 | Type::Fixed64, true) => "0u64",
+        (Type::Uint64 | Type::Fixed64, false) => "1u64",
+        (Type::Float, true) => "0f32",
+        (Type::Float, false) => "1.25f32",
+        (Type::Double, true) => "0f64",
+        (Type::Double, false) => "1.25f64",
+        (other, _) => panic!("schema: no test scalar witness for {other:?}"),
+    }
+}
+
+fn schema_test_scalar_boundary_value(ty: Type) -> &'static str {
+    match ty {
+        Type::Int32 | Type::Sint32 | Type::Sfixed32 => "i32::MIN",
+        Type::Uint32 | Type::Fixed32 => "u32::MAX",
+        Type::Int64 | Type::Sint64 | Type::Sfixed64 => "i64::MIN",
+        Type::Uint64 | Type::Fixed64 => "u64::MAX",
+        Type::Float => "f32::MAX",
+        Type::Double => "f64::MAX",
+        other => panic!("schema: no numeric boundary witness for {other:?}"),
+    }
+}
 
 fn emit_match_schema_source(
     messages: &[Message<'_>],

@@ -4919,6 +4919,32 @@ order remain unchanged. The work is classified as shadow implementation and exec
 no consensus-neutrality or production-performance verdict is inferred before the named cutover and
 equivalence gates close.
 
+**CBR-044 living implementation continuation (2026-08-25, descriptor-complete codec/admission
+equivalence; pgmcp #6019).** The one descriptor pass now emits a test-only seventh artifact that
+constructs 329 canonical witnesses over all 56 generated messages, every field, five oneofs and all
+54 arms, numeric boundaries, repeated cardinalities, and all-fields-populated values. The two
+repository-owned externs remain explicit: `Par` is tested through its authoritative
+`PathMap<Multiplicity>`, and EPathMap through neutral-empty, `PathMap<()>` set, and `PathMap<Par>`
+map storage. No adapter projects either trie to an entry vector or treats its encoded snapshot as a
+semantic traversal.
+
+Every canonical witness is an exact fixed point for the generated protobuf PDA and untouched Prost
+oracle, and its generated bincode bytes equal the derived serde/bincode bytes. Forty-eight
+descriptor-derived explicit-default mutants, plus truncation, duplicate-image, unknown-field, and
+nonminimal-key matrices, separate permissive decoding from strict canonical admission. Successful
+admission records one byte-native validation and zero typed decodes, reconstructed-key bytes, or
+endpoint replays; five independently applied counter mutants make each forbidden fallback turn the
+production completion verdict red. The iterative depth-20,000 and width-4,096 gates pass on 256 KiB
+native stacks.
+
+This checkpoint adds exhaustive evidence and a descriptor-known opaque summary for envelope types
+that have no RPB3 scoring role. It does not change any generated message definition, protobuf or
+bincode encoder, ParBag/EPathMap representation, active RPB3 validator, EPM1 mode/topology/value
+association, normalized `Par`, channel or datum identity, hash, COMM schedule, charge, accepted
+Rholang program, or parallel execution order. It remains a continuation of active CBR-044, not a
+new consensus entry. Single-parse ACT emission, formal equivalence, production cutover, complete
+RSpace lifecycle composition, and resource measurement remain open dependencies.
+
 **CBR-023 living-set continuation (2026-08-09, comparison exhaustiveness; pgmcp #5282).** The full
 models gate found catch-all mismatch arms in the already-iterative `Sig`, `Token`, `SignedProcess`,
 and `InterpreterError` equality machines. Each arm returned `false` for every currently representable

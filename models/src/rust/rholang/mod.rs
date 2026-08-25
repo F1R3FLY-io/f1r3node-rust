@@ -32,12 +32,12 @@ pub mod bincode_encoder;
 pub(crate) mod phase7_depth_histogram;
 
 // ---------------------------------------------------------------------------
-// ★ THE SIX GENERATED MODULES — ONE build-script pass, six outputs
+// ★ THE SEVEN GENERATED MODULES — ONE build-script pass, seven outputs
 //
 // `models/codegen/schema.rs` resolves every `rhoapi` message ONCE and emits
-// six files into `OUT_DIR`; `models/build.rs` writes each one. All six are
-// included here: six files written, six modules compiled, one walk of the
-// descriptor.
+// seven files into `OUT_DIR`; `models/build.rs` writes each one. Six production
+// modules and one test-only equivalence adapter are included here: seven files
+// written, one walk of the descriptor, and no test registry in production.
 //
 // ⚠★ The two field tables are the SAME resolved fields under TWO SORT KEYS —
 // `identity` for serde/bincode, `sort_by_key(min_tag)` for protobuf — and the
@@ -126,4 +126,13 @@ pub mod protobuf_decoder {
 #[allow(clippy::all, unused_imports)]
 pub mod match_schema_tables {
     include!(concat!(env!("OUT_DIR"), "/rhoapi_match_schema.rs"));
+}
+
+/// Descriptor-exhaustive codec/admission fixtures. This is deliberately absent
+/// from production builds: it names the preserved recursive Prost oracle and
+/// exists only to prove the generated PDA against an independent implementation.
+#[cfg(test)]
+#[allow(clippy::all, unused_imports)]
+pub(crate) mod schema_test_adapters {
+    include!(concat!(env!("OUT_DIR"), "/rhoapi_schema_test_adapters.rs"));
 }

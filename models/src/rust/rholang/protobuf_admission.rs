@@ -225,6 +225,10 @@ impl std::error::Error for CanonicalProtobufAdmissionError {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SemanticKind {
+    /// A descriptor-known message with no RPB3 scoring role. Its fields are
+    /// still validated recursively and canonically; it simply contributes no
+    /// Rholang semantic-score summary to a parent.
+    Opaque,
     RawPar,
     Component(ParComponentTag),
     Var,
@@ -372,6 +376,14 @@ fn semantic_kind(program: &'static RhoMatchProgram) -> Option<SemanticKind> {
         || program_is!(GDEPLOYERID_RHO_MATCH_PROGRAM)
     {
         SemanticKind::BytesLeaf
+    } else if RHO_MATCH_REGISTRY
+        .iter()
+        .any(|(_, candidate)| std::ptr::eq(program, *candidate))
+    {
+        // The generated registry is the closed descriptor authority. Wrappers
+        // such as PCost, ParWithRandom, and TaggedContinuation need strict wire
+        // admission but are not members of the RPB3 scoring algebra.
+        SemanticKind::Opaque
     } else {
         return None;
     };
@@ -436,6 +448,7 @@ struct ExprPayloadSummary<'src> {
 
 #[derive(Clone)]
 enum SemanticSummary<'src> {
+    Opaque,
     Par(ParSummary<'src>),
     Component(ComponentSummary),
     Var(CanonicalScoreHandle),
@@ -899,6 +912,7 @@ fn reduce_semantic_kind<'src>(
     kind: SemanticKind,
 ) -> Result<SemanticSummary<'src>, CanonicalProtobufAdmissionError> {
     match kind {
+        SemanticKind::Opaque => Ok(SemanticSummary::Opaque),
         SemanticKind::RawPar => reduce_raw_par(frame, scores),
         SemanticKind::Component(family) => reduce_component(frame, scores, family),
         SemanticKind::Var => reduce_var(frame, scores),
@@ -3063,26 +3077,7 @@ fn validate_canonical_protobuf_inner<'src>(
                         .protobuf_bytes_read
                         .checked_sub(stats.protobuf_bytes_traversed)
                         .ok_or(CanonicalProtobufAdmissionError::SizeOverflow)?;
-                    if stats.reconstructed_key_bytes != 0 {
-                        return Err(CanonicalProtobufAdmissionError::CutoverInvariant(
-                            "reconstructed key bytes are nonzero",
-                        ));
-                    }
-                    if stats.legacy_endpoint_replays != 0 {
-                        return Err(CanonicalProtobufAdmissionError::CutoverInvariant(
-                            "legacy endpoint replays are nonzero",
-                        ));
-                    }
-                    if stats.typed_decodes != 0 {
-                        return Err(CanonicalProtobufAdmissionError::CutoverInvariant(
-                            "typed decodes are nonzero",
-                        ));
-                    }
-                    if stats.byte_native_validations != 1 {
-                        return Err(CanonicalProtobufAdmissionError::CutoverInvariant(
-                            "byte-native validation count is not exactly one",
-                        ));
-                    }
+                    validate_cutover_stats(&stats)?;
                     if let Some((family, claimed_score)) = claimed_component {
                         let SemanticSummary::Component(root_component) = &summary.semantic else {
                             return Err(CanonicalProtobufAdmissionError::Schema {
@@ -3121,6 +3116,35 @@ fn validate_canonical_protobuf_inner<'src>(
             }
         }
     }
+}
+
+/// The executable no-fallback verdict shared by production completion and its
+/// mutation proof. Keeping it separate makes every forbidden legacy route
+/// independently falsifiable without weakening the successful fast path.
+fn validate_cutover_stats(
+    stats: &CanonicalProtobufAdmissionStats,
+) -> Result<(), CanonicalProtobufAdmissionError> {
+    if stats.reconstructed_key_bytes != 0 {
+        return Err(CanonicalProtobufAdmissionError::CutoverInvariant(
+            "reconstructed key bytes are nonzero",
+        ));
+    }
+    if stats.legacy_endpoint_replays != 0 {
+        return Err(CanonicalProtobufAdmissionError::CutoverInvariant(
+            "legacy endpoint replays are nonzero",
+        ));
+    }
+    if stats.typed_decodes != 0 {
+        return Err(CanonicalProtobufAdmissionError::CutoverInvariant(
+            "typed decodes are nonzero",
+        ));
+    }
+    if stats.byte_native_validations != 1 {
+        return Err(CanonicalProtobufAdmissionError::CutoverInvariant(
+            "byte-native validation count is not exactly one",
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -3170,13 +3194,15 @@ pub(crate) fn validate_canonical_component_protobuf_indexed<'src>(
 mod tests {
     use std::collections::BTreeMap;
 
+    use prost::Message;
+
     use super::*;
     use crate::rhoapi::connective::ConnectiveInstance;
     use crate::rhoapi::expr::ExprInstance;
     use crate::rhoapi::g_unforgeable::UnfInstance;
     use crate::rhoapi::{
-        Bundle, Connective, ConnectiveBody, EList, Expr, GPrivate, GUnforgeable, If, Match,
-        MatchCase, New, Par, Receive, ReceiveBind, Send,
+        Bundle, Connective, ConnectiveBody, Expr, GPrivate, GUnforgeable, If, Match, MatchCase,
+        New, Par, Receive, ReceiveBind, Send,
     };
     use crate::rust::par_bag::{with_component_key, ParBagComponent, PAR_BAG_KEY_DOMAIN};
     use crate::rust::rhoapi_ext::EPathMap;
@@ -3186,8 +3212,13 @@ mod tests {
         NEW_RHO_MATCH_PROGRAM, PAR_RHO_MATCH_PROGRAM, RECEIVE_RHO_MATCH_PROGRAM,
         SEND_RHO_MATCH_PROGRAM,
     };
-    use crate::rust::rholang::protobuf_encoder;
     use crate::rust::rholang::protobuf_schema::ProtobufField;
+    use crate::rust::rholang::schema_test_adapters::{
+        explicit_default_mutants, schema_fixtures, GENERATED_SCHEMA_TEST_EXTERN_COUNT,
+        GENERATED_SCHEMA_TEST_EXTERN_NAMES, GENERATED_SCHEMA_TEST_MESSAGE_COUNT,
+        GENERATED_SCHEMA_TEST_ONEOF_ARM_COUNT, GENERATED_SCHEMA_TEST_ONEOF_COUNT,
+    };
+    use crate::rust::rholang::{bincode_encoder, protobuf_decoder, protobuf_encoder};
 
     fn gint(value: i64) -> Par {
         Par::default().with_exprs(vec![Expr {
@@ -3297,6 +3328,260 @@ mod tests {
 
     fn assert_component_score<T: ParBagComponent>(value: &T, program: &'static RhoMatchProgram) {
         assert_component_score_state(value, program, true);
+    }
+
+    #[test]
+    fn every_descriptor_message_field_and_oneof_arm_matches_the_recursive_oracle() {
+        assert_eq!(GENERATED_SCHEMA_TEST_MESSAGE_COUNT, 56);
+        assert_eq!(GENERATED_SCHEMA_TEST_EXTERN_COUNT, 2);
+        assert_eq!(GENERATED_SCHEMA_TEST_ONEOF_COUNT, 5);
+        assert_eq!(GENERATED_SCHEMA_TEST_ONEOF_ARM_COUNT, 54);
+        assert_eq!(GENERATED_SCHEMA_TEST_EXTERN_NAMES, &["EPathMap", "Par"]);
+
+        let fixtures = schema_fixtures();
+        let covered_messages = fixtures
+            .iter()
+            .map(|fixture| fixture.message_name)
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(covered_messages.len(), GENERATED_SCHEMA_TEST_MESSAGE_COUNT);
+
+        for fixture in fixtures {
+            let label = format!("{}.{}", fixture.message_name, fixture.fixture_name);
+            let machine = (fixture.machine_round_trip)(&fixture.bytes)
+                .unwrap_or_else(|error| panic!("{label}: generated PDA rejected fixture: {error}"));
+            let oracle = (fixture.oracle_round_trip)(&fixture.bytes).unwrap_or_else(|error| {
+                panic!("{label}: recursive Prost rejected fixture: {error}")
+            });
+            assert_eq!(machine, oracle, "{label}: PDA/oracle re-encoding differs");
+            assert_eq!(
+                machine, fixture.bytes,
+                "{label}: fixture is not a protobuf fixed point"
+            );
+            let (machine_bincode, oracle_bincode) = (fixture.bincode_pair)(&fixture.bytes)
+                .unwrap_or_else(|error| panic!("{label}: bincode differential: {error}"));
+            assert_eq!(
+                machine_bincode, oracle_bincode,
+                "{label}: generated bincode encoder differs from derived Serialize"
+            );
+
+            let admission = validate_canonical_protobuf(
+                ProtobufRegion::copy_from_slice(&fixture.bytes),
+                fixture.program,
+            )
+            .unwrap_or_else(|error| {
+                panic!("{label}: descriptor-generated canonical fixture was rejected: {error}")
+            });
+            let stats = admission.stats();
+            assert_eq!(stats.reconstructed_key_bytes, 0, "{label}");
+            assert_eq!(stats.legacy_endpoint_replays, 0, "{label}");
+            assert_eq!(stats.typed_decodes, 0, "{label}");
+            assert_eq!(stats.byte_native_validations, 1, "{label}");
+        }
+    }
+
+    #[test]
+    fn pathmap_backed_externs_keep_specialized_wire_and_admission_paths() {
+        let set = EPathMap::from_set_iter([gint(1), gint(2)], Vec::new(), false, None);
+        let map = EPathMap::new_map(
+            [(gint(1), gint(11)), (gint(2), gint(22))],
+            Vec::new(),
+            false,
+            None,
+        );
+        for (label, value) in [("empty", EPathMap::default()), ("set", set), ("map", map)] {
+            let bytes = value.encode_to_vec();
+            let oracle = EPathMap::decode(bytes.as_slice())
+                .unwrap_or_else(|error| panic!("EPathMap.{label}: oracle decode: {error}"));
+            let machine = protobuf_decoder::decode_epath_map(bytes.as_slice())
+                .unwrap_or_else(|error| panic!("EPathMap.{label}: PDA decode: {error}"));
+            assert_eq!(
+                machine.encode_to_vec(),
+                oracle.encode_to_vec(),
+                "EPathMap.{label}"
+            );
+            assert_eq!(
+                machine.encode_to_vec(),
+                bytes,
+                "EPathMap.{label}: not a fixed point"
+            );
+            assert_eq!(
+                bincode_encoder::encode(&value),
+                bincode::serialize(&value).expect("EPathMap bincode oracle"),
+                "EPathMap.{label}: bincode differential"
+            );
+            validate_canonical_protobuf(
+                ProtobufRegion::copy_from_slice(&bytes),
+                &EPATHMAP_RHO_MATCH_PROGRAM,
+            )
+            .unwrap_or_else(|error| panic!("EPathMap.{label}: admission: {error}"));
+        }
+
+        for (label, value) in [("empty", Par::default()), ("component", gint(7))] {
+            let bytes = value.encode_to_vec();
+            let oracle = Par::decode(bytes.as_slice())
+                .unwrap_or_else(|error| panic!("Par.{label}: oracle decode: {error}"));
+            let machine = protobuf_decoder::decode_par(bytes.as_slice())
+                .unwrap_or_else(|error| panic!("Par.{label}: PDA decode: {error}"));
+            assert_eq!(
+                protobuf_encoder::encode_to_vec(&machine),
+                oracle.encode_to_vec(),
+                "Par.{label}"
+            );
+            assert_eq!(
+                protobuf_encoder::encode_to_vec(&machine),
+                bytes,
+                "Par.{label}: not a fixed point"
+            );
+            assert_eq!(
+                bincode_encoder::encode(&value),
+                bincode::serialize(&value).expect("Par bincode oracle"),
+                "Par.{label}: bincode differential"
+            );
+            validate_canonical_protobuf(
+                ProtobufRegion::copy_from_slice(&bytes),
+                &PAR_PROTOBUF_REGION_PROGRAM,
+            )
+            .unwrap_or_else(|error| panic!("Par.{label}: admission: {error}"));
+        }
+    }
+
+    #[test]
+    fn descriptor_wide_hostile_wires_match_decode_plus_canonical_reencode() {
+        let fixtures = schema_fixtures();
+        let mut comparisons = 0usize;
+        let mut opaque_fixtures = 0usize;
+        for fixture in fixtures {
+            if semantic_kind(fixture.program) != Some(SemanticKind::Opaque) {
+                // RPB3-bearing roots have the stronger typed sorter/score
+                // oracle exercised by the component-family tests below.
+                continue;
+            }
+            opaque_fixtures += 1;
+            let mut candidates = Vec::new();
+            for cut in 0..fixture.bytes.len() {
+                candidates.push(("truncation", fixture.bytes[..cut].to_vec()));
+            }
+
+            let mut unknown = fixture.bytes.clone();
+            unknown.extend_from_slice(&[0xf8, 0x07, 0x01]);
+            candidates.push(("unknown_field", unknown));
+
+            if !fixture.bytes.is_empty() {
+                let mut duplicate = fixture.bytes.clone();
+                duplicate.extend_from_slice(&fixture.bytes);
+                candidates.push(("duplicate_image", duplicate));
+
+                if fixture.bytes[0] < 0x80 {
+                    let mut nonminimal_key = Vec::with_capacity(fixture.bytes.len() + 1);
+                    nonminimal_key.push(fixture.bytes[0] | 0x80);
+                    nonminimal_key.push(0);
+                    nonminimal_key.extend_from_slice(&fixture.bytes[1..]);
+                    candidates.push(("nonminimal_key", nonminimal_key));
+                }
+            }
+
+            for (mutation, bytes) in candidates {
+                let machine_fixed_point = (fixture.machine_round_trip)(&bytes)
+                    .map(|canonical| canonical == bytes)
+                    .unwrap_or(false);
+                let oracle_fixed_point = (fixture.oracle_round_trip)(&bytes)
+                    .map(|canonical| canonical == bytes)
+                    .unwrap_or(false);
+                let label = format!(
+                    "{}.{}::{mutation}",
+                    fixture.message_name, fixture.fixture_name
+                );
+                assert_eq!(
+                    machine_fixed_point, oracle_fixed_point,
+                    "{label}: PDA and Prost disagree on strict fixed-point admission"
+                );
+                let admitted = validate_canonical_protobuf(
+                    ProtobufRegion::copy_from_slice(&bytes),
+                    fixture.program,
+                )
+                .is_ok();
+                assert_eq!(
+                    admitted, oracle_fixed_point,
+                    "{label}: byte-native admission differs from decode-plus-canonical-reencode"
+                );
+                comparisons += 1;
+            }
+        }
+        assert!(
+            opaque_fixtures > 0 && comparisons >= opaque_fixtures * 4,
+            "hostile schema matrix became vacuous: {opaque_fixtures} opaque fixtures, \
+             {comparisons} comparisons"
+        );
+    }
+
+    #[test]
+    fn every_descriptor_scalar_field_rejects_explicit_default_presence() {
+        let mutants = explicit_default_mutants();
+        assert!(
+            mutants.len() >= 32,
+            "explicit-default matrix became vacuous: only {} scalar fields",
+            mutants.len()
+        );
+        for mutant in mutants {
+            let label = format!("{}.{}", mutant.message_name, mutant.fixture_name);
+            assert!(!mutant.bytes.is_empty(), "{label}: mutation did not apply");
+            let machine = (mutant.machine_round_trip)(&mutant.bytes).unwrap_or_else(|error| {
+                panic!("{label}: PDA did not accept protobuf alias: {error}")
+            });
+            let oracle = (mutant.oracle_round_trip)(&mutant.bytes).unwrap_or_else(|error| {
+                panic!("{label}: Prost did not accept protobuf alias: {error}")
+            });
+            assert_eq!(machine, oracle, "{label}: alias re-encoding differs");
+            assert_ne!(
+                machine, mutant.bytes,
+                "{label}: explicit default stayed canonical"
+            );
+            assert!(
+                validate_canonical_protobuf(
+                    ProtobufRegion::copy_from_slice(&mutant.bytes),
+                    mutant.program,
+                )
+                .is_err(),
+                "{label}: byte-native admission accepted explicit scalar default"
+            );
+        }
+    }
+
+    #[test]
+    fn every_forbidden_cutover_fallback_makes_the_verdict_red() {
+        let baseline = CanonicalProtobufAdmissionStats {
+            byte_native_validations: 1,
+            ..CanonicalProtobufAdmissionStats::default()
+        };
+        validate_cutover_stats(&baseline).expect("the byte-native control must remain green");
+
+        let mut reconstructed = baseline;
+        reconstructed.reconstructed_key_bytes = 1;
+        let mut replayed = baseline;
+        replayed.legacy_endpoint_replays = 1;
+        let mut typed = baseline;
+        typed.typed_decodes = 1;
+        let mut skipped = baseline;
+        skipped.byte_native_validations = 0;
+        let mut repeated = baseline;
+        repeated.byte_native_validations = 2;
+
+        for (name, mutant) in [
+            ("reconstructed_key", reconstructed),
+            ("endpoint_replay", replayed),
+            ("typed_decode", typed),
+            ("skipped_validation", skipped),
+            ("repeated_validation", repeated),
+        ] {
+            assert_ne!(mutant, baseline, "{name}: mutation did not apply");
+            assert!(
+                matches!(
+                    validate_cutover_stats(&mutant),
+                    Err(CanonicalProtobufAdmissionError::CutoverInvariant(_))
+                ),
+                "{name}: the production cutover verdict admitted a forbidden fallback"
+            );
+        }
     }
 
     #[test]
@@ -3686,27 +3971,82 @@ mod tests {
         rejects(vec![0x82, 0x02, 0x00], &EXPR_RHO_MATCH_PROGRAM);
     }
 
-    #[test]
-    fn depth_4096_validation_uses_the_heap_worklist_on_a_small_native_stack() {
-        let mut deep = gint(0);
-        for _ in 0..4_096 {
-            deep = Par::default().with_exprs(vec![Expr {
-                expr_instance: Some(ExprInstance::EListBody(EList {
-                    ps: vec![deep],
-                    ..EList::default()
-                })),
-            }]);
+    fn test_varint_len(mut value: usize) -> usize {
+        let mut len = 1usize;
+        while value >= 0x80 {
+            value >>= 7;
+            len += 1;
         }
-        let bytes = protobuf_encoder::encode_to_vec(&deep);
+        len
+    }
+
+    fn push_test_varint(out: &mut Vec<u8>, mut value: usize) {
+        while value >= 0x80 {
+            out.push((value as u8 & 0x7f) | 0x80);
+            value >>= 7;
+        }
+        out.push(value as u8);
+    }
+
+    /// Iteratively encode `Par → Expr::ENot → Par` without retaining all AST
+    /// suffixes. The size pass is bottom-up and the write pass root-down, so
+    /// construction is linear in the final bytes and uses no native recursion.
+    fn nested_not_protobuf(depth: usize) -> Vec<u8> {
+        let mut lengths = vec![(0usize, 0usize, 0usize); depth];
+        let mut inner_par_len = 0usize;
+        for slot in lengths.iter_mut().rev() {
+            let enot_len = 1 + test_varint_len(inner_par_len) + inner_par_len;
+            let expr_len = 1 + test_varint_len(enot_len) + enot_len;
+            let par_len = 1 + test_varint_len(expr_len) + expr_len;
+            *slot = (par_len, expr_len, enot_len);
+            inner_par_len = par_len;
+        }
+        let mut out = Vec::with_capacity(inner_par_len);
+        for (level, &(_, expr_len, enot_len)) in lengths.iter().enumerate() {
+            let child_par_len = lengths.get(level + 1).map_or(0, |entry| entry.0);
+            out.push(0x2a);
+            push_test_varint(&mut out, expr_len);
+            out.push(0x2a);
+            push_test_varint(&mut out, enot_len);
+            out.push(0x0a);
+            push_test_varint(&mut out, child_par_len);
+        }
+        assert_eq!(out.len(), inner_par_len);
+        out
+    }
+
+    #[test]
+    fn depth_20000_validation_uses_the_heap_worklist_on_a_small_native_stack() {
+        let bytes = nested_not_protobuf(20_000);
         std::thread::Builder::new()
-            .name("canonical-protobuf-admission-depth".to_string())
+            .name("canonical-protobuf-admission-depth-20000".to_string())
             .stack_size(256 * 1024)
             .spawn(move || {
                 let admission = validate(bytes, &PAR_PROTOBUF_REGION_PROGRAM);
-                assert!(admission.stats().max_frames >= 4_096);
+                assert!(admission.stats().max_frames >= 20_000);
             })
             .expect("spawn small-stack canonical protobuf validator")
             .join()
             .expect("canonical protobuf validator completes");
+    }
+
+    #[test]
+    fn width_4096_validation_uses_counted_occurrences_on_a_small_native_stack() {
+        std::thread::Builder::new()
+            .name("canonical-protobuf-admission-width-4096".to_string())
+            .stack_size(256 * 1024)
+            .spawn(|| {
+                let exprs = (0..4_096)
+                    .map(|value| Expr {
+                        expr_instance: Some(ExprInstance::GInt(value)),
+                    })
+                    .collect();
+                let bytes = protobuf_encoder::encode_to_vec(&Par::default().with_exprs(exprs));
+                let admission = validate(bytes, &PAR_PROTOBUF_REGION_PROGRAM);
+                assert!(admission.stats().fields >= 4_096);
+            })
+            .expect("spawn small-stack wide canonical protobuf validator")
+            .join()
+            .expect("wide canonical protobuf validator completes");
     }
 }
