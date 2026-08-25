@@ -21,8 +21,10 @@
 //! - **Failed** ⟺ beyond the contestability bound, not in the state, and
 //!   a floor-covered `is_failed` execution exists (it ran and failed; the
 //!   charge landed).
-//! - **Expired** ⟺ beyond the bound, not in the state otherwise: the
-//!   window is closed and nothing can ever apply it.
+//! - **Expired** ⟺ beyond the bound, not in the state, and the whole
+//!   lineage segment down to the bound was READABLE: on a truncated node a
+//!   sig whose walk crosses the restore horizon is unknowable, and the
+//!   register abstains (Pending) rather than invent a terminal verdict.
 //!
 //! The CONTESTABILITY BOUND is `max(window_end, last inclusion) +
 //! citability horizon`, past which no admissible block can adjudicate,
@@ -98,13 +100,12 @@ fn effect_in_state_of_above(
         if checked_below == Some(&cur) {
             return Ok(false);
         }
+        // Absence is a statement about THIS node's history (a truncated
+        // node lacks bodies below its restore horizon), never a judgement:
+        // typed so every availability classifier downstream can defer,
+        // fetch, or abstain instead of laundering it into a verdict.
         let Some(block) = block_store.get(&cur)? else {
-            return Err(CasperError::Other(format!(
-                "effect_in_state_of: block {} on the base lineage is absent \
-                 from the store — refusing to judge membership from an \
-                 incomplete lineage",
-                hex::encode(&cur[..8.min(cur.len())]),
-            )));
+            return Err(CasperError::BlockNotHeld(cur));
         };
         if block.body.state.block_number < min_height {
             return Ok(false);
@@ -161,6 +162,12 @@ struct Schedule {
     /// membership check already answered FALSE for. The next check walks
     /// only the new segment above it.
     checked: HashMap<Bytes, BlockHash>,
+    /// Sigs whose membership walk crossed the restore horizon: the segment
+    /// below is unreadable on this node, so "not in the state" — the
+    /// premise of Expired and Failed — is unknowable for them. They stay
+    /// Pending; only a readable re-application above the horizon (found by
+    /// the ongoing coverage re-checks) can still settle them Finalized.
+    horizon_blocked: HashSet<Bytes>,
     /// Set once `rebuild_schedule` has armed the persisted open rows.
     rebuilt: bool,
 }
@@ -314,19 +321,59 @@ fn evaluate(
     // true answer is the verdict. The memo bounds the walk to the lineage
     // segment above the last floor already answered false.
     let checked_below = schedule.checked.get(sig).cloned();
-    let member = effect_in_state_of_above(
+    let member = match effect_in_state_of_above(
         block_store,
         &max_floor.hash,
         sig,
         valid_after,
         checked_below.as_ref(),
-    )?;
+    ) {
+        Ok(member) => member,
+        // The walk crossed the restore horizon: the sig's verdict is
+        // unknowable on this node, and that is a fact about the node,
+        // never a failure of the block whose admission ran this
+        // evaluation. Abstain: flag the sig, memoize the boundary (the
+        // absent hash is on the lineage, so the early stop ends every
+        // later walk there without re-reading), and re-arm — a readable
+        // re-application above the horizon can still finalize it.
+        Err(CasperError::BlockNotHeld(missing)) => {
+            tracing::warn!(
+                target: "f1r3fly.casper.lifecycle",
+                sig = %hex::encode(&sig[..8.min(sig.len())]),
+                missing = %hex::encode(&missing[..8.min(missing.len())]),
+                "membership walk crossed the restore horizon: verdict \
+                 unknowable on this node, sig stays Pending"
+            );
+            schedule.horizon_blocked.insert(sig.clone());
+            schedule.checked.insert(sig.clone(), missing);
+            schedule
+                .floor_thresholds
+                .entry(floor_height + 1)
+                .or_default()
+                .insert(sig.clone());
+            return Ok(());
+        }
+        Err(other) => return Err(other),
+    };
     if member {
         write_terminal(dag, sig, TerminalState::Finalized, &row, terminalized)?;
         schedule.checked.remove(sig);
+        schedule.horizon_blocked.remove(sig);
         return Ok(());
     }
     schedule.checked.insert(sig.clone(), max_floor.hash.clone());
+
+    // "Not in the state" over an unreadable segment is not established —
+    // it is unknowable. Expired/Failed for a horizon-blocked sig would be
+    // an invented terminal verdict; keep re-checking coverage instead.
+    if schedule.horizon_blocked.contains(sig) {
+        schedule
+            .floor_thresholds
+            .entry(floor_height + 1)
+            .or_default()
+            .insert(sig.clone());
+        return Ok(());
+    }
 
     // EXPIRED / FAILED — only beyond the contestability bound, past which
     // no admissible block can adjudicate, re-apply, or re-include the sig,
@@ -820,5 +867,191 @@ mod tests {
         }
         let sig = Bytes::from_static(b"sig_x");
         assert!(effect_in_state_of(&store, &m.block_hash, &sig, 0).is_err());
+    }
+
+    /// An absent lineage block is a statement about THIS node's history —
+    /// a truncated node legitimately lacks bodies below its restore
+    /// horizon — so the refusal must be the typed [`CasperError::BlockNotHeld`]
+    /// naming the block, never a stringified `Other` that bypasses every
+    /// availability classifier downstream.
+    #[tokio::test]
+    async fn an_absent_lineage_block_is_a_typed_block_not_held() {
+        let store = store().await;
+        let absent = block_at(1, vec![], 1);
+        let b = block_at(2, vec![absent.block_hash.clone()], 2);
+        store.put_block_message(&b).expect("store block");
+
+        let sig = Bytes::from_static(b"sig_x");
+        let err = effect_in_state_of(&store, &b.block_hash, &sig, 0)
+            .expect_err("an unreadable lineage segment must refuse, not answer");
+        assert!(
+            matches!(err, CasperError::BlockNotHeld(ref h) if *h == absent.block_hash),
+            "absence must carry the missing block's name typed; got: {}",
+            err
+        );
+    }
+
+    /// A truncated node whose membership walk crosses the restore horizon
+    /// must ABSORB the refusal, not error block admission: the blocked sig
+    /// stays Pending (no invented Expired past the contestability bound —
+    /// "not in the state" is unknowable over an unreadable segment), sibling
+    /// sigs still evaluate, later observations do not re-error, and a
+    /// readable re-application above the horizon still lands Finalized.
+    #[tokio::test]
+    async fn the_register_absorbs_the_horizon_instead_of_erroring_admission() {
+        use block_storage::rust::dag::block_dag_key_value_storage::{
+            BlockDagKeyValueStorage, InsertMode,
+        };
+        use models::rust::block_implicits::get_random_block;
+
+        let mut kvm = InMemoryStoreManager::new();
+        let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
+            .await
+            .expect("block store");
+        let dag_storage = BlockDagKeyValueStorage::new(&mut kvm)
+            .await
+            .expect("dag storage");
+
+        // Bonds are EMPTY: a truncated DAG holds no height-0 block, so a
+        // bonded-validator insert would (correctly) demand the genesis
+        // sentinel this test does not need.
+        let mk = |number: i64,
+                  seq: i32,
+                  parents: Vec<BlockHash>,
+                  deploys: Vec<models::rust::casper::protocol::casper_message::ProcessedDeploy>| {
+            get_random_block(
+                Some(number),
+                Some(seq),
+                None,
+                None,
+                None,
+                None,
+                Some(number),
+                Some(parents),
+                Some(Vec::new()),
+                Some(deploys),
+                Some(Vec::new()),
+                Some(Vec::new()),
+                Some("test".to_string()),
+                None,
+            )
+        };
+
+        // The horizon: block #5 exists only as a hash pointer — its body
+        // was never restored. The window: w1(#6, anchor) <- w2(#7).
+        let absent = mk(5, 5, Vec::new(), Vec::new());
+
+        let blocked_deploy = crate::rust::util::construct_deploy::basic_deploy_data(
+            1,
+            None,
+            Some("test".to_string()),
+        )
+        .expect("deploy data");
+        let sig_blocked = blocked_deploy.sig.clone();
+        let mut blocked_pd =
+            models::rust::casper::protocol::casper_message::ProcessedDeploy::empty(blocked_deploy);
+        blocked_pd.is_failed = true;
+
+        let live_deploy = crate::rust::util::construct_deploy::basic_deploy_data(
+            2,
+            None,
+            Some("test".to_string()),
+        )
+        .expect("deploy data");
+        let sig_live = live_deploy.sig.clone();
+        let live_pd =
+            models::rust::casper::protocol::casper_message::ProcessedDeploy::empty(live_deploy);
+
+        // w1 carries a FAILED execution of the blocked sig: the row exists
+        // (valid_after 0) but membership must keep walking — straight into
+        // the absent block.
+        let w1 = mk(6, 6, vec![absent.block_hash.clone()], vec![blocked_pd]);
+        let w2 = mk(7, 7, vec![w1.block_hash.clone()], vec![live_pd]);
+
+        for block in [&w1, &w2] {
+            block_store.put_block_message(block).expect("store block");
+        }
+        dag_storage
+            .insert(&w1, InsertMode::Approved)
+            .expect("insert anchor");
+        dag_storage
+            .insert(&w2, InsertMode::Normal)
+            .expect("insert w2");
+        dag_storage
+            .record_directly_finalized(w2.block_hash.clone(), 0.5, |_| async { Ok(()) })
+            .await
+            .expect("adopt w2");
+
+        let dag = dag_storage.get_representation().expect("dag");
+        let register = DeployLifecycle::default();
+        let terminalized = register
+            .observe_block(&dag, &block_store, &w2, 1, Some(1))
+            .await
+            .expect("a horizon crossing must not error block admission");
+        assert_eq!(
+            terminalized,
+            vec![sig_live.clone()],
+            "the sibling sig must still reach its verdict"
+        );
+        assert!(
+            dag.deploy_terminal(&sig_blocked)
+                .expect("terminal lookup")
+                .is_none(),
+            "no verdict may be invented for a sig whose lineage is unreadable"
+        );
+
+        // Past the contestability bound (decide_at = max(0+1, 6) + 1 = 7 <
+        // floor 8): the Expired arm is live, and must stay suppressed for
+        // the horizon-blocked sig. The observation must not re-error either.
+        let w3 = mk(8, 8, vec![w2.block_hash.clone()], Vec::new());
+        block_store.put_block_message(&w3).expect("store w3");
+        dag_storage
+            .insert(&w3, InsertMode::Normal)
+            .expect("insert w3");
+        dag_storage
+            .record_directly_finalized(w3.block_hash.clone(), 0.5, |_| async { Ok(()) })
+            .await
+            .expect("adopt w3");
+        let dag = dag_storage.get_representation().expect("dag");
+        let terminalized = register
+            .observe_block(&dag, &block_store, &w3, 1, Some(1))
+            .await
+            .expect("later observations must not re-error");
+        assert!(terminalized.is_empty());
+        assert!(
+            dag.deploy_terminal(&sig_blocked)
+                .expect("terminal lookup")
+                .is_none(),
+            "Expired past the bound would be an invented verdict: membership \
+             below the horizon is unknowable"
+        );
+
+        // A readable re-application above the horizon answers the question
+        // the unreadable segment could not: Finalized still lands.
+        let mut w4 = mk(9, 9, vec![w3.block_hash.clone()], Vec::new());
+        w4.body.applied_from_scope = vec![sig_blocked.clone()];
+        block_store.put_block_message(&w4).expect("store w4");
+        dag_storage
+            .insert(&w4, InsertMode::Normal)
+            .expect("insert w4");
+        dag_storage
+            .record_directly_finalized(w4.block_hash.clone(), 0.5, |_| async { Ok(()) })
+            .await
+            .expect("adopt w4");
+        let dag = dag_storage.get_representation().expect("dag");
+        let terminalized = register
+            .observe_block(&dag, &block_store, &w4, 1, Some(1))
+            .await
+            .expect("observe w4");
+        assert_eq!(terminalized, vec![sig_blocked.clone()]);
+        let record = dag
+            .deploy_terminal(&sig_blocked)
+            .expect("terminal lookup")
+            .expect("terminal record written");
+        assert_eq!(
+            record.state,
+            TerminalState::Finalized,
+            "a readable re-application must still finalize a horizon-blocked sig"
+        );
     }
 }

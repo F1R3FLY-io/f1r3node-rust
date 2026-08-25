@@ -95,17 +95,14 @@ async fn integration_t_invalid_block_hash_records() {
     .await
     .expect("snapshot");
 
-    // Look up the v0 label and assert a record exists at base 46.
-    // (The exact base seq depends on the dispatcher reading
-    // `invalid.seq_num - 1`. We assert presence of *some* record
-    // for v0 — the post-fix #3 invariant.)
+    // Assert NO record exists for v0 at any base seq: InvalidBlockHash is
+    // demoted (dropped without economic evidence), so the dispatcher must
+    // not mint anything.
     let v0_label = "v0";
     let has_any_record =
         (0..=50).any(|base| <_ as SlashingObserver>::has_record(&snapshot, v0_label, base));
     assert!(
-        has_any_record,
-        "post-fix #3 catch-all: dispatcher must mint a record for v0 \
-         when an InvalidBlockHash block is processed; pre-fix this \
-         assertion fails (catch-all silently skipped record creation)"
+        !has_any_record,
+        "demoted: InvalidBlockHash is dropped without minting slash evidence"
     );
 }

@@ -342,6 +342,7 @@ fn classify_casper_error(err: &CasperError) -> (StatusCode, &'static str, String
         ReplayFailure(_) => internal("replay_failure"),
         StreamError(_) => internal("stream_error"),
         LockError(_) => internal("lock_error"),
+        IncompatibleFinalizedFork(_) => internal("incompatible_finalized_fork"),
         Other(_) => internal("other_error"),
     }
 }
