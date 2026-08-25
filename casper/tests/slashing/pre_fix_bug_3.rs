@@ -1,7 +1,7 @@
 // Pre-fix regression backstop for bug #3 (catch-all dispatcher
 // doesn't mint records for non-equivocation slashable variants).
 //
-// Reference: docs/theory/slashing/design/09-bug-fixes-and-rationale.md §9.4.
+// Reference: docs/casper/theory/slashing/design/09-bug-fixes-and-rationale.md §9.4.
 // Out-of-band approach: this asserts the post-fix invariant that
 // would FAIL on the parent of the bug-#3 fix commit (where
 // engine/multi_parent_casper/mod.rs:1090-1099's catch-all only called

@@ -304,7 +304,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
                     // because we additionally clean up the BlockRetriever's
                     // hash-tracking state (a launch-specific concern that
                     // the generic recon helper doesn't know about).
-                    // See docs/theory/slashing/design/09-bug-fixes-and-rationale.md §9.20.
+                    // See docs/casper/theory/slashing/design/09-bug-fixes-and-rationale.md §9.20.
                     if dag_contains {
                         tracing::warn!(
                             "Pendant {} is already in DAG; purging stale CasperBuffer entry to prevent requeue loops.",

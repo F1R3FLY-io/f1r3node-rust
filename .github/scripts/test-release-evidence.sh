@@ -91,7 +91,7 @@ jq -e '
 	and (.ci.required_jobs | length) == 25
 	and .images.publication_state == "not_published"
 	and .images.docker_hub == null
-	and .images.ocir == null
+	and .images.ocir_index_digest == null
 ' --arg source_sha "$SOURCE_SHA" "$OUTPUT" >/dev/null
 
 expect_failure() {
@@ -123,16 +123,20 @@ INDEX_REF="docker.io/f1r3flyindustries/f1r3fly-rust@sha256:$(printf 'index' | sh
 AMD64_DIGEST="sha256:$(printf 'amd64' | sha256sum | awk '{print $1}')"
 ARM64_DIGEST="sha256:$(printf 'arm64' | sha256sum | awk '{print $1}')"
 cp "$OUTPUT" "$TMP/canary-evidence.json"
-"$TOOL" record-images "$TMP/canary-evidence.json" "$INDEX_REF" "$AMD64_DIGEST" "$ARM64_DIGEST"
+"$TOOL" record-images "$TMP/canary-evidence.json" "$INDEX_REF" "$AMD64_DIGEST" "$ARM64_DIGEST" "${INDEX_REF#*@}"
 jq -e '
 	.publication_mode == "canary"
 	and .images.publication_state == "published"
-	and .images.ocir == null
+	and .images.ocir_index_digest == (.images.docker_hub | split("@")[1])
 ' "$TMP/canary-evidence.json" >/dev/null
 "$TOOL" validate "$TMP/canary-evidence.json"
-expect_failure 'record-images rejects canary input' "$TOOL" record-images "$TMP/canary-evidence.json" "$INDEX_REF" "$AMD64_DIGEST" "$ARM64_DIGEST"
+expect_failure 'record-images rejects canary input' "$TOOL" record-images "$TMP/canary-evidence.json" "$INDEX_REF" "$AMD64_DIGEST" "$ARM64_DIGEST" "${INDEX_REF#*@}"
 cp "$OUTPUT" "$TMP/bad-ref.json"
-expect_failure 'record-images rejects a tag reference' "$TOOL" record-images "$TMP/bad-ref.json" "docker.io/f1r3flyindustries/f1r3fly-rust:v0.4.46-canary.812" "$AMD64_DIGEST" "$ARM64_DIGEST"
+expect_failure 'record-images rejects a tag reference' "$TOOL" record-images "$TMP/bad-ref.json" "docker.io/f1r3flyindustries/f1r3fly-rust:v0.4.46-canary.812" "$AMD64_DIGEST" "$ARM64_DIGEST" "${INDEX_REF#*@}"
+cp "$OUTPUT" "$TMP/ocir-mismatch.json"
+expect_failure 'record-images rejects a divergent OCIR digest' "$TOOL" record-images "$TMP/ocir-mismatch.json" "$INDEX_REF" "$AMD64_DIGEST" "$ARM64_DIGEST" "$AMD64_DIGEST"
+jq '.images.ocir_index_digest = "sha256:0000000000000000000000000000000000000000000000000000000000000000"' "$TMP/canary-evidence.json" >"$TMP/tampered-ocir.json"
+expect_failure 'OCIR digest differs from Docker Hub index' "$TOOL" validate "$TMP/tampered-ocir.json"
 jq '.images.linux_amd64_digest = "sha256:bad"' "$TMP/canary-evidence.json" >"$TMP/tampered-canary.json"
 expect_failure 'invalid canary image digest' "$TOOL" validate "$TMP/tampered-canary.json"
 printf 'release evidence tests passed\n'

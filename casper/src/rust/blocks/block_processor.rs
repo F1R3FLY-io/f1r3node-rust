@@ -114,16 +114,44 @@ pub(crate) fn guard_deferral(
 /// this node's restore, not about the block.
 ///
 /// Each condition closes a distinct attack; see the truth-table test.
+///
+/// `seq_below_senders_latest` requires the block's sequence number to sit
+/// strictly below the sender's current latest message. Genuine settled
+/// stragglers always do — settled history predates the anchor's
+/// justification frontier — while a block at-or-above that frontier is
+/// live-chain material wearing a sub-anchor height (the CI run 32588262605
+/// pollution shape: shared validator keys, foreign seq 40 against a live
+/// seq-5 head). A sender with NO latest message passes the condition:
+/// deep settled history is routinely authored by since-unbonded validators
+/// with no live slot, and live material always has one — refusing on an
+/// absent slot re-wedges the restore gaps the door exists to close.
 pub(crate) fn admit_as_settled(
     block_number: i64,
     approved_block_number: i64,
     solicited_by_bonded: bool,
     budget_remaining: bool,
+    seq_below_senders_latest: bool,
 ) -> bool {
     approved_block_number > 0
         && block_number <= approved_block_number
         && solicited_by_bonded
         && budget_remaining
+        && seq_below_senders_latest
+}
+
+/// What the block-processing loop should do with a block whose validation
+/// attempt returned a hard `Err` (no verdict, not a typed deferral).
+///
+/// `Retry` keeps the block buffered — a transient fault heals on a later
+/// harvest, and the failure quarantine paces those retries. `PurgeAndQuarantine`
+/// is the bounded end: the block leaves the buffer loudly, and only a fresh
+/// peer delivery can bring it back (CI run 32588262605, arm64-docker joiner3:
+/// five buffered blocks re-harvested ~2,770 times each on the same estimator
+/// walk error — fail, pendant, fail — with nothing bounding the loop).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ValidationFailureDisposition {
+    Retry,
+    PurgeAndQuarantine,
 }
 
 /// Classify a validation outcome for post-processing.
@@ -164,6 +192,8 @@ const CASPER_BUFFER_APPROX_NODES_METRIC: &str = "casper.buffer.approx-nodes";
 const CASPER_BUFFER_DEPENDENCY_LOOP_PRUNED_METRIC: &str = "casper.buffer.dependency-loop-pruned";
 const MISSING_DEPENDENCY_ATTEMPTS_MAX_DEFAULT: u32 = 32;
 const MISSING_DEPENDENCY_ATTEMPTS_MAX_ENV: &str = "F1R3_MISSING_DEPENDENCY_ATTEMPTS_MAX";
+const VALIDATION_ERROR_ATTEMPTS_MAX_DEFAULT: u32 = 32;
+const VALIDATION_ERROR_ATTEMPTS_MAX_ENV: &str = "F1R3_VALIDATION_ERROR_ATTEMPTS_MAX";
 const MISSING_DEPENDENCY_QUARANTINE_MS_DEFAULT: u64 = 120_000;
 const MISSING_DEPENDENCY_QUARANTINE_MS_ENV: &str = "F1R3_MISSING_DEPENDENCY_QUARANTINE_MS";
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
@@ -179,6 +209,7 @@ static CASPER_BUFFER_STALE_TTL_MS_CFG: OnceLock<u64> = OnceLock::new();
 static CASPER_BUFFER_MAX_PRUNE_BATCH_CFG: OnceLock<usize> = OnceLock::new();
 static CASPER_BUFFER_PRUNE_INTERVAL_MS_CFG: OnceLock<u64> = OnceLock::new();
 static MISSING_DEPENDENCY_ATTEMPTS_MAX_CFG: OnceLock<u32> = OnceLock::new();
+static VALIDATION_ERROR_ATTEMPTS_MAX_CFG: OnceLock<u32> = OnceLock::new();
 static MISSING_DEPENDENCY_QUARANTINE_MS_CFG: OnceLock<u64> = OnceLock::new();
 
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
@@ -248,6 +279,18 @@ fn maybe_trim_allocator_after_block() {
 
 #[cfg(not(all(target_os = "linux", target_env = "gnu")))]
 fn maybe_trim_allocator_after_block() {}
+
+/// Hard-error attempt cap per buffered block. Public so tests exercise the
+/// bound the block-processing loop relies on.
+pub fn validation_error_attempts_max() -> u32 {
+    *VALIDATION_ERROR_ATTEMPTS_MAX_CFG.get_or_init(|| {
+        env::var_or_filtered(
+            VALIDATION_ERROR_ATTEMPTS_MAX_ENV,
+            VALIDATION_ERROR_ATTEMPTS_MAX_DEFAULT,
+            |v: &u32| *v > 0,
+        )
+    })
+}
 
 fn missing_dependency_attempts_max() -> u32 {
     *MISSING_DEPENDENCY_ATTEMPTS_MAX_CFG.get_or_init(|| {
@@ -357,6 +400,10 @@ impl<T: TransportLayer + Send + Sync> BlockProcessor<T> {
             .sweep_orphaned_missing_dependency_attempts()?;
         self.dependencies
             .sweep_orphaned_missing_dependency_quarantine()?;
+        self.dependencies
+            .sweep_expired_validation_error_quarantine()?;
+        self.dependencies
+            .sweep_orphaned_validation_error_attempts()?;
 
         if self
             .dependencies
@@ -521,7 +568,7 @@ impl<T: TransportLayer + Send + Sync> BlockProcessor<T> {
                     // BlockException → InvalidTransaction is safe: validation_dispatcher.rs:548
                     // routes every is_slashable() variant through the same record-creation path
                     // as AdmissibleEquivocation, so the slash pipeline fires identically. See
-                    // docs/theory/slashing/design/09-bug-fixes-and-rationale.md §9.4 and
+                    // docs/casper/theory/slashing/design/09-bug-fixes-and-rationale.md §9.4 and
                     // theorem T-9.3 (`t_9_3_dispatch_complete`, BugFixDispatcher.v:41).
                     BlockError::BlockException(ref err) => {
                         tracing::warn!(
@@ -621,6 +668,28 @@ impl<T: TransportLayer + Send + Sync> BlockProcessor<T> {
         self.dependencies.remove_from_buffer(block).await?;
         self.dependencies.ack_processed(block).await
     }
+
+    /// See [`BlockProcessorDependencies::note_validation_failure`].
+    pub fn note_validation_failure(
+        &self,
+        block_hash: &BlockHash,
+    ) -> Result<ValidationFailureDisposition, CasperError> {
+        self.dependencies.note_validation_failure(block_hash)
+    }
+
+    /// See [`BlockProcessorDependencies::is_validation_failure_quarantined`].
+    pub fn is_validation_failure_quarantined(
+        &self,
+        block_hash: &BlockHash,
+    ) -> Result<bool, CasperError> {
+        self.dependencies
+            .is_validation_failure_quarantined(block_hash)
+    }
+
+    /// See [`BlockProcessorDependencies::clear_validation_failures`].
+    pub fn clear_validation_failures(&self, block_hash: &BlockHash) -> Result<(), CasperError> {
+        self.dependencies.clear_validation_failures(block_hash)
+    }
 }
 
 /// Unified dependencies structure - equivalent to Scala companion object approach
@@ -637,6 +706,13 @@ pub struct BlockProcessorDependencies<T: TransportLayer + Send + Sync> {
     casper_buffer_last_prune_ms: Arc<AtomicU64>,
     missing_dependency_attempts: Arc<Mutex<HashMap<BlockHash, u32>>>,
     missing_dependency_quarantine_until: Arc<Mutex<HashMap<BlockHash, u64>>>,
+    /// Hard validation `Err`s per buffered block, bounding the
+    /// fail→pendant→fail loop the way `missing_dependency_attempts` bounds
+    /// the dependency-check loop. Deadlines are `Instant`s: the quarantine
+    /// paces retries, so a wall-clock step (NTP correction) must neither
+    /// void an active quarantine nor extend one for hours.
+    validation_error_attempts: Arc<Mutex<HashMap<BlockHash, u32>>>,
+    validation_error_quarantine_until: Arc<Mutex<HashMap<BlockHash, std::time::Instant>>>,
     /// Hashes solicited as dependencies by a block whose sender is bonded in
     /// this node's anchor. Membership is the third condition of
     /// [`admit_as_settled`]; entries are removed when the block arrives, and
@@ -673,6 +749,8 @@ impl<T: TransportLayer + Send + Sync> BlockProcessorDependencies<T> {
             casper_buffer_last_prune_ms: Arc::new(AtomicU64::new(0)),
             missing_dependency_attempts: Arc::new(Mutex::new(HashMap::new())),
             missing_dependency_quarantine_until: Arc::new(Mutex::new(HashMap::new())),
+            validation_error_attempts: Arc::new(Mutex::new(HashMap::new())),
+            validation_error_quarantine_until: Arc::new(Mutex::new(HashMap::new())),
             settled_solicitations: Arc::new(Mutex::new(HashSet::new())),
             settled_admissions: Arc::new(AtomicU64::new(0)),
             state_root_fetch_tx,
@@ -1144,6 +1222,140 @@ impl<T: TransportLayer + Send + Sync> BlockProcessorDependencies<T> {
             .is_some_and(|until| now_ms < until))
     }
 
+    /// Record one hard validation `Err` for a buffered block and decide its
+    /// fate: pace further retries via the failure quarantine, and end the
+    /// retry loop entirely once the attempt cap is reached.
+    ///
+    /// The quarantine is stamped in both dispositions — between retries it
+    /// paces the pendant harvest, and after the cap it damps an immediate
+    /// re-delivery from restarting the loop hot. Only a fresh peer delivery
+    /// outlives the purge, which is exactly the re-delivery convergence the
+    /// truncation-horizon work relies on.
+    pub fn note_validation_failure(
+        &self,
+        block_hash: &BlockHash,
+    ) -> Result<ValidationFailureDisposition, CasperError> {
+        let reached_cap = {
+            let mut attempts = self.validation_error_attempts.lock().map_err(|_| {
+                CasperError::RuntimeError(
+                    "Failed to acquire validation_error_attempts lock".to_string(),
+                )
+            })?;
+            let next = attempts.entry(block_hash.clone()).or_insert(0);
+            *next = next.saturating_add(1);
+            if *next >= validation_error_attempts_max() {
+                attempts.remove(block_hash);
+                true
+            } else {
+                false
+            }
+        };
+
+        let until = std::time::Instant::now()
+            + std::time::Duration::from_millis(missing_dependency_quarantine_ms());
+        let mut quarantine = self.validation_error_quarantine_until.lock().map_err(|_| {
+            CasperError::RuntimeError(
+                "Failed to acquire validation_error_quarantine_until lock".to_string(),
+            )
+        })?;
+        quarantine.insert(block_hash.clone(), until);
+
+        Ok(if reached_cap {
+            ValidationFailureDisposition::PurgeAndQuarantine
+        } else {
+            ValidationFailureDisposition::Retry
+        })
+    }
+
+    /// Whether the pendant harvest should skip this hash because its last
+    /// validation attempt hard-failed within the quarantine window.
+    pub fn is_validation_failure_quarantined(
+        &self,
+        block_hash: &BlockHash,
+    ) -> Result<bool, CasperError> {
+        let now = std::time::Instant::now();
+        let quarantine = self.validation_error_quarantine_until.lock().map_err(|_| {
+            CasperError::RuntimeError(
+                "Failed to acquire validation_error_quarantine_until lock".to_string(),
+            )
+        })?;
+        Ok(quarantine
+            .get(block_hash)
+            .copied()
+            .is_some_and(|until| now < until))
+    }
+
+    /// A settled verdict ends the failure ledger for this hash.
+    pub fn clear_validation_failures(&self, block_hash: &BlockHash) -> Result<(), CasperError> {
+        {
+            let mut attempts = self.validation_error_attempts.lock().map_err(|_| {
+                CasperError::RuntimeError(
+                    "Failed to acquire validation_error_attempts lock".to_string(),
+                )
+            })?;
+            attempts.remove(block_hash);
+        }
+        let mut quarantine = self.validation_error_quarantine_until.lock().map_err(|_| {
+            CasperError::RuntimeError(
+                "Failed to acquire validation_error_quarantine_until lock".to_string(),
+            )
+        })?;
+        quarantine.remove(block_hash);
+        Ok(())
+    }
+
+    fn sweep_expired_validation_error_quarantine(&self) -> Result<(), CasperError> {
+        let now = std::time::Instant::now();
+        let mut quarantine = self.validation_error_quarantine_until.lock().map_err(|_| {
+            CasperError::RuntimeError(
+                "Failed to acquire validation_error_quarantine_until lock".to_string(),
+            )
+        })?;
+        quarantine.retain(|_, until| *until > now);
+        Ok(())
+    }
+
+    fn sweep_orphaned_validation_error_attempts(&self) -> Result<(), CasperError> {
+        let to_clear: Vec<BlockHash> = {
+            let attempts = self.validation_error_attempts.lock().map_err(|_| {
+                CasperError::RuntimeError(
+                    "Failed to acquire validation_error_attempts lock".to_string(),
+                )
+            })?;
+
+            attempts
+                .keys()
+                .filter_map(|block_hash| {
+                    let block_hash_serde = BlockHashSerde(block_hash.clone());
+                    let is_active = self.casper_buffer.contains(&block_hash_serde)
+                        || self.casper_buffer.is_pendant(&block_hash_serde);
+
+                    if is_active {
+                        None
+                    } else {
+                        Some(block_hash.clone())
+                    }
+                })
+                .collect()
+        };
+
+        if to_clear.is_empty() {
+            return Ok(());
+        }
+
+        let mut attempts = self.validation_error_attempts.lock().map_err(|_| {
+            CasperError::RuntimeError(
+                "Failed to acquire validation_error_attempts lock".to_string(),
+            )
+        })?;
+
+        for block_hash in to_clear {
+            attempts.remove(&block_hash);
+        }
+
+        Ok(())
+    }
+
     fn sweep_expired_missing_dependency_quarantine(&self) -> Result<(), CasperError> {
         let now_ms = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -1171,36 +1383,73 @@ impl<T: TransportLayer + Send + Sync> BlockProcessorDependencies<T> {
     /// whether the block was admitted; a `false` sends it down the ordinary
     /// judged path.
     ///
-    /// Insertion cannot regress consensus state: the DAG's latest-message
-    /// update is sequence-monotone, so an old block never moves a validator's
-    /// latest message backward, and every verdict channel is untouched because
-    /// the block never enters validation.
+    /// Insertion cannot touch consensus state: `InsertMode::SettledHistory`
+    /// leaves latest messages exactly as they were, and every verdict channel
+    /// is untouched because the block never enters validation.
     pub async fn try_admit_settled(
         &self,
         casper: Arc<dyn Casper + Send + Sync + 'static>,
         block: &BlockMessage,
     ) -> Result<bool, CasperError> {
-        if !self.take_settled_solicitation(&block.block_hash) {
+        // One-shot provenance ticket: `take` consumes the solicitation, so
+        // the boolean below is the REAL third conjunct, not a restatement.
+        let solicited_by_bonded = self.take_settled_solicitation(&block.block_hash);
+        if !solicited_by_bonded {
             return Ok(false);
         }
         let approved_block_number = casper
             .get_approved_block()
             .map(|approved| proto_util::block_number(approved))?;
-        let admitted_so_far = self.settled_admissions.load(Ordering::Relaxed);
+        let seq_below_senders_latest = {
+            let representation = self.block_dag_storage.get_representation()?;
+            match representation.latest_message_hash(&block.sender) {
+                Some(latest_hash) => match representation.lookup(&latest_hash)? {
+                    Some(latest_meta) => block.seq_num < latest_meta.sequence_number,
+                    None => false,
+                },
+                // No latest message: this sender has no live testimony on
+                // this node — an unbonded historic author, the normal case
+                // for deep settled history. The conjunct exists to refuse
+                // live-chain material wearing a sub-anchor height, and live
+                // material always HAS a live latest message, so its job is
+                // done entirely by the Some arm; refusing here re-wedges
+                // restores whose gap blocks were authored by since-departed
+                // validators. A bonded citer vouching for a no-slot author
+                // is the budget-priced attack the admission cap already
+                // bounds.
+                None => true,
+            }
+        };
         if !admit_as_settled(
             proto_util::block_number(block),
             approved_block_number,
-            true,
-            admitted_so_far < SETTLED_ADMISSION_BUDGET,
+            solicited_by_bonded,
+            self.settled_admissions.load(Ordering::Relaxed) < SETTLED_ADMISSION_BUDGET,
+            seq_below_senders_latest,
         ) {
             return Ok(false);
         }
 
-        self.block_dag_storage.insert(
+        // Reserve the budget slot atomically: check-then-increment as two
+        // steps lets concurrent admissions overshoot the documented bound.
+        let Ok(reserved) = self.settled_admissions.fetch_update(
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+            |admitted| (admitted < SETTLED_ADMISSION_BUDGET).then(|| admitted + 1),
+        ) else {
+            return Ok(false);
+        };
+
+        if let Err(insert_err) = self.block_dag_storage.insert(
             block,
-            block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Normal,
-        )?;
-        let admitted = self.settled_admissions.fetch_add(1, Ordering::Relaxed) + 1;
+            block_storage::rust::dag::block_dag_key_value_storage::InsertMode::SettledHistory,
+        ) {
+            // Return the reserved slot: a storage failure must not consume
+            // budget headroom.
+            self.settled_admissions.fetch_sub(1, Ordering::Relaxed);
+            return Err(insert_err.into());
+        }
+        let admitted = reserved + 1;
         if admitted == SETTLED_ADMISSION_BUDGET / 2 {
             tracing::warn!(
                 admitted,
@@ -1435,32 +1684,39 @@ mod tests {
     ///     (an unbonded attacker's citations open nothing);
     ///   - only within budget (a staked attacker buys bounded, alarmed storage,
     ///     never unbounded growth — past the budget the node degrades to
-    ///     today's deferral, loudly).
+    ///     today's deferral, loudly);
+    ///   - only seq-strictly-below the sender's latest message (settled
+    ///     history predates the anchor's justification frontier; a higher
+    ///     seq is live-chain material wearing a sub-anchor height).
     #[test]
-    fn settled_history_admission_has_four_conditions() {
+    fn settled_history_admission_has_five_conditions() {
         assert!(
-            admit_as_settled(9, 87, true, true),
+            admit_as_settled(9, 87, true, true, true),
             "a below-anchor block solicited by a bonded citer on a truncated node is settled history"
         );
         assert!(
-            admit_as_settled(87, 87, true, true),
+            admit_as_settled(87, 87, true, true, true),
             "the anchor's own height is inside the settled cut"
         );
         assert!(
-            !admit_as_settled(88, 87, true, true),
+            !admit_as_settled(88, 87, true, true, true),
             "above the anchor is live consensus and must be judged"
         );
         assert!(
-            !admit_as_settled(9, 0, true, true),
+            !admit_as_settled(9, 0, true, true, true),
             "a genesis-rooted node judges everything — same discriminator as guard_deferral"
         );
         assert!(
-            !admit_as_settled(9, 87, false, true),
+            !admit_as_settled(9, 87, false, true, true),
             "a citation from an unbonded sender opens no door"
         );
         assert!(
-            !admit_as_settled(9, 87, true, false),
+            !admit_as_settled(9, 87, true, false, true),
             "budget exhausted falls back to deferral, never silent growth"
+        );
+        assert!(
+            !admit_as_settled(9, 87, true, true, false),
+            "a seq at-or-above the sender's latest message is not settled history"
         );
     }
 

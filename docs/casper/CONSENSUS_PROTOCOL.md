@@ -300,15 +300,19 @@ Finalization determines when a block is **mathematically irreversible**. Once fi
 
 Finalization runs asynchronously after each valid block is added to the DAG. A single-flight guard (`finalizer_task_in_progress`) prevents concurrent runs. A `finalization_in_progress` flag prevents snapshot creation during finalization (avoids stale proposals).
 
-### Algorithm (`finalizer.rs`)
+### Algorithm (`floor.rs::floor_of_view` + `finalization_runner.rs`)
 
-1. **Scope**: BFS from latest messages down the main-parent chain to the current LFB (Last Finalized Block)
+There is ONE finality clock: the LFB is the floor of the live view — the same
+derivation, candidate soundness, and exact `≥ θ` decision every block
+operation uses.
+
+1. **Scope**: derive the floor of the current latest-message frontier
 2. **Candidate filtering**: Only blocks with >50% stake agreement (quick filter before expensive clique computation)
 3. **Clique Oracle** for each candidate:
    - Build an agreement graph: edge between validators A and B if they "never eventually see disagreement" about the target block
    - Find the maximum weighted clique (largest fully-connected subgraph by stake)
-   - Compute fault tolerance: `FT = (2 * clique_weight - total_stake) / total_stake`
-4. **Finalization**: If `FT > fault_tolerance_threshold`, block is finalized
+   - Decide finalization with exact integer arithmetic (`2·q·den ⋛ S·(den+num)` — the integer form of `FT = (2·clique_weight − total_stake) / total_stake ≥ θ`)
+4. **Containment gate**: the derived floor advances the LFB only when its state CONTAINS the current LFB's settled effects — the read surface can never designate a state missing settled content
 5. **LFB advancement**: Update last finalized block, clean up deploy storage, emit `BlockFinalised` event
 
 ### "Never Eventually See Disagreement"
@@ -316,9 +320,28 @@ Finalization runs asynchronously after each valid block is added to the DAG. A s
 Two validators A and B agree on block T if:
 - A's latest message is in T's main-parent chain
 - B's latest message is in T's main-parent chain
-- Walking B's self-justification chain from B's latest back to A's view of B reveals no messages that disagree with T
+- Walking B's self-justification chain from B's latest back to A's view of B reveals no messages that disagree with T. Disagreement is two-sided by height: at or above T's height, a message whose spine excludes T disagrees (a rival estimate); below T's height, only a message off T's OWN spine disagrees (a rival prefix) — a block on T's own ancestry is history, not disagreement.
 
 This is a **permanent** agreement — once two validators are in a clique for block T, no future messages can break it.
+
+### Hold states (operator-visible)
+
+A finalizer cycle that derives a higher floor but does not adopt it ends in
+one of two holds:
+
+- **ContainmentHold** — the derived floor's state is missing effects settled
+  under the current LFB. One refusal is routine (a rejected-then-recovered
+  deploy legitimately fails containment until its re-homed carrier
+  finalizes); a streak of refusals with RISING derived floors means the
+  shard is finalizing without this node. The `DivergenceMonitor` detects
+  exactly that pattern and escalates once: an ERROR log ("FINALITY
+  DIVERGENCE") plus the `finality.divergence.detected` counter, cleared
+  with an INFO if a containing floor is later adopted. Proposing is
+  deliberately not halted.
+- **AbsenceHold** — the floor walk needed a block this node does not hold
+  (a restored node's descent crossed its retention edge). The cycle holds
+  quietly at DEBUG; catch-up delivers the missing block and the next run
+  derives cleanly.
 
 ### Work Budgets
 
@@ -386,10 +409,10 @@ The heartbeat runs a loop that races between:
 
 On each heartbeat tick:
 
-1. **Frontier chase**: Is my latest block behind the DAG tip? → Propose (catch up)
-2. **Pending deploys**: Are there unfinalized deploys AND LFB lag exceeds threshold? → Propose
-3. **Stale LFB recovery**: Is LFB older than `max_lfb_age` AND regular recovery is throttled? → Leader-only proposal (deterministic leader selection prevents N competing recovery blocks)
-4. **Self-propose cooldown**: Don't propose more often than the configured cooldown
+1. **Pending deploys**: Unfinalized user deploys → propose (with a lag throttle and an interval-paced backstop so deploys never starve)
+2. **Frontier follow**: New parents observed → propose to keep the frontier moving (lag-capped while ahead)
+3. **Stale LFB recovery**: LFB older than `max_lfb_age` → EVERY bonded validator proposes, at most once per `stale-recovery-min-interval` (its own silence must also exceed the interval). Recovery is never leader-gated: certification needs mutual witnessing, and one proposer cannot rebuild it alone. A deterministic leader survives only for the one-shot multi-parent convergence proposal.
+4. **Self-propose cooldown**: Gates every routine lane (1–2); never the stale-recovery lane, which paces on its own interval
 
 ### Why Heartbeat Matters
 
@@ -414,7 +437,7 @@ When the synchrony constraint blocks proposals:
 | Simple | Validator created two blocks at same sequence number | Creator justification != latest message | Block rejected |
 | Admissible | Equivocating block needed as dependency by another block | Same as simple, but block is in dependency chain | Stored as invalid in DAG for tracking |
 | Ignorable | Equivocating block arrived unsolicited | Same as simple, not needed as dependency | Dropped entirely |
-| Neglected | Validator had evidence of equivocation but didn't slash | Justifications reference known equivocator | Block rejected, validator penalized |
+| Neglected | Validator had evidence of equivocation but didn't slash | Justifications reference known equivocator | Block rejected (no stake penalty: the neglect verdict is view-relative and is demoted from evidence minting pending re-promotion — see the slashing-specification amendment) |
 
 ### Slashing Flow
 
@@ -448,10 +471,13 @@ Heartbeat-disabled proposers (`allow_empty_blocks = false`, the production defau
 
 ### Two-Level Slashing
 
-- **Level 1**: Direct equivocator — loses entire stake
-- **Level 2**: Validator that neglected to report equivocation — also loses stake
-
-This makes collusion economically irrational: both parties get slashed.
+- **Level 1**: Direct equivocator — loses entire stake (live)
+- **Level 2**: Validator that neglected to report equivocation — block
+  rejected; the stake penalty is currently inactive. Neglect verdicts are
+  judged against the receiver's own tracker (view-relative), so they are
+  demoted from evidence minting until shown admission-order-free — see the
+  slashing-specification amendment. Level-2 stake loss resumes on
+  re-promotion; the collusion-irrationality argument holds fully only then.
 
 ---
 

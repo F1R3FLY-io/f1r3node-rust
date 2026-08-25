@@ -8,23 +8,23 @@
 //! * Project the DAG's `latest_message_hashes` through the
 //!   `invalid_latest_messages` filter so slashed validators contribute
 //!   zero weight to fork choice (T-10).
-//! * Rank surviving tips by their cumulative validator-weight score
-//!   (`build_scores_map`), breaking ties on hash for cross-node
-//!   determinism.
+//! * Choose the head by a heaviest-subtree DESCENT over the scored
+//!   main-parent tree (`build_scores_map` + `rank_forkchoices`), ties
+//!   by ascending hash for cross-node determinism; rank the remaining
+//!   frontier tips behind it.
 //! * Apply `max_parent_depth` truncation so old parents do not delay
 //!   finalization.
 //!
 //! ## Slashing-protocol position
 //!
-//! See `docs/theory/slashing/slashing-verification.md` §6.4 (T-10) for
+//! See `docs/casper/theory/slashing/slashing-verification.md` §6.4 (T-10) for
 //! the abstract filter property. The operational realization is the
 //! conjunction `(invalid-block-flag) ∧ (bond=0 ⇒ zero weight)` — see
-//! `docs/theory/slashing/design/07-fork-choice-and-lifecycle.md`.
+//! `docs/casper/theory/slashing/design/07-fork-choice-and-lifecycle.md`.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
-use futures::stream::{self, StreamExt, TryStreamExt};
 use models::rust::block_hash::BlockHash;
 use models::rust::block_metadata::BlockMetadata;
 use models::rust::casper::protocol::casper_message::BlockMessage;
@@ -105,8 +105,12 @@ impl Estimator {
             Self::build_scores_map(dag, &filtered_latest_messages_hashes, &lca).await?;
 
         tracing::debug!(target: "f1r3fly.casper.estimator.tips_fallback", "ranked-latest-messages-hashes");
-        let ranked_latest_messages_hashes =
-            Self::rank_forkchoices(vec![lca.clone()], dag, &scores_map).await?;
+        let ranked_latest_messages_hashes = Self::rank_forkchoices(
+            lca.clone(),
+            &filtered_latest_messages_hashes,
+            dag,
+            &scores_map,
+        )?;
 
         tracing::debug!(target: "f1r3fly.casper.estimator.tips_fallback", "filtered-deep-parents");
         let ranked_shallow_hashes = self
@@ -316,79 +320,84 @@ impl Estimator {
         Ok(scores_map)
     }
 
-    async fn rank_forkchoices(
-        blocks: Vec<BlockHash>,
+    /// The GHOST head plus the ranked frontier.
+    ///
+    /// The HEAD comes from a heaviest-subtree DESCENT: starting at the LCA,
+    /// each step commits to the scored MAIN-parent child carrying the greatest
+    /// cumulative score (ties by ascending hash) before descending further,
+    /// and stops at the first block with no scored main-parent children — a
+    /// latest-message tip. Scores accumulate up main-parent chains
+    /// (`build_scores_map`), so a child's score IS its subtree's
+    /// latest-message weight and the head can only leave a branch for one
+    /// carrying strictly more support. Only MAIN-parent children are
+    /// followed: a merge is a main-parent child of exactly one of its parents
+    /// and a secondary child of the rest, so weight flows up exactly one
+    /// chain and same-height siblings stay mutually exclusive. An unscored
+    /// child is beyond the latest messages and bounds the walk.
+    ///
+    /// Ranking the TIPS by their own scores instead is NOT GHOST: a tip's own
+    /// score is only its owner's weight, so under concurrent proposal every
+    /// tip ties and the head falls to hash order — the spine then abandons
+    /// majority branches, which is how a finality certificate was reverted
+    /// with zero equivocations in production (the ucc-i6 divergence; see
+    /// tests/fork_choice/heaviest_subtree_descent.rs).
+    ///
+    /// The tail is the remaining latest-message frontier — every other latest
+    /// message with no scored main-parent child (one that HAS such a child is
+    /// a superseded ancestor of another tip on its own chain) — ordered
+    /// (score DESC, hash ASC) for callers that consume the full frontier.
+    fn rank_forkchoices(
+        lca: BlockHash,
+        latest_messages_hashes: &HashMap<Validator, BlockHash>,
         block_dag: &KeyValueDagRepresentation,
         scores: &HashMap<BlockHash, i64>,
     ) -> Result<Vec<BlockHash>, KvStoreError> {
-        let unsorted_new_blocks: Vec<BlockHash> = stream::iter(blocks.iter())
-            .then(|block| Self::replace_block_hash_with_children(block, block_dag, scores))
-            .try_fold(Vec::new(), |mut acc, children| async move {
-                acc.extend(children);
-                Ok(acc)
-            })
-            .await?;
+        fn scored_main_children(
+            block: &BlockHash,
+            block_dag: &KeyValueDagRepresentation,
+            scores: &HashMap<BlockHash, i64>,
+        ) -> Vec<BlockHash> {
+            match block_dag.children(block) {
+                Some(children_set) => children_set
+                    .iter()
+                    .filter(|child| {
+                        scores.contains_key(*child)
+                            && block_dag.main_parent(child).as_ref() == Some(block)
+                    })
+                    .cloned()
+                    .collect(),
+                None => Vec::new(),
+            }
+        }
 
-        let unique_blocks: Vec<BlockHash> = unsorted_new_blocks
-            .into_iter()
+        let mut head = lca;
+        loop {
+            let mut children = scored_main_children(&head, block_dag, scores);
+            if children.is_empty() {
+                break;
+            }
+            children.sort_by(|a, b| {
+                let score_a = scores.get(a).copied().unwrap_or(0);
+                let score_b = scores.get(b).copied().unwrap_or(0);
+                score_b.cmp(&score_a).then_with(|| a.cmp(b))
+            });
+            head = children.swap_remove(0);
+        }
+
+        let frontier: Vec<BlockHash> = latest_messages_hashes
+            .values()
+            .filter(|hash| {
+                **hash != head && scored_main_children(hash, block_dag, scores).is_empty()
+            })
+            .cloned()
             .collect::<HashSet<_>>() // distinct
             .into_iter()
             .collect();
+        let mut ranked = ListOps::sort_by_with_decreasing_order(frontier, scores);
 
-        let new_blocks = ListOps::sort_by_with_decreasing_order(unique_blocks, scores);
-
-        if Self::still_same(&blocks, &new_blocks) {
-            Ok(blocks)
-        } else {
-            Box::pin(Self::rank_forkchoices(new_blocks, block_dag, scores)).await
-        }
+        let mut tips = Vec::with_capacity(ranked.len() + 1);
+        tips.push(head);
+        tips.append(&mut ranked);
+        Ok(tips)
     }
-
-    fn non_empty_list(elements: &HashSet<BlockHash>) -> Option<Vec<BlockHash>> {
-        if elements.is_empty() {
-            None
-        } else {
-            Some(elements.iter().cloned().collect())
-        }
-    }
-
-    /// Only include children that have been scored, and only MAIN-parent
-    /// children: scores accumulate up main-parent chains, so the descent has to
-    /// follow the same structure or it compares a subtree's weight against a
-    /// child that never inherited it. A merge is a main-parent child of exactly
-    /// one of its parents and a secondary child of the rest.
-    ///
-    /// Scoring bounds the search as before — an unscored child is beyond the
-    /// latest messages.
-    async fn replace_block_hash_with_children(
-        b: &BlockHash,
-        block_dag: &KeyValueDagRepresentation,
-        scores: &HashMap<BlockHash, i64>,
-    ) -> Result<Vec<BlockHash>, KvStoreError> {
-        match block_dag.children(b) {
-            Some(children_set) => {
-                let scored_children: HashSet<BlockHash> = children_set
-                    .iter()
-                    .filter_map(|child| {
-                        let child_hash = child.clone();
-                        if scores.contains_key(&child_hash)
-                            && block_dag.main_parent(&child_hash).as_ref() == Some(b)
-                        {
-                            Some(child_hash)
-                        } else {
-                            None
-                        }
-                    })
-                    .collect();
-
-                match Self::non_empty_list(&scored_children) {
-                    Some(non_empty_children) => Ok(non_empty_children),
-                    None => Ok(vec![b.clone()]),
-                }
-            }
-            None => Ok(vec![b.clone()]),
-        }
-    }
-
-    fn still_same(blocks: &[BlockHash], new_blocks: &[BlockHash]) -> bool { new_blocks == blocks }
 }

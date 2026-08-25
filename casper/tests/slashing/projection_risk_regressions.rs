@@ -1,11 +1,11 @@
 // References below to `formal/{rocq,tlaplus,sage}/slashing/`,
 // `FINDINGS.md`, `slashing-search-horizon.{md,sh}`, `slashing-traceability.md`,
-// `docs/theory/slashing/methodology/`, and `.mutants.toml` point at
+// `docs/casper/theory/slashing/methodology/`, and `.mutants.toml` point at
 // audit-corpus artifacts preserved on the `analysis/slashing` branch.
 //
 // UC-72 — Projection-risk regression catalog.
 //
-// Maps to: docs/theory/slashing/slashing-specification.md §12 UC-72.
+// Maps to: docs/casper/theory/slashing/slashing-specification.md §12 UC-72.
 // Theorems: T-5 record key, T-8 arithmetic, T-12 retention.
 // Reference: formal/sage/slashing/FINDINGS.md row 23 —
 // "implementation projection risks are now explicit finite
