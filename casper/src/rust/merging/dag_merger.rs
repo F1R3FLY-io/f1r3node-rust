@@ -834,6 +834,15 @@ pub fn merge(
     // base where scope-level dedup cannot see it, and without the seed the
     // scope copy re-applies and doubles the deploy's cells.
     sig_settled_in_base: &dyn Fn(&Bytes) -> Result<bool, CasperError>,
+    // True iff the sig's effect is settled in one of the merging block's
+    // SETTLED FLOORS (the tripwire's own definition of settled). Derived
+    // from the block's frozen justification snapshot, so proposer and every
+    // replaying validator answer identically — the node-local finalized set
+    // is deliberately never consulted here. Chains all of whose user sigs
+    // are settled this way carry committed content the base state does not
+    // hold (a finalized sibling of the base): the merge must re-apply them,
+    // never reject them (#341).
+    sig_settled_in_floor: &dyn Fn(&Bytes) -> Result<bool, CasperError>,
     // Blocks on the BASE's own lineage that at least one other parent has not
     // seen — the base's contribution since the parents diverged. Bounded by
     // branch divergence, not by finality lag. Empty for a single-parent block,
@@ -1169,6 +1178,103 @@ pub fn merge(
         }
     }
 
+    // Settled-content protection (#341). Under multi-parent finality a
+    // SETTLED block — one whose effects live in the merging block's settled
+    // floors — can sit on a sibling branch of the base with its effects
+    // absent from the base state, and its chains then enter the scope like
+    // any other. Settled content is committed exactly like the base's — it
+    // must never lose a window split or a cost adjudication (a rejection
+    // here is what recovery later purges as "finalized canonical wins",
+    // vanishing settled state: the bridge-admin registry flake and the
+    // #341 bond loss; the caller's `assert_no_settled_rejection` tripwire
+    // hard-fails the merge if it happens anyway).
+    //
+    // The classifier is `sig_settled_in_floor` — the tripwire's own
+    // settled definition, derived from the merging block's frozen
+    // justification snapshot, so proposer and every replaying validator
+    // classify identically. The node-local finalized set is deliberately
+    // NOT consulted: it differs across nodes and in time, and a
+    // view-relative classifier would let two honest nodes compute
+    // different rejection sets for the same block. Carrier height alone
+    // cannot discriminate either: a silent validator's dead below-floor
+    // sibling is NOT settled and must stay subject to the window rule
+    // (tests/batch2/merge_window_spec.rs).
+    //
+    // Settled chains are held out of the window rule and the adjudication
+    // partitions below, re-joining the merge set afterward; an ordinary
+    // scope chain conflicting with settled content loses deterministically
+    // (same downstream path as a base conflict). Two mutually conflicting
+    // settled chains would be a finality-safety violation upstream: it is
+    // logged as an error for evidence and they fall through to ordinary
+    // adjudication rather than wedging the merge.
+    let mut settled_committed: Vec<DeployChainIndex> = Vec::new();
+    {
+        let mut settled_probe_cache: HashMap<Bytes, bool> = HashMap::new();
+        let mut sig_settled = |sig: &Bytes| -> Result<bool, CasperError> {
+            if let Some(cached) = settled_probe_cache.get(sig) {
+                return Ok(*cached);
+            }
+            let settled = sig_settled_in_floor(sig)?;
+            settled_probe_cache.insert(sig.clone(), settled);
+            Ok(settled)
+        };
+        let mut ordinary: Vec<DeployChainIndex> = Vec::new();
+        for chain in actual_set_vec {
+            let mut user_sigs = chain
+                .deploys_with_cost
+                .0
+                .iter()
+                .filter(|d| !is_system_deploy_id(&d.deploy_id))
+                .peekable();
+            let mut settled = user_sigs.peek().is_some();
+            for deploy in user_sigs {
+                if !sig_settled(&deploy.deploy_id)? {
+                    settled = false;
+                    break;
+                }
+            }
+            if settled {
+                settled_committed.push(chain);
+            } else {
+                ordinary.push(chain);
+            }
+        }
+        actual_set_vec = ordinary;
+    }
+    let mut settled_log = rspace_plus_plus::rspace::merger::event_log_index::EventLogIndex::empty();
+    for chain in &settled_committed {
+        settled_log = rspace_plus_plus::rspace::merger::event_log_index::EventLogIndex::combine(
+            &settled_log,
+            &chain.event_log_index,
+        )
+        .map_err(CasperError::HistoryError)?;
+    }
+    for (i, first) in settled_committed.iter().enumerate() {
+        for second in settled_committed.iter().skip(i + 1) {
+            if merging_logic::are_conflicting(&first.event_log_index, &second.event_log_index) {
+                tracing::error!(
+                    target: "f1r3fly.merge.cpps",
+                    first_src = %hex::encode(&first.source_block_hash[..]),
+                    second_src = %hex::encode(&second.source_block_hash[..]),
+                    "finality-safety violation: two settled carriers hold conflicting \
+                     content; falling back to ordinary adjudication"
+                );
+            }
+        }
+    }
+    let (kept_ordinary, settled_conflicting) =
+        partition_base_conflicts(actual_set_vec, &settled_log);
+    actual_set_vec = kept_ordinary;
+    if !settled_conflicting.is_empty() {
+        tracing::debug!(
+            target: "f1r3fly.merge.cpps",
+            step = "merge.reject_conflicts_with_settled",
+            n_rejected = settled_conflicting.len(),
+            n_settled_chains = settled_committed.len(),
+            "scope chains conflicting with settled carriers' committed content"
+        );
+    }
+
     // Merge-time validity-window rule (see split_window_closed_chains):
     // closed-window chains join the LATE set — `resolve_conflicts` rejects
     // late chains unconditionally (they reach the block's rejection record
@@ -1179,7 +1285,8 @@ pub fn merge(
     // disabled) late-block query lacked. A chain both settled-in-base and
     // window-closed was already dropped record-less by the dedup sentinel
     // above — fine: its effect stands, a record would be dup-flagged
-    // testimony.
+    // testimony. Settled chains were split out above and are exempt: a
+    // settled carrier's content is committed regardless of its window.
     let (in_window, window_rejected) =
         split_window_closed_chains(actual_set_vec, floor_block_number, deploy_lifespan);
     actual_set_vec = in_window;
@@ -1278,13 +1385,39 @@ pub fn merge(
         );
     }
 
-    // Nothing to pin. Pinning existed to keep the main parent's chains out of
-    // the rejection set while the merge rebuilt state from the floor and those
-    // chains were in scope competing on cost. The base is the main parent now,
-    // so its content is committed under the merge rather than adjudicated by
-    // it, and every consumer below runs its empty-set path.
+    // Settled chains re-join the merge set here, after the ordinary chains
+    // passed the base-conflict partition: settled content is committed, so
+    // it is never an input to that partition. A settled chain conflicting
+    // with the base's own committed content is committed-versus-committed —
+    // a finality-safety violation upstream. It is logged for evidence and
+    // falls through to ordinary adjudication (liveness over wedging); the
+    // caller's `assert_no_settled_rejection` tripwire hard-fails the merge
+    // if settled effects are in fact dropped.
+    let mut actual_seq_all = actual_seq_all;
+    for chain in &settled_committed {
+        if merging_logic::are_conflicting(&chain.event_log_index, &base_event_log) {
+            tracing::error!(
+                target: "f1r3fly.merge.cpps",
+                settled_src = %hex::encode(&chain.source_block_hash[..]),
+                "finality-safety violation: a settled carrier's content conflicts \
+                 with the base lineage's committed content; falling back to \
+                 ordinary adjudication"
+            );
+        }
+    }
+    actual_seq_all.extend(settled_committed.iter().cloned());
+    actual_seq_all.sort();
+    let actual_seq_all = actual_seq_all;
+
+    // Pin the settled chains. Pinning keeps a preferred writer as the
+    // keep-one survivor in the over-filled single-value-cell splitter; the
+    // main parent no longer needs it (its content is committed in the
+    // base), but a SETTLED chain competing in that splitter must win for
+    // the same reason the base's content must: it is committed. This is a
+    // preference inside an existing keep-one, never a veto — see the
+    // splitter's ordering comment.
     #[allow(clippy::mutable_key_type)]
-    let pinned: HashSet<DeployChainIndex> = HashSet::new();
+    let pinned: HashSet<DeployChainIndex> = settled_committed.iter().cloned().collect();
 
     struct BranchDerived {
         user_deploy_ids: HashSet<Bytes>,
@@ -1714,10 +1847,11 @@ pub fn merge(
     )
     .map_err(CasperError::HistoryError)?;
 
-    // Chains the base's own content precluded. Folded in here so they travel
-    // the ordinary rejection path — record, buffer, recovery — like any other
+    // Chains the base's own content precluded, and chains settled
+    // carriers' content precluded. Folded in here so they travel the
+    // ordinary rejection path — record, buffer, recovery — like any other
     // adjudicated loser.
-    for chain in base_conflicting {
+    for chain in base_conflicting.into_iter().chain(settled_conflicting) {
         resolved.rejected.0.insert(chain);
     }
 
@@ -1773,7 +1907,13 @@ pub fn merge(
                 #[allow(clippy::mutable_key_type)]
                 let mut kept: HashSet<DeployChainIndex> = HashSet::new();
                 for chain in branch.0 {
-                    if descends_rejected(&chain.source_block_hash)? {
+                    // Settled chains (the pinned set) are exempt (#341):
+                    // settled content is committed and can never be rejected
+                    // through lineage expansion. A settled carrier cannot
+                    // DAG-descend from in-scope rejected work anyway — its
+                    // content precedes the floor — so the exemption only
+                    // forecloses the impossible edge deterministically.
+                    if !pinned.contains(&chain) && descends_rejected(&chain.source_block_hash)? {
                         expanded += 1;
                         resolved.rejected.0.insert(chain);
                     } else {
