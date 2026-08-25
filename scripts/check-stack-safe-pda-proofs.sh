@@ -155,6 +155,80 @@ if ! grep -q 'Invariant PreflightCompletesBeforeBuild is violated' \
   echo "stack-safe-pda: canonical-egress validation mutant failed without the expected invariant witness" >&2
   exit 1
 fi
+tlc_run "$tla_metadir" \
+  ParBagProjectionLifecycle.cfg ParBagProjectionLifecycle.tla -cleanup
+if projection_cap_mutant="$({
+  tlc_run "$tla_metadir" \
+    ParBagProjectionCapMutant.cfg ParBagProjectionLifecycle.tla -cleanup
+} 2>&1)"; then
+  printf '%s\n' "$projection_cap_mutant"
+  echo "stack-safe-pda: strict projection-cap mutant unexpectedly passed" >&2
+  exit 1
+fi
+printf '%s\n' "$projection_cap_mutant"
+if ! grep -q 'Invariant RefusalOnlyWhenTooLarge is violated' \
+    <<<"$projection_cap_mutant"; then
+  echo "stack-safe-pda: projection-cap mutant failed without the expected invariant witness" >&2
+  exit 1
+fi
+if projection_partial_mutant="$({
+  tlc_run "$tla_metadir" \
+    ParBagProjectionPartialMutant.cfg ParBagProjectionLifecycle.tla -cleanup
+} 2>&1)"; then
+  printf '%s\n' "$projection_partial_mutant"
+  echo "stack-safe-pda: partial projection-publication mutant unexpectedly passed" >&2
+  exit 1
+fi
+printf '%s\n' "$projection_partial_mutant"
+if ! grep -q 'Invariant ReadyImageIsComplete is violated' \
+    <<<"$projection_partial_mutant"; then
+  echo "stack-safe-pda: projection-publication mutant failed without the expected invariant witness" >&2
+  exit 1
+fi
+if projection_stale_mutant="$({
+  tlc_run "$tla_metadir" \
+    ParBagProjectionStaleMutant.cfg ParBagProjectionLifecycle.tla -cleanup
+} 2>&1)"; then
+  printf '%s\n' "$projection_stale_mutant"
+  echo "stack-safe-pda: stale projection-cache mutant unexpectedly passed" >&2
+  exit 1
+fi
+printf '%s\n' "$projection_stale_mutant"
+if ! grep -q 'Invariant WriterCacheMatchesIdentity is violated' \
+    <<<"$projection_stale_mutant"; then
+  echo "stack-safe-pda: stale-cache mutant failed without the expected invariant witness" >&2
+  exit 1
+fi
+tlc_run "$tla_metadir" \
+  ParBagProtobufSinkPublication.cfg ParBagProtobufSinkPublication.tla -cleanup
+if sink_public_mutant="$({
+  tlc_run "$tla_metadir" \
+    ParBagProtobufSinkPublicMutant.cfg ParBagProtobufSinkPublication.tla -cleanup
+} 2>&1)"; then
+  printf '%s\n' "$sink_public_mutant"
+  echo "stack-safe-pda: public partial-sink mutant unexpectedly passed" >&2
+  exit 1
+fi
+printf '%s\n' "$sink_public_mutant"
+if ! grep -q 'Invariant PublicImageAtomic is violated' \
+    <<<"$sink_public_mutant"; then
+  echo "stack-safe-pda: partial-sink mutant failed without the expected invariant witness" >&2
+  exit 1
+fi
+if sink_preflight_mutant="$({
+  tlc_run "$tla_metadir" \
+    ParBagProtobufSinkPreflightMutant.cfg ParBagProtobufSinkPublication.tla -cleanup
+} 2>&1)"; then
+  printf '%s\n' "$sink_preflight_mutant"
+  echo "stack-safe-pda: preflight-bypass sink mutant unexpectedly passed" >&2
+  exit 1
+fi
+printf '%s\n' "$sink_preflight_mutant"
+if ! grep -q 'Invariant InvalidInputHasNoPrefix is violated' \
+    <<<"$sink_preflight_mutant"; then
+  echo "stack-safe-pda: sink preflight mutant failed without the expected invariant witness" >&2
+  exit 1
+fi
 tlc_run "$tla_metadir" FreeMapJournal.cfg FreeMapJournal.tla -cleanup
 tlc_run "$tla_metadir" AccountingDemand.cfg AccountingDemand.tla -cleanup
 popd >/dev/null

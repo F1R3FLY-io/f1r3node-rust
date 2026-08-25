@@ -20,8 +20,8 @@ use serde::ser::{SerializeSeq, SerializeStruct};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use super::par_bag::{
-    EncodedParComponent, ParBag, ParBagComponent, ParBagProtobufError, ParBagVisitError,
-    ParComponentItem,
+    encode_protobuf_varint_chunk, EncodedParComponent, ParBag, ParBagComponent,
+    ParBagProtobufError, ParBagVisitError, ParComponentItem, ParProtobufProjectionPreparation,
 };
 use crate::rhoapi::{Bundle, Connective, Expr, GUnforgeable, If, Match, New, Receive, Send};
 use crate::rust::rholang::sorter::score_tree::{Score, ScoreAtom, Tree};
@@ -54,6 +54,31 @@ impl std::error::Error for ParProtobufError {
 
 impl From<ParBagProtobufError> for ParProtobufError {
     fn from(error: ParBagProtobufError) -> Self { Self::Components(error) }
+}
+
+/// Error from streaming canonical protobuf chunks to a caller-owned sink.
+#[derive(Debug)]
+pub enum ParProtobufSinkError<E> {
+    Protobuf(ParProtobufError),
+    Sink(E),
+}
+
+impl<E: fmt::Display> fmt::Display for ParProtobufSinkError<E> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Protobuf(error) => error.fmt(formatter),
+            Self::Sink(error) => write!(formatter, "protobuf sink rejected a chunk: {error}"),
+        }
+    }
+}
+
+impl<E: std::error::Error + 'static> std::error::Error for ParProtobufSinkError<E> {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Protobuf(error) => Some(error),
+            Self::Sink(error) => Some(error),
+        }
+    }
 }
 
 #[repr(C)]
@@ -612,17 +637,112 @@ impl Par {
         // to the caller. This keeps impossible Bag multiplicities atomic even
         // when callers invoke `encode_raw` without first asking `encoded_len`.
         let _ = self.protobuf_encoded_len()?;
-        self.components
-            .encode_protobuf_components_before_root_metadata(output)?;
+        let mut sink = |chunk: &[u8]| {
+            output.put_slice(chunk);
+            Ok::<_, std::convert::Infallible>(())
+        };
+        match self.try_visit_protobuf_chunks_prevalidated(&mut sink) {
+            Ok(()) => {}
+            Err(never) => match never {},
+        }
+        Ok(())
+    }
+
+    fn try_visit_root_metadata_chunks<E>(
+        &self,
+        visitor: &mut impl FnMut(&[u8]) -> Result<(), E>,
+    ) -> Result<(), E> {
         if !self.locally_free.is_empty() {
-            prost::encoding::bytes::encode(9, &self.locally_free, output);
+            const LOCALLY_FREE_KEY: [u8; 1] = [(9 << 3) | 2];
+            let mut length = [0u8; 10];
+            let length_bytes =
+                encode_protobuf_varint_chunk(self.locally_free.len() as u64, &mut length);
+            visitor(&LOCALLY_FREE_KEY)?;
+            visitor(&length[..length_bytes])?;
+            visitor(&self.locally_free)?;
         }
         if self.connective_used {
-            prost::encoding::bool::encode(10, &self.connective_used, output);
+            const CONNECTIVE_USED_TRUE: [u8; 2] = [(10 << 3), 1];
+            visitor(&CONNECTIVE_USED_TRUE)?;
         }
-        self.components
-            .encode_protobuf_components_after_root_metadata(output)?;
         Ok(())
+    }
+
+    fn try_visit_protobuf_chunks_prevalidated<E>(
+        &self,
+        visitor: &mut impl FnMut(&[u8]) -> Result<(), E>,
+    ) -> Result<(), E> {
+        match self.components.protobuf_projection_if_prepared() {
+            Some((before_root, after_root)) => {
+                if !before_root.is_empty() {
+                    visitor(before_root)?;
+                }
+                self.try_visit_root_metadata_chunks(visitor)?;
+                if !after_root.is_empty() {
+                    visitor(after_root)?;
+                }
+            }
+            None => self
+                .components
+                .try_visit_protobuf_chunks_direct_around_root_metadata(visitor, |visitor| {
+                    self.try_visit_root_metadata_chunks(visitor)
+                })?,
+        }
+        Ok(())
+    }
+
+    fn try_visit_protobuf_chunks_direct_prevalidated<E>(
+        &self,
+        visitor: &mut impl FnMut(&[u8]) -> Result<(), E>,
+    ) -> Result<(), E> {
+        self.components
+            .try_visit_protobuf_chunks_direct_around_root_metadata(visitor, |visitor| {
+                self.try_visit_root_metadata_chunks(visitor)
+            })
+    }
+
+    /// Stream the canonical protobuf image as callback-scoped borrowed chunks.
+    ///
+    /// A prepared component projection is reused when present; otherwise the
+    /// authoritative RPB3 PathMap is traversed once and remains cold. Complete
+    /// output length is validated before the first callback, so an invalid
+    /// multiplicity publishes no prefix. A callback error can follow earlier
+    /// successful chunks: durable callers must write into an uncommitted WAL
+    /// transaction or equivalent private staging area and publish only after
+    /// this method returns `Ok(())`.
+    pub fn try_visit_protobuf_chunks<E>(
+        &self,
+        mut visitor: impl FnMut(&[u8]) -> Result<(), E>,
+    ) -> Result<(), ParProtobufSinkError<E>> {
+        let _ = self
+            .protobuf_encoded_len()
+            .map_err(ParProtobufSinkError::Protobuf)?;
+        self.try_visit_protobuf_chunks_prevalidated(&mut visitor)
+            .map_err(ParProtobufSinkError::Sink)
+    }
+
+    /// Strict cold-control form of [`Self::try_visit_protobuf_chunks`].
+    /// Existing prepared bytes are ignored and no projection is retained.
+    pub fn try_visit_protobuf_chunks_direct<E>(
+        &self,
+        mut visitor: impl FnMut(&[u8]) -> Result<(), E>,
+    ) -> Result<(), ParProtobufSinkError<E>> {
+        let _ = self
+            .protobuf_encoded_len()
+            .map_err(ParProtobufSinkError::Protobuf)?;
+        self.try_visit_protobuf_chunks_direct_prevalidated(&mut visitor)
+            .map_err(ParProtobufSinkError::Sink)
+    }
+
+    /// Explicitly retain a CoW-shared component projection for a measured
+    /// repeated-use owner, subject to that owner's byte budget.
+    pub fn prepare_protobuf_projection(
+        &self,
+        max_retained_bytes: usize,
+    ) -> Result<ParProtobufProjectionPreparation, ParProtobufError> {
+        self.components
+            .prepare_protobuf_projection(max_retained_bytes)
+            .map_err(Into::into)
     }
 
     /// Emit one final protobuf image without retaining a second component
@@ -634,22 +754,27 @@ impl Par {
     /// occurrences in a larger generated message.
     pub fn encode_protobuf_direct(&self, output: &mut impl BufMut) -> Result<(), ParProtobufError> {
         let _ = self.protobuf_encoded_len()?;
-        self.components
-            .encode_protobuf_components_before_root_metadata_direct(output)?;
-        if !self.locally_free.is_empty() {
-            prost::encoding::bytes::encode(9, &self.locally_free, output);
+        let mut sink = |chunk: &[u8]| {
+            output.put_slice(chunk);
+            Ok::<_, std::convert::Infallible>(())
+        };
+        match self.try_visit_protobuf_chunks_direct_prevalidated(&mut sink) {
+            Ok(()) => {}
+            Err(never) => match never {},
         }
-        if self.connective_used {
-            prost::encoding::bool::encode(10, &self.connective_used, output);
-        }
-        self.components
-            .encode_protobuf_components_after_root_metadata_direct(output)?;
         Ok(())
     }
 
     pub fn protobuf_bytes(&self) -> Result<Vec<u8>, ParProtobufError> {
         let mut output = Vec::with_capacity(self.protobuf_encoded_len()?);
-        self.encode_protobuf_direct(&mut output)?;
+        let mut sink = |chunk: &[u8]| {
+            output.put_slice(chunk);
+            Ok::<_, std::convert::Infallible>(())
+        };
+        match self.try_visit_protobuf_chunks_direct_prevalidated(&mut sink) {
+            Ok(()) => {}
+            Err(never) => match never {},
+        }
         Ok(output)
     }
 

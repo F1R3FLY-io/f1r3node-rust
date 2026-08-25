@@ -179,11 +179,28 @@ fn par_message_round_trip_is_stack_safe_and_unbounded_by_decode_context() {
             let term = nested_list(DEPTH);
             assert_eq!(par_depth(&term), DEPTH);
 
-            let message_bytes = term.encode_to_vec();
+            let message_bytes = term.protobuf_bytes().expect("cold direct protobuf image");
             let pda_bytes = protobuf_encoder::encode_to_vec(&term);
             assert_eq!(message_bytes, pda_bytes);
             assert_eq!(term.encoded_len(), message_bytes.len());
             assert_eq!(protobuf_encoder::encoded_len(&term), message_bytes.len());
+
+            let component_bytes = term
+                .components()
+                .protobuf_components_encoded_len()
+                .expect("deep component projection length");
+            term.prepare_protobuf_projection(component_bytes)
+                .expect("bounded deep projection preparation");
+            assert_eq!(
+                term.encode_to_vec(),
+                message_bytes,
+                "prepared projection must preserve the cold direct image"
+            );
+            assert_eq!(
+                protobuf_encoder::encode_to_vec(&term),
+                message_bytes,
+                "generated PDA must reuse the same prepared image"
+            );
 
             let message = Par::decode(message_bytes.as_slice())
                 .expect("manual Message decoder accepts depth 4096");

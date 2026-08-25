@@ -1228,6 +1228,17 @@ fn protobuf_expansion_rejects_impossible_output_length_before_allocating() {
         [0xc3],
         "Par must preflight the complete expansion before root fields are emitted"
     );
+    let mut published_chunks = 0usize;
+    assert!(par
+        .try_visit_protobuf_chunks(|_| {
+            published_chunks += 1;
+            Ok::<_, std::convert::Infallible>(())
+        })
+        .is_err());
+    assert_eq!(
+        published_chunks, 0,
+        "invalid multiplicity must fail preflight before a fallible sink observes any chunk"
+    );
 }
 
 #[test]

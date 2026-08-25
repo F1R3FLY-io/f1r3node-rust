@@ -1,5 +1,7 @@
 //! Representation and compatibility gates for the authoritative PathMap-backed `Par`.
 
+use std::io::Write as _;
+
 use models::rhoapi::connective::ConnectiveInstance;
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::g_unforgeable::UnfInstance;
@@ -71,6 +73,76 @@ fn valid_all_families() -> Par {
     par
 }
 
+/// Frozen test-only projection of the legacy generated `Par` repeated-field
+/// schema. Production must never reconstruct these vectors; the oracle exists
+/// precisely to keep the trie-native encoder independent of its authority.
+struct LegacyProtobufParts {
+    before_root: Vec<u8>,
+    root: Vec<u8>,
+    after_root: Vec<u8>,
+}
+
+impl LegacyProtobufParts {
+    fn into_bytes(self) -> Vec<u8> {
+        let mut output =
+            Vec::with_capacity(self.before_root.len() + self.root.len() + self.after_root.len());
+        output.extend_from_slice(&self.before_root);
+        output.extend_from_slice(&self.root);
+        output.extend_from_slice(&self.after_root);
+        output
+    }
+}
+
+fn legacy_repeated_field_oracle_parts(value: &Par) -> LegacyProtobufParts {
+    let mut before_root = Vec::new();
+    for occurrence in value.decode_occurrences::<Send>() {
+        prost::encoding::message::encode(1, &occurrence, &mut before_root);
+    }
+    for occurrence in value.decode_occurrences::<Receive>() {
+        prost::encoding::message::encode(2, &occurrence, &mut before_root);
+    }
+    for occurrence in value.decode_occurrences::<New>() {
+        prost::encoding::message::encode(4, &occurrence, &mut before_root);
+    }
+    for occurrence in value.decode_occurrences::<Expr>() {
+        prost::encoding::message::encode(5, &occurrence, &mut before_root);
+    }
+    for occurrence in value.decode_occurrences::<Match>() {
+        prost::encoding::message::encode(6, &occurrence, &mut before_root);
+    }
+    for occurrence in value.decode_occurrences::<GUnforgeable>() {
+        prost::encoding::message::encode(7, &occurrence, &mut before_root);
+    }
+    for occurrence in value.decode_occurrences::<Connective>() {
+        prost::encoding::message::encode(8, &occurrence, &mut before_root);
+    }
+
+    let mut root = Vec::new();
+    if !value.locally_free().is_empty() {
+        prost::encoding::bytes::encode(9, &value.locally_free, &mut root);
+    }
+    if value.connective_used() {
+        prost::encoding::bool::encode(10, &value.connective_used(), &mut root);
+    }
+
+    let mut after_root = Vec::new();
+    for occurrence in value.decode_occurrences::<Bundle>() {
+        prost::encoding::message::encode(11, &occurrence, &mut after_root);
+    }
+    for occurrence in value.decode_occurrences::<If>() {
+        prost::encoding::message::encode(12, &occurrence, &mut after_root);
+    }
+    LegacyProtobufParts {
+        before_root,
+        root,
+        after_root,
+    }
+}
+
+fn legacy_repeated_field_oracle(value: &Par) -> Vec<u8> {
+    legacy_repeated_field_oracle_parts(value).into_bytes()
+}
+
 #[test]
 fn protobuf_stream_is_exact_and_round_trips_without_a_vec_shadow() {
     let value = Par::default()
@@ -105,6 +177,205 @@ fn protobuf_stream_is_exact_and_round_trips_without_a_vec_shadow() {
     assert_eq!(Par::decode(expected.as_slice()).expect("decode"), value);
     assert_eq!(value.distinct_len(), 2);
     assert_eq!(value.cardinality(), 3);
+}
+
+#[test]
+fn direct_default_prepared_prost_and_generated_par_encoders_match_the_legacy_schema() {
+    let base = valid_all_families();
+    let value = Par::from_parts(
+        base.components()
+            .scale(2)
+            .expect("double all multiplicities"),
+        base.locally_free().to_vec(),
+        base.connective_used(),
+    );
+    let expected = legacy_repeated_field_oracle(&value);
+
+    let mut direct = Vec::with_capacity(expected.len());
+    value
+        .encode_protobuf_direct(&mut direct)
+        .expect("direct trie-native encode");
+    assert_eq!(direct, expected);
+
+    let mut cold_default = Vec::with_capacity(expected.len());
+    value
+        .encode_protobuf(&mut cold_default)
+        .expect("cold default encode");
+    assert_eq!(cold_default, expected);
+    assert_eq!(value.encode_to_vec(), expected, "prost Message entry point");
+    assert_eq!(
+        models::rust::rholang::protobuf_encoder::encode_to_vec(&value),
+        expected,
+        "generated protobuf PDA entry point"
+    );
+    let mut cold_chunks = Vec::with_capacity(expected.len());
+    value
+        .try_visit_protobuf_chunks(|chunk| {
+            cold_chunks.extend_from_slice(chunk);
+            Ok::<_, std::convert::Infallible>(())
+        })
+        .expect("cold borrowed-chunk stream");
+    assert_eq!(cold_chunks, expected);
+
+    let mut direct_writer = std::io::Cursor::new(Vec::with_capacity(expected.len()));
+    value
+        .try_visit_protobuf_chunks_direct(|chunk| direct_writer.write_all(chunk))
+        .expect("direct fallible writer stream");
+    assert_eq!(direct_writer.into_inner(), expected);
+
+    let component_bytes = value
+        .components()
+        .protobuf_components_encoded_len()
+        .expect("component projection length");
+    value
+        .prepare_protobuf_projection(component_bytes)
+        .expect("bounded explicit preparation");
+    let mut prepared = Vec::with_capacity(expected.len());
+    value
+        .encode_protobuf(&mut prepared)
+        .expect("prepared projection encode");
+    assert_eq!(prepared, expected);
+    let mut prepared_chunks = Vec::with_capacity(expected.len());
+    value
+        .try_visit_protobuf_chunks(|chunk| {
+            prepared_chunks.extend_from_slice(chunk);
+            Ok::<_, std::convert::Infallible>(())
+        })
+        .expect("prepared borrowed-chunk stream");
+    assert_eq!(prepared_chunks, expected);
+    assert_eq!(
+        value.encode_to_vec(),
+        expected,
+        "warm prost Message entry point"
+    );
+    assert_eq!(
+        models::rust::rholang::protobuf_encoder::encode_to_vec(&value),
+        expected,
+        "warm generated protobuf PDA entry point"
+    );
+
+    for direct in [true, false] {
+        let mut callback_count = 0usize;
+        let mut staged = Vec::new();
+        let mut public = vec![0xee];
+        let mut sink = |chunk: &[u8]| {
+            let callback = callback_count;
+            callback_count += 1;
+            if callback == 2 {
+                staged.extend_from_slice(&chunk[..chunk.len().div_ceil(2)]);
+                return Err(17u8);
+            }
+            staged.extend_from_slice(chunk);
+            Ok(())
+        };
+        let result = if direct {
+            value.try_visit_protobuf_chunks_direct(&mut sink)
+        } else {
+            value.try_visit_protobuf_chunks(&mut sink)
+        };
+        if result.is_ok() {
+            public = staged.clone();
+        }
+        assert!(matches!(
+            result,
+            Err(models::rust::par::ParProtobufSinkError::Sink(17))
+        ));
+        assert_eq!(
+            callback_count, 3,
+            "emission must stop at the failed callback"
+        );
+        assert!(!staged.is_empty());
+        assert!(expected.starts_with(&staged));
+        assert!(staged.len() < expected.len());
+        assert_eq!(
+            public,
+            [0xee],
+            "a failed private sink must not replace its public value"
+        );
+    }
+    assert_eq!(
+        value.protobuf_encoded_len().expect("encoded length"),
+        expected.len()
+    );
+    assert_eq!(Par::decode(expected.as_slice()).expect("decode"), value);
+}
+
+#[test]
+fn protobuf_oracle_rejects_shifted_split_and_omitted_after_root_family() {
+    let value = valid_all_families();
+    let parts = legacy_repeated_field_oracle_parts(&value);
+    assert!(!parts.before_root.is_empty());
+    assert!(!parts.root.is_empty());
+    assert!(!parts.after_root.is_empty());
+
+    let expected = legacy_repeated_field_oracle(&value);
+    let mut projection = parts.before_root.clone();
+    projection.extend_from_slice(&parts.after_root);
+    let correct_split = parts.before_root.len();
+    let mut correct = projection[..correct_split].to_vec();
+    correct.extend_from_slice(&parts.root);
+    correct.extend_from_slice(&projection[correct_split..]);
+    assert_eq!(correct, expected);
+
+    let shifted_split = correct_split - 1;
+    let mut shifted = projection[..shifted_split].to_vec();
+    shifted.extend_from_slice(&parts.root);
+    shifted.extend_from_slice(&projection[shifted_split..]);
+    assert_ne!(
+        shifted, expected,
+        "the byte-equivalence gate must reject a one-byte split mutant"
+    );
+
+    let mut omitted_if = value.clone();
+    omitted_if.replace_conditionals(Vec::new());
+    assert_ne!(
+        legacy_repeated_field_oracle(&omitted_if),
+        expected,
+        "the independent oracle must reject omission of an after-root family"
+    );
+}
+
+#[test]
+fn prepared_empty_component_projection_emits_only_nonempty_chunks() {
+    let empty = Par::default();
+    empty
+        .prepare_protobuf_projection(0)
+        .expect("empty projection fits an exact zero-byte cap");
+    let mut empty_callbacks = 0usize;
+    empty
+        .try_visit_protobuf_chunks(|chunk| {
+            empty_callbacks += 1;
+            assert!(!chunk.is_empty());
+            Ok::<_, std::convert::Infallible>(())
+        })
+        .expect("empty protobuf stream");
+    assert_eq!(empty_callbacks, 0);
+
+    let metadata = Par::default()
+        .with_locally_free(vec![0x05, 0x80])
+        .with_connective_used(true);
+    let expected = legacy_repeated_field_oracle(&metadata);
+    metadata
+        .prepare_protobuf_projection(0)
+        .expect("metadata does not consume the component retention budget");
+    let mut prepared = Vec::new();
+    metadata
+        .try_visit_protobuf_chunks(|chunk| {
+            assert!(!chunk.is_empty());
+            prepared.extend_from_slice(chunk);
+            Ok::<_, std::convert::Infallible>(())
+        })
+        .expect("prepared metadata stream");
+    let mut direct = Vec::new();
+    metadata
+        .try_visit_protobuf_chunks_direct(|chunk| {
+            assert!(!chunk.is_empty());
+            direct.extend_from_slice(chunk);
+            Ok::<_, std::convert::Infallible>(())
+        })
+        .expect("direct metadata stream");
+    assert_eq!(prepared, expected);
+    assert_eq!(direct, expected);
 }
 
 #[test]

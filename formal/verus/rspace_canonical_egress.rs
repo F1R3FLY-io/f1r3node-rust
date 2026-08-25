@@ -326,6 +326,267 @@ pub proof fn legacy_expansion_cardinality(
     }
 }
 
+/// Canonical protobuf transcript produced by one cold RPB3 zipper traversal.
+/// `before` contains component fields 1..8, `root` fields 9/10, and `after`
+/// fields 11/12. Executable differential tests bind these abstract bytes to
+/// the generated schema and resident component bodies.
+pub open spec fn direct_protobuf_transcript(
+    before: Seq<u8>,
+    root: Seq<u8>,
+    after: Seq<u8>,
+) -> Seq<u8> {
+    before + root + after
+}
+
+/// Transcript emitted from the atomic prepared projection. The retained image
+/// is exactly `before ++ after`; `split` restores the root-field insertion
+/// point without retaining two allocations.
+pub open spec fn prepared_protobuf_transcript(
+    projection: Seq<u8>,
+    split: int,
+    root: Seq<u8>,
+) -> Seq<u8>
+    recommends 0 <= split <= projection.len(),
+{
+    projection.subrange(0, split)
+        + root
+        + projection.subrange(split, projection.len() as int)
+}
+
+pub proof fn prepared_projection_equals_direct(
+    before: Seq<u8>,
+    root: Seq<u8>,
+    after: Seq<u8>,
+)
+    ensures
+        prepared_protobuf_transcript(
+            before + after,
+            before.len() as int,
+            root,
+        ) == direct_protobuf_transcript(before, root, after),
+{
+    let projection = before + after;
+    assert(projection.len() == before.len() + after.len());
+    assert(projection.subrange(0, before.len() as int) =~= before);
+    assert(projection.subrange(before.len() as int, projection.len() as int) =~= after);
+}
+
+/// Calibration witnesses: either moving the root insertion point by one byte
+/// or omitting an after-root family changes the transcript. These witnesses
+/// keep the sequence-equivalence theorem from passing against a gate that is
+/// insensitive to the two principal projection mutants.
+pub proof fn projection_mutants_change_the_transcript()
+    ensures
+        prepared_protobuf_transcript(seq![1u8, 2u8, 11u8], 1, seq![9u8])
+            != direct_protobuf_transcript(seq![1u8, 2u8], seq![9u8], seq![11u8]),
+        direct_protobuf_transcript(seq![1u8], seq![9u8], seq![11u8])
+            != direct_protobuf_transcript(seq![1u8], seq![9u8], Seq::empty()),
+{
+    assert(prepared_protobuf_transcript(seq![1u8, 2u8, 11u8], 1, seq![9u8])[1]
+        == 9u8);
+    assert(direct_protobuf_transcript(seq![1u8, 2u8], seq![9u8], seq![11u8])[1]
+        == 2u8);
+    assert(direct_protobuf_transcript(seq![1u8], seq![9u8], seq![11u8]).len()
+        == 3);
+    assert(direct_protobuf_transcript(seq![1u8], seq![9u8], Seq::empty()).len()
+        == 2);
+}
+
+/// Exact admission predicate for caller-budgeted retained projections.
+pub open spec fn projection_fits_spec(projected_bytes: int, limit: int) -> bool {
+    0 <= projected_bytes && projected_bytes <= limit
+}
+
+pub fn projection_fits(projected_bytes: usize, limit: usize) -> (fits: bool)
+    ensures fits == projection_fits_spec(projected_bytes as int, limit as int),
+{
+    projected_bytes <= limit
+}
+
+/// A cold exact-cap request is admitted inclusively. A one-byte-smaller cap is
+/// refused, while the empty projection fits an empty budget. Production first
+/// checks for an existing shared projection; therefore this predicate governs
+/// only allocation of a new cold projection, not reuse of already-retained
+/// bytes.
+pub proof fn cold_projection_cap_is_exact(projected_bytes: int)
+    requires projected_bytes > 0,
+    ensures
+        projection_fits_spec(projected_bytes, projected_bytes),
+        !projection_fits_spec(projected_bytes, projected_bytes - 1),
+{}
+
+pub proof fn empty_projection_fits_zero_cap()
+    ensures projection_fits_spec(0, 0),
+{}
+
+/// Abstract CoW identity/cache state. A projection records the exact
+/// authoritative RPB3 identity for which its bytes were prepared. `None` is a
+/// valid cold state; `Some(id)` is valid only for the current identity.
+pub struct ProjectionIdentityState {
+    pub writer_identity: u64,
+    pub writer_projection: Option<u64>,
+    pub clone_identity: u64,
+    pub clone_projection: Option<u64>,
+}
+
+pub open spec fn projection_cache_valid(
+    identity: u64,
+    projection: Option<u64>,
+) -> bool {
+    projection.is_none() || projection == Some(identity)
+}
+
+pub open spec fn projection_state_valid(state: ProjectionIdentityState) -> bool {
+    projection_cache_valid(state.writer_identity, state.writer_projection)
+        && projection_cache_valid(state.clone_identity, state.clone_projection)
+}
+
+pub open spec fn successful_component_mutation_spec(
+    state: ProjectionIdentityState,
+    new_writer_identity: u64,
+) -> ProjectionIdentityState {
+    ProjectionIdentityState {
+        writer_identity: new_writer_identity,
+        writer_projection: None,
+        clone_identity: state.clone_identity,
+        clone_projection: state.clone_projection,
+    }
+}
+
+pub proof fn successful_component_mutation_preserves_validity(
+    state: ProjectionIdentityState,
+    new_writer_identity: u64,
+)
+    requires
+        projection_state_valid(state),
+        new_writer_identity != state.writer_identity,
+    ensures
+        projection_state_valid(successful_component_mutation_spec(
+            state,
+            new_writer_identity,
+        )),
+        successful_component_mutation_spec(state, new_writer_identity)
+            .writer_projection.is_none(),
+        successful_component_mutation_spec(state, new_writer_identity)
+            .clone_identity == state.clone_identity,
+        successful_component_mutation_spec(state, new_writer_identity)
+            .clone_projection == state.clone_projection,
+{}
+
+/// Rejected structurally non-mutating operations preserve both authoritative
+/// identities and both projection versions. Root metadata changes use the
+/// same transition because fields 9/10 are deliberately outside the retained
+/// component projection.
+pub open spec fn projection_preserving_change_spec(
+    state: ProjectionIdentityState,
+) -> ProjectionIdentityState {
+    ProjectionIdentityState {
+        writer_identity: state.writer_identity,
+        writer_projection: state.writer_projection,
+        clone_identity: state.clone_identity,
+        clone_projection: state.clone_projection,
+    }
+}
+
+pub proof fn rejected_and_metadata_changes_preserve_projection(
+    state: ProjectionIdentityState,
+)
+    requires projection_state_valid(state),
+    ensures
+        projection_state_valid(projection_preserving_change_spec(state)),
+        projection_preserving_change_spec(state).writer_identity
+            == state.writer_identity,
+        projection_preserving_change_spec(state).writer_projection
+            == state.writer_projection,
+        projection_preserving_change_spec(state).clone_identity
+            == state.clone_identity,
+        projection_preserving_change_spec(state).clone_projection
+            == state.clone_projection,
+{}
+
+/// A stale-cache mutant changes the writer identity but retains bytes prepared
+/// for the prior identity. The validity predicate rejects it.
+pub proof fn stale_projection_mutant_is_rejected()
+    ensures !projection_cache_valid(2u64, Some(1u64)),
+{}
+
+/// Atomic publication invariant refined by the production `OnceLock`: a
+/// visible value is either absent or the complete projection. Private build
+/// prefixes are not supplied to this public state.
+pub open spec fn projection_publication_valid(
+    visible: Option<Seq<u8>>,
+    complete: Seq<u8>,
+) -> bool {
+    visible.is_none() || visible == Some(complete)
+}
+
+/// Extending a private build prefix preserves public invisibility.
+pub proof fn private_projection_build_is_invisible(
+    old_private_prefix: Seq<u8>,
+    next_private_prefix: Seq<u8>,
+    complete: Seq<u8>,
+)
+    ensures
+        projection_publication_valid(None, complete),
+        None::<Seq<u8>> == None,
+{}
+
+/// Publication is legal only after the private image equals the complete
+/// projection; publishing it establishes the public invariant.
+pub proof fn complete_projection_publication_is_atomic(
+    private_image: Seq<u8>,
+    complete: Seq<u8>,
+)
+    requires private_image == complete,
+    ensures projection_publication_valid(Some(private_image), complete),
+{}
+
+/// Calibration witness for a forbidden partially visible projection.
+pub proof fn partial_projection_publication_mutant_is_rejected()
+    ensures
+        !projection_publication_valid(Some(seq![1u8]), seq![1u8, 2u8]),
+{
+    assert(seq![1u8].len() == 1);
+    assert(seq![1u8, 2u8].len() == 2);
+    assert(seq![1u8] != seq![1u8, 2u8]);
+    assert(Some(seq![1u8]) != Some(seq![1u8, 2u8]));
+}
+
+/// Fallible sinks may contain a private prefix after callback failure, but the
+/// owner publishes only a complete successful image. This model separates the
+/// private sink from the public transaction boundary.
+pub open spec fn public_sink_after_result(
+    succeeded: bool,
+    old_public: Seq<u8>,
+    private_staging: Seq<u8>,
+    complete: Seq<u8>,
+) -> Seq<u8> {
+    if succeeded && private_staging == complete {
+        complete
+    } else {
+        old_public
+    }
+}
+
+pub proof fn failed_sink_keeps_public_value(
+    old_public: Seq<u8>,
+    private_prefix: Seq<u8>,
+    complete: Seq<u8>,
+)
+    ensures
+        public_sink_after_result(false, old_public, private_prefix, complete)
+            == old_public,
+{}
+
+pub proof fn complete_sink_publishes_exact_image(
+    old_public: Seq<u8>,
+    complete: Seq<u8>,
+)
+    ensures
+        public_sink_after_result(true, old_public, complete, complete)
+            == complete,
+{}
+
 }
 
 fn main() {}

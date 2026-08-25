@@ -31,6 +31,8 @@ use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::marker::PhantomData;
 use std::ops::Range;
+#[cfg(feature = "protobuf-projection-experiment")]
+use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::sync::{Arc, OnceLock};
 
 use prost::bytes::BufMut;
@@ -82,6 +84,15 @@ use crate::rust::rholang::sorter::unforgeable_sort_matcher::UnforgeableSortMatch
 /// The version byte is part of the trie path, so a future encoding cannot
 /// silently collide with or reinterpret this key language.
 pub const PAR_BAG_KEY_DOMAIN: [u8; 4] = *b"RPB\x03";
+#[cfg(feature = "protobuf-projection-experiment")]
+static PROTOBUF_PATHMAP_TRAVERSALS: AtomicU64 = AtomicU64::new(0);
+
+#[inline]
+fn record_protobuf_pathmap_traversal() {
+    #[cfg(feature = "protobuf-projection-experiment")]
+    PROTOBUF_PATHMAP_TRAVERSALS.fetch_add(1, AtomicOrdering::Relaxed);
+}
+
 const PAR_BAG_FAMILY_PREFIX_LEN: usize = PAR_BAG_KEY_DOMAIN.len() + 1;
 const PAR_BAG_SCORE_LEN_BYTES: usize = std::mem::size_of::<u64>();
 const PAR_BAG_KEY_HEADER_LEN: usize = PAR_BAG_FAMILY_PREFIX_LEN;
@@ -862,6 +873,26 @@ impl std::error::Error for ParBagProtobufError {
 
 impl From<ParBagCodecError> for ParBagProtobufError {
     fn from(error: ParBagCodecError) -> Self { Self::Codec(error) }
+}
+
+/// Outcome of an explicit request to retain a reusable protobuf projection.
+///
+/// Ordinary protobuf emission never prepares this cache. A caller that has
+/// measured repeated use supplies its own lifetime-specific byte budget; a
+/// value larger than that budget remains cold and continues to stream directly
+/// from the authoritative RPB3 trie.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ParProtobufProjectionPreparation {
+    AlreadyPrepared {
+        retained_bytes: usize,
+    },
+    Prepared {
+        retained_bytes: usize,
+    },
+    TooLarge {
+        projected_bytes: usize,
+        max_retained_bytes: usize,
+    },
 }
 
 /// Error from a decoded trie traversal, preserving a caller's own error type.
@@ -4061,6 +4092,19 @@ impl ParFamilyMetrics {
     }
 }
 
+struct ParProtobufProjection {
+    bytes: Box<[u8]>,
+    before_root_end: usize,
+}
+
+impl ParProtobufProjection {
+    fn before_root(&self) -> &[u8] { &self.bytes[..self.before_root_end] }
+
+    fn after_root(&self) -> &[u8] { &self.bytes[self.before_root_end..] }
+
+    fn retained_bytes(&self) -> usize { self.bytes.len() }
+}
+
 struct ParBagAux {
     metrics: ParFamilyMetrics,
     compact_snapshot: OnceLock<Arc<[u8]>>,
@@ -4075,8 +4119,13 @@ struct ParBagAux {
     /// Concatenated component score keys in canonical Par family order.
     score_components: OnceLock<Arc<[u8]>>,
     /// Canonical protobuf component bytes on either side of root fields 9/10.
-    protobuf_before_root: OnceLock<Arc<[u8]>>,
-    protobuf_after_root: OnceLock<Arc<[u8]>>,
+    ///
+    /// The containing `ParBagAux` is already CoW-shared, so the byte arrays do
+    /// not need their own reference-counted allocations. Initializing both
+    /// halves in one cell also guarantees that reusable projection admission
+    /// is atomic, uses one allocation, and requires one RPB3 domain-prefix
+    /// traversal. `before_root_end` marks where fields 9/10 are inserted.
+    protobuf_projection: OnceLock<ParProtobufProjection>,
     /// Stability of the sole component, when cardinality is exactly one.
     /// Multi-component and empty bags are known unstable without consulting
     /// this cell. The cell is shared by CoW clones and invalidated on mutation.
@@ -4094,8 +4143,7 @@ impl ParBagAux {
             compact_snapshot: OnceLock::new(),
             rmp2_component_digest: OnceLock::new(),
             score_components: OnceLock::new(),
-            protobuf_before_root: OnceLock::new(),
-            protobuf_after_root: OnceLock::new(),
+            protobuf_projection: OnceLock::new(),
             canonical_path_singleton_stable: OnceLock::new(),
             concrete_components_locally_free_empty: OnceLock::new(),
         }
@@ -4407,36 +4455,25 @@ impl ParBag {
         let _ = aux.compact_snapshot.take();
         let _ = aux.rmp2_component_digest.take();
         let _ = aux.score_components.take();
-        let _ = aux.protobuf_before_root.take();
-        let _ = aux.protobuf_after_root.take();
+        let _ = aux.protobuf_projection.take();
         let _ = aux.canonical_path_singleton_stable.take();
         let _ = aux.concrete_components_locally_free_empty.take();
         aux
     }
 
-    /// A newly-created one-endpoint Par is the dominant recursive construction
-    /// shape. The complete key is already in hand, so seed all byte projections
-    /// now instead of opening three independent PathMap zippers when its parent
-    /// immediately consumes it.
-    fn seed_singleton_caches(
+    /// Seed compact singleton facts that do not retain a second complete
+    /// protobuf image. Protobuf projection is an explicit reuse decision;
+    /// ordinary singleton construction remains a cold one-shot value.
+    fn seed_singleton_derived_caches(
         &mut self,
         tag: ParComponentTag,
         key: &[u8],
         canonical_path_stable: Option<bool>,
     ) {
-        let (actual_tag, score, body) = split_key_parts(key)
+        let (actual_tag, score, _body) = split_key_parts(key)
             .expect("ParBag invariant: a typed singleton key has a valid header");
         debug_assert_eq!(actual_tag, tag);
         let score: Arc<[u8]> = Arc::from(score);
-        let mut protobuf = Vec::with_capacity(
-            key_len(tag.byte().into()) + encoded_len_varint(body.len() as u64) + body.len(),
-        );
-        encode_key(tag.byte().into(), WireType::LengthDelimited, &mut protobuf);
-        prost::encoding::encode_varint(body.len() as u64, &mut protobuf);
-        protobuf.extend_from_slice(body);
-        let protobuf: Arc<[u8]> = Arc::from(protobuf);
-        let empty: Arc<[u8]> = Arc::from([]);
-
         let aux = Arc::get_mut(&mut self.aux).expect("singleton insertion owns auxiliary state");
         if let Some(stable) = canonical_path_stable {
             aux.canonical_path_singleton_stable
@@ -4446,21 +4483,6 @@ impl ParBag {
         aux.score_components
             .set(score)
             .expect("mutation cleared the singleton score cache");
-        if matches!(tag, ParComponentTag::Bundle | ParComponentTag::If) {
-            aux.protobuf_before_root
-                .set(Arc::clone(&empty))
-                .expect("mutation cleared the before-root protobuf cache");
-            aux.protobuf_after_root
-                .set(protobuf)
-                .expect("mutation cleared the after-root protobuf cache");
-        } else {
-            aux.protobuf_before_root
-                .set(protobuf)
-                .expect("mutation cleared the before-root protobuf cache");
-            aux.protobuf_after_root
-                .set(empty)
-                .expect("mutation cleared the after-root protobuf cache");
-        }
     }
 
     #[inline]
@@ -4538,7 +4560,7 @@ impl ParBag {
             .expect("ParBag invariant: typed insertion produced a valid component key");
         self.record_insert(tag, amount, payload.len(), distinct_added);
         if was_empty && amount == Multiplicity::ONE {
-            self.seed_singleton_caches(tag, key, canonical_path_stable);
+            self.seed_singleton_derived_caches(tag, key, canonical_path_stable);
         }
         Ok(next)
     }
@@ -4919,27 +4941,19 @@ impl ParBag {
         &self,
         mut visitor: impl FnMut(ParComponentTag, &[u8], &[u8], Multiplicity) -> Result<(), E>,
     ) -> Result<(), E> {
-        for tag in [
-            ParComponentTag::Send,
-            ParComponentTag::Receive,
-            ParComponentTag::New,
-            ParComponentTag::Expr,
-            ParComponentTag::Match,
-            ParComponentTag::GUnforgeable,
-            ParComponentTag::Connective,
-            ParComponentTag::Bundle,
-            ParComponentTag::If,
-        ] {
-            self.components.try_visit_relative_prefix(
-                &component_prefix(tag),
-                |suffix, multiplicity| {
-                    let (score, protobuf) = split_key_suffix(tag, suffix)
-                        .expect("ParBag invariant: every component has a valid RPB3 key");
-                    visitor(tag, score, protobuf, multiplicity)
-                },
-            )?;
-        }
-        Ok(())
+        self.components.try_visit_relative_prefix(
+            &PAR_BAG_KEY_DOMAIN,
+            |domain_suffix, multiplicity| {
+                let (&tag_byte, key_suffix) = domain_suffix
+                    .split_first()
+                    .expect("ParBag invariant: every component has a family tag");
+                let tag = ParComponentTag::from_byte(tag_byte)
+                    .expect("ParBag invariant: every component family tag is valid");
+                let (score, protobuf) = split_key_suffix(tag, key_suffix)
+                    .expect("ParBag invariant: every component has a valid RPB3 key");
+                visitor(tag, score, protobuf, multiplicity)
+            },
+        )
     }
 
     /// Append one family's canonical score trees in the exact order encoded by
@@ -5196,21 +5210,17 @@ impl ParBag {
 
     /// Emit protobuf fields in canonical tag/key order.
     ///
-    /// Singleton construction seeds these projections from the canonical RPB3
-    /// key already in hand. Other Bags memoize the two component projections
-    /// on first use so CoW clones and repeated encoders can reuse them. The
-    /// projection builder copies canonical protobuf bodies directly from trie
-    /// endpoints; it never decodes a component, constructs a repeated-field
-    /// `Vec`, reconstructs a legacy `Par`, or sorts elements.
+    /// A prepared CoW-shared projection is reused when one exists. A cold Bag
+    /// streams directly from one RPB3 domain-prefix zipper and remains cold.
+    /// Preparing retained bytes is always an explicit, bounded caller choice;
+    /// one-shot generic `prost::Message` emission therefore cannot silently
+    /// double a Par's resident byte footprint.
     pub fn encode_protobuf_components(
         &self,
         output: &mut impl BufMut,
     ) -> Result<(), ParBagProtobufError> {
-        // Prove the complete expansion representable before publishing a
-        // prefix to an externally supplied sink.
         let _ = self.protobuf_components_encoded_len()?;
-        self.encode_protobuf_components_before_root_metadata(output)?;
-        self.encode_protobuf_components_after_root_metadata(output)?;
+        self.encode_protobuf_components_prevalidated(output);
         Ok(())
     }
 
@@ -5218,164 +5228,167 @@ impl ParBag {
     ///
     /// This traverses the authoritative PathMap and writes the final fields to
     /// the caller's sink without allocating or retaining a component
-    /// projection. It shares [`Self::encode_protobuf_family`] with the cached
-    /// route so the experiment compares policies, not two encoders.
+    /// projection. Both this route and reusable projection preparation use the
+    /// same chunk emitter, so policy comparisons cannot drift semantically.
     pub fn encode_protobuf_components_direct(
         &self,
         output: &mut impl BufMut,
     ) -> Result<(), ParBagProtobufError> {
         let _ = self.protobuf_components_encoded_len()?;
-        self.encode_protobuf_components_before_root_metadata_direct(output)?;
-        self.encode_protobuf_components_after_root_metadata_direct(output)?;
+        self.encode_protobuf_components_direct_prevalidated(output);
         Ok(())
     }
 
-    /// Candidate policy: reuse an already-present CoW projection, but do not
-    /// retain a second complete byte image merely because a cold Bag is
-    /// serialized once.
-    #[cfg(any(test, feature = "protobuf-projection-experiment"))]
-    fn encode_protobuf_components_existing_cache_or_direct(
-        &self,
-        output: &mut impl BufMut,
-    ) -> Result<(), ParBagProtobufError> {
-        let _ = self.protobuf_components_encoded_len()?;
-        match self.aux.protobuf_before_root.get() {
-            Some(bytes) => output.put_slice(bytes),
-            None => self.encode_protobuf_components_before_root_metadata_direct(output)?,
+    pub(crate) fn encode_protobuf_components_prevalidated(&self, output: &mut impl BufMut) {
+        match self.aux.protobuf_projection.get() {
+            Some(projection) => output.put_slice(&projection.bytes),
+            None => self.encode_protobuf_components_direct_prevalidated(output),
         }
-        match self.aux.protobuf_after_root.get() {
-            Some(bytes) => output.put_slice(bytes),
-            None => self.encode_protobuf_components_after_root_metadata_direct(output)?,
+    }
+
+    pub(crate) fn encode_protobuf_components_direct_prevalidated(&self, output: &mut impl BufMut) {
+        let mut sink = |chunk: &[u8]| {
+            output.put_slice(chunk);
+            Ok::<_, std::convert::Infallible>(())
+        };
+        match self.try_visit_protobuf_component_chunks(&mut sink) {
+            Ok(()) => {}
+            Err(never) => match never {},
+        }
+    }
+
+    /// Visit one cold protobuf component stream as borrowed chunks.
+    ///
+    /// Framing bytes live in fixed stack arrays and component bodies borrow
+    /// the canonical bytes resident in RPB3 endpoints. The callback must
+    /// consume each slice before returning; PathMap's zipper owns the current
+    /// path buffer. Multiplicity expansion performs no component decode.
+    pub(crate) fn try_visit_protobuf_component_chunks<E>(
+        &self,
+        visitor: &mut impl FnMut(&[u8]) -> Result<(), E>,
+    ) -> Result<(), E> {
+        record_protobuf_pathmap_traversal();
+        self.try_visit_canonical_key_parts(|tag, _score, payload, multiplicity| {
+            Self::try_visit_protobuf_occurrences(visitor, tag, payload, multiplicity)
+        })
+    }
+
+    /// Visit all cold component fields while inserting root metadata between
+    /// fields 8 and 11. The complete RPB3 domain is traversed exactly once.
+    pub(crate) fn try_visit_protobuf_chunks_direct_around_root_metadata<E, V, R>(
+        &self,
+        visitor: &mut V,
+        root_metadata: R,
+    ) -> Result<(), E>
+    where
+        V: FnMut(&[u8]) -> Result<(), E>,
+        R: FnOnce(&mut V) -> Result<(), E>,
+    {
+        record_protobuf_pathmap_traversal();
+        let mut root_metadata = Some(root_metadata);
+        self.try_visit_canonical_key_parts(|tag, _score, payload, multiplicity| {
+            if tag >= ParComponentTag::Bundle {
+                if let Some(emit) = root_metadata.take() {
+                    emit(visitor)?;
+                }
+            }
+            Self::try_visit_protobuf_occurrences(visitor, tag, payload, multiplicity)
+        })?;
+        if let Some(emit) = root_metadata {
+            emit(visitor)?;
         }
         Ok(())
     }
 
-    pub(crate) fn encode_protobuf_components_before_root_metadata(
-        &self,
-        output: &mut impl BufMut,
-    ) -> Result<(), ParBagProtobufError> {
-        output.put_slice(self.protobuf_before_root_snapshot());
-        Ok(())
-    }
-
-    pub(crate) fn encode_protobuf_components_after_root_metadata(
-        &self,
-        output: &mut impl BufMut,
-    ) -> Result<(), ParBagProtobufError> {
-        output.put_slice(self.protobuf_after_root_snapshot());
-        Ok(())
-    }
-
-    pub(crate) fn encode_protobuf_components_before_root_metadata_direct(
-        &self,
-        output: &mut impl BufMut,
-    ) -> Result<(), ParBagProtobufError> {
-        self.encode_protobuf_family::<Send>(output)?;
-        self.encode_protobuf_family::<Receive>(output)?;
-        self.encode_protobuf_family::<New>(output)?;
-        self.encode_protobuf_family::<Expr>(output)?;
-        self.encode_protobuf_family::<Match>(output)?;
-        self.encode_protobuf_family::<GUnforgeable>(output)?;
-        self.encode_protobuf_family::<Connective>(output)?;
-        Ok(())
-    }
-
-    pub(crate) fn encode_protobuf_components_after_root_metadata_direct(
-        &self,
-        output: &mut impl BufMut,
-    ) -> Result<(), ParBagProtobufError> {
-        self.encode_protobuf_family::<Bundle>(output)?;
-        self.encode_protobuf_family::<If>(output)?;
-        Ok(())
-    }
-
-    /// Measurement-only access to the current memoizing production policy.
-    #[cfg(feature = "protobuf-projection-experiment")]
-    pub fn encode_protobuf_components_cached_experiment(
-        &self,
-        output: &mut impl BufMut,
-    ) -> Result<(), ParBagProtobufError> {
-        self.encode_protobuf_components(output)
-    }
-
-    /// Measurement-only access to the cache-hit-or-direct candidate policy.
-    #[cfg(feature = "protobuf-projection-experiment")]
-    pub fn encode_protobuf_components_adaptive_experiment(
-        &self,
-        output: &mut impl BufMut,
-    ) -> Result<(), ParBagProtobufError> {
-        self.encode_protobuf_components_existing_cache_or_direct(output)
-    }
-
-    /// Whether the before/after-root projections have been initialized.
-    #[cfg(feature = "protobuf-projection-experiment")]
-    pub fn protobuf_projection_cache_state_experiment(&self) -> (bool, bool) {
-        (
-            self.aux.protobuf_before_root.get().is_some(),
-            self.aux.protobuf_after_root.get().is_some(),
-        )
-    }
-
-    fn protobuf_before_root_snapshot(&self) -> &[u8] {
+    pub(crate) fn protobuf_projection_if_prepared(&self) -> Option<(&[u8], &[u8])> {
         self.aux
-            .protobuf_before_root
-            .get_or_init(|| {
-                let exact = [
-                    ParComponentTag::Send,
-                    ParComponentTag::Receive,
-                    ParComponentTag::New,
-                    ParComponentTag::Expr,
-                    ParComponentTag::Match,
-                    ParComponentTag::GUnforgeable,
-                    ParComponentTag::Connective,
-                ]
-                .into_iter()
-                .try_fold(0u128, |total, tag| {
-                    self.aux.metrics.exact_protobuf_lengths[tag.index()]?.checked_add(total)
+            .protobuf_projection
+            .get()
+            .map(|projection| (projection.before_root(), projection.after_root()))
+    }
+
+    /// Prepare one reusable component projection if new retention fits the
+    /// caller's explicit byte budget.
+    ///
+    /// The budget governs only a cold allocation: an existing shared
+    /// projection is returned even when it exceeds a later caller's budget,
+    /// because no new bytes would be retained. The projection is built and
+    /// published atomically in one `OnceLock`. Concurrent callers share the
+    /// winning image; successful component mutation detaches the writer and
+    /// invalidates only its projection.
+    pub fn prepare_protobuf_projection(
+        &self,
+        max_retained_bytes: usize,
+    ) -> Result<ParProtobufProjectionPreparation, ParBagProtobufError> {
+        if let Some(projection) = self.aux.protobuf_projection.get() {
+            return Ok(ParProtobufProjectionPreparation::AlreadyPrepared {
+                retained_bytes: projection.retained_bytes(),
+            });
+        }
+        let projected_bytes = self.protobuf_components_encoded_len()?;
+        if projected_bytes > max_retained_bytes {
+            return Ok(ParProtobufProjectionPreparation::TooLarge {
+                projected_bytes,
+                max_retained_bytes,
+            });
+        }
+        let initialized_here = std::cell::Cell::new(false);
+        let projection = self.aux.protobuf_projection.get_or_init(|| {
+            initialized_here.set(true);
+            record_protobuf_pathmap_traversal();
+            let mut bytes = Vec::with_capacity(projected_bytes);
+            let mut before_root_end = None;
+            let result: Result<(), std::convert::Infallible> =
+                self.try_visit_canonical_key_parts(|tag, _score, payload, multiplicity| {
+                    if tag >= ParComponentTag::Bundle && before_root_end.is_none() {
+                        before_root_end = Some(bytes.len());
+                    }
+                    let mut sink = |chunk: &[u8]| {
+                        bytes.put_slice(chunk);
+                        Ok::<_, std::convert::Infallible>(())
+                    };
+                    Self::try_visit_protobuf_occurrences(&mut sink, tag, payload, multiplicity)
                 });
-                let capacity = exact
-                    .and_then(|length| usize::try_from(length).ok())
-                    .unwrap_or(0);
-                let mut out = Vec::with_capacity(capacity);
-                self.encode_protobuf_family::<Send>(&mut out)
-                    .expect("resident Send protobuf lengths are representable");
-                self.encode_protobuf_family::<Receive>(&mut out)
-                    .expect("resident Receive protobuf lengths are representable");
-                self.encode_protobuf_family::<New>(&mut out)
-                    .expect("resident New protobuf lengths are representable");
-                self.encode_protobuf_family::<Expr>(&mut out)
-                    .expect("resident Expr protobuf lengths are representable");
-                self.encode_protobuf_family::<Match>(&mut out)
-                    .expect("resident Match protobuf lengths are representable");
-                self.encode_protobuf_family::<GUnforgeable>(&mut out)
-                    .expect("resident GUnforgeable protobuf lengths are representable");
-                self.encode_protobuf_family::<Connective>(&mut out)
-                    .expect("resident Connective protobuf lengths are representable");
-                Arc::from(out)
-            })
-            .as_ref()
+            match result {
+                Ok(()) => {}
+                Err(never) => match never {},
+            }
+            let before_root_end = before_root_end.unwrap_or(bytes.len());
+            debug_assert_eq!(bytes.len(), projected_bytes);
+            ParProtobufProjection {
+                bytes: bytes.into_boxed_slice(),
+                before_root_end,
+            }
+        });
+        let retained_bytes = projection.retained_bytes();
+        if initialized_here.get() {
+            Ok(ParProtobufProjectionPreparation::Prepared { retained_bytes })
+        } else {
+            Ok(ParProtobufProjectionPreparation::AlreadyPrepared { retained_bytes })
+        }
     }
 
-    fn protobuf_after_root_snapshot(&self) -> &[u8] {
-        self.aux
-            .protobuf_after_root
-            .get_or_init(|| {
-                let exact = [ParComponentTag::Bundle, ParComponentTag::If]
-                    .into_iter()
-                    .try_fold(0u128, |total, tag| {
-                        self.aux.metrics.exact_protobuf_lengths[tag.index()]?.checked_add(total)
-                    });
-                let capacity = exact
-                    .and_then(|length| usize::try_from(length).ok())
-                    .unwrap_or(0);
-                let mut out = Vec::with_capacity(capacity);
-                self.encode_protobuf_family::<Bundle>(&mut out)
-                    .expect("resident Bundle protobuf lengths are representable");
-                self.encode_protobuf_family::<If>(&mut out)
-                    .expect("resident If protobuf lengths are representable");
-                Arc::from(out)
-            })
-            .as_ref()
+    /// Measurement-only projection state and retained-byte count.
+    #[cfg(feature = "protobuf-projection-experiment")]
+    pub fn protobuf_projection_cache_state_experiment(&self) -> (bool, usize) {
+        match self.aux.protobuf_projection.get() {
+            Some(projection) => (true, projection.retained_bytes()),
+            None => (false, 0),
+        }
+    }
+
+    /// Reset the exact feature-only traversal counter immediately before one
+    /// isolated projection-policy observation.
+    #[cfg(feature = "protobuf-projection-experiment")]
+    pub fn reset_protobuf_pathmap_traversals_experiment() {
+        PROTOBUF_PATHMAP_TRAVERSALS.store(0, AtomicOrdering::Relaxed);
+    }
+
+    /// Consume the exact feature-only traversal count for one isolated
+    /// projection-policy observation.
+    #[cfg(feature = "protobuf-projection-experiment")]
+    pub fn take_protobuf_pathmap_traversals_experiment() -> u64 {
+        PROTOBUF_PATHMAP_TRAVERSALS.swap(0, AtomicOrdering::Relaxed)
     }
 
     /// Collect the direct protobuf stream into its final `Vec<u8>` payload.
@@ -5387,7 +5400,7 @@ impl ParBag {
     pub fn protobuf_components_bytes(&self) -> Result<Vec<u8>, ParBagProtobufError> {
         let encoded_len = self.protobuf_components_encoded_len()?;
         let mut output = Vec::with_capacity(encoded_len);
-        self.encode_protobuf_components(&mut output)?;
+        self.encode_protobuf_components_direct_prevalidated(&mut output);
         debug_assert_eq!(output.len(), encoded_len);
         Ok(output)
     }
@@ -5417,24 +5430,34 @@ impl ParBag {
         Ok(())
     }
 
-    fn encode_protobuf_family<T>(
-        &self,
-        output: &mut impl BufMut,
-    ) -> Result<(), ParBagProtobufError>
-    where
-        T: ParBagComponent,
-    {
-        self.visit_encoded::<T>(|entry| {
-            let payload = entry.payload();
-            let multiplicity = entry.multiplicity();
-            for _ in 0..multiplicity.get() {
-                encode_key(T::TAG.byte().into(), WireType::LengthDelimited, output);
-                prost::encoding::encode_varint(payload.len() as u64, output);
-                output.put_slice(payload);
-            }
-        });
+    fn try_visit_protobuf_occurrences<E>(
+        visitor: &mut impl FnMut(&[u8]) -> Result<(), E>,
+        tag: ParComponentTag,
+        payload: &[u8],
+        multiplicity: Multiplicity,
+    ) -> Result<(), E> {
+        debug_assert!(tag.byte() < 16, "Par field keys occupy one protobuf byte");
+        let key = [(tag.byte() << 3) | WireType::LengthDelimited as u8];
+        let mut length = [0u8; 10];
+        let length_bytes = encode_protobuf_varint_chunk(payload.len() as u64, &mut length);
+        for _ in 0..multiplicity.get() {
+            visitor(&key)?;
+            visitor(&length[..length_bytes])?;
+            visitor(payload)?;
+        }
         Ok(())
     }
+}
+
+pub(crate) fn encode_protobuf_varint_chunk(mut value: u64, output: &mut [u8; 10]) -> usize {
+    let mut length = 0usize;
+    while value >= 0x80 {
+        output[length] = (value as u8 & 0x7f) | 0x80;
+        length += 1;
+        value >>= 7;
+    }
+    output[length] = value as u8;
+    length + 1
 }
 
 impl Serialize for ParBag {
@@ -5647,7 +5670,7 @@ mod fast_key_tests {
     }
 
     #[test]
-    fn direct_cached_and_existing_cache_protobuf_policies_are_byte_identical() {
+    fn direct_cold_and_explicitly_prepared_protobuf_policies_are_byte_identical() {
         let mut source = ParBag::new();
         for value in canonical_family_keys().into_iter().map(|(_, key)| key) {
             let (tag, _, stable) = validate_key(&value).expect("canonical fixture key");
@@ -5656,33 +5679,239 @@ mod fast_key_tests {
                 .expect("fixture multiplicity fits");
         }
         let bag = ParBag::try_from_bag(source.as_bag().clone()).expect("fresh cache root");
-        assert!(bag.aux.protobuf_before_root.get().is_none());
-        assert!(bag.aux.protobuf_after_root.get().is_none());
+        assert!(bag.aux.protobuf_projection.get().is_none());
 
         let mut direct = Vec::new();
         bag.encode_protobuf_components_direct(&mut direct)
             .expect("direct projection");
-        assert!(bag.aux.protobuf_before_root.get().is_none());
-        assert!(bag.aux.protobuf_after_root.get().is_none());
+        assert!(bag.aux.protobuf_projection.get().is_none());
 
-        let mut cold_adaptive = Vec::new();
-        bag.encode_protobuf_components_existing_cache_or_direct(&mut cold_adaptive)
-            .expect("cold adaptive projection");
-        assert_eq!(cold_adaptive, direct);
-        assert!(bag.aux.protobuf_before_root.get().is_none());
-        assert!(bag.aux.protobuf_after_root.get().is_none());
+        let mut cold_default = Vec::new();
+        bag.encode_protobuf_components(&mut cold_default)
+            .expect("cold default projection");
+        assert_eq!(cold_default, direct);
+        assert!(bag.aux.protobuf_projection.get().is_none());
 
-        let mut cached = Vec::new();
-        bag.encode_protobuf_components(&mut cached)
-            .expect("cached projection");
-        assert_eq!(cached, direct);
-        assert!(bag.aux.protobuf_before_root.get().is_some());
-        assert!(bag.aux.protobuf_after_root.get().is_some());
+        assert_eq!(
+            bag.prepare_protobuf_projection(direct.len() - 1)
+                .expect("bounded refusal"),
+            ParProtobufProjectionPreparation::TooLarge {
+                projected_bytes: direct.len(),
+                max_retained_bytes: direct.len() - 1,
+            }
+        );
+        assert!(bag.aux.protobuf_projection.get().is_none());
 
-        let mut warm_adaptive = Vec::new();
-        bag.encode_protobuf_components_existing_cache_or_direct(&mut warm_adaptive)
-            .expect("warm adaptive projection");
-        assert_eq!(warm_adaptive, direct);
+        assert_eq!(
+            bag.prepare_protobuf_projection(direct.len())
+                .expect("bounded preparation"),
+            ParProtobufProjectionPreparation::Prepared {
+                retained_bytes: direct.len(),
+            }
+        );
+        assert_eq!(
+            bag.prepare_protobuf_projection(direct.len())
+                .expect("reuse preparation"),
+            ParProtobufProjectionPreparation::AlreadyPrepared {
+                retained_bytes: direct.len(),
+            }
+        );
+        assert_eq!(
+            bag.prepare_protobuf_projection(0)
+                .expect("an existing projection allocates no new retained bytes"),
+            ParProtobufProjectionPreparation::AlreadyPrepared {
+                retained_bytes: direct.len(),
+            },
+            "the byte cap governs cold retention, not reuse of an existing image"
+        );
+
+        let mut warm_default = Vec::new();
+        bag.encode_protobuf_components(&mut warm_default)
+            .expect("warm default projection");
+        assert_eq!(warm_default, direct);
+    }
+
+    #[test]
+    fn protobuf_projection_is_explicit_atomically_shared_and_cow_invalidated() {
+        let first = Expr {
+            expr_instance: Some(ExprInstance::GInt(1)),
+        };
+        let second = Expr {
+            expr_instance: Some(ExprInstance::GInt(2)),
+        };
+        let absent = Expr {
+            expr_instance: Some(ExprInstance::GInt(99)),
+        };
+        let mut writer = ParBag::new();
+        writer.insert(&first).expect("singleton insert");
+        assert!(
+            writer.aux.protobuf_projection.get().is_none(),
+            "singleton construction must not retain an unrequested protobuf image"
+        );
+
+        let projected_bytes = writer
+            .protobuf_components_encoded_len()
+            .expect("projection length");
+        assert_eq!(
+            writer
+                .prepare_protobuf_projection(projected_bytes)
+                .expect("explicit preparation"),
+            ParProtobufProjectionPreparation::Prepared {
+                retained_bytes: projected_bytes,
+            }
+        );
+        let old_projection = writer
+            .aux
+            .protobuf_projection
+            .get()
+            .expect("prepared writer projection")
+            .bytes
+            .to_vec();
+        let untouched = writer.clone();
+        assert!(writer.shares_storage_with(&untouched));
+        assert!(untouched.aux.protobuf_projection.get().is_some());
+
+        assert_eq!(writer.remove(&absent), None);
+        assert!(
+            writer.shares_storage_with(&untouched),
+            "absent removal must not detach or invalidate derived state"
+        );
+        assert!(
+            writer
+                .try_remove_many(&first, Multiplicity::new(2).expect("positive multiplicity"))
+                .is_err(),
+            "checked removal beyond resident multiplicity must fail"
+        );
+        assert!(
+            writer.shares_storage_with(&untouched),
+            "rejected checked removal must preserve shared derived state"
+        );
+
+        let mut metadata_only = Par::from_parts(untouched.clone(), Vec::new(), false);
+        metadata_only.replace_locally_free(vec![0x05, 0x80]);
+        metadata_only.replace_connective_used(true);
+        assert!(metadata_only.components().shares_storage_with(&untouched));
+        let expected_metadata = metadata_only
+            .protobuf_bytes()
+            .expect("direct metadata projection");
+        let mut reused_metadata = Vec::new();
+        metadata_only
+            .encode_protobuf(&mut reused_metadata)
+            .expect("prepared metadata projection");
+        assert_eq!(reused_metadata, expected_metadata);
+
+        writer.insert(&second).expect("successful writer mutation");
+        assert!(!writer.shares_storage_with(&untouched));
+        assert!(
+            writer.aux.protobuf_projection.get().is_none(),
+            "successful mutation must clear only the detached writer projection"
+        );
+        assert!(
+            untouched.aux.protobuf_projection.get().is_some(),
+            "the untouched clone must retain the shared prepared projection"
+        );
+        let mut writer_default = Vec::new();
+        writer
+            .encode_protobuf_components(&mut writer_default)
+            .expect("cold detached writer encode");
+        assert_eq!(
+            writer_default,
+            writer
+                .protobuf_components_bytes()
+                .expect("direct detached writer encode")
+        );
+        assert_ne!(
+            writer_default, old_projection,
+            "retaining the pre-mutation projection would be observably stale"
+        );
+        let mut untouched_default = Vec::new();
+        untouched
+            .encode_protobuf_components(&mut untouched_default)
+            .expect("untouched clone prepared encode");
+        assert_eq!(untouched_default, old_projection);
+
+        let expanded_projection_len = writer_default.len();
+        assert_eq!(
+            writer
+                .prepare_protobuf_projection(expanded_projection_len)
+                .expect("prepare the expanded writer"),
+            ParProtobufProjectionPreparation::Prepared {
+                retained_bytes: expanded_projection_len,
+            }
+        );
+        assert_eq!(writer.remove(&second), None);
+        assert!(!writer.contains(&second));
+        assert!(
+            writer.aux.protobuf_projection.get().is_none(),
+            "successful removal must invalidate the detached writer projection"
+        );
+        assert_eq!(
+            writer
+                .protobuf_components_bytes()
+                .expect("post-removal direct authority"),
+            old_projection,
+            "removing the inserted occurrence returns to the original bytes"
+        );
+    }
+
+    #[test]
+    fn concurrent_projection_preparation_publishes_one_complete_image() {
+        let mut bag = ParBag::new();
+        for value in canonical_family_keys().into_iter().map(|(_, key)| key) {
+            let (tag, _, stable) = validate_key(&value).expect("canonical fixture key");
+            bag.insert_bytes(tag, &value, Multiplicity::ONE, Some(stable))
+                .expect("fixture insert");
+        }
+        let expected = bag.protobuf_components_bytes().expect("direct authority");
+        let barrier = Arc::new(std::sync::Barrier::new(8));
+        let mut workers = Vec::new();
+        for _ in 0..8 {
+            let worker_bag = bag.clone();
+            let worker_barrier = Arc::clone(&barrier);
+            let expected_len = expected.len();
+            workers.push(std::thread::spawn(move || {
+                worker_barrier.wait();
+                let outcome = worker_bag
+                    .prepare_protobuf_projection(expected_len)
+                    .expect("concurrent preparation");
+                let mut output = Vec::new();
+                worker_bag
+                    .encode_protobuf_components(&mut output)
+                    .expect("concurrent prepared encode");
+                (outcome, output)
+            }));
+        }
+        let mut prepared_count = 0usize;
+        let mut already_prepared_count = 0usize;
+        for worker in workers {
+            let (outcome, output) = worker.join().expect("preparation worker");
+            match outcome {
+                ParProtobufProjectionPreparation::Prepared { retained_bytes } => {
+                    assert_eq!(retained_bytes, expected.len());
+                    prepared_count += 1;
+                }
+                ParProtobufProjectionPreparation::AlreadyPrepared { retained_bytes } => {
+                    assert_eq!(retained_bytes, expected.len());
+                    already_prepared_count += 1;
+                }
+                ParProtobufProjectionPreparation::TooLarge { .. } => {
+                    panic!("an exact-cap concurrent preparation cannot be refused")
+                }
+            }
+            assert_eq!(output, expected);
+        }
+        assert_eq!(prepared_count, 1, "exactly one caller initializes OnceLock");
+        assert_eq!(already_prepared_count, 7);
+        let projection = bag
+            .aux
+            .protobuf_projection
+            .get()
+            .expect("one complete projection is published");
+        assert_eq!(projection.retained_bytes(), expected.len());
+        assert_eq!(
+            projection.before_root().len() + projection.after_root().len(),
+            expected.len()
+        );
     }
 
     #[test]
