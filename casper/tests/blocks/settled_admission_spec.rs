@@ -300,6 +300,59 @@ async fn settled_admission_never_advances_a_latest_message() {
     );
 }
 
+/// Deep settled history is routinely authored by validators that have since
+/// unbonded and therefore hold no latest-message slot on this node. Such a
+/// block must still go through the door: the fifth conjunct exists to refuse
+/// live-chain material wearing a sub-anchor height, and live material always
+/// HAS a live latest message. Refusing on an absent slot re-wedges exactly
+/// the restore gaps the door was built to close.
+#[tokio::test]
+async fn settled_admission_admits_an_unbonded_historic_author() {
+    let fixture = Fixture::new().await;
+
+    let departed = generate_validator(Some("DepartedHistoricValidator"));
+    assert!(
+        fixture
+            .dag_reader
+            .get_representation()
+            .unwrap()
+            .latest_message_hash(&departed)
+            .is_none(),
+        "the departed author must have no latest-message slot",
+    );
+
+    let historic = lean_block(
+        6,
+        3,
+        Some(departed.clone()),
+        vec![fixture.genesis.block_hash.clone()],
+        fixture.bonds.clone(),
+    );
+    fixture.solicit(&historic.block_hash).await;
+
+    let admitted = fixture
+        .processor
+        .try_admit_settled(fixture.casper.clone(), &historic)
+        .await
+        .unwrap();
+
+    assert!(
+        admitted,
+        "a solicited sub-anchor block from a sender with no latest-message \
+         slot is settled history and must be admitted",
+    );
+    assert!(
+        fixture
+            .dag_reader
+            .get_representation()
+            .unwrap()
+            .latest_message_hash(&departed)
+            .is_none(),
+        "settled-history admission must not create a latest-message slot \
+         for the departed author",
+    );
+}
+
 #[tokio::test]
 async fn settled_admission_still_admits_a_genuine_straggler() {
     let fixture = Fixture::new().await;

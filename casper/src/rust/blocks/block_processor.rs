@@ -121,8 +121,10 @@ pub(crate) fn guard_deferral(
 /// justification frontier — while a block at-or-above that frontier is
 /// live-chain material wearing a sub-anchor height (the CI run 32588262605
 /// pollution shape: shared validator keys, foreign seq 40 against a live
-/// seq-5 head). A sender with no latest message fails the condition and
-/// takes the judged path, which defers safely.
+/// seq-5 head). A sender with NO latest message passes the condition:
+/// deep settled history is routinely authored by since-unbonded validators
+/// with no live slot, and live material always has one — refusing on an
+/// absent slot re-wedges the restore gaps the door exists to close.
 pub(crate) fn admit_as_settled(
     block_number: i64,
     approved_block_number: i64,
@@ -1405,7 +1407,17 @@ impl<T: TransportLayer + Send + Sync> BlockProcessorDependencies<T> {
                     Some(latest_meta) => block.seq_num < latest_meta.sequence_number,
                     None => false,
                 },
-                None => false,
+                // No latest message: this sender has no live testimony on
+                // this node — an unbonded historic author, the normal case
+                // for deep settled history. The conjunct exists to refuse
+                // live-chain material wearing a sub-anchor height, and live
+                // material always HAS a live latest message, so its job is
+                // done entirely by the Some arm; refusing here re-wedges
+                // restores whose gap blocks were authored by since-departed
+                // validators. A bonded citer vouching for a no-slot author
+                // is the budget-priced attack the admission cap already
+                // bounds.
+                None => true,
             }
         };
         if !admit_as_settled(
