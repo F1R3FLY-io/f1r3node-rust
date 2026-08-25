@@ -16,6 +16,9 @@ default = []
 # production suffix-checkpoint path. Ordinary builds compile neither the
 # facade nor its legacy control.
 candidate-checkpoint-experiment = []
+# Measurement-only comparison between the typed legacy DATA checkpoint route
+# and the production canonical-identity zipper/arena route.
+canonical-egress-experiment = []
 # Measurement-only access to the accepted-match transaction and its frozen
 # pre-transaction split-call control. Neither arm is compiled by default.
 accepted-match-transition-experiment = []
@@ -106,6 +109,11 @@ harness = false
 name = "rspace_candidate_suffix_checkpoint"
 harness = false
 required-features = ["candidate-checkpoint-experiment"]
+
+[[bench]]
+name = "rspace_canonical_egress"
+harness = false
+required-features = ["canonical-egress-experiment"]
 
 [[bench]]
 name = "rspace_accepted_match"

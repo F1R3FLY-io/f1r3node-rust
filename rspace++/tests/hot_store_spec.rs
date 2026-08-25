@@ -861,6 +861,49 @@ fn checkpoint_changes_reuse_sorted_canonical_identities_and_preserve_multiplicit
     ),)));
 }
 
+proptest! {
+    #![proptest_config(ProptestConfig {
+        cases: 64,
+        failure_persistence: None,
+        .. ProptestConfig::default()
+    })]
+
+    #[test]
+    fn canonical_checkpoint_bytes_equal_the_typed_encoder_for_arbitrary_bags(
+        entries in proptest::collection::vec(("[a-z]{0,32}", 1_u8..=8), 1..64)
+    ) {
+        let (_, hot_store) = fixture();
+        let channel = "canonical-egress-property".to_string();
+        let mut data = Vec::new();
+        for (value, multiplicity) in entries {
+            let datum = Datum::create(&channel, value, false);
+            data.extend(std::iter::repeat_n(datum, usize::from(multiplicity)));
+        }
+        // Reverse the expanded stream so neither insertion nor structural
+        // order can accidentally serve as the legacy byte-order authority.
+        data.reverse();
+        hot_store.set_state(HotStoreState {
+            continuations: HashMap::new(),
+            installed_continuations: HashMap::new(),
+            data: HashMap::from([(channel.clone(), data.clone())]),
+            joins: HashMap::new(),
+            installed_joins: HashMap::new(),
+        });
+
+        let actions = hot_store.checkpoint_changes().expect("checkpoint preflight");
+        let canonical = actions
+            .iter()
+            .find_map(|action| match action {
+                HotStoreAction::Insert(InsertAction::InsertCanonicalData(insert)) => Some(insert),
+                _ => None,
+            })
+            .expect("the generated bag is nonempty");
+        prop_assert_eq!(canonical.hash.clone(), hash(&channel));
+        prop_assert_eq!(canonical.datum_count, data.len() as u64);
+        prop_assert_eq!(&canonical.encoded_datums, &encode_datums(&data));
+    }
+}
+
 fn check_removal_works_or_fails_on_error<T>(
     res: Option<()>,
     actual: Vec<T>,

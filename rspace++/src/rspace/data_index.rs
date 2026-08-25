@@ -1465,7 +1465,10 @@ impl<C, A: Clone> RSpaceDataStore<C, A> {
     pub(crate) fn loaded_canonical_records(
         &self,
     ) -> Result<Vec<CanonicalDataRecord>, DataIndexError> {
-        let mut records = Vec::with_capacity(self.loaded_channel_count);
+        let mut records = Vec::new();
+        records
+            .try_reserve_exact(self.loaded_channel_count)
+            .map_err(|_| DataIndexError::AllocationFailure(self.loaded_channel_count))?;
         for (prefix, _) in self.loaded_channels.iter() {
             let view = RhoPathV1::parse_datum_prefix(&prefix)?;
             let channel_hash = Blake2b256Hash::new(&view.channel_identity());
@@ -1618,3 +1621,8 @@ mod digest_collision_replay_tests;
 #[doc(hidden)]
 #[path = "../../tests/data_index/candidate_checkpoint_experiment.rs"]
 pub mod candidate_checkpoint_experiment;
+
+#[cfg(feature = "canonical-egress-experiment")]
+#[doc(hidden)]
+#[path = "../../tests/data_index/canonical_egress_experiment.rs"]
+pub mod canonical_egress_experiment;
