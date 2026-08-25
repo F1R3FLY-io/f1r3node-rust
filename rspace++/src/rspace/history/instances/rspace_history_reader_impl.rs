@@ -1,4 +1,5 @@
 use std::marker::PhantomData;
+use std::ops::Range;
 use std::sync::Arc;
 
 use shared::rust::store::key_value_store::KeyValueStore;
@@ -6,7 +7,9 @@ use shared::rust::store::key_value_store::KeyValueStore;
 use crate::rspace::errors::HistoryError;
 use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use crate::rspace::hashing::stable_hash_provider::{StableHashSerialize, hash, hash_from_vec};
-use crate::rspace::history::cold_store::PersistedData;
+use crate::rspace::history::cold_store::{
+    PERSISTED_DATA_HEADER_LEN, PersistedDataKind, PersistedDataView,
+};
 use crate::rspace::history::history::History;
 use crate::rspace::history::history_reader::{HistoryReader, HistoryReaderBase};
 use crate::rspace::history::history_repository::{PREFIX_DATUM, PREFIX_JOINS, PREFIX_KONT};
@@ -28,6 +31,17 @@ pub struct RSpaceHistoryReaderImpl<C, P, A, K> {
     _marker: PhantomData<(C, P, A, K)>,
 }
 
+#[derive(Debug)]
+struct FetchedPersistedData {
+    bytes: Vec<u8>,
+    kind: PersistedDataKind,
+    payload: Range<usize>,
+}
+
+impl FetchedPersistedData {
+    fn payload(&self) -> &[u8] { &self.bytes[self.payload.clone()] }
+}
+
 impl<C, P, A, K> RSpaceHistoryReaderImpl<C, P, A, K> {
     pub fn new(target_history: Box<dyn History>, leaf_store: Arc<dyn KeyValueStore>) -> Self {
         RSpaceHistoryReaderImpl {
@@ -42,7 +56,7 @@ impl<C, P, A, K> RSpaceHistoryReaderImpl<C, P, A, K> {
         &self,
         prefix: u8,
         key: &Blake2b256Hash,
-    ) -> Result<Option<PersistedData>, HistoryError> {
+    ) -> Result<Option<FetchedPersistedData>, HistoryError> {
         let __fetch_start = std::time::Instant::now();
         metrics::counter!(HISTORY_FETCH_DATA_CALLS_METRIC, "source" => RSPACE_METRICS_SOURCE)
             .increment(1);
@@ -80,16 +94,21 @@ impl<C, P, A, K> RSpaceHistoryReaderImpl<C, P, A, K> {
                 match get_opt {
                     Some(store_value_bytes) => {
                         let __deser_start = std::time::Instant::now();
-                        let decoded = bincode::deserialize(&store_value_bytes).map_err(|e| {
+                        let view = PersistedDataView::parse(&store_value_bytes).map_err(|e| {
                             HistoryError::ActionError(format!(
-                                "RSpace History Reader Impl: Failed to deserialize persisted \
-                                 leaf: {}",
+                                "RSpace History Reader Impl: Failed to validate persisted leaf: {}",
                                 e
                             ))
                         })?;
+                        let kind = view.kind();
+                        let payload_end = PERSISTED_DATA_HEADER_LEN + view.payload().len();
                         metrics::counter!(HISTORY_FETCH_DATA_DESERIALIZE_NS_METRIC, "source" => RSPACE_METRICS_SOURCE)
                             .increment(__deser_start.elapsed().as_nanos() as u64);
-                        Ok(Some(decoded))
+                        Ok(Some(FetchedPersistedData {
+                            bytes: store_value_bytes,
+                            kind,
+                            payload: PERSISTED_DATA_HEADER_LEN..payload_end,
+                        }))
                     }
                     None => Ok(None),
                 }
@@ -113,8 +132,9 @@ where
 
     fn get_data_proj(&self, key: &Blake2b256Hash) -> Result<Vec<Datum<A>>, HistoryError> {
         match self.fetch_data(PREFIX_DATUM, key)? {
-            Some(PersistedData::Data(data_leaf)) => decode_datums(&data_leaf.bytes)
-                .map_err(|e| HistoryError::DecodeError(e.to_string())),
+            Some(data) if data.kind == PersistedDataKind::Data => {
+                decode_datums(data.payload()).map_err(|e| HistoryError::DecodeError(e.to_string()))
+            }
             Some(p) => {
                 panic!(
                     "Found unexpected leaf while looking for data at key {:?}, data: {:?}",
@@ -127,8 +147,10 @@ where
 
     fn get_data_proj_binary(&self, key: &Blake2b256Hash) -> Result<Vec<Vec<u8>>, HistoryError> {
         match self.fetch_data(PREFIX_DATUM, key)? {
-            Some(PersistedData::Data(data_leaf)) => Ok(bincode::deserialize(&data_leaf.bytes)
-                .expect("RSpace History Reader Impl: Failed to deserialize")),
+            Some(data) if data.kind == PersistedDataKind::Data => {
+                Ok(bincode::deserialize(data.payload())
+                    .expect("RSpace History Reader Impl: Failed to deserialize"))
+            }
             Some(p) => {
                 panic!(
                     "Found unexpected leaf while looking for data at key {:?}, data: {:?}",
@@ -144,8 +166,8 @@ where
         key: &Blake2b256Hash,
     ) -> Result<Vec<WaitingContinuation<P, K>>, HistoryError> {
         match self.fetch_data(PREFIX_KONT, key)? {
-            Some(PersistedData::Continuations(continuation_leaf)) => {
-                decode_continuations(&continuation_leaf.bytes)
+            Some(data) if data.kind == PersistedDataKind::Continuations => {
+                decode_continuations(data.payload())
                     .map_err(|e| HistoryError::DecodeError(e.to_string()))
             }
             Some(p) => {
@@ -163,8 +185,8 @@ where
         key: &Blake2b256Hash,
     ) -> Result<Vec<Vec<u8>>, HistoryError> {
         match self.fetch_data(PREFIX_KONT, key)? {
-            Some(PersistedData::Continuations(continuation_leaf)) => {
-                Ok(bincode::deserialize(&continuation_leaf.bytes)
+            Some(data) if data.kind == PersistedDataKind::Continuations => {
+                Ok(bincode::deserialize(data.payload())
                     .expect("RSpace History Reader Impl: Failed to deserialize"))
             }
             Some(p) => {
@@ -179,8 +201,9 @@ where
 
     fn get_joins_proj(&self, key: &Blake2b256Hash) -> Result<Vec<Vec<C>>, HistoryError> {
         match self.fetch_data(PREFIX_JOINS, key)? {
-            Some(PersistedData::Joins(joins_leaf)) => decode_joins(&joins_leaf.bytes)
-                .map_err(|e| HistoryError::DecodeError(e.to_string())),
+            Some(data) if data.kind == PersistedDataKind::Joins => {
+                decode_joins(data.payload()).map_err(|e| HistoryError::DecodeError(e.to_string()))
+            }
             Some(p) => {
                 panic!(
                     "Found unexpected leaf while looking for joins at key {:?}, data: {:?}",
@@ -193,8 +216,10 @@ where
 
     fn get_joins_proj_binary(&self, key: &Blake2b256Hash) -> Result<Vec<Vec<u8>>, HistoryError> {
         match self.fetch_data(PREFIX_JOINS, key)? {
-            Some(PersistedData::Joins(joins_leaf)) => Ok(bincode::deserialize(&joins_leaf.bytes)
-                .expect("RSpace History Reader Impl: Failed to deserialize")),
+            Some(data) if data.kind == PersistedDataKind::Joins => {
+                Ok(bincode::deserialize(data.payload())
+                    .expect("RSpace History Reader Impl: Failed to deserialize"))
+            }
             Some(p) => {
                 panic!(
                     "Found unexpected leaf while looking for joins at key {:?}, data: {:?}",

@@ -10,6 +10,7 @@ use rand::prelude::SliceRandom;
 use rand::thread_rng;
 use rspace_plus_plus::rspace::candidate_order::deterministic_candidate_hash;
 use rspace_plus_plus::rspace::hashing::stable_hash_provider::hash;
+use rspace_plus_plus::rspace::history::cold_store::{DataLeaf, PersistedData};
 use rspace_plus_plus::rspace::history::history_reader::HistoryReaderBase;
 use rspace_plus_plus::rspace::hot_store::{HotStore, HotStoreInstances, HotStoreState};
 use rspace_plus_plus::rspace::hot_store_action::{
@@ -852,7 +853,11 @@ fn checkpoint_changes_reuse_sorted_canonical_identities_and_preserve_multiplicit
         .expect("non-empty loaded channel must produce canonical DATA bytes");
     assert_eq!(canonical.hash, hash(&channel));
     assert_eq!(canonical.datum_count, data.len() as u64);
-    assert_eq!(canonical.encoded_datums, expected);
+    assert_eq!(canonical.encoded_datums(), expected);
+    assert_eq!(
+        canonical.encoded_persisted_data,
+        bincode::serialize(&PersistedData::Data(DataLeaf { bytes: expected })).unwrap()
+    );
 
     assert!(actions.contains(&HotStoreAction::Delete(DeleteAction::DeleteCanonicalData(
         DeleteCanonicalData {
@@ -900,7 +905,12 @@ proptest! {
             .expect("the generated bag is nonempty");
         prop_assert_eq!(canonical.hash.clone(), hash(&channel));
         prop_assert_eq!(canonical.datum_count, data.len() as u64);
-        prop_assert_eq!(&canonical.encoded_datums, &encode_datums(&data));
+        let expected = encode_datums(&data);
+        prop_assert_eq!(canonical.encoded_datums(), &expected);
+        prop_assert_eq!(
+            &canonical.encoded_persisted_data,
+            &bincode::serialize(&PersistedData::Data(DataLeaf { bytes: expected })).unwrap()
+        );
     }
 }
 

@@ -13,6 +13,7 @@ use serde::Serialize;
 
 use super::bag::{Bag, BagDelta, BagError, Multiplicity};
 use super::hashing::blake2b256_hash::Blake2b256Hash;
+use super::history::cold_store::{PERSISTED_DATA_HEADER_LEN, PersistedDataKind};
 use super::internal::{Datum, DatumAddress};
 use super::rho_path::{
     CompiledRhoPathQueryAtom, RhoPathEncode, RhoPathError, RhoPathQuery, RhoPathV1,
@@ -124,7 +125,7 @@ struct EncodedIndexedDatum {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct CanonicalDataRecord {
     pub channel_hash: Blake2b256Hash,
-    pub encoded_datums: Vec<u8>,
+    pub encoded_persisted_data: Vec<u8>,
     pub datum_count: u64,
 }
 
@@ -1066,7 +1067,7 @@ impl RSpaceDataIndex {
         Ok(entries)
     }
 
-    /// Encode the legacy cold-store `Vec<Vec<u8>>` body directly from the
+    /// Encode the final legacy `PersistedData::Data` value directly from the
     /// canonical datum identities resident in the PathMap.
     ///
     /// The RhoPath structural dimension is intentionally not the cold-store
@@ -1075,7 +1076,7 @@ impl RSpaceDataIndex {
     /// distinct endpoint, sorts those exact bytes, and expands multiplicity
     /// directly into the final bincode image. It never constructs `Datum<A>`
     /// values or a `Vec<Vec<u8>>` shadow.
-    fn encode_canonical_datums_at_prefix(
+    fn encode_canonical_persisted_data_at_prefix(
         &self,
         prefix: &[u8],
     ) -> Result<(Vec<u8>, u64), DataIndexError> {
@@ -1131,12 +1132,20 @@ impl RSpaceDataIndex {
 
         let datum_count_u64 = u64::try_from(datum_count)
             .map_err(|_| DataIndexError::EncodedCardinalityOverflow(datum_count))?;
-        let capacity = usize::try_from(encoded_len)
+        let payload_capacity = usize::try_from(encoded_len)
             .map_err(|_| DataIndexError::EncodedLengthOverflow(encoded_len))?;
+        let capacity = payload_capacity
+            .checked_add(PERSISTED_DATA_HEADER_LEN)
+            .ok_or(DataIndexError::EncodedLengthOverflow(u128::MAX))?;
         let mut output = Vec::new();
         output
             .try_reserve_exact(capacity)
             .map_err(|_| DataIndexError::AllocationFailure(capacity))?;
+        PersistedDataKind::Data.write_header(
+            u64::try_from(payload_capacity)
+                .map_err(|_| DataIndexError::EncodedLengthOverflow(encoded_len))?,
+            &mut output,
+        );
         output.extend_from_slice(&datum_count_u64.to_le_bytes());
         for descriptor in descriptors {
             let identity = descriptor.identity(&identities);
@@ -1472,11 +1481,12 @@ impl<C, A: Clone> RSpaceDataStore<C, A> {
         for (prefix, _) in self.loaded_channels.iter() {
             let view = RhoPathV1::parse_datum_prefix(&prefix)?;
             let channel_hash = Blake2b256Hash::new(&view.channel_identity());
-            let (encoded_datums, datum_count) =
-                self.index.encode_canonical_datums_at_prefix(&prefix)?;
+            let (encoded_persisted_data, datum_count) = self
+                .index
+                .encode_canonical_persisted_data_at_prefix(&prefix)?;
             records.push(CanonicalDataRecord {
                 channel_hash,
-                encoded_datums,
+                encoded_persisted_data,
                 datum_count,
             });
         }

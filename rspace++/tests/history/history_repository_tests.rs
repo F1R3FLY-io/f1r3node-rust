@@ -68,11 +68,11 @@ async fn canonical_data_action_is_root_equivalent_to_typed_data_action() {
         }),
     )]);
     let canonical = create_empty_repository().checkpoint(vec![HotStoreAction::Insert(
-        InsertAction::InsertCanonicalData(InsertCanonicalData {
-            hash: hash(&channel),
-            encoded_datums: encode_datums(&data),
-            datum_count: data.len() as u64,
-        }),
+        InsertAction::InsertCanonicalData(InsertCanonicalData::from_encoded_datums(
+            hash(&channel),
+            encode_datums(&data),
+            data.len() as u64,
+        )),
     )]);
 
     assert_eq!(canonical.root(), typed.root());

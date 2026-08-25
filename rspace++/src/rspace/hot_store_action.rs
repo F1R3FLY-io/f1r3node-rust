@@ -1,4 +1,7 @@
 use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+use crate::rspace::history::cold_store::{
+    DataLeaf, PersistedData, PersistedDataKind, PersistedDataView,
+};
 use crate::rspace::internal::{Datum, WaitingContinuation};
 
 // See rspace/src/main/scala/coop/rchain/rspace/HotStoreAction.scala
@@ -23,14 +26,49 @@ pub struct InsertData<C: Clone, A: Clone> {
     pub data: Vec<Datum<A>>,
 }
 
-/// A checkpoint-ready DATA leaf body derived from resident canonical datum
-/// identities. `encoded_datums` is exactly the legacy bincode encoding of the
-/// sorted `Vec<Vec<u8>>`; it is not an ACT image or an alternate wire format.
+/// A checkpoint-ready `PersistedData::Data` value derived directly from
+/// resident canonical datum identities. `encoded_persisted_data` includes the
+/// frozen enum and leaf framing; it is not an ACT image or alternate format.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InsertCanonicalData {
     pub hash: Blake2b256Hash,
-    pub encoded_datums: Vec<u8>,
+    pub encoded_persisted_data: Vec<u8>,
     pub datum_count: u64,
+}
+
+impl InsertCanonicalData {
+    /// Compatibility constructor for callers that already hold the frozen
+    /// `Vec<Vec<u8>>` leaf payload. PathMap-native checkpoint egress bypasses
+    /// this adapter and constructs `encoded_persisted_data` in one pass.
+    pub fn from_encoded_datums(
+        hash: Blake2b256Hash,
+        encoded_datums: Vec<u8>,
+        datum_count: u64,
+    ) -> Self {
+        Self {
+            hash,
+            encoded_persisted_data: PersistedData::Data(DataLeaf {
+                bytes: encoded_datums,
+            })
+            .into_legacy_bincode(),
+            datum_count,
+        }
+    }
+
+    pub fn encoded_datums(&self) -> &[u8] {
+        let view = PersistedDataView::parse(&self.encoded_persisted_data)
+            .expect("canonical DATA action must contain a valid persisted envelope");
+        assert_eq!(
+            view.kind(),
+            PersistedDataKind::Data,
+            "canonical DATA action must contain the DATA persisted variant"
+        );
+        assert!(
+            view.trailing().is_empty(),
+            "canonical DATA action must not contain trailing bytes"
+        );
+        view.payload()
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

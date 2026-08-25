@@ -8,6 +8,9 @@
 
 use super::*;
 use crate::rspace::hashing::stable_hash_provider::hash;
+use crate::rspace::history::cold_store::{
+    DataLeaf, PERSISTED_DATA_HEADER_LEN, PersistedData, PersistedDataKind, PersistedDataView,
+};
 use crate::rspace::serializers::serializers::encode_datums;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -30,13 +33,15 @@ impl CanonicalEgressArm {
 #[derive(Debug, PartialEq, Eq)]
 pub struct CanonicalEgressOutcome {
     pub channel_hash: Blake2b256Hash,
-    pub encoded_datums: Vec<u8>,
+    pub encoded_persisted_data: Vec<u8>,
     pub datum_count: u64,
 }
 
 impl CanonicalEgressOutcome {
     pub fn digest_hex(&self) -> String {
-        hex::encode(Blake2b256Hash::new(&self.encoded_datums).bytes())
+        let view = PersistedDataView::parse(&self.encoded_persisted_data)
+            .expect("egress outcome must contain a valid persisted envelope");
+        hex::encode(Blake2b256Hash::new(view.leaf_encoding()).bytes())
     }
 }
 
@@ -135,9 +140,13 @@ impl CanonicalEgressFixture {
             .expect("legacy typed checkpoint projection");
         assert_eq!(records.len(), 1, "benchmark fixture has one channel");
         let (channel, data) = records.pop().expect("one legacy record");
+        let encoded_persisted_data = PersistedData::Data(DataLeaf {
+            bytes: encode_datums(&data),
+        })
+        .into_legacy_bincode();
         CanonicalEgressOutcome {
             channel_hash: hash(&channel),
-            encoded_datums: encode_datums(&data),
+            encoded_persisted_data,
             datum_count: u64::try_from(data.len()).expect("benchmark cardinality fits u64"),
         }
     }
@@ -151,7 +160,7 @@ impl CanonicalEgressFixture {
         let record = records.pop().expect("one canonical record");
         CanonicalEgressOutcome {
             channel_hash: record.channel_hash,
-            encoded_datums: record.encoded_datums,
+            encoded_persisted_data: record.encoded_persisted_data,
             datum_count: record.datum_count,
         }
     }
@@ -439,27 +448,35 @@ fn encode_identity_order_bag(
             identity_order.bag.exact_cardinality(),
         ));
     }
-    let capacity = usize::try_from(identity_order.encoded_len)
+    let payload_capacity = usize::try_from(identity_order.encoded_len)
         .map_err(|_| DataIndexError::EncodedLengthOverflow(identity_order.encoded_len))?;
-    let mut encoded_datums = Vec::new();
-    encoded_datums
+    let capacity = payload_capacity
+        .checked_add(PERSISTED_DATA_HEADER_LEN)
+        .ok_or(DataIndexError::EncodedLengthOverflow(u128::MAX))?;
+    let mut encoded_persisted_data = Vec::new();
+    encoded_persisted_data
         .try_reserve_exact(capacity)
         .map_err(|_| DataIndexError::AllocationFailure(capacity))?;
-    encoded_datums.extend_from_slice(&datum_count.to_le_bytes());
+    PersistedDataKind::Data.write_header(
+        u64::try_from(payload_capacity)
+            .map_err(|_| DataIndexError::EncodedLengthOverflow(identity_order.encoded_len))?,
+        &mut encoded_persisted_data,
+    );
+    encoded_persisted_data.extend_from_slice(&datum_count.to_le_bytes());
     identity_order
         .bag
         .visit_relative_prefix(&[], |identity, multiplicity| {
             let identity_len = u64::try_from(identity.len())
                 .expect("preflighted identity length must fit bincode u64");
             for _ in 0..multiplicity.get() {
-                encoded_datums.extend_from_slice(&identity_len.to_le_bytes());
-                encoded_datums.extend_from_slice(identity);
+                encoded_persisted_data.extend_from_slice(&identity_len.to_le_bytes());
+                encoded_persisted_data.extend_from_slice(identity);
             }
         });
-    debug_assert_eq!(encoded_datums.len(), capacity);
+    debug_assert_eq!(encoded_persisted_data.len(), capacity);
     Ok(CanonicalEgressOutcome {
         channel_hash: hash(channel),
-        encoded_datums,
+        encoded_persisted_data,
         datum_count,
     })
 }
@@ -473,7 +490,13 @@ mod identity_order_tests {
         let channel = "empty-identity-order".to_string();
         let actual = encode_identity_order_bag(&channel, &IdentityOrderIndex::new()).unwrap();
         assert_eq!(actual.channel_hash, hash(&channel));
-        assert_eq!(actual.encoded_datums, encode_datums::<String>(&Vec::new()));
+        assert_eq!(
+            actual.encoded_persisted_data,
+            PersistedData::Data(DataLeaf {
+                bytes: encode_datums::<String>(&Vec::new()),
+            })
+            .into_legacy_bincode()
+        );
         assert_eq!(actual.datum_count, 0);
     }
 

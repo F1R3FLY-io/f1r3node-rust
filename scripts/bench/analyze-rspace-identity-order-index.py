@@ -24,7 +24,10 @@ import numpy as np
 from scipy import __version__ as scipy_version
 from scipy.stats import mannwhitneyu, shapiro, ttest_ind
 
-SCHEMA = "rspace-identity-order-index-v1"
+SCHEMAS = {
+    "rspace-identity-order-index-v1",
+    "rspace-identity-order-index-v2-final-persisted-value",
+}
 NO_DIGEST = "-"
 SEED = 0x4131_6028_2026_0825
 RETAINED_PAIRS = 82
@@ -84,10 +87,12 @@ def read_and_validate(
     path: Path,
 ) -> tuple[
     bytes,
+    str,
     dict[tuple[str, int, int, int, str], dict[str, Any]],
     dict[tuple[str, int, int, int, str, int], dict[str, dict[str, Any]]],
 ]:
     raw = path.read_bytes()
+    schema: str | None = None
     checks: dict[tuple[str, int, int, int, str], dict[str, Any]] = {}
     pairs: dict[tuple[str, int, int, int, str, int], dict[str, dict[str, Any]]] = (
         defaultdict(dict)
@@ -102,8 +107,14 @@ def read_and_validate(
             raise ValueError(
                 f"line {line_number}: expected {expected_width} fields, got {len(fields)}"
             )
-        if fields[1] != SCHEMA:
+        if fields[1] not in SCHEMAS:
             raise ValueError(f"line {line_number}: unexpected schema {fields[1]!r}")
+        if schema is None:
+            schema = fields[1]
+        elif fields[1] != schema:
+            raise ValueError(
+                f"line {line_number}: mixed schemas {schema!r} and {fields[1]!r}"
+            )
         shape = fields[2]
         distinct = parse_int(fields[3], "distinct")
         multiplicity = parse_int(fields[4], "multiplicity")
@@ -196,11 +207,14 @@ def read_and_validate(
                     )
     if len(checks) != 36 or len(pairs) != 36 * RETAINED_PAIRS:
         raise AssertionError("locked matrix cardinality changed")
-    return raw, checks, pairs
+    if schema is None:
+        raise ValueError("input contains no protocol rows")
+    return raw, schema, checks, pairs
 
 
 def read_retained_profiles(
     directory: Path,
+    schema: str,
 ) -> tuple[
     dict[tuple[str, int, int], dict[str, dict[str, int | str]]],
     list[dict[str, str]],
@@ -218,7 +232,7 @@ def read_retained_profiles(
         if len(lines) != 1:
             raise ValueError(f"{path}: expected exactly one RETAINED row")
         fields = lines[0].split("\t")
-        if len(fields) != 14 or fields[0] != "RETAINED" or fields[1] != SCHEMA:
+        if len(fields) != 14 or fields[0] != "RETAINED" or fields[1] != schema:
             raise ValueError(f"{path}: malformed retained-profile row")
         shape = fields[2]
         distinct = parse_int(fields[3], "retained distinct")
@@ -406,6 +420,7 @@ def analyze_cell(
 def analyze(
     path: Path,
     raw: bytes,
+    schema: str,
     checks: dict[tuple[str, int, int, int, str], dict[str, Any]],
     pairs: dict[tuple[str, int, int, int, str, int], dict[str, dict[str, Any]]],
     bootstrap_replicates: int,
@@ -522,7 +537,7 @@ def analyze(
     }
     return {
         "experiment_id": 314,
-        "schema": SCHEMA,
+        "schema": schema,
         "input": str(path),
         "input_sha256": hashlib.sha256(raw).hexdigest(),
         "protocol_valid": True,
@@ -628,15 +643,16 @@ def main() -> None:
     existing_outputs = [str(path) for path in output_paths if path.exists()]
     if existing_outputs:
         raise FileExistsError(f"analysis outputs already exist: {existing_outputs!r}")
-    raw, checks, pairs = read_and_validate(args.input)
+    raw, schema, checks, pairs = read_and_validate(args.input)
     retained, retained_artifacts = (
         (None, [])
         if args.retained_dir is None
-        else read_retained_profiles(args.retained_dir)
+        else read_retained_profiles(args.retained_dir, schema)
     )
     result = analyze(
         args.input,
         raw,
+        schema,
         checks,
         pairs,
         args.bootstrap_replicates,

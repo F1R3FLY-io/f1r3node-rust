@@ -19,7 +19,7 @@ use rspace_plus_plus::rspace::data_index::canonical_egress_experiment::{
     CanonicalEgressFixture, IdentityOrderArm, IdentityOrderFixture, PrefixShape,
 };
 
-const SCHEMA: &str = "rspace-identity-order-index-v1";
+const SCHEMA: &str = "rspace-identity-order-index-v2-final-persisted-value";
 const NO_DIGEST: &str = "-";
 const SEED: u64 = 0x4131_6028_2026_0825;
 const WARMUPS: usize = 5;
@@ -262,7 +262,7 @@ fn execute(fixture: &IdentityOrderFixture, operation: Operation, arm: IdentityOr
             let outcome = fixture.run_egress(arm);
             Outcome {
                 logical: outcome.datum_count,
-                output_len: outcome.encoded_datums.len(),
+                output_len: outcome.encoded_persisted_data.len(),
                 digest: outcome.digest_hex(),
             }
         }
@@ -283,7 +283,7 @@ fn execute(fixture: &IdentityOrderFixture, operation: Operation, arm: IdentityOr
             let outcome = fixture.run_rebuild_egress(arm);
             Outcome {
                 logical: outcome.datum_count,
-                output_len: outcome.encoded_datums.len(),
+                output_len: outcome.encoded_persisted_data.len(),
                 digest: outcome.digest_hex(),
             }
         }

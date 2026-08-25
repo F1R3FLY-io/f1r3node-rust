@@ -19,7 +19,7 @@ use rspace_plus_plus::rspace::data_index::canonical_egress_experiment::{
     CanonicalEgressArm, CanonicalEgressFixture, PrefixShape,
 };
 
-const SCHEMA: &str = "rspace-canonical-egress-v1";
+const SCHEMA: &str = "rspace-canonical-egress-v2-final-persisted-value";
 const SEED: u64 = 0x4131_6026_2026_0824;
 const WARMUPS: usize = 5;
 const RETAINED_PAIRS: usize = 31;
@@ -140,7 +140,7 @@ fn run_matrix() {
             fixture.distinct(),
             fixture.multiplicity(),
             fixture.logical_cardinality(),
-            authority.encoded_datums.len(),
+            authority.encoded_persisted_data.len(),
             authority.digest_hex(),
         );
 
@@ -165,7 +165,7 @@ fn run_matrix() {
             };
             for arm in arms {
                 let observation = measure(&fixture, pair, order, arm);
-                assert_eq!(observation.output_len, authority.encoded_datums.len());
+                assert_eq!(observation.output_len, authority.encoded_persisted_data.len());
                 assert_eq!(observation.digest, authority.digest_hex());
                 println!(
                     "OBS\t{SCHEMA}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
@@ -213,7 +213,7 @@ fn measure(
         elapsed_ns,
         allocations: ALLOC_CALLS.load(Ordering::Relaxed),
         allocation_bytes: ALLOC_BYTES.load(Ordering::Relaxed),
-        output_len: outcome.encoded_datums.len(),
+        output_len: outcome.encoded_persisted_data.len(),
         digest: outcome.digest_hex(),
     };
     black_box(outcome);

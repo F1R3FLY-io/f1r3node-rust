@@ -7,7 +7,7 @@ use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use shared::rust::ByteVector;
 
 use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
-use crate::rspace::history::cold_store::PersistedData;
+use crate::rspace::history::cold_store::PersistedDataView;
 use crate::rspace::shared::trie_exporter::KeyHash;
 use crate::rspace::shared::trie_importer::TrieImporter;
 use crate::rspace::state::rspace_exporter::RSpaceExporterInstance;
@@ -67,13 +67,8 @@ impl RSpaceImporterInstance {
             let pool = ThreadPoolBuilder::new().num_threads(64).build().unwrap();
             pool.install(|| {
                 data_items.par_iter().try_for_each(|(hash, value_bytes)| {
-                    let persisted_data: PersistedData = bincode::deserialize(value_bytes).unwrap();
-                    let bytes = match persisted_data {
-                        PersistedData::Joins(ref leaf) => bincode::serialize(leaf).unwrap(),
-                        PersistedData::Data(ref leaf) => bincode::serialize(leaf).unwrap(),
-                        PersistedData::Continuations(ref leaf) => bincode::serialize(leaf).unwrap(),
-                    };
-                    let data_hash = Blake2b256Hash::new(&bytes);
+                    let persisted_data = PersistedDataView::parse(value_bytes).unwrap();
+                    let data_hash = Blake2b256Hash::new(persisted_data.leaf_encoding());
                     if *hash != data_hash {
                         Err(format!(
                             "Data hash does not match decoded data, key: {}, decoded: {}.",

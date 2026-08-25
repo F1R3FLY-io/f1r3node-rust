@@ -6,7 +6,9 @@ use serde::Serialize;
 use shared::rust::store::key_value_store::KeyValueStore;
 use tracing::{Level, debug};
 
-use super::cold_store::{ContinuationsLeaf, DataLeaf, JoinsLeaf};
+use super::cold_store::{
+    ContinuationsLeaf, DataLeaf, JoinsLeaf, PersistedDataKind, PersistedDataView,
+};
 use super::history_action::{DeleteAction, HistoryAction, InsertAction};
 use super::history_reader::HistoryReader;
 use super::history_repository::{PREFIX_DATUM, PREFIX_JOINS, PREFIX_KONT};
@@ -46,7 +48,7 @@ pub struct HistoryRepositoryImpl<C, P, A, K> {
     pub _marker: PhantomData<(C, P, A, K)>,
 }
 
-type ColdAction = (Blake2b256Hash, Option<PersistedData>);
+type ColdAction = (Blake2b256Hash, Option<Vec<u8>>);
 const CHECKPOINT_PARALLEL_ACTIONS_THRESHOLD: usize = 256;
 
 /// Hash the frozen bincode-1 representation of a leaf whose sole field is a
@@ -113,12 +115,16 @@ where
                     let data = encode_datums(&i.data);
                     format!("{};insert-data;{};{}", hex::encode(key), data.len(), i.data.len())
                 }
-                HotStoreAction::Insert(InsertCanonicalData(i)) => format!(
-                    "{};insert-data;{};{}",
-                    hex::encode(i.hash.bytes()),
-                    i.encoded_datums.len(),
-                    i.datum_count
-                ),
+                HotStoreAction::Insert(InsertCanonicalData(i)) => {
+                    let view = PersistedDataView::parse(&i.encoded_persisted_data)
+                        .expect("canonical DATA egress must construct a valid persisted envelope");
+                    format!(
+                        "{};insert-data;{};{}",
+                        hex::encode(i.hash.bytes()),
+                        view.payload().len(),
+                        i.datum_count
+                    )
+                }
                 HotStoreAction::Insert(InsertContinuations(i)) => {
                     let key = hash_from_vec(&i.channels).bytes();
                     let data = encode_continuations(&i.continuations);
@@ -162,9 +168,10 @@ where
                 let data = encode_datums(&i.data);
                 let data_leaf = DataLeaf { bytes: data };
                 let data_hash = hash_single_byte_vec_leaf(&data_leaf.bytes);
+                let encoded = PersistedData::Data(data_leaf).into_legacy_bincode();
 
                 (
-                    (data_hash.clone(), Some(PersistedData::Data(data_leaf))),
+                    (data_hash.clone(), Some(encoded)),
                     HistoryAction::Insert(InsertAction {
                         key: prepend_bytes(PREFIX_DATUM, &i.hash.bytes()),
                         hash: data_hash,
@@ -174,13 +181,22 @@ where
             HotStoreTrieAction::TrieInsertAction(TrieInsertAction::TrieInsertCanonicalProduce(
                 i,
             )) => {
-                let data_leaf = DataLeaf {
-                    bytes: i.encoded_datums,
-                };
-                let data_hash = hash_single_byte_vec_leaf(&data_leaf.bytes);
+                let encoded = i.encoded_persisted_data;
+                let view = PersistedDataView::parse(&encoded)
+                    .expect("canonical DATA egress must construct a valid persisted envelope");
+                assert_eq!(
+                    view.kind(),
+                    PersistedDataKind::Data,
+                    "canonical DATA egress constructed the wrong persisted variant"
+                );
+                assert!(
+                    view.trailing().is_empty(),
+                    "canonical DATA egress constructed trailing bytes"
+                );
+                let data_hash = Blake2b256Hash::new(view.leaf_encoding());
 
                 (
-                    (data_hash.clone(), Some(PersistedData::Data(data_leaf))),
+                    (data_hash.clone(), Some(encoded)),
                     HistoryAction::Insert(InsertAction {
                         key: prepend_bytes(PREFIX_DATUM, &i.hash.bytes()),
                         hash: data_hash,
@@ -191,12 +207,11 @@ where
                 let data = encode_continuations(&i.continuations);
                 let continuations_leaf = ContinuationsLeaf { bytes: data };
                 let continuations_hash = hash_single_byte_vec_leaf(&continuations_leaf.bytes);
+                let encoded =
+                    PersistedData::Continuations(continuations_leaf).into_legacy_bincode();
 
                 (
-                    (
-                        continuations_hash.clone(),
-                        Some(PersistedData::Continuations(continuations_leaf)),
-                    ),
+                    (continuations_hash.clone(), Some(encoded)),
                     HistoryAction::Insert(InsertAction {
                         key: prepend_bytes(PREFIX_KONT, &i.hash.bytes()),
                         hash: continuations_hash,
@@ -207,9 +222,10 @@ where
                 let data = encode_joins(&i.joins);
                 let joins_leaf = JoinsLeaf { bytes: data };
                 let joins_hash = hash_single_byte_vec_leaf(&joins_leaf.bytes);
+                let encoded = PersistedData::Joins(joins_leaf).into_legacy_bincode();
 
                 (
-                    (joins_hash.clone(), Some(PersistedData::Joins(joins_leaf))),
+                    (joins_hash.clone(), Some(encoded)),
                     HistoryAction::Insert(InsertAction {
                         key: prepend_bytes(PREFIX_JOINS, &i.hash.bytes()),
                         hash: joins_hash,
@@ -225,9 +241,10 @@ where
                     bincode::serialize(&sorted_data).expect("Failed to serialize Vec<Vec<u8>>");
                 let data_leaf = DataLeaf { bytes: data };
                 let data_hash = hash_single_byte_vec_leaf(&data_leaf.bytes);
+                let encoded = PersistedData::Data(data_leaf).into_legacy_bincode();
 
                 (
-                    (data_hash.clone(), Some(PersistedData::Data(data_leaf))),
+                    (data_hash.clone(), Some(encoded)),
                     HistoryAction::Insert(InsertAction {
                         key: prepend_bytes(PREFIX_DATUM, &i.hash.bytes()),
                         hash: data_hash,
@@ -243,12 +260,11 @@ where
                     .expect("Failed to serialize Vec<Vec<u8>>");
                 let continuations_leaf = ContinuationsLeaf { bytes: data };
                 let continuations_hash = hash_single_byte_vec_leaf(&continuations_leaf.bytes);
+                let encoded =
+                    PersistedData::Continuations(continuations_leaf).into_legacy_bincode();
 
                 (
-                    (
-                        continuations_hash.clone(),
-                        Some(PersistedData::Continuations(continuations_leaf)),
-                    ),
+                    (continuations_hash.clone(), Some(encoded)),
                     HistoryAction::Insert(InsertAction {
                         key: prepend_bytes(PREFIX_KONT, &i.hash.bytes()),
                         hash: continuations_hash,
@@ -264,9 +280,10 @@ where
                     bincode::serialize(&sorted_joins).expect("Failed to serialize Vec<Vec<u8>>");
                 let joins_leaf = JoinsLeaf { bytes: data };
                 let joins_hash = hash_single_byte_vec_leaf(&joins_leaf.bytes);
+                let encoded = PersistedData::Joins(joins_leaf).into_legacy_bincode();
 
                 (
-                    (joins_hash.clone(), Some(PersistedData::Joins(joins_leaf))),
+                    (joins_hash.clone(), Some(encoded)),
                     HistoryAction::Insert(InsertAction {
                         key: prepend_bytes(PREFIX_JOINS, &i.hash.bytes()),
                         hash: joins_hash,
@@ -308,7 +325,7 @@ where
             HotStoreAction::Insert(InsertCanonicalData(i)) => HotStoreTrieAction::TrieInsertAction(
                 TrieInsertAction::TrieInsertCanonicalProduce(TrieInsertCanonicalProduce {
                     hash: i.hash,
-                    encoded_datums: i.encoded_datums,
+                    encoded_persisted_data: i.encoded_persisted_data,
                     datum_count: i.datum_count,
                 }),
             ),
@@ -402,7 +419,7 @@ where
                     .collect()
             };
 
-        let mut cold_actions: Vec<(Blake2b256Hash, PersistedData)> = Vec::new();
+        let mut cold_actions: Vec<(Blake2b256Hash, Vec<u8>)> = Vec::new();
         let mut history_actions: Vec<HistoryAction> = Vec::with_capacity(storage_actions.len());
         for ((key, maybe_data), history) in storage_actions {
             if let Some(data) = maybe_data {
@@ -424,12 +441,10 @@ where
         {
             let serialized_cold_actions = cold_actions
                 .into_iter()
-                .map(|(key, value)| {
+                .map(|(key, encoded_value)| {
                     let serialized_key = bincode::serialize(&key)
                         .expect("History Respository Impl: Failed to serialize");
-                    let serialized_value = bincode::serialize(&value)
-                        .expect("History Respository Impl: Failed to serialize");
-                    (serialized_key, serialized_value)
+                    (serialized_key, encoded_value)
                 })
                 .collect();
 

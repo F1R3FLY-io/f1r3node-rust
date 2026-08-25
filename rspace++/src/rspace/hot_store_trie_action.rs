@@ -34,7 +34,7 @@ impl<A: Clone> TrieInsertProduce<A> {
 #[derive(Debug, Clone)]
 pub struct TrieInsertCanonicalProduce {
     pub hash: Blake2b256Hash,
-    pub encoded_datums: Vec<u8>,
+    pub encoded_persisted_data: Vec<u8>,
     pub datum_count: u64,
 }
 

@@ -1088,7 +1088,7 @@ where
                 } else {
                     HotStoreAction::Insert(InsertAction::InsertCanonicalData(InsertCanonicalData {
                         hash: record.channel_hash,
-                        encoded_datums: record.encoded_datums,
+                        encoded_persisted_data: record.encoded_persisted_data,
                         datum_count: record.datum_count,
                     }))
                 }
