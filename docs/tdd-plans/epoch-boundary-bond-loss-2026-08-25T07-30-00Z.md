@@ -40,9 +40,17 @@ behaviors:
     statement: "The bonds map of a merge block at an epoch boundary contains every validator whose bonding deploy is finalized below the merge"
     priority: must
     deep_module: false
-    done: false
-    notes:
-      - "End-shape test at the block/bonds level, mirroring the SI assertion 'V4 unexpectedly dropped from bonds'. Uses test_node helpers; epoch_length small so the merge lands on a boundary."
+    done: true
+    cycle_log:
+      - test: "batch1::multi_parent_casper_bonding_spec::a_finalized_bond_survives_an_epoch_boundary_merge"
+        red: "DEVIATION: never went RED. The test also passes against the pre-B1 tree (verified by a working-tree control run), so the deterministic epoch-boundary shape does not route finalized content into losing adjudication — consistent with the SI campaign's 19 deterministic variants all passing while the heartbeat-race variant fails ~33%. Recorded as a characterization guard for the end shape. Flagged for user review."
+        green: "no implementation change"
+        files:
+          - casper/tests/batch1/multi_parent_casper_bonding_spec.rs   # test only
+        suite: "target test passes in 123s; pre-B1 control run also passes"
+        discovered:
+          - "PoS epoch_length is overridable per test via GenesisParameters (parameters.2.proof_of_stake.epoch_length) — no harness change needed. The default huge epoch exists to dodge close-block epoch-change merge conflicts (genesis_builder comment); this test walks three boundary merges with epoch_length 4 and the pipeline handles them cleanly."
+          - "The production #341 failure therefore needs an ingredient beyond boundary merges: the heartbeat propose race and/or LFS-restore history gaps. The preflight (heartbeat 3s cadence) remains the arbiter for the fix's effectiveness; B1's merge-level protection is the mechanism-level guard."
   - id: B3
     statement: "No JustificationRegression verdict is recorded for a lineage whose only difference is carrying the finalized bond effect"
     priority: should
