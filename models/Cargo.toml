@@ -34,6 +34,10 @@ phase7-depth-histograms = []
 # callers use the memoized encoder; experiments enable this feature explicitly
 # so control and treatment share one transcript implementation.
 rmp2-digest-experiment = []
+# Measurement-only access to direct, memoized, and cache-hit-or-direct ParBag
+# protobuf egress policies. Ordinary builds expose only the selected production
+# policy and carry no experiment branches or public controls.
+protobuf-projection-experiment = []
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ["cfg(kani)"] }
@@ -324,6 +328,14 @@ name = "rmp2_par_bag_digest_cache"
 path = "benches/rmp2_par_bag_digest_cache.rs"
 harness = false
 required-features = ["rmp2-digest-experiment"]
+
+# Preregistered cold/warm protobuf projection policy experiment. Each arm uses
+# the same RPB3 zipper encoder; only projection retention differs.
+[[bench]]
+name = "parbag_protobuf_projection"
+path = "benches/parbag_protobuf_projection.rs"
+harness = false
+required-features = ["protobuf-projection-experiment"]
 
 # The heap-profile subject. One arm per run (`MASSIF_ARM`), so `massif`'s
 # snapshots describe ONE mechanism instead of superimposing three.

@@ -5194,18 +5194,60 @@ impl ParBag {
         Ok(())
     }
 
-    /// Stream protobuf fields from trie endpoints directly into a caller's
-    /// output buffer in canonical tag/key order.
+    /// Emit protobuf fields in canonical tag/key order.
     ///
-    /// The canonical protobuf body is copied directly `Multiplicity` times;
-    /// no component decode, repeated-field `Vec`, legacy `Par`, intermediate
-    /// byte buffer, or element sort is involved.
+    /// Singleton construction seeds these projections from the canonical RPB3
+    /// key already in hand. Other Bags memoize the two component projections
+    /// on first use so CoW clones and repeated encoders can reuse them. The
+    /// projection builder copies canonical protobuf bodies directly from trie
+    /// endpoints; it never decodes a component, constructs a repeated-field
+    /// `Vec`, reconstructs a legacy `Par`, or sorts elements.
     pub fn encode_protobuf_components(
         &self,
         output: &mut impl BufMut,
     ) -> Result<(), ParBagProtobufError> {
+        // Prove the complete expansion representable before publishing a
+        // prefix to an externally supplied sink.
+        let _ = self.protobuf_components_encoded_len()?;
         self.encode_protobuf_components_before_root_metadata(output)?;
         self.encode_protobuf_components_after_root_metadata(output)?;
+        Ok(())
+    }
+
+    /// Cold one-shot control for the protobuf projection experiment.
+    ///
+    /// This traverses the authoritative PathMap and writes the final fields to
+    /// the caller's sink without allocating or retaining a component
+    /// projection. It shares [`Self::encode_protobuf_family`] with the cached
+    /// route so the experiment compares policies, not two encoders.
+    #[cfg(any(test, feature = "protobuf-projection-experiment"))]
+    fn encode_protobuf_components_direct(
+        &self,
+        output: &mut impl BufMut,
+    ) -> Result<(), ParBagProtobufError> {
+        let _ = self.protobuf_components_encoded_len()?;
+        self.encode_protobuf_components_before_root_metadata_direct(output)?;
+        self.encode_protobuf_components_after_root_metadata_direct(output)?;
+        Ok(())
+    }
+
+    /// Candidate policy: reuse an already-present CoW projection, but do not
+    /// retain a second complete byte image merely because a cold Bag is
+    /// serialized once.
+    #[cfg(any(test, feature = "protobuf-projection-experiment"))]
+    fn encode_protobuf_components_existing_cache_or_direct(
+        &self,
+        output: &mut impl BufMut,
+    ) -> Result<(), ParBagProtobufError> {
+        let _ = self.protobuf_components_encoded_len()?;
+        match self.aux.protobuf_before_root.get() {
+            Some(bytes) => output.put_slice(bytes),
+            None => self.encode_protobuf_components_before_root_metadata_direct(output)?,
+        }
+        match self.aux.protobuf_after_root.get() {
+            Some(bytes) => output.put_slice(bytes),
+            None => self.encode_protobuf_components_after_root_metadata_direct(output)?,
+        }
         Ok(())
     }
 
@@ -5223,6 +5265,67 @@ impl ParBag {
     ) -> Result<(), ParBagProtobufError> {
         output.put_slice(self.protobuf_after_root_snapshot());
         Ok(())
+    }
+
+    #[cfg(any(test, feature = "protobuf-projection-experiment"))]
+    fn encode_protobuf_components_before_root_metadata_direct(
+        &self,
+        output: &mut impl BufMut,
+    ) -> Result<(), ParBagProtobufError> {
+        self.encode_protobuf_family::<Send>(output)?;
+        self.encode_protobuf_family::<Receive>(output)?;
+        self.encode_protobuf_family::<New>(output)?;
+        self.encode_protobuf_family::<Expr>(output)?;
+        self.encode_protobuf_family::<Match>(output)?;
+        self.encode_protobuf_family::<GUnforgeable>(output)?;
+        self.encode_protobuf_family::<Connective>(output)?;
+        Ok(())
+    }
+
+    #[cfg(any(test, feature = "protobuf-projection-experiment"))]
+    fn encode_protobuf_components_after_root_metadata_direct(
+        &self,
+        output: &mut impl BufMut,
+    ) -> Result<(), ParBagProtobufError> {
+        self.encode_protobuf_family::<Bundle>(output)?;
+        self.encode_protobuf_family::<If>(output)?;
+        Ok(())
+    }
+
+    /// Measurement-only direct policy. This API is absent from normal builds.
+    #[cfg(feature = "protobuf-projection-experiment")]
+    pub fn encode_protobuf_components_direct_experiment(
+        &self,
+        output: &mut impl BufMut,
+    ) -> Result<(), ParBagProtobufError> {
+        self.encode_protobuf_components_direct(output)
+    }
+
+    /// Measurement-only access to the current memoizing production policy.
+    #[cfg(feature = "protobuf-projection-experiment")]
+    pub fn encode_protobuf_components_cached_experiment(
+        &self,
+        output: &mut impl BufMut,
+    ) -> Result<(), ParBagProtobufError> {
+        self.encode_protobuf_components(output)
+    }
+
+    /// Measurement-only access to the cache-hit-or-direct candidate policy.
+    #[cfg(feature = "protobuf-projection-experiment")]
+    pub fn encode_protobuf_components_adaptive_experiment(
+        &self,
+        output: &mut impl BufMut,
+    ) -> Result<(), ParBagProtobufError> {
+        self.encode_protobuf_components_existing_cache_or_direct(output)
+    }
+
+    /// Whether the before/after-root projections have been initialized.
+    #[cfg(feature = "protobuf-projection-experiment")]
+    pub fn protobuf_projection_cache_state_experiment(&self) -> (bool, bool) {
+        (
+            self.aux.protobuf_before_root.get().is_some(),
+            self.aux.protobuf_after_root.get().is_some(),
+        )
     }
 
     fn protobuf_before_root_snapshot(&self) -> &[u8] {
@@ -5553,6 +5656,45 @@ mod fast_key_tests {
             measured <= 672,
             "ParBagAux measured {measured} bytes, exceeding the reviewed per-CoW-root cache budget"
         );
+    }
+
+    #[test]
+    fn direct_cached_and_existing_cache_protobuf_policies_are_byte_identical() {
+        let mut source = ParBag::new();
+        for value in canonical_family_keys().into_iter().map(|(_, key)| key) {
+            let (tag, _, stable) = validate_key(&value).expect("canonical fixture key");
+            source
+                .insert_bytes(tag, &value, Multiplicity::ONE, Some(stable))
+                .expect("fixture multiplicity fits");
+        }
+        let bag = ParBag::try_from_bag(source.as_bag().clone()).expect("fresh cache root");
+        assert!(bag.aux.protobuf_before_root.get().is_none());
+        assert!(bag.aux.protobuf_after_root.get().is_none());
+
+        let mut direct = Vec::new();
+        bag.encode_protobuf_components_direct(&mut direct)
+            .expect("direct projection");
+        assert!(bag.aux.protobuf_before_root.get().is_none());
+        assert!(bag.aux.protobuf_after_root.get().is_none());
+
+        let mut cold_adaptive = Vec::new();
+        bag.encode_protobuf_components_existing_cache_or_direct(&mut cold_adaptive)
+            .expect("cold adaptive projection");
+        assert_eq!(cold_adaptive, direct);
+        assert!(bag.aux.protobuf_before_root.get().is_none());
+        assert!(bag.aux.protobuf_after_root.get().is_none());
+
+        let mut cached = Vec::new();
+        bag.encode_protobuf_components(&mut cached)
+            .expect("cached projection");
+        assert_eq!(cached, direct);
+        assert!(bag.aux.protobuf_before_root.get().is_some());
+        assert!(bag.aux.protobuf_after_root.get().is_some());
+
+        let mut warm_adaptive = Vec::new();
+        bag.encode_protobuf_components_existing_cache_or_direct(&mut warm_adaptive)
+            .expect("warm adaptive projection");
+        assert_eq!(warm_adaptive, direct);
     }
 
     #[test]

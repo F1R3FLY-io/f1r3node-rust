@@ -608,6 +608,10 @@ impl Par {
     }
 
     pub fn encode_protobuf(&self, output: &mut impl BufMut) -> Result<(), ParProtobufError> {
+        // Validate the complete expanded length before publishing any prefix
+        // to the caller. This keeps impossible Bag multiplicities atomic even
+        // when callers invoke `encode_raw` without first asking `encoded_len`.
+        let _ = self.protobuf_encoded_len()?;
         self.components
             .encode_protobuf_components_before_root_metadata(output)?;
         if !self.locally_free.is_empty() {

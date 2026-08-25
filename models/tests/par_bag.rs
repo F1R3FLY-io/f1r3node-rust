@@ -1208,6 +1208,26 @@ fn protobuf_expansion_rejects_impossible_output_length_before_allocating() {
             ..
         })
     ));
+
+    let mut component_output = vec![0xa5, 0x5a];
+    assert!(matches!(
+        bag.encode_protobuf_components(&mut component_output),
+        Err(ParBagProtobufError::EncodedLengthOverflow { .. })
+    ));
+    assert_eq!(
+        component_output,
+        [0xa5, 0x5a],
+        "an impossible multiplicity must fail before publishing a prefix"
+    );
+
+    let par = Par::from_parts(bag, Vec::new(), false);
+    let mut par_output = vec![0xc3];
+    assert!(par.encode_protobuf(&mut par_output).is_err());
+    assert_eq!(
+        par_output,
+        [0xc3],
+        "Par must preflight the complete expansion before root fields are emitted"
+    );
 }
 
 #[test]
