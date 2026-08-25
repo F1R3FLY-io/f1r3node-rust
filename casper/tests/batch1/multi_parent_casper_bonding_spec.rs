@@ -113,3 +113,114 @@ async fn multi_parent_casper_should_allow_bonding() {
         "n4 must be BONDED after its bond block finalizes"
     );
 }
+
+/// B2 of the #341 TDD plan: a finalized bond survives epoch-boundary
+/// merges.
+///
+/// The default test genesis sets a huge PoS epoch length precisely to
+/// avoid the epoch change in the PoS close-block method, "which causes
+/// block merge conflicts" (util/genesis_builder.rs). That avoidance is the
+/// #341 blind spot: in production every epoch boundary runs that code, and
+/// the preflight loses a freshly-bonded validator's bond around one. This
+/// test walks straight into it: a small epoch length, a bond that
+/// finalizes before the boundary, and sibling blocks at each boundary so a
+/// multi-parent merge must adjudicate two close-block epoch changes.
+#[tokio::test]
+async fn a_finalized_bond_survives_an_epoch_boundary_merge() {
+    let validator_key_pairs = vec![
+        DEFAULT_VALIDATOR_KEY_PAIRS[0].clone(),
+        DEFAULT_VALIDATOR_KEY_PAIRS[1].clone(),
+        DEFAULT_VALIDATOR_KEY_PAIRS[2].clone(),
+        (DEFAULT_SEC.clone(), DEFAULT_PUB.clone()),
+    ];
+    let validator_pks: Vec<PublicKey> = validator_key_pairs
+        .iter()
+        .map(|(_, pk)| pk.clone())
+        .collect();
+    let bonds: HashMap<PublicKey, i64> = validator_pks
+        .iter()
+        .take(3)
+        .enumerate()
+        .map(|(i, pk)| (pk.clone(), 2 * i as i64 + 1))
+        .collect();
+
+    let mut parameters = GenesisBuilder::build_genesis_parameters(validator_key_pairs, &bonds);
+    // Small epoch: boundaries at block numbers 4, 8, 12 — inside the walk
+    // below, not beyond it.
+    parameters.2.proof_of_stake.epoch_length = 4;
+    let genesis = GenesisBuilder::new()
+        .build_genesis_with_parameters(Some(parameters))
+        .await
+        .expect("Failed to build genesis");
+
+    let mut nodes = TestNode::create_network(genesis.clone(), 4, None, None, None, None)
+        .await
+        .expect("create 4-node network");
+    let shard_id = genesis.genesis_block.shard_id.clone();
+
+    // n4 bonds in block #1.
+    let bond_deploy = bonding_util::bonding_deploy(1000, &DEFAULT_SEC, Some(shard_id.clone()))
+        .expect("bond deploy");
+    let _b1 = TestNode::propagate_block_at_index(&mut nodes, 0, &[bond_deploy])
+        .await
+        .expect("propagate the bond block");
+
+    // Finalize the bond with filler rounds (blocks #2..#5, crossing the
+    // first boundary at #4).
+    for round in 0..4 {
+        let d = construct_deploy::basic_deploy_data(round, None, Some(shard_id.clone()))
+            .expect("filler deploy");
+        let _ = TestNode::propagate_block_at_index(&mut nodes, (round as usize + 1) % 3, &[d])
+            .await
+            .expect("propagate a filler block");
+    }
+    assert!(
+        bonded_status(&DEFAULT_PUB, &nodes[0]).await,
+        "n4 must be BONDED once its bond block finalizes"
+    );
+
+    // Three rounds of {two sibling blocks, sync, merge block}: each round
+    // advances the height by two, so the walk covers the #8 and #12
+    // boundaries with multi-parent merges of sibling close-block state.
+    for round in 0..3i32 {
+        let d1 = construct_deploy::basic_deploy_data(100 + round * 3, None, Some(shard_id.clone()))
+            .expect("sibling deploy 1");
+        let d2 = construct_deploy::basic_deploy_data(101 + round * 3, None, Some(shard_id.clone()))
+            .expect("sibling deploy 2");
+        let d3 = construct_deploy::basic_deploy_data(102 + round * 3, None, Some(shard_id.clone()))
+            .expect("merge deploy");
+        // Siblings: node 0 and node 1 each build on their own view.
+        let _s1 = nodes[0]
+            .add_block_from_deploys(&[d1])
+            .await
+            .expect("sibling block 1");
+        let _s2 = nodes[1]
+            .add_block_from_deploys(&[d2])
+            .await
+            .expect("sibling block 2");
+        {
+            let mut refs: Vec<&mut TestNode> = nodes.iter_mut().collect();
+            TestNode::propagate(&mut refs)
+                .await
+                .expect("propagate siblings");
+        }
+        // Node 2 merges both siblings.
+        let _m = TestNode::propagate_block_at_index(&mut nodes, 2, &[d3])
+            .await
+            .expect("propagate the merge block");
+    }
+
+    // Finalize the boundary merges.
+    for round in 0..4i32 {
+        let d = construct_deploy::basic_deploy_data(200 + round, None, Some(shard_id.clone()))
+            .expect("tail filler deploy");
+        let _ = TestNode::propagate_block_at_index(&mut nodes, (round as usize + 1) % 3, &[d])
+            .await
+            .expect("propagate a tail filler block");
+    }
+
+    assert!(
+        bonded_status(&DEFAULT_PUB, &nodes[0]).await,
+        "n4's finalized bond must survive epoch-boundary merges (issue #341)"
+    );
+}
