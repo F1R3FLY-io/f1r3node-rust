@@ -3,19 +3,32 @@
 // natives (streaming-backing slice, 2026-08-25).
 //
 // A per-runtime `Arc<RwLock<HashMap<u64, Arc<DirHandle>>>>` mapping
-// opaque u64 stream fds to open `tokio::fs::ReadDir` iterators.  Fds
-// are monotonic and derived from a state-hash-seeded watermark — same
-// aliasing-prevention pattern as `FileHandleTable` (PB-M-13 / slice 28).
+// opaque u64 stream fds to `libc::DIR*` iterators.  Fds are monotonic
+// and derived from a state-hash-seeded watermark — same aliasing-
+// prevention pattern as `FileHandleTable` (PB-M-13 / slice 28).
 //
 // Why `Arc<DirHandle>` instead of storing `DirHandle` directly (as
-// `FileHandleTable` does with `FileHandle`): `tokio::fs::ReadDir::
-// next_entry` is an async syscall that returns a future which must be
-// awaited.  Holding the outer table `RwLock` across that await would
-// serialize every unrelated dir-fd operation behind the slowest one.
-// Each `DirHandle` therefore wraps its `ReadDir` in a per-handle
-// `tokio::sync::Mutex` so a `next_entry` call locks only its own
-// iterator, and callers acquire the handle via a cheap `Arc` clone
-// under a brief read lock on the table.
+// `FileHandleTable` does with `FileHandle`): every `readdir` runs in
+// `spawn_blocking`, so the caller `.await`s the result while the
+// per-handle iter mutex is held.  Wrapping each handle in an `Arc`
+// lets the handler acquire a cheap clone under a brief read lock on
+// the outer table, then acquire the handle's own mutex outside the
+// table lock — different-fd traffic proceeds in parallel while same-
+// fd calls serialize (which is required — POSIX `readdir` on the
+// same `DIR*` from multiple threads is undefined).
+//
+// Why raw `libc::DIR*` and not `tokio::fs::ReadDir`: `tokio::fs::
+// read_dir(path)` internally calls `std::fs::read_dir(path)` which
+// calls `opendir(3)` on the joined path — a symlink-following open.
+// The pre-existing bulk `fs_entries` handler explicitly uses `openat`
+// + `O_NOFOLLOW` off a `safe_descend`-resolved dirfd for TOCTOU-
+// immunity against symlink-swap attacks (see `handlers.rs::
+// fs_entries`).  Streaming is meant to supersede bulk for large
+// directories, so its safety story must match.  We open the dir via
+// the same `safe_descend_verified` + `openat` path used by
+// `fs_entries`, then wrap the fd in `fdopendir` for iteration.  The
+// per-handle Mutex serializes `readdir` calls; each call runs inside
+// `spawn_blocking`.
 //
 // The plan calls for `MAX_OPEN_FDS = 1024` to be shared between file
 // and dir handles.  This module reuses the same constant but tracks
@@ -29,11 +42,74 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-use tokio::fs::ReadDir;
 use tokio::sync::{Mutex, RwLock};
 
 use super::lock::DeployScope;
 use super::ConsensusMode;
+
+/// Owned `libc::DIR*` iterator over a directory.
+///
+/// Constructed via `DirIter::from_dir_fd(fd)` (which calls `fdopendir`
+/// and takes ownership of the fd; on failure the fd is closed before
+/// the error is returned so callers do not double-close).  Drop calls
+/// `closedir` which also closes the underlying kernel dirp fd.
+///
+/// The `*mut libc::DIR` pointer is not `Send` by default; the
+/// `unsafe impl` below asserts serial single-thread access, which the
+/// enclosing `Mutex<Option<DirIter>>` in `DirHandle` enforces.  POSIX
+/// guarantees `readdir(3)` is thread-safe *across distinct* `DIR*`
+/// streams but leaves same-stream concurrent access undefined; the
+/// Mutex is the load-bearing invariant.
+///
+/// `readdir` also stashes state inside libc; passing the pointer
+/// across a `spawn_blocking` boundary is safe as long as no other
+/// thread touches it in the meantime — the outer Mutex guarantees
+/// that.  The pointer round-trips via `usize` cast because raw
+/// pointers are not `Send`; the guard proves the address stays live
+/// for the closure's lifetime.
+pub struct DirIter {
+    dirp: *mut libc::DIR,
+}
+
+// SAFETY: the enclosing `Mutex<Option<DirIter>>` guarantees exclusive
+// access — POSIX allows serial single-thread `readdir` on a `DIR*`.
+unsafe impl Send for DirIter {}
+
+impl DirIter {
+    /// Wrap a directory fd in a `DIR*` iterator.  Takes ownership of
+    /// `dir_fd` — do NOT close it separately.  On `fdopendir` failure
+    /// the fd is closed before the error is returned.
+    pub fn from_dir_fd(dir_fd: libc::c_int) -> std::io::Result<Self> {
+        let dirp = unsafe { libc::fdopendir(dir_fd) };
+        if dirp.is_null() {
+            let e = std::io::Error::last_os_error();
+            unsafe { libc::close(dir_fd) };
+            return Err(e);
+        }
+        Ok(Self { dirp })
+    }
+
+    /// Raw pointer for callers driving `readdir` inside `spawn_blocking`.
+    /// The caller must hold the enclosing Mutex guard for the duration
+    /// of every use.
+    pub fn as_ptr(&self) -> *mut libc::DIR { self.dirp }
+}
+
+impl std::fmt::Debug for DirIter {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DirIter")
+            .field("dirp", &(self.dirp as usize))
+            .finish()
+    }
+}
+
+impl Drop for DirIter {
+    fn drop(&mut self) {
+        // closedir closes the underlying dirp fd as a side-effect,
+        // matching fdopendir's ownership contract.
+        unsafe { libc::closedir(self.dirp) };
+    }
+}
 
 /// Number of low bits reserved as per-lifetime fd-allocation headroom
 /// below the state-hash-derived watermark.  Mirrors the constant of
@@ -57,23 +133,24 @@ const _: () = assert!(
 /// One live directory-stream handle.
 #[derive(Debug)]
 pub struct DirHandle {
-    /// The underlying async iterator, or `None` for a shadow handle
-    /// inserted on the follower's `entriesStreamOpen` replay branch.
+    /// The underlying `libc::DIR*` iterator, or `None` for a shadow
+    /// handle inserted on the follower's `entriesStreamOpen` replay
+    /// branch.
     ///
-    /// The per-handle Mutex lets `next_entry().await` proceed while
-    /// holding only this handle's lock — not the outer table `RwLock`.
-    /// Concurrent callers of `entriesStreamNext(fd)` for the same fd
-    /// serialize on this mutex (which is the intended semantics — a
-    /// `ReadDir`'s iteration state is single-threaded); calls for
-    /// *different* fds proceed in parallel.
+    /// The per-handle Mutex lets a `spawn_blocking(readdir)` call
+    /// proceed while holding only this handle's lock — not the outer
+    /// table `RwLock`.  Concurrent callers of `entriesStreamNext(fd)`
+    /// for the same fd serialize on this mutex (which is required —
+    /// POSIX leaves same-`DIR*` concurrent `readdir` undefined);
+    /// calls for *different* fds proceed in parallel.
     ///
     /// The follower's replay branch never touches this field — the
     /// `is_replay = true` short-circuit returns the cached `previous`
-    /// reply before reaching `next_entry`.  A shadow handle carries
+    /// reply before reaching `readdir`.  A shadow handle carries
     /// enough metadata (`canon_path`, `cmode`, `deploy`) for the
     /// replay-branch handler to look up (cmode, canon_path) for
     /// symmetric WAL journaling.
-    pub iter: Mutex<Option<ReadDir>>,
+    pub iter: Mutex<Option<DirIter>>,
     /// Canonical host path of the directory the stream iterates.
     pub canon_path: PathBuf,
     /// Consensus vs. oracular mode captured at open time.  The
@@ -90,9 +167,9 @@ pub struct DirHandle {
 
 impl DirHandle {
     /// Construct a real (leader / oracular) handle wrapping an open
-    /// `ReadDir`.
+    /// `DIR*` iterator.
     pub fn new(
-        iter: ReadDir,
+        iter: DirIter,
         canon_path: PathBuf,
         cmode: ConsensusMode,
         deploy: DeployScope,
@@ -106,7 +183,7 @@ impl DirHandle {
     }
 
     /// Construct a shadow handle for the follower's replay branch.
-    /// No underlying `ReadDir` — the replay path never iterates.
+    /// No underlying `DIR*` — the replay path never iterates.
     pub fn shadow(canon_path: PathBuf, cmode: ConsensusMode, deploy: DeployScope) -> Self {
         Self {
             iter: Mutex::new(None),
@@ -296,8 +373,21 @@ mod tests {
         DirHandle::shadow(PathBuf::from("/root/dir"), cmode, deploy)
     }
 
-    async fn mk_real(path: &std::path::Path) -> DirHandle {
-        let iter = tokio::fs::read_dir(path).await.unwrap();
+    /// Open `path` via the same syscall pattern the streaming handler
+    /// uses (`open(O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC)` + `fdopendir`)
+    /// so tests exercise the real DIR* iteration path — not a
+    /// tokio-shortcut that would follow symlinks.
+    fn mk_real(path: &std::path::Path) -> DirHandle {
+        use std::os::unix::ffi::OsStrExt;
+        let cpath = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
+        let dir_fd = unsafe {
+            libc::open(
+                cpath.as_ptr(),
+                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            )
+        };
+        assert!(dir_fd >= 0, "open dir: {}", std::io::Error::last_os_error());
+        let iter = DirIter::from_dir_fd(dir_fd).unwrap();
         DirHandle::new(
             iter,
             path.to_path_buf(),
@@ -622,25 +712,23 @@ mod tests {
         let _ = table.close_all_for_deploy(&[0u8; 32]).await;
     }
 
-    /// A real handle's ReadDir can be advanced via `iter.lock().await`.
-    /// Exercises the actual streaming path (not just the metadata
-    /// slots) so a future refactor to the iter storage doesn't
-    /// silently break next_entry.
+    /// A real handle's DIR* iterator can be advanced via
+    /// `libc::readdir` under the per-handle Mutex.  Exercises the
+    /// actual streaming path (not just the metadata slots) so a
+    /// future refactor to the iter storage doesn't silently break
+    /// per-call iteration.  Passes the raw pointer via `usize` cast
+    /// to satisfy `Send` — the enclosing Mutex guard keeps it live.
     #[tokio::test]
     async fn real_handle_iter_can_be_advanced() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("a"), b"").unwrap();
         std::fs::write(dir.path().join("b"), b"").unwrap();
         let table = DirHandleTable::new();
-        let fd = table.insert(mk_real(dir.path()).await).await.unwrap();
+        let fd = table.insert(mk_real(dir.path())).await.unwrap();
         let dh = table.get(fd).await.unwrap();
-        let mut iter_lock = dh.iter.lock().await;
-        let iter = iter_lock.as_mut().expect("real handle has iter");
-        let mut names = Vec::new();
-        while let Some(entry) = iter.next_entry().await.unwrap() {
-            names.push(entry.file_name().to_string_lossy().into_owned());
-        }
-        names.sort();
+        let iter_lock = dh.iter.lock().await;
+        let iter = iter_lock.as_ref().expect("real handle has iter");
+        let names = read_all_names(iter);
         assert_eq!(names, vec!["a".to_string(), "b".to_string()]);
     }
 
@@ -653,28 +741,63 @@ mod tests {
         std::fs::write(dir.path().join("a"), b"").unwrap();
         std::fs::write(dir.path().join("b"), b"").unwrap();
         let table = DirHandleTable::new();
-        let fd1 = table.insert(mk_real(dir.path()).await).await.unwrap();
-        let fd2 = table.insert(mk_real(dir.path()).await).await.unwrap();
+        let fd1 = table.insert(mk_real(dir.path())).await.unwrap();
+        let fd2 = table.insert(mk_real(dir.path())).await.unwrap();
         assert_ne!(fd1, fd2);
         // Advance fd1 to completion.
         let dh1 = table.get(fd1).await.unwrap();
         {
-            let mut it = dh1.iter.lock().await;
-            let it = it.as_mut().unwrap();
-            let mut count = 0;
-            while it.next_entry().await.unwrap().is_some() {
-                count += 1;
-            }
-            assert_eq!(count, 2, "fd1 saw both entries");
+            let it = dh1.iter.lock().await;
+            let it = it.as_ref().unwrap();
+            let names = read_all_names(it);
+            assert_eq!(names.len(), 2, "fd1 saw both entries");
         }
         // fd2's iterator has not been advanced — must still see both.
         let dh2 = table.get(fd2).await.unwrap();
-        let mut it = dh2.iter.lock().await;
-        let it = it.as_mut().unwrap();
-        let mut count = 0;
-        while it.next_entry().await.unwrap().is_some() {
-            count += 1;
-        }
-        assert_eq!(count, 2, "fd2 iterator must be independent of fd1");
+        let it = dh2.iter.lock().await;
+        let it = it.as_ref().unwrap();
+        let names = read_all_names(it);
+        assert_eq!(names.len(), 2, "fd2 iterator must be independent of fd1");
     }
+
+    /// Drain `iter` via readdir, skipping "." and "..", returning
+    /// sorted names.  Serial single-thread access is sound because
+    /// the caller holds the enclosing Mutex guard.
+    fn read_all_names(iter: &DirIter) -> Vec<String> {
+        use std::os::unix::ffi::OsStringExt;
+        let dirp = iter.as_ptr();
+        let mut names: Vec<String> = Vec::new();
+        loop {
+            // POSIX readdir returns NULL on both EOF and error;
+            // distinguishing them requires clearing errno beforehand.
+            unsafe { errno_reset() };
+            let ent = unsafe { libc::readdir(dirp) };
+            if ent.is_null() {
+                let raw = std::io::Error::last_os_error().raw_os_error();
+                assert!(
+                    raw == Some(0) || raw.is_none(),
+                    "readdir returned NULL with errno {raw:?}"
+                );
+                break;
+            }
+            let name_ptr = unsafe { (*ent).d_name.as_ptr() };
+            let name_c = unsafe { std::ffi::CStr::from_ptr(name_ptr) };
+            let name_bytes = name_c.to_bytes();
+            if name_bytes == b"." || name_bytes == b".." {
+                continue;
+            }
+            let name = std::ffi::OsString::from_vec(name_bytes.to_vec())
+                .to_string_lossy()
+                .into_owned();
+            names.push(name);
+        }
+        names.sort();
+        names
+    }
+
+    #[cfg(target_os = "macos")]
+    unsafe fn errno_reset() { *libc::__error() = 0; }
+
+    #[cfg(target_os = "linux")]
+    unsafe fn errno_reset() { *libc::__errno_location() = 0; }
 }
