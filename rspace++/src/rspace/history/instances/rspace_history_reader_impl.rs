@@ -94,12 +94,15 @@ impl<C, P, A, K> RSpaceHistoryReaderImpl<C, P, A, K> {
                 match get_opt {
                     Some(store_value_bytes) => {
                         let __deser_start = std::time::Instant::now();
-                        let view = PersistedDataView::parse(&store_value_bytes).map_err(|e| {
-                            HistoryError::ActionError(format!(
-                                "RSpace History Reader Impl: Failed to validate persisted leaf: {}",
-                                e
-                            ))
-                        })?;
+                        let view = PersistedDataView::parse_canonical(&store_value_bytes).map_err(
+                            |e| {
+                                HistoryError::ActionError(format!(
+                                    "RSpace History Reader Impl: Failed to validate persisted \
+                                     leaf: {}",
+                                    e
+                                ))
+                            },
+                        )?;
                         let kind = view.kind();
                         let payload_end = PERSISTED_DATA_HEADER_LEN + view.payload().len();
                         metrics::counter!(HISTORY_FETCH_DATA_DESERIALIZE_NS_METRIC, "source" => RSPACE_METRICS_SOURCE)

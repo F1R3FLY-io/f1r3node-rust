@@ -127,6 +127,34 @@ if ! grep -q 'Invariant VisibleImageIsAtomic is violated' \
   echo "stack-safe-pda: canonical-egress mutant failed without the expected invariant witness" >&2
   exit 1
 fi
+if canonical_egress_header_mutant="$({
+  tlc_run "$tla_metadir" \
+    RSpaceCanonicalEgressHeaderMutant.cfg RSpaceCanonicalEgress.tla -cleanup
+} 2>&1)"; then
+  printf '%s\n' "$canonical_egress_header_mutant"
+  echo "stack-safe-pda: missing-envelope canonical-egress mutant unexpectedly passed" >&2
+  exit 1
+fi
+printf '%s\n' "$canonical_egress_header_mutant"
+if ! grep -q 'Invariant PrivateImageCompletesBeforePublish is violated' \
+    <<<"$canonical_egress_header_mutant"; then
+  echo "stack-safe-pda: canonical-egress header mutant failed without the expected invariant witness" >&2
+  exit 1
+fi
+if canonical_egress_validation_mutant="$({
+  tlc_run "$tla_metadir" \
+    RSpaceCanonicalEgressValidationMutant.cfg RSpaceCanonicalEgress.tla -cleanup
+} 2>&1)"; then
+  printf '%s\n' "$canonical_egress_validation_mutant"
+  echo "stack-safe-pda: skipped-validation canonical-egress mutant unexpectedly passed" >&2
+  exit 1
+fi
+printf '%s\n' "$canonical_egress_validation_mutant"
+if ! grep -q 'Invariant PreflightCompletesBeforeBuild is violated' \
+    <<<"$canonical_egress_validation_mutant"; then
+  echo "stack-safe-pda: canonical-egress validation mutant failed without the expected invariant witness" >&2
+  exit 1
+fi
 tlc_run "$tla_metadir" FreeMapJournal.cfg FreeMapJournal.tla -cleanup
 tlc_run "$tla_metadir" AccountingDemand.cfg AccountingDemand.tla -cleanup
 popd >/dev/null

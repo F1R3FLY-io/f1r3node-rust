@@ -56,16 +56,12 @@ impl InsertCanonicalData {
     }
 
     pub fn encoded_datums(&self) -> &[u8] {
-        let view = PersistedDataView::parse(&self.encoded_persisted_data)
+        let view = PersistedDataView::parse_canonical(&self.encoded_persisted_data)
             .expect("canonical DATA action must contain a valid persisted envelope");
         assert_eq!(
             view.kind(),
             PersistedDataKind::Data,
             "canonical DATA action must contain the DATA persisted variant"
-        );
-        assert!(
-            view.trailing().is_empty(),
-            "canonical DATA action must not contain trailing bytes"
         );
         view.payload()
     }

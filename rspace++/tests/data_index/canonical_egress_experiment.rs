@@ -39,7 +39,7 @@ pub struct CanonicalEgressOutcome {
 
 impl CanonicalEgressOutcome {
     pub fn digest_hex(&self) -> String {
-        let view = PersistedDataView::parse(&self.encoded_persisted_data)
+        let view = PersistedDataView::parse_canonical(&self.encoded_persisted_data)
             .expect("egress outcome must contain a valid persisted envelope");
         hex::encode(Blake2b256Hash::new(view.leaf_encoding()).bytes())
     }
@@ -485,6 +485,24 @@ fn encode_identity_order_bag(
 mod identity_order_tests {
     use super::*;
 
+    fn decode_occurrences(encoded: &[u8]) -> Vec<Vec<u8>> {
+        let view = PersistedDataView::parse_canonical(encoded).unwrap();
+        assert_eq!(view.kind(), PersistedDataKind::Data);
+        bincode::deserialize(view.payload()).unwrap()
+    }
+
+    fn encode_occurrences(occurrences: Vec<Vec<u8>>) -> Vec<u8> {
+        PersistedData::Data(DataLeaf {
+            bytes: bincode::serialize(&occurrences).unwrap(),
+        })
+        .into_legacy_bincode()
+    }
+
+    fn leaf_digest(encoded: &[u8]) -> Blake2b256Hash {
+        let view = PersistedDataView::parse_canonical(encoded).unwrap();
+        Blake2b256Hash::new(view.leaf_encoding())
+    }
+
     #[test]
     fn empty_identity_index_encodes_the_frozen_empty_datum_vector() {
         let channel = "empty-identity-order".to_string();
@@ -507,6 +525,33 @@ mod identity_order_tests {
             fixture.run_egress(IdentityOrderArm::ArenaSort),
             fixture.run_egress(IdentityOrderArm::MaintainedPathMap),
         );
+    }
+
+    #[test]
+    fn omitted_multiplicity_mutant_changes_final_bytes_and_leaf_digest() {
+        let fixture = CanonicalEgressFixture::new(16, 2, PrefixShape::Shared);
+        let correct = fixture.run(CanonicalEgressArm::CanonicalArena);
+        let mut mutant_occurrences = decode_occurrences(&correct.encoded_persisted_data);
+        assert_eq!(mutant_occurrences.len(), 32);
+        mutant_occurrences.pop().unwrap();
+        let mutant = encode_occurrences(mutant_occurrences);
+
+        assert_ne!(mutant, correct.encoded_persisted_data);
+        assert_ne!(leaf_digest(&mutant), leaf_digest(&correct.encoded_persisted_data));
+    }
+
+    #[test]
+    fn wrong_identity_order_mutant_changes_final_bytes_and_leaf_digest() {
+        let fixture = CanonicalEgressFixture::new(256, 1, PrefixShape::Opposed);
+        let correct = fixture.run(CanonicalEgressArm::CanonicalArena);
+        let mut mutant_occurrences = decode_occurrences(&correct.encoded_persisted_data);
+        let original = mutant_occurrences.clone();
+        mutant_occurrences.reverse();
+        assert_ne!(mutant_occurrences, original);
+        let mutant = encode_occurrences(mutant_occurrences);
+
+        assert_ne!(mutant, correct.encoded_persisted_data);
+        assert_ne!(leaf_digest(&mutant), leaf_digest(&correct.encoded_persisted_data));
     }
 
     #[test]

@@ -8,6 +8,52 @@ verus! {
 /// model proves the cardinality and length arithmetic around those words.
 pub const BINCODE_U64_BYTES: usize = 8;
 
+/// The frozen bincode-1 outer enum tag and single-field vector length that
+/// precede the canonical DATA payload in the final cold-store value.
+pub const PERSISTED_DATA_TAG_BYTES: usize = 4;
+pub const PERSISTED_DATA_HEADER_BYTES: usize =
+    PERSISTED_DATA_TAG_BYTES + BINCODE_U64_BYTES;
+
+/// Exact acceptance boundary for adding the final `PersistedData` envelope to
+/// a fully preflighted payload. The payload length must fit both bincode's
+/// `u64` field and the platform allocation after the 12-byte prefix.
+pub open spec fn final_value_len_spec(payload_len: int) -> Option<int> {
+    if payload_len < 0
+        || payload_len > u64::MAX as int
+        || payload_len > usize::MAX as int - PERSISTED_DATA_HEADER_BYTES as int
+    {
+        None
+    } else {
+        Some(payload_len + PERSISTED_DATA_HEADER_BYTES as int)
+    }
+}
+
+/// Executable counterpart of the final capacity check in
+/// `encode_canonical_persisted_data_at_prefix`.
+pub fn checked_final_value_len(payload_len: usize) -> (result: Option<usize>)
+    ensures
+        match result {
+            Some(final_len) => final_value_len_spec(payload_len as int)
+                == Some(final_len as int),
+            None => final_value_len_spec(payload_len as int).is_none(),
+        },
+{
+    assert(usize::MAX as int <= u64::MAX as int);
+    assert(payload_len as int <= u64::MAX as int);
+    if payload_len > usize::MAX - PERSISTED_DATA_HEADER_BYTES {
+        assert(payload_len as int
+            > usize::MAX as int - PERSISTED_DATA_HEADER_BYTES as int);
+        assert(final_value_len_spec(payload_len as int).is_none());
+        None
+    } else {
+        let final_len = payload_len + PERSISTED_DATA_HEADER_BYTES;
+        assert(final_len as int
+            == payload_len as int + PERSISTED_DATA_HEADER_BYTES as int);
+        assert(final_value_len_spec(payload_len as int) == Some(final_len as int));
+        Some(final_len)
+    }
+}
+
 /// Mathematical acceptance boundary for one preflighted canonical identity.
 /// A successful step adds `multiplicity` logical datums and that many framed
 /// copies of the identity to the final output length. Mathematical integers
@@ -39,7 +85,7 @@ pub open spec fn preflight_step_spec(
 }
 
 /// Executable arithmetic kernel corresponding to the production
-/// `encode_canonical_datums_at_prefix` preflight. The implementation performs
+/// `encode_canonical_persisted_data_at_prefix` payload preflight. The implementation performs
 /// no write: publication receives an exact cardinality and capacity only after
 /// every record has passed this boundary.
 pub fn checked_preflight_step(

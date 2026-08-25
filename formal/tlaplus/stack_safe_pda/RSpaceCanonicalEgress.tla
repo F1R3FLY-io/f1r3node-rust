@@ -5,8 +5,8 @@ EXTENDS Naturals, TLC
 Finite-state publication model for trie-native RSpace canonical egress.
 
 The implementation first validates every resident identity and computes the
-exact output size, then builds the complete legacy leaf in private storage,
-and finally publishes it with one history/cold-store action. A malformed
+exact output size, then builds the complete final cold-store envelope in
+private storage, and finally publishes it with one history/cold-store action. A malformed
 identity rejects before any public byte changes. The model deliberately keeps
 the private byte contents abstract: Verus and Rust differential tests prove
 their exact sequence, while TLC owns the publication lifecycle.
@@ -19,9 +19,9 @@ ASSUME MaxRecords \in Nat
 Phases == {"preflight", "ready", "building", "committed", "rejected"}
 VisibleImages == {"old", "new", "partial"}
 
-VARIABLES recordCount, invalidAt, cursor, emitted, phase, visible, publications
+VARIABLES recordCount, invalidAt, cursor, emitted, headerBuilt, phase, visible, publications
 
-vars == <<recordCount, invalidAt, cursor, emitted, phase, visible, publications>>
+vars == <<recordCount, invalidAt, cursor, emitted, headerBuilt, phase, visible, publications>>
 
 RecordValid(index) == invalidAt = 0 \/ index # invalidAt
 
@@ -30,6 +30,7 @@ Init ==
     /\ invalidAt \in 0..recordCount
     /\ cursor = 0
     /\ emitted = 0
+    /\ headerBuilt = FALSE
     /\ phase = "preflight"
     /\ visible = "old"
     /\ publications = 0
@@ -39,39 +40,47 @@ ValidateNext ==
     /\ cursor < recordCount
     /\ RecordValid(cursor + 1)
     /\ cursor' = cursor + 1
-    /\ UNCHANGED <<recordCount, invalidAt, emitted, phase, visible, publications>>
+    /\ UNCHANGED <<recordCount, invalidAt, emitted, headerBuilt, phase, visible, publications>>
 
 RejectMalformed ==
     /\ phase = "preflight"
     /\ cursor < recordCount
     /\ ~RecordValid(cursor + 1)
     /\ phase' = "rejected"
-    /\ UNCHANGED <<recordCount, invalidAt, cursor, emitted, visible, publications>>
+    /\ UNCHANGED <<recordCount, invalidAt, cursor, emitted, headerBuilt, visible, publications>>
 
 FinishPreflight ==
     /\ phase = "preflight"
     /\ cursor = recordCount
     /\ invalidAt = 0
     /\ phase' = "ready"
+    /\ UNCHANGED <<recordCount, invalidAt, cursor, emitted, headerBuilt, visible, publications>>
+
+BuildHeader ==
+    /\ phase = "ready"
+    /\ ~headerBuilt
+    /\ headerBuilt' = TRUE
+    /\ phase' = "building"
     /\ UNCHANGED <<recordCount, invalidAt, cursor, emitted, visible, publications>>
 
 BuildPrivate ==
-    /\ phase \in {"ready", "building"}
+    /\ phase = "building"
+    /\ headerBuilt
     /\ emitted < recordCount
     /\ emitted' = emitted + 1
-    /\ phase' = "building"
-    /\ UNCHANGED <<recordCount, invalidAt, cursor, visible, publications>>
+    /\ UNCHANGED <<recordCount, invalidAt, cursor, headerBuilt, phase, visible, publications>>
 
 PublishComplete ==
-    /\ phase \in {"ready", "building"}
+    /\ phase = "building"
+    /\ headerBuilt
     /\ emitted = recordCount
     /\ phase' = "committed"
     /\ visible' = "new"
     /\ publications' = publications + 1
-    /\ UNCHANGED <<recordCount, invalidAt, cursor, emitted>>
+    /\ UNCHANGED <<recordCount, invalidAt, cursor, emitted, headerBuilt>>
 
 Next == ValidateNext \/ RejectMalformed \/ FinishPreflight
-        \/ BuildPrivate \/ PublishComplete
+        \/ BuildHeader \/ BuildPrivate \/ PublishComplete
 
 Spec == Init /\ [][Next]_vars
 
@@ -80,6 +89,7 @@ TypeInvariant ==
     /\ invalidAt \in 0..recordCount
     /\ cursor \in 0..recordCount
     /\ emitted \in 0..recordCount
+    /\ headerBuilt \in BOOLEAN
     /\ phase \in Phases
     /\ visible \in VisibleImages
     /\ publications \in 0..1
@@ -90,7 +100,8 @@ PreflightCompletesBeforeBuild ==
       /\ invalidAt = 0
 
 PrivateImageCompletesBeforePublish ==
-    phase = "committed" => emitted = recordCount
+    phase = "committed" => /\ headerBuilt
+                           /\ emitted = recordCount
 
 VisibleImageIsAtomic ==
     /\ (visible = "new") <=> (phase = "committed")
@@ -117,9 +128,40 @@ PublishPartialMutant ==
     /\ phase \in {"ready", "building"}
     /\ emitted < recordCount
     /\ visible' = "partial"
-    /\ UNCHANGED <<recordCount, invalidAt, cursor, emitted, phase, publications>>
+    /\ UNCHANGED <<recordCount, invalidAt, cursor, emitted, headerBuilt, phase, publications>>
 
 MutantNext == Next \/ PublishPartialMutant
 MutantSpec == Init /\ [][MutantNext]_vars
+
+(***************************************************************************
+Negative control. This transition publishes a payload-sized private image
+without constructing the frozen enum/length envelope first.
+***************************************************************************)
+PublishWithoutHeaderMutant ==
+    /\ phase = "ready"
+    /\ ~headerBuilt
+    /\ phase' = "committed"
+    /\ emitted' = recordCount
+    /\ visible' = "new"
+    /\ publications' = publications + 1
+    /\ UNCHANGED <<recordCount, invalidAt, cursor, headerBuilt>>
+
+HeaderMutantNext == Next \/ PublishWithoutHeaderMutant
+HeaderMutantSpec == Init /\ [][HeaderMutantNext]_vars
+
+(***************************************************************************
+Negative control. This transition treats a malformed current identity as if
+preflight had succeeded. It must violate the preflight-before-build invariant
+before any private construction or publication is possible.
+***************************************************************************)
+SkipValidationMutant ==
+    /\ phase = "preflight"
+    /\ cursor < recordCount
+    /\ ~RecordValid(cursor + 1)
+    /\ phase' = "ready"
+    /\ UNCHANGED <<recordCount, invalidAt, cursor, emitted, headerBuilt, visible, publications>>
+
+ValidationMutantNext == Next \/ SkipValidationMutant
+ValidationMutantSpec == Init /\ [][ValidationMutantNext]_vars
 
 =============================================================================

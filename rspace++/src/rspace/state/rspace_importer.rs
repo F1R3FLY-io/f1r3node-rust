@@ -67,7 +67,7 @@ impl RSpaceImporterInstance {
             let pool = ThreadPoolBuilder::new().num_threads(64).build().unwrap();
             pool.install(|| {
                 data_items.par_iter().try_for_each(|(hash, value_bytes)| {
-                    let persisted_data = PersistedDataView::parse(value_bytes).unwrap();
+                    let persisted_data = PersistedDataView::parse_canonical(value_bytes).unwrap();
                     let data_hash = Blake2b256Hash::new(persisted_data.leaf_encoding());
                     if *hash != data_hash {
                         Err(format!(

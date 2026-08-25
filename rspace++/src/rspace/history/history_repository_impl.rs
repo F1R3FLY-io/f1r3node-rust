@@ -116,7 +116,7 @@ where
                     format!("{};insert-data;{};{}", hex::encode(key), data.len(), i.data.len())
                 }
                 HotStoreAction::Insert(InsertCanonicalData(i)) => {
-                    let view = PersistedDataView::parse(&i.encoded_persisted_data)
+                    let view = PersistedDataView::parse_canonical(&i.encoded_persisted_data)
                         .expect("canonical DATA egress must construct a valid persisted envelope");
                     format!(
                         "{};insert-data;{};{}",
@@ -182,16 +182,12 @@ where
                 i,
             )) => {
                 let encoded = i.encoded_persisted_data;
-                let view = PersistedDataView::parse(&encoded)
+                let view = PersistedDataView::parse_canonical(&encoded)
                     .expect("canonical DATA egress must construct a valid persisted envelope");
                 assert_eq!(
                     view.kind(),
                     PersistedDataKind::Data,
                     "canonical DATA egress constructed the wrong persisted variant"
-                );
-                assert!(
-                    view.trailing().is_empty(),
-                    "canonical DATA egress constructed trailing bytes"
                 );
                 let data_hash = Blake2b256Hash::new(view.leaf_encoding());
 

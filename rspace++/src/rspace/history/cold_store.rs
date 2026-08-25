@@ -41,10 +41,12 @@ impl PersistedDataKind {
 
 /// A validated borrowed view of the non-recursive bincode cold-store envelope.
 ///
-/// Bincode 1 permits trailing bytes, so this cursor deliberately exposes but
-/// does not reject them. `leaf_encoding` is the exact hash authority (the
-/// encoded single-field leaf without the outer enum tag); `payload` is the
-/// already-encoded datum, continuation, or join collection.
+/// `leaf_encoding` is the exact hash authority (the encoded single-field leaf
+/// without the outer enum tag); `payload` is the already-encoded datum,
+/// continuation, or join collection. Authoritative storage paths use
+/// [`Self::parse_canonical`]. The private compatibility parser exists only so
+/// executable differentials can pin bincode 1's trailing-byte behavior without
+/// making that permissive language available to production callers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PersistedDataView<'a> {
     kind: PersistedDataKind,
@@ -54,7 +56,7 @@ pub struct PersistedDataView<'a> {
 }
 
 impl<'a> PersistedDataView<'a> {
-    pub fn parse(bytes: &'a [u8]) -> Result<Self, PersistedDataFrameError> {
+    fn parse_bincode_compatible(bytes: &'a [u8]) -> Result<Self, PersistedDataFrameError> {
         if bytes.len() < PERSISTED_DATA_HEADER_LEN {
             return Err(PersistedDataFrameError::TruncatedHeader {
                 available: bytes.len(),
@@ -92,6 +94,20 @@ impl<'a> PersistedDataView<'a> {
         })
     }
 
+    /// Parse a value produced by the canonical writer rather than a merely
+    /// bincode-compatible value. Bincode 1 admits trailing bytes, but a
+    /// canonical cold-store value has exactly one envelope and no suffix.
+    pub fn parse_canonical(bytes: &'a [u8]) -> Result<Self, PersistedDataFrameError> {
+        let view = Self::parse_bincode_compatible(bytes)?;
+        if view.trailing.is_empty() {
+            Ok(view)
+        } else {
+            Err(PersistedDataFrameError::TrailingBytes {
+                available: view.trailing.len(),
+            })
+        }
+    }
+
     pub fn kind(self) -> PersistedDataKind { self.kind }
 
     pub fn leaf_encoding(self) -> &'a [u8] { self.leaf_encoding }
@@ -107,6 +123,7 @@ pub enum PersistedDataFrameError {
     InvalidDiscriminant(u32),
     LengthOverflow(u64),
     TruncatedPayload { declared: u64, available: usize },
+    TrailingBytes { available: usize },
 }
 
 impl std::fmt::Display for PersistedDataFrameError {
@@ -130,6 +147,9 @@ impl std::fmt::Display for PersistedDataFrameError {
                 f,
                 "persisted-data payload is truncated: declared {declared} bytes, found {available}"
             ),
+            Self::TrailingBytes { available } => {
+                write!(f, "canonical persisted-data value has {available} trailing bytes")
+            }
         }
     }
 }
@@ -221,7 +241,8 @@ mod tests {
                 let actual = typed(kind, payload.clone()).into_legacy_bincode();
                 assert_eq!(actual, expected);
 
-                let view = PersistedDataView::parse(&actual).unwrap();
+                let view = PersistedDataView::parse_bincode_compatible(&actual).unwrap();
+                assert_eq!(PersistedDataView::parse_canonical(&actual).unwrap(), view);
                 assert_eq!(view.kind(), kind);
                 assert_eq!(view.payload(), payload);
                 assert_eq!(view.leaf_encoding(), &actual[PERSISTED_DATA_TAG_LEN..]);
@@ -257,7 +278,7 @@ mod tests {
 
         for bytes in corpus {
             assert_eq!(
-                PersistedDataView::parse(&bytes).is_ok(),
+                PersistedDataView::parse_bincode_compatible(&bytes).is_ok(),
                 bincode::deserialize::<PersistedData>(&bytes).is_ok(),
                 "admission differs for {} bytes: {}",
                 bytes.len(),
@@ -276,8 +297,24 @@ mod tests {
             bytes: b"leaf-payload".to_vec(),
         })
         .unwrap();
-        let view = PersistedDataView::parse(&encoded).unwrap();
+        let view = PersistedDataView::parse_bincode_compatible(&encoded).unwrap();
         assert_eq!(view.leaf_encoding(), leaf);
         assert_ne!(view.leaf_encoding(), encoded);
+    }
+
+    #[test]
+    fn canonical_cursor_rejects_the_trailing_bytes_that_bincode_admits() {
+        let mut encoded = bincode::serialize(&PersistedData::Data(DataLeaf {
+            bytes: b"canonical-payload".to_vec(),
+        }))
+        .unwrap();
+        encoded.extend_from_slice(b"noncanonical-suffix");
+
+        assert!(bincode::deserialize::<PersistedData>(&encoded).is_ok());
+        assert!(PersistedDataView::parse_bincode_compatible(&encoded).is_ok());
+        assert_eq!(
+            PersistedDataView::parse_canonical(&encoded),
+            Err(PersistedDataFrameError::TrailingBytes { available: 19 })
+        );
     }
 }
