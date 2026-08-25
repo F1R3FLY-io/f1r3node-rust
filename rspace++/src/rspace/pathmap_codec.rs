@@ -684,8 +684,13 @@ pub struct CanonicalCompactTrieWorkCounters {
 type ActWorkCounters = CanonicalCompactTrieWorkCounters;
 
 #[cfg(not(any(test, feature = "act-codec-instrumentation")))]
-#[derive(Default)]
 struct ActWorkCounters;
+
+#[cfg(any(test, feature = "act-codec-instrumentation"))]
+fn new_act_work_counters() -> ActWorkCounters { ActWorkCounters::default() }
+
+#[cfg(not(any(test, feature = "act-codec-instrumentation")))]
+const fn new_act_work_counters() -> ActWorkCounters { ActWorkCounters }
 
 struct ValidatedActPlan {
     empty: bool,
@@ -1653,7 +1658,7 @@ where S: IndexedByteSource + ?Sized {
     let counted = CountedIndexedByteSource::new(bytes);
     #[cfg(any(test, feature = "act-codec-instrumentation"))]
     let bytes = &counted;
-    let mut counters = ActWorkCounters::default();
+    let mut counters = new_act_work_counters();
     let mut magic = [0u8; COMPACT_TREE_MAGIC.len()];
     if !bytes.copy_exact(0, &mut magic) || magic != COMPACT_TREE_MAGIC {
         return Err(CompactTrieError::new("invalid ACTree03 magic"));
