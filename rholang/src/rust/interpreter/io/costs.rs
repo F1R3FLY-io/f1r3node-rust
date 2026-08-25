@@ -240,6 +240,27 @@ pub fn fs_entries_stream_cost(n_entries: u64) -> Cost {
     )
 }
 
+/// Streaming-backing slice (2026-08-25): per-handler cost aliases for
+/// the three natives that back the per-fd streaming primitive.  Each
+/// alias exists to satisfy the naming pin in
+/// `fileio_cost_spec::every_fs_handler_charges_its_cost_helper` —
+/// a load-bearing static check that each `fs_X` handler references
+/// `costs::fs_X_cost(...)` in its body, so a future refactor that
+/// deletes the charge site is caught at test-time.  Under D3 a
+/// missing handler charge is a leader/replay consensus divergence.
+///
+/// Semantically these delegate to the pre-existing shapes:
+/// - `fs_entries_stream_open_cost` = `fs_entries_stream_cost(0)`
+///   (setup only; per-entry supplement is fs_entries_stream_next).
+/// - `fs_entries_stream_next_cost` = `fs_entries_stream_cost(0)`
+///   (per-call setup; per-entry supplement charged separately via
+///   `fs_entries_stream_per_entry_supplement_cost`).
+/// - `fs_entries_stream_close_cost` = `fs_close_cost()` (fd release
+///   is a hashmap remove + closedir, same class as fs_close).
+pub fn fs_entries_stream_open_cost() -> Cost { fs_entries_stream_cost(0) }
+pub fn fs_entries_stream_next_cost() -> Cost { fs_entries_stream_cost(0) }
+pub fn fs_entries_stream_close_cost() -> Cost { fs_close_cost() }
+
 /// `fs_remove_dir` recursive — path-mutation base plus per-entry
 /// cost across the subtree.  Under D3 canonical accounting, the
 /// per-entry count is measured (not estimated) — the handler

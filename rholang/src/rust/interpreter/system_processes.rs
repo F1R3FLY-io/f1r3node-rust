@@ -304,6 +304,13 @@ impl FixedChannels {
     pub fn fs_lock_sequential() -> Par { byte_name(63) }
     pub fn fs_release_lock() -> Par { byte_name(64) }
     pub fn fs_release_all_for_holder() -> Par { byte_name(65) }
+    // Streaming-backing slice (2026-08-25) — three natives backing the
+    // per-fd directory-entries streaming primitive.  Reserved byte
+    // slots 66-68; drift-checked against `BodyRefs` (same numeric
+    // values) by the D3 pipeline convention.
+    pub fn fs_entries_stream_open() -> Par { byte_name(66) }
+    pub fn fs_entries_stream_next() -> Par { byte_name(67) }
+    pub fn fs_entries_stream_close() -> Par { byte_name(68) }
 }
 
 pub struct BodyRefs;
@@ -370,6 +377,10 @@ impl BodyRefs {
     pub const FS_LOCK_SEQUENTIAL: i64 = 63;
     pub const FS_RELEASE_LOCK: i64 = 64;
     pub const FS_RELEASE_ALL_FOR_HOLDER: i64 = 65;
+    // Streaming-backing slice (2026-08-25).
+    pub const FS_ENTRIES_STREAM_OPEN: i64 = 66;
+    pub const FS_ENTRIES_STREAM_NEXT: i64 = 67;
+    pub const FS_ENTRIES_STREAM_CLOSE: i64 = 68;
 }
 
 pub fn non_deterministic_ops() -> HashSet<i64> {
@@ -414,6 +425,12 @@ pub fn non_deterministic_ops() -> HashSet<i64> {
         BodyRefs::FS_LOCK_SEQUENTIAL,
         BodyRefs::FS_RELEASE_LOCK,
         BodyRefs::FS_RELEASE_ALL_FOR_HOLDER,
+        // Streaming-backing slice.  Every entriesStream* reply is
+        // replay-cached so a follower sees the leader's fd allocation +
+        // yielded entry records byte-identically.
+        BodyRefs::FS_ENTRIES_STREAM_OPEN,
+        BodyRefs::FS_ENTRIES_STREAM_NEXT,
+        BodyRefs::FS_ENTRIES_STREAM_CLOSE,
     ])
 }
 

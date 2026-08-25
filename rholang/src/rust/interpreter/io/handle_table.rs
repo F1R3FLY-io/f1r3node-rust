@@ -121,6 +121,14 @@ pub struct FileHandleTable {
     /// deploys sequentially, so a single cell suffices; concurrent
     /// runtimes have independent `FileHandleTable` instances.
     pub current_deploy_scope: Arc<std::sync::RwLock<super::lock::DeployScope>>,
+    /// Streaming-backing slice (2026-08-25): per-runtime directory-
+    /// stream handle table backing the entriesStream* natives.
+    /// Colocated with the file handle table because both are per-
+    /// runtime and travel together through `FsProcesses`; handlers
+    /// reach it via `self.handles.dir_handles`.  NOT shared across
+    /// runtimes via `RuntimeManager` — dir-stream lifetimes are
+    /// per-runtime just like file-handle lifetimes.
+    pub dir_handles: super::dir_handle_table::DirHandleTable,
 }
 
 #[derive(Debug)]
@@ -148,6 +156,7 @@ impl FileHandleTable {
             // this via WalDeployScope::new at deploy entry; the
             // guard clears it back to sentinel on drop.
             current_deploy_scope: Arc::new(std::sync::RwLock::new([0u8; 32])),
+            dir_handles: super::dir_handle_table::DirHandleTable::new(),
         }
     }
 

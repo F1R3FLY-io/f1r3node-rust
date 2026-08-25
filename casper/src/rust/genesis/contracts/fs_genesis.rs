@@ -548,6 +548,15 @@ pub const FS_NATIVE_URN_SUFFIXES: &[&str] = &[
     // deploy-end auto-release fires.  Scoped by HolderId — cross-cap
     // locks on the same (dev, inode) survive.
     "releaseAllForHolder",
+    // Streaming-backing slice (2026-08-25) — per-fd directory-entries
+    // streaming primitive.  Three natives replace the bulk `entriesStream`
+    // stub (kept in place until Dir.rho swaps its consumer, Step 5).
+    // Open allocates a stream fd; Next yields one entry per call; Close
+    // releases the fd.  See implementation-plan.md
+    // §"Streaming-backing slice" for the full design.
+    "entriesStreamOpen",
+    "entriesStreamNext",
+    "entriesStreamClose",
 ];
 
 /// Compose the full FsGenesis Rholang source.
@@ -671,6 +680,9 @@ new
   fsCopyFile(`rho:io:fs:native:1.0.0/copyFile`),
   fsEntries(`rho:io:fs:native:1.0.0/entries`),
   fsEntriesStream(`rho:io:fs:native:1.0.0/entriesStream`),
+  fsEntriesStreamOpen(`rho:io:fs:native:1.0.0/entriesStreamOpen`),
+  fsEntriesStreamNext(`rho:io:fs:native:1.0.0/entriesStreamNext`),
+  fsEntriesStreamClose(`rho:io:fs:native:1.0.0/entriesStreamClose`),
   fsQuarantine(`rho:io:fs:native:1.0.0/quarantine`),
   fsLockRange(`rho:io:fs:native:1.0.0/lockRange`),
   fsLockSequential(`rho:io:fs:native:1.0.0/lockSequential`),
@@ -913,7 +925,11 @@ mod tests {
             ("copyFile", 6),      // (from_root, from_rel, to_root, to_rel, cmode, ack) — Slice 26
             ("entries", 4),       // (root, rel, cmode, ack) — Slice 26
             ("entriesStream", 3), // (root, rel, ack)
-            ("quarantine", 3),    // (root, rel, ack)
+            // Streaming-backing slice (2026-08-25).
+            ("entriesStreamOpen", 4),  // (root, rel, cmode, ack)
+            ("entriesStreamNext", 2),  // (streamFd, ack) — cmode captured at open
+            ("entriesStreamClose", 2), // (streamFd, ack)
+            ("quarantine", 3),         // (root, rel, ack)
             // Phase 8 slice 8a — range-lock natives (fd-based after
             // review-2 fix, 2026-08-12: keys correctly under oracular
             // file swap; path-based keying was semantically wrong).
@@ -1292,6 +1308,16 @@ mod tests {
         // billion-item chunk that would allocate an unbounded reply
         // list.  Same hard-fork discipline as prior anchor rolls.
         //
+        // Anchor roll 2026-08-25 (streaming-backing slice Step 2):
+        // FsGenesis's outer `new` clause gains three new native URN
+        // bindings — `fsEntriesStreamOpen`, `fsEntriesStreamNext`,
+        // `fsEntriesStreamClose` — for the per-fd directory streaming
+        // primitive.  The bindings are lexically captured only (no
+        // callers within the composed source yet; Step 5 swaps
+        // Dir.rho::entries() to consume them).  This is a hard fork
+        // of the Genesis deploy content — see the plan's
+        // "Hard-fork surfaces flagged during Phase 10" section.
+        //
         // Anchor roll 2026-08-24 (PB-B-3 shipped): FsGenesis now also
         // invokes `insertVersion("serve", "fs", "1.0.0", fs, ret)`
         // via a direct `v1Api` binding to `rho:registry:v1:internal`,
@@ -1312,12 +1338,13 @@ mod tests {
         // on `ell > cap`, and the 4 File.rho callers now pass
         // `67108864` = MAX_WRITE_BYTES.
         //
+        // Prior anchor: 46db7011 (PB-B-3 insertVersion shipped, 2026-08-24).
         // Prior anchor: af6f10fa (10c reclassification docstrings, 2026-08-23).
         // Prior anchor: fbea2d02 (slice 9c-ii toByteArray cap, 2026-08-23).
         // Prior anchor: 126a35ab (slice 9c-i reply-payload cap, 2026-08-23).
         // Prior anchor: 5f41dafe (cost-accounted-rho merge, 2026-08-21).
         // Prior anchor: c243b4db (pre-merge).
-        const EXPECTED: &str = "46db7011db7770eef0766d038c41d93fd9582f2f017f27e0a023c3d80655dc23";
+        const EXPECTED: &str = "434a828bf90f42f233812af544ec843e38cf3529eb062e7ac77eb96f81b95709";
         assert_eq!(
             hex, EXPECTED,
             "M-12: compose_fs_genesis_source() hash changed.  If intentional \

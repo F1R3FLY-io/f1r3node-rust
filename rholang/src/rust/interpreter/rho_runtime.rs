@@ -1317,6 +1317,34 @@ fn std_system_processes() -> Vec<Definition> {
             BodyRefs::FS_ENTRIES_STREAM,
             |sp, args| Box::pin(async move { sp.fs.fs_entries_stream(args).await }),
         ),
+        // Streaming-backing slice (2026-08-25) — per-fd directory-entries
+        // streaming primitive.  Three natives replace the bulk
+        // `entriesStream` stub above (kept for backwards compat until
+        // Dir.rho swaps its consumer, Step 5): Open allocates a stream
+        // fd, Next yields one entry per call, Close releases the fd.
+        // Under Consensus mode each Next reply is D3-WAL-journaled
+        // (Step 3); under Oracular the natives are best-effort.
+        fs_native_def(
+            "rho:io:fs:native:1.0.0/entriesStreamOpen",
+            FixedChannels::fs_entries_stream_open(),
+            4, // (rootCanon, rel, cmode, ack)
+            BodyRefs::FS_ENTRIES_STREAM_OPEN,
+            |sp, args| Box::pin(async move { sp.fs.fs_entries_stream_open(args).await }),
+        ),
+        fs_native_def(
+            "rho:io:fs:native:1.0.0/entriesStreamNext",
+            FixedChannels::fs_entries_stream_next(),
+            2, // (streamFd, ack) — cmode captured in DirHandle at open
+            BodyRefs::FS_ENTRIES_STREAM_NEXT,
+            |sp, args| Box::pin(async move { sp.fs.fs_entries_stream_next(args).await }),
+        ),
+        fs_native_def(
+            "rho:io:fs:native:1.0.0/entriesStreamClose",
+            FixedChannels::fs_entries_stream_close(),
+            2, // (streamFd, ack)
+            BodyRefs::FS_ENTRIES_STREAM_CLOSE,
+            |sp, args| Box::pin(async move { sp.fs.fs_entries_stream_close(args).await }),
+        ),
         fs_native_def(
             "rho:io:fs:native:1.0.0/rename",
             FixedChannels::fs_rename(),

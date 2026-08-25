@@ -38,7 +38,8 @@
 use rholang::rust::interpreter::accounting::costs::Cost;
 use rholang::rust::interpreter::io::costs::{
     fs_chmod_cost, fs_chown_cost, fs_close_cost, fs_copy_file_cost, fs_entries_cost,
-    fs_entries_per_entry_supplement_cost, fs_entries_stream_cost,
+    fs_entries_per_entry_supplement_cost, fs_entries_stream_close_cost, fs_entries_stream_cost,
+    fs_entries_stream_next_cost, fs_entries_stream_open_cost,
     fs_entries_stream_per_entry_supplement_cost, fs_exists_cost, fs_flush_cost, fs_lock_range_cost,
     fs_lock_sequential_cost, fs_open_cost, fs_quarantine_cost, fs_read_at_cost, fs_read_cost,
     fs_release_all_for_holder_cost, fs_release_lock_cost, fs_remove_dir_cost,
@@ -212,6 +213,44 @@ fn fs_release_all_for_holder_weight_is_pinned() {
     assert_eq!(
         fs_release_all_for_holder_cost(),
         Cost::create(100, "fs_release_all_for_holder")
+    );
+}
+
+// -------- Streaming-backing slice per-handler aliases --------------
+//
+// The three natives that back the per-fd directory-streaming primitive
+// (`entriesStreamOpen`/`Next`/`Close`) each ship a per-handler cost
+// alias so the every-handler-charges-its-cost pin
+// (`every_fs_handler_charges_its_cost_helper`) passes.  Semantically
+// they delegate to the pre-existing shapes:
+//   - open + next  → fs_entries_stream_cost(0) = FS_ENTRIES_SETUP = 50
+//     (the per-entry supplement is a separate two-branch charge via
+//      `fs_entries_stream_per_entry_supplement_cost`).
+//   - close        → fs_close_cost() = FS_SYSCALL_CONST = 100.
+// Golden values pinned here so a future consensus-observable retune of
+// the underlying shapes flips the corresponding pin.
+
+#[test]
+fn fs_entries_stream_open_weight_is_pinned() {
+    assert_eq!(
+        fs_entries_stream_open_cost(),
+        Cost::create(FS_ENTRIES_SETUP, "fs_entries_stream")
+    );
+}
+
+#[test]
+fn fs_entries_stream_next_weight_is_pinned() {
+    assert_eq!(
+        fs_entries_stream_next_cost(),
+        Cost::create(FS_ENTRIES_SETUP, "fs_entries_stream")
+    );
+}
+
+#[test]
+fn fs_entries_stream_close_weight_is_pinned() {
+    assert_eq!(
+        fs_entries_stream_close_cost(),
+        Cost::create(FS_SYSCALL_CONST, "fs_close")
     );
 }
 

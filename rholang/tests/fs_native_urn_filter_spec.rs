@@ -213,6 +213,10 @@ mod tests {
             "releaseLock",
             // Phase 8 slice 8a step-4 — File.close sweep native.
             "releaseAllForHolder",
+            // Streaming-backing slice (2026-08-25).
+            "entriesStreamOpen",
+            "entriesStreamNext",
+            "entriesStreamClose",
         ] {
             let term = format!(r#"new bad(`rho:io:fs:native:1.0.0/{suffix}`) in {{ bad!(0) }}"#);
             let result = runtime

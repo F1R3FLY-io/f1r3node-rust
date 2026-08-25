@@ -54,6 +54,18 @@ pub fn err(code: &str, msg: impl Into<String>) -> Par {
     ])
 }
 
+/// Streaming-backing slice (2026-08-25): end-of-stream terminator
+/// for `entriesStreamNext`.  Deliberately 2-element (`[false, "EOS"]`)
+/// so callers can distinguish normal termination from a genuine
+/// error (`[false, code, msg]` = 3-element).  `"EOS"` is not an
+/// `FSERR_*` code — EOS is expected control flow, not a failure.
+pub fn err_eos() -> Par {
+    list_par(vec![
+        bool_par(false),
+        RhoString::create_par("EOS".to_string()),
+    ])
+}
+
 /// C-R1 review fix: extract the head-`true` + second-element-u64 shape
 /// from a cached `previous` reply.  Returns `Some(n)` if the Par is
 /// `[true, n_int]` with `n_int >= 0`; `None` otherwise (error reply,

@@ -35,6 +35,7 @@ use super::super::errors::{illegal_argument_error, InterpreterError};
 use super::super::metering::MeteredMachine;
 use super::super::rho_runtime::RhoISpace;
 use super::super::rho_type::{RhoBoolean, RhoByteArray, RhoNumber, RhoString};
+use super::dir_handle_table::{DirHandle, DirIter};
 use super::errors::*;
 use super::handle_table::{FileHandle, FileHandleTable};
 // C-R1 review fix: `extract_ok_u64` is used from fs_open's is_replay
@@ -2482,6 +2483,322 @@ impl FsProcesses {
     }
 
     // -------------------------------------------------------------------
+    // Streaming-backing slice (2026-08-25) — three natives implementing
+    // per-fd directory-entries streaming.  Companion to (eventually
+    // replacing, once Dir.rho swaps) the bulk `entriesStream` stub
+    // above.
+    //
+    // Safety pattern mirrors bulk `fs_entries`: `entriesStreamOpen` does
+    // `safe_descend_verified` + `openat(O_DIRECTORY|O_NOFOLLOW|
+    // O_CLOEXEC)` to get a TOCTOU-immune dirfd, then wraps it in
+    // `fdopendir` for iteration.  The per-stream `DirHandle` lives in
+    // `self.handles.dir_handles` (a `DirHandleTable` parallel to the
+    // file handle table) and holds the `DIR*` behind a `Mutex`.
+    //
+    // D3 WAL wiring is Step 3 of this slice — the three handlers below
+    // implement the oracular / non-journaled path.  Under Consensus
+    // mode today, `entriesStreamNext` yields records but does NOT
+    // append them to the WAL; consensus-mode replay parity across
+    // validators works because the reply is replay-cached via
+    // `non_deterministic_ops()`, but there is no independent
+    // durability substrate yet.  Step 3 lands `WalOp::EntriesStreamNext`
+    // and the symmetric leader/follower journal hooks.
+    // -------------------------------------------------------------------
+
+    /// `entriesStreamOpen(root, rel, cmode, ack)`.
+    ///
+    /// Args: `(String root, String rel, String cmode, ack)`.
+    ///
+    /// Success: `[true, streamFd]` where `streamFd` is an opaque u64
+    /// allocated by `DirHandleTable`.  The fd is monotonic + state-
+    /// hash-seeded (slice-28 aliasing prevention), so leader and
+    /// follower produce the same fd for the same deploy call site.
+    ///
+    /// Failure: `[false, code, msg]` — usual FSERR_QUARANTINE /
+    /// FSERR_BAD_ARG / FSERR_QUOTA_EXCEEDED / FSERR_IO shapes.
+    ///
+    /// Follower `is_replay = true`: shadow-insert at the leader's fd
+    /// (extracted via `extract_ok_u64`) so future replay-branch
+    /// handlers can look up `(cmode, canon_path)` symmetrically.  Same
+    /// contract as `fs_open`'s C-R1 shadow-handle logic.
+    pub async fn fs_entries_stream_open(
+        &self,
+        contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
+    ) -> Result<Vec<Par>, InterpreterError> {
+        // Charge setup cost.  Weight = fs_entries_stream_cost(0) =
+        // FS_ENTRIES_SETUP = 50 — same as bulk `fs_entries` setup so
+        // the two variants are cost-comparable at open.  The alias
+        // `fs_entries_stream_open_cost` exists to satisfy the per-
+        // handler naming pin in `fileio_cost_spec`.
+        self.metering
+            .reserve_primitive(costs::fs_entries_stream_open_cost())?;
+        let Some((produce, is_replay, previous, args)) =
+            self.is_contract_call().unapply(contract_args)
+        else {
+            return Err(illegal_argument_error("fs_entries_stream_open"));
+        };
+        let [root_par, rel_par, cmode_par, ack] = args.as_slice() else {
+            return Err(illegal_argument_error("fs_entries_stream_open"));
+        };
+        if is_replay {
+            // Shadow-insert at the leader's fd so subsequent replay-
+            // branch handlers (entriesStreamNext, entriesStreamClose)
+            // can look up cmode / canon_path from the DirHandleTable.
+            if let Some(fd) = extract_ok_u64(&previous) {
+                if let (Some(root), Some(rel)) =
+                    (RhoString::unapply(root_par), RhoString::unapply(rel_par))
+                {
+                    // Fall back to Consensus on bogus cmode — matches
+                    // fs_open's C-R1 fallback rationale (a bogus cmode
+                    // with a [true, fd] cached reply is definitionally
+                    // a bug; fail-closed to the more restrictive mode).
+                    let cmode = resolve_cmode(cmode_par).unwrap_or(ConsensusMode::Consensus);
+                    let deploy = *self
+                        .handles
+                        .current_deploy_scope
+                        .read()
+                        .expect("current_deploy_scope RwLock poisoned");
+                    let shadow =
+                        DirHandle::shadow(canonicalize_lexical(&root, &rel), cmode, deploy);
+                    // Ignore the return: on a fresh follower the slot
+                    // is empty; on a repeat call the existing handle
+                    // wins.  Real divergence surfaces later.
+                    let _ = self.handles.dir_handles.insert_at(fd, shadow).await;
+                }
+            }
+            produce(&previous, ack).await?;
+            return Ok(previous);
+        }
+        // Leader path.
+        let cmode = match resolve_cmode(cmode_par) {
+            Some(m) => m,
+            None => {
+                let out = vec![err(
+                    FSERR_BAD_ARG,
+                    "cmode must be String \"oracular\" or \"consensus\"",
+                )];
+                produce(&out, ack).await?;
+                return Ok(out);
+            }
+        };
+        let (root, rel) = match (RhoString::unapply(root_par), RhoString::unapply(rel_par)) {
+            (Some(r), Some(l)) => (r, l),
+            _ => {
+                let out = vec![err(FSERR_BAD_ARG, "expected (String root, String rel)")];
+                produce(&out, ack).await?;
+                return Ok(out);
+            }
+        };
+        let root_pb = PathBuf::from(&root);
+        let expected_root_id = self.handles.root_registry.get(&root_pb);
+        let rel_for_open = rel.clone();
+        // safe_descend + openat + fdopendir in a blocking task —
+        // mirrors bulk fs_entries' opening syscall sequence exactly
+        // so TOCTOU-immunity + O_NOFOLLOW semantics carry through.
+        let opened = spawn_blocking(move || -> Result<DirIter, Par> {
+            let parent = match safe_descend_verified(&root_pb, &rel_for_open, expected_root_id) {
+                Ok(p) => p,
+                Err(qe) => {
+                    let (code, msg) = quarantine_err_reply(&qe);
+                    return Err(err(code, msg));
+                }
+            };
+            let dir_fd = unsafe {
+                libc::openat(
+                    parent.as_raw_fd(),
+                    parent.leaf_ptr(),
+                    libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+                )
+            };
+            if dir_fd < 0 {
+                let e = std::io::Error::last_os_error();
+                return Err(err(io_err_code(&e), io_msg_scrub(&e)));
+            }
+            // L-3 pattern (fs_entries): F_DUPFD_CLOEXEC on the fd
+            // handed to fdopendir so the DIR*'s underlying fd
+            // carries CLOEXEC atomically.  Close the original.
+            let read_fd = unsafe { libc::fcntl(dir_fd, libc::F_DUPFD_CLOEXEC, 0) };
+            unsafe { libc::close(dir_fd) };
+            if read_fd < 0 {
+                let e = std::io::Error::last_os_error();
+                return Err(err(io_err_code(&e), io_msg_scrub(&e)));
+            }
+            DirIter::from_dir_fd(read_fd).map_err(|e| err(io_err_code(&e), io_msg_scrub(&e)))
+        })
+        .await
+        .unwrap_or_else(|_je| Err(err(FSERR_IO, "spawn_blocking task failed")));
+        let reply = match opened {
+            Ok(iter) => {
+                let deploy = *self
+                    .handles
+                    .current_deploy_scope
+                    .read()
+                    .expect("current_deploy_scope RwLock poisoned");
+                let handle = DirHandle::new(iter, canonicalize_lexical(&root, &rel), cmode, deploy);
+                match self.handles.dir_handles.insert(handle).await {
+                    Ok(fd) => ok_u64(fd),
+                    Err(()) => err(
+                        FSERR_QUOTA_EXCEEDED,
+                        "per-runtime dir-stream fd cap reached",
+                    ),
+                }
+            }
+            Err(e_par) => e_par,
+        };
+        let out = vec![reply];
+        produce(&out, ack).await?;
+        Ok(out)
+    }
+
+    /// `entriesStreamNext(streamFd, ack)`.
+    ///
+    /// Args: `(GInt streamFd, ack)`.  `cmode` is captured in the
+    /// DirHandle at open time, not re-passed here — matches the fd-
+    /// based natives (fs_read, fs_write, ...) that also look up
+    /// cmode from the handle.
+    ///
+    /// Success: `[true, entryRecord]` — one entry, same
+    /// `stat_record`-shaped Par that bulk `fs_entries` emits per row.
+    /// End of stream: `[false, "EOS"]` — 2-element terminator,
+    /// distinguishable from error `[false, code, msg]` shapes.
+    /// Error: `[false, code, msg]` — FSERR_CLOSED / FSERR_IO / etc.
+    ///
+    /// Cost: per-call setup `fs_entries_stream_cost(0)` at entry, plus
+    /// a per-entry supplement of `fs_entries_stream_per_entry_supplement_cost(1)`
+    /// after a successful entry (0 on EOS or error).  Two-branch shape
+    /// mirrors `fs_entries` so the D3 canonical event log is byte-
+    /// identical across leader and follower on both success and EOS
+    /// paths.
+    pub async fn fs_entries_stream_next(
+        &self,
+        contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
+    ) -> Result<Vec<Par>, InterpreterError> {
+        // Per-call setup portion of the two-branch charge.  Per-entry
+        // supplement is charged post-reply via
+        // `fs_entries_stream_per_entry_supplement_cost` (n=1 on
+        // `[true, ...]`, n=0 on EOS / error).  The alias
+        // `fs_entries_stream_next_cost` exists to satisfy the per-
+        // handler naming pin in `fileio_cost_spec`.
+        self.metering
+            .reserve_primitive(costs::fs_entries_stream_next_cost())?;
+        let Some((produce, is_replay, previous, args)) =
+            self.is_contract_call().unapply(contract_args)
+        else {
+            return Err(illegal_argument_error("fs_entries_stream_next"));
+        };
+        let [fd_par, ack] = args.as_slice() else {
+            return Err(illegal_argument_error("fs_entries_stream_next"));
+        };
+        if is_replay {
+            // Per-entry supplement charge on the replay branch: n = 1
+            // when the cached reply is `[true, entryRecord]`, else n = 0
+            // (EOS or error).  `extract_ok_u64(&previous)` returns Some
+            // only on `[true, int]` shapes, so we use a dedicated helper
+            // that just checks the head is `true`.
+            let n = if reply_is_ok(&previous) { 1 } else { 0 };
+            self.metering
+                .reserve_primitive(costs::fs_entries_stream_per_entry_supplement_cost(n))?;
+            produce(&previous, ack).await?;
+            return Ok(previous);
+        }
+        // Leader path.
+        let fd = match RhoNumber::unapply(fd_par) {
+            Some(n) => n as u64,
+            None => {
+                let out = vec![err(FSERR_BAD_ARG, "expected GInt streamFd")];
+                produce(&out, ack).await?;
+                return Ok(out);
+            }
+        };
+        let reply = match self.handles.dir_handles.get(fd).await {
+            None => err(FSERR_CLOSED, "stream fd closed or unknown"),
+            Some(handle) => {
+                let cmode = handle.cmode;
+                let iter_lock = handle.iter.lock().await;
+                match iter_lock.as_ref() {
+                    None => err(
+                        FSERR_CLOSED,
+                        "shadow stream handle has no iterator (leader path only)",
+                    ),
+                    Some(iter) => {
+                        // Pass the DIR* address across spawn_blocking
+                        // via usize cast (raw pointers are not Send).
+                        // The MutexGuard `iter_lock` is held across the
+                        // .await below, keeping the address live for
+                        // the closure's whole lifetime.
+                        let dirp_addr = iter.as_ptr() as usize;
+                        spawn_blocking(move || -> Par {
+                            let dirp = dirp_addr as *mut libc::DIR;
+                            readdir_one_entry(dirp, cmode)
+                        })
+                        .await
+                        .unwrap_or_else(|_je| err(FSERR_IO, "spawn_blocking task failed"))
+                    }
+                }
+            }
+        };
+        // Post-reply supplement charge — same two-branch shape as
+        // fs_entries.  n = 1 on `[true, ...]`, else 0.
+        let n = if reply_is_ok(std::slice::from_ref(&reply)) {
+            1
+        } else {
+            0
+        };
+        self.metering
+            .reserve_primitive(costs::fs_entries_stream_per_entry_supplement_cost(n))?;
+        let out = vec![reply];
+        produce(&out, ack).await?;
+        Ok(out)
+    }
+
+    /// `entriesStreamClose(streamFd, ack)`.
+    ///
+    /// Args: `(GInt streamFd, ack)`.  Idempotent — closing an already-
+    /// removed fd is a no-op that still returns `[true]`, matching
+    /// `fs_close`'s shape.  Dropping the `DirHandle` runs `DirIter`'s
+    /// `closedir` which releases the underlying kernel dirp fd.
+    ///
+    /// Cost: `fs_close_cost()` — same class as `fs_close`; the work is
+    /// a hashmap remove + `closedir` syscall.
+    pub async fn fs_entries_stream_close(
+        &self,
+        contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
+    ) -> Result<Vec<Par>, InterpreterError> {
+        // Aliased to `fs_close_cost` semantically (fd release +
+        // closedir).  The alias `fs_entries_stream_close_cost` exists
+        // to satisfy the per-handler naming pin in `fileio_cost_spec`.
+        self.metering
+            .reserve_primitive(costs::fs_entries_stream_close_cost())?;
+        let Some((produce, is_replay, previous, args)) =
+            self.is_contract_call().unapply(contract_args)
+        else {
+            return Err(illegal_argument_error("fs_entries_stream_close"));
+        };
+        let [fd_par, ack] = args.as_slice() else {
+            return Err(illegal_argument_error("fs_entries_stream_close"));
+        };
+        if is_replay {
+            // Also drop the shadow handle so the follower's dir_handles
+            // table converges to the leader's post-close state.
+            if let Some(fd) = RhoNumber::unapply(fd_par) {
+                self.handles.dir_handles.remove(fd as u64).await;
+            }
+            produce(&previous, ack).await?;
+            return Ok(previous);
+        }
+        let reply = match RhoNumber::unapply(fd_par) {
+            Some(fd) => {
+                self.handles.dir_handles.remove(fd as u64).await;
+                ok_bare()
+            }
+            None => err(FSERR_BAD_ARG, "expected GInt streamFd"),
+        };
+        let out = vec![reply];
+        produce(&out, ack).await?;
+        Ok(out)
+    }
+
+    // -------------------------------------------------------------------
     // Phase 8 slice 8a — range-lock natives.
     //
     // These acquire and release entries in `self.handles.lock_registry`,
@@ -3327,6 +3644,77 @@ async fn chown_impl(
 /// File-agent wiring).
 #[allow(dead_code)]
 fn _use_access_mode(_a: AccessMode) {}
+
+/// Streaming-backing slice: drive a single `readdir` on `dirp`,
+/// skipping `.` and `..`, and return either:
+///   * `[true, entryRecord]` on a real entry (stat via `entry_stat_row`);
+///   * `[false, "EOS"]` on clean end-of-directory;
+///   * `[false, code, msg]` on `readdir` error or per-entry stat error.
+///
+/// Must run inside `spawn_blocking` — `readdir` + `openat` + `fstat`
+/// are blocking syscalls.  The caller holds the enclosing `DirHandle`
+/// Mutex guard for the whole duration, which is what makes the raw
+/// `dirp` pointer safe to touch here (POSIX leaves same-`DIR*`
+/// concurrent `readdir` undefined; the Mutex is the load-bearing
+/// invariant that serializes access).
+///
+/// SAFETY: `dirp` must be a live `libc::DIR*` obtained via
+/// `fdopendir` on a fd that has not been closed; the caller must
+/// hold the enclosing `DirHandle::iter` Mutex guard for the
+/// duration.
+fn readdir_one_entry(dirp: *mut libc::DIR, cmode: ConsensusMode) -> Par {
+    use std::os::unix::ffi::OsStringExt;
+    loop {
+        unsafe { errno_reset() };
+        let ent = unsafe { libc::readdir(dirp) };
+        if ent.is_null() {
+            let raw = std::io::Error::last_os_error().raw_os_error();
+            if raw == Some(0) || raw.is_none() {
+                // Clean EOF.
+                return err_eos();
+            }
+            let e = std::io::Error::last_os_error();
+            return err(io_err_code(&e), io_msg_scrub(&e));
+        }
+        let name_ptr = unsafe { (*ent).d_name.as_ptr() };
+        let name_c = unsafe { std::ffi::CStr::from_ptr(name_ptr) };
+        let name_bytes = name_c.to_bytes();
+        if name_bytes == b"." || name_bytes == b".." {
+            continue;
+        }
+        // dirfd(3) returns the underlying fd for `openat`-based
+        // per-entry stat — matches bulk fs_entries' pattern.
+        let dir_fd = unsafe { libc::dirfd(dirp) };
+        let name_os = std::ffi::OsString::from_vec(name_bytes.to_vec());
+        return ok_par(entry_stat_row(dir_fd, &name_os, cmode));
+    }
+}
+
+/// Streaming-backing slice: returns `true` if `reply` is a `[true, ...]`
+/// shape (regardless of the tail).  Used by the entries-stream Next
+/// handler to derive `n = 1` (successful entry) vs `n = 0` (EOS or
+/// error) for the per-entry supplement charge — same two-branch
+/// pattern as bulk `fs_entries`.
+///
+/// Not the same as `extract_ok_u64` (which requires `[true, int]`);
+/// not the same as `extract_ok_list_len` (which requires
+/// `[true, list]`); we only need to know if the head is `true`.
+fn reply_is_ok(reply: &[Par]) -> bool {
+    use models::rhoapi::expr::ExprInstance;
+    let Some(head) = reply.first() else {
+        return false;
+    };
+    let Some(expr) = head.exprs.first() else {
+        return false;
+    };
+    let Some(ExprInstance::EListBody(list)) = expr.expr_instance.as_ref() else {
+        return false;
+    };
+    let Some(ok_par) = list.ps.first() else {
+        return false;
+    };
+    RhoBoolean::unapply(ok_par) == Some(true)
+}
 
 /// Portable errno reset.  `readdir` returns NULL on both EOF and error;
 /// distinguishing them requires clearing errno beforehand and checking
