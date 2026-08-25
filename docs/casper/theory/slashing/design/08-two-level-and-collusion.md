@@ -20,6 +20,16 @@ deploy.
 
 **Two-level slashing** closes this loophole.
 
+> **Current activation status.** Neglect DETECTION and block REJECTION are
+> live. The economic arm is not: `NeglectedEquivocation` /
+> `NeglectedInvalidBlock` are demoted from the slashable set (they are
+> judged against the receiver's own tracker and records — view-relative,
+> so honest nodes can disagree on them; CI run 32588262605 burned honest
+> stake through exactly this class). Level-2 stake loss resumes if the
+> neglect checks are shown admission-order-free and re-promoted — see the
+> amendment in `slashing-specification.md` §4. The closure theory below is
+> the design for that re-promoted state.
+
 ## 8.2 The neglect rule (T-3, T-6)
 
 The detection layer adds a second classification verdict —
@@ -236,7 +246,7 @@ The diagram shows:
 
 | Theorem | Statement                                                                                                      | File:line                                |
 |---------|----------------------------------------------------------------------------------------------------------------|------------------------------------------|
-| T-3     | Post-fix, the slashable set strictly extends the pre-fix slashable set.                                        | `InvalidBlock.v:151`                     |
+| T-3     | Historical (bug-fix era): the slashable set strictly extends the pre-fix set. Superseded by the spec amendment — the normative set is the 2-variant equivocation class; see verification §4.4. | `InvalidBlock.v:151`                     |
 | T-6     | `detect_neglected` is sound and complete (verification §4.5 / §4.6).                                           | `EquivocationDetector.v` (sound at §4.5) |
 | T-11    | Level-2 closure terminates in at most `|V|` iterations.                                                        | `TwoLevelSlashing.v:126`                 |
 | T-12    | Under `|closure| ≤ F`, slash closure preserves quorum.                                                         | `TwoLevelSlashing.v:174`                 |

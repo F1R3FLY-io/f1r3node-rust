@@ -103,7 +103,7 @@ This option extends the inclusion-leadership mechanism to serialize same-key con
 A proposer applies this rule when its parent set contains a sibling that carries a chain with strictly more prior rejections. The proposer declares that sibling as `parents[0]`. The retry is then in the base and lands structurally.
 
 - **Pros:** This option gives the strongest liveness effect that needs no validation change. Ground Truth 1 makes it proposer policy: validators replay the declared parents and recompute the same merge. The priority derives from on-chain records, so the rule is deterministic.
-- **Cons:** The spine follows main parents. Fork-choice scores credit only the main-parent chain, and `prefer_certified_main_parent` exists to keep the spine on certified ground. Systematic deviation for fairness reasons risks finalization-health regressions. The option also opens a mild griefing vector: cheap manufactured losses could steer the main-parent choice of other proposers. This option must enter only after soak evidence supports it.
+- **Cons:** The spine follows main parents. Fork-choice scores credit only the main-parent chain, and the heaviest-subtree descent keeps the spine on certified ground (a certified branch holds a strict weight majority). Systematic deviation for fairness reasons risks finalization-health regressions. The option also opens a mild griefing vector: cheap manufactured losses could steer the main-parent choice of other proposers. This option must enter only after soak evidence supports it.
 
 ### Option C2 — loss-aware base fallback (reserve)
 

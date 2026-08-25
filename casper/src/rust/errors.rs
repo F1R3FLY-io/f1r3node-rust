@@ -35,6 +35,15 @@ pub enum CasperError {
     /// processor can request the named block and retry, instead of folding it
     /// into the storage-failure class that becomes a slashable verdict.
     BlockNotHeld(BlockHash),
+    /// The floor derivation found finalized candidates that are mutually
+    /// incompatible (same-height certified siblings with no containment and
+    /// no re-merge). Under a BFT threshold (θ ≥ 0) this is impossible
+    /// without a protocol breach and stays a loud error; under a negative
+    /// threshold "finalized" is bare majority agreement per snapshot, so the
+    /// live clock absorbs it as an expected transient hold
+    /// (`FloorOfView::IncompatibilityHold`). Typed so that regime split is a
+    /// match, not a string search. Carries the full preformatted detail.
+    IncompatibleFinalizedFork(String),
     Other(String),
 }
 
@@ -57,6 +66,10 @@ impl fmt::Display for CasperError {
                 "block not held by this node: {} — its history does not reach that block",
                 PrettyPrinter::build_string_bytes(hash)
             ),
+            // The detail is self-describing ("finalized-floor safety
+            // violation: ... — incompatible finalized fork"), and harness
+            // forbidden-log patterns key on that text — print it verbatim.
+            CasperError::IncompatibleFinalizedFork(detail) => write!(f, "{}", detail),
             CasperError::Other(error) => write!(f, "Other error: {}", error),
         }
     }

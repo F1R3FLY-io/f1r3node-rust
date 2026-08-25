@@ -127,6 +127,7 @@ async fn probe_floor_state(
     )
     .await
     .expect("floor_of_view")
+    .advanced()
     .unwrap_or_else(|| current.clone());
     tracing::info!(
         target: "repro",

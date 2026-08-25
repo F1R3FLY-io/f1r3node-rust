@@ -164,11 +164,20 @@ pub fn weight_from_validator_by_dag(
     block_hash: &BlockHash,
     validator: &Validator,
 ) -> Result<i64, KvStoreError> {
+    // On the fork-choice BFS a traversed block — or its main parent, read for
+    // the weight map — can be absent from the metadata index: a sync/prune
+    // window, or, on an LFS-restored node, a parent below the restore horizon
+    // (held as a hash only, never indexed). Absence is a statement about THIS
+    // node's history, never about the block being judged: `MissingBlock`
+    // collapses to `BlockNotHeld` and the pipeline defers the block for
+    // fetch-and-retry, where a `KeyNotFound` hard-failed admission (the #306
+    // storm on restored joiners and observers). No backtrace in the context —
+    // this is a hot path with exactly one caller (`estimator::build_scores_map`).
     let block_metadata = dag
         .lookup(block_hash)?
         .ok_or_else(|| KvStoreError::MissingBlock {
             hash: block_hash.clone(),
-            context: " during weight_from_validator_by_dag block metadata lookup".to_string(),
+            context: " [weight_from_validator_by_dag: traversed block]".to_string(),
         })?;
 
     // Try to get parent's weight for this validator
@@ -179,8 +188,7 @@ pub fn weight_from_validator_by_dag(
                 dag.lookup(parent_hash)?
                     .ok_or_else(|| KvStoreError::MissingBlock {
                         hash: parent_hash.clone(),
-                        context: " during weight_from_validator_by_dag main-parent metadata lookup"
-                            .to_string(),
+                        context: " [weight_from_validator_by_dag: main parent]".to_string(),
                     })?;
             // Return validator's weight from parent or 0 if not found
             Ok(parent_metadata
@@ -613,6 +621,20 @@ pub fn justification_to_justification_info(justification: &Justification) -> Jus
     }
 }
 
+// ---------------------------------------------------------------------------
+// Fork-choice FV — B1, refined by the restore-horizon walk (#306).
+//
+// `weight_from_validator_by_dag` (above) reads the traversed block's MAIN
+// PARENT weight map on the fork-choice BFS hot path (`estimator::build_scores_map`).
+// B1 (FIXED): a traversed block whose main parent is momentarily absent from the
+// metadata index — a sync / prune window — previously panicked via
+// `.expect("Parent metadata should exist")`. The typed error is now
+// `KvStoreError::MissingBlock`, which collapses to `CasperError::BlockNotHeld`
+// so admission DEFERS the block (fetch-and-retry) instead of hard-failing —
+// on an LFS-restored node a main parent below the restore horizon is the
+// normal condition, not a fault.
+// See docs/casper/theory/fork-choice/fork-choice-verification.md (B1).
+// ---------------------------------------------------------------------------
 #[cfg(test)]
 mod fork_choice_b1_repro_tests {
     use std::collections::BTreeMap;
@@ -685,29 +707,48 @@ mod fork_choice_b1_repro_tests {
         }
     }
 
+    /// The sixth restore-horizon walk (#306). On an LFS-restored node a held
+    /// block's main parent can sit below the horizon — hash-only, never
+    /// indexed. That absence is a statement about THIS node's sync, so it
+    /// must surface as `MissingBlock` (which collapses to `BlockNotHeld` and
+    /// defers the block for fetch-and-retry), never as a `KeyNotFound`
+    /// processing failure that hard-fails admission.
     #[test]
-    fn weight_from_validator_missing_block_names_missing_block() {
+    fn a_main_parent_below_the_restore_horizon_is_a_missing_block() {
         let v = h(9);
-        let missing = h(1);
-        let mut dag = dag_with(vec![]);
-        let result = weight_from_validator_by_dag(&mut dag, &missing, &v);
+        let child = h(1);
+        let missing = h(2); // below the horizon: referenced, never indexed
+        let mut dag = dag_with(vec![md(child.clone(), vec![missing.clone()], 1, &v)]);
+        let result = weight_from_validator_by_dag(&mut dag, &child, &v);
+        let Err(err) = result else {
+            panic!("unheld main parent must error, got {result:?}");
+        };
         assert!(
-            matches!(result, Err(KvStoreError::MissingBlock { ref hash, .. }) if *hash == missing),
-            "missing block metadata must name the unavailable block, got {result:?}"
+            matches!(&err, KvStoreError::MissingBlock { hash, .. } if *hash == missing),
+            "unheld main parent must be MissingBlock naming the parent, got {err:?}"
+        );
+        // The deferral collapse the block pipeline routes on: the typed
+        // absence becomes BlockNotHeld, never a judged exception.
+        assert!(
+            matches!(
+                crate::rust::errors::CasperError::from(err),
+                crate::rust::errors::CasperError::BlockNotHeld(hash) if hash == missing
+            ),
+            "MissingBlock must collapse to BlockNotHeld for the deferral path"
         );
     }
 
+    /// The BFS twin of the case above: the traversed block itself is unheld
+    /// (its hash was queued from a held child's parent list). Same contract.
     #[test]
-    fn weight_from_validator_missing_parent_defers_with_hash() {
+    fn an_unheld_traversed_block_is_a_missing_block() {
         let v = h(9);
-        let child = h(1);
-        let missing = h(2);
-        let mut dag = dag_with(vec![md(child.clone(), vec![missing.clone()], 1, &v)]);
-        let error = weight_from_validator_by_dag(&mut dag, &child, &v)
-            .expect_err("missing main-parent metadata must refuse a partial score");
+        let missing = h(3); // never added to the index
+        let mut dag = dag_with(vec![]);
+        let result = weight_from_validator_by_dag(&mut dag, &missing, &v);
         assert!(
-            matches!(CasperError::from(error), CasperError::BlockNotHeld(hash) if hash == missing),
-            "missing main-parent metadata must enter the fetch-and-retry path"
+            matches!(&result, Err(KvStoreError::MissingBlock { hash, .. }) if *hash == missing),
+            "unheld traversed block must be MissingBlock naming it, got {result:?}"
         );
     }
 

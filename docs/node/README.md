@@ -361,7 +361,8 @@ These values are hardcoded (previously configurable via `F1R3_*` env vars, remov
 |---------|--------:|---------|
 | `F1R3_MAX_BLOCKS_IN_PROCESSING` | `512` | Cap on concurrently in-flight blocks in `BlockProcessorInstance`. **When the cap is hit, incoming blocks are dropped with a warn log** (they are re-fetched via the missing-dependency path later), so undersizing this on a catching-up node slows sync. Was hardcoded 2048 through v0.4.16; lowered to bound peak memory. `0`/invalid falls back to the default. |
 | `F1R3_MALLOC_TRIM_EVERY_BLOCKS` | `0` (disabled) | Linux/glibc only: call `malloc_trim(0)` after every N processed blocks to return freed arena memory to the OS. Was 8 through v0.4.16; now disabled by default because trims stall the processing loop. Long-running validators that need bounded RSS should set a non-zero interval (e.g. `8`). |
-| `F1R3_MISSING_DEPENDENCY_QUARANTINE_MS` | `120000` | How long a block whose dependencies exceeded the retry budget stays quarantined before another fetch round. Was 10s through v0.4.16; raised to 120s to stop request storms against slow peers. Lower it on small local networks where dependencies resolve fast. |
+| `F1R3_MISSING_DEPENDENCY_QUARANTINE_MS` | `120000` | How long a block whose dependencies exceeded the retry budget stays quarantined before another fetch round. Was 10s through v0.4.16; raised to 120s to stop request storms against slow peers. Lower it on small local networks where dependencies resolve fast. Also paces the validation-error quarantine below. |
+| `F1R3_VALIDATION_ERROR_ATTEMPTS_MAX` | `32` | Cap on hard validation `Err`s per buffered block (typed outcomes — duplicate, malformed, missing-dependency — never count). At the cap the block is purged from the buffer with a warn; only a fresh peer delivery brings it back. Retries between attempts are paced by the quarantine interval above. |
 
 **`ProposerInstance`** -- Dequeues proposal requests. Non-blocking locking (try_lock). 5-minute timeout for stuck proposals. Min-interval between proposals is 250ms (hardcoded).
 
@@ -372,16 +373,17 @@ These values are hardcoded (previously configurable via `F1R3_*` env vars, remov
 | `heartbeat.enabled` | `false` | Enable the heartbeat proposer |
 | `heartbeat.check-interval` | 5s | How often the loop evaluates its decision tree |
 | `heartbeat.max-lfb-age` | 5s | LFB age threshold above which stale-LFB recovery may fire |
-| `heartbeat.self-propose-cooldown` | 15s | Min interval between self-proposals |
-| `heartbeat.stale-recovery-min-interval` | 12s | Min LFB/frontier age before stale/leader/backstop recovery may fire |
-| `heartbeat.deploy-finalization-grace` | 25s | Grace window opened when pending deploys land; relaxes lag caps |
-| `heartbeat.advanced.frontier-chase-max-lag` | 0 | EXPERIMENTAL. Max lag for frontier-chase proposals while ahead of LFB |
+| `heartbeat.self-propose-cooldown` | 3s | Min interval between self-proposals; gates every routine lane (never the stale-recovery lane, which paces on the interval below) |
+| `heartbeat.stale-recovery-min-interval` | 3s | Pacing for stale-LFB recovery and the pending-deploy backstop: both the LFB's age and the validator's own silence must exceed it — at most one recovery proposal per validator per interval |
+| `heartbeat.deploy-finalization-grace` | 25s | Grace window opened when pending deploys land; widens lag caps only — never bypasses the cooldown |
+| `heartbeat.advanced.frontier-chase-max-lag` | 20 | EXPERIMENTAL. Max lag for frontier-chase proposals while ahead of LFB (0 stops validators contributing under load) |
 | `heartbeat.advanced.pending-deploy-max-lag` | 20 | EXPERIMENTAL. Lag threshold above which pending-deploy proposals throttle |
 | `heartbeat.advanced.deploy-recovery-max-lag` | 64 | EXPERIMENTAL. Wider lag cap during the deploy-finalization grace window. Must be >= `pending-deploy-max-lag` to take effect (else collapses to that floor). |
+| `heartbeat.advanced.empty-frontier-max-unfinalized-blocks` | 64 | EXPERIMENTAL. Width cap on empty (no-deploy) proposals: above this many unfinalized blocks, empty proposals stop — except one per validator per stale-recovery interval when temporally idle (the consensus-deadlock escape). |
 
 **Deploy grace window**: When a deploy is proposed or finalization-critical parents observed, a grace window opens (default 25s) that allows proposals which would normally be blocked by cooldown/interval constraints.
 
-**Stale LFB leader-only recovery**: Deterministic leader selection allows one validator to propose when LFB is stale but regular recovery is throttled (`lag in [1, threshold)`).
+**Stale LFB recovery**: Open to every bonded validator — once the LFB and the validator's own last proposal are both older than `stale-recovery-min-interval`, it proposes one recovery block per interval. Certification needs mutual witnessing, so recovery is never gated on a leader or on height relations; a temporally idle validator also passes the empty-frontier width cap once per interval (the cap bounds churn to the recovery cadence, never to zero). Deterministic leader selection survives only for the one-shot multi-parent convergence proposal.
 
 ## Logging
 

@@ -82,8 +82,8 @@ async fn integration_t_invalid_transaction() {
 
     let has_v0 = (0..=10).any(|b| <_ as SlashingObserver>::has_record(&snapshot, "v0", b));
     assert!(
-        has_v0,
-        "post-fix #3 catch-all: dispatcher mints record for v0 \
-         on InvalidTransaction"
+        !has_v0,
+        "demoted: InvalidTransaction is judged against local replay state \
+         and mints no slash evidence"
     );
 }
