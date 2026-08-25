@@ -305,6 +305,7 @@ Abbreviations used throughout are ABI (application binary interface), CBR (conse
 | **SS-C12** | this checkpoint; pgmcp #5193, #5282, #5283 | f1r3node | direct ACTree03 replay, range-backed canonical-key/value worklist, and exact deferred EPathMap fold construction; exhaustive comparison residues and malformed-gate resource closure | decoder/canonicalizer host re-entry $`\Theta(d) \rightarrow O(1)`$ native stack; repeated trie reconstruction/hash $`\Theta(d^2) \rightarrow \Theta(d)`$; depth **20,000** on **256 KiB**; malformed gate **6.12 GiB $`\rightarrow`$ 682,548 KiB** peak | **yes** for the decoder SCC; byte/acceptance neutral under CBR-044 and retired CBR-023 | [5.19](#519-direct-epm1-canonical-validation-and-fold-construction-closure-ss-c12) |
 | **SS-C13** | this checkpoint; pgmcp #5192 | cross-repository | one shared borrowed/owned canonical-`Par` PDA suspends native read/owned EPathMap zippers directly; set keys remain `PathMap<()>`, map values remain `PathMap<Par>` until their entry is current | all-entry decoded-key/value-pointer frontier $`\rightarrow O(1)`$ live trie cursors plus the current decoded key and structural frontier; **20,000** levels on **256 KiB**; integration **3/3** | **yes**; borrowed/owned preorder equality, independent recursive receive-count oracle, and existing forward/reverse raw-zipper order gates | [5.20](#520-semantic-scc-constructor-and-pathmap-streaming-closure-ss-g43-ss-c13) |
 | **SS-C14** | `2142b2273`; pgmcp experiment 258 | f1r3node | dormant `ParBag` RPB2 key: family tag + prefix-free score-order key + canonical protobuf body; ACT import decodes, canonicalizes, and re-keys one current endpoint; protobuf output traverses trie order and copies stored bodies without a `Vec`, decoded shadow, or element sort | native stack remains $`O(1)`$ through the existing hand-written sorter worklist, generated protobuf PDAs, and iterative score-key parser; exact lookup is one PathMap probe after $`O(k)`$ prepared-key construction for key length $`k`$ | **yes**; all-family byte oracle, malformed/noncanonical ACT rejection, nested-metadata witness, depth 4,096, and experiment 258's 1,312 checksum-guarded observations | [5.27](#527-canonical-protobuf-key-parbag-and-prepared-key-closure-ss-c14) |
+| **SS-C15** | `bdaf93a5f`; pgmcp #6023 | f1r3node | Bag/EPathMap canonical ACT admission and every production endpoint/topology consumer share one validated preorder plan; generated EPM1 decoding retains only the current borrowed value body | physical primary-record parses $`4S-2 \rightarrow S`$, wrapper parses $`2W \rightarrow W`$, node reparses and event-time metadata reads $`\rightarrow 0`$; native stack remains $`O(1)`$ | **yes for the ACT replay slope**; 12/12 plan, 24/24 EPM1, 28/28 Bag, 74/74 rspace library, and 279/279 models library gates | [5.42](#542-single-admission-act-plan-and-epm1-consumer-closure-ss-c15) |
 | **SS-D1** | `d2591fa1` | f1r3node | task-spawn boundary per-branch deep clone | 2,867 $`\rightarrow`$ **0** *(this site)* | **yes** | [5.5.3](#553-the-three-repairs) |
 | **SS-D2** | `94dc983f` | f1r3node | ownership to the substitution; **15** deep copies | incl. $`O(n^2)`$ $`\rightarrow`$ $`O(n)`$ | **yes** | [5.5.3](#553-the-three-repairs) |
 | **SS-D3** | `9082d12c` | f1r3node | `inj_attempt` read-back clone $`\rightarrow`$ by-move | 2,852 $`\rightarrow`$ **0** | **yes** | [5.5.3](#553-the-three-repairs) |
@@ -528,6 +529,7 @@ register rows (SS-C5…SS-C14, SS-Y6) and the stack-safety consequences.
   - [5.34 RMP2 byte-native projection, cache, and candidate-product continuations [SS-A20, SS-A21, SS-Y14]](#534-rmp2-byte-native-projection-cache-and-candidate-product-continuations-ss-a20-ss-a21-ss-y14)
   - [5.35 Resident Send projection and proof-preserving reducer Join [SS-Y15]](#535-resident-send-projection-and-proof-preserving-reducer-join-ss-y15)
   - [5.36 Semantic-group candidate masks and retention pressure [SS-Y16]](#536-semantic-group-candidate-masks-and-retention-pressure-ss-y16)
+  - [5.42 Single-admission ACT plan and EPM1 consumer closure [SS-C15]](#542-single-admission-act-plan-and-epm1-consumer-closure-ss-c15)
 - [6. Discussion](#6-discussion)
   - [6.1 Why the explicit-worklist shape, and why it is *smaller* than what it replaces](#61-why-the-explicit-worklist-shape-and-why-it-is-smaller-than-what-it-replaces)
   - [6.2 Why the SCC is the unit of conversion](#62-why-the-scc-is-the-unit-of-conversion)
@@ -9962,19 +9964,17 @@ hash/event/error-parity cases. Their captured-log SHA-256 values are, respective
 `9862e7f0b14fe158c0ddc35f9eb2c5a663c29fdd0d907fcf8fd60e188edbf2c6`, and
 `aeff25cbf3076616f4a2cfe4e73be2bc8c36734690f9b7fd9d9c6a1bfd64cd9b`.
 
-This checkpoint does not yet close the physical-ACT replay slope. Construction of
-`CanonicalCompactTrieTopologyState` performs one complete stack-safe canonicality DFS and event
-emission later reparses node metadata. For $`S`$ semantic nodes and $`W`$ folded line wrappers,
-construction plus one walk parses primary records $`4S - 2`$ times and wrappers $`2W`$ times.
-The validation barrier preserves fail-before-use and error precedence, but repeated parsing is not
-required. Pgmcp #6023 specifies one eager DFS that retains a compact preorder validated traversal
-plan; its hard targets are zero node reparses and zero event-time metadata reads. The arena's
-immutable-node allocation rate and freeze metadata slope also remain hypotheses for headless
-Heaptrack and geometric depth/width measurement.
+At this historical checkpoint the physical-ACT replay slope was still open. Construction of
+`CanonicalCompactTrieTopologyState` performed one complete stack-safe canonicality DFS and event
+emission later reparsed node metadata. For $`S`$ semantic nodes and $`W`$ folded line wrappers,
+construction plus one walk parsed primary records $`4S - 2`$ times and wrappers $`2W`$ times.
+Pgmcp #6023 therefore specified one eager DFS retaining a compact preorder validated traversal plan.
 
-This remains prerequisite evidence, not production activation: pgmcp children 6018 and 6023 retain
-the ACT plan, indexed nested reducer cutover, source-level zero-reconstruction/zero-decode gates,
-formal proof, and performance experiment as open P0 work.
+Checkpoint `bdaf93a5f` closes that named replay mechanism; [SS-C15](#542-single-admission-act-plan-and-epm1-consumer-closure-ss-c15)
+records the production-consumer cutover and exact zero-reparse counters. The persistent arena's
+immutable-page allocation/freeze slope, end-to-end RPB3 activation, formal proof, and comparative
+allocator/throughput experiment remain separate obligations. Closing one proven work slope is not
+a blanket performance verdict for those layers.
 
 The focused executable gate contains twelve tests. It covers every schema family, the root-
 `locally_free` quotient, empty false/true connective separation, pairwise image/`Par` ordering,
@@ -10192,11 +10192,104 @@ library passes 279 of 279 in 4.71 s. The respective SHA-256 log digests are
 `ca7545c2a3c6e96fc1853d818fcfb5f47689b3f46dc521ce26b2c2d69cd0a1c1`. These are test-runner
 observations, not throughput claims.
 
-The single-parse ACT plan, production RPB3 cutover, full RSpace lifecycle composition, and formal
-equivalence task remain separate pgmcp dependencies. SS-E5 neither activates the shadow RCI2 path
-nor proves PathMap, bincode, Prost, or BLAKE2 internals. It proves that the generated adapters do not
-silently omit a descriptor root/field/arm and that the selected implementations agree on their
-observable byte languages for this exhaustive schema partition.
+At the SS-E5 checkpoint, the single-parse ACT plan, production RPB3 cutover, full RSpace lifecycle
+composition, and formal-equivalence task were separate pgmcp dependencies. SS-C15 (§5.42) now closes
+the ACT-consumer migration only. SS-E5 neither activates the shadow RCI2 path nor proves PathMap,
+bincode, Prost, or BLAKE2 internals. It proves that the generated adapters do not silently omit a
+descriptor root/field/arm and that the selected implementations agree on their observable byte
+languages for this exhaustive schema partition.
+
+---
+
+### 5.42 Single-admission ACT plan and EPM1 consumer closure [SS-C15]
+
+#### 5.42.1 Mechanism and boundary
+
+An ACT (`ACTree03`) image is PathMap's physical prefix-compressed trie representation. Before
+`bdaf93a5f`, the newer indexed topology route admitted that image into `ValidatedActPlan`, while
+Bag import and several EPathMap routes still used the older metadata-map parser. Direct EPM1 decode
+also inspected the ACT arena and then parsed it again during live `PathMap` reconstruction. Both
+implementations were iterative, so this was not a native-stack regression; it was redundant linear
+work and proportional metadata retained across adjacent stages.
+
+The selected boundary is now:
+
+```text
+untrusted ACT bytes
+  -> one stack-safe physical admission DFS
+  -> immutable preorder ValidatedActPlan
+       |-> endpoint cursor -> Bag / EPathMap reconstruction
+       |-> value summary   -> Set/Map ordinal admission
+       `-> topology cursor -> byte-native EPM1/RPB3 reducers
+```
+
+Admission proves canonical varints, offsets, producer order, sparse/dense branch order, line
+placement/reuse, exact line-hash collision equality, complete arena coverage, and root/trailer
+closure before a logical event becomes observable. The plan retains source offsets for values,
+edges, and line bytes. The contiguous and indexed/fragmented cursors therefore share the same
+accepted language and event order while the indexed cursor maps a logical offset back to exact
+physical provenance.
+
+Ordinal facts are folded during the same physical DFS. Set mode requires every value ordinal to be
+zero and declares no external value table. Map mode requires preorder ordinals $`0,1,\ldots,n-1`$
+and exact agreement with the EPM1 value count. A malformed ordinal or count now fails at cursor
+construction rather than after an event prefix has escaped. The error text and physical location
+remain differential-tested against the contiguous boundary.
+
+#### 5.42.2 Space and traversal result
+
+For physical ACT length $`a`$, semantic records $`S`$, folded line wrappers $`W`$, emitted logical
+edge bytes $`e`$, maximum current endpoint length $`K`$, and branch depth $`D`$, validation plus one
+walk has the derived bounds
+
+```math
+T(a,S,W,e)=\Theta(a+e),\qquad
+H(S,W,K,D)=O(S+W+K+D),\qquad
+N=O(1),
+```
+
+where $`H`$ is transient heap and $`N`$ is native-stack space. Instrumented construction requires
+exactly $`S`$ semantic-node parses and $`W`$ wrapper parses. `node_reparses` and
+`event_metadata_source_reads` are hard-zero sentinels; only compressed line bytes are reread when
+their logical `Edge` events are emitted. `rewind` resets indices and explicit stacks without
+revalidating the source.
+
+A complete one-line endpoint lends its exact input range. A key that crosses a branch edge uses one
+reusable path buffer; retained EPathMap inspection owns only those branched keys. Bag and EPathMap
+reconstruction insert directly from the cursor into `PathMap<Multiplicity>`, `PathMap<()>`, or
+`PathMap<Par>`. No route projects the trie to `Vec<Par>`, sorts entries, or creates a hash-based
+semantic shadow.
+
+Generated pausable EPM1 value decoding keeps one current borrowed protobuf-body range. It compares
+the generated PDA result with that body immediately, stores only the first failure ordinal, admits
+and reconstructs ACT once, and reports a delayed body error afterward. The delay preserves the
+pre-existing ACT-before-body error precedence without retaining $`O(n)`$ body ranges. Publication
+still occurs only after the complete snapshot succeeds.
+
+#### 5.42.3 Executable evidence and limits
+
+All commands ran in systemd user scopes with `MemoryHigh=6G`, `MemoryMax=10G`, and
+`MemorySwapMax=0`:
+
+| Gate | Result | Captured-log SHA-256 |
+|---|---:|---|
+| focused EPathMap/ACT module | 24/24 | `be02a3ef2c44eecbc85b231c98238506a85089fa9c50f91f879eb487388a1d37` |
+| validated-plan module | 12/12 | `56dc6a4df2acb630dd58e2e420077c1fa19c38741001e4959b640d8b3589c685` |
+| Bag integration | 28/28 | `14d75411ea34d4a1cb429d0700394e273f0165e4c163310e5b29c99f15bb02a7` |
+| complete `rspace_plus_plus` library | 74/74 | `b00c4a6e8dcc26183d2776980d70648a553cf273c61c26270810a174aca9ab54` |
+| complete `models` library | 279/279 | `728b1266945f6237c47528a534995e6a18886dd034aaf5b3af37babaf931080d` |
+
+The matrix covers all ACT truncations and single-bit mutations against an independent parser,
+aliases/gaps/overlap, sparse and dense branches, forced line-hash collision behavior, contiguous
+and fragmented provenance, source-relative versus branched endpoints, malformed EPM1 framing and
+ordinals, Empty/Set/Map round trips, a 200,000-byte compressed Bag key, wide shared prefixes, and
+depth-4,096 EPM1/ACT walks on fixed small native stacks.
+
+This closes the measured metadata-replay mechanism and production-consumer migration. It is **not**
+a wall-clock, allocator, cache, or whole-RSpace performance verdict. Headless allocation/RSS and
+instruction/cache profiles, persistent-arena page selection, formal admission equivalence, and the
+full release workspace remain explicit downstream gates. The legacy parser remains as a test
+oracle/compatibility surface until removal can preserve the independent malformed differential.
 
 ---
 

@@ -4942,8 +4942,9 @@ that have no RPB3 scoring role. It does not change any generated message definit
 bincode encoder, ParBag/EPathMap representation, active RPB3 validator, EPM1 mode/topology/value
 association, normalized `Par`, channel or datum identity, hash, COMM schedule, charge, accepted
 Rholang program, or parallel execution order. It remains a continuation of active CBR-044, not a
-new consensus entry. Single-parse ACT emission, formal equivalence, production cutover, complete
-RSpace lifecycle composition, and resource measurement remain open dependencies.
+new consensus entry. At that checkpoint, single-parse ACT emission, formal equivalence, production
+cutover, complete RSpace lifecycle composition, and resource measurement remained open; the
+`bdaf93a5f` continuation below subsequently closes the ACT-consumer migration only.
 
 **CBR-044 living implementation continuation (2026-08-25, exact RPB3 semantic observation and
 hostile EPM1 closure; pgmcp #6019).** Test builds now retain the admission reducer's root score long
@@ -4964,9 +4965,30 @@ homogeneous-mode, and mixed legacy/current mutations. The focused gate passes 21
 These changes strengthen the executable equivalence relation only. They do not change emitted or
 accepted canonical bytes, score construction, multiplicity, EPM1 specialization, PathMap state,
 hashes, event/history bytes, COMM ordering, charge, or Rholang behavior, and therefore add no axis
-movement to CBR-044. ACT-plan migration across the remaining production consumers, formal proof,
-publication-fault composition, full release, and performance measurement remain open and are not
-claimed by this continuation.
+movement to CBR-044. At that checkpoint, ACT-plan migration across the remaining production
+consumers, formal proof, publication-fault composition, full release, and performance measurement
+remained open; the next continuation closes only the ACT-consumer migration.
+
+**CBR-044 living implementation continuation (2026-08-25, single-admission ACT consumer cutover;
+`bdaf93a5f`, pgmcp #6023).** Bag import, EPathMap reconstruction, retained snapshot inspection,
+value-region inspection, and topology streaming now consume one canonical preorder ACT validation
+plan. Set-zero and Map-sequential/count summaries are proved during that physical pass and checked
+before any topology event is observable. A complete compressed-line key remains a borrowed snapshot
+range; only a key assembled across branch edges becomes owned when retained inspection requires it.
+The generated pausable EPM1 decoder retains one current protobuf body range, records a canonicality
+failure without publishing it, admits/reconstructs ACT once, and reports that failure afterward so
+the established ACT-before-value-body error precedence remains fixed.
+
+This cutover changes neither final acceptance nor any serialized or semantic authority. EPM1 magic,
+version, mode, ACTree03 arena, ordinal association, protobuf value bodies, bincode image,
+`PathMap<()>`/`PathMap<Par>` specialization, decoded `Par`, RPB3 score/body key, hash, event/history
+bytes, COMM selection/order, charge, and public Rholang result remain identical. Constructor-time
+rejection of an invalid indexed ordinal prevents a malformed event prefix from escaping but reaches
+the same terminal error and provenance as before; no valid image is newly accepted or rejected.
+The capped gates pass 12/12 validated-plan, 24/24 EPM1, 28/28 Bag, 74/74 rspace-library, and 279/279
+models-library cases. This is an implementation refinement within active CBR-044, not a new change
+record. Formal proof, full release, publication-fault composition, and end-to-end performance
+measurement remain separate gates and are not inferred from the exact zero-reparse counters.
 
 **CBR-023 living-set continuation (2026-08-09, comparison exhaustiveness; pgmcp #5282).** The full
 models gate found catch-all mismatch arms in the already-iterative `Sig`, `Token`, `SignedProcess`,

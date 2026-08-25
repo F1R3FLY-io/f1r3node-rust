@@ -1917,6 +1917,69 @@ separate H-014 hypothesis; it must preserve channel-prefix algebra and the full 
 before it can replace the current structural authority. The complete scientific record is
 [`../stack-safety/measurements/rspace-identity-order-index-experiment-2026-08-25.md`](../stack-safety/measurements/rspace-identity-order-index-experiment-2026-08-25.md).
 
+### J-025 — 2026-08-25: admit an ACT image once, then lend every consumer the same proof
+
+**OBSERVED.** The new byte-native RPB3 path used a validated preorder ACT plan, but production Bag
+and EPathMap consumers still entered the older `CompactTrie` parser. EPathMap direct and generated
+decoding first called structural inspection and then parsed the identical ACT arena again during
+live `PathMap` reconstruction. Snapshot inspection, value-region inspection, and topology streaming
+also replayed the older materialized metadata maps. This was not a PathMap lookup cost; it was a
+proof-lifetime defect at the integration boundary.
+
+**DECISION.** Checkpoint `bdaf93a5f` makes `ValidatedActPlan` the single admission result for all of
+those consumers. Its endpoint and topology cursors expose the ordinal facts proved during physical
+validation, so EPM1 checks Set-zero and Map-sequential/count rules before any topology event becomes
+observable. A complete root line carries its exact source range; a path crossing a branch remains
+in one reusable cursor buffer and becomes owned only when a retained inspection result requires
+ownership. Bag and EPathMap reconstruction insert directly from the borrowed endpoint cursor—never
+through `Vec<Par>`, an entry sort, or a shadow hash map.
+
+The generated pausable protobuf decoder keeps only the current EPM1 value-body range. It checks
+canonical protobuf bytes when that value returns from the generated PDA, records only the first
+failure ordinal, admits/reconstructs the ACT arena once, and then reports the delayed body error.
+This preserves ACT-before-body error precedence without retaining a proportional `Vec<Range>` or
+reparsing ACT. Nested trusted validation continues to share the existing deferred semantic fence.
+
+For physical arena length $`a`$, semantic records $`S`$, folded line wrappers $`W`$, logical edge
+bytes $`e`$, and maximum current key length $`K`$, the derived admission/walk bound is
+$`\Theta(a + e)`$ time, $`O(S + W + K)`$ transient plan/cursor heap, and $`O(1)`$ native stack.
+Instrumentation requires `semantic_node_parses = S`, `wrapper_node_parses = W`,
+`node_reparses = 0`, and `event_metadata_source_reads = 0`; compressed line bytes are the only
+source bytes reread to emit their logical edges. No throughput or allocator win is inferred from
+these exact work counters.
+
+**MEASURED correctness/resource gates.** Under zero-swap systemd scopes with `MemoryHigh=6G` and
+`MemoryMax=10G`, the focused EPathMap suite passes 24/24 (including malformed/provenance and two
+depth-4,096 small-stack walks), the validated-plan suite passes 12/12, Bag passes 28/28, the complete
+`rspace_plus_plus` library passes 74/74, and the complete `models` library passes 279/279. Log
+SHA-256 digests are `be02a3ef2c44eecbc85b231c98238506a85089fa9c50f91f879eb487388a1d37`,
+`56dc6a4df2acb630dd58e2e420077c1fa19c38741001e4959b640d8b3589c685`,
+`14d75411ea34d4a1cb429d0700394e273f0165e4c163310e5b29c99f15bb02a7`,
+`b00c4a6e8dcc26183d2776980d70648a553cf273c61c26270810a174aca9ab54`, and
+`728b1266945f6237c47528a534995e6a18886dd034aaf5b3af37babaf931080d`, respectively.
+The old parser remains only as an independent differential oracle/compatibility surface; no
+production Bag or EPathMap consumer calls it.
+
+## Upstream PathMap integration request register
+
+This register separates local integration code from changes worth proposing to PathMap's
+maintainers. An **upstream request** is not permission to patch or fork PathMap in this campaign:
+the local implementation must remain correct, stack-safe, and measured against the released crate.
+Each request names the compatibility layer that can be deleted after an upstream release supplies
+the stated contract. Statuses distinguish a demonstrated integration need from a hypothesis that
+still requires measurement.
+
+| ID | Class and status | Local compatibility layer | Requested upstream contract | Evidence required or available | Removal criterion |
+|---|---|---|---|---|---|
+| PMU-001 | API + correctness hardening; **demonstrated need, local implementation active** | `rspace++/src/rspace/pathmap_codec.rs` validates arbitrary `ACTree03` input into a preorder plan and supplies contiguous/indexed topology and endpoint cursors. | Publish a stable, stack-safe canonical ACT admission plan and cursor API. It should parse each physical node/wrapper once; reject aliases, gaps, overlap, malformed offsets, noncanonical branches/lines/varints, and unreachable bytes before use; retain exact source offsets; expose value count/nonzero/nonsequential summaries; lend a complete one-line endpoint as a source range; support contiguous and fragmented indexed sources; rewind without reparsing; and keep native-stack use constant. | Old/new malformed and topology differentials, forced line-hash collision controls, fragmented provenance tests, deep/wide small-stack tests, and zero-reparse counters already exist locally. Performance/allocation closure remains part of pgmcp `rpb3-single-parse-act-traversal-plan`. | A released PathMap version provides the same admitted language, error/provenance guarantees, cursor event order, value summaries, and measured resource envelope; local consumers pass unchanged equivalence gates after replacing the compatibility layer. |
+| PMU-002 | Performance API; **candidate, measurement pending** | `Bag::compact_bytes` and EPM1 layout currently obtain an owned `ArenaCompactTree` image before a caller can write or hash it. | Add a checked canonical ACT writer that can preflight encoded length and then stream zipper output to fallible byte, `io::Write`, hash, WAL/page, or chunk sinks without constructing a second complete byte buffer. Exact bytes must equal `ArenaCompactTree::from_zipper(...).get_data()`, and sink failure must never imply successful publication. | Exact-byte differential, checked-length equality, injected sink failure, one-pass/copy counters, geometric shared-prefix workloads, and headless allocation/RSS evidence are required before calling this an optimization. | The upstream sink API passes the differential/resource gates and replaces local destination-specific buffering without changing consensus bytes. |
+| PMU-003 | Construction API; **candidate, profile before proposing** | Canonical Bag/EPathMap import validates ACT once, then reconstructs a live `PathMap` by replaying endpoints through public insertion and `create_path` APIs. | Consider a fallible `PathMap` constructor or write-zipper graft operation from an already validated canonical ACT plan, preserving prefix compression and value-free endpoints without a `Vec` projection or per-key reparsing. The API must not bypass value decoding/validation owned by the caller. | Compare endpoint replay with plan-to-trie construction over deep lines, wide branches, shared prefixes, value-free endpoints, Set, Map, and Bag; require identical zipper topology, lookups, algebra/lattice behavior, CoW sharing, merkleization, drop safety, and consensus encodings. | Adopt only if measurement shows a material win and upstream supplies topology/CoW equivalence; otherwise retain the simpler public insertion route and mark the request rejected. |
+
+The reachable pgmcp tracking item is `pathmap-upstream-integration-request-register` under
+`rpb3-single-parse-act-traversal-plan`, itself a descendant of epic 4131. New entries must include
+crate/version coordinates, a minimal reproducer or benchmark, and a maintainer-facing proposed
+contract rather than merely describing local inconvenience.
+
 ## Open hypotheses and required closure evidence
 
 | ID | Hypothesis | Required evidence before acceptance | Status |
