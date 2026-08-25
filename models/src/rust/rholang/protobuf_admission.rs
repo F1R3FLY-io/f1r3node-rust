@@ -68,33 +68,42 @@ pub(crate) struct CanonicalProtobufAdmissionStats {
     pub(crate) byte_native_validations: usize,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(not(test), derive(Copy))]
 pub(crate) struct CanonicalProtobufAdmission {
     stats: CanonicalProtobufAdmissionStats,
     semantic_default_par: Option<bool>,
     canonical_path_stable_par: Option<bool>,
     component: Option<CanonicalComponentAdmission>,
+    /// Exact root score emitted by the byte-native semantic reducer. This is
+    /// retained only by tests so the executable differential can observe the
+    /// reducer independently of the claimed-score comparison wrapper.
+    #[cfg(test)]
+    score_bytes: Option<Vec<u8>>,
 }
 
 impl CanonicalProtobufAdmission {
     #[cfg(test)]
-    pub(crate) const fn stats(self) -> CanonicalProtobufAdmissionStats { self.stats }
+    pub(crate) const fn stats(&self) -> CanonicalProtobufAdmissionStats { self.stats }
 
     /// `Some(true)` means the admitted root is a raw protobuf `Par` equal to
     /// `Par::default()`. Root `locally_free` is intentionally ignored, exactly
     /// as `Par::PartialEq` ignores it and Prost's map-value default test does.
     #[cfg(test)]
-    pub(crate) const fn semantic_default_par(self) -> Option<bool> { self.semantic_default_par }
+    pub(crate) const fn semantic_default_par(&self) -> Option<bool> { self.semantic_default_par }
 
     /// `Some(stable)` is the exact canonical-path stability verdict for an
     /// admitted raw `Par`.  Nested path admission uses this to resolve an
     /// escape payload without constructing a rhoapi value.
     #[cfg(test)]
-    pub(crate) const fn canonical_path_stable_par(self) -> Option<bool> {
+    pub(crate) const fn canonical_path_stable_par(&self) -> Option<bool> {
         self.canonical_path_stable_par
     }
 
-    pub(crate) const fn component(self) -> Option<CanonicalComponentAdmission> { self.component }
+    #[cfg(test)]
+    pub(crate) fn score_bytes(&self) -> Option<&[u8]> { self.score_bytes.as_deref() }
+
+    pub(crate) const fn component(&self) -> Option<CanonicalComponentAdmission> { self.component }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -3073,6 +3082,22 @@ fn validate_canonical_protobuf_inner<'src>(
                         }
                         _ => None,
                     };
+                    #[cfg(test)]
+                    let score_bytes = {
+                        let score = match &summary.semantic {
+                            SemanticSummary::Par(par) => Some(par.score),
+                            SemanticSummary::Component(component) => Some(component.score),
+                            SemanticSummary::Var(score) => Some(*score),
+                            SemanticSummary::ReceiveBind { score, .. }
+                            | SemanticSummary::MatchCase { score, .. } => *score,
+                            SemanticSummary::ExprPayload(payload) => payload.score,
+                            _ => None,
+                        };
+                        score.map(|score| {
+                            let mut cursor = scores.cursor(score);
+                            std::iter::from_fn(|| cursor.next()).collect()
+                        })
+                    };
                     stats.protobuf_bytes_fast_forwarded = stats
                         .protobuf_bytes_read
                         .checked_sub(stats.protobuf_bytes_traversed)
@@ -3111,6 +3136,8 @@ fn validate_canonical_protobuf_inner<'src>(
                         semantic_default_par,
                         canonical_path_stable_par,
                         component,
+                        #[cfg(test)]
+                        score_bytes,
                     });
                 }
             }
@@ -3201,8 +3228,8 @@ mod tests {
     use crate::rhoapi::expr::ExprInstance;
     use crate::rhoapi::g_unforgeable::UnfInstance;
     use crate::rhoapi::{
-        Bundle, Connective, ConnectiveBody, Expr, GPrivate, GUnforgeable, If, Match, MatchCase,
-        New, Par, Receive, ReceiveBind, Send,
+        Bundle, Connective, ConnectiveBody, EMap, ESet, Expr, GPrivate, GUnforgeable, If,
+        KeyValuePair, Match, MatchCase, New, Par, Receive, ReceiveBind, Send,
     };
     use crate::rust::par_bag::{with_component_key, ParBagComponent, PAR_BAG_KEY_DOMAIN};
     use crate::rust::rhoapi_ext::EPathMap;
@@ -3224,6 +3251,40 @@ mod tests {
         Par::default().with_exprs(vec![Expr {
             expr_instance: Some(ExprInstance::GInt(value)),
         }])
+    }
+
+    fn admitted_par_score(value: &Par) -> Vec<u8> {
+        let admission = validate_canonical_protobuf(
+            ProtobufRegion::from(protobuf_encoder::encode_to_vec(value)),
+            &PAR_PROTOBUF_REGION_PROGRAM,
+        )
+        .unwrap_or_else(|error| panic!("canonical Par was rejected: {error}"));
+        admission
+            .score_bytes()
+            .expect("raw Par admission returns its canonical score")
+            .to_vec()
+    }
+
+    fn authoritative_par_score(value: &Par) -> Vec<u8> {
+        let mut score = Vec::new();
+        value
+            .components()
+            .append_par_score_key(value.connective_used(), &mut score);
+        score
+    }
+
+    fn is_authoritative_component_body<T: ParBagComponent>(value: &T, body: &[u8]) -> bool {
+        with_component_key(value, |key| {
+            let trailer = key.len() - std::mem::size_of::<u64>();
+            let score_len = usize::try_from(u64::from_be_bytes(
+                key[trailer..]
+                    .try_into()
+                    .expect("an RPB3 key ends in one score-length word"),
+            ))
+            .expect("the test score length fits usize");
+            let body_start = PAR_BAG_KEY_DOMAIN.len() + 1 + score_len;
+            &key[body_start..trailer] == body
+        })
     }
 
     fn validate(bytes: Vec<u8>, program: &'static RhoMatchProgram) -> CanonicalProtobufAdmission {
@@ -3282,8 +3343,9 @@ mod tests {
         assert!(shifted_error.to_string().contains("17000"));
     }
 
-    fn assert_component_score_state<T: ParBagComponent>(
+    fn assert_component_body_score_state<T: ParBagComponent>(
         value: &T,
+        expected_body: Option<&[u8]>,
         program: &'static RhoMatchProgram,
         expected_complete: bool,
     ) {
@@ -3297,17 +3359,31 @@ mod tests {
             .expect("the test score length fits usize");
             let score_start = PAR_BAG_KEY_DOMAIN.len() + 1;
             let score_end = score_start + score_len;
-            let admission = validate_canonical_component_protobuf(
-                ProtobufRegion::copy_from_slice(&key[score_end..trailer]),
+            let body = &key[score_end..trailer];
+            if let Some(expected_body) = expected_body {
+                assert_eq!(
+                    body, expected_body,
+                    "the authoritative RPB3 body differs from the generated canonical fixture"
+                );
+            }
+            let admission = validate_canonical_protobuf_inner(
+                IndexedByteRegion::from_borrowed(body, 0, 0),
                 program,
-                T::TAG,
-                &key[score_start..score_end],
+                Some((T::TAG, &key[score_start..score_end])),
             )
             .unwrap_or_else(|error| panic!("canonical RPB3 component was rejected: {error}"));
-            assert_eq!(admission.family, T::TAG);
-            assert_eq!(admission.complete, expected_complete);
             assert_eq!(
-                admission.canonical_path_stable,
+                admission.score_bytes(),
+                Some(&key[score_start..score_end]),
+                "the byte-native reducer returned different canonical score bytes"
+            );
+            let component = admission
+                .component()
+                .expect("component admission returns component metadata");
+            assert_eq!(component.family, T::TAG);
+            assert_eq!(component.complete, expected_complete);
+            assert_eq!(
+                component.canonical_path_stable,
                 T::canonical_path_stable(value)
             );
 
@@ -3324,6 +3400,14 @@ mod tests {
                 Err(CanonicalProtobufAdmissionError::ScoreMismatch { .. })
             ));
         });
+    }
+
+    fn assert_component_score_state<T: ParBagComponent>(
+        value: &T,
+        program: &'static RhoMatchProgram,
+        expected_complete: bool,
+    ) {
+        assert_component_body_score_state(value, None, program, expected_complete);
     }
 
     fn assert_component_score<T: ParBagComponent>(value: &T, program: &'static RhoMatchProgram) {
@@ -3377,6 +3461,199 @@ mod tests {
             assert_eq!(stats.typed_decodes, 0, "{label}");
             assert_eq!(stats.byte_native_validations, 1, "{label}");
         }
+    }
+
+    #[test]
+    fn every_generated_rpb3_family_fixture_returns_the_authoritative_body_and_score() {
+        macro_rules! check_fixture {
+            ($fixture:ident, $decoder:ident) => {{
+                let value =
+                    protobuf_decoder::$decoder($fixture.bytes.as_slice()).unwrap_or_else(|error| {
+                        panic!(
+                            "{}.{}: generated decoder rejected its fixture: {error}",
+                            $fixture.message_name, $fixture.fixture_name
+                        )
+                    });
+                let complete = ParBagComponent::semantic_shape_is_complete(&value);
+                assert_component_body_score_state(
+                    &value,
+                    Some(&$fixture.bytes),
+                    $fixture.program,
+                    complete,
+                );
+            }};
+        }
+
+        let mut family_counts = BTreeMap::new();
+        for fixture in schema_fixtures() {
+            match fixture.message_name {
+                "Send" => check_fixture!(fixture, decode_send),
+                "Receive" => check_fixture!(fixture, decode_receive),
+                "New" => check_fixture!(fixture, decode_new),
+                "Expr" => check_fixture!(fixture, decode_expr),
+                "Match" => check_fixture!(fixture, decode_match),
+                "GUnforgeable" => check_fixture!(fixture, decode_g_unforgeable),
+                "Connective" => check_fixture!(fixture, decode_connective),
+                "Bundle" => check_fixture!(fixture, decode_bundle),
+                "If" => check_fixture!(fixture, decode_if),
+                _ => continue,
+            }
+            *family_counts.entry(fixture.message_name).or_insert(0usize) += 1;
+        }
+
+        assert_eq!(
+            family_counts.keys().copied().collect::<Vec<_>>(),
+            vec![
+                "Bundle",
+                "Connective",
+                "Expr",
+                "GUnforgeable",
+                "If",
+                "Match",
+                "New",
+                "Receive",
+                "Send",
+            ],
+            "the generated semantic differential no longer covers all nine RPB3 families"
+        );
+        assert!(
+            family_counts.values().all(|count| *count >= 2),
+            "every RPB3 family needs at least its default and one populated descriptor witness"
+        );
+    }
+
+    #[test]
+    fn raw_par_score_preserves_multiplicity_and_quotients_only_root_locally_free() {
+        let empty = Par::default();
+        let locally_free_empty = Par::default().with_locally_free(vec![1, 3, 5]);
+        let once = gint(7);
+        let once_with_locally_free = once.clone().with_locally_free(vec![2, 4, 6]);
+        let twice = Par::default().with_exprs(vec![
+            Expr {
+                expr_instance: Some(ExprInstance::GInt(7)),
+            },
+            Expr {
+                expr_instance: Some(ExprInstance::GInt(7)),
+            },
+        ]);
+        let connective = once.clone().with_connective_used(true);
+
+        for value in [
+            &empty,
+            &locally_free_empty,
+            &once,
+            &once_with_locally_free,
+            &twice,
+            &connective,
+        ] {
+            assert_eq!(
+                admitted_par_score(value),
+                authoritative_par_score(value),
+                "byte-native raw-Par reduction differs from the PathMap<Multiplicity> authority"
+            );
+        }
+
+        assert_eq!(
+            admitted_par_score(&empty),
+            admitted_par_score(&locally_free_empty),
+            "root locally_free is a cache quotient and must not enter semantic score"
+        );
+        assert_eq!(
+            admitted_par_score(&once),
+            admitted_par_score(&once_with_locally_free),
+            "root locally_free is the only ignored root byte region"
+        );
+        assert_ne!(
+            admitted_par_score(&once),
+            admitted_par_score(&twice),
+            "omitting a PathMap endpoint multiplicity must turn the semantic gate red"
+        );
+        assert_ne!(
+            admitted_par_score(&once),
+            admitted_par_score(&connective),
+            "root connective_used remains semantic"
+        );
+    }
+
+    #[test]
+    fn eset_and_emap_admission_bind_identity_representatives_and_value_winners() {
+        let first_equal_key = gint(1).with_locally_free(vec![9]);
+        let later_equal_key = gint(1).with_locally_free(vec![7]);
+        let lesser_value = gint(2);
+        let greater_value = gint(3);
+
+        let source_set = Expr {
+            expr_instance: Some(ExprInstance::ESetBody(ESet {
+                ps: vec![first_equal_key.clone(), later_equal_key.clone()],
+                ..ESet::default()
+            })),
+        };
+        rejects(
+            protobuf_encoder::encode_to_vec(&source_set),
+            &EXPR_RHO_MATCH_PROGRAM,
+        );
+        let canonical_set = <Expr as ParBagComponent>::canonicalize(&source_set).term;
+        let Some(ExprInstance::ESetBody(set)) = &canonical_set.expr_instance else {
+            panic!("ESet canonicalization changed constructor family");
+        };
+        assert_eq!(set.ps.len(), 1);
+        assert_eq!(
+            set.ps[0].locally_free(),
+            first_equal_key.locally_free(),
+            "ESet must retain the first semantic-equality representative"
+        );
+        assert_component_body_score_state(
+            &canonical_set,
+            Some(&protobuf_encoder::encode_to_vec(&canonical_set)),
+            &EXPR_RHO_MATCH_PROGRAM,
+            true,
+        );
+
+        let source_map = Expr {
+            expr_instance: Some(ExprInstance::EMapBody(EMap {
+                kvs: vec![
+                    KeyValuePair {
+                        key: Some(first_equal_key.clone()),
+                        value: Some(lesser_value),
+                    },
+                    KeyValuePair {
+                        key: Some(later_equal_key),
+                        value: Some(greater_value.clone()),
+                    },
+                ],
+                ..EMap::default()
+            })),
+        };
+        rejects(
+            protobuf_encoder::encode_to_vec(&source_map),
+            &EXPR_RHO_MATCH_PROGRAM,
+        );
+        let canonical_map = <Expr as ParBagComponent>::canonicalize(&source_map).term;
+        let Some(ExprInstance::EMapBody(map)) = &canonical_map.expr_instance else {
+            panic!("EMap canonicalization changed constructor family");
+        };
+        assert_eq!(map.kvs.len(), 1);
+        let winner = &map.kvs[0];
+        assert_eq!(
+            winner
+                .key
+                .as_ref()
+                .expect("canonical EMap key")
+                .locally_free(),
+            first_equal_key.locally_free(),
+            "EMap must retain the first semantic-equality key representative"
+        );
+        assert_eq!(
+            winner.value.as_ref(),
+            Some(&greater_value),
+            "EMap must retain the greatest emitted-byte value for an equal key"
+        );
+        assert_component_body_score_state(
+            &canonical_map,
+            Some(&protobuf_encoder::encode_to_vec(&canonical_map)),
+            &EXPR_RHO_MATCH_PROGRAM,
+            true,
+        );
     }
 
     #[test]
@@ -3449,14 +3726,9 @@ mod tests {
     fn descriptor_wide_hostile_wires_match_decode_plus_canonical_reencode() {
         let fixtures = schema_fixtures();
         let mut comparisons = 0usize;
-        let mut opaque_fixtures = 0usize;
+        let mut covered_fixtures = 0usize;
         for fixture in fixtures {
-            if semantic_kind(fixture.program) != Some(SemanticKind::Opaque) {
-                // RPB3-bearing roots have the stronger typed sorter/score
-                // oracle exercised by the component-family tests below.
-                continue;
-            }
-            opaque_fixtures += 1;
+            covered_fixtures += 1;
             let mut candidates = Vec::new();
             for cut in 0..fixture.bytes.len() {
                 candidates.push(("truncation", fixture.bytes[..cut].to_vec()));
@@ -3495,21 +3767,42 @@ mod tests {
                     machine_fixed_point, oracle_fixed_point,
                     "{label}: PDA and Prost disagree on strict fixed-point admission"
                 );
+                macro_rules! component_fixed_point {
+                    ($decoder:ident) => {
+                        protobuf_decoder::$decoder(bytes.as_slice())
+                            .map(|value| is_authoritative_component_body(&value, &bytes))
+                            .unwrap_or(false)
+                    };
+                }
+                let semantic_fixed_point = match fixture.message_name {
+                    "Send" => component_fixed_point!(decode_send),
+                    "Receive" => component_fixed_point!(decode_receive),
+                    "New" => component_fixed_point!(decode_new),
+                    "Expr" => component_fixed_point!(decode_expr),
+                    "Match" => component_fixed_point!(decode_match),
+                    "GUnforgeable" => component_fixed_point!(decode_g_unforgeable),
+                    "Connective" => component_fixed_point!(decode_connective),
+                    "Bundle" => component_fixed_point!(decode_bundle),
+                    "If" => component_fixed_point!(decode_if),
+                    _ => true,
+                };
+                let strict_fixed_point = oracle_fixed_point && semantic_fixed_point;
                 let admitted = validate_canonical_protobuf(
                     ProtobufRegion::copy_from_slice(&bytes),
                     fixture.program,
                 )
                 .is_ok();
                 assert_eq!(
-                    admitted, oracle_fixed_point,
-                    "{label}: byte-native admission differs from decode-plus-canonical-reencode"
+                    admitted, strict_fixed_point,
+                    "{label}: byte-native admission differs from decode, semantic \
+                     canonicalization, and exact re-encoding"
                 );
                 comparisons += 1;
             }
         }
         assert!(
-            opaque_fixtures > 0 && comparisons >= opaque_fixtures * 4,
-            "hostile schema matrix became vacuous: {opaque_fixtures} opaque fixtures, \
+            covered_fixtures > 0 && comparisons >= covered_fixtures * 4,
+            "hostile schema matrix became vacuous: {covered_fixtures} fixtures, \
              {comparisons} comparisons"
         );
     }
@@ -3947,6 +4240,20 @@ mod tests {
         // Unknown field and nonminimal varint framing never enter the schema.
         rejects(vec![0xf8, 0x07, 0x01], &SEND_RHO_MATCH_PROGRAM);
         rejects(vec![0x18, 0x81, 0x00], &SEND_RHO_MATCH_PROGRAM);
+
+        // The complete hostile scalar/framing classes remain independently
+        // observable rather than relying on a single overlong field key.
+        for (bytes, program) in [
+            (vec![0x00], &SEND_RHO_MATCH_PROGRAM), // forbidden field tag zero
+            (vec![0x18, 0x02], &SEND_RHO_MATCH_PROGRAM), // noncanonical true alias
+            (vec![0x1a, 0x00], &SEND_RHO_MATCH_PROGRAM), // bool with wrong wire type
+            (vec![0x18, 0x01, 0x18, 0x01], &SEND_RHO_MATCH_PROGRAM), // duplicate singular field
+            (vec![0x0b, 0x0c], &SEND_RHO_MATCH_PROGRAM), // unsupported group framing
+            (vec![0x1a, 0x81, 0x00, b'a'], &EXPR_RHO_MATCH_PROGRAM), // nonminimal string length
+            (vec![0x1a, 0xff, 0xff, 0xff, 0xff], &EXPR_RHO_MATCH_PROGRAM), // truncated oversized length
+        ] {
+            rejects(bytes, program);
+        }
     }
 
     #[test]
@@ -3969,6 +4276,110 @@ mod tests {
         // The hand-written canonical EPathMap writer always emits tag 9,
         // including neutral empty mode.
         rejects(vec![0x82, 0x02, 0x00], &EXPR_RHO_MATCH_PROGRAM);
+    }
+
+    #[test]
+    fn every_epm1_framing_layer_and_homogeneous_mode_is_admitted_once() {
+        fn snapshot_from_root(bytes: &[u8]) -> Vec<u8> {
+            let start = bytes
+                .windows(4)
+                .position(|window| window == b"EPM1")
+                .expect("canonical EPathMap protobuf contains its EPM1 snapshot");
+            bytes[start..].to_vec()
+        }
+
+        fn wrap_snapshot(snapshot: &[u8]) -> Vec<u8> {
+            let mut bytes = vec![0x4a]; // EPathMap.trie_snapshot = field 9.
+            prost::encoding::encode_varint(snapshot.len() as u64, &mut bytes);
+            bytes.extend_from_slice(snapshot);
+            bytes
+        }
+
+        fn read_varint(bytes: &[u8], cursor: &mut usize) -> usize {
+            let mut value = 0usize;
+            let mut shift = 0usize;
+            loop {
+                let byte = bytes[*cursor];
+                *cursor += 1;
+                value |= usize::from(byte & 0x7f) << shift;
+                if byte & 0x80 == 0 {
+                    return value;
+                }
+                shift += 7;
+            }
+        }
+
+        let set = EPathMap::from_set_iter([gint(1), gint(2)], Vec::new(), false, None);
+        let map = EPathMap::new_map(
+            [(gint(1), gint(11)), (gint(2), gint(22))],
+            Vec::new(),
+            false,
+            None,
+        );
+
+        for (label, value) in [("empty", EPathMap::default()), ("set", set), ("map", map)] {
+            let root = value.encode_to_vec();
+            let admission = validate_canonical_protobuf(
+                ProtobufRegion::copy_from_slice(&root),
+                &EPATHMAP_RHO_MATCH_PROGRAM,
+            )
+            .unwrap_or_else(|error| panic!("{label}: canonical EPM1 rejected: {error}"));
+            assert_eq!(admission.stats().epathmaps, 1, "{label}");
+
+            let snapshot = snapshot_from_root(&root);
+            assert_eq!(&snapshot[..4], b"EPM1", "{label}");
+            assert_eq!(snapshot[4], 1, "{label}: EPM1 version");
+
+            let mut mutations = Vec::new();
+            let mut bad_magic = snapshot.clone();
+            bad_magic[0] ^= 1;
+            mutations.push(("magic", bad_magic));
+            let mut bad_version = snapshot.clone();
+            bad_version[4] = 2;
+            mutations.push(("version", bad_version));
+            let mut bad_mode = snapshot.clone();
+            bad_mode[5] = 0xff;
+            mutations.push(("unknown_mode", bad_mode));
+            let mut mixed_mode = snapshot.clone();
+            mixed_mode[5] = match snapshot[5] {
+                0 => 1,
+                1 => 2,
+                2 => 1,
+                _ => unreachable!("canonical EPM1 mode"),
+            };
+            mutations.push(("mixed_mode", mixed_mode));
+            let mut trailing = snapshot.clone();
+            trailing.push(0);
+            mutations.push(("trailing_byte", trailing));
+
+            let mut cursor = 6usize;
+            let arena_len = read_varint(&snapshot, &mut cursor);
+            if arena_len != 0 {
+                let mut bad_act = snapshot.clone();
+                bad_act[cursor] ^= 1;
+                mutations.push(("act_magic", bad_act));
+
+                let value_count_at = cursor + arena_len;
+                let mut bad_count = snapshot.clone();
+                bad_count[value_count_at] = if snapshot[5] == 1 { 1 } else { 0 };
+                mutations.push(("value_count", bad_count));
+            }
+
+            for (mutation, snapshot) in mutations {
+                assert!(
+                    validate_canonical_protobuf(
+                        ProtobufRegion::from(wrap_snapshot(&snapshot)),
+                        &EPATHMAP_RHO_MATCH_PROGRAM,
+                    )
+                    .is_err(),
+                    "{label}.{mutation}: malformed EPM1 was admitted"
+                );
+            }
+
+            let mut mixed_legacy = root.clone();
+            mixed_legacy.extend_from_slice(&[0x0a, 0x00]);
+            rejects(mixed_legacy, &EPATHMAP_RHO_MATCH_PROGRAM);
+        }
     }
 
     fn test_varint_len(mut value: usize) -> usize {

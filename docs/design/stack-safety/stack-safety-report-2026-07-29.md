@@ -10154,17 +10154,28 @@ fail closed; the generated registry is the closed authority that permits the opa
 
 #### 5.41.3 Results and anti-vacuity
 
-The focused module passes 17 of 17 tests. Its generated arithmetic is 56 ordinary messages plus 2
+The focused module passes 21 of 21 tests. Its generated arithmetic is 56 ordinary messages plus 2
 externs, 5 oneofs with 54 arms, 329 canonical witnesses, and 48 ordinary scalar fields whose
 explicit default presence must be rejected. Every canonical witness is byte-identical across both
 protobuf implementations and both bincode implementations. Successful admission reports exactly
 one byte-native validation and zero typed decodes, reconstructed-key bytes, and endpoint replays.
 
+For every generated fixture in all nine RPB3 families, a test-only arena cursor returns the exact
+byte-native score and compares it with the score/body split already resident in the authoritative
+RPB3 key. Completeness, family, and canonical-path stability agree as well. Raw-`Par` controls prove
+that multiplicity changes the score, root `locally_free` does not, and `connective_used` does. ESet
+and EMap controls pin first equality-representative retention and greatest-value collision
+selection. The score observation and its `Vec<u8>` are absent from non-test builds.
+
 The hostile matrix applies every truncation, duplicate complete image, unknown field, and
-nonminimal first key to descriptor-known opaque wrappers, then compares admission with independent
-decode-plus-canonical-reencode. Five test-only state mutants independently set reconstructed-key,
-endpoint-replay, typed-decode, skipped-validation, and repeated-validation counters; every mutant
-changes the observation and makes the production completion verdict red.
+nonminimal first key to all 329 fixtures. Ordinary messages use decode-plus-exact-reencode;
+component roots additionally require the independent authoritative RPB3 body fixed point. Targeted
+mutations cover tag zero, wrong wire types, boolean aliases, duplicate singular/oneof fields,
+groups, invalid UTF-8, nonminimal/oversized lengths, every EPM1 fixed framing layer, ACT corruption,
+value-count mismatch, homogeneous-mode confusion, trailing bytes, and mixed legacy/current fields.
+Five test-only state mutants independently set reconstructed-key, endpoint-replay, typed-decode,
+skipped-validation, and repeated-validation counters; an omitted-multiplicity score is a sixth
+executable red observation.
 
 The former depth-4,096 admission fixture was replaced by an iterative byte builder for a
 20,000-level `Par` / `Expr::ENot` spine. It and a 4,096-element wide `ParBag` complete on 256 KiB
@@ -10175,8 +10186,11 @@ not retain every recursive AST suffix.
 
 Wall-clock microbenchmark, allocator profile, and retained-heap deltas are **NOT MEASURED — SS-E5
 is a correctness/anti-vacuity instrument and changes no selected production algorithm**. The
-captured debug module run completes 17 tests in 0.32 s after compilation, but that number is a test
-runner observation, not a throughput claim.
+captured debug module run completes 21 tests in 0.36 s after compilation, and the full `models`
+library passes 279 of 279 in 4.71 s. The respective SHA-256 log digests are
+`4624c47b83cc964a7bca732abbd066f4bb7221c8969f42133b5968d9376c6c87` and
+`ca7545c2a3c6e96fc1853d818fcfb5f47689b3f46dc521ce26b2c2d69cd0a1c1`. These are test-runner
+observations, not throughput claims.
 
 The single-parse ACT plan, production RPB3 cutover, full RSpace lifecycle composition, and formal
 equivalence task remain separate pgmcp dependencies. SS-E5 neither activates the shadow RCI2 path

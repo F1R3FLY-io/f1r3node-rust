@@ -4945,6 +4945,29 @@ Rholang program, or parallel execution order. It remains a continuation of activ
 new consensus entry. Single-parse ACT emission, formal equivalence, production cutover, complete
 RSpace lifecycle composition, and resource measurement remain open dependencies.
 
+**CBR-044 living implementation continuation (2026-08-25, exact RPB3 semantic observation and
+hostile EPM1 closure; pgmcp #6019).** Test builds now retain the admission reducer's root score long
+enough to compare its exact bytes with the score already stored in the authoritative RPB3 key.
+Production builds retain neither this observation nor its allocation. All descriptor-generated
+fixtures rooted at the nine `Par` component families agree on exact canonical body, score, family,
+semantic completeness, and canonical-path stability. Raw-`Par` witnesses separately prove the
+established equality quotient: root `locally_free` does not affect the semantic score, while
+`connective_used` and `PathMap<Multiplicity>` endpoint counts do.
+
+The collection witnesses pin pre-existing consensus rules rather than selecting new ones: ESet
+retains the first semantic-equality representative; EMap retains the first equal-key representative
+and the greatest emitted-byte value. The descriptor-wide hostile differential now covers all 329
+fixtures and adds fixed EPM1 magic/version/mode, ACT arena, ordinal count, trailing-byte,
+homogeneous-mode, and mixed legacy/current mutations. The focused gate passes 21 of 21 and the full
+`models` library passes 279 of 279 under capped, zero-swap execution.
+
+These changes strengthen the executable equivalence relation only. They do not change emitted or
+accepted canonical bytes, score construction, multiplicity, EPM1 specialization, PathMap state,
+hashes, event/history bytes, COMM ordering, charge, or Rholang behavior, and therefore add no axis
+movement to CBR-044. ACT-plan migration across the remaining production consumers, formal proof,
+publication-fault composition, full release, and performance measurement remain open and are not
+claimed by this continuation.
+
 **CBR-023 living-set continuation (2026-08-09, comparison exhaustiveness; pgmcp #5282).** The full
 models gate found catch-all mismatch arms in the already-iterative `Sig`, `Token`, `SignedProcess`,
 and `InterpreterError` equality machines. Each arm returned `false` for every currently representable

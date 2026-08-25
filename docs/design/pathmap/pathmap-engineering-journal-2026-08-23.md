@@ -1807,6 +1807,39 @@ close the single-parse ACT plan (#6023), formal equivalence (#6020), production 
 full RSpace lifecycle composition, or the preregistered resource experiment. No performance or
 consensus-neutrality conclusion is inferred from this correctness gate.
 
+**2026-08-25 RPB3 semantic-equivalence continuation.** A test-only observation now retains the
+byte-native reducer's exact root score until the admission certificate is returned. This is not a
+second score implementation: the test reads the existing arena cursor before the arena is dropped.
+It makes the reducer independently observable instead of inferring its result only from the
+claimed-score comparison wrapper. Test-only ownership is compiled out of production.
+
+Every descriptor-generated fixture whose root is one of the nine `Par` component families now
+passes the generated decoder once and is checked against the authoritative RPB3 key produced by
+`with_component_key`: exact protobuf body, exact canonical score bytes, family, semantic-shape
+completeness, and canonical-path stability must agree. Raw `Par` witnesses separately bind the
+reducer to `ParBag::append_par_score_key`. They prove that root `locally_free` is quotiented while
+`connective_used` and `PathMap<Multiplicity>` endpoint counts remain semantic; the explicit
+omitted-multiplicity mutant differs from the accepted score.
+
+The collection differential now pins both nontrivial identity rules. `ESet` retains the first
+semantic-equality representative, and `EMap` retains the first equal-key representative while
+selecting the greatest emitted-byte value. Their noncanonical duplicate source images are rejected,
+and their sorter-normalized bodies and scores are admitted exactly. The hostile matrix now covers
+all 329 descriptor fixtures, not only opaque envelopes, with semantic roots compared against
+authoritative RPB3 canonicalization after decode. Separate malformed witnesses cover tag zero,
+wrong wire type, noncanonical boolean truth, duplicate singular fields, groups, nonminimal and
+oversized lengths, every EPM1 framing layer, ACT corruption, value-count mismatch, homogeneous-mode
+confusion, trailing bytes, and mixed legacy/current fields.
+
+The capped focused module passes 21 of 21 tests in 0.36 s after compilation; the full `models`
+library passes 279 of 279. The captured logs are
+`scratch/rpb3-semantic-admission-module-2.log` (SHA-256
+`4624c47b83cc964a7bca732abbd066f4bb7221c8969f42133b5968d9376c6c87`) and
+`scratch/models-lib-rpb3-semantic.log` (SHA-256
+`ca7545c2a3c6e96fc1853d818fcfb5f47689b3f46dc521ce26b2c2d69cd0a1c1`). These are correctness
+observations, not performance measurements. The ACT single-parse production-consumer migration,
+publication lifecycle, resource experiment, and formal proof remain separate open gates.
+
 ### J-023 — 2026-08-24: serialize a resident identity directly, but preserve its external order
 
 Question: When an RSpace Bag key already contains the exact canonical bincode `Datum` identity used
