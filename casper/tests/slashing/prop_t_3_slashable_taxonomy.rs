@@ -24,13 +24,33 @@
 use casper::rust::block_status::InvalidBlock;
 
 #[test]
-fn t_3_post_fix_slashable_set_is_18_elements() {
+fn t_3_slashable_set_is_the_equivocation_class() {
+    // Slash evidence demands a fault every honest node attributes
+    // identically from the signed block alone; equivocation is the one
+    // verdict with that property. The former 18-element set slashed
+    // view-relative verdicts too, and CI run 32588262605 demonstrated the
+    // consequence: JustificationRegression and UnauthorizedSlashDeploy
+    // verdicts diverging across honest nodes minted recursive evidence
+    // that burned honest stake to FT −18.55. A demoted verdict still
+    // drops the block; only the economic layer narrowed.
     let slashable = vec![
         InvalidBlock::AdmissibleEquivocation,
         InvalidBlock::IgnorableEquivocation,
+    ];
+    assert_eq!(
+        slashable.len(),
+        2,
+        "slashable set is the equivocation class"
+    );
+    for v in &slashable {
+        assert!(v.is_slashable(), "{:?} must be slashable", v);
+    }
+
+    let demoted = vec![
         InvalidBlock::NeglectedEquivocation,
         InvalidBlock::NeglectedInvalidBlock,
         InvalidBlock::JustificationRegression,
+        InvalidBlock::UnauthorizedSlashDeploy,
         InvalidBlock::InvalidParents,
         InvalidBlock::InvalidFollows,
         InvalidBlock::InvalidBlockNumber,
@@ -45,13 +65,13 @@ fn t_3_post_fix_slashable_set_is_18_elements() {
         InvalidBlock::ContainsTimeExpiredDeploy,
         InvalidBlock::ContainsFutureDeploy,
     ];
-    assert_eq!(
-        slashable.len(),
-        18,
-        "post-fix slashable set has 18 variants"
-    );
-    for v in &slashable {
-        assert!(v.is_slashable(), "post-fix: {:?} must be slashable", v);
+    for v in &demoted {
+        assert!(
+            !v.is_slashable(),
+            "{:?} is judged against local state and must not mint slash \
+             evidence",
+            v
+        );
     }
 }
 
@@ -75,15 +95,4 @@ fn t_3_non_slashable_set_is_8_elements() {
             v
         );
     }
-}
-
-#[test]
-fn t_3_post_fix_extends_pre_fix_by_exactly_ignorable() {
-    // Pre-fix: 17 slashable variants (AdmissibleEquivocation, ...).
-    // Post-fix: same 17 plus IgnorableEquivocation = 18.
-    // The bug-fix-#1 commit flipped exactly one bit in is_slashable().
-    assert!(
-        InvalidBlock::IgnorableEquivocation.is_slashable(),
-        "post-fix #1: IgnorableEquivocation is slashable (the only variant added)"
-    );
 }

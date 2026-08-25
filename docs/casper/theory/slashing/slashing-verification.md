@@ -436,21 +436,23 @@ return value explicit:
     detect(S, v, n, d) = (if d then DSAdmissible else DSIgnorable)
 ```
 
-### 4.4 Theorem 4.3 (T-3, Slashable taxonomy correctness)
+### 4.4 Theorem 4.3 (T-3, Slashable taxonomy correctness) — SUPERSEDED
 
-**Statement.** *(`slashable_post_fix_extends_pre_fix`, `InvalidBlock.v:164`.)*
-For every `ib : InvalidBlock`,
+The normative slashable set is now the equivocation class
+`{ AdmissibleEquivocation, IgnorableEquivocation }` — see the amendment in
+`slashing-specification.md` §4 (2026-08, after CI run 32588262605): slash
+evidence demands a fault every honest node attributes identically from the
+signed block alone, and equivocation is the only verdict with that
+property. The 17 demoted variants are judged against receiver-local state;
+a demoted verdict still drops the block — only the economic layer narrows.
 
-```
-  is_slashable_pre_fix(ib) = ⊤ ⟹ is_slashable(ib) = ⊤
-```
-
-**Proof.** Exhaustive case analysis on the 27-element `InvalidBlock`
-inductive: each variant where `is_slashable_pre_fix` returns `true` also
-has `is_slashable` returning `true`. ∎
-
-The diagonal theorem `slashable_diff_only_ignorable` (line 160) shows
-that the two predicates differ only on `IBIgnorableEquivocation`.
+The mechanized theorems `slashable_post_fix_extends_pre_fix` and
+`slashable_diff_only_ignorable` (`InvalidBlock.v`) prove the BUG-FIX-ERA
+inclusion (`is_slashable_pre_fix ⟹ is_slashable`); that inclusion is
+REVERSED by the narrowing (current `is_slashable ⟹ pre_fix`), so the
+Rocq model is historical pending re-derivation. The live pins are Rust:
+`slashing::prop_t_3_slashable_taxonomy::t_3_slashable_set_is_the_equivocation_class`
+and `slashing::dispatch_routes_demoted_variants_to_the_drop_arm`.
 
 ### 4.5 Theorem 4.4 (T-6, `detect_neglected` soundness)
 
@@ -1627,12 +1629,18 @@ corrected capstone `bug_fix_ignorable_safety` (re-exported as
 ```
 
 Every disjunct is an *attributable* offense, so the honest-validator
-safety conclusion still holds. The empty record minted for the
-`UnauthorizedSlashDeploy` branch (`EquivocationRecord::new(V, seq-1, {})`)
-is shown to resolve to `EquivocationOblivious` for an honest bonded
-sender by `unauth_record_honest_oblivious`
+safety conclusion still holds. Under the current narrowed taxonomy (§4.4)
+the slashable set is `{Admissible, Ignorable}` — a subset of the
+disjunction — so the capstone's conclusion survives the narrowing, but the
+model's 19-variant `is_slashable` and the `UnauthorizedSlashDeploy`
+branch below describe the bug-fix era: `UnauthorizedSlashDeploy` is
+demoted (rejected, no evidence minted), and its empty-record machinery is
+inactive. The historical result: the empty record minted for that branch
+(`EquivocationRecord::new(V, seq-1, {})`) resolves to
+`EquivocationOblivious` for an honest bonded sender by
+`unauth_record_honest_oblivious`
 (`BugFixDispatcher.v`, re-exported `main_T9_1_unauth_record_oblivious`) —
-so minting it does not, on its own, corrupt neglected-equivocation
+so minting it did not, on its own, corrupt neglected-equivocation
 detection. (The related *observer-hash stamping while the offender is
 unbonded* mechanism — a distinct fork, FV audit #6 — is now RESOLVED; see
 §9.1a below and `design/12-failure-modes.md §12.2.1a`.)
@@ -3023,7 +3031,7 @@ formal/rocq/slashing/theories/                 (26 Rocq modules; cf. §1.3)
 ├── Validator.v                       (foundations: BondMap algebra)
 ├── ValidatorLifetime.v               (Bug #13: epoch-scoped lifetime identity)
 ├── Block.v                           (Block, Justification, equivocation predicate)
-├── InvalidBlock.v                    (27-variant taxonomy + is_slashable, 19 slashable, T-3)
+├── InvalidBlock.v                    (27-variant taxonomy + is_slashable — models the bug-fix-era 19-slashable set; the normative set is now the 2-variant equivocation class, §4.4)
 ├── EquivocationRecord.v              (EqStore, T-4, T-5)
 ├── DAGState.v                        (DAG snapshot + equivocates predicate)
 ├── EquivocationDetector.v            (detect, T-1, T-2, T-6, T-9.11)

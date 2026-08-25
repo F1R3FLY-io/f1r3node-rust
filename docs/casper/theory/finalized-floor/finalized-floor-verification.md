@@ -226,7 +226,7 @@ the ratchet collapses and over-cap is safe.
 | **T-ALG (semilattice)** | BitmaskOr / keep-one fold laws | Rocq `Merge` (`Nat.lor` / `Nat.max`); Rust proptests `bitmask_or_is_associative`, `bitmask_or_is_commutative`, `bitmask_or_is_idempotent` (`rspace++/…/merging_logic.rs` — the join semilattice laws for the shipped `combine_mergeable_value`) |
 | **T-ALG (IntegerAdd c/d)** | wrapping-add group + checked-apply reject overflow/`<0` (S7) | Rocq `IntegerAdd.wadd_assoc`, `checked_apply_rejects_overflow`/`_negative`; Rust proptests `integer_add_is_commutative`, `integer_add_is_associative`, `integer_add_overflow_returns_none` (`≡ i64::checked_add`) + unit `integer_add_rejects_overflow_and_underflow` (`rspace++/…/merging_logic.rs`) |
 | **IntegerAdd launder** | fail-loudly at BOTH combine **and terminal apply**; the diff (`end−prev`) stays wrapping — it is the group inverse that recovers the true delta; supply-cap bound | Rocq `IntegerAdd.launder_exhibit`/`checked_combine_sound`/`supply_cap_no_launder`; Z3 `integeradd_launder_bitvec.py`; Rust `combine_mergeable_value` (combine, `checked_add`), `calculate_number_channel_merge` (terminal apply, `checked_add`+`≥0`); tests `cal_merged_result_rejects_integer_add_true_launder_wraps_nonnegative`, `merge_integer_add_overflow_is_rejected`, `diff_integer_add_recovers_wrapped_delta` |
-| **A9 exact-integer FT** | finalization decides `2·q·den ⋛ S·(den+num)` in i128 (`≥` floor / `>` LFB), not the fuzzy f32 ratio — precise + node-identical | Rocq `MainTheorem.finalized_floor_ftexact_correct` (`FtExact.v`); Z3 `ft_exact_no_overflow.py`; Sage `ft_algebra.sage`; Rust `clique_oracle.ft_decides_exact`/`ft_witnessed_exact`; test `ft_decides_exact_tests` |
+| **A9 exact-integer FT** | finalization decides `2·q·den ≥ S·(den+num)` in i128 (one `≥` decision — the LFB is the floor of the live view; the strict-`>` twin has no production caller), not the fuzzy f32 ratio — precise + node-identical | Rocq `MainTheorem.finalized_floor_ftexact_correct` (`FtExact.v`); Z3 `ft_exact_no_overflow.py`; Sage `ft_algebra.sage`; Rust `clique_oracle.ft_decides_exact`/`ft_witnessed_exact`; test `ft_decides_exact_tests` |
 | **ancestry precondition (GAP-2/GAP-4)** | `CliqueOracle.v`/`Selection.v` model DAG ancestry ABSTRACTLY (`anc_of`); the trusted realization `is_dag_ancestor` (`block_dag_key_value_storage.rs`, used by `floor.rs`) computes EXACTLY that relation. Its block-number prune is sound under strict per-edge monotonicity (`wf_dag`: `block_number = 1 + max parent`), which block validation enforces — **not** the global contiguity (`max−min==len`) that `block_metadata_store.rs` demoted to a `warn!` (GAP-4: a strictly stronger, separate diagnostic the prune never needed) | Rust property test `is_dag_ancestor_matches_reflexive_transitive_closure_over_parents` (`block-storage`, `--features test-internals`): on random well-formed DAGs, `is_dag_ancestor` (with the prune) ≡ the reflexive-transitive closure over parents |
 | **capstone** | all of the above, axiom-free | Rocq `MainTheorem.{finalized_floor_merge_correct, finalized_floor_selection_correct, finalized_floor_arithmetic_correct, finalized_floor_phase7_correct, finalized_floor_ftexact_correct, finalized_floor_thetaexact_advance_correct}` (the last bundles C1/C5) |
 
@@ -392,11 +392,14 @@ stakes `> 2²⁴` the `i64→f32` cast drops mantissa bits, making the threshold
 `O(S/2²⁴)`. The fix replaces the finalization **decision** with an **exact-integer**
 test over `i128`, `θ = num/den = ppm / 1_000_000`:
 
-- **`≥` (floor path):** `2·q·den ≥ S·(den + num)` — `clique_oracle.rs`
+- **`≥` (the one decision):** `2·q·den ≥ S·(den + num)` — `clique_oracle.rs`
   `ft_decides_exact` / `ft_witnessed_exact`, routed through `floor.rs`'s three decision
-  sites; **`>` (LFB finalizer):** the strict twin via `finalizer.rs`
-  `compute_decision_with_cache(…, strict=true)` — the finalizer's strict-`>` clearance
-  is preserved. The early `agreeing ≤ S/2 ⇒ not finalized` becomes exact `2·agreeing ≤ S`.
+  sites with `strict=false`. The LFB is the floor of the live view
+  (`floor_of_view`), so it runs the SAME `≥` decision — the old finalizer's strict-`>`
+  second clock was unified away (an LFB lagging the floors at the exact threshold
+  boundary would be a second clock). The strict twin survives in the API and its unit
+  pins only; no production caller passes `strict=true`.
+  The early `agreeing ≤ S/2 ⇒ not finalized` becomes exact `2·agreeing ≤ S`.
   The `f32` `ft` value is kept only for display/metadata (`fault_tolerance_value`); **no
   decision is re-derived from it**. θ is threaded as the exact on-chain **ppm** (i64),
   converted once at `initializing.rs` (never the lossy f32).
