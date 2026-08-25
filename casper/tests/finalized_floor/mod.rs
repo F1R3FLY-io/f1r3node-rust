@@ -8,6 +8,11 @@
 //   recovery_no_double_apply — T-NDA: the production `canonical_won_sigs` recovery record
 //     applies a recovered effect at most once (Recovery.apply_idem / no_double_apply).
 
+//   oracle_stall_replay_spec — exact oracle replays of CI stall instances i1
+//     and i5 from committed sub-DAG fixtures: logged-verdict fidelity pins,
+//     plus the below-target ancestor-prefix red the walk refinement answers.
+
+mod oracle_stall_replay_spec;
 mod prop_bonds_from_floor;
 mod prop_ft_ppm_provenance;
 mod recovery_no_double_apply;

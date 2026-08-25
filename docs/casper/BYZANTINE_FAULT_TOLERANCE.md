@@ -853,8 +853,10 @@ Validators that accept deploys with prices below this threshold can be slashed. 
 
 **Defense:**
 - Neglected equivocation detection specifically targets this attack
-- If validator had evidence but didn't slash, they are themselves slashed
-- Two-level slashing makes collusion mutually destructive
+- A block that neglects known evidence is rejected; the level-2 stake
+  penalty is currently demoted (view-relative verdict) pending
+  re-promotion — see the slashing-specification amendment
+- Two-level slashing makes collusion mutually destructive once re-promoted
 - Requires >2/3 stake to avoid detection (same as direct Byzantine attack)
 
 ### Attack: Censorship

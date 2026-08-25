@@ -1158,6 +1158,9 @@ impl TestNode {
         };
 
         let casper_impl = MultiParentCasperImpl {
+            divergence_monitor: std::sync::Arc::new(
+                crate::rust::engine::multi_parent_casper::finalization_runner::DivergenceMonitor::default(),
+            ),
             block_retriever: block_retriever.clone(),
             event_publisher: event_publisher.clone(),
             runtime_manager: Arc::new(runtime_manager.clone()),
@@ -1199,6 +1202,7 @@ impl TestNode {
         let casper_for_engine = {
             let casper_guard = casper.clone();
             Arc::new(MultiParentCasperImpl {
+                divergence_monitor: casper_guard.divergence_monitor.clone(),
                 block_retriever: casper_guard.block_retriever.clone(),
                 event_publisher: casper_guard.event_publisher.clone(),
                 runtime_manager: casper_guard.runtime_manager.clone(),

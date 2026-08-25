@@ -1222,7 +1222,7 @@ The post-2026 vulnerability fixes add the
 | `received_stale_slash_deploy_is_rejected_before_replay` | Received slash deploy authorization before Rholang replay. |
 | `duplicate_justification_validators_are_invalid` | Duplicate justifications are rejected before detector projection. |
 | `checked_sequence_arithmetic_rejects_boundaries` | Checked `seq − 1` and proposer `seq + 1` boundary behavior. |
-| `unauthorized_slash_status_is_slashable` | Unauthorized slash deploys are slashable proposer faults. |
+| `view_relative_verdicts_are_not_slash_worthy` / `equivocation_class_remains_slash_worthy` | Unauthorized slash deploys are rejected but demoted from evidence minting; only the equivocation class mints (spec amendment). Replaced `unauthorized_slash_status_is_slashable`. |
 
 These tests are example-based and property-based regressions. The matching formal coverage is in
 `ValidatorLifetime.v`, `BugFixSlashAuthorization.v`,

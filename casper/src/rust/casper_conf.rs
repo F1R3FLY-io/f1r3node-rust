@@ -335,9 +335,12 @@ impl Default for HeartbeatConf {
     }
 }
 
-fn default_self_propose_cooldown() -> Duration { Duration::from_secs(15) }
+// Code fallbacks MUST equal the shipped defaults.conf values (pinned by the
+// embedded-defaults test): a sparse operator conf omitting a key must get
+// the same behavior every tested deployment runs, not an untested stranger.
+fn default_self_propose_cooldown() -> Duration { Duration::from_secs(3) }
 
-fn default_stale_recovery_min_interval() -> Duration { Duration::from_secs(12) }
+fn default_stale_recovery_min_interval() -> Duration { Duration::from_secs(3) }
 
 fn default_finality_progress_timeout() -> Duration { Duration::from_secs(30) }
 
@@ -410,7 +413,7 @@ impl Default for HeartbeatAdvancedConf {
     }
 }
 
-fn default_frontier_chase_max_lag() -> i64 { 0 }
+fn default_frontier_chase_max_lag() -> i64 { 20 }
 
 fn default_pending_deploy_max_lag() -> i64 { 20 }
 

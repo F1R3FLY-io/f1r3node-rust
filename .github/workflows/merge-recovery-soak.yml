@@ -140,15 +140,46 @@ env:
   SOAK_HOST_FREE_FLOOR_MB: "8192"
   # Third pin site; keep identical to the other two — bump via scripts/repin-system-integration.sh.
   # Pin history:
-  # 2026-08-23: 56884ab -> 3e5b5eb (system-integration main, PR #128). Carries
-  #   SI PR #127: _deploy_and_wait in test_web_api.py deploys onto a fresh
-  #   string channel per call. Closes the shared-shard finalization timeouts
-  #   (rejection_count 15-24) caused by a second bare-integer produce onto a
-  #   reused @2000-@2002 cell; see docs/work-logs/shared-shard-single-number-
-  #   cell-starvation-2026-08-22.md. Also carries SI PR #129 shard-port
-  #   reservation. Verified: SI PR #127 CI green; f1r3node-rust run
-  #   32615164762 attempt 1 reproduced the timeout on the old pin.
-  SYSTEM_INTEGRATION_REF: 3e5b5eb89be3f5ef64c3dc3648bb56ebe30eb263
+  # 2026-08-20: 56884ab -> 3757cab (system-integration PR #124 branch, NOT yet
+  # main): validator-lifecycle payout bounds made race-proof (pre-withdraw
+  # baselines, fee-aware phase-8 owed). Verified by three consecutive local
+  # full passes (lifecycle runs 19/21/22) and a green local mirror of the
+  # arm64-subprocess integration leg (92 passed).
+  # 2026-08-21: 3757cab -> 147da81 (system-integration PR #126 branch, NOT yet
+  # main): finality-stall-recovery cadence spec, two forbidden-log patterns,
+  # seven deselect audits with fixes, docs current. Verified by a combined
+  # local mirror — full suite + bonding + lifecycle + ucc in one invocation,
+  # 118 passed / 0 failed / 1h48m on the folded node branch. Re-pin to the
+  # merged main SHA once #126 lands.
+  # 2026-08-23 (dev): 56884ab -> 3e5b5eb (system-integration main, PR #128).
+  #   Carries SI PR #127: _deploy_and_wait in test_web_api.py deploys onto a
+  #   fresh string channel per call. Closes the shared-shard finalization
+  #   timeouts (rejection_count 15-24) caused by a second bare-integer
+  #   produce onto a reused @2000-@2002 cell; see docs/work-logs/shared-
+  #   shard-single-number-cell-starvation-2026-08-22.md. Also carries SI PR
+  #   #129 shard-port reservation. Verified: SI PR #127 CI green;
+  #   f1r3node-rust run 32615164762 attempt 1 reproduced the timeout on the
+  #   old pin.
+  # 2026-08-24: 147da81 -> 5943837 (PR #126 branch, NOT yet main; supersedes
+  # dev's 3e5b5eb on this branch until #126 folds main in):
+  # per-shard docker isolation (the CI run 32588262605 pollution root),
+  # joiner-boundary bonds guard polls out the header-lag window, ucc scalar
+  # rounds batched under the 1200s budget. Verified by two full CI
+  # simulations on CI-shaped OCI VMs against the node fix branch: main leg
+  # 107/107 + ucc 11/11 on both, plus a failure-free near-complete second
+  # iteration each. Re-pin to the merged main SHA once #126 lands.
+  # 2026-08-24: 5943837 -> d94fffd (PR #126 branch with system-integration
+  # main merged in): folds SI PR #127 (fresh web-api deploy channels — the
+  # single-value-cell starvation fix dev pinned as 3e5b5eb) and SI PR #129
+  # (CI shard-port reservation + monitoring readiness). Verified: clean
+  # auto-merge, 229 unit tests + ruff green. Re-pin to the merged main SHA
+  # once #126 lands.
+  # 2026-08-24: d94fffd -> 8b4da0f (system-integration MAIN — the #126 merge
+  # commit; the branch pin's content, now immutable on main). Verified: CI
+  # full green x3 on the d94fffd content (run 32691266446 attempts 1+2, run
+  # 32759382579), and 8b4da0f is d94fffd merged to main with no further
+  # changes.
+  SYSTEM_INTEGRATION_REF: 8b4da0f9395fc951b68af1be8ae023fb1aeb9d09
   # Pinned OCI CLI installer (release tag + sha256). The checksum fails closed
   # if the tag is ever moved. Bump both together when upgrading.
   OCI_CLI_INSTALLER_URL: "https://raw.githubusercontent.com/oracle/oci-cli/v3.89.1/scripts/install/install.sh"
