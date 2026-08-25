@@ -135,7 +135,7 @@ impl Fixture {
             base.protobuf_components_encoded_len()
                 .expect("fixture expansion is representable"),
         );
-        base.encode_protobuf_components_direct_experiment(&mut expected)
+        base.encode_protobuf_components_direct(&mut expected)
             .expect("direct fixture authority");
         let fixture = Self { base, expected };
         fixture.preflight();
@@ -169,7 +169,7 @@ impl Fixture {
 
     fn execute(&self, arm: Arm, bag: &ParBag, output: &mut Vec<u8>) {
         match arm {
-            Arm::Direct => bag.encode_protobuf_components_direct_experiment(output),
+            Arm::Direct => bag.encode_protobuf_components_direct(output),
             Arm::ColdCached | Arm::WarmCached => {
                 bag.encode_protobuf_components_cached_experiment(output)
             }

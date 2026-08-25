@@ -625,9 +625,31 @@ impl Par {
         Ok(())
     }
 
+    /// Emit one final protobuf image without retaining a second component
+    /// projection in the shared `ParBag` auxiliary root.
+    ///
+    /// This is the appropriate route for one-shot hash, transport, and owned
+    /// `Vec` boundaries. [`Self::encode_protobuf`] remains the reusable route:
+    /// it can share memoized projections across CoW clones and repeated
+    /// occurrences in a larger generated message.
+    pub fn encode_protobuf_direct(&self, output: &mut impl BufMut) -> Result<(), ParProtobufError> {
+        let _ = self.protobuf_encoded_len()?;
+        self.components
+            .encode_protobuf_components_before_root_metadata_direct(output)?;
+        if !self.locally_free.is_empty() {
+            prost::encoding::bytes::encode(9, &self.locally_free, output);
+        }
+        if self.connective_used {
+            prost::encoding::bool::encode(10, &self.connective_used, output);
+        }
+        self.components
+            .encode_protobuf_components_after_root_metadata_direct(output)?;
+        Ok(())
+    }
+
     pub fn protobuf_bytes(&self) -> Result<Vec<u8>, ParProtobufError> {
         let mut output = Vec::with_capacity(self.protobuf_encoded_len()?);
-        self.encode_protobuf(&mut output)?;
+        self.encode_protobuf_direct(&mut output)?;
         Ok(output)
     }
 

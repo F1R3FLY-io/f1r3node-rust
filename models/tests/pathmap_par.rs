@@ -92,6 +92,11 @@ fn protobuf_stream_is_exact_and_round_trips_without_a_vec_shadow() {
     let mut streamed = Vec::new();
     value.encode_protobuf(&mut streamed).expect("stream Par");
     assert_eq!(streamed, expected);
+    let mut direct = Vec::new();
+    value
+        .encode_protobuf_direct(&mut direct)
+        .expect("direct one-shot Par");
+    assert_eq!(direct, expected);
     assert_eq!(
         value.protobuf_encoded_len().expect("length"),
         expected.len()

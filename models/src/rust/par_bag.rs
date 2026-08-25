@@ -5214,14 +5214,13 @@ impl ParBag {
         Ok(())
     }
 
-    /// Cold one-shot control for the protobuf projection experiment.
+    /// Stream a cold one-shot protobuf projection without retaining it.
     ///
     /// This traverses the authoritative PathMap and writes the final fields to
     /// the caller's sink without allocating or retaining a component
     /// projection. It shares [`Self::encode_protobuf_family`] with the cached
     /// route so the experiment compares policies, not two encoders.
-    #[cfg(any(test, feature = "protobuf-projection-experiment"))]
-    fn encode_protobuf_components_direct(
+    pub fn encode_protobuf_components_direct(
         &self,
         output: &mut impl BufMut,
     ) -> Result<(), ParBagProtobufError> {
@@ -5267,8 +5266,7 @@ impl ParBag {
         Ok(())
     }
 
-    #[cfg(any(test, feature = "protobuf-projection-experiment"))]
-    fn encode_protobuf_components_before_root_metadata_direct(
+    pub(crate) fn encode_protobuf_components_before_root_metadata_direct(
         &self,
         output: &mut impl BufMut,
     ) -> Result<(), ParBagProtobufError> {
@@ -5282,23 +5280,13 @@ impl ParBag {
         Ok(())
     }
 
-    #[cfg(any(test, feature = "protobuf-projection-experiment"))]
-    fn encode_protobuf_components_after_root_metadata_direct(
+    pub(crate) fn encode_protobuf_components_after_root_metadata_direct(
         &self,
         output: &mut impl BufMut,
     ) -> Result<(), ParBagProtobufError> {
         self.encode_protobuf_family::<Bundle>(output)?;
         self.encode_protobuf_family::<If>(output)?;
         Ok(())
-    }
-
-    /// Measurement-only direct policy. This API is absent from normal builds.
-    #[cfg(feature = "protobuf-projection-experiment")]
-    pub fn encode_protobuf_components_direct_experiment(
-        &self,
-        output: &mut impl BufMut,
-    ) -> Result<(), ParBagProtobufError> {
-        self.encode_protobuf_components_direct(output)
     }
 
     /// Measurement-only access to the current memoizing production policy.
