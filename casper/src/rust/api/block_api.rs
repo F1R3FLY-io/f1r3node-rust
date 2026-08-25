@@ -1784,6 +1784,66 @@ impl BlockAPI {
         }
     }
 
+    /// Bulk snapshot of pending deploys from both `deploy_storage` (fresh,
+    /// not yet proposed) and `rejected_deploy_buffer` (recovering after a
+    /// merge conflict). Each entry is paired with an `is_rejected` flag.
+    ///
+    /// When `deployer` is `Some`, only deploys signed by that public key
+    /// are returned. The result is capped at
+    /// [`pending_deploys::PENDING_DEPLOYS_MAX_RESULTS`] entries; the
+    /// `total_available` field reports the count that matched before
+    /// truncation, so callers can detect truncation by comparing
+    /// `deploys.len() < total_available`.
+    ///
+    /// The queue is **node-local**: deploys never gossip, so an observer
+    /// node always answers empty (it rejects `doDeploy`). For cross-node
+    /// deploy status, use `deployFinalizationStatus` — it is DAG-derived
+    /// and consistent across nodes. This API is for validator-side
+    /// introspection of the local proposer pool.
+    ///
+    /// Returns an error on bootstrapping nodes where Casper is not yet
+    /// initialised (`with_casper()` returns `None`).
+    pub async fn list_pending_deploys(
+        engine_cell: &EngineCell,
+        deployer: Option<&[u8]>,
+    ) -> ApiErr<crate::rust::api::pending_deploys::PendingDeploysSnapshot> {
+        use crate::rust::api::pending_deploys::{
+            PendingDeploysSnapshot, PENDING_DEPLOYS_MAX_RESULTS,
+        };
+
+        let error_message =
+            "Could not list pending deploys, casper instance was not available yet.";
+        let eng = engine_cell.get().await;
+        let Some(casper) = eng.with_casper() else {
+            tracing::warn!("{}", error_message);
+            return Err(eyre::eyre!("Error: {}", error_message));
+        };
+
+        let mut deploys = casper.list_pending_deploys().await?;
+
+        if let Some(pk) = deployer {
+            deploys.retain(|(d, _)| d.pk.bytes.as_ref() == pk);
+        }
+
+        // Deterministic ordering before cap truncation: by timestamp, then
+        // by signature bytes. Makes the truncation result reproducible
+        // across calls for the same queue state.
+        deploys.sort_by(|(a, _), (b, _)| {
+            a.data
+                .time_stamp
+                .cmp(&b.data.time_stamp)
+                .then_with(|| a.sig.as_ref().cmp(b.sig.as_ref()))
+        });
+
+        let total_available = deploys.len() as u32;
+        deploys.truncate(PENDING_DEPLOYS_MAX_RESULTS);
+
+        Ok(PendingDeploysSnapshot {
+            deploys,
+            total_available,
+        })
+    }
+
     pub async fn bond_status(engine_cell: &EngineCell, public_key: &ByteString) -> ApiErr<bool> {
         let error_message =
             "Could not check if validator is bonded, casper instance was not available yet.";
