@@ -19,9 +19,18 @@ pub struct Blake2b256Hash(pub Vec<u8>);
 pub const LENGTH: i64 = 32;
 
 impl Blake2b256Hash {
-    pub fn new(data: &[u8]) -> Self {
+    pub fn new(data: &[u8]) -> Self { Self::new_from_chunks([data]) }
+
+    /// Hash a logical byte string supplied as adjacent borrowed chunks.
+    ///
+    /// This is byte-for-byte equivalent to concatenating the chunks and
+    /// passing the resulting slice to [`Self::new`], but it does not allocate
+    /// that intermediate concatenation.
+    pub fn new_from_chunks<'a>(chunks: impl IntoIterator<Item = &'a [u8]>) -> Self {
         let mut hasher = Blake2b::<U32>::new();
-        hasher.update(data);
+        for chunk in chunks {
+            hasher.update(chunk);
+        }
         let hash = hasher.finalize();
         Blake2b256Hash(hash.to_vec())
     }

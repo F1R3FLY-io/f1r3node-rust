@@ -49,6 +49,20 @@ pub struct HistoryRepositoryImpl<C, P, A, K> {
 type ColdAction = (Blake2b256Hash, Option<PersistedData>);
 const CHECKPOINT_PARALLEL_ACTIONS_THRESHOLD: usize = 256;
 
+/// Hash the frozen bincode-1 representation of a leaf whose sole field is a
+/// `Vec<u8>` without materializing `[length prefix | bytes]` a second time.
+///
+/// `bincode::serialize(&DataLeaf { bytes })`, and likewise the continuation
+/// and join leaf wrappers, is exactly an eight-byte little-endian element
+/// count followed by the byte payload. Differential tests below bind this
+/// transducer to bincode rather than relying on that statement alone.
+fn hash_single_byte_vec_leaf(bytes: &[u8]) -> Blake2b256Hash {
+    let len = u64::try_from(bytes.len())
+        .expect("RSpace leaf byte length must fit the frozen bincode u64 length field");
+    let len = len.to_le_bytes();
+    Blake2b256Hash::new_from_chunks([len.as_slice(), bytes])
+}
+
 impl<C, P, A, K> HistoryRepositoryImpl<C, P, A, K>
 where
     C: Clone + Send + Sync + StableHashSerialize,
@@ -147,9 +161,7 @@ where
             HotStoreTrieAction::TrieInsertAction(TrieInsertAction::TrieInsertProduce(i)) => {
                 let data = encode_datums(&i.data);
                 let data_leaf = DataLeaf { bytes: data };
-                let data_leaf_encoded = bincode::serialize(&data_leaf)
-                    .expect("History Repository Impl: Unable to serialize DataLeaf");
-                let data_hash = Blake2b256Hash::new(&data_leaf_encoded);
+                let data_hash = hash_single_byte_vec_leaf(&data_leaf.bytes);
 
                 (
                     (data_hash.clone(), Some(PersistedData::Data(data_leaf))),
@@ -165,9 +177,7 @@ where
                 let data_leaf = DataLeaf {
                     bytes: i.encoded_datums,
                 };
-                let data_leaf_encoded = bincode::serialize(&data_leaf)
-                    .expect("History Repository Impl: Unable to serialize DataLeaf");
-                let data_hash = Blake2b256Hash::new(&data_leaf_encoded);
+                let data_hash = hash_single_byte_vec_leaf(&data_leaf.bytes);
 
                 (
                     (data_hash.clone(), Some(PersistedData::Data(data_leaf))),
@@ -180,9 +190,7 @@ where
             HotStoreTrieAction::TrieInsertAction(TrieInsertAction::TrieInsertConsume(i)) => {
                 let data = encode_continuations(&i.continuations);
                 let continuations_leaf = ContinuationsLeaf { bytes: data };
-                let continuations_leaf_encoded = bincode::serialize(&continuations_leaf)
-                    .expect("History Repository Impl: Unable to serialize ContinuationsLeaf");
-                let continuations_hash = Blake2b256Hash::new(&continuations_leaf_encoded);
+                let continuations_hash = hash_single_byte_vec_leaf(&continuations_leaf.bytes);
 
                 (
                     (
@@ -198,9 +206,7 @@ where
             HotStoreTrieAction::TrieInsertAction(TrieInsertAction::TrieInsertJoins(i)) => {
                 let data = encode_joins(&i.joins);
                 let joins_leaf = JoinsLeaf { bytes: data };
-                let joins_leaf_encoded = bincode::serialize(&joins_leaf)
-                    .expect("History Repository Impl: Unable to serialize JoinsLeaf");
-                let joins_hash = Blake2b256Hash::new(&joins_leaf_encoded);
+                let joins_hash = hash_single_byte_vec_leaf(&joins_leaf.bytes);
 
                 (
                     (joins_hash.clone(), Some(PersistedData::Joins(joins_leaf))),
@@ -218,9 +224,7 @@ where
                 let data =
                     bincode::serialize(&sorted_data).expect("Failed to serialize Vec<Vec<u8>>");
                 let data_leaf = DataLeaf { bytes: data };
-                let data_leaf_encoded = bincode::serialize(&data_leaf)
-                    .expect("History Repository Impl: Unable to serialize DataLeaf");
-                let data_hash = Blake2b256Hash::new(&data_leaf_encoded);
+                let data_hash = hash_single_byte_vec_leaf(&data_leaf.bytes);
 
                 (
                     (data_hash.clone(), Some(PersistedData::Data(data_leaf))),
@@ -238,9 +242,7 @@ where
                 let data = bincode::serialize(&sorted_continuations)
                     .expect("Failed to serialize Vec<Vec<u8>>");
                 let continuations_leaf = ContinuationsLeaf { bytes: data };
-                let continuations_leaf_encoded = bincode::serialize(&continuations_leaf)
-                    .expect("History Repository Impl: Unable to serialize ContinuationsLeaf");
-                let continuations_hash = Blake2b256Hash::new(&continuations_leaf_encoded);
+                let continuations_hash = hash_single_byte_vec_leaf(&continuations_leaf.bytes);
 
                 (
                     (
@@ -261,9 +263,7 @@ where
                 let data =
                     bincode::serialize(&sorted_joins).expect("Failed to serialize Vec<Vec<u8>>");
                 let joins_leaf = JoinsLeaf { bytes: data };
-                let joins_leaf_encoded = bincode::serialize(&joins_leaf)
-                    .expect("History Repository Impl: Unable to serialize JoinsLeaf");
-                let joins_hash = Blake2b256Hash::new(&joins_leaf_encoded);
+                let joins_hash = hash_single_byte_vec_leaf(&joins_leaf.bytes);
 
                 (
                     (joins_hash.clone(), Some(PersistedData::Joins(joins_leaf))),
@@ -551,4 +551,27 @@ pub fn prepend_bytes(element: u8, _bytes: &[u8]) -> Vec<u8> {
     bytes.push(element);
     bytes.extend(_bytes.iter().cloned());
     bytes
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn legacy_data_leaf_hash(bytes: Vec<u8>) -> Blake2b256Hash {
+        let encoded = bincode::serialize(&DataLeaf { bytes }).unwrap();
+        Blake2b256Hash::new(&encoded)
+    }
+
+    #[test]
+    fn chunked_leaf_hash_is_exactly_the_frozen_bincode_hash() {
+        for bytes in [Vec::new(), vec![0], (0u8..=254).collect(), vec![0xa5; 65_537]] {
+            assert_eq!(hash_single_byte_vec_leaf(&bytes), legacy_data_leaf_hash(bytes));
+        }
+    }
+
+    #[test]
+    fn chunked_leaf_hash_negative_control_rejects_a_missing_length_prefix() {
+        let bytes = b"length-prefix-is-consensus-significant";
+        assert_ne!(hash_single_byte_vec_leaf(bytes), Blake2b256Hash::new(bytes));
+    }
 }
