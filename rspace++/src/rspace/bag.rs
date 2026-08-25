@@ -12,7 +12,7 @@ use pathmap::zipper::{
 };
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-use super::pathmap_codec::{CompactTrie, CompactTrieError};
+use super::pathmap_codec::{CanonicalCompactTrieCursor, CompactTrieError};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BagError {
@@ -683,7 +683,7 @@ impl Bag {
     /// The reader is iterative and rejects alternate encodings, zero values,
     /// and value-free endpoints that the Bag API cannot produce.
     pub fn from_compact_bytes(bytes: &[u8]) -> Result<Self, BagCodecError> {
-        let trie = CompactTrie::parse_canonical(bytes)?;
+        let mut trie = CanonicalCompactTrieCursor::new(bytes)?;
         if trie.is_empty() {
             return Ok(Self::new());
         }
@@ -691,15 +691,14 @@ impl Bag {
         let mut entries = PathMap::new();
         let mut distinct_len = 0usize;
         let mut cardinality = 0u128;
-        trie.visit(|path, value| {
-            let value = value.ok_or(BagCodecError::MissingMultiplicity)?;
+        while let Some(endpoint) = trie.next_endpoint() {
+            let value = endpoint.value.ok_or(BagCodecError::MissingMultiplicity)?;
             let multiplicity =
                 Multiplicity::new(value).map_err(|_| BagCodecError::ZeroMultiplicity)?;
-            entries.insert(path, multiplicity);
+            entries.insert(endpoint.path, multiplicity);
             distinct_len += 1;
             cardinality += u128::from(value);
-            Ok::<(), BagCodecError>(())
-        })?;
+        }
         Ok(Self {
             entries,
             distinct_len,

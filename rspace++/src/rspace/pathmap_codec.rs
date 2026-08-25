@@ -698,6 +698,10 @@ struct ValidatedActPlan {
 pub struct CanonicalCompactTrieEndpoint<'a> {
     pub path: &'a [u8],
     pub value: Option<u64>,
+    /// Exact source range when the complete path is one borrowed ACT line.
+    /// Branched paths are assembled in the cursor's reusable path buffer and
+    /// therefore have no single contiguous source range.
+    pub contiguous_path_range: Option<Range<usize>>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1022,6 +1026,8 @@ where B: AsRef<[u8]>
             .expect("canonical ACT remains valid while owned")
     }
 
+    pub fn value_summary(&self) -> CanonicalCompactTrieValueSummary { self.state.value_summary() }
+
     #[cfg(any(test, feature = "act-codec-instrumentation"))]
     pub fn work_counters(&self) -> CanonicalCompactTrieWorkCounters {
         let mut counters = self.state.work_counters();
@@ -1063,6 +1069,8 @@ where B: AsRef<[u8]>
 
     pub fn is_empty(&self) -> bool { self.plan.empty }
 
+    pub fn value_summary(&self) -> CanonicalCompactTrieValueSummary { self.plan.value_summary }
+
     pub fn rewind(&mut self) {
         self.path.clear();
         self.stack.clear();
@@ -1093,7 +1101,10 @@ where B: AsRef<[u8]>
         value_only: bool,
     ) -> Option<CanonicalCompactTrieEndpoint<'_>> {
         enum Action {
-            Yield(Option<u64>),
+            Yield {
+                value: Option<u64>,
+                contiguous_path_range: Option<Range<usize>>,
+            },
             Pop(usize),
             Push {
                 record: usize,
@@ -1104,6 +1115,7 @@ where B: AsRef<[u8]>
         }
 
         loop {
+            let is_root = self.stack.len() == 1;
             let action = {
                 let frame = self.stack.last_mut()?;
                 let record = &self.plan.records[frame.record];
@@ -1114,7 +1126,12 @@ where B: AsRef<[u8]>
                     }
                     if record.value().is_some() || record.child_count() == 0 {
                         if !value_only || record.value().is_some() {
-                            Action::Yield(record.value())
+                            Action::Yield {
+                                value: record.value(),
+                                contiguous_path_range: is_root
+                                    .then(|| record.line_suffix())
+                                    .flatten(),
+                            }
                         } else {
                             Action::Continue
                         }
@@ -1145,10 +1162,14 @@ where B: AsRef<[u8]>
             };
 
             match action {
-                Action::Yield(value) => {
+                Action::Yield {
+                    value,
+                    contiguous_path_range,
+                } => {
                     return Some(CanonicalCompactTrieEndpoint {
                         path: &self.path,
                         value,
+                        contiguous_path_range,
                     });
                 }
                 Action::Pop(path_len) => {

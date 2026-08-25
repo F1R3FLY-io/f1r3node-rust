@@ -10465,10 +10465,9 @@ enum Node {
          }\n\n\
          struct EpmFrame {\n\
              parent: EPathMap,\n\
-             limit: usize,\n\
-             pending: OwnedPendingEpmDecode,\n\
-             validate_canonical: bool,\n\
-         }\n\n\
+	             limit: usize,\n\
+	             pending: OwnedPendingEpmDecode,\n\
+	         }\n\n\
          enum Frame {\n\
              Node(Node),\n\
              Attach(Attach),\n\
@@ -11351,19 +11350,18 @@ fn emit_protobuf_decoder_epathmap_step(src: &mut String) {
                             error.push("EPathMap", "trie_snapshot");
                             error
                         })?;
-                        let pending = OwnedPendingEpmDecode::new(region).map_err(|error| {
-                            let mut error: DecodeError = error.into();
-                            error.push("EPathMap", "trie_snapshot");
-                            error
-                        })?;
-                        let validate_canonical = self.epm_depth == 0;
-                        self.epm_depth += 1;
-                        self.frames.push(Frame::Epm(EpmFrame {
-                            parent: value,
-                            limit,
-                            pending,
-                            validate_canonical,
-                        }));
+	                        let validate_canonical = self.epm_depth == 0;
+	                        let pending = OwnedPendingEpmDecode::new(region, validate_canonical).map_err(|error| {
+	                            let mut error: DecodeError = error.into();
+	                            error.push("EPathMap", "trie_snapshot");
+	                            error
+	                        })?;
+	                        self.epm_depth += 1;
+	                        self.frames.push(Frame::Epm(EpmFrame {
+	                            parent: value,
+	                            limit,
+	                            pending,
+	                        }));
                     }
                     _ => {
                         skip_unknown_field(protobuf_wire_type, tag, &mut self.buf)?;
@@ -11401,9 +11399,9 @@ fn emit_protobuf_decoder_epathmap_step(src: &mut String) {
             return Ok(());
         }
 
-        let repr = frame
-            .pending
-            .finish(frame.validate_canonical)
+	        let repr = frame
+	            .pending
+	            .finish()
             .map_err(|error| {
                 let mut error: DecodeError = error.into();
                 error.push("EPathMap", "trie_snapshot");

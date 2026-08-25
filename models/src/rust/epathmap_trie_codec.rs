@@ -16,10 +16,11 @@ use pathmap::zipper::{ZipperIteration, ZipperMoving};
 use pathmap::PathMap;
 use prost::bytes::Bytes;
 #[cfg(test)]
-use rspace_plus_plus::rspace::pathmap_codec::CanonicalCompactTrieCursor;
+use rspace_plus_plus::rspace::pathmap_codec::CompactTrie;
 use rspace_plus_plus::rspace::pathmap_codec::{
-    CanonicalCompactTrieIndexedTopologyCursor, CanonicalCompactTrieTopologyEvent, CompactPath,
-    CompactTrie, CompactTrieError, CompactTrieTopologyEvent,
+    CanonicalCompactTrieCursor, CanonicalCompactTrieIndexedTopologyCursor,
+    CanonicalCompactTrieTopologyCursor, CanonicalCompactTrieTopologyEvent,
+    CanonicalCompactTrieValueSummary, CompactTrieError, CompactTrieTopologyEvent,
 };
 
 use crate::rhoapi::Par;
@@ -289,50 +290,12 @@ fn validate_epm1_value_table(
 fn validate_typed_epm1_trie<B>(
     mode: EPathMapMode,
     value_count: usize,
-    trie: &mut CanonicalCompactTrieCursor<B>,
+    trie: &CanonicalCompactTrieCursor<B>,
 ) -> Result<(), TrieCodecError>
 where
     B: AsRef<[u8]>,
 {
-    if trie.is_empty() {
-        return Err(TrieCodecError::new(
-            "typed EPathMap mode has empty ACTree topology; use neutral empty mode",
-        ));
-    }
-    let mut referenced_values = 0usize;
-    while let Some(endpoint) = trie.next_value_endpoint() {
-        let ordinal = endpoint
-            .value
-            .expect("a value-endpoint cursor yields an ordinal");
-        match mode {
-            EPathMapMode::Set => {
-                if ordinal != 0 {
-                    return Err(TrieCodecError::new("set ACTree value ordinal is not zero"));
-                }
-            }
-            EPathMapMode::Map => {
-                if ordinal != referenced_values as u64 {
-                    return Err(TrieCodecError::new(format!(
-                        "map ACTree value ordinal {ordinal} is not canonical ordinal {referenced_values}"
-                    )));
-                }
-                referenced_values = referenced_values
-                    .checked_add(1)
-                    .ok_or_else(|| TrieCodecError::new("EPathMap value count overflows usize"))?;
-            }
-            EPathMapMode::Empty => unreachable!("empty mode has no ACT arena"),
-        }
-    }
-    if mode == EPathMapMode::Set && value_count != 0 {
-        return Err(TrieCodecError::new("set EPathMap carries map values"));
-    }
-    if mode == EPathMapMode::Map && referenced_values != value_count {
-        return Err(TrieCodecError::new(format!(
-            "map ACTree references {referenced_values} values but EPM1 declares {value_count}"
-        )));
-    }
-    trie.rewind();
-    Ok(())
+    validate_canonical_act_summary(mode, value_count, trie.is_empty(), trie.value_summary())
 }
 
 #[cfg(test)]
@@ -590,6 +553,66 @@ fn indexed_act_error(arena: &IndexedByteRegion<'_>, error: CompactTrieError) -> 
     TrieCodecError::located(error.to_string(), position.physical, position.physical)
 }
 
+fn validate_indexed_canonical_act_summary(
+    mode: EPathMapMode,
+    value_count: usize,
+    value_count_provenance: CanonicalByteProvenance,
+    trie: &CanonicalCompactTrieIndexedTopologyCursor<IndexedByteRegion<'_>>,
+) -> Result<(), TrieCodecError> {
+    let arena = trie.source();
+    if trie.is_empty() {
+        let provenance = arena.end_position().physical;
+        return Err(TrieCodecError::located(
+            "typed EPathMap mode has empty ACTree topology; use neutral empty mode",
+            provenance,
+            provenance,
+        ));
+    }
+    let summary = trie.value_summary();
+    match mode {
+        EPathMapMode::Set => {
+            if let Some((source_offset, _ordinal)) = summary.first_nonzero() {
+                let provenance = arena
+                    .position_at(source_offset.min(arena.len()))
+                    .expect("a validated ACT value offset belongs to its indexed arena")
+                    .physical;
+                return Err(TrieCodecError::located(
+                    "set ACTree value ordinal is not zero",
+                    provenance,
+                    provenance,
+                ));
+            }
+        }
+        EPathMapMode::Map => {
+            if let Some((source_offset, ordinal, expected)) = summary.first_nonsequential() {
+                let provenance = arena
+                    .position_at(source_offset.min(arena.len()))
+                    .expect("a validated ACT value offset belongs to its indexed arena")
+                    .physical;
+                return Err(TrieCodecError::located(
+                    format!(
+                        "map ACTree value ordinal {ordinal} is not canonical ordinal {expected}"
+                    ),
+                    provenance,
+                    provenance,
+                ));
+            }
+            if summary.value_count() != value_count {
+                return Err(TrieCodecError::located(
+                    format!(
+                        "map ACTree references {} values but EPM1 declares {value_count}",
+                        summary.value_count()
+                    ),
+                    value_count_provenance,
+                    value_count_provenance,
+                ));
+            }
+        }
+        EPathMapMode::Empty => unreachable!("empty mode has no indexed ACT cursor"),
+    }
+    Ok(())
+}
+
 struct IndexedCanonicalSnapshotPrefix<'a> {
     mode: EPathMapMode,
     mode_provenance: CanonicalByteProvenance,
@@ -792,28 +815,24 @@ impl<'a> IndexedCanonicalEpm1TopologyCursor<'a> {
                 let arena = prefix.arena;
                 let trie = CanonicalCompactTrieIndexedTopologyCursor::from_source(arena.clone())
                     .map_err(|error| indexed_act_error(&arena, error))?;
-                if trie.is_empty() {
-                    let provenance = arena.end_position().physical;
-                    return Err(TrieCodecError::located(
-                        "typed EPathMap mode has empty ACTree topology; use neutral empty mode",
-                        provenance,
-                        provenance,
-                    ));
-                }
+                validate_indexed_canonical_act_summary(
+                    prefix.mode,
+                    prefix.value_count,
+                    prefix.value_count_provenance,
+                    &trie,
+                )?;
                 Some(trie)
             }
             EPathMapMode::Map => {
                 let arena = prefix.arena;
                 let trie = CanonicalCompactTrieIndexedTopologyCursor::from_source(arena.clone())
                     .map_err(|error| indexed_act_error(&arena, error))?;
-                if trie.is_empty() {
-                    let provenance = arena.end_position().physical;
-                    return Err(TrieCodecError::located(
-                        "typed EPathMap mode has empty ACTree topology; use neutral empty mode",
-                        provenance,
-                        provenance,
-                    ));
-                }
+                validate_indexed_canonical_act_summary(
+                    prefix.mode,
+                    prefix.value_count,
+                    prefix.value_count_provenance,
+                    &trie,
+                )?;
                 Some(trie)
             }
         };
@@ -1241,13 +1260,16 @@ pub(crate) struct PendingEpmDecode<S: AsRef<[u8]>> {
     next_value_at: usize,
     remaining_values: usize,
     expected_values: usize,
+    current_value_range: Option<Range<usize>>,
+    validate_canonical: bool,
+    first_noncanonical_value: Option<usize>,
     values: Vec<Option<Par>>,
 }
 
 pub(crate) type OwnedPendingEpmDecode = PendingEpmDecode<Bytes>;
 
 impl<S: AsRef<[u8]>> PendingEpmDecode<S> {
-    pub(crate) fn new(snapshot: S) -> Result<Self, TrieCodecError> {
+    pub(crate) fn new(snapshot: S, validate_canonical: bool) -> Result<Self, TrieCodecError> {
         let bytes = snapshot.as_ref();
         let mut cursor = 0usize;
         let magic = take(bytes, &mut cursor, EPM_MAGIC.len(), "EPM1 magic")?;
@@ -1295,11 +1317,19 @@ impl<S: AsRef<[u8]>> PendingEpmDecode<S> {
             next_value_at,
             remaining_values: value_count,
             expected_values: value_count,
+            current_value_range: None,
+            validate_canonical,
+            first_noncanonical_value: None,
             values: Vec::with_capacity(value_count),
         })
     }
 
     fn next_value_range(&mut self) -> Result<Option<Range<usize>>, TrieCodecError> {
+        if self.current_value_range.is_some() {
+            return Err(TrieCodecError::new(
+                "next map value requested before the previous value was decoded",
+            ));
+        }
         if self.remaining_values == 0 {
             return Ok(None);
         }
@@ -1308,7 +1338,9 @@ impl<S: AsRef<[u8]>> PendingEpmDecode<S> {
         let start = self.next_value_at;
         take(bytes, &mut self.next_value_at, len, "map value payload")?;
         self.remaining_values -= 1;
-        Ok(Some(start..start + len))
+        let range = start..start + len;
+        self.current_value_range = Some(range.clone());
+        Ok(Some(range))
     }
 
     pub(crate) fn push_value(&mut self, value: Par) -> Result<(), TrieCodecError> {
@@ -1317,14 +1349,20 @@ impl<S: AsRef<[u8]>> PendingEpmDecode<S> {
                 "more map values were decoded than the EPM1 value count",
             ));
         }
+        let range = self.current_value_range.take().ok_or_else(|| {
+            TrieCodecError::new("map value supplied without a corresponding EPM1 value body")
+        })?;
+        if self.validate_canonical
+            && self.first_noncanonical_value.is_none()
+            && protobuf_encoder::encode_to_vec(&value) != self.snapshot.as_ref()[range]
+        {
+            self.first_noncanonical_value = Some(self.values.len());
+        }
         self.values.push(Some(value));
         Ok(())
     }
 
-    pub(crate) fn finish(
-        self,
-        validate_canonical: bool,
-    ) -> Result<EPathMapRepr<Par>, TrieCodecError> {
+    pub(crate) fn finish(self) -> Result<EPathMapRepr<Par>, TrieCodecError> {
         let Self {
             snapshot,
             mode,
@@ -1332,33 +1370,23 @@ impl<S: AsRef<[u8]>> PendingEpmDecode<S> {
             next_value_at: _,
             remaining_values,
             expected_values,
+            current_value_range,
+            validate_canonical: _,
+            first_noncanonical_value,
             values,
         } = self;
-        if remaining_values != 0 || values.len() != expected_values {
+        if remaining_values != 0 || current_value_range.is_some() || values.len() != expected_values
+        {
             return Err(TrieCodecError::new(
                 "fewer map values were decoded than the EPM1 value count",
             ));
         }
-        if validate_canonical {
-            let inspection = inspect_canonical_snapshot(snapshot.as_ref())?;
-            if inspection.mode != mode || inspection.value_bodies.len() != values.len() {
-                return Err(TrieCodecError::new(
-                    "EPM1 structural inspection disagrees with its decoded framing",
-                ));
-            }
-            for (ordinal, (range, value)) in inspection.value_bodies.iter().zip(&values).enumerate()
-            {
-                let value = value
-                    .as_ref()
-                    .expect("a completed pending EPM decode retains every value");
-                if protobuf_encoder::encode_to_vec(value) != snapshot.as_ref()[range.clone()] {
-                    return Err(TrieCodecError::new(format!(
-                        "map value {ordinal} protobuf body is not canonical"
-                    )));
-                }
-            }
-        }
         let repr = build_repr(mode, &snapshot.as_ref()[arena], values)?;
+        if let Some(ordinal) = first_noncanonical_value {
+            return Err(TrieCodecError::new(format!(
+                "map value {ordinal} protobuf body is not canonical"
+            )));
+        }
         Ok(repr)
     }
 }
@@ -1390,19 +1418,22 @@ fn build_repr(
             if !values.is_empty() {
                 return Err(TrieCodecError::new("set EPathMap carries map values"));
             }
+            let mut trie = CanonicalCompactTrieCursor::new(arena)?;
+            validate_canonical_act_summary(
+                mode,
+                values.len(),
+                trie.is_empty(),
+                trie.value_summary(),
+            )?;
             let mut map = PathMap::<()>::new();
-            visit_act(arena, |path, ordinal| {
-                if !path.is_empty() {
-                    map.create_path(path);
+            while let Some(endpoint) = trie.next_endpoint() {
+                if !endpoint.path.is_empty() {
+                    map.create_path(endpoint.path);
                 }
-                if let Some(ordinal) = ordinal {
-                    if ordinal != 0 {
-                        return Err(TrieCodecError::new("set ACTree value ordinal is not zero"));
-                    }
-                    map.insert(path, ());
+                if endpoint.value.is_some() {
+                    map.insert(endpoint.path, ());
                 }
-                Ok(())
-            })?;
+            }
             if map.is_empty() {
                 return Err(TrieCodecError::new(
                     "typed set mode is empty; use neutral empty mode",
@@ -1411,13 +1442,20 @@ fn build_repr(
             Ok(EPathMapRepr::Set(map))
         }
         EPathMapMode::Map => {
+            let mut trie = CanonicalCompactTrieCursor::new(arena)?;
+            validate_canonical_act_summary(
+                mode,
+                values.len(),
+                trie.is_empty(),
+                trie.value_summary(),
+            )?;
             let mut map = PathMap::<Par>::new();
-            visit_act(arena, |path, ordinal| {
-                if !path.is_empty() {
-                    map.create_path(path);
+            while let Some(endpoint) = trie.next_endpoint() {
+                if !endpoint.path.is_empty() {
+                    map.create_path(endpoint.path);
                 }
-                let Some(ordinal) = ordinal else {
-                    return Ok(());
+                let Some(ordinal) = endpoint.value else {
+                    continue;
                 };
                 let index = usize::try_from(ordinal)
                     .map_err(|_| TrieCodecError::new("map value ordinal overflows usize"))?;
@@ -1427,9 +1465,8 @@ fn build_repr(
                 let value = slot.take().ok_or_else(|| {
                     TrieCodecError::new(format!("map value ordinal {index} is reused"))
                 })?;
-                map.insert(path, value);
-                Ok(())
-            })?;
+                map.insert(endpoint.path, value);
+            }
             if map.is_empty() {
                 return Err(TrieCodecError::new(
                     "typed map mode is empty; use neutral empty mode",
@@ -1489,6 +1526,7 @@ fn decode_with(
         )));
     }
 
+    let mut first_noncanonical_value = None;
     let mut values = Vec::with_capacity(value_count);
     for ordinal in 0..value_count {
         let len = read_len(bytes, &mut cursor, "map value length")?;
@@ -1496,29 +1534,23 @@ fn decode_with(
         let value = decode_value(payload).map_err(|error| {
             TrieCodecError::new(format!("map value {ordinal} is not a Par: {error}"))
         })?;
+        if first_noncanonical_value.is_none() && protobuf_encoder::encode_to_vec(&value) != payload
+        {
+            first_noncanonical_value = Some(ordinal);
+        }
         values.push(Some(value));
     }
     if cursor != bytes.len() {
         return Err(TrieCodecError::new("trailing bytes after EPM1 payload"));
     }
 
-    let inspection = inspect_canonical_snapshot(bytes)?;
-    if inspection.mode != mode || inspection.value_bodies.len() != values.len() {
-        return Err(TrieCodecError::new(
-            "EPM1 structural inspection disagrees with its decoded framing",
-        ));
+    let repr = build_repr(mode, arena, values)?;
+    if let Some(ordinal) = first_noncanonical_value {
+        return Err(TrieCodecError::new(format!(
+            "map value {ordinal} protobuf body is not canonical"
+        )));
     }
-    for (ordinal, (range, value)) in inspection.value_bodies.iter().zip(&values).enumerate() {
-        let value = value
-            .as_ref()
-            .expect("the direct EPM decoder retains every value before construction");
-        if protobuf_encoder::encode_to_vec(value) != bytes[range.clone()] {
-            return Err(TrieCodecError::new(format!(
-                "map value {ordinal} protobuf body is not canonical"
-            )));
-        }
-    }
-    build_repr(mode, arena, values)
+    Ok(repr)
 }
 
 pub fn decode(bytes: &[u8]) -> Result<EPathMapRepr<Par>, TrieCodecError> {
@@ -1535,76 +1567,76 @@ pub(crate) fn decode_deferred_key_validation(
     })
 }
 
+#[cfg(test)]
 fn visit_act(
     bytes: &[u8],
-    visit: impl FnMut(&[u8], Option<u64>) -> Result<(), TrieCodecError>,
+    mut visit: impl FnMut(&[u8], Option<u64>) -> Result<(), TrieCodecError>,
 ) -> Result<(), TrieCodecError> {
-    CompactTrie::parse(bytes)?.visit(visit)
+    let mut trie = CanonicalCompactTrieCursor::new(bytes)?;
+    while let Some(endpoint) = trie.next_endpoint() {
+        visit(endpoint.path, endpoint.value)?;
+    }
+    Ok(())
 }
 
-fn collect_canonical_keys(
-    arena_start: usize,
-    trie: &CompactTrie<'_>,
+fn validate_canonical_act_summary(
     mode: EPathMapMode,
     value_count: usize,
-) -> Result<Vec<CanonicalSnapshotKey>, TrieCodecError> {
-    let mut keys = Vec::with_capacity(value_count);
-    visit_canonical_value_paths(trie, mode, value_count, |path| {
-        keys.push(match path {
-            CompactPath::Relative(range) => {
-                CanonicalSnapshotKey::Relative(arena_start + range.start..arena_start + range.end)
-            }
-            CompactPath::Owned(path) => CanonicalSnapshotKey::Owned(path),
-        });
-        Ok::<(), TrieCodecError>(())
-    })?;
-    Ok(keys)
-}
-
-fn visit_canonical_value_paths(
-    trie: &CompactTrie<'_>,
-    mode: EPathMapMode,
-    value_count: usize,
-    mut visit_map_path: impl FnMut(CompactPath) -> Result<(), TrieCodecError>,
+    is_empty: bool,
+    summary: CanonicalCompactTrieValueSummary,
 ) -> Result<(), TrieCodecError> {
-    if trie.is_empty() {
+    if is_empty {
         return Err(TrieCodecError::new(
             "typed EPathMap mode has empty ACTree topology; use neutral empty mode",
         ));
     }
-    let mut referenced_values = 0usize;
-    trie.visit_compact(|path, ordinal| {
-        let Some(ordinal) = ordinal else {
-            return Ok(());
-        };
-        match mode {
-            EPathMapMode::Set => {
-                if ordinal != 0 {
-                    return Err(TrieCodecError::new("set ACTree value ordinal is not zero"));
-                }
+    match mode {
+        EPathMapMode::Set => {
+            if summary.first_nonzero().is_some() {
+                return Err(TrieCodecError::new("set ACTree value ordinal is not zero"));
             }
-            EPathMapMode::Map => {
-                if ordinal != referenced_values as u64 {
-                    return Err(TrieCodecError::new(format!(
-                        "map ACTree value ordinal {ordinal} is not canonical ordinal {referenced_values}"
-                    )));
-                }
-                referenced_values += 1;
-                visit_map_path(path)?;
+            if value_count != 0 {
+                return Err(TrieCodecError::new("set EPathMap carries map values"));
             }
-            EPathMapMode::Empty => unreachable!("empty mode has no ACT arena"),
         }
-        Ok(())
-    })?;
-    if mode == EPathMapMode::Map && referenced_values != value_count {
-        return Err(TrieCodecError::new(format!(
-            "map ACTree references {referenced_values} values but EPM1 declares {value_count}"
-        )));
-    }
-    if mode == EPathMapMode::Set && value_count != 0 {
-        return Err(TrieCodecError::new("set EPathMap carries map values"));
+        EPathMapMode::Map => {
+            if let Some((_source_offset, ordinal, expected)) = summary.first_nonsequential() {
+                return Err(TrieCodecError::new(format!(
+                    "map ACTree value ordinal {ordinal} is not canonical ordinal {expected}"
+                )));
+            }
+            if summary.value_count() != value_count {
+                return Err(TrieCodecError::new(format!(
+                    "map ACTree references {} values but EPM1 declares {value_count}",
+                    summary.value_count()
+                )));
+            }
+        }
+        EPathMapMode::Empty => unreachable!("empty mode has no ACT arena"),
     }
     Ok(())
+}
+
+fn collect_canonical_keys(
+    arena_start: usize,
+    arena: &[u8],
+    mode: EPathMapMode,
+    value_count: usize,
+) -> Result<Vec<CanonicalSnapshotKey>, TrieCodecError> {
+    let mut trie = CanonicalCompactTrieCursor::new(arena)?;
+    validate_canonical_act_summary(mode, value_count, trie.is_empty(), trie.value_summary())?;
+    let mut keys = Vec::with_capacity(value_count);
+    while let Some(endpoint) = trie.next_value_endpoint() {
+        if mode == EPathMapMode::Map {
+            keys.push(match endpoint.contiguous_path_range {
+                Some(range) => CanonicalSnapshotKey::Relative(
+                    arena_start + range.start..arena_start + range.end,
+                ),
+                None => CanonicalSnapshotKey::Owned(endpoint.path.to_vec()),
+            });
+        }
+    }
+    Ok(keys)
 }
 
 fn parse_canonical_snapshot_prefix(
@@ -1703,8 +1735,13 @@ fn validate_canonical_snapshot_topology(
             }
         }
         EPathMapMode::Set | EPathMapMode::Map => {
-            let trie = CompactTrie::parse_canonical(arena)?;
-            visit_canonical_value_paths(&trie, mode, value_count, |_path| Ok(()))?;
+            let trie = CanonicalCompactTrieCursor::new(arena)?;
+            validate_canonical_act_summary(
+                mode,
+                value_count,
+                trie.is_empty(),
+                trie.value_summary(),
+            )?;
         }
     }
     Ok(())
@@ -1726,15 +1763,12 @@ pub(crate) fn inspect_canonical_snapshot(
             }
             Vec::new()
         }
-        EPathMapMode::Set | EPathMapMode::Map => {
-            let trie = CompactTrie::parse_canonical(framing.arena)?;
-            collect_canonical_keys(
-                framing.arena_start,
-                &trie,
-                framing.mode,
-                framing.value_count,
-            )?
-        }
+        EPathMapMode::Set | EPathMapMode::Map => collect_canonical_keys(
+            framing.arena_start,
+            framing.arena,
+            framing.mode,
+            framing.value_count,
+        )?,
     };
 
     Ok(CanonicalSnapshotInspection {
@@ -1763,7 +1797,7 @@ pub(crate) fn inspect_canonical_snapshot_value_regions(
 /// Validate one EPM1 image and stream its exact logical PathMap topology.
 ///
 /// Canonical value-ordinal validation runs to completion before the first
-/// event becomes observable. `CompactTrie::visit_topology` then expands ACT
+/// event becomes observable. The validated topology cursor then expands ACT
 /// line compression directly into the same DFS event language as a live
 /// `PathMap` zipper. No PathMap, key collection, or map value is constructed.
 pub(crate) fn visit_canonical_snapshot_topology(
@@ -1791,18 +1825,25 @@ pub(crate) fn visit_canonical_snapshot_topology(
         return Ok((prefix.mode, 0));
     }
 
-    let trie = CompactTrie::parse_canonical(prefix.arena)?;
-    visit_canonical_value_paths(&trie, prefix.mode, prefix.value_count, |_path| Ok(()))?;
-    let mut length = 0usize;
-    trie.visit_topology(|event| {
-        if event == CompactTrieTopologyEvent::Value(true) {
-            length = length
-                .checked_add(1)
-                .ok_or_else(|| TrieCodecError::new("EPathMap length overflows usize"))?;
-        }
-        visitor(event);
-        Ok::<(), TrieCodecError>(())
-    })?;
+    let mut trie = CanonicalCompactTrieTopologyCursor::new(prefix.arena)?;
+    validate_canonical_act_summary(
+        prefix.mode,
+        prefix.value_count,
+        trie.is_empty(),
+        trie.value_summary(),
+    )?;
+    let length = trie.value_summary().value_count();
+    while let Some(event) = trie.next_event() {
+        visitor(match event {
+            CanonicalCompactTrieTopologyEvent::Value { value, .. } => {
+                CompactTrieTopologyEvent::Value(value.is_some())
+            }
+            CanonicalCompactTrieTopologyEvent::Edge { byte, .. } => {
+                CompactTrieTopologyEvent::Edge(byte)
+            }
+            CanonicalCompactTrieTopologyEvent::Leave { .. } => CompactTrieTopologyEvent::Leave,
+        });
+    }
     Ok((prefix.mode, length))
 }
 
@@ -1965,7 +2006,7 @@ mod tests {
     }
 
     fn reconstruction_oracle(bytes: &[u8]) -> bool {
-        let Ok(mut pending) = PendingEpmDecode::new(Bytes::copy_from_slice(bytes)) else {
+        let Ok(mut pending) = PendingEpmDecode::new(Bytes::copy_from_slice(bytes), true) else {
             return false;
         };
         loop {
@@ -1981,7 +2022,7 @@ mod tests {
                 return false;
             }
         }
-        let Ok(repr) = pending.finish(false) else {
+        let Ok(repr) = pending.finish() else {
             return false;
         };
         encode(&repr) == bytes
@@ -2084,7 +2125,7 @@ mod tests {
         let snapshot = Bytes::from(encode(&EPathMapRepr::Map(map)));
         let storage_start = snapshot.as_ptr();
 
-        let pending = PendingEpmDecode::new(snapshot).expect("EPM1 header is valid");
+        let pending = PendingEpmDecode::new(snapshot, true).expect("EPM1 header is valid");
         let arena = &pending.snapshot.as_ref()[pending.arena.clone()];
 
         assert_eq!(
@@ -2527,7 +2568,9 @@ mod tests {
             (invalid_magic, false),
             (trailing, false),
             (set_with_value, false),
-            (map_count_mismatch, true),
+            // The validated ACT plan proves ordinal count before exposing the
+            // first indexed topology event; this must fail at admission.
+            (map_count_mismatch, false),
         ] {
             let contiguous = OwnedCanonicalEpm1TopologyCursor::new(Bytes::from(bytes.clone()))
                 .err()

@@ -110,6 +110,30 @@ fn planned_endpoints(bytes: &[u8]) -> Vec<(Vec<u8>, Option<u64>)> {
     endpoints
 }
 
+#[test]
+fn endpoint_provenance_borrows_only_complete_single_line_paths() {
+    let path = b"one/prefix-compressed/path";
+    let bytes = canonical_image([(path.to_vec(), 7)]);
+    let mut cursor = CanonicalCompactTrieCursor::new(bytes.as_slice()).unwrap();
+    let endpoint = cursor.next_value_endpoint().expect("one value endpoint");
+    let range = endpoint
+        .contiguous_path_range
+        .clone()
+        .expect("one complete ACT line remains source-relative");
+    assert_eq!(endpoint.path, path);
+    assert_eq!(&bytes[range], path);
+    assert!(cursor.next_value_endpoint().is_none());
+
+    let bytes = canonical_image([(b"shared/a".to_vec(), 0), (b"shared/b".to_vec(), 1)]);
+    let mut cursor = CanonicalCompactTrieCursor::new(bytes.as_slice()).unwrap();
+    while let Some(endpoint) = cursor.next_value_endpoint() {
+        assert!(
+            endpoint.contiguous_path_range.is_none(),
+            "a path assembled across a branch edge must not claim one source range"
+        );
+    }
+}
+
 fn assert_old_new_admission_equivalent(bytes: &[u8], case: impl std::fmt::Display) {
     let old = CompactTrie::parse_canonical(bytes)
         .map(|_| ())
