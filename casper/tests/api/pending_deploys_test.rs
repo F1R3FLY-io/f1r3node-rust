@@ -349,3 +349,93 @@ fn empty_snapshot_is_zero() {
     assert!(s.deploys.is_empty());
     assert_eq!(s.total_available, 0);
 }
+
+/// A deploy whose validity window has not opened yet is still queued. It is not
+/// proposable into the next block, but it is submitted and will land once the
+/// chain reaches its `valid_after_block_number` — reporting it as absent would
+/// tell a wallet its deploy vanished.
+#[tokio::test]
+async fn a_future_dated_deploy_is_still_reported_as_pending() {
+    let ctx = TestContext::new().await;
+    let nodes = TestNode::create_network(ctx.genesis.clone(), 1, None, None, None, None)
+        .await
+        .unwrap();
+    let engine_cell = create_engine_cell(&nodes[0]).await;
+
+    let base = construct_deploy::basic_deploy_data(21, None, None).expect("deploy");
+    let mut data = base.data.clone();
+    data.valid_after_block_number = 100_000;
+    let future = crypto::rust::signatures::signed::Signed::create(
+        data,
+        Box::new(crypto::rust::signatures::secp256k1::Secp256k1),
+        construct_deploy::DEFAULT_SEC.clone(),
+    )
+    .expect("resign");
+
+    nodes[0]
+        .casper
+        .deploy_storage
+        .lock()
+        .add(vec![future.clone()])
+        .expect("add future deploy");
+
+    let snapshot = BlockAPI::list_pending_deploys(&engine_cell, None)
+        .await
+        .expect("snapshot");
+
+    assert_eq!(
+        snapshot.deploys.len(),
+        1,
+        "a deploy ahead of its window is queued, not gone"
+    );
+    assert_eq!(snapshot.deploys[0].0.sig, future.sig);
+}
+
+/// The recovery backlog gets the same window test as the fresh pool: a deploy
+/// whose expiration passed while it sat in the buffer can never land, so it is
+/// not pending. The buffer is only purged when a proposal runs.
+#[tokio::test]
+async fn an_expired_deploy_in_the_rejected_buffer_is_not_reported() {
+    let ctx = TestContext::new().await;
+    let nodes = TestNode::create_network(ctx.genesis.clone(), 1, None, None, None, None)
+        .await
+        .unwrap();
+    let engine_cell = create_engine_cell(&nodes[0]).await;
+
+    let live = construct_deploy::basic_deploy_data(22, None, None).expect("live");
+    let base = construct_deploy::basic_deploy_data(23, None, None).expect("expired");
+    let mut data = base.data.clone();
+    data.expiration_timestamp = Some(1);
+    let expired = crypto::rust::signatures::signed::Signed::create(
+        data,
+        Box::new(crypto::rust::signatures::secp256k1::Secp256k1),
+        construct_deploy::DEFAULT_SEC.clone(),
+    )
+    .expect("resign");
+
+    nodes[0]
+        .casper
+        .rejected_deploy_buffer
+        .lock()
+        .expect("buffer lock")
+        .add(vec![live.clone(), expired.clone()])
+        .expect("add rejected deploys");
+
+    let snapshot = BlockAPI::list_pending_deploys(&engine_cell, None)
+        .await
+        .expect("snapshot");
+
+    let sigs: Vec<_> = snapshot
+        .deploys
+        .iter()
+        .map(|(d, _)| d.sig.clone())
+        .collect();
+    assert!(
+        sigs.contains(&live.sig),
+        "a live rejected deploy is still awaiting retry"
+    );
+    assert!(
+        !sigs.contains(&expired.sig),
+        "an expired rejected deploy can never land, so it is not pending"
+    );
+}

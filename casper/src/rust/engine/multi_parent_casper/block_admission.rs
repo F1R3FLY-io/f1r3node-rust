@@ -279,6 +279,35 @@ fn stored_deploy_is_pending_for_snapshot(
     !is_future && !already_in_scope
 }
 
+/// Whether a stored deploy is still WAITING to land, for the reporting API.
+///
+/// Deliberately weaker than `stored_deploy_is_pending_for_snapshot`, which
+/// answers "may the proposer put this in the NEXT block". The two differ on
+/// one clause: a deploy whose `valid_after_block_number` is ahead of the tip
+/// is not proposable yet, but it is submitted, queued, and will land once the
+/// chain reaches its window — so it is pending to a caller asking "where is my
+/// deploy". Using the proposer predicate here would report it as absent.
+///
+/// The three exclusions are the ones that mean "will never land, or already
+/// did": the validity window closed on block height, the expiration timestamp
+/// passed, or the deploy is already in the merge scope.
+fn stored_deploy_is_queued(
+    snapshot: &CasperSnapshot,
+    earliest_block_number: i64,
+    current_time_millis: i64,
+    deploy: &Signed<DeployData>,
+) -> bool {
+    let block_expired = deploy.data.valid_after_block_number <= earliest_block_number;
+    let time_expired = deploy.data.is_expired_at(current_time_millis);
+    if block_expired || time_expired {
+        return false;
+    }
+
+    let already_in_scope = snapshot.deploys_in_scope.contains(&deploy.sig)
+        && !snapshot.rejected_in_scope.contains(&deploy.sig);
+    !already_in_scope
+}
+
 /// C15 / Arch-3: extracted from `Casper::has_pending_deploys_in_storage_for_snapshot`
 /// in `dispatch.rs`. The dispatch module is intended to host thin
 /// trait delegates (one-line `super::<module>::<fn>` calls); the
@@ -388,9 +417,8 @@ pub(crate) async fn admit_list_pending_deploys<T: TransportLayer + Send + Sync>(
         if buffered_sigs.contains(&deploy.sig) {
             continue;
         }
-        if stored_deploy_is_pending_for_snapshot(
+        if stored_deploy_is_queued(
             &snapshot,
-            latest_block_number,
             earliest_block_number,
             current_time_millis,
             &deploy,
@@ -399,8 +427,20 @@ pub(crate) async fn admit_list_pending_deploys<T: TransportLayer + Send + Sync>(
         }
     }
 
+    // The recovery backlog gets the same test as the fresh pool. A deploy
+    // whose window has closed while it sat here can never land, so reporting
+    // it as pending is the same wrong answer in the other pool — the buffer
+    // is only purged when a proposal runs, so a node that is not proposing
+    // would report it indefinitely.
     for deploy in rejected {
-        out.push((deploy, true));
+        if stored_deploy_is_queued(
+            &snapshot,
+            earliest_block_number,
+            current_time_millis,
+            &deploy,
+        ) {
+            out.push((deploy, true));
+        }
     }
 
     Ok(out)
