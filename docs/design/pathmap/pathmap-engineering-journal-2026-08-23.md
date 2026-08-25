@@ -1960,6 +1960,43 @@ SHA-256 digests are `be02a3ef2c44eecbc85b231c98238506a85089fa9c50f91f879eb487388
 The old parser remains only as an independent differential oracle/compatibility surface; no
 production Bag or EPathMap consumer calls it.
 
+### J-026 — 2026-08-25: compose resident leaf bytes directly into the history-hash sink
+
+**OBSERVED.** J-023's DATA checkpoint route already copied each canonical datum identity directly
+from the authoritative RSpace `PathMap<Multiplicity>` and constructed the frozen
+`Vec<Vec<u8>>`-compatible leaf body without decoding a `Datum`. The history repository then wrapped
+that body in the single-field `DataLeaf` and called `bincode::serialize` solely to obtain a second
+complete buffer for BLAKE2b-256. The same redundant wrapper allocation existed for continuation and
+join leaves. This did not lose trie compression during the PathMap walk, but it needlessly doubled
+the live byte volume at the hash boundary.
+
+**DECISION.** Checkpoint `583f21e44` adds `Blake2b256Hash::new_from_chunks` and feeds the frozen
+bincode-1 leaf image to it as two adjacent borrowed slices. For resident payload $`p`$, the exact
+hashed byte string remains
+
+```math
+B(p)=\operatorname{LE64}(|p|)\mathbin{\|}p,
+\qquad H(p)=\operatorname{BLAKE2b}_{256}(B(p)).
+```
+
+The implementation supplies `LE64` and $`p`$ directly to the incremental hasher; it does not
+allocate $`B(p)`$. Typed, canonical-DATA, binary-DATA, continuation, and join insertion paths share
+the same helper. This is sink composition, not a new serialization format and not a decode/re-encode
+route.
+
+**MEASURED correctness gate and boundary.** Exact differentials cover empty, one-byte, 255-byte,
+and 65,537-byte payloads for all three leaf wrapper types. A negative control that omits the length
+prefix produces a different hash; the focused 2/2 captured-log SHA-256 is
+`92bca75c8d51714fc53b8afc1d886a8354f1ae16265f3ed5f483fbe9eca7c7f7`. The complete
+capped, zero-swap `rspace_plus_plus` library gate passes 76/76; its captured-log SHA-256 is
+`f0130e46758de9f9c4122e8dcece395a732dacb1533f3d35ed90b8cf73797a2d`. The eliminated
+$`8+|p|`$ secondary buffer follows by construction; no wall-clock, allocator, RSS, cache, or WAL
+throughput claim is inferred. The current legacy store still serializes the enclosing
+`PersistedData` into an owned value for its key-value API. The PathMap-native differential WAL,
+packed object store, and crash-atomic catalog publication remain owned by pgmcp
+`rspace-pathmap-persistent-dag-backend`; this checkpoint neither implements nor changes that
+protocol.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's
@@ -1972,7 +2009,7 @@ still requires measurement.
 | ID | Class and status | Local compatibility layer | Requested upstream contract | Evidence required or available | Removal criterion |
 |---|---|---|---|---|---|
 | PMU-001 | API + correctness hardening; **demonstrated need, local implementation active** | `rspace++/src/rspace/pathmap_codec.rs` validates arbitrary `ACTree03` input into a preorder plan and supplies contiguous/indexed topology and endpoint cursors. | Publish a stable, stack-safe canonical ACT admission plan and cursor API. It should parse each physical node/wrapper once; reject aliases, gaps, overlap, malformed offsets, noncanonical branches/lines/varints, and unreachable bytes before use; retain exact source offsets; expose value count/nonzero/nonsequential summaries; lend a complete one-line endpoint as a source range; support contiguous and fragmented indexed sources; rewind without reparsing; and keep native-stack use constant. | Old/new malformed and topology differentials, forced line-hash collision controls, fragmented provenance tests, deep/wide small-stack tests, and zero-reparse counters already exist locally. Performance/allocation closure remains part of pgmcp `rpb3-single-parse-act-traversal-plan`. | A released PathMap version provides the same admitted language, error/provenance guarantees, cursor event order, value summaries, and measured resource envelope; local consumers pass unchanged equivalence gates after replacing the compatibility layer. |
-| PMU-002 | Performance API; **candidate, measurement pending** | `Bag::compact_bytes` and EPM1 layout currently obtain an owned `ArenaCompactTree` image before a caller can write or hash it. | Add a checked canonical ACT writer that can preflight encoded length and then stream zipper output to fallible byte, `io::Write`, hash, WAL/page, or chunk sinks without constructing a second complete byte buffer. Exact bytes must equal `ArenaCompactTree::from_zipper(...).get_data()`, and sink failure must never imply successful publication. | Exact-byte differential, checked-length equality, injected sink failure, one-pass/copy counters, geometric shared-prefix workloads, and headless allocation/RSS evidence are required before calling this an optimization. | The upstream sink API passes the differential/resource gates and replaces local destination-specific buffering without changing consensus bytes. |
+| PMU-002 | Performance API; **candidate, measurement pending** | `Bag::compact_bytes` and EPM1 layout currently obtain an owned `ArenaCompactTree` image before a caller can write or hash it. J-026's integration-owned `Blake2b256Hash::new_from_chunks` proves the destination-side composition pattern for frozen leaf framing, but cannot stream ACT construction itself. | Add a checked canonical ACT writer that can preflight encoded length and then stream zipper output to fallible byte, `io::Write`, hash, WAL/page, or chunk sinks without constructing a second complete byte buffer. Exact bytes must equal `ArenaCompactTree::from_zipper(...).get_data()`, and sink failure must never imply successful publication. The API should separate byte production from transaction policy: PathMap reports sink failure, while the integration owns WAL commit, sync, catalog publication, and acknowledgement. | J-026 supplies exact chunked-hash/bincode equivalence and a missing-framing negative control. ACT-specific exact-byte differential, checked-length equality, injected sink failure, one-pass/copy counters, geometric shared-prefix workloads, and headless allocation/RSS evidence remain required before calling the upstream API an optimization. | The upstream sink API passes the differential/resource gates and replaces local destination-specific buffering without changing consensus bytes; the integration retains transaction and publication authority. |
 | PMU-003 | Construction API; **candidate, profile before proposing** | Canonical Bag/EPathMap import validates ACT once, then reconstructs a live `PathMap` by replaying endpoints through public insertion and `create_path` APIs. | Consider a fallible `PathMap` constructor or write-zipper graft operation from an already validated canonical ACT plan, preserving prefix compression and value-free endpoints without a `Vec` projection or per-key reparsing. The API must not bypass value decoding/validation owned by the caller. | Compare endpoint replay with plan-to-trie construction over deep lines, wide branches, shared prefixes, value-free endpoints, Set, Map, and Bag; require identical zipper topology, lookups, algebra/lattice behavior, CoW sharing, merkleization, drop safety, and consensus encodings. | Adopt only if measurement shows a material win and upstream supplies topology/CoW equivalence; otherwise retain the simpler public insertion route and mark the request rejected. |
 
 The reachable pgmcp tracking item is `pathmap-upstream-integration-request-register` under

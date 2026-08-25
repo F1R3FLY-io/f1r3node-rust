@@ -4990,6 +4990,21 @@ models-library cases. This is an implementation refinement within active CBR-044
 record. Formal proof, full release, publication-fault composition, and end-to-end performance
 measurement remain separate gates and are not inferred from the exact zero-reparse counters.
 
+**Consensus-neutral RSpace history continuation (2026-08-25, chunked leaf hashing;
+`583f21e44`, pgmcp #6026).** DATA, continuation, and join history leaves no longer allocate a
+second complete bincode wrapper solely for BLAKE2b-256. The hasher receives the same frozen
+eight-byte little-endian vector length followed by the same resident leaf bytes as two adjacent
+chunks. Exact differentials bind all three wrapper types to `bincode::serialize` at empty, one-byte,
+255-byte, and 65,537-byte boundaries; omitting the length prefix is a failing negative control. The
+complete capped, zero-swap RSpace library gate passes 76/76.
+
+Chunk boundaries are not serialized and therefore cannot alter the leaf hash. Cold-store bytes,
+history keys, radix actions, roots, reset/replay/export/import behavior, event bytes, COMM order,
+charges, protobuf, bincode, EPM1, RPB3, and Rholang values remain identical. The checkpoint changes
+neither the legacy store's publication sequence nor the separately designed PathMap-native
+differential WAL. It is a byte- and value-neutral implementation refinement, not a new active
+change record.
+
 **CBR-023 living-set continuation (2026-08-09, comparison exhaustiveness; pgmcp #5282).** The full
 models gate found catch-all mismatch arms in the already-iterative `Sig`, `Token`, `SignedProcess`,
 and `InterpreterError` equality machines. Each arm returned `false` for every currently representable

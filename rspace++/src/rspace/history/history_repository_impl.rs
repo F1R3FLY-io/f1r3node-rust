@@ -557,15 +557,28 @@ pub fn prepend_bytes(element: u8, _bytes: &[u8]) -> Vec<u8> {
 mod tests {
     use super::*;
 
-    fn legacy_data_leaf_hash(bytes: Vec<u8>) -> Blake2b256Hash {
-        let encoded = bincode::serialize(&DataLeaf { bytes }).unwrap();
+    fn legacy_leaf_hash(leaf: &impl Serialize) -> Blake2b256Hash {
+        let encoded = bincode::serialize(leaf).unwrap();
         Blake2b256Hash::new(&encoded)
     }
 
     #[test]
     fn chunked_leaf_hash_is_exactly_the_frozen_bincode_hash() {
         for bytes in [Vec::new(), vec![0], (0u8..=254).collect(), vec![0xa5; 65_537]] {
-            assert_eq!(hash_single_byte_vec_leaf(&bytes), legacy_data_leaf_hash(bytes));
+            let expected = hash_single_byte_vec_leaf(&bytes);
+            assert_eq!(
+                expected,
+                legacy_leaf_hash(&DataLeaf {
+                    bytes: bytes.clone()
+                })
+            );
+            assert_eq!(
+                expected,
+                legacy_leaf_hash(&ContinuationsLeaf {
+                    bytes: bytes.clone(),
+                })
+            );
+            assert_eq!(expected, legacy_leaf_hash(&JoinsLeaf { bytes }));
         }
     }
 

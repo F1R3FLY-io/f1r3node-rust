@@ -306,6 +306,7 @@ Abbreviations used throughout are ABI (application binary interface), CBR (conse
 | **SS-C13** | this checkpoint; pgmcp #5192 | cross-repository | one shared borrowed/owned canonical-`Par` PDA suspends native read/owned EPathMap zippers directly; set keys remain `PathMap<()>`, map values remain `PathMap<Par>` until their entry is current | all-entry decoded-key/value-pointer frontier $`\rightarrow O(1)`$ live trie cursors plus the current decoded key and structural frontier; **20,000** levels on **256 KiB**; integration **3/3** | **yes**; borrowed/owned preorder equality, independent recursive receive-count oracle, and existing forward/reverse raw-zipper order gates | [5.20](#520-semantic-scc-constructor-and-pathmap-streaming-closure-ss-g43-ss-c13) |
 | **SS-C14** | `2142b2273`; pgmcp experiment 258 | f1r3node | dormant `ParBag` RPB2 key: family tag + prefix-free score-order key + canonical protobuf body; ACT import decodes, canonicalizes, and re-keys one current endpoint; protobuf output traverses trie order and copies stored bodies without a `Vec`, decoded shadow, or element sort | native stack remains $`O(1)`$ through the existing hand-written sorter worklist, generated protobuf PDAs, and iterative score-key parser; exact lookup is one PathMap probe after $`O(k)`$ prepared-key construction for key length $`k`$ | **yes**; all-family byte oracle, malformed/noncanonical ACT rejection, nested-metadata witness, depth 4,096, and experiment 258's 1,312 checksum-guarded observations | [5.27](#527-canonical-protobuf-key-parbag-and-prepared-key-closure-ss-c14) |
 | **SS-C15** | `bdaf93a5f`; pgmcp #6023 | f1r3node | Bag/EPathMap canonical ACT admission and every production endpoint/topology consumer share one validated preorder plan; generated EPM1 decoding retains only the current borrowed value body | physical primary-record parses $`4S-2 \rightarrow S`$, wrapper parses $`2W \rightarrow W`$, node reparses and event-time metadata reads $`\rightarrow 0`$; native stack remains $`O(1)`$ | **yes for the ACT replay slope**; 12/12 plan, 24/24 EPM1, 28/28 Bag, 74/74 rspace library, and 279/279 models library gates | [5.42](#542-single-admission-act-plan-and-epm1-consumer-closure-ss-c15) |
+| **SS-C16** | `583f21e44`; pgmcp #6026 | f1r3node | frozen single-`Vec<u8>` history leaves: second complete bincode wrapper buffer $`\rightarrow`$ two borrowed hash chunks | secondary $`8+|p|`$-byte allocation $`\rightarrow 0`$ by construction; native stack remains $`O(1)`$ | **yes for exact leaf hashes**; all three leaf types, framing negative control, and 76/76 rspace library gate | [5.43](#543-chunked-history-leaf-hashing-ss-c16) |
 | **SS-D1** | `d2591fa1` | f1r3node | task-spawn boundary per-branch deep clone | 2,867 $`\rightarrow`$ **0** *(this site)* | **yes** | [5.5.3](#553-the-three-repairs) |
 | **SS-D2** | `94dc983f` | f1r3node | ownership to the substitution; **15** deep copies | incl. $`O(n^2)`$ $`\rightarrow`$ $`O(n)`$ | **yes** | [5.5.3](#553-the-three-repairs) |
 | **SS-D3** | `9082d12c` | f1r3node | `inj_attempt` read-back clone $`\rightarrow`$ by-move | 2,852 $`\rightarrow`$ **0** | **yes** | [5.5.3](#553-the-three-repairs) |
@@ -530,6 +531,7 @@ register rows (SS-C5…SS-C14, SS-Y6) and the stack-safety consequences.
   - [5.35 Resident Send projection and proof-preserving reducer Join [SS-Y15]](#535-resident-send-projection-and-proof-preserving-reducer-join-ss-y15)
   - [5.36 Semantic-group candidate masks and retention pressure [SS-Y16]](#536-semantic-group-candidate-masks-and-retention-pressure-ss-y16)
   - [5.42 Single-admission ACT plan and EPM1 consumer closure [SS-C15]](#542-single-admission-act-plan-and-epm1-consumer-closure-ss-c15)
+  - [5.43 Chunked history-leaf hashing [SS-C16]](#543-chunked-history-leaf-hashing-ss-c16)
 - [6. Discussion](#6-discussion)
   - [6.1 Why the explicit-worklist shape, and why it is *smaller* than what it replaces](#61-why-the-explicit-worklist-shape-and-why-it-is-smaller-than-what-it-replaces)
   - [6.2 Why the SCC is the unit of conversion](#62-why-the-scc-is-the-unit-of-conversion)
@@ -10290,6 +10292,41 @@ a wall-clock, allocator, cache, or whole-RSpace performance verdict. Headless al
 instruction/cache profiles, persistent-arena page selection, formal admission equivalence, and the
 full release workspace remain explicit downstream gates. The legacy parser remains as a test
 oracle/compatibility surface until removal can preserve the independent malformed differential.
+
+---
+
+### 5.43 Chunked history-leaf hashing [SS-C16]
+
+#### 5.43.1 Mechanism
+
+RSpace cold-history DATA, continuation, and join leaves each wrap one already-encoded `Vec<u8>`.
+The frozen bincode-1 representation of that wrapper is an eight-byte little-endian length followed
+by the resident payload. Before `583f21e44`, checkpoint preparation materialized that complete
+wrapper into a second `Vec<u8>` solely to pass one contiguous slice to BLAKE2b-256.
+
+The new `Blake2b256Hash::new_from_chunks` feeds the length and resident payload to the same
+incremental BLAKE2b-256 state. Hash functions consume a byte stream, so chunk boundaries are not
+semantic. The production helper nevertheless relies on no informal assumption: its exact output is
+differential-tested against `bincode::serialize` for `DataLeaf`, `ContinuationsLeaf`, and
+`JoinsLeaf`. Omitting the length prefix is an executed negative control and changes the hash.
+
+#### 5.43.2 Resource result and limit
+
+For payload length $`n`$, the retired route retained the original $`n`$ payload and allocated an
+additional $`n+8`$ wrapper before hashing. The selected route retains the original payload and an
+eight-byte stack prefix, then performs two hasher updates. Both routes are $`\Theta(n)`$ time and
+$`O(1)`$ native stack; the selected route removes the proportional secondary heap buffer. The
+complete `rspace_plus_plus` library passes 76/76 under `MemoryHigh=6G`, `MemoryMax=10G`, and
+`MemorySwapMax=0`; the captured-log SHA-256 is
+`f0130e46758de9f9c4122e8dcece395a732dacb1533f3d35ed90b8cf73797a2d`. The strengthened
+all-wrapper 2/2 differential log is
+`92bca75c8d51714fc53b8afc1d886a8354f1ae16265f3ed5f483fbe9eca7c7f7`.
+
+This is a construction-level allocation result, not an allocator-profile or throughput result.
+The legacy key-value boundary still owns a serialized `PersistedData` value. The later
+PathMap-native persistence design remains differential and transactional through its WAL; it owns
+object durability, commit records, catalog publication, recovery, compaction, and acknowledgement.
+SS-C16 changes none of those stages and does not claim that the WAL is implemented.
 
 ---
 
