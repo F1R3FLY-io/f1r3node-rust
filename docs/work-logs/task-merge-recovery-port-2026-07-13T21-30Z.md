@@ -1,7 +1,6 @@
 ---
 task: merge-recovery-validation-port
 branch: fix/dev-merge-recovery-validation
-claimed_by: claude-session-07b4ccc6
 started: 2026-07-13T20:00:00Z
 handoff_status: in_progress
 ---
