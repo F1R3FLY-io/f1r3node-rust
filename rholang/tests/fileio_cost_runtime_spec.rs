@@ -8,11 +8,12 @@
 //!
 //! ## Why it's separate from fileio_cost_spec
 //!
-//! Runtime harness has different scaffolding cost (full runtime build
-//! + tempfile fixtures) than source-scan (include_str! + grep).
-//! Splitting keeps `fileio_cost_spec.rs` a fast-running check-in
-//! suite (~0.02s for 68 pins) and this file a "when you need to
-//! prove the wiring is live" verification suite.
+//! Runtime harness has different scaffolding cost (full runtime
+//! build plus tempfile fixtures) than source-scan (`include_str!`
+//! plus grep).  Splitting keeps `fileio_cost_spec.rs` as a
+//! fast-running check-in suite (roughly 0.02s for 68 pins) and this
+//! file as a verification suite for when you need to prove the wiring
+//! is live.
 //!
 //! ## Harness pattern
 //!
@@ -68,8 +69,8 @@ mod tests {
     fn rand() -> Blake2b512Random { Blake2b512Random::create_from_bytes(&[1, 2, 45, 65]) }
 
     /// Initial phlo for cost-measurement runtimes.  Any finite value
-    /// >= the expected workload cost works; 1 billion units is
-    /// comfortably above any reasonable single-deploy consumption.
+    /// at or above the expected workload cost works; 1 billion units
+    /// is comfortably above any reasonable single-deploy consumption.
     const INITIAL_PHLO: i64 = 1_000_000_000;
 
     /// Build a runtime primed for cost measurement: in-memory rspace
