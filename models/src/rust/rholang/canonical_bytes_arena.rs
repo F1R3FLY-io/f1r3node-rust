@@ -165,6 +165,16 @@ struct PageBackedArenaStats {
     page_rollovers: usize,
 }
 
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct PageLayoutHypothesisStats {
+    full_page_pairs: usize,
+    unique_full_byte_pages: usize,
+    unique_full_provenance_pages: usize,
+    unique_full_page_pairs: usize,
+    provenance_runs: usize,
+}
+
 /// Append-log backend. Descriptor nodes are arena-owned; only immutable
 /// payload pages cross the ownership boundary when a value is frozen.
 struct PageBackedArena<const CAPACITY: usize> {
@@ -491,6 +501,45 @@ impl<const CAPACITY: usize> PageBackedArena<CAPACITY> {
             }
         }
         leaves
+    }
+
+    /// Count exact deduplication and provenance-run opportunities without
+    /// changing the measured representation. Hash-set equality is the final
+    /// evidence, so a hash collision cannot fabricate an interning win.
+    #[cfg(test)]
+    fn layout_hypothesis_stats(&self) -> PageLayoutHypothesisStats {
+        use std::collections::HashSet;
+
+        let mut unique_full_byte_pages = HashSet::new();
+        let mut unique_full_provenance_pages = HashSet::new();
+        let mut unique_full_page_pairs = HashSet::new();
+        let mut full_page_pairs = 0usize;
+        let mut provenance_runs = 0usize;
+        for (bytes, provenance) in self.byte_pages.iter().zip(&self.provenance_pages) {
+            let bytes = bytes.bytes.as_slice();
+            let provenance = provenance.values.as_slice();
+            provenance_runs += usize::from(!provenance.is_empty());
+            provenance_runs += provenance
+                .windows(2)
+                .filter(|pair| {
+                    pair[0].source != pair[1].source
+                        || pair[0].offset.checked_add(1) != Some(pair[1].offset)
+                })
+                .count();
+            if bytes.len() == CAPACITY && provenance.len() == CAPACITY {
+                full_page_pairs += 1;
+                unique_full_byte_pages.insert(bytes);
+                unique_full_provenance_pages.insert(provenance);
+                unique_full_page_pairs.insert((bytes, provenance));
+            }
+        }
+        PageLayoutHypothesisStats {
+            full_page_pairs,
+            unique_full_byte_pages: unique_full_byte_pages.len(),
+            unique_full_provenance_pages: unique_full_provenance_pages.len(),
+            unique_full_page_pairs: unique_full_page_pairs.len(),
+            provenance_runs,
+        }
     }
 }
 
@@ -1683,6 +1732,21 @@ mod tests {
                     arena.stats.payload_slots,
                     frozen.inner.data.leaves.len(),
                 );
+                if std::env::var_os("CANONICAL_BYTES_ARENA_LAYOUT_ANALYSIS").is_some() {
+                    let layout = arena.layout_hypothesis_stats();
+                    println!(
+                        "canonical_bytes_arena_layout,{},{},{},{},{},{},{},{},{}",
+                        CAPACITY,
+                        workload.name(),
+                        len,
+                        layout.full_page_pairs,
+                        layout.unique_full_byte_pages,
+                        layout.unique_full_provenance_pages,
+                        layout.unique_full_page_pairs,
+                        arena.stats.payload_slots,
+                        layout.provenance_runs,
+                    );
+                }
             }
         }
 
@@ -1700,6 +1764,11 @@ mod tests {
             println!(
                 "subject,page_capacity,workload,base_length,build_ns,scan_ns,segments,byte_pages,provenance_pages,payload_slots,frozen_leaves"
             );
+            if std::env::var_os("CANONICAL_BYTES_ARENA_LAYOUT_ANALYSIS").is_some() {
+                println!(
+                    "layout_subject,page_capacity,workload,base_length,full_page_pairs,unique_full_byte_pages,unique_full_provenance_pages,unique_full_page_pairs,payload_slots,provenance_runs"
+                );
+            }
         }
         let selected_capacity = std::env::var("CANONICAL_BYTES_ARENA_CAPACITY")
             .ok()
@@ -1845,6 +1914,36 @@ mod tests {
         for (snapshot, expected) in frozen {
             assert_eq!(snapshot.located_bytes().collect::<Vec<_>>(), expected);
         }
+    }
+
+    #[test]
+    fn frozen_partial_page_aliasing_is_safe_under_miri() {
+        let mut arena = CanonicalBytesArena::new();
+        let prefix_bytes: Vec<_> = (0..63).map(|offset| (offset % 251) as u8).collect();
+        let prefix = append_bytes(&mut arena, &prefix_bytes, 71, 1_000);
+        let frozen_prefix = arena.freeze(prefix);
+
+        let left = arena.append(prefix, located(0xaa, 72, 2_000)).unwrap();
+        let right = arena.append(prefix, located(0xbb, 73, 3_000)).unwrap();
+        let frozen_left = arena.freeze(left);
+        let frozen_right = arena.freeze(right);
+
+        assert_eq!(frozen_prefix.bytes().collect::<Vec<_>>(), prefix_bytes);
+        assert_eq!(frozen_left.byte_at(63), Some(0xaa));
+        assert_eq!(frozen_right.byte_at(63), Some(0xbb));
+        assert_eq!(
+            frozen_left.provenance_at(63),
+            Some(CanonicalByteProvenance::new(72, 2_000))
+        );
+        assert_eq!(
+            frozen_right.provenance_at(63),
+            Some(CanonicalByteProvenance::new(73, 3_000))
+        );
+
+        drop(arena);
+        assert_eq!(frozen_prefix.bytes().collect::<Vec<_>>(), prefix_bytes);
+        assert_eq!(frozen_left.bytes().last(), Some(0xaa));
+        assert_eq!(frozen_right.bytes().last(), Some(0xbb));
     }
 
     #[test]
