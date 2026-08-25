@@ -1179,6 +1179,52 @@ pub fn merge(
         );
     }
 
+    // Finalized-content protection (#341): finality is wider than the base
+    // lineage. Under multi-parent finality a FINALIZED carrier can sit on a
+    // sibling branch of the base with its effects absent from the base
+    // state, and its chains then enter the scope like any other. Such
+    // content is committed exactly like the base's — it must never lose a
+    // cost adjudication (a rejection here is what recovery later purges as
+    // "finalized canonical wins", vanishing settled state: the bridge-admin
+    // registry flake and the #341 bond loss). Split finalized-carrier
+    // chains out, reject ordinary chains conflicting with their combined
+    // log deterministically (same downstream path as a base conflict), and
+    // re-join the finalized chains to the merge set. Two finalized chains
+    // conflicting with each other would be a finality-safety violation
+    // upstream; if it ever happens they fall through to ordinary
+    // adjudication rather than wedging the merge.
+    let (finalized_committed, actual_seq_all): (Vec<DeployChainIndex>, Vec<DeployChainIndex>) =
+        actual_seq_all
+            .into_iter()
+            .partition(|chain| dag.finalized_blocks_set.contains(&chain.source_block_hash));
+    let (mut actual_seq_all, finalized_conflicting) = if finalized_committed.is_empty() {
+        (actual_seq_all, Vec::new())
+    } else {
+        let mut finalized_log =
+            rspace_plus_plus::rspace::merger::event_log_index::EventLogIndex::empty();
+        for chain in &finalized_committed {
+            finalized_log =
+                rspace_plus_plus::rspace::merger::event_log_index::EventLogIndex::combine(
+                    &finalized_log,
+                    &chain.event_log_index,
+                )
+                .map_err(CasperError::HistoryError)?;
+        }
+        partition_base_conflicts(actual_seq_all, &finalized_log)
+    };
+    if !finalized_conflicting.is_empty() {
+        tracing::debug!(
+            target: "f1r3fly.merge.cpps",
+            step = "merge.reject_conflicts_with_finalized",
+            n_rejected = finalized_conflicting.len(),
+            n_finalized_chains = finalized_committed.len(),
+            "scope chains conflicting with finalized carriers' committed content"
+        );
+    }
+    actual_seq_all.extend(finalized_committed);
+    actual_seq_all.sort();
+    let actual_seq_all = actual_seq_all;
+
     // Nothing to pin. Pinning existed to keep the main parent's chains out of
     // the rejection set while the merge rebuilt state from the floor and those
     // chains were in scope competing on cost. The base is the main parent now,
@@ -1614,10 +1660,11 @@ pub fn merge(
     )
     .map_err(CasperError::HistoryError)?;
 
-    // Chains the base's own content precluded. Folded in here so they travel
-    // the ordinary rejection path — record, buffer, recovery — like any other
+    // Chains the base's own content precluded, and chains finalized
+    // carriers' content precluded. Folded in here so they travel the
+    // ordinary rejection path — record, buffer, recovery — like any other
     // adjudicated loser.
-    for chain in base_conflicting {
+    for chain in base_conflicting.into_iter().chain(finalized_conflicting) {
         resolved.rejected.0.insert(chain);
     }
 

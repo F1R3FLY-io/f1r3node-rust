@@ -19,11 +19,23 @@ behaviors:
     statement: "A state effect whose carrier block is finalized is never rejected by merge adjudication at a later merge (deterministic reproduction of the #341 bond-loss shape)"
     priority: must
     deep_module: true
-    done: false
-    notes:
-      - "RED test: finalize a block carrying a bonding-style state effect on the canonical lineage; drive a later multi-parent merge whose conflict set contends the same channel; assert the finalized effect survives in the merged state."
-      - "If the test cannot go RED (finalized effects already protected), record the deviation and pivot B1 to the epoch-boundary close-block path (PoS ejection) as the next mechanism candidate."
-      - "Build on the dag_merger test harness patterns from key-contention-starvation plan (round-driven production adjudication)."
+    done: true
+    cycle_log:
+      - tracer: true
+        test: "merging::finalized_protection_spec::a_finalized_siblings_deploy_is_never_rejected_by_cost_adjudication"
+        red: "behavioral: rejections contained the finalized deploy (0xF1) — cost adjudication rejected the cheap finalized-carrier chain while the expensive contender survived; the exact #341/bridge-admin mechanism"
+        green: "finalized-carrier partition in dag_merger::merge, mirroring base protection: scope chains split by carrier finalization (dag.finalized_blocks_set); ordinary chains conflicting with the finalized chains' combined event log are rejected deterministically via partition_base_conflicts and travel the same record/buffer/recovery path as base conflicts; finalized chains re-join the merge set exempt from cost adjudication"
+        files:
+          - casper/src/rust/merging/dag_merger.rs               # finalized partition + rejection fold-in
+          - casper/tests/merging/finalized_protection_spec.rs   # new spec
+          - casper/tests/merging/mod.rs                         # module registration
+        suite: "cargo test -p casper --release: 314 lib + 900 + 4 integration passed, 0 failed"
+        discovered:
+          - "Window rule runs BEFORE the finalized partition: a finalized carrier's chain with a closed deploy window can still be window-rejected. Finalized content should be exempt — candidate behavior B4."
+          - "Two mutually conflicting finalized chains fall through to ordinary adjudication (deliberate liveness fallback; a finality-safety violation upstream). Documented in the code comment."
+          - "Rejection-expansion over block lineage runs after the fold-in: a chain DEPENDING on a rejected chain is rejected even if its carrier is finalized — worth a dedicated behavior if B2's end-shape test does not cover it."
+        deferred_refactor:
+          - "produce_on/consume_on/chain builders duplicated between base_protection_spec.rs and finalized_protection_spec.rs — extract a shared tests/merging test-helper module."
   - id: B2
     statement: "The bonds map of a merge block at an epoch boundary contains every validator whose bonding deploy is finalized below the merge"
     priority: must
