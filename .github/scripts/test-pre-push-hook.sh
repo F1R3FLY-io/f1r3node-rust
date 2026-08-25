@@ -29,7 +29,10 @@ cat >"$HARNESS/bin/cargo" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 printf '%s %s\n' "$$" "$*" >> "$FAKE_CARGO_LOG"
-if [[ "${SLEEP_CASPER:-0}" == 1 && "$*" == "test --release -p casper" ]]; then
+if [[ "${MISSING_NEXTEST:-0}" == 1 && "$*" == "nextest --version" ]]; then
+    exit 101
+fi
+if [[ "${SLEEP_CASPER:-0}" == 1 && "$*" == "nextest run --release -p casper --no-tests=pass" ]]; then
     : > "$FAKE_CASPER_STARTED"
     sleep 300
 fi
@@ -58,9 +61,32 @@ COMMON_ENV=(
 
 printf '%s\n' "$PUSH_INPUT" |
   "${COMMON_ENV[@]}" bash "$HOOK" origin fake >"$HARNESS/normal.out" 2>&1
-grep -q '^1800 cargo test --release -p casper$' "$HARNESS/timeouts"
+grep -q '^1800 cargo nextest run --release -p casper --no-tests=pass$' "$HARNESS/timeouts"
+grep -Eq '\[test\].*casper.*PASS.*\([0-9]+s\)' "$HARNESS/normal.out"
+grep -Eq 'Nextest test time: [0-9]+s' "$HARNESS/normal.out"
 if find "$HARNESS/tmp" -mindepth 1 -print -quit | grep -q .; then
   echo "normal hook exit left temporary results" >&2
+  exit 1
+fi
+
+: >"$HARNESS/timeouts"
+: >"$HARNESS/cargo"
+set +e
+printf '%s\n' "$PUSH_INPUT" |
+  "${COMMON_ENV[@]}" MISSING_NEXTEST=1 bash "$HOOK" origin fake >"$HARNESS/missing.out" 2>&1
+MISSING_RC=$?
+set -e
+[[ "$MISSING_RC" -eq 1 ]]
+grep -q 'cargo-nextest is required for pre-push tests' "$HARNESS/missing.out"
+grep -q 'cargo install cargo-nextest --locked' "$HARNESS/missing.out"
+
+: >"$HARNESS/timeouts"
+: >"$HARNESS/cargo"
+printf '%s\n' "$PUSH_INPUT" |
+  "${COMMON_ENV[@]}" TEST_RUNNER=cargo bash "$HOOK" origin fake >"$HARNESS/cargo-runner.out" 2>&1
+grep -q '^1800 cargo test --release -p casper$' "$HARNESS/timeouts"
+if grep -q 'nextest run' "$HARNESS/cargo"; then
+  echo "cargo runner invoked nextest" >&2
   exit 1
 fi
 

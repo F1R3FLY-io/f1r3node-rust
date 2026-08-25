@@ -46,10 +46,10 @@ All mathematical expressions use unicode and are quoted in backticks.
 |---|---|
 | **T-DET** | Determinism: identical `(DAG, latest_messages)` ⟹ identical `(tips, lca, main_parent)` on every node. Its failure is a fork (safety **S1**). |
 | **T-TOTAL** | The tie-break is a strict total order on distinct hashes ⟹ the ranked argmax is unique (the core of T-DET). |
-| **T-GHOST** | The ranking returns the heaviest-subtree leaf reachable through scored children. |
+| **T-GHOST** | The head lands in the heaviest subtree at every fork of the scored main-parent tree. |
 | **T-SCORE** | Score accumulation is additive/associative/commutative ⟹ order-independent (the `HashMap` iteration order cannot change a score). |
 | **T-FILTER** | Slashed/invalid latest messages contribute zero weight (reuses slashing T-10). |
-| **T-TERM** | `rank_forkchoices` terminates (a strictly-increasing block-number measure, bounded by height). |
+| **T-TERM** | The descent terminates (each step commits to a strictly higher-numbered child, bounded by DAG height). |
 | **T-LCA** | The LCA is a genuine common ancestor; the depth filter is deterministic. |
 | **T-BOUND** | Count/depth truncations keep the head, never panic, node-deterministic. |
 | **T-MP** | Main-parent selection is deterministic and consistent with the ranking (proposer-side). |
@@ -93,40 +93,43 @@ The `checked_add` (fix **B3**) can only reject if the cumulative weight exceeds
 `i64::MAX` — a supply-cap violation, i.e. an already-invalid state. (Rocq
 `Score.score_perm_invariant`, `score_eq_support_sum`; Z3 `score_supply_cap_bitvec.py`.)
 
-### 2.2 Heaviest-subtree ranking (`rank_forkchoices`)
+### 2.2 Heaviest-subtree descent (`rank_forkchoices`)
 
-**Problem.** From the scored DAG, pick the canonical tip: descend, level by level, into
-the heaviest scored child until no scored child remains.
+**Problem.** From the scored main-parent tree, pick the canonical tip: at each fork,
+commit to the heaviest scored child before descending further.
 
-**Why it is deterministic and terminates.** At each level the children are ranked by the
-**total order** `(score desc, hash asc)`; on distinct hashes the maximum is **unique**,
-so the descent never depends on iteration order — **T-TOTAL ⟹ T-DET(a)**. Each step
-moves to a strictly higher-numbered block (a child), and block numbers are bounded by the
-DAG height, so the fixpoint is reached in finitely many steps — **T-TERM**.
+**Why it is deterministic and terminates.** At each fork the scored main-parent
+children are compared under the **total order** `(score desc, hash asc)`; on distinct
+hashes the maximum is **unique**, so the step never depends on iteration order —
+**T-TOTAL ⟹ T-DET(a)**. Each step moves to a strictly higher-numbered block (a
+child), and block numbers are bounded by the DAG height — **T-TERM**. Only
+MAIN-parent children are followed: a merge is a main-parent child of exactly one of
+its parents, so weight flows up exactly one chain and same-height siblings stay
+mutually exclusive.
 
-⟨ *Replace the current level with its scored children; sort by the total order; repeat to
-a fixpoint.* ⟩
+⟨ *Descend from the LCA into the heaviest scored main-parent child; stop at the
+frontier; rank the remaining frontier tips behind the head.* ⟩
 ```
-level ← [ lca ]
+head ← lca
 loop:
-    next ← []
-    for b in level:
-        children_scored ← { c ∈ children(b) : c ∈ scores }   ⟨ stay within scored blocks ⟩
-        if children_scored is empty:
-            next ← next ++ [ b ]                              ⟨ leaf: keep self (fixpoint arm) ⟩
-        else:
-            next ← next ++ children_scored
-    next ← dedup(next)                                        ⟨ distinct hashes ⟩
-    next ← sort_by(next, key = (score desc, hash asc))        ⟨ TOTAL order ⟹ unique argmax ⟩
-    if next == level: return level                           ⟨ still_same fixpoint ⟩
-    level ← next
+    children ← { c ∈ children(head) : c ∈ scores and main_parent(c) = head }
+    if children is empty: break                    ⟨ head is a latest-message tip ⟩
+    head ← argmax(children, key = (score desc, hash asc))   ⟨ unique: TOTAL order ⟩
+
+frontier ← dedup { lm ∈ latest_messages : lm ≠ head and no scored main child }
+tail ← sort_by(frontier, key = (score desc, hash asc))
+return [ head ] ++ tail
 ```
 
-The head `level[0]` is the canonical main tip. Because `sort_by` is applied to a
-**deduplicated (distinct-hash)** list under a **total** order, its output — and hence the
-head — is a pure function of the scored DAG: no `HashSet`/`HashMap` order survives the
-sort. (Rocq `Rank.rank_terminates`, `rank_selects_heaviest`, `TieBreak.sort_total_order`,
-`output_indep_of_input_perm`; TLA⁺ `ForkChoice.tla`; Z3 `tiebreak_total_order.py`.)
+Ranking the TIPS by their own scores instead is not GHOST: a tip's own score is only
+its owner's weight, so under concurrent proposal every tip ties and the head falls to
+hash order — the spine then abandons majority branches (the ucc-i6 production
+divergence; see `tests/fork_choice/heaviest_subtree_descent.rs`). A latest message
+that HAS a scored main-parent child is a superseded ancestor of another tip on its own
+chain and is excluded from the tail. (Rust `heaviest_subtree_descent.rs`,
+`prop_ghost_argmax.rs`; Rocq `TieBreak.sort_total_order`,
+`output_indep_of_input_perm`; TLA⁺ `ForkChoice.tla`; Z3 `tiebreak_total_order.py`.
+`Rank.v`'s correspondence is pending re-derivation against the descent.)
 
 ---
 

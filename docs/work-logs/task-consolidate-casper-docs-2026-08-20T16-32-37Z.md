@@ -2,7 +2,6 @@
 task: consolidate-casper-design
 branch: docs/consolidate-casper-design
 stacked_on: fix/key-contention-starvation (PR #299)
-claimed_by: claude-session-consolidate-casper
 claimed_at: 2026-08-20T16:32:37Z
 handoff_status: in_progress
 checkpoints:

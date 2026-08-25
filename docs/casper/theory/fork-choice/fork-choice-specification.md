@@ -38,9 +38,12 @@ Given a DAG `d` and a frozen `latest_messages` map (validator → their latest b
   whose latest message supports it (i.e. descends from it), accumulated down the
   supporting chains to the `lca`. The accumulation MUST be order-independent
   (associative + commutative).
-- **R-GHOST.** The ranking MUST select, at each level, the child of **maximum
-  cumulative score** (the heaviest subtree), iterating to a fixpoint; the head of the
-  result is the canonical main tip.
+- **R-GHOST.** The head MUST come from a descent that commits, at each fork, to the
+  main-parent child of **maximum cumulative score** (the heaviest subtree) and stops
+  at the frontier; the descent's endpoint is the canonical main tip. Ranking tips by
+  their own scores is NOT a conforming implementation: a tip's own score is only its
+  owner's weight, so concurrent proposal ties every tip and the head falls to hash
+  order.
 - **R-TOTAL.** The tie-break MUST be a **total order** on distinct blocks: score
   descending, then block-hash ascending. This makes the ranked head **unique**.
 
