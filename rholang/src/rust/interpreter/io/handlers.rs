@@ -2595,12 +2595,16 @@ impl FsProcesses {
         // safe_descend + openat + fdopendir in a blocking task —
         // mirrors bulk fs_entries' opening syscall sequence exactly
         // so TOCTOU-immunity + O_NOFOLLOW semantics carry through.
-        let opened = spawn_blocking(move || -> Result<DirIter, Par> {
+        //
+        // Err returns a `Box<Par>` (not bare `Par`) so the enclosing
+        // Result stays pointer-sized — clippy `result_large_err` flags
+        // a naked ~296-byte error variant.
+        let opened = spawn_blocking(move || -> Result<DirIter, Box<Par>> {
             let parent = match safe_descend_verified(&root_pb, &rel_for_open, expected_root_id) {
                 Ok(p) => p,
                 Err(qe) => {
                     let (code, msg) = quarantine_err_reply(&qe);
-                    return Err(err(code, msg));
+                    return Err(Box::new(err(code, msg)));
                 }
             };
             let dir_fd = unsafe {
@@ -2612,7 +2616,7 @@ impl FsProcesses {
             };
             if dir_fd < 0 {
                 let e = std::io::Error::last_os_error();
-                return Err(err(io_err_code(&e), io_msg_scrub(&e)));
+                return Err(Box::new(err(io_err_code(&e), io_msg_scrub(&e))));
             }
             // L-3 pattern (fs_entries): F_DUPFD_CLOEXEC on the fd
             // handed to fdopendir so the DIR*'s underlying fd
@@ -2621,12 +2625,13 @@ impl FsProcesses {
             unsafe { libc::close(dir_fd) };
             if read_fd < 0 {
                 let e = std::io::Error::last_os_error();
-                return Err(err(io_err_code(&e), io_msg_scrub(&e)));
+                return Err(Box::new(err(io_err_code(&e), io_msg_scrub(&e))));
             }
-            DirIter::from_dir_fd(read_fd).map_err(|e| err(io_err_code(&e), io_msg_scrub(&e)))
+            DirIter::from_dir_fd(read_fd)
+                .map_err(|e| Box::new(err(io_err_code(&e), io_msg_scrub(&e))))
         })
         .await
-        .unwrap_or_else(|_je| Err(err(FSERR_IO, "spawn_blocking task failed")));
+        .unwrap_or_else(|_je| Err(Box::new(err(FSERR_IO, "spawn_blocking task failed"))));
         let reply = match opened {
             Ok(iter) => {
                 let deploy = *self
@@ -2643,7 +2648,7 @@ impl FsProcesses {
                     ),
                 }
             }
-            Err(e_par) => e_par,
+            Err(e_par) => *e_par,
         };
         let out = vec![reply];
         produce(&out, ack).await?;
