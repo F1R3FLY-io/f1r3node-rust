@@ -44,6 +44,7 @@ impl CanonicalEgressOutcome {
 pub enum PrefixShape {
     Shared,
     Unshared,
+    Opposed,
 }
 
 impl PrefixShape {
@@ -51,6 +52,7 @@ impl PrefixShape {
         match self {
             Self::Shared => "shared",
             Self::Unshared => "unshared",
+            Self::Opposed => "opposed",
         }
     }
 }
@@ -76,6 +78,10 @@ impl CanonicalEgressFixture {
                 PrefixShape::Unshared => {
                     let digest = Blake2b256Hash::new(&(index as u64).to_le_bytes());
                     hex::encode(digest.bytes())
+                }
+                PrefixShape::Opposed => {
+                    let width = 1 + index % 251;
+                    format!("{:04x}/{}", distinct - index, "x".repeat(width))
                 }
             };
             let datum = Datum::create(&channel, value, false);
@@ -148,5 +154,281 @@ impl CanonicalEgressFixture {
             encoded_datums: record.encoded_datums,
             datum_count: record.datum_count,
         }
+    }
+}
+
+/// Experimental per-channel index whose relative keys are complete canonical
+/// datum identities. A production multi-channel form would prepend one
+/// versioned, prefix-free channel identity frame and retain this exact suffix
+/// order; it would not allocate one PathMap or one persistence object per
+/// channel.
+pub struct IdentityOrderFixture {
+    control: CanonicalEgressFixture,
+    identity_order: Bag,
+    channel: String,
+    channel_prefix: Vec<u8>,
+    extra_datum: Datum<String>,
+    extra_identity: Vec<u8>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IdentityOrderArm {
+    ArenaSort,
+    MaintainedPathMap,
+}
+
+impl IdentityOrderArm {
+    pub const ALL: [Self; 2] = [Self::ArenaSort, Self::MaintainedPathMap];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::ArenaSort => "arena_sort",
+            Self::MaintainedPathMap => "identity_pathmap",
+        }
+    }
+}
+
+impl IdentityOrderFixture {
+    pub fn new(distinct: usize, multiplicity: u64, shape: PrefixShape) -> Self {
+        let control = CanonicalEgressFixture::new(distinct, multiplicity, shape);
+        let channel = "canonical-egress-benchmark".to_string();
+        let channel_prefix = RhoPathV1::datum_prefix(&channel);
+        let identity_order = build_identity_order_index(&control.store, &channel_prefix)
+            .expect("valid benchmark authority must build an identity-order index");
+        if shape == PrefixShape::Opposed {
+            assert!(
+                structural_and_identity_orders_differ(&control.store, &channel_prefix),
+                "opposed fixture must exercise the ordering bridge",
+            );
+        }
+        let extra_datum =
+            Datum::create(&channel, "identity-order-index/mutation-sentinel".to_string(), false);
+        let extra_identity = encode_datum(&extra_datum);
+        let fixture = Self {
+            control,
+            identity_order,
+            channel,
+            channel_prefix,
+            extra_datum,
+            extra_identity,
+        };
+        fixture.audit();
+        fixture
+    }
+
+    pub const fn distinct(&self) -> usize { self.control.distinct() }
+
+    pub const fn multiplicity(&self) -> u64 { self.control.multiplicity() }
+
+    pub const fn shape(&self) -> PrefixShape { self.control.shape() }
+
+    pub fn logical_cardinality(&self) -> u64 { self.control.logical_cardinality() }
+
+    pub fn run_egress(&self, arm: IdentityOrderArm) -> CanonicalEgressOutcome {
+        match arm {
+            IdentityOrderArm::ArenaSort => self.control.canonical_arena(),
+            IdentityOrderArm::MaintainedPathMap => self.identity_pathmap_egress(),
+        }
+    }
+
+    pub fn run_rebuild_egress(&self, arm: IdentityOrderArm) -> CanonicalEgressOutcome {
+        match arm {
+            IdentityOrderArm::ArenaSort => self.control.canonical_arena(),
+            IdentityOrderArm::MaintainedPathMap => {
+                let rebuilt = build_identity_order_index(&self.control.store, &self.channel_prefix)
+                    .expect("valid benchmark authority must rebuild");
+                encode_identity_order_bag(&self.channel, &rebuilt)
+                    .expect("valid benchmark identity index must encode")
+            }
+        }
+    }
+
+    pub fn mutation_fixture(&self, arm: IdentityOrderArm) -> IdentityOrderMutationFixture {
+        IdentityOrderMutationFixture {
+            store: self.control.store.clone(),
+            identity_order: match arm {
+                IdentityOrderArm::ArenaSort => None,
+                IdentityOrderArm::MaintainedPathMap => Some(self.identity_order.clone()),
+            },
+            channel: self.channel.clone(),
+            extra_datum: self.extra_datum.clone(),
+            extra_identity: self.extra_identity.clone(),
+            expected_cardinality: self.logical_cardinality(),
+        }
+    }
+
+    pub fn run_clone_update(&self, arm: IdentityOrderArm) -> u64 {
+        let mut store = self.control.store.clone();
+        let mut identity_order = match arm {
+            IdentityOrderArm::ArenaSort => None,
+            IdentityOrderArm::MaintainedPathMap => Some(self.identity_order.clone()),
+        };
+        store
+            .insert(&self.channel, &self.extra_datum)
+            .expect("clone-update authority insertion");
+        if let Some(index) = identity_order.as_mut() {
+            index
+                .insert(&self.extra_identity)
+                .expect("clone-update identity insertion");
+        }
+        std::hint::black_box(
+            identity_order
+                .as_ref()
+                .map_or(0, |index| index.cardinality()),
+        );
+        store.cardinality()
+    }
+
+    pub fn audit(&self) {
+        let expected = self.control.canonical_arena();
+        assert_eq!(self.identity_pathmap_egress(), expected);
+        assert_eq!(self.run_rebuild_egress(IdentityOrderArm::MaintainedPathMap), expected,);
+        for arm in IdentityOrderArm::ALL {
+            let mut mutation = self.mutation_fixture(arm);
+            assert_eq!(mutation.run_insert_remove_cycle(), self.logical_cardinality());
+            assert_eq!(mutation.store.cardinality(), self.logical_cardinality());
+        }
+    }
+
+    fn identity_pathmap_egress(&self) -> CanonicalEgressOutcome {
+        encode_identity_order_bag(&self.channel, &self.identity_order)
+            .expect("valid benchmark identity index must encode")
+    }
+}
+
+pub struct IdentityOrderMutationFixture {
+    store: RSpaceDataStore<String, String>,
+    identity_order: Option<Bag>,
+    channel: String,
+    extra_datum: Datum<String>,
+    extra_identity: Vec<u8>,
+    expected_cardinality: u64,
+}
+
+impl IdentityOrderMutationFixture {
+    pub fn run_insert_remove_cycle(&mut self) -> u64 {
+        let path = RSpaceDataIndex::datum_path(&self.channel, &self.extra_datum);
+        self.store
+            .insert(&self.channel, &self.extra_datum)
+            .expect("mutation authority insertion");
+        if let Some(index) = self.identity_order.as_mut() {
+            index
+                .insert(&self.extra_identity)
+                .expect("mutation identity insertion");
+        }
+        assert!(self.store.remove_path(&path), "inserted authority path must remove");
+        if let Some(index) = self.identity_order.as_mut() {
+            index.remove(&self.extra_identity);
+        }
+        assert_eq!(self.store.cardinality(), self.expected_cardinality);
+        if let Some(index) = &self.identity_order {
+            assert_eq!(index.cardinality(), self.expected_cardinality);
+        }
+        self.expected_cardinality
+    }
+}
+
+fn build_identity_order_index(
+    store: &RSpaceDataStore<String, String>,
+    channel_prefix: &[u8],
+) -> Result<Bag, DataIndexError> {
+    let mut identity_order = Bag::new();
+    store
+        .index
+        .as_bag()
+        .try_visit_relative_prefix(channel_prefix, |path, multiplicity| {
+            let identity = RhoPathV1::relative_datum_identity(path)?;
+            if identity_order.contains(identity) {
+                return Err(DataIndexError::DuplicateDatumIdentity);
+            }
+            identity_order.insert_many(identity, multiplicity)?;
+            Ok(())
+        })?;
+    Ok(identity_order)
+}
+
+fn structural_and_identity_orders_differ(
+    store: &RSpaceDataStore<String, String>,
+    channel_prefix: &[u8],
+) -> bool {
+    let mut structural_order = Vec::new();
+    store
+        .index
+        .as_bag()
+        .try_visit_relative_prefix(channel_prefix, |path, _| {
+            structural_order.push(RhoPathV1::relative_datum_identity(path)?.to_vec());
+            Ok::<(), DataIndexError>(())
+        })
+        .expect("valid benchmark paths");
+    let mut identity_order = structural_order.clone();
+    identity_order.sort_unstable();
+    structural_order != identity_order
+}
+
+fn encode_identity_order_bag(
+    channel: &String,
+    identity_order: &Bag,
+) -> Result<CanonicalEgressOutcome, DataIndexError> {
+    let datum_count = identity_order.cardinality();
+    if identity_order.cardinality_is_saturated() {
+        return Err(DataIndexError::EncodedCardinalityOverflow(identity_order.exact_cardinality()));
+    }
+    let mut encoded_len = u128::from(u64::BITS / 8);
+    identity_order.try_visit_relative_prefix(&[], |identity, multiplicity| {
+        let framed_len = u128::from(u64::BITS / 8)
+            .checked_add(identity.len() as u128)
+            .ok_or(DataIndexError::EncodedLengthOverflow(u128::MAX))?;
+        encoded_len = encoded_len
+            .checked_add(
+                u128::from(multiplicity.get())
+                    .checked_mul(framed_len)
+                    .ok_or(DataIndexError::EncodedLengthOverflow(u128::MAX))?,
+            )
+            .ok_or(DataIndexError::EncodedLengthOverflow(u128::MAX))?;
+        Ok::<(), DataIndexError>(())
+    })?;
+    let capacity = usize::try_from(encoded_len)
+        .map_err(|_| DataIndexError::EncodedLengthOverflow(encoded_len))?;
+    let mut encoded_datums = Vec::new();
+    encoded_datums
+        .try_reserve_exact(capacity)
+        .map_err(|_| DataIndexError::AllocationFailure(capacity))?;
+    encoded_datums.extend_from_slice(&datum_count.to_le_bytes());
+    identity_order.visit_relative_prefix(&[], |identity, multiplicity| {
+        let identity_len = u64::try_from(identity.len())
+            .expect("preflighted identity length must fit bincode u64");
+        for _ in 0..multiplicity.get() {
+            encoded_datums.extend_from_slice(&identity_len.to_le_bytes());
+            encoded_datums.extend_from_slice(identity);
+        }
+    });
+    debug_assert_eq!(encoded_datums.len(), capacity);
+    Ok(CanonicalEgressOutcome {
+        channel_hash: hash(channel),
+        encoded_datums,
+        datum_count,
+    })
+}
+
+#[cfg(test)]
+mod identity_order_tests {
+    use super::*;
+
+    #[test]
+    fn empty_identity_index_encodes_the_frozen_empty_datum_vector() {
+        let channel = "empty-identity-order".to_string();
+        let actual = encode_identity_order_bag(&channel, &Bag::new()).unwrap();
+        assert_eq!(actual.channel_hash, hash(&channel));
+        assert_eq!(actual.encoded_datums, encode_datums::<String>(&Vec::new()));
+        assert_eq!(actual.datum_count, 0);
+    }
+
+    #[test]
+    fn opposed_fixture_exercises_different_structural_and_identity_orders() {
+        let fixture = IdentityOrderFixture::new(256, 1, PrefixShape::Opposed);
+        assert_eq!(
+            fixture.run_egress(IdentityOrderArm::ArenaSort),
+            fixture.run_egress(IdentityOrderArm::MaintainedPathMap),
+        );
     }
 }

@@ -116,6 +116,11 @@ harness = false
 required-features = ["canonical-egress-experiment"]
 
 [[bench]]
+name = "rspace_identity_order_index"
+harness = false
+required-features = ["canonical-egress-experiment"]
+
+[[bench]]
 name = "rspace_accepted_match"
 harness = false
 required-features = ["accepted-match-transition-experiment"]
