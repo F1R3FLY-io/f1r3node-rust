@@ -55,9 +55,14 @@ behaviors:
     statement: "No JustificationRegression verdict is recorded for a lineage whose only difference is carrying the finalized bond effect"
     priority: should
     deep_module: false
-    done: false
-    notes:
-      - "Second-order symptom guard from run 32808149007. Only meaningful once B1/B2 pin the mechanism; drop with a recorded deviation if the mechanism turns out unrelated to justification handling."
+    done: true
+    cycle_log:
+      - red: "DEVIATION: dropped without a test. Validate::justification_regressions compares only justification sequence numbers against the receiver's view of the sender's previous justifications (validate.rs:1464); a lineage's bond content is not an input, so this behavior statement tests a non-input and cannot go RED for the right reason. The preflight's JustificationRegression warnings are view-divergence symptoms, not part of the #341 mechanism B1 pinned."
+        green: "no change"
+        files: []
+        discovered:
+          - "justification_regressions resolves justification hashes with dag.lookup_unsafe (validate.rs:1509, 1517). On a restored node a below-horizon justification errors there; with the #318 MissingBlock -> BlockNotHeld mapping this defers the block, pre-#318 it hard-failed — another instance of the #306 class, now covered."
+          - "The `!new_justification.invalid` guard (validate.rs:1526) makes the JR verdict view-relative: a node that locally recorded the justification invalid suppresses JR while another node flags it. This is the divergence that produced the preflight's JR warnings and the documented reason JR is demoted from the slashable set."
 ---
 
 # TDD plan: epoch-boundary bond loss (#341)
