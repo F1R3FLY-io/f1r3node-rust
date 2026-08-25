@@ -10068,6 +10068,41 @@ most once. An intentionally premature-publication configuration violates
 TLC, and mCRL2 runner passes; the captured runner log has SHA-256
 `483099d32f80375e9e1b01522639d6b4ce4344128fa4e530199c19621bffd56e`.
 
+#### 5.40.1 Complete-lifecycle identity-order experiment
+
+Pgmcp experiment 314 tested whether a second persistent identity-ordered
+`PathMap<Multiplicity>` should replace J-023's transient descriptor sort. Nine key/multiplicity
+shapes and four lifecycle operations each retained 82 counterbalanced pairs after five warmups;
+every observation was admitted only after exact output bytes, digest, and logical cardinality
+agreed. The analyzer applies Welch and Mann–Whitney tests, Cohen's $`d`$, Cliff's $`\delta`$,
+pair-preserving 99% bootstrap intervals, and the preregistered Benjamini–Hochberg correction.
+
+The first implementation parsed the same secondary trie twice and is a measured negative: shared
+4,096 egress regressed 8.60%. Maintaining exact framed length with the mutation and emitting with
+one zipper pass repairs that defect. The repaired ready-egress mean ratio is 0.691–0.960 in every
+case, every corrected statistical/effect-size gate passes, and its maintenance cost amortizes in
+0.00125–0.638 checkpoints per mutation. At shared 4,096 it reduces mean egress from 995,252 to
+809,061 ns, allocation calls from 39 to 10, and requested bytes from 2,234,662 to 701,834. Five
+`perf stat` repetitions attribute 17.87% fewer cycles, 18.80% fewer instructions, 56.09% fewer
+branches, and 59.35% fewer cache misses; headless AMD uProf reports the same direction.
+
+An exact release gate executes ready egress, cold rebuild, insert/remove, CoW clone-update, and
+destruction for shared, unshared, and opposed 4,096-identity shapes on a 128 KiB thread stack. It
+passes 1/1 with no depth limit, `RUST_MIN_STACK`, `stacker`, or recursive fallback.
+
+The secondary index is still rejected because it fails the frozen retained-memory ceiling in every
+case. Net live requested-byte ratios are 1.672–2.094; shared 4,096 grows from 1,253,632 to 2,230,780
+bytes. Headless `heaptrack --record-only` plus `heaptrack_print` corroborates the retained increase
+and independently reproduces the exact 29-call ready-egress reduction. The complete protocol,
+negative two-pass result, repaired matrix, corrected statistics, retained profiles, Heaptrack
+integrity coordinates, hardware counters, and raw uProf reports are preserved in
+[`measurements/rspace-identity-order-index-experiment-2026-08-25.md`](measurements/rspace-identity-order-index-experiment-2026-08-25.md).
+
+Therefore the production path remains J-023's single authoritative Bag plus transient arena and
+borrowed descriptor sort. No retained secondary index, snapshot, occurrence vector, or alternate
+authority was introduced. A future non-duplicating primary-key-layout experiment is separately
+registered as PathMap journal H-014 and cannot inherit the rejected treatment's performance claim.
+
 This is a stack-safe and byte-neutral optimization. It introduces no native recursion, traversal
 limit, `RUST_MIN_STACK`, `stacker`, retained serialization cache, PathMap modification, or alternate
 cold-store format. Continuation and join egress remain on their existing authoritative layouts;

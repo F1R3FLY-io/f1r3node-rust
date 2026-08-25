@@ -1,0 +1,7 @@
+metric	control_mean	treatment_mean	treatment_control_ratio	reduction_percent	control_relative_stddev_percent	treatment_relative_stddev_percent
+cycles:u	4344663216	3568158974	0.821274	17.87	0.11	0.21
+instructions:u	17241055919	13999920264	0.812011	18.80	0.01	0.01
+branches:u	1507210143	661884592	0.439146	56.09	0.01	0.13
+branch-misses:u	3307652	806846	0.243933	75.61	1.09	0.47
+cache-references:u	183420575	85830896	0.467946	53.21	0.07	0.15
+cache-misses:u	15780822	6414881	0.406499	59.35	0.42	1.05

@@ -1818,6 +1818,44 @@ AST as an intermediate. Preserve every external ordering contract explicitly. A 
 snapshot or a secondary identity-ordered PathMap is not justified by egress alone: it must repay
 its mutation, CoW, and retained-memory costs in a preregistered complete-lifecycle experiment.
 
+### J-024 — 2026-08-25: one zipper pass wins, but a duplicated identity trie loses
+
+Question: Does a transactionally maintained secondary `PathMap<Multiplicity>`, keyed by each
+complete canonical `Datum` identity, outperform J-023's arena-plus-descriptor-sort route after
+mutation, CoW clone-update, cold rebuild, and retained storage are included?
+
+Status: EXPERIMENT COMPLETE; SECONDARY INDEX REJECTED. Pgmcp experiment 314 froze nine workload
+shapes, four lifecycle operations, 82 counterbalanced retained pairs per cell, exact byte/digest/
+cardinality witnesses, Benjamini–Hochberg correction, a one-checkpoint-per-mutation break-even
+ceiling, a 5% narrow-egress guard, and a 10% retained-memory ceiling.
+
+The first treatment walked the secondary trie twice—once to count/validate and once to emit—and
+regressed shared 4,096 by 8.60%. That implementation is rejected as a concrete zipper-usage defect,
+not treated as a verdict against identity order. The repaired treatment maintains the exact framed
+length with each multiplicity transaction, reserves once, and emits through one read-zipper walk.
+It improves every ready-egress cell: mean treatment/control ratios are 0.691–0.960; the largest
+corrected ready-egress q-value is $`1.044\times10^{-15}`$; the least favorable Cohen effect is
+$`d=-1.412`$; and break-even frequency is 0.00125–0.638 checkpoints per mutation.
+
+The exact shared/unshared/opposed 4,096-identity lifecycle—ready egress, cold rebuild,
+insert/remove, CoW clone-update, and destruction—also passes on a 128 KiB thread stack without a
+depth cap or recursive fallback.
+
+The complete-lifecycle decision is nevertheless negative. Net live requested-byte ratios are
+1.672–2.094 because the treatment retains the structural authority **and** a second persistent
+trie. Shared 4,096 retains 1,253,632 bytes in the control and 2,230,780 in the treatment. Headless
+Heaptrack agrees on mechanism, while five user-space `perf stat` repetitions and AMD uProf
+attribute the ready-egress win to fewer instructions, branches, branch misses, and cache events.
+No production index was activated.
+
+DECISION: retain J-023's transient arena-plus-sort route. Preserve the positive rule—when trie order
+already equals sink order, maintain checked encoded length transactionally and write with exactly
+one zipper pass—but do not duplicate a persistent trie solely to remove a transient sort. A
+non-duplicating primary layout with a prefix-free channel frame followed by complete identity is a
+separate H-014 hypothesis; it must preserve channel-prefix algebra and the full RSpace lifecycle
+before it can replace the current structural authority. The complete scientific record is
+[`../stack-safety/measurements/rspace-identity-order-index-experiment-2026-08-25.md`](../stack-safety/measurements/rspace-identity-order-index-experiment-2026-08-25.md).
+
 ## Open hypotheses and required closure evidence
 
 | ID | Hypothesis | Required evidence before acceptance | Status |
@@ -1834,7 +1872,8 @@ its mutation, CoW, and retained-memory costs in a preregistered complete-lifecyc
 | H-010 | Immutable candidate authority plus a separate reservation Bag reduces speculative CoW mutation without a material regression from availability filtering under high reservation pressure. | Frozen decrement/reinsert control; equal exact selections and rollback states; distinct/repeated identities; single/repeated channels; low/high reservation pressure; Criterion confidence decision; allocation and RSS attribution; report-only Heaptrack plus instruction/cache profile; exact release lifecycle. | Open; representation and semantic invariants accepted at `173bf4e07`/`39bc0d999`, performance verdict deliberately not inferred |
 | H-011 | One validated accepted-match publication removes width-dependent split-store overhead without an unacceptable narrow-cell regression. | Frozen git-history control; exact post-state/stale nonmutation; singleton and join-2 99% CI guards; repeated/join/arrival matrix; exact lock/root/allocation attribution; RSS, report-only Heaptrack, and instruction/cache profiles. | **Accepted** at `281c1698a` and pgmcp experiment 313; singleton/join-2 conservative ratios pass 1.05, the powered join-32 replication and wide/repeated/arrival cells improve, and persistent/named/singleton-tail negatives remain documented |
 | H-012 | A logical RCI2 endpoint transcript plus an equality-invariant RhoPathV2 channel frame improves channel-key construction and matching without changing any selected COMM or legacy hash. | Frozen RhoPathV1/canonical-bincode control; complete equality/order/hash corpus; root-LF and connective counterexamples; repeated/ordered channel groups; play/replay/checkpoint/reset/export/import differential; geometric key-size/prefix-sharing matrix; allocations, peak heap, RSS, instructions/cache, and report-only Heaptrack; explicit legacy bridge and epoch proof. | Open; shadow codec and focused correctness matrix implemented, production activation and performance experiment not yet authorized by those results |
-| H-013 | Maintaining a second PathMap keyed by complete datum identity can remove DATA egress descriptor sorting without costing more across mutation, CoW cloning, checkpointing, and retained space. | Frozen J-023 arena-plus-sort control; exact leaf/root differential; insertion/removal/rollback and clone-family maintenance; checkpoint-frequency matrix; retained bytes/root sharing; allocations, RSS, instructions/cache, and headless Heaptrack. | Open; no secondary production index exists |
+| H-013 | Maintaining a second PathMap keyed by complete datum identity can remove DATA egress descriptor sorting without costing more across mutation, CoW cloning, checkpointing, and retained space. | Frozen J-023 arena-plus-sort control; exact leaf/root differential; insertion/removal/rollback and clone-family maintenance; checkpoint-frequency matrix; retained bytes/root sharing; allocations, RSS, instructions/cache, and headless Heaptrack. | **Rejected at `8fd6dde61` / experiment 314**; one-pass egress wins every cell, but retained space is 1.672–2.094× and violates the frozen 1.10 ceiling |
+| H-014 | Reordering the single primary RSpace Bag key to a prefix-free channel frame followed by complete canonical datum identity can obtain identity-order zipper egress without retaining a second trie. | Exact channel-prefix and point-operation algebra; matcher/candidate and multiplicity equivalence; play/replay/checkpoint/reset/export/import bytes and roots; mixed-channel/adversarial-prefix corpus; mutation/CoW/egress/rebuild time and allocation matrix; retained/root-sharing, RSS, instructions/cache, and headless Heaptrack against J-023. | Open; no production or shadow primary-layout change exists |
 
 ## Threats to validity
 

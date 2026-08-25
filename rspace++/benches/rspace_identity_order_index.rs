@@ -20,6 +20,7 @@ use rspace_plus_plus::rspace::data_index::canonical_egress_experiment::{
 };
 
 const SCHEMA: &str = "rspace-identity-order-index-v1";
+const NO_DIGEST: &str = "-";
 const SEED: u64 = 0x4131_6028_2026_0825;
 const WARMUPS: usize = 5;
 const RETAINED_PAIRS: usize = 82;
@@ -270,13 +271,13 @@ fn execute(fixture: &IdentityOrderFixture, operation: Operation, arm: IdentityOr
             Outcome {
                 logical: mutation.run_insert_remove_cycle(),
                 output_len: 0,
-                digest: String::new(),
+                digest: NO_DIGEST.to_owned(),
             }
         }
         Operation::CloneUpdate => Outcome {
             logical: fixture.run_clone_update(arm),
             output_len: 0,
-            digest: String::new(),
+            digest: NO_DIGEST.to_owned(),
         },
         Operation::RebuildEgress => {
             let outcome = fixture.run_rebuild_egress(arm);
@@ -306,7 +307,7 @@ fn measure(
         Outcome {
             logical: mutation.run_insert_remove_cycle(),
             output_len: 0,
-            digest: String::new(),
+            digest: NO_DIGEST.to_owned(),
         }
     } else {
         execute(fixture, operation, arm)
@@ -352,14 +353,18 @@ fn run_profile() {
         other => panic!("unknown identity-order shape {other}"),
     };
     if profile == "retained" && arm == IdentityOrderArm::ArenaSort {
-        black_box(CanonicalEgressFixture::new(distinct, multiplicity, shape));
+        profile_retained(arm, shape, distinct, multiplicity, || {
+            CanonicalEgressFixture::new(distinct, multiplicity, shape)
+        });
+        return;
+    }
+    if profile == "retained" {
+        profile_retained(arm, shape, distinct, multiplicity, || {
+            IdentityOrderFixture::new(distinct, multiplicity, shape)
+        });
         return;
     }
     let fixture = IdentityOrderFixture::new(distinct, multiplicity, shape);
-    if profile == "retained" {
-        black_box(fixture);
-        return;
-    }
     let operation = match profile.as_str() {
         "egress" => Operation::Egress,
         "insert_remove" => Operation::InsertRemove,
@@ -371,6 +376,46 @@ fn run_profile() {
     for _ in 0..iterations {
         black_box(execute(&fixture, operation, arm));
     }
+}
+
+fn profile_retained<T>(
+    arm: IdentityOrderArm,
+    shape: PrefixShape,
+    distinct: usize,
+    multiplicity: u64,
+    build: impl FnOnce() -> T,
+) {
+    reset_allocations();
+    COUNT_ALLOCATIONS.store(true, Ordering::SeqCst);
+    let fixture = build();
+    black_box(&fixture);
+    COUNT_ALLOCATIONS.store(false, Ordering::SeqCst);
+
+    let allocation_bytes = ALLOC_BYTES.load(Ordering::Relaxed);
+    let deallocation_bytes = DEALLOC_BYTES.load(Ordering::Relaxed);
+    let retained_bytes = allocation_bytes
+        .checked_sub(deallocation_bytes)
+        .expect("fixture construction cannot deallocate unobserved bytes");
+    let logical_cardinality = u64::try_from(distinct)
+        .expect("profile distinct count fits u64")
+        .checked_mul(multiplicity)
+        .expect("profile logical cardinality fits u64");
+    println!(
+        "RETAINED\t{SCHEMA}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+        shape.label(),
+        distinct,
+        multiplicity,
+        logical_cardinality,
+        arm.label(),
+        ALLOC_CALLS.load(Ordering::Relaxed),
+        allocation_bytes,
+        DEALLOC_CALLS.load(Ordering::Relaxed),
+        deallocation_bytes,
+        retained_bytes,
+        std::mem::size_of_val(&fixture),
+        std::any::type_name::<T>(),
+    );
+    black_box(fixture);
 }
 
 fn env_usize(name: &str, default: usize) -> usize {

@@ -485,4 +485,38 @@ mod identity_order_tests {
             fixture.run_egress(IdentityOrderArm::MaintainedPathMap),
         );
     }
+
+    #[test]
+    fn wide_identity_order_lifecycle_is_stack_safe_on_a_small_thread() {
+        std::thread::Builder::new()
+            .name("identity-order-small-stack".to_string())
+            .stack_size(128 * 1024)
+            .spawn(|| {
+                for shape in [PrefixShape::Shared, PrefixShape::Unshared, PrefixShape::Opposed] {
+                    let fixture = IdentityOrderFixture::new(4_096, 1, shape);
+                    assert_eq!(
+                        fixture.run_egress(IdentityOrderArm::ArenaSort),
+                        fixture.run_egress(IdentityOrderArm::MaintainedPathMap),
+                    );
+                    assert_eq!(
+                        fixture.run_rebuild_egress(IdentityOrderArm::ArenaSort),
+                        fixture.run_rebuild_egress(IdentityOrderArm::MaintainedPathMap),
+                    );
+                    for arm in IdentityOrderArm::ALL {
+                        let mut mutation = fixture.mutation_fixture(arm);
+                        assert_eq!(
+                            mutation.run_insert_remove_cycle(),
+                            fixture.logical_cardinality()
+                        );
+                        assert_eq!(
+                            fixture.run_clone_update(arm),
+                            fixture.logical_cardinality() + 1
+                        );
+                    }
+                }
+            })
+            .expect("spawn identity-order small-stack gate")
+            .join()
+            .expect("identity-order small-stack gate must not overflow or panic");
+    }
 }
