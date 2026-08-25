@@ -246,7 +246,7 @@ where
     async fn create_checkpoint(&self) -> Result<Checkpoint, RSpaceError> {
         self.check_replay_data().await?;
 
-        let changes = self.get_store().changes();
+        let changes = self.get_store().checkpoint_changes()?;
         let next_history = self.get_history_repository().checkpoint(changes);
         *self.history_repository.write().expect("history write lock") = Arc::new(next_history);
 

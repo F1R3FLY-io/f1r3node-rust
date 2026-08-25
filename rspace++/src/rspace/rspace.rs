@@ -260,7 +260,7 @@ where
         let changes = {
             let _changes_span =
                 tracing::info_span!(target: "f1r3fly.rspace", CHANGES_SPAN).entered();
-            self.get_store().changes()
+            self.get_store().checkpoint_changes()?
         };
 
         // Create history checkpoint with span

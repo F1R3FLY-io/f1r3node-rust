@@ -741,6 +741,18 @@ impl RhoPathV1 {
             Err(RhoPathError::TrailingBytes)
         }
     }
+
+    /// Borrow the canonical datum identity from a channel-relative RhoPath.
+    ///
+    /// A `Bag` prefix zipper already selected and removed the complete channel
+    /// prefix, so the remaining path is exactly `frame(datum_structure) ||
+    /// datum_identity`. Parsing that suffix directly avoids rebuilding one
+    /// absolute key per endpoint during checkpoint egress.
+    pub(crate) fn relative_datum_identity(path: &[u8]) -> Result<&[u8], RhoPathError> {
+        let mut cursor = 0;
+        let _ = take_frame(path, &mut cursor)?;
+        Ok(&path[cursor..])
+    }
 }
 
 fn parse_channel(path: &[u8]) -> Result<(ChannelPathView<'_>, usize), RhoPathError> {

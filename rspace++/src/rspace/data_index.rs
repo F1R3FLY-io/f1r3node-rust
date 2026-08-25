@@ -27,6 +27,8 @@ pub enum DataIndexError {
     Path(RhoPathError),
     Decode(ColdStoreDecodeError),
     CardinalityOverflow(u128),
+    EncodedCardinalityOverflow(u128),
+    EncodedLengthOverflow(u128),
     AllocationFailure(usize),
     DuplicateDatumIdentity,
     IndexOutOfBounds { index: i32, cardinality: u128 },
@@ -41,8 +43,15 @@ impl fmt::Display for DataIndexError {
             Self::CardinalityOverflow(cardinality) => {
                 write!(f, "bag cardinality {cardinality} does not fit in usize")
             }
+            Self::EncodedCardinalityOverflow(cardinality) => write!(
+                f,
+                "datum cardinality {cardinality} does not fit the legacy bincode Vec length"
+            ),
+            Self::EncodedLengthOverflow(length) => {
+                write!(f, "encoded datum sequence length {length} does not fit in usize")
+            }
             Self::AllocationFailure(requested) => {
-                write!(f, "unable to reserve space for {requested} bag elements")
+                write!(f, "unable to reserve requested capacity {requested}")
             }
             Self::DuplicateDatumIdentity => f.write_str(
                 "one canonical datum identity is stored under multiple derived RhoPaths",
@@ -110,6 +119,26 @@ struct EncodedIndexedDatum {
     path: Vec<u8>,
     identity_offset: usize,
     multiplicity: Multiplicity,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CanonicalDataRecord {
+    pub channel_hash: Blake2b256Hash,
+    pub encoded_datums: Vec<u8>,
+    pub datum_count: u64,
+}
+
+#[derive(Debug)]
+struct DatumIdentityDescriptor {
+    start: usize,
+    len: usize,
+    multiplicity: Multiplicity,
+}
+
+impl DatumIdentityDescriptor {
+    fn identity<'a>(&self, arena: &'a [u8]) -> &'a [u8] {
+        &arena[self.start..self.start + self.len]
+    }
 }
 
 /// Compare datum candidates without consulting their derived structural path.
@@ -1036,6 +1065,91 @@ impl RSpaceDataIndex {
         })?;
         Ok(entries)
     }
+
+    /// Encode the legacy cold-store `Vec<Vec<u8>>` body directly from the
+    /// canonical datum identities resident in the PathMap.
+    ///
+    /// The RhoPath structural dimension is intentionally not the cold-store
+    /// ordering authority: legacy leaves sort by each complete datum identity.
+    /// This method therefore retains one lightweight identity descriptor per
+    /// distinct endpoint, sorts those exact bytes, and expands multiplicity
+    /// directly into the final bincode image. It never constructs `Datum<A>`
+    /// values or a `Vec<Vec<u8>>` shadow.
+    fn encode_canonical_datums_at_prefix(
+        &self,
+        prefix: &[u8],
+    ) -> Result<(Vec<u8>, u64), DataIndexError> {
+        let mut identities = Vec::new();
+        let mut descriptors = Vec::new();
+        self.bag
+            .try_visit_relative_prefix(prefix, |path, multiplicity| {
+                let identity = RhoPathV1::relative_datum_identity(path)?;
+                let start = identities.len();
+                let identity_capacity = start
+                    .checked_add(identity.len())
+                    .ok_or(DataIndexError::EncodedLengthOverflow(u128::MAX))?;
+                identities
+                    .try_reserve(identity.len())
+                    .map_err(|_| DataIndexError::AllocationFailure(identity_capacity))?;
+                let descriptor_capacity = descriptors
+                    .len()
+                    .checked_add(1)
+                    .ok_or(DataIndexError::EncodedLengthOverflow(u128::MAX))?;
+                descriptors
+                    .try_reserve(1)
+                    .map_err(|_| DataIndexError::AllocationFailure(descriptor_capacity))?;
+                identities.extend_from_slice(identity);
+                descriptors.push(DatumIdentityDescriptor {
+                    start,
+                    len: identity.len(),
+                    multiplicity,
+                });
+                Ok::<(), DataIndexError>(())
+            })?;
+        descriptors.sort_unstable_by(|left, right| {
+            left.identity(&identities).cmp(right.identity(&identities))
+        });
+
+        let mut datum_count = 0_u128;
+        let mut encoded_len = u128::from(u64::BITS / 8);
+        for descriptor in &descriptors {
+            let multiplicity = u128::from(descriptor.multiplicity.get());
+            datum_count = datum_count
+                .checked_add(multiplicity)
+                .ok_or(DataIndexError::EncodedCardinalityOverflow(u128::MAX))?;
+            let framed_identity_len = u128::from(u64::BITS / 8)
+                .checked_add(descriptor.len as u128)
+                .ok_or(DataIndexError::EncodedLengthOverflow(u128::MAX))?;
+            encoded_len = encoded_len
+                .checked_add(
+                    multiplicity
+                        .checked_mul(framed_identity_len)
+                        .ok_or(DataIndexError::EncodedLengthOverflow(u128::MAX))?,
+                )
+                .ok_or(DataIndexError::EncodedLengthOverflow(u128::MAX))?;
+        }
+
+        let datum_count_u64 = u64::try_from(datum_count)
+            .map_err(|_| DataIndexError::EncodedCardinalityOverflow(datum_count))?;
+        let capacity = usize::try_from(encoded_len)
+            .map_err(|_| DataIndexError::EncodedLengthOverflow(encoded_len))?;
+        let mut output = Vec::new();
+        output
+            .try_reserve_exact(capacity)
+            .map_err(|_| DataIndexError::AllocationFailure(capacity))?;
+        output.extend_from_slice(&datum_count_u64.to_le_bytes());
+        for descriptor in descriptors {
+            let identity = descriptor.identity(&identities);
+            let identity_len = u64::try_from(identity.len())
+                .map_err(|_| DataIndexError::EncodedLengthOverflow(identity.len() as u128))?;
+            for _ in 0..descriptor.multiplicity.get() {
+                output.extend_from_slice(&identity_len.to_le_bytes());
+                output.extend_from_slice(identity);
+            }
+        }
+        debug_assert_eq!(output.len(), capacity);
+        Ok((output, datum_count_u64))
+    }
 }
 
 pub struct RSpaceDataStore<C, A: Clone> {
@@ -1333,12 +1447,35 @@ impl<C, A: Clone> RSpaceDataStore<C, A> {
         C: Clone + ColdStoreDecode + RhoPathEncode,
         A: Clone + ColdStoreDecode,
     {
-        let mut records = Vec::with_capacity(self.loaded_channel_count);
+        let mut records = Vec::new();
+        records
+            .try_reserve_exact(self.loaded_channel_count)
+            .map_err(|_| DataIndexError::AllocationFailure(self.loaded_channel_count))?;
         for (path, _) in self.loaded_channels.iter() {
             let view = RhoPathV1::parse_datum_prefix(&path)?;
             let channel = C::cold_decode(&view.channel_identity())?;
             let datums = self.channel_data(&channel)?.unwrap_or_default();
             records.push((channel, datums));
+        }
+        Ok(records)
+    }
+
+    /// Return checkpoint-ready DATA records without decoding resident datum
+    /// identities back into typed values.
+    pub(crate) fn loaded_canonical_records(
+        &self,
+    ) -> Result<Vec<CanonicalDataRecord>, DataIndexError> {
+        let mut records = Vec::with_capacity(self.loaded_channel_count);
+        for (prefix, _) in self.loaded_channels.iter() {
+            let view = RhoPathV1::parse_datum_prefix(&prefix)?;
+            let channel_hash = Blake2b256Hash::new(&view.channel_identity());
+            let (encoded_datums, datum_count) =
+                self.index.encode_canonical_datums_at_prefix(&prefix)?;
+            records.push(CanonicalDataRecord {
+                channel_hash,
+                encoded_datums,
+                datum_count,
+            });
         }
         Ok(records)
     }

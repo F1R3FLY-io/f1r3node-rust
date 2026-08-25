@@ -1,3 +1,4 @@
+use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use crate::rspace::internal::{Datum, WaitingContinuation};
 
 // See rspace/src/main/scala/coop/rchain/rspace/HotStoreAction.scala
@@ -11,6 +12,7 @@ pub enum HotStoreAction<C: Clone, P: Clone, A: Clone, K: Clone> {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum InsertAction<C: Clone, P: Clone, A: Clone, K: Clone> {
     InsertData(InsertData<C, A>),
+    InsertCanonicalData(InsertCanonicalData),
     InsertJoins(InsertJoins<C>),
     InsertContinuations(InsertContinuations<C, P, K>),
 }
@@ -19,6 +21,16 @@ pub enum InsertAction<C: Clone, P: Clone, A: Clone, K: Clone> {
 pub struct InsertData<C: Clone, A: Clone> {
     pub channel: C,
     pub data: Vec<Datum<A>>,
+}
+
+/// A checkpoint-ready DATA leaf body derived from resident canonical datum
+/// identities. `encoded_datums` is exactly the legacy bincode encoding of the
+/// sorted `Vec<Vec<u8>>`; it is not an ACT image or an alternate wire format.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InsertCanonicalData {
+    pub hash: Blake2b256Hash,
+    pub encoded_datums: Vec<u8>,
+    pub datum_count: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -36,6 +48,7 @@ pub struct InsertContinuations<C: Clone, P: Clone, K: Clone> {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DeleteAction<C: Clone> {
     DeleteData(DeleteData<C>),
+    DeleteCanonicalData(DeleteCanonicalData),
     DeleteJoins(DeleteJoins<C>),
     DeleteContinuations(DeleteContinuations<C>),
 }
@@ -43,6 +56,11 @@ pub enum DeleteAction<C: Clone> {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DeleteData<C: Clone> {
     pub channel: C,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DeleteCanonicalData {
+    pub hash: Blake2b256Hash,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

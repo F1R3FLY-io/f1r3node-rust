@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex};
 use rand::prelude::SliceRandom;
 use rspace_plus_plus::rspace::errors::{HistoryError, RootError};
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+use rspace_plus_plus::rspace::hashing::stable_hash_provider::hash;
 use rspace_plus_plus::rspace::history::history::HistoryInstances;
 use rspace_plus_plus::rspace::history::history_repository::HistoryRepository;
 use rspace_plus_plus::rspace::history::history_repository_impl::HistoryRepositoryImpl;
@@ -15,9 +16,10 @@ use rspace_plus_plus::rspace::history::root_repository::RootRepository;
 use rspace_plus_plus::rspace::history::roots_store::RootsStore;
 use rspace_plus_plus::rspace::hot_store_action::{
     DeleteAction, DeleteContinuations, DeleteData, DeleteJoins, HotStoreAction, InsertAction,
-    InsertContinuations, InsertData, InsertJoins,
+    InsertCanonicalData, InsertContinuations, InsertData, InsertJoins,
 };
 use rspace_plus_plus::rspace::internal::{Datum, WaitingContinuation};
+use rspace_plus_plus::rspace::serializers::serializers::encode_datums;
 use rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore;
 use rspace_plus_plus::rspace::shared::trie_exporter::{
     KeyHash, NodePath, TrieExporter, TrieNode, Value,
@@ -50,6 +52,36 @@ async fn history_repository_should_process_insert_one_datum() {
     let fetched = data.first().unwrap().clone();
 
     assert_eq!(fetched, test_datum);
+}
+
+#[tokio::test]
+async fn canonical_data_action_is_root_equivalent_to_typed_data_action() {
+    let channel = test_channel_data_prefix();
+    let first = datum(1);
+    let second = datum(2);
+    let data = vec![second, first.clone(), first];
+
+    let typed = create_empty_repository().checkpoint(vec![HotStoreAction::Insert(
+        InsertAction::InsertData(InsertData {
+            channel: channel.clone(),
+            data: data.clone(),
+        }),
+    )]);
+    let canonical = create_empty_repository().checkpoint(vec![HotStoreAction::Insert(
+        InsertAction::InsertCanonicalData(InsertCanonicalData {
+            hash: hash(&channel),
+            encoded_datums: encode_datums(&data),
+            datum_count: data.len() as u64,
+        }),
+    )]);
+
+    assert_eq!(canonical.root(), typed.root());
+    let fetched = canonical
+        .get_history_reader(&canonical.root())
+        .expect("canonical checkpoint reader")
+        .base()
+        .get_data(&channel);
+    assert_eq!(encode_datums(&fetched), encode_datums(&data));
 }
 
 #[tokio::test]

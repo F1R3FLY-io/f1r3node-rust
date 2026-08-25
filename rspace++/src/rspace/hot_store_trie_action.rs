@@ -11,6 +11,7 @@ pub enum HotStoreTrieAction<C: Clone, P: Clone, A: Clone, K: Clone> {
 #[derive(Debug, Clone)]
 pub enum TrieInsertAction<C: Clone, P: Clone, A: Clone, K: Clone> {
     TrieInsertProduce(TrieInsertProduce<A>),
+    TrieInsertCanonicalProduce(TrieInsertCanonicalProduce),
     TrieInsertJoins(TrieInsertJoins<C>),
     TrieInsertConsume(TrieInsertConsume<P, K>),
     TrieInsertBinaryProduce(TrieInsertBinaryProduce),
@@ -28,6 +29,13 @@ impl<A: Clone> TrieInsertProduce<A> {
     pub fn new(hash: Blake2b256Hash, data: Vec<Datum<A>>) -> Self {
         TrieInsertProduce { hash, data }
     }
+}
+
+#[derive(Debug, Clone)]
+pub struct TrieInsertCanonicalProduce {
+    pub hash: Blake2b256Hash,
+    pub encoded_datums: Vec<u8>,
+    pub datum_count: u64,
 }
 
 #[derive(Debug, Clone)]

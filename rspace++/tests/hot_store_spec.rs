@@ -9,14 +9,15 @@ use proptest_derive::Arbitrary;
 use rand::prelude::SliceRandom;
 use rand::thread_rng;
 use rspace_plus_plus::rspace::candidate_order::deterministic_candidate_hash;
+use rspace_plus_plus::rspace::hashing::stable_hash_provider::hash;
 use rspace_plus_plus::rspace::history::history_reader::HistoryReaderBase;
 use rspace_plus_plus::rspace::hot_store::{HotStore, HotStoreInstances, HotStoreState};
 use rspace_plus_plus::rspace::hot_store_action::{
-    DeleteAction, DeleteContinuations, DeleteData, DeleteJoins, HotStoreAction, InsertAction,
-    InsertContinuations, InsertData, InsertJoins,
+    DeleteAction, DeleteCanonicalData, DeleteContinuations, DeleteData, DeleteJoins,
+    HotStoreAction, InsertAction, InsertContinuations, InsertData, InsertJoins,
 };
 use rspace_plus_plus::rspace::internal::{Datum, WaitingContinuation};
-use rspace_plus_plus::rspace::serializers::serializers::CandidateOrderingBytes;
+use rspace_plus_plus::rspace::serializers::serializers::{CandidateOrderingBytes, encode_datums};
 use rstest::*;
 use serde::Serialize;
 
@@ -816,6 +817,48 @@ fn duplicate_datums_preserve_multiplicity_and_loaded_empty_state() {
     hot_store.remove_datum(&channel, 0).unwrap();
     assert!(hot_store.get_data(&channel).is_empty());
     assert_eq!(hot_store.snapshot().data.get(&channel), Some(&Vec::new()));
+}
+
+#[test]
+fn checkpoint_changes_reuse_sorted_canonical_identities_and_preserve_multiplicity() {
+    let (_, hot_store) = fixture();
+    let channel = "canonical-egress".to_string();
+    let empty_channel = "canonical-egress-empty".to_string();
+    // RhoPath structure orders "aa" before "z", while the legacy bincode
+    // identity starts with the little-endian String length and therefore
+    // orders the one-byte payload first. This prevents the test from passing
+    // by accidentally treating structural trie order as cold-store order.
+    let short = Datum::create(&channel, "z".to_string(), false);
+    let long = Datum::create(&channel, "aa".to_string(), false);
+    let data = vec![long, short.clone(), short];
+    hot_store.set_state(HotStoreState {
+        continuations: HashMap::new(),
+        installed_continuations: HashMap::new(),
+        data: HashMap::from([(channel.clone(), data.clone()), (empty_channel.clone(), Vec::new())]),
+        joins: HashMap::new(),
+        installed_joins: HashMap::new(),
+    });
+
+    let expected = encode_datums(&data);
+    let actions = hot_store
+        .checkpoint_changes()
+        .expect("checkpoint preflight");
+    let canonical = actions
+        .iter()
+        .find_map(|action| match action {
+            HotStoreAction::Insert(InsertAction::InsertCanonicalData(insert)) => Some(insert),
+            _ => None,
+        })
+        .expect("non-empty loaded channel must produce canonical DATA bytes");
+    assert_eq!(canonical.hash, hash(&channel));
+    assert_eq!(canonical.datum_count, data.len() as u64);
+    assert_eq!(canonical.encoded_datums, expected);
+
+    assert!(actions.contains(&HotStoreAction::Delete(DeleteAction::DeleteCanonicalData(
+        DeleteCanonicalData {
+            hash: hash(&empty_channel),
+        }
+    ),)));
 }
 
 fn check_removal_works_or_fails_on_error<T>(

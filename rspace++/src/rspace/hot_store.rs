@@ -18,8 +18,9 @@ use super::data_index::{CandidatePool, DataIndexError, RSpaceDataStore};
 use super::errors::RSpaceError;
 use crate::rspace::history::history_reader::HistoryReaderBase;
 use crate::rspace::hot_store_action::{
-    DeleteAction, DeleteContinuations, DeleteData, DeleteJoins, HotStoreAction, InsertAction,
-    InsertContinuations, InsertData, InsertJoins,
+    DeleteAction, DeleteCanonicalData, DeleteContinuations, DeleteData, DeleteJoins,
+    HotStoreAction, InsertAction, InsertCanonicalData, InsertContinuations, InsertData,
+    InsertJoins,
 };
 use crate::rspace::internal::{Datum, Row, WaitingContinuation};
 use crate::rspace::metrics_constants::{
@@ -85,6 +86,12 @@ pub trait HotStore<C: Clone + Hash + Eq, P: Clone, A: Clone, K: Clone>: Sync + S
     fn remove_join(&self, channel: &C, join: &[C]) -> Option<()>;
 
     fn changes(&self) -> Vec<HotStoreAction<C, P, A, K>>;
+    /// Checkpoint-specific actions. Implementations may override this boundary
+    /// to preserve already-canonical resident bytes while `changes()` remains
+    /// the typed diagnostic and compatibility surface.
+    fn checkpoint_changes(&self) -> Result<Vec<HotStoreAction<C, P, A, K>>, RSpaceError> {
+        Ok(self.changes())
+    }
     fn to_map(&self) -> HashMap<Vec<C>, Row<P, A, K>>;
     fn snapshot(&self) -> HotStoreState<C, P, A, K>;
 
@@ -1048,6 +1055,64 @@ where
             .collect();
 
         [continuations, data, joins].concat()
+    }
+
+    fn checkpoint_changes(&self) -> Result<Vec<HotStoreAction<C, P, A, K>>, RSpaceError> {
+        let cache = self.state.read().expect("hot store state read lock");
+        let continuations: Vec<HotStoreAction<C, P, A, K>> = cache
+            .continuations
+            .iter()
+            .map(|(channels, values)| {
+                if values.is_empty() {
+                    HotStoreAction::Delete(DeleteAction::DeleteContinuations(DeleteContinuations {
+                        channels: channels.clone(),
+                    }))
+                } else {
+                    HotStoreAction::Insert(InsertAction::InsertContinuations(InsertContinuations {
+                        channels: channels.clone(),
+                        continuations: values.clone(),
+                    }))
+                }
+            })
+            .collect();
+
+        let data: Vec<HotStoreAction<C, P, A, K>> = cache
+            .data
+            .loaded_canonical_records()?
+            .into_iter()
+            .map(|record| {
+                if record.datum_count == 0 {
+                    HotStoreAction::Delete(DeleteAction::DeleteCanonicalData(DeleteCanonicalData {
+                        hash: record.channel_hash,
+                    }))
+                } else {
+                    HotStoreAction::Insert(InsertAction::InsertCanonicalData(InsertCanonicalData {
+                        hash: record.channel_hash,
+                        encoded_datums: record.encoded_datums,
+                        datum_count: record.datum_count,
+                    }))
+                }
+            })
+            .collect();
+
+        let joins: Vec<HotStoreAction<C, P, A, K>> = cache
+            .joins
+            .iter()
+            .map(|(channel, values)| {
+                if values.is_empty() {
+                    HotStoreAction::Delete(DeleteAction::DeleteJoins(DeleteJoins {
+                        channel: channel.clone(),
+                    }))
+                } else {
+                    HotStoreAction::Insert(InsertAction::InsertJoins(InsertJoins {
+                        channel: channel.clone(),
+                        joins: values.clone(),
+                    }))
+                }
+            })
+            .collect();
+
+        Ok([continuations, data, joins].concat())
     }
 
     fn to_map(&self) -> HashMap<Vec<C>, Row<P, A, K>> {

@@ -18,12 +18,17 @@ use crate::rspace::history::cold_store::PersistedData;
 use crate::rspace::history::history::History;
 use crate::rspace::history::history_repository::HistoryRepository;
 use crate::rspace::history::root_repository::RootRepository;
-use crate::rspace::hot_store_action::DeleteAction::{DeleteContinuations, DeleteData, DeleteJoins};
+use crate::rspace::hot_store_action::DeleteAction::{
+    DeleteCanonicalData, DeleteContinuations, DeleteData, DeleteJoins,
+};
 use crate::rspace::hot_store_action::HotStoreAction;
-use crate::rspace::hot_store_action::InsertAction::{InsertContinuations, InsertData, InsertJoins};
+use crate::rspace::hot_store_action::InsertAction::{
+    InsertCanonicalData, InsertContinuations, InsertData, InsertJoins,
+};
 use crate::rspace::hot_store_trie_action::{
     HotStoreTrieAction, TrieDeleteAction, TrieDeleteConsume, TrieDeleteJoins, TrieDeleteProduce,
-    TrieInsertAction, TrieInsertConsume, TrieInsertJoins, TrieInsertProduce,
+    TrieInsertAction, TrieInsertCanonicalProduce, TrieInsertConsume, TrieInsertJoins,
+    TrieInsertProduce,
 };
 use crate::rspace::serializers::cold_store_decode::ColdStoreDecode;
 use crate::rspace::serializers::serializers::{encode_continuations, encode_datums, encode_joins};
@@ -94,6 +99,12 @@ where
                     let data = encode_datums(&i.data);
                     format!("{};insert-data;{};{}", hex::encode(key), data.len(), i.data.len())
                 }
+                HotStoreAction::Insert(InsertCanonicalData(i)) => format!(
+                    "{};insert-data;{};{}",
+                    hex::encode(i.hash.bytes()),
+                    i.encoded_datums.len(),
+                    i.datum_count
+                ),
                 HotStoreAction::Insert(InsertContinuations(i)) => {
                     let key = hash_from_vec(&i.channels).bytes();
                     let data = encode_continuations(&i.continuations);
@@ -113,6 +124,9 @@ where
                     let key = hash(&d.channel).bytes();
                     format!("{};delete-data;0", hex::encode(key))
                 }
+                HotStoreAction::Delete(DeleteCanonicalData(d)) => {
+                    format!("{};delete-data;0", hex::encode(d.hash.bytes()))
+                }
                 HotStoreAction::Delete(DeleteContinuations(d)) => {
                     let key = hash_from_vec(&d.channels).bytes();
                     format!("{};delete-continuation;0", hex::encode(key))
@@ -127,12 +141,30 @@ where
 
     fn calculate_storage_actions(
         &self,
-        action: &HotStoreTrieAction<C, P, A, K>,
+        action: HotStoreTrieAction<C, P, A, K>,
     ) -> (ColdAction, HistoryAction) {
         match action {
             HotStoreTrieAction::TrieInsertAction(TrieInsertAction::TrieInsertProduce(i)) => {
                 let data = encode_datums(&i.data);
                 let data_leaf = DataLeaf { bytes: data };
+                let data_leaf_encoded = bincode::serialize(&data_leaf)
+                    .expect("History Repository Impl: Unable to serialize DataLeaf");
+                let data_hash = Blake2b256Hash::new(&data_leaf_encoded);
+
+                (
+                    (data_hash.clone(), Some(PersistedData::Data(data_leaf))),
+                    HistoryAction::Insert(InsertAction {
+                        key: prepend_bytes(PREFIX_DATUM, &i.hash.bytes()),
+                        hash: data_hash,
+                    }),
+                )
+            }
+            HotStoreTrieAction::TrieInsertAction(TrieInsertAction::TrieInsertCanonicalProduce(
+                i,
+            )) => {
+                let data_leaf = DataLeaf {
+                    bytes: i.encoded_datums,
+                };
                 let data_leaf_encoded = bincode::serialize(&data_leaf)
                     .expect("History Repository Impl: Unable to serialize DataLeaf");
                 let data_hash = Blake2b256Hash::new(&data_leaf_encoded);
@@ -181,7 +213,7 @@ where
             HotStoreTrieAction::TrieInsertAction(TrieInsertAction::TrieInsertBinaryProduce(i)) => {
                 // Sort data before serializing for deterministic hashing regardless of
                 // insertion order
-                let mut sorted_data = i.data.clone();
+                let mut sorted_data = i.data;
                 sorted_data.sort();
                 let data =
                     bincode::serialize(&sorted_data).expect("Failed to serialize Vec<Vec<u8>>");
@@ -201,7 +233,7 @@ where
             HotStoreTrieAction::TrieInsertAction(TrieInsertAction::TrieInsertBinaryConsume(i)) => {
                 // Sort continuations before serializing for deterministic hashing regardless of
                 // insertion order
-                let mut sorted_continuations = i.continuations.clone();
+                let mut sorted_continuations = i.continuations;
                 sorted_continuations.sort();
                 let data = bincode::serialize(&sorted_continuations)
                     .expect("Failed to serialize Vec<Vec<u8>>");
@@ -224,7 +256,7 @@ where
             HotStoreTrieAction::TrieInsertAction(TrieInsertAction::TrieInsertBinaryJoins(i)) => {
                 // Sort joins before serializing for deterministic hashing regardless of
                 // insertion order
-                let mut sorted_joins = i.joins.clone();
+                let mut sorted_joins = i.joins;
                 sorted_joins.sort();
                 let data =
                     bincode::serialize(&sorted_joins).expect("Failed to serialize Vec<Vec<u8>>");
@@ -273,6 +305,13 @@ where
                     TrieInsertProduce::new(key, i.data),
                 ))
             }
+            HotStoreAction::Insert(InsertCanonicalData(i)) => HotStoreTrieAction::TrieInsertAction(
+                TrieInsertAction::TrieInsertCanonicalProduce(TrieInsertCanonicalProduce {
+                    hash: i.hash,
+                    encoded_datums: i.encoded_datums,
+                    datum_count: i.datum_count,
+                }),
+            ),
             HotStoreAction::Insert(InsertContinuations(i)) => {
                 let key = hash_from_vec(&i.channels);
                 HotStoreTrieAction::TrieInsertAction(TrieInsertAction::TrieInsertConsume(
@@ -291,6 +330,9 @@ where
                     TrieDeleteProduce::new(key),
                 ))
             }
+            HotStoreAction::Delete(DeleteCanonicalData(d)) => HotStoreTrieAction::TrieDeleteAction(
+                TrieDeleteAction::TrieDeleteProduce(TrieDeleteProduce::new(d.hash)),
+            ),
             HotStoreAction::Delete(DeleteContinuations(d)) => {
                 let key = hash_from_vec(&d.channels);
                 HotStoreTrieAction::TrieDeleteAction(TrieDeleteAction::TrieDeleteConsume(
@@ -350,12 +392,12 @@ where
         let storage_actions: Vec<(ColdAction, HistoryAction)> =
             if Self::should_parallelize_checkpoint_actions(trie_actions.len()) {
                 trie_actions
-                    .par_iter()
+                    .into_par_iter()
                     .map(|a| self.calculate_storage_actions(a))
                     .collect()
             } else {
                 trie_actions
-                    .iter()
+                    .into_iter()
                     .map(|a| self.calculate_storage_actions(a))
                     .collect()
             };
