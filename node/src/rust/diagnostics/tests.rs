@@ -156,7 +156,7 @@ mod tests {
                     file_io_provisioning: Default::default(),
                     consensus_fs_snapshot_cadence: None,
                     consensus_fs_snapshot_dir: None,
-                    consensus_fs_snapshot_retain: None,
+                    consensus_fs_snapshot_retain: 2,
                 };
                 s
             },

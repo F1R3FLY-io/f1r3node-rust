@@ -55,6 +55,11 @@ pub enum SnapshotConfigError {
     /// Dir key present but the path is not a directory (and could not
     /// be created), or is not writable.
     UnwritableDir { path: PathBuf, reason: String },
+    /// F-30b-1 (2026-08-24): consensus-static provisioning present
+    /// but retention value is less than 2.  A retain < 2 would
+    /// prune every snapshot beyond the most recent, breaking
+    /// data availability for joining validators.
+    RetainTooSmall { retain: usize },
 }
 
 impl std::fmt::Display for SnapshotConfigError {
@@ -87,6 +92,14 @@ impl std::fmt::Display for SnapshotConfigError {
                 "storage.consensus-fs-snapshot-dir {} is not writable: {reason}",
                 path.display()
             ),
+            SnapshotConfigError::RetainTooSmall { retain } => write!(
+                f,
+                "storage.consensus-fs-snapshot-retain must be >= 2 (got {retain}) when any \
+                 consensus-static-* bucket is provisioned.  A retain < 2 would prune every \
+                 snapshot beyond the most recent, leaving joining validators with no history \
+                 window.  Size per your late-join SLA: retain = ceil(target_history_blocks / \
+                 cadence) + 1."
+            ),
         }
     }
 }
@@ -116,6 +129,7 @@ pub fn validate_snapshot_config(
     provisioning: &FileIoProvisioning,
     cadence: Option<u64>,
     dir: Option<&Path>,
+    retain: usize,
 ) -> Result<Option<PathBuf>, SnapshotConfigError> {
     if !requires_snapshot_config(provisioning) {
         return Ok(None);
@@ -124,6 +138,12 @@ pub fn validate_snapshot_config(
         None => return Err(SnapshotConfigError::MissingCadence),
         Some(0) => return Err(SnapshotConfigError::ZeroCadence),
         Some(_) => {}
+    }
+    // F-30b-1 (2026-08-24): retention must be >= 2 when snapshotting.
+    // The floor is not silently applied — operators must have made an
+    // informed choice.
+    if retain < 2 {
+        return Err(SnapshotConfigError::RetainTooSmall { retain });
     }
     let dir = dir.ok_or(SnapshotConfigError::MissingDir)?;
     probe_dir_writable(dir)?;
@@ -146,15 +166,17 @@ pub fn validate_snapshot_config(
 /// needed), or `Err(SnapshotConfigError)` on any validation
 /// failure.
 ///
-/// Retention is derived from cadence: `retain = cadence * 2`
-/// snapshots, capped to at least 2.  A joining validator can
-/// span up to `2 * cadence` blocks of history from any single
-/// snapshot download.  Slice 30c may make this operator-tunable.
+/// F-30b-1 promotion (2026-08-24): retention is now a required
+/// operator value (see `NodeConfig.storage.consensus_fs_snapshot_retain`
+/// docstring for sizing guidance).  The pre-promotion `cadence *
+/// 2` fallback heuristic is gone — validate_snapshot_config
+/// rejects `retain < 2` with `RetainTooSmall` when consensus
+/// provisioning is present.
 pub fn build_snapshot_writer(
     provisioning: &FileIoProvisioning,
     cadence: Option<u64>,
     dir: Option<&Path>,
-    retain_override: Option<usize>,
+    retain: usize,
     // H-4 fix (2026-08-06): validator identity secret key (raw
     // secp256k1 bytes) for signing manifest entries.  Populated
     // from `conf.casper.validator_private_key` at boot.  `None`
@@ -164,30 +186,13 @@ pub fn build_snapshot_writer(
     // manifests won't be verifiable by peers.
     signer_sk: Option<Vec<u8>>,
 ) -> Result<Option<SnapshotWriter>, SnapshotConfigError> {
-    let canonical = validate_snapshot_config(provisioning, cadence, dir)?;
+    let canonical = validate_snapshot_config(provisioning, cadence, dir, retain)?;
     match canonical {
         None => Ok(None),
         Some(canonical_dir) => {
             // Unwrap safe: validate returned Some(dir) which implies
-            // cadence was Some(nonzero) too.
+            // cadence was Some(nonzero) and retain was >= 2.
             let cadence = cadence.expect("cadence validated above");
-            // Slice 35 (MED-5): operator override wins; fall back to
-            // the built-in heuristic when unset.  The heuristic itself
-            // is a placeholder pending slice 30c's join-protocol
-            // design — see `NodeConfig.storage.consensus_fs_snapshot_retain`
-            // docstring for sizing guidance.
-            //
-            // H-30b-1 review fix: saturating_mul + try_into so a
-            // pathological `cadence >= u64::MAX / 2` cannot wrap to
-            // a small retain (which would prune every snapshot
-            // beyond the second — a data-availability disaster for
-            // joining validators).  Cap at usize::MAX; floor at 2.
-            let retain = match retain_override {
-                Some(n) => n.max(2),
-                None => usize::try_from(cadence.saturating_mul(2))
-                    .unwrap_or(usize::MAX)
-                    .max(2),
-            };
             if signer_sk.is_none() {
                 tracing::warn!(
                     target: "f1r3fly.fs_wal.snapshot",
@@ -341,20 +346,20 @@ mod tests {
         // even if cadence is missing / zero.  Backward-compat for
         // nodes not using consensus static provisioning.
         assert_eq!(
-            validate_snapshot_config(&empty_provisioning(), None, None).unwrap(),
+            validate_snapshot_config(&empty_provisioning(), None, None, 2).unwrap(),
             None,
             "no consensus provisioning returns Ok(None) canonicalized dir"
         );
         assert_eq!(
-            validate_snapshot_config(&empty_provisioning(), Some(0), None).unwrap(),
+            validate_snapshot_config(&empty_provisioning(), Some(0), None, 2).unwrap(),
             None
         );
     }
 
     #[test]
     fn missing_cadence_with_consensus_provisioning_fails() {
-        let err =
-            validate_snapshot_config(&provisioning_with_consensus_file(), None, None).unwrap_err();
+        let err = validate_snapshot_config(&provisioning_with_consensus_file(), None, None, 2)
+            .unwrap_err();
         assert_eq!(err, SnapshotConfigError::MissingCadence);
         assert!(err.to_string().contains("consensus-fs-snapshot-cadence"));
         assert!(err.to_string().contains("no default"));
@@ -362,14 +367,14 @@ mod tests {
 
     #[test]
     fn missing_cadence_with_consensus_dir_fails() {
-        let err =
-            validate_snapshot_config(&provisioning_with_consensus_dir(), None, None).unwrap_err();
+        let err = validate_snapshot_config(&provisioning_with_consensus_dir(), None, None, 2)
+            .unwrap_err();
         assert_eq!(err, SnapshotConfigError::MissingCadence);
     }
 
     #[test]
     fn zero_cadence_fails() {
-        let err = validate_snapshot_config(&provisioning_with_consensus_file(), Some(0), None)
+        let err = validate_snapshot_config(&provisioning_with_consensus_file(), Some(0), None, 2)
             .unwrap_err();
         assert_eq!(err, SnapshotConfigError::ZeroCadence);
         assert!(err.to_string().contains(">= 1"));
@@ -377,7 +382,7 @@ mod tests {
 
     #[test]
     fn missing_dir_with_valid_cadence_fails() {
-        let err = validate_snapshot_config(&provisioning_with_consensus_file(), Some(100), None)
+        let err = validate_snapshot_config(&provisioning_with_consensus_file(), Some(100), None, 2)
             .unwrap_err();
         assert_eq!(err, SnapshotConfigError::MissingDir);
         assert!(err.to_string().contains("consensus-fs-snapshot-dir"));
@@ -390,6 +395,7 @@ mod tests {
             &provisioning_with_consensus_file(),
             Some(100),
             Some(dir.path()),
+            200,
         )
         .unwrap()
         .expect("consensus provisioning requires Some(dir) return");
@@ -406,8 +412,13 @@ mod tests {
         let subdir = parent.path().join("snapshots-do-not-exist-yet");
         assert!(!subdir.exists(), "precondition: subdir must not exist");
         assert!(
-            validate_snapshot_config(&provisioning_with_consensus_file(), Some(50), Some(&subdir),)
-                .is_ok(),
+            validate_snapshot_config(
+                &provisioning_with_consensus_file(),
+                Some(50),
+                Some(&subdir),
+                100,
+            )
+            .is_ok(),
             "validation must create the dir"
         );
         assert!(subdir.exists(), "subdir must be created by probe");
@@ -423,9 +434,39 @@ mod tests {
             &provisioning_with_consensus_file(),
             Some(50),
             Some(&file_not_dir),
+            100,
         )
         .unwrap_err();
         assert!(matches!(err, SnapshotConfigError::UnwritableDir { .. }));
+    }
+
+    /// F-30b-1 (2026-08-24): retain < 2 with consensus provisioning
+    /// must fail with `RetainTooSmall`.  Guards the promotion of
+    /// the retention key from `Option<usize>` with a `cadence * 2`
+    /// fallback to a required operator value.
+    #[test]
+    fn retain_below_floor_with_consensus_provisioning_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        for bad_retain in [0usize, 1] {
+            let err = validate_snapshot_config(
+                &provisioning_with_consensus_file(),
+                Some(50),
+                Some(dir.path()),
+                bad_retain,
+            )
+            .unwrap_err();
+            assert_eq!(err, SnapshotConfigError::RetainTooSmall {
+                retain: bad_retain
+            });
+            assert!(err.to_string().contains(">= 2"));
+        }
+    }
+
+    /// Companion: retain=0 without consensus provisioning is fine
+    /// (no writer is built, so retain is unused).
+    #[test]
+    fn retain_zero_without_consensus_provisioning_passes() {
+        assert!(validate_snapshot_config(&empty_provisioning(), Some(100), None, 0).is_ok());
     }
 
     #[test]
@@ -458,7 +499,7 @@ mod tests {
             });
         assert!(!requires_snapshot_config(&p));
         // And boot passes with no snapshot config.
-        assert!(validate_snapshot_config(&p, None, None).is_ok());
+        assert!(validate_snapshot_config(&p, None, None, 2).is_ok());
     }
 
     // Silence unused HashMap import warning; provisioning helper types
@@ -486,6 +527,7 @@ mod tests {
             &provisioning_with_consensus_file(),
             Some(50),
             Some(&symlink_path),
+            100,
         )
         .unwrap()
         .unwrap();
@@ -599,7 +641,7 @@ mod tests {
 
     #[test]
     fn build_snapshot_writer_returns_none_without_consensus_provisioning() {
-        let w = build_snapshot_writer(&empty_provisioning(), Some(100), None, None, None).unwrap();
+        let w = build_snapshot_writer(&empty_provisioning(), Some(100), None, 100, None).unwrap();
         assert!(w.is_none());
     }
 
@@ -610,175 +652,88 @@ mod tests {
             &provisioning_with_consensus_file(),
             Some(50),
             Some(dir.path()),
-            None,
+            200,
             None,
         )
         .unwrap()
         .expect("consensus provisioning + valid config returns Some");
         assert_eq!(w.cadence, 50);
-        assert_eq!(w.retain, 100); // 2 * cadence, default heuristic
+        assert_eq!(
+            w.retain, 200,
+            "explicit operator retain value flows through unchanged"
+        );
         assert!(w.dir.is_absolute());
     }
 
     #[test]
     fn build_snapshot_writer_propagates_validation_error() {
-        let err =
-            build_snapshot_writer(&provisioning_with_consensus_file(), None, None, None, None)
-                .unwrap_err();
+        let err = build_snapshot_writer(&provisioning_with_consensus_file(), None, None, 100, None)
+            .unwrap_err();
         assert_eq!(err, SnapshotConfigError::MissingCadence);
     }
 
-    /// H-30b-1 slice-30b round-2 fix: cadence near u64::MAX must
-    /// NOT wrap the retain calculation to a small number.
-    /// Pre-fix `(cadence * 2) as usize` overflowed silently in
-    /// release builds; the fix uses `saturating_mul` +
-    /// `try_into().unwrap_or(usize::MAX)`.
+    /// F-30b-1 (2026-08-24): retain values pass through unchanged.
+    /// The pre-promotion `cadence * 2` fallback + floor logic is
+    /// gone — operators own the choice.  Large retain values that
+    /// might once have wrapped in the old heuristic (cadence *
+    /// 2 near u64::MAX) are irrelevant now because retain is set
+    /// directly, not derived.
     #[test]
-    fn build_snapshot_writer_retain_saturates_on_cadence_overflow() {
+    fn build_snapshot_writer_retain_flows_through_unchanged() {
         let dir = tempfile::tempdir().unwrap();
-        // cadence * 2 overflows u64.  Pre-fix `retain` would collapse
-        // to the wrapped value; post-fix it saturates.
-        let w = build_snapshot_writer(
-            &provisioning_with_consensus_file(),
-            Some(u64::MAX),
-            Some(dir.path()),
-            None,
-            None,
-        )
-        .unwrap()
-        .unwrap();
-        assert_eq!(w.cadence, u64::MAX);
-        // Saturating semantics: retain is either usize::MAX (on
-        // 64-bit hosts) or capped at u32::MAX-derived usize
-        // (on 32-bit hosts) — either way, NOT a small wrapped
-        // value.
-        assert!(
-            w.retain >= 1_000_000_000,
-            "retain must saturate high, not wrap to a small number; got {}",
-            w.retain
-        );
-    }
-
-    /// Companion: cadence at the exact overflow boundary
-    /// (u64::MAX / 2 + 1) — smallest cadence that triggers wrap in
-    /// the pre-fix code.
-    #[test]
-    fn build_snapshot_writer_retain_saturates_at_wrap_boundary() {
-        let dir = tempfile::tempdir().unwrap();
-        let cadence = u64::MAX / 2 + 1;
-        let w = build_snapshot_writer(
-            &provisioning_with_consensus_file(),
-            Some(cadence),
-            Some(dir.path()),
-            None,
-            None,
-        )
-        .unwrap()
-        .unwrap();
-        assert!(
-            w.retain >= 1_000_000_000,
-            "retain must saturate at the wrap boundary too; got {}",
-            w.retain
-        );
-    }
-
-    #[test]
-    fn build_snapshot_writer_caps_retain_at_two_minimum() {
-        // Cadence=0 fails, so use the smallest valid cadence=1.
-        let dir = tempfile::tempdir().unwrap();
-        let w = build_snapshot_writer(
-            &provisioning_with_consensus_file(),
-            Some(1),
-            Some(dir.path()),
-            None,
-            None,
-        )
-        .unwrap()
-        .unwrap();
-        assert_eq!(
-            w.retain, 2,
-            "retain floor is 2 to preserve at least one prior + current snapshot"
-        );
-    }
-
-    // ---------------------------------------------------------------
-    // Slice 35 (MED-5 minimum-viable): retain_override tests.
-    //
-    // The `cadence * 2` default is a placeholder heuristic pending
-    // slice 30c's join-protocol design; operators with concrete
-    // SLA targets set `storage.consensus-fs-snapshot-retain` in
-    // HOCON.  These tests pin the override path.
-    // ---------------------------------------------------------------
-
-    #[test]
-    fn build_snapshot_writer_retain_override_wins_over_default() {
-        let dir = tempfile::tempdir().unwrap();
-        let w = build_snapshot_writer(
-            &provisioning_with_consensus_file(),
-            Some(50),
-            Some(dir.path()),
-            Some(500),
-            None,
-        )
-        .unwrap()
-        .unwrap();
-        assert_eq!(
-            w.retain, 500,
-            "explicit retain override must win over the cadence * 2 default"
-        );
-    }
-
-    #[test]
-    fn build_snapshot_writer_retain_override_none_falls_back_to_default() {
-        let dir = tempfile::tempdir().unwrap();
-        let w = build_snapshot_writer(
-            &provisioning_with_consensus_file(),
-            Some(50),
-            Some(dir.path()),
-            None,
-            None,
-        )
-        .unwrap()
-        .unwrap();
-        assert_eq!(
-            w.retain, 100,
-            "None must preserve the cadence * 2 default (backwards compat)"
-        );
-    }
-
-    #[test]
-    fn build_snapshot_writer_retain_override_below_floor_is_clamped_to_two() {
-        let dir = tempfile::tempdir().unwrap();
-        // Override with 0 or 1 must still floor at 2 — same invariant
-        // as the default-heuristic path (never keep less than one
-        // prior + current snapshot).
-        for override_val in [0usize, 1] {
+        for retain in [2usize, 100, 10_000, 1_000_000_000] {
             let w = build_snapshot_writer(
                 &provisioning_with_consensus_file(),
-                Some(100),
+                Some(50),
                 Some(dir.path()),
-                Some(override_val),
+                retain,
                 None,
             )
             .unwrap()
             .unwrap();
             assert_eq!(
-                w.retain, 2,
-                "override {override_val} must clamp to the retain floor of 2"
+                w.retain, retain,
+                "retain {retain} must flow through unchanged"
             );
         }
     }
 
+    /// F-30b-1: retain < 2 with consensus provisioning surfaces as
+    /// `RetainTooSmall` from `build_snapshot_writer` (via the
+    /// underlying `validate_snapshot_config` check).  Complements
+    /// `retain_below_floor_with_consensus_provisioning_fails`
+    /// which exercises the same path via validate directly.
     #[test]
-    fn build_snapshot_writer_retain_override_ignored_when_no_provisioning() {
+    fn build_snapshot_writer_rejects_retain_below_floor() {
+        let dir = tempfile::tempdir().unwrap();
+        for bad_retain in [0usize, 1] {
+            let err = build_snapshot_writer(
+                &provisioning_with_consensus_file(),
+                Some(100),
+                Some(dir.path()),
+                bad_retain,
+                None,
+            )
+            .unwrap_err();
+            assert_eq!(err, SnapshotConfigError::RetainTooSmall {
+                retain: bad_retain
+            });
+        }
+    }
+
+    #[test]
+    fn build_snapshot_writer_retain_ignored_when_no_provisioning() {
         // No consensus provisioning → no writer regardless of retain
-        // override.  Retain is a knob on an attached writer; it
-        // can't force a writer to exist.
-        let w =
-            build_snapshot_writer(&empty_provisioning(), Some(100), None, Some(500), None).unwrap();
-        assert!(
-            w.is_none(),
-            "retain override must not conjure a writer without provisioning"
-        );
+        // value.  Retain is a knob on an attached writer; it can't
+        // force a writer to exist, and any retain (including 0)
+        // is accepted since it's unused.
+        for retain in [0usize, 500, 999_999] {
+            let w = build_snapshot_writer(&empty_provisioning(), Some(100), None, retain, None)
+                .unwrap();
+            assert!(
+                w.is_none(),
+                "retain {retain} must not conjure a writer without provisioning"
+            );
+        }
     }
 }

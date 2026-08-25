@@ -752,7 +752,15 @@ mod tests {
                     // here (the CLI-flag / no-file boot path).
                     consensus_fs_snapshot_cadence: None,
                     consensus_fs_snapshot_dir: None,
-                    consensus_fs_snapshot_retain: None,
+                    // F-30b-1: retain is now required usize.  This
+                    // CLI-boot path has no HOCON to derive it from,
+                    // and never sets consensus_fs_snapshot_cadence
+                    // (also None here), so no SnapshotWriter is
+                    // built — the retain value is unused.  Use 2
+                    // (the minimum floor) as a defensive sentinel
+                    // so any future path that DOES build a writer
+                    // gets a valid-but-conservative retention.
+                    consensus_fs_snapshot_retain: 2,
                 };
                 s
             },

@@ -318,6 +318,9 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
             conf.storage.consensus_fs_snapshot_retain,
             signer_sk,
         )
+        // F-30b-1 (2026-08-24): retain is a required operator value.
+        // Boot rejects with RetainTooSmall if <2 while consensus
+        // provisioning is present.
         .unwrap_or_else(|e| {
             panic!("snapshot-config validation failed at boot; refusing to start: {e}")
         });

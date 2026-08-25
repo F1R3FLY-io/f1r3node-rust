@@ -224,10 +224,27 @@ pub struct Storage {
     pub consensus_fs_snapshot_dir: Option<PathBuf>,
 
     /// Slice 35 (MED-5, Phase 7 whole-review FIPS fix): per-node
-    /// override for the snapshot retention count.  `Some(n)` keeps
-    /// the `n` most-recently-written snapshots on disk (older ones
-    /// pruned after each successful write); `None` (default) uses
-    /// the built-in `max(2, cadence * 2)` heuristic.
+    /// snapshot retention count.  Keeps the `n` most-recently-
+    /// written snapshots on disk (older ones pruned after each
+    /// successful write).  **Required key** (F-30b-1 promotion,
+    /// 2026-08-24): no default and no fallback heuristic — an
+    /// operator provisioning any `consensus-static-*` bucket must
+    /// choose a retention window sized for their late-join SLA.
+    /// Pre-promotion the field was `Option<usize>` with a
+    /// `max(2, cadence * 2)` fallback in `build_snapshot_writer`;
+    /// the fallback was a placeholder ("quadratic in cadence,
+    /// almost certainly wrong for both small and large cadences")
+    /// per the pre-promotion docstring, and silently applying it
+    /// meant most operators shipped with disk-usage they had never
+    /// deliberately chosen.
+    ///
+    /// Boot validation (in `validate_snapshot_config`): when any
+    /// `consensus-static-*` bucket is provisioned, retain MUST be
+    /// >= 2 (a smaller value would prune every snapshot beyond the
+    /// most recent — data-availability disaster for joining
+    /// validators).  When no consensus-static provisioning, the
+    /// value is unused and any usize is accepted (the snapshot
+    /// writer isn't built).
     ///
     /// Unlike cadence — which is a shard-wide parameter (all
     /// validators must agree on which blocks are snapshot
@@ -242,15 +259,20 @@ pub struct Storage {
     /// spanning up to `N` blocks of history from a single-peer
     /// fetch, set `retain = ceil(N / cadence) + 1`.  For example,
     /// cadence = 100 and N = 20000 blocks → retain = 201.
-    /// The default `cadence * 2` gives a joining window of roughly
-    /// `2 * cadence²` blocks, which is quadratic in cadence and
-    /// almost certainly overprovisioned for small cadences and
-    /// underprovisioned for very large ones — the built-in default
-    /// is a placeholder heuristic pending the slice-30c
-    /// joining-protocol design; operators with concrete SLA targets
-    /// should set this explicitly.
+    ///
+    /// **HOCON default = 0**: `#[serde(default)]` is retained (not
+    /// removed as F-30b-1's plan-doc bullet initially proposed)
+    /// because removing it would break every shipped HOCON that
+    /// doesn't set consensus provisioning — such nodes never build
+    /// a snapshot writer and don't need a retain value, but would
+    /// fail to parse otherwise.  The 0 default is a sentinel: it
+    /// is silently unused when no consensus provisioning is present,
+    /// and boot validation rejects it with `RetainTooSmall` when
+    /// consensus provisioning IS present.  Net effect matches the
+    /// plan-doc intent: operators must make an informed choice
+    /// exactly when it matters.
     #[serde(default, rename = "consensus-fs-snapshot-retain")]
-    pub consensus_fs_snapshot_retain: Option<usize>,
+    pub consensus_fs_snapshot_retain: usize,
 }
 
 /// TLS configuration
