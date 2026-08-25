@@ -39,6 +39,9 @@ in [§2](#2-background-and-definitions), which every axis table refers back to.
 | **RMP** | *Rholang Match Path* — the family name for versioned, derived structural paths used only by candidate matching indexes. | **CBR-053** |
 | **RMP1** | *Rholang Match Path format version 1* — the self-delimiting structural token stream used by generated matcher queries. | **CBR-053** |
 | **RMP2** | *Rholang Match Path format version 2* — the semantic ParBag-record successor whose resident and canonical-protobuf-region producers share one generated event grammar. | **CBR-053** |
+| **RCI2** | *Rholang Channel Image, version 2* — the shadow logical channel-identity format. | **CBR-053** |
+| **CLI** | *command-line interface* — the noninteractive user observation surface paired with the REPL. | retired **CBR-023** evidence |
+| **WAL** | *write-ahead log* — the transaction journal planned for differential PathMap-DAG persistence. | consensus-neutral RSpace history continuations |
 | **TRIE** | not an acronym — typographic emphasis for the prefix-compressed trie that is the EPathMap representation. | **CBR-041** |
 | **D3 / DR-9 / OD-1 / OD-3** | the token cost model's design-record identifiers (`docs/theory/cost-accounting-impl/d3-replace-phlo-with-tokens.md`). | [§2.2](#22-language-and-runtime-vocabulary), [§3.3](#33-how-each-axis-value-was-established) |
 | **COMM** | the Rho-calculus synchronisation of a produce with a consume; realized by a committed RSpace rendezvous. | [§2.2](#22-language-and-runtime-vocabulary) |
@@ -5004,6 +5007,29 @@ charges, protobuf, bincode, EPM1, RPB3, and Rholang values remain identical. The
 neither the legacy store's publication sequence nor the separately designed PathMap-native
 differential WAL. It is a byte- and value-neutral implementation refinement, not a new active
 change record.
+
+**Consensus-neutral RSpace history continuation (2026-08-25, final persisted-value egress;
+`3061b2501`, pgmcp #6026).** Canonical DATA checkpoint egress now adds the frozen
+`PersistedData::Data` enum and vector framing while it copies resident canonical datum identities
+from the authoritative `PathMap<Multiplicity>`. The repository receives the complete cold-store
+value and no longer serializes a second payload-sized buffer. A shared borrowed envelope cursor
+supplies the identical payload and single-field leaf-hash ranges to reads and import verification;
+it preserves bincode 1's existing trailing-byte admission, while canonical producers require no
+trailing range.
+
+Exact all-variant differentials bind the direct envelope to derived bincode at payload lengths 0,
+1, 255, and 65,537. Header truncations and bit mutations, a hostile maximum length, trailing-byte
+acceptance, canonical-versus-typed roots, multiplicity properties, and export/import all pass. The
+complete capped, zero-swap RSpace package gate passes 491/491 across 24 targets. The paired v2
+performance matrix refuses timing unless complete final length and leaf digest agree.
+
+No accepted or emitted cold-store byte changes. Consequently, history leaf hashes, history keys,
+radix actions, roots, reset/replay/export/import results, event bytes, COMM order, charges,
+protobuf, bincode, EPM1, RPB3, and public Rholang values remain identical. This checkpoint also does
+not change the planned PathMap-DAG persistence protocol: writes remain designed as differential
+immutable-object deltas committed transactionally through the WAL and crash-atomic catalog/root
+publication. The legacy store does not yet implement that backend. This is a byte- and
+value-neutral implementation refinement, not a new active change record.
 
 **CBR-023 living-set continuation (2026-08-09, comparison exhaustiveness; pgmcp #5282).** The full
 models gate found catch-all mismatch arms in the already-iterative `Sig`, `Token`, `SignedProcess`,

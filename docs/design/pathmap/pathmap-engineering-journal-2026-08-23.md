@@ -6,7 +6,7 @@ Campaign: `campaign-root-4131`
 
 Started: 2026-08-23
 
-Last updated: 2026-08-24
+Last updated: 2026-08-25
 
 ## Purpose
 
@@ -36,9 +36,12 @@ The journal complements, rather than duplicates, three living reports:
 | Bag | RSpace's `PathMap<Multiplicity>` multiset; one unique byte path stores one strictly positive `u64` multiplicity. |
 | RMP | Rholang Match Path, the versioned, derived structural search image used by the RSpace candidate index. |
 | RPB3 | The version-3 authoritative ParBag key grammar: component family, canonical score, canonical protobuf body, and score-length trailer. |
+| RPB2 | The retired version-2 resident ParBag key design that preceded RPB3. |
 | RMP1 | The first RMP token grammar, whose ParBag token fingerprints the RPB3/ACT representation. |
 | RMP2 | The provisional second RMP token grammar described in J-005; it fingerprints semantic ParBag endpoint records and is not accepted until H-001 closes. |
 | EPM1 | The version-1 compact EPathMap format: mode and cardinality metadata, ACTree03 topology, and direct map-value protobuf regions. |
+| EPM | EPathMap format: the version-family prefix used when discussing EPM1-specific processing. |
+| RCI2 | Rholang Channel Image, version 2: the shadow logical channel-identity format studied in J-021 and J-022. |
 | ACT | Arena Compact Tree, PathMap's compact trie snapshot family. |
 | ACTree03 | The ACT encoding used as the topology portion of EPM1. |
 | Canonical PathMap writer image | ACTree03 bytes emitted from an in-memory PathMap by the pinned PathMap writer and then framed by the repository codec. A validator must admit every such byte image while refusing alternate physical encodings that the writer would not emit. |
@@ -64,6 +67,11 @@ The journal complements, rather than duplicates, three living reports:
 | CPU | Central processing unit. CPU time sums the execution time consumed by the process's threads. |
 | RSS | Resident set size: the process memory currently resident in physical memory. |
 | CBR | Consensus-Breaking Register: the historical stable identifier prefix retained by the living consensus-change register. |
+| WAL | Write-ahead log: the durable transaction journal that commits a parent root, new root, and mutation digest before catalog publication. |
+| PMU | PathMap maintainer/upstream request: the identifier prefix used by this journal's upstream-integration register. |
+| LF | Locally free: the root `locally_free` metadata summary named in H-012. |
+| CODEC | Not an acronym in status text: the English word “codec” capitalized for emphasis. |
+| CUTOVER | Not an acronym in status text: the English word “cutover” capitalized for emphasis. |
 | RAII | Resource acquisition is initialization: ownership binds resource lifetime to construction and destruction. |
 | SHA | Secure Hash Algorithm: used here in the standard `SHA-256` artifact-integrity label. |
 | KiB and MiB | Binary size units of `$`2^{10}`$` and `$`2^{20}`$` bytes, respectively. |
@@ -1997,6 +2005,55 @@ packed object store, and crash-atomic catalog publication remain owned by pgmcp
 `rspace-pathmap-persistent-dag-backend`; this checkpoint neither implements nor changes that
 protocol.
 
+### J-027 — 2026-08-25: construct the final cold-store value once, then lend its ranges
+
+**OBSERVED.** J-023 ended its direct PathMap walk at the encoded DATA-leaf payload. The history
+repository subsequently serialized `PersistedData::Data` to add a four-byte enum tag and the
+single-field eight-byte bincode length. That final serialization allocated and copied a complete
+second payload. Reads and import validation performed the inverse operation through derived serde:
+they allocated a new payload `Vec<u8>` even when the consumer needed only a borrowed range or hash.
+J-026 had already removed the analogous temporary buffer at the history-hash boundary, so the
+remaining copy was specifically the key-value-store value boundary.
+
+**DECISION.** Checkpoint `3061b2501` makes the final legacy value—not an intermediate
+`Vec<Vec<u8>>` body—the output of canonical DATA egress. After checked cardinality and length
+preflight, the PathMap visitor reserves exactly once and emits this frozen layout:
+
+```text
+[u32 little-endian PersistedData tag]
+[u64 little-endian payload length]
+[u64 little-endian datum occurrence count]
+repeated multiplicity times: [u64 identity length][resident canonical Datum identity]
+```
+
+The descriptor sort from J-023 remains necessary because the frozen external order is the complete
+datum-identity byte order, not the RhoPath structural order. It sorts only arena ranges and never
+constructs a typed `Datum`, `Vec<Datum>`, or `Vec<Vec<u8>>` authority. Typed continuation, join, and
+legacy DATA paths reuse their owned payload allocation while prepending the exact 12-byte envelope.
+A shared `PersistedDataView` validates the envelope once and lends the payload and leaf-hash ranges
+to the repository reader and importer. It deliberately preserves bincode 1's trailing-byte
+admission; canonical producers separately require an empty trailing range.
+
+**MEASURED.** The v2 experiment compares complete final persisted values, not leaf bodies. Each of
+seven preregistered cells has 31 counterbalanced pairs, exact length/digest agreement before
+timing, 100,000 pair-preserving bootstrap resamples, and paired parametric and signed-rank tests
+with Benjamini–Hochberg correction. Treatment/control median-time ratios are **0.0323–0.3745**;
+every 99% bootstrap upper bound is below **0.385**. Allocation-call reductions range from **24**
+at singleton to **36,878** at 4,096 distinct identities; allocated-byte reductions range from
+**2,668** to **4,583,789** bytes per operation. The raw matrix, analysis, and summary SHA-256 values
+are respectively `080db0fc751268ba41b9065edb449300e5de34fab23ef712640fc38b60825ad2`,
+`b27a62e753b07a67164dbb6fa8bdc383b936f608f95ed4a9c85a9588ca8a3e56`, and
+`7d70b939dd3cc7249e77b5dd2f9f967d0905c7c8df96cdbf15e3f6370b5d793b`.
+The complete capped, zero-swap RSpace package passes **491/491** across 24 targets; captured-log
+SHA-256 is `4e5d26e7faadec2807d2feb38fad197f4484f3cd7c02501a305c478e5052f39b`.
+
+This decision does **not** replace the persistence architecture with whole-snapshot clobbering.
+The planned PathMap-DAG store remains differential and transactional: durable immutable-object
+deltas precede a WAL commit that binds parent root, new root, and mutation digest; catalog/root
+publication and acknowledgement follow the required sync barriers. ACT remains an immutable
+snapshot/transport representation, while the integration owns WAL transaction policy. The current
+legacy key-value store does not yet implement that future backend.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's
@@ -2009,7 +2066,7 @@ still requires measurement.
 | ID | Class and status | Local compatibility layer | Requested upstream contract | Evidence required or available | Removal criterion |
 |---|---|---|---|---|---|
 | PMU-001 | API + correctness hardening; **demonstrated need, local implementation active** | `rspace++/src/rspace/pathmap_codec.rs` validates arbitrary `ACTree03` input into a preorder plan and supplies contiguous/indexed topology and endpoint cursors. | Publish a stable, stack-safe canonical ACT admission plan and cursor API. It should parse each physical node/wrapper once; reject aliases, gaps, overlap, malformed offsets, noncanonical branches/lines/varints, and unreachable bytes before use; retain exact source offsets; expose value count/nonzero/nonsequential summaries; lend a complete one-line endpoint as a source range; support contiguous and fragmented indexed sources; rewind without reparsing; and keep native-stack use constant. | Old/new malformed and topology differentials, forced line-hash collision controls, fragmented provenance tests, deep/wide small-stack tests, and zero-reparse counters already exist locally. Performance/allocation closure remains part of pgmcp `rpb3-single-parse-act-traversal-plan`. | A released PathMap version provides the same admitted language, error/provenance guarantees, cursor event order, value summaries, and measured resource envelope; local consumers pass unchanged equivalence gates after replacing the compatibility layer. |
-| PMU-002 | Performance API; **candidate, measurement pending** | `Bag::compact_bytes` and EPM1 layout currently obtain an owned `ArenaCompactTree` image before a caller can write or hash it. J-026's integration-owned `Blake2b256Hash::new_from_chunks` proves the destination-side composition pattern for frozen leaf framing, but cannot stream ACT construction itself. | Add a checked canonical ACT writer that can preflight encoded length and then stream zipper output to fallible byte, `io::Write`, hash, WAL/page, or chunk sinks without constructing a second complete byte buffer. Exact bytes must equal `ArenaCompactTree::from_zipper(...).get_data()`, and sink failure must never imply successful publication. The API should separate byte production from transaction policy: PathMap reports sink failure, while the integration owns WAL commit, sync, catalog publication, and acknowledgement. | J-026 supplies exact chunked-hash/bincode equivalence and a missing-framing negative control. ACT-specific exact-byte differential, checked-length equality, injected sink failure, one-pass/copy counters, geometric shared-prefix workloads, and headless allocation/RSS evidence remain required before calling the upstream API an optimization. | The upstream sink API passes the differential/resource gates and replaces local destination-specific buffering without changing consensus bytes; the integration retains transaction and publication authority. |
+| PMU-002 | Performance API; **candidate, ACT-specific measurement pending** | `Bag::compact_bytes` and EPM1 layout currently obtain an owned `ArenaCompactTree` image before a caller can write or hash it. J-026 and J-027 prove the integration-owned destination pattern for chunked hashes and final cold-store values, but cannot stream ACT construction itself. | Add a checked canonical ACT writer that can preflight encoded length and then stream zipper output to fallible byte, `io::Write`, hash, WAL/page, or chunk sinks without constructing a second complete byte buffer. Exact bytes must equal `ArenaCompactTree::from_zipper(...).get_data()`, and sink failure must never imply successful publication. The API should separate byte production from transaction policy: PathMap reports sink failure, while the integration owns WAL commit, sync, catalog publication, and acknowledgement. | J-026 supplies exact chunked-hash/bincode equivalence and a missing-framing negative control. J-027 adds exact final-envelope equality, reader/importer borrowed ranges, 491 package tests, and a 31-pair seven-cell timing/allocation matrix. ACT-specific exact-byte differential, checked-length equality, injected sink failure, one-pass/copy counters, geometric shared-prefix workloads, and headless allocation/RSS evidence remain required before calling the upstream API an optimization. | The upstream sink API passes the differential/resource gates and replaces local destination-specific buffering without changing consensus bytes; the integration retains transaction and publication authority. |
 | PMU-003 | Construction API; **candidate, profile before proposing** | Canonical Bag/EPathMap import validates ACT once, then reconstructs a live `PathMap` by replaying endpoints through public insertion and `create_path` APIs. | Consider a fallible `PathMap` constructor or write-zipper graft operation from an already validated canonical ACT plan, preserving prefix compression and value-free endpoints without a `Vec` projection or per-key reparsing. The API must not bypass value decoding/validation owned by the caller. | Compare endpoint replay with plan-to-trie construction over deep lines, wide branches, shared prefixes, value-free endpoints, Set, Map, and Bag; require identical zipper topology, lookups, algebra/lattice behavior, CoW sharing, merkleization, drop safety, and consensus encodings. | Adopt only if measurement shows a material win and upstream supplies topology/CoW equivalence; otherwise retain the simpler public insertion route and mark the request rejected. |
 
 The reachable pgmcp tracking item is `pathmap-upstream-integration-request-register` under
