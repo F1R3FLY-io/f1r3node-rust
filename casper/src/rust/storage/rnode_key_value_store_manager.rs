@@ -118,6 +118,13 @@ pub fn rnode_db_mapping(legacy_rspace_paths: Option<bool>) -> Vec<(Db, LmdbEnvCo
             Db::new("last-finalized-block".to_string(), None),
             dag_storage_env_config(),
         ),
+        (
+            // Single-slot register for the shard's genesis hash (learned during
+            // a truncated restore). Opened in BlockDagKeyValueStorage::new like
+            // the indices above.
+            Db::new("genesis-hash".to_string(), None),
+            dag_storage_env_config(),
+        ),
         // Runtime mergeable store (cache of mergeable channels for block-merge)
         (
             Db::new("mergeable-channel-cache".to_string(), None),

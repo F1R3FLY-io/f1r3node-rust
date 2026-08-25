@@ -184,6 +184,60 @@ async fn current_epoch_invalid_evidence_is_authorized_once_per_offender() {
 }
 
 #[tokio::test]
+async fn no_candidates_from_a_view_lagging_the_finalized_frontier() {
+    // joiner7's shape from CI run 32588262605 (amd64-docker 35b31728): a
+    // restored joiner mid-catch-up whose finalizer had already advanced its
+    // own LFB into a later epoch while the proposal snapshot's
+    // justification-derived view still sat in an earlier one. The slashes it
+    // issued matched its lagging view's epoch and were rejected as
+    // non-current by every live peer — pure DOA noise that then minted
+    // UnauthorizedSlashDeploy verdicts on the carriers.
+    let fixture = DetectorFixture::new().await;
+    let offender = fixture.validators[0].clone();
+    let finalized_sender = fixture.validators[1].clone();
+
+    // Evidence in the VIEW's current epoch (view max #3 → proposing #4 →
+    // epoch 0 at length 10; evidence #2 → epoch 0): mintable today.
+    let invalid = block(33, offender.clone(), 2, vec![], fixture.validators.clone());
+    put_block(&fixture, &invalid, true);
+
+    // The node's own finalized frontier is a full epoch ahead of that view.
+    let lfb = block(34, finalized_sender, 13, vec![], fixture.validators.clone());
+    put_block(&fixture, &lfb, false);
+
+    let mut snapshot = snapshot_from_fixture(&fixture, 3, 10, vec![offender]);
+    snapshot.last_finalized_block = lfb.block_hash.clone();
+
+    let candidates = authorized_slash_candidates(&snapshot).expect("candidates");
+    assert!(
+        candidates.is_empty(),
+        "a view trailing this node's own finalized frontier is mid-catch-up \
+         and must not issue slash deploys"
+    );
+}
+
+#[tokio::test]
+async fn candidates_flow_when_the_view_matches_its_finalized_frontier() {
+    let fixture = DetectorFixture::new().await;
+    let offender = fixture.validators[0].clone();
+    let finalized_sender = fixture.validators[1].clone();
+
+    let invalid = block(35, offender.clone(), 2, vec![], fixture.validators.clone());
+    put_block(&fixture, &invalid, true);
+
+    // LFB in the SAME epoch as the view: not lagging, issuance proceeds.
+    let lfb = block(36, finalized_sender, 3, vec![], fixture.validators.clone());
+    put_block(&fixture, &lfb, false);
+
+    let mut snapshot = snapshot_from_fixture(&fixture, 3, 10, vec![offender.clone()]);
+    snapshot.last_finalized_block = lfb.block_hash.clone();
+
+    let candidates = authorized_slash_candidates(&snapshot).expect("candidates");
+    assert_eq!(candidates.len(), 1);
+    assert_eq!(candidates[0].offender, offender);
+}
+
+#[tokio::test]
 async fn received_stale_slash_deploy_is_rejected_before_replay() {
     // Doubles as the JSON-back-compat negative-path test: a legacy JSON
     // payload that omits the `target_activation_epoch` field deserializes
@@ -441,9 +495,29 @@ fn checked_sequence_arithmetic_rejects_boundaries() {
     assert_eq!(checked_next_seq(41), Some(42));
 }
 
+/// CI run 32588262605 shard16: joiner7 judged five foreign bonding-era
+/// blocks JustificationRegression — verdicts no other node issued — then
+/// peers judged the resulting DOA slash carriers UnauthorizedSlashDeploy,
+/// the catch-all minted evidence for every one, and the recursive slashes
+/// burned honest stake to FT −18.55. A verdict two honest nodes can
+/// disagree on — anything relative to the receiver's own records or
+/// admission order — must never mint slash evidence. The dispatcher's
+/// invalid-record and evidence minting both key off `is_slashable`, so
+/// this classification is the single point the whole slashing pipeline
+/// (candidates, neglect obligation, receive-side authorization) follows.
 #[test]
-fn unauthorized_slash_status_is_slashable() {
-    assert!(InvalidBlock::UnauthorizedSlashDeploy.is_slashable());
+fn view_relative_verdicts_are_not_slash_worthy() {
+    assert!(!InvalidBlock::JustificationRegression.is_slashable());
+    assert!(!InvalidBlock::UnauthorizedSlashDeploy.is_slashable());
+    assert!(!InvalidBlock::NeglectedInvalidBlock.is_slashable());
+    assert!(!InvalidBlock::NeglectedEquivocation.is_slashable());
+    assert!(!InvalidBlock::InvalidTransaction.is_slashable());
+}
+
+#[test]
+fn equivocation_class_remains_slash_worthy() {
+    assert!(InvalidBlock::AdmissibleEquivocation.is_slashable());
+    assert!(InvalidBlock::IgnorableEquivocation.is_slashable());
 }
 
 proptest! {

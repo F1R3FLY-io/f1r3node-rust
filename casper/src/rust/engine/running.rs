@@ -813,7 +813,17 @@ impl<T: TransportLayer + Send + Sync> Running<T> {
             %peer,
             "Serving finalized-floor cache entries"
         );
-        let resp = casper_message::FloorCacheResponse { entries };
+        let genesis_hash = self.casper.genesis_block_hash()?.unwrap_or_default();
+        let genesis_block = if genesis_hash.is_empty() {
+            None
+        } else {
+            self.casper.block_store().get(&genesis_hash)?
+        };
+        let resp = casper_message::FloorCacheResponse {
+            entries,
+            genesis_hash,
+            genesis_block,
+        };
         self.transport
             .stream_message_to_peer(&self.conf, &peer, Arc::new(resp.to_proto()))
             .await?;

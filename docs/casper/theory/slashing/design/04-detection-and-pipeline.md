@@ -86,10 +86,14 @@ The detector is **sound** and **complete**:
   `EquivocationDetector.v:111`.)* If `equivocates(S, v, s)` and
   `b ∈ D` with `sender(b) = v`, `seq(b) = s`, then `detect`
   returns either `AdmissibleEquivocation` or `IgnorableEquivocation`.
-- **T-3 (Slashable iff in slashable set).** *(`slashable_post_fix_extends_pre_fix`,
-  `InvalidBlock.v:151`.)* Post-fix #1, the slashable set strictly
-  includes the pre-fix slashable set (by adding
-  `IgnorableEquivocation`).
+- **T-3 (Slashable set).** The normative slashable set is the equivocation
+  class `{ AdmissibleEquivocation, IgnorableEquivocation }` — see the
+  amendment in `slashing-specification.md` §4. The mechanized
+  `slashable_post_fix_extends_pre_fix` (`InvalidBlock.v`) proves the
+  bug-fix-era inclusion (pre-fix set plus `IgnorableEquivocation`), which
+  the narrowing reversed; the model is historical pending re-derivation.
+  Live pins: `t_3_slashable_set_is_the_equivocation_class`,
+  `dispatch_routes_demoted_variants_to_the_drop_arm`.
 - **T-6 (Neglect detection sound + complete).** *(`detect_neglected_sound`,
   `EquivocationDetector.v` §4.5; `detect_neglected_complete` §4.6.)*
   Verdict `NeglectedEquivocation` fires iff an existing
@@ -212,36 +216,37 @@ match verdict:
     Valid                          → DAG.insert(b, invalid = false)
     AdmissibleEquivocation         → tracker.insert_equivocation_record(v, s-1, ∅)
                                    → DAG.insert(b, invalid = true)
-    IgnorableEquivocation          → log("did not add block")  (pre-fix)
-                                   → tracker.insert_equivocation_record(...)  (post-fix #1)
-    NeglectedEquivocation          → tracker.insert_equivocation_record(B, seqN_B-1, ∅)
-                                   → DAG.insert(b_B, invalid = true)
-    ib if is_slashable(ib)         → DAG.insert(b, invalid = true) (pre-fix)
-                                   → tracker.insert+update_record (post-fix #3)
-    other (non-slashable)          → DAG.insert(b, invalid = true)
+    IgnorableEquivocation          → tracker.insert_equivocation_record(...)
+                                     (block itself is dropped, not inserted)
+    other (demoted, non-slashable) → dropped: no DAG insert, no record
 ```
 
 [![Diagram 05 — Generic invalid-block dispatch (post-fix #3)](../diagrams/05-seq-invalid-block-dispatch-fixed.svg)](../diagrams/05-seq-invalid-block-dispatch-fixed.svg)
 
-The post-fix dispatcher (after bug #3) routes every
-`is_slashable() = ⊤` variant through the same record-creation path,
-guaranteeing that *every* slashable invalid block enters the
-slashing pipeline. Pre-fix, only `AdmissibleEquivocation` and
-`IgnorableEquivocation` (when handled) reached the tracker; the
-other 15 slashable variants were merely flagged invalid in the DAG
-and would only get slashed if a future proposer happened to surface
-the offender's invalid latest message.
+The dispatcher routes every `is_slashable() = ⊤` variant through the same
+record-creation path, so every slashable invalid block enters the slashing
+pipeline — and after the taxonomy narrowing (spec amendment) that set is
+exactly the equivocation class, so the catch-all arm now covers only the
+two equivocation verdicts. Demoted verdicts hit the drop arm: the block is
+rejected but nothing is inserted or recorded (pinned by
+`dispatch_routes_demoted_variants_to_the_drop_arm`). Diagram 05 and the
+historical narrative of bug #3 (the pre-fix dispatcher stub that let 15
+then-slashable variants bypass the tracker) describe the bug-fix era —
+see `09-bug-fixes-and-rationale.md` §9.4.
 
 ## 4.6 Two-level detection: the neglected-equivocation path
 
 Once `(A, baseSeq) ∈ E` (the tracker has a record for A), any
 *future* block `b_B` whose latest-message view makes A's equivocation
-detectable while A remains bonded is itself slashable unless the block
-acknowledges/slashes A. A direct citation to A's invalid block is a
-common test witness, but production Rust also accepts nested
+detectable while A remains bonded is rejected as `NeglectedEquivocation`
+unless the block acknowledges/slashes A. A direct citation to A's invalid
+block is a common test witness, but production Rust also accepts nested
 latest-message evidence and previously detected hashes. This is the
-**two-level** closure: B's neglect of A is itself a form of collusion,
-and is itself slashed.
+**two-level** closure: B's neglect of A is a form of collusion. Detection
+and rejection are unchanged; the ECONOMIC arm is currently inactive —
+`NeglectedEquivocation` is demoted from the slashable set (view-relative:
+it is judged against the receiver's own tracker), pending re-promotion
+once the check is shown admission-order-free (spec amendment).
 
 The data flow that powers neglect detection:
 
