@@ -2031,8 +2031,12 @@ datum-identity byte order, not the RhoPath structural order. It sorts only arena
 constructs a typed `Datum`, `Vec<Datum>`, or `Vec<Vec<u8>>` authority. Typed continuation, join, and
 legacy DATA paths reuse their owned payload allocation while prepending the exact 12-byte envelope.
 A shared `PersistedDataView` validates the envelope once and lends the payload and leaf-hash ranges
-to the repository reader and importer. It deliberately preserves bincode 1's trailing-byte
-admission; canonical producers separately require an empty trailing range.
+to the repository reader and importer. Checkpoint `70fae0a9d` makes its bincode-1-compatible parser
+private to executable differentials and exposes only exact canonical admission to production.
+History reads, repository insertion, action measurement, and state import therefore reject a
+trailing suffix before hashing or decoding it. This distinction matters because the frozen leaf
+hash ends at the declared payload boundary: admitting a suffix there would accept bytes that the
+leaf hash does not authenticate.
 
 **MEASURED.** The v2 experiment compares complete final persisted values, not leaf bodies. Each of
 seven preregistered cells has 31 counterbalanced pairs, exact length/digest agreement before
@@ -2044,8 +2048,23 @@ at singleton to **36,878** at 4,096 distinct identities; allocated-byte reductio
 are respectively `080db0fc751268ba41b9065edb449300e5de34fab23ef712640fc38b60825ad2`,
 `b27a62e753b07a67164dbb6fa8bdc383b936f608f95ed4a9c85a9588ca8a3e56`, and
 `7d70b939dd3cc7249e77b5dd2f9f967d0905c7c8df96cdbf15e3f6370b5d793b`.
-The complete capped, zero-swap RSpace package passes **491/491** across 24 targets; captured-log
-SHA-256 is `4e5d26e7faadec2807d2feb38fad197f4484f3cd7c02501a305c478e5052f39b`.
+The final exact-tree capped, zero-swap RSpace package passes **497/497** across 24 targets;
+captured-log SHA-256 is
+`da3840b5a4a8708cb01f20faa5fd51dcf01e12323735439075e430e2e5d7cc21`.
+
+**FORMAL AND ANTI-VACUITY CLOSURE FOR THE FINAL VALUE.** Verus discharges 14 obligations for
+payload/cardinality framing and the complete 12-byte envelope. TLC explores 44 distinct states in
+the good validate/build-header/build-payload/publish-once model. Three executable negative models
+independently violate the expected invariant when they publish a partial image, publish without
+the envelope, or skip malformed-input validation. Rust negative controls separately remove one
+multiplicity occurrence and reverse the identity-order domain; both alter the final bytes and
+BLAKE2b-256 leaf digest. The capped Rocq, Verus, Z3, TLC, and mCRL2 log SHA-256 is
+`8638ffef6b32993bb2407aaaafae2ebe10a7bc5a4010949084f81c6b56ec4cad`; the focused seven-case Rust
+log SHA-256 is `4ebac1e8528bfd0e35cf9693c4bf745d0fe3ebdcf054db9b1c53458d97eaae67`.
+Production-library Clippy with warnings denied passes at log SHA-256
+`4127b863a473919d9e152d01233ec3d7d33a77ed4a85708520ef4db8ff46faaf`. The broader all-target
+Clippy campaign gate is not inferred from that result: pgmcp #5302 remains open on the separately
+recorded test-target backlog.
 
 This decision does **not** replace the persistence architecture with whole-snapshot clobbering.
 The planned PathMap-DAG store remains differential and transactional: durable immutable-object

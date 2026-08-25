@@ -313,7 +313,7 @@ Abbreviations used throughout are ABI (application binary interface), CBR (conse
 | **SS-C14** | `2142b2273`; pgmcp experiment 258 | f1r3node | dormant `ParBag` RPB2 key: family tag + prefix-free score-order key + canonical protobuf body; ACT import decodes, canonicalizes, and re-keys one current endpoint; protobuf output traverses trie order and copies stored bodies without a `Vec`, decoded shadow, or element sort | native stack remains $`O(1)`$ through the existing hand-written sorter worklist, generated protobuf PDAs, and iterative score-key parser; exact lookup is one PathMap probe after $`O(k)`$ prepared-key construction for key length $`k`$ | **yes**; all-family byte oracle, malformed/noncanonical ACT rejection, nested-metadata witness, depth 4,096, and experiment 258's 1,312 checksum-guarded observations | [5.27](#527-canonical-protobuf-key-parbag-and-prepared-key-closure-ss-c14) |
 | **SS-C15** | `bdaf93a5f`; pgmcp #6023 | f1r3node | Bag/EPathMap canonical ACT admission and every production endpoint/topology consumer share one validated preorder plan; generated EPM1 decoding retains only the current borrowed value body | physical primary-record parses $`4S-2 \rightarrow S`$, wrapper parses $`2W \rightarrow W`$, node reparses and event-time metadata reads $`\rightarrow 0`$; native stack remains $`O(1)`$ | **yes for the ACT replay slope**; 12/12 plan, 24/24 EPM1, 28/28 Bag, 74/74 rspace library, and 279/279 models library gates | [5.42](#542-single-admission-act-plan-and-epm1-consumer-closure-ss-c15) |
 | **SS-C16** | `583f21e44`; pgmcp #6026 | f1r3node | frozen single-`Vec<u8>` history leaves: second complete bincode wrapper buffer $`\rightarrow`$ two borrowed hash chunks | secondary $`8+|p|`$-byte allocation $`\rightarrow 0`$ by construction; native stack remains $`O(1)`$ | **yes for exact leaf hashes**; all three leaf types, framing negative control, and 76/76 rspace library gate | [5.43](#543-chunked-history-leaf-hashing-ss-c16) |
-| **SS-C17** | `3061b2501`; pgmcp #6026 | f1r3node | canonical DATA: PathMap $`\rightarrow`$ leaf payload $`\rightarrow`$ second final-value serialization; reads/imports: final value $`\rightarrow`$ copied payload | one checked allocation constructs the final envelope; reader/importer lend borrowed ranges; treatment/control median-time ratio **0.0323–0.3745**, with **24 to 36,878 fewer allocation calls**; native stack remains $`O(1)`$ | **yes for final persisted DATA bytes**; exact framing/admission, root/lifecycle/property gates, and 491/491 package tests | [5.44](#544-final-persisted-value-egress-and-borrowed-admission-ss-c17) |
+| **SS-C17** | `3061b2501`, `70fae0a9d`; pgmcp #6026/#6030 | f1r3node | canonical DATA: PathMap $`\rightarrow`$ leaf payload $`\rightarrow`$ second final-value serialization; reads/imports: final value $`\rightarrow`$ copied payload | one checked allocation constructs the final envelope; reader/importer lend canonically admitted ranges; treatment/control median-time ratio **0.0323–0.3745**, with **24 to 36,878 fewer allocation calls**; native stack remains $`O(1)`$ | **yes for final persisted DATA bytes**; exact framing/admission, three lifecycle mutants, two final-byte mutants, formal gates, and 497/497 package tests | [5.44](#544-final-persisted-value-egress-and-borrowed-admission-ss-c17) |
 | **SS-D1** | `d2591fa1` | f1r3node | task-spawn boundary per-branch deep clone | 2,867 $`\rightarrow`$ **0** *(this site)* | **yes** | [5.5.3](#553-the-three-repairs) |
 | **SS-D2** | `94dc983f` | f1r3node | ownership to the substitution; **15** deep copies | incl. $`O(n^2)`$ $`\rightarrow`$ $`O(n)`$ | **yes** | [5.5.3](#553-the-three-repairs) |
 | **SS-D3** | `9082d12c` | f1r3node | `inj_attempt` read-back clone $`\rightarrow`$ by-move | 2,852 $`\rightarrow`$ **0** | **yes** | [5.5.3](#553-the-three-repairs) |
@@ -10350,9 +10350,11 @@ plan. The plan reserves the exact final size once, writes the envelope, and expa
 identity according to `Multiplicity(u64)` without a typed or occurrence-vector intermediate.
 
 `PersistedDataView` is a non-recursive checked cursor over that envelope. It lends the exact
-single-field range used by the history hash and the payload range used by decoders. It accepts
-trailing bytes because the replaced bincode-1 decoder accepts them; canonical production requires
-none. Typed paths reuse their owned payload allocation and shift it once to prepend the envelope.
+single-field range used by the history hash and the payload range used by decoders. Its private
+bincode-compatible parser retains trailing-byte behavior only for differential tests; every
+authoritative storage reader/importer calls canonical admission and rejects a suffix not covered by
+the declared leaf-hash range. Typed paths reuse their owned payload allocation and shift it once to
+prepend the envelope.
 All paths are $`\Theta(n)`$ in emitted bytes and $`O(1)`$ in native stack. The transient descriptor
 arena remains $`\Theta(d)`$ for $`d`$ distinct identities because the frozen complete-identity order
 can differ from structural PathMap order; J-024 rejected a duplicate persistent identity trie.
@@ -10370,16 +10372,26 @@ upper bound is below 0.385. Observed median ratios are 0.0323–0.3745. Exact al
 | raw v2 matrix | `080db0fc751268ba41b9065edb449300e5de34fab23ef712640fc38b60825ad2` |
 | statistical analysis | `b27a62e753b07a67164dbb6fa8bdc383b936f608f95ed4a9c85a9588ca8a3e56` |
 | summary table | `7d70b939dd3cc7249e77b5dd2f9f967d0905c7c8df96cdbf15e3f6370b5d793b` |
-| 491/491 complete RSpace package gate | `4e5d26e7faadec2807d2feb38fad197f4484f3cd7c02501a305c478e5052f39b` |
+| 497/497 final exact-tree RSpace package gate | `da3840b5a4a8708cb01f20faa5fd51dcf01e12323735439075e430e2e5d7cc21` |
+| Rocq/Verus/Z3/TLC/mCRL2 final-value gate | `8638ffef6b32993bb2407aaaafae2ebe10a7bc5a4010949084f81c6b56ec4cad` |
+| focused final-value and mutant gate | `4ebac1e8528bfd0e35cf9693c4bf745d0fe3ebdcf054db9b1c53458d97eaae67` |
 
 #### 5.44.3 Limits and anti-vacuity
 
 Exact all-variant envelope differentials cover payload lengths 0, 1, 255, and 65,537. Admission is
 compared with derived bincode over every truncation, every header-bit flip, trailing bytes, and a
-hostile maximum length. Canonical and typed checkpoints produce identical roots; property tests
-preserve multiplicity; export/import passes through the shared cursor. The benchmark asserts final
-bytes and digest equality before every timing sample, so a faster wrong format cannot enter the
-statistics.
+hostile maximum length. The compatibility oracle accepts bincode's trailing suffix while
+authoritative canonical admission rejects it. Canonical and typed checkpoints produce identical
+roots; property tests preserve multiplicity; export/import passes through the shared cursor. The
+benchmark asserts final bytes and digest equality before every timing sample, so a faster wrong
+format cannot enter the statistics.
+
+Verus proves the complete envelope-length boundary in addition to occurrence/cardinality
+arithmetic. TLC's good model requires validation, private header construction, complete payload
+construction, and one atomic publication. Required failing mutants expose partial publication,
+missing framing, and skipped validation; executable Rust mutants expose omitted multiplicity and
+the wrong identity-order domain. The proof therefore cannot pass merely because it omits one of
+the final value's observable layers.
 
 This is a heap/allocation refinement, not a new recursion conversion. It does not implement the
 future PathMap-DAG object store or its WAL. That design remains differential and transactional and

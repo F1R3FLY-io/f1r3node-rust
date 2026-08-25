@@ -5013,15 +5013,21 @@ change record.
 `PersistedData::Data` enum and vector framing while it copies resident canonical datum identities
 from the authoritative `PathMap<Multiplicity>`. The repository receives the complete cold-store
 value and no longer serializes a second payload-sized buffer. A shared borrowed envelope cursor
-supplies the identical payload and single-field leaf-hash ranges to reads and import verification;
-it preserves bincode 1's existing trailing-byte admission, while canonical producers require no
-trailing range.
+supplies the identical payload and single-field leaf-hash ranges to reads and import verification.
+Checkpoint `70fae0a9d` keeps bincode 1's trailing-byte behavior only in a private differential
+oracle; every authoritative history reader, repository insertion, action measurement, and state
+import requires an exact canonical envelope. A suffix beyond the declared payload is rejected
+before hashing or decoding because it is outside the frozen leaf-hash range.
 
 Exact all-variant differentials bind the direct envelope to derived bincode at payload lengths 0,
 1, 255, and 65,537. Header truncations and bit mutations, a hostile maximum length, trailing-byte
-acceptance, canonical-versus-typed roots, multiplicity properties, and export/import all pass. The
-complete capped, zero-swap RSpace package gate passes 491/491 across 24 targets. The paired v2
-performance matrix refuses timing unless complete final length and leaf digest agree.
+compatibility, canonical rejection, canonical-versus-typed roots, multiplicity properties, and
+export/import all pass. The complete capped, zero-swap RSpace package gate passes 497/497 across 24
+targets. Verus proves final-envelope arithmetic; TLC proves validate/build-header/build-payload/
+publish-once and rejects partial-publication, missing-header, and skipped-validation mutants. Rust
+mutants prove that omitted multiplicity and the wrong identity-order domain alter final bytes and
+the leaf digest. The paired v2 performance matrix refuses timing unless complete final length and
+leaf digest agree.
 
 No accepted or emitted cold-store byte changes. Consequently, history leaf hashes, history keys,
 radix actions, roots, reset/replay/export/import results, event bytes, COMM order, charges,
@@ -5029,7 +5035,10 @@ protobuf, bincode, EPM1, RPB3, and public Rholang values remain identical. This 
 not change the planned PathMap-DAG persistence protocol: writes remain designed as differential
 immutable-object deltas committed transactionally through the WAL and crash-atomic catalog/root
 publication. The legacy store does not yet implement that backend. This is a byte- and
-value-neutral implementation refinement, not a new active change record.
+value-neutral implementation refinement, not a new active change record. Rejecting an appended
+suffix tightens malformed state-transfer/storage admission only; no canonical writer emitted such
+bytes, the suffix was never covered by the addressed leaf hash, and no valid persisted value or
+consensus state changes.
 
 **CBR-023 living-set continuation (2026-08-09, comparison exhaustiveness; pgmcp #5282).** The full
 models gate found catch-all mismatch arms in the already-iterative `Sig`, `Token`, `SignedProcess`,
