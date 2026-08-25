@@ -58,7 +58,16 @@ pub struct RSpace<C, P, A, K> {
     pub store: Arc<std::sync::RwLock<Arc<Box<dyn HotStore<C, P, A, K>>>>>,
     installs: Arc<std::sync::Mutex<HashMap<Vec<C>, Install<P, K>>>>,
     event_log: Arc<std::sync::Mutex<Log>>,
-    produce_counter: Arc<std::sync::Mutex<BTreeMap<Produce, i32>>>,
+    // Striped like phase_a/phase_b_locks below: NUM_LOCK_STRIPES independent
+    // shards keyed by channel_hash(produce) % NUM_LOCK_STRIPES, instead of
+    // one global std::sync::Mutex<BTreeMap>. Per-shard mem::take keeps the
+    // same no-data-loss guarantee the single-lock version had (a concurrent
+    // produce() racing a checkpoint either lands in the pre-drain snapshot
+    // or the post-drain empty shard, never both/neither), while the hot path
+    // (log_produce/produce_counters) only ever contends the one shard its
+    // key hashes to. See take_produce_counter/reset_produce_counter/
+    // restore_produce_counter below for the checkpoint-boundary helpers.
+    produce_counter: Arc<Vec<std::sync::Mutex<BTreeMap<Produce, i32>>>>,
     matcher: Arc<Box<dyn Match<P, A, K>>>,
     // Fixed-size striped locks replace the growing DashMap<u64, Mutex>.
     // See striped_locks.rs for the stripe count and hashing/lock scheme.
@@ -151,7 +160,7 @@ where
         *self.history_repository.write().expect("history write lock") = Arc::new(next_history);
 
         let log = std::mem::take(&mut *self.event_log.lock().expect("event log lock"));
-        let _ = std::mem::take(&mut *self.produce_counter.lock().expect("produce counter lock"));
+        self.reset_produce_counter();
 
         let history_reader = self
             .get_history_repository()
@@ -175,7 +184,7 @@ where
         *self.history_repository.write().expect("history write lock") = Arc::new(next_history);
 
         *self.event_log.lock().expect("event log lock") = Vec::new();
-        *self.produce_counter.lock().expect("produce counter lock") = BTreeMap::new();
+        self.reset_produce_counter();
 
         // Striped locks are fixed-size and stateless (Mutex<()>); nothing to
         // clear on reset — they are reused across checkpoints.
@@ -214,8 +223,7 @@ where
     async fn create_soft_checkpoint(&self) -> SoftCheckpoint<C, P, A, K> {
         let cache_snapshot = self.get_store().snapshot();
         let curr_event_log = std::mem::take(&mut *self.event_log.lock().expect("event log lock"));
-        let curr_produce_counter =
-            std::mem::take(&mut *self.produce_counter.lock().expect("produce counter lock"));
+        let curr_produce_counter = self.take_produce_counter();
 
         SoftCheckpoint {
             cache_snapshot,
@@ -226,7 +234,7 @@ where
 
     async fn take_event_log(&self) -> Log {
         let curr_event_log = std::mem::take(&mut *self.event_log.lock().expect("event log lock"));
-        let _ = std::mem::take(&mut *self.produce_counter.lock().expect("produce counter lock"));
+        self.reset_produce_counter();
         curr_event_log
     }
 
@@ -245,7 +253,7 @@ where
 
         *self.store.write().expect("store write lock") = Arc::new(hot_store);
         *self.event_log.lock().expect("event log lock") = checkpoint.log;
-        *self.produce_counter.lock().expect("produce counter lock") = checkpoint.produce_counter;
+        self.restore_produce_counter(checkpoint.produce_counter);
 
         Ok(())
     }
@@ -427,7 +435,11 @@ where
             matcher,
             installs: Arc::new(std::sync::Mutex::new(HashMap::new())),
             event_log: Arc::new(std::sync::Mutex::new(Vec::new())),
-            produce_counter: Arc::new(std::sync::Mutex::new(BTreeMap::new())),
+            produce_counter: Arc::new(
+                (0..striped_locks::NUM_LOCK_STRIPES)
+                    .map(|_| std::sync::Mutex::new(BTreeMap::new()))
+                    .collect(),
+            ),
             phase_a_locks: Self::new_striped_locks(),
             phase_b_locks: Self::new_striped_locks(),
         }
@@ -533,22 +545,55 @@ where
         Ok((history_repo, hot_store))
     }
 
+    fn produce_counter_shard(&self, produce_ref: &Produce) -> &std::sync::Mutex<BTreeMap<Produce, i32>> {
+        let idx = (striped_locks::channel_hash(produce_ref) as usize) % self.produce_counter.len();
+        &self.produce_counter[idx]
+    }
+
     fn produce_counters(&self, produce_refs: &[Produce]) -> BTreeMap<Produce, i32> {
         produce_refs
             .iter()
             .cloned()
             .map(|p| {
-                (
-                    p.clone(),
-                    self.produce_counter
-                        .lock()
-                        .expect("produce counter lock")
-                        .get(&p)
-                        .unwrap_or(&0)
-                        .clone(),
-                )
+                let count = self
+                    .produce_counter_shard(&p)
+                    .lock()
+                    .expect("produce counter shard lock")
+                    .get(&p)
+                    .copied()
+                    .unwrap_or(0);
+                (p, count)
             })
             .collect()
+    }
+
+    // Drains all shards into one combined map and leaves every shard empty.
+    // Per-shard mem::take is atomic under that shard's own lock, so a
+    // produce() racing this call either lands in the returned snapshot or
+    // in the now-empty shard afterwards — never both, never neither.
+    fn take_produce_counter(&self) -> BTreeMap<Produce, i32> {
+        let mut combined = BTreeMap::new();
+        for shard in self.produce_counter.iter() {
+            let mut guard = shard.lock().expect("produce counter shard lock");
+            combined.extend(std::mem::take(&mut *guard));
+        }
+        combined
+    }
+
+    fn reset_produce_counter(&self) {
+        for shard in self.produce_counter.iter() {
+            *shard.lock().expect("produce counter shard lock") = BTreeMap::new();
+        }
+    }
+
+    fn restore_produce_counter(&self, map: BTreeMap<Produce, i32>) {
+        self.reset_produce_counter();
+        for (k, v) in map {
+            self.produce_counter_shard(&k)
+                .lock()
+                .expect("produce counter shard lock")
+                .insert(k, v);
+        }
     }
 
     fn locked_consume(
@@ -849,7 +894,10 @@ where
             .expect("event log lock")
             .push(Event::IoEvent(IOEvent::Produce(produce_ref.clone())));
         if !persist {
-            let mut counter = self.produce_counter.lock().expect("produce counter lock");
+            let mut counter = self
+                .produce_counter_shard(produce_ref)
+                .lock()
+                .expect("produce counter shard lock");
             let current = counter.get(produce_ref).copied().unwrap_or(0);
             counter.insert(produce_ref.clone(), current + 1);
         }
