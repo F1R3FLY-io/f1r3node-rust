@@ -22,14 +22,16 @@ use models::casper::v1::{
     BlockInfoResponse, BlockResponse, BondStatusResponse, ContinuationAtNameResponse,
     DeployFinalizationStatusResponse, DeployResponse, EventInfoResponse, ExploratoryDeployResponse,
     FindDeployResponse, IsFinalizedResponse, LastFinalizedBlockResponse, MachineVerifyResponse,
-    PrivateNamePreviewResponse, RhoDataResponse, StatusResponse, VisualizeBlocksResponse,
+    PendingDeploysResponse, PrivateNamePreviewResponse, RhoDataResponse, StatusResponse,
+    VisualizeBlocksResponse,
 };
 use models::casper::{
     BlockQuery, BlocksQuery, BlocksQueryByHeight, BondStatusQuery, ContinuationAtNameQuery,
     DataAtNameByBlockQuery, DeployDataProto, DeployFinalizationStateProto,
     DeployFinalizationStatusInfo, DeployFinalizationStatusQuery, ExploratoryDeployQuery,
     FindDeployQuery, IsFinalizedQuery, LastFinalizedBlockQuery, MachineVerifyQuery,
-    PrivateNamePreviewQuery, ReportQuery, Status, VersionInfo, VisualizeDagQuery,
+    PendingDeployInfo, PendingDeploysQuery, PendingDeploysResponsePayload, PrivateNamePreviewQuery,
+    ReportQuery, Status, VersionInfo, VisualizeDagQuery,
 };
 use models::servicemodelapi::ServiceError;
 use tokio::time::{sleep, Duration};
@@ -759,6 +761,57 @@ impl DeployService for DeployGrpcServiceV1Impl {
                 Ok(tonic::Response::new(DeployFinalizationStatusResponse {
                     message: Some(
                         models::casper::v1::deploy_finalization_status_response::Message::Error(
+                            e.into_service_error(),
+                        ),
+                    ),
+                }))
+            }
+        }
+    }
+
+    /// Bulk list of pending deploys (deploy_storage + rejected-recovery
+    /// buffer), optionally filtered by deployer public key. Empty
+    /// response on read-only nodes (Casper not initialised).
+    async fn get_pending_deploys(
+        &self,
+        request: tonic::Request<PendingDeploysQuery>,
+    ) -> Result<tonic::Response<PendingDeploysResponse>, tonic::Status> {
+        let request = request.into_inner();
+        let deployer = if request.deployer_pubkey.is_empty() {
+            None
+        } else {
+            Some(request.deployer_pubkey.as_ref())
+        };
+
+        match BlockAPI::list_pending_deploys(&self.engine_cell, deployer).await {
+            Ok(snapshot) => {
+                let deploys: Vec<PendingDeployInfo> = snapshot
+                    .deploys
+                    .into_iter()
+                    .map(|(signed, is_rejected)| PendingDeployInfo {
+                        deploy: Some(
+                            models::rust::casper::protocol::casper_message::DeployData::to_proto(
+                                signed,
+                            ),
+                        ),
+                        is_rejected,
+                    })
+                    .collect();
+                let payload = PendingDeploysResponsePayload {
+                    deploys,
+                    total_available: snapshot.total_available,
+                };
+                Ok(tonic::Response::new(PendingDeploysResponse {
+                    message: Some(
+                        models::casper::v1::pending_deploys_response::Message::Payload(payload),
+                    ),
+                }))
+            }
+            Err(e) => {
+                error!("Deploy service method error get_pending_deploys: {}", e);
+                Ok(tonic::Response::new(PendingDeploysResponse {
+                    message: Some(
+                        models::casper::v1::pending_deploys_response::Message::Error(
                             e.into_service_error(),
                         ),
                     ),
