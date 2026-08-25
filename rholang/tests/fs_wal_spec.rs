@@ -1035,6 +1035,310 @@ mod tests {
         }
     }
 
+    /// Streaming-backing slice Step 3 (2026-08-25): consensus-mode
+    /// `entriesStreamNext` on a Consensus-cap dir stream journals one
+    /// `WalOp::EntriesStreamNext` entry per call.  Oracular caps do
+    /// NOT journal — same cross-cap isolation as fs_stat / fs_entries.
+    ///
+    /// The test drives Open → 3 Next calls (yielding a, b, c) → 1 Next
+    /// call (EOS) → Close on a cmode="consensus" cap.  Expects 4 WAL
+    /// entries (3 yields + 1 EOS), all with op = EntriesStreamNext,
+    /// all with outcome = Success (EOS is expected control flow, not
+    /// a failure).  A regression that skipped EOS journaling, or that
+    /// broke the cmode gate, would fail here.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn entries_stream_next_consensus_journals_per_call() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("sub")).unwrap();
+        std::fs::write(dir.path().join("sub/a"), b"1").unwrap();
+        std::fs::write(dir.path().join("sub/b"), b"2").unwrap();
+        std::fs::write(dir.path().join("sub/c"), b"3").unwrap();
+        let runtime = create_runtime().await;
+
+        // Open the stream on a consensus cap.
+        let open_term = format!(
+            r#"
+            new fsOpen(`rho:io:fs:native:1.0.0/entriesStreamOpen`), o in {{
+              fsOpen!("{root}", "sub", "consensus", *o) |
+              for (@[true, _fd] <- o) {{ Nil }}
+            }}
+            "#,
+            root = dir.path().display(),
+        );
+        runtime
+            .evaluate(
+                &open_term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                rand(),
+            )
+            .await
+            .expect("evaluate open");
+
+        // Open itself does NOT journal (only Next journals per the
+        // slice-3 design; Open is a leader-only setup step).
+        assert_eq!(
+            runtime.fs_handles.wal.len(),
+            0,
+            "entriesStreamOpen must NOT journal — only Next journals per call"
+        );
+
+        // 4 Next calls: 3 yields + 1 EOS.  The DirHandleTable fd is 1
+        // (fresh runtime, first alloc).  Use a distinct rand per
+        // iteration so each evaluate constructs a distinct fresh
+        // unforgeable `r` — sharing rand would derive the same `r`
+        // across calls, and the tuplespace persists between
+        // evaluates, so the receiver in call N+1 would consume
+        // call N's reply instead of firing its own Next.
+        let fd: u64 = 1;
+        for i in 0..4u8 {
+            let term = format!(
+                r#"
+                new fsNext(`rho:io:fs:native:1.0.0/entriesStreamNext`), r in {{
+                  fsNext!({fd}, *r) |
+                  for (@_reply <- r) {{ Nil }}
+                }}
+                "#,
+                fd = fd,
+            );
+            runtime
+                .evaluate(
+                    &term,
+                    Cost::unsafe_max(),
+                    std::collections::HashMap::new(),
+                    Blake2b512Random::create_from_bytes(&[i, i, i, i]),
+                )
+                .await
+                .expect("evaluate next");
+        }
+
+        let snap = runtime.fs_handles.wal.snapshot();
+        assert_eq!(
+            snap.len(),
+            4,
+            "expected 4 EntriesStreamNext WAL entries (3 yields + 1 EOS); got {}",
+            snap.len()
+        );
+        for (i, e) in snap.iter().enumerate() {
+            assert_eq!(
+                e.op,
+                WalOp::EntriesStreamNext,
+                "entry {i} op must be EntriesStreamNext"
+            );
+            // Outcome: `[true, entryRecord]` (yields, entries 0-2)
+            // journal as Success.  `[false, "EOS"]` (entry 3) falls
+            // through `extract_err_code` — "EOS" is not an
+            // `FSERR_*` code, so `fserr_to_code` returns 0
+            // (FSERR_CODE_UNKNOWN) and the outcome becomes
+            // `Failure { code: 0 }`.  This is deterministic across
+            // leader/follower and cheap; see the WalOp::
+            // EntriesStreamNext docstring for the downstream
+            // disambiguation strategy.
+            let expected_outcome = if i < 3 {
+                rholang::rust::interpreter::io::wal::WalOutcome::Success
+            } else {
+                rholang::rust::interpreter::io::wal::WalOutcome::Failure { code: 0 }
+            };
+            assert_eq!(
+                e.outcome, expected_outcome,
+                "entry {i} outcome must be {expected_outcome:?}"
+            );
+            // length encodes 1 for yields, 0 for EOS/error.
+            let expected_len = if i < 3 { Some(1) } else { Some(0) };
+            assert_eq!(
+                e.length, expected_len,
+                "entry {i} length must be {expected_len:?}"
+            );
+        }
+
+        // Close does NOT journal (Close is a leader-only fd release).
+        let close_term = format!(
+            r#"
+            new fsClose(`rho:io:fs:native:1.0.0/entriesStreamClose`), r in {{
+              fsClose!({fd}, *r) |
+              for (@_reply <- r) {{ Nil }}
+            }}
+            "#,
+            fd = fd,
+        );
+        runtime
+            .evaluate(
+                &close_term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                rand(),
+            )
+            .await
+            .expect("evaluate close");
+        assert_eq!(
+            runtime.fs_handles.wal.len(),
+            4,
+            "Close must NOT append to WAL; count unchanged after close"
+        );
+    }
+
+    /// Streaming-backing slice Step 3 (2026-08-25): Oracular
+    /// entriesStreamNext MUST NOT journal — same cross-cap isolation
+    /// invariant as fs_stat / fs_entries oracular pins.  A regression
+    /// that ignored the cap's cmode and journaled unconditionally
+    /// would surface Oracular reads in the Consensus WAL and diverge
+    /// across validators with different local fs state.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn entries_stream_next_oracular_does_not_journal() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("sub")).unwrap();
+        std::fs::write(dir.path().join("sub/x"), b"x").unwrap();
+        let runtime = create_runtime().await;
+
+        let open_term = format!(
+            r#"
+            new fsOpen(`rho:io:fs:native:1.0.0/entriesStreamOpen`), o in {{
+              fsOpen!("{root}", "sub", "oracular", *o) |
+              for (@[true, _fd] <- o) {{ Nil }}
+            }}
+            "#,
+            root = dir.path().display(),
+        );
+        runtime
+            .evaluate(
+                &open_term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                rand(),
+            )
+            .await
+            .expect("evaluate open");
+
+        // 2 Next calls (1 yield + 1 EOS).
+        for _ in 0..2 {
+            let term = r#"
+                new fsNext(`rho:io:fs:native:1.0.0/entriesStreamNext`), r in {
+                  fsNext!(1, *r) |
+                  for (@_reply <- r) { Nil }
+                }
+                "#
+            .to_string();
+            runtime
+                .evaluate(
+                    &term,
+                    Cost::unsafe_max(),
+                    std::collections::HashMap::new(),
+                    rand(),
+                )
+                .await
+                .expect("evaluate next");
+        }
+
+        assert!(
+            runtime.fs_handles.wal.is_empty(),
+            "Oracular entriesStreamNext MUST NOT journal; got {} entries",
+            runtime.fs_handles.wal.len()
+        );
+    }
+
+    /// Streaming-backing slice Step 3 (2026-08-25): leader/follower
+    /// WAL byte-identity for the streaming primitive — the C-R1 core
+    /// invariant applied to `entriesStreamNext`.  Runs Open + 3
+    /// Next calls (2 yields + 1 EOS) on a Consensus cap on both
+    /// leader (is_replay=false) and follower (is_replay=true, rigged
+    /// with the leader's event log), and asserts both WALs are
+    /// byte-identical.  Would fail if:
+    /// - The follower's replay branch did NOT populate the shadow
+    ///   dir-handle at Open (Step 2's fs_entries_stream_open replay
+    ///   branch) → follower's Next handler skips journaling.
+    /// - `journal_state_read` behaved differently on the is_replay
+    ///   branch (e.g., different hash derivation).
+    /// - Leader / follower disagreed on the length field or the
+    ///   yielded entry's stable-hash.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn entries_stream_next_wal_is_byte_identical_on_leader_and_follower() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("sub")).unwrap();
+        std::fs::write(dir.path().join("sub/a"), b"1").unwrap();
+        std::fs::write(dir.path().join("sub/b"), b"2").unwrap();
+
+        let (mut leader, mut follower) = create_leader_and_follower().await;
+
+        let term = format!(
+            r#"
+            new fsOpen(`rho:io:fs:native:1.0.0/entriesStreamOpen`),
+                fsNext(`rho:io:fs:native:1.0.0/entriesStreamNext`),
+                o, r1, r2, r3
+            in {{
+              fsOpen!("{root}", "sub", "consensus", *o) |
+              for (@[true, fd] <- o) {{
+                fsNext!(fd, *r1) |
+                for (@_ <- r1) {{
+                  fsNext!(fd, *r2) |
+                  for (@_ <- r2) {{
+                    fsNext!(fd, *r3) |
+                    for (@_ <- r3) {{ Nil }}
+                  }}
+                }}
+              }}
+            }}
+            "#,
+            root = dir.path().display(),
+        );
+        let rand = Blake2b512Random::create_from_bytes(&[3; 32]);
+
+        leader
+            .evaluate(
+                &term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                rand.clone(),
+            )
+            .await
+            .expect("leader evaluate");
+        let leader_wal = leader.fs_handles.wal.snapshot();
+        assert_eq!(
+            leader_wal.len(),
+            3,
+            "leader must have journaled exactly 3 EntriesStreamNext entries \
+             (2 yields + 1 EOS)"
+        );
+
+        let checkpoint = leader.create_checkpoint().await;
+        let root = checkpoint.root;
+        let log = checkpoint.log;
+        follower.reset(&root).await.expect("follower reset");
+        follower.rig(log).await.expect("follower rig");
+
+        follower
+            .evaluate(
+                &term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                rand,
+            )
+            .await
+            .expect("follower evaluate");
+        let follower_wal = follower.fs_handles.wal.snapshot();
+
+        assert_eq!(
+            leader_wal.len(),
+            follower_wal.len(),
+            "leader has {} WAL entries; follower has {} — divergence indicates \
+             the entriesStreamOpen replay branch failed to shadow the dir handle \
+             or entriesStreamNext journals differently on the is_replay=true branch",
+            leader_wal.len(),
+            follower_wal.len()
+        );
+        for (i, (l, f)) in leader_wal.iter().zip(follower_wal.iter()).enumerate() {
+            assert_eq!(
+                l, f,
+                "EntriesStreamNext WAL entry {i} differs between leader and \
+                 follower: leader={l:?}, follower={f:?}"
+            );
+        }
+
+        follower
+            .check_replay_data()
+            .await
+            .expect("follower replay data mismatch — tuplespace divergence, not just WAL");
+    }
+
     /// H1 gap fix: end-to-end WAL cap enforcement — a Rholang program
     /// that fills the WAL past `MAX_WAL_ENTRIES` gets `FSERR_QUOTA_EXCEEDED`
     /// on the overflow write, and the WAL does not exceed the cap.

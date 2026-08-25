@@ -92,8 +92,9 @@
 // 1. **Format version byte** — `SNAPSHOT_FORMAT_VERSION` at
 //    the front of `encode_wal_slice`.  Bump on any format change.
 // 2. **Op tag bytes** — `op_tag(WalOp)` maps enum variants to
-//    stable u8 values 1..=11 (Write, WriteAt, Truncate, Chmod,
-//    Chown, RemoveFile, RemoveDir, Rename, CopyFile, Read, ReadAt).
+//    stable u8 values 1..=15 (Write, WriteAt, Truncate, Chmod,
+//    Chown, RemoveFile, RemoveDir, Rename, CopyFile, Read, ReadAt,
+//    Stat, Entries, Size, EntriesStreamNext).
 //    Pinned by `op_tags_are_stable` + `encode_entry_uses_op_tag_values`.
 // 3. **Hash function = Blake2b256** — `hash_of`,
 //    `PayloadRef::hash`, `compute_wal_root`.
@@ -194,7 +195,15 @@ use super::wal::{PayloadRef, WalEntry, WalOp, WalOutcome};
 ///   tuplespace divergence traceable to filesystem drift
 ///   surfaces as "stat reply differed at path X" rather than
 ///   as an opaque `check_replay_data` mismatch downstream.
-pub const SNAPSHOT_FORMAT_VERSION: u8 = 3;
+/// - `4`: Streaming-backing slice Step 3 (2026-08-25) — added
+///   `EntriesStreamNext` (op tag 15).  Each `entriesStreamNext`
+///   call on a Consensus-cap dir stream journals its reply
+///   (entryRecord or EOS marker) with `payload_ref =
+///   Hash(reply_par)`, symmetric on leader + follower.  Length
+///   field encodes `1` for yielded entries and `0` for
+///   EOS/error terminators so a replay-side auditor can count
+///   the stream without re-parsing.
+pub const SNAPSHOT_FORMAT_VERSION: u8 = 4;
 
 /// M-1 fix (2026-08-06): manifest.jsonl line-format version.
 /// Distinct from `SNAPSHOT_FORMAT_VERSION` because the two are
@@ -334,6 +343,11 @@ fn op_tag(op: WalOp) -> u8 {
         WalOp::Stat => 12,
         WalOp::Entries => 13,
         WalOp::Size => 14,
+        // Streaming-backing slice Step 3 (2026-08-25): per-call
+        // journal on `entriesStreamNext` for Consensus-cap dir
+        // streams.  Tag 15 appended at the tail; version bumped
+        // 3 → 4.
+        WalOp::EntriesStreamNext => 15,
     }
 }
 
@@ -1534,6 +1548,8 @@ mod tests {
         assert_eq!(op_tag(WalOp::Stat), 12);
         assert_eq!(op_tag(WalOp::Entries), 13);
         assert_eq!(op_tag(WalOp::Size), 14);
+        // Streaming-backing slice Step 3 (2026-08-25).
+        assert_eq!(op_tag(WalOp::EntriesStreamNext), 15);
     }
 
     // ------------------------------------------------------------------
@@ -1571,19 +1587,20 @@ mod tests {
             let _ = write!(acc, "{b:02x}");
             acc
         });
-        // Golden value re-pinned 2026-08-06 (M-5 fix: bumped
-        // `SNAPSHOT_FORMAT_VERSION` from 2 to 3, added Stat/
-        // Entries/Size op tags 12-14).  Only the version byte
-        // changed for THIS test's entry shape (Write op), so
-        // the hash differs solely because of the leading
-        // version-byte increment.  Prior anchors:
+        // Golden value re-pinned 2026-08-25 (streaming-slice Step 3:
+        // bumped `SNAPSHOT_FORMAT_VERSION` from 3 to 4 for the new
+        // `EntriesStreamNext` op tag 15).  Only the version byte
+        // changed for THIS test's entry shape (Write op), so the
+        // hash differs solely because of the leading version-byte
+        // increment.  Prior anchors:
+        //   pre-streaming-slice (v=3): 9f2553c38cce8b72bbf6ad78c22f4b32f195b8bed781c952403f5404c25891c4
         //   pre-M-5 (v=2): eaeb49f95ec12631c4d59da9520f23cd9558c98e60529deda1fbc42395b5811a
         //   pre-H-6 (v=1): 532eea9096eb6962acbb48374e79167149960ec132f8e95838678e20e2fa38b2
         //   pre-slice-34: 06a8ce938471c2a9722aa3592209e04dbe9230b759af36a5088dea677f93b825
         // Regenerate via
         //   cargo test -p rholang --lib -- compute_wal_root_golden_hex --nocapture
         // ONLY when intentionally hard-forking the encoding.
-        const EXPECTED: &str = "9f2553c38cce8b72bbf6ad78c22f4b32f195b8bed781c952403f5404c25891c4";
+        const EXPECTED: &str = "0db9a41865abc2e7e00e96f66a26267f2b9e1815ef55490c237675bff1c60a73";
         assert_eq!(
             hex, EXPECTED,
             "WAL root golden-hex mismatch — did you accidentally change the encoding? \
@@ -1616,6 +1633,7 @@ mod tests {
             (WalOp::Stat, 12),
             (WalOp::Entries, 13),
             (WalOp::Size, 14),
+            (WalOp::EntriesStreamNext, 15),
         ] {
             let e = WalEntry {
                 op,

@@ -2697,12 +2697,36 @@ impl FsProcesses {
         if is_replay {
             // Per-entry supplement charge on the replay branch: n = 1
             // when the cached reply is `[true, entryRecord]`, else n = 0
-            // (EOS or error).  `extract_ok_u64(&previous)` returns Some
-            // only on `[true, int]` shapes, so we use a dedicated helper
-            // that just checks the head is `true`.
+            // (EOS or error).  `reply_is_ok` only checks the head is
+            // `true` — dedicated helper vs. `extract_ok_u64` which
+            // additionally requires the payload to be an int.
             let n = if reply_is_ok(&previous) { 1 } else { 0 };
-            self.metering
-                .reserve_primitive(costs::fs_entries_stream_per_entry_supplement_cost(n))?;
+            self.metering.reserve_incremental_primitive(
+                costs::fs_entries_stream_per_entry_supplement_cost(n),
+            )?;
+            // Step 3 (D3 WAL wiring): symmetric journal on the
+            // follower's replay branch.  The shadow handle inserted
+            // by `entriesStreamOpen`'s replay branch (Step 2) carries
+            // `(cmode, canon_path)` — look them up and journal the
+            // cached `previous` reply so leader + follower append
+            // byte-identical WAL entries on the same call site.
+            // Missing shadow handle → skip: the leader also skips
+            // when the fd table returns None (FSERR_CLOSED path),
+            // so both sides converge on "no entry appended".
+            if let Some(fd) = RhoNumber::unapply(fd_par) {
+                if let Some(handle) = self.handles.dir_handles.get(fd as u64).await {
+                    if let Some(reply_par) = previous.first() {
+                        self.journal_state_read(
+                            handle.cmode,
+                            WalOp::EntriesStreamNext,
+                            handle.canon_path.clone(),
+                            reply_par,
+                            ack,
+                            Some(n),
+                        );
+                    }
+                }
+            }
             produce(&previous, ack).await?;
             return Ok(previous);
         }
@@ -2715,42 +2739,66 @@ impl FsProcesses {
                 return Ok(out);
             }
         };
-        let reply = match self.handles.dir_handles.get(fd).await {
-            None => err(FSERR_CLOSED, "stream fd closed or unknown"),
-            Some(handle) => {
-                let cmode = handle.cmode;
-                let iter_lock = handle.iter.lock().await;
-                match iter_lock.as_ref() {
-                    None => err(
-                        FSERR_CLOSED,
-                        "shadow stream handle has no iterator (leader path only)",
-                    ),
-                    Some(iter) => {
-                        // Pass the DIR* address across spawn_blocking
-                        // via usize cast (raw pointers are not Send).
-                        // The MutexGuard `iter_lock` is held across the
-                        // .await below, keeping the address live for
-                        // the closure's whole lifetime.
-                        let dirp_addr = iter.as_ptr() as usize;
-                        spawn_blocking(move || -> Par {
-                            let dirp = dirp_addr as *mut libc::DIR;
-                            readdir_one_entry(dirp, cmode)
-                        })
-                        .await
-                        .unwrap_or_else(|_je| err(FSERR_IO, "spawn_blocking task failed"))
-                    }
+        // Hold onto the Arc so we can re-consult (cmode, canon_path)
+        // for the post-reply journal call without a second table
+        // lookup.  `handle_opt` is dropped at the end of this fn, so
+        // the Arc keeps the DirHandle alive for the whole path.
+        let handle_opt = self.handles.dir_handles.get(fd).await;
+        let reply = if let Some(handle) = handle_opt.as_ref() {
+            let cmode = handle.cmode;
+            let iter_lock = handle.iter.lock().await;
+            match iter_lock.as_ref() {
+                None => err(
+                    FSERR_CLOSED,
+                    "shadow stream handle has no iterator (leader path only)",
+                ),
+                Some(iter) => {
+                    // Pass the DIR* address across spawn_blocking
+                    // via usize cast (raw pointers are not Send).
+                    // The MutexGuard `iter_lock` is held across the
+                    // .await below, keeping the address live for
+                    // the closure's whole lifetime.
+                    let dirp_addr = iter.as_ptr() as usize;
+                    spawn_blocking(move || -> Par {
+                        let dirp = dirp_addr as *mut libc::DIR;
+                        readdir_one_entry(dirp, cmode)
+                    })
+                    .await
+                    .unwrap_or_else(|_je| err(FSERR_IO, "spawn_blocking task failed"))
                 }
             }
+        } else {
+            err(FSERR_CLOSED, "stream fd closed or unknown")
         };
         // Post-reply supplement charge — same two-branch shape as
-        // fs_entries.  n = 1 on `[true, ...]`, else 0.
+        // fs_entries.  n = 1 on `[true, ...]`, else 0.  Uses
+        // `reserve_incremental_primitive` (not `reserve_primitive`)
+        // because the n=0 case (EOS or error) legitimately produces
+        // a zero-weight cost — `reserve_primitive` returns
+        // `BugFoundError` on zero, which would silently poison the
+        // deploy's EvaluateResult.errors.
         let n = if reply_is_ok(std::slice::from_ref(&reply)) {
             1
         } else {
             0
         };
         self.metering
-            .reserve_primitive(costs::fs_entries_stream_per_entry_supplement_cost(n))?;
+            .reserve_incremental_primitive(costs::fs_entries_stream_per_entry_supplement_cost(n))?;
+        // Step 3 (D3 WAL wiring): journal the leader's reply if the
+        // handle is a Consensus cap.  `journal_state_read` skips
+        // Oracular caps internally, so the check inside is enough.
+        // Missing handle (FSERR_CLOSED) → skip: no path or cmode to
+        // journal against.
+        if let Some(handle) = handle_opt.as_ref() {
+            self.journal_state_read(
+                handle.cmode,
+                WalOp::EntriesStreamNext,
+                handle.canon_path.clone(),
+                &reply,
+                ack,
+                Some(n),
+            );
+        }
         let out = vec![reply];
         produce(&out, ack).await?;
         Ok(out)

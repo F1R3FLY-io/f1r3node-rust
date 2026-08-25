@@ -202,6 +202,37 @@ pub enum WalOp {
     /// length = Some(size); payload_ref = None (the u64 fits
     /// in the length field so no separate hash needed).
     Size,
+    /// Streaming-backing slice Step 3 (2026-08-25):
+    /// `entriesStreamNext(streamFd)` — one Next call on a
+    /// Consensus-cap dir stream.  Journaled per call, symmetric on
+    /// both leader (fresh readdir reply) and follower (cached
+    /// `previous` reply).
+    ///
+    /// - `path`: the DirHandle's `canon_path` (same on leader and
+    ///   follower — Step 2's shadow-handle insert on the replay
+    ///   branch of `entriesStreamOpen` captures the same
+    ///   `canonicalize_lexical(root, rel)` the leader stored).
+    /// - `length`: `Some(1)` for a `[true, entryRecord]` reply,
+    ///   `Some(0)` for `[false, "EOS"]` or `[false, code, msg]` —
+    ///   lets a replay-side auditor count yielded entries vs.
+    ///   termination without re-parsing `payload_ref`.
+    /// - `payload_ref`: `Some(Hash(stable_hash(reply_par)))` —
+    ///   covers the full reply (either the stripped stat_record
+    ///   under Consensus cmode, or the 2-element EOS marker, or
+    ///   the 3-element error tuple).
+    /// - `outcome`: derived by the shared `journal_state_read` helper
+    ///   from the reply's head-bool + code slot.  `Success` on
+    ///   `[true, entryRecord]`; `Failure { code = fserr_to_code(code_str) }`
+    ///   on any `[false, code_str, ...]` shape — which covers both
+    ///   genuine `[false, FSERR_*, msg]` errors AND the 2-element
+    ///   `[false, "EOS"]` terminator (mapped to `code = 0` /
+    ///   `FSERR_CODE_UNKNOWN` since `"EOS"` is not an `FSERR_*`
+    ///   spec-canonical code).  Determinism across leader/follower
+    ///   is what matters for consensus; downstream consumers can
+    ///   disambiguate EOS from a genuine unknown-code failure by
+    ///   consulting the `payload_ref` hash (EOS has a well-known
+    ///   2-element reply hash).
+    EntriesStreamNext,
 }
 
 /// Reference to write payload bytes.  The MVP uses `Hash` only; the
