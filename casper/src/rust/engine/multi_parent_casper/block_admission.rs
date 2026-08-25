@@ -4,6 +4,8 @@
 //! function takes the casper instance as a `&MultiParentCasperImpl<T>`
 //! reference; the trait method is a one-line delegate in `traits.rs`.
 
+use std::collections::HashSet;
+
 use block_storage::rust::dag::block_dag_key_value_storage::{
     DeployId, InsertMode, KeyValueDagRepresentation,
 };
@@ -13,11 +15,12 @@ use models::rust::block_hash::{BlockHash, BlockHashSerde};
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{BlockMessage, DeployData};
 use models::rust::normalizer_env::normalizer_env_from_deploy;
+use prost::bytes::Bytes;
 use rspace_plus_plus::rspace::history::Either;
 
 use super::snapshot::record_dag_cardinality_metrics;
 use super::types::MultiParentCasperImpl;
-use crate::rust::casper::{CasperSnapshot, DeployError};
+use crate::rust::casper::{Casper, CasperSnapshot, DeployError};
 use crate::rust::errors::CasperError;
 use crate::rust::util::rholang::interpreter_util;
 
@@ -276,6 +279,35 @@ fn stored_deploy_is_pending_for_snapshot(
     !is_future && !already_in_scope
 }
 
+/// Whether a stored deploy is still WAITING to land, for the reporting API.
+///
+/// Deliberately weaker than `stored_deploy_is_pending_for_snapshot`, which
+/// answers "may the proposer put this in the NEXT block". The two differ on
+/// one clause: a deploy whose `valid_after_block_number` is ahead of the tip
+/// is not proposable yet, but it is submitted, queued, and will land once the
+/// chain reaches its window — so it is pending to a caller asking "where is my
+/// deploy". Using the proposer predicate here would report it as absent.
+///
+/// The three exclusions are the ones that mean "will never land, or already
+/// did": the validity window closed on block height, the expiration timestamp
+/// passed, or the deploy is already in the merge scope.
+fn stored_deploy_is_queued(
+    snapshot: &CasperSnapshot,
+    earliest_block_number: i64,
+    current_time_millis: i64,
+    deploy: &Signed<DeployData>,
+) -> bool {
+    let block_expired = deploy.data.valid_after_block_number <= earliest_block_number;
+    let time_expired = deploy.data.is_expired_at(current_time_millis);
+    if block_expired || time_expired {
+        return false;
+    }
+
+    let already_in_scope = snapshot.deploys_in_scope.contains(&deploy.sig)
+        && !snapshot.rejected_in_scope.contains(&deploy.sig);
+    !already_in_scope
+}
+
 /// C15 / Arch-3: extracted from `Casper::has_pending_deploys_in_storage_for_snapshot`
 /// in `dispatch.rs`. The dispatch module is intended to host thin
 /// trait delegates (one-line `super::<module>::<fn>` calls); the
@@ -329,6 +361,89 @@ pub(crate) async fn admit_has_pending_deploys_in_storage_for_snapshot<
             ))
         })
         .map_err(|e| CasperError::RuntimeError(format!("Failed to scan deploy storage: {:?}", e)))
+}
+
+/// C15 / Arch-3: extracted from `Casper::list_pending_deploys` in
+/// `dispatch.rs`. The dispatch module hosts only thin trait delegates; the
+/// read-and-pair body lives with the other deploy-pool helpers here.
+///
+/// Returns a bulk snapshot of pending deploys from both `deploy_storage`
+/// (fresh, not yet proposed) and `rejected_deploy_buffer` (recovering
+/// after a merge conflict). Each entry is paired with an `is_rejected`
+/// flag: `false` for fresh, `true` for the recovery backlog.
+///
+/// Fresh deploys are filtered by the same predicate as
+/// `fresh_local_deploy_stats` and `has_pending_deploys_in_storage_for_snapshot`:
+/// a deploy already in a block, one whose `valid_after_block_number` is
+/// ahead of the tip, a block-expired one, and a time-expired one are each
+/// excluded. A signature that sits in both pools is emitted once, with
+/// `is_rejected = true` (the buffer dedups storage in its first clause).
+pub(crate) async fn admit_list_pending_deploys<T: TransportLayer + Send + Sync>(
+    this: &MultiParentCasperImpl<T>,
+) -> Result<Vec<(Signed<DeployData>, bool)>, CasperError> {
+    let snapshot = this.get_snapshot().await?;
+    let latest_block_number = snapshot.dag.latest_block_number();
+    let earliest_block_number = crate::rust::util::deploy_window::earliest_valid_after(
+        latest_block_number,
+        snapshot.on_chain_state.shard_conf.deploy_lifespan,
+    )?;
+    let current_time_millis = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .map_err(|e| {
+            CasperError::RuntimeError(format!(
+                "system clock is before UNIX_EPOCH ({}); cannot evaluate \
+                 deploy expiration",
+                e
+            ))
+        })?;
+
+    let rejected = this
+        .rejected_deploy_buffer
+        .lock()
+        .map_err(|e| CasperError::LockError(e.to_string()))?
+        .read_all()
+        .map_err(|e| {
+            CasperError::RuntimeError(format!("Failed to read rejected deploy buffer: {:?}", e))
+        })?;
+    let buffered_sigs: HashSet<Bytes> = rejected.iter().map(|d| d.sig.clone()).collect();
+
+    let mut out: Vec<(Signed<DeployData>, bool)> = Vec::with_capacity(rejected.len());
+
+    let fresh = this.deploy_storage.lock().read_all().map_err(|e| {
+        CasperError::RuntimeError(format!("Failed to read deploy storage: {:?}", e))
+    })?;
+    for deploy in fresh {
+        if buffered_sigs.contains(&deploy.sig) {
+            continue;
+        }
+        if stored_deploy_is_queued(
+            &snapshot,
+            earliest_block_number,
+            current_time_millis,
+            &deploy,
+        ) {
+            out.push((deploy, false));
+        }
+    }
+
+    // The recovery backlog gets the same test as the fresh pool. A deploy
+    // whose window has closed while it sat here can never land, so reporting
+    // it as pending is the same wrong answer in the other pool — the buffer
+    // is only purged when a proposal runs, so a node that is not proposing
+    // would report it indefinitely.
+    for deploy in rejected {
+        if stored_deploy_is_queued(
+            &snapshot,
+            earliest_block_number,
+            current_time_millis,
+            &deploy,
+        ) {
+            out.push((deploy, true));
+        }
+    }
+
+    Ok(out)
 }
 
 #[cfg(test)]
