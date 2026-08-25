@@ -311,6 +311,10 @@ pub const FLOOR_INCREMENTAL_GUARD_FALLBACK_METRIC: &str =
 // settled differently: a finality DIVERGENCE. The most severe event the
 // finalizer can observe; alert on any nonzero value.
 pub const FINALITY_DIVERGENCE_DETECTED_METRIC: &str = "finality.divergence.detected";
+/// A shipped genesis refused during LFS restore (claimed hash or content
+/// re-hash failed against the learned register) — peer equivocation on the
+/// restore channel, visible on dashboards.
+pub const RESTORE_GENESIS_REFUSED_METRIC: &str = "restore.genesis.refused";
 
 // `BlockDagKeyValueStorage::insert`.
 pub const DAG_INSERT_TIME_METRIC: &str = "dag.insert.time";

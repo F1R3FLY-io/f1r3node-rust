@@ -700,6 +700,19 @@ impl KeyValueDagRepresentation {
                         if let Some(parent_metadata) = self.lookup(parent)? {
                             result.insert(parent.clone());
                             next_level.push(parent_metadata);
+                        } else {
+                            // Routine on a truncated node while the sweep
+                            // first crosses its restore horizon; on a node
+                            // holding full history the same skip means the
+                            // index lost a block — keep it visible either
+                            // way rather than terminating silently.
+                            tracing::warn!(
+                                parent = %PrettyPrinter::build_string_bytes(parent),
+                                child = %PrettyPrinter::build_string_bytes(&metadata.block_hash),
+                                "finalization sweep skipped an unheld parent: settled \
+                                 ancestry below a restore horizon, or lost data on a \
+                                 fully-synced node"
+                            );
                         }
                     }
                 }

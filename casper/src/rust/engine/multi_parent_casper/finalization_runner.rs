@@ -121,11 +121,21 @@ impl Default for DivergenceMonitor {
 }
 
 impl DivergenceMonitor {
+    /// Lock the streak state, recovering from poison: the monitor is
+    /// telemetry — a panic elsewhere while the lock was held must never
+    /// escalate into a finalizer panic. The recovered state is at worst a
+    /// stale streak, which the next advance or hold rewrites.
+    fn streak(&self) -> std::sync::MutexGuard<'_, HoldStreak> {
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
     /// A containing floor was adopted: any streak is over. If the monitor
     /// had escalated, the divergence resolved itself (a re-homed carrier
     /// finalized and containment passed) — say so at INFO.
     pub fn on_advance(&self) {
-        *self.state.lock().expect("divergence monitor lock") = HoldStreak::default();
+        *self.streak() = HoldStreak::default();
         if self.diverged.swap(false, Ordering::SeqCst) {
             tracing::info!(
                 target: "f1r3fly.finalizer",
@@ -138,7 +148,7 @@ impl DivergenceMonitor {
     /// The gate refused a strictly higher derived floor.
     pub fn on_containment_hold(&self, current_lfb: &BlockHash, derived_number: i64) {
         let escalate = {
-            let mut streak = self.state.lock().expect("divergence monitor lock");
+            let mut streak = self.streak();
             if streak.pinned_lfb.as_ref() != Some(current_lfb) {
                 *streak = HoldStreak {
                     pinned_lfb: Some(current_lfb.clone()),
@@ -424,10 +434,11 @@ pub(crate) async fn compute_last_finalized_block(
     let new_lfb_opt =
         match crate::rust::finality::floor::floor_of_view(&dag, &block_store, &current, ftt).await?
         {
-            crate::rust::finality::floor::FloorOfView::Advance(floor) => {
-                divergence_monitor.on_advance();
-                Some(floor)
-            }
+            // `on_advance` is NOT called here: the alarm tracks the
+            // PERSISTED LFB, so the streak clears only after the adoption
+            // effect below succeeds. Clearing on derivation alone would let
+            // repeated effect failures suppress the divergence alarm.
+            crate::rust::finality::floor::FloorOfView::Advance(floor) => Some(floor),
             crate::rust::finality::floor::FloorOfView::NoAdvance => None,
             crate::rust::finality::floor::FloorOfView::ContainmentHold { derived } => {
                 divergence_monitor
@@ -479,6 +490,7 @@ pub(crate) async fn compute_last_finalized_block(
         new_lfb_found_effect((new_lfb.hash.clone(), ft_value))
             .await
             .map_err(CasperError::KvStoreError)?;
+        divergence_monitor.on_advance();
         new_lfb.hash
     } else {
         last_finalized_block_hash

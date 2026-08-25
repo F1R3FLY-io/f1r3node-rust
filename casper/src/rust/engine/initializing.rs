@@ -169,12 +169,20 @@ fn receive_shipped_genesis(
     learned_genesis_hash: &BlockHash,
     genesis_block: BlockMessage,
 ) -> Result<bool, CasperError> {
+    let refuse = || {
+        metrics::counter!(
+            crate::rust::metrics_constants::RESTORE_GENESIS_REFUSED_METRIC,
+            "source" => crate::rust::metrics_constants::CASPER_METRICS_SOURCE
+        )
+        .increment(1);
+    };
     if genesis_block.block_hash != *learned_genesis_hash {
         tracing::warn!(
             claimed = %PrettyPrinter::build_string_bytes(&genesis_block.block_hash),
             learned = %PrettyPrinter::build_string_bytes(learned_genesis_hash),
             "shipped genesis claims a different hash than the learned register; refusing"
         );
+        refuse();
         return Ok(false);
     }
     let computed = proto_util::hash_block(&genesis_block);
@@ -184,6 +192,7 @@ fn receive_shipped_genesis(
             learned = %PrettyPrinter::build_string_bytes(learned_genesis_hash),
             "shipped genesis content does not re-hash to the learned register; refusing"
         );
+        refuse();
         return Ok(false);
     }
     if block_dag_storage

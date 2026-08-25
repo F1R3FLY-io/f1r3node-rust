@@ -706,9 +706,11 @@ pub struct BlockProcessorDependencies<T: TransportLayer + Send + Sync> {
     missing_dependency_quarantine_until: Arc<Mutex<HashMap<BlockHash, u64>>>,
     /// Hard validation `Err`s per buffered block, bounding the
     /// fail→pendant→fail loop the way `missing_dependency_attempts` bounds
-    /// the dependency-check loop.
+    /// the dependency-check loop. Deadlines are `Instant`s: the quarantine
+    /// paces retries, so a wall-clock step (NTP correction) must neither
+    /// void an active quarantine nor extend one for hours.
     validation_error_attempts: Arc<Mutex<HashMap<BlockHash, u32>>>,
-    validation_error_quarantine_until: Arc<Mutex<HashMap<BlockHash, u64>>>,
+    validation_error_quarantine_until: Arc<Mutex<HashMap<BlockHash, std::time::Instant>>>,
     /// Hashes solicited as dependencies by a block whose sender is bonded in
     /// this node's anchor. Membership is the third condition of
     /// [`admit_as_settled`]; entries are removed when the block arrives, and
@@ -1247,11 +1249,8 @@ impl<T: TransportLayer + Send + Sync> BlockProcessorDependencies<T> {
             }
         };
 
-        let now_ms = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0);
-        let until = now_ms.saturating_add(missing_dependency_quarantine_ms());
+        let until = std::time::Instant::now()
+            + std::time::Duration::from_millis(missing_dependency_quarantine_ms());
         let mut quarantine = self.validation_error_quarantine_until.lock().map_err(|_| {
             CasperError::RuntimeError(
                 "Failed to acquire validation_error_quarantine_until lock".to_string(),
@@ -1272,10 +1271,7 @@ impl<T: TransportLayer + Send + Sync> BlockProcessorDependencies<T> {
         &self,
         block_hash: &BlockHash,
     ) -> Result<bool, CasperError> {
-        let now_ms = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0);
+        let now = std::time::Instant::now();
         let quarantine = self.validation_error_quarantine_until.lock().map_err(|_| {
             CasperError::RuntimeError(
                 "Failed to acquire validation_error_quarantine_until lock".to_string(),
@@ -1284,7 +1280,7 @@ impl<T: TransportLayer + Send + Sync> BlockProcessorDependencies<T> {
         Ok(quarantine
             .get(block_hash)
             .copied()
-            .is_some_and(|until| now_ms < until))
+            .is_some_and(|until| now < until))
     }
 
     /// A settled verdict ends the failure ledger for this hash.
@@ -1307,16 +1303,13 @@ impl<T: TransportLayer + Send + Sync> BlockProcessorDependencies<T> {
     }
 
     fn sweep_expired_validation_error_quarantine(&self) -> Result<(), CasperError> {
-        let now_ms = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0);
+        let now = std::time::Instant::now();
         let mut quarantine = self.validation_error_quarantine_until.lock().map_err(|_| {
             CasperError::RuntimeError(
                 "Failed to acquire validation_error_quarantine_until lock".to_string(),
             )
         })?;
-        quarantine.retain(|_, until| *until > now_ms);
+        quarantine.retain(|_, until| *until > now);
         Ok(())
     }
 
@@ -1396,13 +1389,15 @@ impl<T: TransportLayer + Send + Sync> BlockProcessorDependencies<T> {
         casper: Arc<dyn Casper + Send + Sync + 'static>,
         block: &BlockMessage,
     ) -> Result<bool, CasperError> {
-        if !self.take_settled_solicitation(&block.block_hash) {
+        // One-shot provenance ticket: `take` consumes the solicitation, so
+        // the boolean below is the REAL third conjunct, not a restatement.
+        let solicited_by_bonded = self.take_settled_solicitation(&block.block_hash);
+        if !solicited_by_bonded {
             return Ok(false);
         }
         let approved_block_number = casper
             .get_approved_block()
             .map(|approved| proto_util::block_number(approved))?;
-        let admitted_so_far = self.settled_admissions.load(Ordering::Relaxed);
         let seq_below_senders_latest = {
             let representation = self.block_dag_storage.get_representation()?;
             match representation.latest_message_hash(&block.sender) {
@@ -1416,18 +1411,33 @@ impl<T: TransportLayer + Send + Sync> BlockProcessorDependencies<T> {
         if !admit_as_settled(
             proto_util::block_number(block),
             approved_block_number,
-            true,
-            admitted_so_far < SETTLED_ADMISSION_BUDGET,
+            solicited_by_bonded,
+            self.settled_admissions.load(Ordering::Relaxed) < SETTLED_ADMISSION_BUDGET,
             seq_below_senders_latest,
         ) {
             return Ok(false);
         }
 
-        self.block_dag_storage.insert(
+        // Reserve the budget slot atomically: check-then-increment as two
+        // steps lets concurrent admissions overshoot the documented bound.
+        let Ok(reserved) = self.settled_admissions.fetch_update(
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+            |admitted| (admitted < SETTLED_ADMISSION_BUDGET).then(|| admitted + 1),
+        ) else {
+            return Ok(false);
+        };
+
+        if let Err(insert_err) = self.block_dag_storage.insert(
             block,
             block_storage::rust::dag::block_dag_key_value_storage::InsertMode::SettledHistory,
-        )?;
-        let admitted = self.settled_admissions.fetch_add(1, Ordering::Relaxed) + 1;
+        ) {
+            // Return the reserved slot: a storage failure must not consume
+            // budget headroom.
+            self.settled_admissions.fetch_sub(1, Ordering::Relaxed);
+            return Err(insert_err.into());
+        }
+        let admitted = reserved + 1;
         if admitted == SETTLED_ADMISSION_BUDGET / 2 {
             tracing::warn!(
                 admitted,
