@@ -164,11 +164,73 @@ impl CanonicalEgressFixture {
 /// channel.
 pub struct IdentityOrderFixture {
     control: CanonicalEgressFixture,
-    identity_order: Bag,
+    identity_order: IdentityOrderIndex,
     channel: String,
     channel_prefix: Vec<u8>,
     extra_datum: Datum<String>,
     extra_identity: Vec<u8>,
+}
+
+#[derive(Clone)]
+struct IdentityOrderIndex {
+    bag: Bag,
+    /// Exact legacy `Vec<Vec<u8>>` length, including its outer `u64` count.
+    /// Maintaining this alongside multiplicity makes trusted egress one
+    /// zipper pass without weakening preflight-before-publication.
+    encoded_len: u128,
+}
+
+impl IdentityOrderIndex {
+    fn new() -> Self {
+        Self {
+            bag: Bag::new(),
+            encoded_len: u128::from(u64::BITS / 8),
+        }
+    }
+
+    fn cardinality(&self) -> u64 { self.bag.cardinality() }
+
+    fn insert_many(
+        &mut self,
+        identity: &[u8],
+        multiplicity: Multiplicity,
+    ) -> Result<(), DataIndexError> {
+        let added_len = framed_identity_bytes(identity, multiplicity)?;
+        let next_len = self
+            .encoded_len
+            .checked_add(added_len)
+            .ok_or(DataIndexError::EncodedLengthOverflow(u128::MAX))?;
+        self.bag.insert_many(identity, multiplicity)?;
+        self.encoded_len = next_len;
+        Ok(())
+    }
+
+    fn insert(&mut self, identity: &[u8]) -> Result<(), DataIndexError> {
+        self.insert_many(identity, Multiplicity::ONE)
+    }
+
+    fn remove(&mut self, identity: &[u8]) -> Result<(), DataIndexError> {
+        if self.bag.count(identity) == 0 {
+            return Ok(());
+        }
+        let removed_len = framed_identity_bytes(identity, Multiplicity::ONE)?;
+        self.bag.remove(identity);
+        self.encoded_len = self
+            .encoded_len
+            .checked_sub(removed_len)
+            .expect("identity length metadata must cover every indexed occurrence");
+        Ok(())
+    }
+}
+
+fn framed_identity_bytes(
+    identity: &[u8],
+    multiplicity: Multiplicity,
+) -> Result<u128, DataIndexError> {
+    u128::from(u64::BITS / 8)
+        .checked_add(identity.len() as u128)
+        .and_then(|framed| framed.checked_mul(u128::from(multiplicity.get())))
+        .ok_or(DataIndexError::EncodedLengthOverflow(u128::MAX))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -274,7 +336,7 @@ impl IdentityOrderFixture {
         std::hint::black_box(
             identity_order
                 .as_ref()
-                .map_or(0, |index| index.cardinality()),
+                .map_or(0, IdentityOrderIndex::cardinality),
         );
         store.cardinality()
     }
@@ -298,7 +360,7 @@ impl IdentityOrderFixture {
 
 pub struct IdentityOrderMutationFixture {
     store: RSpaceDataStore<String, String>,
-    identity_order: Option<Bag>,
+    identity_order: Option<IdentityOrderIndex>,
     channel: String,
     extra_datum: Datum<String>,
     extra_identity: Vec<u8>,
@@ -318,7 +380,9 @@ impl IdentityOrderMutationFixture {
         }
         assert!(self.store.remove_path(&path), "inserted authority path must remove");
         if let Some(index) = self.identity_order.as_mut() {
-            index.remove(&self.extra_identity);
+            index
+                .remove(&self.extra_identity)
+                .expect("mutation identity removal");
         }
         assert_eq!(self.store.cardinality(), self.expected_cardinality);
         if let Some(index) = &self.identity_order {
@@ -331,14 +395,14 @@ impl IdentityOrderMutationFixture {
 fn build_identity_order_index(
     store: &RSpaceDataStore<String, String>,
     channel_prefix: &[u8],
-) -> Result<Bag, DataIndexError> {
-    let mut identity_order = Bag::new();
+) -> Result<IdentityOrderIndex, DataIndexError> {
+    let mut identity_order = IdentityOrderIndex::new();
     store
         .index
         .as_bag()
         .try_visit_relative_prefix(channel_prefix, |path, multiplicity| {
             let identity = RhoPathV1::relative_datum_identity(path)?;
-            if identity_order.contains(identity) {
+            if identity_order.bag.contains(identity) {
                 return Err(DataIndexError::DuplicateDatumIdentity);
             }
             identity_order.insert_many(identity, multiplicity)?;
@@ -367,41 +431,31 @@ fn structural_and_identity_orders_differ(
 
 fn encode_identity_order_bag(
     channel: &String,
-    identity_order: &Bag,
+    identity_order: &IdentityOrderIndex,
 ) -> Result<CanonicalEgressOutcome, DataIndexError> {
-    let datum_count = identity_order.cardinality();
-    if identity_order.cardinality_is_saturated() {
-        return Err(DataIndexError::EncodedCardinalityOverflow(identity_order.exact_cardinality()));
+    let datum_count = identity_order.bag.cardinality();
+    if identity_order.bag.cardinality_is_saturated() {
+        return Err(DataIndexError::EncodedCardinalityOverflow(
+            identity_order.bag.exact_cardinality(),
+        ));
     }
-    let mut encoded_len = u128::from(u64::BITS / 8);
-    identity_order.try_visit_relative_prefix(&[], |identity, multiplicity| {
-        let framed_len = u128::from(u64::BITS / 8)
-            .checked_add(identity.len() as u128)
-            .ok_or(DataIndexError::EncodedLengthOverflow(u128::MAX))?;
-        encoded_len = encoded_len
-            .checked_add(
-                u128::from(multiplicity.get())
-                    .checked_mul(framed_len)
-                    .ok_or(DataIndexError::EncodedLengthOverflow(u128::MAX))?,
-            )
-            .ok_or(DataIndexError::EncodedLengthOverflow(u128::MAX))?;
-        Ok::<(), DataIndexError>(())
-    })?;
-    let capacity = usize::try_from(encoded_len)
-        .map_err(|_| DataIndexError::EncodedLengthOverflow(encoded_len))?;
+    let capacity = usize::try_from(identity_order.encoded_len)
+        .map_err(|_| DataIndexError::EncodedLengthOverflow(identity_order.encoded_len))?;
     let mut encoded_datums = Vec::new();
     encoded_datums
         .try_reserve_exact(capacity)
         .map_err(|_| DataIndexError::AllocationFailure(capacity))?;
     encoded_datums.extend_from_slice(&datum_count.to_le_bytes());
-    identity_order.visit_relative_prefix(&[], |identity, multiplicity| {
-        let identity_len = u64::try_from(identity.len())
-            .expect("preflighted identity length must fit bincode u64");
-        for _ in 0..multiplicity.get() {
-            encoded_datums.extend_from_slice(&identity_len.to_le_bytes());
-            encoded_datums.extend_from_slice(identity);
-        }
-    });
+    identity_order
+        .bag
+        .visit_relative_prefix(&[], |identity, multiplicity| {
+            let identity_len = u64::try_from(identity.len())
+                .expect("preflighted identity length must fit bincode u64");
+            for _ in 0..multiplicity.get() {
+                encoded_datums.extend_from_slice(&identity_len.to_le_bytes());
+                encoded_datums.extend_from_slice(identity);
+            }
+        });
     debug_assert_eq!(encoded_datums.len(), capacity);
     Ok(CanonicalEgressOutcome {
         channel_hash: hash(channel),
@@ -417,7 +471,7 @@ mod identity_order_tests {
     #[test]
     fn empty_identity_index_encodes_the_frozen_empty_datum_vector() {
         let channel = "empty-identity-order".to_string();
-        let actual = encode_identity_order_bag(&channel, &Bag::new()).unwrap();
+        let actual = encode_identity_order_bag(&channel, &IdentityOrderIndex::new()).unwrap();
         assert_eq!(actual.channel_hash, hash(&channel));
         assert_eq!(actual.encoded_datums, encode_datums::<String>(&Vec::new()));
         assert_eq!(actual.datum_count, 0);
