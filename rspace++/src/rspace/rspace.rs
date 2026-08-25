@@ -1374,7 +1374,8 @@ mod tests {
 
     // Disambiguates two candidate explanations for the near-zero wall-clock
     // speedup measured end-to-end at rholang-par scale (bench_par_branches:
-    // 0.88-0.96x at 32 branches, ideal 32x — see issue #50 follow-up):
+    // 0.88-0.96x at 32 branches against a worker-thread-bounded ideal — see
+    // issue #50 follow-up):
     // (a) event_log/produce_counter themselves cost that much, or
     // (b) something else in produce()'s path (HotStore, the striped
     //     per-channel lock, tokio scheduling) is the real cost and these
@@ -1425,13 +1426,24 @@ mod tests {
         }
         let par_ms = t_par.elapsed().as_millis().max(1);
 
+        // log_produce() is synchronous and the branch loops never await, so
+        // each task holds its worker for the whole loop: at most num_workers
+        // (further capped by the host's cores) branches run at once. That, not
+        // PAR_BRANCHES, is the achievable ideal for the efficiency metric.
+        let num_workers = tokio::runtime::Handle::current().metrics().num_workers();
+        let ideal = PAR_BRANCHES.min(num_workers).min(
+            std::thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(usize::MAX),
+        );
         let speedup = seq_ms as f64 / par_ms as f64;
-        let efficiency = speedup / PAR_BRANCHES as f64 * 100.0;
+        let efficiency = speedup / ideal as f64 * 100.0;
 
         eprintln!(
             "event_log+produce_counter isolated cost: branches={PAR_BRANCHES} \
              ops_per_branch={OPS_PER_BRANCH} total_ops={} sequential={seq_ms}ms \
-             concurrent={par_ms}ms speedup={:.2}x (ideal {PAR_BRANCHES}x) efficiency={:.1}%",
+             concurrent={par_ms}ms speedup={:.2}x (ideal {ideal}x: {PAR_BRANCHES} branches on \
+             {num_workers} workers) efficiency={:.1}%",
             PAR_BRANCHES * OPS_PER_BRANCH,
             speedup,
             efficiency,
