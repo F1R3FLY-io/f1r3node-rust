@@ -2,7 +2,6 @@
 # capability-gated tests at SYSTEM_INTEGRATION_REF. Add a kebab-case identifier
 # only when its behavior is present on the target branch; the reader rejects
 # malformed and duplicate entries before pytest starts.
-concurrent-bridge-lock-accounting
 duplicate-signed-deploy-race
 expired-deploy-admission
 finality-stall-recovery
