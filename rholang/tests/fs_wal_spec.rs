@@ -2215,4 +2215,229 @@ mod tests {
             files.len()
         );
     }
+
+    /// **Multi-deploy WAL-replay parity pin (2026-08-26).**
+    /// Intermediate coverage between the single-deploy byte-identity
+    /// pins above and the (still-blocked) two-validator PB-M-14 E2E
+    /// test.  Runs a longer sequence of mutations across multiple
+    /// deploy boundaries on a leader, captures its WAL and
+    /// checkpoint, replays on a follower via the same rig-then-
+    /// evaluate pattern, and asserts byte-identical WAL entries at
+    /// the whole-sequence level.
+    ///
+    /// Coverage delta over `wal_is_byte_identical_on_leader_and_follower`:
+    /// * Three separate deploys (open/mutate/close x 3) instead of
+    ///   one — exercises the cross-deploy fs_handles.wal continuity
+    ///   invariant (WAL entries accumulate across evaluate calls
+    ///   before the follower captures a single checkpoint).
+    /// * Mixed operation types (write, write_at, truncate, stat) in
+    ///   different orderings per deploy.
+    /// * Mixes Consensus and Oracular caps so cross-cap symmetry is
+    ///   exercised too (oracular calls MUST NOT emit WAL entries).
+    ///
+    /// The full PB-M-14 test (validator B joins from genesis + WAL
+    /// alone, no shared store, no rig) requires per-node fs
+    /// provisioning on `TestNode::create_node` which does not exist
+    /// today.  See the ignored `pb_m_14_two_validator_scaffold`
+    /// test below and the Deferred items catalog entry for
+    /// "Two-validator PB-M-14 end-to-end test".
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn multi_deploy_wal_is_byte_identical_on_leader_and_follower() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("data.bin"), vec![0u8; 128]).unwrap();
+        std::fs::write(dir.path().join("aux.bin"), vec![0u8; 64]).unwrap();
+
+        let (mut leader, mut follower) = create_leader_and_follower().await;
+        let root_display = dir.path().display().to_string();
+
+        // Three deploys, each opens + does one or two ops + closes.
+        // Mixed Consensus + Oracular so the follower must observe
+        // WAL entries only from the Consensus caps.
+        let deploys: Vec<(String, [u8; 32])> = vec![
+            (
+                format!(
+                    r#"
+                    new fsOpen(`rho:io:fs:native:1.0.0/open`),
+                        fsWrite(`rho:io:fs:native:1.0.0/write`),
+                        fsClose(`rho:io:fs:native:1.0.0/close`),
+                        oc, wc, cc in {{
+                      fsOpen!("{root_display}", "data.bin", "rw", "consensus", *oc) |
+                      for (@[true, fd] <- oc) {{
+                        fsWrite!(fd, "aabb".hexToBytes(), *wc) |
+                        for (@_ <- wc) {{
+                          fsClose!(fd, *cc) |
+                          for (@_ <- cc) {{ Nil }}
+                        }}
+                      }}
+                    }}
+                    "#
+                ),
+                [1u8; 32],
+            ),
+            (
+                format!(
+                    r#"
+                    new fsOpen(`rho:io:fs:native:1.0.0/open`),
+                        fsWriteAt(`rho:io:fs:native:1.0.0/writeAt`),
+                        fsTruncate(`rho:io:fs:native:1.0.0/truncate`),
+                        fsClose(`rho:io:fs:native:1.0.0/close`),
+                        oc, wc, tc, cc in {{
+                      fsOpen!("{root_display}", "data.bin", "rw", "consensus", *oc) |
+                      for (@[true, fd] <- oc) {{
+                        fsWriteAt!(fd, 10, "ccdd".hexToBytes(), *wc) |
+                        for (@_ <- wc) {{
+                          fsTruncate!(fd, 32, *tc) |
+                          for (@_ <- tc) {{
+                            fsClose!(fd, *cc) |
+                            for (@_ <- cc) {{ Nil }}
+                          }}
+                        }}
+                      }}
+                    }}
+                    "#
+                ),
+                [2u8; 32],
+            ),
+            (
+                // Oracular deploy — must NOT emit WAL entries.  The
+                // WAL count assertion below transitively checks this.
+                format!(
+                    r#"
+                    new fsOpen(`rho:io:fs:native:1.0.0/open`),
+                        fsWrite(`rho:io:fs:native:1.0.0/write`),
+                        fsClose(`rho:io:fs:native:1.0.0/close`),
+                        oc, wc, cc in {{
+                      fsOpen!("{root_display}", "aux.bin", "rw", "oracular", *oc) |
+                      for (@[true, fd] <- oc) {{
+                        fsWrite!(fd, "ee".hexToBytes(), *wc) |
+                        for (@_ <- wc) {{
+                          fsClose!(fd, *cc) |
+                          for (@_ <- cc) {{ Nil }}
+                        }}
+                      }}
+                    }}
+                    "#
+                ),
+                [3u8; 32],
+            ),
+        ];
+
+        // Play the three deploys on the leader; WAL accumulates.
+        for (term, seed) in &deploys {
+            leader
+                .evaluate(
+                    term,
+                    Cost::unsafe_max(),
+                    std::collections::HashMap::new(),
+                    Blake2b512Random::create_from_bytes(seed),
+                )
+                .await
+                .expect("leader evaluate");
+        }
+        let leader_wal = leader.fs_handles.wal.snapshot();
+        assert!(
+            !leader_wal.is_empty(),
+            "at least one Consensus mutation must have journaled"
+        );
+
+        // Capture leader checkpoint; rig follower.
+        let checkpoint = leader.create_checkpoint().await;
+        follower
+            .reset(&checkpoint.root)
+            .await
+            .expect("follower reset");
+        follower.rig(checkpoint.log).await.expect("follower rig");
+
+        // Replay all three deploys on the follower with the same
+        // seeds — drives the is_replay=true branch of every handler.
+        for (term, seed) in &deploys {
+            follower
+                .evaluate(
+                    term,
+                    Cost::unsafe_max(),
+                    std::collections::HashMap::new(),
+                    Blake2b512Random::create_from_bytes(seed),
+                )
+                .await
+                .expect("follower evaluate");
+        }
+        let follower_wal = follower.fs_handles.wal.snapshot();
+
+        assert_eq!(
+            leader_wal.len(),
+            follower_wal.len(),
+            "multi-deploy WAL length diverges: leader={}, follower={} — \
+             regression suggests one of the three deploys leaked an entry \
+             on one side or the other (e.g., WAL append fires on
+             is_replay=true where it shouldn't, or vice versa)",
+            leader_wal.len(),
+            follower_wal.len(),
+        );
+        for (i, (l, f)) in leader_wal.iter().zip(follower_wal.iter()).enumerate() {
+            assert_eq!(
+                l, f,
+                "multi-deploy WAL entry {i} differs: leader={l:?}, follower={f:?}"
+            );
+        }
+        follower
+            .check_replay_data()
+            .await
+            .expect("follower replay data mismatch — tuplespace divergence");
+    }
+
+    /// **PB-M-14 two-validator E2E scaffold (2026-08-26).**  Ignored
+    /// pending the harness gap documented in the Deferred items
+    /// catalog: `TestNode::create_node` in
+    /// `casper/tests/helper/test_node.rs` does not accept per-node
+    /// fs provisioning (bundle entries, consensus_static paths).
+    /// To exercise the PB-M-14 property described at
+    /// implementation-plan.md:397 ("mutate a consensus file on
+    /// validator A; bring validator B online from genesis + WAL only;
+    /// assert byte-identical file contents") the harness needs the
+    /// following additions:
+    ///
+    ///   1. `TestNode::create_node` gains a `fs_config:
+    ///      Option<FsProvisioningConfig>` parameter, threaded through
+    ///      `RuntimeManager::spawn_runtime` into the composed
+    ///      FsGenesis-source-inject site.
+    ///   2. `GenesisBuilder` gains a helper to build a validator's
+    ///      genesis with a specific fs bundle attached so validator A
+    ///      and B can share the same fs-generator PK but different
+    ///      per-node bundle contents (or same bundle contents at
+    ///      identical canon-paths).
+    ///   3. `TestNode` gains a way to observe on-disk file contents
+    ///      after a block finalizes — either via a filesystem hook or
+    ///      by resolving the fs cap and issuing a read-back deploy.
+    ///
+    /// Once those land, this test drives:
+    ///   1. Two-node network (A + B).
+    ///   2. A mutates a consensus-static file (data.bin) via three
+    ///      write deploys.
+    ///   3. Blocks propagate; A finalizes them, WAL committed.
+    ///   4. B (which started with the same fs bundle at the same
+    ///      canon-path but empty file contents) reconstructs the
+    ///      file state from WAL replay.
+    ///   5. Assertion: `std::fs::read(B_bundle_path)` byte-matches
+    ///      `std::fs::read(A_bundle_path)`.
+    ///
+    /// Interim coverage: the multi-deploy WAL-replay pin above
+    /// verifies the WAL-BYTE-IDENTITY half of the PB-M-14 property
+    /// (validators produce identical WAL sequences for identical
+    /// deploys under the shared-store rig pattern).  The still-
+    /// missing half is FILE-STATE-IDENTITY via replay from WAL
+    /// against a fresh store.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[ignore = "blocked on TestNode per-node fs provisioning + \
+                observation hooks; see docstring above and Deferred \
+                items catalog entry `Two-validator PB-M-14 end-to-end \
+                test`"]
+    async fn pb_m_14_two_validator_scaffold() {
+        panic!(
+            "pb_m_14_two_validator_scaffold is a documentation-only \
+             scaffold — remove the #[ignore] attribute AND implement \
+             the harness prerequisites listed in the docstring before \
+             running.  See implementation-plan.md:397 for the \
+             invariant this test targets."
+        );
+    }
 }
