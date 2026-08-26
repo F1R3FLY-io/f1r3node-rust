@@ -198,6 +198,23 @@ pub trait MultiParentCasper: Casper + Send + Sync {
     ) -> Result<bool, CasperError> {
         self.has_pending_deploys_in_storage().await
     }
+
+    /// Bulk snapshot of pending deploys from both `deploy_storage` (fresh,
+    /// not yet proposed) and `rejected_deploy_buffer` (recovering after a
+    /// merge conflict). Each entry is paired with an `is_rejected` flag
+    /// (`true` = recovery backlog, `false` = fresh).
+    ///
+    /// The queue is **node-local**: deploys never gossip, so an observer
+    /// node always answers empty (it rejects `doDeploy`). For cross-node
+    /// deploy status, use `deployFinalizationStatus` — it is DAG-derived
+    /// and consistent across nodes. This API is for validator-side
+    /// introspection of the local proposer pool.
+    ///
+    /// Default returns an empty Vec — used by `NoopEngine` and other
+    /// engine states where `with_casper()` returns `None`.
+    async fn list_pending_deploys(&self) -> Result<Vec<(Signed<DeployData>, bool)>, CasperError> {
+        Ok(Vec::new())
+    }
 }
 
 pub async fn hash_set_casper<T: TransportLayer + Send + Sync>(
