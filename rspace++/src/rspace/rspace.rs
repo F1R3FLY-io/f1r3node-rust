@@ -545,7 +545,10 @@ where
         Ok((history_repo, hot_store))
     }
 
-    fn produce_counter_shard(&self, produce_ref: &Produce) -> &std::sync::Mutex<BTreeMap<Produce, i32>> {
+    fn produce_counter_shard(
+        &self,
+        produce_ref: &Produce,
+    ) -> &std::sync::Mutex<BTreeMap<Produce, i32>> {
         let idx = (striped_locks::channel_hash(produce_ref) as usize) % self.produce_counter.len();
         &self.produce_counter[idx]
     }
