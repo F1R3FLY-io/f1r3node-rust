@@ -929,54 +929,57 @@ fn fs_entries_charges_supplement_on_both_branches() {
     );
 }
 
-/// **Slice 9b-iv follow-up pin — fs_entries_stream + fs_remove_dir stay
-/// setup-only, pending blocker resolution.**
+/// **Slice 9b-iv follow-up pin — fs_remove_dir stays setup-only,
+/// pending reply-shape change.**
 ///
-/// Kept from the original entries-family setup-only pin: fs_entries_stream
-/// is a stub returning `FSERR_UNSUPPORTED` unconditionally (Phase-1 tail-
-/// end backing not yet landed), so the per-entry component is always 0
-/// — no supplement wiring is meaningful yet.  fs_remove_dir has a
-/// separate blocker: the recursive-remove reply is `[true]` on success
-/// with no count, so leader and replay have no shared value to derive
-/// `n` from.  Unblocking requires either (a) instrumenting
-/// `remove_dir_recursive` to count and threading the count into the
-/// reply as `[true, n_deleted]` (with Dir.rho + file_dir_check + fs_generator
-/// callers updated to accept the new shape), or (b) capping recursive
-/// removeDir at a fixed subtree entry budget and charging that flat.
-/// Supplement helpers (`fs_entries_stream_per_entry_supplement_cost`,
-/// `fs_remove_dir_per_entry_supplement_cost`) are already exported by
-/// `costs.rs` so wiring is a one-line change once either blocker
+/// Narrowed 2026-08-25 (streaming-backing slice Step 8): the sibling
+/// `fs_entries_stream` deferral cleared when Steps 1-5 landed the
+/// real streaming backing via three new natives (`fs_entries_stream_open`
+/// / `_next` / `_close`), each of which now charges its own two-branch
+/// setup + per-entry supplement.  The arity-3 `fs_entries_stream`
+/// handler at handlers.rs:2450 remains as an FSERR_UNSUPPORTED stub
+/// for URN backward-compatibility but is no longer the pinned
+/// deferral — the runtime pin
+/// `fs_entries_stream_streams_five_children_charges_supplement_at_runtime`
+/// in `fileio_cost_runtime_spec.rs` now covers the streaming
+/// per-entry charge end-to-end.
+///
+/// `fs_remove_dir` is the remaining deferral: the recursive-remove
+/// reply is `[true]` on success with no count, so leader and replay
+/// have no shared value to derive `n` from.  Unblocking requires
+/// either (a) instrumenting `remove_dir_recursive` to count and
+/// threading the count into the reply as `[true, n_deleted]` (with
+/// Dir.rho + file_dir_check + fs_generator callers updated to accept
+/// the new shape), or (b) capping recursive removeDir at a fixed
+/// subtree entry budget and charging that flat.  Supplement helper
+/// `fs_remove_dir_per_entry_supplement_cost` is already exported by
+/// `costs.rs` so wiring is a one-line change once the blocker
 /// resolves.
 ///
-/// This pin holds the deferral by requiring the exact `_cost(0)`
+/// This pin holds the deferral by requiring the exact `fs_remove_dir_cost(0)`
 /// call site.  A future PR that silently "upgrades" to
-/// `_cost(some_expression)` without also wiring the paired supplement
-/// on the reciprocal branch would trip this pin — forcing the author
-/// to either (a) revert, or (b) land the full two-branch pattern AND
-/// swap this pin for a `_charges_supplement_on_both_branches` pin
-/// (see the fs_entries pin above for the template).
+/// `fs_remove_dir_cost(some_expression)` without also wiring the paired
+/// supplement on the reciprocal branch would trip this pin — forcing
+/// the author to either (a) revert, or (b) land the full two-branch
+/// pattern AND replace this pin with the
+/// `_charges_supplement_on_both_branches` shape (see the fs_entries
+/// pin above for the template).
 #[test]
-fn entries_stream_and_remove_dir_charge_setup_only_pending_blocker_resolution() {
+fn remove_dir_charges_setup_only_pending_reply_shape_change() {
     let src = include_str!("../src/rust/interpreter/io/handlers.rs");
-    for name in &["fs_entries_stream", "fs_remove_dir"] {
-        let signature_prefix = format!("    pub async fn {name}(");
-        let body = method_body(src, &signature_prefix)
-            .unwrap_or_else(|| panic!("{name} handler must exist"));
-        let expected = format!("costs::{name}_cost(0)");
-        assert!(
-            body.contains(&expected),
-            "slice 9b-iv deferred-charge regression: {name} handler must charge \
-             `costs::{name}_cost(0)` — setup weight only — pending blocker \
-             resolution.  {name} blocker: fs_entries_stream is a stub \
-             (Phase-1 backing not yet implemented); fs_remove_dir needs a \
-             reply-shape change to expose `n_deleted` for two-branch \
-             counting.  If you're landing the fix, wire the paired \
-             supplement charge (`costs::{name}_per_entry_supplement_cost`) \
-             on BOTH branches (leader from fresh reply, replay from \
-             `previous`) AND replace this pin with the \
-             `_charges_supplement_on_both_branches` shape."
-        );
-    }
+    let signature_prefix = "    pub async fn fs_remove_dir(";
+    let body = method_body(src, signature_prefix).expect("fs_remove_dir handler must exist");
+    let expected = "costs::fs_remove_dir_cost(0)";
+    assert!(
+        body.contains(expected),
+        "slice 9b-iv deferred-charge regression: fs_remove_dir handler must \
+         charge `costs::fs_remove_dir_cost(0)` — setup weight only — pending \
+         reply-shape change to expose `n_deleted` for two-branch counting.  \
+         If you're landing the fix, wire the paired supplement charge \
+         (`costs::fs_remove_dir_per_entry_supplement_cost`) on BOTH branches \
+         (leader from fresh reply, replay from `previous`) AND replace this \
+         pin with the `_charges_supplement_on_both_branches` shape."
+    );
 }
 
 // -------- Slice 9c-i regression pin --------------------------------
