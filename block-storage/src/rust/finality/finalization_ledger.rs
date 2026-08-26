@@ -97,14 +97,27 @@ pub enum FinalizationEffectKind {
     CosignerRemoval,
     RuntimeCacheEviction,
     FinalizedEvent,
+    /// Fileio Phase 7 fs_wal snapshot write (H-1 fix, 2026-08-06).
+    /// Post-`fileio-phase-1-2 ← cost-accounted-rho` merge (2026-08-26)
+    /// this joins the per-effect idempotency machinery instead of
+    /// relying on `pending_wal_slices.remove(...)` semantics; a
+    /// finalization-round retry after partial write finds this
+    /// effect already recorded and skips.  On restart against pre-
+    /// migration data, `reconcile_finalization_effects` re-runs
+    /// apply_finalization_effects for pending records; the
+    /// WalSnapshotWrite branch cleanly no-ops on cache miss
+    /// (validators that did not compute the block have no cached
+    /// slice, log at debug, record receipt).
+    WalSnapshotWrite,
 }
 
 impl FinalizationEffectKind {
-    const ALL: [Self; 4] = [
+    const ALL: [Self; 5] = [
         Self::DeployRemoval,
         Self::CosignerRemoval,
         Self::RuntimeCacheEviction,
         Self::FinalizedEvent,
+        Self::WalSnapshotWrite,
     ];
 }
 
@@ -1582,9 +1595,13 @@ mod tests {
         let restarted = FinalizationLedger::new(KeyValueTypedStoreImpl::new(store.clone()));
         assert_eq!(restarted.pending_effect_records().unwrap(), vec![record]);
         assert!(restarted.record_round_effects_completed(1).is_err());
+        // Fileio Phase 7 (2026-08-26): WalSnapshotWrite joins the
+        // per-block effect set so the completeness check requires it
+        // alongside RuntimeCacheEviction and FinalizedEvent.
         for kind in [
             FinalizationEffectKind::RuntimeCacheEviction,
             FinalizationEffectKind::FinalizedEvent,
+            FinalizationEffectKind::WalSnapshotWrite,
         ] {
             restarted
                 .record_effect(FinalizationEffectId {

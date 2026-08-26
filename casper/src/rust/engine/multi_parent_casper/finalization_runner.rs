@@ -351,6 +351,85 @@ async fn apply_finalization_effects(
             ctx.block_dag_storage
                 .record_finalization_effect(event_effect)?;
         }
+
+        // Fileio H-1 fix (slice 30c Phase B): LFB-triggered fs_wal
+        // snapshot write per newly-finalized block.  Post-merge
+        // (2026-08-26) folded into apply_finalization_effects's per-
+        // effect idempotency machinery instead of relying on
+        // `pending_wal_slices.remove(...)` semantics — a
+        // finalization-round retry after partial write finds this
+        // effect already recorded and skips.  On cache miss (this
+        // validator didn't compute the block; e.g., joining
+        // validator that received it from a peer without re-
+        // executing), record the receipt anyway so retries don't
+        // loop and downstream peer catch-up fills the snapshot gap.
+        let snapshot_effect = effect_id(
+            revision,
+            block.block_hash.clone(),
+            FinalizationEffectKind::WalSnapshotWrite,
+        );
+        if !ctx
+            .block_dag_storage
+            .finalization_effect_completed(&snapshot_effect)?
+        {
+            let writer_opt = ctx.runtime_manager.fs_snapshot_writer.read().await.clone();
+            if let Some(writer) = writer_opt {
+                let post_state_hash = block.body.state.post_state_hash.to_vec();
+                let bn = block.body.state.block_number;
+                let cache_entry = {
+                    let mut slices = ctx.runtime_manager.pending_wal_slices.write().await;
+                    slices.remove(&post_state_hash)
+                };
+                match cache_entry {
+                    Some((_cached_bn, slice)) => {
+                        let block_hash_pretty =
+                            PrettyPrinter::build_string_bytes(&block.block_hash);
+                        let writer_clone = writer.clone();
+                        let snapshot_result = tokio::task::spawn_blocking(move || {
+                            writer_clone.maybe_write(bn, &slice)
+                        })
+                        .await;
+                        match snapshot_result {
+                            Ok(Ok(_)) => {}
+                            Ok(Err(error)) => tracing::warn!(
+                                target: "f1r3fly.casper.fs_wal",
+                                block_number = bn,
+                                block_hash = %block_hash_pretty,
+                                error = %error,
+                                "LFB-triggered snapshot write failed"
+                            ),
+                            Err(je) => tracing::warn!(
+                                target: "f1r3fly.casper.fs_wal",
+                                block_number = bn,
+                                block_hash = %block_hash_pretty,
+                                error = %je,
+                                "LFB-triggered snapshot spawn_blocking failed"
+                            ),
+                        }
+                    }
+                    None => {
+                        tracing::debug!(
+                            target: "f1r3fly.casper.fs_wal",
+                            block_number = bn,
+                            block_hash = %PrettyPrinter::build_string_bytes(&block.block_hash),
+                            "no cached WAL slice for finalized block \
+                             (this validator did not compute it; \
+                             peer catch-up will cover snapshot needs)"
+                        );
+                    }
+                }
+                // Evict stale entries whose block_number is <= this
+                // finalized block's — either now-finalized (handled
+                // above) or orphaned (never will be).
+                let mut slices = ctx.runtime_manager.pending_wal_slices.write().await;
+                slices.retain(|_, (cached_bn, _)| *cached_bn > bn);
+            }
+            // Record the receipt regardless of writer_opt / cache
+            // presence: on retry we want to skip this effect
+            // regardless of whether it did any real work.
+            ctx.block_dag_storage
+                .record_finalization_effect(snapshot_effect)?;
+        }
     }
     ctx.block_dag_storage
         .record_finalization_round_effects_completed(revision)?;
@@ -445,111 +524,16 @@ async fn compute_last_finalized_block_once(
                         let callback_ctx = callback_ctx.clone();
                         let finalized_set = finalized_set.clone();
                         async move {
+                            // Post-cost-accounted-rho-merge polish
+                            // (2026-08-26): the fs_wal snapshot logic
+                            // (H-1 fix, slice 30c Phase B) is now folded
+                            // into `apply_finalization_effects` as a
+                            // fifth per-effect step (WalSnapshotWrite).
+                            // The atomic callback thus reduces to a
+                            // single call — same shape as any other
+                            // caller of `apply_finalization_effects`.
                             apply_finalization_effects(&callback_ctx, revision, &finalized_set)
-                                .await?;
-
-                            // H-1 fix (2026-08-06) — slice 30c Phase B: LFB-
-                            // triggered fs_wal snapshot write for each newly-
-                            // finalized block.  Preserved through the
-                            // 2026-08-26 merge of origin/feature/cost-
-                            // accounted-rho.  Not folded into
-                            // `apply_finalization_effects`'s per-effect
-                            // idempotency machinery (would require adding a
-                            // `FinalizationEffectKind::WalSnapshotWrite`
-                            // variant, which is a Serialize/persistence
-                            // format change).  Idempotency instead comes
-                            // from the pending-WAL-slice HashMap: on retry
-                            // after partial write, `slices.remove(...)`
-                            // returns None and the branch no-ops.  Design
-                            // rationale in commit b93b0a78c.
-                            //
-                            // Cache miss handling: a snapshot is skipped if
-                            // this validator did not itself compute the
-                            // block (e.g., joining validator that received
-                            // the block from a peer without re-executing).
-                            // Log at debug; downstream join protocol fills
-                            // via peer catch-up.
-                            let writer_opt = callback_ctx
-                                .runtime_manager
-                                .fs_snapshot_writer
-                                .read()
                                 .await
-                                .clone();
-                            if let Some(writer) = writer_opt {
-                                for block_hash in &finalized_set {
-                                    let Some(block) =
-                                        callback_ctx.block_store.get(block_hash)?
-                                    else {
-                                        // `apply_finalization_effects` above already
-                                        // errored on a missing block; if we reach
-                                        // here with Ok(_) and then miss, treat as a
-                                        // transient race and skip.
-                                        continue;
-                                    };
-                                    let post_state_hash =
-                                        block.body.state.post_state_hash.to_vec();
-                                    let bn = block.body.state.block_number;
-                                    let cache_entry = {
-                                        let mut slices = callback_ctx
-                                            .runtime_manager
-                                            .pending_wal_slices
-                                            .write()
-                                            .await;
-                                        slices.remove(&post_state_hash)
-                                    };
-                                    match cache_entry {
-                                        Some((_cached_bn, slice)) => {
-                                            let block_hash_pretty =
-                                                PrettyPrinter::build_string_bytes(block_hash);
-                                            let writer_clone = writer.clone();
-                                            let snapshot_result =
-                                                tokio::task::spawn_blocking(move || {
-                                                    writer_clone.maybe_write(bn, &slice)
-                                                })
-                                                .await;
-                                            match snapshot_result {
-                                                Ok(Ok(_)) => {}
-                                                Ok(Err(e)) => tracing::warn!(
-                                                    target: "f1r3fly.casper.fs_wal",
-                                                    block_number = bn,
-                                                    block_hash = %block_hash_pretty,
-                                                    error = %e,
-                                                    "LFB-triggered snapshot write failed"
-                                                ),
-                                                Err(je) => tracing::warn!(
-                                                    target: "f1r3fly.casper.fs_wal",
-                                                    block_number = bn,
-                                                    block_hash = %block_hash_pretty,
-                                                    error = %je,
-                                                    "LFB-triggered snapshot spawn_blocking failed"
-                                                ),
-                                            }
-                                        }
-                                        None => {
-                                            tracing::debug!(
-                                                target: "f1r3fly.casper.fs_wal",
-                                                block_number = bn,
-                                                block_hash = %PrettyPrinter::build_string_bytes(block_hash),
-                                                "no cached WAL slice for finalized block \
-                                                 (this validator did not compute it; \
-                                                 peer catch-up will cover snapshot needs)"
-                                            );
-                                        }
-                                    }
-                                    // Evict stale entries whose block_number
-                                    // is <= this finalized block's — they
-                                    // are either now-finalized (already
-                                    // handled above) or orphaned (never
-                                    // will be).
-                                    let mut slices = callback_ctx
-                                        .runtime_manager
-                                        .pending_wal_slices
-                                        .write()
-                                        .await;
-                                    slices.retain(|_, (cached_bn, _)| *cached_bn > bn);
-                                }
-                            }
-                            Ok(())
                         }
                     },
                 )
