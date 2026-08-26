@@ -5520,9 +5520,12 @@ or metering decision. It restores the already documented first-representative ru
 modes; relative to the broken intermediate release checkpoint, observable map/set results are
 corrected. Receiver-erased false edges in the handwritten recursion census were separately made
 source-explicit without adding an exemption or depth bound. Debug and release census gates each
-classify all 713 recursive components and exactly disposition all 108 term-family components. The
-exact post-repair full release-workspace gate remains open, so CBR-053's verdict and post-state axes
-remain `UNVERIFIED`.
+classify all 713 recursive components and exactly disposition all 108 term-family components. At
+immutable commit `0065278e3`, the exact post-repair release-workspace command passes all
+4,677/4,677 tests with 53 skipped; its 165.283-second log has SHA-256
+`a8ae8af71bd10a3d665fab91ab999eb8ea5e30ddc95c1dc54fc80bca852514be`. CBR-053's verdict and
+post-state axes remain `UNVERIFIED` because complete generated continuation/join lifecycle evidence
+is still outstanding, not because this release gate remains open.
 
 ### B.2 The original commit-level exemptions
 

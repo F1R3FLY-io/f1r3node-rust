@@ -10525,8 +10525,13 @@ The principal evidence logs have SHA-256 digests
 `3c9f87e3a5be31756ca3e60163d945acb0542d6435889a09fbd4579ec14fed73` (release census),
 `3035f85c282e50a1f98b2e2ce3f39471f4c8fd2d0f2ef676c5be90c7b6ac0a9e` (release models), and
 `9ed97645cbc85f41a175c6e5caee9d97183afdf6ba14464038400bf116996261` (campaign lint). These
-focused results close the defect and census findings; they do not substitute for the exact
-post-commit full release-workspace gate, which remains open at this coordinate.
+focused results close the defect and census findings. At immutable commit `0065278e3`, the exact
+post-commit command `RUST_BACKTRACE=1 cargo nextest run --release --no-fail-fast --workspace`
+completed under a 12 GiB, zero-swap systemd scope pinned to CPUs 0--15: 4,677/4,677 tests passed,
+53 were skipped, and the two tests reported slow both passed. The 165.283-second log has SHA-256
+`a8ae8af71bd10a3d665fab91ab999eb8ea5e30ddc95c1dc54fc80bca852514be`. This closes the
+post-repair release-workspace obligation for SS-C18; trie-native continuation/join egress and the
+separately governed persistent PathMap-DAG backend remain later campaign work.
 
 ---
 

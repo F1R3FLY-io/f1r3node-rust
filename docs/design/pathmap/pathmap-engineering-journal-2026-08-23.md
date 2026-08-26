@@ -2141,6 +2141,31 @@ allocation events—for the measured effect of retaining the native root and rem
 reconstruction/copy-on-write work. This correction changes interpretation only; no benchmark value,
 runtime byte, consensus axis, or PathMap source changed.
 
+### J-030 — 2026-08-26: release builds must not erase PathMap endpoint mutation
+
+**OBSERVATION.** The first exact release-workspace gate after certified protobuf egress found a
+required semantic-identity insertion written as the argument of `debug_assert!`. Debug builds
+executed `PathMap::set_val`; release builds erased the entire expression. ESet/EMap admission could
+therefore lose its first-representative index only in release. The repair executes the mutation
+unconditionally and leaves only the prior-value invariant diagnostic. A prefix-plus-descendant test
+pins simultaneous values at both trie endpoints.
+
+**AUDIT.** Campaign-scoped all-target lint now denies mutation inside `debug_assert!`. Two iterator
+advances used only for diagnostic exhaustion checks are explicitly debug-only. Receiver-erased SCC
+names were also made source-specific without adding a traversal cap or recursion exemption. Debug
+and release recursion censuses each classify 713 recursive components and exactly disposition all
+108 term-family components.
+
+**RESULT.** At immutable commit `0065278e3`, release `models` passes 292/292 tests and the exact
+workspace command passes 4,677/4,677 tests with 53 skipped under a 12 GiB, zero-swap systemd scope.
+The full log's SHA-256 is
+`a8ae8af71bd10a3d665fab91ab999eb8ea5e30ddc95c1dc54fc80bca852514be`.
+
+**DECISION.** Treat side effects inside diagnostic macros as a build-mode equivalence defect, not a
+performance shortcut. PathMap mutation, zipper movement required by semantics, and publication
+must occur outside diagnostics. This repaired the integration; no upstream PathMap change is
+required.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's
