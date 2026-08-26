@@ -29,8 +29,11 @@
 //! that divergence survived.
 
 use models::rhoapi::expr::ExprInstance;
-use models::rhoapi::{EList, Expr, Par};
-use models::rust::rholang::protobuf_encoder::{frame_size, len_table_size, op_size};
+use models::rhoapi::{EList, Expr, New, Par};
+use models::rust::rhoapi_ext::EPathMap;
+use models::rust::rholang::protobuf_encoder::{
+    frame_size, len_table_size, op_size, try_visit_par_slots,
+};
 
 /// `[[[…[0]…]]]` — a chain of `depth` nested `EList`s, one message node per level.
 fn nested_list(depth: usize) -> Par {
@@ -165,4 +168,109 @@ fn every_quantity_the_header_claims_is_actually_pinned() {
         "  protobuf_encoder space: op {} B, frame {} B, len-table {} entries @ depth 8",
         measured[0], measured[1], measured[2]
     );
+}
+
+#[test]
+fn par_slot_visitor_uses_generated_sequence_and_map_order_without_descending_into_par() {
+    let first = nested_list(64);
+    let second = nested_list(128);
+    let list = EList {
+        ps: vec![first, second],
+        locally_free: Vec::new(),
+        connective_used: false,
+        remainder: None,
+    };
+
+    let mut sequence_slots = Vec::new();
+    try_visit_par_slots(&list, |par| {
+        sequence_slots.push(par as *const Par);
+        Ok::<_, std::convert::Infallible>(())
+    })
+    .unwrap();
+    assert_eq!(sequence_slots.len(), 2);
+    assert_eq!(sequence_slots[0], &list.ps[0] as *const Par);
+    assert_eq!(sequence_slots[1], &list.ps[1] as *const Par);
+
+    let mut injections = std::collections::BTreeMap::new();
+    injections.insert("b".to_owned(), nested_list(8));
+    injections.insert("a".to_owned(), nested_list(4));
+    injections.insert("default".to_owned(), Par::default());
+    injections.insert(
+        "locally-free-only".to_owned(),
+        Par::from_parts(Default::default(), vec![1, 2, 3], false),
+    );
+    let new = New {
+        injections,
+        ..New::default()
+    };
+    let expected = [
+        new.injections.get("a").unwrap() as *const Par,
+        new.injections.get("b").unwrap() as *const Par,
+    ];
+    let mut map_slots = Vec::new();
+    try_visit_par_slots(&new, |par| {
+        map_slots.push(par as *const Par);
+        Ok::<_, std::convert::Infallible>(())
+    })
+    .unwrap();
+    assert_eq!(map_slots, expected);
+}
+
+#[test]
+fn par_slot_visitor_reads_epathmap_values_without_projecting_entries() {
+    let map = EPathMap::new_map(
+        [
+            (nested_list(1), nested_list(32)),
+            (nested_list(2), nested_list(64)),
+        ],
+        Vec::new(),
+        false,
+        None,
+    );
+    let mut visited = 0usize;
+    try_visit_par_slots(&map, |_par| {
+        visited += 1;
+        Ok::<_, std::convert::Infallible>(())
+    })
+    .unwrap();
+    assert_eq!(visited, 2, "only the two resident map values are Par slots");
+}
+
+#[test]
+fn par_slot_visitor_is_width_safe_and_stops_at_the_first_callback_error() {
+    const WIDTH: usize = 65_536;
+    let visited = std::thread::Builder::new()
+        .name("protobuf-par-slot-width-gate".to_owned())
+        .stack_size(32 * 1024)
+        .spawn(|| {
+            let list = EList {
+                ps: vec![Par::default(); WIDTH],
+                locally_free: Vec::new(),
+                connective_used: false,
+                remainder: None,
+            };
+            let mut count = 0usize;
+            let refusal = try_visit_par_slots(&list, |_par| {
+                count += 1;
+                if count == 17 {
+                    Err("budget exhausted")
+                } else {
+                    Ok(())
+                }
+            });
+            assert_eq!(refusal, Err("budget exhausted"));
+            assert_eq!(count, 17, "no later slot may run after refusal");
+
+            count = 0;
+            try_visit_par_slots(&list, |_par| {
+                count += 1;
+                Ok::<_, std::convert::Infallible>(())
+            })
+            .unwrap();
+            count
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+    assert_eq!(visited, WIDTH);
 }

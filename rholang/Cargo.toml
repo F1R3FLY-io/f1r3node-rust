@@ -103,6 +103,9 @@ spatial-matcher-candidate-mask-differential = []
 # Pass the Phase 7 measurement-only hooks through to `models` while running the
 # interpreter corpus. Disabled in every production/default build.
 phase7-depth-histograms = ["models/phase7-depth-histograms"]
+# Measurement-only access to exact ParBag protobuf projection counters and
+# explicit preparation controls for the repeated-owner egress experiment.
+protobuf-projection-experiment = ["models/protobuf-projection-experiment"]
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
@@ -144,3 +147,8 @@ harness = false
 [[bench]]
 name = "accounting_demand_paired"
 harness = false
+
+[[bench]]
+name = "par_projection_owner"
+harness = false
+required-features = ["protobuf-projection-experiment"]

@@ -164,6 +164,28 @@ enum Op<'a> {
     Close,
 }
 
+/// One pending obligation for [`try_visit_par_slots`].
+///
+/// This is deliberately separate from [`Op`]: projection preparation does not
+/// measure or emit protobuf bytes, so carrying tags and close frames would make
+/// its heap machine wider without adding information.  `Node` resumes the same
+/// generated field program as the encoder, while `Seq`, `MapEntries`, and
+/// `EpmValues` preserve the encoder's exact child order without constructing a
+/// decoded `Vec<Par>`.
+enum ParSlotOp<'a> {
+    Node {
+        node: &'a dyn ProtobufNode,
+        field: u16,
+    },
+    Seq {
+        seq: &'a dyn ProtobufSeq,
+        index: usize,
+        len: usize,
+    },
+    MapEntries,
+    EpmValues,
+}
+
 /// One OPEN node in pass 1.
 ///
 /// `sum` accumulates this node's own encoded length: the bounded fields the
@@ -195,6 +217,15 @@ struct EpmValueIter<'a> {
     remaining: usize,
 }
 
+/// Exact allocation-free form of `value == Par::default()` for protobuf map
+/// skip-at-default semantics. `Par::PartialEq` intentionally ignores
+/// `locally_free`, so this predicate must do the same; component emptiness and
+/// `connective_used` are the two equality-visible fields.
+#[inline]
+fn par_is_protobuf_map_default(value: &Par) -> bool {
+    value.components_is_empty() && !value.connective_used()
+}
+
 /// Preallocated op-stack capacity, matching `bincode_encoder`'s.
 const OP_STACK_CAPACITY: usize = 64;
 
@@ -215,16 +246,6 @@ struct LenMachine<'a> {
     lens: Vec<u32>,
     map_iters: Vec<btree_map::Iter<'a, String, Par>>,
     epm_iters: Vec<EpmValueIter<'a>>,
-    /// The value every map entry's value is compared against for skip-at-default.
-    ///
-    /// ⚠★ Constructed ONCE and compared with `==`, which goes through the
-    /// **hand-written** `PartialEq` in `models/src/lib.rs` — and that impl
-    /// deliberately ignores `locally_free`. So a `Par` carrying only
-    /// `locally_free` IS skipped, exactly as prost's
-    /// `encode_with_default` skips it (`encoding.rs:1046`). Restating the
-    /// predicate as "is it structurally empty?" would be a second opinion and
-    /// would differ on precisely that value.
-    default_par: Par,
     high_water: usize,
 }
 
@@ -236,7 +257,6 @@ impl<'a> LenMachine<'a> {
             lens: Vec::with_capacity(LEN_TABLE_CAPACITY),
             map_iters: Vec::new(),
             epm_iters: Vec::new(),
-            default_par: Par::default(),
             high_water: 0,
         }
     }
@@ -301,9 +321,7 @@ impl<'a> LenMachine<'a> {
             sum: key_part,
         });
         self.ops.push(Op::Close);
-        // ⚠ `!=` against ONE `Par::default()`, through the HAND-WRITTEN
-        // `PartialEq`. See [`Self::default_par`].
-        if value != &self.default_par {
+        if !par_is_protobuf_map_default(value) {
             // The value is a message child at tag 2, so it gets its own id and
             // its own frame — `close` then contributes
             // `key_len(2) + varint_len(v) + v`, which is exactly
@@ -569,7 +587,6 @@ struct EmitMachine<'a, 'l> {
     cursor: usize,
     map_iters: Vec<btree_map::Iter<'a, String, Par>>,
     epm_iters: Vec<EpmValueIter<'a>>,
-    default_par: Par,
     high_water: usize,
 }
 
@@ -581,7 +598,6 @@ impl<'a, 'l> EmitMachine<'a, 'l> {
             cursor: 1,
             map_iters: Vec::new(),
             epm_iters: Vec::new(),
-            default_par: Par::default(),
             high_water: 0,
         }
     }
@@ -727,7 +743,7 @@ impl<'a, 'l> EmitMachine<'a, 'l> {
                             if !key.is_empty() {
                                 prost::encoding::string::encode(1u32, key, out);
                             }
-                            if value != &self.default_par {
+                            if !par_is_protobuf_map_default(value) {
                                 // …and its VALUE is a nested message at tag 2.
                                 self.open_child(out, 2u32);
                                 self.ops.push(Op::Node {
@@ -879,6 +895,201 @@ pub fn encode_to_vec<T: ProtobufNode>(value: &T) -> Vec<u8> {
     machine.run::<false>(&mut out);
     machine.finish_emit();
     out
+}
+
+/// Visit the protobuf-visible `Par` slots below `value` without decoding a
+/// `Par`, reconstructing an EPathMap key, or building a `Vec<Par>` projection.
+///
+/// The generated protobuf schema is the traversal authority.  Each external
+/// [`Par`] feedback vertex is an opaque terminal: its PathMap-backed component
+/// bodies are not recursively decoded merely to decide whether an owner should
+/// prepare a reusable protobuf projection.  `New.injections` map values and
+/// EPathMap map values are visited directly through their resident map/zipper
+/// representations; keys remain untouched.
+///
+/// The machine uses an explicit heap obligation stack, so input-shaped width
+/// and every generated-schema cycle remain native-stack safe.  The callback is
+/// fallible so a caller-owned aggregate retention budget can stop immediately
+/// without preparing later slots.
+pub fn try_visit_par_slots<E>(
+    value: &dyn ProtobufNode,
+    mut visit: impl FnMut(&Par) -> Result<(), E>,
+) -> Result<(), E> {
+    // Most outer RSpace messages reach a Par within one or two generated
+    // nodes. Start empty and grow geometrically only for an actually deep
+    // schema prelude; reserving the encoder's 64-frame depth budget here made
+    // every shallow owner scan request several kilobytes needlessly.
+    let mut ops = Vec::new();
+    let mut map_iters: Vec<btree_map::Iter<'_, String, Par>> = Vec::new();
+    let mut epm_iters: Vec<EpmValueIter<'_>> = Vec::new();
+    ops.push(ParSlotOp::Node {
+        node: value,
+        field: 0,
+    });
+
+    while let Some(op) = ops.pop() {
+        match op {
+            ParSlotOp::Node { node, field } => {
+                if let Some(par) = node.as_par() {
+                    visit(par)?;
+                    continue;
+                }
+
+                let (_, descent) = node.protobuf_len_step(field as usize);
+                match descent {
+                    ProtobufDescent::Done => {}
+                    ProtobufDescent::Node {
+                        resume,
+                        tag: _,
+                        node: child,
+                    } => {
+                        if resume != NO_RESUME {
+                            ops.push(ParSlotOp::Node {
+                                node,
+                                field: resume,
+                            });
+                        }
+                        ops.push(ParSlotOp::Node {
+                            node: child,
+                            field: 0,
+                        });
+                    }
+                    ProtobufDescent::Seq {
+                        resume,
+                        tag: _,
+                        len,
+                        seq,
+                    } => {
+                        if resume != NO_RESUME {
+                            ops.push(ParSlotOp::Node {
+                                node,
+                                field: resume,
+                            });
+                        }
+                        if len != 0 {
+                            ops.push(ParSlotOp::Seq { seq, index: 0, len });
+                        }
+                    }
+                    ProtobufDescent::Map {
+                        resume,
+                        tag: _,
+                        map,
+                    } => {
+                        if resume != NO_RESUME {
+                            ops.push(ParSlotOp::Node {
+                                node,
+                                field: resume,
+                            });
+                        }
+                        map_iters.push(map.iter());
+                        ops.push(ParSlotOp::MapEntries);
+                    }
+                    ProtobufDescent::EPathMapSnapshot {
+                        resume,
+                        tag: _,
+                        map,
+                    } => {
+                        if resume != NO_RESUME {
+                            ops.push(ParSlotOp::Node {
+                                node,
+                                field: resume,
+                            });
+                        }
+                        let layout = map.entry_trie().epm_layout();
+                        if let Some(values) = map.entry_trie().map_trie() {
+                            epm_iters.push(EpmValueIter {
+                                zipper: values.read_zipper(),
+                                remaining: layout.value_count(),
+                            });
+                            ops.push(ParSlotOp::EpmValues);
+                        } else {
+                            debug_assert_eq!(layout.value_count(), 0);
+                        }
+                    }
+                }
+            }
+            ParSlotOp::Seq { seq, index, len } => {
+                assert!(
+                    index < len,
+                    "protobuf Par-slot sequence cursor escaped its length"
+                );
+                if index + 1 < len {
+                    ops.push(ParSlotOp::Seq {
+                        seq,
+                        index: index + 1,
+                        len,
+                    });
+                }
+                ops.push(ParSlotOp::Node {
+                    node: seq.protobuf_get(index),
+                    field: 0,
+                });
+            }
+            ParSlotOp::MapEntries => {
+                let next = map_iters
+                    .last_mut()
+                    .expect("protobuf Par-slot map opcode has no live iterator")
+                    .next();
+                match next {
+                    Some((_key, value)) => {
+                        ops.push(ParSlotOp::MapEntries);
+                        if !par_is_protobuf_map_default(value) {
+                            ops.push(ParSlotOp::Node {
+                                node: value,
+                                field: 0,
+                            });
+                        }
+                    }
+                    None => {
+                        map_iters.pop();
+                    }
+                }
+            }
+            ParSlotOp::EpmValues => {
+                let next = {
+                    let iter = epm_iters
+                        .last_mut()
+                        .expect("protobuf Par-slot EPathMap opcode has no live zipper");
+                    let next = iter.zipper.to_next_get_val();
+                    if next.is_some() {
+                        iter.remaining = iter
+                            .remaining
+                            .checked_sub(1)
+                            .expect("protobuf Par-slot EPathMap zipper yielded too many values");
+                    }
+                    next
+                };
+                match next {
+                    Some(value) => {
+                        ops.push(ParSlotOp::EpmValues);
+                        ops.push(ParSlotOp::Node {
+                            node: value,
+                            field: 0,
+                        });
+                    }
+                    None => {
+                        let iter = epm_iters
+                            .pop()
+                            .expect("protobuf Par-slot EPathMap zipper disappeared");
+                        assert_eq!(
+                            iter.remaining, 0,
+                            "protobuf Par-slot EPathMap zipper yielded too few values"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    assert!(
+        map_iters.is_empty(),
+        "protobuf Par-slot traversal left a map iterator live"
+    );
+    assert!(
+        epm_iters.is_empty(),
+        "protobuf Par-slot traversal left an EPathMap zipper live"
+    );
+    Ok(())
 }
 
 // ===========================================================================

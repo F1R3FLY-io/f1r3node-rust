@@ -80,6 +80,7 @@ pub extern "C" fn rholang_deallocate_memory(ptr: *mut u8, len: usize) {
 pub mod rust {
     pub mod build;
     pub mod interpreter;
+    pub mod protobuf_egress;
 }
 
 use std::collections::BTreeMap;
@@ -111,6 +112,21 @@ use rust::interpreter::rho_runtime::{
 use rust::interpreter::system_processes::{test_framework_contracts, BlockData};
 
 use crate::rust::interpreter::compiler::compiler::Compiler;
+use crate::rust::protobuf_egress::encode_frame;
+
+fn publish_ffi_frame(message: &impl Message) -> *const u8 {
+    let frame = match encode_frame(message) {
+        Ok(frame) => frame,
+        Err(error) => {
+            eprintln!("Rholang FFI protobuf frame was not published: {error}");
+            return std::ptr::null();
+        }
+    };
+    let total_len = frame.len();
+    let ptr = Box::leak(frame.into_boxed_slice()).as_ptr();
+    RHOLANG_ALLOCATED_BYTES.fetch_add(total_len, Ordering::SeqCst);
+    ptr
+}
 
 #[repr(C)]
 struct RhoRuntime {
@@ -210,15 +226,7 @@ extern "C" fn evaluate(
         mergeable: eval_result.mergeable.into_keys().collect(),
     };
 
-    let mut bytes = eval_result_proto.encode_to_vec();
-    let len = bytes.len() as u32;
-    let len_bytes = len.to_le_bytes().to_vec();
-    let mut result = len_bytes;
-    result.append(&mut bytes);
-    let total_len = result.len();
-    let ptr = Box::leak(result.into_boxed_slice()).as_ptr();
-    RHOLANG_ALLOCATED_BYTES.fetch_add(total_len, Ordering::SeqCst);
-    ptr
+    publish_ffi_frame(&eval_result_proto)
 }
 
 #[no_mangle]
@@ -272,7 +280,7 @@ extern "C" fn inj(runtime_ptr: *mut RhoRuntime, params_ptr: *const u8, params_by
 extern "C" fn create_soft_checkpoint(runtime_ptr: *mut RhoRuntime) -> *const u8 {
     // println!("\nhit rust lib create_soft_checkpoint");
     let runtime = unsafe { &mut (*runtime_ptr).runtime };
-    // TODO: FFI not used — block_on wrapper for async ISpace methods
+    // The synchronous FFI boundary owns a short-lived Tokio runtime for this async ISpace call.
     let rt = tokio::runtime::Runtime::new().unwrap();
     let soft_checkpoint = rt.block_on(async { runtime.create_soft_checkpoint().await });
 
@@ -516,15 +524,7 @@ extern "C" fn create_soft_checkpoint(runtime_ptr: *mut RhoRuntime) -> *const u8 
         produce_counter: produce_counter_map_entries,
     };
 
-    let mut bytes = soft_checkpoint_proto.encode_to_vec();
-    let len = bytes.len() as u32;
-    let len_bytes = len.to_le_bytes().to_vec();
-    let mut result = len_bytes;
-    result.append(&mut bytes);
-    let total_len = result.len();
-    let ptr = Box::leak(result.into_boxed_slice()).as_ptr();
-    RHOLANG_ALLOCATED_BYTES.fetch_add(total_len, Ordering::SeqCst);
-    ptr
+    publish_ffi_frame(&soft_checkpoint_proto)
 }
 
 #[no_mangle]
@@ -781,7 +781,7 @@ extern "C" fn revert_to_soft_checkpoint(
 
     let runtime = unsafe { &mut (*runtime_ptr).runtime };
 
-    // TODO: FFI not used — block_on wrapper for async ISpace methods
+    // The synchronous FFI boundary owns a short-lived Tokio runtime for this async ISpace call.
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async { runtime.revert_to_soft_checkpoint(soft_checkpoint).await });
 }
@@ -789,7 +789,7 @@ extern "C" fn revert_to_soft_checkpoint(
 #[no_mangle]
 extern "C" fn create_checkpoint(runtime_ptr: *mut RhoRuntime) -> *const u8 {
     let runtime = unsafe { &mut (*runtime_ptr).runtime };
-    // TODO: FFI not used — block_on wrapper for async ISpace methods
+    // The synchronous FFI boundary owns a short-lived Tokio runtime for this async ISpace call.
     let rt = tokio::runtime::Runtime::new().unwrap();
     let checkpoint = rt.block_on(async { runtime.create_checkpoint().await });
 
@@ -898,15 +898,7 @@ extern "C" fn create_checkpoint(runtime_ptr: *mut RhoRuntime) -> *const u8 {
         log: log_proto,
     };
 
-    let mut bytes = checkpoint_proto.encode_to_vec();
-    let len = bytes.len() as u32;
-    let len_bytes = len.to_le_bytes().to_vec();
-    let mut result = len_bytes;
-    result.append(&mut bytes);
-    let total_len = result.len();
-    let ptr = Box::leak(result.into_boxed_slice()).as_ptr();
-    RHOLANG_ALLOCATED_BYTES.fetch_add(total_len, Ordering::SeqCst);
-    ptr
+    publish_ffi_frame(&checkpoint_proto)
 }
 
 #[no_mangle]
@@ -921,7 +913,7 @@ extern "C" fn consume_result(
     let channel = consume_result_params.channel;
     let pattern = consume_result_params.pattern;
 
-    // TODO: FFI not used — block_on wrapper for async ISpace methods
+    // The synchronous FFI boundary owns a short-lived Tokio runtime for this async ISpace call.
     let rt = tokio::runtime::Runtime::new().unwrap();
     let consume_result_return = rt.block_on(async {
         unsafe {
@@ -941,15 +933,7 @@ extern "C" fn consume_result(
                 datums,
             };
 
-            let mut bytes = consume_result_return_proto.encode_to_vec();
-            let len = bytes.len() as u32;
-            let len_bytes = len.to_le_bytes().to_vec();
-            let mut result = len_bytes;
-            result.append(&mut bytes);
-            let total_len = result.len();
-            let ptr = Box::leak(result.into_boxed_slice()).as_ptr();
-            RHOLANG_ALLOCATED_BYTES.fetch_add(total_len, Ordering::SeqCst);
-            ptr
+            publish_ffi_frame(&consume_result_return_proto)
         }
     }
 }
@@ -968,7 +952,7 @@ extern "C" fn reset(
     // Access underlying space directly to capture Result and map to error code
     let runtime = unsafe { &mut (*runtime_ptr).runtime };
 
-    // TODO: FFI not used — block_on wrapper for async ISpace methods
+    // The synchronous FFI boundary owns a short-lived Tokio runtime for this async ISpace call.
     let rt = tokio::runtime::Runtime::new().unwrap();
     match rt.block_on(async { runtime.reducer.space.reset(&root).await }) {
         Ok(_) => 0,
@@ -991,7 +975,7 @@ extern "C" fn get_data(
     // let rt = tokio::runtime::Runtime::new().unwrap();
     // let datums =
     //     rt.block_on(async { unsafe { (*runtime_ptr).runtime.try_lock().unwrap().get_data(channel).await } });
-    // TODO: FFI not used — block_on wrapper for async ISpace methods
+    // The synchronous FFI boundary owns a short-lived Tokio runtime for this async ISpace call.
     let rt = tokio::runtime::Runtime::new().unwrap();
     let datums = rt.block_on(async { unsafe { (*runtime_ptr).runtime.get_data(&channel).await } });
 
@@ -1016,15 +1000,7 @@ extern "C" fn get_data(
         datums: datums_protos,
     };
 
-    let mut bytes = datums_proto.encode_to_vec();
-    let len = bytes.len() as u32;
-    let len_bytes = len.to_le_bytes().to_vec();
-    let mut result = len_bytes;
-    result.append(&mut bytes);
-    let total_len = result.len();
-    let ptr = Box::leak(result.into_boxed_slice()).as_ptr();
-    RHOLANG_ALLOCATED_BYTES.fetch_add(total_len, Ordering::SeqCst);
-    ptr
+    publish_ffi_frame(&datums_proto)
 }
 
 #[no_mangle]
@@ -1036,22 +1012,14 @@ extern "C" fn get_joins(
     let channel_slice = unsafe { std::slice::from_raw_parts(channel_pointer, channel_bytes_len) };
     let channel = models::rust::rholang::protobuf_decoder::decode_par(channel_slice).unwrap();
 
-    // TODO: FFI not used — block_on wrapper for async ISpace methods
+    // The synchronous FFI boundary owns a short-lived Tokio runtime for this async ISpace call.
     let rt = tokio::runtime::Runtime::new().unwrap();
     let joins = rt.block_on(async { unsafe { (*runtime_ptr).runtime.get_joins(channel).await } });
 
     let vec_join: Vec<JoinProto> = joins.into_iter().map(|join| JoinProto { join }).collect();
     let joins_proto = JoinsProto { joins: vec_join };
 
-    let mut bytes = joins_proto.encode_to_vec();
-    let len = bytes.len() as u32;
-    let len_bytes = len.to_le_bytes().to_vec();
-    let mut result = len_bytes;
-    result.append(&mut bytes);
-    let total_len = result.len();
-    let ptr = Box::leak(result.into_boxed_slice()).as_ptr();
-    RHOLANG_ALLOCATED_BYTES.fetch_add(total_len, Ordering::SeqCst);
-    ptr
+    publish_ffi_frame(&joins_proto)
 }
 
 #[no_mangle]
@@ -1064,7 +1032,7 @@ extern "C" fn get_waiting_continuations(
         unsafe { std::slice::from_raw_parts(channels_pointer, channels_bytes_len) };
     let channels_proto = ChannelsProto::decode(channels_slice).unwrap();
 
-    // TODO: FFI not used — block_on wrapper for async ISpace methods
+    // The synchronous FFI boundary owns a short-lived Tokio runtime for this async ISpace call.
     let rt = tokio::runtime::Runtime::new().unwrap();
     let wks = rt.block_on(async {
         unsafe {
@@ -1105,15 +1073,7 @@ extern "C" fn get_waiting_continuations(
 
     let wks_proto = WaitingContinuationsProto { wks: wks_protos };
 
-    let mut bytes = wks_proto.encode_to_vec();
-    let len = bytes.len() as u32;
-    let len_bytes = len.to_le_bytes().to_vec();
-    let mut result = len_bytes;
-    result.append(&mut bytes);
-    let total_len = result.len();
-    let ptr = Box::leak(result.into_boxed_slice()).as_ptr();
-    RHOLANG_ALLOCATED_BYTES.fetch_add(total_len, Ordering::SeqCst);
-    ptr
+    publish_ffi_frame(&wks_proto)
 }
 
 #[no_mangle]
@@ -1162,7 +1122,7 @@ extern "C" fn set_invalid_blocks(
 #[no_mangle]
 extern "C" fn get_hot_changes(runtime_ptr: *mut RhoRuntime) -> *const u8 {
     let runtime = unsafe { &(*runtime_ptr).runtime };
-    // TODO: FFI not used — block_on wrapper for async ISpace methods
+    // The synchronous FFI boundary owns a short-lived Tokio runtime for this async ISpace call.
     let rt = tokio::runtime::Runtime::new().unwrap();
     let hot_store_mapped = rt.block_on(async { runtime.get_hot_changes().await });
 
@@ -1223,15 +1183,7 @@ extern "C" fn get_hot_changes(runtime_ptr: *mut RhoRuntime) -> *const u8 {
 
     let to_map_result = StoreToMapResult { map_entries };
 
-    let mut bytes = to_map_result.encode_to_vec();
-    let len = bytes.len() as u32;
-    let len_bytes = len.to_le_bytes().to_vec();
-    let mut result = len_bytes;
-    result.append(&mut bytes);
-    let total_len = result.len();
-    let ptr = Box::leak(result.into_boxed_slice()).as_ptr();
-    RHOLANG_ALLOCATED_BYTES.fetch_add(total_len, Ordering::SeqCst);
-    ptr
+    publish_ffi_frame(&to_map_result)
 }
 
 #[no_mangle]
@@ -1351,7 +1303,7 @@ extern "C" fn rig(
         })
         .collect();
 
-    // TODO: FFI not used — block_on wrapper for async ISpace methods
+    // The synchronous FFI boundary owns a short-lived Tokio runtime for this async ISpace call.
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async {
         unsafe {
@@ -1362,7 +1314,7 @@ extern "C" fn rig(
 
 #[no_mangle]
 extern "C" fn check_replay_data(runtime_ptr: *mut ReplayRhoRuntime) {
-    // TODO: FFI not used — block_on wrapper for async ISpace methods
+    // The synchronous FFI boundary owns a short-lived Tokio runtime for this async ISpace call.
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async {
         unsafe {
@@ -1526,18 +1478,5 @@ extern "C" fn source_to_adt(params_ptr: *const u8, params_bytes_len: usize) -> *
         }
     };
 
-    // Serialization of the result in `Par`
-    let mut result_bytes = result.encode_to_vec();
-    let len = result_bytes.len() as u32;
-    let len_bytes = len.to_le_bytes().to_vec();
-
-    // Add the length of the result at the beginning of the byte array
-    let mut full_result = len_bytes;
-    full_result.append(&mut result_bytes);
-
-    // Return a pointer to the serialized result
-    let total_len = full_result.len();
-    let ptr = Box::leak(full_result.into_boxed_slice()).as_ptr();
-    RHOLANG_ALLOCATED_BYTES.fetch_add(total_len, Ordering::SeqCst);
-    ptr
+    publish_ffi_frame(&result)
 }
