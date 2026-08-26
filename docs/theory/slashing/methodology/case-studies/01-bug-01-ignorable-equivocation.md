@@ -6,14 +6,17 @@ Pre-fix, `IgnorableEquivocation` (an equivocation observed but not
 requested as a dependency by any other block) was **not** in the
 `is_slashable()` taxonomy. A Byzantine validator could flood the
 network with such blocks without economic cost — a denial-of-service
-campaign against honest validators' verification CPU. Post-fix,
-`IgnorableEquivocation` is slashable and follows the standard
-record-and-slash path.
+campaign against honest validators' verification CPU. The original fix made
+the abstract `IgnorableEquivocation` verdict slashable. The current protocol
+refines that behavior: unsolicited siblings remain accepted with a typed
+observation, every certified hash is retained in the generation-scoped
+objective-evidence index, and the slash path becomes available only after two
+distinct hashes establish objective equivocation.
 
 ## 2 · Discovery technique
 
-**Primary**: code-walking review of the `is_slashable()` taxonomy
-(`block_status.rs:183`). The Scala counterpart at
+**Primary**: code-walking review of the historical `is_slashable()` taxonomy.
+The Scala counterpart at
 `BlockStatus.scala:62-65` carried an explicit TODO comment naming
 the DOS vector: *“Make IgnorableEquivocation slashable again ...
 will become a DOS vector if not fixed.”*
@@ -40,9 +43,13 @@ The fixture file
 [`casper/tests/slashing/pre_fix_bug_1.rs`](../../../../../casper/tests/slashing/pre_fix_bug_1.rs)
 encodes the minimum scenario: validator `v0` signs two distinct blocks
 at sequence number 0; no other block cites the offending block (so
-the equivocation is `Ignorable`). The pre-fix Rust path returns
-`Status::Valid` with a log line; the post-fix path returns
-`Status::IgnorableEquivocation` and creates an `EquivocationRecord`.
+the equivocation is `Ignorable`). The regression harness preserves the
+historical vocabulary: the pre-fix path returns `Status::Valid` with a log
+line; the post-fix abstraction returns `Status::IgnorableEquivocation` and
+creates an `EquivocationRecord`. Production now realizes the same no-drop
+obligation through `EquivocationObservation::Unsolicited` plus certified
+two-sibling objective evidence; see
+[`../../objective-equivocation-evidence.md`](../../objective-equivocation-evidence.md).
 
 ## 4 · Classification trace
 

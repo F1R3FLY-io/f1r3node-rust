@@ -43,8 +43,9 @@ The canonical reconstruction refinement to #12/#13 handles a slash that is
 rejected by multi-parent conflict resolution without granting authority to
 the rejected deploy. Every proposer scans the complete current invalid-block
 evidence index against the canonical merged-pre-state bonds. The scan chooses
-one deterministic hash per `(offender, epoch)` and emits only positive-bond
-targets. A surviving parent slash therefore suppresses another candidate,
+one deterministic target per active `(offender, generation)` in the current
+activation epoch and emits only positive-bond targets. A surviving parent
+slash therefore suppresses another candidate,
 while a rejected effect is reconstructed from independent evidence.
 
 Bug #10 is the **withdrawal-flow analog** of Bug #4: both close
@@ -60,7 +61,7 @@ withdrawal arm (line 619). Bug #10's theorem set
 >
 > | Bug | Theorem | Production location                                                  |
 > |-----|---------|----------------------------------------------------------------------|
-> | #1  | T-9.1   | `block_status.rs:214-238` — `IgnorableEquivocation` in `is_slashable()`  |
+> | #1  | T-9.1   | `equivocation_detector.rs:79-120`, `validation_dispatcher.rs:389-415` — typed unsolicited-equivocation observation retained on accepted validation |
 > | #2  | T-9.2   | `engine/multi_parent_casper/validation_dispatcher.rs:459` — RMW via `access_equivocations_tracker` |
 > | #3  | T-9.3   | `engine/multi_parent_casper/validation_dispatcher.rs:502` — `status if status.is_slashable()` catch-all |
 > | #4  | T-9.4   | `PoS.rhox:449-515` — `match transferResult` with deterministic failure |
@@ -68,8 +69,8 @@ withdrawal arm (line 619). Bug #10's theorem set
 > | #6  | T-9.6   | `validate.rs:1247-1319` — self-regression filter dropped             |
 > | #7  | T-9.7   | `equivocation_detector.rs` — canonical self-chain child above base    |
 > | #8  | T-9.8   | `block_creator.rs:498-533` — proposer-bond early-return              |
-> | #9  | T-9.9   | `validate.rs:1448-1449` — per-target `slash_targets` exemption (§9.10) |
-> | #10 | T-9.10  | `PoS.rhox:1265-1302` — `payWithdraw` pattern-match + success-gated `computeRemove` |
+> | #9  | T-9.9   | `validate.rs:1421-1424` — per-generation `slash_targets` exemption (§9.10) |
+> | #10 | T-9.10  | `PoS.rhox:835-861` — `payWithdraw` pattern-match + success-gated `computeRemove` |
 > | #11 | T-9.11  | `equivocation_detector.rs` — total deterministic traversal with distinct child hashes |
 > | #12 | T-9.13  | `slashing_authorization.rs` — pre-replay received-slash authorization |
 > | #13 | T-9.12  | `slashing_authorization.rs` — epoch-scoped evidence authorization |
@@ -101,16 +102,21 @@ without economic cost.
 **Pre-fix behavior.** Detector returns `IgnorableEquivocation`;
 dispatcher logs and discards.
 
-**Post-fix behavior.** Add `IgnorableEquivocation` to
-`is_slashable()`; in `handle_invalid_block`, treat it identically
-to `AdmissibleEquivocation` (record evidence, allow standard
-slash flow).
+**Post-fix behavior.** The original fix added `IgnorableEquivocation` to the
+abstract slashable taxonomy so the dispatcher could not discard it. The
+current protocol realizes the same obligation more precisely: both requested
+and unsolicited siblings remain accepted with a typed observation, while the
+atomic generation-scoped objective-evidence index records each certified hash
+and authorizes equivocation evidence only after two distinct hashes exist
+(`equivocation_detector.rs:79-120`,
+`block_dag_key_value_storage.rs:1499-1528`). This preserves the liveness fix
+without treating a unary observation as objective guilt.
 
 **Theorem T-9.1.** *(`bug_fix_ignorable_safety`,
 `BugFixIgnorable.v:32`; `post_fix_ignorable_implies_equivocation`,
 line 57.)* Under the fix, no honest validator is wrongly slashed
-— since the underlying equivocation predicate (two distinct blocks
-at same seqN by same sender) is unchanged.
+— since the underlying equivocation predicate requires two distinct certified
+blocks at the same sequence by the same validator incarnation.
 
 **Why this matters.** Without the fix, an attacker can mount a DOS
 campaign: send K equivocating blocks from a freshly-bonded validator
@@ -391,9 +397,9 @@ rejects.
 **Cause.** Scala `Validate.scala:727-731` rejects a block whenever
 `neglectedInvalidJustification = ⊤`, even if the block itself
 carries a `Slash` system deploy targeting the offender. Rust's
-`neglected_invalid_block` (`validate.rs:1346`) instead rejects only
+`neglected_invalid_block` (`validate.rs:1336`) instead rejects only
 when a neglected justification still *requires* a slash that the block
-does not itself issue (`validate.rs:1448-1449`), so self-correcting
+does not itself issue (`validate.rs:1421-1424`), so self-correcting
 blocks are *admitted*. The Scala behavior is a bug; the Rust widening
 is correct.
 
@@ -404,14 +410,14 @@ widening was originally a **block-level** predicate: reject iff
 carries as `hs` (mapped to the Rust name by the model↔code table in
 `Block.v`'s module header). The current code refines it to a
 **per-target** exemption: the block first collects the `slash_targets`
-(`validate.rs:1365`) that its own *authorized* slash deploys cover, each
-keyed by `slash_target_key` (`validate.rs:1412`), and excuses a neglected
-justification only when *that offender's* key is present — the
-`slash_targets` membership test at `validate.rs:1448-1449`.
+(`validate.rs:1354-1382`) that its own *authorized* slash deploys cover, each
+keyed by `(offender, bond_generation)`, and excuses a neglected
+justification only when *that incarnation's* key is present — the
+`slash_targets` membership test at `validate.rs:1421-1424`.
 
-The identifier `has_slash_system_deploys` still exists (`validate.rs:962`),
+The identifier `has_slash_system_deploys` still exists (`validate.rs:941`),
 but it now governs a different check: the empty-block progress gate,
-where `has_slash_system_deploys` is one disjunct (`validate.rs:1099`).
+where `has_slash_system_deploys` is one disjunct (`validate.rs:1080`).
 It no longer appears on the neglected-invalid-block path.
 
 T-9.9 itself is unaffected. `rejects_neglected_post_fix` (`BugFixSelfRegression.v:99`)
@@ -633,11 +639,12 @@ PoS state on the basis of evidence the local node had not validated.
 **Post-fix behavior.** Validation rejects unauthorized slash deploys before
 Rholang replay. The issuer must equal the block sender, the invalid hash must
 name a locally known invalid block, the target epoch must match both evidence
-and current epoch, the target must have positive bond in the block's actual
-canonical merged pre-state, and a block may target each `(validator, epoch)`
-at most once. Proposer selection and receiver validation both consume the
-bond map derived from that same pre-state root. Merge-rejection observations
-are diagnostic only and cannot authorize a deploy.
+and current epoch, its bond generation must match certified evidence and the
+canonical pre-state generation, the target must have positive bond at that same
+canonical merged pre-state root, and a block may target each
+`(validator, generation)` at most once. Proposer selection and receiver
+validation both consume one root-bound bond/generation authority. Merge-rejection
+observations are diagnostic only and cannot authorize a deploy.
 
 **Proofs and tests.** Rocq: the core per-deploy predicate
 `authorized_slash_candidate` (evidence/target epoch = current ∧ positive
@@ -646,7 +653,8 @@ canonical pre-state bond) via `execute_unknown_evidence_noop`,
 `canonical_pre_state_authorizes_when_ambient_zero`; the **full seven-rule
 receive gate** (FV audit #3) adds Rule 1 issuer==sender
 (`main_T9_13_issuer_mismatch_rejected`) and Rule 7 block-level
-`(offender, epoch)` NoDup (`main_T9_13_duplicate_target_rejected`,
+`(offender, generation)` NoDup at the production boundary, refining the
+single-current-epoch proof (`main_T9_13_duplicate_target_rejected`,
 `main_T9_13_authorized_block_validates`) over
 `received_slash_deploy_authorized` / `validate_block_slash_deploys` (the
 `SlashDeploy` record now carries the checked `sd_issuer` field); plus
@@ -961,22 +969,105 @@ to evaluate it is available. Treating transport order as proof of proposer
 misconduct converts an availability race into a slashable consensus fault. The
 dependency rule restores the required separation: fetch first, then decide.
 
-## 9.21 Summary
+## 9.21 Bug #19 — Unary equivocation evidence depended on arrival order
 
-The eighteen fixes restore the slashing subsystem to audit-grade
+**Origin.** CI consensus disagreement reproduced as an authorization race.
+
+**Cause.** Equal-sequence siblings can both finish validation against stale
+snapshots before either durable insert observes the other. After serialized
+insertion, one replica receiving `a` then `b` could flag only `b` invalid while
+another receiving `b` then `a` could flag only `a` invalid. A unary slash named
+the locally invalid sibling. The other honest replica saw that named sibling
+as locally valid and rejected the slash as `UnauthorizedSlashDeploy`.
+
+The first objective-evidence repair exposed a second refinement defect. The
+proposer selected the globally least pair before filtering both members to the
+target activation epoch, so one old hash could hide two eligible current
+siblings. Proposal and receipt also obtained bond generation and stake from
+different mutable projections, and the block creator skipped authority loading
+when objective evidence existed without a local invalid-index entry. These are
+authority-provenance and selection-order defects, not changes to Casper's
+majority or clique rule.
+
+**Pre-fix behavior.** Local arrival order selected slash authority. That
+changed accepted-block sets, latest-message projections, merge inputs, replay
+roots, and eventually finality and API results. Missing evidence dependencies
+could amplify the disagreement into an availability-dependent rejection.
+
+**Post-fix behavior.** Every durable insertion records its block hash in a
+persistent ordered set keyed by `(sender, bond_generation, sequence)`. The
+second distinct hash creates canonical objective evidence `(minHash, maxHash)`,
+even when both blocks earlier validated as normal. Proposal and receive
+authorization verify distinct hashes, one non-empty sender, one nonnegative
+sequence, both evidence generations and epochs, and a positive bond. Generation
+and bond come from one canonical authority object loaded at the exact merged
+pre-state root; the proposed activation epoch comes from the actual proposed
+block number. Both hashes enter the dependency closure and deterministic replay
+seed. Local invalid flags are irrelevant to pair acceptance, and existing
+block-validity judgments are not rewritten.
+
+The objective equivocator's affected bond generation is excluded from finality
+voters; a later descendant in that generation cannot restore its weight. Old
+evidence does not permanently retire a later same-key generation. Once a
+structural group exists, unary fallback from that `(validator, sequence)` is
+suppressed before epoch eligibility; independent unary faults remain eligible.
+Pair selection occurs after epoch grouping, so a cross-epoch hash cannot hide
+two current-lifetime siblings. Startup reconciliation rebuilds observed
+sibling groups, unary invalid evidence, and latest-message slots from immutable
+DAG metadata.
+
+**Proofs and tests.** `ObjectiveEquivocation.tla` separates parallel
+stale-snapshot validation from serialized durable insertion and explores
+opposite arrival orders, asymmetric local-invalid flags, complete dependency
+closure, lifetime-scoped voter exclusion, cross-epoch fallback suppression,
+epoch-first pair selection, and restart. TLC checks the safe model and its
+unsafe controls; Apalache independently checks the bounded transition system.
+`ObjectiveEvidenceAuthorization.tla` then isolates the production authorization
+boundary and separately controls pair-before-epoch selection, cross-epoch
+acceptance, snapshot generation, snapshot bond, offender-wide unary
+suppression, invalid-index-only activation, and proposer/receiver drift.
+`ObjectiveEquivocation.v` proves the corresponding unbounded algebraic
+properties without axioms. Loom explores insertion, local classification, and
+lifetime grouping, including simultaneous old-generation, old-epoch, and
+current-sequence streams. Rust storage, proposer/receiver, protobuf, dependency,
+seed, property, and differential fuzz tests bind those transitions to
+production code.
+
+**Why the earlier verification missed the refinement defect.** The first model
+encoded the intended generation grouping but treated activation-epoch filtering
+and pre-state authority as already-correct helper predicates. That abstraction
+mirrored the implementation assumption instead of challenging it. It also had
+no control for pair selection before epoch filtering, no split-root bond versus
+generation authority, and no pair-only activation trace. The corrected proof
+ladder makes those values and transition boundaries independent, requires a
+negative control for each weakened boundary, and connects them to production
+example, property, fuzz, and Loom tests. A safe model without these controls is
+no longer accepted as evidence for objective slash authorization.
+
+**Why this matters.** Equivocation is objective only as a relation between two
+signed messages. A node-local label on one member is not portable evidence.
+The repair makes authorization a deterministic function of immutable block
+facts while preserving accepted history and validator-lifetime safety. The
+complete contract is in
+[Objective equivocation evidence](../objective-equivocation-evidence.md).
+
+## 9.22 Summary
+
+The nineteen fixes restore the slashing subsystem to audit-grade
 correctness:
 
 - Nine Scala-inherited bugs are documented with proven fixes.
 - Two Rust regressions (#2 and #11) are documented with proven fixes.
 - One deliberate widening (#9) is documented as a *Rust improvement*
   over Scala, with a soundness proof.
-- Six Rust-source confirmed vulnerabilities or hardening gaps (#12–#16, #18)
+- Seven Rust-source confirmed vulnerabilities or hardening gaps (#12–#16,
+  #18–#19)
   are fixed by authorized slash evidence, epoch-scoped evidence, checked
   arithmetic, and duplicate-justification rejection.
 - One hardening of an implicit contract (#17) is documented with proven
   recon-on-resume properties.
 
-The bisimilarity claim (T-15, §10) holds modulo these seventeen
+The bisimilarity claim (T-15, §10) holds modulo these eighteen
 deltas: convergence fixes, vault-conservation fixes, Rust-only
 regression fixes, one deliberate widening, the authorization fixes that
 intentionally reject unsafe legacy behavior, and the explicit

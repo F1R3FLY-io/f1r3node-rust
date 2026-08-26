@@ -1,0 +1,3 @@
+---------------- MODULE TransportPeerLifecycleInitRaceUnsafe ----------------
+EXTENDS TransportPeerLifecycle
+=============================================================================

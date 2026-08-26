@@ -59,9 +59,9 @@ impl FtThreshold {
 
 /// Exact rational finalization test: θ = num/den.
 ///
-/// `strict=false` ⇒ (2q−S)/S ≥ θ (floor path); `strict=true` ⇒ > θ (LFB
-/// finalizer). Cleared of denominators (S, den > 0), the test is
-/// `2·q·den ⋛ S·(den+num)`. `i128` so `2·q·den` and `S·(den+num)` (≤ ~2^84 for
+/// The durable floor and LFB finalizer both require `(2q−S)/S > θ`. Cleared of
+/// denominators (S, den > 0), the test is `2·q·den > S·(den+num)`. `i128` so
+/// `2·q·den` and `S·(den+num)` (≤ ~2^84 for
 /// S ≤ i64::MAX, den = 10^6) never overflow, and `2·agreeing` near i64::MAX
 /// stays exact.
 ///
@@ -69,7 +69,7 @@ impl FtThreshold {
 /// comparison and activates ATOMICALLY with the unreleased branch — every
 /// validator runs the branch binary together, so there is no mixed-version
 /// window and no on-chain activation parameter is required.
-pub fn ft_decides_exact(agreeing: i64, q: i64, s: i64, num: i64, den: i64, strict: bool) -> bool {
+pub fn ft_decides_exact(agreeing: i64, q: i64, s: i64, num: i64, den: i64) -> bool {
     // Domain: the doc-contract is 0 ≤ num ≤ den (θ ∈ [0,1]), but the on-chain ppm
     // is range-checked to [-den, den] (token_metadata_check.rs) and some callers
     // pass a negative sentinel θ (e.g. -1.0 "finalize on any majority clique"), so
@@ -81,11 +81,7 @@ pub fn ft_decides_exact(agreeing: i64, q: i64, s: i64, num: i64, den: i64, stric
     }
     let lhs = 2i128 * q as i128 * den as i128;
     let rhs = s as i128 * (den as i128 + num as i128);
-    if strict {
-        lhs > rhs
-    } else {
-        lhs >= rhs
-    }
+    lhs > rhs
 }
 
 pub struct CliqueOracleRunCache {
@@ -537,8 +533,7 @@ impl CliqueOracle {
     /// EXACT deterministic finalization DECISION over a FROZEN snapshot — the
     /// integer-exact analog of [`CliqueOracle::ft_witnessed`]. Returns `true` iff
     /// the clique oracle certifies `target_msg` finalized at threshold `ftt` under
-    /// the exact rule `2·q·den ⋛ S·(den+num)` (see [`ft_decides_exact`]); `strict`
-    /// selects ≥ (floor path) vs > (LFB finalizer). Mirrors `ft_witnessed`'s
+    /// the exact rule `2·q·den > S·(den+num)` (see [`ft_decides_exact`]). Mirrors `ft_witnessed`'s
     /// contains / zero-stake / `agreeing ≤ S/2` short-circuits so the two agree
     /// everywhere except at the `f32` rounding boundary this replaces.
     pub async fn ft_witnessed_exact(
@@ -546,7 +541,6 @@ impl CliqueOracle {
         dag: &KeyValueDagRepresentation,
         latest_messages: &BTreeMap<V, M>,
         ftt: FtThreshold,
-        strict: bool,
     ) -> Result<bool, KvStoreError> {
         // Non-existing message: MIN ⇒ not finalized (mirrors ft_witnessed).
         if !dag.contains(target_msg) {
@@ -581,14 +575,7 @@ impl CliqueOracle {
             latest_messages,
         )
         .await?;
-        let decision = ft_decides_exact(
-            agreeing,
-            max_clique_weight,
-            total_stake,
-            ftt.num,
-            ftt.den,
-            strict,
-        );
+        let decision = ft_decides_exact(agreeing, max_clique_weight, total_stake, ftt.num, ftt.den);
         if tracing::enabled!(target: "f1r3.trace.oracle", tracing::Level::DEBUG) {
             let snapshot: Vec<String> = latest_messages
                 .iter()
@@ -635,7 +622,6 @@ impl CliqueOracle {
         latest_messages: &BTreeMap<V, M>,
         num: i64,
         den: i64,
-        strict: bool,
     ) -> Result<(bool, f32), KvStoreError> {
         let total_stake = message_weight_map.values().sum::<i64>();
         assert!(total_stake > 0, "Long overflow when computing total stake");
@@ -654,7 +640,7 @@ impl CliqueOracle {
         // Display value only: identical formula to compute_output_with_cache.
         let ft_value = (max_clique_weight as f32 * 2.0 - total_stake as f32) / total_stake as f32;
         Ok((
-            ft_decides_exact(agreeing, max_clique_weight, total_stake, num, den, strict),
+            ft_decides_exact(agreeing, max_clique_weight, total_stake, num, den),
             ft_value,
         ))
     }
@@ -737,14 +723,14 @@ impl CliqueOracle {
 mod ft_decides_exact_tests {
     //! Unit tests for the exact-integer finalization DECISION (`ft_decides_exact`)
     //! and the `FtThreshold` newtype. The exact test replaces the imprecise `f32`
-    //! comparison `(2q−S)/S ⋛ θ`; these confirm it matches `f32` where `f32` is
-    //! exact, pins the ≥-vs-> semantics at an exact tie, and never overflows.
+    //! comparison `(2q−S)/S > θ`; these confirm it matches `f32` where `f32` is
+    //! exact, rejects exact threshold ties, and never overflows.
     use super::{ft_decides_exact, FtThreshold, FT_PPM_DEN};
 
     /// On small stakes the exact rule matches the naive `f32` comparison
-    /// `(2q−S)/S ⋛ θ` at every grid point where `f32` is exact (dyadic S and θ),
+    /// `(2q−S)/S > θ` at every grid point where `f32` is exact (dyadic S and θ),
     /// confirming the DECISION is unchanged on the common case. Exact ties are
-    /// excluded here and pinned down by `boundary_tie_ge_finalizes_gt_does_not`.
+    /// excluded here and pinned down by `boundary_tie_is_not_finalized`.
     #[test]
     fn small_stake_matches_f32_rule_on_dyadic_grid() {
         let den = FT_PPM_DEN;
@@ -763,12 +749,7 @@ mod ft_decides_exact_tests {
                     // Full agreement (agreeing = S) so the >S/2 gate always passes,
                     // isolating the θ comparison.
                     assert_eq!(
-                        ft_decides_exact(s, q, s, num, den, false),
-                        ratio >= theta,
-                        ">= mismatch q={q} s={s} num={num}"
-                    );
-                    assert_eq!(
-                        ft_decides_exact(s, q, s, num, den, true),
+                        ft_decides_exact(s, q, s, num, den),
                         ratio > theta,
                         "> mismatch q={q} s={s} num={num}"
                     );
@@ -777,12 +758,11 @@ mod ft_decides_exact_tests {
         }
     }
 
-    /// A large-stake exact tie `2q·den == S·(den+num)` finalizes under ≥ (floor)
-    /// but NOT under > (LFB finalizer) — the precise boundary the `f32` path could
-    /// not resolve. Built so the tie is exact: S = 2·den, q = den+num ⇒
+    /// A large-stake exact tie `2q·den == S·(den+num)` is not finalized. Built so
+    /// the tie is exact: S = 2·den, q = den+num ⇒
     /// 2q·den = 2(den+num)·den = S·(den+num).
     #[test]
-    fn boundary_tie_ge_finalizes_gt_does_not() {
+    fn boundary_tie_is_not_finalized() {
         let den = FT_PPM_DEN;
         let num = 333_333;
         let s = 2 * den; // 2_000_000
@@ -792,15 +772,19 @@ mod ft_decides_exact_tests {
             s as i128 * (den as i128 + num as i128),
             "test setup must produce an exact tie"
         );
-        // agreeing = S so the >S/2 gate passes; the tie is decided purely by strict.
         assert!(
-            ft_decides_exact(s, q, s, num, den, false),
-            "exact tie must finalize under >= (floor)"
+            !ft_decides_exact(s, q, s, num, den),
+            "exact tie must not finalize"
         );
-        assert!(
-            !ft_decides_exact(s, q, s, num, den, true),
-            "exact tie must NOT finalize under > (LFB finalizer)"
-        );
+    }
+
+    #[test]
+    fn four_validator_boundary_requires_clique_above_half() {
+        let den = FT_PPM_DEN;
+        let total_stake = 16;
+        let agreeing_stake = 9;
+        assert!(!ft_decides_exact(agreeing_stake, 8, total_stake, 0, den,));
+        assert!(ft_decides_exact(agreeing_stake, 9, total_stake, 0, den,));
     }
 
     /// The `2·agreeing == S` knife-edge (exactly half agree) is NOT finalized: the
@@ -811,8 +795,7 @@ mod ft_decides_exact_tests {
         let den = FT_PPM_DEN;
         let s = 10i64;
         let agreeing = 5i64; // 2·5 == 10 == S
-        assert!(!ft_decides_exact(agreeing, s, s, 0, den, false));
-        assert!(!ft_decides_exact(agreeing, s, s, 0, den, true));
+        assert!(!ft_decides_exact(agreeing, s, s, 0, den));
     }
 
     /// i64::MAX-scale q and S must not overflow: `2·q·den ≈ 2^84` exceeds i64 but
@@ -823,11 +806,10 @@ mod ft_decides_exact_tests {
         let num = 500_000;
         let s = i64::MAX;
         let q = i64::MAX; // q ≤ S; full clique ⇒ (2S−S)/S = 1 ≥ θ and > θ (θ < 1)
-        assert!(ft_decides_exact(s, q, s, num, den, false));
-        assert!(ft_decides_exact(s, q, s, num, den, true));
+        assert!(ft_decides_exact(s, q, s, num, den));
         // 2·agreeing near i64::MAX in the early-return path: 2·(MAX/2) < MAX ⇒ false.
         let half = i64::MAX / 2;
-        assert!(!ft_decides_exact(half, q, s, num, den, true));
+        assert!(!ft_decides_exact(half, q, s, num, den));
     }
 
     /// Negative-θ sentinel (θ = -1.0 "finalize on any majority clique"): with the
@@ -839,13 +821,10 @@ mod ft_decides_exact_tests {
         let s = 10i64;
         let agreeing = 10i64; // 2·10 > 10 ⇒ gate passes
         assert!(
-            ft_decides_exact(agreeing, 1, s, num, den, true),
+            ft_decides_exact(agreeing, 1, s, num, den),
             "q=1>0 finalizes"
         );
-        assert!(
-            !ft_decides_exact(agreeing, 0, s, num, den, true),
-            "q=0 does not"
-        );
+        assert!(!ft_decides_exact(agreeing, 0, s, num, den), "q=0 does not");
     }
 
     #[test]

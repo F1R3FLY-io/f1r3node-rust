@@ -34,66 +34,17 @@
        docs' recommended Rust hardening. The FV models the rejection that DOES
        exist (`justification_follows`), which is what makes single_root hold.]
 
-   (2) weight_block_structural   - `weight_from_validator_by_dag` reads only the
-       RESOLVED main-parent weight map, so weight is pure: this IS
-       Score.weight_is_pure, re-exported as the seam.
+   (2) weight_floor_structural   - fork choice reads only the certified
+       finalized-floor authority map, so candidate and traversed-block weights
+       cannot reweight a round.
 
-   (3) main_parent_pipeline_deterministic - the proposer's main parent is a
-       DETERMINISTIC PURE FUNCTION of (dag, parents, last_finalized_block). It is
-       NOT (necessarily) the GHOST argmax: the proposer builds its parent list in
-       TWO stages, and the SECOND stage can OVERRIDE the first.
-
-         stage 1 (snapshot.rs:317-331) computes the GHOST head
-           (`estimator.tips_with_latest_messages(..).tips.into_iter().next()`,
-           :317-323) and sorts the parents by (is_main DESC, hash ASC) (:325-331).
-           That IS a total order, so the sorted list is CANONICAL - via
-           TieBreak.output_indep_of_input_perm. This stage, and ONLY this stage,
-           is what the former `main_parent_first_deterministic` characterized.
-
-         stage 2 (snapshot.rs:332 -> :124-185 `prefer_deploy_support_main_parent`)
-           re-scores each parent BRANCH by its unfinalized user-deploy support
-           (`branch_unfinalized_user_deploy_score`, :72-122) and, when a
-           best-scoring branch exists, PROMOTES it to index 0 (`remove(best_idx)`
-           + `insert(0, _)`, :173-174) - OVERRIDING the ghost head.
-
-       So "the block's main parent = the GHOST argmax" is FALSE for the proposer.
-       That is not a hypothesis here: `pipeline_head_may_differ_from_ghost` below
-       REFUTES it by computation. (T-GHOST / Rank.rank_selects_heaviest are
-       UNAFFECTED - the `Estimator` itself is untouched; only the CONSUMER of
-       tips[0] in snapshot.rs re-orders after it.)
-
-       What IS true - and what this seam now proves, axiom-free - is:
-
-         (a) main_parent_pipeline_permutation  - the pipeline PERMUTES its parent
-             list: stage 2's remove+insert is a permutation (promote_permutation),
-             and stage 1's sort is one too. No parent is lost or duplicated, so
-             the parent MULTISET is preserved.
-         (b) dbetter_strict_total_order        - `better_deploy_branch_score`
-             (:48-70) is a STRICT TOTAL order: irreflexive, asymmetric, transitive,
-             and total on distinct hashes. It is lexicographic on
-             (deploy_sig_count, latest_deploy_block_number, root_block_number),
-             each DESCENDING, with a final REVERSED hash tie-break (the SMALLER
-             block hash wins, :68). Distinct parents have distinct (cryptographic)
-             hashes, so on the real parent list it is total. Hence:
-         (c) dbest_hash_perm_invariant / main_parent_pipeline_deterministic - the
-             promoted branch is the UNIQUE argmax, so WHICH parent is promoted is
-             independent of the order the scan visits them (only the INDEX moves);
-             and the WHOLE pipeline output is invariant under permutation of the
-             input parents (which reach the proposer from a HashSet-ordered scan).
-             NOTE the composition is load-bearing: stage 2 ALONE is NOT
-             permutation-invariant - it returns `parents` UNCHANGED when no branch
-             scores (:163-165), so its head is then just whatever came first.
-             Determinism rests on stage 1 CANONICALIZING the list before stage 2
-             ever runs. That is exactly why the model composes the two.
-         (d) SOUNDNESS IS UNAFFECTED by the promotion. `finalized_floor/theories/
-             Selection.v`'s `T_PS` (:196) proves floor safety for an UNCONSTRAINED
-             parent oracle - `select_floor places no precondition on the parent
-             set ... both guarantees are proved forall parents`. A REORDERED parent
-             list is therefore already INSIDE the modeled domain, and by (a) the
-             promotion changes only the ORDER, never the SET. So dev's stage 2 is a
-             model-update obligation (this file), NOT a safety regression.
-             [Cross-project reference only: fork_choice's _CoqProject does not -Q
-             finalized_floor, so this is a documented link, not a Require.]
+   (3) consensus_parent_pipeline_preserves_ghost_head - the proposer's main
+       parent is the LMD-GHOST argmax selected from the certified vote
+       projection. Parent ordering is canonical under (is_main DESC, hash ASC),
+       so input enumeration order cannot alter either the selected head or the
+       complete ordered list. The former deploy-support post-sort promotion is
+       retained below only as an executable unsafe control: it is deterministic,
+       but it can replace the GHOST head and therefore does not model production.
 
    (4) honest_forkchoice_parents_validate - the REFRAMED T-VALID: a validator
        does NOT recompute fork choice; it RANGE-CHECKS the declared parents
@@ -101,9 +52,7 @@
        A proposer's depth-filtered parents (all within `mpd`) therefore
        ALWAYS pass the validator's buffered bound (`mpd + buf`), since mpd <=
        mpd + buf. No honest proposer is ever rejected, and no fork-choice
-       recomputation is needed for validation. This is ALSO what makes (3)'s
-       stage-2 promotion consensus-benign: validators never re-derive the
-       proposer's main parent, so they cannot disagree with it.
+       recomputation is needed for validation.
 
    ---------------------------------------------------------------------------
    Rocq                             | Rust
@@ -111,23 +60,14 @@
    validated_block / ...wf_dag      | validate.rs:681-723 block_number
    validation_implies_single_root   | validate.rs:1135-1139 justification_follows
                                     |   (+ initializing.rs:832-840 approved genesis)
-   weight_block_structural          | proto_util.rs:160 (pure fn of main parent)
+   weight_floor_structural          | estimator.rs frozen context authority
    ghost_sort                       | snapshot.rs:325-331 sort_by (is_main,hash)
-   ghost_sort_first_deterministic   |   (idem; stage 1 ONLY - the former name
-                                    |   main_parent_first_deterministic is kept
-                                    |   as a DEPRECATED alias, see below)
-   dscore                           | snapshot.rs:41-46 DeployBranchScore
-   dbetter / dbetterb               | snapshot.rs:48-70 better_deploy_branch_score
-   branch_score (Section Variable)  | snapshot.rs:72-122
-                                    |   branch_unfinalized_user_deploy_score
-   dbest                            | snapshot.rs:144-161 best-index scan
-   promote                          | snapshot.rs:173-174 remove(best_idx)+insert(0,_)
-   prefer_deploy_support            | snapshot.rs:124-185
-                                    |   prefer_deploy_support_main_parent
-   main_parent_pipeline             | snapshot.rs:317-337 (stage 1 then stage 2)
-   pipeline_head_may_differ_from_ghost | REFUTES "main parent = tips[0]" (:332)
-   (any parent ORDER stays sound)   | finalized_floor Selection.v:196 T_PS
-                                    |   (forall parents - unconstrained oracle)
+   ghost_sort_first_deterministic   | snapshot.rs order_parents_by_ghost_head
+   consensus_parent_pipeline       | snapshot.rs order_parents_by_ghost_head
+   consensus_parent_pipeline_preserves_ghost_head
+                                    | snapshot.rs GHOST-head preservation guard
+   pipeline_head_may_differ_from_ghost
+                                    | unsafe historical promotion control
    honest_forkchoice_parents_validate| snapshot.rs:315 (no recompute)
    =========================================================================== *)
 
@@ -262,9 +202,9 @@ Theorem lca_is_common_ancestor_validated :
   forall genesis genesis_hash d top lms,
     wf_dag d -> wf_lookup d ->
     (forall b, In b d -> validated_block genesis_hash d b) ->
-    all_real d (map snd (depth_filter d top lms)) ->
-    forall lm, In lm (depth_filter d top lms) ->
-      anc_of d (lca genesis (lcua_many d (map snd (depth_filter d top lms))) d top lms) (snd lm).
+    all_real d (map snd (certified_messages d top lms)) ->
+    forall lm, In lm (certified_messages d top lms) ->
+      anc_of d (lca genesis (lcua_many d (map snd (certified_messages d top lms))) d top lms) (snd lm).
 Proof.
   intros genesis genesis_hash d top lms Hwf Hwl Hval Har lm Hin.
   eapply lca_is_common_ancestor with (root := genesis_hash).
@@ -276,22 +216,25 @@ Proof.
 Qed.
 
 (* ===========================================================================
-   Seam (2) - weight is a pure function of the resolved main-parent bonds
+   Seam (2) - weight is frozen by the certified finalized-floor authority
    =========================================================================== *)
 
-Corollary weight_block_structural :
-  forall d1 d2 h v,
-    Score.resolve_main d1 h = Score.resolve_main d2 h ->
-    Score.weight d1 h v = Score.weight d2 h v.
+Corollary weight_floor_structural :
+  forall authority1 authority2 v,
+    authority1 = authority2 ->
+    Score.weight authority1 v = Score.weight authority2 v.
 Proof. exact Score.weight_is_pure. Qed.
 
-(* ===========================================================================
-   Seam (3) - the proposer's main parent is a DETERMINISTIC PURE FUNCTION of
-   (dag, parents, last_finalized_block) - NOT (necessarily) the GHOST argmax.
+Corollary candidate_bonds_cannot_reweight_round :
+  forall authority candidate_bonds1 candidate_bonds2 v,
+    Score.estimator_weight authority candidate_bonds1 v =
+    Score.estimator_weight authority candidate_bonds2 v.
+Proof. exact Score.candidate_bonds_noninterference. Qed.
 
-   Two stages, modeled separately then composed:
-     stage 1  `ghost_sort`           (snapshot.rs:317-331)
-     stage 2  `prefer_deploy_support` (snapshot.rs:332 -> :124-185)
+(* ===========================================================================
+   Seam (3) - the production parent order is deterministic and preserves the
+   certified LMD-GHOST head. The removed deploy-support override is retained as
+   an executable negative control before the production pipeline definition.
    =========================================================================== *)
 
 (* ---------------------------------------------------------------------------
@@ -317,16 +260,11 @@ Qed.
 Definition ghost_sort (main : BlockHash) (l : list BlockHash) : list BlockHash :=
   map ehash (sort (map (parent_entry main) l)).
 
-(* STAGE 1 ONLY. The sorted parent list is CANONICAL: permuted inputs sort to the
-   IDENTICAL list, because (is_main DESC, hash ASC) is a TOTAL order on distinct
-   hashes (TieBreak.output_indep_of_input_perm).
-
-   This theorem was formerly named `main_parent_first_deterministic`. That name was
-   a MISNOMER once dev added stage 2: this says NOTHING about which parent ends up
-   as the block's main parent, because `prefer_deploy_support` can PROMOTE a
-   different parent to index 0 afterwards (see pipeline_head_may_differ_from_ghost).
-   It remains TRUE, and remains load-bearing - it is precisely what canonicalizes
-   stage 2's input, and hence what makes the composed pipeline deterministic. *)
+(* The sorted parent list is canonical: permuted inputs sort to the identical
+   list because (is_main DESC, hash ASC) is a total order on distinct hashes.
+   Production uses this directly and proves below that the GHOST head remains
+   first. The removed deploy-support override is modeled afterward only as a
+   negative control. *)
 Theorem ghost_sort_first_deterministic :
   forall main (l l' : list BlockHash),
     NoDup l -> Permutation l l' ->
@@ -337,20 +275,6 @@ Proof.
   - rewrite (map_ehash_parent_entry main l). exact Hnd.
   - apply Permutation_map. exact Hperm.
 Qed.
-
-(* DEPRECATED ALIAS - do not use in new work; prefer `ghost_sort_first_deterministic`
-   (stage 1) or `main_parent_pipeline_deterministic` (the real, composed pipeline).
-   Retained ONLY so `MainTheorem.fork_choice_bridge_correct` clause (c) keeps
-   compiling unchanged (MainTheorem.v:184); its STATEMENT is still true (it is the
-   stage-1 sort), only its NAME over-claims. Not deleted, per the `comment out with
-   a reason, never delete` policy. RECOMMENDED FOLLOW-UP (outside this change's file
-   scope): retarget MainTheorem.v:36/:184 at `ghost_sort_first_deterministic` and add
-   `main_parent_pipeline_deterministic` as a fifth bridge clause. *)
-Theorem main_parent_first_deterministic :
-  forall main (l l' : list BlockHash),
-    NoDup l -> Permutation l l' ->
-    sort (map (parent_entry main) l) = sort (map (parent_entry main) l').
-Proof. exact ghost_sort_first_deterministic. Qed.
 
 Lemma ghost_sort_deterministic :
   forall main l l', NoDup l -> Permutation l l' -> ghost_sort main l = ghost_sort main l'.
@@ -369,7 +293,7 @@ Proof.
 Qed.
 
 (* ---------------------------------------------------------------------------
-   Stage 2 - the deploy-support promotion (snapshot.rs:124-185)
+   Historical unsafe control - removed deploy-support promotion
    --------------------------------------------------------------------------- *)
 
 (* `DeployBranchScore` (snapshot.rs:41-46). The Rust fields are
@@ -795,21 +719,72 @@ Section DeployPromotion.
   Proof. intros main l r1 r2 H1 H2. subst. reflexivity. Qed.
 End DeployPromotion.
 
-(* THE REFUTATION of the OLD bridge ("main parent = the GHOST head"), by COMPUTATION.
+(* Executable negative control for the removed deploy-support override.
    Ghost head = hash 0; parents = {0, 1}; branch 1 carries an unfinalized user deploy
-   and branch 0 does not. Stage 1 correctly sorts the ghost head first ([0;1]), and
-   then stage 2 PROMOTES branch 1 - so the block's main parent is 1, NOT the ghost
-   head 0. This is dev's intended behavior (`prefer_deploy_support_main_parent`
-   exists precisely to promote deploy-carrying branches, snapshot.rs:175-183), and it
-   is why seam (3)'s claim had to be WEAKENED from "= the ghost argmax" to
-   "a deterministic pure function". T-GHOST/Rank are untouched: the ESTIMATOR still
-   returns the heaviest subtree; snapshot.rs simply overrides it downstream. *)
+   and branch 0 does not. The unsafe two-stage pipeline promotes branch 1, proving
+   that deterministic deploy scoring is insufficient to preserve the GHOST head.
+   Production uses consensus_parent_pipeline below instead. *)
 Example pipeline_head_may_differ_from_ghost :
   let sc := fun h => if Nat.eqb h 1 then Some (mkDScore 1 1 1) else None in
   ghost_sort 0 [0; 1] = [0; 1]
   /\ main_parent_pipeline sc 0 [0; 1] = [1; 0]
   /\ hd_error (main_parent_pipeline sc 0 [0; 1]) <> Some 0.
 Proof. cbn. repeat split; discriminate. Qed.
+
+Definition consensus_parent_pipeline
+  (main : BlockHash) (parents : list BlockHash) : list BlockHash :=
+  ghost_sort main parents.
+
+Theorem consensus_parent_pipeline_permutation :
+  forall main parents,
+    Permutation (consensus_parent_pipeline main parents) parents.
+Proof. intros; apply ghost_sort_permutation. Qed.
+
+Theorem consensus_parent_pipeline_deterministic :
+  forall main left right,
+    NoDup left ->
+    Permutation left right ->
+    consensus_parent_pipeline main left = consensus_parent_pipeline main right.
+Proof.
+  intros main left right Hnodup Hperm.
+  unfold consensus_parent_pipeline.
+  apply ghost_sort_deterministic; assumption.
+Qed.
+
+Theorem consensus_parent_pipeline_preserves_ghost_head :
+  forall main parents,
+    NoDup parents ->
+    In main parents ->
+    hd_error (consensus_parent_pipeline main parents) = Some main.
+Proof.
+  intros main parents Hnodup Hmain.
+  unfold consensus_parent_pipeline, ghost_sort.
+  assert (HentryNodup : NoDup (map ehash (map (parent_entry main) parents))).
+  { rewrite map_ehash_parent_entry. exact Hnodup. }
+  pose proof (sort_argmax_unique (map (parent_entry main) parents) HentryNodup) as Hwinner.
+  destruct (sort (map (parent_entry main) parents)) as [|winner rest] eqn:Hsorted.
+  - pose proof (sort_is_permutation (map (parent_entry main) parents)) as Hperm.
+    rewrite Hsorted in Hperm.
+    apply Permutation_nil in Hperm.
+    apply map_eq_nil in Hperm. subst. contradiction.
+  - simpl. destruct Hwinner as [Hwinner Hmax].
+    apply in_map_iff in Hwinner.
+    destruct Hwinner as [winner_hash [Hwinner HwinnerIn]].
+    subst winner.
+    destruct (Nat.eq_dec winner_hash main) as [Heq | Hneq].
+    + subst. reflexivity.
+    + specialize (Hmax (parent_entry main main)).
+      assert (HmainEntry : In (parent_entry main main) (map (parent_entry main) parents)).
+      { apply in_map. exact Hmain. }
+      specialize (Hmax HmainEntry).
+      destruct Hmax as [Hequal | HoutRanks].
+      * apply (f_equal ehash) in Hequal. simpl in Hequal.
+        exfalso. apply Hneq. symmetry. exact Hequal.
+      * unfold ord, escore, ehash, parent_entry in HoutRanks. simpl in HoutRanks.
+        rewrite Nat.eqb_refl in HoutRanks.
+        apply Nat.eqb_neq in Hneq. rewrite Hneq in HoutRanks. simpl in HoutRanks.
+        lia.
+Qed.
 
 (* ===========================================================================
    Seam (4) - honest fork-choice parents pass the validator's bound-check
@@ -821,6 +796,16 @@ Definition parents_ok (maxn mpd : nat) (nums : list nat) : bool :=
   forallb (within_depth maxn mpd) nums.
 Definition prop_filter (maxn mpd : nat) (nums : list nat) : list nat :=
   filter (within_depth maxn mpd) nums.
+Definition prop_filter_head (maxn mpd : nat) (nums : list nat) : list nat :=
+  match nums with
+  | [] => []
+  | head :: tail => head :: prop_filter maxn mpd tail
+  end.
+Definition declared_parents_ok (maxn mpd : nat) (nums : list nat) : bool :=
+  match nums with
+  | [] => true
+  | _ :: tail => parents_ok maxn mpd tail
+  end.
 
 Lemma within_depth_mono :
   forall maxn mpd buf pn,
@@ -833,13 +818,27 @@ Qed.
 (* The reframed T-VALID: the proposer's depth-filtered parents (all within `mpd`)
    ALWAYS pass the validator's buffered acceptance (`mpd + buf`). Validators
    range-check declared parents; they never recompute fork choice. *)
-Theorem honest_forkchoice_parents_validate :
+Lemma filtered_tail_validates :
   forall maxn mpd buf nums,
     parents_ok maxn (mpd + buf) (prop_filter maxn mpd nums) = true.
 Proof.
   intros maxn mpd buf nums. unfold parents_ok. rewrite forallb_forall.
   intros x Hx. unfold prop_filter in Hx. apply filter_In in Hx.
   destruct Hx as [_ Hp]. apply within_depth_mono. exact Hp.
+Qed.
+
+Theorem depth_filter_preserves_head :
+  forall maxn mpd head tail,
+    hd_error (prop_filter_head maxn mpd (head :: tail)) = Some head.
+Proof. reflexivity. Qed.
+
+Theorem honest_forkchoice_parents_validate :
+  forall maxn mpd buf nums,
+    declared_parents_ok maxn (mpd + buf) (prop_filter_head maxn mpd nums) = true.
+Proof.
+  intros maxn mpd buf nums. destruct nums as [| head tail]; simpl.
+  - reflexivity.
+  - apply filtered_tail_validates.
 Qed.
 
 (* ===========================================================================
@@ -852,6 +851,12 @@ Qed.
 Corollary honest_lms_exclude_slashed :
   forall lms inv v h, In v inv -> ~ In (v, h) (filter_inv lms inv).
 Proof. exact invalid_excluded. Qed.
+
+Corollary forkchoice_ignores_receiver_invalid_cache :
+  forall lms certified_exclusions receiver_cache1 receiver_cache2,
+    projection_with_receiver_cache lms certified_exclusions receiver_cache1 =
+    projection_with_receiver_cache lms certified_exclusions receiver_cache2.
+Proof. exact receiver_cache_noninterference. Qed.
 
 (* Rank: the fork-choice descent always terminates at a tip. *)
 Corollary forkchoice_descent_reaches_tip :
@@ -875,10 +880,15 @@ Qed.
 
 Corollary capped_parents_validate :
   forall maxn mpd buf n unlimited nums,
-    parents_ok maxn (mpd + buf) (cap_tips n unlimited (prop_filter maxn mpd nums)) = true.
+    declared_parents_ok maxn (mpd + buf)
+      (cap_tips n unlimited (prop_filter_head maxn mpd nums)) = true.
 Proof.
   intros maxn mpd buf n unlimited nums. unfold cap_tips. destruct unlimited.
   - apply honest_forkchoice_parents_validate.
-  - unfold parents_ok. apply forallb_firstn.
-    exact (honest_forkchoice_parents_validate maxn mpd buf nums).
+  - destruct nums as [| head tail].
+    + destruct n; reflexivity.
+    + simpl.
+    destruct n as [| n]; simpl; [reflexivity |].
+    unfold parents_ok. apply forallb_firstn.
+    exact (filtered_tail_validates maxn mpd buf tail).
 Qed.

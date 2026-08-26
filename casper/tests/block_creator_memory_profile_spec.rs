@@ -9,7 +9,9 @@ use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use casper::rust::blocks::proposer::block_creator;
 use casper::rust::blocks::proposer::propose_result::BlockCreatorResult;
-use casper::rust::casper::{CasperShardConf, CasperSnapshot, OnChainCasperState};
+use casper::rust::casper::{
+    CasperShardConf, CasperSnapshot, OnChainCasperState, CURRENT_CASPER_PROTOCOL_VERSION,
+};
 use casper::rust::genesis::contracts::proof_of_stake::ProofOfStake;
 use casper::rust::genesis::contracts::validator::Validator as GenesisValidator;
 use casper::rust::genesis::genesis::Genesis;
@@ -96,7 +98,7 @@ fn create_snapshot_with_parent(
     snapshot.max_block_num = parent.body.state.block_number;
     snapshot.last_finalized_block = parent.block_hash.clone();
     snapshot.parents = vec![parent.clone()];
-    snapshot.justifications.insert(Justification {
+    snapshot.justifications.push(Justification {
         validator: validator.clone(),
         latest_block_hash: parent.block_hash.clone(),
     });
@@ -104,6 +106,7 @@ fn create_snapshot_with_parent(
     let mut max_seq_nums: HashMap<Validator, u64> = HashMap::new();
     max_seq_nums.insert(validator.clone(), parent.seq_num as u64);
     snapshot.max_seq_nums = max_seq_nums;
+    snapshot.finalized_floor_bonds = parent.body.state.bonds.clone();
 
     let mut shard_conf = CasperShardConf::new();
     shard_conf.shard_name = shard_name;
@@ -124,9 +127,16 @@ fn create_snapshot_with_parent(
         shard_conf,
         bonds_map,
         active_validators: vec![validator],
+        bond_generations: HashMap::new(),
     };
 
     snapshot.deploys_in_scope = Arc::new(DashSet::new());
+    snapshot.consensus_context =
+        casper::rust::causal_equivocation::CertifiedConsensusContext::for_finalized_floor(
+            &snapshot.dag,
+            parent.block_hash,
+        )
+        .expect("Failed to derive finalized-floor consensus context");
     snapshot
 }
 
@@ -221,7 +231,7 @@ async fn run_block_creator_create_memory_profile() {
         vaults: Vec::new(),
         client_fuel_allocations: Vec::new(),
         supply: i64::MAX,
-        version: 1,
+        version: CURRENT_CASPER_PROTOCOL_VERSION,
         native_token_name: "F1R3CAP".to_string(),
         native_token_symbol: "F1R3".to_string(),
         native_token_decimals: 8,
@@ -238,7 +248,7 @@ async fn run_block_creator_create_memory_profile() {
     dag_storage
         .insert(
             &parent,
-            block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Approved,
+            block_storage::rust::dag::block_dag_key_value_storage::InsertMode::ApprovedGenesis,
         )
         .expect("Failed to insert parent block in DAG");
 
@@ -295,8 +305,11 @@ async fn run_block_creator_create_memory_profile() {
                 created_count += 1;
                 ("created", Some(block))
             }
-            Ok(Ok(_)) => {
+            Ok(Ok(result)) => {
                 non_created_count += 1;
+                if error_samples.len() < 5 {
+                    error_samples.push(format!("{result:?}"));
+                }
                 ("non_created", None)
             }
             Ok(Err(err)) => {
@@ -321,9 +334,13 @@ async fn run_block_creator_create_memory_profile() {
             dag_storage
                 .insert(
                     &block,
-                    block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Approved,
+                    block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Normal,
                 )
                 .expect("Failed to advance DAG");
+            dag_storage
+                .record_directly_finalized(block.block_hash.clone(), 1.0, |_| async { Ok(()) })
+                .await
+                .expect("Failed to finalize advancing block");
             snapshot = create_snapshot_with_parent(
                 dag_storage
                     .get_representation()
@@ -497,7 +514,7 @@ async fn run_block_creator_phase_split_memory_profile() {
         vaults: Vec::new(),
         client_fuel_allocations: Vec::new(),
         supply: i64::MAX,
-        version: 1,
+        version: CURRENT_CASPER_PROTOCOL_VERSION,
         native_token_name: "F1R3CAP".to_string(),
         native_token_symbol: "F1R3".to_string(),
         native_token_decimals: 8,
@@ -514,7 +531,7 @@ async fn run_block_creator_phase_split_memory_profile() {
     dag_storage
         .insert(
             &parent,
-            block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Approved,
+            block_storage::rust::dag::block_dag_key_value_storage::InsertMode::ApprovedGenesis,
         )
         .expect("Failed to insert parent block in DAG");
 

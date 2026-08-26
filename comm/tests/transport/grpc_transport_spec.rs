@@ -283,7 +283,7 @@ mod tests {
         };
 
         // Create expected chunks
-        let expected_chunks = Chunker::chunk_it(NETWORK_ID, &blob, message_size);
+        let expected_chunks = Chunker::chunk_it(NETWORK_ID, &blob, message_size).unwrap();
 
         let mut stub = TestTransportLayer::new(ack_response());
 

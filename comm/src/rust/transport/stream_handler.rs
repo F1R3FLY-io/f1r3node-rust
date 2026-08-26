@@ -3,18 +3,18 @@
 use futures::StreamExt;
 use models::routing::chunk::Content;
 use models::routing::{Chunk, ChunkData, ChunkHeader};
+use prost::bytes::Bytes;
 use shared::rust::shared::compression::Compression;
 use tokio_stream::Stream;
 use tracing;
 
 use crate::rust::errors::CommError;
-use crate::rust::metrics_constants::{
-    STREAM_CACHE_BYTES_METRIC, STREAM_CACHE_ENTRIES_METRIC, TRANSPORT_METRICS_SOURCE,
-};
 use crate::rust::peer_node::PeerNode;
 use crate::rust::rp::protocol_helper;
 use crate::rust::transport::messages::StreamMessage;
-use crate::rust::transport::packet_ops::{PacketOps, StreamCache};
+use crate::rust::transport::payload_budget::{
+    PayloadBudget, PayloadBudgetError, PayloadReservation,
+};
 use crate::rust::transport::transport_layer::Blob;
 
 /// Type alias for circuit breaker function
@@ -83,9 +83,16 @@ pub enum StreamError {
     /// Maximum size reached
     MaxSizeReached,
     /// Incomplete message received
-    NotFullMessage { streamed: String },
+    NotFullMessage {
+        streamed: String,
+    },
     /// Unexpected error occurred
-    Unexpected { error: String },
+    Unexpected {
+        error: String,
+    },
+    ResourceExhausted {
+        error: String,
+    },
 }
 
 impl StreamError {
@@ -105,6 +112,9 @@ impl StreamError {
             StreamError::Unexpected { error } => {
                 format!("Could not receive stream! {}", error)
             }
+            StreamError::ResourceExhausted { error } => {
+                format!("Could not receive stream: resource exhausted: {}", error)
+            }
         }
     }
 
@@ -119,10 +129,12 @@ impl StreamError {
 
     /// Create an Unexpected error
     pub fn unexpected(error: String) -> Self { StreamError::Unexpected { error } }
+
+    pub fn resource_exhausted(error: String) -> Self { StreamError::ResourceExhausted { error } }
 }
 
 /// State of an ongoing streaming operation
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct Streamed {
     /// Header information (if received)
     pub header: Option<Header>,
@@ -130,18 +142,26 @@ pub struct Streamed {
     pub read_so_far: u64,
     /// Circuit breaker state
     pub circuit: Circuit,
-    /// Cache key for the stream
-    pub key: String,
+    payload: Vec<u8>,
+    reservation: PayloadReservation,
+    max_payload_bytes: usize,
+    max_wire_bytes: usize,
 }
 
 impl Streamed {
-    /// Create a new Streamed with default values
-    pub fn new(key: String) -> Self {
+    pub fn new(
+        reservation: PayloadReservation,
+        max_payload_bytes: usize,
+        max_wire_bytes: usize,
+    ) -> Self {
         Self {
             header: None,
             read_so_far: 0,
             circuit: Circuit::Closed,
-            key,
+            payload: Vec::new(),
+            reservation,
+            max_payload_bytes,
+            max_wire_bytes,
         }
     }
 
@@ -168,11 +188,10 @@ impl std::fmt::Display for Streamed {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "Streamed(header: {:?}, read_so_far: {}, circuit_broken: {}, key: {})",
+            "Streamed(header: {:?}, read_so_far: {}, circuit_broken: {})",
             self.header.as_ref().map(|h| &h.type_id),
             self.read_so_far,
-            self.circuit.broken(),
-            self.key
+            self.circuit.broken()
         )
     }
 }
@@ -180,52 +199,53 @@ impl std::fmt::Display for Streamed {
 /// StreamHandler provides functionality for processing streaming data
 pub struct StreamHandler;
 
-impl StreamHandler {
-    fn update_stream_cache_metrics(cache: &StreamCache) {
-        let entries = cache.len();
-        let total_bytes: usize = cache.iter().map(|entry| entry.value().len()).sum();
-        metrics::gauge!(STREAM_CACHE_ENTRIES_METRIC, "source" => TRANSPORT_METRICS_SOURCE)
-            .set(entries as f64);
-        metrics::gauge!(STREAM_CACHE_BYTES_METRIC, "source" => TRANSPORT_METRICS_SOURCE)
-            .set(total_bytes as f64);
-    }
+fn payload_budget_comm_error(error: PayloadBudgetError) -> CommError {
+    CommError::ResourceExhausted(error.to_string())
+}
 
-    /// Initialize a new streaming operation
-    /// Creates a cache entry with "packet_send/" prefix and returns a new Streamed instance.
-    pub fn init(cache: &StreamCache) -> Result<Streamed, CommError> {
-        let key = PacketOps::create_cache_entry("packet_send", cache)?;
-        Ok(Streamed::new(key))
+fn payload_budget_stream_error(error: PayloadBudgetError) -> StreamError {
+    StreamError::resource_exhausted(error.to_string())
+}
+
+impl StreamHandler {
+    pub fn init(
+        budget: &std::sync::Arc<PayloadBudget>,
+        max_payload_bytes: usize,
+    ) -> Result<Streamed, CommError> {
+        let max_wire_bytes = Compression::max_compressed_allocation(max_payload_bytes)
+            .ok_or_else(|| CommError::ConfigError("stream size bound overflow".to_string()))?;
+        let reservation = budget.try_reserve(0).map_err(payload_budget_comm_error)?;
+        Ok(Streamed::new(
+            reservation,
+            max_payload_bytes,
+            max_wire_bytes,
+        ))
     }
 
     /// Handle a stream of chunks with proper resource management
     ///
     /// This method processes a stream of chunks using the circuit breaker pattern
     /// and provides proper cleanup in all scenarios (success, failure, errors).
-    pub async fn handle_stream<S>(
+    pub async fn handle_stream<S, F>(
         stream: S,
-        circuit_breaker: CircuitBreaker,
-        cache: &StreamCache,
+        circuit_breaker: F,
+        budget: &std::sync::Arc<PayloadBudget>,
+        max_payload_bytes: usize,
     ) -> Result<StreamMessage, StreamError>
     where
         S: Stream<Item = Chunk> + Unpin,
+        F: Fn(&Streamed) -> Circuit,
     {
-        // Initialize streaming state
-        let init_stmd = match Self::init(cache) {
+        let init_stmd = match Self::init(budget, max_payload_bytes) {
             Ok(stmd) => stmd,
-            Err(e) => {
-                tracing::error!(error = %e, "stream handler initialization failed");
-                return Err(StreamError::unexpected(format!(
-                    "Initialization failed: {}",
-                    e
-                )));
+            Err(CommError::ResourceExhausted(error)) => {
+                return Err(StreamError::resource_exhausted(error));
             }
+            Err(error) => return Err(StreamError::unexpected(error.to_string())),
         };
-
-        // Process the stream with proper cleanup
-        let result =
-            Self::process_stream_with_cleanup(init_stmd, stream, circuit_breaker, cache).await;
-
-        // Handle the final result
+        let result = Self::collect(init_stmd, stream, circuit_breaker)
+            .await
+            .and_then(Self::to_result);
         match result {
             Ok(stream_message) => {
                 tracing::debug!("Stream collected.");
@@ -238,70 +258,26 @@ impl StreamHandler {
         }
     }
 
-    /// Process stream with automatic cleanup (internal helper)
-    async fn process_stream_with_cleanup<S>(
-        init_stmd: Streamed,
-        stream: S,
-        circuit_breaker: CircuitBreaker,
-        cache: &StreamCache,
-    ) -> Result<StreamMessage, StreamError>
-    where
-        S: Stream<Item = Chunk> + Unpin,
-    {
-        let key = init_stmd.key.clone(); // Store key for cleanup
-
-        // Process the stream
-        let collect_result = Self::collect(init_stmd, stream, circuit_breaker, cache).await;
-
-        // Handle collection result and cleanup
-        match collect_result {
-            Ok(streamed) => {
-                // Successfully collected - convert to result
-                match Self::to_result(&streamed) {
-                    Ok(stream_message) => {
-                        // Success - no cleanup needed for cache (handled by caller)
-                        Ok(stream_message)
-                    }
-                    Err(error) => {
-                        // Failed to convert to result - cleanup and return error
-                        tracing::warn!("Failed collecting stream.");
-                        cache.remove(&key);
-                        Self::update_stream_cache_metrics(cache);
-                        Err(error)
-                    }
-                }
-            }
-            Err(error) => {
-                // Failed during collection - cleanup and return error
-                tracing::warn!("Failed collecting stream.");
-                cache.remove(&key);
-                Self::update_stream_cache_metrics(cache);
-                Err(error)
-            }
-        }
-    }
-
     /// Collect and process chunks from a stream
     ///
     /// Processes each chunk in the stream, building up the Streamed state:
     /// - Header chunks: Creates Header and updates Streamed state
-    /// - Data chunks: Appends data to cache and updates read count
+    /// - Data chunks: Appends owned data and updates read count
     /// - Unknown chunks: Sets an error
-    pub async fn collect<S>(
+    pub async fn collect<S, F>(
         init: Streamed,
         mut stream: S,
-        circuit_breaker: CircuitBreaker,
-        cache: &StreamCache,
+        circuit_breaker: F,
     ) -> Result<Streamed, StreamError>
     where
         S: Stream<Item = Chunk> + Unpin,
+        F: Fn(&Streamed) -> Circuit,
     {
         let mut current_state = init;
 
         // Process each chunk in the stream
         while let Some(chunk) = stream.next().await {
-            // Process the chunk and update state
-            current_state = match Self::process_chunk(current_state, chunk, cache)? {
+            current_state = match Self::process_chunk(current_state, chunk)? {
                 ChunkProcessResult::Continue(state) => state,
                 ChunkProcessResult::Error(error) => {
                     return Err(error);
@@ -332,79 +308,36 @@ impl StreamHandler {
     /// Validates the streamed state and creates a StreamMessage if valid:
     /// - Must have a valid header
     /// - For uncompressed content, read_so_far must equal content_length
-    pub fn to_result(streamed: &Streamed) -> Result<StreamMessage, StreamError> {
-        // Create the "not full" error message for reuse
+    pub fn to_result(streamed: Streamed) -> Result<StreamMessage, StreamError> {
         let not_full_error = StreamError::not_full_message(streamed.to_string());
-
-        match &streamed.header {
-            Some(header) => {
-                // Extract header fields
-                let Header {
-                    sender,
-                    type_id: packet_type,
-                    content_length,
-                    compressed,
-                    ..
-                } = header;
-
-                // Create the StreamMessage
-                let stream_message = StreamMessage::new(
-                    sender.clone(),
-                    packet_type.clone(),
-                    streamed.key.clone(),
-                    *compressed,
-                    *content_length,
-                );
-
-                // Validate content length for uncompressed data
-                if !compressed && streamed.read_so_far != *content_length as u64 {
-                    Err(not_full_error)
-                } else {
-                    Ok(stream_message)
-                }
-            }
-            None => {
-                // No header present - return error
-                Err(not_full_error)
-            }
+        let Some(header) = streamed.header else {
+            return Err(not_full_error);
+        };
+        if !header.compressed && streamed.read_so_far != header.content_length as u64 {
+            return Err(not_full_error);
         }
+        Ok(StreamMessage::new(
+            header.sender,
+            header.type_id,
+            header.compressed,
+            header.content_length,
+            streamed.payload,
+            streamed.reservation,
+        ))
     }
 
-    /// Restore a blob from cache using a StreamMessage
-    ///
-    /// Retrieves the cached data, decompresses if necessary, and creates a Blob.
-    /// Cleans up the cache entry after processing.
-    pub async fn restore(msg: &StreamMessage, cache: &StreamCache) -> Result<Blob, CommError> {
-        // Read data from cache
-        let content = match cache.get(&msg.key) {
-            Some(entry) => entry.value().clone(),
-            None => {
-                let error = format!("Could not read streamed data from cache (key: {})", msg.key);
-                tracing::error!(key = %msg.key, "blob stream cache read failed: data not found");
-                return Err(CommError::InternalCommunicationError(error));
-            }
+    /// Restore an owned StreamMessage into a Blob and its residency reservation
+    pub async fn restore(msg: StreamMessage) -> Result<(Blob, PayloadReservation), CommError> {
+        let (sender, type_id, compressed, content_length, payload, reservation) = msg.into_parts();
+        let content = Self::decompress_content(payload, compressed, content_length).await?;
+        let blob = Blob {
+            sender,
+            packet: models::routing::Packet {
+                type_id,
+                content: Bytes::from(content),
+            },
         };
-
-        // Decompress content if necessary
-        let decompressed_content =
-            match Self::decompress_content(content, msg.compressed, msg.content_length).await {
-                Ok(data) => data,
-                Err(e) => {
-                    tracing::error!(key = %msg.key, error = %e, "blob stream decompression failed");
-                    cache.remove(&msg.key);
-                    Self::update_stream_cache_metrics(cache);
-                    return Err(e);
-                }
-            };
-
-        // Create blob using protocol helper
-        let blob = protocol_helper::blob(&msg.sender, &msg.type_id, &decompressed_content);
-
-        // Clean up cache entry
-        cache.remove(&msg.key);
-        Self::update_stream_cache_metrics(cache);
-
-        Ok(blob)
+        Ok((blob, reservation))
     }
 
     /// Decompress content if compressed, otherwise return as-is
@@ -413,9 +346,11 @@ impl StreamHandler {
         compressed: bool,
         content_length: i32,
     ) -> Result<Vec<u8>, CommError> {
+        let content_length = usize::try_from(content_length).map_err(|_| {
+            CommError::InternalCommunicationError("Negative stream content length".to_string())
+        })?;
         if compressed {
-            // Decompress the data
-            match Compression::decompress(&raw, content_length as usize) {
+            match Compression::decompress(&raw, content_length) {
                 Some(decompressed) => Ok(decompressed),
                 None => {
                     let error = "Could not decompress data".to_string();
@@ -423,20 +358,22 @@ impl StreamHandler {
                 }
             }
         } else {
-            // Return raw data as-is
             Ok(raw)
         }
     }
 
     /// Process a single chunk and update the Streamed state
     fn process_chunk(
-        streamed: Streamed,
+        mut streamed: Streamed,
         chunk: Chunk,
-        cache: &StreamCache,
     ) -> Result<ChunkProcessResult, StreamError> {
         match chunk.content {
             Some(Content::Header(chunk_header)) => {
-                // Process header chunk
+                if streamed.header.is_some() {
+                    return Ok(ChunkProcessResult::Error(StreamError::not_full_message(
+                        "Stream contains more than one header".to_string(),
+                    )));
+                }
                 let ChunkHeader {
                     sender,
                     type_id,
@@ -444,8 +381,11 @@ impl StreamHandler {
                     content_length,
                     network_id,
                 } = chunk_header;
-
-                // Convert sender Node to PeerNode
+                let declared_bytes = usize::try_from(content_length)
+                    .map_err(|_| StreamError::unexpected("Negative content length".to_string()))?;
+                if declared_bytes > streamed.max_payload_bytes {
+                    return Ok(ChunkProcessResult::Error(StreamError::MaxSizeReached));
+                }
                 let peer_sender = match sender {
                     Some(node) => protocol_helper::to_peer_node(&node),
                     None => {
@@ -454,34 +394,45 @@ impl StreamHandler {
                         )));
                     }
                 };
-
-                // Create header
+                streamed
+                    .reservation
+                    .try_grow(declared_bytes)
+                    .map_err(payload_budget_stream_error)?;
                 let header =
                     Header::new(peer_sender, type_id, content_length, network_id, compressed);
-
-                // Update streamed state with header
-                let new_streamed = streamed.with_header(header);
-                Ok(ChunkProcessResult::Continue(new_streamed))
+                Ok(ChunkProcessResult::Continue(streamed.with_header(header)))
             }
             Some(Content::Data(chunk_data)) => {
-                // Process data chunk
+                let Some(header) = streamed.header.as_ref() else {
+                    return Ok(ChunkProcessResult::Error(StreamError::not_full_message(
+                        "Stream data arrived before its header".to_string(),
+                    )));
+                };
                 let ChunkData { content_data } = chunk_data;
-                let received_bytes = content_data.to_vec();
-
-                // Write data to cache
-                let mut existing_data = cache
-                    .get(&streamed.key)
-                    .map(|entry| entry.value().clone())
-                    .unwrap_or_default();
-
-                existing_data.extend_from_slice(&received_bytes);
-                cache.insert(streamed.key.clone(), existing_data);
-
-                // Update read count
-                let new_read_so_far = streamed.read_so_far + received_bytes.len() as u64;
-                let new_streamed = streamed.with_read_so_far(new_read_so_far);
-
-                Ok(ChunkProcessResult::Continue(new_streamed))
+                let received_bytes = content_data.len();
+                let new_read_so_far = streamed
+                    .read_so_far
+                    .checked_add(received_bytes as u64)
+                    .ok_or_else(|| StreamError::unexpected("Stream size overflow".to_string()))?;
+                if (header.compressed && new_read_so_far > streamed.max_wire_bytes as u64)
+                    || (!header.compressed && new_read_so_far > header.content_length as u64)
+                {
+                    return Ok(ChunkProcessResult::Error(StreamError::MaxSizeReached));
+                }
+                if header.compressed {
+                    streamed
+                        .reservation
+                        .try_grow(received_bytes)
+                        .map_err(payload_budget_stream_error)?;
+                }
+                streamed
+                    .payload
+                    .try_reserve_exact(received_bytes)
+                    .map_err(|error| StreamError::unexpected(error.to_string()))?;
+                streamed.payload.extend_from_slice(&content_data);
+                Ok(ChunkProcessResult::Continue(
+                    streamed.with_read_so_far(new_read_so_far),
+                ))
             }
             None => {
                 // Unknown/invalid chunk type
@@ -503,9 +454,6 @@ enum ChunkProcessResult {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
-    use dashmap::DashMap;
     use prost::bytes::Bytes;
 
     use super::*;
@@ -521,27 +469,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn restore_cleans_cache_on_decompress_failure() {
-        let cache: StreamCache = Arc::new(DashMap::new());
-        let key = "packet_send/20260222000000_deadbeef".to_string();
-        cache.insert(key.clone(), vec![1, 2, 3, 4, 5, 6]);
-
+    async fn restore_failure_releases_payload_reservation() {
+        let budget = PayloadBudget::new("test", 2048, 1).unwrap();
         let msg = StreamMessage::new(
             create_test_peer(),
             "TestPacket".to_string(),
-            key.clone(),
             true,
             1024,
+            vec![1, 2, 3, 4, 5, 6],
+            budget.try_reserve(1030).unwrap(),
         );
-
-        let result = StreamHandler::restore(&msg, &cache).await;
-        assert!(
-            result.is_err(),
-            "restore should fail for invalid compressed data"
-        );
-        assert!(
-            !cache.contains_key(&key),
-            "cache entry should be removed on restore failure"
-        );
+        assert!(StreamHandler::restore(msg).await.is_err());
+        assert_eq!(budget.used_bytes(), 0);
+        assert_eq!(budget.active_items(), 0);
     }
 }

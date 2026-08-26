@@ -333,14 +333,20 @@ pub fn token_metadata(
 pub fn pos_generator(pos: &ProofOfStake, shard_id: &str) -> Signed<DeployData> {
     assert!(pos.minimum_bond <= pos.maximum_bond);
     assert!(!pos.validators.is_empty());
+    let pos_public_key = hex::encode(&POS_GENERATOR_PUB_KEY.bytes);
 
     to_deploy(
         CompiledRholangTemplate::new("PoS.rhox", embedded_rho::POS, HashMap::new(), &[
+            ("posPubKey", &pos_public_key),
             ("minimumBond", &pos.minimum_bond.to_string()),
             ("maximumBond", &pos.maximum_bond.to_string()),
             (
                 "initialBonds",
                 &ProofOfStake::initial_bonds(&pos.validators),
+            ),
+            (
+                "initialBondGenerations",
+                &ProofOfStake::initial_bond_generations(&pos.validators),
             ),
             ("epochLength", &pos.epoch_length.to_string()),
             ("quarantineLength", &pos.quarantine_length.to_string()),
@@ -357,10 +363,6 @@ pub fn pos_generator(pos: &ProofOfStake, shard_id: &str) -> Signed<DeployData> {
                 &ProofOfStake::public_keys(&pos.pos_multi_sig_public_keys),
             ),
             ("posMultiSigQuorum", &pos.pos_multi_sig_quorum.to_string()),
-            (
-                "maxCosignersPerDeploy",
-                &pos.max_cosigners_per_deploy.to_string(),
-            ),
             ("initialPhlogiston", &pos.initial_phlogiston.to_string()),
             ("epochPhlogiston", &pos.epoch_phlogiston.to_string()),
         ]),
@@ -466,4 +468,35 @@ pub fn to_public(priv_key_hex: &str) -> PublicKey {
         PrivateKey::from_bytes(&hex::decode(priv_key_hex).expect("Invalid private key hex string"));
     let secp256k1 = Secp256k1;
     secp256k1.to_public(&private_key)
+}
+
+#[cfg(test)]
+mod embedded_contract_compile_tests {
+    use super::*;
+    use crate::rust::genesis::contracts::validator::Validator;
+
+    #[test]
+    fn system_vault_source_compiles() { let _ = system_vault("root"); }
+
+    #[test]
+    fn proof_of_stake_source_compiles() {
+        let proof_of_stake = ProofOfStake {
+            minimum_bond: 1,
+            maximum_bond: 1_000_000,
+            validators: vec![Validator {
+                pk: POS_GENERATOR_PUB_KEY.clone(),
+                stake: 100,
+            }],
+            epoch_length: 10,
+            quarantine_length: 20,
+            number_of_active_validators: 1,
+            fault_tolerance_threshold_ppm: 100_000,
+            pos_multi_sig_public_keys: vec![hex::encode(&POS_GENERATOR_PUB_KEY.bytes)],
+            pos_multi_sig_quorum: 1,
+            max_cosigners_per_deploy: 64,
+            initial_phlogiston: 100,
+            epoch_phlogiston: 100,
+        };
+        let _ = pos_generator(&proof_of_stake, "root");
+    }
 }

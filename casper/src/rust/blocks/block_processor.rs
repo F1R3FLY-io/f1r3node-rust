@@ -16,7 +16,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use block_storage::rust::casperbuffer::casper_buffer_key_value_storage::CasperBufferKeyValueStorage;
 use block_storage::rust::dag::block_dag_key_value_storage::{
-    BlockDagKeyValueStorage, KeyValueDagRepresentation,
+    BlockDagKeyValueStorage, CertifiedSenderAuthority, KeyValueDagRepresentation,
 };
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use comm::rust::rp::connect::ConnectionsCell;
@@ -26,10 +26,9 @@ use models::rust::block_hash::{BlockHash, BlockHashSerde};
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{BlockMessage, CasperMessage};
 use prost::Message;
-use rspace_plus_plus::rspace::history::Either;
 use shared::rust::env;
 
-use crate::rust::block_status::{BlockError, InvalidBlock};
+use crate::rust::block_status::{CertifiedBlockValidation, InvalidBlock};
 use crate::rust::casper::{Casper, CasperSnapshot};
 use crate::rust::engine::block_retriever::{AdmitHashReason, BlockRetriever};
 use crate::rust::errors::CasperError;
@@ -280,56 +279,69 @@ impl<T: TransportLayer + Send + Sync> BlockProcessor<T> {
 
         // Time block validation
         let validation_start = Instant::now();
-        let status = self
+        let validation = self
             .dependencies
             .validate_block(casper.clone(), &mut snapshot, block)
             .await?;
+        let status = validation.status();
         metrics::histogram!(BLOCK_VALIDATION_TIME_METRIC, "source" => BLOCK_PROCESSOR_METRICS_SOURCE)
             .record(validation_start.elapsed().as_secs_f64());
 
         // Record validation outcome
-        let _ = match &status {
-            Either::Right(_valid_block) => {
+        let _ = match &validation {
+            CertifiedBlockValidation::Accepted {
+                sender_authority,
+                admission_outcome,
+                ..
+            } => {
                 metrics::counter!(BLOCK_VALIDATION_SUCCESS_METRIC, "source" => BLOCK_PROCESSOR_METRICS_SOURCE)
                     .increment(1);
                 self.dependencies
-                    .effects_for_valid_block(casper, block)
+                    .effects_for_valid_block(casper, block, sender_authority, admission_outcome)
                     .await
             }
-            Either::Left(invalid_block) => {
+            CertifiedBlockValidation::ObjectiveRejected {
+                invalid,
+                sender_authority,
+                admission_outcome,
+            } => {
                 metrics::counter!(BLOCK_VALIDATION_FAILED_METRIC, "source" => BLOCK_PROCESSOR_METRICS_SOURCE)
                     .increment(1);
-                // this is to maintain backward compatibility with casper validate method.
-                // as it returns not only InvalidBlock or ValidBlock
-                match invalid_block {
-                    BlockError::Invalid(i) => {
-                        self.dependencies
-                            .effects_for_invalid_block(casper, block, i, &snapshot)
-                            .await
-                    }
-                    BlockError::BlockException(ref err) => {
-                        tracing::error!(
-                            "Block {} validation was inconclusive because of a local fault ({}); deferring it to bounded recovery without recording invalidity.",
-                            PrettyPrinter::build_string_bytes(&block.block_hash),
-                            err
-                        );
-                        self.dependencies
-                            .recover_after_local_validation_fault(&block.block_hash)
-                            .await?;
-                        return Ok(status);
-                    }
-                    BlockError::CasperIsBusy => {
-                        self.dependencies
-                            .recover_after_local_validation_fault(&block.block_hash)
-                            .await?;
-                        return Ok(status);
-                    }
-                    BlockError::MissingBlocks => {
-                        return Ok(status);
-                    }
-                    BlockError::Processed => Ok(snapshot.dag.clone()),
-                }
+                self.dependencies
+                    .effects_for_invalid_block(
+                        casper,
+                        block,
+                        invalid,
+                        &snapshot,
+                        sender_authority,
+                        admission_outcome,
+                    )
+                    .await
             }
+            CertifiedBlockValidation::UnattributableRejected { .. } => {
+                metrics::counter!(BLOCK_VALIDATION_FAILED_METRIC, "source" => BLOCK_PROCESSOR_METRICS_SOURCE)
+                    .increment(1);
+                Ok(snapshot.dag.clone())
+            }
+            CertifiedBlockValidation::LocalFault(err) => {
+                tracing::error!(
+                    "Block {} validation was inconclusive because of a local fault ({}); deferring it to bounded recovery without recording invalidity.",
+                    PrettyPrinter::build_string_bytes(&block.block_hash),
+                    err
+                );
+                self.dependencies
+                    .recover_after_local_validation_fault(&block.block_hash)
+                    .await?;
+                return Ok(status);
+            }
+            CertifiedBlockValidation::CasperBusy => {
+                self.dependencies
+                    .recover_after_local_validation_fault(&block.block_hash)
+                    .await?;
+                return Ok(status);
+            }
+            CertifiedBlockValidation::MissingDependency => return Ok(status),
+            CertifiedBlockValidation::AlreadyProcessed => Ok(snapshot.dag.clone()),
         }?;
 
         // once block is validated and effects are invoked, it should be removed from buffer
@@ -460,38 +472,15 @@ impl<T: TransportLayer + Send + Sync> BlockProcessorDependencies<T> {
     /// Equivalent to Scala's: getNonValidatedDependencies = (c: Casper[F], b: BlockMessage) => { ... }
     pub async fn get_non_validated_dependencies(
         &self,
-        casper: Arc<dyn Casper + Send + Sync + 'static>,
+        _casper: Arc<dyn Casper + Send + Sync + 'static>,
         block: &BlockMessage,
     ) -> Result<(bool, HashSet<BlockHash>, HashSet<BlockHash>), CasperError> {
-        let all_deps = proto_util::dependencies_hashes_of(block);
-        let slash_evidence_deps = proto_util::slash_evidence_hashes_of(block);
-
-        // in addition, equivocation tracker has to be checked, as admissible equivocations are not stored in DAG
-        let equivocation_hashes: HashSet<BlockHash> = {
-            self.block_dag_storage
-                .access_equivocations_tracker(|tracker| {
-                    let equivocation_records = tracker.data()?;
-                    // Use HashSet to ensure uniqueness and O(1) lookup, just like Scala's Set
-                    let hashes: HashSet<BlockHash> = equivocation_records
-                        .iter()
-                        .flat_map(|record| record.equivocation_detected_block_hashes.iter())
-                        .cloned()
-                        .collect();
-                    Ok(hashes)
-                })?
-        };
-        // Invalid blocks are already known/built into Casper state and should not be re-fetched
-        // as unresolved dependencies.
-        let invalid_block_hashes: HashSet<BlockHash> = {
-            self.block_dag_storage
-                .get_representation()?
-                .invalid_blocks_map()?
-                .into_keys()
-                .collect()
-        };
+        let dag = self.block_dag_storage.get_representation()?;
+        let (deps_validated, deps_missing) =
+            proto_util::dependency_metadata_partition(block, &dag)?;
 
         let deps_in_buffer_all: Vec<BlockHash> = {
-            all_deps
+            deps_missing
                 .iter()
                 .filter_map(|dep| {
                     let block_hash_serde = BlockHashSerde(dep.clone());
@@ -506,31 +495,11 @@ impl<T: TransportLayer + Send + Sync> BlockProcessorDependencies<T> {
                 .collect()
         };
 
-        let deps_validated: Vec<BlockHash> = all_deps
-            .iter()
-            .filter(|&dep| {
-                proto_util::dependency_source_satisfies(
-                    slash_evidence_deps.contains(dep),
-                    casper.dag_contains(dep),
-                    equivocation_hashes.contains(dep),
-                    invalid_block_hashes.contains(dep),
-                )
-            })
-            .cloned()
-            .collect();
+        let deps_in_buffer = deps_in_buffer_all;
 
-        // If a dependency is already validated, it should not be treated as a blocking
-        // buffer dependency even if stale buffer relations still exist for that hash.
-        let deps_in_buffer: Vec<BlockHash> = deps_in_buffer_all
-            .iter()
-            .filter(|dep| !deps_validated.contains(dep))
-            .cloned()
-            .collect();
-
-        let deps_to_fetch: Vec<BlockHash> = all_deps
+        let deps_to_fetch: Vec<BlockHash> = deps_missing
             .iter()
             .filter(|&dep| !deps_in_buffer.contains(dep))
-            .filter(|&dep| !deps_validated.contains(dep))
             .cloned()
             .collect();
 
@@ -848,7 +817,7 @@ impl<T: TransportLayer + Send + Sync> BlockProcessorDependencies<T> {
         casper: Arc<dyn Casper + Send + Sync + 'static>,
         snapshot: &mut CasperSnapshot,
         block: &BlockMessage,
-    ) -> Result<ValidBlockProcessing, CasperError> {
+    ) -> Result<CertifiedBlockValidation, CasperError> {
         casper.validate(block, snapshot).await
     }
 
@@ -868,8 +837,16 @@ impl<T: TransportLayer + Send + Sync> BlockProcessorDependencies<T> {
         block: &BlockMessage,
         invalid_block: &InvalidBlock,
         snapshot: &CasperSnapshot,
+        certificate: &CertifiedSenderAuthority,
+        outcome: &models::rust::block_metadata::CertifiedAdmissionOutcome,
     ) -> Result<KeyValueDagRepresentation, CasperError> {
-        let dag = casper.handle_invalid_block(block, invalid_block, &snapshot.dag)?;
+        let dag = casper.handle_invalid_block(
+            block,
+            invalid_block,
+            &snapshot.dag,
+            certificate,
+            outcome,
+        )?;
 
         // Equivalent to Scala's: CommUtil[F].sendBlockHash(b.blockHash, b.sender)
         if let Err(err) = self
@@ -897,8 +874,14 @@ impl<T: TransportLayer + Send + Sync> BlockProcessorDependencies<T> {
         &self,
         casper: Arc<dyn Casper + Send + Sync + 'static>,
         block: &BlockMessage,
+        certificate: &CertifiedSenderAuthority,
+        outcome: &models::rust::block_metadata::CertifiedAdmissionOutcome,
     ) -> Result<KeyValueDagRepresentation, CasperError> {
-        let dag = { casper.handle_valid_block(block).await? };
+        let dag = {
+            casper
+                .handle_valid_block(block, certificate, outcome)
+                .await?
+        };
 
         // Equivalent to Scala's: CommUtil[F].sendBlockHash(b.blockHash, b.sender)
         if let Err(err) = self

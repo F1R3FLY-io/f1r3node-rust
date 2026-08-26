@@ -115,11 +115,15 @@ fn mk_casper_snapshot(dag: KeyValueDagRepresentation) -> CasperSnapshot {
         rejected_in_scope: Default::default(),
         max_block_num: 0,
         max_seq_nums: Default::default(),
+        finalized_floor_bonds: Vec::new(),
         on_chain_state: OnChainCasperState {
             shard_conf: CasperShardConf::new(),
             bonds_map: HashMap::new(),
+            bond_generations: HashMap::new(),
             active_validators: Vec::new(),
         },
+        consensus_context:
+            casper::rust::causal_equivocation::CertifiedConsensusContext::pre_genesis(),
     }
 }
 
@@ -534,7 +538,7 @@ async fn genesis_from_input_files_should_create_a_valid_genesis_block() {
                 block_dag_storage
                     .insert(
                         &genesis,
-                        block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Approved,
+                        block_storage::rust::dag::block_dag_key_value_storage::InsertMode::ApprovedGenesis,
                     )
                     .expect("Failed to insert genesis into DAG");
 

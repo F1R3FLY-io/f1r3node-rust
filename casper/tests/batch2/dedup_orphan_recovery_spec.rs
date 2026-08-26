@@ -43,6 +43,7 @@ use dashmap::DashSet;
 use models::rust::block::state_hash::StateHash;
 use models::rust::block_hash::BlockHash;
 use models::rust::block_implicits;
+use models::rust::bond_generation::BondGeneration;
 use models::rust::casper::protocol::casper_message::ProcessedDeploy;
 use rholang::rust::interpreter::external_services::ExternalServices;
 use rholang::rust::interpreter::system_processes::BlockData;
@@ -98,7 +99,7 @@ async fn dedup_orphan_lands_in_rejected_deploy_buffer() {
         .put_block_message(&genesis_block)
         .expect("store genesis");
     dag_storage
-        .insert(&genesis_block, InsertMode::Approved)
+        .insert(&genesis_block, InsertMode::ApprovedGenesis)
         .expect("dag genesis");
 
     let now_millis = || -> i64 {
@@ -132,6 +133,7 @@ async fn dedup_orphan_lands_in_rejected_deploy_buffer() {
         snapshot.on_chain_state = OnChainCasperState {
             shard_conf,
             bonds_map,
+            bond_generations: HashMap::from([(validator.clone(), BondGeneration::GENESIS)]),
             active_validators: vec![validator.clone()],
         };
         snapshot.deploys_in_scope = Arc::new(DashSet::new());

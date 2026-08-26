@@ -23,26 +23,26 @@ consensus voting rule. See DR-53 and CA-P-200.
 
 ## Normative projection
 
-Let $U$ be the ordered user status records in a block, $S$ its ordered processed
-system deploys, and $M$ the mergeable-channel evidence reconstructed by local
+Let $`U`$ be the ordered user status records in a block, $`S`$ its ordered processed
+system deploys, and $`M`$ the mergeable-channel evidence reconstructed by local
 execution or replay. Define:
 
-$$
+```math
 E_U = [u \in U \mid u.\operatorname{admissionStatus} \ne \text{Rejected}].
-$$
+```
 
 The metadata cardinality and ordered split are:
 
-$$
+```math
 |M| = |E_U| + |S|,
-$$
+```
 
-$$
+```math
 M_U = M[0..|E_U|], \qquad M_S = M[|E_U|..|M|].
-$$
+```
 
-User effect $E_U[i]$ aligns with $M_U[i]$. System execution $S[j]$ aligns
-with $M_S[j]$ and has global execution index $|E_U|+j$. Inserting, removing,
+User effect $`E_U[i]`$ aligns with $`M_U[i]`$. System execution $`S[j]`$ aligns
+with $`M_S[j]`$ and has global execution index $`|E_U|+j`$. Inserting, removing,
 or reordering admission-rejected status records cannot change either effect
 projection. Reordering effect-bearing records changes their execution order and
 therefore is not permitted by this rule.
@@ -63,8 +63,8 @@ the runtime and retains its metadata position; only
 4. System deploys execute after the admitted user sequence and append their
    metadata maps.
 5. Replay reconstructs the admitted/rejected partition from the same pre-state,
-   executes only admitted candidates, and reproduces the same $M$.
-6. `BlockIndex` projects $U$ to $E_U$ before validating cardinality, checking
+   executes only admitted candidates, and reproduces the same $`M`$.
+6. `BlockIndex` projects $`U`$ to $`E_U`$ before validating cardinality, checking
    state-witness adjacency, splitting metadata, and assigning execution indices.
 7. A genuine missing or extra effect map still fails closed. A status-only
    admission record cannot make an otherwise valid parent unindexable.
@@ -89,11 +89,11 @@ cardinality assumption, the result was shard-wide loss of proposal progress.
 
 | Specification element | Rust realization |
 | --- | --- |
-| $U$ | `BlockMessage.body.deploys` / `usr_processed_deploys` |
+| $`U`$ | `BlockMessage.body.deploys` / `usr_processed_deploys` |
 | Admission-rejected predicate | `ProcessedDeploy::is_admission_rejected` |
-| $E_U$ | `block_index::effect_bearing_user_deploys` |
-| $S$ | `BlockMessage.body.system_deploys` / `sys_processed_deploys` |
-| $M$ | locally derived `NumberChannelsDiff` vector |
+| $`E_U`$ | `block_index::effect_bearing_user_deploys` |
+| $`S`$ | `BlockMessage.body.system_deploys` / `sys_processed_deploys` |
+| $`M`$ | locally derived `NumberChannelsDiff` vector |
 | Ordered split and index construction | `merging::block_index::new` |
 | Replay-side projection | `RuntimeManager::verify_state_bound_admission_partition` |
 

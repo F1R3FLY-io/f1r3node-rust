@@ -1,6 +1,6 @@
 // See casper/src/main/scala/coop/rchain/casper/Casper.scala
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fmt::{self, Display};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -8,7 +8,8 @@ use std::time::Duration;
 use async_trait::async_trait;
 use block_storage::rust::casperbuffer::casper_buffer_key_value_storage::CasperBufferKeyValueStorage;
 use block_storage::rust::dag::block_dag_key_value_storage::{
-    BlockDagKeyValueStorage, DeployId, KeyValueDagRepresentation,
+    BlockDagKeyValueStorage, CertifiedAdmissionOutcome, CertifiedSenderAuthority, DeployId,
+    KeyValueDagRepresentation,
 };
 use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage;
 use block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer;
@@ -17,24 +18,30 @@ use comm::rust::transport::transport_layer::TransportLayer;
 use crypto::rust::signatures::signed::Signed;
 use dashmap::DashSet;
 use models::rust::block_hash::BlockHash;
-use models::rust::casper::protocol::casper_message::{BlockMessage, DeployData, Justification};
+use models::rust::bond_generation::BondGeneration;
+use models::rust::casper::protocol::casper_message::{
+    BlockMessage, Bond, DeployData, Justification,
+};
 use models::rust::validator::Validator;
 use prost::bytes::Bytes;
 use rspace_plus_plus::rspace::history::Either;
 use rspace_plus_plus::rspace::state::rspace_exporter::RSpaceExporter;
 use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
 
-use crate::rust::block_status::{BlockError, InvalidBlock, ValidBlock};
+use crate::rust::block_status::{CertifiedBlockValidation, InvalidBlock, ValidBlock};
 use crate::rust::engine::block_retriever::BlockRetriever;
 use crate::rust::engine::multi_parent_casper::MultiParentCasperImpl;
 use crate::rust::errors::CasperError;
 use crate::rust::estimator::Estimator;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
+use crate::rust::validate::Validate;
 
 pub const LEGACY_CASPER_PROTOCOL_VERSION: i64 = 1;
-pub const STATE_EFFECT_PROVENANCE_PROTOCOL_VERSION: i64 = 3;
+pub const STATE_EFFECT_PROVENANCE_PROTOCOL_VERSION: i64 =
+    models::rust::block_metadata::STATE_EFFECT_PROVENANCE_PROTOCOL_VERSION;
 pub const VAULT_BACKED_BYTE_ACCOUNTING_PROTOCOL_VERSION: i64 = 4;
-pub const CURRENT_CASPER_PROTOCOL_VERSION: i64 = VAULT_BACKED_BYTE_ACCOUNTING_PROTOCOL_VERSION;
+pub const CERTIFIED_VALIDATOR_INCARNATION_PROTOCOL_VERSION: i64 = 5;
+pub const CURRENT_CASPER_PROTOCOL_VERSION: i64 = CERTIFIED_VALIDATOR_INCARNATION_PROTOCOL_VERSION;
 use crate::rust::validator_identity::ValidatorIdentity;
 
 pub fn is_supported_casper_protocol_version(version: i64) -> bool {
@@ -99,6 +106,8 @@ impl Display for DeployError {
 pub trait Casper {
     async fn get_snapshot(&self) -> Result<CasperSnapshot, CasperError>;
 
+    fn request_finalization(&self) -> Result<(), CasperError>;
+
     fn contains(&self, hash: &BlockHash) -> bool;
 
     fn dag_contains(&self, hash: &BlockHash) -> bool;
@@ -143,11 +152,15 @@ pub trait Casper {
 
     fn get_version(&self) -> i64;
 
+    fn recovery_sync_active(&self) -> bool { false }
+
+    fn set_recovery_sync_active(&self, _active: bool) {}
+
     async fn validate(
         &self,
         block: &BlockMessage,
         snapshot: &mut CasperSnapshot,
-    ) -> Result<Either<BlockError, ValidBlock>, CasperError>;
+    ) -> Result<CertifiedBlockValidation, CasperError>;
 
     /// Validate a self-created block through the same consensus checks used for a peer block.
     async fn validate_self_created(
@@ -156,11 +169,13 @@ pub trait Casper {
         snapshot: &mut CasperSnapshot,
         pre_state_hash: Bytes,
         post_state_hash: Bytes,
-    ) -> Result<Either<BlockError, ValidBlock>, CasperError>;
+    ) -> Result<CertifiedBlockValidation, CasperError>;
 
     async fn handle_valid_block(
         &self,
         block: &BlockMessage,
+        certificate: &CertifiedSenderAuthority,
+        outcome: &CertifiedAdmissionOutcome,
     ) -> Result<KeyValueDagRepresentation, CasperError>;
 
     fn handle_invalid_block(
@@ -168,9 +183,20 @@ pub trait Casper {
         block: &BlockMessage,
         status: &InvalidBlock,
         dag: &KeyValueDagRepresentation,
+        certificate: &CertifiedSenderAuthority,
+        outcome: &CertifiedAdmissionOutcome,
     ) -> Result<KeyValueDagRepresentation, CasperError>;
 
     fn get_dependency_free_from_buffer(&self) -> Result<Vec<BlockMessage>, CasperError>;
+
+    fn get_dependency_free_hashes_from_buffer(&self) -> Result<Vec<BlockHash>, CasperError> {
+        self.get_dependency_free_from_buffer().map(|blocks| {
+            blocks
+                .into_iter()
+                .map(|block| BlockHash::from(block.block_hash))
+                .collect()
+        })
+    }
 
     fn get_all_from_buffer(&self) -> Result<Vec<BlockMessage>, CasperError>;
 }
@@ -182,10 +208,7 @@ pub trait MultiParentCasper: Casper + Send + Sync {
     // This is the weight of faults that have been accumulated so far.
     // We want the clique oracle to give us a fault tolerance that is greater than
     // this initial fault weight combined with our fault tolerance threshold t.
-    fn normalized_initial_fault(
-        &self,
-        weights: HashMap<Validator, u64>,
-    ) -> Result<f32, CasperError>;
+    fn normalized_initial_fault(&self, target: &BlockHash) -> Result<f32, CasperError>;
 
     async fn last_finalized_block(&self) -> Result<BlockMessage, CasperError>;
 
@@ -234,10 +257,26 @@ pub async fn hash_set_casper<T: TransportLayer + Send + Sync>(
     casper_buffer_storage: CasperBufferKeyValueStorage,
     validator_id: Option<ValidatorIdentity>,
     mut casper_shard_conf: CasperShardConf,
-    approved_block: BlockMessage,
+    genesis_block: BlockMessage,
     heartbeat_signal_ref: crate::rust::heartbeat_signal::HeartbeatSignalRef,
 ) -> Result<MultiParentCasperImpl<T>, CasperError> {
-    casper_shard_conf.adopt_approved_protocol_version(&approved_block)?;
+    casper_shard_conf.validate_parent_bounds()?;
+    if genesis_block.body.state.block_number != 0
+        || !genesis_block.header.parents_hash_list.is_empty()
+        || genesis_block.seq_num != 0
+        || !genesis_block.justifications.is_empty()
+        || !matches!(Validate::block_hash(&genesis_block), Either::Right(_))
+    {
+        return Err(CasperError::RuntimeError(
+            "Casper construction requires a structurally valid canonical genesis block".to_string(),
+        ));
+    }
+    block_dag_storage.insert(
+        &genesis_block,
+        block_storage::rust::dag::block_dag_key_value_storage::InsertMode::ApprovedGenesis,
+    )?;
+    block_dag_storage.reconcile_latest_messages(&block_store)?;
+    casper_shard_conf.adopt_approved_protocol_version(&genesis_block)?;
     // SINGLE ADOPTION POINT for the protocol fault-tolerance threshold.
     //
     // θ is a CONSENSUS value: the finalized-floor oracle runs on it, and the
@@ -258,7 +297,7 @@ pub async fn hash_set_casper<T: TransportLayer + Send + Sync>(
     let onchain_ppm =
         crate::rust::util::token_metadata_check::read_on_chain_fault_tolerance_threshold_ppm(
             &runtime_manager,
-            &approved_block.body.state.post_state_hash,
+            &genesis_block.body.state.post_state_hash,
         )
         .await?;
     if onchain_ppm != casper_shard_conf.fault_tolerance_threshold_ppm {
@@ -274,6 +313,7 @@ pub async fn hash_set_casper<T: TransportLayer + Send + Sync>(
     // using. The ppm remains the sole DECISION input; this f32 is display-only.
     casper_shard_conf.fault_tolerance_threshold = (onchain_ppm as f64 / 1_000_000.0) as f32;
 
+    let finalization_worker_limit = casper_shard_conf.finalizer_conf.max_parallel_workers;
     Ok(MultiParentCasperImpl {
         block_retriever,
         event_publisher,
@@ -289,10 +329,14 @@ pub async fn hash_set_casper<T: TransportLayer + Send + Sync>(
         casper_buffer_storage,
         validator_id,
         casper_shard_conf,
-        approved_block,
-        finalization_in_progress: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        finalizer_task_in_progress: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        finalizer_task_queued: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        approved_block: genesis_block,
+        finalization_in_progress: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        recovery_sync_active: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        finalization_schedule: Arc::new(
+            crate::rust::finality::finalization_schedule::FinalizationSchedule::new(
+                finalization_worker_limit,
+            ),
+        ),
         heartbeat_signal_ref,
         deploys_in_scope_cache: Arc::new(parking_lot::Mutex::new(None)),
         active_validators_cache: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
@@ -319,7 +363,7 @@ pub struct CasperSnapshot {
     // pure cost for a zero-contention workload — plain
     // HashSet/HashMap are strictly cheaper and have the same
     // iteration/lookup API consumers already use.
-    pub justifications: HashSet<Justification>,
+    pub justifications: Vec<Justification>,
     pub invalid_blocks: HashMap<BlockHash, Validator>,
     /// Signatures of deploys seen in ancestry window.
     /// Keeping signatures avoids retaining full deploy payloads in long-lived snapshots.
@@ -331,7 +375,9 @@ pub struct CasperSnapshot {
     pub rejected_in_scope: Arc<DashSet<Bytes>>,
     pub max_block_num: i64,
     pub max_seq_nums: HashMap<Validator, u64>,
+    pub finalized_floor_bonds: Vec<Bond>,
     pub on_chain_state: OnChainCasperState,
+    pub consensus_context: crate::rust::causal_equivocation::CertifiedConsensusContext,
 }
 
 impl CasperSnapshot {
@@ -342,33 +388,37 @@ impl CasperSnapshot {
             lca: BlockHash::default(),
             tips: vec![],
             parents: vec![],
-            justifications: HashSet::new(),
+            justifications: Vec::new(),
             invalid_blocks: HashMap::new(),
             deploys_in_scope: Arc::new(DashSet::new()),
             rejected_in_scope: Arc::new(DashSet::new()),
             max_block_num: 0,
             max_seq_nums: HashMap::new(),
+            finalized_floor_bonds: Vec::new(),
             on_chain_state: OnChainCasperState::new(CasperShardConf::new()),
+            consensus_context:
+                crate::rust::causal_equivocation::CertifiedConsensusContext::pre_genesis(),
         }
     }
 
-    /// Returns the canonical, ordered validator committee used for proposal
-    /// leadership in this snapshot. The active set is authoritative when
-    /// present; positive bonds are the bootstrap fallback.
-    pub fn current_proposal_validators(&self) -> Vec<Validator> {
-        let mut validators = if !self.on_chain_state.active_validators.is_empty() {
-            self.on_chain_state.active_validators.clone()
-        } else {
-            self.on_chain_state
-                .bonds_map
-                .iter()
-                .filter(|(_, stake)| **stake > 0)
-                .map(|(validator, _)| validator.clone())
-                .collect()
-        };
+    pub fn finalized_floor_validators(&self) -> Vec<Validator> {
+        let mut validators = self
+            .finalized_floor_bonds
+            .iter()
+            .filter(|bond| bond.stake > 0)
+            .map(|bond| bond.validator.clone())
+            .collect::<Vec<_>>();
         validators.sort_unstable();
         validators.dedup();
         validators
+    }
+
+    pub fn finalized_floor_weight_map(&self) -> HashMap<Validator, i64> {
+        self.finalized_floor_bonds
+            .iter()
+            .filter(|bond| bond.stake > 0)
+            .map(|bond| (bond.validator.clone(), bond.stake))
+            .collect()
     }
 }
 
@@ -376,6 +426,7 @@ impl CasperSnapshot {
 pub struct OnChainCasperState {
     pub shard_conf: CasperShardConf,
     pub bonds_map: HashMap<Validator, i64>,
+    pub bond_generations: HashMap<Validator, BondGeneration>,
     pub active_validators: Vec<Validator>,
 }
 
@@ -384,6 +435,7 @@ impl OnChainCasperState {
         Self {
             shard_conf,
             bonds_map: HashMap::new(),
+            bond_generations: HashMap::new(),
             active_validators: vec![],
         }
     }
@@ -445,10 +497,9 @@ pub struct CasperShardConf {
     pub synchrony_finalized_baseline_max_distance: u64,
     pub max_user_deploys_per_block: u32,
     /// Per-deploy hard cap on number of cosigners in a multi-signature
-    /// deploy. Substituted into the PoS contract at genesis as
-    /// `$$maxCosignersPerDeploy$$` (per §1.7) and enforced at the
-    /// `admit_deploy_cosigned` ingress boundary (per §1.9.5) before the
-    /// deploy reaches the pool. Sourced from
+    /// deploy. Committed by genesis and enforced at the
+    /// `admit_deploy_cosigned` ingress boundary before the deploy reaches the
+    /// pool. Sourced from
     /// `casper_conf::max_cosigners_per_deploy` (default 64). Configurable
     /// per shard.
     pub max_cosigners_per_deploy: u32,
@@ -468,6 +519,15 @@ pub struct CasperShardConf {
 }
 
 impl CasperShardConf {
+    pub fn validate_parent_bounds(&self) -> Result<(), CasperError> {
+        crate::rust::casper_conf::validate_parent_bound_values(
+            self.max_number_of_parents,
+            self.max_parent_depth,
+            self.mergeable_channels_gc_depth_buffer,
+        )
+        .map_err(CasperError::RuntimeError)
+    }
+
     pub fn adopt_approved_protocol_version(
         &mut self,
         approved_block: &BlockMessage,
@@ -485,8 +545,8 @@ impl CasperShardConf {
             shard_name: "".to_string(),
             parent_shard_id: "".to_string(),
             finalization_rate: 0,
-            max_number_of_parents: 0,
-            max_parent_depth: 0,
+            max_number_of_parents: UNLIMITED_PARENTS,
+            max_parent_depth: i32::MAX,
             synchrony_constraint_threshold: 0.0,
             height_constraint_threshold: 0,
             deploy_lifespan: 0,
@@ -526,6 +586,8 @@ impl CasperShardConf {
 // to avoid including test code in production binaries.
 /// Test helpers for creating mock Casper implementations.
 pub mod test_helpers {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
     use async_trait::async_trait;
     use rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore;
 
@@ -537,6 +599,7 @@ pub mod test_helpers {
         lfb: BlockMessage,
         pending_deploy_count: usize,
         block_store: KeyValueBlockStore,
+        finalization_requests: AtomicUsize,
     }
 
     impl TestCasperWithSnapshot {
@@ -553,6 +616,7 @@ pub mod test_helpers {
                 lfb,
                 pending_deploy_count: 0,
                 block_store: Self::create_test_block_store(),
+                finalization_requests: AtomicUsize::new(0),
             }
         }
 
@@ -566,7 +630,12 @@ pub mod test_helpers {
                 lfb,
                 pending_deploy_count,
                 block_store: Self::create_test_block_store(),
+                finalization_requests: AtomicUsize::new(0),
             }
+        }
+
+        pub fn finalization_request_count(&self) -> usize {
+            self.finalization_requests.load(Ordering::SeqCst)
         }
 
         /// Create an empty CasperSnapshot for testing.
@@ -590,11 +659,12 @@ pub mod test_helpers {
                 main_parent_map: imbl::HashMap::new(),
                 self_justification_map: imbl::HashMap::new(),
                 invalid_blocks_set: imbl::HashSet::new(),
+                equivocation_observations: imbl::HashMap::new(),
                 last_finalized_block_hash: BlockHash::new(),
                 finalized_blocks_set: imbl::HashSet::new(),
-                block_metadata_index: Arc::new(RwLock::new(BlockMetadataStore::new(
-                    block_metadata_store,
-                ))),
+                block_metadata_index: Arc::new(RwLock::new(
+                    BlockMetadataStore::new(block_metadata_store).unwrap(),
+                )),
                 deploy_index: Arc::new(RwLock::new(KeyValueTypedStoreImpl::new(Arc::new(
                     InMemoryKeyValueStore::new(),
                 )))),
@@ -628,6 +698,16 @@ pub mod test_helpers {
                 .any(|bond| bond.validator == validator)
             {
                 parent.body.state.bonds.push(Bond {
+                    validator: validator.clone(),
+                    stake: 100,
+                });
+            }
+            if !snapshot
+                .finalized_floor_bonds
+                .iter()
+                .any(|bond| bond.validator == validator)
+            {
+                snapshot.finalized_floor_bonds.push(Bond {
                     validator,
                     stake: 100,
                 });
@@ -635,10 +715,44 @@ pub mod test_helpers {
         }
     }
 
+    fn certified_test_validation(
+        block: &BlockMessage,
+    ) -> Result<CertifiedBlockValidation, CasperError> {
+        let generation = block.header.sender_bond_generation.ok_or_else(|| {
+            CasperError::RuntimeError(
+                "accepted test block is missing sender bond generation".to_string(),
+            )
+        })?;
+        let authority_floor = block
+            .header
+            .parents_hash_list
+            .first()
+            .cloned()
+            .unwrap_or_else(|| block.block_hash.clone());
+        let authority_post_state = block.body.state.pre_state_hash.clone();
+        let mut preimage = authority_floor.to_vec();
+        preimage.extend_from_slice(&authority_post_state);
+        let certificate = CertifiedSenderAuthority::new(
+            block,
+            authority_floor,
+            authority_post_state,
+            crypto::rust::hash::blake2b256::Blake2b256::hash(preimage).into(),
+            generation,
+            1,
+        )
+        .map_err(|error| CasperError::RuntimeError(error.to_string()))?;
+        CertifiedBlockValidation::certified(block, Either::Right(ValidBlock::Valid), certificate)
+    }
+
     #[async_trait]
     impl Casper for TestCasperWithSnapshot {
         async fn get_snapshot(&self) -> Result<CasperSnapshot, CasperError> {
             Ok(self.snapshot.clone())
+        }
+
+        fn request_finalization(&self) -> Result<(), CasperError> {
+            self.finalization_requests.fetch_add(1, Ordering::SeqCst);
+            Ok(())
         }
 
         fn contains(&self, _hash: &BlockHash) -> bool { false }
@@ -667,25 +781,27 @@ pub mod test_helpers {
 
         async fn validate(
             &self,
-            _block: &BlockMessage,
+            block: &BlockMessage,
             _snapshot: &mut CasperSnapshot,
-        ) -> Result<Either<BlockError, ValidBlock>, CasperError> {
-            Ok(Either::Right(ValidBlock::Valid))
+        ) -> Result<CertifiedBlockValidation, CasperError> {
+            certified_test_validation(block)
         }
 
         async fn validate_self_created(
             &self,
-            _block: &BlockMessage,
+            block: &BlockMessage,
             _snapshot: &mut CasperSnapshot,
             _pre_state_hash: Bytes,
             _post_state_hash: Bytes,
-        ) -> Result<Either<BlockError, ValidBlock>, CasperError> {
-            Ok(Either::Right(ValidBlock::Valid))
+        ) -> Result<CertifiedBlockValidation, CasperError> {
+            certified_test_validation(block)
         }
 
         async fn handle_valid_block(
             &self,
             _block: &BlockMessage,
+            _certificate: &CertifiedSenderAuthority,
+            _outcome: &CertifiedAdmissionOutcome,
         ) -> Result<KeyValueDagRepresentation, CasperError> {
             Ok(self.snapshot.dag.clone())
         }
@@ -695,6 +811,8 @@ pub mod test_helpers {
             _block: &BlockMessage,
             _status: &InvalidBlock,
             dag: &KeyValueDagRepresentation,
+            _certificate: &CertifiedSenderAuthority,
+            _outcome: &CertifiedAdmissionOutcome,
         ) -> Result<KeyValueDagRepresentation, CasperError> {
             Ok(dag.clone())
         }
@@ -710,10 +828,7 @@ pub mod test_helpers {
     impl MultiParentCasper for TestCasperWithSnapshot {
         async fn fetch_dependencies(&self) -> Result<(), CasperError> { Ok(()) }
 
-        fn normalized_initial_fault(
-            &self,
-            _weights: HashMap<Validator, u64>,
-        ) -> Result<f32, CasperError> {
+        fn normalized_initial_fault(&self, _target: &BlockHash) -> Result<f32, CasperError> {
             Ok(0.0)
         }
 
@@ -752,6 +867,7 @@ mod protocol_version_tests {
     use prost::bytes::Bytes;
 
     use super::*;
+    use crate::rust::finality_recovery_leader;
 
     #[test]
     fn approved_protocol_version_adoption_accepts_current() {
@@ -782,36 +898,27 @@ mod protocol_version_tests {
     }
 
     #[test]
-    fn proposal_validators_prefer_the_canonical_active_set() {
+    fn recovery_validators_ignore_divergent_proposal_committee() {
         let mut snapshot = test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
         let first = Bytes::from_static(b"a");
         let second = Bytes::from_static(b"b");
-        let bonded_only = Bytes::from_static(b"c");
-        snapshot.on_chain_state.active_validators =
-            vec![second.clone(), first.clone(), second.clone()];
-        snapshot.on_chain_state.bonds_map.insert(bonded_only, 100);
+        snapshot.finalized_floor_bonds = vec![
+            Bond {
+                validator: second.clone(),
+                stake: 1,
+            },
+            Bond {
+                validator: first.clone(),
+                stake: 1,
+            },
+            Bond {
+                validator: second.clone(),
+                stake: 1,
+            },
+        ];
+        snapshot.on_chain_state.active_validators = vec![Bytes::from_static(b"head")];
 
-        assert_eq!(snapshot.current_proposal_validators(), vec![first, second]);
-    }
-
-    #[test]
-    fn proposal_validators_fall_back_to_distinct_positive_bonds() {
-        let mut snapshot = test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
-        let positive = Bytes::from_static(b"positive");
-        snapshot
-            .on_chain_state
-            .bonds_map
-            .insert(positive.clone(), 1);
-        snapshot
-            .on_chain_state
-            .bonds_map
-            .insert(Bytes::from_static(b"zero"), 0);
-        snapshot
-            .on_chain_state
-            .bonds_map
-            .insert(Bytes::from_static(b"negative"), -1);
-
-        assert_eq!(snapshot.current_proposal_validators(), vec![positive]);
+        assert_eq!(snapshot.finalized_floor_validators(), vec![first, second]);
     }
 
     proptest! {
@@ -820,6 +927,38 @@ mod protocol_version_tests {
             let expected = version == CURRENT_CASPER_PROTOCOL_VERSION;
             prop_assert_eq!(is_supported_casper_protocol_version(version), expected);
             prop_assert_eq!(ensure_supported_casper_protocol_version(version).is_ok(), expected);
+        }
+
+        #[test]
+        fn recovery_leader_is_invariant_under_head_committee_drift(
+            head_committee in proptest::collection::vec(any::<u8>(), 0..8),
+            finalized_height in 0i64..1_000,
+            recovery_round in any::<u64>(),
+        ) {
+            let mut snapshot = test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
+            snapshot.finalized_floor_bonds = vec![
+                Bond { validator: Bytes::from_static(b"a"), stake: 1 },
+                Bond { validator: Bytes::from_static(b"b"), stake: 1 },
+                Bond { validator: Bytes::from_static(b"c"), stake: 1 },
+            ];
+            let expected = finality_recovery_leader(
+                snapshot.finalized_floor_validators(),
+                finalized_height,
+                recovery_round,
+            );
+            snapshot.on_chain_state.active_validators = head_committee
+                .into_iter()
+                .map(|validator| Bytes::from(vec![validator]))
+                .collect();
+
+            prop_assert_eq!(
+                finality_recovery_leader(
+                    snapshot.finalized_floor_validators(),
+                    finalized_height,
+                    recovery_round,
+                ),
+                expected,
+            );
         }
     }
 }

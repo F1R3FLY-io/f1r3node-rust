@@ -55,7 +55,14 @@ impl IndexedBlockDagStorage {
 
         // Use internal methods to avoid re-acquiring lock
         self.underlying
-            .insert_internal(genesis, InsertMode::Approved)?;
+            .insert_internal(genesis, InsertMode::ApprovedGenesis)?;
+        if block.block_hash == genesis.block_hash {
+            let block_number = genesis.body.state.block_number;
+            self.id_to_blocks.insert(block_number, genesis.clone());
+            let mut current_id = self.current_id.lock().unwrap();
+            *current_id = (*current_id).max(block_number);
+            return Ok(genesis.clone());
+        }
         let dag = self.underlying.get_representation_internal()?;
         let next_creator_seq_num = if block.seq_num == 0 {
             dag.latest_message(&block.sender)?

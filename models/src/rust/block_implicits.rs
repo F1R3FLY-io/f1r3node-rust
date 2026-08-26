@@ -11,9 +11,10 @@ use rand::prelude::*;
 
 use super::block::state_hash::{self, StateHash};
 use super::block_hash::{self, BlockHash};
+use super::bond_generation::BondGeneration;
 use super::casper::protocol::casper_message::{
     BlockMessage, Body, Bond, DeployData, F1r3flyState, Header, Justification, ProcessedDeploy,
-    ProcessedSystemDeploy,
+    ProcessedSystemDeploy, ValidatorBondGeneration,
 };
 use super::validator::{self, Validator};
 use crate::rhoapi::PCost;
@@ -165,7 +166,7 @@ pub fn block_element_gen(
             .boxed(),
     };
 
-    let version = set_version.unwrap_or(1);
+    let version = set_version.unwrap_or(5);
     let timestamp_gen = match set_timestamp {
         Some(t) => Just(t).boxed(),
         None => any::<i64>().boxed(),
@@ -195,6 +196,23 @@ pub fn block_element_gen(
                 validator,
                 timestamp,
             )| {
+                let mut bond_generations = if version == 5 {
+                    bonds
+                        .iter()
+                        .map(|bond| ValidatorBondGeneration {
+                            validator: bond.validator.clone(),
+                            generation: BondGeneration::GENESIS,
+                        })
+                        .collect::<Vec<_>>()
+                } else {
+                    Vec::new()
+                };
+                bond_generations.sort_by(|left, right| left.validator.cmp(&right.validator));
+                bond_generations.dedup_by(|left, right| left.validator == right.validator);
+                let active_validators = bond_generations
+                    .iter()
+                    .map(|generation| generation.validator.clone())
+                    .collect();
                 let block = BlockMessage {
                     block_hash: prost::bytes::Bytes::new(),
                     header: Header {
@@ -202,12 +220,16 @@ pub fn block_element_gen(
                         timestamp,
                         version,
                         extra_bytes: prost::bytes::Bytes::new(),
+                        sender_bond_generation: (version == 5).then_some(BondGeneration::GENESIS),
+                        objective_equivocation_evidence_delta: Vec::new(),
                     },
                     body: Body {
                         state: F1r3flyState {
                             pre_state_hash,
                             post_state_hash,
                             bonds,
+                            bond_generations,
+                            active_validators,
                             block_number,
                         },
                         deploys,
@@ -248,14 +270,9 @@ pub fn block_elements_with_parents_gen(
     max_size: usize,
 ) -> impl Strategy<Value = Vec<BlockMessage>> {
     let bonds = genesis.body.state.bonds.clone();
-
-    prop::collection::vec(any::<u8>(), min_size..max_size).prop_flat_map(move |_| {
-        let bonds = bonds.clone();
-        let blocks: Vec<BlockMessage> = Vec::new();
-
-        Just(blocks).prop_perturb(move |mut blocks, _| {
-            let mut rng = rand::rng();
-            let new_block = block_element_gen(
+    prop::collection::vec(
+        (
+            block_element_gen(
                 None,
                 None,
                 None,
@@ -267,32 +284,43 @@ pub fn block_elements_with_parents_gen(
                 None,
                 None,
                 None,
-                Some(bonds.clone()),
+                Some(bonds),
                 None,
                 None,
-            )
-            .new_tree(&mut TestRunner::default())
-            .unwrap()
-            .current();
-
-            // Select random parents from existing blocks
-            let parent_hashes: Vec<BlockHash> = blocks
-                .choose_multiple(&mut rng, blocks.len().max(1) / 2)
-                .map(|b| b.block_hash.clone().into())
-                .collect();
-
-            // Create modified block with parent hashes
-            let block = BlockMessage {
-                header: Header {
-                    parents_hash_list: parent_hashes.into_iter().map(Into::into).collect(),
-                    ..new_block.header
-                },
-                ..new_block
-            };
-
+            ),
+            any::<u64>(),
+        ),
+        min_size..max_size,
+    )
+    .prop_map(move |generated| {
+        let mut blocks: Vec<BlockMessage> = Vec::with_capacity(generated.len());
+        for (mut block, selector) in generated {
+            let mut available = Vec::with_capacity(blocks.len() + 1);
+            available.push((genesis.block_hash.clone(), genesis.body.state.block_number));
+            available.extend(
+                blocks
+                    .iter()
+                    .map(|parent| (parent.block_hash.clone(), parent.body.state.block_number)),
+            );
+            let mut parents = available
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| selector & (1_u64 << (index % 64)) != 0)
+                .map(|(_, parent)| parent.clone())
+                .collect::<Vec<_>>();
+            if parents.is_empty() {
+                parents.push(available[selector as usize % available.len()].clone());
+            }
+            block.header.parents_hash_list = parents.iter().map(|(hash, _)| hash.clone()).collect();
+            block.body.state.block_number = parents
+                .iter()
+                .map(|(_, height)| *height)
+                .max()
+                .unwrap_or(genesis.body.state.block_number)
+                + 1;
             blocks.push(block);
-            blocks
-        })
+        }
+        blocks
     })
 }
 

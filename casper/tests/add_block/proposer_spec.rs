@@ -2,6 +2,10 @@
 
 use std::sync::Arc;
 
+use block_storage::rust::dag::block_dag_key_value_storage::{
+    CertifiedAdmissionOutcome, CertifiedSenderAuthority,
+};
+use casper::rust::block_status::CertifiedBlockValidation;
 use casper::rust::blocks::proposer::propose_result::{
     BlockCreatorResult, CheckProposeConstraintsResult,
 };
@@ -12,8 +16,9 @@ use casper::rust::blocks::proposer::proposer::{
 use casper::rust::casper::{Casper, CasperSnapshot};
 use casper::rust::errors::CasperError;
 use casper::rust::validator_identity::ValidatorIdentity;
-use casper::rust::ValidBlockProcessing;
+use casper::rust::{ProposeRequestKind, ValidBlockProcessing};
 use crypto::rust::private_key::PrivateKey;
+use models::rust::bond_generation::BondGeneration;
 use models::rust::casper::protocol::casper_message::BlockMessage;
 
 use crate::helper::block_dag_storage_fixture::with_storage;
@@ -103,8 +108,10 @@ impl BlockCreator for TestBlockCreator {
         _: bool,
     ) -> Result<BlockCreatorResult, CasperError> {
         use models::rust::block_implicits::get_random_block_default;
+        let mut block = get_random_block_default();
+        block.header.sender_bond_generation = Some(BondGeneration::GENESIS);
         Ok(BlockCreatorResult::Created(
-            get_random_block_default(),
+            block,
             prost::bytes::Bytes::new(),
             prost::bytes::Bytes::new(),
         ))
@@ -117,10 +124,31 @@ impl BlockValidator for TestBlockValidator {
         &self,
         _: Arc<dyn Casper + Send + Sync + 'static>,
         _: &mut CasperSnapshot,
-        _: &BlockMessage,
-    ) -> Result<ValidBlockProcessing, CasperError> {
+        block: &BlockMessage,
+    ) -> Result<CertifiedBlockValidation, CasperError> {
         use casper::rust::block_status::ValidBlock;
-        Ok(ValidBlockProcessing::Right(ValidBlock::Valid))
+        let generation = block.header.sender_bond_generation.ok_or_else(|| {
+            CasperError::RuntimeError("test proposal is missing its sender generation".to_string())
+        })?;
+        let certificate = CertifiedSenderAuthority::new(
+            block,
+            block
+                .header
+                .parents_hash_list
+                .first()
+                .cloned()
+                .unwrap_or_else(|| block.block_hash.clone()),
+            block.body.state.pre_state_hash.clone(),
+            block.block_hash.clone(),
+            generation,
+            1,
+        )
+        .map_err(|error| CasperError::RuntimeError(error.to_string()))?;
+        CertifiedBlockValidation::certified(
+            block,
+            ValidBlockProcessing::Right(ValidBlock::Valid),
+            certificate,
+        )
     }
 }
 
@@ -131,11 +159,11 @@ impl BlockValidator for AlwaysUnsuccessfulValidator {
         _: Arc<dyn Casper + Send + Sync + 'static>,
         _: &mut CasperSnapshot,
         _: &BlockMessage,
-    ) -> Result<ValidBlockProcessing, CasperError> {
-        use casper::rust::block_status::{BlockError, InvalidBlock};
-        Ok(ValidBlockProcessing::Left(BlockError::Invalid(
+    ) -> Result<CertifiedBlockValidation, CasperError> {
+        use casper::rust::block_status::InvalidBlock;
+        Ok(CertifiedBlockValidation::unattributable(
             InvalidBlock::InvalidFormat,
-        )))
+        ))
     }
 }
 
@@ -145,6 +173,8 @@ impl ProposeEffectHandler for TestProposeEffectHandler {
         &mut self,
         _: Arc<dyn Casper + Send + Sync + 'static>,
         _: &BlockMessage,
+        _: &CertifiedSenderAuthority,
+        _: &CertifiedAdmissionOutcome,
     ) -> Result<(), CasperError> {
         Ok(())
     }
@@ -170,6 +200,8 @@ impl ProposeEffectHandler for TrackingProposeEffectHandler {
         &mut self,
         _: Arc<dyn Casper + Send + Sync + 'static>,
         _: &BlockMessage,
+        _: &CertifiedSenderAuthority,
+        _: &CertifiedAdmissionOutcome,
     ) -> Result<(), CasperError> {
         PROPOSE_EFFECT_VAR.store(self.value, Ordering::SeqCst);
         Ok(())
@@ -220,7 +252,7 @@ async fn proposer_should_reject_to_propose_if_proposer_is_not_active_validator()
             dag_representation,
         ));
 
-        let result = proposer.propose(casper, false).await;
+        let result = proposer.propose(casper, ProposeRequestKind::Manual).await;
 
         match result {
             Ok(ProposeReturnType {
@@ -280,7 +312,7 @@ async fn proposer_should_reject_to_propose_if_synchrony_constraint_not_met() {
             dag_representation,
         ));
 
-        let result = proposer.propose(casper, false).await;
+        let result = proposer.propose(casper, ProposeRequestKind::Manual).await;
 
         match result {
             Ok(ProposeReturnType {
@@ -340,7 +372,7 @@ async fn proposer_should_reject_to_propose_if_last_finalized_height_constraint_n
             dag_representation,
         ));
 
-        let result = proposer.propose(casper, false).await;
+        let result = proposer.propose(casper, ProposeRequestKind::Manual).await;
 
         match result {
             Ok(ProposeReturnType {
@@ -400,7 +432,7 @@ async fn proposer_should_shut_down_the_node_if_block_created_is_not_successfully
             dag_representation,
         ));
 
-        let result = proposer.propose(casper, false).await;
+        let result = proposer.propose(casper, ProposeRequestKind::Manual).await;
 
         // Should return an error when block validation fails
         match result {
@@ -451,7 +483,7 @@ async fn proposer_should_execute_propose_effects_if_block_created_successfully_r
             dag_representation,
         ));
 
-        let result = proposer.propose(casper, false).await;
+        let result = proposer.propose(casper, ProposeRequestKind::Manual).await;
 
         match result {
             Ok(ProposeReturnType {

@@ -37,7 +37,8 @@ MIRI_CACHE_HOME="${MIRI_CACHE_HOME:-$PWD/target/miri-cache}"
 SYSTEMD_MEMORY_MAX="${SYSTEMD_MEMORY_MAX:-32G}"
 SYSTEMD_CPU_QUOTA="${SYSTEMD_CPU_QUOTA:-}"
 KANI_HARNESSES=(
-    checked_base_seq_matches_i32_predecessor
+    checked_base_seq_rejects_nonpositive
+    checked_base_seq_matches_positive_i32_predecessor
     checked_next_seq_matches_i32_successor
     epoch_for_block_number_rejects_invalid_domain
     epoch_for_block_number_matches_bounded_floor_division
@@ -181,8 +182,13 @@ run_apalache() {
         echo "SKIP Apalache: apalache-mc not found"
         return
     fi
-    run_limited apalache-mc check formal/tlaplus/slashing/MC_AuthorizedSlashFlow.tla
-    run_limited apalache-mc check formal/tlaplus/slashing/MC_TwoLevelSlashing.tla
+    local model="formal/tlaplus/slashing/EquivocationDetectorEager_apalache.tla"
+    local output_dir="$SEARCH_OUTPUT_DIR/apalache"
+    mkdir -p "$output_dir"
+    run_limited apalache-mc check --init=Init --inv=IndInv --length=0 --cinit=CInit \
+        --out-dir="$output_dir" "$model"
+    run_limited apalache-mc check --init=IndInv --inv=IndInv --length=1 --cinit=CInit \
+        --out-dir="$output_dir" "$model"
 }
 
 write_run_metadata

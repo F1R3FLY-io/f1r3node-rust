@@ -12,9 +12,7 @@ use comm::rust::peer_node::PeerNode;
 use comm::rust::rp::protocol_helper;
 use comm::rust::test_instances::create_rp_conf_ask;
 use comm::rust::transport::communication_response::CommunicationResponse;
-use comm::rust::transport::grpc_transport_client::{
-    BufferedGrpcStreamChannel, GrpcTransportClient,
-};
+use comm::rust::transport::grpc_transport_client::{ChannelsMap, GrpcTransportClient};
 use comm::rust::transport::grpc_transport_server::{
     DispatchFn, GrpcTransportServer, HandleStreamedFn, TransportServer,
 };
@@ -22,7 +20,6 @@ use comm::rust::transport::transport_layer::{Blob, TransportLayer};
 use crypto::rust::util::certificate_helper::{CertificateHelper, CertificatePrinter};
 use models::routing::Protocol;
 use tokio::net::TcpListener;
-use tokio::sync::OnceCell;
 
 /// TLS Environment for transport layer testing
 pub struct TlsEnvironment {
@@ -84,10 +81,8 @@ impl TransportLayerTestRuntime {
         &self,
         env: &TlsEnvironment,
     ) -> Result<GrpcTransportClient, CommError> {
-        let channels_map = Arc::new(tokio::sync::Mutex::new(HashMap::<
-            PeerNode,
-            Arc<OnceCell<Arc<BufferedGrpcStreamChannel>>>,
-        >::new()));
+        let channels_map: ChannelsMap =
+            Arc::new(tokio::sync::Mutex::new(HashMap::<PeerNode, _>::new()));
 
         GrpcTransportClient::new(
             self.network_id.clone(),
@@ -96,6 +91,7 @@ impl TransportLayerTestRuntime {
             self.max_message_size,
             self.max_message_size,
             100,
+            self.max_stream_message_size,
             channels_map,
             std::time::Duration::from_secs(5), // Default timeout for tests
         )

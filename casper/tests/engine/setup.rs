@@ -13,6 +13,9 @@ use block_storage::rust::dag::equivocation_tracker_store::EquivocationTrackerSto
 use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage;
 use block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer;
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
+use casper::rust::blocks::block_processing_queue::{
+    BlockProcessingQueueItem, BlockProcessingQueueReceiver, BlockProcessingQueueSender,
+};
 use casper::rust::casper::{CasperShardConf, MultiParentCasper};
 use casper::rust::engine::block_approver_protocol::BlockApproverProtocol;
 use casper::rust::engine::block_retriever;
@@ -34,6 +37,7 @@ use dashmap::DashSet;
 use models::routing::Protocol;
 use models::rust::block_hash::{BlockHash, BlockHashSerde};
 use models::rust::block_metadata::BlockMetadata;
+use models::rust::bond_generation::BondGeneration;
 use models::rust::casper::protocol::casper_message::{
     ApprovedBlock, ApprovedBlockCandidate, BlockMessage, CasperMessage, DeployData, HasBlock,
 };
@@ -45,7 +49,6 @@ use rspace_plus_plus::rspace::state::rspace_state_manager::RSpaceStateManager;
 use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
 use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
 use shared::rust::ByteString;
-use tokio::sync::mpsc;
 
 use crate::helper::no_ops_casper_effect::NoOpsCasperEffect;
 use crate::util::genesis_builder::GenesisBuilder;
@@ -70,13 +73,8 @@ pub struct TestFixture {
     pub engine: Running<TransportLayerStub>,
     // Scala: implicit val blockProcessingQueue = Queue.unbounded[Task, (Casper[Task], BlockMessage)]
     // Refactored to use mpsc channel - both sender and receiver kept for test inspection
-    pub block_processing_queue_tx:
-        mpsc::Sender<(Arc<dyn MultiParentCasper + Send + Sync>, BlockMessage)>,
-    pub block_processing_queue_rx: Arc<
-        tokio::sync::Mutex<
-            mpsc::Receiver<(Arc<dyn MultiParentCasper + Send + Sync>, BlockMessage)>,
-        >,
-    >,
+    pub block_processing_queue_tx: BlockProcessingQueueSender,
+    pub block_processing_queue_rx: Arc<tokio::sync::Mutex<BlockProcessingQueueReceiver>>,
     // Test-only: Track blocks enqueued for processing (updated lazily on first check)
     blocks_enqueued_for_processing: Arc<Mutex<HashSet<BlockHash>>>,
     // Scala Step 4: implicit val rspaceStateManager = RSpacePlusPlusStateManagerImpl(exporter, importer)
@@ -228,7 +226,7 @@ impl TestFixture {
         ));
         let metadata_typed_store =
             KeyValueTypedStoreImpl::<BlockHashSerde, BlockMetadata>::new(metadata_store);
-        let block_metadata_store = BlockMetadataStore::new(metadata_typed_store);
+        let block_metadata_store = BlockMetadataStore::new(metadata_typed_store).unwrap();
 
         let deploy_index_store = Arc::new(MockKeyValueStore::with_shared_data(
             kvm_dagstorage_deploy_index.clone(),
@@ -252,7 +250,7 @@ impl TestFixture {
             kvm_dagstorage_equivocation_tracker.clone(),
         ));
         let equivocation_tracker_typed_store = KeyValueTypedStoreImpl::<
-            (ValidatorSerde, SequenceNumber),
+            (ValidatorSerde, BondGeneration, SequenceNumber),
             BTreeSet<BlockHashSerde>,
         >::new(equivocation_tracker_store);
         let equivocation_tracker = EquivocationTrackerStore::new(equivocation_tracker_typed_store);
@@ -282,7 +280,7 @@ impl TestFixture {
         block_dag_storage_unwrapped
             .insert(
                 &genesis,
-                block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Approved,
+                block_storage::rust::dag::block_dag_key_value_storage::InsertMode::ApprovedGenesis,
             )
             .expect("Failed to insert genesis into BlockDagStorage");
 
@@ -344,7 +342,9 @@ impl TestFixture {
         );
 
         // Create mpsc channel for block processing queue (receiver kept for test inspection)
-        let (block_processing_queue_tx, block_processing_queue_rx) = mpsc::channel(1024);
+        let (block_processing_queue_tx, block_processing_queue_rx) =
+            BlockProcessingQueueSender::channel(1024, 64 * 1024 * 1024)
+                .expect("block processing queue");
 
         let approved_block = ApprovedBlock {
             candidate: ApprovedBlockCandidate {
@@ -572,15 +572,20 @@ impl TestFixture {
         let mut blocks = Vec::new();
 
         // Drain the queue and update tracking set
-        while let Ok((casper, block)) = rx.try_recv() {
+        while let Ok(BlockProcessingQueueItem {
+            casper,
+            block,
+            reservation,
+        }) = rx.try_recv()
+        {
             tracking_set.insert(block.block_hash.clone());
+            drop(reservation);
             blocks.push((casper, block));
         }
 
         // Re-enqueue all blocks to maintain queue state
         for (casper, block) in blocks {
-            // Safe to ignore send errors in tests - if channel is closed, test is ending anyway
-            let _ = self.block_processing_queue_tx.send((casper, block)).await;
+            let _ = self.block_processing_queue_tx.try_enqueue(casper, block);
         }
     }
 }

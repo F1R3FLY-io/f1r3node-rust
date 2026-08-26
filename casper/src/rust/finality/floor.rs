@@ -8,13 +8,19 @@
 //! RChain's per-message fringe: the cut the block's merge builds on.
 
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap, HashMap, HashSet};
-use std::sync::Arc;
 
 use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
+use block_storage::rust::finality::state_preservation::{
+    is_dag_ancestor_with_cache, is_state_preserved_with_cache, metadata_with_cache,
+    StateProvenanceCache,
+};
+use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use models::rust::block::state_hash::StateHash;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::pretty_printer::PrettyPrinter;
-use models::rust::casper::protocol::casper_message::{Bond, StateEffectId};
+use models::rust::casper::protocol::casper_message::Bond;
+#[cfg(test)]
+use models::rust::casper::protocol::casper_message::StateEffectId;
 use models::rust::validator::Validator;
 
 use crate::rust::errors::CasperError;
@@ -29,227 +35,16 @@ pub struct Floor {
     pub block_number: i64,
 }
 
-#[derive(Default)]
-struct StateProvenanceCache {
-    active: HashMap<(BlockHash, StateEffectId), bool>,
-    preservation: HashMap<(BlockHash, BlockHash), bool>,
-    ancestry: HashMap<(BlockHash, BlockHash), bool>,
-    metadata: HashMap<BlockHash, Arc<models::rust::block_metadata::BlockMetadata>>,
-}
-
-fn metadata_with_cache(
-    dag: &KeyValueDagRepresentation,
-    block_hash: &BlockHash,
-    cache: &mut StateProvenanceCache,
-) -> Result<Arc<models::rust::block_metadata::BlockMetadata>, CasperError> {
-    if let Some(metadata) = cache.metadata.get(block_hash) {
-        return Ok(metadata.clone());
-    }
-    let metadata = Arc::new(dag.lookup_unsafe(block_hash)?);
-    cache.metadata.insert(block_hash.clone(), metadata.clone());
-    Ok(metadata)
-}
-
-fn is_dag_ancestor_with_cache(
-    dag: &KeyValueDagRepresentation,
-    ancestor: &BlockHash,
-    descendant: &BlockHash,
-    cache: &mut StateProvenanceCache,
-) -> Result<bool, CasperError> {
-    let key = (ancestor.clone(), descendant.clone());
-    if let Some(result) = cache.ancestry.get(&key) {
-        return Ok(*result);
-    }
-    if ancestor == descendant {
-        cache.ancestry.insert(key, true);
-        return Ok(true);
-    }
-
-    let stop_height = dag.block_number_unsafe(ancestor)?;
-    let mut visited = HashSet::new();
-    let mut stack = vec![descendant.clone()];
-    let mut result = false;
-    while let Some(current) = stack.pop() {
-        if current == *ancestor {
-            result = true;
-            break;
-        }
-        if !visited.insert(current.clone()) || dag.block_number_unsafe(&current)? <= stop_height {
-            continue;
-        }
-        let metadata = metadata_with_cache(dag, &current, cache)?;
-        stack.extend(metadata.parents.iter().rev().cloned());
-    }
-    cache.ancestry.insert(key, result);
-    Ok(result)
-}
-
-fn require_effect_provenance(
-    block_hash: &BlockHash,
-    metadata: &models::rust::block_metadata::BlockMetadata,
-) -> Result<(), CasperError> {
-    if metadata.protocol_version < crate::rust::casper::STATE_EFFECT_PROVENANCE_PROTOCOL_VERSION {
-        return Err(CasperError::Other(format!(
-            "state-effect provenance is unavailable for block {} at protocol version {}",
-            PrettyPrinter::build_string_bytes(block_hash),
-            metadata.protocol_version
-        )));
-    }
-    Ok(())
-}
-
-fn state_input_blocks(
-    dag: &KeyValueDagRepresentation,
-    block_hash: &BlockHash,
-    parents: &[BlockHash],
-    cache: &mut StateProvenanceCache,
-) -> Result<Vec<BlockHash>, CasperError> {
-    if parents.is_empty() {
-        return Ok(Vec::new());
-    }
-    let mut inputs = Vec::with_capacity(parents.len() + 1);
-    for candidate in parents {
-        let mut covered = false;
-        for parent in parents {
-            if parent != candidate && is_dag_ancestor_with_cache(dag, candidate, parent, cache)? {
-                covered = true;
-                break;
-            }
-        }
-        if !covered {
-            inputs.push(candidate.clone());
-        }
-    }
-    let floor = dag.get_cached_floor(block_hash)?.ok_or_else(|| {
-        CasperError::Other(format!(
-            "finalized floor is not materialized for state provenance of block {}",
-            PrettyPrinter::build_string_bytes(block_hash)
-        ))
-    })?;
-    if floor != *block_hash && !inputs.contains(&floor) {
-        inputs.push(floor);
-    }
-    Ok(inputs)
-}
-
-fn effect_active_with_cache(
-    dag: &KeyValueDagRepresentation,
-    block_hash: &BlockHash,
-    effect: &StateEffectId,
-    cache: &mut StateProvenanceCache,
-) -> Result<bool, CasperError> {
-    let key = (block_hash.clone(), effect.clone());
-    if let Some(active) = cache.active.get(&key) {
-        return Ok(*active);
-    }
-
-    let mut stack = vec![(block_hash.clone(), false)];
-    while let Some((current, expanded)) = stack.pop() {
-        let current_key = (current.clone(), effect.clone());
-        if cache.active.contains_key(&current_key) {
-            continue;
-        }
-        let metadata = metadata_with_cache(dag, &current, cache)?;
-        require_effect_provenance(&current, &metadata)?;
-        let inputs = state_input_blocks(dag, &current, &metadata.parents, cache)?;
-        if expanded {
-            let own = current == effect.source_block_hash
-                && metadata
-                    .successful_state_effect_indices
-                    .contains(&effect.execution_index);
-            let inherited = inputs.iter().any(|input| {
-                cache
-                    .active
-                    .get(&(input.clone(), effect.clone()))
-                    .copied()
-                    .unwrap_or(false)
-            });
-            let active = !metadata.rejected_state_effects.contains(effect) && (own || inherited);
-            cache.active.insert(current_key, active);
-        } else {
-            stack.push((current.clone(), true));
-            for input in inputs.iter().rev() {
-                if !cache.active.contains_key(&(input.clone(), effect.clone())) {
-                    stack.push((input.clone(), false));
-                }
-            }
-        }
-    }
-    Ok(cache.active.get(&key).copied().unwrap_or(false))
-}
-
-fn potentially_removed_effects(
-    dag: &KeyValueDagRepresentation,
-    ancestor: &BlockHash,
-    descendant: &BlockHash,
-    cache: &mut StateProvenanceCache,
-) -> Result<BTreeSet<StateEffectId>, CasperError> {
-    let ancestor_number = dag.block_number_unsafe(ancestor)?;
-    let mut effects = BTreeSet::new();
-    let mut visited = HashSet::new();
-    let mut stack = vec![descendant.clone()];
-    while let Some(current) = stack.pop() {
-        if current == *ancestor || !visited.insert(current.clone()) {
-            continue;
-        }
-        if dag.block_number_unsafe(&current)? <= ancestor_number {
-            continue;
-        }
-        let metadata = metadata_with_cache(dag, &current, cache)?;
-        require_effect_provenance(&current, &metadata)?;
-        effects.extend(metadata.rejected_state_effects.iter().cloned());
-        for parent in metadata.parents.iter().rev() {
-            if parent == ancestor || dag.block_number_unsafe(parent)? > ancestor_number {
-                stack.push(parent.clone());
-            }
-        }
-    }
-    Ok(effects)
-}
-
 pub fn is_state_preserved(
     dag: &KeyValueDagRepresentation,
     ancestor: &BlockHash,
     descendant: &BlockHash,
 ) -> Result<bool, CasperError> {
-    is_state_preserved_with_cache(
-        dag,
-        ancestor,
-        descendant,
-        &mut StateProvenanceCache::default(),
+    Ok(
+        block_storage::rust::finality::state_preservation::is_state_preserved(
+            dag, ancestor, descendant,
+        )?,
     )
-}
-
-fn is_state_preserved_with_cache(
-    dag: &KeyValueDagRepresentation,
-    ancestor: &BlockHash,
-    descendant: &BlockHash,
-    cache: &mut StateProvenanceCache,
-) -> Result<bool, CasperError> {
-    let key = (ancestor.clone(), descendant.clone());
-    if let Some(preserved) = cache.preservation.get(&key) {
-        return Ok(*preserved);
-    }
-    if ancestor == descendant {
-        cache.preservation.insert(key, true);
-        return Ok(true);
-    }
-    if !is_dag_ancestor_with_cache(dag, ancestor, descendant, cache)? {
-        cache.preservation.insert(key, false);
-        return Ok(false);
-    }
-
-    let mut preserved = true;
-    for effect in potentially_removed_effects(dag, ancestor, descendant, cache)? {
-        if effect_active_with_cache(dag, ancestor, &effect, cache)?
-            && !effect_active_with_cache(dag, descendant, &effect, cache)?
-        {
-            preserved = false;
-            break;
-        }
-    }
-    cache.preservation.insert(key, preserved);
-    Ok(preserved)
 }
 
 pub async fn materialize_finalized_floor(
@@ -324,14 +119,12 @@ pub async fn state_witnessed_exact(
     target: &BlockHash,
     latest_messages: &BTreeMap<Validator, BlockHash>,
     ftt: FtThreshold,
-    strict: bool,
 ) -> Result<bool, CasperError> {
     state_witnessed_exact_with_cache(
         dag,
         target,
         latest_messages,
         ftt,
-        strict,
         &mut StateProvenanceCache::default(),
     )
     .await
@@ -342,7 +135,6 @@ async fn state_witnessed_exact_with_cache(
     target: &BlockHash,
     latest_messages: &BTreeMap<Validator, BlockHash>,
     ftt: FtThreshold,
-    strict: bool,
     provenance_cache: &mut StateProvenanceCache,
 ) -> Result<bool, CasperError> {
     if !dag.contains(target) {
@@ -390,7 +182,6 @@ async fn state_witnessed_exact_with_cache(
         latest_messages,
         ftt.num,
         ftt.den,
-        strict,
     )
     .await?;
     tracing::debug!(
@@ -436,7 +227,7 @@ async fn state_certified_frontier(
     loop {
         let metadata = dag.lookup_unsafe(&current)?;
         if metadata.parents.is_empty()
-            || state_witnessed_exact(dag, &current, latest_messages, ftt, false).await?
+            || state_witnessed_exact(dag, &current, latest_messages, ftt).await?
         {
             return Ok(Floor {
                 block_number: metadata.block_number,
@@ -474,9 +265,23 @@ fn candidate_preserves_inherited_floors_with_cache(
     Ok(true)
 }
 
-fn latest_message_coverage(
+pub(crate) fn latest_message_coverage_above(
     dag: &KeyValueDagRepresentation,
     latest_messages: &BTreeMap<Validator, BlockHash>,
+    minimum_exclusive_height: i64,
+) -> Result<HashMap<BlockHash, BTreeSet<Validator>>, CasperError> {
+    latest_message_coverage_with_cache(
+        dag,
+        latest_messages,
+        Some(minimum_exclusive_height),
+        &mut StateProvenanceCache::default(),
+    )
+}
+
+fn latest_message_coverage_with_cache(
+    dag: &KeyValueDagRepresentation,
+    latest_messages: &BTreeMap<Validator, BlockHash>,
+    minimum_exclusive_height: Option<i64>,
     provenance_cache: &mut StateProvenanceCache,
 ) -> Result<HashMap<BlockHash, BTreeSet<Validator>>, CasperError> {
     let mut queue = BinaryHeap::new();
@@ -500,6 +305,9 @@ fn latest_message_coverage(
         }
         let metadata = metadata_with_cache(dag, &hash, provenance_cache)?;
         let current_coverage = coverage.get(&hash).cloned().unwrap_or_default();
+        if minimum_exclusive_height.is_some_and(|minimum| metadata.block_number <= minimum) {
+            continue;
+        }
         for parent in &metadata.parents {
             let parent_metadata = metadata_with_cache(dag, parent, provenance_cache)?;
             if parent_metadata.block_number >= metadata.block_number {
@@ -575,7 +383,8 @@ async fn dual_certified_universal_frontier(
     let mut queued = HashSet::new();
     let mut processed = HashSet::new();
     let mut coverage: HashMap<BlockHash, BTreeSet<usize>> = HashMap::new();
-    let latest_coverage = latest_message_coverage(dag, latest_messages, provenance_cache)?;
+    let latest_coverage =
+        latest_message_coverage_with_cache(dag, latest_messages, None, provenance_cache)?;
     let mut clique_cache = CliqueOracle::new_run_cache();
     for (index, parent) in parents.iter().enumerate() {
         let metadata = metadata_with_cache(dag, parent, provenance_cache)?;
@@ -627,7 +436,6 @@ async fn dual_certified_universal_frontier(
                     latest_messages,
                     ftt.num,
                     ftt.den,
-                    false,
                 )
                 .await?
                 .0
@@ -641,7 +449,6 @@ async fn dual_certified_universal_frontier(
                 &candidate.hash,
                 latest_messages,
                 ftt,
-                false,
                 provenance_cache,
             )
             .await?
@@ -726,28 +533,91 @@ fn can_reuse_linear_parent_universal_frontier(
     Ok(true)
 }
 
-/// The active committee derived from a finalized-floor block's post-state: the
-/// PoS bonds at that state, filtered to the currently-active validator set.
-///
-/// Both the proposer (packaging `block.bonds`, `block_creator.rs`) and the
-/// validator (recomputing the bonds cache, `validate.rs::bonds_cache_from_floor`)
-/// call THIS ONE function on the same floor state hash, so their committees are
-/// identical by construction — the PLAY≡REPLAY the `InvalidBondsCache` check
-/// relies on (a block whose `bonds` set differs from the floor committee is
-/// rejected). Extracting the two previously byte-identical inline copies into a
-/// single helper removes the standing risk that a future edit to one site
-/// silently diverges the two (the committee is `Selection.committee_is_floor_bonds`
-/// — a pure function of the floor — realized in Rust).
+/// The active authorization committee derived from a finalized-floor block's
+/// post-state. This is distinct from a candidate block's serialized post-state
+/// bond cache: transitions executed by the candidate are recorded there but do
+/// not authorize the candidate itself.
+pub fn canonical_floor_committee(
+    floor_bonds: Vec<Bond>,
+    active: &[Validator],
+) -> Result<Vec<Bond>, CasperError> {
+    let mut committee = floor_bonds
+        .into_iter()
+        .filter(|bond| bond.stake > 0 && active.contains(&bond.validator))
+        .collect::<Vec<_>>();
+    committee.sort_by(|left, right| left.validator.cmp(&right.validator));
+    if committee
+        .windows(2)
+        .any(|pair| pair[0].validator == pair[1].validator)
+    {
+        return Err(CasperError::RuntimeError(
+            "finalized-floor PoS state contains duplicate validator bonds".to_string(),
+        ));
+    }
+    Ok(committee)
+}
+
 pub async fn floor_committee(
     runtime_manager: &RuntimeManager,
     floor_state: &StateHash,
 ) -> Result<Vec<Bond>, CasperError> {
     let floor_bonds = runtime_manager.compute_bonds(floor_state).await?;
     let active = runtime_manager.get_active_validators(floor_state).await?;
-    Ok(floor_bonds
-        .into_iter()
-        .filter(|bond| active.contains(&bond.validator))
-        .collect())
+    canonical_floor_committee(floor_bonds, &active)
+}
+
+#[cfg(test)]
+mod floor_committee_tests {
+    use prost::bytes::Bytes;
+
+    use super::*;
+
+    fn bond(validator: u8, stake: i64) -> Bond {
+        Bond {
+            validator: Bytes::from(vec![validator]),
+            stake,
+        }
+    }
+
+    #[test]
+    fn canonical_committee_filters_and_orders_active_positive_bonds() {
+        let active = vec![Bytes::from(vec![1]), Bytes::from(vec![2])];
+        let result = canonical_floor_committee(
+            vec![bond(2, 20), bond(3, 30), bond(1, 10), bond(2, 0)],
+            &active,
+        )
+        .expect("canonical committee");
+
+        assert_eq!(result, vec![bond(1, 10), bond(2, 20)]);
+    }
+
+    #[test]
+    fn canonical_committee_rejects_duplicate_active_validator_bonds() {
+        let active = vec![Bytes::from(vec![1])];
+        let result = canonical_floor_committee(vec![bond(1, 10), bond(1, 10)], &active);
+
+        assert!(result.is_err());
+    }
+}
+
+pub async fn authority_committee_for_evidence(
+    dag: &KeyValueDagRepresentation,
+    block_store: &KeyValueBlockStore,
+    runtime_manager: &RuntimeManager,
+    parents: &[BlockHash],
+    latest_messages: &BTreeMap<Validator, BlockHash>,
+    ftt: FtThreshold,
+) -> Result<(Floor, Vec<Bond>), CasperError> {
+    let floor = finalized_floor(dag, parents, latest_messages, ftt).await?;
+    let floor_block = block_store.get(&floor.hash)?.ok_or_else(|| {
+        CasperError::RuntimeError(format!(
+            "finalized-floor block {} not in block store for authority derivation",
+            PrettyPrinter::build_string_bytes(&floor.hash)
+        ))
+    })?;
+    let committee =
+        floor_committee(runtime_manager, &floor_block.body.state.post_state_hash).await?;
+    Ok((floor, committee))
 }
 
 /// Walk depth past which a floor walk is reported as unusually deep (cold
@@ -794,6 +664,9 @@ pub async fn finalized_floor(
         ftt,
     )
     .await?;
+    let projection =
+        crate::rust::causal_equivocation::project_parent_votes(dag, parents, latest_messages)?;
+    let projected_latest_messages = projection.eligible_latest_messages();
     let mut inherited: Vec<Floor> = Vec::with_capacity(parents.len());
     for parent in parents {
         let hash = dag.get_cached_floor(parent)?.ok_or_else(|| {
@@ -808,7 +681,7 @@ pub async fn finalized_floor(
         });
     }
     let (floor, _main_parent_frontier) =
-        derive_floor(dag, parents, latest_messages, ftt, inherited).await?;
+        derive_floor(dag, parents, projected_latest_messages, ftt, inherited).await?;
     Ok(floor)
 }
 
@@ -1082,15 +955,20 @@ pub async fn floor_of_block(
                 hash,
             });
         }
-        let latest_messages: BTreeMap<Validator, BlockHash> = metadata
+        let exact_latest_messages: BTreeMap<Validator, BlockHash> = metadata
             .justifications
             .iter()
             .map(|j| (j.validator.clone(), j.latest_block_hash.clone()))
             .collect();
+        let projection = crate::rust::causal_equivocation::project_parent_votes(
+            dag,
+            &metadata.parents,
+            &exact_latest_messages,
+        )?;
         let (floor, frontier) = derive_floor_with_cache(
             dag,
             &metadata.parents,
-            &latest_messages,
+            projection.eligible_latest_messages(),
             ftt,
             inherited,
             &mut provenance_cache,
@@ -1247,10 +1125,10 @@ async fn incremental_frontier(
     // only raise the fault tolerance — but a bonding event in the band can break
     // that monotonicity, so we verify rather than assume.
     let mut oracle_calls: u64 = 1;
-    // A9 exact ≥-semantics (floor path): the pivot must still be witnessed-
-    // finalized over the larger snapshot. `strict=false` ⇒ (2q−S)/S ≥ θ.
+    // A9 exact durable semantics: the pivot must still be witnessed-finalized
+    // over the larger snapshot with `(2q−S)/S > θ`.
     let pivot_finalized = dag.main_parent(pivot_hash).is_none()
-        || CliqueOracle::ft_witnessed_exact(pivot_hash, dag, latest_messages, ftt, false).await?;
+        || CliqueOracle::ft_witnessed_exact(pivot_hash, dag, latest_messages, ftt).await?;
     if !pivot_finalized {
         metrics::counter!(
             crate::rust::metrics_constants::FLOOR_INCREMENTAL_GUARD_FALLBACK_METRIC,
@@ -1268,10 +1146,10 @@ async fn incremental_frontier(
     let mut best_number = pivot_number;
     let mut advance: u64 = 0;
     for candidate in spine[..spine.len() - 1].iter().rev() {
-        // A9 exact ≥-semantics (floor path): advance while each block stays
-        // witnessed-finalized over the snapshot.
+        // A9 exact durable semantics: advance while each block stays
+        // strictly witnessed-finalized over the snapshot.
         let finalized =
-            CliqueOracle::ft_witnessed_exact(candidate, dag, latest_messages, ftt, false).await?;
+            CliqueOracle::ft_witnessed_exact(candidate, dag, latest_messages, ftt).await?;
         oracle_calls += 1;
         if finalized {
             best_hash = candidate.clone();
@@ -1319,10 +1197,10 @@ async fn cold_parent_frontier(
     let mut walked: usize = 0;
     let mut oracle_calls: u64 = 0;
     loop {
-        // A9 exact ≥-semantics (floor path): first witnessed-finalized block down
-        // the main-parent chain is the frontier.
+        // A9 exact durable semantics: the first strictly witnessed-finalized
+        // block down the main-parent chain is the frontier.
         let finalized =
-            CliqueOracle::ft_witnessed_exact(&current, dag, latest_messages, ftt, false).await?;
+            CliqueOracle::ft_witnessed_exact(&current, dag, latest_messages, ftt).await?;
         oracle_calls += 1;
         tracing::debug!(
             target: "f1r3.trace.floor_walk",
@@ -1423,7 +1301,8 @@ mod frontier_determinism_tests {
     use super::*;
 
     fn h(n: u8) -> Bytes { Bytes::from(vec![n; 32]) }
-    fn val() -> Bytes { Bytes::from(vec![9; 65]) }
+    fn val_n(n: u8) -> Bytes { Bytes::from(vec![n; models::rust::validator::LENGTH]) }
+    fn val() -> Bytes { val_n(9) }
 
     fn effect(source_block_hash: Bytes, execution_index: u32) -> StateEffectId {
         StateEffectId {
@@ -1447,22 +1326,43 @@ mod frontier_determinism_tests {
     fn md(hash: Bytes, parents: Vec<Bytes>, num: i64, v: &Bytes) -> BlockMetadata {
         let mut wm = BTreeMap::new();
         wm.insert(v.clone(), 1i64);
-        BlockMetadata {
-            block_hash: hash,
-            parents,
-            sender: v.clone(),
-            justifications: vec![],
-            weight_map: wm,
-            block_number: num,
-            sequence_number: num as i32,
-            invalid: false,
-            directly_finalized: false,
-            finalized: false,
-            fault_tolerance_value: 0.0,
-            successful_state_effect_indices: Default::default(),
-            rejected_state_effects: Default::default(),
-            protocol_version: crate::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION,
-        }
+        let bond_generation_map = wm
+            .keys()
+            .cloned()
+            .map(|validator| {
+                (
+                    validator,
+                    models::rust::bond_generation::BondGeneration::GENESIS,
+                )
+            })
+            .collect();
+        let active_validator_set = wm.keys().cloned().collect();
+        crate::rust::test_metadata::certify(
+            BlockMetadata {
+                block_hash: hash,
+                post_state_hash: Bytes::from(vec![num as u8; models::rust::block_hash::LENGTH]),
+                parents,
+                sender: v.clone(),
+                justifications: vec![],
+                weight_map: wm,
+                bond_generation_map,
+                active_validator_set,
+                block_number: num,
+                sequence_number: num as i32,
+                admission_outcome: None,
+                directly_finalized: false,
+                finalized: false,
+                fault_tolerance_value: 0.0,
+                successful_state_effect_indices: Default::default(),
+                rejected_state_effects: Default::default(),
+                protocol_version: crate::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION,
+                objective_equivocation_evidence_delta: Vec::new(),
+                sender_authority: None,
+                admission_schema_version: models::rust::block_metadata::ADMISSION_SCHEMA_VERSION,
+                approved_genesis: false,
+            },
+            models::rust::bond_generation::BondGeneration::GENESIS,
+        )
     }
 
     /// A single-validator linear chain genesis <- b1 <- b2 <- b3, committee {v:1}.
@@ -1478,7 +1378,7 @@ mod frontier_determinism_tests {
         let (g, b1, b2, b3) = (h(0), h(1), h(2), h(3));
 
         let store = KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new()));
-        let mut bms = BlockMetadataStore::new(store);
+        let mut bms = BlockMetadataStore::new(store).unwrap();
         bms.add(md(g.clone(), vec![], 0, &v)).unwrap();
         bms.add(md(b1.clone(), vec![g.clone()], 1, &v)).unwrap();
         bms.add(md(b2.clone(), vec![b1.clone()], 2, &v)).unwrap();
@@ -1507,6 +1407,7 @@ mod frontier_determinism_tests {
             main_parent_map: mp,
             self_justification_map: imbl::HashMap::new(),
             invalid_blocks_set: imbl::HashSet::new(),
+            equivocation_observations: imbl::HashMap::new(),
             last_finalized_block_hash: Bytes::new(),
             finalized_blocks_set: imbl::HashSet::new(),
             block_metadata_index: Arc::new(PlRwLock::new(bms)),
@@ -1572,7 +1473,7 @@ mod frontier_determinism_tests {
 
     #[tokio::test]
     async fn finalized_floor_materializes_off_parent_latest_message_provenance() {
-        let validator = h(50);
+        let validator = val();
         let (genesis, source, sibling, latest) = (h(0), h(1), h(2), h(3));
         let weights = vec![(validator.clone(), 1)];
         let dag = build_dag(vec![
@@ -1622,7 +1523,7 @@ mod frontier_determinism_tests {
 
     #[tokio::test]
     async fn stale_dag_descendant_cannot_advance_inherited_state_floor() {
-        let v = h(50);
+        let v = val();
         let (g, funding, sibling, stale) = (h(0), h(1), h(2), h(3));
         let wm = || vec![(v.clone(), 1)];
         let dag = build_dag(vec![
@@ -1666,7 +1567,7 @@ mod frontier_determinism_tests {
 
     #[test]
     fn state_frontier_skips_stale_descendant_and_accepts_rebase() {
-        let v = h(50);
+        let v = val();
         let (g, funding, sibling, stale, rebased) = (h(0), h(1), h(2), h(3), h(4));
         let wm = || vec![(v.clone(), 1)];
         let dag = build_dag(vec![
@@ -1714,10 +1615,10 @@ mod frontier_determinism_tests {
 
     #[tokio::test]
     async fn causal_merge_vote_cannot_certify_a_rejected_parent_state() {
-        let heavy = h(50);
-        let source = h(51);
-        let other_a = h(52);
-        let other_b = h(53);
+        let heavy = val_n(50);
+        let source = val_n(51);
+        let other_a = val_n(52);
+        let other_b = val_n(53);
         let genesis = h(0);
         let rejected_parent = h(1);
         let sibling = h(2);
@@ -1774,7 +1675,6 @@ mod frontier_determinism_tests {
             &rejected_parent,
             &latest_messages,
             FtThreshold::from_f32_lossy(0.1),
-            false,
         )
         .await
         .expect("state-preserving certificate"));
@@ -1782,7 +1682,7 @@ mod frontier_determinism_tests {
 
     #[tokio::test]
     async fn accepted_three_way_merges_retain_state_support_across_repeated_rounds() {
-        let validators = [h(50), h(51), h(52)];
+        let validators = [val_n(50), val_n(51), val_n(52)];
         let weights = validators
             .iter()
             .cloned()
@@ -1876,7 +1776,6 @@ mod frontier_determinism_tests {
             &source,
             &latest_messages,
             FtThreshold::from_f32_lossy(0.1),
-            true,
         )
         .await
         .unwrap());
@@ -1884,7 +1783,7 @@ mod frontier_determinism_tests {
 
     #[test]
     fn state_provenance_is_invariant_under_every_three_parent_order() {
-        let validator = h(50);
+        let validator = val();
         let weights = vec![(validator.clone(), 1)];
         let (genesis, source, sibling_a, sibling_b) = (h(0), h(1), h(2), h(3));
         let parent_orders = [
@@ -1968,7 +1867,7 @@ mod frontier_determinism_tests {
 
     #[test]
     fn unrelated_rejections_in_the_causal_scan_do_not_change_preservation() {
-        let validator = h(50);
+        let validator = val();
         let weights = vec![(validator.clone(), 1)];
         let (genesis, source, unrelated, rejected_unrelated, descendant) =
             (h(0), h(1), h(2), h(3), h(4));
@@ -2041,29 +1940,50 @@ mod frontier_determinism_tests {
         for (validator, weight) in wm {
             weight_map.insert(validator, weight);
         }
-        BlockMetadata {
-            block_hash: hash,
-            parents,
-            sender: sender.clone(),
-            justifications: vec![],
-            weight_map,
-            block_number: num,
-            sequence_number: num as i32,
-            invalid: false,
-            directly_finalized: false,
-            finalized: false,
-            fault_tolerance_value: 0.0,
-            successful_state_effect_indices: Default::default(),
-            rejected_state_effects: Default::default(),
-            protocol_version: crate::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION,
-        }
+        let bond_generation_map = weight_map
+            .keys()
+            .cloned()
+            .map(|validator| {
+                (
+                    validator,
+                    models::rust::bond_generation::BondGeneration::GENESIS,
+                )
+            })
+            .collect();
+        let active_validator_set = weight_map.keys().cloned().collect();
+        crate::rust::test_metadata::certify(
+            BlockMetadata {
+                block_hash: hash,
+                post_state_hash: Bytes::from(vec![num as u8; models::rust::block_hash::LENGTH]),
+                parents,
+                sender: sender.clone(),
+                justifications: vec![],
+                weight_map,
+                bond_generation_map,
+                active_validator_set,
+                block_number: num,
+                sequence_number: num as i32,
+                admission_outcome: None,
+                directly_finalized: false,
+                finalized: false,
+                fault_tolerance_value: 0.0,
+                successful_state_effect_indices: Default::default(),
+                rejected_state_effects: Default::default(),
+                protocol_version: crate::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION,
+                objective_equivocation_evidence_delta: Vec::new(),
+                sender_authority: None,
+                admission_schema_version: models::rust::block_metadata::ADMISSION_SCHEMA_VERSION,
+                approved_genesis: false,
+            },
+            models::rust::bond_generation::BondGeneration::GENESIS,
+        )
     }
 
     /// Assemble a DAG from an explicit block list, deriving `dag_set`,
     /// `block_number_map`, and `main_parent_map` (parents[0]) from the metadata.
     fn build_dag(blocks: Vec<BlockMetadata>) -> KeyValueDagRepresentation {
         let store = KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new()));
-        let mut bms = BlockMetadataStore::new(store);
+        let mut bms = BlockMetadataStore::new(store).unwrap();
         let mut dag_set = imbl::HashSet::new();
         let mut bnum = imbl::HashMap::new();
         let mut mp = imbl::HashMap::new();
@@ -2097,6 +2017,7 @@ mod frontier_determinism_tests {
             main_parent_map: mp,
             self_justification_map: self_justifications,
             invalid_blocks_set: imbl::HashSet::new(),
+            equivocation_observations: imbl::HashMap::new(),
             last_finalized_block_hash: Bytes::new(),
             finalized_blocks_set: imbl::HashSet::new(),
             block_metadata_index: Arc::new(PlRwLock::new(bms)),
@@ -2122,7 +2043,7 @@ mod frontier_determinism_tests {
 
     #[test]
     fn latest_message_coverage_rejects_non_descending_edges() {
-        let validator = h(50);
+        let validator = val();
         let parent = h(0);
         let child = h(1);
         let dag = build_dag(vec![
@@ -2136,8 +2057,7 @@ mod frontier_determinism_tests {
             )]),
         ]);
         let latest_messages = BTreeMap::from([(validator, child)]);
-        let result =
-            latest_message_coverage(&dag, &latest_messages, &mut StateProvenanceCache::default());
+        let result = latest_message_coverage_above(&dag, &latest_messages, i64::MIN);
         assert!(matches!(
             result,
             Err(CasperError::Other(message))
@@ -2147,7 +2067,7 @@ mod frontier_determinism_tests {
 
     #[test]
     fn universal_frontier_reuse_requires_a_linear_parent_and_unchanged_prior_snapshot() {
-        let validator = h(50);
+        let validator = val();
         let genesis = h(0);
         let side = h(1);
         let linear = h(2);
@@ -2227,7 +2147,7 @@ mod frontier_determinism_tests {
     /// soundness `GuardBridge.chain_adj_AdjDC` derives in Rocq.
     #[tokio::test]
     async fn guard_trip_committee_change_falls_back_to_cold() {
-        let v = h(50);
+        let v = val();
         let (g, b1, b2, b3) = (h(0), h(1), h(2), h(3));
         // v's weight changes 1 -> 2 at b2, so committee(b3) = wm(b2) = {v:2} differs
         // from pivot_committee = committee(b1) = wm(g) = {v:1}.
@@ -2274,8 +2194,8 @@ mod frontier_determinism_tests {
     /// frontier) is in c's past ⇒ Case-B selects c. Mirrors Selection.case_b_compatible.
     #[tokio::test]
     async fn derive_floor_case_b_selects_dominating_finalized_tip() {
-        let v = h(50);
-        let w = h(51);
+        let v = val();
+        let w = val_n(51);
         let (g, t, c, p1, p2) = (h(0), h(1), h(2), h(3), h(4));
         let wm = || vec![(v.clone(), 1)]; // committee is always {v:1}; w never votes
         let dag = build_dag(vec![
@@ -2325,8 +2245,8 @@ mod frontier_determinism_tests {
     /// Case-A nor Case-B holds ⇒ the safety error fires (Selection.select_none_correct).
     #[tokio::test]
     async fn derive_floor_incompatible_fork_errors() {
-        let v = h(50);
-        let w = h(51);
+        let v = val();
+        let w = val_n(51);
         let (g_a, a1, g_b, b1) = (h(0), h(1), h(5), h(6));
         let dag = build_dag(vec![
             md_wm(g_a.clone(), vec![], 0, &v, vec![(v.clone(), 1)]),
@@ -2371,8 +2291,8 @@ mod frontier_determinism_tests {
         Vec<Floor>,
         (Bytes, Bytes, Bytes, Bytes, Bytes),
     ) {
-        let v = h(50);
-        let w = h(51);
+        let v = val();
+        let w = val_n(51);
         let (g, t, c, p1, p2) = (h(0), h(1), h(2), h(3), h(4));
         let wm = || vec![(v.clone(), 1)];
         let dag = build_dag(vec![
@@ -2486,7 +2406,7 @@ mod frontier_determinism_tests {
 
     #[tokio::test]
     async fn derive_floor_promotes_dual_certified_universal_secondary_ancestor() {
-        let validators = [h(50), h(51), h(52)];
+        let validators = [val_n(50), val_n(51), val_n(52)];
         let weights = validators
             .iter()
             .cloned()
@@ -2604,17 +2524,13 @@ mod frontier_determinism_tests {
             .zip(tips.iter().cloned())
             .collect::<BTreeMap<_, _>>();
         let threshold = FtThreshold::from_ppm(100_000);
-        assert!(CliqueOracle::ft_witnessed_exact(
-            &finalized,
-            &dag,
-            &latest_messages,
-            threshold,
-            false,
-        )
-        .await
-        .expect("causal certificate"));
         assert!(
-            state_witnessed_exact(&dag, &finalized, &latest_messages, threshold, false,)
+            CliqueOracle::ft_witnessed_exact(&finalized, &dag, &latest_messages, threshold,)
+                .await
+                .expect("causal certificate")
+        );
+        assert!(
+            state_witnessed_exact(&dag, &finalized, &latest_messages, threshold)
                 .await
                 .expect("state certificate")
         );
@@ -2665,19 +2581,14 @@ mod frontier_determinism_tests {
             &rejected_dag,
             &latest_messages,
             threshold,
-            false,
         )
         .await
         .expect("causal certificate"));
-        assert!(!state_witnessed_exact(
-            &rejected_dag,
-            &finalized,
-            &latest_messages,
-            threshold,
-            false,
-        )
-        .await
-        .expect("state certificate"));
+        assert!(
+            !state_witnessed_exact(&rejected_dag, &finalized, &latest_messages, threshold,)
+                .await
+                .expect("state certificate")
+        );
         let inherited = tips
             .iter()
             .map(|_| Floor {
@@ -2693,7 +2604,7 @@ mod frontier_determinism_tests {
 
     /// T-FIN (`Selection.select_finalized` / `GuardBridge.upgo_finalized`): the floor
     /// `derive_floor` returns is itself `Finalized` over the justification snapshot — it
-    /// clears the exact FT threshold (floor path, `≥`) per the same clique oracle the
+    /// clears the exact durable FT threshold (`>`) per the same clique oracle the
     /// node runs (`CliqueOracle::ft_witnessed_exact`). Confirms the result is a genuinely
     /// finalized cut, not merely a well-formed ancestor.
     #[tokio::test]
@@ -2707,7 +2618,6 @@ mod frontier_determinism_tests {
             &dag,
             &j,
             thr,
-            false,
         )
         .await
         .expect("ft_witnessed_exact");
@@ -2792,7 +2702,7 @@ mod frontier_determinism_tests {
         #[test]
         fn derive_floor_selects_highest_sound_candidate_over_chain((depth, k, mask) in chain_scenario()) {
             FLOOR_RUNTIME.block_on(async move {
-                let v = h(50);
+                let v = val();
                 let mut blocks: Vec<BlockMetadata> = Vec::with_capacity(depth + 1);
                 for i in 0..=depth {
                     let parents = if i == 0 { vec![] } else { vec![h((i - 1) as u8)] };
@@ -2848,7 +2758,7 @@ mod frontier_determinism_tests {
             (side_depths, tail_depths, parent_order, validator_order) in universal_floor_scenario()
         ) {
             FLOOR_RUNTIME.block_on(async move {
-                let validators = [h(240), h(241), h(242)];
+                let validators = [val_n(240), val_n(241), val_n(242)];
                 let weights = validators
                     .iter()
                     .cloned()
@@ -2975,13 +2885,46 @@ mod frontier_determinism_tests {
                     .collect::<BTreeMap<_, _>>();
                 let threshold = FtThreshold::from_ppm(100_000);
 
+                let coverage =
+                    latest_message_coverage_above(&dag, &latest_messages, i64::MIN)
+                        .expect("latest-message coverage");
+                let maximum_height = block_hashes
+                    .iter()
+                    .map(|hash| dag.block_number_unsafe(hash).expect("block height"))
+                    .max()
+                    .expect("non-empty DAG");
+                for minimum_exclusive_height in
+                    [i64::MIN, 0, 1, maximum_height.saturating_sub(1)]
+                {
+                    let bounded_coverage = latest_message_coverage_above(
+                        &dag,
+                        &latest_messages,
+                        minimum_exclusive_height,
+                    )
+                    .expect("bounded latest-message coverage");
+                    for target in &block_hashes {
+                        if dag.block_number_unsafe(target).expect("target height")
+                            <= minimum_exclusive_height
+                        {
+                            continue;
+                        }
+                        let pairwise_supporters = latest_messages
+                            .iter()
+                            .filter_map(|(validator, latest)| {
+                                dag.is_dag_ancestor(target, latest)
+                                    .expect("bounded pairwise DAG ancestry")
+                                    .then_some(validator.clone())
+                            })
+                            .collect::<BTreeSet<_>>();
+                        prop_assert_eq!(
+                            bounded_coverage.get(target).cloned().unwrap_or_default(),
+                            pairwise_supporters,
+                        );
+                    }
+                }
                 let mut provenance_cache = StateProvenanceCache::default();
-                let coverage = latest_message_coverage(
-                    &dag,
-                    &latest_messages,
-                    &mut provenance_cache,
-                )
-                .expect("latest-message coverage");
+                let mut optimized_candidates = Vec::new();
+                let mut pairwise_candidates = Vec::new();
                 for target in &block_hashes {
                     let pairwise_supporters = latest_messages
                         .iter()
@@ -3028,7 +2971,6 @@ mod frontier_determinism_tests {
                         &latest_messages,
                         threshold.num,
                         threshold.den,
-                        false,
                     )
                     .await
                     .expect("optimized causal decision")
@@ -3038,19 +2980,41 @@ mod frontier_determinism_tests {
                         &dag,
                         &latest_messages,
                         threshold,
-                        false,
                     )
                     .await
                     .expect("pairwise causal decision");
                     prop_assert_eq!(optimized_decision, pairwise_decision);
+                    let target_height = dag.block_number_unsafe(target).expect("target height");
+                    if target_height > 0
+                        && is_state_preserved(&dag, &genesis, target)
+                            .expect("current-floor preservation")
+                        && state_witnessed_exact(
+                            &dag,
+                            target,
+                            &latest_messages,
+                            threshold,
+                        )
+                        .await
+                        .expect("state certificate")
+                    {
+                        if optimized_decision {
+                            optimized_candidates.push((target_height, target.clone()));
+                        }
+                        if pairwise_decision {
+                            pairwise_candidates.push((target_height, target.clone()));
+                        }
+                    }
                 }
+                prop_assert_eq!(
+                    optimized_candidates.into_iter().max(),
+                    pairwise_candidates.into_iter().max(),
+                );
 
                 prop_assert!(CliqueOracle::ft_witnessed_exact(
                     &finalized,
                     &dag,
                     &latest_messages,
                     threshold,
-                    false,
                 )
                 .await
                 .expect("causal certificate"));
@@ -3059,7 +3023,6 @@ mod frontier_determinism_tests {
                     &finalized,
                     &latest_messages,
                     threshold,
-                    false,
                 )
                 .await
                 .expect("state certificate"));
@@ -3122,7 +3085,7 @@ mod frontier_determinism_tests {
         fn state_safe_frontier_is_monotone_across_stale_merges_and_rebases(
             (stale_len, safe_len) in state_lineage_scenario()
         ) {
-            let validator = h(50);
+            let validator = val();
             let genesis = h(0);
             let funding = h(1);
             let mut blocks = vec![
@@ -3245,7 +3208,7 @@ mod frontier_determinism_tests {
         fn active_effect_recurrence_matches_arbitrary_reject_and_restore_sequences(
             steps in state_effect_recurrence_scenario()
         ) {
-            let validator = h(50);
+            let validator = val();
             let weights = vec![(validator.clone(), 1)];
             let genesis = h(0);
             let source = h(1);

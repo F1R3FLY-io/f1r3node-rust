@@ -6,7 +6,8 @@ use crypto::rust::hash::blake2b512_random::Blake2b512Random;
 use crypto::rust::public_key::PublicKey;
 use models::rhoapi::Par;
 use models::rust::block_hash::BlockHash;
-use models::rust::utils::new_gstring_par;
+use models::rust::bond_generation::BondGeneration;
+use models::rust::utils::{new_gint_par, new_gstring_par};
 use rholang::rust::interpreter::rho_type::{Extractor, RhoBoolean, RhoNil, RhoString};
 use rspace_plus_plus::rspace::history::Either;
 
@@ -17,12 +18,14 @@ use crate::rust::util::rholang::system_deploy_user_error::SystemDeployUserError;
 #[derive(Clone)]
 pub struct SlashDeploy {
     pub invalid_block_hash: BlockHash,
+    pub equivocation_block_hash: Option<BlockHash>,
     pub pk: PublicKey,
     /// Epoch at which the slash takes effect. By the §9 authorization
     /// predicate this must equal both the offender's evidence epoch and the
     /// current epoch of the block carrying the slash; see
     /// `slashing_authorization::received_slash_deploy_authorized`.
     pub target_activation_epoch: i64,
+    pub target_bond_generation: BondGeneration,
     pub initial_rand: Blake2b512Random,
 }
 
@@ -36,12 +39,13 @@ impl SystemDeployTrait for SlashDeploy {
           poSCh,
           deployerId(`sys:casper:deployerId`),
           invalidBlockHash(`sys:casper:invalidBlockHash`),
+          targetBondGeneration(`sys:casper:targetBondGeneration`),
           sysAuthToken(`sys:casper:authToken`),
           return(`sys:casper:return`)
           in {
             rl!(`rho:system:pos`, *poSCh) |
             for(@(_, PoS) <- poSCh) {
-              @PoS!("slash", *deployerId, *invalidBlockHash.hexToBytes(), *sysAuthToken, *return)
+              @PoS!("slash", *deployerId, *invalidBlockHash.hexToBytes(), *targetBondGeneration, *sysAuthToken, *return)
             }
         }"#
     }
@@ -71,6 +75,10 @@ impl SystemDeployTrait for SlashDeploy {
         env.insert(
             "sys:casper:invalidBlockHash".to_string(),
             new_gstring_par(hex::encode(&self.invalid_block_hash), Vec::new(), false),
+        );
+        env.insert(
+            "sys:casper:targetBondGeneration".to_string(),
+            new_gint_par(self.target_bond_generation.get(), Vec::new(), false),
         );
 
         let (sys_key, sys_value) = self.mk_sys_auth_token();

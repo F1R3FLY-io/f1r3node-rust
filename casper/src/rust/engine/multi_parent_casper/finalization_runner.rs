@@ -11,16 +11,23 @@
 //!     `run_queued_finalizer` → `compute_last_finalized_block`
 
 use std::collections::HashSet;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage;
+use block_storage::rust::dag::block_dag_key_value_storage::{
+    BlockDagKeyValueStorage, FinalizationWitnessInputs,
+};
 use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage;
+use block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer;
+use block_storage::rust::finality::{
+    FinalizationEffectId, FinalizationEffectKind, FinalizationRecord,
+};
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use comm::rust::transport::transport_layer::TransportLayer;
-use models::rust::block_hash::BlockHash;
+use models::rust::block_hash::{BlockHash, BlockHashSerde};
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::BlockMessage;
+use models::rust::validator::ValidatorSerde;
 // Phase 9 (A-3): deploy_storage uses parking_lot::Mutex.
 use parking_lot::Mutex;
 use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
@@ -32,6 +39,7 @@ use shared::rust::store::key_value_store::KvStoreError;
 use super::events::finalised_event;
 use super::types::MultiParentCasperImpl;
 use crate::rust::errors::CasperError;
+use crate::rust::finality::finalization_schedule::FinalizationSchedule;
 use crate::rust::finality::finalizer::Finalizer;
 use crate::rust::safety::clique_oracle::FtThreshold;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
@@ -39,10 +47,39 @@ use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 /// RAII guard that ensures the finalization flag is reset on drop.
 /// This prevents the flag from being stuck in `true` state if the async block
 /// panics or returns early via `?` operator.
-struct FinalizationGuard<'a>(&'a AtomicBool);
+struct FinalizationGuard<'a>(&'a AtomicU64);
 
 impl Drop for FinalizationGuard<'_> {
-    fn drop(&mut self) { self.0.store(false, Ordering::SeqCst); }
+    fn drop(&mut self) {
+        let previous = self.0.fetch_sub(1, Ordering::SeqCst);
+        debug_assert!(previous > 0);
+    }
+}
+
+struct FinalizationDispatcherGuard(Arc<FinalizationSchedule>);
+
+impl Drop for FinalizationDispatcherGuard {
+    fn drop(&mut self) { self.0.clear_dispatcher(); }
+}
+
+#[derive(Clone, Copy)]
+enum FinalizationWorkerOutcome {
+    Succeeded,
+    Failed,
+}
+
+fn settle_finalization_worker(
+    schedule: &FinalizationSchedule,
+    covered_through: u64,
+    outcome: FinalizationWorkerOutcome,
+) -> Option<std::time::Duration> {
+    match outcome {
+        FinalizationWorkerOutcome::Succeeded => {
+            schedule.mark_succeeded(covered_through);
+            None
+        }
+        FinalizationWorkerOutcome::Failed => schedule.mark_failed(covered_through),
+    }
 }
 
 /// Phase 8 (PO-3): bundles the 9 service handles + tuning flags that
@@ -56,6 +93,7 @@ pub(crate) struct FinalizationContext {
     pub(crate) block_dag_storage: BlockDagKeyValueStorage,
     pub(crate) block_store: KeyValueBlockStore,
     pub(crate) deploy_storage: Arc<Mutex<KeyValueDeployStorage>>,
+    pub(crate) rejected_deploy_buffer: Arc<std::sync::Mutex<KeyValueRejectedDeployBuffer>>,
     /// Cosigner-metadata sidecar (keyed by primary signature). Drained in
     /// lockstep with `deploy_storage` when a block's deploys are finalized, so
     /// compound-deploy metadata stays bounded after canonical inclusion. Under
@@ -68,7 +106,7 @@ pub(crate) struct FinalizationContext {
     >,
     pub(crate) runtime_manager: Arc<RuntimeManager>,
     pub(crate) event_publisher: F1r3flyEvents,
-    pub(crate) finalization_in_progress: Arc<AtomicBool>,
+    pub(crate) finalization_in_progress: Arc<AtomicU64>,
     pub(crate) enable_mergeable_channel_gc: bool,
     pub(crate) ftt: FtThreshold,
     pub(crate) finalizer_conf: crate::rust::casper_conf::FinalizerConf,
@@ -88,6 +126,7 @@ pub(crate) fn build_finalization_context<
         block_dag_storage: this.block_dag_storage.clone(),
         block_store: this.block_store.clone(),
         deploy_storage: this.deploy_storage.clone(),
+        rejected_deploy_buffer: this.rejected_deploy_buffer.clone(),
         pending_cosigner_metadata: this.pending_cosigner_metadata.clone(),
         runtime_manager: this.runtime_manager.clone(),
         event_publisher: this.event_publisher.clone(),
@@ -100,264 +139,420 @@ pub(crate) fn build_finalization_context<
 }
 
 #[tracing::instrument(level = "info", skip_all)]
-pub(crate) async fn run_queued_finalizer(
+async fn run_finalization_dispatcher(
     ctx: FinalizationContext,
-    finalizer_task_in_progress: Arc<AtomicBool>,
-    finalizer_task_queued: Arc<AtomicBool>,
+    schedule: Arc<FinalizationSchedule>,
 ) {
-    let _task_guard = FinalizationGuard(finalizer_task_in_progress.as_ref());
-    tracing::info!(target: "f1r3fly.casper", "finalizer-run-started");
-
+    let _dispatcher_guard = FinalizationDispatcherGuard(schedule.clone());
     loop {
-        match compute_last_finalized_block(ctx.clone()).await {
-            Ok(_) => {}
-            Err(err) => {
-                tracing::warn!("finalizer-run failed: {:?}", err);
+        let Some(covered_through) = schedule.next_coverage() else {
+            if schedule.release_dispatcher_or_reacquire() {
+                continue;
             }
-        }
+            return;
+        };
+        let permit = match schedule.acquire_worker().await {
+            Ok(permit) => permit,
+            Err(error) => {
+                tracing::error!("finalization dispatcher stopped: {}", error);
+                schedule.make_retry_ready(covered_through);
+                schedule.release_dispatcher_or_reacquire();
+                return;
+            }
+        };
+        schedule.mark_launched(covered_through);
+        let worker_ctx = ctx.clone();
+        let retry_ctx = ctx.clone();
+        let worker_schedule = schedule.clone();
+        let handle = tokio::spawn(async move {
+            tracing::info!(
+                target: "f1r3fly.casper",
+                covered_through,
+                "finalizer-worker-started"
+            );
+            let result = compute_last_finalized_block(worker_ctx).await;
+            drop(permit);
+            tracing::info!(
+                target: "f1r3fly.casper",
+                covered_through,
+                "finalizer-worker-finished"
+            );
+            result
+        });
+        tokio::spawn(async move {
+            let outcome = match handle.await {
+                Ok(Ok(_)) => FinalizationWorkerOutcome::Succeeded,
+                Ok(Err(error)) => {
+                    tracing::warn!(covered_through, "finalizer worker failed: {:?}", error);
+                    FinalizationWorkerOutcome::Failed
+                }
+                Err(error) => {
+                    tracing::error!(covered_through, "finalizer worker panicked: {}", error);
+                    FinalizationWorkerOutcome::Failed
+                }
+            };
+            let retry_delay =
+                settle_finalization_worker(&worker_schedule, covered_through, outcome);
+            if let Some(retry_delay) = retry_delay {
+                tokio::time::sleep(retry_delay).await;
+                if worker_schedule.make_retry_ready(covered_through) {
+                    start_finalization_dispatcher(retry_ctx, worker_schedule);
+                }
+            }
+        });
+    }
+}
 
-        if finalizer_task_queued.swap(false, Ordering::SeqCst) {
-            tracing::debug!("finalizer-run-queued; continuing finalizer loop");
-            continue;
-        }
-
-        tracing::info!(target: "f1r3fly.casper", "finalizer-run-finished");
+fn start_finalization_dispatcher(ctx: FinalizationContext, schedule: Arc<FinalizationSchedule>) {
+    if !schedule.try_start_dispatcher() {
         return;
     }
+    let restart_ctx = ctx.clone();
+    let restart_schedule = schedule.clone();
+    let handle = tokio::spawn(run_finalization_dispatcher(ctx, schedule));
+    tokio::spawn(async move {
+        if let Err(error) = handle.await {
+            tracing::error!("finalization dispatcher panicked: {}", error);
+            start_finalization_dispatcher(restart_ctx, restart_schedule);
+        }
+    });
+}
+
+fn effect_id(
+    revision: u64,
+    block_hash: BlockHash,
+    kind: FinalizationEffectKind,
+) -> FinalizationEffectId {
+    FinalizationEffectId {
+        revision,
+        block_hash: block_hash.into(),
+        kind,
+    }
+}
+
+async fn apply_finalization_effects(
+    ctx: &FinalizationContext,
+    revision: u64,
+    finalized_set: &HashSet<BlockHash>,
+) -> Result<(), KvStoreError> {
+    ctx.finalization_in_progress
+        .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |current| {
+            current.checked_add(1)
+        })
+        .map_err(|_| {
+            KvStoreError::InvalidArgument(
+                "concurrent finalization effect counter exhausted".to_string(),
+            )
+        })?;
+    let _guard = FinalizationGuard(ctx.finalization_in_progress.as_ref());
+    let mut blocks = finalized_set
+        .iter()
+        .map(|block_hash| {
+            ctx.block_store.get(block_hash)?.ok_or_else(|| {
+                KvStoreError::KeyNotFound(format!(
+                    "finalized block {} not present in store",
+                    PrettyPrinter::build_string_bytes(block_hash)
+                ))
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    blocks.sort_by(|left, right| {
+        left.body
+            .state
+            .block_number
+            .cmp(&right.body.state.block_number)
+            .then_with(|| left.block_hash.cmp(&right.block_hash))
+    });
+
+    for block in blocks {
+        let deploys = block
+            .body
+            .deploys
+            .iter()
+            .map(|processed| processed.deploy.clone())
+            .collect::<Vec<_>>();
+        let deploy_signatures = deploys
+            .iter()
+            .map(|deploy| prost::bytes::Bytes::from(deploy.sig.to_vec()))
+            .collect::<Vec<_>>();
+
+        let deploy_effect = effect_id(
+            revision,
+            block.block_hash.clone(),
+            FinalizationEffectKind::DeployRemoval,
+        );
+        if !ctx
+            .block_dag_storage
+            .finalization_effect_completed(&deploy_effect)?
+        {
+            ctx.deploy_storage.lock().remove(deploys.clone())?;
+            ctx.rejected_deploy_buffer
+                .lock()
+                .map_err(|error| KvStoreError::LockError(error.to_string()))?
+                .remove(deploys)?;
+            ctx.block_dag_storage
+                .record_finalization_effect(deploy_effect)?;
+        }
+
+        let cosigner_effect = effect_id(
+            revision,
+            block.block_hash.clone(),
+            FinalizationEffectKind::CosignerRemoval,
+        );
+        if !ctx
+            .block_dag_storage
+            .finalization_effect_completed(&cosigner_effect)?
+        {
+            let mut sidecar = ctx.pending_cosigner_metadata.lock();
+            for signature in deploy_signatures {
+                sidecar.remove(&signature);
+            }
+            drop(sidecar);
+            ctx.block_dag_storage
+                .record_finalization_effect(cosigner_effect)?;
+        }
+
+        let cache_effect = effect_id(
+            revision,
+            block.block_hash.clone(),
+            FinalizationEffectKind::RuntimeCacheEviction,
+        );
+        if !ctx
+            .block_dag_storage
+            .finalization_effect_completed(&cache_effect)?
+        {
+            ctx.runtime_manager
+                .remove_block_index_cache(&block.block_hash);
+            ctx.block_dag_storage
+                .record_finalization_effect(cache_effect)?;
+        }
+
+        if !ctx.enable_mergeable_channel_gc {
+            tracing::debug!(
+                "Mergeable channel GC disabled; retaining mergeable data for finalized block {} (sender={}, seq={})",
+                PrettyPrinter::build_string_bytes(&block.block_hash),
+                PrettyPrinter::build_string_bytes(&block.sender),
+                block.seq_num
+            );
+        }
+
+        let event_effect = effect_id(
+            revision,
+            block.block_hash.clone(),
+            FinalizationEffectKind::FinalizedEvent,
+        );
+        if !ctx
+            .block_dag_storage
+            .finalization_effect_completed(&event_effect)?
+        {
+            ctx.event_publisher
+                .publish(finalised_event(&block))
+                .map_err(|error| KvStoreError::IoError(error.to_string()))?;
+            ctx.block_dag_storage
+                .record_finalization_effect(event_effect)?;
+        }
+    }
+    ctx.block_dag_storage
+        .record_finalization_round_effects_completed(revision)?;
+    Ok(())
+}
+
+async fn reconcile_finalization_effects(ctx: &FinalizationContext) -> Result<(), KvStoreError> {
+    ctx.block_dag_storage.reconcile_finalization_projection()?;
+    ctx.block_dag_storage
+        .reconcile_finalization_effect_compaction()?;
+    for FinalizationRecord {
+        revision,
+        finalized,
+        ..
+    } in ctx
+        .block_dag_storage
+        .pending_finalization_effect_records()?
+    {
+        let finalized = finalized.into_iter().map(|hash| hash.0).collect();
+        apply_finalization_effects(ctx, revision, &finalized).await?;
+    }
+    Ok(())
 }
 
 pub(crate) async fn compute_last_finalized_block(
     ctx: FinalizationContext,
 ) -> Result<BlockMessage, CasperError> {
+    loop {
+        match compute_last_finalized_block_once(ctx.clone()).await {
+            Err(CasperError::KvStoreError(KvStoreError::StaleFinalization { .. })) => {
+                tokio::task::yield_now().await;
+            }
+            result => return result,
+        }
+    }
+}
+
+async fn compute_last_finalized_block_once(
+    ctx: FinalizationContext,
+) -> Result<BlockMessage, CasperError> {
+    reconcile_finalization_effects(&ctx).await?;
+    let evaluation_base = ctx.block_dag_storage.capture_finalization_base()?;
+    let effect_ctx = ctx.clone();
     let FinalizationContext {
-        block_dag_storage,
         block_store,
-        deploy_storage,
-        pending_cosigner_metadata,
-        runtime_manager,
-        event_publisher,
-        finalization_in_progress,
-        enable_mergeable_channel_gc,
         ftt,
         finalizer_conf,
+        ..
     } = ctx;
     let finalizer_conf = &finalizer_conf;
     let lfb_lookup_started = std::time::Instant::now();
-    // Get current LFB hash and height
-    let dag = block_dag_storage.get_representation()?;
-    let last_finalized_block_hash = dag.last_finalized_block();
-    let last_finalized_block_height = dag.lookup_unsafe(&last_finalized_block_hash)?.block_number;
-
-    // Keep effect closure FnMut-compatible by cloning captured state on each invocation.
-    let block_dag_storage_for_effect = block_dag_storage.clone();
-    let block_store_for_effect = block_store.clone();
-    let deploy_storage_for_effect = deploy_storage.clone();
-    let pending_cosigner_metadata_for_effect = pending_cosigner_metadata.clone();
-    let runtime_manager_for_effect = runtime_manager.clone();
-    let event_publisher_for_effect = event_publisher.clone();
-    let finalization_in_progress_for_effect = finalization_in_progress.clone();
-
-    // Create simple finalization effect closure
+    let dag = evaluation_base.dag;
+    let last_finalized_block_hash = evaluation_base.head.block_hash.0.clone();
+    let last_finalized_block_height = evaluation_base.head.block_number;
+    let evaluation_head = evaluation_base.head;
+    let certificate_context =
+        crate::rust::causal_equivocation::CertifiedConsensusContext::for_finalized_floor(
+            &dag,
+            last_finalized_block_hash.clone(),
+        )?;
+    let witness_inputs = FinalizationWitnessInputs {
+        fault_tolerance_numerator: ftt.num,
+        fault_tolerance_denominator: ftt.den,
+        authority_context_digest: BlockHashSerde(certificate_context.digest().clone()),
+        latest_messages: certificate_context
+            .vote_projection()
+            .exact_latest_messages()
+            .iter()
+            .map(|(validator, block_hash)| {
+                (
+                    ValidatorSerde(validator.clone()),
+                    BlockHashSerde(block_hash.clone()),
+                )
+            })
+            .collect(),
+    };
     let new_lfb_found_effect = move |(new_lfb, ft_value): (BlockHash, f32)| {
-        let block_dag_storage = block_dag_storage_for_effect.clone();
-        let block_store = block_store_for_effect.clone();
-        let deploy_storage = deploy_storage_for_effect.clone();
-        let pending_cosigner_metadata = pending_cosigner_metadata_for_effect.clone();
-        let runtime_manager = runtime_manager_for_effect.clone();
-        let event_publisher = event_publisher_for_effect.clone();
-        let finalization_in_progress = finalization_in_progress_for_effect.clone();
+        let effect_ctx = effect_ctx.clone();
+        let evaluation_head = evaluation_head.clone();
+        let witness_inputs = witness_inputs.clone();
         async move {
             let effect_started = std::time::Instant::now();
-            block_dag_storage
-                .record_directly_finalized(new_lfb.clone(), ft_value, |finalized_set: &HashSet<BlockHash>| {
-                    let finalized_set = finalized_set.clone();
-                    let block_store = block_store.clone();
-                    let deploy_storage = deploy_storage.clone();
-                    let pending_cosigner_metadata = pending_cosigner_metadata.clone();
-                    let runtime_manager = runtime_manager.clone();
-                    let event_publisher = event_publisher.clone();
-                    let finalization_in_progress = finalization_in_progress.clone();
-                    Box::pin(async move {
-                        let process_finalized_started = std::time::Instant::now();
-                        // Use RAII guard to ensure flag is reset even if we return early or panic
-                        finalization_in_progress.store(true, Ordering::SeqCst);
-                        let _guard = FinalizationGuard(finalization_in_progress.as_ref());
-                        tracing::debug!("Finalization started for {} blocks", finalized_set.len());
+            let callback_ctx = effect_ctx.clone();
+            effect_ctx
+                .block_dag_storage
+                .record_directly_finalized_certified_atomic(
+                    &evaluation_head,
+                    new_lfb,
+                    ft_value,
+                    witness_inputs,
+                    move |revision, finalized_set| {
+                        let callback_ctx = callback_ctx.clone();
+                        let finalized_set = finalized_set.clone();
+                        async move {
+                            apply_finalization_effects(&callback_ctx, revision, &finalized_set)
+                                .await?;
 
-                        // process_finalized
-                        for block_hash in &finalized_set {
-                            // P2-7: a finalized hash should always be in the
-                            // store, but a panic here would crash the
-                            // finalization runner. Surface as a typed error.
-                            let block = block_store.get(block_hash)?.ok_or_else(|| {
-                                KvStoreError::KeyNotFound(format!(
-                                    "finalized block {} not present in store",
-                                    PrettyPrinter::build_string_bytes(block_hash)
-                                ))
-                            })?;
-                            let deploys: Vec<_> = block
-                                .body
-                                .deploys
-                                .iter()
-                                .map(|pd| pd.deploy.clone())
-                                .collect();
-
-                            // Remove block deploys from persistent store.
-                            // Phase 9 (A-3): parking_lot::Mutex — no poison.
-                            let deploys_count = deploys.len();
-                            let deploy_sigs_for_buffer: Vec<Vec<u8>> =
-                                deploys.iter().map(|d| d.sig.to_vec()).collect();
-                            deploy_storage.lock().remove(deploys)?;
-
-                            // Drain the cosigner-metadata sidecar in lockstep
-                            // with `deploy_storage` (both keyed by primary
-                            // signature). Relocated here from the acceptance-time
-                            // purge so the sidecar stays bounded under sealed-floor
-                            // record-driven recovery: deploys are retained through
-                            // accept and removed only once finalized, so their
-                            // compound-deploy metadata must be released here too.
-                            {
-                                let mut sidecar = pending_cosigner_metadata.lock();
-                                for sig in &deploy_sigs_for_buffer {
-                                    sidecar.remove(&prost::bytes::Bytes::from(sig.clone()));
-                                }
-                            }
-
-                            let finalized_set_str = PrettyPrinter::build_string_hashes(
-                                &finalized_set.iter().map(|h| h.to_vec()).collect::<Vec<_>>(),
-                            );
-                            let removed_deploy_msg = format!(
-                                "Removed {} deploys from deploy history as we finalized block {}.",
-                                deploys_count, finalized_set_str
-                            );
-                            tracing::info!("{}", removed_deploy_msg);
-
-                            // Remove block index from cache
-                            runtime_manager.remove_block_index_cache(block_hash);
-
-                            // Keep mergeable data on finalization to preserve deterministic
-                            // parent-state reconstruction. Safe deletion is handled only by
-                            // reachability-based background GC when enabled.
-                            if !enable_mergeable_channel_gc {
-                                tracing::debug!(
-                                    "Mergeable channel GC disabled; retaining mergeable data for finalized block {} (sender={}, seq={})",
-                                    PrettyPrinter::build_string_bytes(&block.block_hash),
-                                    PrettyPrinter::build_string_bytes(&block.sender),
-                                    block.seq_num
-                                );
-                            }
-
-                            // Publish BlockFinalised event for each newly finalized block
-                            event_publisher
-                                .publish(finalised_event(&block))
-                                .map_err(|e| KvStoreError::IoError(e.to_string()))?;
-
-                            // H-1 fix (2026-08-06) — slice 30c Phase B:
-                            // LFB-triggered snapshot write.  For each
-                            // newly-finalized block, look up its per-block
-                            // WAL slice in the shared cache (populated by
-                            // `play_deploys_for_state` on this validator
-                            // when the block was originally computed) and,
-                            // if the block hits a cadence boundary, call
-                            // `SnapshotWriter::maybe_write` with the
-                            // cached slice.  This closes the pre-H-1
-                            // divergence hazard where the snapshot fired
-                            // per-candidate-block: two sibling non-
-                            // finalized blocks at the same block_number
-                            // could both trigger writes with different
-                            // slice contents.  Post-fix, only finalized-
-                            // chain blocks produce snapshots.
+                            // H-1 fix (2026-08-06) — slice 30c Phase B: LFB-
+                            // triggered fs_wal snapshot write for each newly-
+                            // finalized block.  Preserved through the
+                            // 2026-08-26 merge of origin/feature/cost-
+                            // accounted-rho.  Not folded into
+                            // `apply_finalization_effects`'s per-effect
+                            // idempotency machinery (would require adding a
+                            // `FinalizationEffectKind::WalSnapshotWrite`
+                            // variant, which is a Serialize/persistence
+                            // format change).  Idempotency instead comes
+                            // from the pending-WAL-slice HashMap: on retry
+                            // after partial write, `slices.remove(...)`
+                            // returns None and the branch no-ops.  Design
+                            // rationale in commit b93b0a78c.
                             //
-                            // Cache miss handling: a snapshot may be
-                            // missed if this validator did not itself
-                            // compute the block (e.g., joining validator
-                            // that received the block from a peer without
-                            // re-executing).  Log at debug; downstream
-                            // join protocol will fill via peer catch-up.
-                            let writer_opt = runtime_manager
+                            // Cache miss handling: a snapshot is skipped if
+                            // this validator did not itself compute the
+                            // block (e.g., joining validator that received
+                            // the block from a peer without re-executing).
+                            // Log at debug; downstream join protocol fills
+                            // via peer catch-up.
+                            let writer_opt = callback_ctx
+                                .runtime_manager
                                 .fs_snapshot_writer
                                 .read()
                                 .await
                                 .clone();
                             if let Some(writer) = writer_opt {
-                                let post_state_hash =
-                                    block.body.state.post_state_hash.to_vec();
-                                let bn = block.body.state.block_number;
-                                let cache_entry = {
-                                    let mut slices = runtime_manager
+                                for block_hash in &finalized_set {
+                                    let Some(block) =
+                                        callback_ctx.block_store.get(block_hash)?
+                                    else {
+                                        // `apply_finalization_effects` above already
+                                        // errored on a missing block; if we reach
+                                        // here with Ok(_) and then miss, treat as a
+                                        // transient race and skip.
+                                        continue;
+                                    };
+                                    let post_state_hash =
+                                        block.body.state.post_state_hash.to_vec();
+                                    let bn = block.body.state.block_number;
+                                    let cache_entry = {
+                                        let mut slices = callback_ctx
+                                            .runtime_manager
+                                            .pending_wal_slices
+                                            .write()
+                                            .await;
+                                        slices.remove(&post_state_hash)
+                                    };
+                                    match cache_entry {
+                                        Some((_cached_bn, slice)) => {
+                                            let block_hash_pretty =
+                                                PrettyPrinter::build_string_bytes(block_hash);
+                                            let writer_clone = writer.clone();
+                                            let snapshot_result =
+                                                tokio::task::spawn_blocking(move || {
+                                                    writer_clone.maybe_write(bn, &slice)
+                                                })
+                                                .await;
+                                            match snapshot_result {
+                                                Ok(Ok(_)) => {}
+                                                Ok(Err(e)) => tracing::warn!(
+                                                    target: "f1r3fly.casper.fs_wal",
+                                                    block_number = bn,
+                                                    block_hash = %block_hash_pretty,
+                                                    error = %e,
+                                                    "LFB-triggered snapshot write failed"
+                                                ),
+                                                Err(je) => tracing::warn!(
+                                                    target: "f1r3fly.casper.fs_wal",
+                                                    block_number = bn,
+                                                    block_hash = %block_hash_pretty,
+                                                    error = %je,
+                                                    "LFB-triggered snapshot spawn_blocking failed"
+                                                ),
+                                            }
+                                        }
+                                        None => {
+                                            tracing::debug!(
+                                                target: "f1r3fly.casper.fs_wal",
+                                                block_number = bn,
+                                                block_hash = %PrettyPrinter::build_string_bytes(block_hash),
+                                                "no cached WAL slice for finalized block \
+                                                 (this validator did not compute it; \
+                                                 peer catch-up will cover snapshot needs)"
+                                            );
+                                        }
+                                    }
+                                    // Evict stale entries whose block_number
+                                    // is <= this finalized block's — they
+                                    // are either now-finalized (already
+                                    // handled above) or orphaned (never
+                                    // will be).
+                                    let mut slices = callback_ctx
+                                        .runtime_manager
                                         .pending_wal_slices
                                         .write()
                                         .await;
-                                    slices.remove(&post_state_hash)
-                                };
-                                match cache_entry {
-                                    Some((_cached_bn, slice)) => {
-                                        let block_hash_pretty =
-                                            PrettyPrinter::build_string_bytes(
-                                                block_hash,
-                                            );
-                                        let snapshot_result =
-                                            tokio::task::spawn_blocking(
-                                                move || {
-                                                    writer.maybe_write(
-                                                        bn, &slice,
-                                                    )
-                                                },
-                                            )
-                                            .await;
-                                        match snapshot_result {
-                                            Ok(Ok(_)) => {}
-                                            Ok(Err(e)) => tracing::warn!(
-                                                target: "f1r3fly.casper.fs_wal",
-                                                block_number = bn,
-                                                block_hash = %block_hash_pretty,
-                                                error = %e,
-                                                "LFB-triggered snapshot write failed"
-                                            ),
-                                            Err(je) => tracing::warn!(
-                                                target: "f1r3fly.casper.fs_wal",
-                                                block_number = bn,
-                                                block_hash = %block_hash_pretty,
-                                                error = %je,
-                                                "LFB-triggered snapshot spawn_blocking failed"
-                                            ),
-                                        }
-                                    }
-                                    None => {
-                                        tracing::debug!(
-                                            target: "f1r3fly.casper.fs_wal",
-                                            block_number = bn,
-                                            block_hash = %PrettyPrinter::build_string_bytes(block_hash),
-                                            "no cached WAL slice for finalized block \
-                                             (this validator did not compute it; \
-                                             peer catch-up will cover snapshot needs)"
-                                        );
-                                    }
+                                    slices.retain(|_, (cached_bn, _)| *cached_bn > bn);
                                 }
-                                // Evict stale entries whose block_number is
-                                // <= this finalized block's — they are
-                                // either now-finalized (already handled) or
-                                // orphaned (never will be).
-                                let mut slices = runtime_manager
-                                    .pending_wal_slices
-                                    .write()
-                                    .await;
-                                slices.retain(|_, (cached_bn, _)| *cached_bn > bn);
                             }
+                            Ok(())
                         }
-
-                        // Guard will reset finalization_in_progress flag on drop
-                        tracing::debug!("Finalization completed");
-                        tracing::debug!(
-                            target: "f1r3fly.casper.finalizer.effect.timing",
-                            "Finalization effect timing: finalized_blocks={}, process_finalized_ms={}",
-                            finalized_set.len(),
-                            process_finalized_started.elapsed().as_millis()
-                        );
-
-                        Ok(())
-                    })
-                })
+                    },
+                )
                 .await?;
             tracing::debug!(
                 target: "f1r3fly.casper.finalizer.effect.timing",
@@ -370,11 +565,12 @@ pub(crate) async fn compute_last_finalized_block(
 
     // Run finalizer
     let finalizer_started = std::time::Instant::now();
-    let new_finalized_hash_opt = Finalizer::run(
+    let new_finalized_hash_opt = Finalizer::run_with_context(
         &dag,
         ftt,
         &last_finalized_block_hash,
         last_finalized_block_height,
+        &certificate_context,
         new_lfb_found_effect,
         finalizer_conf,
     )
@@ -419,39 +615,82 @@ pub(crate) async fn update_last_finalized_block<T: TransportLayer + Send + Sync>
     this: &MultiParentCasperImpl<T>,
     new_block: &BlockMessage,
 ) -> Result<(), CasperError> {
-    if this.casper_shard_conf.finalization_rate <= 0 {
-        return Ok(());
-    }
-
-    if new_block.body.state.block_number % this.casper_shard_conf.finalization_rate as i64 == 0 {
-        if this
-            .finalizer_task_in_progress
-            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-            .is_err()
-        {
-            if !this.finalizer_task_queued.swap(true, Ordering::SeqCst) {
-                tracing::debug!("Finalizer already running; queued follow-up finalization run");
-            }
-            return Ok(());
-        }
-
-        let ctx = build_finalization_context(this);
-        let finalizer_task_in_progress = this.finalizer_task_in_progress.clone();
-        let finalizer_task_queued = this.finalizer_task_queued.clone();
-
-        // Capture the JoinHandle so a panic inside `run_queued_finalizer`
-        // surfaces in the logs instead of being silently dropped. The
-        // RAII `FinalizationGuard` in run_queued_finalizer prevents the
-        // in-progress flag from sticking even if the task panics, so
-        // there's no deadlock — but silent panics mask real bugs.
-        let handle = tokio::spawn(async move {
-            run_queued_finalizer(ctx, finalizer_task_in_progress, finalizer_task_queued).await;
-        });
-        tokio::spawn(async move {
-            if let Err(join_err) = handle.await {
-                tracing::error!("Finalization task terminated abnormally: {}", join_err);
-            }
-        });
+    if finalization_due(
+        this.casper_shard_conf.finalization_rate,
+        new_block.body.state.block_number,
+        this.recovery_sync_active
+            .load(std::sync::atomic::Ordering::Acquire),
+    ) {
+        request_finalization(this)?;
     }
     Ok(())
+}
+
+fn finalization_due(finalization_rate: i32, block_number: i64, recovery_active: bool) -> bool {
+    recovery_active || (finalization_rate > 0 && block_number % i64::from(finalization_rate) == 0)
+}
+
+pub(crate) fn request_finalization<T: TransportLayer + Send + Sync>(
+    this: &MultiParentCasperImpl<T>,
+) -> Result<(), CasperError> {
+    let ticket = this.finalization_schedule.request().ok_or_else(|| {
+        CasperError::RuntimeError("finalization request sequence exhausted".to_string())
+    })?;
+    let ctx = build_finalization_context(this);
+    start_finalization_dispatcher(ctx, this.finalization_schedule.clone());
+    tracing::debug!(ticket, "published finalization request");
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use proptest::prelude::*;
+
+    use super::*;
+
+    #[test]
+    fn failed_worker_is_retryable_instead_of_completed() {
+        let schedule = FinalizationSchedule::new(2);
+        assert_eq!(schedule.request(), Some(1));
+        assert_eq!(schedule.next_coverage(), Some(1));
+        schedule.mark_launched(1);
+        assert_eq!(
+            settle_finalization_worker(&schedule, 1, FinalizationWorkerOutcome::Failed),
+            Some(Duration::from_millis(25))
+        );
+        assert!(!schedule.is_quiescent());
+        assert!(schedule.make_retry_ready(1));
+        assert_eq!(schedule.next_coverage(), Some(1));
+    }
+
+    #[test]
+    fn successful_worker_completes_its_coverage() {
+        let schedule = FinalizationSchedule::new(2);
+        assert_eq!(schedule.request(), Some(1));
+        assert_eq!(schedule.next_coverage(), Some(1));
+        schedule.mark_launched(1);
+        assert_eq!(
+            settle_finalization_worker(&schedule, 1, FinalizationWorkerOutcome::Succeeded),
+            None
+        );
+        assert!(schedule.is_quiescent());
+    }
+
+    #[test]
+    fn recovery_requests_finalization_even_when_periodic_finalization_is_disabled() {
+        assert!(finalization_due(0, 7, true));
+        assert!(finalization_due(-1, 7, true));
+    }
+
+    proptest! {
+        #[test]
+        fn recovery_finalization_is_independent_of_height_and_rate(
+            rate in i32::MIN..=i32::MAX,
+            height in i64::MIN..=i64::MAX,
+        ) {
+            prop_assert!(finalization_due(rate, height, true));
+        }
+    }
 }

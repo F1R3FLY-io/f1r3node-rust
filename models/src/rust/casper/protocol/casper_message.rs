@@ -12,7 +12,9 @@ use crate::casper::system_deploy_data_proto::SystemDeploy;
 use crate::casper::*;
 use crate::rhoapi::PCost;
 use crate::rust::block_hash::BlockHash;
+use crate::rust::bond_generation::BondGeneration;
 use crate::rust::casper::pretty_printer::PrettyPrinter;
+use crate::rust::{block_hash, validator};
 
 // TODO: Use type ByteString from models crate
 type ByteString = prost::bytes::Bytes;
@@ -354,7 +356,7 @@ impl BlockMessage {
                 proto
                     .header
                     .ok_or_else(|| "Missing header field".to_string())?,
-            ),
+            )?,
             body: Body::from_proto(proto.body.ok_or_else(|| "Missing body field".to_string())?)?,
             justifications: proto
                 .justifications
@@ -401,16 +403,39 @@ pub struct Header {
     pub timestamp: i64,
     pub version: i64,
     pub extra_bytes: ByteString,
+    pub sender_bond_generation: Option<BondGeneration>,
+    pub objective_equivocation_evidence_delta: Vec<ObjectiveEquivocationEvidence>,
 }
 
 impl Header {
-    pub fn from_proto(proto: HeaderProto) -> Self {
-        Self {
+    pub fn from_proto(proto: HeaderProto) -> Result<Self, String> {
+        let sender_bond_generation = proto
+            .sender_bond_generation
+            .map(BondGeneration::try_from)
+            .transpose()
+            .map_err(|error| error.to_string())?;
+        let objective_equivocation_evidence_delta = proto
+            .objective_equivocation_evidence_delta
+            .into_iter()
+            .map(ObjectiveEquivocationEvidence::from_proto)
+            .collect::<Result<Vec<_>, _>>()?;
+        if objective_equivocation_evidence_delta
+            .windows(2)
+            .any(|pair| pair[0] >= pair[1])
+        {
+            return Err(
+                "objective equivocation evidence delta must be strictly sorted and unique"
+                    .to_string(),
+            );
+        }
+        Ok(Self {
             parents_hash_list: proto.parents_hash_list,
             timestamp: proto.timestamp,
             version: proto.version,
             extra_bytes: proto.extra_bytes,
-        }
+            sender_bond_generation,
+            objective_equivocation_evidence_delta,
+        })
     }
 
     pub fn to_proto(&self) -> HeaderProto {
@@ -419,6 +444,100 @@ impl Header {
             timestamp: self.timestamp,
             version: self.version,
             extra_bytes: self.extra_bytes.clone(),
+            sender_bond_generation: self.sender_bond_generation.map(BondGeneration::get),
+            objective_equivocation_evidence_delta: self
+                .objective_equivocation_evidence_delta
+                .iter()
+                .map(ObjectiveEquivocationEvidence::to_proto)
+                .collect(),
+        }
+    }
+}
+
+#[derive(
+    Clone,
+    Debug,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize
+)]
+pub struct ObjectiveEquivocationEvidence {
+    #[serde(with = "shared::rust::serde_bytes")]
+    pub validator: ByteString,
+    pub bond_generation: BondGeneration,
+    pub sequence_number: i32,
+    #[serde(with = "shared::rust::serde_bytes")]
+    pub first_block_hash: ByteString,
+    #[serde(with = "shared::rust::serde_bytes")]
+    pub second_block_hash: ByteString,
+}
+
+impl ObjectiveEquivocationEvidence {
+    pub fn new(
+        validator: ByteString,
+        bond_generation: BondGeneration,
+        sequence_number: i32,
+        first_block_hash: ByteString,
+        second_block_hash: ByteString,
+    ) -> Result<Self, String> {
+        if validator.len() != validator::LENGTH {
+            return Err(format!(
+                "objective evidence validator must be {} bytes, got {}",
+                validator::LENGTH,
+                validator.len()
+            ));
+        }
+        if sequence_number < 0 {
+            return Err(format!(
+                "objective evidence sequence number must be nonnegative, got {sequence_number}"
+            ));
+        }
+        if first_block_hash.len() != block_hash::LENGTH
+            || second_block_hash.len() != block_hash::LENGTH
+        {
+            return Err(format!(
+                "objective evidence block hashes must be {} bytes",
+                block_hash::LENGTH
+            ));
+        }
+        if first_block_hash == second_block_hash {
+            return Err("objective evidence must identify two distinct blocks".to_string());
+        }
+        let (first_block_hash, second_block_hash) = if first_block_hash < second_block_hash {
+            (first_block_hash, second_block_hash)
+        } else {
+            (second_block_hash, first_block_hash)
+        };
+        Ok(Self {
+            validator,
+            bond_generation,
+            sequence_number,
+            first_block_hash,
+            second_block_hash,
+        })
+    }
+
+    pub fn from_proto(proto: ObjectiveEquivocationEvidenceProto) -> Result<Self, String> {
+        Self::new(
+            proto.validator,
+            BondGeneration::try_from(proto.bond_generation).map_err(|error| error.to_string())?,
+            proto.sequence_number,
+            proto.first_block_hash,
+            proto.second_block_hash,
+        )
+    }
+
+    pub fn to_proto(&self) -> ObjectiveEquivocationEvidenceProto {
+        ObjectiveEquivocationEvidenceProto {
+            validator: self.validator.clone(),
+            bond_generation: self.bond_generation.get(),
+            sequence_number: self.sequence_number,
+            first_block_hash: self.first_block_hash.clone(),
+            second_block_hash: self.second_block_hash.clone(),
         }
     }
 }
@@ -583,7 +702,7 @@ impl Body {
                 proto
                     .state
                     .ok_or_else(|| "Missing state field".to_string())?,
-            ),
+            )?,
             deploys: proto
                 .deploys
                 .into_iter()
@@ -644,6 +763,8 @@ impl Body {
     Clone,
     Eq,
     PartialEq,
+    Ord,
+    PartialOrd,
     serde::Serialize,
     serde::Deserialize,
     Hash
@@ -676,12 +797,39 @@ pub struct F1r3flyState {
     pub pre_state_hash: ByteString,
     pub post_state_hash: ByteString,
     pub bonds: Vec<Bond>,
+    pub bond_generations: Vec<ValidatorBondGeneration>,
+    pub active_validators: Vec<ByteString>,
     pub block_number: i64,
 }
 
 impl F1r3flyState {
-    pub fn from_proto(proto: RChainStateProto) -> Self {
-        Self {
+    pub fn from_proto(proto: RChainStateProto) -> Result<Self, String> {
+        let bond_generations = proto
+            .bond_generations
+            .into_iter()
+            .map(ValidatorBondGeneration::from_proto)
+            .collect::<Result<Vec<_>, _>>()?;
+        if bond_generations.windows(2).any(|pair| pair[0] >= pair[1]) {
+            return Err("bond generation cache must be strictly sorted and unique".to_string());
+        }
+        if proto
+            .active_validators
+            .iter()
+            .any(|validator| validator.len() != validator::LENGTH)
+        {
+            return Err(format!(
+                "active validator keys must be {} bytes",
+                validator::LENGTH
+            ));
+        }
+        if proto
+            .active_validators
+            .windows(2)
+            .any(|pair| pair[0] >= pair[1])
+        {
+            return Err("active validator cache must be strictly sorted and unique".to_string());
+        }
+        Ok(Self {
             pre_state_hash: proto.pre_state_hash,
             post_state_hash: proto.post_state_hash,
             bonds: proto
@@ -689,8 +837,10 @@ impl F1r3flyState {
                 .into_iter()
                 .map(|b| Bond::from_proto(b))
                 .collect(),
+            bond_generations,
+            active_validators: proto.active_validators,
             block_number: proto.block_number,
-        }
+        })
     }
 
     pub fn to_proto(&self) -> RChainStateProto {
@@ -703,7 +853,43 @@ impl F1r3flyState {
                 .into_iter()
                 .map(|b| Bond::to_proto(b))
                 .collect(),
+            bond_generations: self
+                .bond_generations
+                .iter()
+                .map(ValidatorBondGeneration::to_proto)
+                .collect(),
+            active_validators: self.active_validators.clone(),
             block_number: self.block_number,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ValidatorBondGeneration {
+    pub validator: ByteString,
+    pub generation: BondGeneration,
+}
+
+impl ValidatorBondGeneration {
+    pub fn from_proto(proto: ValidatorBondGenerationProto) -> Result<Self, String> {
+        if proto.validator.len() != validator::LENGTH {
+            return Err(format!(
+                "bond-generation validator must be {} bytes, got {}",
+                validator::LENGTH,
+                proto.validator.len()
+            ));
+        }
+        Ok(Self {
+            validator: proto.validator,
+            generation: BondGeneration::try_from(proto.generation)
+                .map_err(|error| error.to_string())?,
+        })
+    }
+
+    pub fn to_proto(&self) -> ValidatorBondGenerationProto {
+        ValidatorBondGenerationProto {
+            validator: self.validator.clone(),
+            generation: self.generation.get(),
         }
     }
 }
@@ -1002,8 +1188,10 @@ pub struct RedemptionAuthorizationData {
 pub enum SystemDeployData {
     Slash {
         invalid_block_hash: ByteString,
+        equivocation_block_hash: Option<ByteString>,
         issuer_public_key: PublicKey,
         target_activation_epoch: i64,
+        target_bond_generation: BondGeneration,
     },
     CloseBlockSystemDeployData,
     /// Cost-Accounted Rho Stage-C validator redemption (DR-7/DR-12). Carries the
@@ -1011,6 +1199,7 @@ pub enum SystemDeployData {
     /// PoS-multisig-quorum platform obligation byte-identically to play.
     Redeem {
         validator_pk: ByteString,
+        target_bond_generation: BondGeneration,
         /// Outcome tag: "Vindicated" | "Guilty" | "Burned".
         outcome_tag: String,
         /// Penalty for Guilty (0 otherwise).
@@ -1027,18 +1216,44 @@ impl SystemDeployData {
         invalid_block_hash: ByteString,
         issuer_public_key: PublicKey,
         target_activation_epoch: i64,
+        target_bond_generation: BondGeneration,
     ) -> Self {
         Self::Slash {
             invalid_block_hash,
+            equivocation_block_hash: None,
             issuer_public_key,
             target_activation_epoch,
+            target_bond_generation,
         }
     }
 
     pub fn create_close() -> Self { Self::CloseBlockSystemDeployData }
 
+    pub fn create_equivocation_slash(
+        first_block_hash: ByteString,
+        second_block_hash: ByteString,
+        issuer_public_key: PublicKey,
+        target_activation_epoch: i64,
+        target_bond_generation: BondGeneration,
+    ) -> Self {
+        let (invalid_block_hash, equivocation_block_hash) = if first_block_hash < second_block_hash
+        {
+            (first_block_hash, second_block_hash)
+        } else {
+            (second_block_hash, first_block_hash)
+        };
+        Self::Slash {
+            invalid_block_hash,
+            equivocation_block_hash: Some(equivocation_block_hash),
+            issuer_public_key,
+            target_activation_epoch,
+            target_bond_generation,
+        }
+    }
+
     pub fn create_redeem(
         validator_pk: ByteString,
+        target_bond_generation: BondGeneration,
         outcome_tag: String,
         penalty: i64,
         pos_multi_sig_public_keys: Vec<String>,
@@ -1047,6 +1262,7 @@ impl SystemDeployData {
     ) -> Self {
         Self::Redeem {
             validator_pk,
+            target_bond_generation,
             outcome_tag,
             penalty,
             pos_multi_sig_public_keys,
@@ -1062,19 +1278,40 @@ impl SystemDeployData {
         {
             system_deploy_data_proto::SystemDeploy::SlashSystemDeploy(
                 slash_system_deploy_data_proto,
-            ) => Ok(Self::Slash {
-                invalid_block_hash: slash_system_deploy_data_proto.invalid_block_hash,
-                issuer_public_key: PublicKey::from_bytes(
-                    &slash_system_deploy_data_proto.issuer_public_key,
-                ),
-                target_activation_epoch: slash_system_deploy_data_proto.target_activation_epoch,
-            }),
+            ) => {
+                let target_bond_generation = slash_system_deploy_data_proto
+                    .target_bond_generation
+                    .ok_or_else(|| "slash deploy is missing target bond generation".to_string())
+                    .and_then(|generation| {
+                        BondGeneration::try_from(generation).map_err(|error| error.to_string())
+                    })?;
+                Ok(Self::Slash {
+                    invalid_block_hash: slash_system_deploy_data_proto.invalid_block_hash,
+                    equivocation_block_hash: (!slash_system_deploy_data_proto
+                        .equivocation_block_hash
+                        .is_empty())
+                    .then_some(slash_system_deploy_data_proto.equivocation_block_hash),
+                    issuer_public_key: PublicKey::from_bytes(
+                        &slash_system_deploy_data_proto.issuer_public_key,
+                    ),
+                    target_activation_epoch: slash_system_deploy_data_proto.target_activation_epoch,
+                    target_bond_generation,
+                })
+            }
             system_deploy_data_proto::SystemDeploy::CloseBlockSystemDeploy(_) => {
                 Ok(Self::CloseBlockSystemDeployData)
             }
             system_deploy_data_proto::SystemDeploy::RedeemSystemDeploy(redeem) => {
                 Ok(Self::Redeem {
                     validator_pk: redeem.validator_pk,
+                    target_bond_generation: redeem
+                        .target_bond_generation
+                        .ok_or_else(|| {
+                            "redeem deploy is missing target bond generation".to_string()
+                        })
+                        .and_then(|generation| {
+                            BondGeneration::try_from(generation).map_err(|error| error.to_string())
+                        })?,
                     outcome_tag: redeem.outcome_tag,
                     penalty: redeem.penalty,
                     pos_multi_sig_public_keys: redeem.pos_multi_sig_public_keys,
@@ -1096,14 +1333,18 @@ impl SystemDeployData {
         match sdd {
             Self::Slash {
                 invalid_block_hash,
+                equivocation_block_hash,
                 issuer_public_key,
                 target_activation_epoch,
+                target_bond_generation,
             } => SystemDeployDataProto {
                 system_deploy: Some(SystemDeploy::SlashSystemDeploy(
                     SlashSystemDeployDataProto {
                         invalid_block_hash,
                         issuer_public_key: issuer_public_key.bytes.into(),
                         target_activation_epoch,
+                        equivocation_block_hash: equivocation_block_hash.unwrap_or_default(),
+                        target_bond_generation: Some(target_bond_generation.get()),
                     },
                 )),
             },
@@ -1114,6 +1355,7 @@ impl SystemDeployData {
             },
             Self::Redeem {
                 validator_pk,
+                target_bond_generation,
                 outcome_tag,
                 penalty,
                 pos_multi_sig_public_keys,
@@ -1134,6 +1376,7 @@ impl SystemDeployData {
                                 signature: a.signature,
                             })
                             .collect(),
+                        target_bond_generation: Some(target_bond_generation.get()),
                     },
                 )),
             },
@@ -2130,6 +2373,51 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn equivocation_slash_canonicalizes_and_round_trips_both_hashes() {
+        let first = Bytes::from_static(b"block-a");
+        let second = Bytes::from_static(b"block-b");
+        let issuer = PublicKey::from_bytes(b"issuer");
+        let forward = SystemDeployData::create_equivocation_slash(
+            first.clone(),
+            second.clone(),
+            issuer.clone(),
+            7,
+            BondGeneration::GENESIS,
+        );
+        let reverse = SystemDeployData::create_equivocation_slash(
+            second.clone(),
+            first.clone(),
+            issuer,
+            7,
+            BondGeneration::GENESIS,
+        );
+        assert_eq!(forward, reverse);
+        assert_eq!(
+            SystemDeployData::from_proto(SystemDeployData::to_proto(forward.clone()))
+                .expect("equivocation slash"),
+            forward
+        );
+    }
+
+    #[test]
+    fn unary_slash_round_trip_preserves_absent_equivocation_hash() {
+        let slash = SystemDeployData::create_slash(
+            Bytes::from_static(b"invalid"),
+            PublicKey::from_bytes(b"issuer"),
+            9,
+            BondGeneration::GENESIS,
+        );
+        let encoded = SystemDeployData::to_proto(slash.clone()).encode_to_vec();
+        let decoded_proto = SystemDeployDataProto::decode(encoded.as_slice()).expect("slash proto");
+        let decoded = SystemDeployData::from_proto(decoded_proto).expect("unary slash");
+        assert_eq!(decoded, slash);
+        assert!(matches!(decoded, SystemDeployData::Slash {
+            equivocation_block_hash: None,
+            ..
+        }));
+    }
+
     fn deploy_data() -> DeployData {
         DeployData {
             term: "Nil".to_string(),
@@ -2249,6 +2537,8 @@ mod tests {
                 pre_state_hash: Bytes::from_static(b"pre"),
                 post_state_hash: Bytes::from_static(b"post"),
                 bonds: Vec::new(),
+                bond_generations: Vec::new(),
+                active_validators: Vec::new(),
                 block_number: 7,
             },
             deploys: Vec::new(),

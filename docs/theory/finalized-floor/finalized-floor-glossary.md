@@ -29,11 +29,14 @@ make them correct.
 
 | Term | Definition |
 |---|---|
-| **committee** | The bonded validators with their weights — a `WeightMap`. For block `B`, `get_corresponding_weight_map(B) = weight_map(main_parent(B))` (the bonds active for `B`). |
-| **`θ` (ft_threshold)** | The finalization threshold; a block is finalized when its fault-tolerance ratio is `≥ θ`. |
-| **`ft_witnessed(C, J)`** | The clique oracle's normalized fault tolerance of block `C` over snapshot `J`: `ft = (2q − S)/S`, where `S = Σ committee weights` and `q =` max-clique agreeing weight. `C` is **finalized** over `J` iff `ft_witnessed(C,J) ≥ θ`. (`clique_oracle.rs`; Rocq `CliqueOracle.Finalized`.) |
+| **committee** | A set of bonded validators and their weights. The protocol distinguishes the authorization committee from the post-state bond cache; they coincide only when no bond transition lies between the finalized floor and the block's post-state. |
+| **authorization committee `Auth(B)`** | The positive active PoS bonds read from `post_state(floor(B))`. It supplies the exact justification-validator set, sender membership, and synchrony weights for `B`. It is derived from immutable evidence and cannot be changed by a non-finalized head or by `B`'s own post-state. |
+| **post-state bond cache** | `B.body.state.bonds`, which must equal the PoS bonds replayed from `B.post_state`. It records the result of `B`'s state transition and allows an accepted block to register newly bonded validator slots. It does not authorize `B`. |
+| **committee transition** | A bond change recorded in an accepted block's post-state cache. The new validator is registered with a genesis latest-message placeholder, but gains proposal/validation authority only after a later block's structural finalized floor includes that post-state. Invalid blocks cannot register identities. |
+| **`θ` (ft_threshold)** | The finalization threshold; a block is finalized when its fault-tolerance ratio is strictly greater than `θ`. |
+| **`ft_witnessed(C, J)`** | The clique oracle's normalized fault tolerance of block `C` over snapshot `J`: `ft = (2q − S)/S`, where `S = Σ committee weights` and `q =` max-clique agreeing weight. `C` is **finalized** over `J` iff `ft_witnessed(C,J) > θ`. (`clique_oracle.rs`; Rocq `CliqueOracle.Finalized_ft`.) |
 | **quorum** | A majority-weight sub-committee that mutually agree on `C` (a clique). The oracle finalizes `C` when a quorum witnesses it. |
-| **`Finalized c J b`** | Rocq abstraction: *some majority-weight sub-committee `c` all agree on `b` over `J`* — a faithful monotone abstraction of `ft_witnessed ≥ θ`. |
+| **`Finalized c J b`** | Rocq abstraction: *some strict-majority-weight sub-committee `c` all agree on `b` over `J`* — a monotone abstraction refined by the strict exact threshold predicate `Finalized_ft`. |
 | **causal clique certificate** | The original exact clique-oracle decision. A validator causally supports candidate `C` when `C` is in the all-parent DAG past of that validator's frozen latest message. A certificate proves that sufficient mutually agreeing causal support clears the configured exact fault-tolerance threshold. |
 | **state-effect identity** | The consensus identity `E = (source_block_hash, execution_index)` of one successful user or system execution. The source hash prevents equal indices in different blocks from aliasing. |
 | **active effect set `Active(B)`** | The successful execution identities retained by block `B`: its own successful effects plus the active effects of its maximal parents and finalized floor, minus `B.rejected_state_effects`. This is provenance of accepted transitions, not a snapshot of live tuples. |
@@ -45,14 +48,32 @@ make them correct.
 | **stale-state descendant** | A block that is a DAG descendant of the current LFB but whose merge rejected at least one effect active at that LFB. It may remain valid and causally certified while being ineligible as the next LFB. |
 | **rebase** | Recompute a successor from the certified floor instead of reusing a stale covering-parent post-state. The floor is an explicit state input, so accepted floor effects become active again and later LFB progress is possible. |
 | **floor-rebased parent selection** | The proposer retains every valid validator latest message as causal fork-choice evidence, compacts direct parents only when another selected parent causally covers the removed tip, then computes state from the certified floor plus deterministic accepted deltas in the parent closure. State safety is a property of replay and promotion, not a filter over causal tips. |
-| **LFB parent fallback** | The non-empty parent rule used only when no valid latest message remains: the proposed block declares the snapshot LFB itself as its sole parent instead of falling back to genesis. |
+| **causal-parent projection** | The exact latest messages whose certified admission, sender, current bond generation, positive floor authority, and non-equivocation status make them valid causal merge inputs. Floor descent is intentionally not part of this predicate. |
+| **finality-vote projection** | The subset of the causal-parent projection that descends from the captured finalized floor. LMD-GHOST weights, clique support, fault tolerance, and finality use this set; parent construction does not. |
+| **LFB parent backstop** | The protected-floor rule that inserts the captured LFB whenever no causal-parent candidate equals or descends from it. If no causal parent exists, the LFB is the sole parent; if only stale disjoint parents exist, the LFB participates in reachability compaction and guarantees a floor-descending replay input. Genesis is never substituted for a later floor. |
 | **local finalizer view** | One node's immutable snapshot of its currently validated shard DAG and validator latest messages. Asynchronous delivery may make it a proper subgraph of another honest node's view. Missing latest messages contribute no agreement but do not remove their stake from the candidate committee. |
+| **durable-finalizer coverage** | The complete all-parent propagation of validator identities from one frozen latest-message map down to the current LFB height. At candidate `C`, the propagated identities equal exactly the validators whose latest messages causally include `C`. Coverage enumerates candidates; it does not certify them. Each target still needs its own exact causal clique, state-preserving clique, and current-LFB preservation check. |
+| **finalizer materialization alignment** | The refinement obligation that a dual-certified proposal floor discoverable through secondary-parent evidence is also discoverable by the durable finalizer, and that publication is bound to the exact selected target and its own evidence. The selected LFB is the greatest eligible `(block_number, block_hash)` in the frozen view. |
 | **direct finalization** | The exact causal/state-certified candidate selected as the next shard LFB. It is the only new block whose finality was decided by that finalizer invocation. |
 | **indirect finalization** | Marking an unfinalized all-parent DAG ancestor of a directly finalized candidate as finalized because it belongs to that candidate's committed causal history. This is causal closure of one decision, not another clique vote and not a sub-finalization rollup. |
 | **shard finality** | Finality within one shard DAG and its bonded committee. Nodes independently discover the same LFB from validated evidence. The current protocol has no automatic cross-shard aggregation into a global LFB. |
-| **finality-progress timer** | Task-local monotonic elapsed time since the node first observed the current LFB hash. Only observing another LFB hash resets it; producer timestamps, wall-clock block age, frontier movement, and latest-message churn do not. |
-| **heartbeat recovery round** | A zero-based interval of continued observation of one unchanged LFB. For ordered committee `C`, LFB height `h`, and round `r`, the unique local recovery leader is `C[(h+r) mod |C|]`. Different nodes may temporarily occupy different rounds without changing block validity or finality authority. |
-| **heartbeat backpressure** | The proposal-admission rules that keep liveness work within the serialized proposer queue, deploy-lag/cooldown limits, and the exact unfinalized-DAG cap. It controls when ordinary blocks may be requested; it cannot certify or promote an LFB. |
+| **proposal intent** | The explicit reason carried into the serialized proposer: `Manual` for an operator/API request, `PendingDeploy` for ordinary stored work, or `FinalityRecovery(permit)` for heartbeat liveness. Intent is authority, not a diagnostic label: only a fresh authorized recovery intent may permit an empty block. |
+| **recovery deferral reason** | A typed reason that block creation cannot proceed from its captured snapshot. `FinalizedFloorMaterializationPending` means the candidate's certified context is ahead of the durable materialized context; it retains deploys and issues an idempotent finalization request. `IncompleteCandidateCommitteeSlots`, `InactiveCandidateValidator`, and `StaleRecoveryPermit` are distinct authority failures and do not trigger finalizer retries. Live DAG synchronization does not add a proposal pause. |
+| **local finalization witness** | The immutable audit input retained beside one local finalization record: exact local predecessor, target block and state, frozen eligible latest messages, supporting closure, exact FTT, authority-context digest, and deterministic witness digest. It proves what one node evaluated and supports crash recovery, but its ledger revision and digest are node-local and cannot authorize another node's state transition. |
+| **live minority-fork recovery** | Validator-local synchronization that requests ordinary fork-choice tips from connected peers, admits every missing dependency through normal bounded certified admission, and asks the existing local finalizer to recompute from a frozen context. Peer tips are discovery evidence, not votes, checkpoints, or state authority. |
+| **local ledger identity** | A finalization record's revision and digest within one node's durable audit history. Two honest nodes can share the same finalized block and replay state while having different local ledger identities because they published different intermediate rounds. |
+| **finality-recovery permit** | A capability value binding one observed LFB hash, that LFB's metadata height, and one validator-local recovery round. The proposer revalidates the hash and LFB height against a fresh snapshot, then uses the captured round only to recompute deterministic leadership over the canonical committee derived from that LFB's post-state. There is no independent current-round comparison. If the LFB changed or the floor committee cannot be reconstructed while the request waited, the permit is stale and the proposal is deferred; advancing only the unfinalized DAG head does not stale it. |
+| **finality-progress timer** | Task-local monotonic elapsed time since the node first observed the current LFB hash. Only observing another LFB hash resets it; producer timestamps, wall-clock block age, frontier movement, and latest-message churn do not. The first recovery round opens once after `max(max_lfb_age, check_interval)`; later rounds advance every `check_interval`. |
+| **heartbeat recovery round** | A validator-local zero-based interval of continued observation of one unchanged LFB. If $`T_0 = \max(\mathtt{max\_lfb\_age},\mathtt{check\_interval})`$, no round is available before $`T_0`$, and at elapsed duration $`d \ge T_0`$ the highest available round is $`\left\lfloor(d-T_0)/\mathtt{check\_interval}\right\rfloor`$. A late task processes the earliest uncompleted available round, so completed rounds form a prefix and no rotating leader is skipped. For ordered committee $`C`$, LFB height $`h`$, and round $`r`$, the unique local recovery leader is $`C[(h+r) \bmod |C|]`$. Validators may temporarily occupy different rounds without changing block validity or finality authority. |
+| **stored pending deploy** | A signed deploy envelope retained in local deploy storage. Storage membership alone does not imply that a fresh proposal may include it. |
+| **admissible pending deploy** | A stored deploy that passes the fresh snapshot's ordinary eligibility rules, including time/height validity, terminal and in-scope exclusion, duplicate bounds, and available proposal capacity. A stored but inadmissible deploy cannot mask authorized empty recovery. |
+| **pending-plus-recovery composition** | The rule that a selected recovery request retains its recovery permit while the ordinary block creator includes all deterministically selected admissible deploys. The same proposal advances liveness and performs useful work; only the absence of admissible work makes empty-block authority relevant. |
+| **peer-derived proposal authority** | The prohibited rule that observing a peer block, frontier movement, or latest-message divergence directly entitles the local node to propose a support block. Peer messages are evidence after validation, not scheduling capabilities; automatic proposal authority comes only from admissible local work or selected permit-bound recovery. |
+| **proposer coalescer** | The single-flight admission gate with states `Idle`, `Active`, and `ActiveDirty`. A pending-deploy collision changes `Active` to `ActiveDirty`, and normal completion converts that dirty bit into exactly one fresh `PendingDeploy` follow-up. More pending collisions share that wakeup; manual and recovery collisions are classified `Busy` and return an empty trigger result without changing intent. Enqueue or engine-unavailability cancellation clears the gate and may drop the wake edge, but leaves the deploy stored for a later heartbeat rescan. |
+| **explicit heartbeat evidence view** | The block ancestry and captured validator latest-message map recorded by an ordinary recovery proposal. A finality certificate is computed from mutual visibility in these views: its supporters form a mutual causal clique, and its state supporters form a mutual state-preserving clique. A heartbeat attempt or leader selection is not support by itself. |
+| **`DeliveryWithinRound`** | An eventual-synchrony liveness assumption in `HeartbeatFinalityBackpressure.tla`: a local round closes after its offline leader is bypassed or its admitted attempt has drained through validation. It is not a safety premise; the asynchronous configuration removes it and still checks every safety invariant while validators advance local rounds independently. |
+| **`BoundedRecoveryScheduling`** | An eventual-synchrony liveness assumption in `HeartbeatFinalityBackpressure.tla` that keeps online heartbeat tasks within one completed local recovery step once the scheduling bound applies. It prevents a finite bounded model from starving one fair task while another drains every available round. It is disabled together with within-round delivery in the asynchronous safety configuration. |
+| **heartbeat backpressure** | The proposal-admission rules that keep liveness work within one active proposer, one coalesced pending wakeup, deploy-lag/cooldown limits, and the exact unfinalized-DAG cap. It controls when ordinary blocks may be requested; it cannot certify or promote an LFB. |
 
 ### 1.3 The floor and the merge
 
@@ -90,13 +111,18 @@ make them correct.
 | **T-DETMERGE / T-CONV** | The merge is order-independent ⟹ no fork from fold order (safety **S6**). |
 | **T-ALG** | Fold laws — BitmaskOr semilattice; IntegerAdd wrapping group + checked apply (safety **S7**). |
 | **T-PS** | Safety holds for *any* parent list (unconstrained oracle). |
-| **T-COMM** | The committee is `bonds_of(floor)`, a pure function of the floor (safety **S8**). |
+| **T-COMM** | `Auth(B)` is a pure function of `floor(B)`; exact justifications, sender membership, and synchrony use it, while `B.body.state.bonds` remains the independently replay-checked post-state cache (safety **S8**). |
+| **T-COMMITTEE-TRANSITION** | A transition in `B.post_state` cannot authorize `B`; accepted registration plus later floor promotion enables the new committee, while invalid-block registration, post-state self-authorization, head-filtered justifications, head-local synchrony weights, and premature promotion are rejected by proof or executable negative controls. |
 | **T-EFFECT-PROVENANCE** | Exact active effects follow the accepted-input union-minus-rejections recurrence; parent order and redundant covered parents are irrelevant, direct rejection removes only its named identity, and the complete candidate scan decides preservation exactly (safety **S28**). |
 | **T-STATE-PARENT** | Every valid latest message remains a causal parent, an empty valid-tip set selects the LFB, and the resulting merge state preserves the certified floor even when a parent delta does not (safety **S29**). |
 | **T-CERTIFIED-FLOOR-PROMOTION** | Complete all-parent causal discovery promotes the highest dual-certified universal state floor independently of parent order; restricting discovery to main-parent spines starves an off-main committed state. |
 | **T-COVERAGE-TRANSPARENCY** | Propagated latest-message coverage equals pairwise DAG ancestry for every candidate and validator; therefore supporter filtering and the existing exact clique decision are unchanged. Linear-snapshot reuse preserves the eligible ancestor set only under its one-predecessor and older-snapshot premises. |
+| **T-FINALIZER-MATERIALIZATION** | Durable-finalizer all-parent coverage is extensionally equal to exhaustive per-target causal support, and deterministic greatest-eligible selection cannot substitute a causal-only rejected-state sibling for the requested dual-certified target. |
 | **T-SNAPSHOT-MATERIALIZATION** | Materializing the complete snapshot target set makes every required provenance entry available before selection; repeated materialization is idempotent, arbitrary snapshot/finalizer interleavings commute, and the parent-only control is incomplete. |
-| **T-HEARTBEAT-BACKPRESSURE** | Rotating recovery selects one in-committee leader per `(LFB,round)`, records at most one local attempt for that round, resets history only on observed LFB change, and preserves the proposal/validation capacity bound. It leaves the exact causal and state certificates unchanged. |
+| **T-HEARTBEAT-BACKPRESSURE** | Rotating recovery selects one in-committee leader per validator-local `(LFB,round)`, records at most one local attempt for that round, resets history only on observed LFB change, and preserves the proposal/validation capacity bound. Explicit ancestry/latest-message views must yield both a mutual causal clique and a refining mutual state clique before promotion. Safety does not require `DeliveryWithinRound`. |
+| **T-HEARTBEAT-CADENCE** | Recovery round zero begins after the one-time `max(max_lfb_age, check_interval)` stall timeout; subsequent rounds begin every `check_interval`. `HeartbeatRecoveryCadence.tla` checks this contract for independent validator-local clocks, and its collapsed-timeout control demonstrates the delayed-round defect caused by reusing the stall timeout as every later interval. |
+| **T-PENDING-RECOVERY-COMPOSITION** | A selected recovery reservation composes with admissible pending work, while stored but exhausted work cannot mask an empty recovery. Retryable outcomes preserve the deploy pool and keep the round open; terminal evidence alone permits removal. |
+| **T-PROPOSER-COALESCING** | Concurrent proposal ingress preserves intent and boundedness during available service: only pending work may latch one follow-up, every normally completed dirty epoch is serviced once, stale recovery never gains empty authority, and busy recovery remains retryable. Permit freshness means exact LFB hash/metadata-height agreement plus leader recomputation using the captured round and the fresh LFB-derived committee; the model MUST NOT interpret non-finalized head movement, a divergent parent committee, or an independent current round as another freshness oracle. Its retry obligation abstracts the owning heartbeat's later resubmission, not proposer-owned retry state. |
 | **Case-A / Case-B** | The two sound-base cases in `derive_floor`: **A** = candidate is a general ancestor of every parent; **B** = every *other* candidate is compatible (in the candidate's past, or mergeable via a common-descendant parent). |
 
 ---
@@ -138,7 +164,7 @@ for block in spine:
 
 ⟨ *L-SNAP guard: the pivot must still finalize over the larger snapshot `J`.* ⟩
 ```
-if ft_witnessed(pivot, J) < θ:
+if ft_witnessed(pivot, J) ≤ θ:
     emit metric floor_incremental_guard_fallback
     return None                              ⟨ L-SNAP premise failed ⟹ cold ⟩
 ```
@@ -147,7 +173,7 @@ if ft_witnessed(pivot, J) < θ:
 ```
 best ← pivot
 for candidate in reverse(spine without parent-to-pivot already covered):
-    if ft_witnessed(candidate, J) ≥ θ:       ⟨ only these are oracle calls: O(advance) ⟩
+    if ft_witnessed(candidate, J) > θ:       ⟨ only these are oracle calls: O(advance) ⟩
         best ← candidate
     else:
         break                                ⟨ downward-closed ⟹ first miss ends it ⟩
@@ -243,33 +269,40 @@ tips back into the estimator lets an honest proposer build from a state that has
 already been excluded from committed-state progression.
 
 **Snapshot rule.** Let `L` be the LFB read from the same immutable DAG
-representation as the latest-message map. Parent eligibility is an exact
-state-provenance query. An error aborts snapshot construction rather than silently
-shrinking the voting input.
+representation as the latest-message map. Base eligibility authenticates
+authority, admission, sender, generation, and objective-equivocation status
+before floor ancestry is considered. An error aborts snapshot construction
+rather than silently shrinking either projection.
 
 ```text
-eligible := empty validator-to-block map
-for each (validator, latest) in valid_latest_messages:
-    preserved := preserves(L, latest)
-    if preserved returned an error:
-        fail snapshot construction
-    if latest = L or preserved:
-        eligible[validator] := latest
+causal := empty validator-to-block map
+votes := empty validator-to-block map
+for each (validator, latest) in exact_latest_messages:
+    if not base_admissible(L, validator, latest):
+        continue
+    causal[validator] := latest
+    if latest = L or dag_descends(latest, L):
+        votes[validator] := latest
 
-parent_hashes := distinct values of eligible
+parent_hashes := reachability_maximal(distinct values of causal)
+if no parent_hash descends from L:
+    parent_hashes := parent_hashes union {L}
+if configured_bounds_drop_an_uncovered_tip(causal, parent_hashes):
+    fail snapshot construction
 if parent_hashes is empty:
     parent_hashes := {L}
 
-ghost_main_parent := estimate_tip(eligible)
+ghost_main_parent := estimate_tip(votes) or L
 declared_parents := deterministically order parent_hashes around ghost_main_parent
 ```
 
 The complete latest-message map still supplies block justifications, and all
-valid latest metadata still supplies sequence-number accounting. Validators
-replay `declared_parents`; they do not apply their local LFB as an additional
-validity predicate. This separation preserves asynchronous block validity while
-ensuring every proposal made after local finalization starts from state that
-retains that finalization.
+latest metadata still supplies sequence-number accounting. Validators replay
+`declared_parents`; they do not recompute either projection from their local,
+possibly lagging LFB. This separation preserves asynchronous block validity,
+keeps a stale accepted sibling as causal evidence without granting it voting
+weight, and ensures every proposal made after local finalization starts from
+state that retains that finalization.
 
 ### 2.5 Universal certified-floor promotion
 
@@ -366,5 +399,5 @@ universal. Such a child always performs the complete scan.
 
 ## 3. References
 
-See the [dossier's References section](./finalized-floor-verification.md#references)
+See the [dossier's References section](./finalized-floor-verification.md#9-references)
 for the cited literature (CBC Casper, clique-based finality, IEEE-754) with DOIs.

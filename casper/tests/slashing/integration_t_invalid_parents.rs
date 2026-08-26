@@ -11,14 +11,14 @@
 // Theorem citation: T-9.3 (catch-all dispatcher), Rocq
 // formal/rocq/slashing/theories/BugFixDispatcher.v.
 //
-// Validation order: block_summary's `justification_follows`
+// Validation order: block_summary's `justifications_well_formed`
 // (validate.rs:820) runs after `block_number` and returns
 // `InvalidParents` from line 833 when `parent_hashes.first() ==
 // None`. To keep `block_number` happy on the empty-parents path
 // the mutator ALSO zeroes `body.state.block_number` (since the
 // validator's `max_block_number = -1` fold gives expected = 0
 // when the parents list is empty). Result: block_number passes,
-// justification_follows returns InvalidParents.
+// parent validation returns InvalidParents.
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -69,7 +69,7 @@ async fn integration_t_invalid_parents() {
         // Empty parents list AND zero block_number: block_number
         // validator computes expected = -1 + 1 = 0 with empty
         // parents; setting body.state.block_number = 0 makes that
-        // check pass. justification_follows then trips on
+        // check pass. parent validation then trips on
         // parent_hashes.first() == None → InvalidParents.
         b.header.parents_hash_list = vec![];
         b.body.state.block_number = 0;

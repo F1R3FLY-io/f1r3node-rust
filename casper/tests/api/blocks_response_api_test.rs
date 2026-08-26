@@ -270,14 +270,19 @@ async fn show_main_chain_should_return_only_blocks_in_the_main_chain() {
 
     let genesis = create_dag_with_8_blocks(&mut block_store, &mut block_dag_storage);
 
-    let mut dag = block_dag_storage
+    let dag = block_dag_storage
         .get_representation()
         .expect("dag representation");
 
-    let tips = UnlimitedParentsEstimatorFixture::create_estimator()
-        .tips(&mut dag, &genesis)
-        .await
-        .unwrap();
+    let estimator = UnlimitedParentsEstimatorFixture::create_estimator();
+    let tips = block_generator::certified_fork_choice(
+        &estimator,
+        &dag,
+        &genesis,
+        dag.latest_message_hashes().into_iter().collect(),
+    )
+    .await
+    .unwrap();
 
     let scope_id = generate_scope_id();
     let mut kvm = mk_test_rnode_store_manager_shared(scope_id);
@@ -319,14 +324,19 @@ async fn get_blocks_should_return_all_blocks() {
 
     let genesis = create_dag_with_8_blocks(&mut block_store, &mut dag_storage);
 
-    let mut dag = dag_storage
+    let dag = dag_storage
         .get_representation()
         .expect("dag representation");
 
-    let tips = UnlimitedParentsEstimatorFixture::create_estimator()
-        .tips(&mut dag, &genesis)
-        .await
-        .unwrap();
+    let estimator = UnlimitedParentsEstimatorFixture::create_estimator();
+    let tips = block_generator::certified_fork_choice(
+        &estimator,
+        &dag,
+        &genesis,
+        dag.latest_message_hashes().into_iter().collect(),
+    )
+    .await
+    .unwrap();
 
     let scope_id = generate_scope_id();
     let mut kvm = mk_test_rnode_store_manager_shared(scope_id);
@@ -366,14 +376,19 @@ async fn get_blocks_should_return_until_depth() {
 
     let genesis = create_dag_with_8_blocks(&mut block_store, &mut dag_storage);
 
-    let mut dag = dag_storage
+    let dag = dag_storage
         .get_representation()
         .expect("dag representation");
 
-    let tips = UnlimitedParentsEstimatorFixture::create_estimator()
-        .tips(&mut dag, &genesis)
-        .await
-        .unwrap();
+    let estimator = UnlimitedParentsEstimatorFixture::create_estimator();
+    let tips = block_generator::certified_fork_choice(
+        &estimator,
+        &dag,
+        &genesis,
+        dag.latest_message_hashes().into_iter().collect(),
+    )
+    .await
+    .unwrap();
 
     let scope_id = generate_scope_id();
     let mut kvm = mk_test_rnode_store_manager_shared(scope_id);
@@ -418,14 +433,19 @@ async fn get_blocks_by_heights_should_return_blocks_between_start_and_end() {
 
     let genesis = create_dag_with_8_blocks(&mut block_store, &mut dag_storage);
 
-    let mut dag = dag_storage
+    let dag = dag_storage
         .get_representation()
         .expect("dag representation");
 
-    let tips = UnlimitedParentsEstimatorFixture::create_estimator()
-        .tips(&mut dag, &genesis)
-        .await
-        .unwrap();
+    let estimator = UnlimitedParentsEstimatorFixture::create_estimator();
+    let tips = block_generator::certified_fork_choice(
+        &estimator,
+        &dag,
+        &genesis,
+        dag.latest_message_hashes().into_iter().collect(),
+    )
+    .await
+    .unwrap();
 
     let scope_id = generate_scope_id();
     let mut kvm = mk_test_rnode_store_manager_shared(scope_id);

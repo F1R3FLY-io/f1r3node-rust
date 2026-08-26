@@ -4,9 +4,11 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use block_storage::rust::dag::block_dag_key_value_storage::{DeployId, KeyValueDagRepresentation};
+use block_storage::rust::dag::block_dag_key_value_storage::{
+    CertifiedAdmissionOutcome, CertifiedSenderAuthority, DeployId, KeyValueDagRepresentation,
+};
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
-use casper::rust::block_status::{BlockError, InvalidBlock, ValidBlock};
+use casper::rust::block_status::{BlockError, CertifiedBlockValidation, InvalidBlock, ValidBlock};
 use casper::rust::casper::{
     Casper, CasperShardConf, CasperSnapshot, DeployError, MultiParentCasper,
 };
@@ -73,6 +75,43 @@ impl Clone for NoOpsCasperEffect {
 // Using shared MockKeyValueStore from test_mocks module
 
 impl NoOpsCasperEffect {
+    fn validation_result(
+        block: &BlockMessage,
+        status: Either<BlockError, ValidBlock>,
+    ) -> Result<CertifiedBlockValidation, CasperError> {
+        let sender_authority = block
+            .header
+            .sender_bond_generation
+            .map(|generation| {
+                CertifiedSenderAuthority::new(
+                    block,
+                    block
+                        .header
+                        .parents_hash_list
+                        .first()
+                        .cloned()
+                        .unwrap_or_else(|| block.block_hash.clone()),
+                    block.body.state.pre_state_hash.clone(),
+                    block.block_hash.clone(),
+                    generation,
+                    1,
+                )
+                .map_err(|error| CasperError::RuntimeError(error.to_string()))
+            })
+            .transpose()?;
+        match sender_authority {
+            Some(sender_authority) => {
+                CertifiedBlockValidation::certified(block, status, sender_authority)
+            }
+            None => match status {
+                Either::Left(error) => CertifiedBlockValidation::from_uncertified_error(error),
+                Either::Right(_) => Err(CasperError::RuntimeError(
+                    "accepted test block is missing sender bond generation".to_string(),
+                )),
+            },
+        }
+    }
+
     pub fn new(
         _blocks: Option<HashMap<BlockHash, BlockMessage>>, // No longer used - blocks stored in actual KeyValueBlockStore
         estimator_func: Option<Vec<BlockHash>>,
@@ -157,12 +196,7 @@ impl NoOpsCasperEffect {
 impl MultiParentCasper for NoOpsCasperEffect {
     async fn fetch_dependencies(&self) -> Result<(), CasperError> { Ok(()) }
 
-    fn normalized_initial_fault(
-        &self,
-        _weights: HashMap<Validator, u64>,
-    ) -> Result<f32, CasperError> {
-        Ok(0.0)
-    }
+    fn normalized_initial_fault(&self, _target: &BlockHash) -> Result<f32, CasperError> { Ok(0.0) }
 
     async fn last_finalized_block(&self) -> Result<BlockMessage, CasperError> {
         Ok(get_random_block_default())
@@ -190,6 +224,12 @@ impl Casper for NoOpsCasperEffect {
     async fn get_snapshot(&self) -> Result<CasperSnapshot, CasperError> {
         Err(CasperError::RuntimeError(
             "get_snapshot not implemented for NoOpsCasperEffect - use TestCasperWithSnapshot for heartbeat tests".to_string(),
+        ))
+    }
+
+    fn request_finalization(&self) -> Result<(), CasperError> {
+        Err(CasperError::RuntimeError(
+            "request_finalization not implemented for NoOpsCasperEffect".to_string(),
         ))
     }
 
@@ -225,31 +265,32 @@ impl Casper for NoOpsCasperEffect {
 
     async fn validate(
         &self,
-        _block: &BlockMessage,
+        block: &BlockMessage,
         _snapshot: &mut CasperSnapshot,
-    ) -> Result<Either<BlockError, ValidBlock>, CasperError> {
-        Ok(Either::Right(ValidBlock::Valid))
+    ) -> Result<CertifiedBlockValidation, CasperError> {
+        Self::validation_result(block, Either::Right(ValidBlock::Valid))
     }
 
     async fn validate_self_created(
         &self,
-        _block: &BlockMessage,
+        block: &BlockMessage,
         _snapshot: &mut CasperSnapshot,
         _pre_state_hash: Bytes,
         _post_state_hash: Bytes,
-    ) -> Result<Either<BlockError, ValidBlock>, CasperError> {
-        if self.self_created_should_fail {
-            Ok(Either::Left(BlockError::Invalid(
-                InvalidBlock::InvalidFormat,
-            )))
+    ) -> Result<CertifiedBlockValidation, CasperError> {
+        let status = if self.self_created_should_fail {
+            Either::Left(BlockError::Invalid(InvalidBlock::InvalidFormat))
         } else {
-            Ok(Either::Right(ValidBlock::Valid))
-        }
+            Either::Right(ValidBlock::Valid)
+        };
+        Self::validation_result(block, status)
     }
 
     async fn handle_valid_block(
         &self,
         _block: &BlockMessage,
+        _certificate: &CertifiedSenderAuthority,
+        _outcome: &CertifiedAdmissionOutcome,
     ) -> Result<KeyValueDagRepresentation, CasperError> {
         Ok(self.block_dag_storage.clone())
     }
@@ -259,6 +300,8 @@ impl Casper for NoOpsCasperEffect {
         _block: &BlockMessage,
         _status: &InvalidBlock,
         _dag: &KeyValueDagRepresentation,
+        _certificate: &CertifiedSenderAuthority,
+        _outcome: &CertifiedAdmissionOutcome,
     ) -> Result<KeyValueDagRepresentation, CasperError> {
         Ok(self.block_dag_storage.clone())
     }
@@ -302,7 +345,7 @@ impl NoOpsCasperEffect {
             self.block_dag_storage.dag_set.insert(block_hash.clone());
 
             // Add block metadata to the metadata store
-            let block_metadata = BlockMetadata::from_block(&block, false, None, None);
+            let block_metadata = BlockMetadata::from_block(&block, None, None);
             let mut metadata_guard = self.block_dag_storage.block_metadata_index.write();
             match metadata_guard.add(block_metadata) {
                 Ok(_) => {

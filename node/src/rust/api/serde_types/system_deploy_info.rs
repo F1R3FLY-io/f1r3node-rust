@@ -3,9 +3,10 @@
 //! This module provides custom JSON serialization for protobuf types that don't have serde derives by default.
 
 use models::casper::{
-    BondInfo, CloseBlockSystemDeployDataProto, JustificationInfo, PeekProto, RejectedDeployInfo,
-    ReportCommProto, ReportConsumeProto, ReportProduceProto, ReportProto, SingleReport,
-    SlashSystemDeployDataProto, SystemDeployDataProto, SystemDeployInfoWithEventData,
+    BondInfo, CloseBlockSystemDeployDataProto, JustificationInfo, PeekProto,
+    RedeemSystemDeployDataProto, RedemptionAuthorizationProto, RejectedDeployInfo, ReportCommProto,
+    ReportConsumeProto, ReportProduceProto, ReportProto, SingleReport, SlashSystemDeployDataProto,
+    SystemDeployDataProto, SystemDeployInfoWithEventData,
 };
 use models::rhoapi::{BindPattern, ListParWithRandom, Par};
 use serde::{Deserialize, Serialize};
@@ -95,6 +96,13 @@ impl From<RejectedDeployInfoSerde> for RejectedDeployInfo {
 pub struct SlashSystemDeployDataSerde {
     #[serde(rename = "invalidBlockHash", with = "base64_bytes")]
     pub invalid_block_hash: Vec<u8>,
+    #[serde(
+        rename = "equivocationBlockHash",
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        with = "base64_bytes"
+    )]
+    pub equivocation_block_hash: Vec<u8>,
     #[serde(rename = "issuerPublicKey", with = "base64_bytes")]
     pub issuer_public_key: Vec<u8>,
     // `default` preserves API back-compat with pre-§9 clients that don't know
@@ -104,14 +112,18 @@ pub struct SlashSystemDeployDataSerde {
     // epoch — old clients fail cleanly rather than silently slashing.
     #[serde(rename = "targetActivationEpoch", default)]
     pub target_activation_epoch: i64,
+    #[serde(rename = "targetBondGeneration", default)]
+    pub target_bond_generation: Option<i64>,
 }
 
 impl From<SlashSystemDeployDataProto> for SlashSystemDeployDataSerde {
     fn from(data: SlashSystemDeployDataProto) -> Self {
         Self {
             invalid_block_hash: data.invalid_block_hash.to_vec(),
+            equivocation_block_hash: data.equivocation_block_hash.to_vec(),
             issuer_public_key: data.issuer_public_key.to_vec(),
             target_activation_epoch: data.target_activation_epoch,
+            target_bond_generation: data.target_bond_generation,
         }
     }
 }
@@ -120,8 +132,80 @@ impl From<SlashSystemDeployDataSerde> for SlashSystemDeployDataProto {
     fn from(data: SlashSystemDeployDataSerde) -> Self {
         Self {
             invalid_block_hash: data.invalid_block_hash.into(),
+            equivocation_block_hash: data.equivocation_block_hash.into(),
             issuer_public_key: data.issuer_public_key.into(),
             target_activation_epoch: data.target_activation_epoch,
+            target_bond_generation: data.target_bond_generation,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct RedemptionAuthorizationSerde {
+    #[serde(rename = "publicKey", with = "base64_bytes")]
+    pub public_key: Vec<u8>,
+    #[serde(with = "base64_bytes")]
+    pub signature: Vec<u8>,
+}
+
+impl From<RedemptionAuthorizationProto> for RedemptionAuthorizationSerde {
+    fn from(data: RedemptionAuthorizationProto) -> Self {
+        Self {
+            public_key: data.public_key.to_vec(),
+            signature: data.signature.to_vec(),
+        }
+    }
+}
+
+impl From<RedemptionAuthorizationSerde> for RedemptionAuthorizationProto {
+    fn from(data: RedemptionAuthorizationSerde) -> Self {
+        Self {
+            public_key: data.public_key.into(),
+            signature: data.signature.into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct RedeemSystemDeployDataSerde {
+    #[serde(rename = "validatorPk", with = "base64_bytes")]
+    pub validator_pk: Vec<u8>,
+    #[serde(rename = "targetBondGeneration")]
+    pub target_bond_generation: Option<i64>,
+    #[serde(rename = "outcomeTag")]
+    pub outcome_tag: String,
+    pub penalty: i64,
+    #[serde(rename = "posMultiSigPublicKeys")]
+    pub pos_multi_sig_public_keys: Vec<String>,
+    #[serde(rename = "posMultiSigQuorum")]
+    pub pos_multi_sig_quorum: u32,
+    pub authorizations: Vec<RedemptionAuthorizationSerde>,
+}
+
+impl From<RedeemSystemDeployDataProto> for RedeemSystemDeployDataSerde {
+    fn from(data: RedeemSystemDeployDataProto) -> Self {
+        Self {
+            validator_pk: data.validator_pk.to_vec(),
+            target_bond_generation: data.target_bond_generation,
+            outcome_tag: data.outcome_tag,
+            penalty: data.penalty,
+            pos_multi_sig_public_keys: data.pos_multi_sig_public_keys,
+            pos_multi_sig_quorum: data.pos_multi_sig_quorum,
+            authorizations: data.authorizations.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
+impl From<RedeemSystemDeployDataSerde> for RedeemSystemDeployDataProto {
+    fn from(data: RedeemSystemDeployDataSerde) -> Self {
+        Self {
+            validator_pk: data.validator_pk.into(),
+            target_bond_generation: data.target_bond_generation,
+            outcome_tag: data.outcome_tag,
+            penalty: data.penalty,
+            pos_multi_sig_public_keys: data.pos_multi_sig_public_keys,
+            pos_multi_sig_quorum: data.pos_multi_sig_quorum,
+            authorizations: data.authorizations.into_iter().map(Into::into).collect(),
         }
     }
 }
@@ -141,6 +225,7 @@ impl From<CloseBlockSystemDeployDataSerde> for CloseBlockSystemDeployDataProto {
 pub enum SystemDeployDataSerde {
     SlashSystemDeploy(SlashSystemDeployDataSerde),
     CloseBlockSystemDeploy(CloseBlockSystemDeployDataSerde),
+    RedeemSystemDeploy(RedeemSystemDeployDataSerde),
 }
 
 impl From<SystemDeployDataProto> for SystemDeployDataSerde {
@@ -154,12 +239,10 @@ impl From<SystemDeployDataProto> for SystemDeployDataSerde {
                     close,
                 ),
             ) => Self::CloseBlockSystemDeploy(close.into()),
-            // The Stage-C `RedeemSystemDeploy` oneof variant has no dedicated
-            // JSON serde view yet; surface it as the degenerate close-block
-            // shape (matching the `None` fallback) — this diagnostic serde is
-            // not a consensus surface. (Pre-existing gap, unrelated to D3.)
-            Some(models::casper::system_deploy_data_proto::SystemDeploy::RedeemSystemDeploy(_))
-            | None => Self::CloseBlockSystemDeploy(CloseBlockSystemDeployDataSerde {}),
+            Some(models::casper::system_deploy_data_proto::SystemDeploy::RedeemSystemDeploy(
+                redeem,
+            )) => Self::RedeemSystemDeploy(redeem.into()),
+            None => Self::CloseBlockSystemDeploy(CloseBlockSystemDeployDataSerde {}),
         }
     }
 }
@@ -175,6 +258,11 @@ impl From<SystemDeployDataSerde> for SystemDeployDataProto {
             SystemDeployDataSerde::CloseBlockSystemDeploy(close) => Some(
                 models::casper::system_deploy_data_proto::SystemDeploy::CloseBlockSystemDeploy(
                     close.into(),
+                ),
+            ),
+            SystemDeployDataSerde::RedeemSystemDeploy(redeem) => Some(
+                models::casper::system_deploy_data_proto::SystemDeploy::RedeemSystemDeploy(
+                    redeem.into(),
                 ),
             ),
         };
@@ -375,12 +463,16 @@ mod tests {
     fn slash_system_deploy_preserves_target_activation_epoch() {
         let proto = SlashSystemDeployDataProto {
             invalid_block_hash: vec![1, 2, 3].into(),
+            equivocation_block_hash: vec![7, 8, 9].into(),
             issuer_public_key: vec![4, 5, 6].into(),
             target_activation_epoch: 42,
+            target_bond_generation: Some(3),
         };
 
         let serde: SlashSystemDeployDataSerde = proto.clone().into();
         assert_eq!(serde.target_activation_epoch, 42);
+        assert_eq!(serde.target_bond_generation, Some(3));
+        assert_eq!(serde.equivocation_block_hash, vec![7, 8, 9]);
 
         let roundtrip: SlashSystemDeployDataProto = serde.into();
         assert_eq!(roundtrip, proto);
@@ -402,7 +494,40 @@ mod tests {
         let serde: SlashSystemDeployDataSerde = serde_json::from_str(json).unwrap();
 
         assert_eq!(serde.invalid_block_hash, vec![1, 2, 3]);
+        assert!(serde.equivocation_block_hash.is_empty());
         assert_eq!(serde.issuer_public_key, vec![4, 5, 6]);
         assert_eq!(serde.target_activation_epoch, 0);
+        assert_eq!(serde.target_bond_generation, None);
+    }
+
+    #[test]
+    fn redeem_system_deploy_roundtrip_remains_redeem() {
+        let proto = RedeemSystemDeployDataProto {
+            validator_pk: vec![1, 2, 3].into(),
+            outcome_tag: "Guilty".to_string(),
+            penalty: 9,
+            pos_multi_sig_public_keys: vec!["a".to_string(), "b".to_string()],
+            pos_multi_sig_quorum: 2,
+            authorizations: vec![RedemptionAuthorizationProto {
+                public_key: vec![4, 5].into(),
+                signature: vec![6, 7].into(),
+            }],
+            target_bond_generation: Some(4),
+        };
+        let wrapped = SystemDeployDataProto {
+            system_deploy: Some(
+                models::casper::system_deploy_data_proto::SystemDeploy::RedeemSystemDeploy(
+                    proto.clone(),
+                ),
+            ),
+        };
+
+        let serde: SystemDeployDataSerde = wrapped.clone().into();
+        assert!(matches!(
+            serde,
+            SystemDeployDataSerde::RedeemSystemDeploy(_)
+        ));
+        let roundtrip: SystemDeployDataProto = serde.into();
+        assert_eq!(roundtrip, wrapped);
     }
 }

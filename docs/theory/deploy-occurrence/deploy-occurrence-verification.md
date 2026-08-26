@@ -14,7 +14,7 @@
 | Retry requires every exact source to be tombstoned | Rocq `no_active_iff_all_sources_tombstoned`, `retry_requires_no_active_source`, TLA⁺ `Inv_RetryRequiresNoActiveSource` | `recovery_projection_preserves_every_untombstoned_source`, `exact_rejection_preserves_another_source_as_canonical_win` |
 | Recovery cannot cross the deploy lifespan boundary | Rocq `expiry_closes_recovery`, TLA⁺ `Inv_NoExpiredRetry` | `recovered_buffered_deploy_is_purged_after_block_expiry`, `rejected_buffer_backlog_requires_selectable_deploy` |
 | At most one validator packages recovery from one committed finalized-height view | Rocq `recovery_authorization_unique_per_finalized_view`; TLA⁺ `Inv_OneRecoveryProposerPerFinalizedView`, `Inv_RecoveryLeaderIsCommittedViewDerived` | finalized-height rotation, duplicate-validator normalization, and per-view uniqueness tests |
-| A canonically selected retry survives downstream self-chain filtering without admitting ordinary duplicates | TLA⁺ `Inv_SelectedRetrySurvivesSelfChainFilter` and packaging pre-fix counterexample | `self_chain_filter_keeps_only_selected_recoveries`, D3 vault-draining merge recovery end-to-end test |
+| Candidate-relative packaging suppresses only an active duplicate and rehomes a historical occurrence excluded from the selected-parent closure | Rocq `finalized_floor_candidate_scope_rehome_correct`; TLA⁺ `Inv_SelectedRehomeSurvivesCandidateFilter` and `MC_DeployRecovery_rehome_pre_fix.cfg` | `self_chain_filter_is_candidate_scope_relative`, `candidate_scope_packaging_matches_the_captured_authorization`, and `loom_candidate_scope_deploy_rehome` |
 | Concurrent retries across lagging finalized views are bounded | TLA⁺ `Inv_CrossViewRetriesAreBounded`, `Inv_OnePendingRetryPerValidator` | independent-height rotation tests and exact-occurrence admission tests |
 | Recovery expiry uses proposal height, not finalized height | TLA⁺ `Inv_RecoveryHeightUsesCommittedDagView`, `Inv_NoExpiredRetry` | exact proposal-height expiry tests |
 | An offline recovery leader cannot halt finality | TLA⁺ `Live_RecoveryOrExpiry` | heartbeat and consensus-safety system integration scenarios |
@@ -66,6 +66,17 @@ and heartbeat/finality progress. Its safe invariants permit bounded cross-view
 concurrency while excluding multiple proposers from the same finalized view;
 four negative controls retain the original defect witnesses.
 
+The next liveness defect crossed the same boundary in a different direction.
+Admission used `snapshot.deploys_in_scope`, but packaging later rescanned the
+validator's raw historical self-chain. After floor advancement excluded an old
+branch, admission correctly authorized the deploy while packaging still removed
+it as a duplicate. `DeployRecovery.tla` now models excluded historical sources
+and a candidate-captured authorization. The safe model exhausts every reachable
+state while `MC_DeployRecovery_rehome_pre_fix.cfg` reproduces the stale-filter
+counterexample. The Rocq classifier proves that only an active candidate-scope
+duplicate is suppressed. Three Loom models cover concurrent floor advancement,
+parallel validator rehome, and concurrent cleanup against the captured context.
+
 ## Relationship to the publications
 
 The publications supply the design constraints, not the complete node protocol:
@@ -115,6 +126,15 @@ published constraints.
 - finalized-height leader rotation is invariant under parent sender and order;
 - each fixed finalized-height view elects exactly one validator after validator-set normalization;
 - proposal-height expiry and finalized-height leader rotation remain independent.
+- candidate-scope packaging matches the immutable authorization captured before
+  concurrent floor movement.
+
+### Concurrency tests
+
+- a captured excluded-branch rehome survives concurrent floor advancement;
+- independent validators rehome without a global lock and their results commute;
+- an occurrence active in the captured candidate scope remains suppressed while
+  another thread cleans historical state.
 
 ### Integration tests
 

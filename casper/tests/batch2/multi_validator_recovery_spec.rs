@@ -41,6 +41,7 @@ use dashmap::DashSet;
 use models::rust::block::state_hash::StateHash;
 use models::rust::block_hash::BlockHash;
 use models::rust::block_implicits;
+use models::rust::bond_generation::BondGeneration;
 use models::rust::casper::protocol::casper_message::ProcessedDeploy;
 use rholang::rust::interpreter::external_services::ExternalServices;
 use rholang::rust::interpreter::system_processes::BlockData;
@@ -93,7 +94,7 @@ async fn multi_validator_recovery_dedups_re_proposed_sig() {
         .put_block_message(&genesis_block)
         .expect("store genesis");
     dag_storage
-        .insert(&genesis_block, InsertMode::Approved)
+        .insert(&genesis_block, InsertMode::ApprovedGenesis)
         .expect("dag genesis");
 
     let now_millis = || -> i64 {
@@ -124,6 +125,10 @@ async fn multi_validator_recovery_dedups_re_proposed_sig() {
         snapshot.on_chain_state = OnChainCasperState {
             shard_conf,
             bonds_map,
+            bond_generations: HashMap::from([
+                (validator_0.clone(), BondGeneration::GENESIS),
+                (validator_1.clone(), BondGeneration::GENESIS),
+            ]),
             active_validators: vec![validator_0.clone(), validator_1.clone()],
         };
         snapshot.deploys_in_scope = Arc::new(DashSet::new());

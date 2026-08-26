@@ -31,6 +31,7 @@ pub enum CommError {
     UnableToRestorePacket(String, String),
     ConfigError(String),
     CasperError(String),
+    ResourceExhausted(String),
 }
 
 impl fmt::Display for CommError {
@@ -64,6 +65,7 @@ impl fmt::Display for CommError {
             CommError::ParseError(msg) => write!(f, "Parse error: {}", msg),
             CommError::ConfigError(msg) => write!(f, "Configuration error: {}", msg),
             CommError::CasperError(msg) => write!(f, "Casper error: {}", msg),
+            CommError::ResourceExhausted(msg) => write!(f, "Resource exhausted: {}", msg),
             _ => write!(f, "{:?}", self),
         }
     }

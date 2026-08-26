@@ -45,14 +45,15 @@ Definition redeem_custody
            coop_balance := coop_balance state;
            burned_balance := burned_balance state |}
     | Guilty penalty =>
-        let stake_penalty := Nat.min penalty (quarantined_stake state) in
-        let fuel_penalty := Nat.min stake_penalty (quarantined_fuel state) in
-        {| liquid_fuel := liquid_fuel state + quarantined_fuel state - fuel_penalty;
-           quarantined_fuel := 0;
-           bonded_stake := bonded_stake state + quarantined_stake state - stake_penalty;
-           quarantined_stake := 0;
-           coop_balance := coop_balance state + stake_penalty + fuel_penalty;
-           burned_balance := burned_balance state |}
+        if penalty <? quarantined_stake state then
+          let fuel_penalty := Nat.min penalty (quarantined_fuel state) in
+          {| liquid_fuel := liquid_fuel state + quarantined_fuel state - fuel_penalty;
+             quarantined_fuel := 0;
+             bonded_stake := bonded_stake state + quarantined_stake state - penalty;
+             quarantined_stake := 0;
+             coop_balance := coop_balance state + penalty + fuel_penalty;
+             burned_balance := burned_balance state |}
+        else state
     | Burned =>
         {| liquid_fuel := liquid_fuel state;
            quarantined_fuel := 0;
@@ -92,19 +93,33 @@ Theorem guilty_redemption_conserves :
 Proof.
   intros state penalty. destruct state.
   unfold redeem_custody, custody_total. simpl.
-  pose proof (Nat.le_min_r penalty quarantined_stake0).
-  pose proof (Nat.le_min_r (Nat.min penalty quarantined_stake0) quarantined_fuel0).
-  lia.
+  destruct (penalty <? quarantined_stake0) eqn:Hpartial; simpl.
+  - apply Nat.ltb_lt in Hpartial.
+    pose proof (Nat.le_min_r penalty quarantined_fuel0).
+    lia.
+  - lia.
 Qed.
 
 Theorem guilty_redemption_credits_both_roles_once :
   forall state penalty,
-    let stake_penalty := Nat.min penalty (quarantined_stake state) in
-    let fuel_penalty := Nat.min stake_penalty (quarantined_fuel state) in
+    penalty < quarantined_stake state ->
+    let fuel_penalty := Nat.min penalty (quarantined_fuel state) in
     coop_balance (redeem_custody true (Guilty penalty) state)
-      = coop_balance state + stake_penalty + fuel_penalty.
+      = coop_balance state + penalty + fuel_penalty.
 Proof.
-  reflexivity.
+  intros state penalty Hpartial. unfold redeem_custody.
+  assert (Hltb : (penalty <? quarantined_stake state) = true).
+  { apply Nat.ltb_lt. exact Hpartial. }
+  rewrite Hltb. reflexivity.
+Qed.
+
+Theorem full_guilty_confiscation_is_rejected :
+  forall state penalty,
+    quarantined_stake state <= penalty ->
+    redeem_custody true (Guilty penalty) state = state.
+Proof.
+  intros state penalty Hfull. unfold redeem_custody.
+  apply Nat.ltb_ge in Hfull. rewrite Hfull. reflexivity.
 Qed.
 
 Theorem burned_redemption_conserves_canonical_rev :
@@ -129,5 +144,6 @@ Print Assumptions unauthorized_redemption_is_identity.
 Print Assumptions vindicated_redemption_conserves.
 Print Assumptions guilty_redemption_conserves.
 Print Assumptions guilty_redemption_credits_both_roles_once.
+Print Assumptions full_guilty_confiscation_is_rejected.
 Print Assumptions burned_redemption_conserves_canonical_rev.
 Print Assumptions burned_redemption_removes_circulating_claims.

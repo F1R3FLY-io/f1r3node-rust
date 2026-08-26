@@ -24,6 +24,8 @@ use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 use crate::rust::util::rholang::system_deploy_enum::SystemDeployEnum;
 use crate::rust::util::{construct_deploy, proto_util};
 
+fn default_state_hash() -> StateHash { vec![0; models::rust::block_hash::LENGTH].into() }
+
 pub fn mk_casper_snapshot(dag: KeyValueDagRepresentation) -> CasperSnapshot {
     CasperSnapshot::new(dag)
 }
@@ -163,9 +165,9 @@ pub fn build_block_with_system_deploys(
     let bonds = bonds.unwrap_or_default();
     let justifications = justifications.unwrap_or_default();
     let deploys = deploys.unwrap_or_default();
-    let post_state_hash = post_state_hash.unwrap_or_default();
+    let post_state_hash = post_state_hash.unwrap_or_else(default_state_hash);
     let shard_id = shard_id.unwrap_or("root".to_string());
-    let pre_state_hash = pre_state_hash.unwrap_or_default();
+    let pre_state_hash = pre_state_hash.unwrap_or_else(default_state_hash);
     let seq_num = seq_num.unwrap_or(0);
     let system_deploys = system_deploys.unwrap_or_default();
 
@@ -203,9 +205,9 @@ pub fn create_genesis_block(
     let bonds = bonds.unwrap_or_default();
     let justifications = justifications.unwrap_or_default();
     let deploys = deploys.unwrap_or_default();
-    let ts_hash = ts_hash.unwrap_or_default();
+    let ts_hash = ts_hash.unwrap_or_else(default_state_hash);
     let shard_id = shard_id.unwrap_or("root".to_string());
-    let pre_state_hash = pre_state_hash.unwrap_or_default();
+    let pre_state_hash = pre_state_hash.unwrap_or_else(default_state_hash);
     let seq_num = seq_num.unwrap_or(0);
 
     let now = SystemTime::now()
@@ -297,9 +299,9 @@ pub fn create_block_with_system_deploys(
         })
         .collect();
     let deploys = deploys.unwrap_or_default();
-    let post_state_hash = post_state_hash.unwrap_or_default();
+    let post_state_hash = post_state_hash.unwrap_or_else(default_state_hash);
     let shard_id = shard_id.unwrap_or("root".to_string());
-    let pre_state_hash = pre_state_hash.unwrap_or_default();
+    let pre_state_hash = pre_state_hash.unwrap_or_else(default_state_hash);
     let seq_num = seq_num.unwrap_or(0);
     let invalid = invalid.unwrap_or(false);
 

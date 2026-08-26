@@ -57,7 +57,42 @@ impl CompiledRholangTemplate {
                 content.replace(&format!("$${}$$", key), value)
             });
 
+        assert!(
+            !final_content.contains("$$"),
+            "Rholang template {name} contains an unresolved macro"
+        );
+
         CompiledRholangSource::new(final_content, normalizer_env, name.to_string())
             .expect("Failed to compile template")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use super::CompiledRholangTemplate;
+
+    #[test]
+    fn template_compilation_replaces_every_macro() {
+        let compiled = CompiledRholangTemplate::new(
+            "complete.rhox",
+            "@\"$$channel$$\"!(\"$$value$$\")",
+            HashMap::new(),
+            &[("channel", "result"), ("value", "ok")],
+        );
+
+        assert_eq!(compiled.code, "@\"result\"!(\"ok\")");
+    }
+
+    #[test]
+    #[should_panic(expected = "Rholang template incomplete.rhox contains an unresolved macro")]
+    fn template_compilation_rejects_unresolved_macros() {
+        CompiledRholangTemplate::new(
+            "incomplete.rhox",
+            "@\"$$channel$$\"!(\"$$value$$\")",
+            HashMap::new(),
+            &[("channel", "result")],
+        );
     }
 }

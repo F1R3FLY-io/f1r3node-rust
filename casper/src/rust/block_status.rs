@@ -1,5 +1,10 @@
 // See casper/src/main/scala/coop/rchain/casper/BlockStatus.scala
 
+use models::rust::block_metadata::{
+    AdmissionRejectionReason, CertifiedAdmissionOutcome, CertifiedSenderAuthority,
+};
+use models::rust::casper::protocol::casper_message::BlockMessage;
+use rspace_plus_plus::rspace::history::Either;
 use shared::rust::store::key_value_store::KvStoreError;
 
 use super::errors::CasperError;
@@ -30,15 +35,6 @@ pub enum BlockError {
 /// Represents an invalid block
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum InvalidBlock {
-    // AdmissibleEquivocation are blocks that would create an equivocation but are
-    // pulled in through a justification of another block
-    AdmissibleEquivocation,
-    // IgnorableEquivocation: an equivocating block we observe via someone
-    // else's justification but did not pull in as a dependency. Slashable —
-    // the dispatcher mints an EquivocationRecord so the proposer can issue a
-    // SlashDeploy. See docs/theory/slashing/design/09-bug-fixes-and-rationale.md §9.1.
-    IgnorableEquivocation,
-
     InvalidFormat,
     InvalidSignature,
     InvalidSender,
@@ -57,6 +53,7 @@ pub enum InvalidBlock {
     NeglectedEquivocation,
     InvalidTransaction,
     InvalidBondsCache,
+    InvalidEquivocationEvidence,
     InvalidBlockHash,
     // UnauthorizedSlashDeploy: a block carries a `Slash` system deploy that
     // fails the authorization predicate (wrong epoch, missing/non-invalid
@@ -74,6 +71,12 @@ pub enum InvalidBlock {
     LowDeployCost,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum EquivocationObservation {
+    RequestedDependency,
+    Unsolicited,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ValidationDisposition {
     Accept,
@@ -81,6 +84,167 @@ pub enum ValidationDisposition {
     MissingDependency,
     LocalFault,
     AlreadyProcessed,
+}
+
+#[derive(Clone, Debug)]
+pub enum CertifiedBlockValidation {
+    Accepted {
+        sender_authority: CertifiedSenderAuthority,
+        admission_outcome: CertifiedAdmissionOutcome,
+        equivocation_observation: Option<EquivocationObservation>,
+    },
+    ObjectiveRejected {
+        invalid: InvalidBlock,
+        sender_authority: CertifiedSenderAuthority,
+        admission_outcome: CertifiedAdmissionOutcome,
+    },
+    UnattributableRejected {
+        invalid: InvalidBlock,
+    },
+    MissingDependency,
+    LocalFault(CasperError),
+    CasperBusy,
+    AlreadyProcessed,
+}
+
+impl CertifiedBlockValidation {
+    pub fn unattributable(invalid: InvalidBlock) -> Self {
+        Self::UnattributableRejected { invalid }
+    }
+
+    pub fn local_fault(error: CasperError) -> Self { Self::LocalFault(error) }
+
+    pub fn from_uncertified_error(error: BlockError) -> Result<Self, CasperError> {
+        match error {
+            BlockError::Invalid(invalid) => Ok(Self::unattributable(invalid)),
+            BlockError::MissingBlocks => Ok(Self::MissingDependency),
+            BlockError::BlockException(error) => Ok(Self::LocalFault(error)),
+            BlockError::CasperIsBusy => Ok(Self::CasperBusy),
+            BlockError::Processed => Ok(Self::AlreadyProcessed),
+        }
+    }
+
+    pub fn certified(
+        block: &BlockMessage,
+        status: Either<BlockError, ValidBlock>,
+        sender_authority: CertifiedSenderAuthority,
+    ) -> Result<Self, CasperError> {
+        Self::certified_with_observation(block, status, sender_authority, None)
+    }
+
+    pub fn certified_with_observation(
+        block: &BlockMessage,
+        status: Either<BlockError, ValidBlock>,
+        sender_authority: CertifiedSenderAuthority,
+        equivocation_observation: Option<EquivocationObservation>,
+    ) -> Result<Self, CasperError> {
+        match status {
+            Either::Right(ValidBlock::Valid) => {
+                let admission_outcome =
+                    CertifiedAdmissionOutcome::accepted(block, &sender_authority)
+                        .map_err(|error| CasperError::RuntimeError(error.to_string()))?;
+                Ok(Self::Accepted {
+                    sender_authority,
+                    admission_outcome,
+                    equivocation_observation,
+                })
+            }
+            Either::Left(BlockError::Invalid(invalid)) => {
+                let admission_outcome = CertifiedAdmissionOutcome::rejected(
+                    block,
+                    &sender_authority,
+                    AdmissionRejectionReason::from(&invalid),
+                )
+                .map_err(|error| CasperError::RuntimeError(error.to_string()))?;
+                Ok(Self::ObjectiveRejected {
+                    invalid,
+                    sender_authority,
+                    admission_outcome,
+                })
+            }
+            Either::Left(error) => Self::from_uncertified_error(error),
+        }
+    }
+
+    pub fn status(&self) -> Either<BlockError, ValidBlock> {
+        match self {
+            Self::Accepted { .. } => Either::Right(ValidBlock::Valid),
+            Self::ObjectiveRejected { invalid, .. } | Self::UnattributableRejected { invalid } => {
+                Either::Left(BlockError::Invalid(invalid.clone()))
+            }
+            Self::MissingDependency => Either::Left(BlockError::MissingBlocks),
+            Self::LocalFault(error) => Either::Left(BlockError::BlockException(error.clone())),
+            Self::CasperBusy => Either::Left(BlockError::CasperIsBusy),
+            Self::AlreadyProcessed => Either::Left(BlockError::Processed),
+        }
+    }
+
+    pub fn sender_authority(&self) -> Option<&CertifiedSenderAuthority> {
+        match self {
+            Self::Accepted {
+                sender_authority, ..
+            }
+            | Self::ObjectiveRejected {
+                sender_authority, ..
+            } => Some(sender_authority),
+            _ => None,
+        }
+    }
+
+    pub fn admission_outcome(&self) -> Option<&CertifiedAdmissionOutcome> {
+        match self {
+            Self::Accepted {
+                admission_outcome, ..
+            }
+            | Self::ObjectiveRejected {
+                admission_outcome, ..
+            } => Some(admission_outcome),
+            _ => None,
+        }
+    }
+
+    pub fn equivocation_observation(&self) -> Option<EquivocationObservation> {
+        match self {
+            Self::Accepted {
+                equivocation_observation,
+                ..
+            } => *equivocation_observation,
+            _ => None,
+        }
+    }
+}
+
+impl From<&InvalidBlock> for AdmissionRejectionReason {
+    fn from(value: &InvalidBlock) -> Self {
+        match value {
+            InvalidBlock::InvalidFormat => Self::InvalidFormat,
+            InvalidBlock::InvalidSignature => Self::InvalidSignature,
+            InvalidBlock::InvalidSender => Self::InvalidSender,
+            InvalidBlock::InvalidVersion => Self::InvalidVersion,
+            InvalidBlock::InvalidTimestamp => Self::InvalidTimestamp,
+            InvalidBlock::DeployNotSigned => Self::DeployNotSigned,
+            InvalidBlock::InvalidBlockNumber => Self::InvalidBlockNumber,
+            InvalidBlock::InvalidRepeatDeploy => Self::InvalidRepeatDeploy,
+            InvalidBlock::InvalidParents => Self::InvalidParents,
+            InvalidBlock::InvalidFollows => Self::InvalidFollows,
+            InvalidBlock::InvalidSequenceNumber => Self::InvalidSequenceNumber,
+            InvalidBlock::InvalidShardId => Self::InvalidShardId,
+            InvalidBlock::JustificationRegression => Self::JustificationRegression,
+            InvalidBlock::NeglectedInvalidBlock => Self::NeglectedInvalidBlock,
+            InvalidBlock::NeglectedEquivocation => Self::NeglectedEquivocation,
+            InvalidBlock::InvalidTransaction => Self::InvalidTransaction,
+            InvalidBlock::InvalidBondsCache => Self::InvalidBondsCache,
+            InvalidBlock::InvalidEquivocationEvidence => Self::InvalidEquivocationEvidence,
+            InvalidBlock::InvalidBlockHash => Self::InvalidBlockHash,
+            InvalidBlock::UnauthorizedSlashDeploy => Self::UnauthorizedSlashDeploy,
+            InvalidBlock::InvalidRejectedDeploy => Self::InvalidRejectedDeploy,
+            InvalidBlock::ContainsExpiredDeploy => Self::ContainsExpiredDeploy,
+            InvalidBlock::ContainsTimeExpiredDeploy => Self::ContainsTimeExpiredDeploy,
+            InvalidBlock::ContainsFutureDeploy => Self::ContainsFutureDeploy,
+            InvalidBlock::NotOfInterest => Self::NotOfInterest,
+            InvalidBlock::LowDeployCost => Self::LowDeployCost,
+        }
+    }
 }
 
 impl BlockStatus {
@@ -93,14 +257,6 @@ impl BlockStatus {
     pub fn exception(ex: CasperError) -> BlockError { BlockError::BlockException(ex) }
 
     pub fn missing_blocks() -> BlockError { BlockError::MissingBlocks }
-
-    pub fn admissible_equivocation() -> BlockError {
-        BlockError::Invalid(InvalidBlock::AdmissibleEquivocation)
-    }
-
-    pub fn ignorable_equivocation() -> BlockError {
-        BlockError::Invalid(InvalidBlock::IgnorableEquivocation)
-    }
 
     pub fn invalid_format() -> BlockError { BlockError::Invalid(InvalidBlock::InvalidFormat) }
 
@@ -212,8 +368,7 @@ impl InvalidBlock {
         // future-correctness footgun protection T-9.3 depends on at the
         // dispatcher catch-all.
         match self {
-            InvalidBlock::AdmissibleEquivocation
-            | InvalidBlock::DeployNotSigned
+            InvalidBlock::DeployNotSigned
             | InvalidBlock::InvalidBlockNumber
             | InvalidBlock::InvalidRepeatDeploy
             | InvalidBlock::InvalidParents
@@ -225,17 +380,11 @@ impl InvalidBlock {
             | InvalidBlock::NeglectedEquivocation
             | InvalidBlock::InvalidTransaction
             | InvalidBlock::InvalidBondsCache
-            | InvalidBlock::InvalidBlockHash
+            | InvalidBlock::InvalidEquivocationEvidence
             | InvalidBlock::UnauthorizedSlashDeploy
             | InvalidBlock::ContainsExpiredDeploy
             | InvalidBlock::ContainsTimeExpiredDeploy
-            | InvalidBlock::ContainsFutureDeploy
-            // IgnorableEquivocation is now slashable per Bug #1 (§9.1). On
-            // dev this variant was a known DOS-vector TODO — equivocations
-            // observed via someone else's justification produced no on-chain
-            // evidence. The dispatcher (`engine::multi_parent_casper::handle_*`)
-            // now mints an EquivocationRecord whenever this branch fires.
-            | InvalidBlock::IgnorableEquivocation => true,
+            | InvalidBlock::ContainsFutureDeploy => true,
 
             // Non-slashable variants — listed explicitly so the compiler
             // catches new additions to the enum. Each represents a failure
@@ -254,6 +403,7 @@ impl InvalidBlock {
             | InvalidBlock::InvalidSender
             | InvalidBlock::InvalidVersion
             | InvalidBlock::InvalidTimestamp
+            | InvalidBlock::InvalidBlockHash
             | InvalidBlock::InvalidRejectedDeploy
             | InvalidBlock::NotOfInterest
             | InvalidBlock::LowDeployCost => false,

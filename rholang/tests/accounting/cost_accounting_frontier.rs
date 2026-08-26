@@ -2994,6 +2994,19 @@ fn generated_frontier_v13_coverage_adequacy_holds() {
 }
 
 #[test]
+fn generated_frontier_v14_source_graph_oracles_hold() {
+    let fixtures = replay_matching_fixtures("v14 source graph replay security", |fixture| {
+        matches!(
+            fixture.security_surface.as_str(),
+            "api_to_runtime_replay" | "replay_cache_payload_binding"
+        )
+    });
+    for fixture in &fixtures {
+        run_v14_source_graph_oracle(fixture);
+    }
+}
+
+#[test]
 fn generated_frontier_v14_slashing_security_oracles_hold() {
     let fixtures = replay_matching_fixtures("v14 slashing security", |fixture| {
         fixture.security_surface == "slashing_authorization"

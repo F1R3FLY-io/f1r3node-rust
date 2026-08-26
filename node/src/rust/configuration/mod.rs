@@ -157,6 +157,10 @@ pub mod builder {
             .genesis_block_data
             .validate_cost_accounting_parameters()
             .map_err(|e| eyre::eyre!("cost-accounting genesis config invalid: {}", e))?;
+        node_conf
+            .casper
+            .validate_parent_bounds()
+            .map_err(|e| eyre::eyre!("parent-bound config invalid: {}", e))?;
 
         // The proposer computes its recovery cap as
         // `max(pending_deploy_max_lag, deploy_recovery_max_lag)`. When

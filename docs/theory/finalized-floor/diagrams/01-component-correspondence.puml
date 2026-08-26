@@ -62,7 +62,7 @@ package "Derivation layer" <<Derivation>> {
 }
 
 package "Oracle layer" <<Oracle>> {
-  component "Clique oracle  ft_witnessed ≥ θ\n──────────────────────────────────────\nspec  quorum-finalization decision\nRocq  CliqueOracle.v (L_ANC, L_SNAP)\nZ3    ft_algebra_crosswitness.py\nSage  ft_algebra.sage\nRust  casper/src/rust/safety/clique_oracle.rs" as OR #FFECB3
+  component "Clique oracle  ft_witnessed > θ\n──────────────────────────────────────\nspec  quorum-finalization decision\nRocq  CliqueOracle.v (L_ANC, L_SNAP)\nZ3    ft_algebra_crosswitness.py\nSage  ft_algebra.sage\nRust  casper/src/rust/safety/clique_oracle.rs" as OR #FFECB3
 }
 
 package "Algebra layer" <<Algebra>> {
@@ -82,7 +82,7 @@ package "Storage layer" <<Storage>> {
 }
 
 ' === Explicit (visible) edges ===
-D  -[#1565C0]-> OR : reads ft_witnessed ≥ θ\nover just(B)
+D  -[#1565C0]-> OR : reads ft_witnessed > θ\nover just(B)
 D  -[#1565C0]-> CA : read pivot F(parent)\n(warm hit)
 D  -[#E65100]-> CA : persist F(B), floor(B)\n(pure fn of B)
 DR -[#00838F]-> D  : drives floor(B) derivation\n(before the scan)

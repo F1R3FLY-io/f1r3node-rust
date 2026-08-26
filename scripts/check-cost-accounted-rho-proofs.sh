@@ -18,6 +18,39 @@ mkdir -p "$WORK_ROOT"
 
 echo "Checking cost-accounted rho proof hygiene..."
 
+proof_module_count="$(find "$THEORIES" -maxdepth 1 -type f -name '*.v' | wc -l | tr -d ' ')"
+listed_module_count="$(rg -N '^[[:space:]]*theories/[A-Za-z0-9_]+\.v[[:space:]]*$' \
+  "$PROOF_ROOT/_CoqProject" | wc -l | tr -d ' ')"
+proof_line_count="$(find "$THEORIES" -maxdepth 1 -type f -name '*.v' -print0 \
+  | xargs -0 wc -l | awk 'END {print $1}')"
+proof_term_count="$(rg -o '\b(Qed|Defined)\.' "$THEORIES" --glob '*.v' \
+  | wc -l | tr -d ' ')"
+
+if [[ "$proof_module_count" != "$listed_module_count" ]]; then
+  echo "error: _CoqProject lists $listed_module_count of $proof_module_count Rocq modules" >&2
+  exit 1
+fi
+
+verification_doc_plain="$(perl -0pe \
+  's/(?<=\d),(?=\d)//g; s/\n[[:space:]]*/ /g' \
+  "${VERIFICATION_DOCS[0]}")"
+required_scale_claims=(
+  "across $proof_module_count modules and $proof_line_count lines of development"
+  "All $proof_term_count \`Qed.\`/\`Defined.\` proof terms"
+  "development spans $proof_module_count modules and $proof_line_count lines, with $proof_term_count \`Qed.\`"
+  "| Rocq source files                                | $proof_module_count modules"
+  "| Total lines of Rocq                              | $proof_line_count"
+  "| Proven lemmas and theorems (\`Qed.\` / \`Defined.\`) | $proof_term_count"
+  "foundational 32-module subgraph of the $proof_module_count-module formalization"
+  "current $proof_module_count-module catalog"
+)
+for claim in "${required_scale_claims[@]}"; do
+  if ! rg -q -F "$claim" <<<"$verification_doc_plain"; then
+    echo "error: stale or missing Rocq scale claim: $claim" >&2
+    exit 1
+  fi
+done
+
 SANITIZED_THEORIES="$(mktemp -d "$WORK_ROOT/sanitized.XXXXXX")"
 for proof in "$THEORIES"/*.v; do
   perl -0pe 's/\(\*.*?\*\)//gs' "$proof" > "$SANITIZED_THEORIES/$(basename "$proof")"
@@ -54,16 +87,13 @@ if rg -n 'TODO|FIXME|deferred|future work|not formally proven|open work' "$SANIT
   exit 1
 fi
 
-# "placeholder" as an incompletion marker is rejected EXCEPT for the D2.9 threshold
-# "placeholder cosigner" DOMAIN term — an unsigned M-of-N funding slot that
-# `accounting::funding_sig` filters (mirrored by code + the test
-# `threshold_placeholder_victim_wallet_is_never_debited`). That is a legitimate
-# concept, NOT an incomplete artifact, so a "placeholder" hit is a false positive
-# iff its line also carries the cosigner vocabulary (cosigner / threshold / signer
-# / sig / wallet / funding_sig). A genuine "placeholder proof / stub / section"
-# carries none of those and is still rejected.
+# "placeholder" as an incompletion marker is rejected except for two modeled
+# domain terms: unsigned threshold-cosigner slots and the historical unresolved
+# PoS template literal that the fail-closed compiler model must name and refute.
+# A genuine "placeholder proof / stub / section" carries neither vocabulary and
+# is still rejected.
 placeholder_hits="$(rg -n 'placeholder' "$SANITIZED_THEORIES" "${VERIFICATION_DOCS[@]}" \
-  | rg -iv 'cosigner|threshold|signer|`sig`|\bsig\b|wallet|funding_sig' || true)"
+  | rg -iv 'cosigner|threshold|signer|`sig`|\bsig\b|wallet|funding_sig|template|PoS|controller|literal|unresolved' || true)"
 if [ -n "$placeholder_hits" ]; then
   printf '%s\n' "$placeholder_hits" >&2
   echo "error: found a non-domain 'placeholder' incompletion marker in proof theories or verification docs" >&2
@@ -103,7 +133,7 @@ echo "Compiling and checking the validator contract aggregation..."
 
 if ! rocq repl -Q "$THEORIES" CostAccountedRho > "$assumptions" 2>&1 <<'EOF'
 From CostAccountedRho Require Import CostAccountedSyntax TranslationFaithfulness Bisimulation Replication Settlement SlashingComposition MergeableChannelAccounting RuntimeBudgetRefinement AtomicCommAccounting MultiSignerRefinement LinearLogicResources LLIdentities MintingInjection MintingHalt UseCaseAdequacy SystemStructEquiv SyntacticSugar WalletNaming ChannelSeparation TokenConservation FuelEventDecomposition Exchange BoundedLedger GSLTOSLFCapstone Rule45ContinuationAdequacy CAReduction WrappingSubjectReduction SignatureMonoid CATokenConservation CAStrongNormalization CAConfluence CAStepDeterminism CACostDeterminism CAModulus ContinuedGSLTCapstone CAGradedTransition CATranslation CostMonad CATranslationLemmas CATranslationFaithfulness CABisimulation CASettlement CAMintingInjection CAExchange CAEconomicCapstone CALocatedPurses CAGradedAdequacy CAAdjunctions CATypeDiscipline CAOSLFSpatialModal CAGradedImageFinite CAGradedSuccPairs CAGradedCompleteness CAInternalisation CAGradedLimit CAForceSeparation CAJoinConservation CategoryInterface CACategory CACostFunctor CACostFunctorCI CACostMonadCat CAAdjunctionI CACostMonadInstances CASimulationBicat CAAdjunctionII CAProperSubcategory CAAbstractCapstone CAUntypedLambda CAUntypedLambdaCI EndToEndAuthority.
-From CostAccountedRho Require Import LocatedAuthoritySettlement RuntimeBoundAuthority PayloadSortPersistence SettlementMergeVisibility StructuralAuthorityBound RuntimeAuthorityScope StackTransferConservation StackIntroductionAtomicity EvaluationTransactionIsolation MergeableEvidenceAuthentication ParallelStackMaterialization StateBoundFrontierExpansion VaultBackedCostLifecycle AtomicVaultSettlementRefinement WalletFundedLollipop FundingSlotBootstrap PhysicalSettlementWorklist ReplayRootMaterialization VaultBackedByteAccounting MultiShardConcurrency.
+From CostAccountedRho Require Import LocatedAuthoritySettlement RuntimeBoundAuthority PayloadSortPersistence SettlementMergeVisibility StructuralAuthorityBound RuntimeAuthorityScope StackTransferConservation StackIntroductionAtomicity EvaluationTransactionIsolation MergeableEvidenceAuthentication ParallelStackMaterialization StateBoundFrontierExpansion VaultBackedCostLifecycle AtomicVaultSettlementRefinement WalletFundedLollipop FundingSlotBootstrap PoSVaultAuthority PhysicalSettlementWorklist ReplayRootMaterialization CanonicalRevRedemption RedemptionCustodyAtomicity RedemptionMintResumption VaultBackedByteAccounting MultiShardConcurrency.
 Print Assumptions unmatched_introduction_costs_zero.
 Print Assumptions committed_comm_costs_exactly_one.
 Print Assumptions trigger_side_does_not_change_cost.
@@ -124,6 +154,25 @@ Print Assumptions replay_preserves_authority.
 Print Assumptions replay_preserves_purse_debit.
 Print Assumptions continuation_requires_outer_event.
 Print Assumptions cross_deploy_slot_identity_is_replay_stable.
+Print Assumptions full_guilty_confiscation_is_rejected.
+Print Assumptions burned_redemption_conserves_canonical_rev.
+Print Assumptions burned_redemption_removes_circulating_claims.
+Print Assumptions failed_evaluation_publishes_nothing.
+Print Assumptions unauthorized_generation_is_effect_free.
+Print Assumptions full_guilty_penalty_is_effect_free.
+Print Assumptions exact_retry_is_idempotent.
+Print Assumptions conflicting_retry_is_effect_free.
+Print Assumptions vindication_restores_exact_phase.
+Print Assumptions guilty_restores_exact_phase.
+Print Assumptions resolution_conserves_canonical_rev.
+Print Assumptions resolution_preserves_physical_custody.
+Print Assumptions distinct_validator_resolutions_commute.
+Print Assumptions redemption_preserves_mint_ledger.
+Print Assumptions redemption_preserves_vault_balance.
+Print Assumptions redemption_removes_only_the_target_halt.
+Print Assumptions redemption_cannot_remint_recorded_epoch.
+Print Assumptions redemption_enables_exactly_one_fresh_epoch_credit.
+Print Assumptions redemption_fresh_epoch_replay_is_idempotent.
 Print Assumptions atomic_join_debits_all_or_none.
 Print Assumptions bound_authority_is_excluded_from_static_capacity.
 Print Assumptions resolved_authority_is_static.
@@ -181,6 +230,13 @@ Print Assumptions settlement_success_is_conserving.
 Print Assumptions wallet_funding_then_lollipop_is_conserving.
 Print Assumptions wallet_funding_then_lollipop_is_component_exact.
 Print Assumptions replay_uses_identical_staged_settlement.
+Print Assumptions unresolved_templates_fail_closed.
+Print Assumptions complete_templates_compile.
+Print Assumptions authenticated_install_binds_pos_generator.
+Print Assumptions unauthorized_transfer_is_effect_free.
+Print Assumptions authenticated_transfer_moves_exactly_one.
+Print Assumptions transfer_conserves_custody.
+Print Assumptions literal_placeholder_denies_the_authenticated_generator.
 Print Assumptions candidate_stack_does_not_inflate_creator_preflight_capacity.
 Print Assumptions certification_execution_replay_share_authenticated_environment.
 Print Assumptions empty_certification_environment_diverges_on_deployer_identity.
@@ -962,6 +1018,7 @@ Print Assumptions main_T6_detect_neglected_complete.
 Print Assumptions main_slashing_algorithm_correct.
 Print Assumptions redeem_vindicated_restores.
 Print Assumptions redeem_guilty_redistributes.
+Print Assumptions redeem_full_guilty_rejected.
 Print Assumptions redeem_burned_conserves.
 Print Assumptions redeem_burned_stays_halted.
 Print Assumptions redeem_requires_quarantine.

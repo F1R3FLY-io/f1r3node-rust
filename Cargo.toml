@@ -79,7 +79,7 @@ validated = "1.0"
 serial_test = "3.1"
 metrics-util = "0.17"
 rholang-parser = { git = "https://github.com/F1R3FLY-io/rholang-rs", rev = "02cef80" }
-reqwest = "0.12"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 
 [profile.dev]
 debug = true

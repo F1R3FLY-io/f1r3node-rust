@@ -15,7 +15,8 @@ use comm::rust::test_instances::{create_rp_conf_ask, TransportLayerStub};
 use crypto::rust::public_key::PublicKey;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::protocol::casper_message::{
-    BlockMessage, Bond, Header, ProcessedSystemDeploy, SystemDeployData,
+    BlockMessage, Bond, Header, ObjectiveEquivocationEvidence, ProcessedSystemDeploy,
+    SystemDeployData,
 };
 use models::rust::equivocation_record::EquivocationRecord;
 use prost::bytes::Bytes;
@@ -447,6 +448,8 @@ async fn block_processor_components_should_work_together() {
             timestamp: 0,
             version: 1,
             extra_bytes: prost::bytes::Bytes::new(),
+            sender_bond_generation: None,
+            objective_equivocation_evidence_delta: vec![],
         },
         body: fixture.test_block.body.clone(), // Use same body as test block
         justifications: vec![],
@@ -508,8 +511,10 @@ async fn slash_evidence_is_fetched_before_block_validation() {
         event_list: vec![],
         system_deploy: SystemDeployData::Slash {
             invalid_block_hash: evidence_hash.clone(),
+            equivocation_block_hash: None,
             issuer_public_key: PublicKey::from_bytes(&incoming.sender),
             target_activation_epoch: 0,
+            target_bond_generation: models::rust::bond_generation::BondGeneration::GENESIS,
         },
         pre_state_hash: Bytes::new(),
         post_state_hash: Bytes::new(),
@@ -518,6 +523,7 @@ async fn slash_evidence_is_fetched_before_block_validation() {
         .access_equivocations_tracker(|tracker| {
             tracker.add(EquivocationRecord::new(
                 incoming.sender.clone(),
+                models::rust::bond_generation::BondGeneration::GENESIS,
                 0,
                 BTreeSet::from([evidence_hash.clone()]),
             ))
@@ -538,6 +544,15 @@ async fn slash_evidence_is_fetched_before_block_validation() {
 
     let mut evidence = node.genesis.clone();
     evidence.block_hash = evidence_hash;
+    evidence.header.parents_hash_list = vec![node.genesis.block_hash.clone()];
+    evidence.header.sender_bond_generation =
+        Some(models::rust::bond_generation::BondGeneration::GENESIS);
+    evidence.sender = Bytes::from(vec![0xa6; models::rust::validator::LENGTH]);
+    evidence.seq_num = 1;
+    evidence.body.state.bonds = vec![Bond {
+        validator: evidence.sender.clone(),
+        stake: 1,
+    }];
     node.block_store
         .put_block_message(&evidence)
         .expect("store evidence");
@@ -569,6 +584,7 @@ async fn tracker_witness_alone_does_not_suppress_block_admission() {
         .access_equivocations_tracker(|tracker| {
             tracker.add(EquivocationRecord::new(
                 incoming.sender.clone(),
+                models::rust::bond_generation::BondGeneration::GENESIS,
                 0,
                 BTreeSet::from([tracker_only_hash.clone()]),
             ))
@@ -580,4 +596,144 @@ async fn tracker_witness_alone_does_not_suppress_block_admission() {
         .block_processor
         .check_if_of_interest(node.casper.clone(), &incoming)
         .expect("interest check"));
+}
+
+#[tokio::test]
+async fn tracker_witness_cannot_satisfy_a_certified_block_dependency() {
+    let mut genesis_builder = GenesisBuilder::new();
+    let parameters = GenesisBuilder::build_genesis_parameters_with_defaults(None, None);
+    let genesis = genesis_builder
+        .build_genesis_with_parameters(Some(parameters))
+        .await
+        .expect("genesis");
+    let node = TestNode::standalone(genesis).await.expect("node");
+    let tracker_only_hash = Bytes::from(vec![0xc8; 32]);
+    let mut incoming = node.genesis.clone();
+    incoming.block_hash = Bytes::from(vec![0xc9; 32]);
+    incoming.header.parents_hash_list = vec![tracker_only_hash.clone()];
+    node.block_dag_storage
+        .access_equivocations_tracker(|tracker| {
+            tracker.add(EquivocationRecord::new(
+                incoming.sender.clone(),
+                models::rust::bond_generation::BondGeneration::GENESIS,
+                0,
+                BTreeSet::from([tracker_only_hash.clone()]),
+            ))
+        })
+        .expect("tracker witness");
+
+    let ready = node
+        .block_processor
+        .check_dependencies_with_effects(node.casper.clone(), &incoming)
+        .await
+        .expect("dependency check");
+
+    assert!(!ready);
+    assert!(node
+        .requested_blocks
+        .lock()
+        .expect("requested blocks")
+        .contains_key(&tracker_only_hash));
+}
+
+#[tokio::test]
+async fn objective_pair_requires_both_admitted_metadata_records() {
+    let mut genesis_builder = GenesisBuilder::new();
+    let parameters = GenesisBuilder::build_genesis_parameters_with_defaults(None, None);
+    let genesis = genesis_builder
+        .build_genesis_with_parameters(Some(parameters))
+        .await
+        .expect("genesis");
+    let node = TestNode::standalone(genesis).await.expect("node");
+    let first_hash = Bytes::from(vec![0xd1; models::rust::block_hash::LENGTH]);
+    let second_hash = Bytes::from(vec![0xd2; models::rust::block_hash::LENGTH]);
+    let evidence_validator = Bytes::from(vec![0xd4; models::rust::validator::LENGTH]);
+    let mut incoming = node.genesis.clone();
+    incoming.block_hash = Bytes::from(vec![0xd3; models::rust::block_hash::LENGTH]);
+    incoming.header.parents_hash_list = vec![node.genesis.block_hash.clone()];
+    incoming.body.system_deploys = vec![ProcessedSystemDeploy::Succeeded {
+        event_list: vec![],
+        system_deploy: SystemDeployData::Slash {
+            invalid_block_hash: first_hash.clone(),
+            equivocation_block_hash: Some(second_hash.clone()),
+            issuer_public_key: PublicKey::from_bytes(&incoming.sender),
+            target_activation_epoch: 0,
+            target_bond_generation: models::rust::bond_generation::BondGeneration::GENESIS,
+        },
+        pre_state_hash: Bytes::new(),
+        post_state_hash: Bytes::new(),
+    }];
+    incoming.header.objective_equivocation_evidence_delta =
+        vec![ObjectiveEquivocationEvidence::new(
+            evidence_validator.clone(),
+            models::rust::bond_generation::BondGeneration::GENESIS,
+            incoming.seq_num,
+            first_hash.clone(),
+            second_hash.clone(),
+        )
+        .expect("objective evidence")];
+
+    let mut first = node.genesis.clone();
+    first.block_hash = first_hash.clone();
+    first.header.parents_hash_list = vec![node.genesis.block_hash.clone()];
+    first.header.sender_bond_generation =
+        Some(models::rust::bond_generation::BondGeneration::GENESIS);
+    first.sender = evidence_validator.clone();
+    first.seq_num = 1;
+    first.body.state.bonds = vec![Bond {
+        validator: evidence_validator.clone(),
+        stake: 1,
+    }];
+    node.block_store
+        .put_block_message(&first)
+        .expect("store first evidence block");
+    node.block_dag_storage
+        .insert(&first, InsertMode::Invalid)
+        .expect("admit first evidence metadata");
+    node.block_dag_storage
+        .access_equivocations_tracker(|tracker| {
+            tracker.add(EquivocationRecord::new(
+                evidence_validator,
+                models::rust::bond_generation::BondGeneration::GENESIS,
+                incoming.seq_num,
+                BTreeSet::from([first_hash.clone(), second_hash.clone()]),
+            ))
+        })
+        .expect("tracker hints");
+
+    let ready = node
+        .block_processor
+        .check_dependencies_with_effects(node.casper.clone(), &incoming)
+        .await
+        .expect("partial objective dependency check");
+    assert!(!ready);
+    {
+        let requested = node.requested_blocks.lock().expect("requested blocks");
+        assert!(!requested.contains_key(&first_hash));
+        assert!(requested.contains_key(&second_hash));
+    }
+
+    let mut second = node.genesis.clone();
+    second.block_hash = second_hash;
+    second.header.parents_hash_list = vec![node.genesis.block_hash.clone()];
+    second.header.sender_bond_generation =
+        Some(models::rust::bond_generation::BondGeneration::GENESIS);
+    second.sender = Bytes::from(vec![0xd5; models::rust::validator::LENGTH]);
+    second.seq_num = 1;
+    second.body.state.bonds = vec![Bond {
+        validator: second.sender.clone(),
+        stake: 1,
+    }];
+    node.block_store
+        .put_block_message(&second)
+        .expect("store second evidence block");
+    node.block_dag_storage
+        .insert(&second, InsertMode::Invalid)
+        .expect("admit second evidence metadata");
+
+    assert!(node
+        .block_processor
+        .check_dependencies_with_effects(node.casper.clone(), &incoming)
+        .await
+        .expect("complete objective dependency check"));
 }

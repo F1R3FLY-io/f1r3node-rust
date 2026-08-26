@@ -66,6 +66,7 @@ fn mk_snapshot(
         shard_conf,
         bonds_map,
         active_validators: vec![validator],
+        bond_generations: HashMap::new(),
     };
     snapshot.deploys_in_scope = std::sync::Arc::new(DashSet::new());
     snapshot
@@ -80,11 +81,12 @@ fn build_empty_block(
     bonds: Vec<Bond>,
     shard_id: String,
 ) -> BlockMessage {
+    let post_state_hash = pre_state_hash.clone();
     block_implicits::get_random_block(
         Some(block_number),
         Some(seq_num),
         Some(pre_state_hash),
-        Some(StateHash::default()),
+        Some(post_state_hash),
         Some(creator),
         Some(CURRENT_CASPER_PROTOCOL_VERSION),
         Some(now_millis()),
@@ -262,7 +264,7 @@ async fn run_compute_parents_post_state_finalized_skew_regression() {
     dag_storage
         .insert(
             &genesis_block,
-            block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Approved,
+            block_storage::rust::dag::block_dag_key_value_storage::InsertMode::ApprovedGenesis,
         )
         .expect("Failed to insert genesis in DAG");
 
@@ -550,7 +552,7 @@ async fn run_compute_parents_dag_cover_fast_path_regression() {
     dag_storage
         .insert(
             &genesis_block,
-            block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Approved,
+            block_storage::rust::dag::block_dag_key_value_storage::InsertMode::ApprovedGenesis,
         )
         .expect("Failed to insert genesis in DAG");
 
@@ -928,7 +930,7 @@ async fn run_compute_parents_post_state_missing_mergeable_regression() {
     dag_storage
         .insert(
             &genesis_block,
-            block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Approved,
+            block_storage::rust::dag::block_dag_key_value_storage::InsertMode::ApprovedGenesis,
         )
         .expect("Failed to insert genesis in DAG");
 
@@ -1160,7 +1162,7 @@ async fn run_visible_blocks_scope_test() {
     dag_storage
         .insert(
             &genesis_block,
-            block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Approved,
+            block_storage::rust::dag::block_dag_key_value_storage::InsertMode::ApprovedGenesis,
         )
         .expect("Failed to insert genesis");
 

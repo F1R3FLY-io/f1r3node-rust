@@ -74,6 +74,18 @@ detectNeglected(S, b) =
   | otherwise                              ⟹ unchanged
 ```
 
+`AdmissibleEquivocation` and `IgnorableEquivocation` are the proof model's
+historical labels. Current Rust maps them to
+`EquivocationObservation::RequestedDependency` and `Unsolicited` on an
+otherwise accepted certified validation (`equivocation_detector.rs:79-120`,
+`block_status.rs:74-78`). Consensus evidence is not derived from that unary
+label: certified block admission atomically accumulates distinct hashes under
+`(validator, bond_generation, sequence)`, and the pair becomes objective only
+when the set contains at least two hashes
+(`block_dag_key_value_storage.rs:1499-1528`). The generation-scoped refinement
+is specified in
+[`objective-equivocation-evidence.md`](../objective-equivocation-evidence.md).
+
 ### Theorems
 
 The detector is **sound** and **complete**:
@@ -86,10 +98,12 @@ The detector is **sound** and **complete**:
   `EquivocationDetector.v:111`.)* If `equivocates(S, v, s)` and
   `b ∈ D` with `sender(b) = v`, `seq(b) = s`, then `detect`
   returns either `AdmissibleEquivocation` or `IgnorableEquivocation`.
-- **T-3 (Slashable iff in slashable set).** *(`slashable_post_fix_extends_pre_fix`,
-  `InvalidBlock.v:151`.)* Post-fix #1, the slashable set strictly
-  includes the pre-fix slashable set (by adding
-  `IgnorableEquivocation`).
+- **T-3 (Historical detector refinement).**
+  *(`slashable_post_fix_extends_pre_fix`, `InvalidBlock.v:164`.)* The original
+  fix proves that the abstract unsolicited-equivocation verdict cannot be
+  silently discarded. Current production refines that verdict into accepted,
+  generation-scoped two-sibling objective evidence; the unary observation is
+  diagnostic and does not itself authorize a slash.
 - **T-6 (Neglect detection sound + complete).** *(`detect_neglected_sound`,
   `EquivocationDetector.v` §4.5; `detect_neglected_complete` §4.6.)*
   Verdict `NeglectedEquivocation` fires iff an existing

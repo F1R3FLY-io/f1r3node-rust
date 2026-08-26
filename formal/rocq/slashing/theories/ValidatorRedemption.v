@@ -22,9 +22,11 @@
                        [redeem_vindicated_restores] is the formal anchor for the
                        Stage-C un-halt fix verified end-to-end by the Rust test
                        `redeem_outcomes_and_multisig_gate`.)
-     Guilty penalty  — partial: move min(penalty, bond) to the Coop vault (the
-                       ONLY coop-growth path) and restore the remainder; un-halt
-                       + clear quarantine.
+     Guilty penalty  — partial: when penalty is strictly below the quarantined
+                       bond, move exactly penalty to the Coop vault (the ONLY
+                       coop-growth path) and restore the remainder; un-halt and
+                       clear quarantine. A penalty greater than or equal to the
+                       bond is rejected; total confiscation requires Burned.
      Burned          — total: destroy the quarantined stake from PoS custody;
                        the validator STAYS
                        unbonded AND halted (NOT removed from "mintingHalted");
@@ -95,15 +97,16 @@ Definition redeem
                (qs_remove (psc_quarantined psc) v),        (* clear quarantine *)
              true)
         | Guilty penalty =>
-            let p := Nat.min penalty bond in               (* clamp to [0,bond] *)
-            (mkPoSStateC
-               (mkPoSState
-                  (bm_update (ps_allBonds ps) v (bond - p)) (* restore remainder *)
-                  (v :: ps_active ps)
-                  (ps_coopVault ps + p))                    (* coop GROWS by p *)
-               (halted_remove (psc_mintingHalted psc) v)    (* UN-HALT *)
-               (qs_remove (psc_quarantined psc) v),
-             true)
+            if penalty <? bond then
+              (mkPoSStateC
+                 (mkPoSState
+                    (bm_update (ps_allBonds ps) v (bond - penalty))
+                    (v :: ps_active ps)
+                    (ps_coopVault ps + penalty))
+                 (halted_remove (psc_mintingHalted psc) v)
+                 (qs_remove (psc_quarantined psc) v),
+               true)
+            else (psc, false)
         | Burned =>
             (mkPoSStateC
                (mkPoSState
@@ -138,24 +141,40 @@ Proof.
 Qed.
 
 (* ═══════════════════════════════════════════════════════════════════════════
-   §3 — Guilty redistributes (coop grows by exactly the clamped penalty)
+   §3 — A strictly partial Guilty verdict redistributes the exact penalty
    ═══════════════════════════════════════════════════════════════════════════ *)
 
 Theorem redeem_guilty_redistributes :
   forall psc v bond penalty,
     qs_lookup (psc_quarantined psc) v = Some bond ->
+    penalty < bond ->
     let (psc', ok) := redeem psc v (Guilty penalty) true in
     ok = true
-    /\ ps_coopVault (psc_pos psc') = ps_coopVault (psc_pos psc) + Nat.min penalty bond
-    /\ bm_lookup (ps_allBonds (psc_pos psc')) v = bond - Nat.min penalty bond
+    /\ ps_coopVault (psc_pos psc') = ps_coopVault (psc_pos psc) + penalty
+    /\ bm_lookup (ps_allBonds (psc_pos psc')) v = bond - penalty
     /\ halted_mem (psc_mintingHalted psc') v = false
     /\ qs_lookup (psc_quarantined psc') v = None.
 Proof.
-  intros psc v bond penalty Hq. unfold redeem. rewrite Hq. simpl.
+  intros psc v bond penalty Hq Hpartial. unfold redeem. rewrite Hq.
+  assert (Hltb : (penalty <? bond) = true).
+  { apply Nat.ltb_lt. exact Hpartial. }
+  rewrite Hltb. simpl.
   repeat split.
   - apply bm_lookup_update_same.
   - apply halted_mem_remove_same.
   - apply qs_lookup_remove_same.
+Qed.
+
+Theorem redeem_full_guilty_rejected :
+  forall psc v bond penalty,
+    qs_lookup (psc_quarantined psc) v = Some bond ->
+    bond <= penalty ->
+    redeem psc v (Guilty penalty) true = (psc, false).
+Proof.
+  intros psc v bond penalty Hq Hfull. unfold redeem. rewrite Hq.
+  assert (Hltb : (penalty <? bond) = false).
+  { apply Nat.ltb_ge. exact Hfull. }
+  rewrite Hltb. reflexivity.
 Qed.
 
 (* ═══════════════════════════════════════════════════════════════════════════
@@ -307,16 +326,19 @@ Qed.
 Lemma redeem_guilty_preserves_total :
   forall psc v bond penalty,
     qs_lookup (psc_quarantined psc) v = Some bond ->
+    penalty < bond ->
     bm_lookup (ps_allBonds (psc_pos psc)) v = 0 ->
     sum_quarantined (qs_remove (psc_quarantined psc) v) + bond
       = sum_quarantined (psc_quarantined psc) ->
     total_funds (fst (redeem psc v (Guilty penalty) true)) = total_funds psc.
 Proof.
-  intros psc v bond penalty Hq Hzero Hqsum. unfold total_funds, redeem.
-  rewrite Hq. simpl.
-  pose proof (sum_bonds_update (ps_allBonds (psc_pos psc)) v (bond - Nat.min penalty bond)) as Hb.
+  intros psc v bond penalty Hq Hpartial Hzero Hqsum. unfold total_funds, redeem.
+  rewrite Hq.
+  assert (Hltb : (penalty <? bond) = true).
+  { apply Nat.ltb_lt. exact Hpartial. }
+  rewrite Hltb. simpl.
+  pose proof (sum_bonds_update (ps_allBonds (psc_pos psc)) v (bond - penalty)) as Hb.
   rewrite Hzero in Hb.
-  pose proof (Nat.le_min_r penalty bond) as Hmin. (* min penalty bond <= bond *)
   lia.
 Qed.
 
@@ -329,7 +351,8 @@ Theorem slash_then_redeem_conserves_total :
   forall psc v o,
     bm_lookup (ps_allBonds (psc_pos psc)) v > 0 ->
     qs_lookup (psc_quarantined psc) v = None ->   (* not already quarantined *)
-    (o = Vindicated \/ exists p, o = Guilty p) ->
+    (o = Vindicated \/ exists p,
+       o = Guilty p /\ p < bm_lookup (ps_allBonds (psc_pos psc)) v) ->
     let psc1 := fst (slashC psc v) in
     total_funds (fst (redeem psc1 v o true)) = total_funds psc.
 Proof.
@@ -374,11 +397,14 @@ Proof.
   { unfold psc1, total_funds; simpl. unfold qs_insert; simpl.
     pose proof (sum_bonds_slash (ps_allBonds (psc_pos psc)) v) as Hs. fold b in Hs.
     lia. }
-  destruct Ho as [HV | [p HG]].
+  destruct Ho as [HV | [p [HG Hpartial]]].
   - subst o.
     rewrite (redeem_vindicated_preserves_total psc1 v Hq1 Hzero1 Hqsum1). exact Hpsc1_total.
   - subst o.
-    rewrite (redeem_guilty_preserves_total psc1 v p Hq1 Hzero1 Hqsum1). exact Hpsc1_total.
+    rewrite (redeem_guilty_preserves_total psc1 v
+               (bond := b) (penalty := p)
+               Hq1 Hpartial Hzero1 Hqsum1).
+    exact Hpsc1_total.
 Qed.
 
 (* The Burned case is intentionally NOT a conservation of the tracked total:
@@ -447,15 +473,17 @@ Theorem redeem_other_unchanged :
 Proof.
   intros psc v u o Hne Hq. unfold redeem.
   destruct (qs_lookup (psc_quarantined psc) v) as [bond |] eqn:Hl; [| contradiction].
-  destruct o; simpl.
+  destruct o as [| penalty |]; simpl.
   - (* Vindicated: bond restored via bm_update; other key untouched. *)
     split.
     + apply bm_lookup_update_diff. apply not_eq_sym. assumption.
     + apply qs_remove_other. assumption.
-  - (* Guilty: remainder restored via bm_update; other key untouched. *)
-    split.
-    + apply bm_lookup_update_diff. apply not_eq_sym. assumption.
-    + apply qs_remove_other. assumption.
+  - (* Guilty: a partial verdict updates only v; an invalid full verdict is a no-op. *)
+    destruct (penalty <? bond) eqn:Hpartial; simpl.
+    + split.
+      * apply bm_lookup_update_diff. apply not_eq_sym. assumption.
+      * apply qs_remove_other. assumption.
+    + split; reflexivity.
   - (* Burned: allBonds unchanged; quarantine other key untouched. *)
     split.
     + reflexivity.

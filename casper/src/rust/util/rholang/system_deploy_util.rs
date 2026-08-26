@@ -73,6 +73,30 @@ pub fn generate_slash_deploy_random_seed(
     Tools::rng(&seed).split_byte(1)
 }
 
+pub fn generate_slash_evidence_random_seed(
+    validator: Validator,
+    seq_num: i32,
+    invalid_block_hash: &BlockHash,
+    equivocation_block_hash: Option<&BlockHash>,
+) -> Blake2b512Random {
+    let Some(equivocation_block_hash) = equivocation_block_hash else {
+        return generate_slash_deploy_random_seed(validator, seq_num, invalid_block_hash);
+    };
+    let (first, second) = if invalid_block_hash <= equivocation_block_hash {
+        (invalid_block_hash, equivocation_block_hash)
+    } else {
+        (equivocation_block_hash, invalid_block_hash)
+    };
+    let seed: Vec<u8> = serialize_int32_fixed(SYSTEM_DEPLOY_PREFIX)
+        .into_iter()
+        .chain(validator)
+        .chain(serialize_int32_fixed(seq_num))
+        .chain(first.iter().copied())
+        .chain(second.iter().copied())
+        .collect();
+    Tools::rng(&seed).split_byte(1)
+}
+
 /// Per-redemption random seed for the Cost-Accounted Rho Stage-C validator
 /// redemption system deploy (DR-7/DR-12). The redeem deploy's `source()`
 /// allocates its own private channels (`new ...`) from this rng, so the seed
@@ -285,6 +309,17 @@ mod tests {
             seed_second.to_bytes(),
             "same inputs must produce same seed for replay determinism"
         );
+    }
+
+    #[test]
+    fn equivocation_slash_seed_is_pair_order_independent() {
+        let validator: Validator = Bytes::from(vec![0xBC; 32]);
+        let first: BlockHash = Bytes::from(vec![0x13; 32]);
+        let second: BlockHash = Bytes::from(vec![0x37; 32]);
+        let forward =
+            generate_slash_evidence_random_seed(validator.clone(), 19, &first, Some(&second));
+        let reverse = generate_slash_evidence_random_seed(validator, 19, &second, Some(&first));
+        assert_eq!(forward.to_bytes(), reverse.to_bytes());
     }
 
     // D3 (DR-9, OD-2): the pre-charge / refund per-signer-seed tests and the

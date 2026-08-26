@@ -11,13 +11,8 @@
 // Theorem citation: T-9.3 (catch-all dispatcher), Rocq
 // formal/rocq/slashing/theories/BugFixDispatcher.v.
 //
-// Validation order: block_summary's `justification_follows`
-// (validate.rs:820) checks that the set of validators in the
-// justifications equals the set of bonded validators in the main
-// parent. Clearing all justifications gives an empty justified set
-// — bonded set has 3 entries (v0, v1, v2) — line 860 returns
-// `InvalidFollows`. parents_hash_list stays intact so the earlier
-// "missing main parent" arm at line 833 does NOT fire.
+// Validation order: block_summary's `justifications_well_formed`
+// rejects duplicate validator entries before parent and sequence checks.
 
 use casper::rust::block_status::{BlockError, InvalidBlock};
 use casper::rust::util::construct_deploy;
@@ -47,8 +42,12 @@ async fn integration_t_invalid_follows() {
 
     let d1 = construct_deploy::basic_deploy_data(0, None, Some(shard_id.clone())).expect("d1");
     let mutated = propose_with_block_mutation(&mut nodes[0], vec![d1], |b| {
-        // Clear all justifications. Bonded set ≠ justified set.
-        b.justifications.clear();
+        let duplicate = b
+            .justifications
+            .first()
+            .cloned()
+            .expect("proposed block must have a justification");
+        b.justifications.push(duplicate);
     })
     .await
     .expect("propose_with_block_mutation");

@@ -12,7 +12,11 @@ skinparam sequence {
 skinparam participant {
   BackgroundColor<<commit>> #D1C4E9
   BackgroundColor<<latest>> #BBDEFB
+  BackgroundColor<<auth>> #E1BEE7
+  BackgroundColor<<vote>> #FFCDD2
   BackgroundColor<<choice>> #FFE082
+  BackgroundColor<<bound>> #D7CCC8
+  BackgroundColor<<evidence>> #F8BBD0
   BackgroundColor<<closure>> #C8E6C9
   BackgroundColor<<replay>> #B2DFDB
   BackgroundColor<<block>> #FFECB3
@@ -24,30 +28,41 @@ skinparam note {
 skinparam defaultFontName "monospace"
 skinparam defaultFontSize 10
 
-title Causal parent retention with certified-floor replay
+title Causal parent retention, GHOST identity, and certified-floor replay
 
 participant "Captured LFB\nF" as LFB <<commit>>
-participant "Valid latest messages\n{P1, P2, D}" as Latest <<latest>>
+participant "Exact latest slots\n{P1, P2, D}" as Latest <<latest>>
+participant "Base-admissible\ncausal projection" as Causal <<auth>>
+participant "Floor-descending\nvote projection" as Vote <<vote>>
 participant "Estimator and\ndirect parents" as Choice <<choice>>
+participant "Depth expiry and\nrecovery guard" as Bound <<bound>>
+participant "Evidence roots" as Evidence <<evidence>>
 participant "Parent causal\nclosure" as Closure <<closure>>
 participant "Deterministic\nmerge replay" as Replay <<replay>>
 participant "Proposed block" as Block <<block>>
 
-Latest -[#1565C0]> Choice : retain every valid tip\nas fork-choice evidence
-Choice -[#2E7D32]> Closure : direct parents are reachability-maximal\nevery valid tip is covered
+Latest -[#7B1FA2]> Causal : certify authority, admission,\nsender, generation, non-equivocation
+Causal -[#C62828]> Vote : retain only tips descending from F
+Vote -[#C62828]> Choice : LMD-GHOST votes and main tip
+Causal -[#2E7D32]> Choice : declared-parent candidates\ninclude valid stale tip D
+LFB -[#F57C00]> Choice : add F when no causal candidate descends from F
+Choice -[#2E7D32]> Bound : reachability-maximal antichain\nwith GHOST head first
+Bound -[#2E7D32]> Closure : expire only deterministic deep tips;\nnarrow recovery only if main covers\nlive tips and descends from F
 Closure -[#2E7D32]> Replay : all above-floor causal inputs
 LFB -[#1565C0]> Replay : protected floor state
 Replay -[#2E7D32]> Block : floor state + accepted deltas\nexactly reject conflicting deltas
-Choice -[#2E7D32]> Block : declare compact direct parents
+Bound -[#2E7D32]> Block : declare bounded live antichain
+Latest -[#AD1457]> Evidence : every exact latest hash
+LFB -[#AD1457]> Evidence : F always remains a root
 
-note over Latest, Block
-Stale or effect-dropping tips remain causal evidence. Replay decides their
-above-floor effects deterministically; no such rejection may erase an effect
-already represented by the certified floor.
+note over Causal, Block
+D remains causal input but has no vote after F finalizes. If D expires from
+the live parent horizon it still remains an exact evidence root. Deploy policy
+cannot replace the GHOST main parent, and no merge rejection may erase an
+effect already represented by the certified floor.
 end note
 
-Latest -[#546E7A]> Choice : alternate snapshot has no valid tip
-LFB -[#F57C00]> Choice : exact fallback parent = F
-Choice -[#2E7D32]> Block : declare {F}
+Latest -[#546E7A]> Causal : alternate snapshot has only stale disjoint tips
+LFB -[#F57C00]> Choice : explicit backstop parent = F
 
 @enduml

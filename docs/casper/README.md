@@ -137,11 +137,18 @@ Computes normalized fault tolerance between -1.0 and 1.0:
 1. Find blocks with >50% stake agreement via main parent chain
 2. Execute Clique Oracle on candidates
 3. Output first block exceeding fault tolerance threshold, along with its computed FT value
-4. Cache the normalized FT in `BlockMetadata.fault_tolerance_value` for the directly finalized block and all indirectly finalized ancestors
-5. Propagate FT to all previously-finalized blocks whose cached value is lower (`propagate_ft_to_finalized_blocks`). This covers orphaned branches in the multi-parent DAG and ensures all finalized blocks converge toward FT=1.0 as later rounds produce higher agreement.
-6. Guarded by `FinalizationInProgress` atomic bool (prevents snapshot creation during finalization)
+4. Compare-and-append one immutable finalization round against the durable head
+5. Project committed rounds into metadata in revision order, caching the normalized FT for the directly finalized block and all indirectly finalized ancestors
+6. Monotonically raise lower cached FT display values for previously finalized metadata during projection
+7. Apply deploy, cosigner, runtime-cache, and finalized-event effects with durable receipts; restart resumes the unfinished suffix
 
-**FT caching**: The block API returns the cached FT for finalized blocks instead of recomputing via the clique oracle. Cached FT is monotonically non-decreasing — it only increases as later finalization rounds propagate higher values. Bulk endpoints (`get_blocks`, `show_main_chain`, `get_blocks_by_heights`) use a single DAG snapshot per response for internal consistency.
+Immutable evaluations may overlap up to `finalizer.max-parallel-workers`. Only
+the constant-size head-and-round append and ordered metadata projection are
+linearized. `finalization_in_progress` is a reference count for overlapping
+effect application; snapshot construction remains concurrent and observes an
+internally consistent DAG representation.
+
+**FT caching**: The block API returns the cached FT for finalized blocks instead of recomputing via the clique oracle. Cached FT is monotonically non-decreasing — it only increases as later finalization rounds project higher values. Bulk endpoints (`get_blocks`, `show_main_chain`, `get_blocks_by_heights`) use a single DAG snapshot per response for internal consistency.
 
 ## Equivocation Detection
 

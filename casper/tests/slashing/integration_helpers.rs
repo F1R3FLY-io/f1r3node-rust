@@ -18,9 +18,10 @@ use casper::rust::util::rholang::{interpreter_util, system_deploy_util};
 use crypto::rust::signatures::signed::{Cosigned, Signed};
 use models::rust::block::state_hash::StateHash;
 use models::rust::block_hash::BlockHash;
+use models::rust::bond_generation::BondGeneration;
 use models::rust::casper::protocol::casper_message::{
     BlockMessage, Bond, DeployData, ProcessedDeploy, ProcessedSystemDeploy, RejectedDeploy,
-    StateEffectId,
+    StateEffectId, ValidatorBondGeneration,
 };
 use models::rust::validator::Validator;
 use prost::bytes::Bytes;
@@ -104,6 +105,36 @@ async fn compute_cost_accounted_checkpoint(
         admission,
     )
     .await
+}
+
+async fn validator_caches_at(
+    node: &TestNode,
+    state_hash: &StateHash,
+) -> Result<(Vec<ValidatorBondGeneration>, Vec<Validator>), CasperError> {
+    let mut bond_generations = node
+        .runtime_manager
+        .compute_bond_generations(state_hash)
+        .await?
+        .into_iter()
+        .map(|(validator, generation)| {
+            Ok(ValidatorBondGeneration {
+                validator,
+                generation: BondGeneration::try_from(generation).map_err(|error| {
+                    CasperError::RuntimeError(format!(
+                        "PoS returned an invalid bond generation: {error}"
+                    ))
+                })?,
+            })
+        })
+        .collect::<Result<Vec<_>, CasperError>>()?;
+    bond_generations.sort_unstable();
+    let mut active_validators = node
+        .runtime_manager
+        .get_active_validators(state_hash)
+        .await?;
+    active_validators.sort_unstable();
+    active_validators.dedup();
+    Ok((bond_generations, active_validators))
 }
 
 /// Capture a production-tier snapshot at the post-state hash of
@@ -236,7 +267,7 @@ pub async fn equivocate_block(
 
     // Build the same parent set b1 used.
     let parents = snapshot.parents.clone();
-    let justifications: Vec<_> = snapshot.justifications.iter().cloned().collect();
+    let justifications = snapshot.justifications.to_vec();
 
     // Build BlockData from b1's header (matching the timestamp in
     // particular — `rho:block:data` reads it during replay; an
@@ -273,6 +304,8 @@ pub async fn equivocate_block(
     ) = checkpoint;
 
     let casper_version = snapshot.on_chain_state.shard_conf.casper_version;
+    let (bond_generations, active_validators) =
+        validator_caches_at(producing_node, &post_state_hash).await?;
 
     // Inline the equivalent of `block_creator::package_block` —
     // that function is private to block_creator.rs (`fn`, not
@@ -284,6 +317,8 @@ pub async fn equivocate_block(
         pre_state_hash,
         post_state_hash,
         bonds: new_bonds,
+        bond_generations,
+        active_validators,
         block_number: block_data.block_number,
     };
     let body = Body {
@@ -299,6 +334,14 @@ pub async fn equivocate_block(
         timestamp: block_data.time_stamp,
         version: casper_version,
         extra_bytes: Bytes::new(),
+        sender_bond_generation: snapshot
+            .on_chain_state
+            .bond_generations
+            .get(&Bytes::copy_from_slice(
+                &validator_identity.public_key.bytes,
+            ))
+            .copied(),
+        objective_equivocation_evidence_delta: Vec::new(),
     };
     let unsigned = proto_util::unsigned_block_proto(
         body,
@@ -361,7 +404,8 @@ pub async fn propose_with_explicit_justifications(
     for j in extra_justifications {
         merged.insert(j.validator.clone(), j);
     }
-    let justifications: Vec<_> = merged.into_values().collect();
+    let mut justifications: Vec<_> = merged.into_values().collect();
+    justifications.sort_unstable();
 
     let parent_max_ts = parents
         .iter()
@@ -404,6 +448,8 @@ pub async fn propose_with_explicit_justifications(
     ) = checkpoint;
 
     let casper_version = snapshot.on_chain_state.shard_conf.casper_version;
+    let (bond_generations, active_validators) =
+        validator_caches_at(producing_node, &post_state_hash).await?;
 
     use models::rust::casper::protocol::casper_message::{Body, F1r3flyState, Header};
 
@@ -411,6 +457,8 @@ pub async fn propose_with_explicit_justifications(
         pre_state_hash,
         post_state_hash,
         bonds: new_bonds,
+        bond_generations,
+        active_validators,
         block_number: block_data.block_number,
     };
     let body = Body {
@@ -426,6 +474,14 @@ pub async fn propose_with_explicit_justifications(
         timestamp: block_data.time_stamp,
         version: casper_version,
         extra_bytes: Bytes::new(),
+        sender_bond_generation: snapshot
+            .on_chain_state
+            .bond_generations
+            .get(&Bytes::copy_from_slice(
+                &validator_identity.public_key.bytes,
+            ))
+            .copied(),
+        objective_equivocation_evidence_delta: Vec::new(),
     };
     let unsigned = proto_util::unsigned_block_proto(
         body,
@@ -526,7 +582,7 @@ pub async fn propose_with_block_mutation(
     let shard_id = snapshot.on_chain_state.shard_conf.shard_name.clone();
 
     let parents = snapshot.parents.clone();
-    let justifications: Vec<_> = snapshot.justifications.iter().cloned().collect();
+    let justifications = snapshot.justifications.to_vec();
 
     let parent_max_ts = parents
         .iter()
@@ -569,6 +625,8 @@ pub async fn propose_with_block_mutation(
     ) = checkpoint;
 
     let casper_version = snapshot.on_chain_state.shard_conf.casper_version;
+    let (bond_generations, active_validators) =
+        validator_caches_at(producing_node, &post_state_hash).await?;
 
     use models::rust::casper::protocol::casper_message::{Body, F1r3flyState, Header};
 
@@ -576,6 +634,8 @@ pub async fn propose_with_block_mutation(
         pre_state_hash,
         post_state_hash,
         bonds: new_bonds,
+        bond_generations,
+        active_validators,
         block_number: block_data.block_number,
     };
     let body = Body {
@@ -591,6 +651,14 @@ pub async fn propose_with_block_mutation(
         timestamp: block_data.time_stamp,
         version: casper_version,
         extra_bytes: Bytes::new(),
+        sender_bond_generation: snapshot
+            .on_chain_state
+            .bond_generations
+            .get(&Bytes::copy_from_slice(
+                &validator_identity.public_key.bytes,
+            ))
+            .copied(),
+        objective_equivocation_evidence_delta: Vec::new(),
     };
     let mut unsigned = proto_util::unsigned_block_proto(
         body,
@@ -658,7 +726,7 @@ pub async fn propose_neglecting_block(
     // receiver's check_neglected_equivocations_with_update
     // recognises that this block "saw" the equivocation).
     let parents = snapshot.parents.clone();
-    let justifications: Vec<_> = snapshot.justifications.iter().cloned().collect();
+    let justifications = snapshot.justifications.to_vec();
 
     // Honest block timestamp: pick "now" matching production
     // semantics. Use the max parent timestamp + 1 so we satisfy
@@ -709,6 +777,8 @@ pub async fn propose_neglecting_block(
     ) = checkpoint;
 
     let casper_version = snapshot.on_chain_state.shard_conf.casper_version;
+    let (bond_generations, active_validators) =
+        validator_caches_at(producing_node, &post_state_hash).await?;
 
     use models::rust::casper::protocol::casper_message::{Body, F1r3flyState, Header};
 
@@ -716,6 +786,8 @@ pub async fn propose_neglecting_block(
         pre_state_hash,
         post_state_hash,
         bonds: new_bonds,
+        bond_generations,
+        active_validators,
         block_number: block_data.block_number,
     };
     let body = Body {
@@ -731,6 +803,14 @@ pub async fn propose_neglecting_block(
         timestamp: block_data.time_stamp,
         version: casper_version,
         extra_bytes: Bytes::new(),
+        sender_bond_generation: snapshot
+            .on_chain_state
+            .bond_generations
+            .get(&Bytes::copy_from_slice(
+                &validator_identity.public_key.bytes,
+            ))
+            .copied(),
+        objective_equivocation_evidence_delta: Vec::new(),
     };
     let unsigned = proto_util::unsigned_block_proto(
         body,

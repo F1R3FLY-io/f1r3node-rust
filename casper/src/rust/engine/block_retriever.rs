@@ -14,9 +14,10 @@ use tracing::{debug, info};
 
 use crate::rust::errors::CasperError;
 use crate::rust::metrics_constants::{
-    BLOCK_DOWNLOAD_END_TO_END_TIME_METRIC, BLOCK_REQUESTS_RETRIES_METRIC,
-    BLOCK_REQUESTS_RETRY_ACTION_METRIC, BLOCK_REQUESTS_STALE_EVICTIONS_METRIC,
-    BLOCK_REQUESTS_TOTAL_METRIC, BLOCK_RETRIEVER_BROADCAST_TRACKING_SIZE_METRIC,
+    BLOCK_DOWNLOAD_END_TO_END_TIME_METRIC, BLOCK_REQUESTS_CAPACITY_DEFERRED_TOTAL_METRIC,
+    BLOCK_REQUESTS_RETRIES_METRIC, BLOCK_REQUESTS_RETRY_ACTION_METRIC,
+    BLOCK_REQUESTS_STALE_EVICTIONS_METRIC, BLOCK_REQUESTS_TOTAL_METRIC,
+    BLOCK_RETRIEVER_BROADCAST_TRACKING_SIZE_METRIC,
     BLOCK_RETRIEVER_DEP_RECOVERY_TRACKING_SIZE_METRIC, BLOCK_RETRIEVER_METRICS_SOURCE,
     BLOCK_RETRIEVER_PEERS_TOTAL_SIZE_METRIC, BLOCK_RETRIEVER_REQUESTED_BLOCKS_SIZE_METRIC,
     BLOCK_RETRIEVER_WAITING_LIST_TOTAL_SIZE_METRIC,
@@ -63,6 +64,7 @@ pub type RequestedBlocks = Arc<Mutex<HashMap<BlockHash, RequestState>>>;
 enum AckReceiveResult {
     AddedAsReceived,
     MarkedAsReceived,
+    UntrackedAtCapacity,
 }
 
 /**
@@ -329,71 +331,21 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
         Ok(())
     }
 
-    fn enforce_requested_blocks_bound(&self) -> Result<usize, CasperError> {
-        let hashes_to_evict: Vec<BlockHash> = {
-            let state = self.requested_blocks.lock().map_err(|_| {
+    fn verify_requested_blocks_bound(&self) -> Result<(), CasperError> {
+        let size = self
+            .requested_blocks
+            .lock()
+            .map_err(|_| {
                 CasperError::RuntimeError("Failed to acquire requested_blocks lock".to_string())
-            })?;
-
-            if state.len() <= Self::MAX_REQUESTED_BLOCKS_ENTRIES {
-                Vec::new()
-            } else {
-                let mut candidates: Vec<(BlockHash, u64, bool)> = state
-                    .iter()
-                    .map(|(hash, req)| {
-                        (
-                            hash.clone(),
-                            req.initial_timestamp,
-                            !req.received && !req.in_casper_buffer,
-                        )
-                    })
-                    .collect();
-
-                // Prefer evicting oldest unresolved/non-buffered requests first.
-                candidates.sort_by_key(|(_, ts, preferred)| (!*preferred, *ts));
-                let to_remove = state
-                    .len()
-                    .saturating_sub(Self::MAX_REQUESTED_BLOCKS_ENTRIES);
-                candidates
-                    .into_iter()
-                    .take(to_remove)
-                    .map(|(hash, _, _)| hash)
-                    .collect()
-            }
-        };
-
-        if hashes_to_evict.is_empty() {
-            return Ok(0);
-        }
-
-        let evicted_count = {
-            let mut state = self.requested_blocks.lock().map_err(|_| {
-                CasperError::RuntimeError("Failed to acquire requested_blocks lock".to_string())
-            })?;
-            let mut count = 0usize;
-            for hash in &hashes_to_evict {
-                if state.remove(hash).is_some() {
-                    count += 1;
-                }
-            }
-            count
-        };
-
-        for hash in &hashes_to_evict {
-            self.cleanup_aux_tracking_for_hash(hash)?;
-        }
-
-        if evicted_count > 0 {
-            metrics::counter!(BLOCK_REQUESTS_STALE_EVICTIONS_METRIC, "source" => BLOCK_RETRIEVER_METRICS_SOURCE)
-                .increment(evicted_count as u64);
-            debug!(
-                "Evicted {} requested block entries to enforce max bound {}.",
-                evicted_count,
+            })?
+            .len();
+        if size > Self::MAX_REQUESTED_BLOCKS_ENTRIES {
+            return Err(CasperError::RuntimeError(format!(
+                "requested block tracker invariant violated: {size} > {}",
                 Self::MAX_REQUESTED_BLOCKS_ENTRIES
-            );
+            )));
         }
-
-        Ok(evicted_count)
+        Ok(())
     }
 
     /// Creates a new BlockRetriever with shared requested_blocks state.
@@ -688,18 +640,26 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
             let unknown_hash = !state.contains_key(&hash);
 
             if unknown_hash {
-                // Add new request
-                metrics::counter!(BLOCK_REQUESTS_TOTAL_METRIC, "source" => BLOCK_RETRIEVER_METRICS_SOURCE).increment(1);
-                let initial_peers = if let Some(peer_node) = peer.clone() {
-                    vec![peer_node]
+                if state.len() >= Self::MAX_REQUESTED_BLOCKS_ENTRIES {
+                    metrics::counter!(BLOCK_REQUESTS_CAPACITY_DEFERRED_TOTAL_METRIC, "source" => BLOCK_RETRIEVER_METRICS_SOURCE).increment(1);
+                    AdmitHashResult {
+                        status: AdmitHashStatus::Ignore,
+                        broadcast_request: false,
+                        request_block: false,
+                    }
                 } else {
-                    missing_dependency_peers
-                };
-                Self::add_new_request(&mut state, hash.clone(), now, false, initial_peers);
-                AdmitHashResult {
-                    status: AdmitHashStatus::NewRequestAdded,
-                    broadcast_request: request_from_peer.is_none(),
-                    request_block: request_from_peer.is_some(),
+                    metrics::counter!(BLOCK_REQUESTS_TOTAL_METRIC, "source" => BLOCK_RETRIEVER_METRICS_SOURCE).increment(1);
+                    let initial_peers = if let Some(peer_node) = peer.clone() {
+                        vec![peer_node]
+                    } else {
+                        missing_dependency_peers
+                    };
+                    Self::add_new_request(&mut state, hash.clone(), now, false, initial_peers);
+                    AdmitHashResult {
+                        status: AdmitHashStatus::NewRequestAdded,
+                        broadcast_request: request_from_peer.is_none(),
+                        request_block: request_from_peer.is_some(),
+                    }
                 }
             } else if let Some(ref peer_node) = peer {
                 // Hash exists, check if peer is already in waiting list
@@ -974,7 +934,7 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
         }
 
         // Keep cooldown-tracking maps bounded to active requested hashes.
-        self.enforce_requested_blocks_bound()?;
+        self.verify_requested_blocks_bound()?;
         self.sweep_orphaned_aux_tracking()?;
         self.sweep_expired_retry_budget_quarantine(current_time)?;
         self.update_aux_tracking_metrics()?;
@@ -1078,6 +1038,51 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
         self.update_aux_tracking_metrics()?;
 
         Ok(())
+    }
+
+    pub async fn defer_for_admission(
+        &self,
+        hash: BlockHash,
+        source_peer: Option<PeerNode>,
+    ) -> Result<bool, CasperError> {
+        let now = Self::current_millis();
+        let tracked = {
+            let mut state = self.requested_blocks.lock().map_err(|_| {
+                CasperError::RuntimeError("Failed to acquire requested_blocks lock".to_string())
+            })?;
+            if let Some(request) = state.get_mut(&hash) {
+                request.received = false;
+                request.in_casper_buffer = false;
+                request.timestamp = now;
+                if let Some(peer) = source_peer {
+                    let known = request.peers.contains(&peer)
+                        || request
+                            .waiting_list
+                            .iter()
+                            .any(|candidate| candidate == &peer);
+                    if !known && request.waiting_list.len() < Self::MAX_WAITING_LIST_PER_HASH {
+                        request.waiting_list.push(peer);
+                    }
+                }
+                true
+            } else if state.len() >= Self::MAX_REQUESTED_BLOCKS_ENTRIES {
+                metrics::counter!(BLOCK_REQUESTS_CAPACITY_DEFERRED_TOTAL_METRIC, "source" => BLOCK_RETRIEVER_METRICS_SOURCE).increment(1);
+                false
+            } else {
+                Self::add_new_request(
+                    &mut state,
+                    hash.clone(),
+                    now,
+                    false,
+                    source_peer.into_iter().collect(),
+                );
+                true
+            }
+        };
+        self.cleanup_aux_tracking_for_hash(&hash)?;
+        self.verify_requested_blocks_bound()?;
+        self.update_aux_tracking_metrics()?;
+        Ok(tracked)
     }
 
     /// Helper method to try re-requesting a block from the next peer in waiting list
@@ -1270,8 +1275,13 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
             match state.get(&hash) {
                 // There might be blocks that are not maintained by RequestedBlocks, e.g. fork-choice tips
                 None => {
-                    Self::add_new_request(&mut state, hash.clone(), now, true, Vec::new());
-                    (AckReceiveResult::AddedAsReceived, None)
+                    if state.len() >= Self::MAX_REQUESTED_BLOCKS_ENTRIES {
+                        metrics::counter!(BLOCK_REQUESTS_CAPACITY_DEFERRED_TOTAL_METRIC, "source" => BLOCK_RETRIEVER_METRICS_SOURCE).increment(1);
+                        (AckReceiveResult::UntrackedAtCapacity, None)
+                    } else {
+                        Self::add_new_request(&mut state, hash.clone(), now, true, Vec::new());
+                        (AckReceiveResult::AddedAsReceived, None)
+                    }
                 }
                 Some(requested) => {
                     let initial_timestamp = requested.initial_timestamp;
@@ -1303,6 +1313,12 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
             AckReceiveResult::MarkedAsReceived => {
                 info!(
                     "Block {} marked as received.",
+                    PrettyPrinter::build_string_bytes(&hash)
+                );
+            }
+            AckReceiveResult::UntrackedAtCapacity => {
+                debug!(
+                    "Block {} was received without tracker capacity; processing ownership remains in the block queue.",
                     PrettyPrinter::build_string_bytes(&hash)
                 );
             }
@@ -1509,6 +1525,162 @@ mod tests {
             1,
             "recover_dependency should issue a direct request when a connected peer exists"
         );
+    }
+
+    #[tokio::test]
+    async fn admission_deferral_reopens_received_state_without_immediate_network_retry() {
+        let local = peer_node("local", 40400);
+        let source = peer_node("source", 40401);
+        let rp_conf = create_rp_conf_ask(local, None, None);
+        let connections_cell = ConnectionsCell {
+            peers: Arc::new(Mutex::new(Connections::from_vec(vec![source.clone()]))),
+        };
+        let requested_blocks: RequestedBlocks = Arc::new(Mutex::new(HashMap::new()));
+        let transport = Arc::new(TransportLayerStub::new());
+        let block_retriever = BlockRetriever::new(
+            requested_blocks,
+            transport.clone(),
+            connections_cell,
+            rp_conf,
+        );
+        let hash: BlockHash = Bytes::from_static(b"admission-deferred-hash");
+
+        block_retriever
+            .ack_receive(hash.clone())
+            .await
+            .expect("receipt should be recorded");
+        for _ in 0..BlockRetriever::<TransportLayerStub>::MAX_RETRIES_PER_HASH {
+            block_retriever
+                .register_retry_attempt(&hash)
+                .expect("retry attempt should be recorded");
+        }
+        block_retriever
+            .mark_retry_budget_quarantine(
+                &hash,
+                BlockRetriever::<TransportLayerStub>::current_millis(),
+            )
+            .expect("quarantine should be recorded");
+
+        block_retriever
+            .defer_for_admission(hash.clone(), Some(source.clone()))
+            .await
+            .expect("admission deferral should complete");
+
+        let state = block_retriever
+            .get_request_state_for_test(&hash)
+            .await
+            .expect("state lookup should succeed")
+            .expect("deferred request should remain tracked");
+        assert!(!state.received);
+        assert!(!state.in_casper_buffer);
+        assert!(state.waiting_list.contains(&source));
+        assert!(!block_retriever
+            .has_exceeded_retry_budget(&hash)
+            .expect("retry budget lookup should succeed"));
+        assert!(!block_retriever
+            .is_retry_budget_quarantined(
+                &hash,
+                BlockRetriever::<TransportLayerStub>::current_millis(),
+            )
+            .expect("quarantine lookup should succeed"));
+        assert_eq!(transport.request_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn admission_deferral_creates_request_state_for_unsolicited_block() {
+        let local = peer_node("local", 40400);
+        let source = peer_node("source", 40401);
+        let rp_conf = create_rp_conf_ask(local, None, None);
+        let connections_cell = ConnectionsCell {
+            peers: Arc::new(Mutex::new(Connections::from_vec(vec![source.clone()]))),
+        };
+        let requested_blocks: RequestedBlocks = Arc::new(Mutex::new(HashMap::new()));
+        let transport = Arc::new(TransportLayerStub::new());
+        let block_retriever =
+            BlockRetriever::new(requested_blocks, transport, connections_cell, rp_conf);
+        let hash: BlockHash = Bytes::from_static(b"unsolicited-admission-deferred-hash");
+
+        block_retriever
+            .defer_for_admission(hash.clone(), Some(source.clone()))
+            .await
+            .expect("admission deferral should create state");
+
+        let state = block_retriever
+            .get_request_state_for_test(&hash)
+            .await
+            .expect("state lookup should succeed")
+            .expect("deferred request should exist");
+        assert!(!state.received);
+        assert_eq!(state.waiting_list, vec![source]);
+    }
+
+    #[tokio::test]
+    async fn request_capacity_preserves_existing_work_and_defers_new_hashes() {
+        let local = peer_node("local", 40400);
+        let source = peer_node("source", 40401);
+        let rp_conf = create_rp_conf_ask(local, None, None);
+        let connections_cell = ConnectionsCell {
+            peers: Arc::new(Mutex::new(Connections::from_vec(vec![source.clone()]))),
+        };
+        let requested_blocks: RequestedBlocks = Arc::new(Mutex::new(HashMap::new()));
+        let existing = Bytes::from_static(b"existing-request");
+        {
+            let mut state = requested_blocks.lock().expect("request state");
+            BlockRetriever::<TransportLayerStub>::add_new_request(
+                &mut state,
+                existing.clone(),
+                1,
+                false,
+                vec![source.clone()],
+            );
+            for index in 1..BlockRetriever::<TransportLayerStub>::MAX_REQUESTED_BLOCKS_ENTRIES {
+                BlockRetriever::<TransportLayerStub>::add_new_request(
+                    &mut state,
+                    Bytes::from(index.to_be_bytes().to_vec()),
+                    index as u64 + 1,
+                    false,
+                    Vec::new(),
+                );
+            }
+        }
+        let transport = Arc::new(TransportLayerStub::new());
+        let block_retriever = BlockRetriever::new(
+            requested_blocks.clone(),
+            transport,
+            connections_cell,
+            rp_conf,
+        );
+        let new_hash: BlockHash = Bytes::from_static(b"capacity-deferred-hash");
+
+        let result = block_retriever
+            .admit_hash(
+                new_hash.clone(),
+                Some(source.clone()),
+                AdmitHashReason::HashBroadcastReceived,
+            )
+            .await
+            .expect("capacity admission decision");
+        assert_eq!(result.status, AdmitHashStatus::Ignore);
+        assert!(block_retriever
+            .defer_for_admission(existing.clone(), Some(source.clone()))
+            .await
+            .expect("existing deferral"));
+        assert!(!block_retriever
+            .defer_for_admission(new_hash.clone(), Some(source))
+            .await
+            .expect("new deferral"));
+        block_retriever
+            .ack_receive(new_hash.clone())
+            .await
+            .expect("untracked receipt");
+
+        let state = requested_blocks.lock().expect("request state");
+        assert_eq!(
+            state.len(),
+            BlockRetriever::<TransportLayerStub>::MAX_REQUESTED_BLOCKS_ENTRIES
+        );
+        assert!(state.contains_key(&existing));
+        assert!(!state.contains_key(&new_hash));
     }
 
     #[tokio::test]

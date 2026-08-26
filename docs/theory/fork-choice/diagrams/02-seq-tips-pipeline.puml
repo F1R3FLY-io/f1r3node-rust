@@ -1,12 +1,12 @@
 ' Sequence Diagram 02 — Estimator::tips deterministic fork-choice pipeline.
 '
 ' The tips() call chain in casper/src/rust/estimator.rs, in order:
-'   collect latest_message_hashes
-'   → filter invalid latest messages (T-10; slashed ⟹ zero weight)
-'   → calculate_lca (with the LATEST_MESSAGE_MAX_DEPTH = 1000 depth filter)
-'   → build_scores_map (BFS down each supporting chain to the LCA, += weight)
-'   → rank_forkchoices (replace block with scored children; sort score desc,
-'                       hash asc; recurse to still_same)
+'   consume the certified eligible-message projection
+'   → calculate_lca over every eligible message
+'   → build_scores_map (parallel per-validator ancestry; ordered reduction)
+'   → greedy_ghost_head (per-level score/hash argmax)
+'   → terminal_frontier (all asynchronous branch expansions; deduplicated)
+'   → rank_forkchoices (greedy head ++ sorted remaining terminals)
 '   → filter_deep_parents (max_parent_depth)
 '   → take(max_number_of_parents)
 '
@@ -37,7 +37,7 @@ title Estimator::tips pipeline (deterministic fork-choice)
 ' Participant color legend:
 '   Estimator      = gold      (#FFE082)  the pure fork-choice driver
 '   DAG            = sky blue  (#BBDEFB)  block metadata + children reads
-'   Clique/bonds   = mint      (#C8E6C9)  bonded-weight source
+'   Certified ctx  = lavender  (#D1C4E9)  frozen round authority and votes
 '
 ' Arrow color legend:
 '   blue   (#1565C0) = read query to the DAG
@@ -47,56 +47,53 @@ title Estimator::tips pipeline (deterministic fork-choice)
 
 participant "Estimator" as EST #FFE082
 participant "DAG" as DAG #BBDEFB
-participant "Clique / bonds" as BND #C8E6C9
+participant "Certified context" as CTX #D1C4E9
 
 activate EST
 
-EST -[#1565C0]> DAG : latest_message_hashes()
-activate DAG
-DAG --[#1565C0]> EST : validator ▶ latest hash
-deactivate DAG
-
-EST -[#1565C0]> DAG : invalid_latest_messages_from_hashes(..)
-activate DAG
-DAG --[#1565C0]> EST : invalid set (T-10)
-deactivate DAG
+EST -[#1565C0]> CTX : eligible_latest_messages()
 note over EST
-  retain: DROP invalid validators
-  slashed ⟹ 0 weight in fork choice
+  exact complete slots; sender, generation,
+  objective evidence, and floor ancestry bound
 end note
 
 EST -[#1565C0]> DAG : calculate_lca(..)
 activate DAG
 note over DAG
-  depth filter: keep tips with
-  block_number > top − 1000
-  (LATEST_MESSAGE_MAX_DEPTH);
   lowest_universal_common_ancestor_many
+  over every certified eligible message
 end note
 DAG --[#1565C0]> EST : LCA hash
 deactivate DAG
 
 EST -[#546E7A]> EST : build_scores_map — BFS to LCA
 activate EST #C8E6C9
-loop per surviving validator, down supporting chain
-  EST -[#2E7D32]> BND : weight_from_validator_by_dag(block, v)
-  activate BND
-  BND --[#2E7D32]> EST : bonded i64 weight (B1: typed Err if missing)
-  deactivate BND
-  EST -[#546E7A]> EST : score[block] += weight (checked_add, B3)
+loop parallel per eligible validator, down every parent path
+  EST -[#2E7D32]> CTX : frozen_authority[validator]
+  CTX --[#2E7D32]> EST : positive i64 stake
+  EST -[#546E7A]> EST : emit per-validator contribution map
 end
+EST -[#546E7A]> EST : deterministic checked ordered reduction
 deactivate EST
 
-EST -[#546E7A]> EST : rank_forkchoices({lca})
+EST -[#546E7A]> EST : greedy_ghost_head(lca)
 activate EST #FFE0B2
-loop until still_same
+loop until no scored child
   EST -[#1565C0]> DAG : children(block)
   activate DAG
   DAG --[#1565C0]> EST : scored children
   deactivate DAG
-  EST -[#546E7A]> EST : sort_by_with_decreasing_order\n(score DESC, hash ASC) ── UNIQUE order
+  EST -[#546E7A]> EST : require child height advances;\nselect score DESC, hash ASC head
 end
 deactivate EST
+
+EST -[#546E7A]> EST : terminal_frontier({lca})
+loop asynchronous expansion order
+  EST -[#1565C0]> DAG : all scored children(block)
+  DAG --[#1565C0]> EST : height-advancing children
+  EST -[#546E7A]> EST : set replacement + deduplication
+end
+EST -[#546E7A]> EST : require ghost in frontier;\nranked = ghost ++ sorted(frontier - ghost)
 
 EST -[#1565C0]> DAG : filter_deep_parents(ranked)
 activate DAG
@@ -108,8 +105,8 @@ EST -[#546E7A]> EST : take(max_number_of_parents)\n(B2 cast-safe: < 0 or i32::MA
 EST -[#E65100]>o EST : ForkChoice { tips, lca }
 deactivate EST
 
-note over EST, BND
-  Every step is a PURE function of (DAG, latest_messages)
+note over EST, CTX
+  Every step is a PURE function of (DAG, certified context)
   ⟹ node-identical result on every honest node.
   Rocq fork_choice_determinism_correct (axiom-free).
 end note

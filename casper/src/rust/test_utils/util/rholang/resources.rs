@@ -2,7 +2,7 @@
 // Moved from casper/tests/util/rholang/resources.rs to casper/src/rust/test_utils/util/rholang/resources.rs
 // All imports fixed for library crate context
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicU64;
@@ -316,7 +316,7 @@ pub async fn mk_test_rnode_store_manager_with_shared_rspace(
         .map_err(|e| CasperError::RuntimeError(format!("Failed to create DAG storage: {:?}", e)))?;
     new_dag_storage.insert(
         &genesis_context.genesis_block,
-        block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Approved,
+        block_storage::rust::dag::block_dag_key_value_storage::InsertMode::ApprovedGenesis,
     )?;
 
     Ok(new_kvm)
@@ -376,6 +376,7 @@ pub async fn block_dag_storage_from_dyn(
     use block_storage::rust::dag::equivocation_tracker_store::EquivocationTrackerStore;
     use models::rust::block_hash::BlockHashSerde;
     use models::rust::block_metadata::BlockMetadata;
+    use models::rust::bond_generation::BondGeneration;
     use models::rust::equivocation_record::SequenceNumber;
     use models::rust::validator::ValidatorSerde;
     use parking_lot::RwLock;
@@ -389,10 +390,10 @@ pub async fn block_dag_storage_from_dyn(
     })?;
     let block_metadata_db: KeyValueTypedStoreImpl<BlockHashSerde, BlockMetadata> =
         KeyValueTypedStoreImpl::new(block_metadata_kv_store);
-    let block_metadata_store = BlockMetadataStore::new(block_metadata_db);
+    let block_metadata_store = BlockMetadataStore::new(block_metadata_db)?;
 
     let equivocation_tracker_kv_store = kvm
-        .store("equivocation-tracker".to_string())
+        .store("equivocation-tracker-v5".to_string())
         .await
         .map_err(|e| {
             shared::rust::store::key_value_store::KvStoreError::IoError(format!(
@@ -401,7 +402,7 @@ pub async fn block_dag_storage_from_dyn(
             ))
         })?;
     let equivocation_tracker_db: KeyValueTypedStoreImpl<
-        (ValidatorSerde, SequenceNumber),
+        (ValidatorSerde, BondGeneration, SequenceNumber),
         BTreeSet<BlockHashSerde>,
     > = KeyValueTypedStoreImpl::new(equivocation_tracker_kv_store);
     let equivocation_tracker_store = EquivocationTrackerStore::new(equivocation_tracker_db);
@@ -642,9 +643,12 @@ fn new_key_value_dag_representation() -> KeyValueDagRepresentation {
         main_parent_map: imbl::HashMap::new(),
         self_justification_map: imbl::HashMap::new(),
         invalid_blocks_set: imbl::HashSet::new(),
+        equivocation_observations: imbl::HashMap::new(),
         last_finalized_block_hash: BlockHash::new(),
         finalized_blocks_set: imbl::HashSet::new(),
-        block_metadata_index: Arc::new(RwLock::new(BlockMetadataStore::new(block_metadata_store))),
+        block_metadata_index: Arc::new(RwLock::new(
+            BlockMetadataStore::new(block_metadata_store).unwrap(),
+        )),
         deploy_index: Arc::new(RwLock::new(KeyValueTypedStoreImpl::new(Arc::new(
             InMemoryKeyValueStore::new(),
         )))),
@@ -665,17 +669,21 @@ pub fn mk_dummy_casper_snapshot() -> CasperSnapshot {
         lca: Bytes::new(),
         tips: Vec::new(),
         parents: Vec::new(),
-        justifications: HashSet::new(),
+        justifications: Vec::new(),
         invalid_blocks: HashMap::new(),
         deploys_in_scope: Arc::new(DashSet::new()),
         rejected_in_scope: Arc::new(DashSet::new()),
         max_block_num: 0,
         max_seq_nums: HashMap::new(),
+        finalized_floor_bonds: Vec::new(),
         on_chain_state: OnChainCasperState {
             shard_conf: CasperShardConf::new(),
             bonds_map: HashMap::new(),
             active_validators: Vec::new(),
+            bond_generations: HashMap::new(),
         },
+        consensus_context: crate::rust::causal_equivocation::CertifiedConsensusContext::pre_genesis(
+        ),
     }
 }
 

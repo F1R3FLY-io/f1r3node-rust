@@ -164,7 +164,7 @@ included in the aggregate proof gate.
 - The repair changes transaction ownership, not majority voting, clique
   calculation, fork choice, RSpace matching, or byte tariff semantics.
 
-See CA-P-196/197, TM-CA-185/186, UC-CA-176/177, E2E-059/060, DR-49/50, and
+See CA-P-196/197, TM-CA-185/186, UC-CA-176/177, REL-014/015, DR-49/50, and
 [vault-backed byte accounting](vault-backed-byte-accounting.md). Complete cache
 identity and peer-input exclusion are specified by CA-P-198, DR-51, and
 [mergeable evidence authentication](mergeable-evidence-authentication.md).

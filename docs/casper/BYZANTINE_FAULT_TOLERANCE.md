@@ -386,7 +386,7 @@ However, the clique oracle's `normalized_fault_tolerance` function computes FT f
 
 1. **Ancestors** (via `record_finalized`): Indirectly finalized blocks — ancestors of the directly finalized block — receive the descendant's FT as their cached value. This is a provably correct lower bound: in CBC Casper, the agreeing clique for a block is always a subset of the agreeing set for its ancestors (every validator in the clique has the ancestors in their main-parent chain by construction), so ancestor FT >= descendant FT.
 
-2. **All finalized blocks** (via `propagate_ft_to_finalized_blocks`): On each finalization round, all previously-finalized blocks whose cached FT is lower than the new LFB's FT are updated — including blocks on orphaned branches that are NOT ancestors of the new LFB. This is not a strict clique oracle proof (the clique that agrees on the new LFB may not have the orphaned block in their main-parent chain). It is a convergence heuristic: the orphaned block was already independently proven irreversible by its own finalization, and the network's overall agreement has grown. Displaying the higher FT reflects the network's actual coordination level rather than a stale proof from an earlier round.
+2. **All finalized blocks** (during ordered finalization-ledger projection): On each finalization round, all previously-finalized blocks whose cached FT is lower than the new LFB's FT are updated — including blocks on orphaned branches that are NOT ancestors of the new LFB. This is not a strict clique oracle proof (the clique that agrees on the new LFB may not have the orphaned block in their main-parent chain). It is a convergence heuristic: the orphaned block was already independently proven irreversible by its own finalization, and the network's overall agreement has grown. Displaying the higher FT reflects the network's actual coordination level rather than a stale proof from an earlier round. The immutable round retains the exact FT computed for its directly finalized block; the raised metadata value is an API display projection rather than a replacement certificate.
 
 **Convergence**: Cached FT is monotonically non-decreasing — it only increases, never decreases. With all validators active, cached FT converges toward 1.0 across all nodes as later rounds produce higher agreement.
 
@@ -953,4 +953,3 @@ These mechanisms work together to provide:
 - **Economic security** (via comprehensive slashing)
 
 The system achieves Byzantine Fault Tolerance while maintaining the scalability benefits of the multi-parent DAG structure, enabling parallel block production without sacrificing security guarantees.
-

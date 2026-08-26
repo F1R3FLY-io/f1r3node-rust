@@ -9,19 +9,12 @@
 //   * T-GHOST — `formal/rocq/fork_choice/theories/Rank.v`'s `rank_head_is_argmax`
 //     ("the chosen child has the MAXIMUM score") and `rank_selects_heaviest` (the
 //     `(score DESC, hash ASC)` argmax over the scored children = GHOST's heaviest
-//     subtree). We build a RANDOM single-level weighted fork — genesis with a random
-//     number of branch blocks (≥ 2), each branch a distinct child of genesis carrying
-//     a random-stake validator set — so every branch's own score IS its subtree
-//     weight (a depth-1 subtree is its own leaf). We independently sum each branch's
-//     supporter stake and assert the real `tips_with_latest_messages`:
-//       (a) returns exactly the branches, ordered `(score DESC, hash ASC)` — the full
-//           `rank_selects_heaviest` ranking; and
-//       (b) leads with the heaviest branch — `rank_head_is_argmax`.
-//     The score a branch accrues is `Σ weight_from_validator_by_dag(branch, v)` over
-//     the validators whose latest message is that branch (estimator.rs:215-299), and
-//     `weight_from_validator_by_dag` reads the block's MAIN-PARENT (genesis) weight
-//     map, so a branch's score is the total genesis-bonded stake of its supporters —
-//     exactly the oracle below.
+//     subtree). We build a RANDOM two-level weighted fork: every validator's latest
+//     message is authored by that validator beneath its assigned branch. We
+//     independently sum support at the branch level, descend through the winning
+//     subtree, and assert that the real certified-context estimator returns the
+//     greedy GHOST head first while retaining all other scored terminal leaves in
+//     `(score DESC, hash ASC)` order.
 //
 //   * T-MP (STAGE 1) — `formal/rocq/fork_choice/theories/GuardBridge.v`'s
 //     `ghost_sort_first_deterministic` (snapshot.rs:317-331): the GHOST head is
@@ -54,7 +47,7 @@ use proptest::prelude::*;
 use proptest::test_runner::TestCaseError;
 
 use crate::helper::block_dag_storage_fixture::with_storage;
-use crate::helper::block_generator::{create_block, create_genesis_block};
+use crate::helper::block_generator::{certified_fork_choice, create_block, create_genesis_block};
 use crate::helper::block_util::generate_validator;
 
 lazy_static::lazy_static! {
@@ -65,10 +58,32 @@ lazy_static::lazy_static! {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn make_branch(
+fn make_block(
     block_store: &mut block_storage::rust::key_value_block_store::KeyValueBlockStore,
     block_dag_storage: &mut block_storage::rust::test::indexed_block_dag_storage::IndexedBlockDagStorage,
     genesis: &BlockMessage,
+    parent: &BlockHash,
+    creator: &Validator,
+    bonds: &[Bond],
+    justifications: HashMap<Validator, BlockHash>,
+) -> BlockMessage {
+    make_block_with_parents(
+        block_store,
+        block_dag_storage,
+        genesis,
+        vec![parent.clone()],
+        creator,
+        bonds,
+        justifications,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn make_block_with_parents(
+    block_store: &mut block_storage::rust::key_value_block_store::KeyValueBlockStore,
+    block_dag_storage: &mut block_storage::rust::test::indexed_block_dag_storage::IndexedBlockDagStorage,
+    genesis: &BlockMessage,
+    parents: Vec<BlockHash>,
     creator: &Validator,
     bonds: &[Bond],
     justifications: HashMap<Validator, BlockHash>,
@@ -76,7 +91,7 @@ fn make_branch(
     create_block(
         block_store,
         block_dag_storage,
-        vec![genesis.block_hash.clone()],
+        parents,
         genesis,
         Some(creator.clone()),
         Some(bonds.to_vec()),
@@ -90,9 +105,9 @@ fn make_branch(
     )
 }
 
-/// A generated single-level weighted fork: `n` validators with random stakes,
-/// partitioned onto `n_branches` (≥ 2) distinct children of genesis. `assign[i]` is
-/// validator `i`'s branch; branches `0..n_branches` each carry ≥ 1 validator.
+/// A generated two-level weighted fork: `n` validators with random stakes are
+/// partitioned onto `n_branches` distinct children of genesis and then author their
+/// own latest messages below those branches.
 #[derive(Debug, Clone)]
 struct ForkShape {
     stakes: Vec<i64>,
@@ -119,15 +134,15 @@ prop_compose! {
     }
 }
 
-/// Build the fork in the DAG and return `(genesis, per-branch blocks, latest-message
-/// map)`. All blocks carry the SAME bonds; the score a branch accrues is the total
-/// genesis-bonded stake of the validators whose latest message it is.
+/// Build the fork in the DAG and return genesis, branch roots, terminal supporter
+/// blocks, and the author-bound latest-message map.
 async fn build_fork(
     block_store: &mut block_storage::rust::key_value_block_store::KeyValueBlockStore,
     block_dag_storage: &mut block_storage::rust::test::indexed_block_dag_storage::IndexedBlockDagStorage,
     shape: &ForkShape,
 ) -> (
     BlockMessage,
+    Vec<BlockMessage>,
     Vec<BlockMessage>,
     HashMap<Validator, BlockHash>,
 ) {
@@ -174,10 +189,11 @@ async fn build_fork(
             .iter()
             .position(|&a| a == j)
             .expect("every branch has ≥ 1 supporter by construction");
-        let block = make_branch(
+        let block = make_block(
             block_store,
             block_dag_storage,
             &genesis,
+            &genesis.block_hash,
             &validators[creator_idx],
             &bonds,
             justifications.clone(),
@@ -185,69 +201,105 @@ async fn build_fork(
         branch_blocks.push(block);
     }
 
-    let latest: HashMap<Validator, BlockHash> = validators
-        .iter()
-        .enumerate()
-        .map(|(i, v)| (v.clone(), branch_blocks[shape.assign[i]].block_hash.clone()))
+    let mut supporter_blocks = Vec::with_capacity(validators.len());
+    for (index, validator) in validators.iter().enumerate() {
+        let parent = &branch_blocks[shape.assign[index]].block_hash;
+        supporter_blocks.push(make_block(
+            block_store,
+            block_dag_storage,
+            &genesis,
+            parent,
+            validator,
+            &bonds,
+            justifications.clone(),
+        ));
+    }
+    let latest = validators
+        .into_iter()
+        .zip(
+            supporter_blocks
+                .iter()
+                .map(|block| block.block_hash.clone()),
+        )
         .collect();
 
-    (genesis, branch_blocks, latest)
+    (genesis, branch_blocks, supporter_blocks, latest)
 }
 
-/// The INDEPENDENT heaviest-subtree oracle: each branch's score is the sum of its
-/// supporters' stakes; the expected ranked tips are the branch hashes ordered
-/// `(score DESC, hash ASC)` — the same total order `sort_by_with_decreasing_order`
-/// (estimator.rs:320) realizes.
-fn expected_ranked_tips(shape: &ForkShape, branch_blocks: &[BlockMessage]) -> Vec<BlockHash> {
+/// The independent two-lane oracle: select the GHOST head by greedy subtree descent,
+/// then order every other terminal leaf by `(score DESC, hash ASC)`.
+fn expected_ranked_tips(
+    shape: &ForkShape,
+    branch_blocks: &[BlockMessage],
+    supporter_blocks: &[BlockMessage],
+) -> Vec<BlockHash> {
     let mut scores = vec![0i64; shape.n_branches];
     for (i, &branch) in shape.assign.iter().enumerate() {
         scores[branch] += shape.stakes[i];
     }
-    let mut ranked: Vec<(i64, BlockHash)> = (0..shape.n_branches)
+    let mut ranked_branches: Vec<(i64, BlockHash, usize)> = (0..shape.n_branches)
         .map(|j| (scores[j], branch_blocks[j].block_hash.clone()))
+        .enumerate()
+        .map(|(index, (score, hash))| (score, hash, index))
         .collect();
-    // score DESC, then hash ASC (the estimator's decreasing-order tie-break).
-    ranked.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
-    ranked.into_iter().map(|(_, hash)| hash).collect()
+    ranked_branches.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+    let winning_branch = ranked_branches[0].2;
+    let mut winning_children = shape
+        .assign
+        .iter()
+        .enumerate()
+        .filter(|(_, branch)| **branch == winning_branch)
+        .map(|(index, _)| {
+            (
+                shape.stakes[index],
+                supporter_blocks[index].block_hash.clone(),
+                index,
+            )
+        })
+        .collect::<Vec<_>>();
+    winning_children.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+    let head_index = winning_children[0].2;
+    let mut tail = supporter_blocks
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| *index != head_index)
+        .map(|(index, block)| (shape.stakes[index], block.block_hash.clone()))
+        .collect::<Vec<_>>();
+    tail.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+    std::iter::once(supporter_blocks[head_index].block_hash.clone())
+        .chain(tail.into_iter().map(|(_, hash)| hash))
+        .collect()
 }
 
 proptest! {
     #![proptest_config(ProptestConfig { cases: 16, max_shrink_iters: 8, ..ProptestConfig::default() })]
 
-    // T-GHOST (Rank.v `rank_head_is_argmax` + `rank_selects_heaviest`): on a RANDOM
-    // weighted fork the estimator's ranked tips equal the branches ordered by
-    // heaviest subtree first (score DESC, hash ASC), and the HEAD is the heaviest —
-    // the GHOST argmax. The oracle is computed independently from the generated
-    // stakes/assignment, so a wrong ranking (or a leaked HashMap iteration order)
-    // fails the test.
+    // T-GHOST: the head follows greedy heaviest-subtree descent, while the tail is the
+    // exact terminal frontier ordered by score and hash.
     #[test]
     fn ghost_ranked_tips_are_heaviest_subtree_argmax(shape in fork_shape()) {
         RUNTIME.block_on(with_storage(|mut block_store, mut block_dag_storage| async move {
-            let (genesis, branch_blocks, latest) =
+            let (genesis, branch_blocks, supporter_blocks, latest) =
                 build_fork(&mut block_store, &mut block_dag_storage, &shape).await;
-            let mut dag = block_dag_storage
+            let dag = block_dag_storage
                 .get_representation()
                 .expect("dag representation");
             let estimator = Estimator::apply(i32::MAX, None);
 
-            let tips = estimator
-                .tips_with_latest_messages(&mut dag, &genesis, latest)
+            let tips = certified_fork_choice(&estimator, &dag, &genesis, latest)
                 .await
                 .expect("tips")
                 .tips;
 
-            let expected = expected_ranked_tips(&shape, &branch_blocks);
+            let expected = expected_ranked_tips(&shape, &branch_blocks, &supporter_blocks);
 
-            // (a) rank_selects_heaviest: the full ranked tip list is the heaviest-first
-            //     ordering of the branches (each branch is its own depth-1 subtree).
             prop_assert_eq!(
                 &tips, &expected,
-                "estimator tips must equal the heaviest-subtree ranking (score DESC, hash ASC)"
+                "estimator tips must equal GHOST head followed by the ranked terminal frontier"
             );
-            // (b) rank_head_is_argmax: the head is the maximum-score branch.
             prop_assert_eq!(
                 tips.first(), expected.first(),
-                "estimator head tip must be the heaviest-subtree argmax"
+                "estimator head must be the result of greedy heaviest-subtree descent"
             );
             Ok::<(), TestCaseError>(())
         }))?;
@@ -274,15 +326,15 @@ async fn main_parent_is_ghost_head_deterministic() {
             n_branches: 3,
             assign: vec![0, 1, 2],
         };
-        let (genesis, branch_blocks, latest) =
+        let (genesis, _branch_blocks, supporter_blocks, latest) =
             build_fork(&mut block_store, &mut block_dag_storage, &shape).await;
-        let mut dag = block_dag_storage
+        let dag = block_dag_storage
             .get_representation()
             .expect("dag representation");
         let estimator = Estimator::apply(i32::MAX, None);
 
         // The heaviest branch is validator 0's (stake 30) — the expected main parent.
-        let expected_main = branch_blocks[0].block_hash.clone();
+        let expected_main = supporter_blocks[0].block_hash.clone();
 
         // Deterministic across every ordering of the latest-message map: the ghost main
         // parent (tips[0]) is invariant to HashMap iteration order.
@@ -293,8 +345,7 @@ async fn main_parent_is_ghost_head_deterministic() {
         for order in orders {
             let permuted: HashMap<Validator, BlockHash> =
                 order.iter().map(|&i| entries[i].clone()).collect();
-            let ghost_main_parent = estimator
-                .tips_with_latest_messages(&mut dag, &genesis, permuted)
+            let ghost_main_parent = certified_fork_choice(&estimator, &dag, &genesis, permuted)
                 .await
                 .expect("tips")
                 .tips
@@ -313,9 +364,9 @@ async fn main_parent_is_ghost_head_deterministic() {
         // `deploy_support_*` proptests in snapshot.rs's in-module `mod tests`.)
         let ghost_main_parent = Some(expected_main.clone());
         let mut parents: Vec<BlockMessage> = vec![
-            branch_blocks[2].clone(),
-            branch_blocks[0].clone(),
-            branch_blocks[1].clone(),
+            supporter_blocks[2].clone(),
+            supporter_blocks[0].clone(),
+            supporter_blocks[1].clone(),
         ];
         parents.sort_by(|a, b| {
             let a_main = ghost_main_parent.as_ref() == Some(&a.block_hash);
@@ -329,6 +380,122 @@ async fn main_parent_is_ghost_head_deterministic() {
             Some(expected_main),
             "the snapshot.rs parent ordering must sort the ghost main parent first"
         );
+    })
+    .await
+}
+
+#[tokio::test]
+async fn aggregate_subtree_weight_beats_larger_terminal_leaf() {
+    with_storage(|mut block_store, mut block_dag_storage| async move {
+        let shape = ForkShape {
+            stakes: vec![30, 30, 40],
+            n_branches: 2,
+            assign: vec![0, 0, 1],
+        };
+        let (genesis, branch_blocks, supporter_blocks, latest) =
+            build_fork(&mut block_store, &mut block_dag_storage, &shape).await;
+        let dag = block_dag_storage
+            .get_representation()
+            .expect("dag representation");
+        let tips = certified_fork_choice(&Estimator::apply(i32::MAX, None), &dag, &genesis, latest)
+            .await
+            .expect("tips")
+            .tips;
+        let expected = expected_ranked_tips(&shape, &branch_blocks, &supporter_blocks);
+
+        assert_eq!(tips, expected);
+        assert_ne!(tips[0], supporter_blocks[2].block_hash);
+        assert!(
+            tips[0] == supporter_blocks[0].block_hash || tips[0] == supporter_blocks[1].block_hash
+        );
+    })
+    .await
+}
+
+#[tokio::test]
+async fn multi_parent_diamond_has_one_shared_terminal_leaf() {
+    with_storage(|mut block_store, mut block_dag_storage| async move {
+        let validators = [
+            generate_validator(Some("Diamond Validator 0")),
+            generate_validator(Some("Diamond Validator 1")),
+        ];
+        let bonds = vec![
+            Bond {
+                validator: validators[0].clone(),
+                stake: 30,
+            },
+            Bond {
+                validator: validators[1].clone(),
+                stake: 20,
+            },
+        ];
+        let genesis = create_genesis_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            None,
+            Some(bonds.clone()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        let justifications = validators
+            .iter()
+            .map(|validator| (validator.clone(), genesis.block_hash.clone()))
+            .collect::<HashMap<_, _>>();
+        let left = make_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            &genesis,
+            &genesis.block_hash,
+            &validators[0],
+            &bonds,
+            justifications.clone(),
+        );
+        let right = make_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            &genesis,
+            &genesis.block_hash,
+            &validators[1],
+            &bonds,
+            justifications.clone(),
+        );
+        let shared = make_block_with_parents(
+            &mut block_store,
+            &mut block_dag_storage,
+            &genesis,
+            vec![left.block_hash.clone(), right.block_hash.clone()],
+            &validators[0],
+            &bonds,
+            justifications.clone(),
+        );
+        let independent = make_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            &genesis,
+            &genesis.block_hash,
+            &validators[1],
+            &bonds,
+            justifications,
+        );
+        let latest = HashMap::from([
+            (validators[0].clone(), shared.block_hash.clone()),
+            (validators[1].clone(), independent.block_hash.clone()),
+        ]);
+        let dag = block_dag_storage
+            .get_representation()
+            .expect("dag representation");
+        let tips = certified_fork_choice(&Estimator::apply(i32::MAX, None), &dag, &genesis, latest)
+            .await
+            .expect("tips")
+            .tips;
+
+        assert_eq!(tips.len(), 2);
+        assert_eq!(tips[0], shared.block_hash);
+        assert_eq!(tips[1], independent.block_hash);
     })
     .await
 }

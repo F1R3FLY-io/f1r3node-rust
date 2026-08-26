@@ -1041,17 +1041,22 @@ impl ReplayRuntimeOps {
         match system_deploy {
             SystemDeployData::Slash {
                 invalid_block_hash,
+                equivocation_block_hash,
                 issuer_public_key,
                 target_activation_epoch,
+                target_bond_generation,
             } => {
                 let slash_deploy = SlashDeploy {
                     invalid_block_hash: invalid_block_hash.clone(),
+                    equivocation_block_hash: equivocation_block_hash.clone(),
                     pk: issuer_public_key.clone(),
                     target_activation_epoch: *target_activation_epoch,
-                    initial_rand: system_deploy_util::generate_slash_deploy_random_seed(
+                    target_bond_generation: *target_bond_generation,
+                    initial_rand: system_deploy_util::generate_slash_evidence_random_seed(
                         block_data.sender.bytes.clone(),
                         block_data.seq_num,
                         invalid_block_hash,
+                        equivocation_block_hash.as_ref(),
                     ),
                 };
 
@@ -1113,6 +1118,7 @@ impl ReplayRuntimeOps {
 
             SystemDeployData::Redeem {
                 validator_pk,
+                target_bond_generation,
                 outcome_tag,
                 penalty,
                 pos_multi_sig_public_keys,
@@ -1138,6 +1144,7 @@ impl ReplayRuntimeOps {
                 };
                 let mut redeem_deploy = RedeemDeploy::new(
                     validator_pk.to_vec(),
+                    *target_bond_generation,
                     outcome,
                     pos_multi_sig_public_keys.clone(),
                     *pos_multi_sig_quorum,

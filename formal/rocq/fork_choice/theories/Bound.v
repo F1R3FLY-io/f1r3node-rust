@@ -20,6 +20,11 @@
      * `cast_usize_safe`     - the two unlimited sentinels take ALL; a positive
                                cap truncates (the B2 cast-safety, no wraparound);
      * `empty_tips_typed_err`- capping [] yields [] and flags the P2-8 error.
+     * `configured_parent_capacity_prevents_frontier_truncation` - capacity for
+                               active validators plus one floor backstop carries
+                               every live proposal-parent frontier;
+     * `undersized_parent_capacity_has_a_blocked_frontier_witness` - every
+                               smaller cap admits a liveness-blocking frontier.
 
    ---------------------------------------------------------------------------
    Spec-to-Code Traceability
@@ -34,6 +39,7 @@
 
 From Stdlib Require Import Arith.Arith.
 From Stdlib Require Import Lists.List.
+From Stdlib Require Import Lia.
 Import ListNotations.
 
 From ForkChoice Require Import Foundation.
@@ -91,6 +97,30 @@ Proof.
   destruct unlimited; simpl.
   - split; reflexivity.
   - rewrite firstn_nil. split; reflexivity.
+Qed.
+
+Definition parent_frontier_capacity_valid
+  (max_active_validators max_parents : nat) : Prop :=
+  S max_active_validators <= max_parents.
+
+Theorem configured_parent_capacity_prevents_frontier_truncation :
+  forall (A : Type) max_active_validators max_parents (parents : list A),
+    length parents <= S max_active_validators ->
+    parent_frontier_capacity_valid max_active_validators max_parents ->
+    length parents <= max_parents.
+Proof.
+  intros A max_active_validators max_parents parents Hfrontier Hcapacity.
+  unfold parent_frontier_capacity_valid in Hcapacity. lia.
+Qed.
+
+Theorem undersized_parent_capacity_has_a_blocked_frontier_witness :
+  forall max_active_validators max_parents,
+    max_parents < S max_active_validators ->
+    exists frontier_size,
+      frontier_size <= S max_active_validators /\ max_parents < frontier_size.
+Proof.
+  intros max_active_validators max_parents Hsmall.
+  exists (S max_active_validators). split; lia.
 Qed.
 
 (* ===========================================================================

@@ -1,0 +1,3 @@
+-------------- MODULE TransportPayloadResidencyCountOnlyUnsafe --------------
+EXTENDS TransportPayloadResidency
+=============================================================================

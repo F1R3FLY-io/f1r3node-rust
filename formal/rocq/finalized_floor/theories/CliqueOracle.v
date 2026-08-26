@@ -25,7 +25,7 @@
    ---------------------------------------------------------------------------
    Faithful abstraction of the clique oracle
    ---------------------------------------------------------------------------
-   `ft_witnessed(b,J) >= t` holds when a max-weight clique of validators that
+   `ft_witnessed(b,J) > t` holds when a max-weight clique of validators that
    AGREE on `b` (each has `b` in the DAG-past of its latest message in J) carries
    > 1/2 of the committee's stake. We model finalization as:
 
@@ -49,7 +49,7 @@
    ------------------------+-------------------------+-------------------------
    anc_of                  | DAG ancestry <=         | is_dag_ancestor (bdkvs.rs:517)
    agrees                  | validator agrees on msg | agreeing_weight_map_f (clique:445)
-   Finalized               | ft_witnessed >= t       | CliqueOracle::ft_witnessed (:437)
+   Finalized               | ft_witnessed > t        | CliqueOracle::ft_witnessed (:437)
    L_ANC                   | L-ANC                   | floor.rs warm up-walk stop rule
    L_SNAP                  | L-SNAP                  | floor.rs warm pivot guard
    snap_extends            | just(B) \supseteq just(P)| child snapshot dominates parent
@@ -68,7 +68,7 @@ From FinalizedFloor Require Import FtExact.
 (* The default parsing scope of THIS file is `nat`: every committee weight, quorum
    bound (`2 * cweight Q > cweight c`), and agreement predicate is over `nat`.
    `ZArith`/`Psatz` are required only so the θ-exact finalization test (Section 7)
-   can talk to `FtExact.ft_exact_ge`, which is stated over `Z` (i128 in Rust). We
+   can talk to `FtExact.ft_exact_gt`, which is stated over `Z` (i128 in Rust). We
    force `nat_scope` back to the top of the scope stack so the existing quorum
    arithmetic keeps its `nat` meaning, and annotate the handful of `Z` comparisons
    with `%Z`. (`FtExact` opens then CLOSES `Z_scope`, so requiring it leaves the
@@ -204,7 +204,7 @@ Definition is_quorum (c Q : Committee) : Prop :=
   incl Q c /\ NoDup (map fst Q) /\ 2 * cweight Q > cweight c.
 
 (* Finalization: some majority-weight sub-committee all agree on `b`. Faithful
-   monotone abstraction of `ft_witnessed(b,J) >= t` (a clique is such a Q). *)
+   monotone abstraction of `ft_witnessed(b,J) > t` (a clique is such a Q). *)
 Definition Finalized (d : DAG) (c : Committee) (J : Snapshot) (b : BlockHash) : Prop :=
   exists Q, is_quorum c Q /\ (forall v w, In (v, w) Q -> agrees d J v b).
 
@@ -280,7 +280,7 @@ Qed.
    θ = 0 CORNER of the fault-tolerance threshold the NODE actually evaluates. The
    real node decision (A9, FtExact.v) is the exact-integer test
 
-       ft_exact_ge q S num den   :=   2*q*den >= S*(den + num)      (over Z / i128)
+       ft_exact_gt q S num den   :=   2*q*den > S*(den + num)       (over Z / i128)
 
    with q = agreeing (clique) weight, S = total committee stake, θ = num/den =
    ppm/1e6. For num > 0 this is STRICTER than strict majority: it demands a margin
@@ -295,9 +295,9 @@ Qed.
 
    Rocq                           | Rust (safety/clique_oracle.rs)
    -------------------------------+--------------------------------------------
-   is_quorum_ft / Finalized_ft    | ft_witnessed(b,J): 2q·den ≥ S(den+num)  (:437)
+   is_quorum_ft / Finalized_ft    | ft_witnessed(b,J): 2q·den > S(den+num)  (:437)
    L_ANC_ft / L_SNAP_ft           | warm up-walk stop/pivot rules, exact test
-   Finalized_ft_refines_Finalized | θ-test ⇒ strict-majority proxy (num,den,stake>0)
+   Finalized_ft_refines_Finalized | θ-test ⇒ strict-majority proxy (num>=0,den>0)
    =========================================================================== *)
 
 (* A θ-exact quorum: an included sub-committee whose weight clears the exact FT
@@ -305,7 +305,7 @@ Qed.
    FtExact states the test. The `incl Q c` half is IDENTICAL to `is_quorum`. *)
 Definition is_quorum_ft (c Q : Committee) (num den : Z) : Prop :=
   incl Q c /\ NoDup (map fst Q) /\
-  ft_exact_ge (Z.of_nat (cweight Q)) (Z.of_nat (cweight c)) num den.
+  ft_exact_gt (Z.of_nat (cweight Q)) (Z.of_nat (cweight c)) num den.
 
 (* θ-exact finalization: some θ-exact quorum all agree on `b`. This is the test
    the NODE runs; `Finalized` (Section 4) is its strict-majority (θ = 0⁺) proxy. *)
@@ -361,26 +361,15 @@ Proof.
 Qed.
 
 (* ---------------------------------------------------------------------------
-   The refinement bridge:  θ-exact test  ⇒  strict-majority proxy.
+   The refinement bridge: strict θ-exact test implies strict-majority finality.
 
-   ARITHMETIC CORE (pure Z). At θ = 0 (num = 0) the exact test is the NON-strict
-   `2q ≥ S`; for num > 0 it strengthens to the STRICT `2q > S`. We prove both.
-
-   NOTE (faithful, necessary side-condition — mirrors FtExact.v's `0 <= den` NOTE).
-   The strict form `2q > S` additionally needs `0 < S` (a committee with positive
-   total stake). It is GENUINELY necessary, not a convenience: with S = 0 the test
-   `2q·den ≥ 0` is trivially true (e.g. the empty quorum Q = []), yet strict
-   majority `2q > 0` fails, so `Finalized_ft` with a zero-stake committee does NOT
-   imply `Finalized`. In the system every committee has positive total stake — an
-   empty / zero-stake committee finalizes nothing — so `0 < S`, equivalently
-   `0 < cweight c`, is a faithful domain fact, not a weakening of the finalization
-   semantics. It is the ONLY hypothesis added beyond `0 < num` and `0 < den`
-   (θ = num/den ∈ (0,1) needs num, den > 0). `Finalized` and its proofs are left
-   entirely unchanged; the bridge only ADDS a route into them.
+   For every non-negative threshold, `2q*den > S*(den+num)` implies `2q > S`.
+   This includes θ = 0 exactly; it needs no positive-stake hypothesis because a
+   zero-stake quorum cannot satisfy the strict premise. The inclusive lemmas below
+   remain only as arithmetic controls for the historical candidate/finalizer
+   boundary mismatch and are not the runtime finalization predicate.
    --------------------------------------------------------------------------- *)
 
-(* θ = 0 corner: the exact test is at least strict majority, NON-strictly. This
-   is the `>=`-finalizer boundary (FtExact `ft_exact_ge` is the floor test). *)
 Lemma ft_exact_ge_weak_majority :
   forall q S num den,
     (0 <= num)%Z -> (0 < den)%Z -> (0 <= S)%Z ->
@@ -395,32 +384,40 @@ Lemma ft_exact_ge_strict_majority :
     ft_exact_ge q S num den -> (2 * q > S)%Z.
 Proof. intros q S num den Hnum Hden HS Hft. unfold ft_exact_ge in Hft. nia. Qed.
 
-(* THE BRIDGE. Every θ-finalized block (θ = num/den, num,den>0, positive committee
+Lemma ft_exact_gt_strict_majority :
+  forall q S num den,
+    (0 <= num)%Z -> (0 < den)%Z -> (0 <= S)%Z ->
+    ft_exact_gt q S num den -> (2 * q > S)%Z.
+Proof. intros q S num den Hnum Hden HS Hft. unfold ft_exact_gt in Hft. nia. Qed.
+
+(* THE BRIDGE. Every θ-finalized block (θ = num/den, num>=0, den>0)
    stake) is finalized under the strict-majority `Finalized`, hence enjoys L_ANC,
    L_SNAP, L_ANC_SNAP, T-CACHE and every downstream capstone WITHOUT re-proof. The
    quorum witness Q is reused verbatim; only its weight bound is upgraded from the
-   exact inequality to strict majority (`ft_exact_ge_strict_majority`, then a
+   exact inequality to strict majority (`ft_exact_gt_strict_majority`, then a
    linear nat↔Z step). *)
 Theorem Finalized_ft_refines_Finalized :
   forall d c J b num den,
-    (0 < num)%Z -> (0 < den)%Z -> 0 < cweight c ->
+    (0 <= num)%Z -> (0 < den)%Z ->
     Finalized_ft d c J b num den -> Finalized d c J b.
 Proof.
-  intros d c J b num den Hnum Hden Hc Hfin.
+  intros d c J b num den Hnum Hden Hfin.
   destruct Hfin as [Q [Hq Hag]].
   unfold is_quorum_ft in Hq. destruct Hq as [Hincl [Hnodup Hft]].
   exists Q. split; [| exact Hag].
   unfold is_quorum. split; [exact Hincl | split; [exact Hnodup |]].
-  assert (HS : (0 < Z.of_nat (cweight c))%Z) by lia.
-  pose proof (ft_exact_ge_strict_majority _ _ _ _ Hnum Hden HS Hft) as Hstrict.
+  assert (HS : (0 <= Z.of_nat (cweight c))%Z) by lia.
+  pose proof
+    (ft_exact_gt_strict_majority _ _ _ _ Hnum Hden HS Hft)
+    as Hstrict.
   lia.
 Qed.
 
 (* ---------------------------------------------------------------------------
-   Weight-monotonicity of the exact test (uses FtExact.ft_exact_mono_q): more
+   Weight-monotonicity of the exact test (uses FtExact.ft_exact_gt_mono_q): more
    agreeing stake never un-finalizes. A faithful companion, at the quorum /
-   finalization level, of `ft_exact_mono_q`'s "more agreeing stake never
-   un-finalizes"; `0 <= den` is inherited from `ft_exact_mono_q` (den = 1e6 ≥ 0 in
+   finalization level, of `ft_exact_gt_mono_q`'s "more agreeing stake never
+   un-finalizes"; `0 <= den` is inherited from `ft_exact_gt_mono_q` (den = 1e6 ≥ 0 in
    the system). Kept because it is the natural monotonicity of the exact test.
    --------------------------------------------------------------------------- *)
 Lemma is_quorum_ft_mono_weight :
@@ -434,7 +431,7 @@ Lemma is_quorum_ft_mono_weight :
 Proof.
   intros c Q Q' num den Hden Hincl' Hnodup' Hle [Hincl [Hnodup Hft]].
   split; [exact Hincl' | split; [exact Hnodup' |]].
-  eapply ft_exact_mono_q with (q := Z.of_nat (cweight Q));
+  eapply ft_exact_gt_mono_q with (q := Z.of_nat (cweight Q));
     [exact Hden | lia | exact Hft].
 Qed.
 
@@ -568,12 +565,10 @@ Qed.
 (* ===========================================================================
    Section 9 - C1' : the θ-INDEPENDENT hard majority gate — θ ≤ 0 coverage.
 
-   `Finalized_ft_refines_Finalized` (Section 7) needs `0 < num` (θ > 0). At the
-   DEFAULT θ = 0 (num = 0) the θ-exact test degrades to the NON-strict `2q ≥ S`,
-   and for the negative-θ sentinels (num < 0; `ft_decides_exact`, clique_oracle.rs
-   :72-78, e.g. θ = -1 "finalize on any majority clique") it is weaker still — so
-   the θ-test ALONE does NOT imply the strict-majority `Finalized` at θ ≤ 0, and
-   that refinement is VACUOUS there.
+   `Finalized_ft_refines_Finalized` (Section 7) covers every non-negative
+   threshold, including the default θ = 0. For negative-θ sentinels (num < 0;
+   `ft_decides_exact`, clique_oracle.rs, e.g. θ = -1 "finalize on any majority
+   clique") the θ-test alone can be weaker than strict majority.
 
    But the node does NOT finalize on the θ-test alone. `ft_decides_exact`
    (clique_oracle.rs:79-81) first applies a θ-INDEPENDENT HARD GATE
@@ -589,18 +584,17 @@ Qed.
    (Section 4), for ALL num.
 
    We model the gate faithfully as `hard_gate` (an agreeing majority sub-committee),
-   prove it equivalent to `Finalized`, and derive the θ ≤ 0 bridge
-   `Finalized_ft_hg_refines_Finalized` for ALL num — no `0 < num`, no positive-stake
-   side-condition. (Independently, T-CACHE holds DIRECTLY over `Finalized_ft` for all
-   num via `L_ANC_ft`/`L_SNAP_ft` — see GuardBridge.BridgeFt — so cache transparency
-   never needed the num>0 bridge; this section additionally recovers the strict-
-   majority proxy at θ ≤ 0.)
+   prove it equivalent to `Finalized`, and derive
+   `Finalized_ft_hg_refines_Finalized` for all thresholds. The gate is redundant
+   for the refinement at θ >= 0 but necessary for negative sentinels. Independently,
+   T-CACHE holds directly over `Finalized_ft` for every threshold through
+   `L_ANC_ft`/`L_SNAP_ft` (see GuardBridge.BridgeFt).
 
    Rocq                              | Rust (safety/clique_oracle.rs)
    ----------------------------------+--------------------------------------------
    hard_gate (2·agreeing > S)        | ft_decides_exact :79-81 (agreeing*2 ≤ s ⇒ false)
    Finalized_ft_hg                   | ft_decides_exact = θ-test ∧ hard gate
-   Finalized_ft_hg_refines_Finalized | θ-finalized ⇒ strict-majority (ALL num, θ ≤ 0)
+   Finalized_ft_hg_refines_Finalized | real decision ⇒ strict-majority (all num)
    =========================================================================== *)
 
 (* The θ-INDEPENDENT hard majority gate: a sub-committee A of the AGREEING
@@ -627,11 +621,8 @@ Definition Finalized_ft_hg (d : DAG) (c : Committee) (J : Snapshot) (b : BlockHa
                            (num den : Z) : Prop :=
   Finalized_ft d c J b num den /\ hard_gate d c J b.
 
-(* THE θ ≤ 0 BRIDGE. The hard gate ALONE supplies strict-majority `Finalized`, for
-   ALL num (num = 0 = default θ, and num < 0 sentinels) — NO `0 < num`, NO positive-
-   stake side-condition. This closes the θ ≤ 0 seam `Finalized_ft_refines_Finalized`
-   left open, so every hard-gated θ-finalized block inherits L-ANC, L-SNAP, T-CACHE
-   and every downstream capstone regardless of θ. *)
+(* The hard gate alone supplies strict-majority `Finalized` for all num. This is
+   the negative-threshold bridge and also models the runtime gate explicitly. *)
 Theorem Finalized_ft_hg_refines_Finalized :
   forall d c J b num den, Finalized_ft_hg d c J b num den -> Finalized d c J b.
 Proof.

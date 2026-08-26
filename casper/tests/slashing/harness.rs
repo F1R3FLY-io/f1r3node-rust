@@ -477,7 +477,7 @@ impl SlashingTestHarness {
             return Err("Bond amount must be positive.".to_string());
         }
         if self.pos_state.bonds.contains_key(validator) {
-            return Err("Public key is already bonded.".to_string());
+            return Err("Public key already has a live or burned bond lifecycle.".to_string());
         }
         if self.pos_state.slashed.contains(validator) {
             return Err("Validator is slashed; cannot re-bond.".to_string());

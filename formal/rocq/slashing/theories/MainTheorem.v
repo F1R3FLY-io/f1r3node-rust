@@ -27,7 +27,7 @@ From Slashing Require Import
   BugFixTransferFailure BugFixStakeZero BugFixSelfRegression
   BugFixSeqNumDensity BugFixSeqArithmetic BugFixDuplicateJustifications
   BugFixSlashAuthorization BugFixUnbondedProposer
-  BugFixWithdrawTransferFailure.
+  BugFixWithdrawTransferFailure ProtocolV5DependencyReadiness.
 
 Import ListNotations.
 
@@ -619,6 +619,76 @@ Theorem main_T6_detect_neglected_complete :
     has_key records (v, pred n) = true ->
     detect_neglected st v n true records = DSNeglected.
 Proof. exact detect_neglected_complete. Qed.
+
+Theorem main_T9_21_protocol_ready_decidable :
+  forall (Hash : Type)
+         (hash_eq_dec : forall left right : Hash, {left = right} + {left <> right})
+         metadata origins,
+    protocol_readyb hash_eq_dec metadata origins = true <->
+    protocol_all_admitted hash_eq_dec metadata origins.
+Proof.
+  intros.
+  apply protocol_readyb_spec.
+Qed.
+
+Theorem main_T9_21_objective_pair_complete :
+  forall (Hash : Type)
+         (hash_eq_dec : forall left right : Hash, {left = right} + {left <> right})
+         origins first second,
+    In (ProtocolObjectivePair first second) (protocol_slash_evidence origins) ->
+    In first (protocol_dependencies hash_eq_dec origins)
+    /\ In second (protocol_dependencies hash_eq_dec origins).
+Proof.
+  intros.
+  eapply protocol_objective_pair_is_complete.
+  exact H.
+Qed.
+
+Theorem main_T9_21_header_pair_complete :
+  forall (Hash : Type)
+         (hash_eq_dec : forall left right : Hash, {left = right} + {left <> right})
+         origins first second,
+    In (first, second) (protocol_header_evidence origins) ->
+    In first (protocol_dependencies hash_eq_dec origins)
+    /\ In second (protocol_dependencies hash_eq_dec origins).
+Proof.
+  intros.
+  eapply protocol_header_pair_is_complete.
+  exact H.
+Qed.
+
+Theorem main_T9_21_invalid_index_noninterference :
+  forall (Hash : Type)
+         (hash_eq_dec : forall left right : Hash, {left = right} + {left <> right})
+         metadata invalid_left invalid_right tracker origins,
+    protocol_direct_ready hash_eq_dec metadata invalid_left tracker origins <->
+    protocol_direct_ready hash_eq_dec metadata invalid_right tracker origins.
+Proof.
+  intros.
+  apply protocol_invalid_index_noninterference.
+Qed.
+
+Theorem main_T9_21_tracker_noninterference :
+  forall (Hash : Type)
+         (hash_eq_dec : forall left right : Hash, {left = right} + {left <> right})
+         metadata invalid_index tracker_left tracker_right origins,
+    protocol_direct_ready hash_eq_dec metadata invalid_index tracker_left origins <->
+    protocol_direct_ready hash_eq_dec metadata invalid_index tracker_right origins.
+Proof.
+  intros.
+  apply protocol_tracker_noninterference.
+Qed.
+
+Theorem main_T9_21_direct_buffer_parity :
+  forall (Hash : Type)
+         (hash_eq_dec : forall left right : Hash, {left = right} + {left <> right})
+         metadata invalid_index tracker origins,
+    protocol_direct_ready hash_eq_dec metadata invalid_index tracker origins <->
+    protocol_buffer_ready hash_eq_dec metadata invalid_index tracker origins.
+Proof.
+  intros.
+  apply protocol_direct_buffer_readiness_equal.
+Qed.
 
 (* ═══════════════════════════════════════════════════════════════════════════
    §6 — Headline composition

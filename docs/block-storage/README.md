@@ -21,11 +21,34 @@ Block persistence, DAG state management, casper buffer, and deploy indexing.
 - `invalid_blocks_set`, `last_finalized_block`, `finalized_blocks_set`
 - Queries: `lookup`, `children`, `parents_unsafe`, `latest_messages`, `topo_sort`, `main_parent_chain`, `ancestors`, `descendants`, `non_finalized_blocks`
 
-**`BlockDagKeyValueStorage`** -- Live mutable DAG with global `Mutex`:
+**`BlockDagKeyValueStorage`** -- Live mutable DAG with a global read/write lock:
 - `get_representation()` -- Atomic snapshot (acquires lock)
-- `insert(block, invalid, approved)` -- Add block with metadata updates
-- `record_directly_finalized(hash, ft_value, effect)` -- Async finalization with cached FT
-- `propagate_ft_to_finalized_blocks(ft_value)` -- Update all finalized blocks with lower cached FT
+- `insert(block, mode)` -- Add a normal, invalid, or approved block with metadata updates
+- `record_directly_finalized_atomic(hash, ft_value, effect)` -- Compare-and-append an immutable finalization round, project it in order, and run its receipted effect
+- `reconcile_finalization_projection()` -- Resume committed metadata projection from the durable cursor
+- `pending_finalization_effect_records()` -- Return only the unfinished contiguous effect suffix
+
+**`FinalizationLedger`** -- Crash-consistent local finalization publication:
+- Atomically bootstraps an immutable approved-genesis anchor, revision-zero head, and three recovery cursors
+- Treats an exact approved-genesis retry after any head advancement as a write-free identity assertion
+- Rejects conflicting genesis identity, same-hash immutable-metadata drift, partial bootstrap, unrooted history, chain corruption, and cursor corruption
+- Persists an immutable local finalization witness before its successor round,
+  binding the exact local predecessor, target state, frozen eligible
+  latest-message map, supporting closure, authority-context digest, exact FTT,
+  and finalized manifest
+- Atomically stores an immutable successor round and its durable head, with the
+  record bound to the persisted witness digest
+- Hash-chains exact sorted finalized manifests and rejects stale, unrelated, equal-height, and regressive successors
+- Persists ordered projection, contiguous effect-completion, and receipt-compaction cursors
+- Receipts deploy removal, cosigner removal, runtime-cache eviction, and finalized-event publication independently
+- Audits the complete hash chain on reopen and uses constant-time anchor/head checks on ordinary duplicate-genesis insertion
+- Treats revision, record digest, and witness digest as node-local audit
+  identity; live synchronization never imports them as consensus authority
+
+Admission schema version `9` is the first schema with the rooted finalization
+ledger. Schema `8` stores are not silently upgraded because an inferred root
+would not be independently auditable. Start from a fresh protocol-v5 genesis or
+use an explicit verified migration.
 
 **`BlockMetadataStore`** -- Per-block metadata with in-memory DAG state:
 - Uses `imbl` persistent collections (HashSet, OrdMap, HashMap) for structural sharing
@@ -57,7 +80,13 @@ Block persistence, DAG state management, casper buffer, and deploy indexing.
 
 ## Tests
 
-`block_dag_storage_test.rs` (proptest integration), `key_value_block_store.rs` (proptest unit), `casper_buffer_key_value_storage.rs` (tokio async), `doubly_linked_dag_operations.rs` (DAG unit tests).
+`block_dag_storage_test.rs` (example and property integration),
+`finalization_ledger.rs` (restart, corruption, idempotence, and parallel append
+unit tests), `key_value_block_store.rs` (property unit),
+`casper_buffer_key_value_storage.rs` (Tokio async), and
+`doubly_linked_dag_operations.rs` (DAG unit tests). The corresponding TLA+,
+Rocq, and Loom evidence is cataloged in
+[`finalization-atomicity-and-recovery.md`](../theory/finalized-floor/finalization-atomicity-and-recovery.md).
 
 **See also:** [block-storage/ crate](../../block-storage/)
 

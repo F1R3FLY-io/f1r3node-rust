@@ -8,24 +8,25 @@
 //! method is 2–4 lines) so the file is reviewable as a single concern
 //! ("how the casper engine binds into its public protocol surface").
 
-use std::collections::HashMap;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use block_storage::rust::dag::block_dag_key_value_storage::{DeployId, KeyValueDagRepresentation};
+use block_storage::rust::dag::block_dag_key_value_storage::{
+    CertifiedAdmissionOutcome, CertifiedSenderAuthority, DeployId, KeyValueDagRepresentation,
+};
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use comm::rust::transport::transport_layer::TransportLayer;
 use crypto::rust::signatures::signed::Signed;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{BlockMessage, DeployData};
-use models::rust::validator::Validator;
 use prost::bytes::Bytes;
 use rspace_plus_plus::rspace::history::Either;
 use rspace_plus_plus::rspace::state::rspace_exporter::RSpaceExporter;
 
 use super::types::MultiParentCasperImpl;
-use crate::rust::block_status::{BlockError, InvalidBlock, ValidBlock};
+use crate::rust::block_status::{CertifiedBlockValidation, InvalidBlock};
 use crate::rust::casper::{
     Casper, CasperShardConf, CasperSnapshot, DeployError, MultiParentCasper,
 };
@@ -38,6 +39,10 @@ use crate::rust::validator_identity::ValidatorIdentity;
 impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
     async fn get_snapshot(&self) -> Result<CasperSnapshot, CasperError> {
         super::snapshot::compute_snapshot(self).await
+    }
+
+    fn request_finalization(&self) -> Result<(), CasperError> {
+        super::finalization_runner::request_finalization(self)
     }
 
     fn contains(&self, hash: &BlockHash) -> bool {
@@ -79,12 +84,18 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
 
     fn get_version(&self) -> i64 { self.casper_shard_conf.casper_version }
 
+    fn recovery_sync_active(&self) -> bool { self.recovery_sync_active.load(Ordering::Acquire) }
+
+    fn set_recovery_sync_active(&self, active: bool) {
+        self.recovery_sync_active.store(active, Ordering::Release);
+    }
+
     #[tracing::instrument(level = "info", skip(self, block, snapshot), fields(block_hash = %PrettyPrinter::build_string_bytes(&block.block_hash)))]
     async fn validate(
         &self,
         block: &BlockMessage,
         snapshot: &mut CasperSnapshot,
-    ) -> Result<Either<BlockError, ValidBlock>, CasperError> {
+    ) -> Result<CertifiedBlockValidation, CasperError> {
         super::validation_dispatcher::dispatch_validate(self, block, snapshot).await
     }
 
@@ -94,7 +105,7 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
         snapshot: &mut CasperSnapshot,
         pre_state_hash: Bytes,
         post_state_hash: Bytes,
-    ) -> Result<Either<BlockError, ValidBlock>, CasperError> {
+    ) -> Result<CertifiedBlockValidation, CasperError> {
         super::validation_dispatcher::dispatch_validate_self_created(
             self,
             block,
@@ -109,8 +120,10 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
     async fn handle_valid_block(
         &self,
         block: &BlockMessage,
+        certificate: &CertifiedSenderAuthority,
+        outcome: &CertifiedAdmissionOutcome,
     ) -> Result<KeyValueDagRepresentation, CasperError> {
-        super::block_admission::admit_handle_valid_block(self, block).await
+        super::block_admission::admit_handle_valid_block(self, block, certificate, outcome).await
     }
 
     fn handle_invalid_block(
@@ -118,12 +131,25 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
         block: &BlockMessage,
         status: &InvalidBlock,
         dag: &KeyValueDagRepresentation,
+        certificate: &CertifiedSenderAuthority,
+        outcome: &CertifiedAdmissionOutcome,
     ) -> Result<KeyValueDagRepresentation, CasperError> {
-        super::validation_dispatcher::dispatch_handle_invalid_block(self, block, status, dag)
+        super::validation_dispatcher::dispatch_handle_invalid_block(
+            self,
+            block,
+            status,
+            dag,
+            certificate,
+            outcome,
+        )
     }
 
     fn get_dependency_free_from_buffer(&self) -> Result<Vec<BlockMessage>, CasperError> {
         super::buffer_resolver::buffer_get_dependency_free_from_buffer(self)
+    }
+
+    fn get_dependency_free_hashes_from_buffer(&self) -> Result<Vec<BlockHash>, CasperError> {
+        super::buffer_resolver::buffer_get_dependency_free_hashes_from_buffer(self)
     }
 
     fn get_all_from_buffer(&self) -> Result<Vec<BlockMessage>, CasperError> {
@@ -169,28 +195,11 @@ impl<T: TransportLayer + Send + Sync> MultiParentCasper for MultiParentCasperImp
         Ok(())
     }
 
-    fn normalized_initial_fault(
-        &self,
-        weights: HashMap<Validator, u64>,
-    ) -> Result<f32, CasperError> {
-        let equivocating_weight =
-            self.block_dag_storage
-                .access_equivocations_tracker(|tracker| {
-                    let equivocation_records = tracker.data()?;
-                    let equivocating_weight: u64 = equivocation_records
-                        .iter()
-                        .map(|record| &record.equivocator)
-                        .filter_map(|equivocator| weights.get(equivocator))
-                        .sum();
-                    Ok(equivocating_weight)
-                })?;
-
-        let total_weight: u64 = weights.values().sum();
-        if total_weight == 0 {
-            Ok(0.0)
-        } else {
-            Ok(equivocating_weight as f32 / total_weight as f32)
-        }
+    fn normalized_initial_fault(&self, target: &BlockHash) -> Result<f32, CasperError> {
+        let dag = self.block_dag_storage.get_representation()?;
+        let context =
+            crate::rust::causal_equivocation::CertifiedConsensusContext::for_target(&dag, target)?;
+        Ok(context.normalized_initial_fault())
     }
 
     async fn last_finalized_block(&self) -> Result<BlockMessage, CasperError> {

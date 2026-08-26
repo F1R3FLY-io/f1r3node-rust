@@ -25,6 +25,13 @@ pub trait LastFinalizedStorage: Send + Sync {
 
 pub mod last_finalized_key_value_storage;
 pub mod last_finalized_memory_storage;
+pub mod finalization_ledger;
+pub mod state_preservation;
 
+pub use finalization_ledger::{
+    EnsureGenesisOutcome, FinalizationAppendOutcome, FinalizationEffectId, FinalizationEffectKind,
+    FinalizationGenesisAnchor, FinalizationHead, FinalizationLedger, FinalizationRecord,
+    LocalFinalizationWitness,
+};
 pub use last_finalized_key_value_storage::LastFinalizedKeyValueStorage;
 pub use last_finalized_memory_storage::LastFinalizedMemoryStorage;

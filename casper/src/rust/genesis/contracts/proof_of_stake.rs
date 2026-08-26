@@ -17,11 +17,9 @@ pub struct ProofOfStake {
     pub pos_multi_sig_public_keys: Vec<String>,
     pub pos_multi_sig_quorum: u32,
     /// Per-deploy hard cap on the number of cosigners in a multi-signature
-    /// deploy. Substituted into the PoS contract at genesis as
-    /// `$$maxCosignersPerDeploy$$`. Default `64`; configurable per shard via
-    /// `casper_conf.rs::max_cosigners_per_deploy`. Defense-in-depth against
-    /// adversarial deploys exhausting block resources via runaway cosigner
-    /// lists.
+    /// deploy. Committed in genesis parameters and propagated into the shard
+    /// protocol configuration. Default `64`; configurable per shard via
+    /// `casper_conf.rs::max_cosigners_per_deploy`.
     pub max_cosigners_per_deploy: u32,
     /// Initial validator fuel credited to the validator's canonical SystemVault.
     /// Genesis validators receive it in the blessed vault generator; a newly
@@ -50,6 +48,22 @@ impl ProofOfStake {
             .map(|validator| {
                 let pk_string = hex::encode(validator.pk.bytes.clone());
                 format!(" \"{}\".hexToBytes() : {}", pk_string, validator.stake)
+            })
+            .collect::<Vec<String>>()
+            .join(", ");
+
+        format!("{{{}}}", map_entries)
+    }
+
+    pub fn initial_bond_generations(validators: &[Validator]) -> String {
+        let mut sorted_validators = validators.to_vec();
+        sorted_validators.sort_by(|a, b| a.pk.bytes.cmp(&b.pk.bytes));
+
+        let map_entries = sorted_validators
+            .iter()
+            .map(|validator| {
+                let pk_string = hex::encode(validator.pk.bytes.clone());
+                format!(" \"{}\".hexToBytes() : 0", pk_string)
             })
             .collect::<Vec<String>>()
             .join(", ");

@@ -1,14 +1,16 @@
 // See casper/src/test/scala/coop/rchain/casper/helper/BlockGenerator.scala
 #![allow(clippy::too_many_arguments)]
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use block_storage::rust::test::indexed_block_dag_storage::IndexedBlockDagStorage;
 use casper::rust::casper::CasperSnapshot;
+use casper::rust::causal_equivocation::CertifiedConsensusContext;
 use casper::rust::errors::CasperError;
+use casper::rust::estimator::{Estimator, ForkChoice};
 use casper::rust::util::rholang::interpreter_util::compute_deploys_checkpoint;
 use casper::rust::util::rholang::runtime_manager::RuntimeManager;
 use casper::rust::util::{construct_deploy, proto_util};
@@ -20,6 +22,50 @@ use models::rust::casper::protocol::casper_message::{
 };
 use models::rust::validator::Validator;
 use rholang::rust::interpreter::system_processes::BlockData;
+use shared::rust::store::key_value_store::KvStoreError;
+
+fn default_state_hash() -> StateHash { vec![0; models::rust::block_hash::LENGTH].into() }
+
+fn default_validator() -> Validator { vec![2; models::rust::validator::LENGTH].into() }
+
+pub async fn certified_fork_choice(
+    estimator: &Estimator,
+    dag: &KeyValueDagRepresentation,
+    authority_floor: &BlockMessage,
+    latest_messages: HashMap<Validator, BlockHash>,
+) -> Result<ForkChoice, KvStoreError> {
+    let context = certified_consensus_context(dag, authority_floor, latest_messages)?;
+    estimator
+        .tips_with_context(dag, authority_floor, &context)
+        .await
+}
+
+pub fn certified_consensus_context(
+    dag: &KeyValueDagRepresentation,
+    authority_floor: &BlockMessage,
+    latest_messages: HashMap<Validator, BlockHash>,
+) -> Result<CertifiedConsensusContext, KvStoreError> {
+    let authority = dag.lookup_unsafe(&authority_floor.block_hash)?;
+    let exact_latest_messages = authority
+        .active_validator_set
+        .iter()
+        .map(|validator| {
+            (
+                validator.clone(),
+                latest_messages
+                    .get(validator)
+                    .cloned()
+                    .unwrap_or_else(|| authority_floor.block_hash.clone()),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    CertifiedConsensusContext::for_frozen_floor(
+        dag,
+        authority_floor.block_hash.clone(),
+        &exact_latest_messages,
+    )
+    .map_err(|error| KvStoreError::InvalidArgument(error.to_string()))
+}
 
 pub fn mk_casper_snapshot(dag: KeyValueDagRepresentation) -> CasperSnapshot {
     CasperSnapshot::new(dag)
@@ -217,13 +263,13 @@ fn build_block_with_system_deploys_at_height(
     seq_num: Option<i32>,
     system_deploys: Option<Vec<ProcessedSystemDeploy>>,
 ) -> BlockMessage {
-    let creator = creator.unwrap_or_default();
+    let creator = creator.unwrap_or_else(default_validator);
     let bonds = bonds.unwrap_or_default();
     let justifications = justifications.unwrap_or_default();
     let deploys = deploys.unwrap_or_default();
-    let post_state_hash = post_state_hash.unwrap_or_default();
+    let post_state_hash = post_state_hash.unwrap_or_else(default_state_hash);
     let shard_id = shard_id.unwrap_or("root".to_string());
-    let pre_state_hash = pre_state_hash.unwrap_or_default();
+    let pre_state_hash = pre_state_hash.unwrap_or_else(default_state_hash);
     let seq_num = seq_num.unwrap_or(0);
     let system_deploys = system_deploys.unwrap_or_default();
 
@@ -257,13 +303,13 @@ pub fn create_genesis_block(
     pre_state_hash: Option<StateHash>,
     seq_num: Option<i32>,
 ) -> BlockMessage {
-    let creator = creator.unwrap_or_default();
+    let creator = creator.unwrap_or_else(default_validator);
     let bonds = bonds.unwrap_or_default();
     let justifications = justifications.unwrap_or_default();
     let deploys = deploys.unwrap_or_default();
-    let ts_hash = ts_hash.unwrap_or_default();
+    let ts_hash = ts_hash.unwrap_or_else(default_state_hash);
     let shard_id = shard_id.unwrap_or("root".to_string());
-    let pre_state_hash = pre_state_hash.unwrap_or_default();
+    let pre_state_hash = pre_state_hash.unwrap_or_else(default_state_hash);
     let seq_num = seq_num.unwrap_or(0);
 
     let now = SystemTime::now()
@@ -350,7 +396,7 @@ pub fn create_block_with_system_deploys_at(
     system_deploys: Option<Vec<ProcessedSystemDeploy>>,
     time_stamp: i64,
 ) -> BlockMessage {
-    let creator = creator.unwrap_or_default();
+    let creator = creator.unwrap_or_else(default_validator);
     let bonds = bonds.unwrap_or_default();
     let justifications = justifications
         .unwrap_or_default()
@@ -361,9 +407,9 @@ pub fn create_block_with_system_deploys_at(
         })
         .collect();
     let deploys = deploys.unwrap_or_default();
-    let post_state_hash = post_state_hash.unwrap_or_default();
+    let post_state_hash = post_state_hash.unwrap_or_else(default_state_hash);
     let shard_id = shard_id.unwrap_or("root".to_string());
-    let pre_state_hash = pre_state_hash.unwrap_or_default();
+    let pre_state_hash = pre_state_hash.unwrap_or_else(default_state_hash);
     let seq_num = seq_num.unwrap_or(0);
     let invalid = invalid.unwrap_or(false);
 

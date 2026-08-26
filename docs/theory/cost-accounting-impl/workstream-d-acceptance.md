@@ -8,7 +8,7 @@ superseded by DR-31 state-bound dependent evidence, authority-derived finite
 capacity, replay-checked exact settlement, native signed regions, first-class
 stacks, and authenticated physical draws. The “central representation
 decision” below is historical: `Par`, stored data, and continuations now retain
-cost authority, and production no longer uses the $s_0$ collapse.
+cost authority, and production no longer uses the $`s_0`$ collapse.
 
 > **⚠ SUPERSEDED on the funding key by §D2.9** ([wd-d2-acceptance-gate.md](wd-d2-acceptance-gate.md)). This sketch keys the supply pool by `lane_hash(deploy_sig)` (the per-deploy **wire-signature** envelope); the landed implementation keys it by `funding_sig = Sig::Ground(pk)` (single) / the `Sig::And`-fold of `Sig::Ground(pkᵢ)` (multi), so `Σ⟦signer⟧ == Σ⟦wallet⟧` (the genesis-seeded wallet `Σ⟦Ground(pk)⟧`). `deploy_id` remains wire-sig-derived (correct, byte-identical). Read this doc for the D0–D6 staging spine; read `wd-d2-acceptance-gate.md` §D2.9 for the authoritative funding key.
 

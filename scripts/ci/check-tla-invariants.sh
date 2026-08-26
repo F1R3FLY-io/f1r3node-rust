@@ -70,8 +70,9 @@ mkdir -p "$LOG_DIR"
 \rm -rf "$TLC_METADIR_ROOT"/slashing-* 2>/dev/null || true
 trap '\rm -rf "$TLC_METADIR_ROOT"/slashing-* 2>/dev/null || true' EXIT
 
-# Post-fix configs: each must TLC-clean. Entries are
-# <subdir under formal/tlaplus>/<config basename>.
+# Post-fix configs: each must TLC-clean. Entries are either
+# <subdir>/<config basename> or <subdir>/<config basename>|<module basename>.
+# The mapped form registers multiple configurations against one non-empty module.
 POST_FIX_CONFIGS=(
     slashing/MC_EquivocationDetector_liveness
     slashing/MC_EquivocationDetector_liveness_2v
@@ -92,6 +93,12 @@ POST_FIX_CONFIGS=(
     deploy_recovery/MC_ProtocolVersionLifecycle
     deploy_recovery/MC_ProtocolVersionLifecycle_legacy_rejected
     deploy_recovery/MC_ProtocolVersionLifecycle_unsupported_rejected
+    'finalized_floor/MC_PendingDeployHeartbeatComposition|PendingDeployHeartbeatComposition'
+    'finalized_floor/MC_PendingDeployHeartbeatComposition_ingress_safety|PendingDeployHeartbeatComposition'
+    'finalized_floor/MC_ProposerAdmissionCoalescing|ProposerAdmissionCoalescing'
+    'finalized_floor/MC_RecoveryCommitteeTransition|RecoveryCommitteeTransition'
+    'finalized_floor/MC_ObjectiveEquivocation|ObjectiveEquivocation'
+    'finalized_floor/MC_ObjectiveEvidenceAuthorization|ObjectiveEvidenceAuthorization'
 )
 
 if [[ "${RUN_EXHAUSTIVE_TLA:-0}" == "1" ]]; then
@@ -129,35 +136,42 @@ failed=0
 timeouts=0
 violations=0
 for entry in "${POST_FIX_CONFIGS[@]}"; do
-    if [[ "$entry" != */* ]]; then
+    if [[ "$entry" == *'|'* ]]; then
+        config_entry="${entry%%|*}"
+        module="${entry#*|}"
+    else
+        config_entry="$entry"
+        module="${entry##*/}"
+    fi
+    if [[ "$config_entry" != */* || -z "$module" || "$module" == */* ]]; then
         echo "ERROR: malformed POST_FIX_CONFIGS entry '$entry' (expected <subdir>/<config>)" >&2
         exit 2
     fi
-    dir="$TLA_ROOT/${entry%/*}"
-    cfg="${entry##*/}"
-    log="$LOG_DIR/tlc-${entry//\//-}.log"
-    if [[ ! -f "$dir/$cfg.tla" || ! -f "$dir/$cfg.cfg" ]]; then
-        echo "FAIL   $entry (missing $cfg.tla or $cfg.cfg in $dir — registered config not found)"
+    dir="$TLA_ROOT/${config_entry%/*}"
+    cfg="${config_entry##*/}"
+    log="$LOG_DIR/tlc-${config_entry//\//-}.log"
+    if [[ ! -f "$dir/$module.tla" || ! -f "$dir/$cfg.cfg" ]]; then
+        echo "FAIL   $config_entry (missing $module.tla or $cfg.cfg in $dir — registered model/config not found)"
         failed=$((failed + 1))
         violations=$((violations + 1))
         continue
     fi
     started_epoch="$(date +%s)"
-    echo "CHECK  $entry (started $(date -u +%H:%M:%SZ), cap $TLC_PER_CONFIG_TIMEOUT)"
+    echo "CHECK  $config_entry -> $module (started $(date -u +%H:%M:%SZ), cap $TLC_PER_CONFIG_TIMEOUT)"
     set +e
     (cd "$dir" && TLC_WALL_TIMEOUT="$TLC_PER_CONFIG_TIMEOUT" \
-        tlc_run "$(tlc_metadir "slashing-${entry//\//-}")" "$cfg.cfg" "$cfg.tla") >"$log" 2>&1
+        tlc_run "$(tlc_metadir "slashing-${config_entry//\//-}")" "$cfg.cfg" "$module.tla") >"$log" 2>&1
     status=$?
     set -e
     elapsed="$(( $(date +%s) - started_epoch ))s"
     if (( status == 0 )); then
-        echo "OK     $entry ($elapsed)"
+        echo "OK     $config_entry ($elapsed)"
     elif (( status == 124 )); then
-        echo "TIMEOUT $entry after $elapsed (cap $TLC_PER_CONFIG_TIMEOUT) — treat as failure; profile or split the config"
+        echo "TIMEOUT $config_entry after $elapsed (cap $TLC_PER_CONFIG_TIMEOUT) — treat as failure; profile or split the config"
         failed=$((failed + 1))
         timeouts=$((timeouts + 1))
     else
-        echo "FAIL   $entry ($elapsed)"
+        echo "FAIL   $config_entry ($elapsed)"
         echo "--- last 40 lines of $log ---"
         tail -40 "$log"
         echo "--- end log ---"
@@ -167,7 +181,7 @@ for entry in "${POST_FIX_CONFIGS[@]}"; do
     # Reclaim this model's on-disk state graph immediately (MC_SlashFlow
     # alone reaches ~11 GB); without this the per-model metadirs accumulate
     # on the NVMe until the EXIT trap. The log under $LOG_DIR is retained.
-    \rm -rf "$TLC_METADIR_ROOT/slashing-${entry//\//-}" 2>/dev/null || true
+    \rm -rf "$TLC_METADIR_ROOT/slashing-${config_entry//\//-}" 2>/dev/null || true
 done
 
 # Redemption-un-halt invariant (Inv_RedeemedValidatorUnhalted): the full

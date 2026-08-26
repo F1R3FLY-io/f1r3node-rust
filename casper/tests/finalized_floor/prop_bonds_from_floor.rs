@@ -1,157 +1,304 @@
-// P1 proptests — `bonds_cache_from_floor` committee PLAY ≡ REPLAY.
-//
-// Models the committee derivation shared by the two independent copies:
-//   - PROPOSER  blocks/proposer/block_creator.rs:1081-1084
-//         let committee: Vec<Bond> = floor_bonds
-//             .into_iter().filter(|bond| active.contains(&bond.validator)).collect();
-//   - VALIDATOR validate.rs::bonds_cache_from_floor, :1471-1477
-//         let computed_bonds_set: HashSet<_> = computed_bonds.iter()
-//             .filter(|bond| active.contains(&bond.validator))
-//             .map(|bond| (bond.validator.clone(), bond.stake)).collect();
-//         if bonds_set == computed_bonds_set { Valid } else { InvalidBondsCache }
-//
-// Both sites: committee = compute_bonds(floor_state) filtered to the active validator
-// set, via the BYTE-IDENTICAL predicate `active.contains(&bond.validator)`. Given the
-// same finalized floor, both call the deterministic `compute_bonds(floor_state)` and
-// `get_active_validators(floor_state)`, so they see the same `(floor_bonds, active)`.
-// The proposer emits an ORDERED `Vec<Bond>` (→ block.bonds); the validator compares as
-// a SET of (validator, stake). This test models that shared derivation and the
-// validator's set-equality accept rule, and checks PLAY ≡ REPLAY plus rejection of
-// every committee-CHANGING perturbation (order/duplicate perturbations are set-
-// preserving and are correctly TOLERATED — see the two `..._is_tolerated` tests).
-//
-// Discharged math (no new Rocq): Selection.committee_is_floor_bonds +
-// committee_deterministic + Floor.frontier_cache_transparent.
-
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet};
 
 use proptest::prelude::*;
 
 type Validator = Vec<u8>;
-/// Faithful to `models::rust::casper::protocol::casper_message::Bond`
-/// (`{ validator: ByteString, stake: i64 }`).
 type Bond = (Validator, i64);
+type BlockHash = Vec<u8>;
 
-/// PROPOSER-side derivation (block_creator.rs:1081-1084): floor bonds filtered to
-/// active, emitted as an ORDERED `Vec<Bond>` that becomes `block.bonds`.
-fn proposer_committee(floor_bonds: &[Bond], active: &HashSet<Validator>) -> Vec<Bond> {
-    floor_bonds
+fn positive_bonds(bonds: &[Bond]) -> BTreeMap<Validator, i64> {
+    bonds
         .iter()
-        .filter(|(v, _)| active.contains(v))
+        .filter(|(_, stake)| *stake > 0)
         .cloned()
         .collect()
 }
 
-/// VALIDATOR-side derivation (validate.rs:1471-1475): the SAME floor bonds filtered
-/// to active, collected as a SET of (validator, stake) for the equality check.
-fn validator_committee(floor_bonds: &[Bond], active: &HashSet<Validator>) -> BTreeSet<Bond> {
-    floor_bonds
-        .iter()
-        .filter(|(v, _)| active.contains(v))
-        .cloned()
-        .collect()
+fn cache_accepts(serialized: &[Bond], replayed_post_state: &[Bond]) -> bool {
+    let serialized_set = serialized.iter().cloned().collect::<BTreeSet<_>>();
+    let replayed_set = replayed_post_state.iter().cloned().collect::<BTreeSet<_>>();
+    serialized_set.len() == serialized.len()
+        && replayed_set.len() == replayed_post_state.len()
+        && serialized_set == replayed_set
 }
 
-/// VALIDATOR accept rule (validate.rs:1477): `bonds_set == computed_bonds_set`, where
-/// `bonds_set` is the block's declared bonds projected to a SET of (validator, stake).
-fn accepts(block_bonds: &[Bond], committee: &BTreeSet<Bond>) -> bool {
-    let block_set: BTreeSet<Bond> = block_bonds.iter().cloned().collect();
-    &block_set == committee
+fn authority_accepts(sender: &Validator, justifications: &[Validator], floor: &[Bond]) -> bool {
+    let committee = positive_bonds(floor);
+    let justified = justifications.iter().cloned().collect::<BTreeSet<_>>();
+    committee.contains_key(sender)
+        && justified == committee.keys().cloned().collect::<BTreeSet<_>>()
 }
 
-// A scenario is a set of floor bonds with UNIQUE validators (compute_bonds returns a
-// per-validator map) plus a per-validator "active" flag. Encoded as entries indexed by
-// position i ⇒ validator = [i], stake = entries[i].0, active = entries[i].1.
+fn register_post_state_bonds(
+    accepted: bool,
+    registered: &BTreeSet<Validator>,
+    post_state: &[Bond],
+) -> BTreeSet<Validator> {
+    let mut result = registered.clone();
+    if accepted {
+        result.extend(
+            post_state
+                .iter()
+                .filter(|(_, stake)| *stake > 0)
+                .map(|(validator, _)| validator.clone()),
+        );
+    }
+    result
+}
+
+fn justification_has_provenance(
+    validator: &Validator,
+    latest_hash: &BlockHash,
+    genesis_hash: &BlockHash,
+    cited_sender: &Validator,
+) -> bool {
+    latest_hash == genesis_hash || validator == cited_sender
+}
+
+fn register_with_canonical_genesis(
+    accepted: bool,
+    registered: &BTreeMap<Validator, BlockHash>,
+    post_state: &[Bond],
+    genesis_hash: &BlockHash,
+) -> BTreeMap<Validator, BlockHash> {
+    let mut result = registered.clone();
+    if accepted {
+        for (validator, _stake) in post_state.iter().filter(|(_, stake)| *stake > 0) {
+            result
+                .entry(validator.clone())
+                .or_insert_with(|| genesis_hash.clone());
+        }
+    }
+    result
+}
+
 prop_compose! {
-    fn scenario()(entries in prop::collection::vec((1i64..=1_000_000i64, any::<bool>()), 1..=8))
-        -> (Vec<Bond>, HashSet<Validator>) {
-        let floor_bonds: Vec<Bond> =
-            entries.iter().enumerate().map(|(i, (s, _))| (vec![i as u8], *s)).collect();
-        let active: HashSet<Validator> = entries
-            .iter()
+    fn committee()(entries in prop::collection::vec(1i64..=1_000_000i64, 1..=8)) -> Vec<Bond> {
+        entries
+            .into_iter()
             .enumerate()
-            .filter_map(|(i, (_, a))| if *a { Some(vec![i as u8]) } else { None })
-            .collect();
-        (floor_bonds, active)
+            .map(|(index, stake)| (vec![index as u8], stake))
+            .collect()
     }
 }
 
 proptest! {
-    // (i) PLAY ≡ REPLAY: proposer and validator derive the SAME committee (set) from
-    // the same floor — the filter predicate is identical on both sides.
     #[test]
-    fn proposer_derive_eq_validator_derive((floor_bonds, active) in scenario()) {
-        let proposer: BTreeSet<Bond> = proposer_committee(&floor_bonds, &active).into_iter().collect();
-        let validator = validator_committee(&floor_bonds, &active);
-        prop_assert_eq!(proposer, validator);
+    fn serialized_bonds_are_exactly_the_replayed_post_state(
+        post_state in committee(),
+        floor in committee(),
+    ) {
+        prop_assert!(cache_accepts(&post_state, &post_state));
+        if post_state.iter().cloned().collect::<BTreeSet<_>>()
+            != floor.iter().cloned().collect::<BTreeSet<_>>()
+        {
+            prop_assert!(!cache_accepts(&floor, &post_state));
+        }
     }
 
-    // (ii) accept rule IS set-equality, and the honest proposer block is accepted.
     #[test]
-    fn accept_rule_is_set_equality((floor_bonds, active) in scenario()) {
-        let committee = validator_committee(&floor_bonds, &active);
-        let honest = proposer_committee(&floor_bonds, &active);
-        // honest block (the proposer's committee) is accepted on replay.
-        prop_assert!(accepts(&honest, &committee));
-        // accepts(b) ⟺ set(b) == committee, definitionally.
-        let honest_set: BTreeSet<Bond> = honest.iter().cloned().collect();
-        prop_assert_eq!(accepts(&honest, &committee), honest_set == committee);
+    fn post_state_transition_cannot_authorize_its_own_block(
+        floor in committee(),
+        new_validator_byte in 128u8..=254,
+        stake in 1i64..=1_000_000,
+    ) {
+        let new_validator = vec![new_validator_byte];
+        prop_assume!(!positive_bonds(&floor).contains_key(&new_validator));
+        let mut post_state = floor.clone();
+        post_state.push((new_validator.clone(), stake));
+        let justifications = positive_bonds(&floor).keys().cloned().collect::<Vec<_>>();
+
+        prop_assert!(cache_accepts(&post_state, &post_state));
+        prop_assert!(!authority_accepts(&new_validator, &justifications, &floor));
     }
 
-    // (ii-drop) drop-one perturbation ⇒ REJECT (committee non-empty).
     #[test]
-    fn reject_drop_one((floor_bonds, active) in scenario(), idx in any::<prop::sample::Index>()) {
-        let committee = validator_committee(&floor_bonds, &active);
-        let honest = proposer_committee(&floor_bonds, &active);
-        prop_assume!(!honest.is_empty());
-        let j = idx.index(honest.len());
-        let mut perturbed = honest.clone();
-        perturbed.remove(j);
-        prop_assert!(!accepts(&perturbed, &committee), "drop-one must be rejected");
+    fn promoted_floor_authorizes_registered_transition_on_later_block(
+        floor in committee(),
+        new_validator_byte in 128u8..=254,
+        stake in 1i64..=1_000_000,
+    ) {
+        let new_validator = vec![new_validator_byte];
+        prop_assume!(!positive_bonds(&floor).contains_key(&new_validator));
+        let mut promoted_floor = floor;
+        promoted_floor.push((new_validator.clone(), stake));
+        let justifications = positive_bonds(&promoted_floor)
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+
+        prop_assert!(authority_accepts(
+            &new_validator,
+            &justifications,
+            &promoted_floor,
+        ));
     }
 
-    // (ii-stake) stake-delta perturbation ⇒ REJECT (committee non-empty).
     #[test]
-    fn reject_stake_delta((floor_bonds, active) in scenario(), idx in any::<prop::sample::Index>()) {
-        let committee = validator_committee(&floor_bonds, &active);
-        let honest = proposer_committee(&floor_bonds, &active);
-        prop_assume!(!honest.is_empty());
-        let j = idx.index(honest.len());
-        let mut perturbed = honest.clone();
-        perturbed[j].1 += 1; // stakes ∈ [1, 1e6]; +1 cannot overflow i64.
-        prop_assert!(!accepts(&perturbed, &committee), "stake-delta must be rejected");
+    fn only_accepted_post_state_bonds_register_new_validator_slots(
+        floor in committee(),
+        new_validator_byte in 128u8..=254,
+        stake in 1i64..=1_000_000,
+    ) {
+        let registered = positive_bonds(&floor).keys().cloned().collect::<BTreeSet<_>>();
+        let new_validator = vec![new_validator_byte];
+        prop_assume!(!registered.contains(&new_validator));
+        let mut post_state = floor;
+        post_state.push((new_validator.clone(), stake));
+
+        prop_assert!(register_post_state_bonds(true, &registered, &post_state)
+            .contains(&new_validator));
+        prop_assert!(!register_post_state_bonds(false, &registered, &post_state)
+            .contains(&new_validator));
     }
 
-    // (ii-spurious) spurious-validator perturbation ⇒ REJECT. The 2-byte validator
-    // cannot collide with any single-byte floor validator, so it is never in committee.
     #[test]
-    fn reject_spurious_validator((floor_bonds, active) in scenario(), stake in any::<i64>()) {
-        let committee = validator_committee(&floor_bonds, &active);
-        let mut perturbed = proposer_committee(&floor_bonds, &active);
-        perturbed.push((vec![0xFF, 0xFF], stake));
-        prop_assert!(!accepts(&perturbed, &committee), "spurious validator must be rejected");
+    fn nonpositive_post_state_bonds_never_register_new_slots(
+        floor in committee(),
+        new_validator_byte in 128u8..=254,
+        stake in i64::MIN..=0i64,
+    ) {
+        let registered = positive_bonds(&floor).keys().cloned().collect::<BTreeSet<_>>();
+        let new_validator = vec![new_validator_byte];
+        prop_assume!(!registered.contains(&new_validator));
+        let post_state = vec![(new_validator.clone(), stake)];
+
+        prop_assert!(!register_post_state_bonds(true, &registered, &post_state)
+            .contains(&new_validator));
     }
 
-    // (ii-reorder) reorder perturbation ⇒ TOLERATED (accepted). The validator compares
-    // SETS (validate.rs:1477), so bond ORDER in the block is consensus-irrelevant to
-    // this check — which is exactly why PLAY ≡ REPLAY is robust to bond ordering.
     #[test]
-    fn reorder_is_tolerated((floor_bonds, active) in scenario()) {
-        let committee = validator_committee(&floor_bonds, &active);
-        let mut perturbed = proposer_committee(&floor_bonds, &active);
-        perturbed.reverse();
-        prop_assert!(accepts(&perturbed, &committee), "reorder is set-preserving ⇒ accepted");
+    fn registration_placeholder_is_independent_of_local_junk(
+        floor in committee(),
+        new_validator_byte in 128u8..=254,
+        genesis_hash in prop::collection::vec(any::<u8>(), 32),
+        junk_hash in prop::collection::vec(any::<u8>(), 32),
+    ) {
+        let registered = positive_bonds(&floor)
+            .keys()
+            .cloned()
+            .map(|validator| (validator, genesis_hash.clone()))
+            .collect::<BTreeMap<_, _>>();
+        let new_validator = vec![new_validator_byte];
+        prop_assume!(!registered.contains_key(&new_validator));
+        prop_assume!(junk_hash != genesis_hash);
+        let post_state = vec![(new_validator.clone(), 1)];
+
+        let without_junk = register_with_canonical_genesis(
+            true,
+            &registered,
+            &post_state,
+            &genesis_hash,
+        );
+        let mut with_junk = registered.clone();
+        with_junk.insert(vec![0xff, 0xff], junk_hash);
+        let with_junk = register_with_canonical_genesis(
+            true,
+            &with_junk,
+            &post_state,
+            &genesis_hash,
+        );
+
+        prop_assert_eq!(without_junk.get(&new_validator), Some(&genesis_hash));
+        prop_assert_eq!(with_junk.get(&new_validator), Some(&genesis_hash));
     }
 
-    // (ii-dup) duplicate perturbation ⇒ TOLERATED (accepted). Duplicating an existing
-    // (validator, stake) is set-preserving under the HashSet comparison.
     #[test]
-    fn duplicate_is_tolerated((floor_bonds, active) in scenario()) {
-        let committee = validator_committee(&floor_bonds, &active);
-        let mut perturbed = proposer_committee(&floor_bonds, &active);
-        prop_assume!(!perturbed.is_empty());
-        let first = perturbed[0].clone();
-        perturbed.push(first);
-        prop_assert!(accepts(&perturbed, &committee), "duplicate is set-preserving ⇒ accepted");
+    fn justification_hashes_cannot_be_relabelled_between_validators(
+        validator in prop::collection::vec(any::<u8>(), 1..=65),
+        cited_sender in prop::collection::vec(any::<u8>(), 1..=65),
+        latest_hash in prop::collection::vec(any::<u8>(), 32),
+        genesis_hash in prop::collection::vec(any::<u8>(), 32),
+    ) {
+        prop_assume!(validator != cited_sender);
+        prop_assume!(latest_hash != genesis_hash);
+
+        prop_assert!(!justification_has_provenance(
+            &validator,
+            &latest_hash,
+            &genesis_hash,
+            &cited_sender,
+        ));
+        prop_assert!(justification_has_provenance(
+            &validator,
+            &genesis_hash,
+            &genesis_hash,
+            &cited_sender,
+        ));
+    }
+
+    #[test]
+    fn authority_is_independent_of_head_and_post_state_bonds(
+        floor in committee(),
+        head in committee(),
+        post_state in committee(),
+    ) {
+        let committee = positive_bonds(&floor);
+        let sender = committee.keys().next().cloned().expect("committee is non-empty");
+        let justifications = committee.keys().cloned().collect::<Vec<_>>();
+        let expected = authority_accepts(&sender, &justifications, &floor);
+
+        let divergent_head = head
+            .into_iter()
+            .map(|(mut validator, stake)| {
+                validator.insert(0, 0xfe);
+                (validator, stake)
+            })
+            .collect::<Vec<_>>();
+        let divergent_post_state = post_state
+            .into_iter()
+            .map(|(mut validator, stake)| {
+                validator.insert(0, 0xfd);
+                (validator, stake)
+            })
+            .collect::<Vec<_>>();
+
+        prop_assert!(expected);
+        prop_assert!(!authority_accepts(&sender, &justifications, &divergent_head));
+        prop_assert!(!authority_accepts(
+            &sender,
+            &justifications,
+            &divergent_post_state,
+        ));
+        prop_assert_eq!(authority_accepts(&sender, &justifications, &floor), expected);
+    }
+
+    #[test]
+    fn post_state_cache_rejects_drop_stake_and_spurious_mutations(
+        post_state in committee(),
+        index in any::<prop::sample::Index>(),
+    ) {
+        let selected = index.index(post_state.len());
+
+        let mut dropped = post_state.clone();
+        dropped.remove(selected);
+        prop_assert!(!cache_accepts(&dropped, &post_state));
+
+        let mut changed_stake = post_state.clone();
+        changed_stake[selected].1 += 1;
+        prop_assert!(!cache_accepts(&changed_stake, &post_state));
+
+        let mut spurious = post_state.clone();
+        spurious.push((vec![0xff, 0xff], 1));
+        prop_assert!(!cache_accepts(&spurious, &post_state));
+
+        let mut duplicate = post_state.clone();
+        duplicate.push(post_state[selected].clone());
+        prop_assert!(!cache_accepts(&duplicate, &post_state));
+    }
+
+    #[test]
+    fn authority_requires_exact_floor_justifications(floor in committee()) {
+        let committee = positive_bonds(&floor);
+        let sender = committee.keys().next().cloned().expect("committee is non-empty");
+        let mut justifications = committee.keys().cloned().collect::<Vec<_>>();
+        prop_assert!(authority_accepts(&sender, &justifications, &floor));
+
+        justifications.pop();
+        prop_assert!(!authority_accepts(&sender, &justifications, &floor));
+
+        let mut extra = committee.keys().cloned().collect::<Vec<_>>();
+        extra.push(vec![0xff, 0xff]);
+        prop_assert!(!authority_accepts(&sender, &extra, &floor));
     }
 }

@@ -1,6 +1,6 @@
 // See casper/src/main/scala/coop/rchain/casper/api/BlockAPI.scala
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
@@ -41,7 +41,7 @@ use crate::rust::state::instances::proposer_state::ProposerState;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 use crate::rust::util::rholang::tools::Tools;
 use crate::rust::util::{event_converter, proto_util};
-use crate::rust::ProposeFunction;
+use crate::rust::{ProposeFunction, ProposeRequestKind};
 pub struct BlockAPI;
 
 pub type ApiErr<T> = eyre::Result<T>;
@@ -73,8 +73,8 @@ fn recoverable_propose_failure_message(status: &ProposeStatus) -> Option<String>
         ProposeStatus::Failure(ProposeFailure::NoNewDeploys) => {
             Some("No new deploys to propose.".to_string())
         }
-        ProposeStatus::Failure(ProposeFailure::RecoveryDeferred) => {
-            Some("Rejected deploy recovery deferred to selected leader.".to_string())
+        ProposeStatus::Failure(ProposeFailure::RecoveryDeferred(reason)) => {
+            Some(format!("Proposal deferred: {}.", reason))
         }
         ProposeStatus::Failure(ProposeFailure::CheckConstraintsFailure(
             CheckProposeConstraintsFailure::NotEnoughNewBlocks,
@@ -396,13 +396,12 @@ impl BlockAPI {
             // propose/finalization APIs separately in integration flows.
             if let Some(tp) = trigger_propose {
                 let tp = Arc::clone(tp);
-                let casper_for_propose = casper.clone();
                 let max_attempts = deploy_propose_max_attempts();
                 let retry_delay = deploy_propose_retry_delay();
                 tokio::spawn(async move {
                     let mut attempt = 1u32;
                     loop {
-                        match tp(casper_for_propose.clone(), true).await {
+                        match tp(ProposeRequestKind::PendingDeploy).await {
                             Ok(proposer_result) => match proposer_result {
                                 ProposerResult::Failure(status, seq_number) => {
                                     if should_retry_deploy_propose(&status)
@@ -590,13 +589,12 @@ impl BlockAPI {
             // Trigger propose asynchronously (mirrors `casper_deploy`).
             if let Some(tp) = trigger_propose {
                 let tp = Arc::clone(tp);
-                let casper_for_propose = casper.clone();
                 let max_attempts = deploy_propose_max_attempts();
                 let retry_delay = deploy_propose_retry_delay();
                 tokio::spawn(async move {
                     let mut attempt = 1u32;
                     loop {
-                        match tp(casper_for_propose.clone(), true).await {
+                        match tp(ProposeRequestKind::PendingDeploy).await {
                             Ok(proposer_result) => match proposer_result {
                                 ProposerResult::Failure(status, seq_number) => {
                                     if should_retry_deploy_propose(&status)
@@ -736,7 +734,7 @@ impl BlockAPI {
     pub async fn create_block(
         engine_cell: &EngineCell,
         trigger_propose_f: &Arc<ProposeFunction>,
-        is_async: bool,
+        _is_async: bool,
     ) -> ApiErr<String> {
         let log_debug = |err: &str| -> ApiErr<String> {
             tracing::debug!("{}", err);
@@ -753,9 +751,9 @@ impl BlockAPI {
 
         let eng = engine_cell.get().await;
 
-        if let Some(casper) = eng.with_casper() {
+        if eng.with_casper().is_some() {
             // Trigger propose
-            let proposer_result = match trigger_propose_f(casper, is_async).await {
+            let proposer_result = match trigger_propose_f(ProposeRequestKind::Manual).await {
                 Ok(proposer_result) => proposer_result,
                 Err(err) => {
                     let err_message = err.to_string();
@@ -1635,13 +1633,7 @@ impl BlockAPI {
                 .await?
         };
 
-        let weights_map = proto_util::weight_map(block);
-        let weights_u64: HashMap<Bytes, u64> = weights_map
-            .into_iter()
-            .map(|(k, v)| (k, v as u64))
-            .collect();
-
-        let initial_fault = casper.normalized_initial_fault(weights_u64)?;
+        let initial_fault = casper.normalized_initial_fault(&block.block_hash)?;
         let fault_tolerance = normalized_fault_tolerance - initial_fault;
 
         let block_info = constructor(block, fault_tolerance, is_finalized);
@@ -1776,8 +1768,8 @@ impl BlockAPI {
             })?;
 
             // Use the same FT computation path as get_block for consistency.
-            // Reads cached FT from DAG metadata (populated at finalization time,
-            // propagated upward by propagate_ft_to_finalized_blocks).
+            // Reads cached FT from DAG metadata populated by ordered finalization
+            // ledger projection.
             Ok(Self::get_block_info_with_dag(
                 casper.as_ref(),
                 &dag,
