@@ -639,6 +639,20 @@ impl RhoRuntime for RhoRuntimeImpl {
         // paths that spawn a fresh runtime for their scope, so the
         // seeding side-effect is contained.
         self.fs_handles.seed_next_fd_from_state_hash(&root.bytes());
+        // Streaming-backing slice Step 3 review-fix (2026-08-25):
+        // seed the dir-stream fd counter from the same state hash.
+        // Same PB-M-13 aliasing threat as file fds: dir-stream fd
+        // values flow through the tuplespace as GInt, so a joining
+        // validator (or restart-after-crash) allocating fresh
+        // dir-stream fds starting from 1 could alias a stream fd
+        // that a prior lifetime stashed in the tuplespace state.
+        // Missing this call means the streaming primitive is
+        // sound within a single runtime lifetime but unsound
+        // across a full restart — a real gap once Dir.rho starts
+        // holding stream fds across block boundaries (Step 5).
+        self.fs_handles
+            .dir_handles
+            .seed_next_fd_from_state_hash(&root.bytes());
         // H-29-F2 review fix (defense in depth): clear the consensus
         // WAL on reset.  All correctness paths already drain the WAL
         // per-deploy via `Wal::take_deploy_entries`; this clear

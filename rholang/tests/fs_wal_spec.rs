@@ -1414,6 +1414,112 @@ mod tests {
         );
     }
 
+    /// Streaming-backing slice Step 3 review-fix (2026-08-25): WAL cap
+    /// enforcement extends to `entriesStreamNext` journal appends.
+    /// A runaway `entriesStreamNext` loop on a Consensus cap that
+    /// pushes the per-runtime WAL past `MAX_WAL_ENTRIES` must
+    /// surface `FSERR_QUOTA_EXCEEDED` on the overflow call — same
+    /// bound as fs_write / fs_stat / fs_entries.
+    ///
+    /// The handler charge model: `journal_state_read` calls
+    /// `wal.append_with_ack` which returns `Err(())` at the cap.
+    /// The handler discards the return via `let _ =` (matches
+    /// fs_stat / fs_entries), so the WAL simply stops growing —
+    /// the cap propagates as a silent no-append on subsequent
+    /// journal calls rather than an explicit FSERR reply.
+    ///
+    /// This test pre-fills the WAL to the cap via direct API, then
+    /// drives one `entriesStreamNext` call, and asserts the WAL
+    /// length stays exactly at the cap.  Matches the shape of
+    /// `wal_cap_returns_fserr_quota_exceeded_from_rholang` above.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn entries_stream_next_respects_wal_cap() {
+        use std::path::PathBuf;
+
+        use rholang::rust::interpreter::io::wal::{
+            PayloadRef, WalEntry, WalOp, WalOutcome, MAX_WAL_ENTRIES,
+        };
+
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("sub")).unwrap();
+        std::fs::write(dir.path().join("sub/a"), b"1").unwrap();
+        let runtime = create_runtime().await;
+
+        // Open the stream FIRST so we have a valid fd before filling
+        // the WAL.  Open itself doesn't journal (leader-only setup).
+        let open_term = format!(
+            r#"
+            new fsOpen(`rho:io:fs:native:1.0.0/entriesStreamOpen`), o in {{
+              fsOpen!("{root}", "sub", "consensus", *o) |
+              for (@[true, _fd] <- o) {{ Nil }}
+            }}
+            "#,
+            root = dir.path().display(),
+        );
+        runtime
+            .evaluate(
+                &open_term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                rand(),
+            )
+            .await
+            .expect("evaluate open");
+        assert!(runtime.fs_handles.wal.is_empty(), "open must not journal");
+
+        // Pre-fill WAL to the cap.
+        for _ in 0..MAX_WAL_ENTRIES {
+            runtime
+                .fs_handles
+                .wal
+                .append(WalEntry {
+                    op: WalOp::EntriesStreamNext,
+                    path: PathBuf::from("/prefill"),
+                    extra_path: None,
+                    offset: None,
+                    length: Some(0),
+                    payload_ref: Some(PayloadRef::hash(b"")),
+                    mode_bits: None,
+                    owner: None,
+                    group: None,
+                    outcome: WalOutcome::Success,
+                })
+                .unwrap();
+        }
+        assert_eq!(runtime.fs_handles.wal.len(), MAX_WAL_ENTRIES);
+
+        // fd is 1 (fresh runtime + open above).  Drive one Next call.
+        let fd: u64 = 1;
+        let next_term = format!(
+            r#"
+            new fsNext(`rho:io:fs:native:1.0.0/entriesStreamNext`), r in {{
+              fsNext!({fd}, *r) |
+              for (@_reply <- r) {{ Nil }}
+            }}
+            "#,
+            fd = fd,
+        );
+        runtime
+            .evaluate(
+                &next_term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                rand(),
+            )
+            .await
+            .expect("evaluate next");
+
+        // WAL must not have grown past the cap — the append failed
+        // silently at cap (matches fs_stat / fs_entries semantics).
+        assert_eq!(
+            runtime.fs_handles.wal.len(),
+            MAX_WAL_ENTRIES,
+            "entriesStreamNext journal must NOT exceed MAX_WAL_ENTRIES; \
+             a growth to {} indicates the cap gate is bypassed",
+            runtime.fs_handles.wal.len()
+        );
+    }
+
     /// H4/M1 round-2 pin: nested `create_soft_checkpoint` calls must
     /// preserve outer marks.  Pre-round-2 the single-slot Option
     /// design silently overwrote the outer, causing revert-to-outer

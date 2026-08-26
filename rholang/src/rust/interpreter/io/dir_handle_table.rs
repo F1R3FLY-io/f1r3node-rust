@@ -71,8 +71,17 @@ pub struct DirIter {
     dirp: *mut libc::DIR,
 }
 
-// SAFETY: the enclosing `Mutex<Option<DirIter>>` guarantees exclusive
-// access — POSIX allows serial single-thread `readdir` on a `DIR*`.
+// SAFETY: `libc::DIR*` is not intrinsically `Send` — POSIX leaves
+// same-`DIR*` concurrent `readdir` undefined.  This impl asserts:
+// callers who move a `DirIter` between threads MUST hold an
+// exclusive-access lock for the whole lifetime of every dereference.
+// The intended (and today the only) caller is `DirHandle::iter`
+// (`Mutex<Option<DirIter>>`) — the outer `Mutex` is the load-bearing
+// invariant that serializes access.  A future caller that wraps a
+// `DirIter` in something weaker (e.g. `RwLock` with concurrent
+// readers) would violate the invariant without any compile-time
+// diagnostic; if you're adding such a caller, either wrap in a
+// `Mutex` or drop the `Send` claim on the wrapper.
 unsafe impl Send for DirIter {}
 
 impl DirIter {

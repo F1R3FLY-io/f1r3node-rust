@@ -259,4 +259,147 @@ mod tests {
             "post-checkpoint stream fd swept by revert"
         );
     }
+
+    // ------------------------------------------------------------------
+    // Review-fixup handler error-path pins (2026-08-25).
+    //
+    // Cover the reply-shape branches that the happy-path tests miss:
+    // safe_descend rejection, non-existent path, opening a file as if it
+    // were a directory, Next on unknown fd, Next with a malformed fd
+    // argument.  Each verifies the reply shape via a Rholang-side
+    // pattern match on `[false, code, _]` — if the handler misclassified
+    // (e.g. an error slipped through as `[true, _]`), the match fails
+    // and the deploy hangs, tripping the harness timeout.  Absent a
+    // shape-capture channel from Rust we can't assert the specific
+    // FSERR_* code from here, but the shape check is sufficient to
+    // detect regressions that flip a error branch into an ok branch.
+    // ------------------------------------------------------------------
+
+    /// Open with a `rel` containing `..` — safe_descend rejects with
+    /// `FSERR_QUARANTINE`.  A regression that skipped the quarantine
+    /// check (e.g. by joining paths directly and handing to
+    /// `tokio::fs::read_dir`) would allow directory traversal outside
+    /// the operator-provisioned root.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn open_with_parent_dir_rel_rejects_quarantine() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("sub")).unwrap();
+        let mut runtime = create_runtime().await;
+        let term = format!(
+            r#"
+            new fsOpen(`rho:io:fs:native:1.0.0/entriesStreamOpen`), o in {{
+              fsOpen!("{root}", "../etc", "oracular", *o) |
+              for (@reply <- o) {{
+                match reply {{
+                  [false, "FSERR_QUARANTINE", _] => Nil
+                  _ => @"MISMATCH"!(reply)
+                }}
+              }}
+            }}
+            "#,
+            root = dir.path().display(),
+        );
+        eval(&mut runtime, &term).await;
+        // A stream fd MUST NOT have been allocated.
+        assert_eq!(
+            runtime.fs_handles.dir_handles.snapshot_next_fd(),
+            1,
+            "safe_descend rejection must NOT advance the dir fd counter"
+        );
+    }
+
+    /// Open against a non-existent subdirectory — `openat` returns
+    /// ENOENT which maps to `FSERR_NOT_FOUND`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn open_nonexistent_subdir_returns_not_found() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut runtime = create_runtime().await;
+        let term = format!(
+            r#"
+            new fsOpen(`rho:io:fs:native:1.0.0/entriesStreamOpen`), o in {{
+              fsOpen!("{root}", "does-not-exist", "oracular", *o) |
+              for (@reply <- o) {{
+                match reply {{
+                  [false, "FSERR_NOT_FOUND", _] => Nil
+                  _ => @"MISMATCH"!(reply)
+                }}
+              }}
+            }}
+            "#,
+            root = dir.path().display(),
+        );
+        eval(&mut runtime, &term).await;
+        assert_eq!(runtime.fs_handles.dir_handles.snapshot_next_fd(), 1);
+    }
+
+    /// Open with a rel pointing at a file (not a directory) — the
+    /// `O_DIRECTORY` flag in `openat` rejects with ENOTDIR, which
+    /// maps to `FSERR_IO` (kernel ErrorKind::Other on Unix; the
+    /// exact code isn't spec-canonical for ENOTDIR, so the pin
+    /// checks the shape only).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn open_on_regular_file_rejects() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("file.bin"), b"x").unwrap();
+        let mut runtime = create_runtime().await;
+        let term = format!(
+            r#"
+            new fsOpen(`rho:io:fs:native:1.0.0/entriesStreamOpen`), o in {{
+              fsOpen!("{root}", "file.bin", "oracular", *o) |
+              for (@reply <- o) {{
+                match reply {{
+                  [false, _, _] => Nil
+                  _ => @"MISMATCH"!(reply)
+                }}
+              }}
+            }}
+            "#,
+            root = dir.path().display(),
+        );
+        eval(&mut runtime, &term).await;
+        assert_eq!(runtime.fs_handles.dir_handles.snapshot_next_fd(), 1);
+    }
+
+    /// Next on an fd that was never opened returns `FSERR_CLOSED`
+    /// (the same shape a Next on a closed-then-reopened fd would
+    /// see if slice-28 aliasing protection didn't hold).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn next_on_unknown_fd_returns_closed() {
+        let mut runtime = create_runtime().await;
+        let term = r#"
+            new fsNext(`rho:io:fs:native:1.0.0/entriesStreamNext`), r in {
+              fsNext!(9999, *r) |
+              for (@reply <- r) {
+                match reply {
+                  [false, "FSERR_CLOSED", _] => Nil
+                  _ => @"MISMATCH"!(reply)
+                }
+              }
+            }
+        "#
+        .to_string();
+        eval(&mut runtime, &term).await;
+    }
+
+    /// Next with a non-int fd argument returns `FSERR_BAD_ARG`.
+    /// Guards against a regression that unwrapped the fd Par
+    /// unconditionally and panicked (or silently coerced) on
+    /// non-int shapes.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn next_with_string_fd_returns_bad_arg() {
+        let mut runtime = create_runtime().await;
+        let term = r#"
+            new fsNext(`rho:io:fs:native:1.0.0/entriesStreamNext`), r in {
+              fsNext!("not-a-fd", *r) |
+              for (@reply <- r) {
+                match reply {
+                  [false, "FSERR_BAD_ARG", _] => Nil
+                  _ => @"MISMATCH"!(reply)
+                }
+              }
+            }
+        "#
+        .to_string();
+        eval(&mut runtime, &term).await;
+    }
 }

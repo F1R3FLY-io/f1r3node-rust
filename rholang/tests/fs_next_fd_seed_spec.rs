@@ -137,6 +137,57 @@ mod tests {
         );
     }
 
+    /// Streaming-backing slice Step 3 review-fix (2026-08-25):
+    /// `RhoRuntimeImpl::reset` MUST seed the DIR-stream fd counter
+    /// too.  Under PB-M-13 the aliasing threat is identical for file
+    /// and dir fds — both flow through the tuplespace as GInt and
+    /// both must be state-hash-seeded so a fresh runtime lifetime
+    /// cannot allocate a fd value that aliases a stashed reference
+    /// from a prior lifetime.
+    ///
+    /// Regression scenario: a refactor that seeds only `fs_handles`
+    /// (files) and forgets `fs_handles.dir_handles` leaves streaming
+    /// vulnerable to cross-restart fd aliasing.  Would surface as a
+    /// silent tuplespace corruption on joining validators once
+    /// `Dir.entries()` starts holding stream fds across block
+    /// boundaries (Step 5).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn reset_seeds_dir_handles_from_state_hash() {
+        let mut runtime = create_runtime().await;
+        // Before reset, dir_handles.next_fd is at construction default (1).
+        assert_eq!(runtime.fs_handles.dir_handles.snapshot_next_fd(), 1);
+        let root = runtime.get_root().await;
+        runtime.reset(&root).await.unwrap();
+        assert_eq!(
+            runtime.fs_handles.dir_handles.snapshot_next_fd(),
+            expected_watermark(&root.bytes()) + 1,
+            "reset() must seed fs_handles.dir_handles.next_fd from the state hash \
+             — same derivation as file fds; PB-M-13 aliasing threat applies equally"
+        );
+    }
+
+    /// Streaming-backing slice Step 3 review-fix: two-runtime
+    /// determinism for dir fds — analog of
+    /// `two_runtimes_at_same_hash_have_identical_next_fd` for files.
+    /// Leader/follower replay parity of stream fds depends on both
+    /// sides deriving the same watermark from the same state hash.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn two_runtimes_at_same_hash_have_identical_dir_next_fd() {
+        let mut r1 = create_runtime().await;
+        let mut r2 = create_runtime().await;
+        let root_r1 = r1.get_root().await;
+        let root_r2 = r2.get_root().await;
+        assert_eq!(root_r1, root_r2);
+        r1.reset(&root_r1).await.unwrap();
+        r2.reset(&root_r2).await.unwrap();
+        assert_eq!(
+            r1.fs_handles.dir_handles.snapshot_next_fd(),
+            r2.fs_handles.dir_handles.snapshot_next_fd(),
+            "two runtimes reset to the same state hash must have identical \
+             dir_handles.next_fd — leader/follower streaming parity depends on this"
+        );
+    }
+
     /// Filter-toggle interaction with reset (defense-in-depth): the
     /// slice-31 URN filter state should NOT be perturbed by slice-28
     /// reset seeding.  If a future refactor accidentally coupled the
