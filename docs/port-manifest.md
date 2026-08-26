@@ -43,7 +43,7 @@ without corresponding fetched objects are treated as notes, not unported work.
 | `7ed761ab` | **fresh-joiner latest-message fix** + graceful not-bonded skip | consensus liveness under concurrent bonds; faithful Scala-bug port |
 | `4fdbd6aa` | **poison-tolerant shared-LMDB test lock** | stops a flake cascade |
 | `ad0081d7` | **LFS state-sync hardening** | networking resilience (join_all, deadline budget, byzantine reason) |
-| `e7efb39d` | **active-committee weighting** (`block.bonds = active(FS) ∩ bonds(FS)`) | committee read from signed block; closes the active-vs-bonded finality fracture |
+| `e7efb39d` | **active-committee weighting** | Retain the active-set idea but separate authority from serialization: `Auth(B) = active(post_state(floor(B))) ∩ bonds(post_state(floor(B)))`, while `block.body.state.bonds = bonds(post_state(B))` remains a replay-checked cache. Never let a block's own transition authorize itself. |
 | `97767045` | **genesis-sourced FT threshold** (`getFaultToleranceThreshold` PoS getter) | required for node-identical floor |
 | `4f63cb82` (part) | **live committee** (`active ∩ bonds ∩ live`; `recent_producers`, GRACE/LIVENESS windows; drop dead-stake from FT denominator) | the COMMITTEE half of the eager commit — sound + orthogonal to the base regression. Isolate from the base half |
 | `4f63cb82` (part) | **LFS horizon requester** (275 lines) | LFS feature; verify standalone |

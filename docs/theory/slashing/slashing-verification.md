@@ -1472,16 +1472,24 @@ provides a mathematical statement of the proof. All are mechanized in
 
 ### 9.1 T-9.1 — IgnorableEquivocation safety
 
-**Statement.** *(`post_fix_ignorable_implies_equivocation`,
-`BugFixIgnorable.v`.)* If the detector emits `DSIgnorable`, then
-`IBIgnorableEquivocation` is in the post-fix slashable set AND the
-arriving block's creator justification really disagreed with the sender's
-latest message (`equivocates_ptr(cj, lm) = true` — a genuine pointer
-equivocation). Hence no honest validator is wrongly slashed.
+**Historical abstraction statement.** *(`post_fix_ignorable_implies_equivocation`,
+`BugFixIgnorable.v`.)* If the abstract detector emits `DSIgnorable`, then the
+arriving block's creator justification disagrees with the sender's latest
+message. The original fix placed `IBIgnorableEquivocation` in the abstract
+post-fix slashable set so the dispatcher could not silently discard it.
 
-**Proof.** Combining `ignorable_post_fix_slashable`
-(T-3 specialization) with `ignorable_only_on_real_equivocation`
-(T-1 specialization, over the pointer notion). ∎
+**Current production refinement.** Rust no longer represents requested or
+unsolicited simple equivocation as an `InvalidBlock`. It accepts the sibling
+with a typed `EquivocationObservation`, atomically records its certified hash
+under `(validator, bond_generation, sequence)`, and creates objective evidence
+only when two distinct hashes exist. The current proof obligations are
+`ObjectiveEquivocation.v`, `CertifiedObjectiveEquivocation.v`, and
+`ObjectiveEvidenceSequenceEligibility.v`; together they establish
+generation separation, order independence, certified identity binding, and
+the non-negative-sequence boundary. Thus the historical theorem is retained
+as a detector-level attribution lemma, while consensus/slashing authority uses
+the stronger two-sibling certified relation. See
+[`objective-equivocation-evidence.md`](./objective-equivocation-evidence.md).
 
 **Honest restatement (FV audit #1).** Adding the 27th slashable variant
 `UnauthorizedSlashDeploy` makes the naïve "every slashable variant is
@@ -1978,7 +1986,7 @@ honest. Worked example: `design/11-worked-examples.md §11.13`.
 
 **Statement.** *(`unauthorized_unknown_execution_noop`,
 `BugFixSlashAuthorization.v:32`; also
-`main_T9_13_unknown_slash_evidence_noop` in `MainTheorem.v:273`.)*
+`main_T9_13_unknown_slash_evidence_noop` in `MainTheorem.v:292`.)*
 ```
   evidence_hash(ev) ∉ local.invalid_blocks
   ⟹  apply_slash_deploy(state, ev) = state .
@@ -2092,19 +2100,34 @@ configuration reproduces the same fault when tracker membership incorrectly
 satisfies slash dependency readiness.
 
 **Rust realization.** `dependencies_hashes_of` unions parents,
-justifications, and successful slash target hashes. Both the direct block
-processor and buffered-block resolver require a slash target to resolve from
-the DAG or invalid-block index; equivocation-tracker membership alone is not
-accepted. The property test
-`dependencies_hashes_of_returns_exact_block_dependency_set` checks the exact
-set and deduplication, while
-`slash_evidence_is_fetched_before_block_validation` exercises tracker-only,
-missing, fetched, and invalid-index-ready states through the block processor.
+justifications, historical unary evidence, both members of every objective
+evidence pair, and both members of every header-certified evidence pair. The
+direct block processor and buffered-block resolver use the same admitted DAG
+metadata predicate. Neither equivocation-tracker membership nor the derived
+invalid-block index is accepted as a substitute. The property test
+`dependencies_hashes_of_returns_exact_block_dependency_set` checks exact set
+projection, deduplication, and origin-order invariance.
+`slash_evidence_is_fetched_before_block_validation` exercises missing and
+fetched rejected metadata, while
+`objective_pair_requires_both_admitted_metadata_records` proves that one pair
+member plus tracker hints remains buffered.
 `tracker_witness_alone_does_not_suppress_block_admission` establishes the
 dual ingress property: tracker-only knowledge cannot masquerade as a DAG or
 buffer commit and discard the block before its metadata is admitted. Rocq
 capstones this separation as
 `main_T9_13_tracker_witness_not_processed_block`.
+
+`ProtocolV5DependencyReadiness.tla` exhausts independent metadata, tracker,
+invalid-index, direct-resolver, and buffer-resolver interleavings. Its safe
+configuration requires complete admitted metadata and resolver parity. Four
+unsafe configurations independently reproduce invalid-index substitution,
+tracker substitution, omission of the second objective hash, and buffered-path
+projection drift. Rocq module `ProtocolV5DependencyReadiness.v` proves exact
+origin membership, pair completeness, decidable readiness, hint
+noninterference, permutation invariance, and direct/buffer parity for arbitrary
+finite dependency lists. The Loom model
+`loom_protocol_v5_dependency_readiness.rs` checks the production memory-order
+boundary under concurrent metadata and hint publication.
 
 #### 9.13.4 Theorem 9.13‴ (Canonical slash reconstruction)
 
@@ -2113,7 +2136,7 @@ capstones this separation as
 corresponding `main_T9_13_*` wrappers.)*
 
 Let `C` be the canonical candidate list produced from the complete current
-invalid-evidence index, with unique `(offender, epoch)` keys, and let
+invalid-evidence index, with unique `(offender, generation)` keys, and let
 `select(C, B, e)` filter `C` by current epoch `e` and positive canonical
 merged-pre-state bond map `B`. Then:
 
@@ -2135,8 +2158,11 @@ The first implication deliberately does not use membership in
 `rejectedHints` to establish authority: the complete evidence scan already
 contains every independently authorized candidate. The second prevents a
 rejected hint from reviving a slash whose effect survived the merge. The third
-forbids two evidence hashes for one `(offender, epoch)` from becoming two
-system deploys.
+forbids two evidence hashes for one active `(offender, generation)` from
+becoming two system deploys. The older unary theorem represents the single
+current-epoch projection; `ObjectiveEquivocation.v` and
+`ObjectiveEvidenceAuthorization.tla` refine it with explicit generation
+identity and one-root bond/generation authority.
 
 **Proof.** `selected_slash_candidates` is `filter candidate_authorized C`.
 The hint-subsumption theorem reduces to `filter_In`; the zero-bond theorem
@@ -2162,6 +2188,34 @@ then ill-formed; the tracker insertion either panicked under
 Symmetrically, proposer-side `seq + 1` near `i32::MAX` would wrap
 into a negative sequence and corrupt block validation downstream.
 Worked example: `design/11-worked-examples.md §11.16`.
+
+A related storage boundary is now explicit. A correctly signed block with a
+negative sequence can still be attributed to its bonded sender and must be
+persisted as an objective invalid admission. It cannot be indexed as objective
+equivocation evidence, whose identity requires a nonnegative sequence. The
+runtime therefore treats metadata persistence and evidence eligibility as two
+decisions: the former succeeds for `ObjectiveRejected`, while the latter checks
+$`\operatorname{sequence} \ge 0`$. The previous implementation attempted both as one operation,
+so recording `InvalidSequenceNumber` failed with a storage error.
+
+`ObjectiveEvidenceSequenceEligibility.v` proves the signed-domain refinement:
+
+```math
+\operatorname{seq} < 0
+\Longrightarrow
+\operatorname{persist}(\operatorname{ObjectiveRejected})
+\land
+\neg\operatorname{indexEvidence}(\operatorname{seq}).
+```
+
+`CertifiedObjectiveEquivocation.tla` explores admission, evidence persistence,
+crash, duplicate retry, and reconciliation on two replicas. The safe sequence-
+boundary configuration excludes the negative sequence in every interleaving;
+the pre-fix control violates
+`Inv_IneligibleSequenceNeverBecomesEvidence` by indexing it immediately after
+durable admission. The Casper integration regression then submits a valid-shard,
+current-version child whose only fault is acknowledging that invalid
+justification and requires `NeglectedInvalidBlock`.
 
 #### 9.14.1 Definition 9.14 (Checked arithmetic operations)
 
@@ -2300,7 +2354,7 @@ index*, closing the original Bug #14 liveness gap.
 
 **Statement.** *(`execute_invalid_auth_token_noop`,
 `SlashDeploy.v:142`; also
-`main_TAuth_invalid_token_noop` in `MainTheorem.v:368`.)*
+`main_TAuth_invalid_token_noop` in `MainTheorem.v:441`.)*
 ```
   auth_token(deploy) is invalid
   ⟹  apply_slash_deploy(state, deploy) = state .
@@ -2320,7 +2374,7 @@ on `state` follows. ∎
 
 **Statement.** *(`execute_valid_auth_token_equiv`,
 `SlashDeploy.v:149`; also
-`main_TAuth_valid_token_equiv` in `MainTheorem.v:373`.)*
+`main_TAuth_valid_token_equiv` in `MainTheorem.v:446`.)*
 ```
   auth_token(deploy) is valid
   ⟹  apply_slash_deploy(state, deploy)
@@ -2957,6 +3011,77 @@ accompanied by the DAG-level theorem, not just the Boolean.
 
 ---
 
+### 12.7 Objective equivocation must not depend on local invalid flags
+
+The CI disagreement in Bug #19 was not a failure of the abstract
+same-sender/same-sequence definition. It was a refinement failure between
+parallel validation and unary slash authorization. Two siblings can both
+complete validation as normal against stale snapshots and then enter the DAG
+in opposite durable orders at different replicas. Any rule naming only the
+locally second or locally invalid block is therefore arrival-dependent.
+
+[`ObjectiveEquivocation.tla`](../../../formal/tlaplus/finalized_floor/ObjectiveEquivocation.tla)
+models validation and durable insertion as separate transitions. Two replicas
+insert fixed siblings in opposite orders, carry asymmetric local-invalid flags,
+restart from durable metadata, and apply the same epoch-lifetime restriction.
+The safe model establishes:
+
+```text
+canonical pair agreement
+∧ both-hash dependency closure
+∧ local-invalid-independent acceptance
+∧ affected-lifetime voter exclusion
+∧ cross-epoch unary-fallback suppression
+∧ epoch-first pair selection
+∧ restart persistence
+```
+
+TLC explored 61 generated and 36 distinct states to depth 11. Each of six
+unsafe configurations violates its named invariant. Apalache independently
+checked the safe model through bound 8 and reproduced all six controls through
+bound 6. The finite bounds establish exhaustive coverage of this model, not an
+unbounded proof of arbitrary DAG size.
+
+[`ObjectiveEquivocation.v`](../../../formal/rocq/finalized_floor/theories/ObjectiveEquivocation.v)
+proves the unbounded algebraic obligations, including canonical symmetry, both-hash
+sufficiency, local-invalid independence, non-retroactive validity, voter
+exclusion, same-current eligibility, cross-epoch fallback suppression, unary
+arrival independence, and restart persistence. Its capstone is closed under
+Rocq's global context. Loom and Rust tests bind the abstract transitions to
+concurrent insertion, lifetime grouping, persistent reconciliation, protobuf encoding,
+dependency extraction, seed derivation, proposer selection, and receive-side
+authorization. The normative protocol is documented in
+[Objective equivocation evidence](objective-equivocation-evidence.md).
+
+The production authorization boundary is checked separately by
+[`ObjectiveEvidenceAuthorization.tla`](../../../formal/tlaplus/finalized_floor/ObjectiveEvidenceAuthorization.tla).
+It does not assume that pair selection, activation epoch, generation, stake,
+or proposal/receipt predicates share an authority source. Instead, the safe
+model requires generation and epoch filtering before pair canonicalization,
+positive bond and generation from one canonical merged-pre-state root,
+pair-only activation, exact fault-key unary suppression, and predicate parity.
+TLC exhausts 769 generated and 256 distinct states to depth 17. Apalache checks
+the same safe projection through bound 12. Seven TLC and Apalache controls each
+restore one defect and must violate the exact corresponding invariant:
+
+| Control | Required violation |
+|---|---|
+| `epoch_after_min_unsafe` | epoch filtering after canonical pair selection |
+| `cross_epoch_unsafe` | receipt of a pair with an old-epoch member |
+| `snapshot_generation_unsafe` | generation authority from a stale snapshot |
+| `snapshot_bond_unsafe` | stake authority from a stale snapshot |
+| `offender_wide_suppression_unsafe` | suppression of an independent unary fault key |
+| `pair_only_disabled_unsafe` | failure to activate without a local invalid-index entry |
+| `predicate_drift_unsafe` | proposal and receipt using different predicates |
+
+The Rocq authority record binds root, bond, and generation, then proves positive
+bond, same sender and sequence, both evidence epochs, generation equality,
+pair-only activation, and proposer/receiver identity without axioms. The Loom
+suite exhausts six concrete Rust interleaving models with sequence identity and
+scoped unary suppression. The differential fuzzers independently derive
+canonical evidence deltas and both unary and paired slash verdicts from
+certified synthetic DAG metadata.
+
 ## 13 · Module reference
 
 The component-to-artifact correspondence is shown visually in Diagram 10
@@ -2972,7 +3097,7 @@ All directories below are present in this repository.
 ```
 formal/rocq/slashing/theories/                 (27 Rocq modules; cf. §1.3)
 ├── Validator.v                       (foundations: BondMap algebra)
-├── ValidatorLifetime.v               (Bug #13: epoch-scoped lifetime identity)
+├── ValidatorLifetime.v               (Bug #13 unary epoch window; refined by PoS generation identity)
 ├── Block.v                           (Block, Justification, equivocation predicate)
 ├── InvalidBlock.v                    (27-variant taxonomy + is_slashable, 19 slashable, T-3)
 ├── EquivocationRecord.v              (EqStore, T-4, T-5)

@@ -3,6 +3,54 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
+use crate::rust::casper::UNLIMITED_PARENTS;
+
+pub fn validate_parent_bound_values(
+    max_number_of_parents: i32,
+    max_parent_depth: i32,
+    depth_buffer: i32,
+) -> Result<(), String> {
+    if max_number_of_parents != UNLIMITED_PARENTS && max_number_of_parents < 1 {
+        return Err(format!(
+            "max-number-of-parents must be -1 or at least 1; got {max_number_of_parents}"
+        ));
+    }
+    if max_parent_depth < 0 {
+        return Err(format!(
+            "max-parent-depth must be non-negative; got {max_parent_depth}"
+        ));
+    }
+    if depth_buffer < 0 {
+        return Err(format!(
+            "mergeable-channels-gc-depth-buffer must be non-negative; got {depth_buffer}"
+        ));
+    }
+    Ok(())
+}
+
+pub fn validate_parent_frontier_capacity(
+    max_number_of_parents: i32,
+    number_of_active_validators: u32,
+) -> Result<(), String> {
+    if max_number_of_parents == UNLIMITED_PARENTS {
+        return Ok(());
+    }
+    if max_number_of_parents < 1 {
+        return Err(format!(
+            "max-number-of-parents must be -1 or at least 1; got {max_number_of_parents}"
+        ));
+    }
+    let required_capacity = u64::from(number_of_active_validators)
+        .saturating_add(1)
+        .max(1);
+    if u64::try_from(max_number_of_parents).unwrap_or(0) < required_capacity {
+        return Err(format!(
+            "max-number-of-parents={max_number_of_parents} cannot carry number-of-active-validators={number_of_active_validators} plus the finalized-floor backstop; configure at least {required_capacity} or -1, otherwise a bounded proposer could permanently omit a live causal tip"
+        ));
+    }
+    Ok(())
+}
+
 /// Casper configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CasperConf {
@@ -134,6 +182,20 @@ pub struct CasperConf {
     pub mergeable_channels_gc_depth_buffer: i32,
 }
 
+impl CasperConf {
+    pub fn validate_parent_bounds(&self) -> Result<(), String> {
+        validate_parent_bound_values(
+            self.max_number_of_parents,
+            self.max_parent_depth,
+            self.mergeable_channels_gc_depth_buffer,
+        )?;
+        validate_parent_frontier_capacity(
+            self.max_number_of_parents,
+            self.genesis_block_data.number_of_active_validators,
+        )
+    }
+}
+
 fn default_synchrony_recovery_stall_window() -> Duration { Duration::from_secs(60) }
 
 fn default_synchrony_recovery_cooldown() -> Duration { Duration::from_secs(20) }
@@ -237,12 +299,8 @@ pub struct GenesisBlockData {
     pub pos_multi_sig_quorum: u32,
 
     /// Per-deploy hard cap on the number of cosigners in a multi-signature
-    /// deploy. Substituted into the PoS contract at genesis as
-    /// `$$maxCosignersPerDeploy$$`; `chargeDeploy` rejects when the
-    /// in-flight cosigner Map reaches this size. Defense-in-depth against
-    /// adversarial deploys with thousands of cosigners exhausting block
-    /// resources. Default `64` (generous — real-world multi-sig wallets
-    /// rarely exceed 10–15). Must be `>= 1`.
+    /// deploy. Committed in genesis parameters and enforced by Rust admission
+    /// before the deployment enters the pool. Default `64`; must be `>= 1`.
     #[serde(
         rename = "max-cosigners-per-deploy",
         default = "default_max_cosigners_per_deploy"
@@ -547,6 +605,12 @@ pub struct FinalizerConf {
         default = "default_finalizer_catchup_yield_interval"
     )]
     pub catchup_yield_interval: Duration,
+    #[serde(
+        rename = "max-parallel-workers",
+        deserialize_with = "de_positive_usize",
+        default = "default_finalizer_max_parallel_workers"
+    )]
+    pub max_parallel_workers: usize,
 }
 
 impl Default for FinalizerConf {
@@ -554,6 +618,7 @@ impl Default for FinalizerConf {
         Self {
             yield_interval: default_finalizer_yield_interval(),
             catchup_yield_interval: default_finalizer_catchup_yield_interval(),
+            max_parallel_workers: default_finalizer_max_parallel_workers(),
         }
     }
 }
@@ -561,6 +626,18 @@ impl Default for FinalizerConf {
 fn default_finalizer_yield_interval() -> Duration { Duration::from_millis(1) }
 
 fn default_finalizer_catchup_yield_interval() -> Duration { Duration::from_millis(1) }
+
+fn default_finalizer_max_parallel_workers() -> usize { 2 }
+
+fn de_positive_usize<'de, D>(deserializer: D) -> Result<usize, D::Error>
+where D: serde::Deserializer<'de> {
+    use serde::de::Error as _;
+    let value = usize::deserialize(deserializer)?;
+    if value == 0 {
+        return Err(D::Error::custom("value must be at least 1"));
+    }
+    Ok(value)
+}
 
 pub fn de_duration<'de, D>(deserializer: D) -> Result<Duration, D::Error>
 where D: serde::Deserializer<'de> {
@@ -603,6 +680,8 @@ where D: serde::Deserializer<'de> {
 
 #[cfg(test)]
 mod native_token_validation_tests {
+    use proptest::prelude::*;
+
     use super::*;
 
     fn valid_genesis() -> GenesisBlockData {
@@ -699,6 +778,56 @@ mod native_token_validation_tests {
         valid_genesis()
             .validate_cost_accounting_parameters()
             .unwrap();
+    }
+
+    #[test]
+    fn finalizer_parallelism_rejects_zero_workers() {
+        assert!(serde_json::from_str::<FinalizerConf>(r#"{"max-parallel-workers":0}"#).is_err());
+        assert_eq!(
+            serde_json::from_str::<FinalizerConf>(r#"{"max-parallel-workers":1}"#)
+                .unwrap()
+                .max_parallel_workers,
+            1
+        );
+    }
+
+    #[test]
+    fn parent_bound_values_require_a_nonempty_cap_and_nonnegative_depths() {
+        assert!(validate_parent_bound_values(-1, i32::MAX, 0).is_ok());
+        assert!(validate_parent_bound_values(1, 0, 0).is_ok());
+        assert!(validate_parent_bound_values(0, 0, 0).is_err());
+        assert!(validate_parent_bound_values(-2, 0, 0).is_err());
+        assert!(validate_parent_bound_values(1, -1, 0).is_err());
+        assert!(validate_parent_bound_values(1, 0, -1).is_err());
+    }
+
+    #[test]
+    fn parent_frontier_capacity_covers_the_maximum_active_committee() {
+        assert!(validate_parent_frontier_capacity(-1, u32::MAX).is_ok());
+        assert!(validate_parent_frontier_capacity(101, 100).is_ok());
+        assert!(validate_parent_frontier_capacity(100, 100).is_err());
+        assert!(validate_parent_frontier_capacity(101, 101).is_err());
+        assert!(validate_parent_frontier_capacity(0, 0).is_err());
+    }
+
+    proptest! {
+        #[test]
+        fn finite_parent_capacity_is_valid_exactly_above_the_floor_backstop_boundary(
+            active in 0u32..=i32::MAX as u32 - 1,
+            extra in 0u32..=1,
+        ) {
+            let required = active + 1;
+            let cap = required.saturating_sub(extra) as i32;
+            prop_assert_eq!(
+                validate_parent_frontier_capacity(cap, active).is_ok(),
+                extra == 0 && cap >= 1
+            );
+        }
+
+        #[test]
+        fn unlimited_parent_capacity_accepts_every_committee_size(active in any::<u32>()) {
+            prop_assert!(validate_parent_frontier_capacity(-1, active).is_ok());
+        }
     }
 
     #[test]

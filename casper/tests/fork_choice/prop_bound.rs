@@ -1,5 +1,5 @@
 // BOUND seams (B2/B3/B4) — the real `Estimator::apply(max_parents, depth)
-// .tips_with_latest_messages` truncation/overflow/empty edges, mirroring the
+// .tips_with_context` truncation/overflow/empty edges, mirroring the
 // `formal/rocq/fork_choice/theories/Bound.v` model and the `fork_choice_bound_correct`
 // capstone the gate re-checks axiom-free. These edges previously had NO Rust modality.
 //
@@ -23,17 +23,12 @@
 //     stake is <= i64::MAX by the supply cap — so the check can only ever reject an
 //     invalid input, never a valid one; the test confirms it rejects rather than wraps.)
 //
-//   * B4 (empty-tips typed Err) — estimator.rs:156-162: when `rank_forkchoices`
+//   * B4 (empty-tips typed Err) — when `rank_forkchoices`
 //     returns no tips AND a `Some(max_parent_depth)` is configured, `filter_deep_parents`
 //     returns `Err(InvalidArgument)` (the P2-8 fix) rather than panicking on
-//     `split_first().unwrap()`. `filter_deep_parents` is a PRIVATE `async fn` reading a
-//     live LMDB-backed DAG, and — as the sibling `prop_filter_deep_parents.rs` documents
-//     — `rank_forkchoices` structurally ALWAYS returns >= 1 tip (it seeds from the LCA
-//     and `replace_block_hash_with_children` falls back to `[b]`), so the empty branch
-//     is UNREACHABLE through the public `tips_*` path. We therefore (a) transcribe the
-//     empty branch as a pure function and assert it yields the typed `Err` byte-for-byte,
-//     and (b) exercise the REAL `Some(depth)` branch on a genesis-only DAG (a non-empty
-//     `[genesis]` ranked list) to confirm it returns cleanly (Ok, no panic).
+//     a typed error replaces a panic. The in-module estimator tests call the production
+//     helper for the empty case; this integration target exercises the public finite-depth
+//     path on a genesis-only DAG.
 //
 // LOCAL-ONLY verification (not consensus code). Run under `cargo test -p casper` and
 // gated by scripts/check-fork-choice-ALL.sh via the `fork_choice::` filter.
@@ -49,7 +44,7 @@ use proptest::test_runner::TestCaseError;
 use shared::rust::store::key_value_store::KvStoreError;
 
 use crate::helper::block_dag_storage_fixture::with_storage;
-use crate::helper::block_generator::{create_block, create_genesis_block};
+use crate::helper::block_generator::{certified_fork_choice, create_block, create_genesis_block};
 use crate::helper::block_util::generate_validator;
 
 lazy_static::lazy_static! {
@@ -141,35 +136,39 @@ async fn b2_sentinel_and_positive_cap_usize_safe() {
     with_storage(|mut block_store, mut block_dag_storage| async move {
         let (genesis, latest) =
             build_two_tip_dag(&mut block_store, &mut block_dag_storage, 2, 3).await;
-        let mut dag = block_dag_storage
+        let dag = block_dag_storage
             .get_representation()
             .expect("dag representation");
 
         // Unlimited via i32::MAX sentinel.
-        let full = Estimator::apply(i32::MAX, None)
-            .tips_with_latest_messages(&mut dag, &genesis, latest.clone())
-            .await
-            .expect("full tips")
-            .tips;
+        let full = certified_fork_choice(
+            &Estimator::apply(i32::MAX, None),
+            &dag,
+            &genesis,
+            latest.clone(),
+        )
+        .await
+        .expect("full tips")
+        .tips;
         assert_eq!(full.len(), 2, "two sibling leaves must yield two tips");
 
         // Unlimited via the -1 config sentinel — must NOT wrap `-1 as usize`.
-        let neg = Estimator::apply(-1, None)
-            .tips_with_latest_messages(&mut dag, &genesis, latest.clone())
-            .await
-            .expect("neg-1 tips")
-            .tips;
+        let neg =
+            certified_fork_choice(&Estimator::apply(-1, None), &dag, &genesis, latest.clone())
+                .await
+                .expect("neg-1 tips")
+                .tips;
         assert_eq!(
             neg, full,
             "max_number_of_parents = -1 must mean unlimited (take all)"
         );
 
         // Positive cap of 1 truncates to just the head.
-        let cap1 = Estimator::apply(1, None)
-            .tips_with_latest_messages(&mut dag, &genesis, latest.clone())
-            .await
-            .expect("cap-1 tips")
-            .tips;
+        let cap1 =
+            certified_fork_choice(&Estimator::apply(1, None), &dag, &genesis, latest.clone())
+                .await
+                .expect("cap-1 tips")
+                .tips;
         assert_eq!(cap1.len(), 1, "positive cap of 1 must truncate to one tip");
         assert_eq!(
             cap1[0], full[0],
@@ -177,8 +176,7 @@ async fn b2_sentinel_and_positive_cap_usize_safe() {
         );
 
         // Positive cap equal to the tip count keeps everything, in order.
-        let cap2 = Estimator::apply(2, None)
-            .tips_with_latest_messages(&mut dag, &genesis, latest)
+        let cap2 = certified_fork_choice(&Estimator::apply(2, None), &dag, &genesis, latest)
             .await
             .expect("cap-2 tips")
             .tips;
@@ -194,13 +192,12 @@ async fn b3_score_overflow_is_typed_err() {
     with_storage(|mut block_store, mut block_dag_storage| async move {
         let (genesis, latest) =
             build_two_tip_dag(&mut block_store, &mut block_dag_storage, i64::MAX, i64::MAX).await;
-        let mut dag = block_dag_storage
+        let dag = block_dag_storage
             .get_representation()
             .expect("dag representation");
 
-        let result = Estimator::apply(i32::MAX, None)
-            .tips_with_latest_messages(&mut dag, &genesis, latest)
-            .await;
+        let result =
+            certified_fork_choice(&Estimator::apply(i32::MAX, None), &dag, &genesis, latest).await;
 
         match result {
             Err(KvStoreError::InvalidArgument(msg)) => {
@@ -238,16 +235,20 @@ async fn b4_some_depth_on_genesis_only_is_ok() {
             None,
             None,
         );
-        let mut dag = block_dag_storage
+        let dag = block_dag_storage
             .get_representation()
             .expect("dag representation");
 
         // Some(0) drives the `filter_deep_parents` depth branch; empty latest =>
         // LCA = genesis => ranked = [genesis] (non-empty) => Ok([genesis]).
-        let forkchoice = Estimator::apply(i32::MAX, Some(0))
-            .tips_with_latest_messages(&mut dag, &genesis, HashMap::new())
-            .await
-            .expect("Some(depth) on genesis-only DAG must return cleanly");
+        let forkchoice = certified_fork_choice(
+            &Estimator::apply(i32::MAX, Some(0)),
+            &dag,
+            &genesis,
+            HashMap::new(),
+        )
+        .await
+        .expect("Some(depth) on genesis-only DAG must return cleanly");
         assert_eq!(
             forkchoice.tips,
             vec![genesis.block_hash.clone()],
@@ -255,45 +256,6 @@ async fn b4_some_depth_on_genesis_only_is_ok() {
         );
     })
     .await
-}
-
-/// Pure transcription of `Estimator::filter_deep_parents`'s `Some(max_parent_depth)`
-/// EMPTY-input case (estimator.rs:156-162), byte-for-byte. The private `async` method
-/// reads a live LMDB DAG and its Err branch is unreachable through the public API
-/// (`rank_forkchoices` structurally returns >= 1 tip); this pure function pins the
-/// typed-error contract the way the sibling `prop_filter_deep_parents.rs` pins the
-/// non-empty branch.
-fn filter_deep_parents_empty_branch(
-    _max_parent_depth: i64,
-    ranked: &[BlockHash],
-) -> Result<Vec<BlockHash>, KvStoreError> {
-    let Some((main, _secondary)) = ranked.split_first() else {
-        return Err(KvStoreError::InvalidArgument(
-            "consensus invariant: rank_forkchoices returned no tips (genesis-only DAG?)"
-                .to_string(),
-        ));
-    };
-    Ok(vec![main.clone()])
-}
-
-// B4 (empty-tips typed Err): the transcribed empty branch yields a typed
-// InvalidArgument (not a panic, not an empty Vec), and a non-empty input is Ok(head).
-#[test]
-fn b4_empty_ranked_tips_is_typed_err() {
-    let empty: Vec<BlockHash> = Vec::new();
-    match filter_deep_parents_empty_branch(0, &empty) {
-        Err(KvStoreError::InvalidArgument(msg)) => {
-            assert!(
-                msg.contains("no tips"),
-                "unexpected empty-branch message: {msg}"
-            );
-        }
-        other => panic!("empty ranked tips must be a typed InvalidArgument Err, got: {other:?}"),
-    }
-
-    let one = vec![BlockHash::from_static(b"main-parent")];
-    let kept = filter_deep_parents_empty_branch(0, &one).expect("non-empty input is Ok");
-    assert_eq!(kept, one, "non-empty input keeps the head");
 }
 
 prop_compose! {
@@ -310,18 +272,26 @@ proptest! {
         RUNTIME.block_on(with_storage(|mut block_store, mut block_dag_storage| async move {
             let (genesis, latest) =
                 build_two_tip_dag(&mut block_store, &mut block_dag_storage, 2, 3).await;
-            let mut dag = block_dag_storage
+            let dag = block_dag_storage
                 .get_representation()
                 .expect("dag representation");
 
-            let full = Estimator::apply(i32::MAX, None)
-                .tips_with_latest_messages(&mut dag, &genesis, latest.clone())
+            let full = certified_fork_choice(
+                &Estimator::apply(i32::MAX, None),
+                &dag,
+                &genesis,
+                latest.clone(),
+            )
                 .await
                 .expect("full tips")
                 .tips;
 
-            let capped = Estimator::apply(cap, None)
-                .tips_with_latest_messages(&mut dag, &genesis, latest)
+            let capped = certified_fork_choice(
+                &Estimator::apply(cap, None),
+                &dag,
+                &genesis,
+                latest,
+            )
                 .await
                 .expect("capped tips")
                 .tips;

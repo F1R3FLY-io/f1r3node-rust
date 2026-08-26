@@ -1,17 +1,14 @@
 // Parameterized coverage for the `is_slashable()` catch-all arm of
 // `validation_dispatcher::dispatch_handle_invalid_block`.
 //
-// The dispatcher routes invalid blocks through three arms:
+// The dispatcher routes intrinsic-invalid blocks through two arms:
 //
 //   match status {
-//       InvalidBlock::AdmissibleEquivocation => { record + insert+buffer }
-//       InvalidBlock::IgnorableEquivocation  => { record + insert+buffer }
 //       status if status.is_slashable()       => { record + insert+buffer }  // ◀ here
 //       _                                     => { buffer remove only }
 //   }
 //
-// The catch-all guard at `validation_dispatcher.rs:489` covers
-// **17** slashable variants. Individually most variants have a
+// The guarded arm covers all **17** intrinsic slashable variants. Individually most variants have a
 // production-path integration test (e.g.
 // `integration_t_invalid_block_hash_records`), but a single
 // parameterized assertion over the full slashable taxonomy is what
@@ -36,19 +33,22 @@
 // sequentially, so reverting to the parent of Bug #3 reproduces the
 // regression this test guards.
 
+use block_storage::rust::dag::block_dag_key_value_storage::{
+    CertifiedAdmissionOutcome, CertifiedSenderAuthority,
+};
 use casper::rust::block_status::InvalidBlock;
 use casper::rust::casper::{Casper, MultiParentCasper};
 use models::rust::block_hash::BlockHashSerde;
+use models::rust::block_metadata::AdmissionRejectionReason;
+use models::rust::bond_generation::BondGeneration;
 
 use super::detector_totality_helpers::{block as synth_block, validator as synth_validator};
 use crate::helper::test_node::TestNode;
 use crate::util::genesis_builder::GenesisBuilder;
 
-/// 17 slashable `InvalidBlock` variants routed via the
-/// `is_slashable()` catch-all guard. AdmissibleEquivocation and
-/// IgnorableEquivocation are NOT in this list — they have their own
-/// dispatcher arms above the catch-all and are covered by
-/// `integration_t_admissible_equivocation` / `integration_t_ignorable_equivocation`.
+/// All 17 slashable `InvalidBlock` variants routed via the
+/// `is_slashable()` guard. Contextual equivocation observations are deliberately
+/// absent because certified sibling messages are intrinsically valid.
 ///
 /// If a new slashable variant is added without updating this list,
 /// the test still passes against the affected variant — but
@@ -69,7 +69,7 @@ const CATCHALL_SLASHABLE_VARIANTS: &[InvalidBlock] = &[
     InvalidBlock::NeglectedEquivocation,
     InvalidBlock::InvalidTransaction,
     InvalidBlock::InvalidBondsCache,
-    InvalidBlock::InvalidBlockHash,
+    InvalidBlock::InvalidEquivocationEvidence,
     InvalidBlock::UnauthorizedSlashDeploy,
     InvalidBlock::ContainsExpiredDeploy,
     InvalidBlock::ContainsTimeExpiredDeploy,
@@ -110,7 +110,9 @@ async fn dispatch_catchall_mints_record_for_each_slashable_variant() {
         // validator bytes (which start at 0); +21 deconflicts within
         // the 0..=255 byte space well past the bonded-set range.
         let sender = synth_validator(hash_byte.saturating_add(21));
-        let synth = synth_block(hash_byte, sender.clone(), seq_num, vec![], vec![]);
+        let mut synth = synth_block(hash_byte, sender.clone(), seq_num, vec![], vec![]);
+        synth.header.parents_hash_list = vec![genesis.genesis_block.block_hash.clone()];
+        synth.body.state.pre_state_hash = genesis.genesis_block.body.state.post_state_hash.clone();
 
         // Pre-populate the buffer with the hash as a dependency-free
         // pendant. `put_pendant` is the canonical "register a block in
@@ -135,8 +137,28 @@ async fn dispatch_catchall_mints_record_for_each_slashable_variant() {
 
         // Drive the dispatcher's `is_slashable()` catch-all arm.
         let dag_repr = node.casper.block_dag().await.expect("dag representation");
+        let certificate = CertifiedSenderAuthority::new(
+            &synth,
+            synth
+                .header
+                .parents_hash_list
+                .first()
+                .cloned()
+                .unwrap_or_else(|| synth.block_hash.clone()),
+            synth.body.state.pre_state_hash.clone(),
+            synth.block_hash.clone(),
+            BondGeneration::GENESIS,
+            100,
+        )
+        .expect("synthetic certified authority");
+        let outcome = CertifiedAdmissionOutcome::rejected(
+            &synth,
+            &certificate,
+            AdmissionRejectionReason::from(variant),
+        )
+        .expect("synthetic rejected admission outcome");
         node.casper
-            .handle_invalid_block(&synth, variant, &dag_repr)
+            .handle_invalid_block(&synth, variant, &dag_repr, &certificate, &outcome)
             .expect("dispatcher catch-all arm must succeed for slashable variant");
 
         // (b) Block in DAG.

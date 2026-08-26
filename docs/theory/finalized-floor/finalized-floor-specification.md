@@ -8,6 +8,10 @@ proofs, models, and tests that discharge each requirement; the
 (read it first if any notation is unfamiliar). Rendered diagrams are in
 [`diagrams/`](./diagrams/).
 
+The local publication and restart boundary after a candidate has passed the
+rules below is specified separately in
+[Atomic finalization and crash recovery](./finalization-atomicity-and-recovery.md).
+
 Requirement levels **MUST / MUST NOT / SHOULD** are used in the RFC-2119 sense.
 
 ---
@@ -53,7 +57,7 @@ For a block `B` with non-empty parent set `P₁…Pₖ` and frozen justification
   **pure function of `B`**:
   1. **Inheritance** — every parent's own floor.
   2. **Advancement** — per parent, the highest main-chain ancestor `A` with
-     `ft_witnessed(A, just(B)) ≥ θ` (genesis is finalized by definition).
+     `ft_witnessed(A, just(B)) > θ` (genesis is finalized by definition).
   3. **Universal certified advancement** — the highest all-parent DAG ancestor
      `U` for which both the causal and state-preserving clique certificates hold
      over `just(B)` and which preserves every inherited parent floor. `U` may be
@@ -75,18 +79,22 @@ For a block `B` with non-empty parent set `P₁…Pₖ` and frozen justification
   Candidate discovery, agreement propagation, and clique decisions MUST all use
   that same map.
 - **R-FINALIZER-CLOSURE.** Candidate discovery MUST visit the complete finite
-  main-parent closure of every frozen latest message above the exact current LFB
-  height. Each `(validator, block)` pair MUST be admitted to the traversal
-  frontier at most once, without removing any reachable pair.
+  all-parent causal closure of every frozen latest message above the exact
+  current LFB height. For each visited candidate, its propagated supporter set
+  MUST equal the validators whose own frozen latest messages causally include
+  that candidate. The descending `(block_number, block_hash)` worklist MUST
+  process a block only after every higher child can propagate coverage to it,
+  and MUST fail closed on a non-descending edge or unreadable metadata.
   A candidate-count cap, elapsed-time budget, or per-candidate timeout MUST NOT
   truncate this consensus search.
 - **R-FINALIZER-ORDER.** The complete candidate set MUST be ordered by block number
-  descending, agreeing stake descending, agreeing-set size ascending, then hash
-  ascending. For each candidate, the finalizer MUST first run the existing exact
-  causal clique decision without modifying its voters, weights, threshold, or
-  strictness. It MUST then run the same exact decision over state-preserving
-  support as required by R-STATE-CERT. The first candidate that holds both
-  certificates and preserves every active effect of the current LFB is the next LFB.
+  descending, then block hash descending. For each candidate, the finalizer MUST
+  first run the existing exact
+  mutual causal-clique decision without modifying its voters, weights, threshold,
+  or strictness. It MUST then run the same exact mutual-clique decision over
+  state-preserving support as required by R-STATE-CERT. The first candidate that
+  holds both certificates and preserves every active effect of the current LFB is
+  the next LFB.
   The current LFB need not lie on the candidate's main-parent spine: a
   multi-parent rebase may preserve it through a secondary parent.
 - **R-FINALIZER-ERROR.** Missing or unreadable consensus metadata and failed clique
@@ -126,23 +134,40 @@ state-certificate, and LFB-admissibility rules above.
 - **R-HEARTBEAT-SEPARATION.** A heartbeat trigger MUST NOT directly mutate the
   LFB, manufacture support, alter clique membership, change validator weights,
   lower the hard-majority or exact-threshold tests, or bypass block validation.
+- **R-PROPOSAL-INTENT.** Every proposal request MUST carry exactly one explicit
+  intent: `Manual`, `PendingDeploy`, or `FinalityRecovery(permit)`. `Manual` and
+  `PendingDeploy` requests MUST NOT authorize an empty block. Only a
+  `FinalityRecovery` request whose permit remains valid at execution MAY request
+  an empty block, and only when the node has the heartbeat capability enabled.
+  A shared asynchronous flag, current LFB lag, or ambient proposer state MUST
+  NOT grant empty-block authority.
 - **R-HEARTBEAT-PROGRESS.** A node MUST measure finality stagnation from the
   task-local monotonic duration for which its observed LFB **hash** has remained
   unchanged. A block's producer-controlled timestamp, wall-clock age, frontier
   timestamp, latest-message churn, or block height alone MUST NOT reset or open a
   finality-recovery round. Observing a different LFB hash MUST reset the stall
-  timer and completed-round history.
-- **R-HEARTBEAT-COMMITTEE.** Proposal and heartbeat recovery leadership MUST use
-  one canonical ordered committee from the captured `CasperSnapshot`: the
-  on-chain active-validator set when non-empty, otherwise the distinct
-  positive-bond validators as the bootstrap fallback. Zero or negative bonds,
-  parent ordering, duplicate entries, and a single parent's bond list MUST NOT
-  change leadership or bonded admission.
+  timer and completed-round history. Let
+  $`T_0 = \max(\mathtt{max\_lfb\_age},\mathtt{check\_interval})`$. Recovery round
+  zero MUST first open after the unchanged hash has been observed for $`T_0`$;
+  after that one-time stall
+  timeout, successive rounds MUST open every `check_interval`. Thus, for elapsed
+  monotonic duration $`d \ge T_0`$, the highest available local recovery round is
+  $`\left\lfloor (d-T_0)/\mathtt{check\_interval}\right\rfloor`$. If one or more earlier rounds were not
+  completed because the task woke late, the implementation MUST expose the
+  earliest uncompleted available round and MUST NOT skip directly to the highest
+  round. The implementation MUST NOT reapply `T₀` as the interval between later
+  rounds.
+- **R-HEARTBEAT-COMMITTEE.** Heartbeat recovery leadership MUST use one
+  canonical ordered committee derived from the captured LFB's post-state by the
+  same `floor_committee` function that realizes R-AUTHORITY: PoS bonds filtered
+  to the active validator set, then sorted and deduplicated. Non-finalized
+  parent state, parent ordering, divergent head views, duplicate entries, and a
+  single parent's bond list MUST NOT change recovery leadership. Empty
+  committees MUST fail closed.
 - **R-HEARTBEAT-ROTATION.** Let `C` be that lexicographically ordered committee,
   `h` the non-negative current-LFB height, and `r` the zero-based local recovery
-  round opened after each complete `max(max_lfb_age, check_interval)` interval of
-  observed stagnation. Exactly one validator is authorized for a given
-  `(LFB,r)` view:
+  round defined by R-HEARTBEAT-PROGRESS. Exactly one validator is authorized for
+  a given `(LFB,r)` view:
 
   ```math
   leader(C,h,r) = C[(h+r) \bmod |C|].
@@ -151,28 +176,290 @@ state-certificate, and LFB-admissibility rules above.
   Empty committees and invalid negative LFB heights MUST fail closed. Advancing
   `r` MUST rotate past an offline leader without changing the finality
   certificate.
-- **R-HEARTBEAT-ONCE.** One heartbeat task MUST attempt idle recovery at most once
-  per observed `(LFB,r)` view. A concurrent proposal already in progress MAY
-  leave the round open because no new attempt was admitted; an admitted,
-  started, successful, or failed ordinary proposal closes that local round.
+- **R-RECOVERY-PERMIT.** A finality-recovery permit MUST bind the exact observed
+  LFB hash, its non-negative height, and the local recovery round. Immediately
+  before proposal execution, the serialized proposer MUST obtain a fresh
+  `CasperSnapshot` and verify that the permit hash equals the snapshot LFB, that
+  the metadata height of that LFB equals the permit height, and that
+  R-HEARTBEAT-ROTATION selects the local validator when given the permit's round
+  and the fresh LFB-derived committee. The round is a captured input to leader
+  selection; there is no independent global or proposer-owned “current round”
+  against which to compare it. A non-finalized head-height change by itself MUST
+  NOT stale a permit because head height is not LFB height. A stale-LFB,
+  malformed, nonleader, or otherwise unauthorized permit MUST be deferred and
+  MUST NOT create a block. Request-time validation alone is insufficient because
+  the LFB may change while the request waits.
+- **R-HEARTBEAT-LOCAL-ROUNDS.** Recovery round and completed-attempt history MUST
+  be validator-local observations. Honest validators MUST NOT require equal
+  clocks, simultaneous stall detection, or agreement on one global recovery
+  round before admitting ordinary proposals.
+- **R-HEARTBEAT-ONCE.** One heartbeat task MUST complete idle recovery at most
+  once per observed $`(\mathrm{LFB},r)`$ view, and completed rounds MUST form a contiguous
+  prefix. A nonleader closes its local round without proposing. A selected leader
+  closes the round only after the serialized proposer reports that work started
+  or succeeded. An already-busy proposer, deferred recovery, empty result, or
+  failed proposal leaves the selected-leader round open for retry. The owning
+  heartbeat task awaits the proposal result, so it cannot complete or advance
+  that local round while its request is outstanding.
 - **R-HEARTBEAT-WORK.** Pending user deploys retain their bounded ordinary
-  proposal path. A newly observed parent carrying a user deploy MAY induce one
-  cooldown-limited support proposal. Missing self history, genesis, unreadable
-  latest metadata, system-only blocks, and latest-message divergence without a
-  user deploy MUST NOT create an empty-block feedback loop.
+  proposal path. Receiving or observing a peer block, frontier movement, or
+  latest-message divergence MUST NOT itself authorize a support proposal.
+  Peer blocks contribute causal and state evidence only after ordinary local
+  validation; they are not proposal authority. The automatic scheduler may
+  propose only for locally admissible pending work or a locally due, selected,
+  permit-bound recovery round.
+- **R-PENDING-ADMISSIBILITY.** A deploy being retained in local storage MUST be
+  distinguished from that deploy being admissible in the proposal's fresh
+  snapshot. Future, expired, terminal, already-in-scope, duplicate-bound, or
+  capacity-exhausted occurrences MAY remain stored while being inadmissible.
+  Stored but inadmissible work MUST NOT mask an otherwise authorized empty
+  recovery, and MUST NOT be included merely to make a recovery non-empty.
+- **R-PENDING-RECOVERY-COMPOSITION.** When selected recovery and admissible
+  pending work coincide, the node MUST submit the `FinalityRecovery(permit)`
+  intent and the ordinary block creator MUST include admissible deploys using its
+  unchanged deterministic selection rules. Recovery thereby reserves liveness
+  service without suppressing useful work. If no deploy is admissible, only the
+  still-valid recovery permit may authorize the empty block. Pending work MUST
+  NOT consume, complete, or invalidate the selected recovery round before the
+  proposer reports `Started` or `Success`.
+- **R-PROPOSER-COALESCING.** Proposal execution MUST be single-flight and its
+  admission state MUST distinguish idle, active, and active-with-pending-wakeup.
+  A `PendingDeploy` request colliding with active work MUST latch at most one
+  follow-up; any number of further pending collisions MAY coalesce into that
+  same wakeup. Completion of the active proposal MUST atomically either return
+  to idle or begin exactly one forced `PendingDeploy` follow-up against the
+  current Casper engine and a fresh snapshot. Colliding `Manual` and
+  `FinalityRecovery` requests MUST be classified `Busy` and return an empty
+  trigger result rather than mutate the active request's intent; heartbeat
+  recovery then retries the same uncompleted round.
+  If enqueue fails or no current Casper engine exists before execution,
+  cancellation MUST clear both active and dirty state because no follow-up can
+  execute in that unavailable service instance. Cancellation MAY discard the
+  coalesced wake edge, but MUST NOT remove the pending deploy itself; periodic
+  heartbeat discovery MUST rescan retained storage after service becomes
+  available.
 - **R-HEARTBEAT-BACKPRESSURE.** Proposal admission MUST remain bounded by the
-  serialized proposer queue. Once the validator is already ahead, an idle
-  recovery proposal MUST respect the configured unfinalized-DAG cap at the exact
-  boundary. Pending-deploy admission remains subject to its lag cap, recovery
-  cap, cooldown, and backstop; continuous empty recovery MUST NOT outrun block
-  validation and replay.
+  single-flight proposer and its one-bit pending wakeup. Once the validator is
+  already ahead, an idle recovery proposal MUST respect the configured
+  unfinalized-DAG cap at the exact boundary. Pending-deploy admission remains
+  subject to its lag cap, recovery cap, cooldown, and backstop; continuous empty
+  recovery MUST NOT outrun block validation and replay.
+- **R-HEARTBEAT-EVIDENCE.** A recovery proposal MUST carry ordinary block
+  ancestry and the proposer's captured latest-message view. Finality support for
+  a candidate MUST be derived from those explicit views: the certificate's
+  supporters MUST form a mutual causal clique, and its state supporters MUST
+  form a mutual state-preserving clique that refines causal support. Recovery
+  leadership, round membership, block creation, or delivery alone MUST NOT count
+  as either certificate.
 - **R-HEARTBEAT-ASYNC.** Honest nodes MAY observe the same LFB stall at different
   times and therefore occupy different local recovery rounds. Such scheduling
   differences MAY produce ordinary concurrent blocks, but cannot create a local
   finality decision: R-FINALIZER-SNAPSHOT through R-SHARD-FINALITY remain the
-  only promotion authority. Under eventual delivery, fair validation, an online
-  threshold-supporting committee, and finite replay time, rotating recovery and
-  bounded admission MUST permit finality progress without unbounded backlog.
+  only promotion authority. Safety MUST hold without assuming delivery within a
+  recovery round or bounded relative scheduling of heartbeat tasks.
+  `DeliveryWithinRound` and `BoundedRecoveryScheduling` are only
+  eventual-synchrony liveness assumptions. The latter states that, after the
+  synchrony bound applies, an online task cannot complete more than one local
+  recovery step ahead of another online task. Under those assumptions, fair
+  validation, an online threshold-supporting committee, and finite replay time,
+  rotating recovery and bounded admission MUST permit finality progress without
+  unbounded backlog.
+
+The idle-recovery portion of the scheduling algorithm below is normative
+pseudocode and runs alongside the distinct pending-deploy path described by
+R-HEARTBEAT-WORK. `completed` is local to one heartbeat task and one observed LFB
+hash. `serialized_propose` is the ordinary Casper proposer; it does not grant
+finality.
+
+```text
+observe_lfb(hash, now):
+  if hash differs from observed_lfb:
+    observed_lfb := hash
+    observed_since := now
+    completed := empty prefix
+
+  elapsed := now - observed_since
+  if elapsed < stall_timeout:
+    return not_due
+
+  highest := floor((elapsed - stall_timeout) / check_interval)
+  round := first nonnegative integer not in completed
+  if round > highest:
+    return not_due
+
+  if local_validator != leader(committee, lfb_height, round):
+    append round to completed
+    return nonleader_complete
+
+  permit := (observed_lfb, lfb_height, round)
+  result := serialized_propose(FinalityRecovery(permit))
+  if result is started or successful:
+    append round to completed
+    return leader_complete
+
+  return retry_same_round
+```
+
+Because `completed` is extended only by its first absent integer, it remains a
+prefix under every wakeup sequence. Because the selected leader uses that integer
+rather than `highest`, elapsed-time jumps cannot skip committee members.
+
+The proposer interprets that intent only after it acquires the current engine
+and a fresh snapshot. This second normative algorithm makes the empty-block
+authority and pending-work composition explicit.
+
+```text
+execute_proposal(intent):
+  casper := current_engine_casper()
+  snapshot := casper.fresh_snapshot()
+  lfb_metadata := snapshot.lookup(snapshot.lfb_hash)
+
+  recovery_valid :=
+    intent is FinalityRecovery(permit)
+    and permit.lfb_hash = snapshot.lfb_hash
+    and permit.lfb_height = lfb_metadata.block_number
+    and local_validator = leader(snapshot.committee,
+                                 lfb_metadata.block_number,
+                                 permit.round)
+
+  if intent is FinalityRecovery and not recovery_valid:
+    return deferred
+
+  allow_empty := heartbeat_capability and recovery_valid
+  deploys := deterministically_select_admissible_pending(snapshot)
+  if deploys is empty and not allow_empty:
+    return no_new_deploys
+
+  return create_validate_and_publish(snapshot, deploys, allow_empty)
+```
+
+There is deliberately no comparison between `permit.round` and a second current
+round. The awaiting heartbeat task owns that local round; the proposer only uses
+its captured value to recompute the leader. Likewise, changes to
+`snapshot.latest_block_height` do not participate in recovery freshness.
+
+The intent decides only whether an empty body is authorized. Deploy admission,
+execution, state-bound cost certification, settlement, replay, validation, and
+publication remain the same ordinary block pipeline for every non-empty body.
+
+### 2.1.2 Atomic publication and crash recovery
+
+Finalizer evaluations MAY overlap over immutable snapshots. Their durable
+publication MUST satisfy all of the following requirements:
+
+- **R-FINALIZATION-APPEND.** A successful round MUST atomically append one
+  immutable round record and replace its exact predecessor head. At most one
+  candidate may succeed for a given predecessor. A stale worker MUST publish no
+  metadata and perform no post-finalization effect.
+- **R-FINALIZATION-BASE.** Certificate evaluation, state-lineage validation,
+  manifest construction, and compare-and-append MUST bind to one exact durable
+  predecessor identity: revision, block hash, height, and record digest. If any
+  part of that identity changes before append, the worker MUST discard the old
+  result and repeat evaluation from a fresh coherent base. It MUST NOT substitute
+  the current head into a certificate evaluated against an older head.
+- **R-FINALIZATION-LINEAGE.** A successor MUST strictly increase block height
+  and both DAG-descend from and preserve the active state of its exact bound
+  durable head. The lineage predicates MUST be revalidated immediately before
+  the atomic append. Equal-height siblings, unrelated candidates, state-dropping
+  descendants, and regressive candidates MUST fail closed.
+- **R-FINALIZATION-PROJECTION.** Committed rounds MUST be projected into block
+  metadata in contiguous revision order. No effect may start before its round
+  is projected. Restart MUST resume at the first unprojected revision.
+- **R-FINALIZATION-EFFECTS.** Deploy removal, cosigner removal, runtime-cache
+  eviction, and finalized-event publication MUST be idempotent and independently
+  receipted for every block in the round manifest. A round-completion cursor may
+  advance only across a contiguous prefix whose complete receipt sets exist.
+- **R-FINALIZATION-COMPACTION.** Receipt compaction MUST persist the completed
+  prefix before deleting receipts and MUST never advance beyond that prefix.
+  A crash at any compaction boundary may retain redundant data but MUST NOT lose
+  completion truth.
+- **R-FINALIZATION-SCHEDULER.** Every accepted scheduling request MUST be covered
+  by a launched evaluation after finite worker progress. Releasing dispatcher
+  ownership concurrently with a request MUST NOT lose the wake. A worker error
+  or panic MUST NOT complete its covered request; the uncovered request MUST
+  become retryable after bounded backoff. A successful newer worker MAY subsume
+  an older retry, but completed coverage MUST NOT regress. Worker bounds MUST
+  constrain resource use without serializing immutable evaluation.
+- **R-FINALIZATION-PROPOSAL-READINESS.** Before deploy selection or replay, a
+  proposer MUST derive the exact candidate consensus context from its captured
+  parents and latest messages and classify its relation to the durable context.
+  Exact equality is ready. A strict state-preserving descendant is
+  `FinalizedFloorMaterializationPending`, retains pending deploys, and
+  idempotently requests finalization. A candidate ancestor of the durable floor
+  is `CandidateFloorRegression`; a same-floor context mismatch is
+  `CertifiedContextMismatch`; every other incomparable candidate is
+  `CandidateFloorConflict`. Those permanent failures, incomplete committee
+  slots, inactive candidate authority, and stale recovery permits fail closed
+  without scheduling finalization.
+
+The durable revision $`H`$, projection cursor $`P`$, effects cursor $`E`$, and
+compaction cursor $`C`$ MUST always satisfy:
+
+```math
+0 \le C \le E \le P \le H.
+```
+
+These requirements refine local materialization only. They MUST NOT change
+clique membership, stake weights, the exact fault-tolerance threshold, or which
+candidate the Casper finalizer certifies.
+
+### 2.1.3 Live minority-fork recovery
+
+An approved genesis is the immutable ceremony-authenticated trust root at block
+height zero. A running node's finalization ledger records that node's local
+publication history. Its revision and record digest are not portable consensus
+identities: honest nodes may finalize the same target through different local
+rounds and therefore retain different ledger revisions and digests.
+
+- **R-RECOVERY-GENESIS-SEPARATION.** `ApprovedBlock` MUST contain only canonical
+  genesis. Live recovery MUST NOT enter the approved-genesis path, replace the
+  canonical genesis hash, or redefine the shard trust root.
+- **R-RECOVERY-LOCAL-IDENTITY.** A peer's finalization-ledger revision, record
+  digest, or local witness MUST NOT authorize a local state transition. Equality
+  of finalized target block and replay state does not imply equality of local
+  ledger history, and inequality of local ledger history is not a consensus
+  disagreement.
+- **R-RECOVERY-TIP-AUTHORITY.** Staleness MAY trigger requests for ordinary
+  fork-choice tips from connected peers. A received tip is discovery evidence
+  only: it MUST NOT directly replace the LFB, install a peer record, authorize a
+  proposal, or count as a finality vote.
+- **R-RECOVERY-ADMISSION.** Missing tips, parents, and justifications MUST pass
+  the ordinary bounded retrieval, stateless validation, certified admission,
+  replay, and DAG publication path. Recovery MUST NOT raw-insert blocks into the
+  DAG or bypass any protocol-version rule.
+- **R-RECOVERY-LOCAL-FINALIZER.** Only the existing local Casper finalizer may
+  publish a recovered floor. It MUST capture one frozen certified consensus
+  context, apply both exact clique predicates and current-LFB state
+  preservation, and compare-and-append against its exact local durable head.
+  Peer responses MUST NOT invoke a second publication rule.
+- **R-RECOVERY-RETRY.** While live synchronization is active, every successfully
+  admitted block MUST request another idempotent local finalization pass even if
+  its height does not meet the normal periodic finalization cadence. Admission
+  concurrent with a finalizer capture therefore remains visible to a later pass.
+- **R-RECOVERY-LOCALITY.** Recovery MUST leave the node in `Running` and MUST NOT
+  globally pause proposal, receipt, replay, validation, finalization, other
+  validators, or other shards. Existing proposal-readiness rules independently
+  prevent creation from an unmaterialized certified floor.
+- **R-RECOVERY-IDENTITY.** Recovery MUST preserve validator sequence number,
+  bond generation, signed minority-fork blocks, and objective evidence. Age may
+  trigger discovery but never authorizes a state transition.
+- **R-RECOVERY-COLD-STATE.** Cold or pruned-state checkpoint synchronization is
+  outside the live protocol. Any future checkpoint proof MUST be separately
+  versioned and use an identity canonical across nodes rather than a local
+  ledger revision or digest.
+
+The live authority chain is:
+
+```math
+\operatorname{PeerTip}(B)
+\rightarrow \operatorname{OrdinaryAdmission}(B)
+\rightarrow \operatorname{LocalFinalizer}(\operatorname{FrozenContext})
+\rightarrow \operatorname{CompareAndAppend}(\operatorname{LocalHead}).
+```
+
+This recovers an arbitrarily stale live node by normal DAG synchronization and
+local recomputation. It neither adds a second finality protocol nor requires
+honest nodes to share an identical local audit-log history.
 
 ### 2.2 State derivation and LFB admissibility
 
@@ -318,33 +605,62 @@ either certificate.
   recapture one current local tuple before replay. Recorded roots needed by an
   active or restarted validation MUST remain available.
 - **R-PARENT-CAUSALITY.** Let `L` be the proposer-local LFB captured with a DAG
-  snapshot and let `J(v)` be bonded validator `v`'s valid latest message in that
-  snapshot. The map supplied to fork-choice estimation MUST retain every valid
-  latest message. The direct parent set MAY remove only a tip causally covered
-  by another selected tip:
+  snapshot and let `J(v)` be bonded validator `v`'s exact latest-message slot in
+  that snapshot. Define `BaseEligible_L(v)` to mean that `v` has positive stake
+  and an exact bond generation in `L`'s authority; `J(v)` has certified accepted
+  admission; its non-genesis sender and certified generation match `v` and the
+  floor generation; and the incarnation has no objective-equivocation evidence.
+  Base eligibility MUST be decided before testing descent from `L`. The causal-
+  parent and finality-vote projections are:
 
   ```math
-  Tips(J) = \{J(v) \mid v \in \operatorname{dom}(J)\},
+  C_L(J) = \{J(v) \mid v \in \operatorname{dom}(J)
+    \land BaseEligible_L(v)\},
 
-  DirectParents(J,L) =
+  V_L(J) = \{T \in C_L(J) \mid L \preceq_{DAG} T\},
+
+  V_L(J) \subseteq C_L(J),
+
+  Candidates(J,L) = C_L(J) \cup
   \begin{cases}
-    \max_{\preceq_{DAG}} Tips(J), &
-      \operatorname{dom}(J) \ne \varnothing,\\
-    \{L\}, & \operatorname{dom}(J) = \varnothing.
+    \{L\}, & \nexists T \in C_L(J) : L \preceq_{DAG} T,\\
+    \varnothing, & \text{otherwise},
   \end{cases}
 
-  \forall T \in Tips(J),\ \exists P \in DirectParents(J,L) :
+  DirectParents(J,L) = \max_{\preceq_{DAG}} Candidates(J,L),
+
+  \forall T \in C_L(J),\ \exists P \in DirectParents(J,L) :
     T \preceq_{DAG} P.
   ```
 
-  Distinct hashes avoid duplicates, and reachability-maximal compaction avoids
-  redundant direct parents without discarding any validator's causal evidence.
-  Stale and effect-dropping tips remain causal inputs; their above-floor deltas are
-  replayed against the certified floor and may be rejected by the deterministic
-  merge. Only an empty valid-tip set falls back to `L`; it MUST NOT fall back to
-  genesis.
+  `V_L(J)` is the only input to LMD-GHOST weights, clique voting, fault
+  tolerance, and finality. `C_L(J)` is the only input to declared-parent
+  construction. Distinct hashes avoid duplicates, and reachability-maximal
+  compaction avoids redundant direct parents without discarding causal
+  evidence. Stale and effect-dropping tips in `C_L(J) \setminus V_L(J)` remain
+  causal inputs; their above-floor deltas are replayed against the certified
+  floor and may be rejected by the deterministic merge. Intrinsically invalid,
+  unregistered, sender-mismatched, wrong-generation, or objectively
+  equivocating tips are absent from both projections. Configured parent bounds
+  MUST fail closed rather than omit an uncovered member of `C_L(J)`. At least
+  one declared parent MUST descend from `L`; when no causal tip does, `L` is
+  added explicitly before reachability compaction. An empty causal-parent
+  projection is the degenerate instance of the same backstop rule. Parent
+  construction MUST NOT fall back to genesis.
+
+  Reachability compaction MUST run before bounds. A finite parent-count cap MUST
+  be at least `number-of-active-validators + 1`, reserving capacity for every
+  distinct active-validator latest message plus an independent floor backstop;
+  startup rejects a smaller cap, and proposal construction MUST NOT silently
+  truncate an uncovered live tip. Finite depth expires a secondary causal tip
+  only through the deterministic block-height horizon shared by all validators.
+  The selected GHOST head is unconditional, and exact latest messages remain
+  evidence roots even after their proposal dependency expires.
 - **R-PARENT-EVIDENCE.** The complete latest-message evidence required by
   justification-following and validator sequence accounting MUST remain intact.
+  The causal evidence closure MUST always be rooted at the captured floor and
+  every exact latest-message hash, independently of the compacted or depth-expired
+  declared-parent set.
   A receiver validates and replays the declared parents from block-structural
   evidence and MUST NOT recompute them from its own possibly lagging LFB.
 - **R-PARENT-STATE.** Parent selection preserves causality; floor-rebased replay
@@ -375,10 +691,76 @@ either certificate.
   incremental up-walk MUST yield the **identical** frontier as the cold down-walk.
   When a determinism premise fails (committee change in band, or the pivot no longer
   finalizes over the larger snapshot), the warm path MUST fall back to the cold walk.
-- **R-COMM.** The committee used to validate `B`'s bonds MUST be `bonds_of(floor(B))`
-  — a pure function of the floor. A bond transition in `B`'s post-state MUST NOT
-  authorize `B` itself. The new committee becomes authoritative only for a later
-  block whose derived floor includes that transition.
+- **R-POST-STATE-BONDS.** `B.body.state.bonds` MUST equal the PoS bonds replayed
+  from `B.post_state`. It is a consensus-visible post-state cache, not an
+  authority declaration. Only an accepted block MAY use this cache to register
+  a newly bonded validator's latest-message slot; an invalid block MUST NOT
+  create a validator slot from untrusted serialized bonds.
+- **R-AUTHORITY.** The authority committee for `B` MUST be the positive active
+  bonds of `post_state(floor(B))`, a pure function of immutable block evidence.
+  `B`'s justification validators MUST equal that committee exactly, `B.sender`
+  MUST be a member with positive stake, and synchrony weights MUST come from the
+  same committee. A bond transition in `B.post_state` MUST NOT authorize `B`
+  itself. After the accepted block registers the validator and a later floor
+  includes the transition, the new committee MAY authorize a later block.
+- **R-PROPOSAL-AUTHORITY.** Immediately before replay, a proposer MUST derive
+  the prospective structural floor from its selected parents and frozen
+  justifications. It MUST defer when that committee differs from the captured
+  LFB committee, when justifications are not exact, or when the sender is not a
+  positive member. This prevents a locally selected block from being
+  deterministically rejected by another honest validator at the same evidence
+  boundary.
+- **R-ADMISSION-CLOSURE.** A non-genesis block MUST remain buffered until DAG
+  metadata is available for its parents, justifications, every historical
+  unary-slash evidence hash, both hashes of every objective-equivocation proof,
+  and both hashes of every header-certified evidence pair needed by its causal
+  closure. Neither a mutable receiver-local equivocation tracker nor the
+  derived invalid-block index may satisfy any dependency. Rejected blocks still
+  satisfy readiness through their persisted certified DAG metadata.
+- **R-EVIDENCE-TRAVERSAL.** Certified causal-evidence discovery MUST traverse
+  the structural parents and justifications of both accepted and rejected
+  blocks. Rejection is not an ancestry barrier. An accepted block's certified
+  evidence delta is inherited; a rejected block's delta is not. The two block
+  hashes named by a proof are terminal evidence facts and MUST NOT recursively
+  import the contexts of those blocks.
+- **R-EVIDENCE-CANONICAL.** For each validator bond generation, the effective
+  evidence context MUST retain the least canonical proof under the stable
+  evidence ordering. The join is commutative, associative, and idempotent.
+  Evidence discovery and the required candidate delta therefore depend only on
+  the complete causal closure, not arrival order, traversal order, or ambient
+  tracker contents.
+- **R-ADMISSION-OUTCOME.** Every persisted non-genesis metadata record MUST
+  carry one typed admission outcome bound to the block hash, protocol version,
+  admission-schema version, compiled ruleset digest, certified incoming-context
+  digest, and certified sender-authority digest. Storage MUST reject a decision
+  whose disposition conflicts with the requested accepted/rejected insertion
+  mode, and an existing decision MUST be byte-identical on retry. A rejected
+  outcome MUST NOT be finalized.
+
+The normative context construction is:
+
+```text
+certify_admission(candidate):
+    require complete_metadata_dependency_closure(candidate)
+    pending := parents(candidate) union justifications(candidate)
+    inherited := empty generation-keyed map
+    structural := empty (generation, sequence)-keyed sibling map
+
+    while pending is not empty:
+        block := remove_any(pending)
+        if block was already visited:
+            continue
+        require admitted DAG metadata for block
+        pending := pending union parents(block) union justifications(block)
+        add block identity to structural
+        if outcome(block) is accepted:
+            join each sound certified evidence delta into inherited
+
+    effective := inherited joined with every sound structural sibling proof
+    required_delta := effective minus inherited
+    require delta(candidate) equals required_delta
+    persist outcome(candidate, digest(effective), certified_sender_authority)
+```
 
 ## 4. Merge base, scope, and the Δ-backstop (normative)
 
@@ -557,7 +939,7 @@ authorization for an in-place protocol upgrade.
 | **S5** | A single-value cell keeps two writes, or a mergeable write is lost/dropped — *the ~400-block bug* (violates R-SCOPE/R-BACKSTOP). |
 | **S6** | Non-deterministic merge output → fork (violates R-BITMASK/R-INTADD). |
 | **S7** | A negative vault balance or a laundered overflow is committed (violates R-INTADD-APPLY). |
-| **S8** | Bonds validated against a non-floor committee (violates R-COMM). |
+| **S8** | Proposal, sender, justification, or synchrony authority is taken from a non-floor committee; or serialized post-state bonds are treated as same-block authority (violates R-POST-STATE-BONDS/R-AUTHORITY/R-PROPOSAL-AUTHORITY). |
 | **S9** | Candidate coverage or selection depends on a node's wall clock, configured timeout, local error, or fixed prefix (violates R-FINALIZER-CLOSURE/ERROR/YIELD). |
 | **S10** | A legacy floor version disables current finalized receipts and allows the same signature's effect to materialize twice (violates R-ACTIVE-BASE/R-BASE-DOMINANCE). |
 | **S11** | A mixed-version above-floor scope or protocol-incompatible disposition encoding is accepted (violates R-SCOPE-VERSION/R-DISPOSITION-ENCODING). |
@@ -583,11 +965,14 @@ authorization for an in-place protocol upgrade.
 | **S31** | Optimized latest-message coverage changes a validator support set, weight map, clique verdict, or permits a multi-parent unchanged-snapshot scan reuse (violates R-COVERAGE-EQUIVALENCE/R-LINEAR-SNAPSHOT-REUSE). |
 | **S32** | Snapshot selection inspects an off-parent latest message before its recursive floor provenance is materialized, or concurrent cache writes lose a required entry, causing node-local classification, repeated processing, or proposal failure (violates R-STATE-DEPENDENCIES/R-SNAPSHOT-PROVENANCE-CLOSURE). |
 | **S33** | A terminal admission rejection is counted as a runtime effect, or an ordinary runtime failure is removed from the effect sequence, shifting metadata and preventing valid-parent indexing (violates R-ADMISSION-EFFECT-PROJECTION/R-ADMISSION-EFFECT-FAIL-CLOSED). |
-| **S34** | Heartbeat recovery treats producer timestamps or frontier churn as finality progress, permits every validator to emit each round, fixes recovery to an offline leader, uses a non-canonical committee, admits an unbounded validation backlog, shrinks the finality denominator to a local subgraph, or treats indirect ancestor closure as an independently voted sub-finalization (violates R-FINALIZER-LOCAL-VIEW/R-FINALIZATION-CLOSURE/R-HEARTBEAT-*). |
+| **S34** | Heartbeat recovery treats producer timestamps or frontier churn as finality progress, reapplies the one-time stall timeout between later rounds, permits every validator to emit each round, requires a shared global round, fixes recovery to an offline leader, uses a non-canonical committee, admits an unbounded validation backlog, promotes without mutual causal and state cliques, assumes within-round delivery for safety, shrinks the finality denominator to a local subgraph, or treats indirect ancestor closure as an independently voted sub-finalization (violates R-FINALIZER-LOCAL-VIEW/R-FINALIZATION-CLOSURE/R-HEARTBEAT-*). |
 | **S35** | A validator captures or publishes a replay root through a shared mutable current-root pointer, so another runtime's reset changes its decision (violates R-LOCAL-ROOT-AUTHORITY). |
 | **S36** | Support is emitted before exact local replay, received support substitutes for local validation, or a delivered message lacks an emitted signer/candidate source (violates R-LOCAL-SUPPORT). |
 | **S37** | Concurrent promotion exposes a torn block/root/effect tuple, mutates another validator's state, fails to commute for distinct validators, or publishes different state for the same candidate (violates R-ATOMIC-FLOOR-PUBLICATION/R-PARALLEL-FRAME). |
 | **S38** | Crash or restart retains a partial validation, publishes support, loses a required recorded root, or combines a newly observed floor block with an older root/effect snapshot (violates R-VALIDATION-RESTART/R-VALIDATOR-LOCAL-TRANSACTION). |
+| **S39** | Peer activity or an ambient flag authorizes an empty block, a stale recovery permit executes, stored but inadmissible work masks recovery, selected recovery suppresses admissible deploys, or a pending collision loses its one required follow-up (violates R-PROPOSAL-INTENT/R-RECOVERY-PERMIT/R-HEARTBEAT-WORK/R-PENDING-ADMISSIBILITY/R-PENDING-RECOVERY-COMPOSITION/R-PROPOSER-COALESCING). |
+| **S40** | Recovery treats a peer's local ledger revision, digest, witness, or advertised head as state authority; bypasses ordinary dependency admission; publishes outside the local frozen-context Casper finalizer; loses a finalization retry after concurrent admission; replaces genesis; or globally pauses validators or shards (violates R-RECOVERY-*). |
+| **S41** | Per-block floor derivation can defer on a dual-certified secondary-parent target that the durable finalizer cannot discover, or materialization substitutes evidence for a different target (violates R-FINALIZER-CLOSURE/R-FINALIZER-ORDER/R-FINALIZATION-BASE). |
 
 ## 7. Liveness invariants — MUST eventually happen
 
@@ -605,8 +990,10 @@ authorization for an in-place protocol upgrade.
 | **L10** | Complete frozen evidence eventually promotes the highest dual-certified universal floor, and the finite descending coverage traversal completes without a node-local timeout or candidate cap. |
 | **L11** | Recording a terminal admission rejection cannot prevent every honest validator from indexing that parent, proposing successors, and finalizing later deploys. |
 | **L12** | Every finite frozen snapshot completes its required provenance closure and reaches parent selection despite arbitrary interleaving with idempotent finalizer cache writes. |
-| **L13** | If an LFB remains unchanged, at least one threshold-supporting validator remains online, validation and delivery are fair, and replay completes in finite time, rotating recovery eventually admits support and advances finality while the proposal/validation backlog remains bounded. |
+| **L13** | If an LFB remains unchanged, at least one threshold-supporting validator remains online, validation is fair, delivery is eventually within a recovery round, online heartbeat tasks are eventually scheduled within one completed recovery step of each other, and replay completes in finite time, the one-time stall timeout followed by ordered `check_interval` rotation eventually admits support and advances finality while the proposal/validation backlog remains bounded. |
 | **L14** | Under fair local execution and support delivery, independently scheduled honest validators that accept the same state-preserving candidate eventually publish its identical block/root/effect tuple regardless of unrelated runtime resets. |
+| **L15** | Under fair proposer execution, a finite burst of pending-deploy requests colliding with one active proposal produces exactly one forced fresh-snapshot follow-up, while a busy or deferred selected recovery leaves its local round available for retry. |
+| **L16** | If a stable frozen view contains an all-parent-reachable candidate above the current LFB that passes its own exact causal certificate, exact state certificate, and current-LFB preservation check, the finalizer eventually materializes the deterministic greatest eligible `(block_number, block_hash)` candidate. |
 
 ## 8. Conformance
 

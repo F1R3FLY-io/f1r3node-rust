@@ -6,8 +6,9 @@ use crypto::rust::public_key::PublicKey;
 use crypto::rust::signatures::signed::Signed;
 use models::rhoapi::Par;
 use models::rust::block::state_hash::StateHash;
+use models::rust::bond_generation::BondGeneration;
 use models::rust::casper::protocol::casper_message::{
-    BlockMessage, Body, Bond, DeployData, F1r3flyState, ProcessedDeploy,
+    BlockMessage, Body, Bond, DeployData, F1r3flyState, ProcessedDeploy, ValidatorBondGeneration,
 };
 use prost::bytes::Bytes;
 use rholang::rust::interpreter::merging::mergeable_tags;
@@ -320,6 +321,8 @@ impl Genesis {
             post_state_hash: state_hash,
             block_number: genesis.block_number,
             bonds: Self::bonds_proto(&genesis.proof_of_stake),
+            bond_generations: Self::bond_generations_proto(&genesis.proof_of_stake),
+            active_validators: Self::active_validators_proto(&genesis.proof_of_stake),
         };
 
         let failed_deploys: Vec<_> = processed_deploys
@@ -369,5 +372,29 @@ impl Genesis {
                 stake,
             })
             .collect()
+    }
+
+    fn bond_generations_proto(proof_of_stake: &ProofOfStake) -> Vec<ValidatorBondGeneration> {
+        let mut generations = proof_of_stake
+            .validators
+            .iter()
+            .map(|validator| ValidatorBondGeneration {
+                validator: validator.pk.bytes.clone().into(),
+                generation: BondGeneration::GENESIS,
+            })
+            .collect::<Vec<_>>();
+        generations.sort_unstable();
+        generations
+    }
+
+    fn active_validators_proto(proof_of_stake: &ProofOfStake) -> Vec<Bytes> {
+        let mut validators = proof_of_stake
+            .validators
+            .iter()
+            .map(|validator| Bytes::copy_from_slice(&validator.pk.bytes))
+            .collect::<Vec<_>>();
+        validators.sort_unstable();
+        validators.truncate(proof_of_stake.number_of_active_validators as usize);
+        validators
     }
 }

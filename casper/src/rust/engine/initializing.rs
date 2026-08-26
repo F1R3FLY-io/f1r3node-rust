@@ -36,6 +36,7 @@ use tokio::sync::mpsc;
 use tokio::time::sleep;
 
 use crate::rust::block_status::ValidBlock;
+use crate::rust::blocks::block_processing_queue::BlockProcessingQueueSender;
 use crate::rust::casper::{CasperShardConf, MultiParentCasper};
 use crate::rust::engine::block_retriever::BlockRetriever;
 use crate::rust::engine::engine::{
@@ -76,10 +77,10 @@ pub struct Initializing<T: TransportLayer + Send + Sync + Clone + 'static> {
 
     // Block processing queue - matches Scala's blockProcessingQueue: Queue[F, (Casper[F], BlockMessage)]
     // Using trait object to support different MultiParentCasper implementations
-    block_processing_queue_tx:
-        mpsc::Sender<(Arc<dyn MultiParentCasper + Send + Sync>, BlockMessage)>,
+    block_processing_queue_tx: BlockProcessingQueueSender,
     blocks_in_processing: Arc<DashSet<BlockHash>>,
     casper_shard_conf: CasperShardConf,
+    required_genesis_signatures: i32,
     validator_id: Option<ValidatorIdentity>,
     the_init: Arc<
         dyn Fn() -> Pin<Box<dyn Future<Output = Result<(), CasperError>> + Send>> + Send + Sync,
@@ -125,12 +126,10 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
         rejected_deploy_buffer: Arc<Mutex<KeyValueRejectedDeployBuffer>>,
         casper_buffer_storage: CasperBufferKeyValueStorage,
         rspace_state_manager: RSpaceStateManager,
-        block_processing_queue_tx: mpsc::Sender<(
-            Arc<dyn MultiParentCasper + Send + Sync>,
-            BlockMessage,
-        )>,
+        block_processing_queue_tx: BlockProcessingQueueSender,
         blocks_in_processing: Arc<DashSet<BlockHash>>,
         casper_shard_conf: CasperShardConf,
+        required_genesis_signatures: i32,
         validator_id: Option<ValidatorIdentity>,
         the_init: Arc<
             dyn Fn() -> Pin<Box<dyn Future<Output = Result<(), CasperError>> + Send>> + Send + Sync,
@@ -162,6 +161,7 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
             block_processing_queue_tx,
             blocks_in_processing,
             casper_shard_conf,
+            required_genesis_signatures,
             validator_id,
             the_init,
             block_message_rx: Arc::new(Mutex::new(Some(block_message_rx))),
@@ -388,7 +388,7 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
 
             initializing.block_dag_storage.insert(
                 block,
-                block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Approved,
+                block_storage::rust::dag::block_dag_key_value_storage::InsertMode::ApprovedGenesis,
             )?;
 
             initializing.request_approved_state(approved_block).await?;
@@ -418,7 +418,8 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
 
         // TODO: Scala resolve validation of approved block - we should be sure that bootstrap is not lying
         // Might be Validate.approvedBlock is enough but have to check
-        let validate_ok = Validate::approved_block(&approved_block);
+        let validate_ok =
+            Validate::approved_block(&approved_block, self.required_genesis_signatures);
         let is_valid = sender_is_bootstrap && shard_name_is_valid && validate_ok;
 
         if is_valid {
@@ -836,6 +837,9 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
             // NOTE: This is not in original Scala code. Added because we changed block_store
             // to Option<KeyValueBlockStore> to support moving it in create_casper_and_transition_to_running
             let block = self.block_store.get_unsafe(&hash);
+            if block.block_hash == start_block.block_hash {
+                continue;
+            }
             // If sender has stake 0 in approved block, this means that sender has been slashed and block is invalid
             let is_invalid = invalid_blocks.contains(&block.block_hash.to_vec());
             // Filter older not necessary blocks
@@ -1103,8 +1107,6 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
             .unwrap()
             .take()
             .ok_or_else(|| CasperError::RuntimeError("Estimator not available".to_string()))?;
-        let recovery_estimator = estimator.clone();
-
         // The on-chain fault-tolerance threshold is read and adopted by
         // `hash_set_casper` (the single adoption point shared by all three
         // casper constructors), so this path deliberately does NOT read it
@@ -1133,8 +1135,6 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
             self.heartbeat_signal_ref.clone(),
         )
         .await?;
-        let adopted_casper_shard_conf = casper.casper_shard_conf().clone();
-
         tracing::info!(
             "create_casper_and_transition_to_running: MultiParentCasper instance created"
         );
@@ -1160,19 +1160,6 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
             self.block_retriever.clone(),
             Some(RunningRecoveryContext {
                 connections_cell: self.connections_cell.clone(),
-                last_approved_block: self.last_approved_block.clone(),
-                block_store: self.block_store.clone(),
-                block_dag_storage: self.block_dag_storage.clone(),
-                deploy_storage: self.deploy_storage.clone(),
-                rejected_deploy_buffer: self.rejected_deploy_buffer.clone(),
-                casper_buffer_storage: self.casper_buffer_storage.clone(),
-                rspace_state_manager: self.rspace_state_manager.clone(),
-                event_publisher: self.event_publisher.clone(),
-                engine_cell: self.engine_cell.clone(),
-                runtime_manager: self.runtime_manager.clone(),
-                estimator: recovery_estimator,
-                casper_shard_conf: adopted_casper_shard_conf,
-                heartbeat_signal_ref: self.heartbeat_signal_ref.clone(),
             }),
             &self.engine_cell,
             &self.event_publisher,

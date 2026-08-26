@@ -650,9 +650,9 @@ Partially redistributed / Burned as dispositions of the *stake*; the StageC mode
 halted (`SlashFlow.tla` Burned branch; Rocq `redeem_burned_stays_halted`; `PoS.rhox` `redeemSlashed` Burned
 branch). A deep-dive of how a Burned validator is used downstream settles the apparent tension with "Upon
 redemption, minting resumes": a Burned validator **cannot mint** (epoch-mint eligibility is
-`active ∧ ¬halted ∧ ¬minted`; Burned fails both `active` and `¬halted` — `PoS.rhox:590–592`), **cannot
-re-bond** (`bond` rejects a pk already in `allBonds`, which slash left at 0 — `PoS.rhox:428`), and **cannot be
-re-redeemed** (redemption requires a quarantine record, which Burned clears — `PoS.rhox:934/1039`): it is
+`active ∧ ¬halted ∧ ¬minted`; Burned fails both `active` and `¬halted` — `PoS.rhox:460-464`), **cannot
+re-bond** (`bond` rejects a key in `burnedValidators` — `PoS.rhox:345-361`), and **cannot be
+re-redeemed** (the Burned resolution clears quarantine and records the terminal key — `PoS.rhox:788-793`): it is
 permanently dead. So the spec's "Upon redemption, minting resumes" is realized by the **restorative**
 redemptions (Vindicated = proven right; Guilty = an arrangement, restored with a positive bond); Burned is the
 non-restorative case, and a burned validator's permanent halt is exactly "minting … contingent on … good
@@ -2237,7 +2237,7 @@ $`r \prec n`$. The Casper same-deploy transfer regression is additionally run
 on one CPU, the schedule that reliably reproduced the original rejection.
 
 **Cross-refs.** DR-31, DR-32, DR-36, DR-38, DR-41, TM-CA-177, E2E-004,
-E2E-021, E2E-048 through E2E-050, `StackTransferConservation.v`, and
+E2E-021, REL-003 through REL-005, `StackTransferConservation.v`, and
 `CausalStackOrder.v`.
 
 ## DR-43 — Exact accepted-effect provenance governs state-preserving finality
@@ -2303,7 +2303,7 @@ orders, repeated majority rounds, unrelated rejection candidates, arbitrary
 reject/restore sequences, causal-versus-state certificates, covering-parent
 fast paths, and execution-backed stale/rebase transitions.
 
-**Cross-refs.** DR-36, DR-38, DR-42, TM-CA-178, E2E-046, E2E-049,
+**Cross-refs.** DR-36, DR-38, DR-42, TM-CA-178, REL-001, REL-004,
 `finalized-floor-specification.md` R-EFFECT-ID through R-EFFECT-SCAN and S28,
 and `finalized-floor-verification.md` H11.
 
@@ -2371,7 +2371,7 @@ falls back to the captured LFB. Merge-rebase regressions prove that parent fast
 paths are used only when the selected cover preserves the floor. The focused
 bridge scenario remains the end-to-end gate.
 
-**Cross-refs.** DR-43, TM-CA-178, E2E-046, E2E-049, E2E-051,
+**Cross-refs.** DR-43, TM-CA-178, REL-001, REL-004, REL-006,
 `finalized-floor-specification.md` R-PARENT-STATE/R-PARENT-EVIDENCE and S29,
 and `finalized-floor-verification.md` T-STATE-PARENT.
 
@@ -2432,7 +2432,7 @@ certificate but blocks promotion. A generated-DAG property varies independent
 side-branch and post-merge depths plus parent order. The five-node bridge and
 aggregate integration suites remain the release gates.
 
-**Cross-refs.** DR-43, DR-44, TM-CA-179, E2E-056,
+**Cross-refs.** DR-43, DR-44, TM-CA-179, REL-011,
 `finalized-floor-specification.md` R-FLOOR/R-UNIVERSAL-FRONTIER and S30, and
 `finalized-floor-verification.md` H12/T-CERTIFIED-FLOOR-PROMOTION.
 
@@ -2487,7 +2487,7 @@ and distinguish the valid linear reuse case from multi-parent, changed-snapshot,
 and non-older-evidence cases. The unchanged 132-block regression passes in 22.92
 seconds, down from 63.21 seconds, without altering its candidate set.
 
-**Cross-refs.** DR-45, TM-CA-180, E2E-057,
+**Cross-refs.** DR-45, TM-CA-180, REL-012,
 `finalized-floor-specification.md` R-COVERAGE-EQUIVALENCE/
 R-LINEAR-SNAPSHOT-REUSE and S31, and
 `finalized-floor-verification.md` C13/T-COVERAGE-TRANSPARENCY.
@@ -2735,7 +2735,7 @@ inside a COMM, exact protocol-4 physical/byte/fee debit, and play/replay root
 equality. Reducer regressions additionally prove that a later deployment error
 removes all stack custody and births while preserving ordinary attempted work.
 
-**Cross-refs.** CA-P-196, TM-CA-185, UC-CA-176, E2E-059, DR-42, DR-47, and
+**Cross-refs.** CA-P-196, TM-CA-185, UC-CA-176, REL-014, DR-42, DR-47, and
 [`cost-accounting-impl/end-to-end-authority-settlement.md`](cost-accounting-impl/end-to-end-authority-settlement.md).
 
 ## DR-50 — Evaluation and replay validation share one state-and-witness transaction
@@ -2824,7 +2824,7 @@ that the replay runtime's active checkpoint equals the block pre-state. Existing
 play/replay cost, status, authority, birth, settlement, and root-tamper tests cover
 the remaining validation exits.
 
-**Cross-refs.** CA-P-197, TM-CA-186, UC-CA-177, E2E-060, DR-47, DR-49, and
+**Cross-refs.** CA-P-197, TM-CA-186, UC-CA-177, REL-015, DR-47, DR-49, and
 [`cost-accounting-impl/evaluation-transaction-isolation.md`](cost-accounting-impl/evaluation-transaction-isolation.md).
 
 ## DR-51 — Mergeable evidence is locally replayed and keyed by complete execution identity
@@ -2933,7 +2933,7 @@ require exact-key deletion while preserving an ineligible neighboring entry;
 the DAG-policy suite exercises every finality, depth, child, empty-latest, latest-message,
 and malformed-state guard.
 
-**Cross-refs.** CA-P-198, TM-CA-187, UC-CA-178, E2E-061, DR-50, and
+**Cross-refs.** CA-P-198, TM-CA-187, UC-CA-178, REL-016, DR-50, and
 [`cost-accounting-impl/mergeable-evidence-authentication.md`](cost-accounting-impl/mergeable-evidence-authentication.md).
 
 ## DR-52 — Close the allocator lifecycle at completed block boundaries
@@ -3064,6 +3064,81 @@ deploy-lifecycle gate runs the safe and unsafe TLC/Apalache controls and the Rus
 suite. The canonical multi-node workload remains the release oracle for proposal
 liveness after a terminal funding rejection.
 
-**Cross-refs.** CA-P-200, TM-CA-189, UC-CA-180, E2E-063, DR-31, DR-50,
+**Cross-refs.** CA-P-200, TM-CA-189, UC-CA-180, REL-018, DR-31, DR-50,
 DR-51, and
 [`cost-accounting-impl/admission-effect-alignment.md`](cost-accounting-impl/admission-effect-alignment.md).
+
+---
+
+## DR-54 — Durable finalizer discovery follows complete causal evidence
+
+**Status:** accepted and implemented; aggregate and canonical multi-node gates
+remain release evidence.
+
+**Context.** State-preserving cost effects made a block carried through a
+secondary parent eligible as a per-block proposal floor. That path used complete
+all-parent latest-message coverage. The durable LFB finalizer still propagated
+support only through main-parent edges. It could therefore fail to enumerate the
+exact target whose absence caused `FinalizedFloorMaterializationPending`.
+Repeated scheduling did not help because every frozen view reproduced the same
+incomplete candidate set.
+
+**Decision.** Candidate enumeration in the durable finalizer MUST use the same
+descending all-parent coverage relation as floor derivation. For frozen latest
+messages $`J`$, the supporter set at candidate $`C`$ is exactly
+$`\{v \mid C \preceq_{DAG} J(v)\}`$. Candidates are considered in descending
+`(block_number, block_hash)` order. Enumeration does not confer finality: the
+candidate's corresponding committee and supporter weights still feed the
+unchanged hard-majority gate and exact mutual causal clique; the independently
+filtered state supporters feed the same exact clique rule; and the candidate
+must preserve the current LFB's active effects. Missing metadata or a
+non-descending edge fails closed.
+
+**Consensus boundary.** This decision changes which causally reachable blocks
+are presented to the existing finality predicate. It does not change committee
+membership, validator weight, clique edges, maximum-clique selection, exact FTT
+arithmetic, strictness, or state-certificate refinement. A target selected for
+materialization is bound to its own evidence and the frozen durable predecessor;
+evidence for a causal-only rejected-state sibling cannot be substituted.
+Independent validators remain parallel. Only the existing compare-and-append
+publication point is linearized.
+
+**Why the earlier verification missed it.** `CertifiedFloorPromotion` proved
+complete all-parent discovery for per-block floors. `FinalizerProgress` proved
+complete scanning only after assuming a finite candidate sequence. The proof
+catalog had no refinement equating the durable finalizer's concrete sequence
+with exhaustive all-parent pairwise reachability. Unit tests separately covered
+off-main state admission and complete main-spine scanning, but did not compose a
+proposal floor secondary to every selected tip with the durable materializer.
+
+**Rejected alternatives.** Requiring the target on a main-parent spine would
+discard valid multi-parent state. Lowering FTT or accepting causal-only support
+would alter Casper safety. Treating prolonged deferral as success would hide a
+non-materialized state. Selecting any reachable target without its own evidence
+would permit target substitution. Serializing validators or disabling parallel
+finalizer evaluation would not repair the missing relation.
+
+**Formal verification.** `FinalizerFloorMaterialization.tla` composes two nodes,
+independent latest-message delivery, a strict 8-of-16 boundary, a
+state-rejected sibling, proposal deferral, and local materialization. TLC
+exhausts 9,289 generated / 1,849 distinct states to depth 15; Apalache checks the
+safe model through length 8. Main-parent-only and causal-only controls violate
+their exact named invariants under both tools. Axiom-free
+`FinalizerFloorMaterialization.v` proves target-bound dual certification,
+target-substitution rejection, propagated/pairwise decision equivalence, unique
+highest selection, and the concrete secondary-parent witness. The result is
+exported by `MainTheorem.finalized_floor_materialization_target_alignment_correct`.
+
+**Implementation verification.** The production finalizer calls
+`latest_message_coverage_above`, the same fail-closed worklist used by floor
+derivation. A slow exhaustive oracle independently recomputes every per-target
+causal certificate, state certificate, current-floor preservation result, and
+greatest eligible candidate. Examples cover strict equality, a state-rejected
+sibling, a surviving secondary parent, split/reconverged tips, and advancement
+from the selected secondary floor. The complete finalizer group passes 11 tests
+with one deliberately ignored stress case. A property test varies branch depth,
+parent order, validator order, and height bounds. Loom proves a concurrent
+ambient latest-message arrival cannot retarget a frozen publication.
+
+**Cross-refs.** CA-P-201, TM-CA-191, UC-CA-182, REL-022, finalized-floor
+S41/L16, DR-43, DR-45, and DR-46.

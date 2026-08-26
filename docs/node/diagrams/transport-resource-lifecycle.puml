@@ -1,0 +1,38 @@
+@startuml
+skinparam backgroundColor #FCFCFF
+skinparam shadowing false
+skinparam sequence {
+  ArrowColor #304FFE
+  ActorBorderColor #283593
+  ActorBackgroundColor #E8EAF6
+  ParticipantBorderColor #00695C
+  ParticipantBackgroundColor #E0F2F1
+  LifeLineBorderColor #546E7A
+  LifeLineBackgroundColor #ECEFF1
+}
+
+actor Sender as sender
+participant "Outbound client\nbyte/item budget" as client
+participant "HTTP/2 finite\nstream window" as h2
+participant "Service execution\nsemaphore" as service
+participant "Inbound global\nbyte/item budget" as budget
+queue "Per-peer bounded\nmessage queue" as queue
+participant "Protocol / blob\nhandler" as handler
+participant "Casper admission\nand replay" as casper
+
+sender -[#3949AB]> client : submit payload
+client -[#3949AB]> client : reserve retained bytes and one item
+client -[#3949AB]> h2 : open request stream
+h2 -[#00897B]> service : admit within finite wire window
+service -[#00897B]> budget : begin one bounded handler
+budget -[#00897B]> budget : reserve decoded bytes\nplus compressed wire bytes
+budget -[#00897B]> queue : move payload and reservation
+queue -[#00897B]> service : remote ACK
+service -[#3949AB]> client : gRPC completion
+client -[#3949AB]> sender : report success
+queue -[#EF6C00]> handler : move activity guard and reservation
+handler -[#EF6C00]> casper : dispatch validated payload
+casper -[#2E7D32]> casper : byte-bounded admission and replay
+handler -[#2E7D32]> budget : release on completion, rejection, or cancellation
+client -[#2E7D32]> client : release after last fanout owner completes
+@enduml

@@ -1,9 +1,12 @@
 use casper::rust::blocks::proposer::propose_result::BlockCreatorResult;
 use casper::rust::casper::Casper;
 use casper::rust::util::construct_deploy;
-use models::rust::casper::protocol::casper_message::{ProcessedSystemDeploy, SystemDeployData};
+use models::rust::casper::protocol::casper_message::{
+    BlockMessage, ProcessedSystemDeploy, SystemDeployData,
+};
 
 use crate::helper::test_node::TestNode;
+use crate::slashing::integration_helpers::equivocate_block;
 use crate::util::genesis_builder::{GenesisBuilder, GenesisContext};
 
 struct TestContext {
@@ -48,6 +51,56 @@ impl TestContext {
     }
 }
 
+async fn signed_equivocation(
+    nodes: &mut [TestNode],
+    shard_id: &str,
+    first_nonce: i32,
+    second_nonce: i32,
+) -> (BlockMessage, BlockMessage) {
+    let first_deploy =
+        construct_deploy::basic_deploy_data(first_nonce, None, Some(shard_id.to_string()))
+            .expect("build first equivocation deploy");
+    nodes[0]
+        .casper
+        .deploy(first_deploy)
+        .expect("validator 0 deploy");
+    let first = nodes[0]
+        .create_block_unsafe(&[])
+        .await
+        .expect("validator 0 creates first sibling");
+    let second_deploy =
+        construct_deploy::basic_deploy_data(second_nonce, None, Some(shard_id.to_string()))
+            .expect("build second equivocation deploy");
+    let second = equivocate_block(&mut nodes[0], &first, vec![second_deploy])
+        .await
+        .expect("validator 0 creates second sibling");
+    (first, second)
+}
+
+fn contains_objective_slash(
+    block: &BlockMessage,
+    left: &BlockMessage,
+    right: &BlockMessage,
+) -> bool {
+    block.body.system_deploys.iter().any(|processed| {
+        matches!(
+            processed,
+            ProcessedSystemDeploy::Succeeded {
+                system_deploy:
+                    SystemDeployData::Slash {
+                        invalid_block_hash,
+                        equivocation_block_hash: Some(equivocation_block_hash),
+                        ..
+                    },
+                ..
+            } if (invalid_block_hash == &left.block_hash
+                && equivocation_block_hash == &right.block_hash)
+                || (invalid_block_hash == &right.block_hash
+                    && equivocation_block_hash == &left.block_hash)
+        )
+    })
+}
+
 #[tokio::test]
 async fn slash_for_equivocator_survives_multi_parent_merge() {
     let ctx = TestContext::new().await;
@@ -68,32 +121,23 @@ async fn slash_for_equivocator_survives_multi_parent_merge() {
         .public_key
         .clone();
 
-    // Equivocation: a forged copy of node[0]'s block with a mutated
-    // seq_num. Honest validators see this as InvalidBlockHash and queue
-    // a slashing deploy for the equivocator.
-    let deploy_data = construct_deploy::basic_deploy_data(0, None, Some(ctx.shard_id.clone()))
-        .expect("build deploy");
-    nodes[0]
-        .casper
-        .deploy(deploy_data)
-        .expect("validator 0 deploy");
-    let signed_block = nodes[0]
-        .create_block_unsafe(&[])
+    let (signed_block, invalid_block) = signed_equivocation(&mut nodes, &ctx.shard_id, 0, 7).await;
+    nodes[1]
+        .process_block(signed_block.clone())
         .await
-        .expect("validator 0 creates signed_block");
-    let invalid_block = {
-        let mut b = signed_block.clone();
-        b.seq_num = 47;
-        b
-    };
+        .expect("node 1 processes first sibling");
     nodes[1]
         .process_block(invalid_block.clone())
         .await
-        .expect("node 1 processes invalid_block");
+        .expect("node 1 processes second sibling");
     nodes[2]
         .process_block(invalid_block.clone())
         .await
-        .expect("node 2 processes invalid_block");
+        .expect("node 2 processes second sibling");
+    nodes[2]
+        .process_block(signed_block.clone())
+        .await
+        .expect("node 2 processes first sibling");
 
     // Each honest validator proposes a block containing its own
     // auto-emitted SlashDeploy via prepare_slashing_deploys.
@@ -127,31 +171,13 @@ async fn slash_for_equivocator_survives_multi_parent_merge() {
         .await
         .expect("node 2 processes its own block_2");
 
-    let slashes_in =
-        |block: &models::rust::casper::protocol::casper_message::BlockMessage| -> Vec<prost::bytes::Bytes> {
-            block
-                .body
-                .system_deploys
-                .iter()
-                .filter_map(|psd| match psd {
-                    ProcessedSystemDeploy::Succeeded {
-                        system_deploy:
-                            SystemDeployData::Slash {
-                                invalid_block_hash, ..
-                            },
-                        ..
-                    } => Some(invalid_block_hash.clone()),
-                    _ => None,
-                })
-                .collect()
-        };
     assert!(
-        slashes_in(&block_1).contains(&invalid_block.block_hash),
-        "block_1 must contain a SlashDeploy for the equivocator's invalid_block"
+        contains_objective_slash(&block_1, &signed_block, &invalid_block),
+        "block_1 must contain the canonical two-sibling SlashDeploy"
     );
     assert!(
-        slashes_in(&block_2).contains(&invalid_block.block_hash),
-        "block_2 must contain a SlashDeploy for the equivocator's invalid_block"
+        contains_objective_slash(&block_2, &signed_block, &invalid_block),
+        "block_2 must contain the canonical two-sibling SlashDeploy"
     );
 
     // Sync block_2 into node 1 so the next propose can take both as parents.
@@ -204,7 +230,7 @@ async fn slash_for_equivocator_survives_multi_parent_merge() {
         .iter()
         .find(|b| b.validator == equivocator_pk.bytes)
         .map(|b| b.stake)
-        .expect("equivocator must still appear in bonds map");
+        .unwrap_or(0);
     assert!(
         equivocator_stake <= 1,
         "post-merge equivocator stake must be at the bond floor (<=1); got {}",
@@ -243,8 +269,8 @@ async fn slash_for_equivocator_survives_multi_parent_merge() {
 //
 // This is the "pre-finalization window" corner surfaced during the merge
 // arbitration: the finalized floor may still predate the slash, so
-// `Validate::bonds_cache_from_floor` does not yet force it; safety in that
-// window comes from the merge combining the parents' bond-channel state without
+// Finalized-floor authority does not itself apply the transition; safety in
+// that window comes from the merge combining the parents' bond-channel state without
 // netting a re-bond (and, on a node that has seen the equivocation,
 // `neglected_invalid_block` re-enforcing it). Either way the equivocator must
 // end at the bond floor. Contrast `slash_for_equivocator_survives_multi_parent_merge`,
@@ -268,28 +294,16 @@ async fn slash_survives_merge_with_pre_slash_sibling() {
         .public_key
         .clone();
 
-    // V0 equivocates: a forged copy of node[0]'s block with a mutated seq_num.
-    let deploy_data = construct_deploy::basic_deploy_data(0, None, Some(ctx.shard_id.clone()))
-        .expect("build deploy");
-    nodes[0]
-        .casper
-        .deploy(deploy_data)
-        .expect("validator 0 deploy");
-    let signed_block = nodes[0]
-        .create_block_unsafe(&[])
-        .await
-        .expect("validator 0 creates signed_block");
-    let invalid_block = {
-        let mut b = signed_block.clone();
-        b.seq_num = 47;
-        b
-    };
+    let (signed_block, invalid_block) = signed_equivocation(&mut nodes, &ctx.shard_id, 0, 7).await;
 
-    // ONLY node 1 observes the equivocation → only node 1 will slash.
+    nodes[1]
+        .process_block(signed_block.clone())
+        .await
+        .expect("node 1 processes first sibling");
     nodes[1]
         .process_block(invalid_block.clone())
         .await
-        .expect("node 1 processes invalid_block");
+        .expect("node 1 processes second sibling");
 
     // Node 1 proposes a POST-slash block (auto-emitted SlashDeploy for V0).
     let deploy_data_a = construct_deploy::basic_deploy_data(1, None, Some(ctx.shard_id.clone()))
@@ -320,30 +334,12 @@ async fn slash_survives_merge_with_pre_slash_sibling() {
         .await
         .expect("validator 2 creates pre_slash_block");
 
-    let slashes_in =
-        |block: &models::rust::casper::protocol::casper_message::BlockMessage| -> Vec<prost::bytes::Bytes> {
-            block
-                .body
-                .system_deploys
-                .iter()
-                .filter_map(|psd| match psd {
-                    ProcessedSystemDeploy::Succeeded {
-                        system_deploy:
-                            SystemDeployData::Slash {
-                                invalid_block_hash, ..
-                            },
-                        ..
-                    } => Some(invalid_block_hash.clone()),
-                    _ => None,
-                })
-                .collect()
-        };
     assert!(
-        slashes_in(&slash_block).contains(&invalid_block.block_hash),
-        "slash_block must contain a SlashDeploy for the equivocator's invalid_block"
+        contains_objective_slash(&slash_block, &signed_block, &invalid_block),
+        "slash_block must contain the canonical two-sibling SlashDeploy"
     );
     assert!(
-        slashes_in(&pre_slash_block).is_empty(),
+        !contains_objective_slash(&pre_slash_block, &signed_block, &invalid_block),
         "pre_slash_block must NOT carry a slash (node 2 never saw the equivocation)"
     );
 
@@ -390,7 +386,7 @@ async fn slash_survives_merge_with_pre_slash_sibling() {
         .iter()
         .find(|b| b.validator == equivocator_pk.bytes)
         .map(|b| b.stake)
-        .expect("equivocator must still appear in bonds map");
+        .unwrap_or(0);
     assert!(
         equivocator_stake <= 1,
         "post-merge equivocator stake must be at the bond floor (<=1) even when a \
@@ -406,31 +402,23 @@ async fn canonical_prestate_zero_bond_excludes_duplicate_slash() {
     let mut nodes = TestNode::create_network(ctx.genesis.clone(), 3, None, None, None, None)
         .await
         .expect("create_network(3)");
-    // Forge an equivocation. node 1 processes the invalid block so
-    // own-detection will emit a SlashDeploy under node 1's pk.
-    let deploy_data = construct_deploy::basic_deploy_data(0, None, Some(ctx.shard_id.clone()))
-        .expect("build deploy");
-    nodes[0]
-        .casper
-        .deploy(deploy_data)
-        .expect("validator 0 deploy");
-    let signed_block = nodes[0]
-        .create_block_unsafe(&[])
+    let (signed_block, invalid_block) = signed_equivocation(&mut nodes, &ctx.shard_id, 0, 7).await;
+    nodes[1]
+        .process_block(signed_block.clone())
         .await
-        .expect("validator 0 creates signed_block");
-    let invalid_block = {
-        let mut b = signed_block.clone();
-        b.seq_num = 47;
-        b
-    };
+        .expect("node 1 processes first sibling");
     nodes[1]
         .process_block(invalid_block.clone())
         .await
-        .expect("node 1 processes invalid_block");
+        .expect("node 1 processes second sibling");
     nodes[2]
         .process_block(invalid_block.clone())
         .await
-        .expect("node 2 processes invalid_block");
+        .expect("node 2 processes second sibling");
+    nodes[2]
+        .process_block(signed_block.clone())
+        .await
+        .expect("node 2 processes first sibling");
 
     // Each honest validator proposes a sibling block at block_number=1
     // so the merge proposer's tip set contains two non-ancestor parents.
@@ -499,7 +487,7 @@ async fn canonical_prestate_zero_bond_excludes_duplicate_slash() {
         .iter()
         .find(|bond| bond.validator == invalid_block.sender)
         .map(|bond| bond.stake)
-        .expect("offender remains represented in merged bonds");
+        .unwrap_or(0);
     assert_eq!(offender_stake, 0);
     drop(snapshot);
 
@@ -514,24 +502,9 @@ async fn canonical_prestate_zero_bond_excludes_duplicate_slash() {
         .await
         .expect("validator 1 creates block");
 
-    let succeeded_slash_for_invalid_block = block
-        .body
-        .system_deploys
-        .iter()
-        .filter(|psd| {
-            matches!(
-                psd,
-                ProcessedSystemDeploy::Succeeded {
-                    system_deploy: SystemDeployData::Slash { invalid_block_hash, .. },
-                    ..
-                } if *invalid_block_hash == invalid_block.block_hash
-            )
-        })
-        .count();
-    assert_eq!(
-        succeeded_slash_for_invalid_block, 0,
-        "canonical candidate selection must exclude an offender whose merged-pre-state bond is zero; got {} slash deploys",
-        succeeded_slash_for_invalid_block
+    assert!(
+        !contains_objective_slash(&block, &signed_block, &invalid_block),
+        "canonical candidate selection must exclude an offender whose merged-pre-state bond is zero"
     );
 }
 
@@ -542,29 +515,23 @@ async fn canonical_prestate_zero_bond_is_not_proposal_work() {
     let mut nodes = TestNode::create_network(ctx.genesis.clone(), 3, None, None, None, None)
         .await
         .expect("create_network(3)");
-    let deploy_data = construct_deploy::basic_deploy_data(0, None, Some(ctx.shard_id.clone()))
-        .expect("build deploy");
-    nodes[0]
-        .casper
-        .deploy(deploy_data)
-        .expect("validator 0 deploy");
-    let signed_block = nodes[0]
-        .create_block_unsafe(&[])
+    let (signed_block, invalid_block) = signed_equivocation(&mut nodes, &ctx.shard_id, 0, 7).await;
+    nodes[1]
+        .process_block(signed_block.clone())
         .await
-        .expect("validator 0 creates signed_block");
-    let invalid_block = {
-        let mut b = signed_block.clone();
-        b.seq_num = 47;
-        b
-    };
+        .expect("node 1 processes first sibling");
     nodes[1]
         .process_block(invalid_block.clone())
         .await
-        .expect("node 1 processes invalid_block");
+        .expect("node 1 processes second sibling");
     nodes[2]
         .process_block(invalid_block.clone())
         .await
-        .expect("node 2 processes invalid_block");
+        .expect("node 2 processes second sibling");
+    nodes[2]
+        .process_block(signed_block.clone())
+        .await
+        .expect("node 2 processes first sibling");
 
     let deploy_a = construct_deploy::basic_deploy_data(1, None, Some(ctx.shard_id.clone()))
         .expect("build deploy a");
@@ -629,7 +596,7 @@ async fn canonical_prestate_zero_bond_is_not_proposal_work() {
         .iter()
         .find(|bond| bond.validator == invalid_block.sender)
         .map(|bond| bond.stake)
-        .expect("offender remains represented in merged bonds");
+        .unwrap_or(0);
     assert_eq!(offender_stake, 0);
     drop(snapshot);
 

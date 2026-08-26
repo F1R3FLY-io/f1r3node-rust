@@ -5,7 +5,8 @@
 //! reference; the trait method is a one-line delegate in `traits.rs`.
 
 use block_storage::rust::dag::block_dag_key_value_storage::{
-    DeployId, InsertMode, KeyValueDagRepresentation,
+    CertifiedAdmissionOutcome, CertifiedSenderAuthority, DeployId, InsertMode,
+    KeyValueDagRepresentation,
 };
 use comm::rust::transport::transport_layer::TransportLayer;
 use crypto::rust::signatures::signed::Signed;
@@ -147,6 +148,8 @@ pub(crate) fn admit_deploy_cosigned<T: TransportLayer + Send + Sync>(
 pub(crate) async fn admit_handle_valid_block<T: TransportLayer + Send + Sync>(
     this: &MultiParentCasperImpl<T>,
     block: &BlockMessage,
+    certificate: &CertifiedSenderAuthority,
+    outcome: &CertifiedAdmissionOutcome,
 ) -> Result<KeyValueDagRepresentation, CasperError> {
     // Bug #17 / T-9.20: atomic (DAG insert, casper-buffer remove) pair
     // via the helper. See
@@ -162,6 +165,8 @@ pub(crate) async fn admit_handle_valid_block<T: TransportLayer + Send + Sync>(
         &this.block_dag_storage,
         block,
         InsertMode::Normal,
+        certificate,
+        outcome,
         &this.casper_buffer_storage,
         block_storage::rust::dag::buffer_dag_transition::BufferTransition::RemoveFromBuffer(
             block_hash_serde,

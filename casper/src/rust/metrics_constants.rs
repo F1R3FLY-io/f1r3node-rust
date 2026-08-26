@@ -22,6 +22,8 @@ pub const REPORTING_RUNTIME_METRICS_SOURCE: &str = "f1r3fly.rholang.reportingRun
 pub const BLOCK_HASH_RECEIVED_METRIC: &str = "block.hash.received";
 pub const BLOCK_REQUEST_RECEIVED_METRIC: &str = "block.request.received";
 pub const BLOCK_REQUESTS_TOTAL_METRIC: &str = "block.requests.total";
+pub const BLOCK_REQUESTS_CAPACITY_DEFERRED_TOTAL_METRIC: &str =
+    "block.requests.capacity-deferred.total";
 pub const BLOCK_REQUESTS_RETRIES_METRIC: &str = "block.requests.retries";
 pub const BLOCK_REQUESTS_RETRY_ACTION_METRIC: &str = "block.requests.retry.action";
 pub const BLOCK_REQUESTS_STALE_EVICTIONS_METRIC: &str = "block.requests.stale-evictions";
@@ -63,6 +65,11 @@ pub const ALLOCATOR_TRIM_TOTAL_METRIC: &str = "allocator.trim.total";
 pub const BLOCK_PROCESSING_ACTIVE_METRIC: &str = "block-processing.active";
 pub const BLOCK_PROCESSING_PARALLEL_LIMIT_METRIC: &str = "block-processing.parallel-limit";
 pub const BLOCK_PROCESSING_QUEUE_PENDING_METRIC: &str = "block-processing.queue.pending";
+pub const BLOCK_PROCESSING_ADMISSION_BYTES_METRIC: &str = "block-processing.admission.bytes";
+pub const BLOCK_PROCESSING_ADMISSION_BYTES_LIMIT_METRIC: &str =
+    "block-processing.admission.bytes-limit";
+pub const BLOCK_PROCESSING_ADMISSION_DEFERRED_TOTAL_METRIC: &str =
+    "block-processing.admission.deferred.total";
 pub const BLOCKS_IN_PROCESSING_SIZE_METRIC: &str = "block-processing.in-flight";
 pub const PROCESS_RSS_KB_METRIC: &str = "process.rss-kb";
 // TODO: Port MergeableChannelsGC metric when PR #367 is merged
@@ -136,7 +143,7 @@ pub const BLOCK_REPLAY_DEPLOY_CHECK_REPLAY_DATA_TIME_METRIC: &str =
 pub const RUNTIME_SPAWN_TIME_METRIC: &str = "runtime.spawn.time";
 pub const RUNTIME_SPAWN_REPLAY_TIME_METRIC: &str = "runtime.spawn-replay.time";
 
-// Block validation step time metrics (8 variants)
+// Block validation step time metrics
 pub const BLOCK_VALIDATION_STEP_BLOCK_SUMMARY_TIME_METRIC: &str =
     "block.validation.step.block-summary.time";
 pub const BLOCK_VALIDATION_STEP_CHECKPOINT_TIME_METRIC: &str =
@@ -145,6 +152,8 @@ pub const BLOCK_VALIDATION_STEP_PRE_STATE_TIME_METRIC: &str =
     "block.validation.step.pre-state.time";
 pub const BLOCK_VALIDATION_STEP_BONDS_CACHE_TIME_METRIC: &str =
     "block.validation.step.bonds-cache.time";
+pub const BLOCK_VALIDATION_STEP_FLOOR_AUTHORITY_TIME_METRIC: &str =
+    "block.validation.step.floor-authority.time";
 pub const BLOCK_VALIDATION_STEP_NEGLECTED_INVALID_BLOCK_TIME_METRIC: &str =
     "block.validation.step.neglected-invalid-block.time";
 pub const BLOCK_VALIDATION_STEP_NEGLECTED_EQUIVOCATION_TIME_METRIC: &str =

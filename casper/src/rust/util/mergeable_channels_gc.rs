@@ -184,7 +184,7 @@ mod tests {
             None,
             None,
             Some(parents),
-            None,
+            Some(vec![]),
             None,
             None,
             Some(vec![Bond {
@@ -213,7 +213,7 @@ mod tests {
         let storage = BlockDagKeyValueStorage::new(&mut manager).await.unwrap();
         for (index, block) in blocks.iter().enumerate() {
             let mode = if index == 0 {
-                InsertMode::Approved
+                InsertMode::ApprovedGenesis
             } else {
                 InsertMode::Normal
             };
@@ -321,7 +321,7 @@ mod tests {
             .enumerate()
         {
             let mode = if index == 0 {
-                InsertMode::Approved
+                InsertMode::ApprovedGenesis
             } else {
                 InsertMode::Normal
             };

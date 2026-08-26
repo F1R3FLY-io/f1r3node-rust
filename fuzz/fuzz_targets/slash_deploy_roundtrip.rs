@@ -19,21 +19,29 @@
 
 use crypto::rust::public_key::PublicKey;
 use libfuzzer_sys::fuzz_target;
+use models::rust::bond_generation::BondGeneration;
 use models::rust::casper::protocol::casper_message::{ProcessedSystemDeploy, SystemDeployData};
 use prost::bytes::Bytes;
 
 #[derive(arbitrary::Arbitrary, Debug)]
 struct Input {
     invalid_block_hash: Vec<u8>,
+    equivocation_block_hash: Option<Vec<u8>>,
     issuer_public_key: Vec<u8>,
     target_activation_epoch: i64,
+    target_bond_generation: u64,
 }
 
 fuzz_target!(|input: Input| {
     let slash = SystemDeployData::Slash {
         invalid_block_hash: Bytes::from(input.invalid_block_hash),
+        equivocation_block_hash: input.equivocation_block_hash.map(Bytes::from),
         issuer_public_key: PublicKey::from_bytes(&Bytes::from(input.issuer_public_key)),
         target_activation_epoch: input.target_activation_epoch,
+        target_bond_generation: BondGeneration::new(
+            i64::try_from(input.target_bond_generation).unwrap_or(i64::MAX),
+        )
+        .expect("nonnegative generation"),
     };
     let processed = ProcessedSystemDeploy::Succeeded {
         event_list: Vec::new(),

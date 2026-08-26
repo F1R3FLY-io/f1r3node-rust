@@ -273,7 +273,7 @@ specification is self-contained.
 | Label                      | Meaning                                                                     |
 |----------------------------|-----------------------------------------------------------------------------|
 | `sign(v, s, b)`            | Validator `v` signs block `b` at sequence number `s`                        |
-| `detect(v, s) → ib`        | Detector classifies the (v, s) signature set with InvalidBlock variant `ib` |
+| `detect(v, s) → obs`       | Detector classifies the arriving message as no, requested-dependency, or unsolicited equivocation observation |
 | `record(v, sn)`            | An EquivocationRecord is created for `(v, sn)`                              |
 | `propose(p, deploys)`      | Proposer `p` emits a block carrying the listed slash deploys                |
 | `executeSlash(o, ok)`      | PoS contract slashes offender `o` with success outcome `ok ∈ Bool`          |
@@ -282,28 +282,33 @@ specification is self-contained.
 
 ### 2.4 InvalidBlock taxonomy
 
-The `InvalidBlock` enum has **27 variants**. **17 are slashable
-pre-fix; 19 are slashable post-fix** (Bug #1 promotes
-`IgnorableEquivocation` from non-slashable to slashable, and the 27th
-variant `UnauthorizedSlashDeploy` — raised when a block carries a Slash
-system deploy that fails the §9.14 receive-gate authorization — is also
-slashable, `block_status.rs:206`). The 17
-pre-fix slashable variants in the current Rust source are:
+The current `InvalidBlock` enum has **26 variants**, of which **17 are
+slashable** (`block_status.rs:37-72,361-387`):
 
 ```
-AdmissibleEquivocation,  NeglectedEquivocation,    NeglectedInvalidBlock,
-JustificationRegression, InvalidParents,            InvalidFollows,
-InvalidBlockNumber,      InvalidSequenceNumber,     InvalidShardId,
-InvalidRepeatDeploy,     DeployNotSigned,           InvalidTransaction,
-InvalidBondsCache,       InvalidBlockHash,          ContainsExpiredDeploy,
+NeglectedEquivocation,     NeglectedInvalidBlock,     JustificationRegression,
+InvalidParents,            InvalidFollows,             InvalidBlockNumber,
+InvalidSequenceNumber,     InvalidShardId,              InvalidRepeatDeploy,
+DeployNotSigned,           InvalidTransaction,          InvalidBondsCache,
+InvalidEquivocationEvidence, UnauthorizedSlashDeploy,   ContainsExpiredDeploy,
 ContainsTimeExpiredDeploy, ContainsFutureDeploy
 ```
 
-The remaining 9 variants — `IgnorableEquivocation`, `InvalidFormat`,
-`InvalidSignature`, `InvalidSender`, `InvalidVersion`, `InvalidTimestamp`,
-`InvalidRejectedDeploy`, `NotOfInterest`, `LowDeployCost` — are
-non-slashable today. **Bug fix #1 (T-9.1)** moves `IgnorableEquivocation`
-into the slashable set.
+The remaining 9 variants — `InvalidFormat`, `InvalidSignature`,
+`InvalidSender`, `InvalidVersion`, `InvalidTimestamp`, `InvalidBlockHash`,
+`InvalidRejectedDeploy`, `NotOfInterest`, and `LowDeployCost` — are
+non-slashable.
+
+`AdmissibleEquivocation` and `IgnorableEquivocation` are historical/abstract
+detector labels, not current `InvalidBlock` variants. Production retains their
+distinction as `EquivocationObservation::{RequestedDependency, Unsolicited}`
+on an otherwise accepted validation (`block_status.rs:74-78,89-100`). The
+durable consensus fact is stronger: every certified accepted sibling extends
+the generation-scoped objective-evidence index keyed by
+`(validator, bond_generation, sequence)`, and two distinct hashes create the
+tracker identity (`block_dag_key_value_storage.rs:1499-1528`). This is the
+current refinement of Bug fix #1/T-9.1: unsolicited evidence cannot be
+dropped, but a unary observation alone does not falsely make a block invalid.
 
 ### 2.5 Rocq ↔ TLA+ ↔ Rust crosswalk
 
@@ -371,9 +376,10 @@ Side effects: none on success; on failure the caller
 
 #### 3.1.2 `EquivocationDetector`
 
-Classifies an arriving block into one of the equivocation statuses:
-`Valid`, `AdmissibleEquivocation`, `IgnorableEquivocation`, or
-`NeglectedEquivocation`.
+Classifies an arriving block with
+`Option<EquivocationObservation>`: `None`, `RequestedDependency`, or
+`Unsolicited`. This observation accompanies an otherwise accepted certified
+validation; it is not itself an `InvalidBlock` verdict.
 
 The decision rules mirror
 `equivocation_detector.rs:78-124`:
@@ -381,11 +387,11 @@ The decision rules mirror
 ```
 detect(v, s, b):
   if no other block (v, s, b') with b' ≠ b exists in the DAG:
-    return Valid
+    return None
   else if b was requested as a dependency of some later block:
-    return AdmissibleEquivocation
+    return RequestedDependency
   else:
-    return IgnorableEquivocation
+    return Unsolicited
 
 detectNeglected(v, s, b):
   if (v, s-1) ∈ EquivocationRecords  AND
@@ -394,9 +400,15 @@ detectNeglected(v, s, b):
     return NeglectedEquivocation
 ```
 
-Rocq mechanization in `EquivocationDetector.v`. TLA+ model in
-`EquivocationDetector.tla`. Theorems T-1 (soundness) and T-2
-(completeness) are proved here. A memory-efficient property-preserving
+The older Rocq/TLA+ detector vocabulary maps `RequestedDependency` to
+`AdmissibleEquivocation` and `Unsolicited` to `IgnorableEquivocation`; it is an
+abstraction of the observation boundary, not the current Rust enum. Current
+durability and two-sibling objectivity are proved in
+`ObjectiveEquivocation.v`, `CertifiedObjectiveEquivocation.v`, and
+`ObjectiveEvidenceSequenceEligibility.v`, and specified in
+[`objective-equivocation-evidence.md`](./objective-equivocation-evidence.md).
+The historical detector mechanization remains in `EquivocationDetector.v`
+and `EquivocationDetector.tla`. A memory-efficient property-preserving
 TLA+ quotient `EquivocationDetectorEager.tla` is also provided; it
 combines signing and detection into one atomic step (collapsing
 classification interleavings) and converts the temporal property to a
@@ -405,29 +417,32 @@ three-part local-exhaustion, product-locality, and eager-abstraction argument.
 
 #### 3.1.3 `MultiParentCasperImpl`
 
-The orchestrator. It composes `Validate`, `EquivocationDetector`, and
-`BlockDagStorage` to process incoming blocks. The critical method is
-`handle_invalid_block(block, ib)` at `engine/multi_parent_casper/validation_dispatcher.rs:403`:
+The orchestrator composes `Validate`, `EquivocationDetector`, certified sender
+authority, and `BlockDagStorage`. Current processing separates accepted
+objective evidence from objective rejection:
 
 ```
-match ib with
-  | AdmissibleEquivocation ⟹
-        record  ← BlockDagStorage.equivocation_records()
-        if (block.sender, block.seq - 1) ∉ record:
-          BlockDagStorage.insert_equivocation_record(
-            block.sender, block.seq - 1, ∅)
-        // ⚠ pre-fix: the read-then-insert is NOT atomic
-        handle_invalid_block_effect(block)
-  | IgnorableEquivocation ⟹
-        // ⚠ pre-fix: silently dropped (DOS vector)
-        log("Ignoring equivocation")
-  | _ if is_slashable(ib) ⟹
-        // ⚠ pre-fix: only flags as invalid; no record, no slash
-        handle_invalid_block_effect(block)
-  | _ ⟹ handle_invalid_block_effect(block)
+match certified_validation with
+  | Accepted(authority, outcome, observation) ⟹
+        atomically insert the valid block
+        repair objective evidence at (sender, generation, sequence)
+        if two distinct certified hashes exist, ensure tracker identity
+  | ObjectiveRejected(ib, authority, outcome) when is_slashable(ib) ⟹
+        atomically ensure generation-scoped tracker identity
+        atomically record invalid DAG disposition and remove buffer entry
+  | ObjectiveRejected(ib, authority, outcome) ⟹
+        record the certified non-slashable rejection
+  | UnattributableRejected | LocalFault | MissingDependency ⟹
+        do not manufacture consensus evidence
 ```
 
-Bug fixes #1, #2, and #3 modify the three commented branches; see §10.
+The accepted-validation boundary is `validation_dispatcher.rs:389-415`; the
+generation-scoped invalid-evidence transition is
+`validation_dispatcher.rs:540-640`; certified objective-evidence repair is
+`block_dag_key_value_storage.rs:1499-1528`. Bug fixes #1–#3 are preserved by
+this stronger current structure: no unsolicited sibling is dropped, tracker
+updates are atomic and generation-scoped, and only attributable certified
+outcomes can affect consensus evidence.
 
 ### 3.2 Storage layer
 
@@ -507,15 +522,18 @@ proposer generated wasted deploys that the PoS contract rejected at the
 auth-token check. The current implementation also rejects stale evidence
 and unknown or forged received slash deploys before replay.
 
-For proposed and received blocks, the positive-bond part of authorization is
-evaluated against the exact canonical merged pre-state committed by
-`body.state.pre_state_hash`, not against the receiver's ambient snapshot or
-any individual-parent approximation. Checkpoint replay establishes that root
-before authorization. Consequently, every honest node derives the same bond
-predicate for a block regardless of parent arrival or local snapshot order.
+For proposed and received blocks, positive bond and bond generation are loaded
+together from the exact canonical merged pre-state committed by
+`body.state.pre_state_hash`, not from the receiver's ambient snapshot, its LFB
+cache, a post-state projection, or any individual-parent approximation.
+Checkpoint replay establishes that root before authorization. Consequently,
+every honest node derives the same validator-incarnation authority for a block
+regardless of parent arrival or local snapshot order.
 
-Every successful slash system deploy also contributes its
-`invalid_block_hash` to the receiving block's dependency set. Let
+Every successful slash system deploy contributes every evidence hash to the
+receiving block's dependency set. Unary evidence contributes
+`invalid_block_hash`; objective equivocation evidence also contributes
+`equivocation_block_hash`. Let
 `parents(b)`, `justifications(b)`, and `slashTargets(b)` denote the three
 hash projections. The dependency set is:
 
@@ -527,12 +545,13 @@ D(b) = \operatorname{set}(parents(b)) \cup
 
 A missing slash target is an availability condition, not evidence that the
 proposer acted without authorization. The receiver buffers the slash-bearing
-block, requests the target, and resumes validation only after the target is
-available as block metadata. A hash appearing only in the equivocation
-tracker is not sufficient: the receive-side authorization predicate needs the
-target block's immutable sender, height, and invalid flag. Once those data are
-available, a target known to be valid is rejected objectively; a target still
-unavailable remains a dependency rather than becoming
+block, requests every target, and resumes validation only after all targets
+are available as block metadata. A hash appearing only in the equivocation
+tracker is not sufficient: receive-side authorization needs immutable sender,
+sequence, and height metadata. Unary evidence additionally needs the local
+invalid flag. Objective pair evidence instead checks two distinct,
+canonically ordered blocks from one sender at one sequence number. A target
+still unavailable remains a dependency rather than becoming
 `UnauthorizedSlashDeploy`.
 
 The same separation governs ingress deduplication. A received block is
@@ -556,7 +575,10 @@ validateSlashAuthorization(block, blockMetadata, canonicalBonds)
 
 A system deploy that invokes the on-chain Rholang `slash` method. The
 normative Rust/protobuf payload is
-`SlashDeploy { invalid_block_hash, pk, target_activation_epoch, initial_rand }`.
+`SlashDeploy { invalid_block_hash, equivocation_block_hash?, pk,
+target_activation_epoch, target_bond_generation, initial_rand }`. The optional
+second hash is present for objective equivocation evidence and absent for
+legacy unary evidence.
 The `target_activation_epoch` field is part of block-level authorization:
 received slash deploys are rejected before replay unless the invalid-block
 evidence epoch, target activation epoch, and current block epoch agree.
@@ -581,13 +603,15 @@ remaining names to the unforgeable channels `sys:casper:deployerId`,
 `sys:casper:invalidBlockHash`, `sys:casper:authToken`, and
 `sys:casper:return`. Note: `invalidBlockHash` is a hex string in the
 deploy and must be converted via `.hexToBytes()` before being passed
-to `slash` (which expects raw bytes per `PoS.rhox:782`).
+to `slash` (which expects raw bytes and an exact target bond generation per
+`PoS.rhox:507-526`).
 
-Source seed: `splitByte(1)` of
-`generateSlashDeployRandomSeed(selfId, seqNum, invalidBlockHash)`.
-Including `invalidBlockHash` is consensus-relevant: a single block can
-contain multiple slash deploys, and each must allocate distinct
-unforgeable names during replay.
+Source seed: `splitByte(1)` of the slash seed function over the proposer,
+sequence number, first evidence hash, and optional second evidence hash. The
+unary path preserves the historical byte layout exactly. The pair path sorts
+both hashes before hashing, so opposite arrival orders produce identical
+seeds. Evidence hashes are consensus-relevant because distinct slashes in one
+block must allocate distinct unforgeable names during replay.
 
 Rust: `casper/src/rust/util/rholang/costacc/slash_deploy.rs`. Scala:
 `coop/rchain/casper/util/rholang/costacc/SlashDeploy.scala`.
@@ -1314,13 +1338,18 @@ Scala behavior; T-9.9 establishes that the widening is sound.
   arrive unsolicited (not pulled in as a dependency) are silently
   dropped. A Byzantine validator can flood the network with these
   without economic cost.
-- **Fix.** Add `IgnorableEquivocation` to `is_slashable()`; in
-  `handle_invalid_block`, treat it identically to
-  `AdmissibleEquivocation` (record evidence, allow standard slash flow).
+- **Original fix.** Add the abstract `IgnorableEquivocation` verdict to the
+  slashable taxonomy so `handle_invalid_block` cannot discard it.
+- **Current refinement.** Production represents requested/unsolicited simple
+  equivocation as typed observations on accepted certified blocks and records
+  every sibling in the generation-scoped objective-evidence index. Two
+  distinct hashes, not the unary observation, create slash-authorizing
+  objective evidence (`block_dag_key_value_storage.rs:1499-1528`).
 - **Theorem.** T-9.1 — `bug_fix_ignorable_safety` in
-  `BugFixIgnorable.v`. Proves: under the fix, no honest validator is
-  wrongly slashed (since the underlying equivocation predicate is
-  unchanged).
+  `BugFixIgnorable.v` proves attribution for the historical abstraction. The
+  current refinement is covered by `ObjectiveEquivocation.v`,
+  `CertifiedObjectiveEquivocation.v`, and
+  `ObjectiveEvidenceSequenceEligibility.v`.
 - **Statement.** *(`post_fix_ignorable_implies_equivocation`,
   `BugFixIgnorable.v:57`.)*
   ∀ `st v n d`, `detect(st, v, n, d) = DSIgnorable` ⟹
@@ -1593,15 +1622,15 @@ Scala behavior; T-9.9 establishes that the widening is sound.
 - **Cause.** Scala `Validate.scala:727-731` rejects a block whenever
   `neglectedInvalidJustification = true`, even if the block itself
   carries a `Slash` system deploy targeting the offender. Rust's
-  `neglected_invalid_block` (`validate.rs:1346`) rejects only when a
+  `neglected_invalid_block` (`validate.rs:1336`) rejects only when a
   neglected justification still *requires* a slash the block does not
   itself issue, which *admits* self-correcting blocks. This is a
   deliberate widening; the Scala behavior is a bug. Since the
   2026-07-15 dev merge the exemption is **per-target** rather than the
   block-level `has_slash_system_deploys`: it is keyed by
-  `slash_target_key(offender, activation_epoch)`, and a neglected
-  justification is excused only when the offender's key is in
-  `slash_targets` (`validate.rs:1448-1449`). See design §9.10.
+  `(offender, bond_generation)`, and a neglected justification is excused only
+  when the exact validator incarnation is in `slash_targets`
+  (`validate.rs:1421-1424`). See design §9.10.
 - **Fix.** Adopt the Rust behavior: a block that includes a
   `SlashDeploy` against the neglected justification's validator is
   valid.
@@ -2351,51 +2380,101 @@ Quick-reference index for the cite-keys used in this document:
 This section is normative for the post-2026 vulnerability-resolution
 semantics.
 
-### 15.1 Validator lifetime
+### 15.1 Validator lifetime and activation window
 
 An **epoch** is `epoch(b) = ⌊blockNumber(b) / epochLength⌋` for
-`epochLength > 0`. A **validator lifetime** is the pair `(v, e)`, where `v`
-is the validator public key and `e` is the epoch targeted by the evidence.
+`epochLength > 0`. A **validator incarnation** is `(v, g)`, where `v` is the
+validator public key and `g` is the monotonic PoS bond generation. Generation
+changes only after a completed withdrawal followed by a fresh bond. It does
+not change at an ordinary epoch boundary.
 
-Evidence for `(v, e₁)` does not authorize slashing `(v, e₂)` when `e₁ ≠ e₂`.
-This prevents old evidence from slashing a later same-key rebond.
+The target activation epoch is a separate authorization window. Evidence for
+generation `g₁` cannot slash generation `g₂`, and evidence whose block epoch is
+not the proposed block's current activation epoch cannot be relabeled as
+current. These two checks respectively prevent stale evidence from slashing a
+later same-key rebond and prevent stale authorization replay.
 
 ### 15.2 Authorization relation
 
-For an invalid block hash `h`, offender `v`, and epoch `e`:
+For unary invalid-block hash `h`, offender `v`, bond generation `g`, and epoch
+`e`:
 
 ```text
-authorized(h, v, e) ≜
-  invalidEvidence[h] = (v, e, …)
+authorized(h, v, g, e, root) ≜
+  invalidEvidence[h] = (v, g, e, …)
   ∧ currentEpoch = e
-  ∧ canonicalMergedPreStateBond(v) > 0
+  ∧ canonicalAuthority(root).generation[v] = g
+  ∧ canonicalAuthority(root).bond[v] > 0
 ```
 
-A `SlashDeploy(h, issuer, e)` is valid in a block from proposer `p` iff:
+A `SlashDeploy(h, issuer, e, g)` is valid in a block from proposer `p` iff:
 
 ```text
 issuer = p
-∧ ∃v. authorized(h, v, e)
-∧ no other slash deploy in the same block targets (v, e)
+∧ ∃v. authorized(h, v, g, e, block.preStateRoot)
+∧ no other slash deploy in the same block targets (v, g)
 ```
 
-Unknown invalid hashes, stale epochs, issuer mismatch, non-positive canonical
-merged-pre-state target bonds, and duplicate `(v, e)` slash targets are
-invalid block conditions. They are classified as slashable proposer faults.
+For distinct block hashes `h₁ < h₂`, objective equivocation authorization is:
+
+```text
+objectiveAuthorized(h₁, h₂, v, g, e, root) ≜
+  metadata[h₁].sender = v
+  ∧ metadata[h₂].sender = v
+  ∧ metadata[h₁].sequence = metadata[h₂].sequence ≥ 0
+  ∧ metadata[h₁].bondGeneration = metadata[h₂].bondGeneration = g
+  ∧ epoch(metadata[h₁]) = epoch(metadata[h₂]) = e
+  ∧ currentEpoch = e
+  ∧ canonicalAuthority(root).generation[v] = g
+  ∧ canonicalAuthority(root).bond[v] > 0
+```
+
+This relation intentionally omits local invalid flags. Opposite arrival orders
+may flag opposite siblings, but immutable sender and sequence facts remain the
+same. Both hashes are dependencies. Once a structural sibling pair exists,
+the proposer suppresses unary fallback for that offender even if the pair is
+cross-epoch and therefore ineligible. This prevents the locally second sibling
+from becoming arrival-dependent slash authority.
+
+Unknown invalid hashes, stale epochs, generation mismatch, issuer mismatch,
+non-positive canonical merged-pre-state target bonds, and duplicate `(v, g)`
+slash targets are invalid block conditions. They are classified as slashable
+proposer faults.
 
 ### 15.3 Candidate generation
 
-The proposer candidate source is the authorized invalid-block evidence index,
-not `invalid_latest_messages`. The candidate algorithm is:
+The proposer candidate sources are the durable objective sibling index and the
+authorized invalid-block evidence index, not `invalid_latest_messages`. The
+candidate algorithm is:
 
 ```text
-currentEpoch ← epoch(nextBlockNumber)
-candidates   ← ∅
+currentEpoch ← epoch(actualProposedBlockNumber)
+authority ← canonicalAuthority(mergedPreStateRoot)
+candidates ← ∅
+objectiveKeys ← ∅
+for observed group (v, g, n, hashes):
+  if cardinality(hashes) ≥ 2:
+    objectiveKeys ← objectiveKeys ∪ {(v, g, n)}
+  if g = authority.generation[v] ∧ authority.bond[v] > 0:
+    eligible ← sort({h ∈ hashes | epoch(metadata[h]) = currentEpoch})
+    if cardinality(eligible) ≥ 2:
+      candidates[v] ← minPair(candidates[v], firstTwo(eligible))
 for invalid block metadata m in invalidEvidence:
+  if (m.sender, m.bondGeneration, m.sequence) ∈ objectiveKeys
+     ∨ candidates contains m.sender:
+    continue
   e ← epoch(m.blockNumber)
-  if e = currentEpoch ∧ canonicalMergedPreStateBond(m.sender) > 0:
+  if e = currentEpoch
+     ∧ m.bondGeneration = authority.generation[m.sender]
+     ∧ authority.bond[m.sender] > 0:
     candidates[m.sender] ← minHash(candidates[m.sender], m.blockHash)
-emit SlashDeploy(hash, self, currentEpoch, seed_fn(self, seqNum, hash))
+emit SlashDeploy(
+  evidence,
+  self,
+  currentEpoch,
+  authority.generation[offender],
+  seed_fn(self, seqNum, evidence)
+)
   for each candidate in key order
 ```
 
@@ -2403,7 +2482,10 @@ This removes the liveness dependency on whether an invalid block happens to be
 represented as an invalid latest message.
 The `minHash` rule is normative: candidate generation must not depend on set
 iteration order when several invalid blocks exist for the same offender in the
-same epoch.
+same epoch. The corresponding `minPair` rule orders pair hashes and then orders
+candidate pairs. See
+[Objective equivocation evidence](objective-equivocation-evidence.md) for the
+storage, restart, voting, authorization, and verification contracts.
 
 ### 15.4 Checked arithmetic and justifications
 

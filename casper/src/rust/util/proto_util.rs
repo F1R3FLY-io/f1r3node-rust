@@ -362,6 +362,8 @@ pub fn block_header(parent_hashes: Vec<ByteString>, version: i64, timestamp: i64
         timestamp,
         version,
         extra_bytes: prost::bytes::Bytes::new(),
+        sender_bond_generation: None,
+        objective_equivocation_evidence_delta: Vec::new(),
     }
 }
 
@@ -445,13 +447,44 @@ pub fn dependencies_hashes_of(b: &BlockMessage) -> Vec<BlockHash> {
                 .iter()
                 .map(|justification| justification.latest_block_hash.clone()),
         )
-        .chain(slash_evidence_hashes_of(b))
+        .chain(
+            slash_evidence_dependencies_of(b)
+                .into_iter()
+                .flat_map(SlashEvidenceDependency::into_hashes),
+        )
+        .chain(
+            b.header
+                .objective_equivocation_evidence_delta
+                .iter()
+                .flat_map(|evidence| {
+                    [
+                        evidence.first_block_hash.clone(),
+                        evidence.second_block_hash.clone(),
+                    ]
+                }),
+        )
         .collect::<std::collections::BTreeSet<_>>()
         .into_iter()
         .collect()
 }
 
-pub fn slash_evidence_hashes_of(b: &BlockMessage) -> HashSet<BlockHash> {
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum SlashEvidenceDependency {
+    LegacyUnary(BlockHash),
+    ObjectivePair { first: BlockHash, second: BlockHash },
+}
+
+impl SlashEvidenceDependency {
+    pub fn into_hashes(self) -> impl Iterator<Item = BlockHash> {
+        let (first, second) = match self {
+            Self::LegacyUnary(first) => (first, None),
+            Self::ObjectivePair { first, second } => (first, Some(second)),
+        };
+        std::iter::once(first).chain(second)
+    }
+}
+
+pub fn slash_evidence_dependencies_of(b: &BlockMessage) -> Vec<SlashEvidenceDependency> {
     b.body
         .system_deploys
         .iter()
@@ -459,22 +492,45 @@ pub fn slash_evidence_hashes_of(b: &BlockMessage) -> HashSet<BlockHash> {
             ProcessedSystemDeploy::Succeeded {
                 system_deploy:
                     SystemDeployData::Slash {
-                        invalid_block_hash, ..
+                        invalid_block_hash,
+                        equivocation_block_hash,
+                        ..
                     },
                 ..
-            } => Some(invalid_block_hash.clone()),
+            } => Some(match equivocation_block_hash {
+                Some(second) => SlashEvidenceDependency::ObjectivePair {
+                    first: invalid_block_hash.clone(),
+                    second: second.clone(),
+                },
+                None => SlashEvidenceDependency::LegacyUnary(invalid_block_hash.clone()),
+            }),
             _ => None,
         })
         .collect()
 }
 
-pub fn dependency_source_satisfies(
-    is_slash_evidence: bool,
-    in_dag: bool,
-    in_equivocation_tracker: bool,
-    in_invalid_index: bool,
-) -> bool {
-    in_dag || in_invalid_index || (in_equivocation_tracker && !is_slash_evidence)
+pub fn all_dependencies_have_admitted_metadata(
+    block: &BlockMessage,
+    dag: &KeyValueDagRepresentation,
+) -> Result<bool, KvStoreError> {
+    let (_, missing) = dependency_metadata_partition(block, dag)?;
+    Ok(missing.is_empty())
+}
+
+pub fn dependency_metadata_partition(
+    block: &BlockMessage,
+    dag: &KeyValueDagRepresentation,
+) -> Result<(Vec<BlockHash>, Vec<BlockHash>), KvStoreError> {
+    let mut admitted = Vec::new();
+    let mut missing = Vec::new();
+    for dependency in dependencies_hashes_of(block) {
+        if dag.lookup(&dependency)?.is_some() {
+            admitted.push(dependency);
+        } else {
+            missing.push(dependency);
+        }
+    }
+    Ok((admitted, missing))
 }
 
 // Return hashes of all blocks that are yet to be seen by the passed in block
@@ -645,6 +701,8 @@ mod fork_choice_b1_repro_tests {
 
     fn h(n: u8) -> Bytes { Bytes::from(vec![n; 32]) }
 
+    fn v(n: u8) -> Bytes { Bytes::from(vec![n; models::rust::validator::LENGTH]) }
+
     #[test]
     fn rejected_state_effect_identity_and_order_are_committed_by_block_hash() {
         let body = Body {
@@ -652,6 +710,8 @@ mod fork_choice_b1_repro_tests {
                 pre_state_hash: h(1),
                 post_state_hash: h(2),
                 bonds: Vec::new(),
+                bond_generations: Vec::new(),
+                active_validators: Vec::new(),
                 block_number: 1,
             },
             deploys: Vec::new(),
@@ -690,27 +750,40 @@ mod fork_choice_b1_repro_tests {
     fn md(hash: Bytes, parents: Vec<Bytes>, num: i64, v: &Bytes) -> BlockMetadata {
         let mut wm = BTreeMap::new();
         wm.insert(v.clone(), 7i64);
-        BlockMetadata {
-            block_hash: hash,
-            parents,
-            sender: v.clone(),
-            justifications: vec![],
-            weight_map: wm,
-            block_number: num,
-            sequence_number: num as i32,
-            invalid: false,
-            directly_finalized: false,
-            finalized: false,
-            fault_tolerance_value: 0.0,
-            successful_state_effect_indices: Default::default(),
-            rejected_state_effects: Default::default(),
-            protocol_version: crate::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION,
-        }
+        crate::rust::test_metadata::certify(
+            BlockMetadata {
+                block_hash: hash,
+                post_state_hash: h(num as u8),
+                parents,
+                sender: v.clone(),
+                justifications: vec![],
+                weight_map: wm,
+                bond_generation_map: BTreeMap::from([(
+                    v.clone(),
+                    models::rust::bond_generation::BondGeneration::GENESIS,
+                )]),
+                active_validator_set: std::collections::BTreeSet::from([v.clone()]),
+                block_number: num,
+                sequence_number: num as i32,
+                admission_outcome: None,
+                directly_finalized: false,
+                finalized: false,
+                fault_tolerance_value: 0.0,
+                successful_state_effect_indices: Default::default(),
+                rejected_state_effects: Default::default(),
+                protocol_version: crate::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION,
+                objective_equivocation_evidence_delta: Vec::new(),
+                sender_authority: None,
+                admission_schema_version: models::rust::block_metadata::ADMISSION_SCHEMA_VERSION,
+                approved_genesis: false,
+            },
+            models::rust::bond_generation::BondGeneration::GENESIS,
+        )
     }
 
     fn dag_with(blocks: Vec<BlockMetadata>) -> KeyValueDagRepresentation {
         let store = KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new()));
-        let mut bms = BlockMetadataStore::new(store);
+        let mut bms = BlockMetadataStore::new(store).unwrap();
         let mut dag_set = imbl::HashSet::new();
         let mut bnum = imbl::HashMap::new();
         let mut mp = imbl::HashMap::new();
@@ -733,6 +806,7 @@ mod fork_choice_b1_repro_tests {
             main_parent_map: mp,
             self_justification_map: imbl::HashMap::new(),
             invalid_blocks_set: imbl::HashSet::new(),
+            equivocation_observations: imbl::HashMap::new(),
             last_finalized_block_hash: Bytes::new(),
             finalized_blocks_set: imbl::HashSet::new(),
             block_metadata_index: Arc::new(PlRwLock::new(bms)),
@@ -749,7 +823,7 @@ mod fork_choice_b1_repro_tests {
 
     #[test]
     fn weight_from_validator_missing_parent_is_typed_err() {
-        let v = h(9);
+        let v = Bytes::from(vec![9; models::rust::validator::LENGTH]);
         let child = h(1);
         let missing = h(2); // deliberately NOT added to the index (sync/prune window)
         let mut dag = dag_with(vec![md(child.clone(), vec![missing], 1, &v)]);
@@ -784,7 +858,7 @@ mod fork_choice_b1_repro_tests {
 
     #[test]
     fn slashed_block_senders_is_view_independent_g1() {
-        let (va, vb, vc) = (h(50), h(51), h(52));
+        let (va, vb, vc) = (v(50), v(51), v(52));
         let (b1, b2, b3) = (h(1), h(2), h(3));
         let blocks = vec![
             md(b1.clone(), vec![], 1, &va),
@@ -844,7 +918,7 @@ mod fork_choice_b1_repro_tests {
                 .map(|i| {
                     let hash = h((i + 1) as u8);
                     let parents = if i == 0 { vec![] } else { vec![h(i as u8)] };
-                    let sender = h(100 + senders[i]);
+                    let sender = v(100 + senders[i]);
                     md(hash, parents, (i + 1) as i64, &sender)
                 })
                 .collect();
@@ -872,7 +946,7 @@ mod fork_choice_b1_repro_tests {
             let mut expected = std::collections::HashMap::new();
             for i in 0..n {
                 if *slashed_flags.get(i).unwrap_or(&false) {
-                    expected.insert(h((i + 1) as u8), h(100 + senders[i]));
+                    expected.insert(h((i + 1) as u8), v(100 + senders[i]));
                 }
             }
             prop_assert_eq!(&map_a, &expected);

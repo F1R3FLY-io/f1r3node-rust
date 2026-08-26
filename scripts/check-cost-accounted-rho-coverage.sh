@@ -5,9 +5,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$REPO_ROOT"
 
-OUT_DIR="$REPO_ROOT/target/llvm-cov"
+source "$REPO_ROOT/scripts/lib/verification-tmpdir.sh"
+
+OUT_DIR="$REPO_ROOT/target/verification/cost-accounted-rho-coverage"
 SUMMARY="$OUT_DIR/cost-accounted-rho-branch-summary.tsv"
-COVERAGE_SCRATCH="$OUT_DIR/scratch"
 COVERAGE_JOBS="${COVERAGE_JOBS:-2}"
 COVERAGE_REUSE_PROFILES="${COVERAGE_REUSE_PROFILES:-0}"
 RUST_HOST="$(rustc -vV | awk '/^host:/ { print $2 }')"
@@ -26,14 +27,13 @@ if [[ "$COVERAGE_REUSE_PROFILES" != 0 && "$COVERAGE_REUSE_PROFILES" != 1 ]]; the
     exit 1
 fi
 mkdir -p "$OUT_DIR"
-rm -rf "$COVERAGE_SCRATCH"
-mkdir -p "$COVERAGE_SCRATCH"
+COVERAGE_SCRATCH="$(verification_tmpdir_create "$OUT_DIR")"
 export TMPDIR="$COVERAGE_SCRATCH"
 ulimit -c 0
 
 cleanup() {
     rm -f "$OUT_DIR"/.coverage-export-*.lcov "$OUT_DIR"/.coverage-export-*.stderr
-    rm -rf "$COVERAGE_SCRATCH"
+    verification_tmpdir_cleanup "$COVERAGE_SCRATCH" "$OUT_DIR"
 }
 trap cleanup EXIT
 trap 'exit 130' INT
@@ -61,9 +61,16 @@ critical_files=(
     casper:casper/src/rust/util/construct_deploy.rs
     casper:casper/src/rust/util/mergeable_channels_gc.rs
     casper:casper/src/rust/util/rholang/acceptance.rs
+    casper:casper/src/rust/util/rholang/costacc/check_balance.rs
+    casper:casper/src/rust/util/rholang/costacc/close_block_deploy.rs
+    casper:casper/src/rust/util/rholang/costacc/redeem_deploy.rs
+    casper:casper/src/rust/util/rholang/costacc/slash_deploy.rs
+    casper:casper/src/rust/util/rholang/costacc/vault_cost_deploy.rs
+    casper:casper/src/rust/util/rholang/costacc/vault_payer.rs
     casper:casper/src/rust/util/rholang/interpreter_util.rs
     casper:casper/src/rust/util/rholang/supply.rs
     casper:casper/src/rust/util/rholang/runtime_manager.rs
+    casper:casper/src/rust/util/rholang/system_deploy_util.rs
     casper:casper/src/rust/merging/deploy_chain_index.rs
 )
 
@@ -99,6 +106,7 @@ for package in "${packages[@]}"; do
     coverage_target="$package_target/llvm-cov-target"
     if [[ "$COVERAGE_REUSE_PROFILES" == 0 ]]; then
         CARGO_TARGET_DIR="$package_target" cargo llvm-cov clean --workspace
+        test -d "$COVERAGE_SCRATCH"
         CARGO_TARGET_DIR="$package_target" cargo llvm-cov nextest \
             --branch \
             --package "$package" \
@@ -228,6 +236,7 @@ done
 stable_target="$REPO_ROOT/target/llvm-cov-isolated/casper-engine-stable"
 if [[ "$COVERAGE_REUSE_PROFILES" == 0 ]]; then
     CARGO_TARGET_DIR="$stable_target" cargo llvm-cov clean --workspace
+    test -d "$COVERAGE_SCRATCH"
     CARGO_TARGET_DIR="$stable_target" cargo llvm-cov nextest \
         --package casper \
         --no-fail-fast \
@@ -249,6 +258,7 @@ CARGO_TARGET_DIR="$stable_target" cargo llvm-cov report \
 rspace_stable_target="$REPO_ROOT/target/llvm-cov-isolated/rspace-engine-stable"
 if [[ "$COVERAGE_REUSE_PROFILES" == 0 ]]; then
     CARGO_TARGET_DIR="$rspace_stable_target" cargo llvm-cov clean --workspace
+    test -d "$COVERAGE_SCRATCH"
     CARGO_TARGET_DIR="$rspace_stable_target" cargo llvm-cov nextest \
         --package rspace_plus_plus \
         --no-fail-fast \

@@ -5,8 +5,6 @@ use loom::thread;
 struct BlockHeapLifecycle {
     completions_since_trim: AtomicUsize,
     retained_units: Mutex<usize>,
-    semantic_commits: AtomicUsize,
-    trim_count: AtomicUsize,
 }
 
 impl BlockHeapLifecycle {
@@ -14,18 +12,16 @@ impl BlockHeapLifecycle {
         Self {
             completions_since_trim: AtomicUsize::new(0),
             retained_units: Mutex::new(0),
-            semantic_commits: AtomicUsize::new(0),
-            trim_count: AtomicUsize::new(0),
         }
     }
 
-    fn complete(&self, interval: usize) {
-        self.semantic_commits.fetch_add(1, Ordering::Relaxed);
+    fn complete(&self, interval: usize) -> bool {
         *self.retained_units.lock().unwrap() += 1;
-        if self.record_completion(interval) {
+        let should_trim = self.record_completion(interval);
+        if should_trim {
             *self.retained_units.lock().unwrap() = 0;
-            self.trim_count.fetch_add(1, Ordering::Relaxed);
         }
+        should_trim
     }
 
     fn record_completion(&self, interval: usize) -> bool {
@@ -65,10 +61,8 @@ fn concurrent_default_boundaries_reclaim_every_completed_block() {
             thread::spawn(move || lifecycle.complete(1))
         };
 
-        left.join().unwrap();
-        right.join().unwrap();
-        assert_eq!(lifecycle.semantic_commits.load(Ordering::Relaxed), 2);
-        assert_eq!(lifecycle.trim_count.load(Ordering::Relaxed), 2);
+        assert!(left.join().unwrap());
+        assert!(right.join().unwrap());
         assert_eq!(lifecycle.completions_since_trim.load(Ordering::Relaxed), 0);
         assert_eq!(*lifecycle.retained_units.lock().unwrap(), 0);
     });
@@ -85,11 +79,12 @@ fn concurrent_periodic_boundaries_preserve_the_interval_bound() {
             })
             .collect::<Vec<_>>();
 
-        for handle in handles {
-            handle.join().unwrap();
-        }
-        assert_eq!(lifecycle.semantic_commits.load(Ordering::Relaxed), 3);
-        assert_eq!(lifecycle.trim_count.load(Ordering::Relaxed), 1);
+        let trim_count = handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap())
+            .filter(|should_trim| *should_trim)
+            .count();
+        assert_eq!(trim_count, 1);
         assert_eq!(lifecycle.completions_since_trim.load(Ordering::Relaxed), 1);
         assert!(*lifecycle.retained_units.lock().unwrap() <= 1);
     });
@@ -108,10 +103,8 @@ fn disabled_reclamation_never_mutates_semantic_state_or_counter() {
             thread::spawn(move || lifecycle.complete(0))
         };
 
-        left.join().unwrap();
-        right.join().unwrap();
-        assert_eq!(lifecycle.semantic_commits.load(Ordering::Relaxed), 2);
-        assert_eq!(lifecycle.trim_count.load(Ordering::Relaxed), 0);
+        assert!(!left.join().unwrap());
+        assert!(!right.join().unwrap());
         assert_eq!(lifecycle.completions_since_trim.load(Ordering::Relaxed), 0);
         assert_eq!(*lifecycle.retained_units.lock().unwrap(), 2);
     });

@@ -36,7 +36,7 @@ autonumber
 
 participant "derive_floor\n(casper/…/finality/floor.rs)"        as DF #B2DFDB
 database    "FrontierCache\n(LMDB frontier_index)"               as FC #D7CCC8
-participant "CliqueOracle\nft_witnessed ≥ θ"                     as OR #FFECB3
+participant "CliqueOracle\nft_witnessed > θ"                     as OR #FFECB3
 
 note over DF, OR #ECEFF1
   GOAL — parent_frontier(parent, J), J = just(child) ⊇ just(parent):
@@ -60,12 +60,12 @@ alt #E8F5E9 WARM path — cache hit and both guards hold
     (GuardBridge.chain_adj_AdjDC)
   end note
 
-  DF -[#6A1B9A]> OR ++ : L-SNAP guard — ft_witnessed(p) ≥ θ\nover the LARGER snapshot J ?
+  DF -[#6A1B9A]> OR ++ : L-SNAP guard — ft_witnessed(p) > θ\nover the LARGER snapshot J ?
   OR -[#2E7D32]-> DF -- : yes — pivot still finalized  (L-SNAP)
 
   loop up-walk from pivot toward parent — amortized O(1)
     DF -[#546E7A]> DF : main_parent hop  b := advance(b)\n(cheap spine hop — NO oracle)
-    DF -[#6A1B9A]> OR ++ : ft_witnessed(b) ≥ θ ?   [ONLY while advancing]
+    DF -[#6A1B9A]> OR ++ : ft_witnessed(b) > θ ?   [ONLY while advancing]
     OR -[#E65100]-> DF -- : finalized ⟹ advance · not finalized ⟹ STOP
   end
   DF -[#E65100]> DF : stop at first non-finalized\n⟹ frontier := highest finalized
@@ -75,7 +75,7 @@ else #FFEBEE COLD path — cache miss / guard trip / off-spine / genesis
   DF -[#1565C0]> FC ++ : read F(parent)
   FC -[#C62828]-> DF -- : MISS  (or a warm guard tripped above)
   loop top-down from parent down to first finalized (or genesis)
-    DF -[#6A1B9A]> OR ++ : ft_witnessed(step) ≥ θ ?   [one call per step DOWN]
+    DF -[#6A1B9A]> OR ++ : ft_witnessed(step) > θ ?   [one call per step DOWN]
     OR -[#E65100]-> DF -- : not finalized ⟹ step down · finalized ⟹ STOP
   end
   DF -[#E65100]> DF : first finalized from the top\n⟹ frontier := highest finalized

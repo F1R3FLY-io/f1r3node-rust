@@ -276,4 +276,4 @@ TLC and Apalache model, refute all five unsafe configurations by name, exhaust e
 Loom interleaving under the configured bound, and pass the Rust example and
 property tests.
 
-See CA-P-198, TM-CA-187, UC-CA-178, E2E-061, DR-50, and DR-51.
+See CA-P-198, TM-CA-187, UC-CA-178, REL-016, DR-50, and DR-51.

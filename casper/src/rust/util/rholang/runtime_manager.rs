@@ -75,7 +75,6 @@ pub struct RuntimeManager {
     pub mergeable_tags: std::sync::Arc<
         std::collections::HashMap<Par, rspace_plus_plus::rspace::merger::merging_logic::MergeType>,
     >,
-    // TODO: make proper storage for block indices - OLD
     block_index_cache: Arc<DashMap<BlockHash, BlockIndex>>,
     block_index_cache_order: Arc<Mutex<VecDeque<BlockHash>>>,
     block_index_cache_retained_bytes: Arc<AtomicUsize>,
@@ -84,6 +83,8 @@ pub struct RuntimeManager {
     pub active_validators_cache_order: Arc<Mutex<VecDeque<StateHash>>>,
     pub bonds_cache: Arc<DashMap<StateHash, Vec<Bond>>>,
     pub bonds_cache_order: Arc<Mutex<VecDeque<StateHash>>>,
+    pub bond_generations_cache: Arc<DashMap<StateHash, HashMap<Validator, i64>>>,
+    pub bond_generations_cache_order: Arc<Mutex<VecDeque<StateHash>>>,
     /// Cache for merged parent post-state computation keyed by parent-set snapshot context.
     pub parents_post_state_cache: Arc<DashMap<ParentsPostStateCacheKey, ParentsPostStateCacheVal>>,
     pub parents_post_state_cache_order: Arc<Mutex<VecDeque<ParentsPostStateCacheKey>>>,
@@ -1110,6 +1111,33 @@ impl RuntimeManager {
         Ok(computed)
     }
 
+    pub async fn compute_bond_generations(
+        &self,
+        hash: &StateHash,
+    ) -> Result<HashMap<Validator, i64>, CasperError> {
+        if let Some(cached) = self.bond_generations_cache.get(hash) {
+            Self::touch_cache_key(&self.bond_generations_cache_order, hash);
+            return Ok(cached.clone());
+        }
+
+        let runtime = self.spawn_runtime().await;
+        let mut runtime_ops = RuntimeOps::new(runtime);
+        let computed = runtime_ops.compute_bond_generations(hash).await?;
+
+        let max_entries = Self::max_bonds_cache_entries();
+        if self.bond_generations_cache.len() >= max_entries {
+            Self::evict_fifo_entry(
+                &self.bond_generations_cache,
+                &self.bond_generations_cache_order,
+            );
+        }
+        self.bond_generations_cache
+            .insert(hash.clone(), computed.clone());
+        Self::touch_cache_key(&self.bond_generations_cache_order, hash);
+
+        Ok(computed)
+    }
+
     // Executes deploy as user deploy with immediate rollback
     pub async fn play_exploratory_deploy(
         &self,
@@ -1654,6 +1682,8 @@ impl RuntimeManager {
             active_validators_cache_order: Arc::new(Mutex::new(VecDeque::new())),
             bonds_cache: Arc::new(DashMap::new()),
             bonds_cache_order: Arc::new(Mutex::new(VecDeque::new())),
+            bond_generations_cache: Arc::new(DashMap::new()),
+            bond_generations_cache_order: Arc::new(Mutex::new(VecDeque::new())),
             parents_post_state_cache: Arc::new(DashMap::new()),
             parents_post_state_cache_order: Arc::new(Mutex::new(VecDeque::new())),
             replay_cache: (replay_cache_size > 0).then(|| {
@@ -1836,8 +1866,10 @@ mod tests {
         super::super::system_deploy_enum::SystemDeployEnum::Slash(
             crate::rust::util::rholang::costacc::slash_deploy::SlashDeploy {
                 invalid_block_hash: vec![2; 32].into(),
+                equivocation_block_hash: None,
                 pk: PublicKey::from_bytes(&[3]),
                 target_activation_epoch: 4,
+                target_bond_generation: models::rust::bond_generation::BondGeneration::GENESIS,
                 initial_rand: Blake2b512Random::create_from_bytes(&[5]),
             },
         )
@@ -1929,12 +1961,18 @@ mod tests {
                 timestamp: 0,
                 version: 1,
                 extra_bytes: Vec::<u8>::new().into(),
+                sender_bond_generation: Some(
+                    models::rust::bond_generation::BondGeneration::GENESIS,
+                ),
+                objective_equivocation_evidence_delta: Vec::new(),
             },
             body: Body {
                 state: F1r3flyState {
                     pre_state_hash: vec![0; 32].into(),
                     post_state_hash: vec![1; 32].into(),
                     bonds: Vec::new(),
+                    bond_generations: Vec::new(),
+                    active_validators: Vec::new(),
                     block_number: 0,
                 },
                 deploys: vec![deploy],
@@ -1958,8 +1996,10 @@ mod tests {
             event_list: vec![produce_event(tag)],
             system_deploy: SystemDeployData::Slash {
                 invalid_block_hash: vec![tag; 32].into(),
+                equivocation_block_hash: None,
                 issuer_public_key: PublicKey::from_bytes(&[tag, tag + 1]),
                 target_activation_epoch: tag as i64,
+                target_bond_generation: models::rust::bond_generation::BondGeneration::GENESIS,
             },
             pre_state_hash: Vec::<u8>::new().into(),
             post_state_hash: Vec::<u8>::new().into(),

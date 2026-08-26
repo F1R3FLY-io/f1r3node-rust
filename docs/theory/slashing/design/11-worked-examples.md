@@ -519,17 +519,18 @@ with the authorize-before-replay guard.
 carried by a branch later rejected by multi-parent merge resolution, the next
 proposer scans the complete persisted invalid-block evidence index. When the
 target remains positively bonded in the exact canonical merged pre-state,
-the scan emits one canonical candidate for `(offender, epoch)`; when the slash
-effect survived, the zero bond emits none. Merge-rejection observations never
-authorize the candidate, and the receiver checks the same parent-derived
-predicate independently of its ambient snapshot.
+the scan emits one canonical candidate for `(offender, bond_generation)` in the
+current activation epoch; when the slash effect survived, the zero bond emits
+none. Merge-rejection observations never authorize the candidate, and the
+receiver checks the same root-bound bond/generation predicate independently of
+its ambient snapshot.
 
 ## 11.14 Stale-evidence rebond identity (bug #13 demo)
 
-**Setup.** Validator with public key `K` bonds at epoch `e₁=5`,
-equivocates, is slashed, unbonds. Later at epoch `e₂=12` the same key
-rebonds. Adversarial proposer `Z` tries to slash `(K, e₂)` by
-replaying the still-retained evidence from `(K, e₁)`.
+**Setup.** Validator with public key `K` bonds as generation `g₁` in epoch
+`e₁=5`, equivocates, is slashed, and completes withdrawal. Later the same key
+rebonds as generation `g₂=g₁+1` in epoch `e₂=12`. Adversarial proposer `Z`
+tries to slash `(K, g₂)` by replaying retained evidence from `(K, g₁)`.
 
 **Pre-fix trace.**
 
@@ -537,26 +538,26 @@ replaying the still-retained evidence from `(K, e₁)`.
 Z.propose(b, [SlashDeploy(target=K, evidence=eq_record_e1)])
 B.replay(b)
   -- pre-fix: authorization checked key identity only
-  K is currently bonded?           ⟶ yes (rebonded at e₂)
+  K is currently bonded?           ⟶ yes (rebonded as g₂)
   evidence references K?           ⟶ yes (eq_record_e1.target = K)
-  ⟶ slash(ps, K)                    -- second slash on innocent (K, e₂)
+  ⟶ slash(ps, K)                    -- second slash on innocent (K, g₂)
 ```
 
-**Post-fix trace.** Authorization is epoch-scoped:
+**Post-fix trace.** Authorization is generation-scoped and epoch-windowed:
 
 ```
 Z.propose(b, [SlashDeploy(target=K, evidence=eq_record_e1)])
 B.replay(b)
   authorize_slash_deploy(local_view, deploy)
-    eq_record_e1.epoch == current_epoch(K)?  ⟶ e₁ ≠ e₂  ✗ — REJECT
-  ⟶ deploy ignored; (K, e₂) retains bond
+    evidence.generation == canonical_generation(K)?  ⟶ g₁ ≠ g₂  ✗ — REJECT
+  ⟶ deploy ignored; (K, g₂) retains bond
 ```
 
 **Theorems exercised.** T-9.12 (`main_T9_12_stale_evidence_not_authorized`).
 TLA+ `Inv_StaleEvidenceCannotSlashRebondedKey`. Rust
 `stale_invalid_evidence_is_not_an_authorized_slash_candidate`.
-**Diagram.** Extends Diagram 06 (validator lifecycle) with epoch
-tags on each lifetime.
+**Diagram.** Extends Diagram 06 (validator lifecycle) with generation and
+activation-epoch tags.
 
 ## 11.15 Authorized-invalid-block evidence index (bug #14 demo)
 
@@ -586,7 +587,7 @@ evidence index:
 B.prepare_slashing_deploys()
   view ← dag.authorized_invalid_evidence_index(current_epoch)
   view contains b_inv.hash for offender A  ✓
-  -- canonicalize: sort by hash, deduplicate per (offender, epoch)
+  -- canonicalize: filter generation and epoch, then sort by hash
   candidates                              ⟶ [SlashDeploy(A, b_inv.hash)]
   emit                                    ⟶ slash deploy enters block
 ```

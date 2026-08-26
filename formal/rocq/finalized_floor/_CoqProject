@@ -29,6 +29,10 @@
 #   StateEffectProvenance         (exact accepted/rejected merge-effect recurrence)
 #   StateLineageFinality          (abstract certificate/admission separation)
 #   CertifiedFloorPromotion       (dual-certified all-parent floor discovery)
+#   CommitteeTransition           (post-state cache, accepted registration, floor authority)
+#   ObjectiveEquivocation          (bond-incarnation evidence, pre-state authority, and durable repair)
+#   CandidateScopeDeployRehome     (candidate-relative duplicate suppression and excluded-branch rehome)
+#   ObjectiveEvidenceSequenceEligibility (signed sequence boundary for durable invalid metadata and pair evidence)
 #   MainTheorem -> all           (end-to-end capstone, axiom-free)
 
 -Q theories FinalizedFloor
@@ -50,6 +54,8 @@ theories/ProtocolActivationCoherence.v
 theories/Selection.v
 theories/IntegerAdd.v
 theories/FtExact.v
+theories/FinalityThresholdAlignment.v
+theories/GenesisApprovalTrust.v
 theories/FtProvenance.v
 theories/FinalizerProgress.v
 theories/BootstrapReplayContext.v
@@ -60,6 +66,19 @@ theories/StateEffectProvenance.v
 theories/StateLineageFinality.v
 theories/CertifiedFloorPromotion.v
 theories/SnapshotFloorMaterialization.v
+theories/CommitteeTransition.v
+theories/ObjectiveEquivocation.v
+theories/BondGenerationLifecycle.v
+theories/CertifiedObjectiveEquivocation.v
+theories/CertifiedCausalAdmission.v
+theories/CausalFinalityProjection.v
 theories/HeartbeatFinalityBackpressure.v
 theories/ParallelValidatorConsensus.v
+theories/FinalizationAtomicity.v
+theories/ProposalFloorReadiness.v
+theories/FinalizerFloorMaterialization.v
+theories/DivergentFinalizationHistories.v
+theories/MinorityForkRecovery.v
+theories/CandidateScopeDeployRehome.v
+theories/ObjectiveEvidenceSequenceEligibility.v
 theories/MainTheorem.v

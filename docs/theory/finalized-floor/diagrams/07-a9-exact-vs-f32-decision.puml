@@ -50,10 +50,10 @@ package "LEGACY — f32 ratio (imprecise)" <<Buggy>> {
 package "FIXED — exact integer (i128)" <<Fixed>> {
   component "no cast — q, S, ppm stay i64" as NOCAST #C8E6C9
   component "lhs = 2·q·den   (i128)\nrhs = S·(den + num)   (i128)\n(≤ 2^84 ≪ 2^127: no overflow)" as CALC #C8E6C9
-  component "finalize iff  lhs ⋛ rhs\n────────────\n≥  floor path (ft_witnessed_exact)\n>  LFB finalizer (strict clearance)\nbit-identical on every node — EXACT" as EXACT #C8E6C9
+  component "finalize iff  lhs > rhs\n────────────\ncandidate floor and durable LFB use\nthe identical strict certificate\nbit-identical on every node — EXACT" as EXACT #C8E6C9
 }
 
-component "Rocq FtExact.v (axiom-free)\n────────────\nft_exact_iff_ratio :  2q·den ≥ S(den+num)  ⟺  (2q−S)/S ≥ num/den\nft_exact_mono_q · ft_exact_no_overflow\n+ Z3 ft_exact_no_overflow.py · Sage ft_algebra.sage" as PROOF #E8F5E9
+component "Rocq FtExact.v (axiom-free)\n────────────\nft_exact_iff_ratio_strict :\n2q·den > S(den+num)  ⟺  (2q−S)/S > num/den\nft_exact_gt_mono_q · ft_exact_no_overflow\n+ inclusive boundary control" as PROOF #E8F5E9
 
 IN -[#C62828]-> CAST
 CAST -[#C62828]-> FT

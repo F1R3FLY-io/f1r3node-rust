@@ -2304,7 +2304,7 @@ mod backstop_tests {
             .await
             .expect("block store");
         let finalized = block_implicits::get_random_block(
-            Some(1),
+            Some(crate::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION),
             Some(1),
             None,
             None,
@@ -2382,7 +2382,7 @@ mod backstop_tests {
             None,
             None,
             Some(sender),
-            Some(1),
+            Some(crate::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION),
             Some(0),
             Some(parents),
             Some(Vec::new()),
@@ -2454,7 +2454,7 @@ mod backstop_tests {
             block_store.put_block_message(block).expect("store block");
         }
         dag_storage
-            .insert(&genesis, InsertMode::Approved)
+            .insert(&genesis, InsertMode::ApprovedGenesis)
             .expect("insert genesis");
         dag_storage
             .insert(&floor, InsertMode::Normal)
@@ -2536,7 +2536,7 @@ mod backstop_tests {
             block_store.put_block_message(block).expect("store block");
         }
         for (block, mode) in [
-            (&genesis, InsertMode::Approved),
+            (&genesis, InsertMode::ApprovedGenesis),
             (&source, InsertMode::Normal),
             (&rejected, InsertMode::Normal),
             (&floor, InsertMode::Normal),
@@ -2603,7 +2603,7 @@ mod backstop_tests {
             block_store.put_block_message(block).expect("store block");
         }
         dag_storage
-            .insert(&floor, InsertMode::Approved)
+            .insert(&floor, InsertMode::ApprovedGenesis)
             .expect("insert floor");
         dag_storage
             .insert(&source, InsertMode::Normal)
@@ -2649,7 +2649,7 @@ mod backstop_tests {
             block_store.put_block_message(block).expect("store block");
         }
         dag_storage
-            .insert(&floor, InsertMode::Approved)
+            .insert(&floor, InsertMode::ApprovedGenesis)
             .expect("insert floor");
         dag_storage
             .insert(&source, InsertMode::Normal)
@@ -2713,7 +2713,7 @@ mod backstop_tests {
             block_store.put_block_message(block).expect("store block");
         }
         for (block, mode) in [
-            (&floor, InsertMode::Approved),
+            (&floor, InsertMode::ApprovedGenesis),
             (&source, InsertMode::Normal),
             (&collateral, InsertMode::Normal),
             (&duplicate, InsertMode::Normal),
@@ -2745,7 +2745,7 @@ mod backstop_tests {
     }
 
     #[tokio::test]
-    async fn merge_context_rejects_mixed_protocol_scope() {
+    async fn protocol_v5_storage_rejects_legacy_scope_before_merge() {
         let mut kvm = InMemoryStoreManager::new();
         let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
             .await
@@ -2754,34 +2754,31 @@ mod backstop_tests {
             .await
             .expect("dag storage");
         let version = crate::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION;
-        let floor = occurrence_test_block(0, 0, 1, Vec::new(), Vec::new());
+        let floor = occurrence_test_block(0, 0, version, Vec::new(), Vec::new());
         let current =
             occurrence_test_block(1, 1, version, vec![floor.block_hash.clone()], Vec::new());
-        let legacy = occurrence_test_block(1, 1, 1, vec![floor.block_hash.clone()], Vec::new());
+        let mut legacy = occurrence_test_block(1, 1, 1, vec![floor.block_hash.clone()], Vec::new());
+        legacy.header.sender_bond_generation =
+            Some(models::rust::bond_generation::BondGeneration::GENESIS);
         for block in [&floor, &current, &legacy] {
             block_store.put_block_message(block).expect("store block");
         }
         dag_storage
-            .insert(&floor, InsertMode::Approved)
+            .insert(&floor, InsertMode::ApprovedGenesis)
             .expect("insert floor");
         dag_storage
             .insert(&current, InsertMode::Normal)
             .expect("insert current block");
-        dag_storage
+        let error = dag_storage
             .insert(&legacy, InsertMode::Normal)
-            .expect("insert legacy block");
-        let dag = dag_storage.get_representation().expect("dag");
-        let visible = HashSet::from([current.block_hash.clone(), legacy.block_hash.clone()]);
-
-        let error = super::merge_occurrence_context(
-            &block_store,
-            &dag,
-            &floor.block_hash,
-            &visible,
-            version,
-        )
-        .expect_err("mixed protocol scope must fail closed");
-        assert!(error.to_string().contains("mixes protocol versions"));
+            .err()
+            .expect("legacy protocol block must not enter protocol-v5 storage");
+        assert_eq!(
+            error,
+            shared::rust::store::key_value_store::KvStoreError::InvalidArgument(
+                "admission outcome uses unsupported protocol version 1".to_string()
+            )
+        );
     }
 
     #[tokio::test]
@@ -2838,7 +2835,7 @@ mod backstop_tests {
         let descendant = scope_test_block(3, 3, v1, vec![floor.block_hash.clone()]);
 
         for (block, mode) in [
-            (&genesis, InsertMode::Approved),
+            (&genesis, InsertMode::ApprovedGenesis),
             (&main, InsertMode::Normal),
             (&off_main, InsertMode::Normal),
             (&floor, InsertMode::Normal),
@@ -3452,7 +3449,7 @@ mod backstop_tests {
             .put_block_message(&finalized_block)
             .expect("store finalized");
         dag_storage
-            .insert(&genesis, InsertMode::Approved)
+            .insert(&genesis, InsertMode::ApprovedGenesis)
             .expect("insert genesis");
         dag_storage
             .insert(&finalized_block, InsertMode::Normal)
@@ -3542,7 +3539,7 @@ mod backstop_tests {
             .put_block_message(&finalized_block)
             .expect("store finalized");
         dag_storage
-            .insert(&genesis, InsertMode::Approved)
+            .insert(&genesis, InsertMode::ApprovedGenesis)
             .expect("insert genesis");
         dag_storage
             .insert(&finalized_block, InsertMode::Normal)

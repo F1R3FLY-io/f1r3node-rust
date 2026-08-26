@@ -43,12 +43,16 @@ fn fixture_block() -> BlockMessage {
             timestamp: 0,
             version: 0,
             extra_bytes: Bytes::new(),
+            sender_bond_generation: None,
+            objective_equivocation_evidence_delta: vec![],
         },
         body: Body {
             state: F1r3flyState {
                 pre_state_hash: Bytes::new(),
                 post_state_hash: Bytes::new(),
                 bonds: vec![],
+                bond_generations: vec![],
+                active_validators: vec![],
                 block_number: 0,
             },
             deploys: vec![],

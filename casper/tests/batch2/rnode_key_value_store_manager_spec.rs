@@ -1,14 +1,29 @@
 use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage;
-use casper::rust::storage::rnode_key_value_store_manager::new_key_value_store_manager;
+use block_storage::rust::finality::FinalizationLedger;
+use casper::rust::storage::rnode_key_value_store_manager::{
+    new_key_value_store_manager, rnode_db_mapping,
+};
 use models::rust::block_hash::{BlockHashSerde, LENGTH};
 use prost::bytes::Bytes;
 use tempfile::TempDir;
+
+#[test]
+fn rnode_mapping_registers_protocol_v5_finalization_ledger() {
+    for legacy_rspace_paths in [Some(false), Some(true)] {
+        let matches = rnode_db_mapping(legacy_rspace_paths)
+            .into_iter()
+            .filter(|(db, _)| db.id() == FinalizationLedger::STORE_NAME)
+            .count();
+        assert_eq!(matches, 1);
+    }
+}
 
 #[tokio::test]
 async fn rnode_store_manager_initializes_block_dag_storage_on_fresh_lmdb_dir() {
     let dir = TempDir::new().unwrap();
     let mut kvm = new_key_value_store_manager(dir.path().to_path_buf(), None);
     let dag_storage = BlockDagKeyValueStorage::new(&mut kvm).await.unwrap();
+    assert_eq!(dag_storage.finalization_head().unwrap(), None);
 
     let block_hash = Bytes::from(vec![1; LENGTH]);
     let floor_hash = Bytes::from(vec![2; LENGTH]);

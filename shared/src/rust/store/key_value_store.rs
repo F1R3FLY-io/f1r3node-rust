@@ -75,6 +75,10 @@ pub enum KvStoreError {
     SerializationError(String),
     InvalidArgument(String),
     LockError(String),
+    StaleFinalization {
+        expected_revision: u64,
+        actual_revision: u64,
+    },
     /// Returned when a DAG representation is requested before the
     /// approved-block / last-finalized-block bootstrap has completed.
     LastFinalizedBlockUninitialized,
@@ -88,6 +92,13 @@ impl std::fmt::Display for KvStoreError {
             KvStoreError::SerializationError(e) => write!(f, "SerializationError error: {}", e),
             KvStoreError::InvalidArgument(e) => write!(f, "Invalid argument: {}", e),
             KvStoreError::LockError(e) => write!(f, "Lock error: {}", e),
+            KvStoreError::StaleFinalization {
+                expected_revision,
+                actual_revision,
+            } => write!(
+                f,
+                "stale finalization base revision {expected_revision}; durable head is revision {actual_revision}"
+            ),
             KvStoreError::LastFinalizedBlockUninitialized => write!(
                 f,
                 "DagState does not contain lastFinalizedBlock (bootstrap incomplete)"

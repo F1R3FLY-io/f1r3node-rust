@@ -1,12 +1,10 @@
 (* ===========================================================================
-   Filter.v - The invalid / slashed latest-message filter (T-10 reuse).
+   Filter.v - Certified latest-message eligibility projection (T-10 reuse).
 
-   Before scoring, the estimator drops the latest messages of INVALID (slashed)
-   validators so they contribute zero weight to fork choice
-   (estimator.rs:86-91):
-
-       let invalid = dag.invalid_latest_messages_from_hashes(&lm)?;
-       filtered.retain(|v, _| !invalid.contains_key(v));
+   CertifiedConsensusContext derives one exclusion set from the finalized-floor
+   authority, certified generations, intrinsic block validity, causal objective
+   evidence, sender provenance, and floor ancestry. The estimator consumes that
+   projection without consulting or mutating a receiver-local invalid cache.
 
    This is the operational realization of the slashing property T-10 (a slashed
    validator, whose post-slash bond is 0, is excluded from the fork-choice
@@ -16,17 +14,16 @@
        formal/rocq/slashing/theories/ForkChoice.v : fork_choice_exclusion
          (bm_lookup bonds v = 0  ->  fc_lookup (filter_slashed lm bonds) v = None)
 
-   Here we model the concrete `retain(!invalid.contains)` step and prove it (i)
-   excludes every invalid validator's entry and (ii) preserves every valid one,
-   and (iii) is idempotent (re-filtering changes nothing).
+   Here `inv` denotes the certified exclusion set. We prove exclusion,
+   preservation, idempotence, and receiver-cache noninterference.
 
    ---------------------------------------------------------------------------
    Spec-to-Code Traceability
    ---------------------------------------------------------------------------
    Rocq                | Rust (casper/src/rust/estimator.rs)
    --------------------+-----------------------------------------------------
-   filter_inv          | filtered.retain(|v,_| !invalid.contains_key(v)) (:90)
-   invalid_excluded    | slashed validator excluded (T-10, upstream bonds)
+   filter_inv          | FinalityVoteProjection::eligible_latest_messages
+   invalid_excluded    | certified-excluded validator contributes no vote
    valid_preserved     | active validator's tip survives the filter
    filter_idempotent   | retain is idempotent on the same invalid set
    =========================================================================== *)
@@ -38,7 +35,7 @@ Import ListNotations.
 
 From ForkChoice Require Import Foundation.
 
-(* Validator `v` is in the invalid set. *)
+(* Validator `v` is in the certified exclusion set. *)
 Definition in_inv (inv : list Validator) (v : Validator) : bool :=
   existsb (Nat.eqb v) inv.
 
@@ -60,12 +57,12 @@ Proof.
     exfalso. apply H. apply (in_inv_true_iff inv v). exact E.
 Qed.
 
-(* Drop every latest message whose validator is invalid (slashed). *)
+(* Drop every latest message whose validator is certified ineligible. *)
 Definition filter_inv (lms : list (Validator * BlockHash)) (inv : list Validator)
   : list (Validator * BlockHash) :=
   filter (fun e => negb (in_inv inv (fst e))) lms.
 
-(* T-10 (concrete step): an invalid validator's latest message is excluded. *)
+(* T-10: a certified-ineligible validator's latest message is excluded. *)
 Theorem invalid_excluded :
   forall lms inv v h, In v inv -> ~ In (v, h) (filter_inv lms inv).
 Proof.
@@ -96,3 +93,15 @@ Proof.
     + rewrite E. rewrite IH. reflexivity.
     + rewrite IH. reflexivity.
 Qed.
+
+Definition projection_with_receiver_cache
+           (lms : list (Validator * BlockHash))
+           (certified_exclusions receiver_cache : list Validator)
+  : list (Validator * BlockHash) :=
+  filter_inv lms certified_exclusions.
+
+Theorem receiver_cache_noninterference :
+  forall lms certified_exclusions receiver_cache1 receiver_cache2,
+    projection_with_receiver_cache lms certified_exclusions receiver_cache1 =
+    projection_with_receiver_cache lms certified_exclusions receiver_cache2.
+Proof. reflexivity. Qed.

@@ -119,13 +119,47 @@ message BlockMetadataInternal {
   repeated BondProto bonds                   = 5 [(scalapb.field).collection_type="collection.immutable.List"];
   int64 blockNum                             = 6;
   int32 seqNum                               = 7;
-  bool invalid                               = 8; // whether the block was marked as invalid
+  reserved 8;
+  reserved "intrinsicallyInvalid";
   bool directlyFinalized                     = 9; // whether the block has been last finalized block (LFB)
   bool finalized                             = 10;// whether the block is finalized
   float faultToleranceValue                  = 11;// cached normalized FT at finalization time
   repeated uint32 successfulStateEffectIndices = 12;
   repeated StateEffectIdProto rejectedStateEffects = 13;
   int64 protocolVersion                     = 14;
+  optional int64 senderBondGeneration       = 15;
+  repeated ObjectiveEquivocationEvidenceProto objectiveEquivocationEvidenceDelta = 16;
+  repeated ValidatorBondGenerationProto bondGenerations = 17;
+  optional CertifiedSenderAuthorityProto senderAuthority = 18;
+  uint32 admissionSchemaVersion = 19;
+  bool approvedGenesis = 20;
+  repeated bytes activeValidators = 21;
+  bytes postStateHash = 22;
+  optional CertifiedAdmissionOutcomeProto admissionOutcome = 23;
+}
+
+message CertifiedSenderAuthorityProto {
+  bytes blockHash = 1;
+  int64 protocolVersion = 2;
+  reserved 3;
+  reserved "preStateHash";
+  bytes sender = 4;
+  int64 bondGeneration = 5;
+  int64 stake = 6;
+  bytes authorityFloorHash = 7;
+  bytes authorityFloorPostStateHash = 8;
+  bytes contextDigest = 9;
+}
+
+message CertifiedAdmissionOutcomeProto {
+  bytes blockHash = 1;
+  int64 protocolVersion = 2;
+  uint32 admissionSchemaVersion = 3;
+  bytes rulesetDigest = 4;
+  bytes incomingContextDigest = 5;
+  bytes senderAuthorityDigest = 6;
+  uint32 disposition = 7;
+  uint32 rejectionReason = 8;
 }
 
 message HeaderProto {
@@ -133,6 +167,16 @@ message HeaderProto {
   int64 timestamp  = 5;
   int64 version    = 6;
   bytes extraBytes = 7;
+  optional int64 senderBondGeneration = 8;
+  repeated ObjectiveEquivocationEvidenceProto objectiveEquivocationEvidenceDelta = 9;
+}
+
+message ObjectiveEquivocationEvidenceProto {
+  bytes validator = 1;
+  int64 bondGeneration = 2;
+  int32 sequenceNumber = 3;
+  bytes firstBlockHash = 4;
+  bytes secondBlockHash = 5;
 }
 
 /**
@@ -404,6 +448,8 @@ message SlashSystemDeployDataProto {
   bytes invalidBlockHash = 1;
   bytes issuerPublicKey = 2;
   int64 targetActivationEpoch = 3;
+  bytes equivocationBlockHash = 4;
+  optional int64 targetBondGeneration = 5;
 }
 
 message CloseBlockSystemDeployDataProto{
@@ -430,6 +476,7 @@ message RedeemSystemDeployDataProto {
   repeated string posMultiSigPublicKeys = 4;
   uint32 posMultiSigQuorum = 5;
   repeated RedemptionAuthorizationProto authorizations = 6;
+  optional int64 targetBondGeneration = 7;
 }
 
 message SystemDeployDataProto{
@@ -488,8 +535,14 @@ message RChainStateProto {
   //(which will be part of the tuplespace in the real implementation).
   repeated BondProto bonds = 3;
   int64 blockNumber        = 4;
-  reserved 5;
+  repeated ValidatorBondGenerationProto bondGenerations = 5;
+  repeated bytes activeValidators = 6;
   reserved "genesisSupply";
+}
+
+message ValidatorBondGenerationProto {
+  bytes validator = 1;
+  int64 generation = 2;
 }
 
 message EventProto {
@@ -530,6 +583,7 @@ message BondProto {
   bytes validator = 1;
   int64 stake     = 2;
 }
+
 // --------- End Core Protocol  --------
 
 // --------- Last finalized state  --------

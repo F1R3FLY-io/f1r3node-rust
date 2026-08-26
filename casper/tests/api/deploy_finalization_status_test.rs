@@ -56,9 +56,11 @@ async fn create_engine_cell(node: &TestNode) -> EngineCell {
         validator_id: node.casper.validator_id.clone(),
         casper_shard_conf: node.casper.casper_shard_conf.clone(),
         approved_block: node.casper.approved_block.clone(),
-        finalization_in_progress: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        finalizer_task_in_progress: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        finalizer_task_queued: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        finalization_in_progress: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        recovery_sync_active: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        finalization_schedule: std::sync::Arc::new(
+            casper::rust::finality::finalization_schedule::FinalizationSchedule::new(2),
+        ),
         heartbeat_signal_ref: casper::rust::heartbeat_signal::new_heartbeat_signal_ref(),
         deploys_in_scope_cache: std::sync::Arc::new(parking_lot::Mutex::new(None)),
         active_validators_cache: std::sync::Arc::new(tokio::sync::Mutex::new(
@@ -177,7 +179,7 @@ async fn resolve_finds_sig_in_secondary_parent_branch() {
         .put_block_message(&genesis_block)
         .expect("store genesis");
     dag_storage
-        .insert(&genesis_block, InsertMode::Approved)
+        .insert(&genesis_block, InsertMode::ApprovedGenesis)
         .expect("dag genesis");
 
     let deploy_b =
@@ -375,7 +377,7 @@ async fn resolve_and_resolve_batch_agree_across_states() {
         .put_block_message(&genesis_block)
         .expect("store genesis");
     dag_storage
-        .insert(&genesis_block, InsertMode::Approved)
+        .insert(&genesis_block, InsertMode::ApprovedGenesis)
         .expect("dag genesis");
 
     // Construct four user deploys; the fifth sig (unknown) is not
@@ -745,7 +747,7 @@ async fn resolve_returns_pending_for_unfinalized_inclusion_past_lifespan() {
         .put_block_message(&genesis_block)
         .expect("store genesis");
     dag_storage
-        .insert(&genesis_block, InsertMode::Approved)
+        .insert(&genesis_block, InsertMode::ApprovedGenesis)
         .expect("dag genesis");
 
     // Deploy with explicit valid_after_block_number = 0.
@@ -858,7 +860,7 @@ async fn resolve_returns_finalized_for_clean_canonical_after_failed_secondary() 
         .put_block_message(&genesis_block)
         .expect("store genesis");
     dag_storage
-        .insert(&genesis_block, InsertMode::Approved)
+        .insert(&genesis_block, InsertMode::ApprovedGenesis)
         .expect("dag genesis");
 
     let deploy_failed_then_clean = construct_deploy::source_deploy_now_full(
@@ -1060,7 +1062,7 @@ async fn resolve_returns_finalized_when_canonical_clean_supersedes_canonical_fai
         .put_block_message(&genesis_block)
         .expect("store genesis");
     dag_storage
-        .insert(&genesis_block, InsertMode::Approved)
+        .insert(&genesis_block, InsertMode::ApprovedGenesis)
         .expect("dag genesis");
 
     let deploy = construct_deploy::source_deploy_now_full(
@@ -1213,7 +1215,7 @@ async fn resolve_returns_typed_err_for_indexed_but_missing_from_body() {
         .put_block_message(&genesis_block)
         .expect("store genesis");
     dag_storage
-        .insert(&genesis_block, InsertMode::Approved)
+        .insert(&genesis_block, InsertMode::ApprovedGenesis)
         .expect("dag genesis");
 
     // Build a block with NO deploys in its body.
@@ -1308,7 +1310,7 @@ async fn resolve_with_known_block_uses_fallback_block_when_deploy_index_misses()
         .put_block_message(&genesis_block)
         .expect("store genesis");
     dag_storage
-        .insert(&genesis_block, InsertMode::Approved)
+        .insert(&genesis_block, InsertMode::ApprovedGenesis)
         .expect("dag genesis");
 
     let deploy =
@@ -1438,7 +1440,7 @@ async fn resolve_returns_pending_for_non_canonical_clean_with_canonical_reject()
         .put_block_message(&genesis_block)
         .expect("store genesis");
     dag_storage
-        .insert(&genesis_block, InsertMode::Approved)
+        .insert(&genesis_block, InsertMode::ApprovedGenesis)
         .expect("dag genesis");
 
     let deploy = construct_deploy::source_deploy_now_full(
@@ -1593,7 +1595,7 @@ async fn source_aware_rejection_returns_the_surviving_occurrence() {
         .put_block_message(&genesis)
         .expect("store genesis");
     dag_storage
-        .insert(&genesis, InsertMode::Approved)
+        .insert(&genesis, InsertMode::ApprovedGenesis)
         .expect("insert genesis");
 
     let deploy =
@@ -1700,7 +1702,7 @@ async fn source_aware_rejection_in_secondary_parent_is_authoritative() {
         .put_block_message(&genesis)
         .expect("store genesis");
     dag_storage
-        .insert(&genesis, InsertMode::Approved)
+        .insert(&genesis, InsertMode::ApprovedGenesis)
         .expect("insert genesis");
 
     let deploy =
@@ -1839,7 +1841,7 @@ async fn multiple_exact_rejections_in_one_block_count_as_one_rejection_event() {
         .put_block_message(&genesis)
         .expect("store genesis");
     dag_storage
-        .insert(&genesis, InsertMode::Approved)
+        .insert(&genesis, InsertMode::ApprovedGenesis)
         .expect("insert genesis");
 
     let deploy =

@@ -8,6 +8,8 @@
 | `CandidateBlockHeight(v)` | the validator-local `CasperSnapshot::max_block_num + 1` expiry boundary |
 | `PrepareRetry` / `PublishRetry` | block construction followed by asynchronous block visibility |
 | `survivesSelfChainFilter` | selected recovery signatures bypass only the legacy self-chain duplicate filter in `block_creator::create` |
+| `excludedSources(v)` | historical self-chain occurrences outside validator `v`'s selected-parent closure |
+| `CandidateActiveSources(v)` | active occurrences reachable from validator `v`'s immutable candidate parents |
 | `ObserveOccurrence` / `ObserveTombstone` | eventual DAG propagation of exact occurrence dispositions |
 | `Advance` | ordinary heartbeat/finality-support blocks, including non-leaders |
 
@@ -22,10 +24,10 @@ visible as an active occurrence, an occurrence-aware validator cannot prepare
 another until every visible exact source is tombstoned.
 
 Selection authorization is preserved through packaging. The self-chain filter
-continues to remove ordinary duplicates, but it cannot remove a retry already
-selected from the exact-source recovery projection. The packaging negative
-control captures the earlier refinement gap in which the formal transition
-published every selected retry while Rust silently dropped a self-chain retry.
+removes only occurrences active in the selected-parent closure. It cannot
+remove a retry already selected from the exact-source recovery projection or a
+retained deploy whose only historical occurrence lies on an excluded branch.
+The two packaging controls distinguish those authorization paths.
 
 | Configuration | Expected result | Defect isolated |
 | --- | --- | --- |
@@ -35,6 +37,7 @@ published every selected retry while Rust silently dropped a self-chain retry.
 | `MC_DeployRecovery_multi_leader_pre_fix.cfg` | violate `Inv_OneRecoveryProposerPerFinalizedView` | multiple validators prepare retries from the same finalized-height view |
 | `MC_DeployRecovery_heartbeat_pre_fix.cfg` | violate `Live_RecoveryOrExpiry` | an offline elected leader prevents proposal and finality views from advancing |
 | `MC_DeployRecovery_packaging_pre_fix.cfg` | violate `Inv_SelectedRetrySurvivesSelfChainFilter` | a canonically authorized retry is selected and then silently removed by downstream self-chain filtering |
+| `MC_DeployRecovery_rehome_pre_fix.cfg` | violate `Inv_SelectedRehomeSurvivesCandidateFilter` | an excluded historical self-chain occurrence masks retained work selected against different candidate parents |
 
 `MergeRecoveryCoherence.tla` closes the refinement boundary between occurrence
 records and the state rooted at the finalized merge floor. Base-committed

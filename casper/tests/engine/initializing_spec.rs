@@ -58,14 +58,15 @@ impl InitializingSpec {
 
         let engine_cell = Arc::new(EngineCell::init());
 
-        // interval and duration don't really matter since we don't require and signs from validators
+        // interval and duration do not affect this direct approved-block transition
         let initializing_engine =
             create_initializing_engine(&fixture, the_init, engine_cell.clone())
                 .await
                 .expect("Failed to create Initializing engine");
 
         let genesis = &fixture.genesis;
-        let approved_block_candidate = fixture.approved_block_candidate.clone();
+        let mut approved_block_candidate = fixture.approved_block_candidate.clone();
+        approved_block_candidate.required_sigs = fixture.required_sigs;
         let validator_sk = &fixture.validator_sk;
         let validator_pk = &fixture.validator_pk;
 
@@ -379,7 +380,12 @@ async fn create_initializing_engine(
     // Create engine-specific channels (each Initializing instance needs its own)
     let (block_tx, block_rx) = mpsc::channel::<BlockMessage>(50);
     let (tuple_tx, tuple_rx) = mpsc::channel::<StoreItemsMessage>(50);
-    let (block_processing_queue_tx, _block_processing_queue_rx) = mpsc::channel(1024);
+    let (block_processing_queue_tx, _block_processing_queue_rx) =
+        casper::rust::blocks::block_processing_queue::BlockProcessingQueueSender::channel(
+            1024,
+            64 * 1024 * 1024,
+        )
+        .expect("block processing queue");
 
     // Use all stores and managers from fixture (matching Scala's Setup pattern)
     Ok(Arc::new(Initializing::new(
@@ -396,6 +402,7 @@ async fn create_initializing_engine(
         block_processing_queue_tx,
         fixture.blocks_in_processing.clone(),
         fixture.casper_shard_conf.clone(),
+        fixture.required_sigs,
         Some(fixture.validator_id.clone()),
         the_init,
         block_tx,
@@ -560,6 +567,7 @@ fn transition_to_initializing_invokes_init_immediately() {
                     &fixture.block_processing_queue_tx,
                     &fixture.blocks_in_processing,
                     &fixture.casper_shard_conf,
+                    fixture.required_sigs,
                     &Some(fixture.validator_id.clone()),
                     the_init,
                     true,

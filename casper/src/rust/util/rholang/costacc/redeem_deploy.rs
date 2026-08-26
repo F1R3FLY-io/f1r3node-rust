@@ -17,6 +17,7 @@ use crypto::rust::hash::blake2b512_random::Blake2b512Random;
 use crypto::rust::signatures::secp256k1::Secp256k1;
 use crypto::rust::signatures::signatures_alg::SignaturesAlg;
 use models::rhoapi::Par;
+use models::rust::bond_generation::BondGeneration;
 use models::rust::utils::{new_gbool_par, new_gint_par, new_gstring_par};
 use models::rust::validator::Validator;
 use rholang::rust::interpreter::rho_type::{Extractor, RhoBoolean, RhoNil, RhoString};
@@ -108,6 +109,7 @@ pub struct RedemptionAuthorization {
 pub struct RedeemDeploy {
     /// The quarantined (slashed) validator being adjudicated.
     pub validator_pk: Vec<u8>,
+    pub target_bond_generation: BondGeneration,
     /// The adjudication outcome.
     pub outcome: RedemptionOutcome,
     /// The configured PoS-multisig public keyset (`$$posMultiSigPublicKeys$$`),
@@ -124,6 +126,7 @@ pub struct RedeemDeploy {
 impl RedeemDeploy {
     pub fn new(
         validator_pk: Vec<u8>,
+        target_bond_generation: BondGeneration,
         outcome: RedemptionOutcome,
         pos_multi_sig_public_keys: Vec<String>,
         pos_multi_sig_quorum: u32,
@@ -137,6 +140,7 @@ impl RedeemDeploy {
         );
         Self {
             validator_pk,
+            target_bond_generation,
             outcome,
             pos_multi_sig_public_keys,
             pos_multi_sig_quorum,
@@ -146,17 +150,22 @@ impl RedeemDeploy {
     }
 
     /// The canonical redemption-authorization digest the cosigners sign:
-    /// `Blake2b256(DOMAIN ++ validatorPk ++ outcomeTag ++ penalty_le_bytes)`.
+    /// `Blake2b256(DOMAIN ++ validatorPk ++ generation_le_bytes ++ outcomeTag ++ penalty_le_bytes)`.
     /// Domain-separated and outcome-bound, so a signature authorizes exactly THIS
     /// `(validator, outcome)` redemption and nothing else.
     pub fn auth_digest(&self) -> Vec<u8> {
         let tag = self.outcome.tag().as_bytes();
         let penalty = self.outcome.penalty().to_le_bytes();
         let mut preimage = Vec::with_capacity(
-            REDEMPTION_AUTH_DOMAIN.len() + self.validator_pk.len() + tag.len() + penalty.len(),
+            REDEMPTION_AUTH_DOMAIN.len()
+                + self.validator_pk.len()
+                + std::mem::size_of::<i64>()
+                + tag.len()
+                + penalty.len(),
         );
         preimage.extend_from_slice(REDEMPTION_AUTH_DOMAIN);
         preimage.extend_from_slice(&self.validator_pk);
+        preimage.extend_from_slice(&self.target_bond_generation.get().to_le_bytes());
         preimage.extend_from_slice(tag);
         preimage.extend_from_slice(&penalty);
         Blake2b256::hash(preimage).to_vec()
@@ -218,6 +227,13 @@ impl RedeemDeploy {
         )
     }
 
+    fn mk_target_bond_generation(&self) -> (String, Par) {
+        (
+            "sys:casper:redeemTargetBondGeneration".to_string(),
+            new_gint_par(self.target_bond_generation.get(), Vec::new(), false),
+        )
+    }
+
     /// The DR-12 verdict env value: the Rust-verified multisig-quorum boolean the
     /// Rholang `redeemSlashed` consumes as `multiSigVerified`. Computed by
     /// [`RedeemDeploy::verify_multisig_quorum`] — the platform obligation — so the
@@ -241,13 +257,14 @@ impl SystemDeployTrait for RedeemDeploy {
           poSCh,
           validatorPk(`sys:casper:redeemValidatorPk`),
           outcome(`sys:casper:redeemOutcome`),
+          targetBondGeneration(`sys:casper:redeemTargetBondGeneration`),
           sysAuthToken(`sys:casper:authToken`),
           multiSigVerified(`sys:casper:redeemMultiSigVerified`),
           return(`sys:casper:return`)
           in {
             rl!(`rho:system:pos`, *poSCh) |
             for(@(_, PoS) <- poSCh) {
-              @PoS!("redeemSlashed", *validatorPk.hexToBytes(), *outcome, *sysAuthToken, *multiSigVerified, *return)
+              @PoS!("redeemSlashed", *validatorPk.hexToBytes(), *targetBondGeneration, *outcome, *sysAuthToken, *multiSigVerified, *return)
             }
         }"#
     }
@@ -277,6 +294,9 @@ impl SystemDeployTrait for RedeemDeploy {
         let (outcome_key, outcome_value) = self.mk_outcome();
         env.insert(outcome_key, outcome_value);
 
+        let (generation_key, generation_value) = self.mk_target_bond_generation();
+        env.insert(generation_key, generation_value);
+
         let (sys_key, sys_value) = self.mk_sys_auth_token();
         env.insert(sys_key, sys_value);
 
@@ -302,6 +322,7 @@ impl SystemDeployTrait for RedeemDeploy {
 #[cfg(test)]
 mod tests {
     use crypto::rust::signatures::signatures_alg::SignaturesAlg;
+    use proptest::prelude::*;
 
     use super::*;
 
@@ -330,6 +351,7 @@ mod tests {
         // Construct the deploy WITHOUT authorizations first to compute the digest.
         let mut deploy = RedeemDeploy::new(
             validator_pk,
+            BondGeneration::GENESIS,
             outcome,
             pos_multi_sig_public_keys,
             quorum,
@@ -456,6 +478,7 @@ mod tests {
         let proposer = prost::bytes::Bytes::from_static(b"seed-test-proposer");
         let deploy = RedeemDeploy::new(
             b"validator".to_vec(),
+            BondGeneration::GENESIS,
             RedemptionOutcome::Guilty { penalty: 7 },
             Vec::new(),
             1,
@@ -467,5 +490,50 @@ mod tests {
             system_deploy_util::generate_redeem_deploy_random_seed(proposer, 9, "Guilty")
                 .to_bytes()
         );
+    }
+
+    proptest! {
+        #[test]
+        fn authorization_is_bound_to_validator_generation_and_outcome(
+            validator_pk in any::<[u8; 65]>(),
+            generation in 0i64..i64::MAX,
+            penalty in any::<i64>(),
+        ) {
+            let secp = Secp256k1;
+            let (secret_key, public_key) = secp.new_key_pair();
+            let mut authorized = RedeemDeploy::new(
+                validator_pk.to_vec(),
+                BondGeneration::new(generation).unwrap(),
+                RedemptionOutcome::Guilty { penalty },
+                vec![hex::encode(&public_key.bytes)],
+                1,
+                prost::bytes::Bytes::from_static(b"redemption-property-proposer"),
+                1,
+            );
+            authorized.authorizations.push(RedemptionAuthorization {
+                public_key: public_key.bytes.to_vec(),
+                signature: secp.sign(&authorized.auth_digest(), &secret_key.bytes),
+            });
+            prop_assert!(authorized.verify_multisig_quorum());
+
+            let mut changed_validator = authorized.clone();
+            changed_validator.validator_pk[0] ^= 1;
+            prop_assert!(!changed_validator.verify_multisig_quorum());
+
+            let mut changed_generation = authorized.clone();
+            changed_generation.target_bond_generation =
+                BondGeneration::new(generation + 1).unwrap();
+            prop_assert!(!changed_generation.verify_multisig_quorum());
+
+            let mut changed_penalty = authorized.clone();
+            changed_penalty.outcome = RedemptionOutcome::Guilty {
+                penalty: penalty.wrapping_add(1),
+            };
+            prop_assert!(!changed_penalty.verify_multisig_quorum());
+
+            let mut changed_tag = authorized;
+            changed_tag.outcome = RedemptionOutcome::Burned;
+            prop_assert!(!changed_tag.verify_multisig_quorum());
+        }
     }
 }

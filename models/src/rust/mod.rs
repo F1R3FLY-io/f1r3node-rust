@@ -2,6 +2,7 @@ pub mod block;
 pub mod block_hash;
 pub mod block_implicits;
 pub mod block_metadata;
+pub mod bond_generation;
 pub mod bundle_ops;
 pub mod casper;
 pub mod equivocation_record;

@@ -1,397 +1,234 @@
-// See comm/src/main/scala/coop/rchain/comm/transport/StreamObservable.scala
+use std::sync::Arc;
 
-use std::sync::atomic::{AtomicUsize, Ordering};
-
-use chrono::{NaiveDateTime, Utc};
+use tokio::sync::{mpsc, oneshot};
 
 use crate::rust::errors::CommError;
-use crate::rust::metrics_constants::{
-    STREAM_CACHE_BYTES_METRIC, STREAM_CACHE_ENTRIES_METRIC, TRANSPORT_METRICS_SOURCE,
-};
 use crate::rust::peer_node::PeerNode;
-use crate::rust::transport::limited_buffer::{
-    FlumeLimitedBuffer, LimitedBuffer, LimitedBufferObservable,
-};
-use crate::rust::transport::packet_ops::{PacketExt, StreamCache};
+use crate::rust::transport::activity_gate::{ActivityGate, ActivityGuard};
+use crate::rust::transport::payload_budget::PayloadReservation;
 use crate::rust::transport::transport_layer::Blob;
 
-const STREAM_CACHE_STALE_TTL_SECS: i64 = 120;
-const STREAM_CACHE_CLEANUP_EVERY_ENQUEUES: usize = 256;
-const STREAM_CACHE_HARD_MAX_ENTRIES: usize = 4096;
-static STREAM_CACHE_ENQUEUES: AtomicUsize = AtomicUsize::new(0);
-
-/// Stream message containing a cache key and sender peer
-#[derive(Debug, Clone)]
-pub struct Stream {
-    pub key: String,
-    pub sender: PeerNode,
+pub struct OutboundPayload {
+    blob: Blob,
+    reservation: PayloadReservation,
 }
 
-/// StreamObservable provides bounded buffering for streaming messages with overflow handling
-#[derive(Debug)]
+impl OutboundPayload {
+    pub fn new(blob: Blob, reservation: PayloadReservation) -> Self { Self { blob, reservation } }
+
+    pub fn blob(&self) -> &Blob { &self.blob }
+
+    pub fn reserved_bytes(&self) -> usize { self.reservation.bytes() }
+}
+
 pub struct StreamObservable {
     peer: PeerNode,
-    cache: StreamCache,
-    subject: FlumeLimitedBuffer<Stream>,
+    sender: mpsc::Sender<OutboundDelivery>,
+    activity: Arc<ActivityGate>,
+    buffer_size: usize,
+}
+
+pub struct OutboundDelivery {
+    payload: Arc<OutboundPayload>,
+    _activity: ActivityGuard,
+    completion: Option<oneshot::Sender<Result<(), CommError>>>,
+}
+
+impl OutboundDelivery {
+    fn new(
+        payload: Arc<OutboundPayload>,
+        activity: &Arc<ActivityGate>,
+    ) -> Result<(Self, oneshot::Receiver<Result<(), CommError>>), CommError> {
+        let activity = activity.try_enter().ok_or_else(|| {
+            CommError::ResourceExhausted("client stream queue is retiring".to_string())
+        })?;
+        let (completion, receiver) = oneshot::channel();
+        Ok((
+            Self {
+                payload,
+                _activity: activity,
+                completion: Some(completion),
+            },
+            receiver,
+        ))
+    }
+
+    pub fn payload(&self) -> &Arc<OutboundPayload> { &self.payload }
+
+    pub fn complete(mut self, result: Result<(), CommError>) {
+        if let Some(completion) = self.completion.take() {
+            let _ = completion.send(result);
+        }
+    }
+}
+
+impl std::fmt::Debug for StreamObservable {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("StreamObservable")
+            .field("peer", &self.peer)
+            .field("buffer_size", &self.buffer_size)
+            .field("available_capacity", &self.sender.capacity())
+            .field("closed", &self.sender.is_closed())
+            .finish()
+    }
 }
 
 impl StreamObservable {
-    fn update_stream_cache_metrics(&self) {
-        let entries = self.cache.len();
-        let total_bytes: usize = self.cache.iter().map(|entry| entry.value().len()).sum();
-        metrics::gauge!(STREAM_CACHE_ENTRIES_METRIC, "source" => TRANSPORT_METRICS_SOURCE)
-            .set(entries as f64);
-        metrics::gauge!(STREAM_CACHE_BYTES_METRIC, "source" => TRANSPORT_METRICS_SOURCE)
-            .set(total_bytes as f64);
+    pub fn new(
+        peer: PeerNode,
+        buffer_size: usize,
+    ) -> Result<(Self, mpsc::Receiver<OutboundDelivery>), CommError> {
+        if buffer_size == 0 {
+            return Err(CommError::ConfigError(
+                "client stream queue capacity must be positive".to_string(),
+            ));
+        }
+        let (sender, receiver) = mpsc::channel(buffer_size);
+        let activity = ActivityGate::new();
+        Ok((
+            Self {
+                peer,
+                sender,
+                activity,
+                buffer_size,
+            },
+            receiver,
+        ))
     }
 
-    fn maybe_cleanup_stale_cache_entries(&self) {
-        let count = STREAM_CACHE_ENQUEUES.fetch_add(1, Ordering::Relaxed) + 1;
-        let len = self.cache.len();
-        let should_run = len >= STREAM_CACHE_HARD_MAX_ENTRIES
-            || count.is_multiple_of(STREAM_CACHE_CLEANUP_EVERY_ENQUEUES);
-        if !should_run {
-            return;
-        }
-
-        let now_ts = Utc::now().timestamp();
-        let mut removed = 0usize;
-        let stale_keys: Vec<String> = self
-            .cache
-            .iter()
-            .filter_map(|entry| {
-                let key = entry.key();
-                Self::cache_key_timestamp(key).and_then(|ts| {
-                    if now_ts.saturating_sub(ts) > STREAM_CACHE_STALE_TTL_SECS {
-                        Some(key.clone())
-                    } else {
-                        None
-                    }
-                })
-            })
-            .collect();
-
-        removed += stale_keys
-            .iter()
-            .filter(|k| self.cache.remove(k.as_str()).is_some())
-            .count();
-
-        if self.cache.len() > STREAM_CACHE_HARD_MAX_ENTRIES {
-            let overflow = self.cache.len() - STREAM_CACHE_HARD_MAX_ENTRIES;
-            let mut candidates: Vec<(i64, String)> = self
-                .cache
-                .iter()
-                .filter_map(|entry| {
-                    Self::cache_key_timestamp(entry.key()).map(|ts| (ts, entry.key().clone()))
-                })
-                .collect();
-
-            if candidates.is_empty() {
-                candidates = self
-                    .cache
-                    .iter()
-                    .map(|entry| (i64::MAX, entry.key().clone()))
-                    .collect();
-            }
-
-            candidates.sort_by_key(|(ts, _)| *ts);
-            removed += candidates
-                .into_iter()
-                .take(overflow)
-                .filter(|(_, key)| self.cache.remove(key).is_some())
-                .count();
-        }
-
-        if removed > 0 {
-            tracing::debug!(
-                "Stream cache GC removed {} entries (cache_len_now={}).",
-                removed,
-                self.cache.len()
-            );
-        }
-
-        self.update_stream_cache_metrics();
-    }
-
-    fn cache_key_timestamp(key: &str) -> Option<i64> {
-        // Keys look like: "packet_receive/YYYYmmddHHMMSS_ab12cd34"
-        let suffix = key.split('/').nth(1)?;
-        let ts_part = suffix.split('_').next()?;
-        let parsed = NaiveDateTime::parse_from_str(ts_part, "%Y%m%d%H%M%S").ok()?;
-        Some(parsed.and_utc().timestamp())
-    }
-
-    /// Create a new StreamObservable with the given peer, buffer size, and cache
-    pub fn new(peer: PeerNode, buffer_size: usize, cache: StreamCache) -> Self {
-        let subject = FlumeLimitedBuffer::drop_new_observable(buffer_size);
-
-        Self {
-            peer,
-            cache,
-            subject,
-        }
-    }
-
-    /// Enqueue a blob for streaming
-    pub async fn enque(&self, blob: &Blob) -> Result<(), CommError> {
-        // Log stream information
-        tracing::debug!(
-            "Pushing message to {} stream message queue.",
-            self.peer.endpoint.host
-        );
-
-        // Prevent unbounded cache growth if stream workers or channels churn.
-        self.maybe_cleanup_stale_cache_entries();
-
-        // Store blob packet in cache
-        let store_result = blob.packet.store(&self.cache);
-
-        match store_result {
-            Ok(key) => {
-                // Successfully stored
-
-                // Create stream message
-                let stream_msg = Stream {
-                    key: key.clone(),
-                    sender: blob.sender.clone(),
-                };
-
-                // Try to push to buffer
-                let push_succeed = self.subject.push_next(stream_msg);
-
-                if !push_succeed {
-                    // Buffer is full
-                    tracing::warn!(
-                        "Client stream message queue for {} is full ({} items). Dropping message.",
-                        self.peer.endpoint.host,
-                        self.subject.buffer_size()
-                    );
-                    // Clean up cache
-                    self.cache.remove(&key);
+    pub fn enqueue(
+        &self,
+        payload: Arc<OutboundPayload>,
+    ) -> Result<oneshot::Receiver<Result<(), CommError>>, CommError> {
+        let (delivery, completion) = OutboundDelivery::new(payload, &self.activity)?;
+        self.sender
+            .try_send(delivery)
+            .map_err(|error| match error {
+                mpsc::error::TrySendError::Full(_) => CommError::ResourceExhausted(format!(
+                    "client stream queue for {} is full at {} items",
+                    self.peer.endpoint.host, self.buffer_size
+                )),
+                mpsc::error::TrySendError::Closed(_) => {
+                    CommError::InternalCommunicationError(format!(
+                        "client stream queue for {} is closed",
+                        self.peer.endpoint.host
+                    ))
                 }
-                self.update_stream_cache_metrics();
-            }
-            Err(e) => {
-                tracing::error!(error = %e, "blob packet cache store failed");
-                self.update_stream_cache_metrics();
-            }
-        }
-
-        // Keep cache strictly bounded even under bursty concurrent enqueue.
-        if self.cache.len() > STREAM_CACHE_HARD_MAX_ENTRIES {
-            self.maybe_cleanup_stale_cache_entries();
-        }
-
-        Ok(())
+            })?;
+        Ok(completion)
     }
 
-    /// Complete the stream
-    pub fn complete(&self) {
-        self.subject.complete();
-        tracing::debug!("Stream for {} marked as complete", self.peer.endpoint.host);
-    }
-
-    /// Check if the stream is complete
-    pub fn is_complete(&self) -> bool { self.subject.is_complete() }
-
-    /// Get a stream subscription
-    pub fn subscribe(&mut self) -> Option<impl tokio_stream::Stream<Item = Stream> + Unpin> {
-        self.subject.subscribe()
-    }
-
-    /// Get the peer this observable is associated with
     pub fn peer(&self) -> &PeerNode { &self.peer }
 
-    /// Get the buffer size
-    pub fn buffer_size(&self) -> usize { self.subject.buffer_size() }
+    pub fn buffer_size(&self) -> usize { self.buffer_size }
 
-    /// Check if the stream is still active (not closed)
-    pub fn is_active(&self) -> bool { self.subject.is_active() }
+    pub fn available_capacity(&self) -> usize { self.sender.capacity() }
+
+    pub fn resident_deliveries(&self) -> usize { self.activity.active() }
+
+    pub(crate) fn activity(&self) -> Arc<ActivityGate> { self.activity.clone() }
+
+    pub fn is_active(&self) -> bool { !self.sender.is_closed() }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
-    use dashmap::DashMap;
     use models::routing::Packet;
     use prost::bytes::Bytes;
-    use tokio_stream::StreamExt;
 
     use super::*;
     use crate::rust::peer_node::{Endpoint, NodeIdentifier};
+    use crate::rust::transport::payload_budget::PayloadBudget;
 
-    fn create_test_peer() -> PeerNode {
+    fn peer(name: &'static str) -> PeerNode {
         PeerNode {
             id: NodeIdentifier {
-                key: Bytes::from("test_peer"),
+                key: Bytes::from_static(name.as_bytes()),
             },
             endpoint: Endpoint::new("127.0.0.1".to_string(), 8080, 8080),
         }
     }
 
-    fn create_test_cache() -> StreamCache { Arc::new(DashMap::new()) }
-
-    fn create_test_blob(sender: PeerNode, content: Vec<u8>) -> Blob {
-        Blob {
-            sender,
-            packet: Packet {
-                type_id: "TestPacket".to_string(),
-                content: Bytes::from(content),
+    fn payload(budget: &Arc<PayloadBudget>, bytes: usize) -> Arc<OutboundPayload> {
+        Arc::new(OutboundPayload::new(
+            Blob {
+                sender: peer("sender"),
+                packet: Packet {
+                    type_id: "TestPacket".to_string(),
+                    content: Bytes::from(vec![1; bytes]),
+                },
             },
-        }
+            budget.try_reserve(bytes).unwrap(),
+        ))
+    }
+
+    #[test]
+    fn queue_capacity_failure_releases_rejected_unique_payload() {
+        let budget = PayloadBudget::new("test", 32, 2).unwrap();
+        let (queue, mut receiver) = StreamObservable::new(peer("remote"), 1).unwrap();
+        let _first_completion = queue.enqueue(payload(&budget, 7)).unwrap();
+        let rejected = payload(&budget, 11);
+        assert!(matches!(
+            queue.enqueue(rejected),
+            Err(CommError::ResourceExhausted(_))
+        ));
+        assert_eq!(queue.resident_deliveries(), 1);
+        assert_eq!(budget.used_bytes(), 7);
+        drop(receiver.try_recv().unwrap());
+        assert_eq!(queue.resident_deliveries(), 0);
+        assert_eq!(budget.used_bytes(), 0);
+    }
+
+    #[test]
+    fn receiver_drop_releases_every_queued_payload() {
+        let budget = PayloadBudget::new("test", 32, 2).unwrap();
+        let (queue, receiver) = StreamObservable::new(peer("remote"), 2).unwrap();
+        let _first_completion = queue.enqueue(payload(&budget, 7)).unwrap();
+        let _second_completion = queue.enqueue(payload(&budget, 11)).unwrap();
+        assert_eq!(queue.resident_deliveries(), 2);
+        assert_eq!(budget.used_bytes(), 18);
+        drop(receiver);
+        assert_eq!(queue.resident_deliveries(), 0);
+        assert_eq!(budget.used_bytes(), 0);
+        assert!(!queue.is_active());
+    }
+
+    #[test]
+    fn shared_fanout_payload_holds_one_reservation() {
+        let budget = PayloadBudget::new("test", 32, 1).unwrap();
+        let payload = payload(&budget, 13);
+        let (first, mut first_rx) = StreamObservable::new(peer("first"), 1).unwrap();
+        let (second, mut second_rx) = StreamObservable::new(peer("second"), 1).unwrap();
+        let _first_completion = first.enqueue(payload.clone()).unwrap();
+        let _second_completion = second.enqueue(payload.clone()).unwrap();
+        drop(payload);
+        assert_eq!(budget.used_bytes(), 13);
+        drop(first_rx.try_recv().unwrap());
+        assert_eq!(budget.used_bytes(), 13);
+        drop(second_rx.try_recv().unwrap());
+        assert_eq!(budget.used_bytes(), 0);
     }
 
     #[tokio::test]
-    async fn test_stream_observable_creation() {
-        let peer = create_test_peer();
-        let cache = create_test_cache();
-        let buffer_size = 10;
-
-        let observable = StreamObservable::new(peer.clone(), buffer_size, cache);
-
-        assert_eq!(observable.peer().id.key, peer.id.key);
-        assert_eq!(observable.buffer_size(), buffer_size);
-        assert!(observable.is_active());
-        assert!(!observable.is_complete());
+    async fn completion_remains_pending_until_delivery_reports_remote_result() {
+        let budget = PayloadBudget::new("test", 32, 1).unwrap();
+        let (queue, mut receiver) = StreamObservable::new(peer("remote"), 1).unwrap();
+        let mut completion = queue.enqueue(payload(&budget, 7)).unwrap();
+        assert!(matches!(
+            completion.try_recv(),
+            Err(oneshot::error::TryRecvError::Empty)
+        ));
+        receiver.try_recv().unwrap().complete(Ok(()));
+        assert!(completion.await.unwrap().is_ok());
     }
 
     #[tokio::test]
-    async fn test_enque_and_subscribe() {
-        let peer = create_test_peer();
-        let cache = create_test_cache();
-        let mut observable = StreamObservable::new(peer.clone(), 10, cache.clone());
-
-        // Get the stream first
-        let mut subscription = observable.subscribe().expect("Should get subscription");
-
-        // Create and enqueue a blob
-        let sender = create_test_peer();
-        let blob = create_test_blob(sender.clone(), vec![1, 2, 3, 4, 5]);
-
-        let result = observable.enque(&blob).await;
-        assert!(result.is_ok());
-
-        // Read from stream
-        if let Some(stream_msg) = subscription.next().await {
-            assert!(stream_msg.key.starts_with("packet_receive/"));
-            assert_eq!(stream_msg.sender.id.key, sender.id.key);
-
-            // Verify packet was stored in cache
-            assert!(cache.contains_key(&stream_msg.key));
-        } else {
-            panic!("Should receive a stream message");
-        }
-    }
-
-    #[tokio::test]
-    async fn test_completion_states() {
-        let peer = create_test_peer();
-        let cache = create_test_cache();
-        let observable = StreamObservable::new(peer.clone(), 10, cache);
-
-        // Initially not complete
-        assert!(!observable.is_complete());
-
-        // Complete the stream
-        observable.complete();
-        assert!(observable.is_complete());
-
-        // Try to enqueue after completion - should still succeed but be dropped
-        let sender = create_test_peer();
-        let blob = create_test_blob(sender, vec![1, 2, 3]);
-        let result = observable.enque(&blob).await;
-        assert!(result.is_ok());
-    }
-
-    #[tokio::test]
-    async fn test_buffer_overflow_drop_new_behavior() {
-        let peer = create_test_peer();
-        let cache = create_test_cache();
-        let buffer_size = 2; // Small buffer to test overflow
-        let observable = StreamObservable::new(peer.clone(), buffer_size, cache.clone());
-
-        // Don't subscribe yet - this will cause buffer to fill up
-        let sender = create_test_peer();
-
-        // Fill the buffer
-        for i in 0..buffer_size {
-            let blob = create_test_blob(sender.clone(), vec![i as u8; 10]);
-            let result = observable.enque(&blob).await;
-            assert!(result.is_ok(), "Enque should always return Ok");
-        }
-
-        // This should still return Ok(()) but drop the message
-        let overflow_blob = create_test_blob(sender.clone(), vec![99; 10]);
-        let result = observable.enque(&overflow_blob).await;
-        assert!(result.is_ok(), "Always returns success even when dropping");
-
-        // Only the successfully stored items should be in cache
-        assert_eq!(cache.len(), buffer_size);
-    }
-
-    #[tokio::test]
-    async fn test_multiple_enque_operations() {
-        let peer = create_test_peer();
-        let cache = create_test_cache();
-        let mut observable = StreamObservable::new(peer.clone(), 10, cache.clone());
-
-        let mut subscription = observable.subscribe().expect("Should get subscription");
-
-        // Enqueue multiple blobs
-        let sender = create_test_peer();
-        for i in 0..3 {
-            let blob = create_test_blob(sender.clone(), vec![i; 10]);
-            let result = observable.enque(&blob).await;
-            assert!(result.is_ok());
-        }
-
-        // Read all messages
-        let mut received_count = 0;
-        while let Some(_stream_msg) = subscription.next().await {
-            received_count += 1;
-            if received_count == 3 {
-                break;
-            }
-        }
-
-        assert_eq!(received_count, 3);
-        assert_eq!(cache.len(), 3); // All packets should be in cache
-    }
-
-    #[tokio::test]
-    async fn test_cache_hard_max_is_enforced() {
-        let peer = create_test_peer();
-        let cache = create_test_cache();
-        let buffer_size = STREAM_CACHE_HARD_MAX_ENTRIES + 16;
-        let observable = StreamObservable::new(peer.clone(), buffer_size, cache.clone());
-
-        let sender = create_test_peer();
-
-        for i in 0..STREAM_CACHE_HARD_MAX_ENTRIES + 32 {
-            let blob = create_test_blob(sender.clone(), vec![i as u8; 16]);
-            let result = observable.enque(&blob).await;
-            assert!(result.is_ok(), "enque should succeed");
-            assert!(
-                cache.len() <= STREAM_CACHE_HARD_MAX_ENTRIES,
-                "cache length {} exceeds hard max {} at iteration {}",
-                cache.len(),
-                STREAM_CACHE_HARD_MAX_ENTRIES,
-                i
-            );
-        }
-    }
-
-    #[tokio::test]
-    async fn test_stream_message_properties() {
-        let sender = create_test_peer();
-
-        let stream_msg = Stream {
-            key: "test_key".to_string(),
-            sender: sender.clone(),
-        };
-
-        assert_eq!(stream_msg.key, "test_key");
-        assert_eq!(stream_msg.sender.id.key, sender.id.key);
+    async fn worker_termination_cannot_be_reported_as_delivery_success() {
+        let budget = PayloadBudget::new("test", 32, 1).unwrap();
+        let (queue, mut receiver) = StreamObservable::new(peer("remote"), 1).unwrap();
+        let completion = queue.enqueue(payload(&budget, 7)).unwrap();
+        drop(receiver.try_recv().unwrap());
+        assert!(completion.await.is_err());
     }
 }

@@ -96,7 +96,7 @@ DR-13 already covers mint-replay/double-credit (**TM-CA-154**) and balance/commi
 5. `ReplaySupplyMismatch` in `replay_failure.rs`.
 6. Proofs: extend `MintingInjection.v`, new `MintingHalt.v`, `_CoqProject` + heredoc.
 7. TLA+/Sage/threat-UC/doc deltas.
-8. (Stage C, later) consumes `mintingHalted` + `supply::produce_balance` for slash's `Σ⟦v⟧`-zero and `redeemSlashed`.
+8. Stage C consumes `mintingHalted` and the native SystemVault settlement path for slash's `Σ⟦v⟧`-zero and `redeemSlashed`; the implemented system deploy, replay path, custody transaction, and generation-scoped receipt are verified by `RedemptionCustodyAtomicity.v`, `RedemptionMintResumption.v`, `ConcurrentRedemptionCustody.tla`, and `loom_redemption_custody.rs`.
 
 ## Critical files
 - `casper/src/main/resources/PoS.rhox` (closeBlock 731-879, mintPhlogiston 464-507, bond 330-385, state-init 198-214, slash 646-729)

@@ -119,6 +119,7 @@ if [[ -f "$TLC_JAR" ]] || command -v tlc >/dev/null 2>&1; then
   declare -A SAFE=(
     [slash_authority]="MC_AuthorizedSlashFlow.cfg:MC_AuthorizedSlashFlow.tla"
     [slash_evidence_dependency]="MC_SlashEvidenceDependency.cfg:MC_SlashEvidenceDependency.tla"
+    [protocol_v5_dependency_readiness]="MC_ProtocolV5DependencyReadiness.cfg:ProtocolV5DependencyReadiness.tla"
     [detector_local_safety]="MC_EquivocationDetector_safety.cfg:MC_EquivocationDetector_local_safety.tla"
     [detector_liveness]="MC_EquivocationDetector_liveness.cfg:MC_EquivocationDetector_liveness.tla"
     [detector_eager]="MC_EquivocationDetectorEager.cfg:MC_EquivocationDetectorEager.tla"
@@ -204,6 +205,27 @@ if [[ -f "$TLC_JAR" ]] || command -v tlc >/dev/null 2>&1; then
       fail "TLA+ tracker-only slash-evidence control failed for the wrong reason (see $LOG_DIR/sl_tlc_evidence_tracker_unsafe.log)"
     fi
   fi
+  declare -A PROTOCOL_V5_DEPENDENCY_UNSAFE=(
+    [invalid_index]="Inv_InvalidIndexNoninterference"
+    [tracker]="Inv_TrackerNoninterference"
+    [omitted_pair]="Inv_DirectBufferRulesExact"
+    [buffer_drift]="Inv_DirectBufferRulesExact"
+  )
+  for dependency_suffix in "${!PROTOCOL_V5_DEPENDENCY_UNSAFE[@]}"; do
+    dependency_invariant="${PROTOCOL_V5_DEPENDENCY_UNSAFE[$dependency_suffix]}"
+    dependency_cfg="$TLA_DIR/MC_ProtocolV5DependencyReadiness_${dependency_suffix}_unsafe.cfg"
+    dependency_log="$LOG_DIR/sl_tlc_protocol_v5_dependency_${dependency_suffix}.log"
+    if tlc_run "$(tlc_metadir "sl_protocol_v5_dependency_${dependency_suffix}")" \
+         "$dependency_cfg" \
+         "$TLA_DIR/ProtocolV5DependencyReadiness.tla" \
+         >"$dependency_log" 2>&1; then
+      fail "TLA+ protocol-v5 dependency $dependency_suffix control should violate $dependency_invariant but passed"
+    elif grep -q "Invariant $dependency_invariant is violated" "$dependency_log"; then
+      pass "TLA+ protocol-v5 dependency $dependency_suffix control reproduces $dependency_invariant"
+    else
+      fail "TLA+ protocol-v5 dependency $dependency_suffix control failed for the wrong reason (see $dependency_log)"
+    fi
+  done
   # FV audit #6 pre-fix counterexample — the PRE-FIX pollution model
   # (EnableStampWitness=TRUE) must REPRODUCE a violation of
   # Inv_NoStampAgainstUnbonded (StampWitness stamping an unbonded offender's
@@ -259,6 +281,38 @@ else
     [[ "$a_base" == "1" ]] || fail "Apalache BASE (Init |= IndInv) did NOT report NoError (see $LOG_DIR/sl_apalache_base.log)"
     [[ "$a_step" == "1" ]] || fail "Apalache STEP (Next preserves IndInv) did NOT report NoError (see $LOG_DIR/sl_apalache_step.log)"
   fi
+
+  if capped apalache-mc --out-dir="$aout/protocol-v5-dependency-safe" check \
+       --config="$TLA_DIR/MC_ProtocolV5DependencyReadinessApalache.cfg" \
+       --length=5 "$TLA_DIR/ProtocolV5DependencyReadiness.tla" \
+       >"$LOG_DIR/sl_apalache_protocol_v5_dependency_safe.log" 2>&1 \
+       && grep -qE "The outcome is: NoError|No error found" "$LOG_DIR/sl_apalache_protocol_v5_dependency_safe.log"; then
+    pass "Apalache protocol-v5 dependency readiness is safe through bound 5"
+  else
+    fail "Apalache protocol-v5 dependency readiness failed (see $LOG_DIR/sl_apalache_protocol_v5_dependency_safe.log)"
+  fi
+
+  declare -A PROTOCOL_V5_DEPENDENCY_APALACHE_UNSAFE=(
+    [invalid_index]="Inv_InvalidIndexNoninterference"
+    [tracker]="Inv_TrackerNoninterference"
+    [omitted_pair]="Inv_DirectBufferRulesExact"
+    [buffer_drift]="Inv_DirectBufferRulesExact"
+  )
+  for dependency_suffix in "${!PROTOCOL_V5_DEPENDENCY_APALACHE_UNSAFE[@]}"; do
+    dependency_invariant="${PROTOCOL_V5_DEPENDENCY_APALACHE_UNSAFE[$dependency_suffix]}"
+    dependency_log="$LOG_DIR/sl_apalache_protocol_v5_dependency_${dependency_suffix}.log"
+    if capped apalache-mc --out-dir="$aout/protocol-v5-dependency-${dependency_suffix}" check \
+         --config="$TLA_DIR/MC_ProtocolV5DependencyReadiness_${dependency_suffix}_unsafe_Apalache.cfg" \
+         --length=4 "$TLA_DIR/ProtocolV5DependencyReadiness.tla" \
+         >"$dependency_log" 2>&1; then
+      fail "Apalache protocol-v5 dependency $dependency_suffix control should violate $dependency_invariant but passed"
+    elif grep -q "$dependency_invariant" "$dependency_log" \
+         && grep -qE "Found an invariant violation|The outcome is: Error" "$dependency_log"; then
+      pass "Apalache protocol-v5 dependency $dependency_suffix control reproduces $dependency_invariant"
+    else
+      fail "Apalache protocol-v5 dependency $dependency_suffix control failed for the wrong reason (see $dependency_log)"
+    fi
+  done
 fi
 
 echo "== [4/5] Rust slashing lib + authorization tests =="
@@ -304,6 +358,30 @@ if command -v cargo >/dev/null 2>&1; then
     pass "Rust tracker-witness/admission separation regression"
   else
     fail "Rust tracker-witness/admission separation regression failed (see $LOG_DIR/sl_rust_tracker_admission.log)"; tail -20 "$LOG_DIR/sl_rust_tracker_admission.log" | sed 's/^/      /'
+  fi
+  if cargo test -p casper --test mod -- blocks::block_processor_test::tracker_witness_cannot_satisfy_a_certified_block_dependency --exact >"$LOG_DIR/sl_rust_tracker_dependency.log" 2>&1 \
+       && grep -qE "test result: ok\. 1 passed" "$LOG_DIR/sl_rust_tracker_dependency.log"; then
+    pass "Rust tracker hint cannot satisfy certified dependency"
+  else
+    fail "Rust tracker dependency noninterference failed (see $LOG_DIR/sl_rust_tracker_dependency.log)"; tail -20 "$LOG_DIR/sl_rust_tracker_dependency.log" | sed 's/^/      /'
+  fi
+  if cargo test -p casper --test mod -- blocks::block_processor_test::objective_pair_requires_both_admitted_metadata_records --exact >"$LOG_DIR/sl_rust_objective_pair_dependency.log" 2>&1 \
+       && grep -qE "test result: ok\. 1 passed" "$LOG_DIR/sl_rust_objective_pair_dependency.log"; then
+    pass "Rust objective pair requires both admitted metadata records"
+  else
+    fail "Rust objective-pair dependency completeness failed (see $LOG_DIR/sl_rust_objective_pair_dependency.log)"; tail -20 "$LOG_DIR/sl_rust_objective_pair_dependency.log" | sed 's/^/      /'
+  fi
+  if cargo test -p block-storage --features test-internals --test block_dag_storage_test -- startup_reconciliation_repairs_objective_and_unary_evidence_indexes --exact >"$LOG_DIR/sl_rust_dependency_restart.log" 2>&1 \
+       && grep -qE "test result: ok\. 1 passed" "$LOG_DIR/sl_rust_dependency_restart.log"; then
+    pass "Rust restart reconciliation derives evidence indexes from certified metadata"
+  else
+    fail "Rust dependency restart reconciliation failed (see $LOG_DIR/sl_rust_dependency_restart.log)"; tail -20 "$LOG_DIR/sl_rust_dependency_restart.log" | sed 's/^/      /'
+  fi
+  if RUSTFLAGS="--cfg loom -C target-cpu=native" cargo test -p cost-accounting-loom-models --test loom_protocol_v5_dependency_readiness >"$LOG_DIR/sl_loom_protocol_v5_dependency.log" 2>&1 \
+       && grep -qE "test result: ok\. 3 passed" "$LOG_DIR/sl_loom_protocol_v5_dependency.log"; then
+    pass "Loom protocol-v5 dependency readiness (3 concurrent metadata/index/tracker checks)"
+  else
+    fail "Loom protocol-v5 dependency readiness failed (see $LOG_DIR/sl_loom_protocol_v5_dependency.log)"; tail -20 "$LOG_DIR/sl_loom_protocol_v5_dependency.log" | sed 's/^/      /'
   fi
 else
   fail "no cargo on PATH"

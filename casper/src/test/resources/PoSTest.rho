@@ -249,7 +249,7 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
                                   ((finalUserBalance, "==", initialUserBalance - bondAmt + $$initialPhlogiston$$), "bonding mints initial validator phlogiston exactly once"),
                                   ((finalPosBalance, "==", initialPosBalance + bondAmt), "pos balance should change by bond amount"),
                                   ((true, "==", withdrawers.contains(userPubKey)), "withdrawer is moved to withdrawers map"),
-                                  (((bondAmt, quarantinePeriod), "==", withdrawers.get(userPubKey)), "withdrawer state has correct quarantine period and bonds after withdrawing from pos")
+                                  (((bondAmt, quarantinePeriod, 0), "==", withdrawers.get(userPubKey)), "withdrawer state has correct quarantine period, bonds, and generation after withdrawing from pos")
                                 ],
                                 *ackCh
                               )
@@ -666,7 +666,7 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
                             [
                               ((true, "==", bond1Result), "the first bond should succeed"),
                               ((false, "==", bond2Result), "the second bond should fail"),
-                              (("Public key is already bonded.", "==", msg2), "the message should be as expected"),
+                              (("Public key already has a live or burned bond lifecycle.", "==", msg2), "the message should be as expected"),
                               ((initialBonds, "== <-", *bondsCh), "the bonds map remains unchanged after second bond request"),
                               ((initialRewards, "== <-", *finalRewardsCh), "the rewards map remains unchanged after second bond request")
                             ],
@@ -840,16 +840,22 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
                 initialCoopBalanceCh, finalCoopBalanceCh,
                 setupCh, slashCh, activeValidatorsCh, finalActiveValidatorsCh,
                 initialPosBalanceCh, finalPosBalanceCh,
-                finalRewardsCh,
-                initialBondsCh, finalBondsCh
+                initialRewardsCh, finalRewardsCh,
+                initialBondsCh, finalBondsCh,
+                bondGenerationsCh, finalBondGenerationsCh,
+                mintingHaltedCh, quarantinedStakeCh
             in {
               prepareUser!("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", *setupCh) |
               for (_, _, _, @userDeployerId <- setupCh) {
                 @PoS!("getActiveValidators", *activeValidatorsCh) |
                 @PoS!("getBonds", *initialBondsCh) |
+                @PoS!("getBondGenerations", *bondGenerationsCh) |
+                @PoS!("getRewards", *initialRewardsCh) |
                 getCoopBalance!(*initialCoopBalanceCh) |
                 for (@activeValidators   <- activeValidatorsCh &
                      @initialBonds       <- initialBondsCh &
+                     @bondGenerations    <- bondGenerationsCh &
+                     @initialRewards     <- initialRewardsCh &
                      @initialCoopBalance <- initialCoopBalanceCh) {
                   match activeValidators.toList().nth(3) {
                     slashedValidator => {
@@ -859,24 +865,34 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
                         setInvalidBlocks!({hash : slashedValidator}, *invalidBlocksSetCh) |
                         for (_                  <- invalidBlocksSetCh &
                              @initialPosBalance <- initialPosBalanceCh) {
-                          @PoS!("slash", userDeployerId, hash, sysAuthToken, *slashCh) |
-                          for (@(true, _) <- slashCh) {
+                          @PoS!("slash", userDeployerId, hash, bondGenerations.getOrElse(slashedValidator, -1), sysAuthToken, *slashCh) |
+                          for (@(slashSucceeded, _) <- slashCh) {
                             @PoS!("getBonds", *finalBondsCh) |
+                            @PoS!("getBondGenerations", *finalBondGenerationsCh) |
                             getPosBalance!(*finalPosBalanceCh) |
                             @PoS!("getRewards", *finalRewardsCh) |
                             @PoS!("getActiveValidators", *finalActiveValidatorsCh) |
+                            @PoS!("getMintingHalted", *mintingHaltedCh) |
+                            @PoS!("getQuarantinedStake", *quarantinedStakeCh) |
                             getCoopBalance!(*finalCoopBalanceCh) |
                             for (@finalPosBalance       <- finalPosBalanceCh &
                                  @finalBonds            <- finalBondsCh &
+                                 @finalBondGenerations  <- finalBondGenerationsCh &
                                  @finalRewards          <- finalRewardsCh &
                                  @finalActiveValidators <- finalActiveValidatorsCh &
+                                 @mintingHalted         <- mintingHaltedCh &
+                                 @quarantinedStake      <- quarantinedStakeCh &
                                  @finalCoopBalance      <- finalCoopBalanceCh) {
                               stdlog!("info", (initialBonds, finalBonds, slashedValidator)) |
                               rhoSpec!("assertMany",
                                 [
-                                  ((finalBonds, "==", initialBonds.set(slashedValidator, 0)), "Slashed validator's bond is zeroed"),
+                                  ((true, "==", slashSucceeded), "Slash succeeds for the current bond generation"),
+                                  ((0, "==", finalBonds.getOrElse(slashedValidator, 0)), "Slashed validator's bond is zeroed"),
+                                  ((bondGenerations.getOrElse(slashedValidator, -1), "==", finalBondGenerations.getOrElse(slashedValidator, -1)), "Slash preserves the validator bond generation"),
                                   ((0, "==", finalRewards.getOrElse(slashedValidator, 0)), "Slashed validator retains no reward balance (committedRewards deleted; zero-bond epoch share)"),
                                   ((false, "==", finalActiveValidators.contains(slashedValidator)), "Slashed validator leaves the active set"),
+                                  ((true, "==", mintingHalted.contains(slashedValidator)), "Slashed validator cannot mint phlogiston"),
+                                  (((initialBonds.get(slashedValidator), initialRewards.getOrElse(slashedValidator, 0), bondGenerations.getOrElse(slashedValidator, -1), "Bonded", -1, true), "==", quarantinedStake.get(slashedValidator)), "Quarantine records exact generation-scoped custody"),
                                   ((finalPosBalance, "==", initialPosBalance), "Stake is quarantined in-state; no funds leave the PoS vault at slash"),
                                   ((finalCoopBalance, "==", initialCoopBalance), "No Coop transfer at slash; forfeiture resolves via the redemption flow")
                                 ],

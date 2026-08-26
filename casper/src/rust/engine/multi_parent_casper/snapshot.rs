@@ -25,9 +25,11 @@ use shared::rust::dag::dag_ops;
 use super::types::MultiParentCasperImpl;
 use crate::rust::casper::{CasperSnapshot, OnChainCasperState};
 use crate::rust::errors::CasperError;
+use crate::rust::estimator::retained_parent_indices;
+use crate::rust::finality::floor::canonical_floor_committee;
 use crate::rust::metrics_constants::{
-    ACTIVE_VALIDATORS_CACHE_SIZE_METRIC, CASPER_METRICS_SOURCE, DAG_BLOCKS_SIZE_METRIC,
-    DAG_CHILDREN_INDEX_SIZE_METRIC, DAG_FINALIZED_BLOCKS_SIZE_METRIC, DAG_HEIGHTS_SIZE_METRIC,
+    CASPER_METRICS_SOURCE, DAG_BLOCKS_SIZE_METRIC, DAG_CHILDREN_INDEX_SIZE_METRIC,
+    DAG_FINALIZED_BLOCKS_SIZE_METRIC, DAG_HEIGHTS_SIZE_METRIC,
     DEPLOYS_IN_SCOPE_SIG_BYTES_ESTIMATE_METRIC, DEPLOYS_IN_SCOPE_SIZE_METRIC,
 };
 use crate::rust::util::proto_util;
@@ -41,159 +43,29 @@ use crate::rust::util::rholang::interpreter_util;
 /// per-deploy actual-byte sum) is intentional.
 const DEPLOY_SIG_BYTES_ESTIMATE: f64 = 65.0;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct DeployBranchScore {
-    deploy_sig_count: usize,
-    latest_deploy_block_number: i64,
-    root_block_number: i64,
-}
-
-fn better_deploy_branch_score(
-    candidate: (&DeployBranchScore, &BlockHash),
-    current: (&DeployBranchScore, &BlockHash),
-) -> bool {
-    candidate
-        .0
-        .deploy_sig_count
-        .cmp(&current.0.deploy_sig_count)
-        .then_with(|| {
-            candidate
-                .0
-                .latest_deploy_block_number
-                .cmp(&current.0.latest_deploy_block_number)
-        })
-        .then_with(|| {
-            candidate
-                .0
-                .root_block_number
-                .cmp(&current.0.root_block_number)
-        })
-        .then_with(|| current.1.cmp(candidate.1))
-        .is_gt()
-}
-
-fn branch_unfinalized_user_deploy_score(
-    dag: &KeyValueDagRepresentation,
-    block_store: &KeyValueBlockStore,
-    root_hash: &BlockHash,
-    last_finalized_block: &BlockHash,
-) -> Result<Option<DeployBranchScore>, CasperError> {
-    let last_finalized_number = dag.lookup_unsafe(last_finalized_block)?.block_number;
-    let root_meta = dag.lookup_unsafe(root_hash)?;
-    let mut stack = vec![root_hash.clone()];
-    let mut seen: HashSet<BlockHash> = HashSet::new();
-    let mut deploy_sigs: HashSet<Bytes> = HashSet::new();
-    let mut latest_deploy_block_number: Option<i64> = None;
-
-    while let Some(block_hash) = stack.pop() {
-        if !seen.insert(block_hash.clone())
-            || block_hash == last_finalized_block
-            || dag.is_finalized(&block_hash)
-        {
-            continue;
-        }
-
-        let block_meta = dag.lookup_unsafe(&block_hash)?;
-        if block_meta.block_number <= last_finalized_number {
-            continue;
-        }
-
-        let sigs = block_store.deploy_sigs(&block_hash)?.ok_or_else(|| {
-            CasperError::RuntimeError(format!(
-                "Missing block {} while scoring deploy-support branches",
-                PrettyPrinter::build_string_bytes(&block_hash)
-            ))
-        })?;
-        if !sigs.is_empty() {
-            latest_deploy_block_number = Some(
-                latest_deploy_block_number
-                    .map(|current| current.max(block_meta.block_number))
-                    .unwrap_or(block_meta.block_number),
-            );
-            for sig in sigs {
-                deploy_sigs.insert(sig.into());
-            }
-        }
-
-        stack.extend(block_meta.parents.iter().cloned());
-    }
-
-    Ok(latest_deploy_block_number.map(|latest| DeployBranchScore {
-        deploy_sig_count: deploy_sigs.len(),
-        latest_deploy_block_number: latest,
-        root_block_number: root_meta.block_number,
-    }))
-}
-
-fn prefer_deploy_support_main_parent(
-    dag: &KeyValueDagRepresentation,
-    block_store: &KeyValueBlockStore,
-    parents: Vec<BlockMessage>,
-    last_finalized_block: &BlockHash,
+fn order_parents_by_ghost_head(
+    mut parents: Vec<BlockMessage>,
+    ghost_main_parent: &BlockHash,
 ) -> Result<Vec<BlockMessage>, CasperError> {
-    if parents.len() <= 1 {
-        return Ok(parents);
+    if !parents
+        .iter()
+        .any(|parent| parent.block_hash == ghost_main_parent)
+    {
+        return Err(CasperError::RuntimeError(format!(
+            "LMD-GHOST head {} is absent from the candidate parent set",
+            hex::encode(ghost_main_parent)
+        )));
     }
-
-    let mut scored: Vec<Option<DeployBranchScore>> = Vec::with_capacity(parents.len());
-    for parent in &parents {
-        scored.push(branch_unfinalized_user_deploy_score(
-            dag,
-            block_store,
-            &parent.block_hash,
-            last_finalized_block,
-        )?);
-    }
-
-    let mut best: Option<(usize, &DeployBranchScore)> = None;
-    for (idx, score) in scored.iter().enumerate() {
-        let Some(score) = score.as_ref() else {
-            continue;
-        };
-        let replace = best
-            .as_ref()
-            .map(|(best_idx, best_score)| {
-                better_deploy_branch_score(
-                    (score, &parents[idx].block_hash),
-                    (best_score, &parents[*best_idx].block_hash),
-                )
-            })
-            .unwrap_or(true);
-        if replace {
-            best = Some((idx, score));
-        }
-    }
-
-    let Some((best_idx, best_score)) = best else {
-        return Ok(parents);
-    };
-    if best_idx == 0 {
-        return Ok(parents);
-    }
-
-    let original_main = parents[0].block_hash.clone();
-    let promoted = parents[best_idx].block_hash.clone();
-    let mut reordered = parents;
-    let promoted_parent = reordered.remove(best_idx);
-    reordered.insert(0, promoted_parent);
-    tracing::info!(
-        target: "f1r3fly.casper.deploy_support",
-        "Parent selection promoted deploy-carrying branch for canonical support: original_main={}, promoted_main={}, deploy_sigs={}, latest_deploy_block={}, promoted_root_block={}",
-        PrettyPrinter::build_string_bytes(&original_main),
-        PrettyPrinter::build_string_bytes(&promoted),
-        best_score.deploy_sig_count,
-        best_score.latest_deploy_block_number,
-        best_score.root_block_number
-    );
-    Ok(reordered)
+    parents.sort_by(|a, b| {
+        let a_main = a.block_hash == ghost_main_parent;
+        let b_main = b.block_hash == ghost_main_parent;
+        b_main
+            .cmp(&a_main)
+            .then_with(|| a.block_hash.cmp(&b.block_hash))
+    });
+    Ok(parents)
 }
 
-/// Collapse the parent set to a single deploy-free parent that DAG-covers
-/// every other candidate. No tip content is lost: covering means every other
-/// parent is already in the candidate's ancestry, so their effects are in its
-/// post-state and "merging" them would be the degenerate ancestor-merge case.
-/// Sibling tips that do not cover each other are always kept (`covers_all`
-/// fails), so genuine multi-parent merges are unaffected.
 fn prune_dag_covered_parents(
     dag: &KeyValueDagRepresentation,
     parents: Vec<BlockMessage>,
@@ -202,31 +74,118 @@ fn prune_dag_covered_parents(
         return Ok(parents);
     }
 
-    for (idx, candidate) in parents.iter().enumerate() {
-        if !candidate.body.deploys.is_empty() {
-            continue;
-        }
-        let mut covers_all = true;
-        for (other_idx, other) in parents.iter().enumerate() {
-            if idx == other_idx {
-                continue;
-            }
-            if !dag.is_dag_ancestor(&other.block_hash, &candidate.block_hash)? {
-                covers_all = false;
+    let retained_indices = reachability_maximal_indices(parents.len(), |candidate, other| {
+        dag.is_dag_ancestor(&parents[candidate].block_hash, &parents[other].block_hash)
+            .map_err(CasperError::from)
+    })?;
+    let retained = retained_indices
+        .into_iter()
+        .map(|index| parents[index].clone())
+        .collect::<Vec<_>>();
+    tracing::debug!(
+        target: "f1r3fly.casper.parent_selection",
+        original_parents = parents.len(),
+        retained_parents = retained.len(),
+        "Parent selection retained the reachability-maximal antichain"
+    );
+    Ok(retained)
+}
+
+fn reachability_maximal_indices<E>(
+    len: usize,
+    mut is_ancestor: impl FnMut(usize, usize) -> Result<bool, E>,
+) -> Result<Vec<usize>, E> {
+    let mut retained = Vec::with_capacity(len);
+    for candidate in 0..len {
+        let mut covered = false;
+        for other in 0..len {
+            if candidate != other && is_ancestor(candidate, other)? {
+                covered = true;
                 break;
             }
         }
-        if covers_all {
-            tracing::info!(
-                target: "f1r3fly.casper.parent_selection",
-                original_parents = parents.len(),
-                pruned_parents = 1,
-                "Parent selection collapsed to DAG-covering parent"
-            );
-            return Ok(vec![candidate.clone()]);
+        if !covered {
+            retained.push(candidate);
         }
     }
-    Ok(parents)
+    Ok(retained)
+}
+
+fn block_covers_causal_tips(
+    dag: &KeyValueDagRepresentation,
+    block_hash: &BlockHash,
+    causal_tips: &HashSet<BlockHash>,
+) -> Result<bool, CasperError> {
+    for tip in causal_tips {
+        if !dag.is_dag_ancestor(tip, block_hash)? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+fn recovery_main_covers_floor_and_causal_tips(
+    dag: &KeyValueDagRepresentation,
+    finalized_floor: &BlockHash,
+    main_parent: &BlockHash,
+    causal_tips: &HashSet<BlockHash>,
+) -> Result<bool, CasperError> {
+    Ok(dag.is_dag_ancestor(finalized_floor, main_parent)?
+        && block_covers_causal_tips(dag, main_parent, causal_tips)?)
+}
+
+fn validate_causal_parent_coverage(
+    dag: &KeyValueDagRepresentation,
+    finalized_floor: &BlockHash,
+    causal_tips: &HashSet<BlockHash>,
+    parents: &[BlockMessage],
+) -> Result<(), CasperError> {
+    let mut descends_from_floor = false;
+    for parent in parents {
+        if dag.is_dag_ancestor(finalized_floor, &parent.block_hash)? {
+            descends_from_floor = true;
+            break;
+        }
+    }
+    if !descends_from_floor {
+        return Err(CasperError::RuntimeError(format!(
+            "parent selection does not descend from captured finalized floor {}",
+            hex::encode(finalized_floor)
+        )));
+    }
+    for tip in causal_tips {
+        let mut covered = false;
+        for parent in parents {
+            if dag.is_dag_ancestor(tip, &parent.block_hash)? {
+                covered = true;
+                break;
+            }
+        }
+        if !covered {
+            return Err(CasperError::RuntimeError(format!(
+                "configured parent bounds omit uncovered causal tip {}",
+                hex::encode(tip)
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn causal_tips_covered_by_parents(
+    dag: &KeyValueDagRepresentation,
+    causal_tips: &HashSet<BlockHash>,
+    parents: &[BlockMessage],
+) -> Result<HashSet<BlockHash>, CasperError> {
+    let mut covered = HashSet::with_capacity(causal_tips.len());
+    for tip in causal_tips {
+        for parent in parents {
+            if dag.is_dag_ancestor(tip, &parent.block_hash)? {
+                covered.insert(tip.clone());
+                break;
+            }
+        }
+    }
+    Ok(covered)
 }
 
 /// Snapshot-time approximation of buffer recoverability, used only to decide
@@ -336,19 +295,37 @@ pub(crate) fn record_dag_cardinality_metrics(dag: &KeyValueDagRepresentation) {
         .set(dag.finalized_blocks_set.len() as f64);
 }
 
+fn latest_sequence_numbers(
+    latest_metadata: &HashMap<Validator, models::rust::block_metadata::BlockMetadata>,
+) -> Result<HashMap<Validator, u64>, CasperError> {
+    latest_metadata
+        .iter()
+        .map(|(validator, metadata)| {
+            let sequence_number = u64::try_from(metadata.sequence_number).map_err(|_| {
+                CasperError::RuntimeError(format!(
+                    "latest-message sequence number is negative: {}",
+                    metadata.sequence_number
+                ))
+            })?;
+            Ok((validator.clone(), sequence_number))
+        })
+        .collect()
+}
+
 pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
     this: &MultiParentCasperImpl<T>,
 ) -> Result<CasperSnapshot, CasperError> {
     if this
         .finalization_in_progress
         .load(std::sync::atomic::Ordering::SeqCst)
+        > 0
     {
         tracing::debug!(
             "Finalization in progress while creating snapshot; using best-effort snapshot"
         );
     }
 
-    let mut dag = this.block_dag_storage.get_representation()?;
+    let dag = this.block_dag_storage.get_representation()?;
 
     // Parent selection: Use latest block from EACH bonded validator.
     // Phase 12 (PERF-5): `latest_message_hashes()` returns an owned
@@ -357,36 +334,40 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
     let latest_msgs_hashes: HashMap<Validator, BlockHash> =
         dag.latest_message_hashes().into_iter().collect();
     let validator_capacity = latest_msgs_hashes.len();
-    let invalid_latest_msgs = dag.invalid_latest_messages_from_hashes(&latest_msgs_hashes)?;
-    // Phase 12 (PERF-7): each subsequent collection is bounded by the
-    // current validator-set cardinality. Preallocating avoids
-    // power-of-two HashMap/HashSet/Vec growth and the rehashes that come
-    // with it on every snapshot.
-    let mut valid_latest_msgs: HashMap<Validator, BlockHash> =
+    let snapshot_lfb_hash = dag.last_finalized_block();
+    let snapshot_lfb = this.block_store.get(&snapshot_lfb_hash)?.ok_or_else(|| {
+        shared::rust::store::key_value_store::KvStoreError::KeyNotFound(format!(
+            "last finalized block missing from block store: {}",
+            hex::encode(&snapshot_lfb_hash)
+        ))
+    })?;
+    let finalized_floor_bonds = canonical_floor_committee(
+        snapshot_lfb.body.state.bonds.clone(),
+        &snapshot_lfb.body.state.active_validators,
+    )?;
+    let mut latest_metas: HashMap<Validator, models::rust::block_metadata::BlockMetadata> =
         HashMap::with_capacity(validator_capacity);
     for (validator, hash) in latest_msgs_hashes.iter() {
-        if invalid_latest_msgs.contains_key(validator) {
-            continue;
-        }
-        valid_latest_msgs.insert(validator.clone(), hash.clone());
+        let metadata = dag.lookup_unsafe(hash)?;
+        latest_metas.insert(validator.clone(), metadata);
     }
-    let snapshot_lfb_hash = dag.last_finalized_block();
-    // Storage errors during snapshot construction must propagate: a
-    // silent empty `valid_latest_metas` would feed wrong fork-choice on
-    // the consensus hot path. Bug #17 / T-9.20 hardened this contract
-    // for crash-window drift; same discipline applies to general
-    // storage I/O.
-    let mut valid_latest_metas: HashMap<Validator, models::rust::block_metadata::BlockMetadata> =
-        HashMap::with_capacity(valid_latest_msgs.len());
-    for (validator, hash) in valid_latest_msgs.iter() {
-        let meta = dag.lookup_unsafe(hash)?;
-        valid_latest_metas.insert(validator.clone(), meta);
-    }
+    let consensus_context =
+        crate::rust::causal_equivocation::CertifiedConsensusContext::for_finalized_floor(
+            &dag,
+            snapshot_lfb_hash.clone(),
+        )?;
+    let causal_parent_latest_msgs = consensus_context
+        .causal_parent_projection()
+        .eligible_latest_messages()
+        .iter()
+        .map(|(validator, hash)| (validator.clone(), hash.clone()))
+        .collect::<HashMap<_, _>>();
     let mut unique_parent_hashes: HashSet<BlockHash> =
-        HashSet::with_capacity(valid_latest_msgs.len());
-    for hash in valid_latest_msgs.values() {
+        HashSet::with_capacity(causal_parent_latest_msgs.len());
+    for hash in causal_parent_latest_msgs.values() {
         unique_parent_hashes.insert(hash.clone());
     }
+    let causal_tips = unique_parent_hashes.clone();
     let mut parent_blocks_list: Vec<BlockMessage> = Vec::with_capacity(unique_parent_hashes.len());
     for hash in unique_parent_hashes.iter() {
         // Missing parent block here is a real consensus invariant
@@ -401,6 +382,20 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
         })?;
         parent_blocks_list.push(block);
     }
+    let mut parent_descends_from_floor = false;
+    for parent in &parent_blocks_list {
+        if dag.is_dag_ancestor(&snapshot_lfb_hash, &parent.block_hash)? {
+            parent_descends_from_floor = true;
+            break;
+        }
+    }
+    if !parent_descends_from_floor
+        && !parent_blocks_list
+            .iter()
+            .any(|parent| parent.block_hash == snapshot_lfb_hash)
+    {
+        parent_blocks_list.push(snapshot_lfb.clone());
+    }
 
     // Sealed-floor: LMD-GHOST main-parent selection. Compute the ghost
     // main-parent from the fork-choice tips over this block's justification
@@ -408,34 +403,47 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
     // (then by block hash for determinism).
     //
     // The bonded-set ("most-slashed" intersection) parent filter that
-    // previously occupied the else-arm below was removed. Committee/bonds
-    // are now validated against the finalized floor
-    // (`Validate::bonds_cache_from_floor`) together with
-    // `neglected_invalid_block` — both validator-side and finalization-
-    // anchored. A proposer-side parent filter cannot be a consensus-safety
-    // mechanism (validators replay declared parents, not fork-choice), so it
-    // was redundant. See docs/sealed-floor-merge-v2-status.md.
-    let ghost_main_parent = this
+    // previously occupied the else-arm below was removed. Sender authority,
+    // exact justification membership, and synchrony weights are derived from
+    // the finalized floor; the block's bonds field remains its replayed
+    // post-state cache. A proposer-side parent filter cannot be a
+    // consensus-safety mechanism because validators replay declared parents.
+    let initial_fork_choice = this
         .estimator
-        .tips_with_latest_messages(&mut dag, &this.approved_block, valid_latest_msgs.clone())
-        .await?
-        .tips
-        .into_iter()
-        .next();
-    let mut sorted_parents_list = parent_blocks_list;
-    sorted_parents_list.sort_by(|a, b| {
-        let a_main = ghost_main_parent.as_ref() == Some(&a.block_hash);
-        let b_main = ghost_main_parent.as_ref() == Some(&b.block_hash);
-        b_main
-            .cmp(&a_main)
-            .then_with(|| a.block_hash.cmp(&b.block_hash))
-    });
-    let sorted_parents_list = prefer_deploy_support_main_parent(
-        &dag,
-        &this.block_store,
-        sorted_parents_list,
-        &snapshot_lfb_hash,
-    )?;
+        .tips_with_context(&dag, &this.approved_block, &consensus_context)
+        .await?;
+    let ghost_main_parent = if consensus_context
+        .vote_projection()
+        .eligible_latest_messages()
+        .is_empty()
+    {
+        snapshot_lfb_hash.clone()
+    } else {
+        let selected = initial_fork_choice.tips.into_iter().next().ok_or_else(|| {
+            CasperError::RuntimeError(
+                "LMD-GHOST returned no head for a non-empty finality-vote projection".to_string(),
+            )
+        })?;
+        if !unique_parent_hashes.contains(&selected) {
+            return Err(CasperError::RuntimeError(format!(
+                "LMD-GHOST head {} is absent from the causal-parent projection",
+                hex::encode(&selected)
+            )));
+        }
+        selected
+    };
+    let sorted_parents_list = order_parents_by_ghost_head(parent_blocks_list, &ghost_main_parent)?;
+    let sorted_parents_list = prune_dag_covered_parents(&dag, sorted_parents_list)?;
+    if sorted_parents_list
+        .first()
+        .is_none_or(|parent| parent.block_hash != ghost_main_parent)
+    {
+        return Err(CasperError::RuntimeError(format!(
+            "reachability compaction did not preserve LMD-GHOST head {}",
+            hex::encode(&ghost_main_parent)
+        )));
+    }
+    validate_causal_parent_coverage(&dag, &snapshot_lfb_hash, &causal_tips, &sorted_parents_list)?;
 
     let recovery_backlog = if sorted_parents_list.is_empty() {
         false
@@ -477,7 +485,17 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
         )?
     };
 
-    let unfiltered_parents = if recovery_backlog && sorted_parents_list.len() > 1 {
+    let recovery_main_covers_all = if recovery_backlog && sorted_parents_list.len() > 1 {
+        recovery_main_covers_floor_and_causal_tips(
+            &dag,
+            &snapshot_lfb_hash,
+            &sorted_parents_list[0].block_hash,
+            &causal_tips,
+        )?
+    } else {
+        false
+    };
+    let unfiltered_parents = if recovery_main_covers_all {
         tracing::info!(
             target: "f1r3fly.casper.recovery",
             "Parent selection narrowed for selectable deploy recovery: original_parents={}, selected_main={}",
@@ -490,43 +508,60 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
     };
 
     let unfiltered_parents_count = unfiltered_parents.len();
-    let compacted_parents = prune_dag_covered_parents(&dag, unfiltered_parents)?;
-
     // C15 / Smell-3: shared wire-convention constant — see
     // `crate::rust::casper::UNLIMITED_PARENTS`.
-    let mut parents_after_count_limit = compacted_parents;
-    if this.casper_shard_conf.max_number_of_parents != crate::rust::casper::UNLIMITED_PARENTS {
-        parents_after_count_limit.truncate(this.casper_shard_conf.max_number_of_parents as usize);
+    let parents =
+        if this.casper_shard_conf.max_parent_depth != i32::MAX && unfiltered_parents.len() > 1 {
+            // C13 / Perf-2: collapse the build-then-max-then-filter triple
+            // pass into a single forward iteration that maintains
+            // `max_block_num` incrementally, followed by an in-place
+            // `retain` on the vector. Eliminates one intermediate Vec
+            // allocation per snapshot and a redundant `.iter()` walk for
+            // the max computation.
+            let mut parents_with_meta: Vec<(
+                BlockMessage,
+                models::rust::block_metadata::BlockMetadata,
+            )> = Vec::with_capacity(unfiltered_parents.len());
+            for b in unfiltered_parents {
+                let meta = dag.lookup_unsafe(&b.block_hash)?;
+                parents_with_meta.push((b, meta));
+            }
+
+            let block_numbers = parents_with_meta
+                .iter()
+                .map(|(_, metadata)| metadata.block_number)
+                .collect::<Vec<_>>();
+            retained_parent_indices(
+                &block_numbers,
+                i64::from(this.casper_shard_conf.max_parent_depth),
+            )?
+            .into_iter()
+            .map(|index| parents_with_meta[index].0.clone())
+            .collect()
+        } else {
+            unfiltered_parents
+        };
+
+    let live_causal_tips = causal_tips_covered_by_parents(&dag, &causal_tips, &parents)?;
+    let expired_causal_tips = causal_tips.len().saturating_sub(live_causal_tips.len());
+    if expired_causal_tips > 0 {
+        tracing::info!(
+            target: "f1r3fly.casper.parent_selection",
+            expired_causal_tips,
+            max_parent_depth = this.casper_shard_conf.max_parent_depth,
+            "Parent-depth expiry removed stale unfinalized causal tips"
+        );
     }
 
-    let parents = if this.casper_shard_conf.max_parent_depth != i32::MAX
-        && parents_after_count_limit.len() > 1
+    if this.casper_shard_conf.max_number_of_parents != crate::rust::casper::UNLIMITED_PARENTS
+        && parents.len() > this.casper_shard_conf.max_number_of_parents as usize
     {
-        // C13 / Perf-2: collapse the build-then-max-then-filter triple
-        // pass into a single forward iteration that maintains
-        // `max_block_num` incrementally, followed by an in-place
-        // `retain` on the vector. Eliminates one intermediate Vec
-        // allocation per snapshot and a redundant `.iter()` walk for
-        // the max computation.
-        let mut parents_with_meta: Vec<(
-            BlockMessage,
-            models::rust::block_metadata::BlockMetadata,
-        )> = Vec::with_capacity(parents_after_count_limit.len());
-        let mut max_block_num: i64 = 0;
-        for b in parents_after_count_limit {
-            let meta = dag.lookup_unsafe(&b.block_hash)?;
-            if meta.block_number > max_block_num {
-                max_block_num = meta.block_number;
-            }
-            parents_with_meta.push((b, meta));
-        }
-
-        let depth = this.casper_shard_conf.max_parent_depth as i64;
-        parents_with_meta.retain(|(_, meta)| max_block_num - meta.block_number <= depth);
-        parents_with_meta.into_iter().map(|(b, _)| b).collect()
-    } else {
-        parents_after_count_limit
-    };
+        return Err(CasperError::RuntimeError(format!(
+            "live causal-parent frontier has {} parents, exceeding configured max-number-of-parents={}; increase the cap to at least the shard's maximum active-validator count plus one finalized-floor backstop",
+            parents.len(), this.casper_shard_conf.max_number_of_parents
+        )));
+    }
+    validate_causal_parent_coverage(&dag, &snapshot_lfb_hash, &live_causal_tips, &parents)?;
 
     // C13 / Perf-3: hoist the parent-metadata lookup. Previously this
     // function performed two passes of `dag.lookup_unsafe` over the
@@ -551,65 +586,33 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
     let tips: Vec<BlockHash> = parents.iter().map(|b| b.block_hash.clone()).collect();
 
     tracing::debug!(
-        "Parent selection: {} validators, {} invalid, {} valid, {} unfiltered, {} parents",
+        "Parent selection: {} validators, {} ineligible, {} valid, {} unfiltered, {} parents",
         latest_msgs_hashes.len(),
-        invalid_latest_msgs.len(),
-        valid_latest_msgs.len(),
+        latest_msgs_hashes
+            .len()
+            .saturating_sub(causal_parent_latest_msgs.len()),
+        causal_parent_latest_msgs.len(),
         unfiltered_parents_count,
         parents.len()
     );
 
-    let on_chain_state = get_on_chain_state(
-        this,
-        parents
-            .first()
-            .expect("parents should never be empty after approved block"),
-    )
-    .await?;
+    let on_chain_state = get_on_chain_state(this, &snapshot_lfb).await?;
 
-    let justifications = {
-        let bonded_validators = &on_chain_state.bonds_map;
-
-        // Include justifications for ALL bonded validators based on their
-        // *unfiltered* latest_messages, valid OR invalid. The proposer must
-        // satisfy `justification_follows` (T-9.7), which requires every
-        // bonded validator to appear in the block's justifications.
-        // Filtering to only `valid_latest_metas` here would drop the
-        // equivocator's slot from the snapshot, so the proposer's resulting
-        // block would lack the equivocator's justification and be flagged
-        // `InvalidFollows` downstream — even though parent-selection /
-        // fork-choice correctly use `valid_latest_metas` only.
-        //
-        // This pairs with the LMM-for-invalid-blocks invariant documented
-        // at `block-storage/src/rust/dag/block_dag_key_value_storage.rs`'s
-        // `new_latest_messages` closure: invalid blocks advance LMM
-        // precisely so the equivocator's slot is reachable here, and
-        // `justification_follows` (validator-side) plus
-        // `check_neglected_equivocations_with_update` (T-9.7 detection)
-        // can both work.
-        latest_msgs_hashes
-            .iter()
-            .filter(|(validator, _)| bonded_validators.contains_key(*validator))
-            .map(|(validator, hash)| Justification {
-                validator: validator.clone(),
-                latest_block_hash: hash.clone(),
-            })
-            .collect::<HashSet<_>>()
-    };
+    let justifications = consensus_context
+        .vote_projection()
+        .exact_latest_messages()
+        .iter()
+        .map(|(validator, hash)| Justification {
+            validator: validator.clone(),
+            latest_block_hash: hash.clone(),
+        })
+        .collect();
 
     // C13 / Perf-3: `parent_metas` is reused from the hoisted lookup
     // above — no second pass of `dag.lookups_unsafe`.
     let max_block_num = proto_util::max_block_number_metadata(&parent_metas);
 
-    let max_seq_nums = valid_latest_metas
-        .iter()
-        .map(
-            |(validator, block_metadata): (
-                &Validator,
-                &models::rust::block_metadata::BlockMetadata,
-            )| (validator.clone(), block_metadata.sequence_number as u64),
-        )
-        .collect::<HashMap<_, _>>();
+    let max_seq_nums = latest_sequence_numbers(&latest_metas)?;
 
     let (deploys_in_scope, rejected_in_scope) = {
         let current_dag_generation = this.block_dag_storage.current_generation();
@@ -738,7 +741,9 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
         rejected_in_scope,
         max_block_num,
         max_seq_nums,
+        finalized_floor_bonds,
         on_chain_state,
+        consensus_context,
     })
 }
 
@@ -746,23 +751,23 @@ pub(crate) async fn estimator<T: TransportLayer + Send + Sync>(
     this: &MultiParentCasperImpl<T>,
     dag: &mut KeyValueDagRepresentation,
 ) -> Result<Vec<BlockHash>, CasperError> {
-    // Phase 12 (PERF-5): use `into_iter` to consume the already-owned
-    // `imbl::HashMap` rather than re-cloning every pair.
-    let latest_message_hashes: HashMap<Validator, BlockHash> =
-        dag.latest_message_hashes().into_iter().collect();
-    let invalid_latest_messages =
-        dag.invalid_latest_messages_from_hashes(&latest_message_hashes)?;
-
-    let valid_latest: HashMap<Validator, BlockHash> = latest_message_hashes
-        .iter()
-        .filter(|(validator, _)| !invalid_latest_messages.contains_key(*validator))
-        .map(|(validator, hash): (&Validator, &BlockHash)| (validator.clone(), hash.clone()))
-        .collect();
-
-    if valid_latest.is_empty() {
+    let lfb_hash = dag.last_finalized_block();
+    let context = crate::rust::causal_equivocation::CertifiedConsensusContext::for_finalized_floor(
+        dag, lfb_hash,
+    )?;
+    if context
+        .vote_projection()
+        .eligible_latest_messages()
+        .is_empty()
+    {
         Ok(vec![this.approved_block.block_hash.clone()])
     } else {
-        let unique_hashes: HashSet<BlockHash> = valid_latest.values().cloned().collect();
+        let unique_hashes: HashSet<BlockHash> = context
+            .vote_projection()
+            .eligible_latest_messages()
+            .values()
+            .cloned()
+            .collect();
         Ok(unique_hashes.into_iter().collect())
     }
 }
@@ -771,47 +776,6 @@ pub(crate) async fn get_on_chain_state<T: TransportLayer + Send + Sync>(
     this: &MultiParentCasperImpl<T>,
     block: &BlockMessage,
 ) -> Result<OnChainCasperState, CasperError> {
-    let cache_key = block.body.state.post_state_hash.to_vec();
-    let (cached_hit, cache_len) = {
-        let cache = this.active_validators_cache.lock().await;
-        (cache.get(&cache_key).cloned(), cache.len())
-    };
-    if let Some(cached) = cached_hit {
-        metrics::gauge!(ACTIVE_VALIDATORS_CACHE_SIZE_METRIC, "source" => CASPER_METRICS_SOURCE)
-            .set(cache_len as f64);
-        let bm = &block.body.state.bonds;
-        return Ok(OnChainCasperState {
-            shard_conf: this.casper_shard_conf.clone(),
-            bonds_map: bm
-                .iter()
-                .map(|v| (v.validator.clone(), v.stake))
-                .collect::<HashMap<_, _>>(),
-            active_validators: cached,
-        });
-    }
-
-    let fetched = this
-        .runtime_manager
-        .get_active_validators(&block.body.state.post_state_hash)
-        .await?;
-
-    let av = {
-        let mut cache = this.active_validators_cache.lock().await;
-        if cache.len() >= this.casper_shard_conf.active_validators_cache_max_entries {
-            if let Some(first_key) = cache.keys().next().cloned() {
-                cache.remove(&first_key);
-            }
-        }
-        let entry = cache
-            .entry(cache_key)
-            .or_insert_with(|| fetched.clone())
-            .clone();
-        let cache_len = cache.len();
-        metrics::gauge!(ACTIVE_VALIDATORS_CACHE_SIZE_METRIC, "source" => CASPER_METRICS_SOURCE)
-            .set(cache_len as f64);
-        entry
-    };
-
     let bm = &block.body.state.bonds;
 
     Ok(OnChainCasperState {
@@ -820,12 +784,20 @@ pub(crate) async fn get_on_chain_state<T: TransportLayer + Send + Sync>(
             .iter()
             .map(|v| (v.validator.clone(), v.stake))
             .collect::<HashMap<_, _>>(),
-        active_validators: av,
+        bond_generations: block
+            .body
+            .state
+            .bond_generations
+            .iter()
+            .map(|entry| (entry.validator.clone(), entry.generation))
+            .collect(),
+        active_validators: block.body.state.active_validators.clone(),
     })
 }
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
     use std::sync::{Arc, Mutex};
     use std::time::SystemTime;
 
@@ -835,14 +807,43 @@ mod tests {
     use block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer;
     use block_storage::rust::key_value_block_store::KeyValueBlockStore;
     use models::rust::block_implicits;
+    use models::rust::block_metadata::BlockMetadata;
     use models::rust::casper::protocol::casper_message::{ProcessedDeploy, RejectedDeploy};
+    use proptest::prelude::*;
     use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
 
     use super::{
-        deploy_scope_cache_key_matches, fallback_to_finalized_parent,
-        local_rejected_buffer_has_recoverable_deploys, prefer_deploy_support_main_parent,
-        prune_dag_covered_parents,
+        causal_tips_covered_by_parents, deploy_scope_cache_key_matches,
+        fallback_to_finalized_parent, latest_sequence_numbers,
+        local_rejected_buffer_has_recoverable_deploys, order_parents_by_ghost_head,
+        prune_dag_covered_parents, reachability_maximal_indices,
+        recovery_main_covers_floor_and_causal_tips, validate_causal_parent_coverage,
     };
+
+    #[test]
+    fn sequence_snapshot_includes_invalid_latest_messages() {
+        let valid = prost::bytes::Bytes::from_static(b"valid");
+        let invalid = prost::bytes::Bytes::from_static(b"invalid");
+        let mut valid_block = block_implicits::get_random_block_default();
+        valid_block.seq_num = 4;
+        let mut invalid_block = block_implicits::get_random_block_default();
+        invalid_block.seq_num = 9;
+        let latest = std::collections::HashMap::from([
+            (
+                valid.clone(),
+                BlockMetadata::from_block(&valid_block, None, None),
+            ),
+            (
+                invalid.clone(),
+                BlockMetadata::from_block(&invalid_block, None, None),
+            ),
+        ]);
+
+        let sequences = latest_sequence_numbers(&latest).expect("latest sequence snapshot");
+
+        assert_eq!(sequences.get(&valid), Some(&4));
+        assert_eq!(sequences.get(&invalid), Some(&9));
+    }
 
     #[test]
     fn deploy_scope_cache_key_includes_selected_parents() {
@@ -917,79 +918,6 @@ mod tests {
             &block_store,
             Vec::new(),
             &prost::bytes::Bytes::from_static(b"missing"),
-        )
-        .is_err());
-    }
-
-    #[tokio::test]
-    async fn deploy_support_scoring_fails_closed_on_missing_committed_inputs() {
-        let mut kvm = InMemoryStoreManager::new();
-        let dag_storage = BlockDagKeyValueStorage::new(&mut kvm)
-            .await
-            .expect("dag storage");
-        let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
-            .await
-            .expect("block store");
-        let genesis = block_implicits::get_random_block(
-            Some(0),
-            Some(0),
-            None,
-            None,
-            None,
-            None,
-            Some(0),
-            Some(Vec::new()),
-            Some(Vec::new()),
-            Some(Vec::new()),
-            Some(Vec::new()),
-            None,
-            Some("test".to_string()),
-            None,
-        );
-        let child = block_implicits::get_random_block(
-            Some(1),
-            Some(1),
-            None,
-            None,
-            None,
-            None,
-            Some(1),
-            Some(vec![genesis.block_hash.clone()]),
-            Some(Vec::new()),
-            Some(Vec::new()),
-            Some(Vec::new()),
-            None,
-            Some("test".to_string()),
-            None,
-        );
-        dag_storage
-            .insert(&genesis, InsertMode::Approved)
-            .expect("insert genesis");
-        dag_storage
-            .insert(&child, InsertMode::Normal)
-            .expect("insert child");
-        block_store
-            .put_block_message(&genesis)
-            .expect("store genesis");
-        let dag = dag_storage.get_representation().expect("dag");
-
-        let body_error = branch_unfinalized_user_deploy_score(
-            &dag,
-            &block_store,
-            &child.block_hash,
-            &genesis.block_hash,
-        )
-        .expect_err("missing child body");
-        assert!(body_error
-            .to_string()
-            .contains("scoring deploy-support branches"));
-
-        let missing_lfb = prost::bytes::Bytes::from_static(b"missing-lfb");
-        assert!(branch_unfinalized_user_deploy_score(
-            &dag,
-            &block_store,
-            &child.block_hash,
-            &missing_lfb,
         )
         .is_err());
     }
@@ -1099,7 +1027,7 @@ mod tests {
         );
 
         dag_storage
-            .insert(&genesis, InsertMode::Approved)
+            .insert(&genesis, InsertMode::ApprovedGenesis)
             .expect("insert genesis");
         for block in [&left, &right, &seal, &left_child, &right_child] {
             dag_storage
@@ -1113,6 +1041,9 @@ mod tests {
                 .expect("prune parents");
         assert_eq!(pruned.len(), 1);
         assert_eq!(pruned[0].block_hash, seal.block_hash);
+        let causal_tips = HashSet::from([left.block_hash.clone(), right.block_hash.clone()]);
+        validate_causal_parent_coverage(&dag, &genesis.block_hash, &causal_tips, &pruned)
+            .expect("covering merge parent preserves both causal tips");
 
         let siblings = prune_dag_covered_parents(&dag, vec![left.clone(), right.clone()])
             .expect("keep siblings");
@@ -1121,15 +1052,121 @@ mod tests {
                 .iter()
                 .map(|block| block.block_hash.clone())
                 .collect::<Vec<_>>(),
-            vec![left.block_hash, right.block_hash]
+            vec![left.block_hash.clone(), right.block_hash.clone()]
+        );
+        validate_causal_parent_coverage(&dag, &genesis.block_hash, &causal_tips, &siblings)
+            .expect("sibling parent set preserves both causal tips");
+        assert!(validate_causal_parent_coverage(
+            &dag,
+            &genesis.block_hash,
+            &causal_tips,
+            std::slice::from_ref(&siblings[0]),
+        )
+        .is_err());
+        assert!(
+            validate_causal_parent_coverage(&dag, &seal.block_hash, &causal_tips, &siblings,)
+                .is_err()
         );
 
         let diverged_from_seal =
             prune_dag_covered_parents(&dag, vec![left_child.clone(), right_child.clone(), seal])
-                .expect("keep common anchor without single covering parent");
-        assert_eq!(diverged_from_seal.len(), 3);
+                .expect("remove every covered common anchor");
+        assert_eq!(diverged_from_seal.len(), 2);
         assert_eq!(diverged_from_seal[0].block_hash, left_child.block_hash);
         assert_eq!(diverged_from_seal[1].block_hash, right_child.block_hash);
+
+        let left_tip = HashSet::from([left.block_hash.clone()]);
+        assert!(!recovery_main_covers_floor_and_causal_tips(
+            &dag,
+            &right.block_hash,
+            &left.block_hash,
+            &left_tip,
+        )
+        .expect("incompatible floor check"));
+        assert!(recovery_main_covers_floor_and_causal_tips(
+            &dag,
+            &genesis.block_hash,
+            &left.block_hash,
+            &left_tip,
+        )
+        .expect("covered floor check"));
+
+        let depth_candidates = HashSet::from([
+            left_child.block_hash.clone(),
+            right_child.block_hash.clone(),
+        ]);
+        let live_after_depth = causal_tips_covered_by_parents(
+            &dag,
+            &depth_candidates,
+            std::slice::from_ref(&left_child),
+        )
+        .expect("derive live causal tips after depth expiry");
+        assert_eq!(live_after_depth, HashSet::from([left_child.block_hash]));
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(256))]
+
+        #[test]
+        fn reachability_compaction_is_a_covering_maximal_antichain(
+            levels in proptest::collection::vec(0u8..32, 1..64),
+        ) {
+            let retained = reachability_maximal_indices(levels.len(), |left, right| {
+                Ok::<bool, ()>(levels[left] < levels[right])
+            })
+            .unwrap();
+
+            prop_assert!(!retained.is_empty());
+            for &left in &retained {
+                for &right in &retained {
+                    prop_assert!(left == right || levels[left] >= levels[right]);
+                }
+            }
+            for candidate in 0..levels.len() {
+                let covered = retained.iter().any(|&parent| {
+                    candidate == parent || levels[candidate] < levels[parent]
+                });
+                prop_assert!(covered);
+            }
+        }
+
+        #[test]
+        fn ghost_parent_order_is_permutation_invariant_and_preserves_the_head(
+            values in proptest::collection::btree_set(any::<u8>(), 1..32),
+            reverse in any::<bool>(),
+        ) {
+            let mut parents = values
+                .iter()
+                .map(|value| {
+                    let mut block = block_implicits::get_random_block_default();
+                    block.block_hash = prost::bytes::Bytes::from(vec![*value]);
+                    block
+                })
+                .collect::<Vec<_>>();
+            let ghost = parents[parents.len() / 2].block_hash.clone();
+            if reverse {
+                parents.reverse();
+            } else {
+                let rotation = parents.len() / 3;
+                parents.rotate_left(rotation);
+            }
+            let input_hashes = parents
+                .iter()
+                .map(|parent| parent.block_hash.clone())
+                .collect::<HashSet<_>>();
+
+            let ordered = order_parents_by_ghost_head(parents, &ghost).unwrap();
+            let output_hashes = ordered
+                .iter()
+                .map(|parent| parent.block_hash.clone())
+                .collect::<HashSet<_>>();
+
+            prop_assert_eq!(&ordered[0].block_hash, &ghost);
+            prop_assert_eq!(output_hashes, input_hashes);
+            prop_assert!(ordered[1..]
+                .windows(2)
+                .all(|pair| pair[0].block_hash < pair[1].block_hash));
+        }
     }
 
     #[tokio::test]
@@ -1355,54 +1392,9 @@ mod tests {
         .expect("empty backlog"));
     }
 
-    #[tokio::test]
-    async fn deploy_support_promotes_nonfinal_deploy_branch_over_empty_main_parent() {
-        let mut kvm = InMemoryStoreManager::new();
-        let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
-            .await
-            .expect("block store");
-        let dag_storage = BlockDagKeyValueStorage::new(&mut kvm)
-            .await
-            .expect("dag storage");
-        let genesis = block_implicits::get_random_block(
-            Some(0),
-            Some(0),
-            None,
-            None,
-            None,
-            None,
-            Some(0),
-            Some(Vec::new()),
-            Some(Vec::new()),
-            Some(Vec::new()),
-            Some(Vec::new()),
-            None,
-            Some("test".to_string()),
-            None,
-        );
-        let deploy = crate::rust::util::construct_deploy::basic_deploy_data(
-            0,
-            None,
-            Some("test".to_string()),
-        )
-        .expect("deploy");
-        let deploy_block = block_implicits::get_random_block(
-            Some(1),
-            Some(1),
-            None,
-            None,
-            None,
-            None,
-            Some(1),
-            Some(vec![genesis.block_hash.clone()]),
-            Some(Vec::new()),
-            Some(vec![ProcessedDeploy::empty(deploy)]),
-            Some(Vec::new()),
-            None,
-            Some("test".to_string()),
-            None,
-        );
-        let deploy_support = block_implicits::get_random_block(
+    #[test]
+    fn ghost_head_remains_first_when_another_parent_carries_a_deploy() {
+        let ghost = block_implicits::get_random_block(
             Some(2),
             Some(2),
             None,
@@ -1410,177 +1402,6 @@ mod tests {
             None,
             None,
             Some(2),
-            Some(vec![deploy_block.block_hash.clone()]),
-            Some(Vec::new()),
-            Some(Vec::new()),
-            Some(Vec::new()),
-            None,
-            Some("test".to_string()),
-            None,
-        );
-        let empty = block_implicits::get_random_block(
-            Some(2),
-            Some(3),
-            None,
-            None,
-            None,
-            None,
-            Some(2),
-            Some(vec![genesis.block_hash.clone()]),
-            Some(Vec::new()),
-            Some(Vec::new()),
-            Some(Vec::new()),
-            None,
-            Some("test".to_string()),
-            None,
-        );
-
-        for block in [&genesis, &deploy_block, &deploy_support, &empty] {
-            block_store.put_block_message(block).expect("store block");
-        }
-        dag_storage
-            .insert(&genesis, InsertMode::Approved)
-            .expect("insert genesis");
-        for block in [&deploy_block, &deploy_support, &empty] {
-            dag_storage
-                .insert(block, InsertMode::Normal)
-                .expect("insert block");
-        }
-
-        let dag = dag_storage.get_representation().expect("dag");
-        let reordered = prefer_deploy_support_main_parent(
-            &dag,
-            &block_store,
-            vec![empty.clone(), deploy_support.clone()],
-            &genesis.block_hash,
-        )
-        .expect("prefer deploy support");
-
-        assert_eq!(reordered[0].block_hash, deploy_support.block_hash);
-        assert_eq!(reordered[1].block_hash, empty.block_hash);
-    }
-
-    #[tokio::test]
-    async fn deploy_support_prefers_larger_unfinalized_deploy_branch() {
-        let mut kvm = InMemoryStoreManager::new();
-        let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
-            .await
-            .expect("block store");
-        let dag_storage = BlockDagKeyValueStorage::new(&mut kvm)
-            .await
-            .expect("dag storage");
-        let genesis = block_implicits::get_random_block(
-            Some(0),
-            Some(0),
-            None,
-            None,
-            None,
-            None,
-            Some(0),
-            Some(Vec::new()),
-            Some(Vec::new()),
-            Some(Vec::new()),
-            Some(Vec::new()),
-            None,
-            Some("test".to_string()),
-            None,
-        );
-        let heavy_a = crate::rust::util::construct_deploy::basic_deploy_data(
-            1,
-            None,
-            Some("test".to_string()),
-        )
-        .expect("deploy a");
-        let heavy_b = crate::rust::util::construct_deploy::basic_deploy_data(
-            2,
-            None,
-            Some("test".to_string()),
-        )
-        .expect("deploy b");
-        let light = crate::rust::util::construct_deploy::basic_deploy_data(
-            3,
-            None,
-            Some("test".to_string()),
-        )
-        .expect("deploy c");
-        let heavy_parent = block_implicits::get_random_block(
-            Some(1),
-            Some(1),
-            None,
-            None,
-            None,
-            None,
-            Some(1),
-            Some(vec![genesis.block_hash.clone()]),
-            Some(Vec::new()),
-            Some(vec![
-                ProcessedDeploy::empty(heavy_a),
-                ProcessedDeploy::empty(heavy_b),
-            ]),
-            Some(Vec::new()),
-            None,
-            Some("test".to_string()),
-            None,
-        );
-        let light_parent = block_implicits::get_random_block(
-            Some(3),
-            Some(2),
-            None,
-            None,
-            None,
-            None,
-            Some(3),
-            Some(vec![genesis.block_hash.clone()]),
-            Some(Vec::new()),
-            Some(vec![ProcessedDeploy::empty(light)]),
-            Some(Vec::new()),
-            None,
-            Some("test".to_string()),
-            None,
-        );
-
-        for block in [&genesis, &heavy_parent, &light_parent] {
-            block_store.put_block_message(block).expect("store block");
-        }
-        dag_storage
-            .insert(&genesis, InsertMode::Approved)
-            .expect("insert genesis");
-        for block in [&heavy_parent, &light_parent] {
-            dag_storage
-                .insert(block, InsertMode::Normal)
-                .expect("insert block");
-        }
-
-        let dag = dag_storage.get_representation().expect("dag");
-        let reordered = prefer_deploy_support_main_parent(
-            &dag,
-            &block_store,
-            vec![light_parent.clone(), heavy_parent.clone()],
-            &genesis.block_hash,
-        )
-        .expect("prefer deploy support");
-
-        assert_eq!(reordered[0].block_hash, heavy_parent.block_hash);
-        assert_eq!(reordered[1].block_hash, light_parent.block_hash);
-    }
-
-    #[tokio::test]
-    async fn deploy_support_keeps_existing_deploy_main_parent() {
-        let mut kvm = InMemoryStoreManager::new();
-        let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
-            .await
-            .expect("block store");
-        let dag_storage = BlockDagKeyValueStorage::new(&mut kvm)
-            .await
-            .expect("dag storage");
-        let genesis = block_implicits::get_random_block(
-            Some(0),
-            Some(0),
-            None,
-            None,
-            None,
-            None,
-            Some(0),
             Some(Vec::new()),
             Some(Vec::new()),
             Some(Vec::new()),
@@ -1596,14 +1417,14 @@ mod tests {
         )
         .expect("deploy");
         let deploy_parent = block_implicits::get_random_block(
-            Some(1),
-            Some(1),
+            Some(3),
+            Some(3),
             None,
             None,
             None,
             None,
-            Some(1),
-            Some(vec![genesis.block_hash.clone()]),
+            Some(3),
+            Some(Vec::new()),
             Some(Vec::new()),
             Some(vec![ProcessedDeploy::empty(deploy)]),
             Some(Vec::new()),
@@ -1611,482 +1432,15 @@ mod tests {
             Some("test".to_string()),
             None,
         );
-        let empty = block_implicits::get_random_block(
-            Some(1),
-            Some(2),
-            None,
-            None,
-            None,
-            None,
-            Some(1),
-            Some(vec![genesis.block_hash.clone()]),
-            Some(Vec::new()),
-            Some(Vec::new()),
-            Some(Vec::new()),
-            None,
-            Some("test".to_string()),
-            None,
-        );
 
-        for block in [&genesis, &deploy_parent, &empty] {
-            block_store.put_block_message(block).expect("store block");
-        }
-        dag_storage
-            .insert(&genesis, InsertMode::Approved)
-            .expect("insert genesis");
-        for block in [&deploy_parent, &empty] {
-            dag_storage
-                .insert(block, InsertMode::Normal)
-                .expect("insert block");
-        }
-
-        let dag = dag_storage.get_representation().expect("dag");
-        let reordered = prefer_deploy_support_main_parent(
-            &dag,
-            &block_store,
-            vec![deploy_parent.clone(), empty.clone()],
-            &genesis.block_hash,
+        let ordered = order_parents_by_ghost_head(
+            vec![deploy_parent.clone(), ghost.clone()],
+            &ghost.block_hash,
         )
-        .expect("prefer deploy support");
+        .expect("order by GHOST head");
 
-        assert_eq!(reordered[0].block_hash, deploy_parent.block_hash);
-        assert_eq!(reordered[1].block_hash, empty.block_hash);
-    }
-
-    // ═══════════════════════════════════════════════════════════════════════════
-    // Fork-choice FV — T-MP STAGE 2 (formal/rocq/fork_choice/theories/GuardBridge.v
-    // seam (3)). LOCAL-ONLY verification; not consensus code.
-    //
-    // The proposer picks its main parent in TWO stages (:317-337):
-    //   stage 1 — the GHOST head (:317-323) + the (is_main DESC, hash ASC) sort
-    //             (:325-331);
-    //   stage 2 — `prefer_deploy_support_main_parent` (:332 -> :124-185), which can
-    //             PROMOTE a deploy-carrying branch to index 0, OVERRIDING the ghost
-    //             head. So "main parent == GHOST argmax" is FALSE for the proposer
-    //             (GuardBridge.v refutes it by computation in
-    //             `pipeline_head_may_differ_from_ghost`).
-    //
-    // These proptests discharge GuardBridge.v's WEAKER, TRUE claim — the main parent
-    // is a deterministic pure function of (dag, parents, last_finalized_block) —
-    // against the REAL (private) `prefer_deploy_support_main_parent` and
-    // `better_deploy_branch_score` rather than against a re-implementation:
-    //
-    //   (a) `deploy_support_promotion_is_permutation_and_order_invariant` (part 1)
-    //         <- GuardBridge.main_parent_pipeline_permutation / promote_permutation
-    //   (b) `better_deploy_branch_score_is_strict_total_order`
-    //         <- GuardBridge.dbetter_strict_total_order
-    //   (c) `deploy_support_promotion_is_permutation_and_order_invariant` (parts 2,4)
-    //         <- GuardBridge.dbest_hash_perm_invariant /
-    //            GuardBridge.main_parent_pipeline_deterministic
-    //
-    // and pin the COMPOSITION fact that makes (c) hold at all (part 3): stage 2 ALONE
-    // is NOT order-invariant — it returns `parents` UNTOUCHED when no branch scores
-    // (:163-165) — so determinism genuinely REQUIRES stage 1's canonical sort to run
-    // first. See docs/theory/fork-choice/fork-choice-verification.md §6.2.
-    // ═══════════════════════════════════════════════════════════════════════════
-
-    use std::collections::HashSet as StdHashSet;
-    use std::sync::OnceLock;
-
-    use models::rust::block_hash::BlockHash;
-    use models::rust::casper::protocol::casper_message::BlockMessage;
-    use proptest::prelude::*;
-
-    use super::{
-        better_deploy_branch_score, branch_unfinalized_user_deploy_score, DeployBranchScore,
-        KeyValueDagRepresentation,
-    };
-
-    /// Shared Tokio runtime: `proptest!` emits plain `#[test]` fns, which cannot be
-    /// `#[tokio::test]`. Mirrors casper/tests/fork_choice/prop_ghost_argmax.rs.
-    fn runtime() -> &'static tokio::runtime::Runtime {
-        static RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
-        RUNTIME.get_or_init(|| tokio::runtime::Runtime::new().expect("tokio runtime"))
-    }
-
-    /// Mirror of the STAGE-1 comparator at snapshot.rs:325-331. Stage 1 is written
-    /// INLINE in `compute_snapshot` (it is not a callable fn), so the composed-pipeline
-    /// property below mirrors the six-line comparator verbatim. Kept adjacent to the
-    /// real code so the two drift together.
-    fn ghost_sort_mirror(ghost_main_parent: Option<&BlockHash>, parents: &mut [BlockMessage]) {
-        parents.sort_by(|a, b| {
-            let a_main = ghost_main_parent == Some(&a.block_hash);
-            let b_main = ghost_main_parent == Some(&b.block_hash);
-            b_main
-                .cmp(&a_main)
-                .then_with(|| a.block_hash.cmp(&b.block_hash))
-        });
-    }
-
-    /// Every permutation of `items` (n! of them; n <= 4 here, so <= 24).
-    fn all_permutations(items: &[BlockMessage]) -> Vec<Vec<BlockMessage>> {
-        let n = items.len();
-        let mut out = Vec::with_capacity((1..=n).product::<usize>());
-        if n == 0 {
-            out.push(Vec::new());
-            return out;
-        }
-        for i in 0..n {
-            let mut rest = items.to_vec();
-            let head = rest.remove(i);
-            for mut tail in all_permutations(&rest) {
-                let mut perm = Vec::with_capacity(n);
-                perm.push(head.clone());
-                perm.append(&mut tail);
-                out.push(perm);
-            }
-        }
-        out
-    }
-
-    /// Every value the ghost head (`:317-323`) can take: `None` (empty tips), or any
-    /// one of the parents.
-    fn ghost_candidates(parents: &[BlockMessage]) -> Vec<Option<BlockHash>> {
-        let mut out = Vec::with_capacity(parents.len() + 1);
-        out.push(None);
-        out.extend(parents.iter().map(|p| Some(p.block_hash.clone())));
-        out
-    }
-
-    /// Builds `genesis <- {parent_i}`, where branch `i` carries `n_deploys_i` distinct
-    /// user deploys and sits at block number `number_i`. Genesis is the last finalized
-    /// block, so every parent (number >= 1) is in the unfinalized scoring window.
-    /// Mirrors the fixture style of the `deploy_support_*` example tests above.
-    async fn build_deploy_branch_fixture(
-        specs: &[(usize, i64)],
-    ) -> (
-        KeyValueBlockStore,
-        KeyValueDagRepresentation,
-        BlockMessage,
-        Vec<BlockMessage>,
-    ) {
-        let mut kvm = InMemoryStoreManager::new();
-        let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
-            .await
-            .expect("block store");
-        let dag_storage = BlockDagKeyValueStorage::new(&mut kvm)
-            .await
-            .expect("dag storage");
-
-        let genesis = block_implicits::get_random_block(
-            Some(0),
-            Some(0),
-            None,
-            None,
-            None,
-            None,
-            Some(0),
-            Some(Vec::new()),
-            Some(Vec::new()),
-            Some(Vec::new()),
-            Some(Vec::new()),
-            None,
-            Some("test".to_string()),
-            None,
-        );
-
-        let mut parents = Vec::with_capacity(specs.len());
-        let mut deploy_id: i32 = 0;
-        for (idx, (n_deploys, number)) in specs.iter().enumerate() {
-            let mut processed = Vec::with_capacity(*n_deploys);
-            for _ in 0..*n_deploys {
-                deploy_id += 1;
-                let deploy = crate::rust::util::construct_deploy::basic_deploy_data(
-                    deploy_id,
-                    None,
-                    Some("test".to_string()),
-                )
-                .expect("deploy");
-                processed.push(ProcessedDeploy::empty(deploy));
-            }
-            parents.push(block_implicits::get_random_block(
-                Some(*number),
-                Some(idx as i32 + 1),
-                None,
-                None,
-                None,
-                None,
-                Some(*number),
-                Some(vec![genesis.block_hash.clone()]),
-                Some(Vec::new()),
-                Some(processed),
-                Some(Vec::new()),
-                None,
-                Some("test".to_string()),
-                None,
-            ));
-        }
-
-        block_store
-            .put_block_message(&genesis)
-            .expect("store genesis");
-        for parent in &parents {
-            block_store.put_block_message(parent).expect("store parent");
-        }
-        dag_storage
-            .insert(&genesis, InsertMode::Approved)
-            .expect("insert genesis");
-        for parent in &parents {
-            dag_storage
-                .insert(parent, InsertMode::Normal)
-                .expect("insert parent");
-        }
-
-        let dag = dag_storage.get_representation().expect("dag");
-        (block_store, dag, genesis, parents)
-    }
-
-    /// (*) The COMPOSITION fact, pinned DETERMINISTICALLY (the proptest above reaches
-    /// this branch only when it happens to draw an all-empty parent set — ~1 case in 16
-    /// — which is too thin to rely on for a property this load-bearing).
-    ///
-    /// When NO parent branch carries an unfinalized user deploy, `prefer_deploy_support_
-    /// main_parent` returns `parents` EXACTLY as given (:163-165) — it is the identity,
-    /// order included. So stage 2 ALONE is *not* input-order invariant: its head is
-    /// simply whichever parent came first. Determinism of the block's main parent is
-    /// therefore inherited from stage 1's canonical `(is_main DESC, hash ASC)` sort
-    /// (:325-331), which is precisely why GuardBridge.v models the COMPOSED pipeline
-    /// (`main_parent_pipeline = prefer_deploy_support . ghost_sort`) rather than
-    /// claiming stage 2 is order-invariant on its own.
-    #[tokio::test]
-    async fn deploy_support_is_identity_when_no_branch_scores() {
-        // two deploy-free branches off genesis => every branch score is `None`
-        let (block_store, dag, genesis, parents) =
-            build_deploy_branch_fixture(&[(0, 1), (0, 2)]).await;
-
-        for parent in &parents {
-            assert!(
-                branch_unfinalized_user_deploy_score(
-                    &dag,
-                    &block_store,
-                    &parent.block_hash,
-                    &genesis.block_hash,
-                )
-                .expect("branch score")
-                .is_none(),
-                "fixture bug: a deploy-free branch must not score"
-            );
-        }
-
-        // BOTH orderings come back untouched — stage 2 preserves whatever order it got.
-        for perm in all_permutations(&parents) {
-            let out = prefer_deploy_support_main_parent(
-                &dag,
-                &block_store,
-                perm.clone(),
-                &genesis.block_hash,
-            )
-            .expect("prefer deploy support");
-            let want: Vec<BlockHash> = perm.iter().map(|b| b.block_hash.clone()).collect();
-            let got: Vec<BlockHash> = out.iter().map(|b| b.block_hash.clone()).collect();
-            assert_eq!(
-                got, want,
-                "stage 2 must be the exact identity when no branch scores"
-            );
-        }
-    }
-
-    /// A `(DeployBranchScore, BlockHash)` over DELIBERATELY tiny domains, so ties at
-    /// every lexicographic level — and hence the reversed hash tie-break at :68 — are
-    /// hit constantly rather than vanishingly rarely.
-    fn arb_scored_branch() -> impl Strategy<Value = (DeployBranchScore, BlockHash)> {
-        (0usize..3, 0i64..3, 0i64..3, 0u8..4).prop_map(
-            |(deploy_sig_count, latest_deploy_block_number, root_block_number, hash_byte)| {
-                (
-                    DeployBranchScore {
-                        deploy_sig_count,
-                        latest_deploy_block_number,
-                        root_block_number,
-                    },
-                    prost::bytes::Bytes::from(vec![hash_byte]),
-                )
-            },
-        )
-    }
-
-    proptest! {
-        #![proptest_config(ProptestConfig::with_cases(2048))]
-
-        /// (b) GuardBridge.v `dbetter_strict_total_order`: the REAL
-        /// `better_deploy_branch_score` (:48-70) is a STRICT TOTAL order — irreflexive,
-        /// asymmetric and transitive UNCONDITIONALLY, and total on DISTINCT hashes
-        /// (distinct blocks always have distinct cryptographic-digest hashes).
-        ///
-        /// This is the load-bearing premise: it is what makes the promoted branch the
-        /// UNIQUE argmax, hence the promotion scan-order independent. Had it NOT been a
-        /// total order, two honest proposers enumerating the same parents in different
-        /// `HashSet` orders could promote DIFFERENT branches — a real consensus
-        /// non-determinism bug.
-        #[test]
-        fn better_deploy_branch_score_is_strict_total_order(
-            a in arb_scored_branch(),
-            b in arb_scored_branch(),
-            c in arb_scored_branch(),
-        ) {
-            let better = |x: &(DeployBranchScore, BlockHash), y: &(DeployBranchScore, BlockHash)| {
-                better_deploy_branch_score((&x.0, &x.1), (&y.0, &y.1))
-            };
-
-            prop_assert!(!better(&a, &a), "irreflexivity violated at {:?}", a);
-
-            if better(&a, &b) {
-                prop_assert!(!better(&b, &a), "asymmetry violated: {:?} vs {:?}", a, b);
-            }
-
-            if better(&a, &b) && better(&b, &c) {
-                prop_assert!(
-                    better(&a, &c),
-                    "transitivity violated: {:?} > {:?} > {:?}",
-                    a, b, c
-                );
-            }
-
-            if a.1 != b.1 {
-                prop_assert!(
-                    better(&a, &b) || better(&b, &a),
-                    "totality violated on distinct hashes: {:?} vs {:?}",
-                    a, b
-                );
-            }
-        }
-    }
-
-    proptest! {
-        // Each case builds a fresh in-memory DAG and signs up to 8 deploys, then runs
-        // the real fn over EVERY permutation (<= 24) x EVERY ghost head (<= 5).
-        #![proptest_config(ProptestConfig::with_cases(16))]
-
-        /// T-MP stage 2, against the REAL `prefer_deploy_support_main_parent`:
-        ///
-        ///   1. (a) GuardBridge.main_parent_pipeline_permutation — the output is always
-        ///      a PERMUTATION of the input (no parent lost or duplicated), so the parent
-        ///      MULTISET is preserved. This is what keeps `Selection.T_PS`'s
-        ///      unconstrained-parent-oracle floor soundness applicable.
-        ///   2. (c) GuardBridge.dbest_hash_perm_invariant — WHEN a branch scores, the
-        ///      promoted parent is the UNIQUE argmax, hence identical for every input
-        ///      ordering.
-        ///   3. (*) the composition fact — when NO branch scores, stage 2 is the exact
-        ///      IDENTITY (:163-165), so its head is merely whatever came first. Stage 2
-        ///      alone is therefore NOT order-invariant; determinism is inherited from
-        ///      stage 1's canonical sort.
-        ///   4. (c) GuardBridge.main_parent_pipeline_deterministic — the COMPOSED
-        ///      pipeline (stage-1 mirror then the real stage 2) yields a byte-identical
-        ///      parent list for EVERY input ordering and EVERY possible ghost head.
-        #[test]
-        fn deploy_support_promotion_is_permutation_and_order_invariant(
-            specs in prop::collection::vec((0usize..=2usize, 1i64..=2i64), 2..=4),
-        ) {
-            let (block_store, dag, genesis, parents) =
-                runtime().block_on(build_deploy_branch_fixture(&specs));
-
-            // Distinct parent hashes are the premise `dbetter_total` needs (and what a
-            // cryptographic digest gives the real code). A collision here would be a
-            // FIXTURE bug, so assert it rather than silently weakening the property.
-            let distinct: StdHashSet<BlockHash> =
-                parents.iter().map(|p| p.block_hash.clone()).collect();
-            prop_assert_eq!(
-                distinct.len(),
-                parents.len(),
-                "fixture produced colliding parent hashes"
-            );
-
-            let perms = all_permutations(&parents);
-
-            // 1. PERMUTATION-PRESERVATION (holds unconditionally).
-            for perm in &perms {
-                let out = prefer_deploy_support_main_parent(
-                    &dag,
-                    &block_store,
-                    perm.clone(),
-                    &genesis.block_hash,
-                )
-                .expect("prefer deploy support");
-
-                let mut want: Vec<BlockHash> = perm.iter().map(|b| b.block_hash.clone()).collect();
-                let mut got: Vec<BlockHash> = out.iter().map(|b| b.block_hash.clone()).collect();
-                prop_assert_eq!(got.len(), want.len(), "stage 2 changed the parent count");
-                want.sort();
-                got.sort();
-                prop_assert_eq!(got, want, "stage 2 did not preserve the parent multiset");
-            }
-
-            let any_scored = parents.iter().any(|p| {
-                branch_unfinalized_user_deploy_score(
-                    &dag,
-                    &block_store,
-                    &p.block_hash,
-                    &genesis.block_hash,
-                )
-                .expect("branch score")
-                .is_some()
-            });
-
-            if any_scored {
-                // 2. ARGMAX INVARIANCE.
-                let heads: StdHashSet<BlockHash> = perms
-                    .iter()
-                    .map(|perm| {
-                        prefer_deploy_support_main_parent(
-                            &dag,
-                            &block_store,
-                            perm.clone(),
-                            &genesis.block_hash,
-                        )
-                        .expect("prefer deploy support")[0]
-                            .block_hash
-                            .clone()
-                    })
-                    .collect();
-                prop_assert_eq!(
-                    heads.len(),
-                    1,
-                    "the promoted parent depends on the input order (argmax not unique)"
-                );
-            } else {
-                // 3. IDENTITY when nothing scores — the reason stage 1 is load-bearing.
-                for perm in &perms {
-                    let out = prefer_deploy_support_main_parent(
-                        &dag,
-                        &block_store,
-                        perm.clone(),
-                        &genesis.block_hash,
-                    )
-                    .expect("prefer deploy support");
-                    let want: Vec<BlockHash> = perm.iter().map(|b| b.block_hash.clone()).collect();
-                    let got: Vec<BlockHash> = out.iter().map(|b| b.block_hash.clone()).collect();
-                    prop_assert_eq!(
-                        got,
-                        want,
-                        "stage 2 must be the exact identity when no branch scores"
-                    );
-                }
-            }
-
-            // 4. WHOLE-PIPELINE INVARIANCE (stage 1 then the real stage 2).
-            for ghost in ghost_candidates(&parents) {
-                let outputs: StdHashSet<Vec<BlockHash>> = perms
-                    .iter()
-                    .map(|perm| {
-                        let mut staged = perm.clone();
-                        ghost_sort_mirror(ghost.as_ref(), &mut staged);
-                        prefer_deploy_support_main_parent(
-                            &dag,
-                            &block_store,
-                            staged,
-                            &genesis.block_hash,
-                        )
-                        .expect("prefer deploy support")
-                        .iter()
-                        .map(|b| b.block_hash.clone())
-                        .collect()
-                    })
-                    .collect();
-                prop_assert_eq!(
-                    outputs.len(),
-                    1,
-                    "the composed pipeline output depends on the input parent order"
-                );
-            }
-        }
+        assert_eq!(ordered[0].block_hash, ghost.block_hash);
+        assert_eq!(ordered[1].block_hash, deploy_parent.block_hash);
+        assert!(order_parents_by_ghost_head(vec![deploy_parent], &ghost.block_hash).is_err());
     }
 }

@@ -1,5 +1,6 @@
 use std::time::Duration;
 
+use casper::rust::casper::MultiParentCasper;
 use casper::rust::engine::running::update_fork_choice_tips_if_stuck;
 use casper::rust::util::construct_deploy;
 
@@ -7,7 +8,7 @@ use crate::helper::test_node::TestNode;
 use crate::util::genesis_builder::GenesisBuilder;
 
 #[tokio::test]
-async fn validator_on_minority_fork_should_request_approved_block_for_rejoin() {
+async fn validator_on_minority_fork_recovers_through_normal_dag_admission() {
     let genesis = GenesisBuilder::new()
         .build_genesis_with_parameters(Some(
             GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(3)),
@@ -31,7 +32,6 @@ async fn validator_on_minority_fork_should_request_approved_block_for_rejoin() {
         Some(shard_id.clone()),
     )
     .expect("Failed to create minority deploy");
-
     let minority_block = nodes[minority_validator]
         .add_block_from_deploys(&[minority_deploy])
         .await
@@ -44,32 +44,30 @@ async fn validator_on_minority_fork_should_request_approved_block_for_rejoin() {
         Some(shard_id.clone()),
     )
     .expect("Failed to create majority deploy");
-
     let majority_block =
         TestNode::propagate_block_to_one(&mut nodes, majority_bootstrap, majority_peer, &[
             majority_deploy,
         ])
         .await
-        .expect(
-            "Majority bootstrap should propagate a majority block to another majority validator",
-        );
+        .expect("Majority block should reach the second majority validator");
 
-    assert!(
-        nodes[majority_bootstrap].contains(&majority_block.block_hash),
-        "Majority bootstrap should contain latest majority block"
-    );
-    assert!(
-        nodes[majority_peer].contains(&majority_block.block_hash),
-        "Peer majority validator should contain latest majority block"
-    );
-    assert!(
-        !nodes[minority_validator].contains(&majority_block.block_hash),
-        "Minority validator should not yet know the majority block"
-    );
-    assert!(
-        nodes[minority_validator].contains(&minority_block.block_hash),
-        "Minority validator should still be on its local fork before recovery"
-    );
+    let support_deploy = construct_deploy::source_deploy_now(
+        "@202!(\"majority-support\")".to_string(),
+        None,
+        None,
+        Some(shard_id.clone()),
+    )
+    .expect("Failed to create majority support deploy");
+    let majority_tip =
+        TestNode::propagate_block_to_one(&mut nodes, majority_peer, majority_bootstrap, &[
+            support_deploy,
+        ])
+        .await
+        .expect("Second majority validator should extend and return the majority fork");
+
+    assert!(!nodes[minority_validator].contains(&majority_block.block_hash));
+    assert!(!nodes[minority_validator].contains(&majority_tip.block_hash));
+    assert!(nodes[minority_validator].contains(&minority_block.block_hash));
 
     update_fork_choice_tips_if_stuck(
         &nodes[minority_validator].engine_cell,
@@ -79,68 +77,64 @@ async fn validator_on_minority_fork_should_request_approved_block_for_rejoin() {
         Duration::from_millis(0),
     )
     .await
-    .expect("Stale minority validator should trigger recovery");
+    .expect("Stale minority validator should trigger live recovery");
 
-    let engine_after_detection = nodes[minority_validator].engine_cell.get().await;
     assert!(
-        engine_after_detection.with_casper().is_none(),
-        "Minority validator should move into Initializing after stale detection"
+        nodes[minority_validator]
+            .engine_cell
+            .get()
+            .await
+            .with_casper()
+            .is_some(),
+        "Live recovery must retain the existing Casper instance and durable state"
     );
 
-    let queue_to_bootstrap = nodes[majority_bootstrap]
-        .tle
-        .test_network()
-        .peer_queue(&nodes[majority_bootstrap].local)
-        .expect("Bootstrap queue should be readable");
-    let request_type_ids: Vec<String> = queue_to_bootstrap
-        .iter()
-        .filter_map(|protocol| {
-            protocol.message.as_ref().and_then(|message| match message {
-                models::routing::protocol::Message::Packet(packet) => Some(packet.type_id.clone()),
-                _ => None,
-            })
-        })
-        .collect();
-    assert!(
-        request_type_ids
-            .iter()
-            .any(|type_id| type_id == "ApprovedBlockRequest"),
-        "Recovery should request ApprovedBlock from bootstrap, got queue types: {:?}",
-        request_type_ids
-    );
+    for _ in 0..12 {
+        for node in &nodes {
+            node.handle_receive()
+                .await
+                .expect("Recovery gossip should remain valid Casper traffic");
+        }
+        tokio::task::yield_now().await;
+    }
 
-    nodes[majority_bootstrap]
-        .handle_receive()
+    assert!(nodes[minority_validator].contains(&majority_block.block_hash));
+    assert!(nodes[minority_validator].contains(&majority_tip.block_hash));
+
+    let recovered_lfb = nodes[minority_validator]
+        .casper
+        .last_finalized_block()
         .await
-        .expect("Bootstrap should answer the approved-block request");
-
-    // Full Initializing restore needs reentrant LFS queue pumping; this harness
-    // asserts through the approved-block handoff.
-    let queue_to_minority = nodes[minority_validator]
-        .tle
-        .test_network()
-        .peer_queue(&nodes[minority_validator].local)
-        .expect("Minority validator queue should be readable");
-    let response_type_ids: Vec<String> = queue_to_minority
-        .iter()
-        .filter_map(|protocol| {
-            protocol.message.as_ref().and_then(|message| match message {
-                models::routing::protocol::Message::Packet(packet) => Some(packet.type_id.clone()),
-                _ => None,
-            })
-        })
-        .collect();
-
+        .expect("Minority validator should recompute finality locally");
+    let recovered_dag = nodes[minority_validator]
+        .casper
+        .block_dag()
+        .await
+        .expect("Recovered DAG should be readable");
     assert!(
-        response_type_ids
-            .iter()
-            .any(|type_id| type_id == "ApprovedBlock"),
-        "Bootstrap should send ApprovedBlock back to the minority validator, got queue types: {:?}",
-        response_type_ids
+        recovered_lfb.block_hash == majority_block.block_hash
+            || recovered_dag
+                .is_dag_ancestor(&majority_block.block_hash, &recovered_lfb.block_hash)
+                .expect("Recovered finalized lineage should be decidable")
     );
 
-    assert!(
-        nodes[majority_peer].contains(&majority_block.block_hash),
-        "Majority peer should still contain the majority block ready for later block sync"
-    );
+    let resumed_deploy = construct_deploy::source_deploy_now(
+        "@301!(\"resumed\")".to_string(),
+        None,
+        None,
+        Some(shard_id),
+    )
+    .expect("Failed to create resumed deploy");
+    let resumed = nodes[minority_validator]
+        .add_block_from_deploys(&[resumed_deploy])
+        .await
+        .expect("Recovered validator should resume ordinary proposal");
+    let resumed_dag = nodes[minority_validator]
+        .casper
+        .block_dag()
+        .await
+        .expect("Resumed DAG should be readable");
+    assert!(resumed_dag
+        .is_dag_ancestor(&recovered_lfb.block_hash, &resumed.block_hash)
+        .expect("Resumed block lineage should be decidable"));
 }

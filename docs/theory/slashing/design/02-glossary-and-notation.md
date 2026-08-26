@@ -137,34 +137,32 @@ BondMap, Active set, Slashed set, Coop vault balance). Labels are:
 
 ## 2.6 InvalidBlock taxonomy (and the slashable subset)
 
-The `InvalidBlock` enum has **27** variants. **17** are *slashable*
-in the current Rust source pre-fix; **19** are slashable post-fix
-(bug #1 promotes `IgnorableEquivocation`; the 27th variant
-`UnauthorizedSlashDeploy` is slashable, `block_status.rs:214-238`). The
-slashable set:
+The current `InvalidBlock` enum has **26** variants, of which **17** are
+slashable (`block_status.rs:37-72,361-387`). The slashable set is:
 
 ```
-AdmissibleEquivocation,    NeglectedEquivocation,    NeglectedInvalidBlock,
-JustificationRegression,   InvalidParents,           InvalidFollows,
-InvalidBlockNumber,        InvalidSequenceNumber,    InvalidShardId,
-InvalidRepeatDeploy,       DeployNotSigned,          InvalidTransaction,
-InvalidBondsCache,         InvalidBlockHash,         ContainsExpiredDeploy,
+NeglectedEquivocation,     NeglectedInvalidBlock,     JustificationRegression,
+InvalidParents,            InvalidFollows,             InvalidBlockNumber,
+InvalidSequenceNumber,     InvalidShardId,              InvalidRepeatDeploy,
+DeployNotSigned,           InvalidTransaction,          InvalidBondsCache,
+InvalidEquivocationEvidence, UnauthorizedSlashDeploy,   ContainsExpiredDeploy,
 ContainsTimeExpiredDeploy, ContainsFutureDeploy
-                          [+ post-fix: IgnorableEquivocation, UnauthorizedSlashDeploy]
 ```
 
-The remaining 9 variants — `IgnorableEquivocation` (pre-fix only),
-`InvalidFormat`, `InvalidSignature`, `InvalidSender`,
-`InvalidVersion`, `InvalidTimestamp`, `InvalidRejectedDeploy`,
-`NotOfInterest`, `LowDeployCost` — are **non-slashable** because
+The remaining 9 variants — `InvalidFormat`, `InvalidSignature`,
+`InvalidSender`, `InvalidVersion`, `InvalidTimestamp`, `InvalidBlockHash`,
+`InvalidRejectedDeploy`, `NotOfInterest`, and `LowDeployCost` — are
+**non-slashable** because
 they are *unattributable* (e.g. the block has no signature, so the
 sender cannot be identified) or *cosmetic* (e.g. the deploy was
 priced below the floor; rejecting it does not prove malice).
 
-The "equivocation-class" variants are `AdmissibleEquivocation`,
-`NeglectedEquivocation`, and (post-fix) `IgnorableEquivocation`.
-The remaining 15 slashable variants are the **non-equivocation
-slashable variants** referenced in §09 and bug-fix #3.
+`NeglectedEquivocation` is the current equivocation-class invalid-block
+variant. `AdmissibleEquivocation` and `IgnorableEquivocation` remain proof and
+test-harness labels for the historical detector boundary; production refines
+them to `EquivocationObservation::{RequestedDependency, Unsolicited}` on
+accepted certified blocks. Generation-scoped objective evidence requires two
+distinct certified hashes and is maintained separately from `InvalidBlock`.
 
 ## 2.7 Theorem-naming convention
 

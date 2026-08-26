@@ -4,6 +4,10 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
 
+use casper::rust::blocks::block_processing_queue::{
+    BlockAdmissionFailure, BlockProcessingQueueItem, BlockProcessingQueueReceiver,
+    BlockProcessingQueueSender,
+};
 use casper::rust::blocks::block_processor::BlockProcessor;
 use casper::rust::casper::MultiParentCasper;
 use casper::rust::errors::CasperError;
@@ -15,16 +19,15 @@ use casper::rust::metrics_constants::{
 };
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
 use casper::rust::util::rholang::runtime_manager::RuntimeManager;
-use casper::rust::{ProposeFunction, ValidBlockProcessing};
+use casper::rust::{ProposeFunction, ProposeRequestKind, ValidBlockProcessing};
 use comm::rust::transport::transport_layer::TransportLayer;
 use dashmap::DashSet;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::BlockMessage;
+use models::rust::validator::Validator;
 use tokio::sync::mpsc;
 
-const MAX_BLOCKS_IN_PROCESSING_DEFAULT: usize = 512;
-const MAX_BLOCKS_IN_PROCESSING_ENV: &str = "F1R3_MAX_BLOCKS_IN_PROCESSING";
 const MAX_PARALLEL_BLOCKS_DEFAULT: usize = 2;
 const MAX_PARALLEL_BLOCKS_ENV: &str = "F1R3_MAX_PARALLEL_BLOCKS";
 const BLOCK_PROCESSING_RESULT_QUEUE_CAPACITY: usize = 128;
@@ -33,7 +36,6 @@ const MALLOC_TRIM_EVERY_BLOCKS_DEFAULT: usize = 1;
 static BLOCKS_SINCE_ALLOCATOR_TRIM: AtomicUsize = AtomicUsize::new(0);
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
 static MALLOC_TRIM_EVERY_BLOCKS: OnceLock<usize> = OnceLock::new();
-static MAX_BLOCKS_IN_PROCESSING: OnceLock<usize> = OnceLock::new();
 static TRIGGER_PROPOSE_AFTER_BLOCK_PROCESSING: OnceLock<bool> = OnceLock::new();
 
 fn configured_malloc_trim_every_blocks(value: Option<&str>) -> usize {
@@ -63,16 +65,6 @@ fn malloc_trim_every_blocks() -> usize {
     })
 }
 
-fn max_blocks_in_processing() -> usize {
-    *MAX_BLOCKS_IN_PROCESSING.get_or_init(|| {
-        std::env::var(MAX_BLOCKS_IN_PROCESSING_ENV)
-            .ok()
-            .and_then(|v| v.parse::<usize>().ok())
-            .filter(|v| *v > 0)
-            .unwrap_or(MAX_BLOCKS_IN_PROCESSING_DEFAULT)
-    })
-}
-
 fn configured_max_parallel_blocks(value: Option<&str>) -> usize {
     value
         .and_then(|v| v.parse::<usize>().ok())
@@ -95,6 +87,10 @@ fn trigger_propose_after_block_processing_enabled() -> bool {
             })
             .unwrap_or(false)
     })
+}
+
+fn is_finalized_floor_validator(validators: &[Validator], validator: &Validator) -> bool {
+    validators.contains(validator)
 }
 
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
@@ -178,9 +174,9 @@ impl Drop for ActiveBlockProcessingGuard {
 
 /// Configuration for BlockProcessorInstance
 pub struct BlockProcessorInstance<T: TransportLayer + Send + Sync + 'static> {
-    pub blocks_queue_rx: mpsc::Receiver<(Arc<dyn MultiParentCasper + Send + Sync>, BlockMessage)>,
+    pub blocks_queue_rx: BlockProcessingQueueReceiver,
 
-    pub block_queue_tx: mpsc::Sender<(Arc<dyn MultiParentCasper + Send + Sync>, BlockMessage)>,
+    pub block_queue_tx: BlockProcessingQueueSender,
 
     pub block_processor: Arc<BlockProcessor<T>>,
 
@@ -194,8 +190,8 @@ pub struct BlockProcessorInstance<T: TransportLayer + Send + Sync + 'static> {
 impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorInstance<T> {
     pub fn new(
         (blocks_queue_rx, block_queue_tx): (
-            mpsc::Receiver<(Arc<dyn MultiParentCasper + Send + Sync>, BlockMessage)>,
-            mpsc::Sender<(Arc<dyn MultiParentCasper + Send + Sync>, BlockMessage)>,
+            BlockProcessingQueueReceiver,
+            BlockProcessingQueueSender,
         ),
         block_processor: Arc<BlockProcessor<T>>,
         blocks_in_processing: Arc<DashSet<BlockHash>>,
@@ -221,9 +217,7 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorInstance<T> {
     ///
     /// * `blocks_queue_tx` - Sender to enqueue blocks for processing (for
     ///   re-enqueuing buffer pendants)
-    pub fn create(
-        self,
-    ) -> Result<mpsc::Receiver<(BlockMessage, ValidBlockProcessing)>, CasperError> {
+    pub fn create(self) -> Result<mpsc::Receiver<ValidBlockProcessing>, CasperError> {
         let (result_tx, result_rx) = mpsc::channel(BLOCK_PROCESSING_RESULT_QUEUE_CAPACITY);
 
         tokio::spawn(async move {
@@ -244,7 +238,17 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorInstance<T> {
             .set(max_parallel_blocks as f64);
             let semaphore = Arc::new(tokio::sync::Semaphore::new(max_parallel_blocks));
 
-            while let Some((casper, block)) = blocks_queue_rx.recv().await {
+            loop {
+                let permit = semaphore.clone().acquire_owned().await.unwrap();
+                let Some(BlockProcessingQueueItem {
+                    casper,
+                    block,
+                    reservation: admission_reservation,
+                }) = blocks_queue_rx.recv().await
+                else {
+                    break;
+                };
+                block_queue_tx.record_dequeue();
                 let block_processor = block_processor.clone();
                 let blocks_in_processing = blocks_in_processing.clone();
                 let trigger_propose_f = trigger_propose_f.clone();
@@ -252,49 +256,21 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorInstance<T> {
                 let casper = casper.clone();
                 let result_tx = result_tx.clone();
 
-                let permit = semaphore.clone().acquire_owned().await.unwrap();
-
                 // Spawn task to process the block
                 tokio::spawn(async move {
                     let _heap_boundary = BlockProcessingHeapBoundary;
                     let _active_guard = ActiveBlockProcessingGuard::new();
                     let block_str = PrettyPrinter::build_string_bytes(&block.block_hash);
-                    if !blocks_in_processing.contains(&block.block_hash) {
-                        // Fallback for legacy enqueue paths: mark before processing.
-                        blocks_in_processing.insert(block.block_hash.clone());
-                        let max_in_flight = max_blocks_in_processing();
-                        if blocks_in_processing.len() > max_in_flight {
-                            // Ensure in-flight marker is always cleared, even when ack cleanup
-                            // fails.
-                            blocks_in_processing.remove(&block.block_hash);
-                            if let Err(err) = block_processor.ack_processed(&block).await {
-                                tracing::warn!(
-                                    "Dropping block {} and cleanup failed: {}",
-                                    block_str,
-                                    err
-                                );
-                            }
-                            tracing::warn!(
-                                "Dropping block {} because in-flight block cap {} is reached",
-                                block_str,
-                                max_in_flight
-                            );
-                            return;
-                        }
-                    }
+                    let block_hash = block.block_hash.clone();
+                    blocks_in_processing.insert(block_hash.clone());
 
-                    let in_flight_guard = InFlightBlockGuard::new(
-                        blocks_in_processing.clone(),
-                        block.block_hash.clone(),
-                    );
+                    let in_flight_guard =
+                        InFlightBlockGuard::new(blocks_in_processing.clone(), block_hash);
 
                     // Process the block with all its validation steps
-                    let result = process_block_with_steps(
-                        block_processor.clone(),
-                        casper.clone(),
-                        block.clone(),
-                    )
-                    .await;
+                    let result =
+                        process_block_with_steps(block_processor.clone(), casper.clone(), block)
+                            .await;
 
                     match result {
                         Ok(res) => {
@@ -323,66 +299,84 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorInstance<T> {
                     // This avoids suppressing re-enqueue when another task resolves a dependency
                     // while this task is still in post-processing.
                     drop(in_flight_guard);
+                    drop(admission_reservation);
 
                     // Step 6 (from Scala): Get dependency-free blocks from buffer and enqueue them
                     // Equivalent to: c.getDependencyFreeFromBuffer
                     // In Scala, if this fails, the stream short-circuits and triggerProposeF won't
                     // be called
-                    match casper.get_dependency_free_from_buffer() {
-                        Ok(buffer_pendants) => {
-                            if !buffer_pendants.is_empty() {
-                                let pendant_hashes = buffer_pendants
-                                    .iter()
-                                    .map(|p| PrettyPrinter::build_string_bytes(&p.block_hash))
-                                    .collect::<Vec<_>>()
-                                    .join(", ");
+                    let dependency_scan_guard = block_queue_tx.acquire_dependency_scan().await;
+                    match casper.get_dependency_free_hashes_from_buffer() {
+                        Ok(buffer_pendant_hashes) => {
+                            if !buffer_pendant_hashes.is_empty() {
                                 tracing::info!(
-                                    "Dependency-free pendants after processing {}: [{}]",
+                                    count = buffer_pendant_hashes.len(),
+                                    "Dependency-free pendants after processing {}",
                                     block_str,
-                                    pendant_hashes
                                 );
                             }
 
                             // Enqueue pendants if we can mark them as queued/in-processing first.
-                            for pendant in &buffer_pendants {
-                                let pendant_hash = BlockHash::from(pendant.block_hash.clone());
+                            for pendant_hash in buffer_pendant_hashes {
                                 if blocks_in_processing.insert(pendant_hash.clone()) {
-                                    let max_in_flight = max_blocks_in_processing();
-                                    if blocks_in_processing.len() > max_in_flight {
-                                        blocks_in_processing.remove(&pendant_hash);
-                                        tracing::warn!(
-                                            "Skipping dependency-free pendant {} enqueue because \
-                                             in-flight block cap {} is reached",
-                                            PrettyPrinter::build_string_bytes(&pendant.block_hash),
-                                            max_in_flight
-                                        );
-                                        continue;
-                                    }
-                                    if block_queue_tx
-                                        .send((casper.clone(), pendant.clone()))
-                                        .await
-                                        .is_err()
-                                    {
-                                        blocks_in_processing.remove(&pendant_hash);
-                                        tracing::warn!(
-                                            "Dropping dependency-free pendant {} because block \
-                                             queue is closed",
-                                            PrettyPrinter::build_string_bytes(&pendant.block_hash)
-                                        );
-                                    } else {
-                                        tracing::info!(
+                                    let pendant = match casper.block_store().get(&pendant_hash) {
+                                        Ok(Some(block)) => block,
+                                        Ok(None) => {
+                                            blocks_in_processing.remove(&pendant_hash);
+                                            continue;
+                                        }
+                                        Err(error) => {
+                                            blocks_in_processing.remove(&pendant_hash);
+                                            tracing::error!(
+                                                error = %error,
+                                                "Dependency-free pendant load failed"
+                                            );
+                                            continue;
+                                        }
+                                    };
+                                    match block_queue_tx.try_enqueue(casper.clone(), pendant) {
+                                        Ok(()) => tracing::info!(
                                             "Enqueued dependency-free pendant {}",
-                                            PrettyPrinter::build_string_bytes(&pendant.block_hash)
-                                        );
+                                            PrettyPrinter::build_string_bytes(&pendant_hash)
+                                        ),
+                                        Err(error)
+                                            if error.failure
+                                                == BlockAdmissionFailure::CountCapacity =>
+                                        {
+                                            blocks_in_processing.remove(&pendant_hash);
+                                            tracing::info!(
+                                                error = %error,
+                                                "Deferred dependency-free pendant {}",
+                                                PrettyPrinter::build_string_bytes(&pendant_hash)
+                                            );
+                                            break;
+                                        }
+                                        Err(error) if error.failure.is_temporary() => {
+                                            blocks_in_processing.remove(&pendant_hash);
+                                            tracing::info!(
+                                                error = %error,
+                                                "Deferred dependency-free pendant {}",
+                                                PrettyPrinter::build_string_bytes(&pendant_hash)
+                                            );
+                                        }
+                                        Err(error) => {
+                                            blocks_in_processing.remove(&pendant_hash);
+                                            tracing::error!(
+                                                error = %error,
+                                                "Dependency-free pendant admission failed"
+                                            );
+                                        }
                                     }
                                 } else {
                                     tracing::info!(
                                         "Skipping dependency-free pendant {} enqueue because it \
                                          is already marked in-flight",
-                                        PrettyPrinter::build_string_bytes(&pendant.block_hash)
+                                        PrettyPrinter::build_string_bytes(&pendant_hash)
                                     );
                                 }
                             }
+
+                            drop(dependency_scan_guard);
 
                             // Only call trigger_propose if get_dependency_free_from_buffer
                             // succeeded and this path is explicitly
@@ -396,10 +390,10 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorInstance<T> {
                                     let is_bonded_validator =
                                         if let Some(validator) = casper.get_validator() {
                                             match casper.get_snapshot().await {
-                                                Ok(snapshot) => snapshot
-                                                    .on_chain_state
-                                                    .active_validators
-                                                    .contains(&validator.public_key.bytes),
+                                                Ok(snapshot) => is_finalized_floor_validator(
+                                                    &snapshot.finalized_floor_validators(),
+                                                    &validator.public_key.bytes,
+                                                ),
                                                 Err(err) => {
                                                     tracing::warn!(
                                                         "Failed to get Casper snapshot for \
@@ -414,11 +408,9 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorInstance<T> {
                                         };
 
                                     if is_bonded_validator {
-                                        // Clone the Arc and cast to trait object
-                                        let casper_arc: Arc<dyn MultiParentCasper + Send + Sync> =
-                                            Arc::clone(&casper)
-                                                as Arc<dyn MultiParentCasper + Send + Sync>;
-                                        match trigger_propose(casper_arc, true).await {
+                                        match trigger_propose(ProposeRequestKind::PendingDeploy)
+                                            .await
+                                        {
                                             Ok(_) => {}
                                             Err(err) => {
                                                 tracing::error!(error = %err, "propose trigger after block processing failed")
@@ -480,7 +472,7 @@ async fn process_block_with_steps<T: TransportLayer + Send + Sync>(
     block_processor: Arc<BlockProcessor<T>>,
     casper: Arc<dyn MultiParentCasper + Send + Sync + 'static>,
     block: BlockMessage,
-) -> Result<(BlockMessage, ValidBlockProcessing), CasperError> {
+) -> Result<ValidBlockProcessing, CasperError> {
     let block_str = PrettyPrinter::build_string_bytes(&block.block_hash);
 
     // Step 1: Check if block is of interest
@@ -602,7 +594,7 @@ async fn process_block_with_steps<T: TransportLayer + Send + Sync>(
 
     tracing::info!("Block {} validated {:?}.", block_str, validation_result);
 
-    Ok((block, validation_result))
+    Ok(validation_result)
 }
 
 #[cfg(test)]
@@ -652,6 +644,16 @@ mod tests {
         assert_eq!(next_trim_counter(6, 8), (7, false));
         assert_eq!(next_trim_counter(7, 8), (0, true));
         assert_eq!(next_trim_counter(usize::MAX, 8), (0, true));
+    }
+
+    #[test]
+    fn post_processing_trigger_uses_finalized_floor_membership() {
+        let floor_validator = Validator::from(vec![1]);
+        let head_only_validator = Validator::from(vec![2]);
+        let floor = vec![floor_validator.clone()];
+
+        assert!(is_finalized_floor_validator(&floor, &floor_validator));
+        assert!(!is_finalized_floor_validator(&floor, &head_only_validator));
     }
 
     proptest::proptest! {

@@ -219,3 +219,78 @@ fn crash_and_restart_preserve_validator_local_replay_roots() {
         assert_eq!(state.capture(), candidate(2));
     });
 }
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct FrozenConsensusInputs {
+    floor: usize,
+    second_tip_invalid: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct FrozenConsensusProjection {
+    inputs: FrozenConsensusInputs,
+    causal_parents: BTreeSet<usize>,
+    votes: BTreeSet<usize>,
+}
+
+struct ConsensusSnapshotState {
+    inputs: Mutex<FrozenConsensusInputs>,
+}
+
+impl ConsensusSnapshotState {
+    fn capture_projection(&self) -> FrozenConsensusProjection {
+        let inputs = self.inputs.lock().unwrap().clone();
+        let mut causal_parents = BTreeSet::from([1]);
+        if !inputs.second_tip_invalid {
+            causal_parents.insert(2);
+        }
+        let mut votes = causal_parents.clone();
+        if inputs.floor == 1 {
+            votes.remove(&2);
+        }
+        FrozenConsensusProjection {
+            inputs,
+            causal_parents,
+            votes,
+        }
+    }
+}
+
+#[test]
+fn finalization_and_evidence_races_cannot_create_a_hybrid_parent_projection() {
+    loom::model(|| {
+        let state = Arc::new(ConsensusSnapshotState {
+            inputs: Mutex::new(FrozenConsensusInputs {
+                floor: 0,
+                second_tip_invalid: false,
+            }),
+        });
+        let promote = {
+            let state = state.clone();
+            thread::spawn(move || state.inputs.lock().unwrap().floor = 1)
+        };
+        let invalidate = {
+            let state = state.clone();
+            thread::spawn(move || state.inputs.lock().unwrap().second_tip_invalid = true)
+        };
+        let capture = {
+            let state = state.clone();
+            thread::spawn(move || state.capture_projection())
+        };
+
+        promote.join().unwrap();
+        invalidate.join().unwrap();
+        let projection = capture.join().unwrap();
+        assert!(projection.votes.is_subset(&projection.causal_parents));
+        if projection.inputs.second_tip_invalid {
+            assert!(!projection.causal_parents.contains(&2));
+        } else {
+            assert!(projection.causal_parents.contains(&2));
+            if projection.inputs.floor == 1 {
+                assert!(!projection.votes.contains(&2));
+            } else {
+                assert!(projection.votes.contains(&2));
+            }
+        }
+    });
+}

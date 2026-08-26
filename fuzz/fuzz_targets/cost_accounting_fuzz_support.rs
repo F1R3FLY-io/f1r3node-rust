@@ -110,12 +110,16 @@ pub fn block_with_deploy(deploy: ProcessedDeploy) -> BlockMessage {
             timestamp: 0,
             version: 1,
             extra_bytes: Vec::<u8>::new().into(),
+            sender_bond_generation: None,
+            objective_equivocation_evidence_delta: Vec::new(),
         },
         body: Body {
             state: F1r3flyState {
                 pre_state_hash: vec![0; 32].into(),
                 post_state_hash: vec![1; 32].into(),
                 bonds: Vec::new(),
+                bond_generations: Vec::new(),
+                active_validators: Vec::new(),
                 block_number: 0,
             },
             deploys: vec![deploy],

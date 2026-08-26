@@ -199,11 +199,22 @@ propose ordinary heartbeat and finality-support blocks, but it cannot package
 rejected-buffer deploys.
 
 Recovery authorization is preserved through every downstream packaging filter.
-In particular, a selected retry may bypass the legacy self-chain duplicate
-filter because its exact-source disposition has already established that it is
-not an ordinary duplicate. The exemption is the finite set of retries selected
-for the current proposal, never the raw rejected-signature set. Ordinary
-self-chain occurrences remain suppressed.
+The relevant duplicate scope is the selected candidate's parent closure, not
+the validator's entire historical self-chain. Let $`H_v(d)`$ mean that validator
+$`v`$ previously proposed deploy $`d`$, and let $`A_P(d)`$ mean that an active
+occurrence of $`d`$ is reachable from candidate parent set $`P`$. Packaging
+suppresses $`d`$ exactly when $`H_v(d) \land A_P(d)`$ and the current candidate
+did not select $`d`$ for exact-source recovery. If $`H_v(d)`$ is true but
+$`A_P(d)`$ is false because the old source lies on an excluded branch, the
+candidate rehomes the still-authorized deploy. Treating every historical
+self-chain occurrence as active would make admission and packaging consult
+different scopes and could leave a valid deploy pending forever.
+
+The candidate captures $`P`$, $`A_P`$, and its selected recovery set once.
+Concurrent floor advancement may authorize a later candidate, but it cannot
+change the decision already being packaged. This preserves validator
+parallelism: each validator classifies against its own immutable candidate
+context, without a shard-wide proposer lock.
 
 ### O13 — recovery leadership cannot suppress finality
 
@@ -245,6 +256,12 @@ function recovery_decision(snapshot, deploy, validator):
     leader := validators[snapshot.finalized_height mod length(validators)]
     if validator is not leader:
         return HeartbeatOnly
+    selected_recoveries := {deploy}
+
+    historical := deploy occurs on validator's self-chain
+    active_in_candidate := deploy occurs in selected parent closure
+    if historical and active_in_candidate and deploy not in selected_recoveries:
+        return Suppressed
     return RetryOnce
 ```
 
@@ -264,5 +281,7 @@ populate the occurrence index, and legacy lookup remains the fallback.
 - Arithmetic in merge ranking cannot wrap and reverse economic priority.
 - Ambiguous canonical state fails loudly instead of allowing validators to
   report different winning blocks.
+- A historical self-chain occurrence outside the selected-parent closure cannot
+  mask a candidate-authorized rehome.
 - Memory pressure is observed with in-flight block and process RSS metrics;
   the host-protection ceiling is not raised to conceal retention.

@@ -1,32 +1,12 @@
-// Integration test — Tier 1 production-path verification of the
-// `AdmissibleEquivocation` arm of
-// `MultiParentCasperImpl::handle_invalid_block`.
-//
-// Reference: docs/theory/slashing/design/14-test-plan.md §14.3.5,
-// design/09-bug-fixes-and-rationale.md §9.1.
-// Plan-agent designed Track 2 / equivocation-construction recipe.
-//
-// AdmissibleEquivocation differs from IgnorableEquivocation by
-// the value of `casper_buffer_storage.requested_as_dependency(b1p)`:
-//   * Ignorable: false (no other block has cited b1p as a dependency)
-//   * Admissible: true (b1p has been requested as a dependency
-//     of some other block, so it MUST be added to the DAG even
-//     though it's an equivocation — see equivocation_detector.rs:38-41)
-//
-// Recipe:
-//   1. Same setup as Ignorable: build b1, build b1p via
-//      `equivocate_block(nodes[0], &b1, vec![d2])`.
-//   2. Before processing b1p on nodes[1], seed the casper buffer:
-//      `nodes[1].casper.casper_buffer_storage.add_relation(b1p, dummy_child)`.
-//      This puts b1p into `parent_to_child_adjacency_list`,
-//      causing `requested_as_dependency(b1p) == true`
-//      (casper_buffer_key_value_storage.rs:195-202).
-//   3. nodes[1].process_block(b1) → Right(Valid).
-//   4. nodes[1].process_block(b1p) → Left(Invalid(AdmissibleEquivocation)).
-//   5. SlashingProductionAdapter snapshot confirms post-fix #1+#3
-//      record-mint at the production tier.
+// Protocol-v5 production-path regression for a certified sibling that was
+// requested as a dependency. Requestedness changes only the contextual
+// observation. Both siblings remain intrinsically valid DAG members and their
+// certified identity creates canonical generation-aware objective evidence.
 
-use casper::rust::block_status::{BlockError, InvalidBlock};
+use std::collections::BTreeSet;
+
+use casper::rust::block_status::EquivocationObservation;
+use casper::rust::casper::{Casper, MultiParentCasper};
 use casper::rust::util::construct_deploy;
 use models::rust::block_hash::BlockHashSerde;
 use rspace_plus_plus::rspace::history::Either;
@@ -96,19 +76,55 @@ async fn integration_t_admissible_equivocation() {
         .expect("process b1");
     assert!(matches!(s1, Either::Right(_)), "b1 valid, got: {:?}", s1);
 
-    // Process b1p on nodes[1] — must classify AdmissibleEquivocation
-    // because b1p is in the buffer's dependency adjacency list.
+    let mut validation_snapshot = nodes[1]
+        .casper
+        .get_snapshot()
+        .await
+        .expect("validation snapshot");
+    let validation = nodes[1]
+        .casper
+        .validate(&b1p, &mut validation_snapshot)
+        .await
+        .expect("validate requested dependency sibling");
+    assert!(matches!(validation.status(), Either::Right(_)));
+    assert!(validation.sender_authority().is_some());
+    assert_eq!(
+        validation.equivocation_observation(),
+        Some(EquivocationObservation::RequestedDependency)
+    );
+
     let s2 = nodes[1]
         .process_block(b1p.clone())
         .await
         .expect("process b1p");
     assert!(
-        matches!(
-            s2,
-            Either::Left(BlockError::Invalid(InvalidBlock::AdmissibleEquivocation))
-        ),
-        "b1p must classify AdmissibleEquivocation given dependency seeding, got: {:?}",
+        matches!(s2, Either::Right(_)),
+        "requestedness must not make a certified sibling intrinsically invalid: {:?}",
         s2
+    );
+
+    let dag = nodes[1]
+        .casper
+        .block_dag()
+        .await
+        .expect("post-admission DAG");
+    for sibling in [&b1, &b1p] {
+        assert!(dag
+            .lookup_unsafe(&sibling.block_hash)
+            .expect("certified sibling metadata")
+            .is_accepted());
+    }
+    let generation = b1
+        .header
+        .sender_bond_generation
+        .expect("certified sender generation");
+    let identity = (b1.sender.clone(), generation, b1.seq_num);
+    assert_eq!(
+        dag.equivocation_observations().get(&identity).cloned(),
+        Some(BTreeSet::from([
+            b1.block_hash.clone(),
+            b1p.block_hash.clone(),
+        ]))
     );
 
     // Snapshot and assert post-fix #1+#3: dispatcher minted a record
@@ -122,7 +138,6 @@ async fn integration_t_admissible_equivocation() {
         (0..=10).any(|base| <_ as SlashingObserver>::has_record(&snapshot, v0_label, base));
     assert!(
         has_any_record,
-        "post-fix #1+#3 invariant: dispatcher mints EquivocationRecord \
-         in the AdmissibleEquivocation arm"
+        "certified requested-dependency siblings must create generation-aware objective evidence"
     );
 }

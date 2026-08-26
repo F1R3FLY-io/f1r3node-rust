@@ -68,6 +68,10 @@ Common TLC jar locations:
 | `WalletFundedLollipop*Unsafe.cfg` | Eight expected-refutation controls for custody copying, first-class Rholang capability leakage, gateway-authentication bypass, per-validator payer collapse, activation before funding, missing outer authority, certified-bound overcharge, and replay omission | Counterexample required from both TLC and Apalache for each configuration | Refutes the exact conservation, ingress authority, attribution, funding/activation staging, refund, or replay invariant that excludes the enabled defect. `AllowCapabilityLeak` means transferring the executable name into an unauthorized continuation; it does not model visibility of deterministic serialized `GPrivate` identity bytes, which cannot be injected into source |
 | `FundingSlotBootstrap.tla` | Concrete installer/sponsor/gateway refinement: installer-paid capability scaffold, publication of distinct outer and continuation addresses, atomic wallet funding of both initially absent vaults, authenticated activation, per-purse settlement, and terminal rejection | Safe TLC and Apalache configurations | CustodyConserved, InstallWorkflowIsAdmissible, RejectedInstallIsEffectFree, InstallPublishesOnlyTheScaffold, CandidateCreatedSupplyNeverFundsItsCreator, LocatedContinuationRequiresPriorFunding, FundingCommitCoversEveryLocatedPurse, RejectedFundingIsEffectFree, ActivationRequiresAuthenticatedLocalSufficiency, SettlementUsesDistinctLocatedPurses; TLC liveness: EventuallyDone |
 | `FundingSlotBootstrap*Unsafe.cfg` | Five expected-refutation controls for eager installation against empty purses, candidate self-funding, slot-only funding, partial debit, and destination creation during a rejected batch | Counterexample required from both TLC and Apalache for each configuration | Refutes admissible staging, authenticated pre-state capacity, complete two-purse funding, balance atomicity, or vault-registry atomicity |
+| `PoSVaultAuthority.tla` | Blessed-template completeness and the PoS stake-vault controller binding from authenticated genesis deployer through unauthorized and authorized transfer | Safe TLC and Apalache configurations | NoCompiledPlaceholder, InstalledBindsAuthenticatedKey, UnauthorizedCannotDebit, VaultConservation; TLC liveness: InstalledEventuallyAuthorizes |
+| `PoSVaultAuthority*Unsafe*.cfg` | Expected-refutation controls for the historical literal controller and permissive unresolved-template compilation | Counterexample required from both TLC and Apalache for each configuration | Refutes authenticated controller binding or fail-closed blessed-template compilation |
+| `ConcurrentRedemptionCustody.tla` | Per-validator, generation-scoped redemption transactions with separately staged stake, fuel, and PoS lifecycle updates; receipt-based retry semantics; abort; and distinct-validator concurrency | TLC exhausts the full staged two-validator graph. Apalache checks the complete seven-transition slash/resolution/retry or rejection transaction horizon; the missing-lock control independently reaches its two-commit violation through length 11. Eight expected-refutation controls are mandatory. | StakeConserved, FuelConserved, LiveStakePositive, QuarantineCarriesExactOrigin, ReceiptsUseAuthorizedGeneration, AtMostOneResolutionPerIncarnation, RejectedTransactionsPublishNothing, ExactRetriesAreEffectFree, UnauthorizedGenerationsNeverCommit, GuiltyIsStrictlyPartial, ConflictingRetriesAreEffectFree, RestoresExactLifecycle |
+| `ConcurrentRedemptionCustody*Unsafe*.cfg` | Expected-refutation controls for missing target ownership, stale generations, total confiscation through `Guilty`, origin collapse, partial stake/fuel publication, lost receipts, and conflicting receipt overwrite | Counterexample required from both TLC and Apalache for each configuration | Refutes the exact concurrency, authorization, lifecycle, atomicity, or idempotence invariant excluding the enabled defect |
 | `EndToEndCostConsensus.tla` | Canonical SystemVault genesis funding and replay, unit-authority symmetry for blessed genesis execution, proof-bearing reservation for every signed deployment kind, concurrent realized events, direct payer-to-proposer fee transfer, settlement, replay, recoverable local faults, validation disposition, and DAG finality | Safe instance explored by `EndToEndCostConsensus.cfg` | GenesisCommitIsExact, AdmissionRequiresGenesisAgreement, GenesisExecutionReplayAuthorityAgree, SettlementDoesNotReapplyGenesisFunding, CostReservationBacksEveryChoice, ReservationBacksRealized, EveryExecutedDeploymentWasFunded, SettlementIsExact, SettlementConserves, FeeIsCanonicalTransfer, RefundIsUnusedReservation, ReplayUsesSameCommittedEvents, LocalFaultNeverCreatesSlashEvidence, FinalityUsesDAGAncestry; liveness: EventuallyDoneOrRejected |
 | `MCEndToEndCostConsensus.tla` | Model instance for EndToEndCostConsensus | — | — |
 | `EndToEndCostConsensusUnsafe.cfg` | Expected-refutation control mapping local faults to slash evidence | Counterexample required | Violates LocalFaultNeverCreatesSlashEvidence |
@@ -141,100 +145,14 @@ So all nine connectives are accounted for: six dedicated specs (Plus, With, Bang
 
 ## Running
 
-```bash
-cd formal/tlaplus/cost_accounted_rho
-TLA2TOOLS="${TLA2TOOLS:-/usr/share/java/tla2tools.jar}"
-
-# Atomic token protocol (3 processes, 3 channels, 3 tokens, all interleavings)
-java -XX:+UseParallelGC -cp "$TLA2TOOLS" \
-  tlc2.TLC MC.tla -config CostAccountedRho.cfg -workers auto -nowarning
-
-# Full compound protocol (2 atomic + 1 compound + 1 spawned child,
-# Split mediators, nested gates, recursive eval, all interleavings)
-java -XX:+UseParallelGC -cp "$TLA2TOOLS" \
-  tlc2.TLC MCCompound.tla -config CompoundProtocol.cfg -workers auto -nowarning
-
-# Eval scheduling comparison (3 bodies, all 3! orderings,
-# internalized vs externalized cost models side by side)
-java -XX:+UseParallelGC -cp "$TLA2TOOLS" \
-  tlc2.TLC MCEval.tla -config EvalScheduling.cfg -workers auto -nowarning
-
-# Full generalized protocol (2 atomic sharing 1 channel + 1 compound depth 1 +
-# 1 doubly-compound depth 2 + 2 join fuel sources + 1 join mediator,
-# shared channels, arbitrary nesting, Join mediators, all interleavings)
-java -XX:+UseParallelGC -cp "$TLA2TOOLS" \
-  tlc2.TLC MCFull.tla -config FullProtocol.cfg -workers auto -nowarning
-
-# Bounded runtime-budget with weakened schedule-order grants, OOP truncation,
-# and bounded-K reconciliation. Three instances exercise the OOP arm, the
-# non-OOP complete-commit arm, and the bounded-K cap arm.
-java -XX:+UseParallelGC -cp "$TLA2TOOLS" \
-  tlc2.TLC MCRuntimeBudgetReplay.tla -config RuntimeBudgetReplay.cfg -workers auto -nowarning
-java -XX:+UseParallelGC -cp "$TLA2TOOLS" \
-  tlc2.TLC MCRuntimeBudgetReplayNonOop.tla -config MCRuntimeBudgetReplayNonOop.cfg -workers auto -nowarning
-java -XX:+UseParallelGC -cp "$TLA2TOOLS" \
-  tlc2.TLC MCRuntimeBudgetReplayCap.tla -config MCRuntimeBudgetReplayCap.cfg -workers auto -nowarning
-
-# Replay tampering, activation downgrade, unauthorized settlement, and
-# cost-invalid evidence threat model
-java -XX:+UseParallelGC -cp "$TLA2TOOLS" \
-  tlc2.TLC MCCostAccountingThreats.tla -config CostAccountingThreats.cfg -workers auto -nowarning
-
-# Search-frontier witness classification and promotion discipline
-java -XX:+UseParallelGC -cp "$TLA2TOOLS" \
-  tlc2.TLC MCCostAccountingSearchFrontier.tla -config CostAccountingSearchFrontier.cfg -workers auto -nowarning
-
-# Atomic semantic COMM accounting and rejection rollback
-java -XX:+UseParallelGC -cp "$TLA2TOOLS" \
-  tlc2.TLC AtomicCommAccounting.tla -config AtomicCommAccounting.cfg -workers auto -nowarning
-java -XX:+UseParallelGC -cp "$TLA2TOOLS" \
-  tlc2.TLC AtomicCommRejection.tla -config AtomicCommRejection.cfg -workers auto -nowarning
-
-# State-bound single-play evidence, constrained replay, and settlement. The first command must
-# pass; each following negative control must report its named invariant breach.
-java -XX:+UseParallelGC -cp "$TLA2TOOLS" \
-  tlc2.TLC MCStateBoundAdmission.tla -config StateBoundAdmission.cfg -workers auto -nowarning
-java -XX:+UseParallelGC -cp "$TLA2TOOLS" \
-  tlc2.TLC MCStateBoundAdmission.tla -config StateBoundAdmissionStructuralUnsafe.cfg -workers auto -nowarning
-java -XX:+UseParallelGC -cp "$TLA2TOOLS" \
-  tlc2.TLC MCStateBoundAdmission.tla -config StateBoundAdmissionDriftUnsafe.cfg -workers auto -nowarning
-java -XX:+UseParallelGC -cp "$TLA2TOOLS" \
-  tlc2.TLC MCStateBoundAdmission.tla -config StateBoundAdmissionExhaustionUnsafe.cfg -workers auto -nowarning
-java -XX:+UseParallelGC -cp "$TLA2TOOLS" \
-  tlc2.TLC MCStateBoundValidatorConvergence.tla -config StateBoundValidatorConvergence.cfg -workers auto -nowarning
-java -XX:+UseParallelGC -cp "$TLA2TOOLS" \
-  tlc2.TLC MCStateBoundValidatorConvergence.tla -config StateBoundValidatorConvergenceContextUnsafe.cfg -workers auto -nowarning
-java -XX:+UseParallelGC -cp "$TLA2TOOLS" \
-  tlc2.TLC MCStateBoundValidatorConvergence.tla -config StateBoundValidatorConvergenceOrderUnsafe.cfg -workers auto -nowarning
-java -XX:+UseParallelGC -cp "$TLA2TOOLS" \
-  tlc2.TLC MCStateBoundValidatorConvergence.tla -config StateBoundValidatorConvergenceScheduleUnsafe.cfg -workers auto -nowarning
-
-# Typed mergeable-channel diff/merge and cost-boundary isolation
-java -XX:+UseParallelGC -cp "$TLA2TOOLS" \
-  tlc2.TLC MCMergeableChannelAccounting.tla -config MergeableChannelAccounting.cfg -workers auto -nowarning
-
-# Phase 1.7 PoS Map-in-MVar refinement
-java -XX:+UseParallelGC -cp "$TLA2TOOLS" \
-  tlc2.TLC MultiSignerProtocol.tla -config MultiSignerProtocol.cfg -workers auto -nowarning
-
-# Phase 2 M-of-N threshold
-java -XX:+UseParallelGC -cp "$TLA2TOOLS" \
-  tlc2.TLC ThresholdProtocol.tla -config ThresholdProtocol.cfg -workers auto -nowarning
-
-# Phase 3 LL connectives (Plus, With, Bang, WhyNot, Lolly)
-for proto in PlusProtocol WithProtocol BangProtocol WhyNotProtocol LollyProtocol; do
-  java -XX:+UseParallelGC -cp "$TLA2TOOLS" \
-    tlc2.TLC "$proto.tla" -config "$proto.cfg" -workers auto -nowarning
-done
-
-# Phase 4.6 scaled-up MC harnesses
-for mc in MCMultiSigner MCThreshold MCPlus MCWith MCBang MCWhyNot MCLolly; do
-  java -XX:+UseParallelGC -cp "$TLA2TOOLS" \
-    tlc2.TLC "$mc.tla" -config "$mc.cfg" -workers auto -nowarning
-done
-```
-
-### Aggregate runner (local-only)
+All TLC execution goes through the repository's bounded runner. It caps the JVM
+heap and worker count, stores the state graph below `target/verification/` on
+disk, and rejects any unsafe control that does not fail for its exact intended
+property. This prevents a large state space from consuming the host's
+RAM-backed `/tmp` or an unbounded ergonomic JVM heap. The TLC registry described
+below covers the atomic and compound protocols, evaluation scheduling,
+generalized nested signatures, runtime-budget replay, threats, search,
+state-bound admission and convergence, and every linear connective.
 
 The companion script `scripts/check-cost-accounted-rho-tla-invariants.sh`
 runs every registered safe specification sequentially through TLC and runs each

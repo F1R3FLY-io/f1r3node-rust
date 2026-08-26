@@ -92,12 +92,16 @@ async fn two_deploys_executed_inside_single_state_transition_should_be_dependent
                     timestamp: block_timestamp,
                     version: genesis_block.header.version,
                     extra_bytes: Vec::<u8>::new().into(),
+                    sender_bond_generation: genesis_block.header.sender_bond_generation,
+                    objective_equivocation_evidence_delta: Vec::new(),
                 },
                 body: Body {
                     state: F1r3flyState {
                         pre_state_hash: base_state.clone(),
                         post_state_hash: post_state_hash.clone(),
                         bonds: Vec::new(),
+                        bond_generations: Vec::new(),
+                        active_validators: Vec::new(),
                         block_number: block_num,
                     },
                     deploys: processed_deploys.clone(),

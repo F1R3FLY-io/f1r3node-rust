@@ -1,4 +1,4 @@
-> Last updated: 2026-04-21
+> Last updated: 2026-08-21
 
 # Crate: node (Orchestrator/Entry Point)
 
@@ -13,16 +13,17 @@ main()
   -> Options::try_parse() (clap CLI)
   -> IF "run" subcommand:
        configuration::builder::build()  (HOCON + CLI merge)
-       init_logging(&cfg.logging, Some(&data_dir))
+       create Zipkin exporter layer when metrics.zipkin is enabled
+       init_logging_with_layers(&cfg.logging, Some(&data_dir), layers)
        check_host(), check_ports(), load_private_key_from_file()
-       initialize_diagnostics()  (Prometheus, InfluxDB, Zipkin, Sigar)
+       initialize_diagnostics()  (Prometheus, InfluxDB, Sigar)
        node_runtime::start()
          -> NodeIdentifier from TLS certificate
          -> setup_node_program()
               -> Initialize LMDB stores (block, DAG, casper buffer, deploy, eval, play, replay, reporting)
               -> Create RuntimeManager (play/replay) with history
               -> Create Estimator, ValidatorIdentity
-              -> Create block processor queue (mpsc::unbounded_channel)
+              -> Create count-and-byte-bounded block processor queue
               -> Create proposer queue (oneshot channels)
               -> Create API services and server instances
          -> Spawn concurrent tasks via JoinSet:
@@ -74,15 +75,16 @@ The following flags override HOCON configuration at startup. CLI flags always ta
 | `--ceremony-master-mode` | `casper.genesis_ceremony.ceremony_master_mode = true` | Enable ceremony master mode (creates genesis block if none found) |
 | `--enable-mergeable-channel-gc` | `casper.enable_mergeable_channel_gc = true` | Enable mergeable channel garbage collection |
 | `--disable-mergeable-channel-gc` | `casper.enable_mergeable_channel_gc = false` | Disable mergeable channel GC (takes precedence over `--enable-mergeable-channel-gc`) |
-| `--heartbeat-enabled` | `casper.heartbeat_conf.enabled = true` | Enable heartbeat block proposing for liveness |
-| `--heartbeat-disabled` | `casper.heartbeat_conf.enabled = false` | Disable heartbeat proposing (takes precedence over `--heartbeat-enabled`) |
-| `--heartbeat-check-interval` | `casper.heartbeat_conf.check_interval` | How often the heartbeat loop wakes to evaluate its decision tree |
-| `--heartbeat-max-lfb-age` | `casper.heartbeat_conf.max_lfb_age` | LFB age threshold above which stale-LFB recovery may fire |
-| `--heartbeat-stale-recovery-min-interval` | `casper.heartbeat_conf.stale_recovery_min_interval` | Minimum LFB/frontier age before stale-recovery, leader-recovery, and pending-deploy backstop are allowed to fire |
-| `--heartbeat-deploy-finalization-grace` | `casper.heartbeat_conf.deploy_finalization_grace` | Grace window opened when pending deploys land; relaxes lag caps and bypasses self-propose-cooldown |
-| `--heartbeat-advanced-frontier-chase-max-lag` | `casper.heartbeat_conf.advanced.frontier_chase_max_lag` | EXPERIMENTAL. Max lag tolerated for frontier-chase proposals while ahead of LFB |
-| `--heartbeat-advanced-pending-deploy-max-lag` | `casper.heartbeat_conf.advanced.pending_deploy_max_lag` | EXPERIMENTAL. Lag threshold above which pending-deploy proposals throttle |
-| `--heartbeat-advanced-deploy-recovery-max-lag` | `casper.heartbeat_conf.advanced.deploy_recovery_max_lag` | EXPERIMENTAL. Wider lag cap during the deploy-finalization grace window |
+| `--heartbeat-enabled` | `casper.heartbeat.enabled = true` | Enable heartbeat block proposing for liveness |
+| `--heartbeat-disabled` | `casper.heartbeat.enabled = false` | Disable heartbeat proposing (takes precedence over `--heartbeat-enabled`) |
+| `--heartbeat-check-interval` | `casper.heartbeat.check-interval` | How often the heartbeat loop wakes; after the initial stall timeout, this is also the recovery-round interval |
+| `--heartbeat-max-lfb-age` | `casper.heartbeat.max-lfb-age` | Input to the one-time observed-LFB stall timeout, which is `max(max_lfb_age, check_interval)` |
+| `--heartbeat-self-propose-cooldown` | `casper.heartbeat.self-propose-cooldown` | Minimum interval between this validator's heartbeat proposals |
+| `--heartbeat-stale-recovery-min-interval` | `casper.heartbeat.stale-recovery-min-interval` | Minimum age of this validator's latest proposal before the pending-deploy recovery backstop may fire |
+| `--heartbeat-deploy-finalization-grace` | `casper.heartbeat.deploy-finalization-grace` | Grace window opened when pending deploys or a new user-deploy parent are observed; relaxes the pending-deploy lag cap |
+| `--heartbeat-advanced-pending-deploy-max-lag` | `casper.heartbeat.advanced.pending-deploy-max-lag` | EXPERIMENTAL. Lag threshold above which pending-deploy proposals throttle |
+| `--heartbeat-advanced-deploy-recovery-max-lag` | `casper.heartbeat.advanced.deploy-recovery-max-lag` | EXPERIMENTAL. Wider lag cap during the deploy-finalization grace window |
+| `--heartbeat-advanced-empty-frontier-max-unfinalized-blocks` | `casper.heartbeat.advanced.empty-frontier-max-unfinalized-blocks` | EXPERIMENTAL. Exact unfinalized-DAG cap for idle empty recovery while this validator is already ahead |
 | `--native-token-name` | `casper.genesis_block_data.native_token_name` | Native token display name (genesis-locked) |
 | `--native-token-symbol` | `casper.genesis_block_data.native_token_symbol` | Native token ticker symbol (genesis-locked) |
 | `--native-token-decimals` | `casper.genesis_block_data.native_token_decimals` | Native token decimal places, 0-18 (genesis-locked) |
@@ -95,7 +97,7 @@ CLI flags are applied to the parsed `NodeConf` by `config_mapper.rs`:
 
 - `--ceremony-master-mode` unconditionally sets `casper.genesis_ceremony.ceremony_master_mode = true`.
 - `--disable-mergeable-channel-gc` / `--enable-mergeable-channel-gc` override `casper.enable_mergeable_channel_gc`. The disable flag is checked first; only if it is absent does the enable flag apply.
-- `--heartbeat-disabled` / `--heartbeat-enabled` follow the same pattern for `casper.heartbeat_conf.enabled`.
+- `--heartbeat-disabled` / `--heartbeat-enabled` follow the same pattern for `casper.heartbeat.enabled`.
 
 ## gRPC Services
 
@@ -357,11 +359,36 @@ These values are hardcoded (previously configurable via `F1R3_*` env vars, remov
 
 **`BlockProcessorInstance`** -- Receives blocks, validates, applies to DAG. Semaphore-bounded parallelism. Re-queues on `FinalizationInProgress`.
 
+Inbound block admission is bounded independently by message count and encoded
+bytes. The byte ceiling is the configured
+`protocol-server.grpc-max-recv-stream-message-size`, so every block the
+transport can accept can also be admitted when the budget is empty. A
+reservation covers both queue residence and in-flight replay. Temporary count
+or byte pressure releases the decoded payload and reopens an existing
+retriever request without evicting other unresolved work. A previously
+untracked block arriving while the finite request map is full can still enter
+the independently byte-bounded queue. If count or byte pressure prevents that
+admission, its payload is released and its hash becomes eligible again on a
+later announcement or dependency scan. A queue-coordinator mutex serializes
+startup and replay-completion dependency-buffer scans; the scanner checks
+deterministically ordered hashes while materializing only one full block at a
+time, then moves selected blocks into the byte-owning queue without cloning.
+Observe
+`block-processing.queue.pending`, `block-processing.admission.bytes`,
+`block-processing.admission.bytes-limit`, and
+`block-processing.admission.deferred.total{reason=...}` together with
+`block.requests.capacity-deferred.total`.
+
+The preceding P2P layer has its own finite byte/item, HTTP/2, handler, peer-map,
+and completion boundaries. It reports stream success only after a remote ACK,
+keeps accepted work alive across concurrent cleanup, and never contributes
+transport-local ordering or metadata to consensus state. See
+[P2P Transport Resource and Completion Semantics](transport-resource-lifecycle.md).
+
 ### Block-processing tuning env vars
 
 | Env var | Default | Purpose |
 |---------|--------:|---------|
-| `F1R3_MAX_BLOCKS_IN_PROCESSING` | `512` | Cap on concurrently in-flight blocks in `BlockProcessorInstance`. **When the cap is hit, incoming blocks are dropped with a warn log** (they are re-fetched via the missing-dependency path later), so undersizing this on a catching-up node slows sync. Was hardcoded 2048 through v0.4.16; lowered to bound peak memory. `0`/invalid falls back to the default. |
 | `F1R3_MALLOC_TRIM_EVERY_BLOCKS` | `1` | Linux/glibc only: ask the allocator to return whole free replay and RSpace arena pages to the operating system after every N completed incoming block-processing tasks. The default closes the block-lifecycle allocation boundary on validators, joining validators, and read-only nodes; every local proposal attempt closes the corresponding creator boundary. Set a larger interval only after demonstrating that the resulting peak RSS remains within the deployment's memory envelope. `0` disables explicit trimming. See [Block-Heap Lifecycle and Reclamation](../theory/cost-accounting-impl/block-heap-lifecycle.md). |
 | `F1R3_MISSING_DEPENDENCY_QUARANTINE_MS` | `120000` | How long a block whose dependencies exceeded the retry budget stays quarantined before another fetch round. Was 10s through v0.4.16; raised to 120s to stop request storms against slow peers. Lower it on small local networks where dependencies resolve fast. |
 
@@ -371,19 +398,37 @@ These values are hardcoded (previously configurable via `F1R3_*` env vars, remov
 
 | HOCON key | Default | Purpose |
 |-----------|--------:|---------|
-| `heartbeat.enabled` | `false` | Enable the heartbeat proposer |
+| `heartbeat.enabled` | `true` | Enable the heartbeat proposer |
 | `heartbeat.check-interval` | 5s | How often the loop evaluates its decision tree |
-| `heartbeat.max-lfb-age` | 5s | LFB age threshold above which stale-LFB recovery may fire |
-| `heartbeat.self-propose-cooldown` | 15s | Min interval between self-proposals |
-| `heartbeat.stale-recovery-min-interval` | 12s | Min LFB/frontier age before stale/leader/backstop recovery may fire |
+| `heartbeat.max-lfb-age` | 15s | Input to the one-time observed-LFB stall timeout |
+| `heartbeat.self-propose-cooldown` | 3s | Min interval between self-proposals |
+| `heartbeat.stale-recovery-min-interval` | 3s | Min age of this validator's latest proposal before the pending-deploy backstop may fire |
 | `heartbeat.deploy-finalization-grace` | 25s | Grace window opened when pending deploys land; relaxes lag caps |
-| `heartbeat.advanced.frontier-chase-max-lag` | 0 | EXPERIMENTAL. Max lag for frontier-chase proposals while ahead of LFB |
 | `heartbeat.advanced.pending-deploy-max-lag` | 20 | EXPERIMENTAL. Lag threshold above which pending-deploy proposals throttle |
 | `heartbeat.advanced.deploy-recovery-max-lag` | 64 | EXPERIMENTAL. Wider lag cap during the deploy-finalization grace window. Must be >= `pending-deploy-max-lag` to take effect (else collapses to that floor). |
+| `heartbeat.advanced.empty-frontier-max-unfinalized-blocks` | 64 | EXPERIMENTAL. Idle empty recovery stops at this exact unfinalized-DAG boundary when the validator is already ahead. |
 
-**Deploy grace window**: When a deploy is proposed or finalization-critical parents observed, a grace window opens (default 25s) that allows proposals which would normally be blocked by cooldown/interval constraints.
+**Deploy grace window**: When pending deploys or a new user-deploy parent are
+observed, a grace window opens (default 25s) and widens the pending-deploy lag cap
+from `pending-deploy-max-lag` to `deploy-recovery-max-lag`. It does not waive the
+self-propose cooldown.
 
-**Stale LFB leader-only recovery**: Deterministic leader selection allows one validator to propose when LFB is stale but regular recovery is throttled (`lag in [1, threshold)`).
+**Observed-LFB rotating recovery**: Each heartbeat task measures monotonic elapsed
+time since it first observed the current LFB hash. Producer timestamps, frontier
+movement, and latest-message churn do not reset that clock. The first local
+recovery round opens after
+$`\max(\mathtt{max\mbox{-}lfb\mbox{-}age},\mathtt{check\mbox{-}interval})`$;
+later rounds open
+every `check-interval`. A delayed wake exposes the earliest uncompleted available
+round, so the task catches up in order without skipping a rotating leader. A
+nonleader completes that local round without proposing; a selected leader retains
+the round until the serialized proposer starts or succeeds. The unique leader is
+selected from the canonical snapshot committee by
+$`(\mathtt{nonnegative\_lfb\_height}+\mathtt{local\_round}) \bmod
+\mathtt{committee\_size}`$, so an offline leader
+is rotated past. Validators may occupy different local rounds. This scheduling
+does not change block validation or the mutual causal and state-preserving clique
+certificates required for finality.
 
 ## Logging
 
@@ -438,8 +483,18 @@ The JSON layer emits one object per event with `span` and `spans` fields for tra
 `initialize_diagnostics()` sets up:
 - Prometheus (`/metrics` HTTP endpoint)
 - InfluxDB (HTTP batch and/or UDP reporters)
-- Zipkin (OpenTelemetry distributed tracing)
 - Sigar (CPU, memory, disk system metrics)
+
+Zipkin is initialized before the process-wide `tracing` subscriber so its
+OpenTelemetry layer shares the same span stream as stdout and file logging.
+Enable it with `metrics.zipkin = true` or `--zipkin`. The batch exporter uses
+an asynchronous Reqwest 0.12 client over Rustls, installs the B3 propagation
+format, and flushes the global tracer provider during orderly shutdown. Set
+`OTEL_EXPORTER_ZIPKIN_ENDPOINT` to the collector's v2 spans endpoint; the
+default is `http://127.0.0.1:9411/api/v2/spans`. Set
+`OTEL_EXPORTER_ZIPKIN_TIMEOUT` to the export timeout in milliseconds; the
+default is 10,000. Startup fails instead of advertising tracing when the
+exporter cannot be constructed.
 
 ## CLI Subcommands
 

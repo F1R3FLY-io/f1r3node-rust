@@ -11,7 +11,7 @@
 //     RELATION, independent of the iteration order of the `latest_messages`
 //     map. Rust `std::collections::HashMap` seeds a fresh `RandomState` per
 //     instance, so two maps built from the SAME pairs iterate in (generally)
-//     different orders — feeding those into `tips_with_latest_messages` and
+//     different orders — certifying those maps and feeding the resulting context into
 //     asserting identical `.tips` is the observable witness.
 //
 //   * SCORE MONOID — `formal/rocq/fork_choice/theories/Score.v`'s
@@ -40,8 +40,9 @@
 // LOCAL-ONLY verification (not consensus code). Run under `cargo test -p casper`
 // and gated by scripts/check-fork-choice-ALL.sh via the `fork_choice::` filter.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
+use casper::rust::causal_equivocation::{CertifiedConsensusContext, VoteExclusion};
 use casper::rust::estimator::Estimator;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::protocol::casper_message::{BlockMessage, Bond};
@@ -50,7 +51,9 @@ use proptest::prelude::*;
 use proptest::test_runner::TestCaseError;
 
 use crate::helper::block_dag_storage_fixture::with_storage;
-use crate::helper::block_generator::{create_block, create_genesis_block};
+use crate::helper::block_generator::{
+    certified_consensus_context, certified_fork_choice, create_block, create_genesis_block,
+};
 use crate::helper::block_util::generate_validator;
 
 lazy_static::lazy_static! {
@@ -236,6 +239,108 @@ async fn build_flipping_dag(
     }
 }
 
+struct FrozenAuthorityScenario {
+    genesis: BlockMessage,
+    common: BlockMessage,
+    left: BlockMessage,
+    right: BlockMessage,
+    v1: Validator,
+    v2: Validator,
+}
+
+async fn build_frozen_authority_scenario(
+    block_store: &mut block_storage::rust::key_value_block_store::KeyValueBlockStore,
+    block_dag_storage: &mut block_storage::rust::test::indexed_block_dag_storage::IndexedBlockDagStorage,
+) -> FrozenAuthorityScenario {
+    let v1 = generate_validator(Some("Frozen Authority One"));
+    let v2 = generate_validator(Some("Frozen Authority Two"));
+    let floor_bonds = vec![
+        Bond {
+            validator: v1.clone(),
+            stake: 10,
+        },
+        Bond {
+            validator: v2.clone(),
+            stake: 5,
+        },
+    ];
+    let unfinalized_bonds = vec![
+        Bond {
+            validator: v1.clone(),
+            stake: 1,
+        },
+        Bond {
+            validator: v2.clone(),
+            stake: 100,
+        },
+    ];
+    let genesis = create_genesis_block(
+        block_store,
+        block_dag_storage,
+        None,
+        Some(floor_bonds),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    );
+    let common = create_block(
+        block_store,
+        block_dag_storage,
+        vec![genesis.block_hash.clone()],
+        &genesis,
+        Some(v1.clone()),
+        Some(unfinalized_bonds.clone()),
+        Some(justifications!(v1 => genesis.block_hash, v2 => genesis.block_hash)),
+        None,
+        None,
+        None,
+        None,
+        Some(1),
+        None,
+    );
+    let left = create_block(
+        block_store,
+        block_dag_storage,
+        vec![common.block_hash.clone()],
+        &genesis,
+        Some(v1.clone()),
+        Some(unfinalized_bonds.clone()),
+        Some(justifications!(v1 => common.block_hash, v2 => genesis.block_hash)),
+        None,
+        None,
+        None,
+        None,
+        Some(2),
+        None,
+    );
+    let right = create_block(
+        block_store,
+        block_dag_storage,
+        vec![common.block_hash.clone()],
+        &genesis,
+        Some(v2.clone()),
+        Some(unfinalized_bonds),
+        Some(justifications!(v1 => common.block_hash, v2 => genesis.block_hash)),
+        None,
+        None,
+        None,
+        None,
+        Some(2),
+        None,
+    );
+    FrozenAuthorityScenario {
+        genesis,
+        common,
+        left,
+        right,
+        v1,
+        v2,
+    }
+}
+
 /// Every distinct ordering of a 3-element list (the 3! insertion orders of the
 /// latest-message pairs). Used to drive the example determinism test.
 const ORDERS_3: [[usize; 3]; 6] = [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [
@@ -251,7 +356,7 @@ const ORDERS_3: [[usize; 3]; 6] = [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [
 async fn fork_choice_determinism_correct() {
     with_storage(|mut block_store, mut block_dag_storage| async move {
         let scenario = build_flipping_dag(&mut block_store, &mut block_dag_storage).await;
-        let mut dag = block_dag_storage
+        let dag = block_dag_storage
             .get_representation()
             .expect("dag representation");
         let estimator = Estimator::apply(i32::MAX, None);
@@ -263,8 +368,7 @@ async fn fork_choice_determinism_correct() {
                 .iter()
                 .map(|&i| scenario.canonical_latest[i].clone())
                 .collect();
-            let tips = estimator
-                .tips_with_latest_messages(&mut dag, &scenario.genesis, latest)
+            let tips = certified_fork_choice(&estimator, &dag, &scenario.genesis, latest)
                 .await
                 .expect("tips")
                 .tips;
@@ -346,7 +450,7 @@ async fn filter_t10_invalid_latest_message_excluded() {
             Some(true),
         );
 
-        let mut dag = block_dag_storage
+        let dag = block_dag_storage
             .get_representation()
             .expect("dag representation");
 
@@ -370,8 +474,7 @@ async fn filter_t10_invalid_latest_message_excluded() {
 
         let estimator = Estimator::apply(i32::MAX, None);
 
-        let tips_all = estimator
-            .tips_with_latest_messages(&mut dag, &genesis, latest_all)
+        let tips_all = certified_fork_choice(&estimator, &dag, &genesis, latest_all)
             .await
             .expect("tips (all)")
             .tips;
@@ -379,8 +482,7 @@ async fn filter_t10_invalid_latest_message_excluded() {
         // (b) tips with v0 present == tips with v0 omitted (v0 contributes zero).
         let latest_v1_only: HashMap<Validator, BlockHash> =
             HashMap::from([(v1.clone(), b_valid.block_hash.clone())]);
-        let tips_v1_only = estimator
-            .tips_with_latest_messages(&mut dag, &genesis, latest_v1_only)
+        let tips_v1_only = certified_fork_choice(&estimator, &dag, &genesis, latest_v1_only)
             .await
             .expect("tips (v1 only)")
             .tips;
@@ -399,6 +501,174 @@ async fn filter_t10_invalid_latest_message_excluded() {
             vec![b_valid.block_hash.clone()],
             "the retained valid validator drives the fork choice"
         );
+    })
+    .await
+}
+
+#[tokio::test]
+async fn unfinalized_bond_cache_cannot_reweight_frozen_floor_fork_choice() {
+    with_storage(|mut block_store, mut block_dag_storage| async move {
+        let scenario =
+            build_frozen_authority_scenario(&mut block_store, &mut block_dag_storage).await;
+        let dag = block_dag_storage
+            .get_representation()
+            .expect("dag representation");
+        let latest = HashMap::from([
+            (scenario.v1.clone(), scenario.left.block_hash.clone()),
+            (scenario.v2.clone(), scenario.right.block_hash.clone()),
+        ]);
+        let context = certified_consensus_context(&dag, &scenario.genesis, latest)
+            .expect("certified consensus context");
+        let choice = Estimator::apply(i32::MAX, None)
+            .tips_with_context(&dag, &scenario.genesis, &context)
+            .await
+            .expect("fork choice");
+
+        assert_eq!(choice.lca, scenario.common.block_hash);
+        assert_eq!(choice.tips[0], scenario.left.block_hash);
+        assert_eq!(choice.tips[1], scenario.right.block_hash);
+    })
+    .await
+}
+
+#[tokio::test]
+async fn certified_fork_choice_is_independent_of_receiver_local_indices() {
+    with_storage(|mut block_store, mut block_dag_storage| async move {
+        let scenario =
+            build_frozen_authority_scenario(&mut block_store, &mut block_dag_storage).await;
+        let dag = block_dag_storage
+            .get_representation()
+            .expect("dag representation");
+        let latest = HashMap::from([
+            (scenario.v1.clone(), scenario.left.block_hash.clone()),
+            (scenario.v2.clone(), scenario.right.block_hash.clone()),
+        ]);
+        let context = certified_consensus_context(&dag, &scenario.genesis, latest)
+            .expect("certified consensus context");
+        let estimator = Estimator::apply(i32::MAX, None);
+        let baseline = estimator
+            .tips_with_context(&dag, &scenario.genesis, &context)
+            .await
+            .expect("baseline fork choice");
+
+        let mut receiver_variant = dag.clone();
+        receiver_variant.invalid_blocks_set.insert(
+            receiver_variant
+                .lookup_unsafe(&scenario.left.block_hash)
+                .expect("left metadata"),
+        );
+        receiver_variant.latest_messages_map = imbl::HashMap::new();
+        receiver_variant
+            .finalized_blocks_set
+            .insert(scenario.right.block_hash.clone());
+        let unrelated_hash = BlockHash::from(vec![0x7f; models::rust::block_hash::LENGTH]);
+        let mut unrelated_height = imbl::HashSet::new();
+        unrelated_height.insert(unrelated_hash);
+        receiver_variant.height_map.insert(10_000, unrelated_height);
+
+        let variant = estimator
+            .tips_with_context(&receiver_variant, &scenario.genesis, &context)
+            .await
+            .expect("receiver-variant fork choice");
+        assert_eq!(variant, baseline);
+        assert_eq!(variant.lca, scenario.common.block_hash);
+    })
+    .await
+}
+
+#[tokio::test]
+async fn fork_choice_rejects_an_incomplete_frozen_authority_view() {
+    with_storage(|mut block_store, mut block_dag_storage| async move {
+        let scenario =
+            build_frozen_authority_scenario(&mut block_store, &mut block_dag_storage).await;
+        let dag = block_dag_storage
+            .get_representation()
+            .expect("dag representation");
+        let partial = BTreeMap::from([(scenario.v1.clone(), scenario.left.block_hash.clone())]);
+        let context = CertifiedConsensusContext::for_frozen_floor(
+            &dag,
+            scenario.genesis.block_hash.clone(),
+            &partial,
+        )
+        .expect("partial context is representable for diagnostics");
+        assert!(!context.has_complete_latest_message_slots());
+
+        let error = Estimator::apply(i32::MAX, None)
+            .tips_with_context(&dag, &scenario.genesis, &context)
+            .await
+            .expect_err("incomplete authority view must fail closed");
+        assert!(matches!(
+            error,
+            shared::rust::store::key_value_store::KvStoreError::InvalidArgument(_)
+        ));
+    })
+    .await
+}
+
+#[tokio::test]
+async fn latest_message_outside_the_certified_floor_is_ineligible() {
+    with_storage(|mut block_store, mut block_dag_storage| async move {
+        let scenario =
+            build_frozen_authority_scenario(&mut block_store, &mut block_dag_storage).await;
+        let outside = create_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            vec![scenario.genesis.block_hash.clone()],
+            &scenario.genesis,
+            Some(scenario.v2.clone()),
+            Some(scenario.genesis.body.state.bonds.clone()),
+            Some(justifications!(
+                scenario.v1 => scenario.genesis.block_hash,
+                scenario.v2 => scenario.genesis.block_hash
+            )),
+            None,
+            None,
+            None,
+            None,
+            Some(1),
+            None,
+        );
+        let dag = block_dag_storage
+            .get_representation()
+            .expect("dag representation");
+        let exact = BTreeMap::from([
+            (scenario.v1.clone(), scenario.left.block_hash.clone()),
+            (scenario.v2.clone(), outside.block_hash.clone()),
+        ]);
+        let context = CertifiedConsensusContext::for_frozen_floor(
+            &dag,
+            scenario.common.block_hash.clone(),
+            &exact,
+        )
+        .expect("certified floor context");
+
+        assert_eq!(
+            context.vote_projection().exclusions().get(&scenario.v2),
+            Some(&VoteExclusion::DoesNotDescendFromFloor)
+        );
+        assert_eq!(
+            context
+                .vote_projection()
+                .eligible_latest_messages()
+                .get(&scenario.v1),
+            Some(&scenario.left.block_hash)
+        );
+        assert!(!context
+            .vote_projection()
+            .eligible_latest_messages()
+            .contains_key(&scenario.v2));
+        assert_eq!(
+            context
+                .causal_parent_projection()
+                .eligible_latest_messages()
+                .get(&scenario.v2),
+            Some(&outside.block_hash)
+        );
+        assert!(context
+            .causal_parent_projection()
+            .exclusions()
+            .get(&scenario.v2)
+            .is_none());
     })
     .await
 }
@@ -427,15 +697,15 @@ proptest! {
     fn score_perm_invariant((keys, _mask) in perm_and_subset()) {
         RUNTIME.block_on(with_storage(|mut block_store, mut block_dag_storage| async move {
             let scenario = build_flipping_dag(&mut block_store, &mut block_dag_storage).await;
-            let mut dag = block_dag_storage
+            let dag = block_dag_storage
                 .get_representation()
                 .expect("dag representation");
             let estimator = Estimator::apply(i32::MAX, None);
 
             let reference: HashMap<Validator, BlockHash> =
                 scenario.canonical_latest.iter().cloned().collect();
-            let reference_tips = estimator
-                .tips_with_latest_messages(&mut dag, &scenario.genesis, reference)
+            let reference_tips =
+                certified_fork_choice(&estimator, &dag, &scenario.genesis, reference)
                 .await
                 .expect("reference tips")
                 .tips;
@@ -447,8 +717,8 @@ proptest! {
                 .iter()
                 .map(|&i| scenario.canonical_latest[i].clone())
                 .collect();
-            let permuted_tips = estimator
-                .tips_with_latest_messages(&mut dag, &scenario.genesis, permuted)
+            let permuted_tips =
+                certified_fork_choice(&estimator, &dag, &scenario.genesis, permuted)
                 .await
                 .expect("permuted tips")
                 .tips;
@@ -470,7 +740,7 @@ proptest! {
     fn fork_choice_determinism_over_subsets((keys, mask) in perm_and_subset()) {
         RUNTIME.block_on(with_storage(|mut block_store, mut block_dag_storage| async move {
             let scenario = build_flipping_dag(&mut block_store, &mut block_dag_storage).await;
-            let mut dag = block_dag_storage
+            let dag = block_dag_storage
                 .get_representation()
                 .expect("dag representation");
             let estimator = Estimator::apply(i32::MAX, None);
@@ -488,8 +758,8 @@ proptest! {
                 .iter()
                 .map(|&i| scenario.canonical_latest[i].clone())
                 .collect();
-            let first_tips = estimator
-                .tips_with_latest_messages(&mut dag, &scenario.genesis, first)
+            let first_tips =
+                certified_fork_choice(&estimator, &dag, &scenario.genesis, first)
                 .await
                 .expect("first tips")
                 .tips;
@@ -501,8 +771,8 @@ proptest! {
                 .iter()
                 .map(|&i| scenario.canonical_latest[i].clone())
                 .collect();
-            let second_tips = estimator
-                .tips_with_latest_messages(&mut dag, &scenario.genesis, second)
+            let second_tips =
+                certified_fork_choice(&estimator, &dag, &scenario.genesis, second)
                 .await
                 .expect("second tips")
                 .tips;

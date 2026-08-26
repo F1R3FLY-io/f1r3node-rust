@@ -3,11 +3,15 @@
 use std::collections::HashSet;
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
-use casper::rust::block_status::{BlockError, InvalidBlock, ValidBlock};
+use block_storage::rust::dag::block_dag_key_value_storage::{
+    CertifiedAdmissionOutcome, CertifiedSenderAuthority,
+};
+use casper::rust::block_status::{CertifiedBlockValidation, InvalidBlock};
 use casper::rust::casper::{
     Casper, CasperShardConf, CasperSnapshot, DeployError, MultiParentCasper,
 };
@@ -18,7 +22,6 @@ use casper::rust::engine::running::{
 };
 use casper::rust::errors::CasperError;
 use casper::rust::validator_identity::ValidatorIdentity;
-use models::casper::ApprovedBlockRequestProto;
 use models::routing::protocol::Message as ProtocolMessage;
 use models::rust::block_hash::BlockHash;
 use models::rust::block_implicits::get_random_block;
@@ -41,6 +44,8 @@ mod tests {
     struct ValidatorAwareNoOpsCasper {
         inner: crate::helper::no_ops_casper_effect::NoOpsCasperEffect,
         validator_id: ValidatorIdentity,
+        finalization_requests: Arc<AtomicUsize>,
+        recovery_sync_active: Arc<std::sync::atomic::AtomicBool>,
     }
 
     #[async_trait]
@@ -51,9 +56,9 @@ mod tests {
 
         fn normalized_initial_fault(
             &self,
-            weights: std::collections::HashMap<models::rust::validator::Validator, u64>,
+            target: &models::rust::block_hash::BlockHash,
         ) -> Result<f32, CasperError> {
-            self.inner.normalized_initial_fault(weights)
+            self.inner.normalized_initial_fault(target)
         }
 
         async fn last_finalized_block(&self) -> Result<BlockMessage, CasperError> {
@@ -98,6 +103,17 @@ mod tests {
             self.inner.get_snapshot().await
         }
 
+        fn request_finalization(&self) -> Result<(), CasperError> {
+            self.finalization_requests.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+
+        fn recovery_sync_active(&self) -> bool { self.recovery_sync_active.load(Ordering::SeqCst) }
+
+        fn set_recovery_sync_active(&self, active: bool) {
+            self.recovery_sync_active.store(active, Ordering::SeqCst);
+        }
+
         fn contains(&self, hash: &BlockHash) -> bool { self.inner.contains(hash) }
 
         fn dag_contains(&self, hash: &BlockHash) -> bool { self.inner.dag_contains(hash) }
@@ -131,7 +147,7 @@ mod tests {
             &self,
             block: &BlockMessage,
             snapshot: &mut CasperSnapshot,
-        ) -> Result<Either<BlockError, ValidBlock>, CasperError> {
+        ) -> Result<CertifiedBlockValidation, CasperError> {
             self.inner.validate(block, snapshot).await
         }
 
@@ -141,7 +157,7 @@ mod tests {
             snapshot: &mut CasperSnapshot,
             pre_state_hash: Bytes,
             post_state_hash: Bytes,
-        ) -> Result<Either<BlockError, ValidBlock>, CasperError> {
+        ) -> Result<CertifiedBlockValidation, CasperError> {
             self.inner
                 .validate_self_created(block, snapshot, pre_state_hash, post_state_hash)
                 .await
@@ -150,11 +166,15 @@ mod tests {
         async fn handle_valid_block(
             &self,
             block: &BlockMessage,
+            certificate: &CertifiedSenderAuthority,
+            outcome: &CertifiedAdmissionOutcome,
         ) -> Result<
             block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation,
             CasperError,
         > {
-            self.inner.handle_valid_block(block).await
+            self.inner
+                .handle_valid_block(block, certificate, outcome)
+                .await
         }
 
         fn handle_invalid_block(
@@ -162,11 +182,14 @@ mod tests {
             block: &BlockMessage,
             status: &InvalidBlock,
             dag: &block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation,
+            certificate: &CertifiedSenderAuthority,
+            outcome: &CertifiedAdmissionOutcome,
         ) -> Result<
             block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation,
             CasperError,
         > {
-            self.inner.handle_invalid_block(block, status, dag)
+            self.inner
+                .handle_invalid_block(block, status, dag, certificate, outcome)
         }
 
         fn get_dependency_free_from_buffer(&self) -> Result<Vec<BlockMessage>, CasperError> {
@@ -398,7 +421,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stale_validator_should_transition_to_initializing_and_request_approved_block() {
+    async fn stale_validator_should_stay_running_and_request_tips_and_local_finalization() {
         let fixture = TestFixture::new().await;
         let engine_cell = Arc::new(EngineCell::init());
 
@@ -423,12 +446,16 @@ mod tests {
             sigs: Vec::new(),
         };
 
+        let finalization_requests = Arc::new(AtomicUsize::new(0));
+        let recovery_sync_active = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let running = Running::new(
             fixture.block_processing_queue_tx.clone(),
             fixture.blocks_in_processing.clone(),
             Arc::new(ValidatorAwareNoOpsCasper {
                 inner: casper,
                 validator_id: fixture.validator_id.clone(),
+                finalization_requests: finalization_requests.clone(),
+                recovery_sync_active: recovery_sync_active.clone(),
             }) as Arc<dyn MultiParentCasper + Send + Sync>,
             approved_block,
             Arc::new(|| {
@@ -441,19 +468,6 @@ mod tests {
             fixture.block_retriever.clone(),
             Some(RunningRecoveryContext {
                 connections_cell: fixture.connections_cell.clone(),
-                last_approved_block: fixture.last_approved_block.clone(),
-                block_store: fixture.block_store.clone(),
-                block_dag_storage: fixture.block_dag_storage.clone(),
-                deploy_storage: fixture.deploy_storage.clone(),
-                rejected_deploy_buffer: fixture.rejected_deploy_buffer.clone(),
-                casper_buffer_storage: fixture.casper_buffer_storage.clone(),
-                rspace_state_manager: fixture.rspace_state_manager.clone(),
-                event_publisher: fixture.event_publisher.clone(),
-                engine_cell: engine_cell.clone(),
-                runtime_manager: fixture.runtime_manager.clone(),
-                estimator: fixture.estimator.clone(),
-                casper_shard_conf: fixture.casper_shard_conf.clone(),
-                heartbeat_signal_ref: casper::rust::heartbeat_signal::new_heartbeat_signal_ref(),
             }),
         );
         engine_cell.set(Arc::new(running)).await;
@@ -470,27 +484,22 @@ mod tests {
 
         let engine = engine_cell.get().await;
         assert!(
-            engine.with_casper().is_none(),
-            "stale validator should leave Running and transition into Initializing"
+            engine.with_casper().is_some(),
+            "stale validator recovery must preserve its live Casper instance"
         );
+        assert_eq!(finalization_requests.load(Ordering::SeqCst), 1);
+        assert!(recovery_sync_active.load(Ordering::SeqCst));
 
-        let expected_proto = ApprovedBlockRequestProto {
-            identifier: "".to_string(),
-            trim_state: true,
-        };
-        let expected_content = Bytes::from(expected_proto.encode_to_vec());
         let requests = fixture.transport_layer.get_all_requests();
-        let found_approved_block_request = requests.iter().any(|req| {
-            if let Some(ProtocolMessage::Packet(packet)) = &req.msg.message {
-                packet.content == expected_content
-            } else {
-                false
-            }
-        });
-
         assert!(
-            found_approved_block_request,
-            "recovery should request an approved block from peers; requests: {:?}",
+            requests.iter().any(|request| {
+                matches!(
+                    &request.msg.message,
+                    Some(models::routing::protocol::Message::Packet(packet))
+                        if packet.type_id == "ForkChoiceTipRequest"
+                )
+            }),
+            "recovery should request ordinary DAG tips from peers; requests: {:?}",
             requests.iter().map(|r| &r.msg).collect::<Vec<_>>()
         );
     }
@@ -524,12 +533,16 @@ mod tests {
             sigs: Vec::new(),
         };
 
+        let finalization_requests = Arc::new(AtomicUsize::new(0));
+        let recovery_sync_active = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let running = Running::new(
             fixture.block_processing_queue_tx.clone(),
             fixture.blocks_in_processing.clone(),
             Arc::new(ValidatorAwareNoOpsCasper {
                 inner: casper,
                 validator_id: fixture.validator_id.clone(),
+                finalization_requests: finalization_requests.clone(),
+                recovery_sync_active: recovery_sync_active.clone(),
             }) as Arc<dyn MultiParentCasper + Send + Sync>,
             approved_block,
             Arc::new(|| {
@@ -542,19 +555,6 @@ mod tests {
             fixture.block_retriever.clone(),
             Some(RunningRecoveryContext {
                 connections_cell: fixture.connections_cell.clone(),
-                last_approved_block: fixture.last_approved_block.clone(),
-                block_store: fixture.block_store.clone(),
-                block_dag_storage: fixture.block_dag_storage.clone(),
-                deploy_storage: fixture.deploy_storage.clone(),
-                rejected_deploy_buffer: fixture.rejected_deploy_buffer.clone(),
-                casper_buffer_storage: fixture.casper_buffer_storage.clone(),
-                rspace_state_manager: fixture.rspace_state_manager.clone(),
-                event_publisher: fixture.event_publisher.clone(),
-                engine_cell: engine_cell.clone(),
-                runtime_manager: fixture.runtime_manager.clone(),
-                estimator: fixture.estimator.clone(),
-                casper_shard_conf: fixture.casper_shard_conf.clone(),
-                heartbeat_signal_ref: casper::rust::heartbeat_signal::new_heartbeat_signal_ref(),
             }),
         );
         engine_cell.set(Arc::new(running)).await;
@@ -575,24 +575,19 @@ mod tests {
             "fresh validator should remain in Running"
         );
 
-        let expected_proto = ApprovedBlockRequestProto {
-            identifier: "".to_string(),
-            trim_state: true,
-        };
-        let expected_content = Bytes::from(expected_proto.encode_to_vec());
         let requests = fixture.transport_layer.get_all_requests();
-        let found_approved_block_request = requests.iter().any(|req| {
-            if let Some(ProtocolMessage::Packet(packet)) = &req.msg.message {
-                packet.content == expected_content
-            } else {
-                false
-            }
-        });
-
         assert!(
-            !found_approved_block_request,
-            "fresh validator should not request an approved block; requests: {:?}",
+            !requests.iter().any(|request| {
+                matches!(
+                    &request.msg.message,
+                    Some(models::routing::protocol::Message::Packet(packet))
+                        if packet.type_id == "ForkChoiceTipRequest"
+                )
+            }),
+            "fresh validator should not request recovery tips; requests: {:?}",
             requests.iter().map(|r| &r.msg).collect::<Vec<_>>()
         );
+        assert_eq!(finalization_requests.load(Ordering::SeqCst), 0);
+        assert!(!recovery_sync_active.load(Ordering::SeqCst));
     }
 }

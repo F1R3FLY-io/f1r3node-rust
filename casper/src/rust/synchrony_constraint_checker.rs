@@ -310,7 +310,6 @@ pub async fn check(
     validator_identity: &ValidatorIdentity,
 ) -> Result<CheckProposeConstraintsResult, CasperError> {
     let validator = validator_identity.public_key.bytes.clone();
-    let main_parent_opt = snapshot.parents.first();
     let shard_conf = &snapshot.on_chain_state.shard_conf;
     let synchrony_constraint_threshold = shard_conf.synchrony_constraint_threshold as f64;
 
@@ -329,14 +328,7 @@ pub async fn check(
                     return Ok(CheckProposeConstraintsResult::success());
                 }
 
-                let main_parent = main_parent_opt.ok_or(CasperError::Other(
-                    "Synchrony constraint checker: Parent blocks not found".to_string(),
-                ))?;
-
-                let main_parent_meta = snapshot.dag.lookup_unsafe(&main_parent.block_hash)?;
-
-                let validator_weight_map: HashMap<Validator, i64> =
-                    main_parent_meta.weight_map.into_iter().collect();
+                let validator_weight_map = snapshot.finalized_floor_weight_map();
 
                 // Guaranteed to be present since last proposed block was present
                 let seen_senders = calculate_seen_senders_since(

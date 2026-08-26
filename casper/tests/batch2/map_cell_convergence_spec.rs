@@ -17,34 +17,53 @@
 // run as part of the normal `cargo test -p casper` suite (CI gate). They pass on the
 // floor-based merge with the channel_change netting fix.
 
+use std::collections::{BTreeMap, HashMap};
+
 use casper::rust::blocks::proposer::block_creator;
 use casper::rust::blocks::proposer::propose_result::BlockCreatorResult;
 use casper::rust::casper::{Casper, MultiParentCasper};
 use casper::rust::util::construct_deploy;
 use crypto::rust::private_key::PrivateKey;
+use crypto::rust::public_key::PublicKey;
 use crypto::rust::signatures::signed::Signed;
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::{Expr, Par};
-use models::rust::casper::protocol::casper_message::DeployData;
+use models::rust::casper::protocol::casper_message::{
+    BlockMessage, DeployAdmissionStatus, DeployData,
+};
+use rspace_plus_plus::rspace::history::Either;
 use serial_test::serial;
 
 use crate::helper::test_node::TestNode;
 use crate::util::genesis_builder::{GenesisBuilder, GenesisContext};
+
+type BondsFunction = fn(Vec<PublicKey>) -> HashMap<PublicKey, i64>;
 
 struct TestContext {
     genesis: GenesisContext,
 }
 
 impl TestContext {
-    async fn new(n_validators: usize) -> Self {
-        let genesis_parameters =
-            GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(n_validators));
+    async fn new(n_validators: usize) -> Self { Self::new_with_bonds(n_validators, None).await }
+
+    async fn new_with_bonds(n_validators: usize, bonds_function: Option<BondsFunction>) -> Self {
+        let genesis_parameters = GenesisBuilder::build_genesis_parameters_with_defaults(
+            bonds_function,
+            Some(n_validators),
+        );
         let genesis = GenesisBuilder::new()
             .build_genesis_with_parameters(Some(genesis_parameters))
             .await
             .unwrap();
         Self { genesis }
     }
+}
+
+fn equal_bonds(validators: Vec<PublicKey>) -> HashMap<PublicKey, i64> {
+    validators
+        .into_iter()
+        .map(|validator| (validator, 1))
+        .collect()
 }
 
 /// Distinct, genesis-funded deployer keys (one per validator) so the only conflict is
@@ -63,17 +82,64 @@ fn signer_key(v: usize) -> PrivateKey {
     }
 }
 
-fn map_set_deploy(key: &str, val: i64, sec: &PrivateKey, shard_id: &str) -> Signed<DeployData> {
+fn map_set_deploy(
+    key: &str,
+    val: i64,
+    sec: &PrivateKey,
+    valid_after_block_number: i64,
+    shard_id: &str,
+) -> Signed<DeployData> {
     let rho = format!(r#"for (@m <- @"m") {{ @"m"!(m.set("{}", {})) }}"#, key, val);
     construct_deploy::source_deploy_now_full(
         rho,
         None,
         None,
         Some(sec.clone()),
-        None,
+        Some(valid_after_block_number),
         Some(shard_id.to_string()),
     )
     .expect("build map-set deploy")
+}
+
+fn marker_deploy(id: i32, valid_after_block_number: i64, shard_id: &str) -> Signed<DeployData> {
+    construct_deploy::source_deploy_now(
+        format!("@{id}!({id})"),
+        None,
+        Some(valid_after_block_number),
+        Some(shard_id.to_string()),
+    )
+    .expect("build marker deploy")
+}
+
+async fn agreed_finalized_height(nodes: &[TestNode]) -> i64 {
+    let first = nodes[0]
+        .casper
+        .last_finalized_block()
+        .await
+        .expect("lfb node0");
+    for (index, node) in nodes.iter().enumerate().skip(1) {
+        let current = node.casper.last_finalized_block().await.expect("lfb");
+        assert_eq!(
+            current.block_hash, first.block_hash,
+            "node {index} finalized a different block before deploy construction"
+        );
+    }
+    first.body.state.block_number
+}
+
+fn assert_deploy_executed(block: &BlockMessage, signature: &prost::bytes::Bytes, label: &str) {
+    let processed = block
+        .body
+        .deploys
+        .iter()
+        .find(|processed| processed.deploy.sig == signature)
+        .unwrap_or_else(|| panic!("{label} was not included in the proposed block"));
+    assert_eq!(
+        processed.admission_status,
+        DeployAdmissionStatus::Executed,
+        "{label} was terminally rejected"
+    );
+    assert!(!processed.is_failed, "{label} failed during execution");
 }
 
 fn par_to_i64(p: &Par) -> Option<i64> {
@@ -83,57 +149,105 @@ fn par_to_i64(p: &Par) -> Option<i64> {
     })
 }
 
-/// Read which of `writes`' keys are present in `@"m"` at `state_hash` (on node 0).
-async fn present_keys(
-    node: &TestNode,
-    state_hash: &prost::bytes::Bytes,
-    writes: &[(String, i64)],
-) -> Vec<String> {
-    let mut keys = Vec::new();
-    for (key, _) in writes {
-        let term = format!(
-            r#"new return in {{ for (@m <<- @"m") {{ return!(m.getOrElse("{}", -999)) }} }}"#,
-            key
-        );
-        if let Ok((res, _)) = node
-            .runtime_manager
-            .play_exploratory_deploy(term, state_hash, None)
-            .await
-        {
-            if res.first().and_then(par_to_i64) != Some(-999) {
-                keys.push(key.clone());
-            }
-        }
-    }
-    keys
+fn par_to_string(p: &Par) -> Option<&str> {
+    p.exprs.first().and_then(|e| match &e.expr_instance {
+        Some(ExprInstance::GString(s)) => Some(s.as_str()),
+        _ => None,
+    })
 }
 
-/// Number of datums currently on `@"m"` at `state_hash`. A single-value cell must hold
-/// EXACTLY ONE; more than one is a multi-datum merge defect (the keep-one did not collapse
-/// concurrent writes) — and is precisely what makes a peek read sample non-deterministically
-/// across nodes. `get_data` returns every datum on the channel, so the count is exact.
-async fn m_datum_count(node: &TestNode, state_hash: &prost::bytes::Bytes) -> usize {
-    let m_channel = Par {
+fn map_cell_channel() -> Par {
+    Par {
         exprs: vec![Expr {
             expr_instance: Some(ExprInstance::GString("m".to_string())),
         }],
         ..Default::default()
-    };
-    node.runtime_manager
-        .get_data(state_hash.clone(), &m_channel)
-        .await
-        .expect("get_data @\"m\"")
-        .len()
+    }
 }
 
-/// Finalized cell keys read on EVERY node at its own LFB. Asserts all nodes agree on
-/// the LFB block AND the finalized key set — a divergence is the #71 node-identity
+fn map_entries(datum: &Par) -> BTreeMap<String, i64> {
+    let map = datum
+        .exprs
+        .iter()
+        .find_map(|expr| match &expr.expr_instance {
+            Some(ExprInstance::EMapBody(map)) => Some(map),
+            _ => None,
+        })
+        .expect("@\"m\" datum must contain a map");
+    let entries = map
+        .kvs
+        .iter()
+        .map(|entry| {
+            let key = entry
+                .key
+                .as_ref()
+                .and_then(par_to_string)
+                .expect("map key must be a string")
+                .to_string();
+            let value = entry
+                .value
+                .as_ref()
+                .and_then(par_to_i64)
+                .expect("map value must be an integer");
+            (key, value)
+        })
+        .collect::<BTreeMap<_, _>>();
+    assert_eq!(
+        entries.len(),
+        map.kvs.len(),
+        "@\"m\" contains duplicate encoded map keys"
+    );
+    entries
+}
+
+async fn map_cell_datums(
+    node: &TestNode,
+    state_hash: &prost::bytes::Bytes,
+) -> Vec<BTreeMap<String, i64>> {
+    let data = node
+        .runtime_manager
+        .get_data(state_hash.clone(), &map_cell_channel())
+        .await
+        .expect("get_data @\"m\"");
+    data.iter().map(map_entries).collect()
+}
+
+fn present_keys_in(entries: &BTreeMap<String, i64>, writes: &BTreeMap<String, i64>) -> Vec<String> {
+    for (key, actual) in entries {
+        let expected = writes
+            .get(key)
+            .unwrap_or_else(|| panic!("finalized map contains unexpected key {key}"));
+        assert_eq!(actual, expected, "value mismatch for finalized key {key}");
+    }
+    writes
+        .iter()
+        .filter_map(|(key, expected)| {
+            entries.get(key).map(|actual| {
+                assert_eq!(actual, expected, "value mismatch for finalized key {key}");
+                key.clone()
+            })
+        })
+        .collect()
+}
+
+async fn present_keys(
+    node: &TestNode,
+    state_hash: &prost::bytes::Bytes,
+    writes: &BTreeMap<String, i64>,
+) -> Vec<String> {
+    let datums = map_cell_datums(node, state_hash).await;
+    assert_eq!(datums.len(), 1, "@\"m\" must contain exactly one datum");
+    present_keys_in(&datums[0], writes)
+}
+
+/// Finalized cell maps read on EVERY node at its own LFB. Asserts all nodes agree on
+/// the LFB block AND the complete finalized map — a divergence is the #71 node-identity
 /// break (a node-local finalized-state corruption that need not itself stall
 /// finalization, which a node-0-only read would miss). Returns the agreed
-/// (lfb_block_number, sorted keys).
+/// (lfb_block_number, sorted expected keys).
 async fn finalized_keys_all_nodes(
     nodes: &[TestNode],
-    writes: &[(String, i64)],
+    writes: &BTreeMap<String, i64>,
 ) -> (i64, Vec<String>) {
     let lfb0 = nodes[0]
         .casper
@@ -144,28 +258,35 @@ async fn finalized_keys_all_nodes(
     // deterministic): @"m" must hold EXACTLY ONE datum. A multi-datum cell is the merge
     // defect; checked before the peek read, it turns the flaky cross-node coin-flip into a
     // precise "N datums at block #B" failure.
-    let n0 = m_datum_count(&nodes[0], &lfb0.body.state.post_state_hash).await;
+    let datums0 = map_cell_datums(&nodes[0], &lfb0.body.state.post_state_hash).await;
+    let n0 = datums0.len();
     assert_eq!(
         n0, 1,
         "SINGLE-VALUE-CELL: @\"m\" holds {} datums (expected 1) on node 0 at LFB #{} — keep-one did not collapse concurrent writes",
         n0, lfb0.body.state.block_number,
     );
-    let mut fs0 = present_keys(&nodes[0], &lfb0.body.state.post_state_hash, writes).await;
+    let mut fs0 = present_keys_in(&datums0[0], writes);
     fs0.sort();
     for (j, node) in nodes.iter().enumerate().skip(1) {
         let lfbj = node.casper.last_finalized_block().await.expect("lfb");
-        let nj = m_datum_count(node, &lfbj.body.state.post_state_hash).await;
+        let datumsj = map_cell_datums(node, &lfbj.body.state.post_state_hash).await;
+        let nj = datumsj.len();
         assert_eq!(
             nj, 1,
             "SINGLE-VALUE-CELL: @\"m\" holds {} datums (expected 1) on node {} at LFB #{} — keep-one did not collapse concurrent writes",
             nj, j, lfbj.body.state.block_number,
         );
-        let mut fsj = present_keys(node, &lfbj.body.state.post_state_hash, writes).await;
+        let mut fsj = present_keys_in(&datumsj[0], writes);
         fsj.sort();
         assert_eq!(
             lfbj.block_hash, lfb0.block_hash,
             "NODE-IDENTITY: node {} finalized #{} but node 0 finalized #{} — LFB divergence",
             j, lfbj.body.state.block_number, lfb0.body.state.block_number,
+        );
+        assert_eq!(
+            datumsj[0], datums0[0],
+            "NODE-IDENTITY: node {j} finalized map differs from node 0 at LFB #{}",
+            lfb0.body.state.block_number,
         );
         assert_eq!(
             fsj, fs0,
@@ -177,7 +298,8 @@ async fn finalized_keys_all_nodes(
 }
 
 /// Run `n_validators` concurrent distinct-key writers across `write_rounds` rounds,
-/// then `drain_rounds` quiet rounds, and assert convergence + FS monotonicity.
+/// optionally cycling the per-validator key space, then `drain_rounds` quiet
+/// rounds, and assert convergence + FS monotonicity.
 ///
 /// `require_full_convergence` gates the TERMINAL "every key landed" assertion.
 /// The per-round invariants that validate the finalized-floor merge — single-value
@@ -195,8 +317,10 @@ async fn run_convergence(
     write_rounds: usize,
     drain_rounds: usize,
     require_full_convergence: bool,
+    write_key_period: Option<usize>,
 ) {
     assert!((2..=3).contains(&n_validators));
+    assert!(write_key_period.is_none_or(|period| period > 0));
     let ctx = TestContext::new(n_validators).await;
     let shard_id = ctx.genesis.genesis_block.shard_id.clone();
 
@@ -222,15 +346,17 @@ async fn run_convergence(
         Some(shard_id.clone()),
     )
     .expect("build init");
+    let init_signature = init.sig.clone();
     nodes[0].casper.deploy(init).expect("init deploy");
     let init_block = nodes[0].create_block_unsafe(&[]).await.expect("init block");
+    assert_deploy_executed(&init_block, &init_signature, "map initialization");
     for node in nodes.iter_mut().take(n_validators) {
         node.process_block(init_block.clone())
             .await
             .expect("process init");
     }
 
-    let mut writes: Vec<(String, i64)> = Vec::new();
+    let mut writes = BTreeMap::new();
     // FS-monotonicity tracking: the set of finalized keys must never shrink.
     let mut prev_fs: Vec<String> = Vec::new();
     let mut fs_violation: Option<String> = None;
@@ -251,28 +377,33 @@ async fn run_convergence(
     // Write rounds: each validator writes a distinct key concurrently (siblings),
     // then node 0 proposes a merge.
     for round in 0..write_rounds {
+        let valid_after_block_number = agreed_finalized_height(&nodes).await;
         let mut sibling_blocks = Vec::new();
         for v in 0..n_validators {
-            let key = format!("v{}_{}", v + 1, round);
-            let val = (round * n_validators + v + 1) as i64;
+            let key_round = write_key_period.map_or(round, |period| round % period);
+            let key = format!("v{}_{}", v + 1, key_round);
+            let val = (key_round * n_validators + v + 1) as i64;
             tokio::time::sleep(tokio::time::Duration::from_millis(2)).await;
-            let d = map_set_deploy(&key, val, &secs[v], &shard_id);
+            let d = map_set_deploy(&key, val, &secs[v], valid_after_block_number, &shard_id);
+            let signature = d.sig.clone();
             println!(
                 "WRITE-SIG key={} sig={}",
                 key,
                 hex::encode(&d.sig[..8.min(d.sig.len())])
             );
             nodes[v].casper.deploy(d).expect("deploy write");
-            writes.push((key.clone(), val));
+            let previous = writes.insert(key.clone(), val);
+            assert!(previous.is_none_or(|expected| expected == val));
             let blk = nodes[v]
                 .create_block_unsafe(&[])
                 .await
                 .expect("propose sibling");
-            let own = present_keys(&nodes[v], &blk.body.state.post_state_hash, &[(
-                key.clone(),
-                val,
-            )])
-            .await;
+            assert_deploy_executed(&blk, &signature, &format!("write {key}"));
+            let own = present_keys(&nodes[v], &blk.body.state.post_state_hash, &writes).await;
+            assert!(
+                own.contains(&key),
+                "write {key} did not update its sibling block"
+            );
             println!(
                 "MSTACK-SIBLING v{} key={} wrote_own_key_in_own_sibling={}",
                 v + 1,
@@ -283,19 +414,24 @@ async fn run_convergence(
         }
         for blk in &sibling_blocks {
             for node in nodes.iter_mut().take(n_validators) {
-                node.process_block(blk.clone()).await.ok();
+                node.process_block(blk.clone())
+                    .await
+                    .expect("process sibling block");
             }
         }
-        let marker =
-            construct_deploy::basic_deploy_data(round as i32, None, Some(shard_id.clone()))
-                .expect("marker");
+        let marker_valid_after = agreed_finalized_height(&nodes).await;
+        let marker = marker_deploy(round as i32, marker_valid_after, &shard_id);
+        let marker_signature = marker.sig.clone();
         nodes[0].casper.deploy(marker).expect("marker deploy");
         let merge = nodes[0]
             .create_block_unsafe(&[])
             .await
             .expect("merge block");
+        assert_deploy_executed(&merge, &marker_signature, &format!("merge marker {round}"));
         for node in nodes.iter_mut().take(n_validators) {
-            node.process_block(merge.clone()).await.ok();
+            node.process_block(merge.clone())
+                .await
+                .expect("process merge block");
         }
         let (lfb_num, fs) = finalized_keys_all_nodes(&nodes, &writes).await;
         let tip = present_keys(&nodes[0], &merge.body.state.post_state_hash, &writes).await;
@@ -314,48 +450,52 @@ async fn run_convergence(
     // Drain rounds: rotate the proposer so every owner re-proposes any keep-one loser.
     for extra in 0..drain_rounds {
         let proposer = extra % n_validators;
-        let marker = construct_deploy::basic_deploy_data(
-            (1000 + extra) as i32,
-            None,
-            Some(shard_id.clone()),
-        )
-        .expect("drain marker");
+        let valid_after_block_number = agreed_finalized_height(&nodes).await;
+        let marker = marker_deploy((1000 + extra) as i32, valid_after_block_number, &shard_id);
+        let marker_signature = marker.sig.clone();
         nodes[proposer].casper.deploy(marker).expect("drain deploy");
-        if let Ok(blk) = nodes[proposer].create_block_unsafe(&[]).await {
-            for node in nodes.iter_mut().take(n_validators) {
-                node.process_block(blk.clone()).await.ok();
-            }
-            let (lfb_num, fs) = finalized_keys_all_nodes(&nodes, &writes).await;
-            let tip = present_keys(&nodes[0], &blk.body.state.post_state_hash, &writes).await;
-            println!(
-                "drain {} (proposer v{}): tip=#{} LFB=#{} tip_keys={:?} fs_keys={:?}",
-                extra,
-                proposer + 1,
-                blk.body.state.block_number,
-                lfb_num,
-                tip,
-                fs
-            );
-            check_fs(
-                &format!("drain {}", extra),
-                &fs,
-                &mut prev_fs,
-                &mut fs_violation,
-            );
+        let blk = nodes[proposer]
+            .create_block_unsafe(&[])
+            .await
+            .expect("drain block");
+        assert_deploy_executed(&blk, &marker_signature, &format!("drain marker {extra}"));
+        for node in nodes.iter_mut().take(n_validators) {
+            node.process_block(blk.clone())
+                .await
+                .expect("process drain block");
         }
+        let (lfb_num, fs) = finalized_keys_all_nodes(&nodes, &writes).await;
+        let tip = present_keys(&nodes[0], &blk.body.state.post_state_hash, &writes).await;
+        println!(
+            "drain {} (proposer v{}): tip=#{} LFB=#{} tip_keys={:?} fs_keys={:?}",
+            extra,
+            proposer + 1,
+            blk.body.state.block_number,
+            lfb_num,
+            tip,
+            fs
+        );
+        check_fs(
+            &format!("drain {}", extra),
+            &fs,
+            &mut prev_fs,
+            &mut fs_violation,
+        );
     }
 
     // Settle: node 0 proposes a final block; read the cell at its post-state.
-    let final_marker = construct_deploy::basic_deploy_data(9999, None, Some(shard_id.clone()))
-        .expect("final marker");
+    let final_valid_after = agreed_finalized_height(&nodes).await;
+    let final_marker = marker_deploy(9999, final_valid_after, &shard_id);
+    let final_marker_signature = final_marker.sig.clone();
     nodes[0].casper.deploy(final_marker).expect("final deploy");
     let final_block = nodes[0]
         .create_block_unsafe(&[])
         .await
         .expect("final block");
+    assert_deploy_executed(&final_block, &final_marker_signature, "final marker");
     let final_keys =
         present_keys(&nodes[0], &final_block.body.state.post_state_hash, &writes).await;
-    let missing: Vec<&(String, i64)> = writes
+    let missing: Vec<(&String, &i64)> = writes
         .iter()
         .filter(|(k, _)| !final_keys.contains(k))
         .collect();
@@ -420,20 +560,20 @@ async fn create_allow_empty(node: &mut TestNode) -> BlockCreatorResult {
 /// while allowing each validator to admit its OWN fresh local deploys under
 /// the bounded `fresh_admission_fallback` cap.
 ///
-/// This test pins the refined invariant: fresh admission is disjoint (a
-/// validator packages only the fresh deploys it received; nothing is
-/// double-packaged) and the already-included frontier work is never
-/// re-packaged by either proposer.
+/// This test pins the refined invariant: fresh admission remains node-local and
+/// already-active frontier work is not repackaged while neither sibling has a
+/// strict finality certificate.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[serial]
 async fn unresolved_user_frontier_fresh_admission_is_bounded_and_disjoint() {
-    let context = TestContext::new(2).await;
+    let context = TestContext::new_with_bonds(2, Some(equal_bonds)).await;
     let shard = context.genesis.genesis_block.shard_id.clone();
+    let genesis_hash = context.genesis.genesis_block.block_hash.clone();
     let mut nodes = TestNode::create_network(context.genesis, 2, None, None, None, None)
         .await
         .expect("network");
-    let first = map_set_deploy("leader-a", 1, &signer_key(0), &shard);
-    let second = map_set_deploy("leader-b", 2, &signer_key(1), &shard);
+    let first = map_set_deploy("leader-a", 1, &signer_key(0), 0, &shard);
+    let second = map_set_deploy("leader-b", 2, &signer_key(1), 0, &shard);
     let frontier_sigs = [first.sig.clone(), second.sig.clone()];
     let block_a = nodes[0]
         .add_block_from_deploys(std::slice::from_ref(&first))
@@ -443,12 +583,48 @@ async fn unresolved_user_frontier_fresh_admission_is_bounded_and_disjoint() {
         .add_block_from_deploys(std::slice::from_ref(&second))
         .await
         .expect("second sibling");
-    for node in &mut nodes {
-        node.process_block(block_a.clone()).await.ok();
-        node.process_block(block_b.clone()).await.ok();
+    let status_b_on_a = nodes[0]
+        .process_block(block_b.clone())
+        .await
+        .expect("process sibling B on validator 0");
+    assert!(
+        matches!(status_b_on_a, Either::Right(_)),
+        "validator 0 did not accept sibling B: {status_b_on_a:?}"
+    );
+    let status_a_on_b = nodes[1]
+        .process_block(block_a.clone())
+        .await
+        .expect("process sibling A on validator 1");
+    assert!(
+        matches!(status_a_on_b, Either::Right(_)),
+        "validator 1 did not accept sibling A: {status_a_on_b:?}"
+    );
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+    for node in &nodes {
+        node.wait_for_finalizer_quiescence(deadline)
+            .await
+            .expect("finalizer quiescence");
+        let snapshot = node
+            .casper
+            .get_snapshot()
+            .await
+            .expect("unresolved snapshot");
+        assert_eq!(
+            snapshot.last_finalized_block, genesis_hash,
+            "equal-stake siblings must not advance the finalized floor"
+        );
+        let parent_hashes = snapshot
+            .parents
+            .iter()
+            .map(|parent| parent.block_hash.clone())
+            .collect::<std::collections::HashSet<_>>();
+        assert!(parent_hashes.contains(&block_a.block_hash));
+        assert!(parent_hashes.contains(&block_b.block_hash));
+        assert!(snapshot.deploys_in_scope.contains(&first.sig));
+        assert!(snapshot.deploys_in_scope.contains(&second.sig));
     }
-    let fresh_a = map_set_deploy("fresh-a", 3, &signer_key(0), &shard);
-    let fresh_b = map_set_deploy("fresh-b", 4, &signer_key(1), &shard);
+    let fresh_a = map_set_deploy("fresh-a", 3, &signer_key(0), 0, &shard);
+    let fresh_b = map_set_deploy("fresh-b", 4, &signer_key(1), 0, &shard);
     nodes[0].casper.deploy(fresh_a.clone()).expect("fresh a");
     nodes[1].casper.deploy(fresh_b.clone()).expect("fresh b");
     let proposal_a = create_allow_empty(&mut nodes[0]).await;
@@ -468,14 +644,6 @@ async fn unresolved_user_frontier_fresh_admission_is_bounded_and_disjoint() {
     let sigs_a = packaged_sigs(&proposal_a);
     let sigs_b = packaged_sigs(&proposal_b);
 
-    // Disjointness: nothing is packaged by both proposers.
-    for sig in &sigs_a {
-        assert!(
-            !sigs_b.contains(sig),
-            "a deploy was double-packaged by both proposers"
-        );
-    }
-    // Locality: each validator packages at most its own fresh deploy.
     assert!(
         sigs_a.iter().all(|sig| sig == &fresh_a.sig),
         "validator 0 packaged deploys it did not receive: {sigs_a:?}"
@@ -495,15 +663,83 @@ async fn unresolved_user_frontier_fresh_admission_is_bounded_and_disjoint() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[serial]
-async fn two_writers_converge() { run_convergence(2, 1, 7, true).await; }
+async fn resolved_asymmetric_frontier_rehomes_excluded_local_deploy() {
+    let context = TestContext::new(2).await;
+    let shard = context.genesis.genesis_block.shard_id.clone();
+    let mut nodes = TestNode::create_network(context.genesis, 2, None, None, None, None)
+        .await
+        .expect("network");
+    let first = map_set_deploy("minority", 1, &signer_key(0), 0, &shard);
+    let second = map_set_deploy("majority", 2, &signer_key(1), 0, &shard);
+    let block_a = nodes[0]
+        .add_block_from_deploys(std::slice::from_ref(&first))
+        .await
+        .expect("minority sibling");
+    let block_b = nodes[1]
+        .add_block_from_deploys(std::slice::from_ref(&second))
+        .await
+        .expect("majority sibling");
+    let status_b_on_a = nodes[0]
+        .process_block(block_b.clone())
+        .await
+        .expect("process majority sibling");
+    assert!(matches!(status_b_on_a, Either::Right(_)));
+    let status_a_on_b = nodes[1]
+        .process_block(block_a)
+        .await
+        .expect("process minority sibling");
+    assert!(matches!(status_a_on_b, Either::Right(_)));
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+    for node in &nodes {
+        node.wait_for_finalizer_quiescence(deadline)
+            .await
+            .expect("finalizer quiescence");
+        assert_eq!(
+            node.casper
+                .last_finalized_block()
+                .await
+                .expect("last finalized block")
+                .block_hash,
+            block_b.block_hash,
+            "the 3/4-stake sibling must resolve the frontier"
+        );
+    }
+    let snapshot = nodes[0]
+        .casper
+        .get_snapshot()
+        .await
+        .expect("resolved snapshot");
+    assert!(!snapshot.deploys_in_scope.contains(&first.sig));
+    assert!(snapshot.deploys_in_scope.contains(&second.sig));
+
+    let fresh = map_set_deploy("fresh", 3, &signer_key(0), 0, &shard);
+    nodes[0].casper.deploy(fresh.clone()).expect("fresh deploy");
+    let proposal = create_allow_empty(&mut nodes[0]).await;
+    let BlockCreatorResult::Created(block, ..) = proposal else {
+        panic!("expected a proposal containing rehomed and fresh deploys: {proposal:?}");
+    };
+    let selected = block
+        .body
+        .deploys
+        .iter()
+        .map(|deploy| deploy.deploy.sig.clone())
+        .collect::<Vec<_>>();
+    assert!(selected.contains(&first.sig));
+    assert!(selected.contains(&fresh.sig));
+    assert!(!selected.contains(&second.sig));
+}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[serial]
-async fn three_writers_converge() { run_convergence(3, 1, 21, true).await; }
+async fn two_writers_converge() { run_convergence(2, 1, 7, true, None).await; }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[serial]
-async fn three_writers_converge_under_load() { run_convergence(3, 3, 21, true).await; }
+async fn three_writers_converge() { run_convergence(3, 1, 21, true, None).await; }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[serial]
+async fn three_writers_converge_under_load() { run_convergence(3, 3, 21, true, None).await; }
 
 /// 400+-block regression soak for the finalized-floor multi-parent-merge fix
 /// (H1 deterministic Δ backstop + H2 persisted frontier cache / warm up-walk +
@@ -511,6 +747,9 @@ async fn three_writers_converge_under_load() { run_convergence(3, 3, 21, true).a
 /// 1 final) this runs an order of magnitude past
 /// `three_writers_converge_under_load` (~35 blocks) and well past the OLD silent
 /// `MERGE_SCOPE_TOO_LARGE` cliff (floor_distance 256 / scope 512).
+/// The soak cycles eight keys per validator, keeping application state bounded at
+/// 24 entries while all 300 signed writer occurrences still execute a real
+/// single-cell COMM and conflict three ways in every round.
 ///
 /// Every merge round exercises the warm frontier up-walk (`incremental_frontier`)
 /// against the persisted `frontier-index`. Two implicit assertions ride on the
@@ -521,9 +760,9 @@ async fn three_writers_converge_under_load() { run_convergence(3, 3, 21, true).a
 /// (cold == warm, no fork) is enforced continuously — plus the terminal
 /// convergence + FS-monotonicity asserts.
 ///
-/// `#[ignore]` because it is a multi-minute soak, not a per-commit gate. Run:
+/// `#[ignore]` because it is a multi-hour soak, not a per-commit gate. Run:
 ///   cargo test -p casper --test mod -- --ignored finalized_floor_400_block_soak
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[serial]
-#[ignore = "multi-minute 400+-block soak; run explicitly with --ignored"]
-async fn finalized_floor_400_block_soak() { run_convergence(3, 100, 20, false).await; }
+#[ignore = "multi-hour 400+-block soak; run explicitly with --ignored"]
+async fn finalized_floor_400_block_soak() { run_convergence(3, 100, 20, false, Some(8)).await; }

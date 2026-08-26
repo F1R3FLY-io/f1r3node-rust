@@ -6,7 +6,7 @@
 //! plan's "Layout C" entry for the wider context.
 
 use std::collections::HashMap;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::{Arc, Mutex};
 
 use block_storage::rust::casperbuffer::casper_buffer_key_value_storage::CasperBufferKeyValueStorage;
@@ -42,6 +42,7 @@ use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
 use crate::rust::casper::CasperShardConf;
 use crate::rust::engine::block_retriever::BlockRetriever;
 use crate::rust::estimator::Estimator;
+use crate::rust::finality::finalization_schedule::FinalizationSchedule;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 use crate::rust::validator_identity::ValidatorIdentity;
 
@@ -118,12 +119,9 @@ pub struct MultiParentCasperImpl<T: TransportLayer + Send + Sync> {
     pub approved_block: BlockMessage,
     /// Flag to track finalization status - block proposals fail fast if finalization is running.
     /// This prevents validators from creating blocks with stale snapshots during finalization.
-    pub finalization_in_progress: Arc<AtomicBool>,
-    /// Single-flight guard for background finalizer scheduling from propose path.
-    pub finalizer_task_in_progress: Arc<AtomicBool>,
-    /// Indicates a finalizer run was requested while another run was still in progress.
-    /// The next queued run will execute immediately after the current one finishes.
-    pub finalizer_task_queued: Arc<AtomicBool>,
+    pub finalization_in_progress: Arc<AtomicU64>,
+    pub recovery_sync_active: Arc<AtomicBool>,
+    pub finalization_schedule: Arc<FinalizationSchedule>,
     /// Shared reference to heartbeat signal for triggering immediate wake on deploy
     pub heartbeat_signal_ref: crate::rust::heartbeat_signal::HeartbeatSignalRef,
     /// Cache for deploys_in_scope BFS result keyed by DAG generation, snapshot LFB, and selected parents.

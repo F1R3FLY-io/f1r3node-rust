@@ -172,17 +172,21 @@ impl TestContext {
             lca: BlockHash::default(),
             tips: Vec::new(),
             parents: Vec::new(),
-            justifications: HashSet::new(),
+            justifications: Vec::new(),
             invalid_blocks: HashMap::new(),
             deploys_in_scope: Arc::new(DashSet::new()),
             rejected_in_scope: Arc::new(DashSet::new()),
             max_block_num: 0,
             max_seq_nums: HashMap::new(),
+            finalized_floor_bonds: Vec::new(),
             on_chain_state: OnChainCasperState {
                 shard_conf: CasperShardConf::new(),
                 bonds_map: HashMap::new(),
+                bond_generations: HashMap::new(),
                 active_validators: Vec::new(),
             },
+            consensus_context:
+                casper::rust::causal_equivocation::CertifiedConsensusContext::pre_genesis(),
         }
     }
 
@@ -957,7 +961,7 @@ async fn validate_block_checkpoint_should_not_return_a_checkpoint_for_an_invalid
     with_storage(|mut block_store, mut block_dag_storage| async move {
         let processed_deploys = TestContext::prepare_deploys(vec!["@1!(1)"], PCost { cost: 1 });
 
-        let invalid_hash = StateHash::default();
+        let invalid_hash = StateHash::from(vec![u8::MAX; models::rust::block_hash::LENGTH]);
 
         // Scala: mkRuntimeManager[Task]("interpreter-util-test").use { runtimeManager =>
         let runtime_manager = resources::mk_runtime_manager("interpreter-util-test-", None).await;

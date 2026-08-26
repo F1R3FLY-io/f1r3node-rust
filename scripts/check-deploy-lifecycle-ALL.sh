@@ -148,6 +148,10 @@ if [[ -f "$TLC_JAR" ]] || command -v tlc >/dev/null 2>&1; then
     MC_DeployRecovery_packaging_pre_fix \
     "Inv_SelectedRetrySurvivesSelfChainFilter is violated" \
     "selected recovery dropped by self-chain filtering"
+  recovery_negative_control \
+    MC_DeployRecovery_rehome_pre_fix \
+    "Inv_SelectedRehomeSurvivesCandidateFilter is violated" \
+    "excluded-branch deploy dropped by raw self-chain filtering"
 
   if tlc_run "$(tlc_metadir merge_recovery_post_gate)" "$RECOVERY_TLA_DIR/MC_MergeRecoveryCoherence.cfg" "$RECOVERY_TLA_DIR/MC_MergeRecoveryCoherence.tla" >"$LOG_DIR/merge_recovery_tlc_post.log" 2>&1; then
     pass "TLA+ finalized-base receipts, exact tombstones, chain filtering, and effect projection are coherent"

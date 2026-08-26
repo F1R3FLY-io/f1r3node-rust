@@ -785,25 +785,8 @@ async fn clique_oracle_growth_feedback_loop_stale_justification_chain() {
     .await
 }
 
-/// Tests whether a finalized block that becomes unreachable from future LFBs
-/// gets its cached FT updated by the propagation pass.
-///
-/// DAG structure:
-/// ```
-///   genesis
-///    ├── b1_v1 (V1, height 1) ← finalized as first LFB with FT=0.33
-///    ├── b1_v2 (V2, height 1)
-///    └── b1_v3 (V3, height 1)
-///              └── b2 (V1, height 2, parent=b1_v3) ← later LFB
-///
-///   b2's ancestor chain: b2 → b1_v3 → genesis
-///   b1_v1 is NOT in b2's ancestor chain (it's a sibling at height 1)
-/// ```
-///
-/// Question: does propagate_ft_to_ancestors update b1_v1 when b2 is finalized?
-/// If not, b1_v1 stays at FT=0.33 forever — the node issue.
 #[tokio::test]
-async fn orphaned_finalized_block_should_still_get_ft_updated() {
+async fn finalized_floor_requires_lineage_and_updates_secondary_parent_ft() {
     with_storage(|mut block_store, mut block_dag_storage| async move {
         let v1 = generate_validator(Some("Orphan V1"));
         let v2 = generate_validator(Some("Orphan V2"));
@@ -871,33 +854,71 @@ async fn orphaned_finalized_block_should_still_get_ft_updated() {
             &HashMap::from([(&v1, &b1_v1), (&v2, &genesis), (&v3, &b1_v3)]),
         );
 
-        // Finalize b2 as the new LFB with FT=1.0
-        // b2's ancestor chain: b2 → b1_v3 → genesis
-        // b1_v1 is NOT in this chain
-        block_dag_storage
+        let error = block_dag_storage
             .record_directly_finalized(b2.block_hash.clone(), 1.0, |_| async { Ok(()) })
             .await
-            .unwrap();
+            .expect_err("a sibling cannot replace the durable finalized floor");
+        assert!(matches!(
+            error,
+            shared::rust::store::key_value_store::KvStoreError::InvalidArgument(ref message)
+                if message == "finalization candidate does not preserve the durable finalized floor"
+        ));
 
-        // Check: did b1_v1 get updated?
         let dag_after_second = block_dag_storage
             .get_representation()
             .expect("dag representation");
         let meta_v1_after = dag_after_second.lookup(&b1_v1.block_hash).unwrap().unwrap();
-
-        eprintln!(
-            "b1_v1 FT after second finalization: {} (expected 1.0)",
+        assert!(
+            (meta_v1_after.fault_tolerance_value - 0.33).abs() < 0.01,
+            "rejected sibling finalization must not rewrite the durable floor FT, got {}",
             meta_v1_after.fault_tolerance_value
         );
+        assert_eq!(dag_after_second.last_finalized_block(), b1_v1.block_hash);
 
-        // This assertion will FAIL if propagation doesn't reach orphaned
-        // finalized blocks — confirming the node issue.
-        assert!(
-            (meta_v1_after.fault_tolerance_value - 1.0).abs() < 0.01,
-            "b1_v1 should have FT updated to 1.0 after second finalization, \
-             but got {}. The block is finalized but not in the new LFB's \
-             ancestor chain — propagation didn't reach it.",
-            meta_v1_after.fault_tolerance_value
+        let b2_rebased = crate::helper::block_generator::create_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            vec![b1_v3.block_hash.clone(), b1_v1.block_hash.clone()],
+            &genesis,
+            Some(v1.clone()),
+            Some(bonds.clone()),
+            Some(HashMap::from([
+                (v1.clone(), b1_v1.block_hash.clone()),
+                (v2.clone(), genesis.block_hash.clone()),
+                (v3.clone(), b1_v3.block_hash.clone()),
+            ])),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        let dag_before_rebased_finalization = block_dag_storage
+            .get_representation()
+            .expect("dag representation");
+        assert!(!dag_before_rebased_finalization
+            .is_in_main_chain(&b1_v1.block_hash, &b2_rebased.block_hash)
+            .expect("main-chain ancestry"));
+        assert!(dag_before_rebased_finalization
+            .is_dag_ancestor(&b1_v1.block_hash, &b2_rebased.block_hash)
+            .expect("DAG ancestry"));
+
+        block_dag_storage
+            .record_directly_finalized(b2_rebased.block_hash.clone(), 1.0, |_| async { Ok(()) })
+            .await
+            .expect("secondary-parent descendant preserves the durable floor");
+        let dag_after_rebased_finalization = block_dag_storage
+            .get_representation()
+            .expect("dag representation");
+        let rebased_floor = dag_after_rebased_finalization
+            .lookup(&b1_v1.block_hash)
+            .unwrap()
+            .unwrap();
+        assert!((rebased_floor.fault_tolerance_value - 1.0).abs() < 0.01);
+        assert_eq!(
+            dag_after_rebased_finalization.last_finalized_block(),
+            b2_rebased.block_hash
         );
     })
     .await

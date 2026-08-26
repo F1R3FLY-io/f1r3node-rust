@@ -16,10 +16,12 @@ use crypto::rust::private_key::PrivateKey;
 use crypto::rust::public_key::PublicKey;
 use crypto::rust::signatures::signed::Signed;
 use models::rust::block_hash::BlockHash;
+use models::rust::bond_generation::BondGeneration;
 use models::rust::casper::pretty_printer;
 use models::rust::casper::protocol::casper_message::{
-    BlockMessage, Body, Bond, DeployData, F1r3flyState, Header, Justification, ProcessedDeploy,
-    ProcessedSystemDeploy, RejectedDeploy, StateEffectId,
+    BlockMessage, Body, Bond, DeployData, F1r3flyState, Header, Justification,
+    ObjectiveEquivocationEvidence, ProcessedDeploy, ProcessedSystemDeploy, RejectedDeploy,
+    StateEffectId, ValidatorBondGeneration,
 };
 use models::rust::validator::Validator;
 use prost::bytes::Bytes;
@@ -28,10 +30,12 @@ use rholang::rust::interpreter::system_processes::BlockData;
 use rspace_plus_plus::rspace::errors::HistoryError;
 use tracing;
 
-use crate::rust::blocks::proposer::propose_result::BlockCreatorResult;
+use crate::rust::blocks::proposer::propose_result::{BlockCreatorResult, RecoveryDeferralReason};
 use crate::rust::casper::CasperSnapshot;
 use crate::rust::errors::CasperError;
-use crate::rust::slashing_authorization::{authorized_slash_candidates, checked_next_seq};
+use crate::rust::slashing_authorization::{
+    authorized_slash_candidates, checked_next_seq, has_slash_evidence, CanonicalSlashAuthority,
+};
 use crate::rust::util::rholang::costacc::close_block_deploy::CloseBlockDeploy;
 use crate::rust::util::rholang::costacc::slash_deploy::SlashDeploy;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
@@ -1438,28 +1442,34 @@ fn storage_has_unresolved_in_scope_deploys(
 /// identical randomness for the candidate selected by `prepare_slashing_deploys`.
 fn build_slash_deploy(
     invalid_block_hash: &BlockHash,
+    equivocation_block_hash: Option<&BlockHash>,
     proposer_public_key: &PublicKey,
     target_activation_epoch: i64,
+    target_bond_generation: BondGeneration,
     seq_num: i32,
 ) -> SlashDeploy {
     let self_id = Bytes::copy_from_slice(&proposer_public_key.bytes);
     SlashDeploy {
         invalid_block_hash: invalid_block_hash.clone(),
+        equivocation_block_hash: equivocation_block_hash.cloned(),
         pk: proposer_public_key.clone(),
         target_activation_epoch,
-        initial_rand: system_deploy_util::generate_slash_deploy_random_seed(
+        target_bond_generation,
+        initial_rand: system_deploy_util::generate_slash_evidence_random_seed(
             self_id,
             seq_num,
             invalid_block_hash,
+            equivocation_block_hash,
         ),
     }
 }
 
-async fn prepare_slashing_deploys(
+fn prepare_slashing_deploys(
     casper_snapshot: &CasperSnapshot,
     validator_identity: &ValidatorIdentity,
+    proposed_block_num: i64,
     seq_num: i32,
-    bonds_map: &HashMap<Validator, i64>,
+    authority: &CanonicalSlashAuthority,
 ) -> Result<Vec<SlashDeploy>, CasperError> {
     let self_id = Bytes::copy_from_slice(&validator_identity.public_key.bytes);
 
@@ -1483,12 +1493,13 @@ async fn prepare_slashing_deploys(
     // the epoch/evidence-epoch matches that dev's filter omitted. The
     // proposer-side authorization here therefore strictly extends, not
     // replaces, dev's filter.
-    let proposer_bond = bonds_map.get(&self_id).copied().unwrap_or(0);
+    let proposer_bond = authority.bond(&self_id);
     if proposer_bond <= 0 {
         return Ok(Vec::new());
     }
 
-    let slash_candidates = authorized_slash_candidates(casper_snapshot, bonds_map)?;
+    let slash_candidates =
+        authorized_slash_candidates(casper_snapshot, proposed_block_num, authority)?;
 
     // `authorized_slash_candidates` documents an at-most-one-per-offender
     // invariant via its `BTreeMap<Validator, …>` accumulator
@@ -1548,8 +1559,10 @@ async fn prepare_slashing_deploys(
         // Phase 10 (C-5): `.get()` converts the typed Epoch back to the protobuf i64.
         let slash_deploy = build_slash_deploy(
             &slash_candidate.invalid_block_hash,
+            slash_candidate.equivocation_block_hash.as_ref(),
             &validator_identity.public_key,
             slash_candidate.target_activation_epoch.get(),
+            slash_candidate.target_bond_generation,
             seq_num,
         );
 
@@ -1715,7 +1728,7 @@ fn purge_recovered_already_in_scope(
 fn recovered_deploy_leader(
     casper_snapshot: &CasperSnapshot,
 ) -> Result<Option<Validator>, CasperError> {
-    let validators = casper_snapshot.current_proposal_validators();
+    let validators = casper_snapshot.finalized_floor_validators();
     if validators.is_empty() {
         return Ok(None);
     }
@@ -1736,15 +1749,48 @@ fn is_recovered_deploy_leader(
         .unwrap_or(false))
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CandidateSelfChainDisposition {
+    NotOnSelfChain,
+    ActiveDuplicate,
+    ExcludedBranchRehome,
+    SelectedRecovery,
+}
+
+impl CandidateSelfChainDisposition {
+    const fn should_package(self) -> bool { !matches!(self, Self::ActiveDuplicate) }
+}
+
+fn candidate_self_chain_disposition(
+    on_self_chain: bool,
+    active_in_candidate_scope: bool,
+    selected_recovery: bool,
+) -> CandidateSelfChainDisposition {
+    if !on_self_chain {
+        CandidateSelfChainDisposition::NotOnSelfChain
+    } else if selected_recovery {
+        CandidateSelfChainDisposition::SelectedRecovery
+    } else if active_in_candidate_scope {
+        CandidateSelfChainDisposition::ActiveDuplicate
+    } else {
+        CandidateSelfChainDisposition::ExcludedBranchRehome
+    }
+}
+
 fn filter_self_chain_deploys(
     deploys: &mut HashSet<Signed<DeployData>>,
     self_chain_deploy_sigs: &HashSet<Bytes>,
+    candidate_scope_deploy_sigs: &dashmap::DashSet<Bytes>,
     selected_recovery_sigs: &HashSet<Bytes>,
 ) -> usize {
     let before = deploys.len();
     deploys.retain(|deploy| {
-        !self_chain_deploy_sigs.contains(&deploy.sig)
-            || selected_recovery_sigs.contains(&deploy.sig)
+        candidate_self_chain_disposition(
+            self_chain_deploy_sigs.contains(&deploy.sig),
+            candidate_scope_deploy_sigs.contains(&deploy.sig),
+            selected_recovery_sigs.contains(&deploy.sig),
+        )
+        .should_package()
     });
     before.saturating_sub(deploys.len())
 }
@@ -1810,7 +1856,7 @@ fn deploy_inclusion_progress(
     casper_snapshot: &CasperSnapshot,
     block_store: &KeyValueBlockStore,
 ) -> Result<DeployInclusionProgress, CasperError> {
-    let validators = casper_snapshot.current_proposal_validators();
+    let validators = casper_snapshot.finalized_floor_validators();
     let mut latest = None;
     for parent in &casper_snapshot.parents {
         if parent.sender.is_empty()
@@ -2459,6 +2505,109 @@ fn record_deploy_admission_metrics(
     .set(metric_bool(inclusion_staleness.missing_deploy_metadata));
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CertifiedContextRelation {
+    Ready,
+    MaterializationPending,
+    FloorRegression,
+    FloorConflict,
+    ContextMismatch,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct CertifiedContextComparison {
+    relation: CertifiedContextRelation,
+    candidate_descends_from_materialized: bool,
+    materialized_descends_from_candidate: bool,
+    candidate_preserves_materialized_state: Option<bool>,
+}
+
+fn compare_certified_contexts(
+    dag: &block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation,
+    materialized: &crate::rust::causal_equivocation::CertifiedConsensusContext,
+    candidate: &crate::rust::causal_equivocation::CertifiedConsensusContext,
+) -> Result<CertifiedContextComparison, CasperError> {
+    if materialized == candidate {
+        return Ok(CertifiedContextComparison {
+            relation: CertifiedContextRelation::Ready,
+            candidate_descends_from_materialized: true,
+            materialized_descends_from_candidate: true,
+            candidate_preserves_materialized_state: Some(true),
+        });
+    }
+
+    let materialized_floor = materialized.incoming_finalized_floor();
+    let candidate_floor = candidate.incoming_finalized_floor();
+    if materialized_floor == candidate_floor {
+        return Ok(CertifiedContextComparison {
+            relation: CertifiedContextRelation::ContextMismatch,
+            candidate_descends_from_materialized: true,
+            materialized_descends_from_candidate: true,
+            candidate_preserves_materialized_state: Some(
+                materialized.incoming_finalized_floor_post_state_hash()
+                    == candidate.incoming_finalized_floor_post_state_hash(),
+            ),
+        });
+    }
+
+    let candidate_descends_from_materialized =
+        dag.is_dag_ancestor(materialized_floor, candidate_floor)?;
+    let materialized_descends_from_candidate =
+        dag.is_dag_ancestor(candidate_floor, materialized_floor)?;
+    let candidate_preserves_materialized_state = if candidate_descends_from_materialized {
+        Some(crate::rust::finality::floor::is_state_preserved(
+            dag,
+            materialized_floor,
+            candidate_floor,
+        )?)
+    } else {
+        None
+    };
+    let relation = if candidate_descends_from_materialized
+        && candidate_preserves_materialized_state == Some(true)
+    {
+        CertifiedContextRelation::MaterializationPending
+    } else if materialized_descends_from_candidate {
+        CertifiedContextRelation::FloorRegression
+    } else {
+        CertifiedContextRelation::FloorConflict
+    };
+    Ok(CertifiedContextComparison {
+        relation,
+        candidate_descends_from_materialized,
+        materialized_descends_from_candidate,
+        candidate_preserves_materialized_state,
+    })
+}
+
+fn proposal_recovery_deferral_reason(
+    context_relation: CertifiedContextRelation,
+    candidate_slots_complete: bool,
+    proposer_active: bool,
+) -> Option<RecoveryDeferralReason> {
+    match context_relation {
+        CertifiedContextRelation::Ready if !candidate_slots_complete => {
+            Some(RecoveryDeferralReason::IncompleteCandidateCommitteeSlots)
+        }
+        CertifiedContextRelation::Ready if !proposer_active => {
+            Some(RecoveryDeferralReason::InactiveCandidateValidator)
+        }
+        CertifiedContextRelation::Ready => None,
+        CertifiedContextRelation::MaterializationPending => {
+            Some(RecoveryDeferralReason::FinalizedFloorMaterializationPending)
+        }
+        CertifiedContextRelation::FloorRegression => {
+            Some(RecoveryDeferralReason::CandidateFloorRegression)
+        }
+        CertifiedContextRelation::FloorConflict => {
+            Some(RecoveryDeferralReason::CandidateFloorConflict)
+        }
+        CertifiedContextRelation::ContextMismatch => {
+            Some(RecoveryDeferralReason::CertifiedContextMismatch)
+        }
+    }
+}
+
 pub async fn create(
     casper_snapshot: &CasperSnapshot,
     validator_identity: &ValidatorIdentity,
@@ -2527,6 +2676,61 @@ pub async fn create(
         })?;
     let parents = &casper_snapshot.parents;
     let justifications = &casper_snapshot.justifications;
+    if !parents.is_empty() {
+        let parent_hashes = parents
+            .iter()
+            .map(|parent| parent.block_hash.clone())
+            .collect::<Vec<_>>();
+        let latest_messages = justifications
+            .iter()
+            .map(|justification| {
+                (
+                    justification.validator.clone(),
+                    justification.latest_block_hash.clone(),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        let candidate_context =
+            crate::rust::causal_equivocation::CertifiedConsensusContext::for_candidate(
+                &casper_snapshot.dag,
+                &parent_hashes,
+                &latest_messages,
+                crate::rust::safety::clique_oracle::FtThreshold::from_ppm(
+                    casper_snapshot
+                        .on_chain_state
+                        .shard_conf
+                        .fault_tolerance_threshold_ppm,
+                ),
+            )
+            .await?;
+        let context_comparison = compare_certified_contexts(
+            &casper_snapshot.dag,
+            &casper_snapshot.consensus_context,
+            &candidate_context,
+        )?;
+        if context_comparison.relation != CertifiedContextRelation::Ready {
+            tracing::warn!(
+                relation = ?context_comparison.relation,
+                materialized_floor = %hex::encode(casper_snapshot.consensus_context.incoming_finalized_floor()),
+                candidate_floor = %hex::encode(candidate_context.incoming_finalized_floor()),
+                materialized_context = %hex::encode(casper_snapshot.consensus_context.digest()),
+                candidate_context = %hex::encode(candidate_context.digest()),
+                candidate_descends_from_materialized = context_comparison.candidate_descends_from_materialized,
+                materialized_descends_from_candidate = context_comparison.materialized_descends_from_candidate,
+                candidate_preserves_materialized_state = ?context_comparison.candidate_preserves_materialized_state,
+                "candidate consensus context is not proposal-ready"
+            );
+        }
+        if let Some(reason) = proposal_recovery_deferral_reason(
+            context_comparison.relation,
+            candidate_context.has_complete_latest_message_slots(),
+            candidate_context
+                .active_validators()
+                .contains(&validator_identity.public_key.bytes),
+        ) {
+            return Ok(BlockCreatorResult::recovery_deferred(reason));
+        }
+    }
     if let Some(max_parent_ts) = parents.iter().map(|p| p.header.timestamp).max() {
         if now_millis < max_parent_ts {
             tracing::debug!(
@@ -2708,11 +2912,15 @@ pub async fn create(
             .collect();
         let mut v = prepared.deploys;
         if !self_chain_deploy_sigs.is_empty() {
-            let skipped =
-                filter_self_chain_deploys(&mut v, &self_chain_deploy_sigs, &selected_recovery_sigs);
+            let skipped = filter_self_chain_deploys(
+                &mut v,
+                &self_chain_deploy_sigs,
+                &casper_snapshot.deploys_in_scope,
+                &selected_recovery_sigs,
+            );
             if skipped > 0 {
                 tracing::info!(
-                    "Filtered {} deploy(s) already present in self latest-message chain",
+                    "Filtered {} deploy(s) already active in the selected-parent closure and self latest-message chain",
                     skipped
                 );
             }
@@ -2768,26 +2976,23 @@ pub async fn create(
     .record(__merge_pre_t.elapsed().as_secs_f64());
     let (pre_state, _rejected_user_sigs) = merge_pre_info;
 
-    let needs_slash_authority = !casper_snapshot.dag.invalid_blocks().is_empty();
-    let pre_state_bonds: HashMap<Validator, i64> = if needs_slash_authority {
-        runtime_manager
-            .compute_bonds(&pre_state)
-            .await?
-            .into_iter()
-            .map(|bond| (bond.validator, bond.stake))
-            .collect()
+    let slash_authority = if has_slash_evidence(casper_snapshot) {
+        Some(CanonicalSlashAuthority::load(runtime_manager, &pre_state).await?)
     } else {
-        HashMap::new()
+        None
     };
     let slashing_deploys = {
         let t = std::time::Instant::now();
-        let v = prepare_slashing_deploys(
-            casper_snapshot,
-            validator_identity,
-            next_seq_num,
-            &pre_state_bonds,
-        )
-        .await?;
+        let v = match slash_authority.as_ref() {
+            Some(authority) => prepare_slashing_deploys(
+                casper_snapshot,
+                validator_identity,
+                next_block_num,
+                next_seq_num,
+                authority,
+            )?,
+            None => Vec::new(),
+        };
         tracing::debug!(
             target: "f1r3fly.block_creator.timing",
             "prepare_slashing_deploys_ms={}, slashing_deploys_count={}",
@@ -3081,47 +3286,37 @@ pub async fn create(
             .iter()
             .map(|deploy| ProcessedDeploy::admission_rejected(deploy, pre_state_hash.clone())),
     );
-    let block_bonds = {
-        let parent_hashes: Vec<BlockHash> = parents.iter().map(|p| p.block_hash.clone()).collect();
-        let latest_messages: BTreeMap<Validator, BlockHash> = casper_snapshot
-            .justifications
-            .iter()
-            .map(|j| (j.validator.clone(), j.latest_block_hash.clone()))
-            .collect();
-        let floor = crate::rust::finality::floor::finalized_floor(
-            &casper_snapshot.dag,
-            &parent_hashes,
-            &latest_messages,
-            crate::rust::safety::clique_oracle::FtThreshold::from_ppm(
-                casper_snapshot
-                    .on_chain_state
-                    .shard_conf
-                    .fault_tolerance_threshold_ppm,
-            ),
-        )
+    let mut bond_generations = runtime_manager
+        .compute_bond_generations(&post_state_hash)
+        .await?
+        .into_iter()
+        .map(|(validator, generation)| {
+            Ok(ValidatorBondGeneration {
+                validator,
+                generation: BondGeneration::try_from(generation).map_err(|error| {
+                    CasperError::RuntimeError(format!(
+                        "PoS returned an invalid bond generation while packaging a block: {error}"
+                    ))
+                })?,
+            })
+        })
+        .collect::<Result<Vec<_>, CasperError>>()?;
+    bond_generations.sort_unstable();
+    let mut active_validators = runtime_manager
+        .get_active_validators(&post_state_hash)
         .await?;
-        let floor_block = block_store.get(&floor.hash)?.ok_or_else(|| {
-            CasperError::RuntimeError(format!(
-                "finalized-floor block {} not in block store for block bonds",
-                pretty_printer::PrettyPrinter::build_string_bytes(&floor.hash)
-            ))
+    active_validators.sort_unstable();
+    active_validators.dedup();
+    let sender_bond_generation = casper_snapshot
+        .consensus_context
+        .authority_generations()
+        .get(&validator_identity.public_key.bytes)
+        .copied()
+        .ok_or_else(|| {
+            CasperError::RuntimeError(
+                "proposer is absent from the certified finalized-floor generation map".to_string(),
+            )
         })?;
-        let floor_state_hash = &floor_block.body.state.post_state_hash;
-        let committee: Vec<Bond> =
-            crate::rust::finality::floor::floor_committee(runtime_manager, floor_state_hash)
-                .await?;
-        if committee.len() != new_bonds.len() {
-            tracing::info!(
-                target: "f1r3fly.casper.bonds_validation",
-                floor_number = floor.block_number,
-                committee = committee.len(),
-                post_state_bonds = new_bonds.len(),
-                "block bonds field differs from post-state bonds"
-            );
-        }
-        committee
-    };
-
     let casper_version = casper_snapshot.on_chain_state.shard_conf.casper_version;
 
     // Span[F].trace(ProcessDeploysAndCreateBlockMetricsSource) from Scala
@@ -3134,17 +3329,39 @@ pub async fn create(
     let package_started = std::time::Instant::now();
     let pre_state_hash_for_result = pre_state_hash.clone();
     let post_state_hash_for_result = post_state_hash.clone();
+    let parent_hashes = parents
+        .iter()
+        .map(|parent| parent.block_hash.clone())
+        .collect::<Vec<_>>();
+    let evidence_roots = parent_hashes
+        .iter()
+        .chain(
+            justifications
+                .iter()
+                .map(|justification| &justification.latest_block_hash),
+        )
+        .cloned()
+        .collect::<Vec<_>>();
+    let objective_equivocation_evidence_delta =
+        crate::rust::causal_equivocation::proposer_evidence_delta(
+            &evidence_roots,
+            &casper_snapshot.dag,
+        )?;
     let unsigned_block = package_block(
         &block_data,
-        parents.iter().map(|p| p.block_hash.clone()).collect(),
-        justifications.iter().cloned().collect(),
+        parent_hashes,
+        justifications.clone(),
         pre_state_hash,
         post_state_hash,
         processed_deploys,
         rejected_deploys,
         rejected_state_effects,
         processed_system_deploys,
-        block_bonds,
+        new_bonds,
+        bond_generations,
+        active_validators,
+        sender_bond_generation,
+        objective_equivocation_evidence_delta,
         shard_id,
         casper_version,
     );
@@ -3222,6 +3439,10 @@ fn package_block(
     rejected_state_effects: Vec<StateEffectId>,
     system_deploys: Vec<ProcessedSystemDeploy>,
     bonds_map: Vec<Bond>,
+    bond_generations: Vec<ValidatorBondGeneration>,
+    active_validators: Vec<Validator>,
+    sender_bond_generation: BondGeneration,
+    objective_equivocation_evidence_delta: Vec<ObjectiveEquivocationEvidence>,
     shard_id: String,
     version: i64,
 ) -> BlockMessage {
@@ -3229,6 +3450,8 @@ fn package_block(
         pre_state_hash,
         post_state_hash,
         bonds: bonds_map,
+        bond_generations,
+        active_validators,
         block_number: block_data.block_number,
     };
 
@@ -3246,6 +3469,8 @@ fn package_block(
         timestamp: block_data.time_stamp,
         version,
         extra_bytes: Bytes::new(),
+        sender_bond_generation: Some(sender_bond_generation),
+        objective_equivocation_evidence_delta,
     };
 
     proto_util::unsigned_block_proto(
@@ -3283,29 +3508,123 @@ mod tests {
         }
     }
 
+    #[test]
+    fn proposal_recovery_deferral_classification_is_total_and_precedence_ordered() {
+        use RecoveryDeferralReason::{
+            CandidateFloorConflict, CandidateFloorRegression, CertifiedContextMismatch,
+            FinalizedFloorMaterializationPending, InactiveCandidateValidator,
+            IncompleteCandidateCommitteeSlots,
+        };
+
+        let cases = [
+            (
+                CertifiedContextRelation::MaterializationPending,
+                false,
+                false,
+                Some(FinalizedFloorMaterializationPending),
+            ),
+            (
+                CertifiedContextRelation::FloorRegression,
+                true,
+                true,
+                Some(CandidateFloorRegression),
+            ),
+            (
+                CertifiedContextRelation::FloorConflict,
+                true,
+                true,
+                Some(CandidateFloorConflict),
+            ),
+            (
+                CertifiedContextRelation::ContextMismatch,
+                true,
+                true,
+                Some(CertifiedContextMismatch),
+            ),
+            (
+                CertifiedContextRelation::Ready,
+                false,
+                false,
+                Some(IncompleteCandidateCommitteeSlots),
+            ),
+            (
+                CertifiedContextRelation::Ready,
+                false,
+                true,
+                Some(IncompleteCandidateCommitteeSlots),
+            ),
+            (
+                CertifiedContextRelation::Ready,
+                true,
+                false,
+                Some(InactiveCandidateValidator),
+            ),
+            (CertifiedContextRelation::Ready, true, true, None),
+        ];
+
+        for (context_relation, slots_complete, proposer_active, expected) in cases {
+            assert_eq!(
+                proposal_recovery_deferral_reason(
+                    context_relation,
+                    slots_complete,
+                    proposer_active,
+                ),
+                expected
+            );
+        }
+    }
+
+    fn set_test_committee(snapshot: &mut CasperSnapshot, validators: Vec<Validator>) {
+        snapshot.finalized_floor_bonds = validators
+            .iter()
+            .cloned()
+            .map(|validator| Bond {
+                validator,
+                stake: 1,
+            })
+            .collect();
+        snapshot.on_chain_state.active_validators = validators;
+    }
+
     fn set_last_finalized_height(snapshot: &mut CasperSnapshot, height: i64) {
         let hash = invalid_block_hash(height as u8);
+        let active_validator_set = snapshot
+            .finalized_floor_bonds
+            .iter()
+            .map(|bond| bond.validator.clone())
+            .collect();
         snapshot.dag.dag_set.insert(hash.clone());
         snapshot
             .dag
             .block_metadata_index
             .write()
-            .add(models::rust::block_metadata::BlockMetadata {
-                block_hash: hash.clone(),
-                parents: Vec::new(),
-                sender: Bytes::new(),
-                justifications: Vec::new(),
-                weight_map: BTreeMap::new(),
-                block_number: height,
-                sequence_number: height as i32,
-                invalid: false,
-                directly_finalized: true,
-                finalized: true,
-                fault_tolerance_value: 1.0,
-                successful_state_effect_indices: Default::default(),
-                rejected_state_effects: Default::default(),
-                protocol_version: crate::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION,
-            })
+            .add(crate::rust::test_metadata::certify(
+                models::rust::block_metadata::BlockMetadata {
+                    block_hash: hash.clone(),
+                    post_state_hash: invalid_block_hash(height as u8),
+                    parents: Vec::new(),
+                    sender: validator(0),
+                    justifications: Vec::new(),
+                    weight_map: BTreeMap::new(),
+                    bond_generation_map: BTreeMap::new(),
+                    active_validator_set,
+                    block_number: height,
+                    sequence_number: height as i32,
+                    admission_outcome: None,
+                    directly_finalized: true,
+                    finalized: true,
+                    fault_tolerance_value: 1.0,
+                    successful_state_effect_indices: Default::default(),
+                    rejected_state_effects: Default::default(),
+                    protocol_version: crate::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION,
+                    objective_equivocation_evidence_delta: Vec::new(),
+                    sender_authority: None,
+                    admission_schema_version:
+                        models::rust::block_metadata::ADMISSION_SCHEMA_VERSION,
+                    approved_genesis: false,
+                },
+                models::rust::bond_generation::BondGeneration::GENESIS,
+            ))
             .expect("insert finalized metadata");
         snapshot.last_finalized_block = hash;
     }
@@ -3349,6 +3668,10 @@ mod tests {
             Vec::new(),
             Vec::new(),
             Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            BondGeneration::GENESIS,
             Vec::new(),
             "test".to_string(),
             1,
@@ -3396,7 +3719,7 @@ mod tests {
             crate::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
         let validator_id = validator(1);
         let identity = validator_identity(1);
-        snapshot.on_chain_state.active_validators = vec![validator_id.clone()];
+        set_test_committee(&mut snapshot, vec![validator_id.clone()]);
         snapshot.on_chain_state.shard_conf.deploy_lifespan = 10;
         snapshot
             .on_chain_state
@@ -3670,7 +3993,11 @@ mod tests {
     fn recovered_deploy_leader_is_independent_of_parent_order_and_sender() {
         let mut snapshot =
             crate::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
-        snapshot.on_chain_state.active_validators = vec![validator(3), validator(1), validator(2)];
+        set_test_committee(&mut snapshot, vec![
+            validator(3),
+            validator(1),
+            validator(2),
+        ]);
         set_last_finalized_height(&mut snapshot, 0);
         snapshot.parents = vec![test_block(
             invalid_block_hash(9),
@@ -3685,6 +4012,7 @@ mod tests {
         assert!(!is_recovered_deploy_leader(&snapshot, &validator_identity(3)).expect("leader"));
 
         snapshot.parents[0].sender = validator(9);
+        snapshot.on_chain_state.active_validators = vec![validator(8), validator(9)];
         assert!(is_recovered_deploy_leader(&snapshot, &validator_identity(1)).expect("leader"));
         assert!(!is_recovered_deploy_leader(&snapshot, &validator_identity(3)).expect("leader"));
     }
@@ -3693,7 +4021,11 @@ mod tests {
     fn recovered_deploy_leader_rotates_by_finalized_height() {
         let mut snapshot =
             crate::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
-        snapshot.on_chain_state.active_validators = vec![validator(3), validator(1), validator(2)];
+        set_test_committee(&mut snapshot, vec![
+            validator(3),
+            validator(1),
+            validator(2),
+        ]);
         set_last_finalized_height(&mut snapshot, 0);
 
         assert!(is_recovered_deploy_leader(&snapshot, &validator_identity(1)).expect("leader"));
@@ -3716,13 +4048,23 @@ mod tests {
     }
 
     #[test]
-    fn recovered_deploy_leader_uses_positive_bonds_without_active_validators() {
+    fn recovered_deploy_leader_uses_the_finalized_floor_committee() {
         let mut snapshot =
             crate::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
         snapshot.on_chain_state.active_validators.clear();
         snapshot.on_chain_state.bonds_map.insert(validator(1), 0);
         snapshot.on_chain_state.bonds_map.insert(validator(2), 10);
         snapshot.on_chain_state.bonds_map.insert(validator(3), 10);
+        snapshot.finalized_floor_bonds = vec![
+            Bond {
+                validator: validator(2),
+                stake: 10,
+            },
+            Bond {
+                validator: validator(3),
+                stake: 10,
+            },
+        ];
         set_last_finalized_height(&mut snapshot, 0);
 
         assert!(is_recovered_deploy_leader(&snapshot, &validator_identity(2)).expect("leader"));
@@ -3749,7 +4091,7 @@ mod tests {
         for height in 0..12 {
             let mut snapshot =
                 crate::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
-            snapshot.on_chain_state.active_validators = validators.clone();
+            set_test_committee(&mut snapshot, validators.clone());
             set_last_finalized_height(&mut snapshot, height);
 
             let elected: Vec<_> = (1..=3)
@@ -3764,23 +4106,82 @@ mod tests {
     }
 
     #[test]
-    fn self_chain_filter_keeps_only_selected_recoveries() {
+    fn self_chain_filter_is_candidate_scope_relative() {
         let recovered = construct_deploy::basic_deploy_data(51, None, Some("test".to_string()))
             .expect("recovered deploy");
-        let ordinary = construct_deploy::basic_deploy_data(52, None, Some("test".to_string()))
-            .expect("ordinary deploy");
+        let active = construct_deploy::basic_deploy_data(52, None, Some("test".to_string()))
+            .expect("active deploy");
+        let rehome = construct_deploy::basic_deploy_data(54, None, Some("test".to_string()))
+            .expect("rehome deploy");
         let unrelated = construct_deploy::basic_deploy_data(53, None, Some("test".to_string()))
             .expect("unrelated deploy");
-        let mut deploys = HashSet::from([recovered.clone(), ordinary.clone(), unrelated.clone()]);
-        let self_chain = HashSet::from([recovered.sig.clone(), ordinary.sig.clone()]);
+        let mut deploys = HashSet::from([
+            recovered.clone(),
+            active.clone(),
+            rehome.clone(),
+            unrelated.clone(),
+        ]);
+        let self_chain = HashSet::from([
+            recovered.sig.clone(),
+            active.sig.clone(),
+            rehome.sig.clone(),
+        ]);
+        let candidate_scope = dashmap::DashSet::from_iter([active.sig.clone()]);
         let selected_recoveries = HashSet::from([recovered.sig.clone()]);
 
-        let removed = filter_self_chain_deploys(&mut deploys, &self_chain, &selected_recoveries);
+        let removed = filter_self_chain_deploys(
+            &mut deploys,
+            &self_chain,
+            &candidate_scope,
+            &selected_recoveries,
+        );
 
         assert_eq!(removed, 1);
         assert!(deploys.contains(&recovered));
-        assert!(!deploys.contains(&ordinary));
+        assert!(!deploys.contains(&active));
+        assert!(deploys.contains(&rehome));
         assert!(deploys.contains(&unrelated));
+    }
+
+    #[test]
+    fn self_chain_candidate_disposition_covers_every_predicate_combination() {
+        use CandidateSelfChainDisposition::{
+            ActiveDuplicate, ExcludedBranchRehome, NotOnSelfChain, SelectedRecovery,
+        };
+
+        let cases = [
+            (false, false, false, NotOnSelfChain),
+            (false, false, true, NotOnSelfChain),
+            (false, true, false, NotOnSelfChain),
+            (false, true, true, NotOnSelfChain),
+            (true, false, false, ExcludedBranchRehome),
+            (true, false, true, SelectedRecovery),
+            (true, true, false, ActiveDuplicate),
+            (true, true, true, SelectedRecovery),
+        ];
+        for (on_self_chain, in_scope, selected_recovery, expected) in cases {
+            let actual =
+                candidate_self_chain_disposition(on_self_chain, in_scope, selected_recovery);
+            assert_eq!(actual, expected);
+            assert_eq!(actual.should_package(), actual != ActiveDuplicate);
+        }
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn candidate_scope_packaging_matches_the_captured_authorization(
+            on_self_chain in proptest::bool::ANY,
+            active_in_candidate_scope in proptest::bool::ANY,
+            selected_recovery in proptest::bool::ANY,
+        ) {
+            let disposition = candidate_self_chain_disposition(
+                on_self_chain,
+                active_in_candidate_scope,
+                selected_recovery,
+            );
+            let expected = !on_self_chain || selected_recovery || !active_in_candidate_scope;
+            proptest::prop_assert_eq!(disposition.should_package(), expected);
+        }
     }
 
     #[tokio::test]
@@ -3820,7 +4221,11 @@ mod tests {
             .expect("block store");
         let mut snapshot =
             crate::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
-        snapshot.on_chain_state.active_validators = vec![validator(1), validator(2), validator(3)];
+        set_test_committee(&mut snapshot, vec![
+            validator(1),
+            validator(2),
+            validator(3),
+        ]);
         snapshot.on_chain_state.shard_conf.deploy_lifespan = 10;
 
         let lfb_hash = invalid_block_hash(0x71);
@@ -4340,7 +4745,11 @@ mod tests {
             .expect("block store");
         let mut snapshot =
             crate::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
-        snapshot.on_chain_state.active_validators = vec![validator(1), validator(2), validator(3)];
+        set_test_committee(&mut snapshot, vec![
+            validator(1),
+            validator(2),
+            validator(3),
+        ]);
         snapshot.on_chain_state.shard_conf.deploy_lifespan = 10;
 
         let lfb_hash = invalid_block_hash(0x86);
@@ -4402,7 +4811,11 @@ mod tests {
             .expect("block store");
         let mut snapshot =
             crate::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
-        snapshot.on_chain_state.active_validators = vec![validator(1), validator(2), validator(3)];
+        set_test_committee(&mut snapshot, vec![
+            validator(1),
+            validator(2),
+            validator(3),
+        ]);
         snapshot.on_chain_state.shard_conf.deploy_lifespan = 10;
 
         let lfb_hash = invalid_block_hash(0x89);
@@ -4473,7 +4886,14 @@ mod tests {
         let seq_num = 42;
         let target_epoch = 7i64;
 
-        let deploy = build_slash_deploy(&invalid_block, &proposer_pk, target_epoch, seq_num);
+        let deploy = build_slash_deploy(
+            &invalid_block,
+            None,
+            &proposer_pk,
+            target_epoch,
+            BondGeneration::GENESIS,
+            seq_num,
+        );
 
         // Straight-through fields.
         assert_eq!(

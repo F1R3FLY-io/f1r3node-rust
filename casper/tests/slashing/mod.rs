@@ -29,7 +29,7 @@
 
 mod generators;
 mod harness;
-mod integration_helpers;
+pub(crate) mod integration_helpers;
 mod integration_t_admissible_equivocation;
 mod integration_t_contains_future_deploy;
 mod integration_t_ignorable_equivocation;

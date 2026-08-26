@@ -26,6 +26,7 @@ use shared::rust::shared::f1r3fly_event::F1r3flyEvent;
 use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
 use tokio::sync::mpsc;
 
+use crate::rust::blocks::block_processing_queue::BlockProcessingQueueSender;
 use crate::rust::casper::{CasperShardConf, MultiParentCasper};
 use crate::rust::engine::block_retriever::BlockRetriever;
 use crate::rust::engine::engine_cell::EngineCell;
@@ -168,7 +169,7 @@ pub fn insert_into_block_and_dag_store(
     block_store.put(genesis.block_hash.clone(), genesis)?;
     block_dag_storage.insert(
         genesis,
-        block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Approved,
+        block_storage::rust::dag::block_dag_key_value_storage::InsertMode::ApprovedGenesis,
     )?;
     block_store.put_approved_block(&approved_block)?;
     Ok(())
@@ -200,10 +201,7 @@ pub async fn send_no_approved_block_available<T: TransportLayer + Send + Sync + 
 // NOTE: Changed to use trait object (dyn MultiParentCasper) instead of generic T
 // based on discussion with Steven for TestFixture compatibility
 pub async fn transition_to_running<U: TransportLayer + Send + Sync + Clone + 'static>(
-    block_processing_queue_tx: mpsc::Sender<(
-        Arc<dyn MultiParentCasper + Send + Sync>,
-        BlockMessage,
-    )>,
+    block_processing_queue_tx: BlockProcessingQueueSender,
     blocks_in_processing: Arc<DashSet<BlockHash>>,
     casper: Arc<dyn MultiParentCasper + Send + Sync>,
     approved_block: ApprovedBlock,
@@ -276,12 +274,10 @@ pub async fn transition_to_running<U: TransportLayer + Send + Sync + Clone + 'st
 // NOTE: Parameter types adapted to match GenesisValidator changes (Arc wrappers, trait objects)
 // based on discussion with Steven for TestFixture compatibility
 pub async fn transition_to_initializing<U: TransportLayer + Send + Sync + Clone + 'static>(
-    block_processing_queue_tx: &mpsc::Sender<(
-        Arc<dyn MultiParentCasper + Send + Sync>,
-        BlockMessage,
-    )>,
+    block_processing_queue_tx: &BlockProcessingQueueSender,
     blocks_in_processing: &Arc<DashSet<BlockHash>>,
     casper_shard_conf: &CasperShardConf,
+    required_genesis_signatures: i32,
     validator_id: &Option<ValidatorIdentity>,
     init: Arc<
         dyn Fn() -> Pin<Box<dyn Future<Output = Result<(), CasperError>> + Send>> + Send + Sync,
@@ -327,6 +323,7 @@ pub async fn transition_to_initializing<U: TransportLayer + Send + Sync + Clone 
         block_processing_queue_tx.clone(),
         blocks_in_processing.clone(),
         casper_shard_conf.clone(),
+        required_genesis_signatures,
         validator_id.clone(),
         init,
         block_tx.clone(),

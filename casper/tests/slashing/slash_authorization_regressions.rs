@@ -23,7 +23,7 @@
 // `epoch_for_block_number`) are exercised against hostile inputs at the
 // same time so a single failure points at the specific rule.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use casper::rust::block_status::{BlockError, InvalidBlock};
@@ -31,11 +31,12 @@ use casper::rust::casper::{CasperShardConf, CasperSnapshot, OnChainCasperState};
 use casper::rust::errors::CasperError;
 use casper::rust::slashing_authorization::{
     authorized_slash_candidates, checked_base_seq, checked_next_seq, epoch_for_block_number,
-    validate_received_slash_deploys, SlashAuthError,
+    has_slash_evidence, validate_received_slash_deploys, CanonicalSlashAuthority, SlashAuthError,
 };
 use casper::rust::validate::Validate;
 use crypto::rust::public_key::PublicKey;
 use dashmap::DashSet;
+use models::rust::bond_generation::BondGeneration;
 use models::rust::casper::protocol::casper_message::{ProcessedSystemDeploy, SystemDeployData};
 use proptest::prelude::*;
 use rspace_plus_plus::rspace::history::Either;
@@ -74,6 +75,11 @@ fn snapshot_from_fixture(
         .iter()
         .map(|validator| (validator.clone(), 100))
         .collect::<HashMap<_, _>>();
+    let bond_generations = fixture
+        .validators
+        .iter()
+        .map(|validator| (validator.clone(), BondGeneration::GENESIS))
+        .collect::<HashMap<_, _>>();
 
     CasperSnapshot {
         dag: fixture
@@ -84,21 +90,59 @@ fn snapshot_from_fixture(
         lca: prost::bytes::Bytes::new(),
         tips: vec![],
         parents: vec![],
-        justifications: HashSet::new(),
+        justifications: Vec::new(),
         invalid_blocks: HashMap::new(),
         deploys_in_scope: Arc::new(DashSet::new()),
         rejected_in_scope: Arc::new(DashSet::new()),
         max_block_num,
         max_seq_nums: HashMap::new(),
+        finalized_floor_bonds: Vec::new(),
         on_chain_state: OnChainCasperState {
             shard_conf: CasperShardConf {
                 epoch_length,
                 ..CasperShardConf::new()
             },
             bonds_map,
+            bond_generations,
             active_validators: bonded,
         },
+        consensus_context:
+            casper::rust::causal_equivocation::CertifiedConsensusContext::pre_genesis(),
     }
+}
+
+fn authority(
+    snapshot: &CasperSnapshot,
+    bonds: &HashMap<prost::bytes::Bytes, i64>,
+) -> CanonicalSlashAuthority {
+    CanonicalSlashAuthority::from_parts(
+        prost::bytes::Bytes::new(),
+        bonds.clone(),
+        snapshot.on_chain_state.bond_generations.clone(),
+    )
+    .expect("canonical authority")
+}
+
+fn candidates(
+    snapshot: &CasperSnapshot,
+    bonds: &HashMap<prost::bytes::Bytes, i64>,
+) -> Result<Vec<casper::rust::slashing_authorization::AuthorizedSlashCandidate>, CasperError> {
+    authorized_slash_candidates(
+        snapshot,
+        snapshot
+            .max_block_num
+            .checked_add(1)
+            .expect("next block number"),
+        &authority(snapshot, bonds),
+    )
+}
+
+fn validate_slashes(
+    block: &models::rust::casper::protocol::casper_message::BlockMessage,
+    snapshot: &CasperSnapshot,
+    bonds: &HashMap<prost::bytes::Bytes, i64>,
+) -> Result<(), CasperError> {
+    validate_received_slash_deploys(block, snapshot, &authority(snapshot, bonds))
 }
 
 fn slash_deploy(
@@ -110,9 +154,31 @@ fn slash_deploy(
         event_list: vec![],
         system_deploy: SystemDeployData::Slash {
             invalid_block_hash,
+            equivocation_block_hash: None,
             issuer_public_key: PublicKey::from_bytes(&issuer),
             target_activation_epoch,
+            target_bond_generation: BondGeneration::GENESIS,
         },
+        pre_state_hash: Vec::<u8>::new().into(),
+        post_state_hash: Vec::<u8>::new().into(),
+    }
+}
+
+fn equivocation_slash_deploy(
+    first_block_hash: prost::bytes::Bytes,
+    second_block_hash: prost::bytes::Bytes,
+    issuer: prost::bytes::Bytes,
+    target_activation_epoch: i64,
+) -> ProcessedSystemDeploy {
+    ProcessedSystemDeploy::Succeeded {
+        event_list: vec![],
+        system_deploy: SystemDeployData::create_equivocation_slash(
+            first_block_hash,
+            second_block_hash,
+            PublicKey::from_bytes(&issuer),
+            target_activation_epoch,
+            BondGeneration::GENESIS,
+        ),
         pre_state_hash: Vec::<u8>::new().into(),
         post_state_hash: Vec::<u8>::new().into(),
     }
@@ -151,8 +217,7 @@ async fn stale_invalid_evidence_is_not_an_authorized_slash_candidate() {
     put_block(&fixture, &invalid, true);
 
     let snapshot = snapshot_from_fixture(&fixture, 10, 10, vec![offender]);
-    let candidates = authorized_slash_candidates(&snapshot, &snapshot.on_chain_state.bonds_map)
-        .expect("candidates");
+    let candidates = candidates(&snapshot, &snapshot.on_chain_state.bonds_map).expect("candidates");
 
     assert!(
         candidates.is_empty(),
@@ -162,29 +227,85 @@ async fn stale_invalid_evidence_is_not_an_authorized_slash_candidate() {
 
 #[tokio::test]
 async fn current_epoch_invalid_evidence_is_authorized_once_per_offender() {
-    let fixture = DetectorFixture::new().await;
-    let offender = fixture.validators[0].clone();
-    let invalid_a = block(31, offender.clone(), 11, vec![], fixture.validators.clone());
-    let invalid_b = block(32, offender.clone(), 12, vec![], fixture.validators.clone());
-    for invalid in [&invalid_a, &invalid_b] {
-        put_block(&fixture, invalid, true);
+    for reverse in [false, true] {
+        let fixture = DetectorFixture::new().await;
+        let offender = fixture.validators[0].clone();
+        let invalid_a = block(31, offender.clone(), 11, vec![], fixture.validators.clone());
+        let invalid_b = block(32, offender.clone(), 12, vec![], fixture.validators.clone());
+        let evidence = if reverse {
+            [&invalid_b, &invalid_a]
+        } else {
+            [&invalid_a, &invalid_b]
+        };
+        for invalid in evidence {
+            put_block(&fixture, invalid, true);
+        }
+
+        let snapshot = snapshot_from_fixture(&fixture, 11, 10, vec![offender.clone()]);
+        let candidates =
+            candidates(&snapshot, &snapshot.on_chain_state.bonds_map).expect("candidates");
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].offender, offender);
+        assert_eq!(candidates[0].target_activation_epoch.get(), 1);
+        assert_eq!(
+            candidates[0].invalid_block_hash,
+            invalid_a
+                .block_hash
+                .clone()
+                .min(invalid_b.block_hash.clone())
+        );
     }
+}
 
-    let snapshot = snapshot_from_fixture(&fixture, 11, 10, vec![offender.clone()]);
-    let candidates = authorized_slash_candidates(&snapshot, &snapshot.on_chain_state.bonds_map)
-        .expect("candidates");
+#[tokio::test]
+async fn neglected_equivocation_uses_pre_state_bonds_across_local_invalid_views() {
+    for reverse_invalid in [false, true] {
+        let fixture = DetectorFixture::new().await;
+        let offender = fixture.validators[0].clone();
+        let child_a = block(41, offender.clone(), 1, vec![], fixture.validators.clone());
+        let child_b = block(42, offender.clone(), 1, vec![], fixture.validators.clone());
+        put_block(&fixture, &child_a, reverse_invalid);
+        put_block(&fixture, &child_b, !reverse_invalid);
+        fixture.add_record(0, 0, &[]);
 
-    assert_eq!(candidates.len(), 1);
-    assert_eq!(candidates[0].offender, offender);
-    // Phase 10 (C-5): typed Epoch newtype — compare via .get() or Epoch::new.
-    assert_eq!(candidates[0].target_activation_epoch.get(), 1);
-    assert_eq!(
-        candidates[0].invalid_block_hash,
-        invalid_a
-            .block_hash
-            .clone()
-            .min(invalid_b.block_hash.clone())
-    );
+        let candidate = block(
+            43,
+            fixture.validators[4].clone(),
+            2,
+            vec![
+                justification(fixture.validators[2].clone(), child_a.block_hash.clone()),
+                justification(fixture.validators[3].clone(), child_b.block_hash.clone()),
+            ],
+            fixture.validators[1..].to_vec(),
+        );
+        let bonded_pre_state = fixture
+            .validators
+            .iter()
+            .cloned()
+            .map(|validator| (validator, 100))
+            .collect();
+        let unbonded_pre_state = fixture
+            .validators
+            .iter()
+            .skip(1)
+            .cloned()
+            .map(|validator| (validator, 100))
+            .collect();
+
+        assert_eq!(
+            fixture
+                .check_with_pre_state_bonds(&candidate, &bonded_pre_state)
+                .await,
+            Either::Left(BlockError::Invalid(InvalidBlock::NeglectedEquivocation))
+        );
+        assert_eq!(
+            fixture
+                .check_with_pre_state_bonds(&candidate, &unbonded_pre_state)
+                .await,
+            Either::Right(casper::rust::block_status::ValidBlock::Valid)
+        );
+    }
 }
 
 #[tokio::test]
@@ -210,12 +331,8 @@ async fn received_stale_slash_deploy_is_rejected_before_replay() {
     slash_block.body.state.block_number = 11;
     slash_block.body.system_deploys = vec![slash_deploy(invalid.block_hash.clone(), proposer, 0)];
 
-    let err = validate_received_slash_deploys(
-        &slash_block,
-        &snapshot,
-        &snapshot.on_chain_state.bonds_map,
-    )
-    .expect_err("reject stale");
+    let err = validate_slashes(&slash_block, &snapshot, &snapshot.on_chain_state.bonds_map)
+        .expect_err("reject stale");
     // Per-variant pattern match (regression hardening: prior `.contains()`
     // assertion would silently pass any error whose Display includes
     // "non-current epoch", masking a wrong-variant rerouting).
@@ -253,8 +370,295 @@ async fn current_epoch_received_slash_deploy_is_accepted() {
         fixture.validators.clone(),
     );
 
-    validate_received_slash_deploys(&slash_block, &snapshot, &snapshot.on_chain_state.bonds_map)
+    validate_slashes(&slash_block, &snapshot, &snapshot.on_chain_state.bonds_map)
         .expect("current slash deploy");
+}
+
+#[tokio::test]
+async fn objective_equivocation_slash_is_arrival_order_independent() {
+    let forward = DetectorFixture::new().await;
+    let reverse = DetectorFixture::new().await;
+    let offender = forward.validators[0].clone();
+    let proposer = forward.validators[1].clone();
+    assert_eq!(reverse.validators[0], offender);
+    assert_eq!(reverse.validators[1], proposer);
+
+    let first = block(53, offender.clone(), 11, vec![], forward.validators.clone());
+    let second = block(54, offender.clone(), 11, vec![], forward.validators.clone());
+    put_block(&forward, &first, false);
+    put_block(&forward, &second, true);
+    put_block(&reverse, &second, false);
+    put_block(&reverse, &first, true);
+
+    let forward_snapshot =
+        snapshot_from_fixture(&forward, 11, 10, vec![offender.clone(), proposer.clone()]);
+    let reverse_snapshot =
+        snapshot_from_fixture(&reverse, 11, 10, vec![offender.clone(), proposer.clone()]);
+    let forward_candidates = candidates(
+        &forward_snapshot,
+        &forward_snapshot.on_chain_state.bonds_map,
+    )
+    .expect("forward candidates");
+    let reverse_candidates = candidates(
+        &reverse_snapshot,
+        &reverse_snapshot.on_chain_state.bonds_map,
+    )
+    .expect("reverse candidates");
+    assert_eq!(forward_candidates, reverse_candidates);
+    assert_eq!(forward_candidates.len(), 1);
+    assert_eq!(forward_candidates[0].offender, offender);
+    assert_eq!(
+        (
+            forward_candidates[0].invalid_block_hash.clone(),
+            forward_candidates[0]
+                .equivocation_block_hash
+                .clone()
+                .expect("paired evidence"),
+        ),
+        (first.block_hash.clone(), second.block_hash.clone())
+    );
+
+    let mut slash = block(55, proposer.clone(), 11, vec![], forward.validators.clone());
+    slash.body.state.block_number = 11;
+    slash.body.system_deploys = vec![equivocation_slash_deploy(
+        second.block_hash,
+        first.block_hash,
+        proposer,
+        1,
+    )];
+    validate_slashes(
+        &slash,
+        &forward_snapshot,
+        &forward_snapshot.on_chain_state.bonds_map,
+    )
+    .expect("forward accepts objective pair");
+    validate_slashes(
+        &slash,
+        &reverse_snapshot,
+        &reverse_snapshot.on_chain_state.bonds_map,
+    )
+    .expect("reverse accepts objective pair");
+}
+
+#[tokio::test]
+async fn objective_equivocation_slash_rejects_noncanonical_or_mismatched_pairs() {
+    let fixture = DetectorFixture::new().await;
+    let offender = fixture.validators[0].clone();
+    let proposer = fixture.validators[1].clone();
+    let other = fixture.validators[2].clone();
+    let first = block(56, offender.clone(), 11, vec![], fixture.validators.clone());
+    let second = block(57, offender.clone(), 11, vec![], fixture.validators.clone());
+    let wrong_sender = block(58, other.clone(), 11, vec![], fixture.validators.clone());
+    let wrong_sequence = block(59, offender.clone(), 12, vec![], fixture.validators.clone());
+    for evidence in [&first, &second, &wrong_sender, &wrong_sequence] {
+        put_block(&fixture, evidence, evidence.block_hash != first.block_hash);
+    }
+    let snapshot = snapshot_from_fixture(&fixture, 11, 10, vec![offender, proposer.clone(), other]);
+
+    let mut noncanonical = block(60, proposer.clone(), 11, vec![], fixture.validators.clone());
+    noncanonical.body.state.block_number = 11;
+    noncanonical.body.system_deploys = vec![ProcessedSystemDeploy::Succeeded {
+        event_list: vec![],
+        system_deploy: SystemDeployData::Slash {
+            invalid_block_hash: second.block_hash.clone(),
+            equivocation_block_hash: Some(first.block_hash.clone()),
+            issuer_public_key: PublicKey::from_bytes(&proposer),
+            target_activation_epoch: 1,
+            target_bond_generation: BondGeneration::GENESIS,
+        },
+        pre_state_hash: Vec::<u8>::new().into(),
+        post_state_hash: Vec::<u8>::new().into(),
+    }];
+    let err = validate_slashes(&noncanonical, &snapshot, &snapshot.on_chain_state.bonds_map)
+        .expect_err("noncanonical pair");
+    assert!(matches!(
+        err,
+        CasperError::SlashAuth(SlashAuthError::NonCanonicalEquivocationPair { .. })
+    ));
+
+    for conflicting_hash in [wrong_sender.block_hash, wrong_sequence.block_hash] {
+        let mut mismatched = noncanonical.clone();
+        mismatched.body.system_deploys = vec![equivocation_slash_deploy(
+            first.block_hash.clone(),
+            conflicting_hash,
+            proposer.clone(),
+            1,
+        )];
+        let err = validate_slashes(&mismatched, &snapshot, &snapshot.on_chain_state.bonds_map)
+            .expect_err("mismatched pair");
+        assert!(matches!(
+            err,
+            CasperError::SlashAuth(SlashAuthError::EquivocationEvidenceMismatch)
+        ));
+    }
+}
+
+#[tokio::test]
+async fn cross_epoch_objective_pair_never_falls_back_to_local_unary_evidence() {
+    let forward = DetectorFixture::new().await;
+    let reverse = DetectorFixture::new().await;
+    let offender = forward.validators[0].clone();
+    let mut prior_epoch = block(61, offender.clone(), 11, vec![], forward.validators.clone());
+    prior_epoch.body.state.block_number = 9;
+    let mut current_epoch = block(62, offender.clone(), 11, vec![], forward.validators.clone());
+    current_epoch.body.state.block_number = 10;
+    put_block(&forward, &prior_epoch, false);
+    put_block(&forward, &current_epoch, true);
+    put_block(&reverse, &current_epoch, false);
+    put_block(&reverse, &prior_epoch, true);
+    let forward_snapshot = snapshot_from_fixture(&forward, 10, 10, vec![offender.clone()]);
+    let reverse_snapshot = snapshot_from_fixture(&reverse, 10, 10, vec![offender]);
+
+    assert!(candidates(
+        &forward_snapshot,
+        &forward_snapshot.on_chain_state.bonds_map,
+    )
+    .expect("forward candidates")
+    .is_empty());
+    assert!(candidates(
+        &reverse_snapshot,
+        &reverse_snapshot.on_chain_state.bonds_map,
+    )
+    .expect("reverse candidates")
+    .is_empty());
+}
+
+#[tokio::test]
+async fn candidate_pair_is_canonicalized_within_the_target_lifetime() {
+    let fixture = DetectorFixture::new().await;
+    let offender = fixture.validators[0].clone();
+    let mut old = block(63, offender.clone(), 11, vec![], fixture.validators.clone());
+    old.body.state.block_number = 9;
+    let mut current_first = block(64, offender.clone(), 11, vec![], fixture.validators.clone());
+    current_first.body.state.block_number = 10;
+    let mut current_second = block(65, offender.clone(), 11, vec![], fixture.validators.clone());
+    current_second.body.state.block_number = 11;
+    for evidence in [&old, &current_first, &current_second] {
+        put_block(&fixture, evidence, false);
+    }
+    let snapshot = snapshot_from_fixture(&fixture, 10, 10, vec![offender.clone()]);
+
+    let candidates = candidates(&snapshot, &snapshot.on_chain_state.bonds_map)
+        .expect("current-lifetime candidates");
+    assert_eq!(candidates.len(), 1);
+    assert_eq!(candidates[0].offender, offender);
+    assert_eq!(candidates[0].invalid_block_hash, current_first.block_hash);
+    assert_eq!(
+        candidates[0].equivocation_block_hash,
+        Some(current_second.block_hash)
+    );
+}
+
+#[tokio::test]
+async fn objective_pair_activates_authority_without_invalid_index() {
+    let fixture = DetectorFixture::new().await;
+    let offender = fixture.validators[0].clone();
+    let first = block(69, offender.clone(), 11, vec![], fixture.validators.clone());
+    let second = block(70, offender.clone(), 11, vec![], fixture.validators.clone());
+    put_block(&fixture, &first, false);
+    put_block(&fixture, &second, false);
+    let snapshot = snapshot_from_fixture(&fixture, 10, 10, vec![offender.clone()]);
+
+    assert!(snapshot.dag.invalid_blocks().is_empty());
+    assert!(has_slash_evidence(&snapshot));
+    let candidates =
+        candidates(&snapshot, &snapshot.on_chain_state.bonds_map).expect("pair-only candidate");
+    assert_eq!(candidates.len(), 1);
+    assert_eq!(candidates[0].offender, offender);
+    assert_eq!(candidates[0].invalid_block_hash, first.block_hash);
+    assert_eq!(
+        candidates[0].equivocation_block_hash,
+        Some(second.block_hash)
+    );
+}
+
+#[tokio::test]
+async fn objective_pair_selection_is_permutation_invariant_after_epoch_filtering() {
+    let permutations = [
+        [0usize, 1, 2],
+        [0, 2, 1],
+        [1, 0, 2],
+        [1, 2, 0],
+        [2, 0, 1],
+        [2, 1, 0],
+    ];
+    for order in permutations {
+        let fixture = DetectorFixture::new().await;
+        let offender = fixture.validators[0].clone();
+        let mut old = block(71, offender.clone(), 11, vec![], fixture.validators.clone());
+        old.body.state.block_number = 9;
+        let mut current_first = block(72, offender.clone(), 11, vec![], fixture.validators.clone());
+        current_first.body.state.block_number = 10;
+        let mut current_second =
+            block(73, offender.clone(), 11, vec![], fixture.validators.clone());
+        current_second.body.state.block_number = 11;
+        let evidence = [&old, &current_first, &current_second];
+        for index in order {
+            put_block(&fixture, evidence[index], false);
+        }
+        let snapshot = snapshot_from_fixture(&fixture, 10, 10, vec![offender]);
+        let selected = candidates(&snapshot, &snapshot.on_chain_state.bonds_map)
+            .expect("permutation candidate");
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].invalid_block_hash, current_first.block_hash);
+        assert_eq!(
+            selected[0].equivocation_block_hash,
+            Some(current_second.block_hash.clone())
+        );
+    }
+}
+
+#[tokio::test]
+async fn received_cross_epoch_objective_pair_is_rejected() {
+    let fixture = DetectorFixture::new().await;
+    let offender = fixture.validators[0].clone();
+    let proposer = fixture.validators[1].clone();
+    let mut old = block(74, offender.clone(), 11, vec![], fixture.validators.clone());
+    old.body.state.block_number = 9;
+    let mut current = block(75, offender.clone(), 11, vec![], fixture.validators.clone());
+    current.body.state.block_number = 10;
+    put_block(&fixture, &old, false);
+    put_block(&fixture, &current, false);
+    let snapshot =
+        snapshot_from_fixture(&fixture, 10, 10, vec![offender.clone(), proposer.clone()]);
+    let mut slash = block(76, proposer.clone(), 11, vec![], fixture.validators.clone());
+    slash.body.state.block_number = 11;
+    slash.body.system_deploys = vec![equivocation_slash_deploy(
+        old.block_hash,
+        current.block_hash,
+        proposer,
+        1,
+    )];
+
+    let error = validate_slashes(&slash, &snapshot, &snapshot.on_chain_state.bonds_map)
+        .expect_err("cross-epoch pair");
+    assert!(matches!(
+        error,
+        CasperError::SlashAuth(SlashAuthError::EvidenceEpochMismatch { .. })
+    ));
+}
+
+#[tokio::test]
+async fn structural_collision_suppresses_only_its_own_unary_fallback() {
+    let fixture = DetectorFixture::new().await;
+    let offender = fixture.validators[0].clone();
+    let mut old = block(66, offender.clone(), 11, vec![], fixture.validators.clone());
+    old.body.state.block_number = 9;
+    let mut current = block(67, offender.clone(), 11, vec![], fixture.validators.clone());
+    current.body.state.block_number = 10;
+    let mut independent = block(68, offender.clone(), 12, vec![], fixture.validators.clone());
+    independent.body.state.block_number = 10;
+    put_block(&fixture, &old, false);
+    put_block(&fixture, &current, true);
+    put_block(&fixture, &independent, true);
+    let snapshot = snapshot_from_fixture(&fixture, 10, 10, vec![offender.clone()]);
+
+    let candidates = candidates(&snapshot, &snapshot.on_chain_state.bonds_map)
+        .expect("independent unary candidate");
+    assert_eq!(candidates.len(), 1);
+    assert_eq!(candidates[0].offender, offender);
+    assert_eq!(candidates[0].invalid_block_hash, independent.block_hash);
+    assert_eq!(candidates[0].equivocation_block_hash, None);
 }
 
 #[tokio::test]
@@ -268,7 +672,7 @@ async fn canonical_pre_state_zero_overrides_positive_snapshot_bond() {
     let snapshot =
         snapshot_from_fixture(&fixture, 11, 10, vec![offender.clone(), proposer.clone()]);
     let canonical_bonds = HashMap::from([(proposer.clone(), 100)]);
-    let candidates = authorized_slash_candidates(&snapshot, &canonical_bonds).expect("candidates");
+    let candidates = candidates(&snapshot, &canonical_bonds).expect("candidates");
     assert!(candidates.is_empty());
 
     let slash_block = slash_block(
@@ -280,7 +684,7 @@ async fn canonical_pre_state_zero_overrides_positive_snapshot_bond() {
         1,
         fixture.validators.clone(),
     );
-    let err = validate_received_slash_deploys(&slash_block, &snapshot, &canonical_bonds)
+    let err = validate_slashes(&slash_block, &snapshot, &canonical_bonds)
         .expect_err("canonical zero bond must reject slash");
     assert!(matches!(
         err,
@@ -298,7 +702,7 @@ async fn canonical_pre_state_positive_overrides_zero_snapshot_bond() {
 
     let snapshot = snapshot_from_fixture(&fixture, 11, 10, vec![proposer.clone()]);
     let canonical_bonds = HashMap::from([(offender.clone(), 100), (proposer.clone(), 100)]);
-    let candidates = authorized_slash_candidates(&snapshot, &canonical_bonds).expect("candidates");
+    let candidates = candidates(&snapshot, &canonical_bonds).expect("candidates");
     assert_eq!(candidates.len(), 1);
     assert_eq!(candidates[0].offender, offender);
 
@@ -311,8 +715,49 @@ async fn canonical_pre_state_positive_overrides_zero_snapshot_bond() {
         1,
         fixture.validators.clone(),
     );
-    validate_received_slash_deploys(&slash_block, &snapshot, &canonical_bonds)
+    validate_slashes(&slash_block, &snapshot, &canonical_bonds)
         .expect("canonical positive bond must authorize slash");
+}
+
+#[tokio::test]
+async fn canonical_pre_state_generation_overrides_stale_snapshot_generation() {
+    let fixture = DetectorFixture::new().await;
+    let offender = fixture.validators[0].clone();
+    let proposer = fixture.validators[1].clone();
+    let invalid = block(77, offender.clone(), 11, vec![], fixture.validators.clone());
+    put_block(&fixture, &invalid, true);
+
+    let mut snapshot =
+        snapshot_from_fixture(&fixture, 11, 10, vec![offender.clone(), proposer.clone()]);
+    snapshot.on_chain_state.bond_generations.insert(
+        offender.clone(),
+        BondGeneration::GENESIS.next().expect("stale generation"),
+    );
+    let canonical = CanonicalSlashAuthority::from_parts(
+        prost::bytes::Bytes::from_static(b"canonical-pre-state"),
+        HashMap::from([(offender.clone(), 100), (proposer.clone(), 100)]),
+        HashMap::from([
+            (offender.clone(), BondGeneration::GENESIS),
+            (proposer.clone(), BondGeneration::GENESIS),
+        ]),
+    )
+    .expect("canonical authority");
+
+    let selected = authorized_slash_candidates(&snapshot, 12, &canonical).expect("candidate");
+    assert_eq!(selected.len(), 1);
+    assert_eq!(selected[0].offender, offender);
+
+    let slash_block = slash_block(
+        78,
+        proposer.clone(),
+        12,
+        invalid.block_hash,
+        proposer,
+        1,
+        fixture.validators.clone(),
+    );
+    validate_received_slash_deploys(&slash_block, &snapshot, &canonical)
+        .expect("canonical generation authorizes slash");
 }
 
 #[tokio::test]
@@ -335,12 +780,8 @@ async fn received_slash_deploy_rejects_issuer_mismatch() {
         fixture.validators.clone(),
     );
 
-    let err = validate_received_slash_deploys(
-        &slash_block,
-        &snapshot,
-        &snapshot.on_chain_state.bonds_map,
-    )
-    .expect_err("reject issuer");
+    let err = validate_slashes(&slash_block, &snapshot, &snapshot.on_chain_state.bonds_map)
+        .expect_err("reject issuer");
     assert!(
         matches!(
             err,
@@ -367,12 +808,8 @@ async fn received_slash_deploy_rejects_unknown_invalid_hash() {
         fixture.validators.clone(),
     );
 
-    let err = validate_received_slash_deploys(
-        &slash_block,
-        &snapshot,
-        &snapshot.on_chain_state.bonds_map,
-    )
-    .expect_err("reject unknown");
+    let err = validate_slashes(&slash_block, &snapshot, &snapshot.on_chain_state.bonds_map)
+        .expect_err("reject unknown");
     assert!(
         matches!(
             err,
@@ -402,12 +839,8 @@ async fn received_slash_deploy_rejects_valid_block_reference() {
         fixture.validators.clone(),
     );
 
-    let err = validate_received_slash_deploys(
-        &slash_block,
-        &snapshot,
-        &snapshot.on_chain_state.bonds_map,
-    )
-    .expect_err("reject valid");
+    let err = validate_slashes(&slash_block, &snapshot, &snapshot.on_chain_state.bonds_map)
+        .expect_err("reject valid");
     assert!(
         matches!(
             err,
@@ -437,12 +870,8 @@ async fn received_slash_deploy_rejects_unbonded_target() {
         fixture.validators.clone(),
     );
 
-    let err = validate_received_slash_deploys(
-        &slash_block,
-        &snapshot,
-        &snapshot.on_chain_state.bonds_map,
-    )
-    .expect_err("reject unbonded");
+    let err = validate_slashes(&slash_block, &snapshot, &snapshot.on_chain_state.bonds_map)
+        .expect_err("reject unbonded");
     assert!(
         matches!(
             err,
@@ -476,12 +905,8 @@ async fn received_slash_deploy_rejects_duplicate_target_in_one_block() {
         .system_deploys
         .push(slash_deploy(invalid.block_hash.clone(), proposer, 1));
 
-    let err = validate_received_slash_deploys(
-        &slash_block,
-        &snapshot,
-        &snapshot.on_chain_state.bonds_map,
-    )
-    .expect_err("reject duplicate");
+    let err = validate_slashes(&slash_block, &snapshot, &snapshot.on_chain_state.bonds_map)
+        .expect_err("reject duplicate");
     assert!(
         matches!(
             err,
@@ -514,7 +939,7 @@ async fn duplicate_justification_validators_are_invalid() {
     );
     candidate.header.parents_hash_list = vec![fixture.genesis.block_hash.clone()];
 
-    let result = Validate::justification_follows(&candidate, &fixture.block_store);
+    let result = Validate::justifications_well_formed(&candidate);
 
     assert_eq!(
         result,

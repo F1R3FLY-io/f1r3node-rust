@@ -16,6 +16,7 @@ use crypto::rust::private_key::PrivateKey;
 use crypto::rust::signatures::secp256k1::Secp256k1;
 use crypto::rust::signatures::signed::Signed;
 use dashmap::DashSet;
+use models::rust::bond_generation::BondGeneration;
 use models::rust::casper::protocol::casper_message::DeployData;
 use models::ByteString;
 use prost::bytes::Bytes;
@@ -90,6 +91,7 @@ fn create_snapshot(
     let on_chain_state = OnChainCasperState {
         shard_conf,
         bonds_map,
+        bond_generations: HashMap::from([(validator_id.clone(), BondGeneration::GENESIS)]),
         active_validators: vec![validator_id],
     };
 
@@ -102,13 +104,16 @@ fn create_snapshot(
         lca: Bytes::new(),
         tips: vec![],
         parents: vec![],
-        justifications: HashSet::new(),
+        justifications: Vec::new(),
         invalid_blocks: HashMap::new(),
         deploys_in_scope: Arc::new(DashSet::new()),
         rejected_in_scope: Arc::new(DashSet::new()),
         max_block_num,
         max_seq_nums,
+        finalized_floor_bonds: Vec::new(),
         on_chain_state,
+        consensus_context:
+            casper::rust::causal_equivocation::CertifiedConsensusContext::pre_genesis(),
     };
     seed_finalized_boundary(&mut snapshot, block_store);
     snapshot

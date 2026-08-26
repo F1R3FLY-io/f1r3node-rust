@@ -34,6 +34,38 @@ fn set_state_effect_provenance(
         .expect("replace block state-effect provenance");
 }
 
+async fn highest_exact_state_certified_candidate(
+    dag: &block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation,
+    latest_messages: &std::collections::BTreeMap<Validator, BlockHash>,
+    current_lfb: &BlockHash,
+    current_lfb_height: i64,
+    threshold: FtThreshold,
+) -> Result<Option<BlockHash>, Box<dyn std::error::Error + Send + Sync>> {
+    let mut eligible = Vec::new();
+    for candidate in &dag.dag_set {
+        let block_number = dag.block_number_unsafe(candidate)?;
+        if candidate == current_lfb || block_number <= current_lfb_height {
+            continue;
+        }
+        if CliqueOracle::ft_witnessed_exact(candidate, dag, latest_messages, threshold).await?
+            && casper::rust::finality::floor::is_state_preserved(dag, current_lfb, candidate)?
+            && casper::rust::finality::floor::state_witnessed_exact(
+                dag,
+                candidate,
+                latest_messages,
+                threshold,
+            )
+            .await?
+        {
+            eligible.push((block_number, candidate.clone()));
+        }
+    }
+    Ok(eligible
+        .into_iter()
+        .max_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(&right.1)))
+        .map(|(_, hash)| hash))
+}
+
 fn create_block_creator<'a>(
     bonds: &'a [Bond],
     genesis: &'a BlockMessage,
@@ -110,7 +142,7 @@ fn cannot_be_orphaned_should_return_false_on_stake_sum_overflow() {
 //   *               b1         <- should be LFB
 //   v1 v2 v3 v4 v5
 #[tokio::test]
-async fn finalizer_advances_only_to_highest_eligible_main_chain_descendant_and_invokes_effects() {
+async fn finalizer_advances_to_highest_eligible_causal_descendant_and_invokes_effects() {
     with_storage(|mut store, mut dag_store| async move {
         let validators = [
             generate_validator(Some("Validator 1")),
@@ -128,7 +160,7 @@ async fn finalizer_advances_only_to_highest_eligible_main_chain_descendant_and_i
             .collect();
 
         let lfb_store = Rc::new(RefCell::new(BlockHash::default()));
-        let lfb_effect_invoked = Rc::new(RefCell::new(false));
+        let lfb_effect_invocations = Rc::new(RefCell::new(0_usize));
 
         let genesis = create_genesis_block(
             &mut store,
@@ -272,16 +304,16 @@ async fn finalizer_advances_only_to_highest_eligible_main_chain_descendant_and_i
 
         let dag = dag_store.get_representation().expect("dag representation");
         let lfb = {
-            let lfb_effect_invoked = lfb_effect_invoked.clone();
+            let lfb_effect_invocations = lfb_effect_invocations.clone();
             Finalizer::run(
                 &dag,
                 FtThreshold::from_f32_lossy(-1.0),
                 &b1.block_hash,
                 finalized_height,
                 move |(_m, _ft)| {
-                    let lfb_effect_invoked = lfb_effect_invoked.clone();
+                    let lfb_effect_invocations = lfb_effect_invocations.clone();
                     async move {
-                        *lfb_effect_invoked.borrow_mut() = true;
+                        *lfb_effect_invocations.borrow_mut() += 1;
                         Ok(())
                     }
                 },
@@ -291,8 +323,51 @@ async fn finalizer_advances_only_to_highest_eligible_main_chain_descendant_and_i
             .unwrap()
         };
 
-        assert_eq!(lfb, None);
-        assert!(!(*lfb_effect_invoked.borrow()));
+        let secondary = lfb.expect("a majority-certified merge parent must finalize");
+        let latest_messages = dag
+            .latest_message_hashes()
+            .into_iter()
+            .collect::<std::collections::BTreeMap<_, _>>();
+        let threshold = FtThreshold::from_f32_lossy(-1.0);
+        let expected_secondary = highest_exact_state_certified_candidate(
+            &dag,
+            &latest_messages,
+            &b1.block_hash,
+            finalized_height,
+            threshold,
+        )
+        .await
+        .expect("exact candidate search")
+        .expect("eligible secondary parent");
+        assert_eq!(secondary.0, expected_secondary);
+        assert_eq!(*lfb_effect_invocations.borrow(), 1);
+        assert!(
+            CliqueOracle::ft_witnessed_exact(&secondary.0, &dag, &latest_messages, threshold,)
+                .await
+                .expect("selected secondary causal certificate")
+        );
+        assert!(casper::rust::finality::floor::state_witnessed_exact(
+            &dag,
+            &secondary.0,
+            &latest_messages,
+            threshold,
+        )
+        .await
+        .expect("selected secondary state certificate"));
+        assert!(casper::rust::finality::floor::is_state_preserved(
+            &dag,
+            &b1.block_hash,
+            &secondary.0,
+        )
+        .expect("selected secondary preserves the current floor"));
+        assert!(!CliqueOracle::ft_witnessed_exact(
+            &b7.block_hash,
+            &dag,
+            &latest_messages,
+            threshold,
+        )
+        .await
+        .expect("merge causal certificate"));
 
         // add more 3 children - finalization should advance
         creator3(
@@ -339,8 +414,10 @@ async fn finalizer_advances_only_to_highest_eligible_main_chain_descendant_and_i
             Finalizer::run(
                 &dag,
                 FtThreshold::from_f32_lossy(-1.0),
-                &b1.block_hash,
-                finalized_height,
+                &secondary.0,
+                dag.lookup_unsafe(&secondary.0)
+                    .expect("secondary metadata")
+                    .block_number,
                 move |(m, _ft)| {
                     let lfb_store = lfb_store.clone();
                     let finalised_store = finalised_store.clone();
@@ -712,6 +789,138 @@ async fn finalizer_advances_to_state_descendant_when_lfb_is_a_secondary_parent()
 }
 
 #[tokio::test]
+async fn finalizer_discovers_state_certified_secondary_parent_through_all_parent_coverage() {
+    with_storage(|mut store, mut dag_store| async move {
+        let validators = [
+            generate_validator(Some("All Parent Validator 1")),
+            generate_validator(Some("All Parent Validator 2")),
+            generate_validator(Some("All Parent Validator 3")),
+            generate_validator(Some("All Parent Validator 4")),
+        ];
+        let bonds = validators
+            .iter()
+            .zip([1, 3, 5, 7])
+            .map(|(validator, stake)| Bond {
+                validator: validator.clone(),
+                stake,
+            })
+            .collect::<Vec<_>>();
+        let genesis = create_genesis_block(
+            &mut store,
+            &mut dag_store,
+            None,
+            Some(bonds.clone()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        let creators = validators
+            .iter()
+            .map(|validator| create_block_creator(&bonds, &genesis, validator))
+            .collect::<Vec<_>>();
+        let genesis_justifications = validators
+            .iter()
+            .map(|validator| (validator, &genesis))
+            .collect::<HashMap<_, _>>();
+        let siblings = creators[..3]
+            .iter()
+            .map(|creator| {
+                creator(
+                    &mut store,
+                    &mut dag_store,
+                    vec![&genesis],
+                    &genesis_justifications,
+                )
+            })
+            .collect::<Vec<_>>();
+        let merge_justifications = HashMap::from([
+            (&validators[0], &siblings[0]),
+            (&validators[1], &siblings[1]),
+            (&validators[2], &siblings[2]),
+            (&validators[3], &genesis),
+        ]);
+        let merge = creators[3](
+            &mut store,
+            &mut dag_store,
+            vec![&siblings[0], &siblings[1], &siblings[2]],
+            &merge_justifications,
+        );
+        let dag = dag_store.get_representation().expect("dag representation");
+        for block in &siblings {
+            set_state_effect_provenance(&dag, &block.block_hash, &[0], &[]);
+        }
+        let rejected = siblings[..2]
+            .iter()
+            .map(|block| StateEffectId {
+                source_block_hash: block.block_hash.clone(),
+                execution_index: 0,
+            })
+            .collect::<Vec<_>>();
+        set_state_effect_provenance(&dag, &merge.block_hash, &[], &rejected);
+
+        assert_eq!(merge.header.parents_hash_list[0], siblings[0].block_hash);
+        assert!(!dag
+            .is_in_main_chain(&siblings[2].block_hash, &merge.block_hash)
+            .expect("secondary-parent main-chain relation"));
+        let latest_messages = dag
+            .latest_message_hashes()
+            .into_iter()
+            .collect::<std::collections::BTreeMap<_, _>>();
+        let threshold = FtThreshold::from_f32_lossy(0.0);
+        for latest in latest_messages.values() {
+            casper::rust::finality::floor::floor_of_block(&dag, latest, threshold)
+                .await
+                .expect("latest-message floor provenance");
+        }
+        assert!(!CliqueOracle::ft_witnessed_exact(
+            &siblings[0].block_hash,
+            &dag,
+            &latest_messages,
+            threshold,
+        )
+        .await
+        .expect("strict half-support verdict"));
+        assert!(!casper::rust::finality::floor::state_witnessed_exact(
+            &dag,
+            &siblings[1].block_hash,
+            &latest_messages,
+            threshold,
+        )
+        .await
+        .expect("state-rejected sibling verdict"));
+        assert!(casper::rust::finality::floor::state_witnessed_exact(
+            &dag,
+            &siblings[2].block_hash,
+            &latest_messages,
+            threshold,
+        )
+        .await
+        .expect("surviving secondary sibling verdict"));
+
+        let result = Finalizer::run(
+            &dag,
+            threshold,
+            &genesis.block_hash,
+            genesis.body.state.block_number,
+            |(_block, _ft)| async { Ok::<(), KvStoreError>(()) },
+            &FinalizerConf::default(),
+        )
+        .await
+        .expect("finalizer run")
+        .expect("secondary-parent candidate");
+
+        assert_eq!(result.0, siblings[2].block_hash);
+
+        Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
+    })
+    .await
+    .expect("validation fixture");
+}
+
+#[tokio::test]
 async fn finalizer_rejects_dag_descendant_without_state_lineage() {
     with_storage(|mut store, mut dag_store| async move {
         let validators = [
@@ -823,7 +1032,6 @@ async fn finalizer_rejects_dag_descendant_without_state_lineage() {
             &dag,
             &latest_messages,
             FtThreshold::from_f32_lossy(-1.0),
-            true,
         )
         .await
         .expect("exact clique decision"));
@@ -832,7 +1040,6 @@ async fn finalizer_rejects_dag_descendant_without_state_lineage() {
             &merge.block_hash,
             &latest_messages,
             FtThreshold::from_f32_lossy(-1.0),
-            true,
         )
         .await
         .expect("state certificate"));
@@ -973,7 +1180,6 @@ async fn finalizer_rejects_causal_certificate_without_state_support() {
             &dag,
             &latest_messages,
             threshold,
-            true,
         )
         .await
         .expect("causal certificate"));
@@ -982,7 +1188,6 @@ async fn finalizer_rejects_causal_certificate_without_state_support() {
             &rejected_parent.block_hash,
             &latest_messages,
             threshold,
-            true,
         )
         .await
         .expect("state certificate"));
@@ -1141,7 +1346,7 @@ async fn finalizer_examines_a_complete_frozen_candidate_set_beyond_the_old_prefi
 }
 
 #[tokio::test]
-async fn finalizer_requires_main_parent_convergence_in_a_reconvergent_dag() {
+async fn finalizer_recognizes_all_parent_convergence_in_a_reconvergent_dag() {
     with_storage(|mut store, mut dag_store| async move {
         let validators = [
             generate_validator(Some("Reconvergent Validator 1")),
@@ -1211,6 +1416,19 @@ async fn finalizer_requires_main_parent_convergence_in_a_reconvergent_dag() {
         }
 
         let dag = dag_store.get_representation().expect("dag representation");
+        let expected_common_parent = left
+            .header
+            .parents_hash_list
+            .iter()
+            .max_by_key(|hash| {
+                (
+                    dag.block_number_unsafe(hash)
+                        .expect("common-parent metadata"),
+                    (*hash).clone(),
+                )
+            })
+            .cloned()
+            .expect("immediate common parent");
         let split_result = Finalizer::run(
             &dag,
             FtThreshold::from_f32_lossy(-1.0),
@@ -1220,8 +1438,89 @@ async fn finalizer_requires_main_parent_convergence_in_a_reconvergent_dag() {
             &FinalizerConf::default(),
         )
         .await
-        .expect("split finalizer run");
-        assert!(split_result.is_none());
+        .expect("split finalizer run")
+        .expect("all-parent convergence must expose a certified common ancestor");
+        let split_latest_messages = dag
+            .latest_message_hashes()
+            .into_iter()
+            .collect::<std::collections::BTreeMap<_, _>>();
+        let exact_split = highest_exact_state_certified_candidate(
+            &dag,
+            &split_latest_messages,
+            &genesis.block_hash,
+            0,
+            FtThreshold::from_f32_lossy(-1.0),
+        )
+        .await
+        .expect("exact split candidate search")
+        .expect("exact split candidate");
+        assert_eq!(split_result.0, exact_split);
+        assert_eq!(split_result.0, expected_common_parent);
+
+        let production_threshold = FtThreshold::from_ppm(100_000);
+        assert!(!CliqueOracle::ft_witnessed_exact(
+            &left.block_hash,
+            &dag,
+            &split_latest_messages,
+            production_threshold,
+        )
+        .await
+        .expect("left split-tip certificate"));
+        assert!(!CliqueOracle::ft_witnessed_exact(
+            &right.block_hash,
+            &dag,
+            &split_latest_messages,
+            production_threshold,
+        )
+        .await
+        .expect("right split-tip certificate"));
+        let production_split_result = Finalizer::run(
+            &dag,
+            production_threshold,
+            &genesis.block_hash,
+            0,
+            |(_hash, _ft)| async { Ok::<(), KvStoreError>(()) },
+            &FinalizerConf::default(),
+        )
+        .await
+        .expect("production-threshold split finalizer run")
+        .expect("production threshold must certify a common ancestor");
+        let exact_production_split = highest_exact_state_certified_candidate(
+            &dag,
+            &split_latest_messages,
+            &genesis.block_hash,
+            0,
+            production_threshold,
+        )
+        .await
+        .expect("exact production candidate search")
+        .expect("exact production candidate");
+        assert_eq!(production_split_result.0, exact_production_split);
+
+        let strict_split_result = Finalizer::run(
+            &dag,
+            FtThreshold::from_ppm(500_000),
+            &genesis.block_hash,
+            0,
+            |(_hash, _ft)| async { Ok::<(), KvStoreError>(()) },
+            &FinalizerConf::default(),
+        )
+        .await
+        .expect("strict-threshold split finalizer run");
+        let exact_strict_split = highest_exact_state_certified_candidate(
+            &dag,
+            &split_latest_messages,
+            &genesis.block_hash,
+            0,
+            FtThreshold::from_ppm(500_000),
+        )
+        .await
+        .expect("exact strict candidate search");
+        assert_eq!(
+            strict_split_result.as_ref().map(|(hash, _)| hash),
+            exact_strict_split.as_ref()
+        );
+        assert!(strict_split_result.is_none());
 
         let split_justifications = HashMap::from([
             (&validators[0], &left),
@@ -1250,7 +1549,7 @@ async fn finalizer_requires_main_parent_convergence_in_a_reconvergent_dag() {
         let dag = dag_store.get_representation().expect("dag representation");
         let selected = Finalizer::run(
             &dag,
-            FtThreshold::from_f32_lossy(-1.0),
+            FtThreshold::from_ppm(500_000),
             &genesis.block_hash,
             0,
             |(_hash, _ft)| async { Ok::<(), KvStoreError>(()) },

@@ -42,7 +42,7 @@ use crate::rust::interpreter::chromadb_service::SharedChromaDBService;
 #[cfg(feature = "chromadb")]
 use crate::rust::interpreter::chromadb_service::{CollectionEntries, Metadata};
 #[cfg(feature = "chromadb")]
-use crate::rust::interpreter::rho_type::{Extractor, RhoList, RhoNil};
+use crate::rust::interpreter::rho_type::{Extractor, RhoNil};
 
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/SystemProcesses.scala
 // NOTE: Not implementing Logger
@@ -1922,7 +1922,7 @@ impl SystemProcesses {
         };
 
         let output = vec![result_par];
-        produce(&output, &ack).await?;
+        produce(&output, ack).await?;
         Ok(output)
     }
 
@@ -1994,7 +1994,7 @@ impl SystemProcesses {
         let result_par = RhoList::create_par(result_par_vec);
 
         let output = vec![result_par];
-        produce(&output, &ack).await?;
+        produce(&output, ack).await?;
         Ok(output)
     }
 

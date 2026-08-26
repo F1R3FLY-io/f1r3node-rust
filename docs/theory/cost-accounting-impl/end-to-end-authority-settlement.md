@@ -194,6 +194,59 @@ The native refinement does not persist an `F_v` holding account or require a
 fee-conversion epoch. The paper's observable collect-and-convert result is the
 atomic payer-to-proposer transfer above.
 
+## Proposal scheduling and settlement independence
+
+Casper proposal scheduling and cost settlement meet at a narrow boundary. The
+scheduler decides **when** the ordinary block creator runs and carries one
+explicit intent: `Manual`, `PendingDeploy`, or
+`FinalityRecovery(FinalityRecoveryPermit)`. The recovery permit binds an exact
+last-finalized-block (LFB) hash, height, and validator-local recovery round. It
+does not contain a payer, purse, budget, cost certificate, or settlement result.
+Freshness compares the captured hash and height with the fresh snapshot's LFB
+and uses the captured round only to recompute the leader over the canonical
+committee derived from that LFB's post-state. It does not compare with a global current round, and an unfinalized
+head-height change does not affect the permit.
+
+For an accepted request, the intent has exactly one effect on block creation: a
+freshly revalidated recovery permit may authorize a block when ordinary
+deterministic deploy selection is empty. If admissible deploys exist, a recovery
+request includes them through the same block-creation path as `PendingDeploy`.
+Their complete economic transition remains a pure function of the authenticated
+block pre-state, canonical deploy sequence, authority certificate, and replayed
+event trace:
+
+```math
+Settlement = f(preState,deploySequence,certificate,eventTrace).
+```
+
+Proposal intent is deliberately absent from $`f`$. Consequently:
+
+- recovery cannot relax the per-purse sufficiency proof or admit an underfunded
+  occurrence;
+- pending-plus-recovery composition cannot change a payer, reservation, realized
+  physical cost, quantitative byte cost, fee, refund, or post-state;
+- an empty recovery has no user deploy and therefore creates no user-cost
+  settlement;
+- validation and replay reproduce the same cost transition without trusting the
+  proposer's scheduling reason.
+
+The proposer coalescer is likewise outside consensus settlement state. It stores
+only `Idle`, `Active`, or `ActiveDirty`, where the dirty state means that at least
+one pending-deploy wakeup arrived during active work. Normal completion turns any
+number of such collisions into exactly one forced `PendingDeploy` follow-up.
+That follow-up reacquires the current Casper engine, takes a fresh snapshot, and
+rescans deploy storage; it does not retain an earlier envelope, supply view, or
+reservation. If enqueue fails or the current engine is unavailable before
+execution, cancellation clears the active/dirty gate and may discard the wake
+edge, but it does not remove the stored deploy; a later heartbeat rescan can
+admit it after service returns. Manual and finality-recovery collisions do not
+change the active intent. This separation prevents a queue race from duplicating
+settlement, resurrecting terminal funding rejection, or allowing a later purse
+top-up to alter an in-flight certificate.
+
+For the normative liveness contract and the stored-versus-admissible distinction,
+see [Heartbeat recovery and validation backpressure](../finalized-floor/finalized-floor-specification.md#211-heartbeat-recovery-and-validation-backpressure).
+
 ## Static and dependent proofs
 
 The implementation supports both proof forms described by the papers.
@@ -419,6 +472,29 @@ post-state root. Ceremony validators reconstruct the expected blessed-deploy
 content, including the vault allocations, before approval. Ordinary settlement
 cannot reapply genesis funding.
 
+### PoS vault control authority
+
+The PoS stake vault has an unforgeable SystemVault address for protocol custody
+and a narrowly scoped human-control handle for the blessed PoS deployer. During
+genesis construction, `pos_generator` derives the controller's public-key hex
+from the exact private-key constant used to sign that blessed deployment. The
+template compiler substitutes that value before parsing and rejects the entire
+template if any `$$` marker remains. The handle converts the committed hex back
+to bytes and compares it with `rho:system:deployerId:ops` output from the
+currently authenticated deployment. Equality authorizes the existing
+unforgeable-vault transfer; inequality returns failure without changing either
+vault.
+
+This binding preserves bootstrap ordering: the stake vault can initialize in
+parallel with PoS deployer lookup, while its controller still names the same key
+that authenticated the blessed source. `PoSVaultAuthority.tla` checks template
+completeness, key binding, unauthorized noninterference, transfer conservation,
+and eventual authorized transfer. Its negative controls reproduce both the
+literal-controller defect and permissive unresolved-template compilation.
+`PoSVaultAuthority.v` proves the same refinement without assumptions, and the
+Rust regression verifies authorized and unauthorized calls plus independent
+replay equality over the generated genesis state.
+
 At an epoch boundary, PoS selects eligible active validators and invokes the
 authenticated SystemVault protocol-mint path. The `(validator, epoch)` ledger
 makes minting idempotent across replay and multi-parent merge. A halted validator
@@ -579,9 +655,9 @@ The formal refinement deliberately spans complementary tools:
 | Concern | Primary artifacts |
 | --- | --- |
 | Calculus, linear authority, lollipop, conservation | Rocq `CostAccountedReduction.v`, `LocatedAuthoritySettlement.v`, `TokenConservation.v`, `CanonicalRevRedemption.v` |
-| Native SystemVault mapping | Rocq `WalletNaming.v`, `MintingInjection.v`, `VaultBackedCostLifecycle.v`, `AtomicVaultSettlementRefinement.v`, `WalletFundedLollipop.v`, `VaultBackedByteAccounting.v`, `BoundedLedger.v`, `EndToEndAuthority.v` |
+| Native SystemVault mapping | Rocq `WalletNaming.v`, `MintingInjection.v`, `VaultBackedCostLifecycle.v`, `AtomicVaultSettlementRefinement.v`, `WalletFundedLollipop.v`, `VaultBackedByteAccounting.v`, `PoSVaultAuthority.v`, `BoundedLedger.v`, `EndToEndAuthority.v` |
 | Concurrent protocol and replay | TLA+ `LocatedAuthoritySettlement.tla`, `VaultBackedCostLifecycle.tla`, `AtomicVaultSettlementRefinement.tla`, `WalletFundedLollipop.tla`, `VaultBackedByteAccounting.tla`, `StateBoundAdmission.tla`, `StateBoundValidatorConvergence.tla`, `ReplaySupplySnapshot.tla`, `ReplayRootMaterialization.tla`, `EndToEndCostConsensus.tla` |
-| Mint, fee, and scheduling interleavings | TLA+ `EvalScheduling.tla`; Sage `supply_accounting_model.sage` |
+| Mint, fee, and scheduling interleavings | TLA+ `EvalScheduling.tla`, `PoSVaultAuthority.tla`; Sage `supply_accounting_model.sage` |
 | Slash and quarantine lifecycle | TLA+ `SlashFlow.tla`; Rocq slashing and redemption developments; Sage slashing models |
 | Concrete atomicity | Loom settlement, join, stack-frontier, stack-introduction rejection/cancellation, and concurrent-admission tests |
 | Implementation conformance | Rust unit, property, fuzz, play/replay, genesis, multi-parent, slashing, and integration tests |

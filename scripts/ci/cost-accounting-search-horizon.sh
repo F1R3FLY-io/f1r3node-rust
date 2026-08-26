@@ -441,10 +441,14 @@ run_horizon_v14_source_graph_replay() {
     COST_ACCOUNTING_FRONTIER_FIXTURES_JSON="$rust_fixtures_out" \
         cargo nextest run -p rholang accounting::cost_accounting_frontier::generated_frontier_v14_slashing_security_oracles_hold
     COST_ACCOUNTING_FRONTIER_FIXTURES_JSON="$rust_fixtures_out" \
+        cargo nextest run -p rholang accounting::cost_accounting_frontier::generated_frontier_v14_mergeable_channel_oracles_hold
+    COST_ACCOUNTING_FRONTIER_FIXTURES_JSON="$rust_fixtures_out" \
+        cargo nextest run -p rholang accounting::cost_accounting_frontier::generated_frontier_v14_mergeable_evidence_oracles_hold
+    COST_ACCOUNTING_FRONTIER_FIXTURES_JSON="$rust_fixtures_out" \
         cargo nextest run -p rholang accounting::cost_accounting_frontier::generated_frontier_v14_node_security_oracles_hold
     COST_ACCOUNTING_FRONTIER_FIXTURES_JSON="$rust_fixtures_out" \
         cargo nextest run -p rholang accounting::cost_accounting_frontier::generated_frontier_v14_coverage_adequacy_holds
-    cargo nextest run -p casper cost_accounting_v14_replay_slashing_oracles_hold
+    cargo nextest run -p casper cost_accounting_v14_replay_security_oracles_hold
 }
 
 triage_fuzz_artifacts() {
@@ -516,9 +520,7 @@ run_apalache() {
         echo "SKIP Apalache: apalache-mc not found"
         return
     fi
-    run_limited apalache-mc check "$FORMAL_REPO/formal/tlaplus/cost_accounted_rho/MCRuntimeBudgetReplay.tla"
-    run_limited apalache-mc check "$FORMAL_REPO/formal/tlaplus/cost_accounted_rho/MCCostAccountingThreats.tla"
-    run_limited apalache-mc check "$FORMAL_REPO/formal/tlaplus/cost_accounted_rho/MCMergeableChannelAccounting.tla"
+    run_limited bash "$ROOT/scripts/check-cost-accounted-rho-apalache.sh"
 }
 
 run_tla() {
@@ -573,7 +575,7 @@ cargo nextest run -p rholang unknown_demand_requires_a_finite_proof
 cargo nextest run -p casper state_bound_admission_has_an_exact_cost_plus_fee_boundary
 cargo nextest run -p casper cost_accounting_v13_source_semantic_replay_payload_oracles_hold
 cargo nextest run -p casper cost_accounting_v13_settlement_slashing_legacy_oracles_hold
-cargo nextest run -p casper cost_accounting_v14_replay_slashing_oracles_hold
+cargo nextest run -p casper cost_accounting_v14_replay_security_oracles_hold
 
 if cargo fuzz --help >/dev/null 2>&1; then
     for target in "${FUZZ_TARGETS[@]}"; do

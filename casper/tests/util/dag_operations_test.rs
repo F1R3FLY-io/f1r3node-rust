@@ -66,7 +66,11 @@ async fn lowest_common_universal_ancestor_should_be_computed_properly() {
             None,
             None,
         );
-        BlockMetadata::from_block(&block, false, None, None)
+        dag_store
+            .get_representation()
+            .expect("dag representation")
+            .lookup_unsafe(&block.block_hash)
+            .expect("authoritative block metadata")
     }
 
     fn create_block_with_meta_and_seq(
@@ -91,7 +95,11 @@ async fn lowest_common_universal_ancestor_should_be_computed_properly() {
             Some(seq_num),
             None,
         );
-        BlockMetadata::from_block(&block, false, None, None)
+        dag_store
+            .get_representation()
+            .expect("dag representation")
+            .lookup_unsafe(&block.block_hash)
+            .expect("authoritative block metadata")
     }
 
     fn block_metadata_to_block_hash(metadata: &BlockMetadata) -> BlockHash {
@@ -185,6 +193,10 @@ async fn lowest_common_universal_ancestor_should_be_computed_properly() {
         let dag = block_dag_storage
             .get_representation()
             .expect("dag representation");
+        for metadata in [&b1, &b2, &b3, &b4, &b5, &b6, &b7, &b8, &b9, &b10] {
+            assert!(metadata.sender_authority.is_some());
+            assert!(metadata.is_accepted());
+        }
 
         let result = DagOperations::lowest_universal_common_ancestor(&b1, &b5, &dag)
             .await
@@ -275,10 +287,6 @@ async fn lowest_common_universal_ancestor_should_be_computed_properly() {
 
 #[tokio::test]
 async fn uncommon_ancestors_should_be_computed_properly() {
-    fn to_metadata(block: &BlockMessage) -> BlockMetadata {
-        BlockMetadata::from_block(block, false, None, None)
-    }
-
     with_storage(|mut block_store, mut block_dag_storage| async move {
         let genesis = create_genesis_block(
             &mut block_store,
@@ -423,13 +431,19 @@ async fn uncommon_ancestors_should_be_computed_properly() {
             .get_representation()
             .expect("dag representation");
 
-        let b1_meta = to_metadata(&b1);
-        let b2_meta = to_metadata(&b2);
-        let b3_meta = to_metadata(&b3);
-        let b4_meta = to_metadata(&b4);
-        let b5_meta = to_metadata(&b5);
-        let b6_meta = to_metadata(&b6);
-        let b7_meta = to_metadata(&b7);
+        let b1_meta = dag.lookup_unsafe(&b1.block_hash).unwrap();
+        let b2_meta = dag.lookup_unsafe(&b2.block_hash).unwrap();
+        let b3_meta = dag.lookup_unsafe(&b3.block_hash).unwrap();
+        let b4_meta = dag.lookup_unsafe(&b4.block_hash).unwrap();
+        let b5_meta = dag.lookup_unsafe(&b5.block_hash).unwrap();
+        let b6_meta = dag.lookup_unsafe(&b6.block_hash).unwrap();
+        let b7_meta = dag.lookup_unsafe(&b7.block_hash).unwrap();
+        for metadata in [
+            &b1_meta, &b2_meta, &b3_meta, &b4_meta, &b5_meta, &b6_meta, &b7_meta,
+        ] {
+            assert!(metadata.sender_authority.is_some());
+            assert!(metadata.is_accepted());
+        }
 
         let result = DagOperations::uncommon_ancestors(&[b6_meta.clone(), b7_meta.clone()], &dag)
             .await

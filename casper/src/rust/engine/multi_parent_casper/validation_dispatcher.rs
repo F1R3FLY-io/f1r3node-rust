@@ -7,14 +7,16 @@
 //! this module while the trait method is a one-line delegate in
 //! `traits.rs`.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use block_storage::rust::casperbuffer::casper_buffer_key_value_storage::CasperBufferKeyValueStorage;
 use block_storage::rust::dag::block_dag_key_value_storage::{
-    BlockDagKeyValueStorage, InsertMode, KeyValueDagRepresentation,
+    BlockDagKeyValueStorage, CertifiedAdmissionOutcome, CertifiedSenderAuthority, InsertMode,
+    KeyValueDagRepresentation,
 };
 use comm::rust::transport::transport_layer::TransportLayer;
 use models::rust::block_hash::BlockHashSerde;
+use models::rust::bond_generation::BondGeneration;
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::BlockMessage;
 use models::rust::equivocation_record::EquivocationRecord;
@@ -24,20 +26,20 @@ use rspace_plus_plus::rspace::history::Either;
 
 use super::snapshot::record_dag_cardinality_metrics;
 use super::types::MultiParentCasperImpl;
-use crate::rust::block_status::{BlockError, InvalidBlock, ValidBlock};
+use crate::rust::block_status::{BlockError, CertifiedBlockValidation, InvalidBlock, ValidBlock};
 use crate::rust::casper::CasperSnapshot;
 use crate::rust::equivocation_detector::EquivocationDetector;
 use crate::rust::errors::CasperError;
 use crate::rust::metrics_constants::{
     BLOCK_VALIDATION_STEP_BLOCK_SUMMARY_TIME_METRIC, BLOCK_VALIDATION_STEP_BONDS_CACHE_TIME_METRIC,
     BLOCK_VALIDATION_STEP_CHECKPOINT_TIME_METRIC,
-    BLOCK_VALIDATION_STEP_NEGLECTED_EQUIVOCATION_TIME_METRIC,
+    BLOCK_VALIDATION_STEP_FLOOR_AUTHORITY_TIME_METRIC,
     BLOCK_VALIDATION_STEP_NEGLECTED_INVALID_BLOCK_TIME_METRIC,
     BLOCK_VALIDATION_STEP_PRE_STATE_TIME_METRIC,
     BLOCK_VALIDATION_STEP_SIMPLE_EQUIVOCATION_TIME_METRIC,
     BLOCK_VALIDATION_STEP_SLASH_AUTHORIZATION_TIME_METRIC, CASPER_METRICS_SOURCE,
 };
-use crate::rust::slashing_authorization::checked_base_seq;
+use crate::rust::slashing_authorization::{checked_base_seq, CanonicalSlashAuthority};
 use crate::rust::util::proto_util;
 use crate::rust::util::rholang::interpreter_util::{
     replay_validated_block_checkpoint, validate_block_pre_state,
@@ -63,13 +65,77 @@ where
     Ok((result, elapsed_str))
 }
 
+async fn timed_operation<A, Fut>(
+    step_name: &'static str,
+    metric_name: &'static str,
+    future: Fut,
+) -> Result<(A, String), CasperError>
+where
+    Fut: std::future::Future<Output = Result<A, CasperError>>,
+{
+    tracing::debug!(target: "f1r3fly.casper", "before-{}", step_name);
+    let start = std::time::Instant::now();
+    let result = future.await?;
+    let elapsed = start.elapsed();
+    metrics::histogram!(metric_name, "source" => CASPER_METRICS_SOURCE)
+        .record(elapsed.as_secs_f64());
+    tracing::debug!(target: "f1r3fly.casper", "after-{}", step_name);
+    Ok((result, format!("{:?}", elapsed)))
+}
+
 /// Returns the outcome of `check_equivocations`. A `Left` from any
 /// intermediate validator short-circuits and is returned directly.
 async fn run_validation_steps<T: TransportLayer + Send + Sync>(
     this: &MultiParentCasperImpl<T>,
     block: &BlockMessage,
     snapshot: &mut CasperSnapshot,
-) -> Result<Either<BlockError, ValidBlock>, CasperError> {
+) -> Result<CertifiedBlockValidation, CasperError> {
+    if let Either::Left(BlockError::Invalid(InvalidBlock::InvalidBlockHash)) =
+        Validate::block_hash(block)
+    {
+        return Ok(CertifiedBlockValidation::unattributable(
+            InvalidBlock::InvalidBlockHash,
+        ));
+    }
+
+    let (baseline_authority_result, t_authority_baseline) = timed_step(
+        "authority-baseline",
+        BLOCK_VALIDATION_STEP_FLOOR_AUTHORITY_TIME_METRIC,
+        async {
+            let authority_floor =
+                crate::rust::causal_equivocation::incoming_finalized_floor(
+                    &snapshot.dag,
+                    &block.header.parents_hash_list,
+                )
+                .unwrap_or_else(|_| snapshot.dag.last_finalized_block_hash.clone());
+            let context = match crate::rust::causal_equivocation::CertifiedConsensusContext::for_authority_floor_baseline(
+                &snapshot.dag,
+                authority_floor,
+            ) {
+                Ok(context) => context,
+                Err(error) => {
+                    return Ok(Either::Left(BlockError::BlockException(error)));
+                }
+            };
+            match context.certify_sender(block) {
+                Ok(certificate) => Ok(Either::Right(certificate)),
+                Err(_) => Ok(Either::Left(BlockError::Invalid(
+                    InvalidBlock::InvalidSender,
+                ))),
+            }
+        },
+    )
+    .await?;
+    let baseline_authority = match baseline_authority_result {
+        Either::Right(certificate) => certificate,
+        Either::Left(BlockError::Invalid(invalid)) => {
+            return Ok(CertifiedBlockValidation::unattributable(invalid));
+        }
+        Either::Left(error) => {
+            return CertifiedBlockValidation::from_uncertified_error(error);
+        }
+    };
+
     let (block_summary_result, t1) = timed_step(
         "block-summary",
         BLOCK_VALIDATION_STEP_BLOCK_SUMMARY_TIME_METRIC,
@@ -92,8 +158,75 @@ async fn run_validation_steps<T: TransportLayer + Send + Sync>(
     .await?;
     tracing::debug!(target: "f1r3fly.casper", "post-validation-block-summary");
     if let Either::Left(block_error) = block_summary_result {
-        return Ok(Either::Left(block_error));
+        return CertifiedBlockValidation::certified(
+            block,
+            Either::Left(block_error),
+            baseline_authority,
+        );
     }
+
+    let (floor_authority_result, t_floor_authority) = timed_step(
+        "floor-authority",
+        BLOCK_VALIDATION_STEP_FLOOR_AUTHORITY_TIME_METRIC,
+        async {
+            let exact_latest_messages = block
+                .justifications
+                .iter()
+                .map(|justification| {
+                    (
+                        justification.validator.clone(),
+                        justification.latest_block_hash.clone(),
+                    )
+                })
+                .collect::<BTreeMap<_, _>>();
+            if exact_latest_messages.len() != block.justifications.len() {
+                return Ok(Either::Left(BlockError::Invalid(
+                    InvalidBlock::InvalidFollows,
+                )));
+            }
+            let context =
+                match crate::rust::causal_equivocation::CertifiedConsensusContext::for_candidate(
+                    &snapshot.dag,
+                    &block.header.parents_hash_list,
+                    &exact_latest_messages,
+                    crate::rust::safety::clique_oracle::FtThreshold::from_ppm(
+                        snapshot
+                            .on_chain_state
+                            .shard_conf
+                            .fault_tolerance_threshold_ppm,
+                    ),
+                )
+                .await
+                {
+                    Ok(context) => context,
+                    Err(error) => {
+                        return Ok(Either::Left(BlockError::BlockException(error)));
+                    }
+                };
+            if !context.has_complete_latest_message_slots() {
+                return Ok(Either::Left(BlockError::Invalid(
+                    InvalidBlock::InvalidFollows,
+                )));
+            }
+            match context.certify_sender(block) {
+                Ok(certificate) => Ok(Either::Right((context, certificate))),
+                Err(_) => Ok(Either::Left(BlockError::Invalid(
+                    InvalidBlock::InvalidSender,
+                ))),
+            }
+        },
+    )
+    .await?;
+    let (certified_context, sender_authority) = match floor_authority_result {
+        Either::Left(block_error) => {
+            return CertifiedBlockValidation::certified(
+                block,
+                Either::Left(block_error),
+                baseline_authority,
+            )
+        }
+        Either::Right(certified) => certified,
+    };
 
     let (validate_pre_state_result, t_pre_state) = timed_step(
         "pre-state",
@@ -108,11 +241,19 @@ async fn run_validation_steps<T: TransportLayer + Send + Sync>(
     )
     .await?;
     let pre_state_hash = match validate_pre_state_result {
-        Either::Left(block_error) => return Ok(Either::Left(block_error)),
+        Either::Left(block_error) => {
+            return CertifiedBlockValidation::certified(
+                block,
+                Either::Left(block_error),
+                sender_authority,
+            )
+        }
         Either::Right(None) => {
-            return Ok(Either::Left(BlockError::Invalid(
-                InvalidBlock::InvalidTransaction,
-            )))
+            return CertifiedBlockValidation::certified(
+                block,
+                Either::Left(BlockError::Invalid(InvalidBlock::InvalidTransaction)),
+                sender_authority,
+            )
         }
         Either::Right(Some(pre_state_hash)) => pre_state_hash,
     };
@@ -121,40 +262,64 @@ async fn run_validation_steps<T: TransportLayer + Send + Sync>(
         "slash-authorization",
         BLOCK_VALIDATION_STEP_SLASH_AUTHORIZATION_TIME_METRIC,
         async {
-            let has_slash = block.body.system_deploys.iter().any(|system_deploy| {
-                matches!(
-                    system_deploy,
-                    models::rust::casper::protocol::casper_message::ProcessedSystemDeploy::Succeeded {
-                        system_deploy: models::rust::casper::protocol::casper_message::SystemDeployData::Slash { .. },
-                        ..
-                    }
-                )
-            });
-            let bonds_map = if has_slash {
-                match this
-                    .runtime_manager
-                    .compute_bonds(&pre_state_hash)
-                    .await
-                {
-                    Ok(bonds) => bonds
-                        .into_iter()
-                        .map(|bond| (bond.validator, bond.stake))
-                        .collect(),
+            let authority =
+                match CanonicalSlashAuthority::load(&this.runtime_manager, &pre_state_hash).await {
+                    Ok(authority) => authority,
                     Err(error) => {
                         return Ok(Either::Left(BlockError::BlockException(error)));
                     }
-                }
-            } else {
-                std::collections::HashMap::new()
-            };
-            Ok(Validate::slash_deploy_authorization(
-                block, snapshot, &bonds_map,
-            ))
+                };
+            match Validate::slash_deploy_authorization(block, snapshot, &authority) {
+                Either::Left(error) => Ok(Either::Right((authority, Some(error)))),
+                Either::Right(_) => Ok(Either::Right((authority, None))),
+            }
         },
     )
     .await?;
-    if let Either::Left(block_error) = slash_authorization_result {
-        return Ok(Either::Left(block_error));
+    let pre_state_slash_authority = match slash_authorization_result {
+        Either::Left(block_error) => {
+            return CertifiedBlockValidation::certified(
+                block,
+                Either::Left(block_error),
+                sender_authority,
+            )
+        }
+        Either::Right((authority, slash_error)) => {
+            if let Some(error) = slash_error {
+                return CertifiedBlockValidation::certified(
+                    block,
+                    Either::Left(error),
+                    sender_authority,
+                );
+            }
+            authority
+        }
+    };
+
+    if let Err(error) = certified_context.validate_certificate(block, &sender_authority) {
+        return Ok(CertifiedBlockValidation::local_fault(
+            CasperError::RuntimeError(error.to_string()),
+        ));
+    }
+
+    match crate::rust::causal_equivocation::validate_evidence_delta(block, &snapshot.dag)? {
+        crate::rust::causal_equivocation::EvidenceDeltaVerdict::Valid => {}
+        crate::rust::causal_equivocation::EvidenceDeltaVerdict::Neglected => {
+            return CertifiedBlockValidation::certified(
+                block,
+                Either::Left(BlockError::Invalid(InvalidBlock::NeglectedEquivocation)),
+                sender_authority,
+            )
+        }
+        crate::rust::causal_equivocation::EvidenceDeltaVerdict::Invalid => {
+            return CertifiedBlockValidation::certified(
+                block,
+                Either::Left(BlockError::Invalid(
+                    InvalidBlock::InvalidEquivocationEvidence,
+                )),
+                sender_authority,
+            )
+        }
     }
 
     let (validate_block_checkpoint_result, t2) = timed_step(
@@ -165,63 +330,54 @@ async fn run_validation_steps<T: TransportLayer + Send + Sync>(
     .await?;
     tracing::debug!(target: "f1r3fly.casper", "transactions-validated");
     if let Either::Left(block_error) = validate_block_checkpoint_result {
-        return Ok(Either::Left(block_error));
+        return CertifiedBlockValidation::certified(
+            block,
+            Either::Left(block_error),
+            sender_authority,
+        );
     }
     if let Either::Right(None) = validate_block_checkpoint_result {
-        return Ok(Either::Left(BlockError::Invalid(
-            InvalidBlock::InvalidTransaction,
-        )));
+        return CertifiedBlockValidation::certified(
+            block,
+            Either::Left(BlockError::Invalid(InvalidBlock::InvalidTransaction)),
+            sender_authority,
+        );
     }
 
     let (bonds_cache_result, t3) = timed_step(
         "bonds-cache",
         BLOCK_VALIDATION_STEP_BONDS_CACHE_TIME_METRIC,
-        async {
-            Ok(Validate::bonds_cache_from_floor(
-                block,
-                &this.block_store,
-                snapshot,
-                &this.runtime_manager,
-            )
-            .await)
-        },
+        async { Ok(Validate::bonds_cache(block, &this.runtime_manager).await) },
     )
     .await?;
     tracing::debug!(target: "f1r3fly.casper", "bonds-cache-validated");
     if let Either::Left(block_error) = bonds_cache_result {
-        return Ok(Either::Left(block_error));
+        return CertifiedBlockValidation::certified(
+            block,
+            Either::Left(block_error),
+            sender_authority,
+        );
     }
 
     let (neglected_invalid_block_result, t4) = timed_step(
         "neglected-invalid-block",
         BLOCK_VALIDATION_STEP_NEGLECTED_INVALID_BLOCK_TIME_METRIC,
-        async { Ok(Validate::neglected_invalid_block(block, snapshot)) },
+        async {
+            Ok(Validate::neglected_invalid_block(
+                block,
+                snapshot,
+                &pre_state_slash_authority,
+            ))
+        },
     )
     .await?;
     tracing::debug!(target: "f1r3fly.casper", "neglected-invalid-block-validated");
     if let Either::Left(block_error) = neglected_invalid_block_result {
-        return Ok(Either::Left(block_error));
-    }
-
-    let (equivocation_detector_result, t5) = timed_step(
-        "neglected-equivocation",
-        BLOCK_VALIDATION_STEP_NEGLECTED_EQUIVOCATION_TIME_METRIC,
-        async {
-            EquivocationDetector::check_neglected_equivocations_with_update(
-                block,
-                &snapshot.dag,
-                &this.block_store,
-                &this.approved_block,
-                &this.block_dag_storage,
-            )
-            .await
-            .map_err(CasperError::from)
-        },
-    )
-    .await?;
-    tracing::debug!(target: "f1r3fly.casper", "neglected-equivocation-validated");
-    if let Either::Left(block_error) = equivocation_detector_result {
-        return Ok(Either::Left(block_error));
+        return CertifiedBlockValidation::certified(
+            block,
+            Either::Left(block_error),
+            sender_authority,
+        );
     }
 
     // D3 (DR-9, D.5): the per-block `phlo-price` validation step is REMOVED —
@@ -233,9 +389,8 @@ async fn run_validation_steps<T: TransportLayer + Send + Sync>(
     let requested_as_dependency = this
         .casper_buffer_storage
         .requested_as_dependency(&BlockHashSerde(block.block_hash.clone()));
-
-    let (equivocation_result, t7) = timed_step(
-        "simple-equivocation",
+    let (equivocation_observation, t7) = timed_operation(
+        "simple-equivocation-observation",
         BLOCK_VALIDATION_STEP_SIMPLE_EQUIVOCATION_TIME_METRIC,
         async {
             EquivocationDetector::check_equivocations(requested_as_dependency, block, &snapshot.dag)
@@ -244,16 +399,20 @@ async fn run_validation_steps<T: TransportLayer + Send + Sync>(
         },
     )
     .await?;
-    tracing::debug!(target: "f1r3fly.casper", "equivocation-validated");
 
     let timing_breakdown = format!(
-        "summary={}, pre-state={}, slash-authorization={}, checkpoint-replay={}, bonds={}, neglected-invalid={}, \
-         neglected-equiv={}, simple-equiv={}",
-        t1, t_pre_state, t_slash, t2, t3, t4, t5, t7
+        "authority-baseline={}, summary={}, floor-authority={}, pre-state={}, slash-authorization={}, checkpoint-replay={}, bonds={}, neglected-invalid={}, \
+         evidence-delta=certified-context, equivocation-observation={}",
+        t_authority_baseline, t1, t_floor_authority, t_pre_state, t_slash, t2, t3, t4, t7
     );
     tracing::debug!(target: "f1r3fly.casper", "Validation timing breakdown: {}", timing_breakdown);
 
-    Ok(equivocation_result)
+    CertifiedBlockValidation::certified_with_observation(
+        block,
+        Either::Right(ValidBlock::Valid),
+        sender_authority,
+        equivocation_observation,
+    )
 }
 
 async fn update_mergeable_cache_after_validation<T: TransportLayer + Send + Sync>(
@@ -300,7 +459,7 @@ pub(crate) async fn dispatch_validate<T: TransportLayer + Send + Sync>(
     this: &MultiParentCasperImpl<T>,
     block: &BlockMessage,
     snapshot: &mut CasperSnapshot,
-) -> Result<Either<BlockError, ValidBlock>, CasperError> {
+) -> Result<CertifiedBlockValidation, CasperError> {
     tracing::info!(
         "Validating block {}",
         PrettyPrinter::build_string_block_message(block, true)
@@ -310,7 +469,7 @@ pub(crate) async fn dispatch_validate<T: TransportLayer + Send + Sync>(
     let val_result = run_validation_steps(this, block, snapshot).await?;
     let elapsed = start.elapsed();
 
-    if let Either::Right(ref status) = val_result {
+    if let Either::Right(status) = val_result.status() {
         let block_info = PrettyPrinter::build_string_block_message(block, true);
         let deploy_count = block.body.deploys.len();
         tracing::info!(
@@ -332,7 +491,7 @@ pub(crate) async fn dispatch_validate_self_created<T: TransportLayer + Send + Sy
     snapshot: &mut CasperSnapshot,
     pre_state_hash: Bytes,
     post_state_hash: Bytes,
-) -> Result<Either<BlockError, ValidBlock>, CasperError> {
+) -> Result<CertifiedBlockValidation, CasperError> {
     tracing::info!(
         "Validating self-created block {}",
         PrettyPrinter::build_string_block_message(block, true)
@@ -352,9 +511,9 @@ pub(crate) async fn dispatch_validate_self_created<T: TransportLayer + Send + Sy
             actual = %PrettyPrinter::build_string_no_limit(&block.body.state.pre_state_hash),
             "self-created block pre_state_hash mismatch"
         );
-        return Ok(Either::Left(BlockError::BlockException(
+        return Ok(CertifiedBlockValidation::local_fault(
             CasperError::RuntimeError(msg),
-        )));
+        ));
     }
     if block.body.state.post_state_hash != post_state_hash {
         let msg = format!(
@@ -369,9 +528,9 @@ pub(crate) async fn dispatch_validate_self_created<T: TransportLayer + Send + Sy
             actual = %PrettyPrinter::build_string_no_limit(&block.body.state.post_state_hash),
             "self-created block post_state_hash mismatch"
         );
-        return Ok(Either::Left(BlockError::BlockException(
+        return Ok(CertifiedBlockValidation::local_fault(
             CasperError::RuntimeError(msg),
-        )));
+        ));
     }
 
     dispatch_validate(this, block, snapshot).await
@@ -382,11 +541,15 @@ pub(crate) fn dispatch_handle_invalid_block<T: TransportLayer + Send + Sync>(
     block: &BlockMessage,
     status: &InvalidBlock,
     dag: &KeyValueDagRepresentation,
+    certificate: &CertifiedSenderAuthority,
+    outcome: &CertifiedAdmissionOutcome,
 ) -> Result<KeyValueDagRepresentation, CasperError> {
     let handle_invalid_block_effect = |block_dag_storage: &BlockDagKeyValueStorage,
                                        casper_buffer_storage: &CasperBufferKeyValueStorage,
                                        status: &InvalidBlock,
-                                       block: &BlockMessage|
+                                       block: &BlockMessage,
+                                       certificate: &CertifiedSenderAuthority,
+                                       outcome: &CertifiedAdmissionOutcome|
      -> Result<KeyValueDagRepresentation, CasperError> {
         tracing::warn!(
             "Recording invalid block {} for {:?}.",
@@ -408,6 +571,8 @@ pub(crate) fn dispatch_handle_invalid_block<T: TransportLayer + Send + Sync>(
                 block_dag_storage,
                 block,
                 InsertMode::Invalid,
+                certificate,
+                outcome,
                 casper_buffer_storage,
                 block_storage::rust::dag::buffer_dag_transition::BufferTransition::RemoveFromBuffer(
                     block_hash_serde,
@@ -420,7 +585,8 @@ pub(crate) fn dispatch_handle_invalid_block<T: TransportLayer + Send + Sync>(
     // Atomic read-modify-write on the equivocation tracker. See
     // docs/theory/slashing/design/09-bug-fixes-and-rationale.md §9.2.
     let record_evidence = |block_dag_storage: &BlockDagKeyValueStorage,
-                           block: &BlockMessage|
+                           block: &BlockMessage,
+                           bond_generation: BondGeneration|
      -> Result<(), CasperError> {
         // `checked_base_seq(block.seq_num)` returns `None` when
         // `seq_num <= 0`. The seq_num == 0 case is the genesis block: the
@@ -437,11 +603,13 @@ pub(crate) fn dispatch_handle_invalid_block<T: TransportLayer + Send + Sync>(
             let equivocation_records = tracker.data()?;
             let record_exists = equivocation_records.iter().any(|record| {
                 record.equivocator == block.sender
+                    && record.equivocator_bond_generation == bond_generation
                     && record.equivocation_base_block_seq_num == base_equivocation_block_seq_num
             });
             if !record_exists {
                 let new_equivocation_record = EquivocationRecord::new(
                     block.sender.clone(),
+                    bond_generation,
                     base_equivocation_block_seq_num,
                     BTreeSet::new(),
                 );
@@ -453,38 +621,17 @@ pub(crate) fn dispatch_handle_invalid_block<T: TransportLayer + Send + Sync>(
     };
 
     match status {
-        InvalidBlock::AdmissibleEquivocation => {
-            record_evidence(&this.block_dag_storage, block)?;
-            handle_invalid_block_effect(
-                &this.block_dag_storage,
-                &this.casper_buffer_storage,
-                status,
-                block,
-            )
-        }
-
-        InvalidBlock::IgnorableEquivocation => {
-            // Record evidence and apply the standard invalid-block effect,
-            // mirroring AdmissibleEquivocation. See
-            // docs/theory/slashing/design/09-bug-fixes-and-rationale.md §9.1.
-            record_evidence(&this.block_dag_storage, block)?;
-            handle_invalid_block_effect(
-                &this.block_dag_storage,
-                &this.casper_buffer_storage,
-                status,
-                block,
-            )
-        }
-
         status if status.is_slashable() => {
             // Every slashable status mints an EquivocationRecord. See
             // docs/theory/slashing/design/09-bug-fixes-and-rationale.md §9.3.
-            record_evidence(&this.block_dag_storage, block)?;
+            record_evidence(&this.block_dag_storage, block, certificate.generation())?;
             handle_invalid_block_effect(
                 &this.block_dag_storage,
                 &this.casper_buffer_storage,
                 status,
                 block,
+                certificate,
+                outcome,
             )
         }
 

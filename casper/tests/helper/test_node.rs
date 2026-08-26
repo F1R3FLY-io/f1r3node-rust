@@ -7,6 +7,7 @@ use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStora
 use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage;
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use casper::rust::block_status::BlockStatus;
+use casper::rust::blocks::block_processing_queue::BlockProcessingQueueSender;
 use casper::rust::blocks::block_processor::{BlockProcessor, BlockProcessorDependencies};
 use casper::rust::blocks::proposer::block_creator;
 use casper::rust::blocks::proposer::propose_result::BlockCreatorResult;
@@ -43,9 +44,7 @@ use models::rust::casper::protocol::casper_message::{
     ApprovedBlock, ApprovedBlockCandidate, BlockMessage, DeployData,
 };
 use rspace_plus_plus::rspace::history::Either;
-use rspace_plus_plus::rspace::state::rspace_state_manager::RSpaceStateManager;
 use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
-use tokio::sync::mpsc;
 
 use crate::util::comm::transport_layer_test_impl::test_network::TestNetwork;
 use crate::util::comm::transport_layer_test_impl::{
@@ -141,14 +140,61 @@ impl TestNode {
         &mut self,
         deploy_datums: &[Signed<DeployData>],
     ) -> Result<BlockMessage, CasperError> {
-        let result = self.create_block(deploy_datums).await?;
+        let mut finalization_deadline = None;
+        let mut first_attempt = true;
+        loop {
+            let result = if first_attempt {
+                first_attempt = false;
+                self.create_block(deploy_datums).await?
+            } else {
+                self.create_block(&[]).await?
+            };
+            match result {
+                BlockCreatorResult::Created(block, ..) => return Ok(block),
+                BlockCreatorResult::RecoveryDeferred(
+                    casper::rust::blocks::proposer::propose_result::RecoveryDeferralReason::FinalizedFloorMaterializationPending,
+                ) => {
+                    let deadline = *finalization_deadline.get_or_insert_with(|| {
+                        tokio::time::Instant::now() + std::time::Duration::from_secs(30)
+                    });
+                    if tokio::time::Instant::now() >= deadline {
+                        return Err(CasperError::RuntimeError(
+                            "Timed out waiting for finalized-floor materialization".to_string(),
+                        ));
+                    }
+                    self.casper.request_finalization()?;
+                    self.wait_for_finalizer_quiescence(deadline).await?;
+                }
+                other => {
+                    return Err(CasperError::RuntimeError(format!(
+                        "Failed creating block: {:?}",
+                        other
+                    )))
+                }
+            }
+        }
+    }
 
-        match result {
-            BlockCreatorResult::Created(block, ..) => Ok(block),
-            _ => Err(CasperError::RuntimeError(format!(
-                "Failed creating block: {:?}",
-                result
-            ))),
+    pub async fn wait_for_finalizer_quiescence(
+        &self,
+        deadline: tokio::time::Instant,
+    ) -> Result<(), CasperError> {
+        loop {
+            if self.casper.finalization_schedule.is_quiescent()
+                && self
+                    .casper
+                    .finalization_in_progress
+                    .load(std::sync::atomic::Ordering::Acquire)
+                    == 0
+            {
+                return Ok(());
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(CasperError::RuntimeError(
+                    "Timed out waiting for finalization to quiesce".to_string(),
+                ));
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
     }
 
@@ -248,19 +294,7 @@ impl TestNode {
     where
         F: FnOnce(&ValidBlockProcessing) -> bool,
     {
-        // Create block
-        let result = self.create_block(deploy_datums).await?;
-
-        // Extract block
-        let block = match result {
-            BlockCreatorResult::Created(b, ..) => b,
-            other => {
-                return Err(CasperError::RuntimeError(format!(
-                    "Expected Created block, got: {:?}",
-                    other
-                )))
-            }
-        };
+        let block = self.create_block_unsafe(deploy_datums).await?;
 
         // Process block
         let status = self.process_block(block.clone()).await?;
@@ -750,6 +784,28 @@ impl TestNode {
         max_parent_depth: Option<i32>,
         with_read_only_size: Option<usize>,
     ) -> Result<Vec<TestNode>, CasperError> {
+        Self::create_network_with_finalization_rate(
+            genesis,
+            network_size,
+            synchrony_constraint_threshold,
+            max_number_of_parents,
+            max_parent_depth,
+            with_read_only_size,
+            1,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn create_network_with_finalization_rate(
+        genesis: GenesisContext,
+        network_size: usize,
+        synchrony_constraint_threshold: Option<f64>,
+        max_number_of_parents: Option<i32>,
+        max_parent_depth: Option<i32>,
+        with_read_only_size: Option<usize>,
+        finalization_rate: i32,
+    ) -> Result<Vec<TestNode>, CasperError> {
         // Initialize the shared tracing subscriber once per test process.
         // Without this, tracing calls in production code are silently
         // dropped during tests, defeating diagnostic intent. Tests opt
@@ -774,6 +830,7 @@ impl TestNode {
             with_read_only_size.unwrap_or(0),
             None,
             test_network,
+            finalization_rate,
         )
         .await
     }
@@ -801,6 +858,7 @@ impl TestNode {
             0,
             Some(bootstrap_index),
             test_network,
+            1,
         )
         .await
     }
@@ -816,6 +874,7 @@ impl TestNode {
         with_read_only_size: usize,
         bootstrap_index: Option<usize>,
         test_network: TestNetwork,
+        finalization_rate: i32,
     ) -> Result<Vec<TestNode>, CasperError> {
         let genesis = genesis_context.genesis_block.clone();
         let n = sks.len();
@@ -861,6 +920,7 @@ impl TestNode {
                 test_network.clone(),
                 &genesis_context,
                 bootstrap_peer.clone(),
+                finalization_rate,
             )
             .await;
             nodes.push(node);
@@ -898,6 +958,7 @@ impl TestNode {
         test_network: TestNetwork,
         genesis_context: &GenesisContext,
         bootstrap_peer: Option<PeerNode>,
+        finalization_rate: i32,
     ) -> TestNode {
         let tle = Arc::new(TransportLayerTestImpl::new(test_network.clone()));
         let tls =
@@ -934,7 +995,7 @@ impl TestNode {
         block_dag_storage
             .insert(
                 &genesis,
-                block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Approved,
+                block_storage::rust::dag::block_dag_key_value_storage::InsertMode::ApprovedGenesis,
             )
             .expect("Failed to insert genesis into DAG storage in TestNode");
         let deploy_storage = Arc::new(parking_lot::Mutex::new(
@@ -958,17 +1019,12 @@ impl TestNode {
             .await
             .unwrap();
         // Use create_with_history to ensure tests can reset to genesis state root hash
-        let (runtime_manager, rho_history_repository) = RuntimeManager::create_with_history(
+        let (runtime_manager, _) = RuntimeManager::create_with_history(
             rspace_store,
             mergeable_store,
             std::sync::Arc::new(Genesis::default_mergeable_tags()),
             rholang::rust::interpreter::external_services::ExternalServices::noop(),
         );
-        let rspace_state_manager = RSpaceStateManager::new(
-            rho_history_repository.exporter(),
-            rho_history_repository.importer(),
-        );
-
         let connections_cell = ConnectionsCell::new();
         let _clique_oracle = CliqueOracleImpl;
         let estimator = Estimator::apply(max_number_of_parents, max_parent_depth);
@@ -1029,18 +1085,13 @@ impl TestNode {
         // Creates an unbounded tokio channel for processing (Casper, BlockMessage) tuples
         // - Sender: Non-blocking, cloneable, used to enqueue blocks for processing
         // - Receiver: Thread-safe (Arc<Mutex>), used to dequeue blocks from processing pipeline
-        let (block_processor_queue_tx, block_processor_queue_rx) =
-            mpsc::channel::<(Arc<dyn MultiParentCasper + Send + Sync>, BlockMessage)>(1024);
-        let block_processor_queue = (
-            block_processor_queue_tx,
-            Arc::new(Mutex::new(block_processor_queue_rx)),
-        );
+        let (block_processor_queue_tx, _block_processor_queue_rx) =
+            BlockProcessingQueueSender::channel(1024, 64 * 1024 * 1024)
+                .expect("block processing queue");
 
         let _block_processor_state = Arc::new(RwLock::new(HashSet::<BlockHash>::new()));
 
         let shard_id = "root".to_string();
-        let finalization_rate = 1;
-
         let _approved_block = ApprovedBlock {
             candidate: ApprovedBlockCandidate {
                 block: genesis.clone(),
@@ -1048,8 +1099,6 @@ impl TestNode {
             },
             sigs: vec![],
         };
-        let last_approved_block = Arc::new(Mutex::new(Some(_approved_block.clone())));
-
         let shard_conf = CasperShardConf {
             fault_tolerance_threshold: 0.0,
             shard_name: shard_id.clone(),
@@ -1093,13 +1142,11 @@ impl TestNode {
             validator_id: validator_id_opt.clone(),
             casper_shard_conf: shard_conf,
             approved_block: genesis.clone(),
-            finalization_in_progress: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
-                false,
-            )),
-            finalizer_task_in_progress: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
-                false,
-            )),
-            finalizer_task_queued: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            finalization_in_progress: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            recovery_sync_active: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            finalization_schedule: std::sync::Arc::new(
+                casper::rust::finality::finalization_schedule::FinalizationSchedule::new(2),
+            ),
             heartbeat_signal_ref: casper::rust::heartbeat_signal::new_heartbeat_signal_ref(),
             deploys_in_scope_cache: std::sync::Arc::new(parking_lot::Mutex::new(None)),
             active_validators_cache: std::sync::Arc::new(tokio::sync::Mutex::new(
@@ -1122,30 +1169,17 @@ impl TestNode {
         let engine_cell = EngineCell::init();
 
         let running_engine = Running::new(
-            block_processor_queue.0.clone(), // block_processing_queue_tx
-            Arc::new(DashSet::new()),        // blocks_in_processing
+            block_processor_queue_tx, // block_processing_queue_tx
+            Arc::new(DashSet::new()), // blocks_in_processing
             casper.clone() as Arc<dyn MultiParentCasper + Send + Sync>, // casper
-            _approved_block.clone(),         // approved_block
-            the_init,                        // the_init
-            true,                            // disable_state_exporter
-            tle.clone(),                     // transport
-            rp_conf.clone(),                 // conf
-            block_retriever.clone(),         // block_retriever
+            _approved_block.clone(),  // approved_block
+            the_init,                 // the_init
+            true,                     // disable_state_exporter
+            tle.clone(),              // transport
+            rp_conf.clone(),          // conf
+            block_retriever.clone(),  // block_retriever
             Some(RunningRecoveryContext {
                 connections_cell: connections_cell.clone(),
-                last_approved_block: last_approved_block.clone(),
-                block_store: block_store.clone(),
-                block_dag_storage: block_dag_storage.clone(),
-                deploy_storage: deploy_storage.lock().clone(),
-                rejected_deploy_buffer: rejected_deploy_buffer.clone(),
-                casper_buffer_storage: casper_buffer_storage.clone(),
-                rspace_state_manager: rspace_state_manager.clone(),
-                event_publisher: event_publisher.clone(),
-                engine_cell: Arc::new(engine_cell.clone()),
-                runtime_manager: Arc::new(runtime_manager.clone()),
-                estimator: estimator.clone(),
-                casper_shard_conf: casper.casper_shard_conf.clone(),
-                heartbeat_signal_ref: casper.heartbeat_signal_ref.clone(),
             }),
         );
         engine_cell.set(Arc::new(running_engine)).await;

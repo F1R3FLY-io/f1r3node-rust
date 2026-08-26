@@ -3,6 +3,7 @@
 use std::collections::BTreeSet;
 
 use super::block_hash::BlockHash;
+use super::bond_generation::BondGeneration;
 use super::validator::Validator;
 
 /**
@@ -11,10 +12,10 @@ use super::validator::Validator;
  * Every equivocation has one "base equivocation block" and multiple "children equivocation blocks" where the
  * "children equivocation blocks" have a sequence number that is one greater than the "base equivocation block".
  * To detect neglected equivocations, we keep a set of "equivocation record"s. An "equivocation record" is a tuple
- * containing equivocator's ID, the sequence number of the equivocation base block and a set of block hashes of blocks
- * that point to enough evidence to slash an equivocation corresponding to the "equivocation record".
+ * containing equivocator's ID, bond generation, the sequence number of the equivocation base block and a set of block
+ * hashes of blocks that point to enough evidence to slash an equivocation corresponding to the "equivocation record".
  * Each time we discover an equivocation, we add a new "equivocation record" entry to the set with the validator's ID
- * and the base equivocation block's sequence number filled in. Each time we add a block to our view,
+ * generation and the base equivocation block's sequence number filled in. Each time we add a block to our view,
  * we loop through our "equivocations record"s and see if the block we want to add has enough information to detect
  * the equivocation corresponding to the "equivocation record". There are three cases:
  *
@@ -42,6 +43,7 @@ pub enum EquivocationDiscoveryStatus {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct EquivocationRecord {
     pub equivocator: Validator,
+    pub equivocator_bond_generation: BondGeneration,
     pub equivocation_base_block_seq_num: SequenceNumber,
     pub equivocation_detected_block_hashes: BTreeSet<BlockHash>,
 }
@@ -49,11 +51,13 @@ pub struct EquivocationRecord {
 impl EquivocationRecord {
     pub fn new(
         equivocator: Validator,
+        equivocator_bond_generation: BondGeneration,
         equivocation_base_block_seq_num: SequenceNumber,
         equivocation_detected_block_hashes: BTreeSet<BlockHash>,
     ) -> Self {
         Self {
             equivocator,
+            equivocator_bond_generation,
             equivocation_base_block_seq_num,
             equivocation_detected_block_hashes,
         }

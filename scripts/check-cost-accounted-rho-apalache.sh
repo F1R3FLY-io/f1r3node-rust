@@ -5,6 +5,11 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 MODEL_ROOT="$ROOT/formal/tlaplus/cost_accounted_rho"
 WORK_ROOT="$ROOT/target/verification/cost-accounted-rho/apalache"
 mkdir -p "$WORK_ROOT"
+APALACHE_TIMEOUT="${APALACHE_TIMEOUT:-1200}"
+if [[ ! "$APALACHE_TIMEOUT" =~ ^[1-9][0-9]*[smhd]?$ ]]; then
+  echo "error: APALACHE_TIMEOUT must be a positive timeout duration" >&2
+  exit 2
+fi
 
 FILTER="${1:-}"
 if [[ "$FILTER" == "--filter" ]]; then
@@ -34,13 +39,16 @@ run_check() {
     return 0
   fi
   checks_run=$((checks_run + 1))
-  output="$(cd "$MODEL_ROOT" && timeout 300 apalache-mc --out-dir="$outdir/$name" check "$@" 2>&1)"
+  output="$(cd "$MODEL_ROOT" && timeout "$APALACHE_TIMEOUT" apalache-mc --out-dir="$outdir/$name" check "$@" 2>&1)"
   rc=$?
   if [ "$rc" -eq 0 ] && grep -qE 'The outcome is: NoError|EXITCODE: OK' <<<"$output"; then
     echo "  PASS $name: $detail"
     return 0
   fi
   echo "  FAIL $name" >&2
+  if [ "$rc" -eq 124 ]; then
+    echo "  timed out after $APALACHE_TIMEOUT" >&2
+  fi
   grep -iE 'error|violat|outcome|EXITCODE' <<<"$output" | tail -20 >&2
   return 1
 }
@@ -55,7 +63,7 @@ run_expected_violation() {
     return 0
   fi
   checks_run=$((checks_run + 1))
-  output="$(cd "$MODEL_ROOT" && timeout 300 apalache-mc --out-dir="$outdir/$name" check "$@" 2>&1)"
+  output="$(cd "$MODEL_ROOT" && timeout "$APALACHE_TIMEOUT" apalache-mc --out-dir="$outdir/$name" check "$@" 2>&1)"
   rc=$?
   if [ "$rc" -ne 0 ] \
      && grep -q "found INVARIANTS: $invariant" <<<"$output" \
@@ -65,6 +73,9 @@ run_expected_violation() {
     return 0
   fi
   echo "  FAIL $name" >&2
+  if [ "$rc" -eq 124 ]; then
+    echo "  timed out after $APALACHE_TIMEOUT" >&2
+  fi
   grep -iE 'error|violat|outcome|EXITCODE|INVARIANTS' <<<"$output" | tail -20 >&2
   return 1
 }
@@ -245,6 +256,52 @@ run_expected_violation funding-slot-bootstrap-rejected-target-creation-unsafe \
   "creating an empty target vault during rejected funding is independently refuted" \
   RejectedFundingIsEffectFree \
   --config=FundingSlotBootstrapRejectedTargetCreationUnsafe.cfg --length=2 MCFundingSlotBootstrap.tla || overall=1
+run_check pos-vault-authority \
+  "PoS human control is bound to the authenticated genesis deployer and preserves vault custody" \
+  --config=PoSVaultAuthorityApalache.cfg --length=4 PoSVaultAuthority.tla || overall=1
+run_expected_violation pos-vault-literal-control-unsafe \
+  "binding PoS human control to a literal placeholder instead of the authenticated deployer is independently refuted" \
+  InstalledBindsAuthenticatedKey \
+  --config=PoSVaultAuthorityLiteralControlUnsafeApalache.cfg --length=2 PoSVaultAuthority.tla || overall=1
+run_expected_violation pos-vault-unresolved-template-unsafe \
+  "compiling a blessed contract with an unresolved template placeholder is independently refuted" \
+  NoCompiledPlaceholder \
+  --config=PoSVaultAuthorityUnresolvedTemplateUnsafeApalache.cfg --length=1 PoSVaultAuthority.tla || overall=1
+run_check concurrent-redemption-custody \
+  "the complete slash, resolution, retry, rejection, and rollback transaction horizon preserves lifecycle, generation, receipt, stake, and fuel invariants; TLC exhausts the full two-validator graph" \
+  --config=ConcurrentRedemptionCustodyApalache.cfg --length=7 ConcurrentRedemptionCustody.tla || overall=1
+run_expected_violation concurrent-redemption-no-lock-unsafe \
+  "two same-incarnation resolutions without a per-validator transaction lock are independently refuted" \
+  AtMostOneResolutionPerIncarnation \
+  --config=ConcurrentRedemptionCustodyNoTargetLockUnsafeApalache.cfg --length=11 ConcurrentRedemptionCustody.tla || overall=1
+run_expected_violation concurrent-redemption-stale-generation-unsafe \
+  "accepting a redemption for a stale validator generation is independently refuted" \
+  ReceiptsUseAuthorizedGeneration \
+  --config=ConcurrentRedemptionCustodyIgnoreGenerationUnsafeApalache.cfg --length=6 ConcurrentRedemptionCustody.tla || overall=1
+run_expected_violation concurrent-redemption-full-guilty-unsafe \
+  "using a Guilty verdict for total stake confiscation instead of Burned is independently refuted" \
+  GuiltyIsStrictlyPartial \
+  --config=ConcurrentRedemptionCustodyFullGuiltyUnsafeApalache.cfg --length=6 ConcurrentRedemptionCustody.tla || overall=1
+run_expected_violation concurrent-redemption-origin-collapse-unsafe \
+  "restoring every quarantined lifecycle as Bonded is independently refuted" \
+  RestoresExactLifecycle \
+  --config=ConcurrentRedemptionCustodyRestoreBondedUnsafeApalache.cfg --length=6 ConcurrentRedemptionCustody.tla || overall=1
+run_expected_violation concurrent-redemption-stake-checkpoint-unsafe \
+  "publishing a staged stake disposition after transaction rejection is independently refuted" \
+  RejectedTransactionsPublishNothing \
+  --config=ConcurrentRedemptionCustodyCheckpointStakeUnsafeApalache.cfg --length=4 ConcurrentRedemptionCustody.tla || overall=1
+run_expected_violation concurrent-redemption-fuel-checkpoint-unsafe \
+  "publishing a staged fuel disposition after transaction rejection is independently refuted" \
+  RejectedTransactionsPublishNothing \
+  --config=ConcurrentRedemptionCustodyCheckpointFuelUnsafeApalache.cfg --length=5 ConcurrentRedemptionCustody.tla || overall=1
+run_expected_violation concurrent-redemption-lost-receipt-unsafe \
+  "reapplying an accepted Guilty disposition after losing its receipt is independently refuted" \
+  ExactRetriesAreEffectFree \
+  --config=ConcurrentRedemptionCustodyLostReceiptUnsafeApalache.cfg --length=7 ConcurrentRedemptionCustody.tla || overall=1
+run_expected_violation concurrent-redemption-conflict-overwrite-unsafe \
+  "overwriting an accepted receipt with a conflicting retry is independently refuted" \
+  ConflictingRetriesAreEffectFree \
+  --config=ConcurrentRedemptionCustodyOverwriteConflictUnsafeApalache.cfg --length=7 ConcurrentRedemptionCustody.tla || overall=1
 run_check introduction-authority-registry \
   "fallback resolution and explicit registration linearize to one committed payer" \
   --config=IntroductionAuthorityRegistryApalache.cfg --length=2 MCIntroductionAuthorityRegistry.tla || overall=1

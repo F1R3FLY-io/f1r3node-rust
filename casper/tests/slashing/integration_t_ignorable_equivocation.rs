@@ -1,38 +1,12 @@
-// Integration test — Tier 1 production-path verification of the
-// `IgnorableEquivocation` arm of
-// `MultiParentCasperImpl::handle_invalid_block`.
-//
-// Reference: docs/theory/slashing/design/14-test-plan.md §14.3.5,
-// design/09-bug-fixes-and-rationale.md §9.1 (bug #1).
-// Plan-agent designed Track 2 / equivocation-construction recipe.
-//
-// The earlier mutate-and-resign attempts (mutating header.timestamp
-// or extra_bytes then re-signing) failed structurally: replay reads
-// header fields and recomputes the post-state hash, so any mutation
-// of a real block's body or header produces "Unable to consume
-// results of system deploy" — rejection as RuntimeError, NOT
-// IgnorableEquivocation. The only correct construction is the
-// `equivocate_block` helper in `integration_helpers.rs`, which
-// builds `b1p` from a different deploy set entirely and runs it
-// through the real interpreter to compute a matching post-state.
-//
-// Recipe:
-//   1. v0's TestNode (nodes[0]) creates b1 with deploy d1 — but
-//      `create_block_unsafe` does NOT add b1 to nodes[0]'s DAG.
-//      nodes[0]'s state is still at genesis.
-//   2. equivocate_block(nodes[0], &b1, vec![d2]) builds b1p from
-//      genesis with deploy d2. Same parents, same seq_num, same
-//      sender as b1; distinct hash; passes replay in isolation.
-//   3. Process b1 on nodes[1] → Right(Valid).
-//   4. Process b1p on nodes[1] → Left(Invalid(IgnorableEquivocation)).
-//      No other node has cited b1p as a dependency, so
-//      requested_as_dependency returns false →
-//      `IgnorableEquivocation` (equivocation_detector.rs:42-60).
-//   5. Post-fix #1 invariant: dispatcher mints an EquivocationRecord
-//      at (v0, base_seq=0). Pre-fix this assertion fails (the
-//      variant was non-slashable + dispatcher silently dropped).
+// Protocol-v5 production-path regression for an unsolicited certified sibling.
+// Arrival context changes only the observation. Both siblings remain
+// intrinsically valid DAG members and their certified identity creates the same
+// canonical generation-aware objective evidence as a requested sibling.
 
-use casper::rust::block_status::{BlockError, InvalidBlock};
+use std::collections::BTreeSet;
+
+use casper::rust::block_status::EquivocationObservation;
+use casper::rust::casper::{Casper, MultiParentCasper};
 use casper::rust::util::construct_deploy;
 use rspace_plus_plus::rspace::history::Either;
 
@@ -99,21 +73,55 @@ async fn integration_t_ignorable_equivocation() {
         s1
     );
 
-    // Process b1p on node 1. Equivocation detected; no other node
-    // has cited b1p as a dependency, so `requested_as_dependency`
-    // returns false → IgnorableEquivocation.
+    let mut validation_snapshot = nodes[1]
+        .casper
+        .get_snapshot()
+        .await
+        .expect("validation snapshot");
+    let validation = nodes[1]
+        .casper
+        .validate(&b1p, &mut validation_snapshot)
+        .await
+        .expect("validate unsolicited sibling");
+    assert!(matches!(validation.status(), Either::Right(_)));
+    assert!(validation.sender_authority().is_some());
+    assert_eq!(
+        validation.equivocation_observation(),
+        Some(EquivocationObservation::Unsolicited)
+    );
+
     let s2 = nodes[1]
         .process_block(b1p.clone())
         .await
         .expect("process b1p");
     assert!(
-        matches!(
-            s2,
-            Either::Left(BlockError::Invalid(InvalidBlock::IgnorableEquivocation))
-                | Either::Left(BlockError::Invalid(InvalidBlock::AdmissibleEquivocation))
-        ),
-        "b1p classified as equivocation, got: {:?}",
+        matches!(s2, Either::Right(_)),
+        "an unsolicited certified sibling remains intrinsically valid: {:?}",
         s2
+    );
+
+    let dag = nodes[1]
+        .casper
+        .block_dag()
+        .await
+        .expect("post-admission DAG");
+    for sibling in [&b1, &b1p] {
+        assert!(dag
+            .lookup_unsafe(&sibling.block_hash)
+            .expect("certified sibling metadata")
+            .is_accepted());
+    }
+    let generation = b1
+        .header
+        .sender_bond_generation
+        .expect("certified sender generation");
+    let identity = (b1.sender.clone(), generation, b1.seq_num);
+    assert_eq!(
+        dag.equivocation_observations().get(&identity).cloned(),
+        Some(BTreeSet::from([
+            b1.block_hash.clone(),
+            b1p.block_hash.clone(),
+        ]))
     );
 
     // Snapshot and assert post-fix #1: a record exists at
@@ -129,9 +137,6 @@ async fn integration_t_ignorable_equivocation() {
         (0..=10).any(|base| <_ as SlashingObserver>::has_record(&snapshot, v0_label, base));
     assert!(
         has_any_record,
-        "post-fix #1: dispatcher mints EquivocationRecord for the \
-         IgnorableEquivocation arm; pre-fix this assertion fails \
-         (the variant was non-slashable + dispatcher returned \
-         Ok(dag.clone()) silently)"
+        "certified unsolicited siblings must create generation-aware objective evidence"
     );
 }

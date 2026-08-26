@@ -2,7 +2,6 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, RwLock};
 
 use block_storage::rust::casperbuffer::casper_buffer_key_value_storage::CasperBufferKeyValueStorage;
@@ -58,7 +57,7 @@ use crate::rust::test_utils::util::genesis_builder::GenesisContext;
 use crate::rust::util::comm::casper_packet_handler::CasperPacketHandler;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 use crate::rust::validator_identity::ValidatorIdentity;
-use crate::rust::ValidBlockProcessing;
+use crate::rust::{ProposeRequestKind, ValidBlockProcessing};
 
 pub struct TestNode {
     pub name: String,
@@ -123,7 +122,9 @@ impl TestNode {
     ) -> Result<BlockHash, CasperError> {
         match &mut self.proposer_opt {
             Some(proposer) => {
-                let propose_return = proposer.propose(casper.clone(), false).await?;
+                let propose_return = proposer
+                    .propose(casper.clone(), ProposeRequestKind::Manual)
+                    .await?;
 
                 match propose_return.propose_result_to_send {
                     ProposerResult::Success(_, block) => Ok(block.block_hash),
@@ -194,14 +195,61 @@ impl TestNode {
         &mut self,
         deploy_datums: &[Signed<DeployData>],
     ) -> Result<BlockMessage, CasperError> {
-        let result = self.create_block(deploy_datums).await?;
+        let mut finalization_deadline = None;
+        let mut first_attempt = true;
+        loop {
+            let result = if first_attempt {
+                first_attempt = false;
+                self.create_block(deploy_datums).await?
+            } else {
+                self.create_block(&[]).await?
+            };
+            match result {
+                BlockCreatorResult::Created(block, ..) => return Ok(block),
+                BlockCreatorResult::RecoveryDeferred(
+                    crate::rust::blocks::proposer::propose_result::RecoveryDeferralReason::FinalizedFloorMaterializationPending,
+                ) => {
+                    let deadline = *finalization_deadline.get_or_insert_with(|| {
+                        tokio::time::Instant::now() + std::time::Duration::from_secs(30)
+                    });
+                    if tokio::time::Instant::now() >= deadline {
+                        return Err(CasperError::RuntimeError(
+                            "Timed out waiting for finalized-floor materialization".to_string(),
+                        ));
+                    }
+                    self.casper.request_finalization()?;
+                    self.wait_for_finalizer_quiescence(deadline).await?;
+                }
+                other => {
+                    return Err(CasperError::RuntimeError(format!(
+                        "Failed creating block: {:?}",
+                        other
+                    )))
+                }
+            }
+        }
+    }
 
-        match result {
-            BlockCreatorResult::Created(block, ..) => Ok(block),
-            _ => Err(CasperError::RuntimeError(format!(
-                "Failed creating block: {:?}",
-                result
-            ))),
+    pub async fn wait_for_finalizer_quiescence(
+        &self,
+        deadline: tokio::time::Instant,
+    ) -> Result<(), CasperError> {
+        loop {
+            if self.casper.finalization_schedule.is_quiescent()
+                && self
+                    .casper
+                    .finalization_in_progress
+                    .load(std::sync::atomic::Ordering::Acquire)
+                    == 0
+            {
+                return Ok(());
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(CasperError::RuntimeError(
+                    "Timed out waiting for finalization to quiesce".to_string(),
+                ));
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
     }
 
@@ -304,35 +352,7 @@ impl TestNode {
     where
         F: FnOnce(&ValidBlockProcessing) -> bool,
     {
-        // Create block. Under suite-parallel timing the just-added deploys can
-        // momentarily be absent from the proposer's view (deploys are added
-        // synchronously, but block_creator filters against the newly-synced
-        // multi-parent post-state / self-chain dedup), so a propose can
-        // transiently return NoNewDeploys. Callers of this helper always supply
-        // deploys and expect a Created block, so retry a bounded number of times
-        // with a short backoff before treating a non-Created result as an error.
-        let mut attempts: u32 = 0;
-        let block = loop {
-            match self.create_block(deploy_datums).await? {
-                BlockCreatorResult::Created(b, ..) => break b,
-                other => {
-                    if attempts < 20 {
-                        attempts += 1;
-                        tracing::debug!(
-                            "create_block returned {:?}; retry {}/20 after backoff",
-                            other,
-                            attempts
-                        );
-                        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-                        continue;
-                    }
-                    return Err(CasperError::RuntimeError(format!(
-                        "Expected Created block after {} retries, got: {:?}",
-                        attempts, other
-                    )));
-                }
-            }
-        };
+        let block = self.create_block_unsafe(deploy_datums).await?;
 
         // Process block
         let status = self.process_block(block.clone()).await?;
@@ -379,7 +399,7 @@ impl TestNode {
     /// Helper method to propagate a block from a node at a specific index in a nodes array.
     ///
     /// This method works around Rust's borrow checker limitation where we cannot do:
-    /// ```ignore
+    /// ```compile_fail
     /// nodes[0].propagate_block(&deploys, &mut nodes)
     /// ```
     /// because it would require borrowing `nodes` mutably twice:
@@ -413,7 +433,7 @@ impl TestNode {
     /// Helper method to propagate a block from one node to another specific node.
     ///
     /// This method works around Rust's borrow checker limitation where we cannot do:
-    /// ```ignore
+    /// ```compile_fail
     /// nodes[from_index].propagate_block(&deploys, &mut [&mut nodes[to_index]])
     /// ```
     /// because it would require borrowing from `nodes` mutably twice.
@@ -1044,7 +1064,7 @@ impl TestNode {
         block_dag_storage
             .insert(
                 &genesis,
-                block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Approved,
+                block_storage::rust::dag::block_dag_key_value_storage::InsertMode::ApprovedGenesis,
             )
             .expect("Failed to insert genesis block into DAG storage in TestNode");
         let deploy_storage = Arc::new(PlMutex::new(
@@ -1197,11 +1217,11 @@ impl TestNode {
             validator_id: validator_id_opt.clone(),
             casper_shard_conf: shard_conf,
             approved_block: genesis.clone(),
-            finalization_in_progress: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
-                false,
-            )),
-            finalizer_task_in_progress: Arc::new(AtomicBool::new(false)),
-            finalizer_task_queued: Arc::new(AtomicBool::new(false)),
+            finalization_in_progress: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            recovery_sync_active: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            finalization_schedule: Arc::new(
+                crate::rust::finality::finalization_schedule::FinalizationSchedule::new(2),
+            ),
             heartbeat_signal_ref: crate::rust::heartbeat_signal::new_heartbeat_signal_ref(),
             deploys_in_scope_cache: Arc::new(parking_lot::Mutex::new(
                 None::<(
@@ -1237,8 +1257,8 @@ impl TestNode {
                 casper_shard_conf: casper_guard.casper_shard_conf.clone(),
                 approved_block: casper_guard.approved_block.clone(),
                 finalization_in_progress: casper_guard.finalization_in_progress.clone(),
-                finalizer_task_in_progress: casper_guard.finalizer_task_in_progress.clone(),
-                finalizer_task_queued: casper_guard.finalizer_task_queued.clone(),
+                recovery_sync_active: casper_guard.recovery_sync_active.clone(),
+                finalization_schedule: casper_guard.finalization_schedule.clone(),
                 heartbeat_signal_ref: casper_guard.heartbeat_signal_ref.clone(),
                 deploys_in_scope_cache: casper_guard.deploys_in_scope_cache.clone(),
                 active_validators_cache: casper_guard.active_validators_cache.clone(),

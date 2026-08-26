@@ -46,7 +46,8 @@ use shared::rust::store::key_value_store::KvStoreError;
 
 use crate::rust::casperbuffer::casper_buffer_key_value_storage::CasperBufferKeyValueStorage;
 use crate::rust::dag::block_dag_key_value_storage::{
-    BlockDagKeyValueStorage, InsertMode, KeyValueDagRepresentation,
+    BlockDagKeyValueStorage, CertifiedAdmissionOutcome, CertifiedSenderAuthority, InsertMode,
+    KeyValueDagRepresentation,
 };
 
 /// Describes what (if anything) the atomic helper does to the casper
@@ -92,13 +93,15 @@ pub fn atomic_insert_then_buffer(
     dag: &BlockDagKeyValueStorage,
     block: &BlockMessage,
     mode: InsertMode,
+    certificate: &CertifiedSenderAuthority,
+    outcome: &CertifiedAdmissionOutcome,
     buffer: &CasperBufferKeyValueStorage,
     buffer_op: BufferTransition,
 ) -> Result<KeyValueDagRepresentation, KvStoreError> {
     let _dag_guard = dag.global_lock.write();
     let _buf_guard = buffer.write_guard();
 
-    let updated = dag.insert_internal(block, mode)?;
+    let updated = dag.insert_internal_certified(block, mode, certificate, outcome)?;
 
     match buffer_op {
         BufferTransition::RemoveFromBuffer(hash) => match buffer.remove_unlocked(hash) {

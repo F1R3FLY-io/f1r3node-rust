@@ -1716,30 +1716,45 @@ impl RuntimeOps {
         let (event_log, result, mergeable_channels) =
             self.play_system_deploy_internal(system_deploy).await?;
 
-        let final_state_hash = {
-            let checkpoint = self.runtime.create_checkpoint().await;
-            checkpoint.root.to_bytes_prost()
-        };
-
         match result {
             Either::Right(system_deploy_result) => {
+                let final_state_hash = {
+                    let checkpoint = self.runtime.create_checkpoint().await;
+                    checkpoint.root.to_bytes_prost()
+                };
                 let mcl = self.get_number_channels_data(&mergeable_channels).await?;
                 if let Some(SlashDeploy {
                     invalid_block_hash,
+                    equivocation_block_hash,
                     pk,
                     target_activation_epoch,
+                    target_bond_generation,
                     initial_rand: _,
                 }) = system_deploy.as_any().downcast_ref::<SlashDeploy>()
                 {
-                    Ok(SystemDeployResult::play_succeeded(
-                        state_hash.clone(),
-                        final_state_hash,
-                        event_log,
+                    let system_deploy = if let Some(equivocation_block_hash) =
+                        equivocation_block_hash
+                    {
+                        SystemDeployData::create_equivocation_slash(
+                            invalid_block_hash.clone(),
+                            equivocation_block_hash.clone(),
+                            pk.clone(),
+                            *target_activation_epoch,
+                            *target_bond_generation,
+                        )
+                    } else {
                         SystemDeployData::create_slash(
                             invalid_block_hash.clone(),
                             pk.clone(),
                             *target_activation_epoch,
-                        ),
+                            *target_bond_generation,
+                        )
+                    };
+                    Ok(SystemDeployResult::play_succeeded(
+                        state_hash.clone(),
+                        final_state_hash,
+                        event_log,
+                        system_deploy,
                         mcl,
                         system_deploy_result,
                     ))
@@ -1782,6 +1797,7 @@ impl RuntimeOps {
                         event_log,
                         SystemDeployData::create_redeem(
                             redeem.validator_pk.clone().into(),
+                            redeem.target_bond_generation,
                             outcome_tag,
                             penalty,
                             redeem.pos_multi_sig_public_keys.clone(),
@@ -1803,7 +1819,12 @@ impl RuntimeOps {
                 }
             }
 
-            Either::Left(usr_err) => Ok(SystemDeployResult::play_failed(event_log, usr_err)),
+            Either::Left(usr_err) => {
+                self.runtime
+                    .reset(&Blake2b256Hash::from_bytes_prost(state_hash))
+                    .await?;
+                Ok(SystemDeployResult::play_failed(event_log, usr_err))
+            }
         }
     }
 
@@ -2501,6 +2522,25 @@ impl RuntimeOps {
         Self::to_bond_vec(bonds_pars[0].to_owned())
     }
 
+    pub async fn compute_bond_generations(
+        &mut self,
+        hash: &StateHash,
+    ) -> Result<HashMap<Validator, i64>, CasperError> {
+        let generation_pars = self
+            .play_exploratory_par(Self::bond_generations_query_par().clone(), hash)
+            .await?;
+
+        if generation_pars.len() != 1 {
+            return Err(CasperError::RuntimeError(format!(
+                "Incorrect number of bond-generation results for state {}: {}",
+                PrettyPrinter::build_string_bytes(hash),
+                generation_pars.len()
+            )));
+        }
+
+        Self::to_bond_generation_map(generation_pars[0].to_owned())
+    }
+
     fn activate_validator_query_source() -> String {
         r#"
           new return, rl(`rho:registry:lookup`), poSCh in {
@@ -2629,6 +2669,26 @@ impl RuntimeOps {
         })
     }
 
+    fn bond_generations_query_source() -> String {
+        r#"
+        new return, rl(`rho:registry:lookup`), poSCh in {
+          rl!(`rho:system:pos`, *poSCh) |
+          for(@(_, PoS) <- poSCh) {
+            @PoS!("getBondGenerations", *return)
+          }
+        }
+      "#
+        .to_string()
+    }
+
+    fn bond_generations_query_par() -> &'static Par {
+        static QUERY: OnceLock<Par> = OnceLock::new();
+        QUERY.get_or_init(|| {
+            Compiler::source_to_adt(&Self::bond_generations_query_source())
+                .expect("Failed to compile bond-generations query source")
+        })
+    }
+
     fn to_validator_vec(validators_par: Par) -> Result<Vec<Validator>, CasperError> {
         if validators_par.exprs.is_empty() {
             return Ok(Vec::new());
@@ -2697,6 +2757,45 @@ impl RuntimeOps {
             }
         })
         .collect::<Result<Vec<_>, _>>()
+    }
+
+    fn to_bond_generation_map(
+        generations_map: Par,
+    ) -> Result<HashMap<Validator, i64>, CasperError> {
+        if generations_map.exprs.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        let ps = match generations_map.exprs[0].expr_instance.as_ref().unwrap() {
+            ExprInstance::EMapBody(map) => ParMapTypeMapper::emap_to_par_map(map.clone()).ps,
+            _ => SortedParMap::create_from_empty(),
+        };
+
+        ps.map_iter(|(validator, generation)| {
+            if validator.exprs.len() != 1 || generation.exprs.len() != 1 {
+                return Err(CasperError::RuntimeError(
+                    "Malformed bond-generation map entry".to_string(),
+                ));
+            }
+            let validator = match validator.exprs[0].expr_instance.as_ref().unwrap() {
+                ExprInstance::GByteArray(value) => value.clone().into(),
+                _ => {
+                    return Err(CasperError::RuntimeError(
+                        "Expected GByteArray in bond-generation validator".to_string(),
+                    ))
+                }
+            };
+            let generation = match generation.exprs[0].expr_instance.as_ref().unwrap() {
+                ExprInstance::GInt(value) if *value >= 0 => *value,
+                _ => {
+                    return Err(CasperError::RuntimeError(
+                        "Expected nonnegative GInt in bond-generation value".to_string(),
+                    ))
+                }
+            };
+            Ok((validator, generation))
+        })
+        .collect()
     }
 }
 

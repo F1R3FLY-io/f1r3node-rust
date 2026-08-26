@@ -11,7 +11,9 @@ CONSTANTS
     EnforceExpiry,
     SingleLeader,
     HeartbeatsContinue,
-    PreserveSelectedRecovery
+    PreserveSelectedRecovery,
+    CandidateScoped,
+    PreserveSelectedRehome
 
 ValidatorSet == 1..NumValidators
 Sources == [height : 0..MaxHeight, validator : ValidatorSet]
@@ -23,6 +25,7 @@ RetryRecords ==
      proposalView : 0..(MaxHeight - 1),
      blockHeight : 1..MaxHeight,
      sourceFree : BOOLEAN,
+     historicalSelfChain : BOOLEAN,
      unexpired : BOOLEAN,
      survivesSelfChainFilter : BOOLEAN]
 
@@ -35,6 +38,7 @@ VARIABLES
     tombstones,
     visibleOccurrences,
     visibleTombstones,
+    excludedSources,
     pendingRetries
 
 vars ==
@@ -46,6 +50,7 @@ vars ==
       tombstones,
       visibleOccurrences,
       visibleTombstones,
+      excludedSources,
       pendingRetries>>
 
 Init ==
@@ -57,10 +62,16 @@ Init ==
     /\ tombstones = {}
     /\ visibleOccurrences = [v \in ValidatorSet |-> InitialSources]
     /\ visibleTombstones = [v \in ValidatorSet |-> {}]
+    /\ excludedSources = [v \in ValidatorSet |-> {}]
     /\ pendingRetries = {}
 
 ActiveSources == occurrences \ tombstones
 LocalActiveSources(v) == visibleOccurrences[v] \ visibleTombstones[v]
+CandidateActiveSources(v) == LocalActiveSources(v) \ excludedSources[v]
+RetrySourceFree(v) ==
+    IF CandidateScoped
+    THEN CandidateActiveSources(v) = {}
+    ELSE LocalActiveSources(v) = {}
 
 InWindowAt(blockHeight) ==
     /\ ValidAfter < blockHeight
@@ -71,7 +82,7 @@ LeaderAt(finalizedView) == (finalizedView % NumValidators) + 1
 
 DispositionAllowsRetry(v) ==
     IF OccurrenceAware
-    THEN LocalActiveSources(v) = {}
+    THEN RetrySourceFree(v)
     ELSE visibleTombstones[v] /= {}
 
 CandidateBlockHeight(v) == observedProposalHeights[v] + 1
@@ -89,9 +100,13 @@ PrepareRetry(v) ==
          finalizedView |-> observedFinalizedHeights[v],
          proposalView |-> observedProposalHeights[v],
          blockHeight |-> CandidateBlockHeight(v),
-         sourceFree |-> LocalActiveSources(v) = {},
+         sourceFree |-> RetrySourceFree(v),
+         historicalSelfChain |-> LocalActiveSources(v) /= {},
          unexpired |-> InWindowAt(CandidateBlockHeight(v)),
-         survivesSelfChainFilter |-> PreserveSelectedRecovery]
+         survivesSelfChainFilter |->
+             IF LocalActiveSources(v) /= {}
+             THEN PreserveSelectedRehome
+             ELSE PreserveSelectedRecovery]
     IN
     /\ v \in OnlineValidators
     /\ RetryEligible(v)
@@ -108,7 +123,8 @@ PrepareRetry(v) ==
          occurrences,
          tombstones,
          visibleOccurrences,
-         visibleTombstones>>
+         visibleTombstones,
+         excludedSources>>
 
 PublishRetry(pending) ==
     LET source ==
@@ -138,7 +154,26 @@ PublishRetry(pending) ==
        <<finalizedHeight,
          observedFinalizedHeights,
          tombstones,
-         visibleTombstones>>
+         visibleTombstones,
+         excludedSources>>
+
+ExcludeSelfChainSource(v, source) ==
+    /\ v \in OnlineValidators
+    /\ source.validator = v
+    /\ source \in LocalActiveSources(v)
+    /\ source \notin excludedSources[v]
+    /\ excludedSources' =
+       [excludedSources EXCEPT ![v] = @ \union {source}]
+    /\ UNCHANGED
+       <<proposalHeight,
+         finalizedHeight,
+         observedProposalHeights,
+         observedFinalizedHeights,
+         occurrences,
+         tombstones,
+         visibleOccurrences,
+         visibleTombstones,
+         pendingRetries>>
 
 PublishRejection(v, source) ==
     /\ v \in OnlineValidators
@@ -154,6 +189,7 @@ PublishRejection(v, source) ==
          observedFinalizedHeights,
          occurrences,
          visibleOccurrences,
+         excludedSources,
          pendingRetries>>
 
 ObserveOccurrence(v, source) ==
@@ -169,6 +205,7 @@ ObserveOccurrence(v, source) ==
          occurrences,
          tombstones,
          visibleTombstones,
+         excludedSources,
          pendingRetries>>
 
 ObserveTombstone(v, source) ==
@@ -185,6 +222,7 @@ ObserveTombstone(v, source) ==
          observedFinalizedHeights,
          occurrences,
          tombstones,
+         excludedSources,
          pendingRetries>>
 
 ObserveProposalHeight(v) ==
@@ -200,6 +238,7 @@ ObserveProposalHeight(v) ==
          tombstones,
          visibleOccurrences,
          visibleTombstones,
+         excludedSources,
          pendingRetries>>
 
 ObserveFinalizedHeight(v) ==
@@ -219,6 +258,7 @@ ObserveFinalizedHeight(v) ==
          tombstones,
          visibleOccurrences,
          visibleTombstones,
+         excludedSources,
          pendingRetries>>
 
 Advance(v) ==
@@ -246,10 +286,13 @@ Advance(v) ==
          tombstones,
          visibleOccurrences,
          visibleTombstones,
+         excludedSources,
          pendingRetries>>
 
 PrepareAny == \E v \in ValidatorSet : PrepareRetry(v)
 PublishAny == \E pending \in RetryRecords : PublishRetry(pending)
+ExcludeAny ==
+    \E v \in ValidatorSet, source \in Sources : ExcludeSelfChainSource(v, source)
 RejectAny ==
     \E v \in ValidatorSet, source \in Sources : PublishRejection(v, source)
 ObserveOccurrenceAny ==
@@ -265,6 +308,7 @@ AdvanceAny == \E v \in ValidatorSet : Advance(v)
 Next ==
     \/ PrepareAny
     \/ PublishAny
+    \/ ExcludeAny
     \/ RejectAny
     \/ ObserveOccurrenceAny
     \/ ObserveTombstoneAny
@@ -297,8 +341,11 @@ TypeOK ==
     /\ tombstones \subseteq occurrences
     /\ visibleOccurrences \in [ValidatorSet -> SUBSET occurrences]
     /\ visibleTombstones \in [ValidatorSet -> SUBSET tombstones]
+    /\ excludedSources \in [ValidatorSet -> SUBSET occurrences]
     /\ \A v \in ValidatorSet :
           visibleTombstones[v] \subseteq visibleOccurrences[v]
+    /\ \A v \in ValidatorSet :
+          excludedSources[v] \subseteq visibleOccurrences[v]
     /\ pendingRetries \subseteq RetryRecords
 
 Inv_ExactTombstones == tombstones \subseteq occurrences
@@ -308,6 +355,7 @@ Inv_LocalViewsAreSound ==
         /\ visibleOccurrences[v] \subseteq occurrences
         /\ visibleTombstones[v] \subseteq tombstones
         /\ visibleTombstones[v] \subseteq visibleOccurrences[v]
+        /\ excludedSources[v] \subseteq visibleOccurrences[v]
 
 Inv_RetryRequiresNoActiveSource ==
     \A pending \in pendingRetries : pending.sourceFree
@@ -317,6 +365,10 @@ Inv_NoExpiredRetry ==
 
 Inv_SelectedRetrySurvivesSelfChainFilter ==
     \A pending \in pendingRetries : pending.survivesSelfChainFilter
+
+Inv_SelectedRehomeSurvivesCandidateFilter ==
+    \A pending \in pendingRetries :
+        pending.historicalSelfChain => pending.survivesSelfChainFilter
 
 Inv_OneRecoveryProposerPerFinalizedView ==
     \A view \in 0..MaxHeight :

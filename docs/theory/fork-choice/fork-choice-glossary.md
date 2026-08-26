@@ -1,137 +1,149 @@
-# Fork-Choice ("Ghosting") — Glossary & Literate Algorithms
+# Fork-choice glossary and algorithms
 
-A pedagogical companion to the [verification dossier](./fork-choice-verification.md).
-Part 1 defines every symbol, acronym, and key term **before it is used** elsewhere in
-the fork-choice documentation. Part 2 presents the two load-bearing algorithms — the
-score accumulation and the heaviest-subtree ranking — in Knuth's literate-programming
-style (prose interleaved with the code chunks it explains), with the invariants that
-make them correct.
+This companion to the [normative specification](./fork-choice-specification.md) defines
+the vocabulary used by the fork-choice implementation and verification artifacts.
 
-All mathematical expressions use unicode and are quoted in backticks.
-
----
-
-## 1. Glossary
-
-### 1.1 DAG & messages
+## 1. Blocks, closure, and floors
 
 | Term | Definition |
 |---|---|
-| **block / message** | A signed node in the block DAG; carries parents, a validator (sender), and justifications. |
-| **tip** | A block with no children in the current view — a candidate head of the chain. |
-| **`parents`, main parent** | A block's parent blocks; `parents[0]` is the **main parent** (spine predecessor). |
-| **child** | `c` is a child of `b` iff `b ∈ parents(c)`. |
-| **`num(b)`** | Block number (height); `num(genesis)=0`, `num(child)=num(main parent)+1`. |
-| **ancestor `b ⪯ p`** | `b` is reachable from `p` by walking parents (reflexive-transitive); "`b` supports `p`". |
-| **latest message `lm(v)`** | Validator `v`'s most recent block, from the frozen `latest_messages` snapshot. |
-| **LCA / LUCA** | Lowest (universal) common ancestor of the latest messages — the base the scoring is measured from. |
-| **`LATEST_MESSAGE_MAX_DEPTH`** | `= 1000` — latest messages more than this far below the top height are filtered out before the LCA, bounding the scored band. |
+| block | A signed DAG vertex carrying ordered parents, sender, sequence number, justifications, protocol version, state roots, and deploy results. |
+| main parent | The first declared parent. It is the LMD-GHOST head when the vote projection is nonempty, or the captured finalized floor when no vote is eligible. No deploy policy may replace it. |
+| secondary parent | Any declared parent after index zero. Secondary states are merged into the main-parent state. |
+| ancestor | `a` is an ancestor of `b` when a parent-path from `b` reaches `a`; ancestry is reflexive. |
+| dependency closure | The immutable blocks reachable through every consensus dependency edge required to certify a candidate. Local indices outside this closure cannot change the candidate verdict. |
+| finalized floor | The highest certified state that all subsequent round calculations must preserve. |
+| floor authority | The exact active validators, positive stakes, and bond generations committed by the finalized floor's replayed state. |
 
-### 1.2 Weights, scores, ranking
+## 2. Certified consensus context
 
 | Term | Definition |
 |---|---|
-| **committee / bonds** | The bonded validators with weights, read from a block's main-parent on-chain `weight_map` — a block-structural fact (identical on every node). |
-| **`w(v, b)`** | Validator `v`'s bonded weight as seen at block `b` (from `b`'s main-parent weight map); an exact `i64 ≥ 0`. |
-| **score `score(b)`** | `score(b) = Σ { w(v, b) : v ∈ V, b ⪯ lm(v) }` — the cumulative weight of validators whose latest message supports `b`. A sum ⟹ order-independent. |
-| **invalid / slashed filter** | Latest messages of slashed/invalid validators are removed before scoring (the **T-10** property) so they add zero weight. |
-| **heaviest subtree (GHOST)** | At each level, the child whose subtree has the maximum cumulative score; the ranking descends into it. |
-| **tie-break** | The total order on tips: **score descending, then block-hash ascending** (`sort_by_with_decreasing_order`). Makes the ranked head unique. |
-| **`max_number_of_parents`** | Cap on returned tips; the head is always kept. Sentinels: estimator `i32::MAX`, config `-1` = unlimited. |
-| **`max_parent_depth`** | Secondary parents deeper than this below the main tip are dropped. |
+| exact latest-message slot | The one signed latest-message pointer carried for an active floor validator. A complete round has exactly one slot per active validator. |
+| objective evidence | A canonical, generation-scoped pair of conflicting signed messages proving equivocation independently of receiver arrival order. |
+| causal-parent projection `C` | Exact slots that pass authority, positive stake, exact-hash, sender, generation, objective-evidence, and objective-admission checks. These are state dependencies even when they do not descend from the current finalized floor. |
+| finality-vote projection `V` | The subset of `C` whose cited block equals or descends from the captured finalized floor. Only `V` contributes stake to LMD-GHOST and finality. |
+| exclusion | The stable reason an exact slot is not eligible. Exclusions are part of the context digest. |
+| certified context | The floor identity and post-state, frozen authority, exact slots, evidence, eligible projection, exclusions, and canonical digest used by every consumer in a round. |
+| context extensionality | Equal context digests plus equal cited DAG closures imply equal LCA, scores, ranking, and head, regardless of receiver-local indices. |
 
-### 1.3 The theorem catalog
+The context separates three facts that older code conflated:
 
-| ID | Meaning |
+1. a signed validator message is immutable;
+2. a receiver may have mutable diagnostic knowledge about it; and
+3. only certified objective facts may affect consensus.
+
+## 3. LMD-GHOST terms
+
+| Term | Definition |
 |---|---|
-| **T-DET** | Determinism: identical `(DAG, latest_messages)` ⟹ identical `(tips, lca, main_parent)` on every node. Its failure is a fork (safety **S1**). |
-| **T-TOTAL** | The tie-break is a strict total order on distinct hashes ⟹ the ranked argmax is unique (the core of T-DET). |
-| **T-GHOST** | The ranking returns the heaviest-subtree leaf reachable through scored children. |
-| **T-SCORE** | Score accumulation is additive/associative/commutative ⟹ order-independent (the `HashMap` iteration order cannot change a score). |
-| **T-FILTER** | Slashed/invalid latest messages contribute zero weight (reuses slashing T-10). |
-| **T-TERM** | `rank_forkchoices` terminates (a strictly-increasing block-number measure, bounded by height). |
-| **T-LCA** | The LCA is a genuine common ancestor; the depth filter is deterministic. |
-| **T-BOUND** | Count/depth truncations keep the head, never panic, node-deterministic. |
-| **T-MP** | Main-parent selection is deterministic and consistent with the ranking (proposer-side). |
-| **T-VALID (reframed)** | An honest proposer's parents pass `Validate::parents` (bound-consistency); validators do **not** recompute fork choice. |
+| latest message `lm(v)` | The eligible message selected from validator `v`'s exact slot. |
+| LCA or LUCA | The lowest universal common ancestor of all eligible latest messages. |
+| frozen stake `A(v)` | Validator `v`'s positive stake at the incoming finalized floor. It is constant for the entire round. |
+| support | Block `b` is supported by `v` when `b` is in the ancestry of `lm(v)` down to the LCA. |
+| score | The sum of frozen stakes of validators supporting a block. |
+| GHOST | Greedy Heaviest-Observed Sub-Tree: repeatedly choose scored children in descending score order. |
+| greedy GHOST head | The terminal block reached by choosing the unique highest-ranked scored child at every level from the LCA. |
+| scored terminal | A scored block with no scored child. |
+| terminal frontier | The exact duplicate-free set of scored terminals reachable from the LCA. A shared child in a multi-parent diamond appears once. |
+| two-lane ranking | The composition of the greedy GHOST head with the independently enumerated terminal frontier: the head is first, followed by every other terminal in total score/hash order. |
+| total tie-break | Score descending, then block hash ascending. It makes every ranked position unique. |
+| candidate-bond noninterference | An unfinalized block's bond cache cannot change the frozen authority or score of its round. |
+| receiver-state noninterference | Local invalid sets, LMM indices, finalized flags, ambient height, and unrelated blocks cannot change a certified result. |
 
----
+The score equation is:
 
-## 2. Literate algorithms
-
-### 2.1 Score accumulation (`build_scores_map`)
-
-**Problem.** Give each block a weight-score so the ranking can pick the heaviest
-subtree. The score of a block is the total bonded weight of the validators whose latest
-message sits at or above it.
-
-**Why it is deterministic.** The score is a **sum**, and `i64` addition is associative
-and commutative, so accumulating over the validators in *any* order (the `HashMap`
-iteration order) yields the same total — **T-SCORE**. Weights are read from the
-block-structural bonds (the main-parent weight map), never a node-local view, so `w(v,b)`
-is identical on every node — **T-DET(b)**. Slashed validators are filtered first
-(**T-FILTER**), so they add nothing.
-
-⟨ *For each surviving validator, walk its supporting chain down to the LCA, adding its
-weight to every block on the way.* ⟩
-```
-scores ← empty map (block → i64, default 0)
-for (v, lm) in filtered_latest_messages:        ⟨ order-independent: sum is commutative ⟩
-    frontier ← { lm }                            ⟨ BFS from the validator's latest block ⟩
-    visited  ← {}
-    while frontier nonempty:
-        b ← take from frontier
-        if b already in visited: continue        ⟨ dedup ⟹ each block counted once per v ⟩
-        visited ← visited ∪ { b }
-        scores[b] ← checked_add(scores[b], w(v, b))   ⟨ B3: fail loudly on overflow ⟩
-        for p in parents(b) with num(p) ≥ num(LCA):   ⟨ bounded by the LCA height ⟩
-            frontier ← frontier ∪ { p }
-return scores
+```math
+score(b) = \sum_{v : b \preceq lm(v)} A(v)
 ```
 
-The `checked_add` (fix **B3**) can only reject if the cumulative weight exceeds
-`i64::MAX` — a supply-cap violation, i.e. an already-invalid state. (Rocq
-`Score.score_perm_invariant`, `score_eq_support_sum`; Z3 `score_supply_cap_bitvec.py`.)
+## 4. Parent-bound terms
 
-### 2.2 Heaviest-subtree ranking (`rank_forkchoices`)
+| Term | Definition |
+|---|---|
+| ranked head | Index zero after policy ordering. Depth and count bounds must preserve it. |
+| causal-tip antichain | The reachability-maximal, duplicate-free set covering every retained causal tip. An ancestor is removed only when another retained parent already covers it. |
+| finalized-floor backstop | The captured floor inserted when no causal-parent candidate descends from it. It makes the proposal's replay base explicit and is also an evidence-closure root. |
+| live causal tip | A causal tip still covered after deterministic parent-depth expiry. Expired tips remain exact evidence roots but no longer block current proposal construction. |
+| maximum candidate height `H` | The greatest block height in the full ranked input before depth or count truncation. |
+| depth horizon `D` | Maximum permitted value of `H - height(p)` for a secondary parent. |
+| depth buffer | Receive-side and history-retention safety margin added to `D`. |
+| unlimited count | Exactly configuration value `-1`, or the estimator's `i32::MAX` sentinel. |
+| frontier-capacity invariant | A finite proposal-parent cap is at least the maximum active-validator count plus one independent finalized-floor backstop. |
 
-**Problem.** From the scored DAG, pick the canonical tip: descend, level by level, into
-the heaviest scored child until no scored child remains.
+For `R = [g] ++ S`, finite-depth filtering returns the head followed by exactly the
+eligible tail:
 
-**Why it is deterministic and terminates.** At each level the children are ranked by the
-**total order** `(score desc, hash asc)`; on distinct hashes the maximum is **unique**,
-so the descent never depends on iteration order — **T-TOTAL ⟹ T-DET(a)**. Each step
-moves to a strictly higher-numbered block (a child), and block numbers are bounded by the
-DAG height, so the fixpoint is reached in finitely many steps — **T-TERM**.
-
-⟨ *Replace the current level with its scored children; sort by the total order; repeat to
-a fixpoint.* ⟩
-```
-level ← [ lca ]
-loop:
-    next ← []
-    for b in level:
-        children_scored ← { c ∈ children(b) : c ∈ scores }   ⟨ stay within scored blocks ⟩
-        if children_scored is empty:
-            next ← next ++ [ b ]                              ⟨ leaf: keep self (fixpoint arm) ⟩
-        else:
-            next ← next ++ children_scored
-    next ← dedup(next)                                        ⟨ distinct hashes ⟩
-    next ← sort_by(next, key = (score desc, hash asc))        ⟨ TOTAL order ⟹ unique argmax ⟩
-    if next == level: return level                           ⟨ still_same fixpoint ⟩
-    level ← next
+```math
+F_D(R) = [g] \mathbin{++} [p \in S \mid H - height(p) \le D]
 ```
 
-The head `level[0]` is the canonical main tip. Because `sort_by` is applied to a
-**deduplicated (distinct-hash)** list under a **total** order, its output — and hence the
-head — is a pure function of the scored DAG: no `HashSet`/`HashMap` order survives the
-sort. (Rocq `Rank.rank_terminates`, `rank_selects_heaviest`, `TieBreak.sort_total_order`,
-`output_indep_of_input_perm`; TLA⁺ `ForkChoice.tla`; Z3 `tiebreak_total_order.py`.)
+The approved genesis may appear as a receiver-side tail exception because its state is
+universally retained. Every parent, including the head and genesis, must still resolve
+successfully; storage failure is local infrastructure failure, not objective block
+invalidity.
 
----
+## 5. Score construction algorithm
 
-## 3. References
+The estimator receives a complete certified context and never consults local vote
+eligibility indices.
 
-See the [dossier's References section](./fork-choice-verification.md#references) for the
-cited literature (GHOST, Gasper, Casper FFG, and the consensus/BFT/formal-methods
-foundations) with DOIs.
+```text
+require complete exact slots
+eligible := context.eligible_latest_messages
+lca := LUCA(all values of eligible), or approved genesis when eligible is empty
+
+parallel for each (validator, latest) in eligible:
+    stake := context.frozen_authority[validator]
+    walk every parent path from latest down to lca
+    emit (block, stake) once per visited block
+
+reduce emitted contributions in deterministic key order using checked addition
+```
+
+Parallel traversal is safe because workers only read the DAG and immutable context.
+Their output is a per-validator map; shared score mutation is deferred to the ordered
+reduction.
+
+## 6. Two-lane ranking algorithm
+
+```text
+ghost := lca
+while scored_children(ghost) is not empty:
+    require every scored child height > height(ghost)
+    ghost := first sort(scored_children(ghost), score descending, hash ascending)
+
+frontier := {lca}
+while frontier contains a block with scored children:
+    choose any such block
+    require every scored child height > height(block)
+    frontier := (frontier - {block}) union scored_children(block)
+
+require ghost in frontier
+tail := sort(frontier - {ghost}, score descending, hash ascending)
+return [ghost] ++ tail
+```
+
+Every nonterminal replacement advances to strictly higher block numbers, so both
+finite-DAG traversals terminate. Set union deduplicates shared multi-parent children.
+The exact terminal frontier is independent of expansion order, and the total order
+makes its tail byte-identical across validators.
+
+The head prefix is essential. With branch scores `60` and `40`, where the score-`60`
+branch terminates in two score-`30` leaves, GHOST selects a score-`30` descendant of
+the score-`60` branch. Globally sorting leaves would incorrectly select the score-`40`
+leaf and implement a different protocol.
+
+## 7. Verification vocabulary
+
+| Artifact | Role |
+|---|---|
+| Rocq | Axiom-free structural proofs: complete slots, floor projection, frozen weights, greedy descent, exact terminal-frontier composition, total tail ranking, LCA, head-preserving bounds, and proposer-to-receiver bridge. |
+| TLA+ and TLC | Concurrent replica/interleaving model plus explicit negative controls for local-state projection, global-terminal head selection, incomplete slots, outside-floor votes, mutable weights, and head loss. |
+| Apalache | Symbolic bounded checking of the same transition invariants. |
+| Z3 and Sage | Independent arithmetic and total-order witnesses. |
+| Wolfram Language | Independent greedy-GHOST, asynchronous frontier confluence, unsafe global-leaf counterexample, termination, frozen-authority, and receiver-state witness. |
+| Rust example/property tests | Executable refinement evidence against production helpers and real DAG/storage paths. |
+
+The [verification dossier](./fork-choice-verification.md) gives exact theorem, model,
+test, and gate names.

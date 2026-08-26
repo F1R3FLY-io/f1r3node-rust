@@ -17,9 +17,11 @@ Life cycle in POS
 POS internal state:
 "allBonds"        : Map[Validator, bonds],
 "activeValidators": Set[Validator],
-"withdrawers"     : Map[Validator, (bonds, quantinue)],
+"withdrawers"     : Map[Validator, (bonds, quarantineEnd, bondGeneration)],
 "committedRewards" : Map[Validator, rewards],
-"pendingWithdrawers": Map[Validator, quantinue]
+"pendingWithdrawers": Map[Validator, (quarantineEnd, bondGeneration)],
+"bondGenerations" : Map[Validator, bondGeneration],
+"quarantinedStake": Map[Validator, (bond, reward, bondGeneration, lifecyclePhase, quarantineEnd, wasActive)]
 
 **There are two vaults `posVault` and `coopMultiSigVault` while pos contract have no controll on `coopMultiSigVault` but `posVault`**
 
@@ -36,7 +38,7 @@ User transfer the bonding amount directly to posVault. `allBonds` would update w
 
 ## Withdraw(Unbond)
 
-`pendingWithdrawers` would update with {Validator: quantinue}
+`pendingWithdrawers` records the quarantine deadline and immutable bond generation.
 
 
 ## EpochChange(CloseBlock)
@@ -50,9 +52,10 @@ User transfer the bonding amount directly to posVault. `allBonds` would update w
 
 
 ## Slashing
-1. Transfer the bonding amount of the slashed validator based on `allBonds` from posVault to coopMultiSigVault.
-2. Set the bonding amount in `allBonds` of the slashed validator to 0
-3. remove the slashed validator in `activeValidators`
+1. Authenticate evidence against the validator's immutable bond generation.
+2. Quarantine fuel in SystemVault and remove the exact locked lifecycle record from PoS.
+3. Preserve bond, reward, generation, withdrawal phase, deadline, and active membership until adjudication.
+4. Vindication restores the exact lifecycle; Guilty partially redistributes stake and fuel; Burned destroys the quarantined custody.
 
 */
 
@@ -131,7 +134,7 @@ in {
                 new deployerPubKeyBytesCh, DeployerIdOps(`rho:system:deployerId:ops`) in {
                   DeployerIdOps!("pubKeyBytes", *deployerID, *deployerPubKeyBytesCh) |
                   for (@deployerPubKeyBytes <- deployerPubKeyBytesCh) {
-                    if (deployerPubKeyBytes ==  pubkey.hexToBytes()){
+                    if (deployerPubKeyBytes == pubkey.hexToBytes()){
                       new unfAuthKeyCh in {
                         @SystemVault!("unforgeableAuthKey", *unf, *unfAuthKeyCh) |
                         for (@unfAuthKey <- unfAuthKeyCh){
@@ -177,6 +180,7 @@ in {
               stateCh!({
                 // Map[PublicKey, Int] - each validator stake
                 "allBonds"        : $$initialBonds$$,
+                "bondGenerations" : $$initialBondGenerations$$,
                 // Set[PublicKey]     - the active validators
                 "activeValidators": initialActive,
                 // Map[PublicKey, (Int, Int)] - The validators who issued a withdraw request , finished validating jobs and not active.
@@ -194,6 +198,7 @@ in {
                 "mintingHalted"    : Set(),
                 "pendingInitialPhlogiston": Set(),
                 "quarantinedStake" : {},
+                "burnedValidators" : Set(),
               }) |
               contract rewardsInfo(retCh) = {
                 new posBalanceCh, totalActiveBondCh, totalBondCh, totalWithdrawCh, committedRewardsCh in {
@@ -227,7 +232,7 @@ in {
               contract accumulateSndNum(@(_, amount), @acc, resultCh) = {
                 resultCh!(acc + amount)
               } |
-              contract accumulateFstOfSndArg(@(_, (amount, _)), @acc, resultCh) = {
+              contract accumulateFstOfSndArg(@(_, (amount, _, _)), @acc, resultCh) = {
                 resultCh!(acc + amount)
               } |
               contract accumulateItemInState(returnCh, @stateKey, accumulateAlgo) = {
@@ -268,6 +273,11 @@ in {
               contract PoS(@"getBonds", returnCh) = {
                 for (@state <<- stateCh) {
                   returnCh!(state.get("allBonds"))
+                }
+              } |
+              contract PoS(@"getBondGenerations", returnCh) = {
+                for (@state <<- stateCh) {
+                  returnCh!(state.get("bondGenerations"))
                 }
               } |
               // Peeks at active validator list.
@@ -341,8 +351,14 @@ in {
                   getUser!(deployerId, *userCh) |
                   for (@state, resultCh <- processCh &
                        @userPk          <- userCh) {
-                    if (state.get("allBonds").contains(userPk)) {
-                      resultCh!(state, (false, "Public key is already bonded."))
+                    if (
+                      state.get("allBonds").contains(userPk) or
+                      state.get("pendingWithdrawers").contains(userPk) or
+                      state.get("withdrawers").contains(userPk) or
+                      state.get("quarantinedStake").contains(userPk) or
+                      state.get("burnedValidators").contains(userPk)
+                    ) {
+                      resultCh!(state, (false, "Public key already has a live or burned bond lifecycle."))
                     } else if (amount <= 0) {
                       // Bug #5 fix: explicit positive-stake assertion. The
                       // Rocq invariant `active_implies_bonded` (T-9.5,
@@ -358,6 +374,8 @@ in {
                       resultCh!(state, (false, "Bond is less than minimum!"))
                     } else if (amount > $$maximumBond$$) {
                       resultCh!(state, (false, "Bond is greater than maximum!"))
+                    } else if (state.get("bondGenerations").getOrElse(userPk, -1) == 9223372036854775807) {
+                      resultCh!(state, (false, "Bond generation exhausted"))
                     } else {
                       // Transfers user's bond amount to the PoS vault.
                       deposit!(deployerId, amount, posVaultAddr, *depositCh) |
@@ -368,6 +386,7 @@ in {
                             resultCh!(
                               state
                                 .set("allBonds", state.get("allBonds").set(userPk, amount))
+                                .set("bondGenerations", state.get("bondGenerations").set(userPk, state.get("bondGenerations").getOrElse(userPk, -1) + 1))
                                 .set("pendingInitialPhlogiston", state.get("pendingInitialPhlogiston").add(userPk)),
                               depositResult
                             )
@@ -400,7 +419,8 @@ in {
                         state.set("pendingWithdrawers",
                                   state.get("pendingWithdrawers")
                                        .set(userPk,
-                                         $$quarantineLength$$ + $$epochLength$$ * (1 + blockNumber / $$epochLength$$))),
+                                         ($$quarantineLength$$ + $$epochLength$$ * (1 + blockNumber / $$epochLength$$),
+                                          state.get("bondGenerations").get(userPk)))),
                         (true, Nil))
                     } else {
                       resultCh!(state, (false, "User is not bonded"))
@@ -484,7 +504,7 @@ in {
                   }
                 } |
               new commitRewards in {
-                contract PoS(@"slash", @deployerId, @blockHash, @sysAuthToken, returnCh) = {
+                contract PoS(@"slash", @deployerId, @blockHash, @targetBondGeneration, @sysAuthToken, returnCh) = {
                   new isValidTokenCh in {
                     sysAuthTokenOps!("check", sysAuthToken, *isValidTokenCh) |
                     for (@isValid <- isValidTokenCh) {
@@ -498,34 +518,97 @@ in {
                           for (@invalidBlocks        <- invalidBlocksCh &
                                @userPk               <- userCh &
                                @state, stateUpdateCh <- stateProcessCh) {
-                                new toBeSlashed, valBondCh, valRewardCh in {
+                                new toBeSlashed in {
                                   if (invalidBlocks.contains(blockHash)) {
                                     toBeSlashed!(invalidBlocks.get(blockHash)) |
                                     for (@validator <- toBeSlashed) {
-                                      valBondCh!(state.get("allBonds").get(validator)) |
-                                      for (@valBond <- valBondCh) {
-                                        if (valBond <= 0) {
-                                          stateUpdateCh!(state, (true, Nil))
-                                        } else {
-                                          new vaultAddressCh, burnCh in {
-                                            vaultAddressOps!("fromPublicKey", validator, *vaultAddressCh) |
-                                            for (@vaultAddress <- vaultAddressCh) {
-                                              @SystemVault!("protocolQuarantineAll", validator, vaultAddress, sysAuthToken, *burnCh) |
-                                              for (@burnResult <- burnCh) {
-                                                match burnResult {
-                                                  (true, _) => {
-                                                    stateUpdateCh!(
-                                                      state
-                                                        .set("allBonds", state.get("allBonds").set(validator, 0))
-                                                        .set("activeValidators", state.get("activeValidators").delete(validator))
-                                                        .set("committedRewards", state.get("committedRewards").delete(validator))
-                                                        .set("mintingHalted", state.get("mintingHalted").add(validator))
-                                                        .set("quarantinedStake", state.get("quarantinedStake").set(validator, valBond)),
-                                                      (true, Nil)
-                                                    )
-                                                  }
-                                                  (false, error) => {
-                                                    stateUpdateCh!(state, (false, "validator fuel quarantine failed: " ++ error))
+                                      if (state.get("bondGenerations").getOrElse(validator, -1) != targetBondGeneration) {
+                                        stateUpdateCh!(state, (false, "stale slash bond generation"))
+                                      } else if (state.get("quarantinedStake").contains(validator)) {
+                                        match state.get("quarantinedStake").get(validator) {
+                                          (_, _, generation, _, _, _) => {
+                                            if (generation == targetBondGeneration) {
+                                              stateUpdateCh!(state, (true, Nil))
+                                            } else {
+                                              stateUpdateCh!(state, (false, "quarantine generation mismatch"))
+                                            }
+                                          }
+                                        }
+                                      } else {
+                                        new lockedStakeCh, lockedGenerationCh,
+                                            lockedOriginCh, withdrawalDeadlineCh
+                                        in {
+                                          if (state.get("withdrawers").contains(validator)) {
+                                            match state.get("withdrawers").get(validator) {
+                                              (bond, deadline, generation) => {
+                                                lockedStakeCh!(bond) |
+                                                lockedGenerationCh!(generation) |
+                                                lockedOriginCh!("Withdrawing") |
+                                                withdrawalDeadlineCh!(deadline)
+                                              }
+                                            }
+                                          } else if (state.get("allBonds").contains(validator)) {
+                                            lockedStakeCh!(state.get("allBonds").get(validator)) |
+                                            if (state.get("pendingWithdrawers").contains(validator)) {
+                                              match state.get("pendingWithdrawers").get(validator) {
+                                                (deadline, generation) => {
+                                                  lockedGenerationCh!(generation) |
+                                                  lockedOriginCh!("PendingWithdraw") |
+                                                  withdrawalDeadlineCh!(deadline)
+                                                }
+                                              }
+                                            } else {
+                                              lockedGenerationCh!(state.get("bondGenerations").get(validator)) |
+                                              lockedOriginCh!("Bonded") |
+                                              withdrawalDeadlineCh!(-1)
+                                            }
+                                          } else {
+                                            lockedStakeCh!(0) |
+                                            lockedGenerationCh!(-1) |
+                                            lockedOriginCh!("None") |
+                                            withdrawalDeadlineCh!(-1)
+                                          } |
+                                          for (@valBond <- lockedStakeCh &
+                                               @lockedGeneration <- lockedGenerationCh &
+                                               @lockedOrigin <- lockedOriginCh &
+                                               @withdrawalDeadline <- withdrawalDeadlineCh) {
+                                            if (valBond <= 0 or lockedGeneration != targetBondGeneration) {
+                                              stateUpdateCh!(state, (false, "slash target has no matching locked stake"))
+                                            } else {
+                                              new vaultAddressCh, burnCh in {
+                                                vaultAddressOps!("fromPublicKey", validator, *vaultAddressCh) |
+                                                for (@vaultAddress <- vaultAddressCh) {
+                                                  @SystemVault!("protocolQuarantineAll", validator, targetBondGeneration, vaultAddress, sysAuthToken, *burnCh) |
+                                                  for (@burnResult <- burnCh) {
+                                                    match burnResult {
+                                                      (true, _) => {
+                                                        stateUpdateCh!(
+                                                          state
+                                                            .set("allBonds", state.get("allBonds").delete(validator))
+                                                            .set("pendingWithdrawers", state.get("pendingWithdrawers").delete(validator))
+                                                            .set("withdrawers", state.get("withdrawers").delete(validator))
+                                                            .set("activeValidators", state.get("activeValidators").delete(validator))
+                                                            .set("committedRewards", state.get("committedRewards").delete(validator))
+                                                            .set("pendingInitialPhlogiston", state.get("pendingInitialPhlogiston").delete(validator))
+                                                            .set("mintingHalted", state.get("mintingHalted").add(validator))
+                                                            .set("quarantinedStake", state.get("quarantinedStake").set(
+                                                              validator,
+                                                              (
+                                                                valBond,
+                                                                state.get("committedRewards").getOrElse(validator, 0),
+                                                                targetBondGeneration,
+                                                                lockedOrigin,
+                                                                withdrawalDeadline,
+                                                                state.get("activeValidators").contains(validator)
+                                                              )
+                                                            )),
+                                                          (true, Nil)
+                                                        )
+                                                      }
+                                                      (false, error) => {
+                                                        stateUpdateCh!(state, (false, "validator fuel quarantine failed: " ++ error))
+                                                      }
+                                                    }
                                                   }
                                                 }
                                               }
@@ -546,16 +629,14 @@ in {
                     }
                   }
                 } |
-                contract PoS(@"redeemSlashed", @validatorPk, @outcome, @sysAuthToken, @multiSigVerified, returnCh) = {
+                contract PoS(@"redeemSlashed", @validatorPk, @targetBondGeneration, @outcome, @sysAuthToken, @multiSigVerified, returnCh) = {
                   new isValidTokenCh in {
                     sysAuthTokenOps!("check", sysAuthToken, *isValidTokenCh) |
                     for (@isValid <- isValidTokenCh) {
                       if (isValid and multiSigVerified) {
-                        new blockDataCh, getBlockData(`rho:block:data`), stateProcessCh in {
-                          getBlockData!(*blockDataCh) |
-                          for (@blockNumber, _, _ <- blockDataCh) {
-                            runMVar!(*stateCh, *stateProcessCh, *returnCh) |
-                            for (@state, stateUpdateCh <- stateProcessCh) {
+                        new stateProcessCh in {
+                          runMVar!(*stateCh, *stateProcessCh, *returnCh) |
+                          for (@state, stateUpdateCh <- stateProcessCh) {
                               // Redemption REQUIRES an active quarantine record
                               // (DR-7 `redeem_requires_quarantine`): a validator that
                               // was never slashed (or already redeemed) has nothing
@@ -563,100 +644,141 @@ in {
                               if (state.get("quarantinedStake").contains(validatorPk) == false) {
                                 stateUpdateCh!(state, (false, "validator not quarantined"))
                               } else {
-                                new quarantinedBondCh, currentEpochCh, clearStaleEpochs in {
+                                new quarantinedBondCh in {
                                   quarantinedBondCh!(state.get("quarantinedStake").get(validatorPk)) |
-                                  // The current epoch index; stale mint records are
-                                  // (v, e) with e >= currentEpoch — removing them lets
-                                  // the next-epoch mint re-fund a restored validator.
-                                  currentEpochCh!(blockNumber / $$epochLength$$) |
-                                  // Fold `mintedEpochs` keeping every entry EXCEPT
-                                  // this validator's records at epoch >= current.
-                                  for (@quarantinedBond <- quarantinedBondCh & @currentEpoch <- currentEpochCh) {
-                                    new staleClearedCh, resolveFuelQuarantine in {
-                                      @ListOps!("fold", state.get("mintedEpochs").toList(), Set(), *clearStaleEpochs, *staleClearedCh) |
-                                      contract clearStaleEpochs(@(epochPk, epochIdx), @acc, outCh) = {
-                                        if (epochPk == validatorPk and epochIdx > currentEpoch) {
-                                          // Stale record for the redeemed validator:
-                                          // drop it (do not re-add to the accumulator).
-                                          outCh!(acc)
+                                  for (@(quarantinedBond, quarantinedReward, quarantineGeneration, quarantineOrigin, withdrawalDeadline, wasActive) <- quarantinedBondCh) {
+                                    if (quarantineGeneration != targetBondGeneration) {
+                                      stateUpdateCh!(state, (false, "redemption bond generation mismatch"))
+                                    } else {
+                                    new restoreMembership, restoreLifecycle,
+                                        applyCustodyResolution
+                                    in {
+                                      contract restoreMembership(@candidateState, resultCh) = {
+                                        if (wasActive) {
+                                          resultCh!(candidateState.set(
+                                            "activeValidators",
+                                            candidateState.get("activeValidators").add(validatorPk)
+                                          ))
                                         } else {
-                                          outCh!(acc.add((epochPk, epochIdx)))
+                                          resultCh!(candidateState)
                                         }
                                       } |
-                                      contract resolveFuelQuarantine(@outcomeTag, @fuelPenalty, @nextState, resultCh) = {
-                                        new resolutionCh in {
-                                          @SystemVault!("protocolResolveQuarantine", validatorPk, outcomeTag, coopMultiVaultAddr, fuelPenalty, sysAuthToken, *resolutionCh) |
-                                          for (@resolution <- resolutionCh) {
-                                            match resolution {
-                                              (true, _) => { resultCh!(nextState, (true, Nil)) }
-                                              (false, error) => { resultCh!(state, (false, "validator fuel quarantine resolution failed: " ++ error)) }
+                                      contract restoreLifecycle(@restoredBond, resultCh) = {
+                                        if (restoredBond <= 0) {
+                                          resultCh!((false, "restorative redemption requires positive remaining stake"))
+                                        } else {
+                                          new phaseStateCh, membershipCh in {
+                                            match quarantineOrigin {
+                                              "Bonded" => {
+                                                phaseStateCh!(state
+                                                  .set("allBonds", state.get("allBonds").set(validatorPk, restoredBond))
+                                                  .set("committedRewards", state.get("committedRewards").set(validatorPk, quarantinedReward))
+                                                  .set("mintingHalted", state.get("mintingHalted").delete(validatorPk))
+                                                  .set("quarantinedStake", state.get("quarantinedStake").delete(validatorPk)))
+                                              }
+                                              "PendingWithdraw" => {
+                                                phaseStateCh!(state
+                                                  .set("allBonds", state.get("allBonds").set(validatorPk, restoredBond))
+                                                  .set("pendingWithdrawers", state.get("pendingWithdrawers").set(
+                                                    validatorPk,
+                                                    (withdrawalDeadline, quarantineGeneration)
+                                                  ))
+                                                  .set("committedRewards", state.get("committedRewards").set(validatorPk, quarantinedReward))
+                                                  .set("mintingHalted", state.get("mintingHalted").delete(validatorPk))
+                                                  .set("quarantinedStake", state.get("quarantinedStake").delete(validatorPk)))
+                                              }
+                                              "Withdrawing" => {
+                                                phaseStateCh!(state
+                                                  .set("withdrawers", state.get("withdrawers").set(
+                                                    validatorPk,
+                                                    (restoredBond, withdrawalDeadline, quarantineGeneration)
+                                                  ))
+                                                  .set("committedRewards", state.get("committedRewards").set(validatorPk, quarantinedReward))
+                                                  .set("mintingHalted", state.get("mintingHalted").delete(validatorPk))
+                                                  .set("quarantinedStake", state.get("quarantinedStake").delete(validatorPk)))
+                                              }
+                                              _ => {
+                                                resultCh!((false, "unknown quarantined lifecycle origin"))
+                                              }
+                                            } |
+                                            for (@phaseState <- phaseStateCh) {
+                                              restoreMembership!(phaseState, *membershipCh) |
+                                              for (@restoredState <- membershipCh) {
+                                                resultCh!((true, restoredState))
+                                              }
                                             }
                                           }
                                         }
                                       } |
-                                      for (@freshEpochs <- staleClearedCh) {
-                                        match outcome {
+                                      contract applyCustodyResolution(@outcomeTag, @fuelPenalty, @stakeAmount, @nextState, resultCh) = {
+                                        new stakeResolutionCh in {
+                                          @SystemVault!(
+                                            "protocolApplyStakeDisposition",
+                                            validatorPk,
+                                            quarantineGeneration,
+                                            posVaultAddr,
+                                            outcomeTag,
+                                            coopMultiVaultAddr,
+                                            stakeAmount,
+                                            sysAuthToken,
+                                            *stakeResolutionCh
+                                          ) |
+                                          for (@stakeResolution <- stakeResolutionCh) {
+                                            match stakeResolution {
+                                              (true, _) => {
+                                                new fuelResolutionCh in {
+                                                  @SystemVault!(
+                                                    "protocolResolveQuarantine",
+                                                    validatorPk,
+                                                    quarantineGeneration,
+                                                    outcomeTag,
+                                                    coopMultiVaultAddr,
+                                                    fuelPenalty,
+                                                    sysAuthToken,
+                                                    *fuelResolutionCh
+                                                  ) |
+                                                  for (@fuelResolution <- fuelResolutionCh) {
+                                                    match fuelResolution {
+                                                      (true, _) => { resultCh!(nextState, (true, Nil)) }
+                                                      (false, error) => { resultCh!(state, (false, "validator fuel quarantine resolution failed: " ++ error)) }
+                                                    }
+                                                  }
+                                                }
+                                              }
+                                              (false, error) => { resultCh!(state, (false, "validator stake disposition failed: " ++ error)) }
+                                            }
+                                          }
+                                        }
+                                      } |
+                                      match outcome {
                                           ("Vindicated", _) => {
-                                            resolveFuelQuarantine!("Vindicated", 0,
-                                              state
-                                                .set("allBonds", state.get("allBonds").set(validatorPk, quarantinedBond))
-                                                .set("activeValidators", state.get("activeValidators").add(validatorPk))
-                                                .set("mintingHalted", state.get("mintingHalted").delete(validatorPk))
-                                                .set("quarantinedStake", state.get("quarantinedStake").delete(validatorPk))
-                                                .set("mintedEpochs", freshEpochs),
-                                              *stateUpdateCh
-                                            )
+                                            new restoredCh in {
+                                              restoreLifecycle!(quarantinedBond, *restoredCh) |
+                                              for (@restoreResult <- restoredCh) {
+                                                match restoreResult {
+                                                  (true, restoredState) => {
+                                                    applyCustodyResolution!("Vindicated", 0, 0, restoredState, *stateUpdateCh)
+                                                  }
+                                                  (false, error) => {
+                                                    stateUpdateCh!(state, (false, error))
+                                                  }
+                                                }
+                                              }
+                                            }
                                           }
                                           ("Guilty", penalty) => {
-                                            // Partial: penalty (clamped to [0, bond])
-                                            // to coopMultiVault, remainder restored.
-                                            new penaltyCh, remainderCh in {
-                                              // Clamp so a penalty cannot exceed the
-                                              // quarantined bond (conservation; the
-                                              // Sage `redemption_model` penalty≤bond
-                                              // property) nor go negative.
-                                              if (penalty < 0) { penaltyCh!(0) }
-                                              else { if (penalty > quarantinedBond) { penaltyCh!(quarantinedBond) } else { penaltyCh!(penalty) } } |
-                                              for (@clampedPenalty <- penaltyCh) {
-                                                remainderCh!(quarantinedBond - clampedPenalty) |
-                                                for (@remainder <- remainderCh) {
-                                                  if (clampedPenalty <= 0) {
-                                                    // No penalty to move: behaves like
-                                                    // a (capped) restore of the whole
-                                                    // bond — no coop transfer needed.
-                                                    resolveFuelQuarantine!("Guilty", clampedPenalty,
-                                                      state
-                                                        .set("allBonds", state.get("allBonds").set(validatorPk, remainder))
-                                                        .set("activeValidators", state.get("activeValidators").add(validatorPk))
-                                                        .set("mintingHalted", state.get("mintingHalted").delete(validatorPk))
-                                                        .set("quarantinedStake", state.get("quarantinedStake").delete(validatorPk))
-                                                        .set("mintedEpochs", freshEpochs),
-                                                      *stateUpdateCh
-                                                    )
-                                                  } else {
-                                                    // Move the penalty REV from posVault
-                                                    // to coopMultiVault (the ONLY coop
-                                                    // growth path) before restoring.
-                                                    new transferDoneCh in {
-                                                      @posVault!("transfer", coopMultiVaultAddr, clampedPenalty, posAuthKey, *transferDoneCh) |
-                                                      for (@transferResult <- transferDoneCh) {
-                                                        match transferResult {
-                                                          (true, _) => {
-                                                            resolveFuelQuarantine!("Guilty", clampedPenalty,
-                                                              state
-                                                                .set("allBonds", state.get("allBonds").set(validatorPk, remainder))
-                                                                .set("activeValidators", state.get("activeValidators").add(validatorPk))
-                                                                .set("mintingHalted", state.get("mintingHalted").delete(validatorPk))
-                                                                .set("quarantinedStake", state.get("quarantinedStake").delete(validatorPk))
-                                                                .set("mintedEpochs", freshEpochs),
-                                                              *stateUpdateCh
-                                                            )
-                                                          }
-                                                          (_, errorMessage) => {
-                                                            stateUpdateCh!(state, (false, "penalty transfer failed: " ++ errorMessage))
-                                                          }
-                                                        }
-                                                      }
+                                            if (penalty < 0 or penalty >= quarantinedBond) {
+                                              stateUpdateCh!(state, (false, "guilty penalty must be non-negative and strictly less than quarantined stake"))
+                                            } else {
+                                              new restoredCh in {
+                                                restoreLifecycle!(quarantinedBond - penalty, *restoredCh) |
+                                                for (@restoreResult <- restoredCh) {
+                                                  match restoreResult {
+                                                    (true, restoredState) => {
+                                                      applyCustodyResolution!("Guilty", penalty, penalty, restoredState, *stateUpdateCh)
+                                                    }
+                                                    (false, error) => {
+                                                      stateUpdateCh!(state, (false, error))
                                                     }
                                                   }
                                                 }
@@ -664,36 +786,23 @@ in {
                                             }
                                           }
                                           ("Burned", _) => {
-                                            new burnStakeCh in {
-                                              @SystemVault!("protocolBurn", posVaultAddr, quarantinedBond, sysAuthToken, *burnStakeCh) |
-                                              for (@burnResult <- burnStakeCh) {
-                                                match burnResult {
-                                                  (true, _) => {
-                                                    resolveFuelQuarantine!("Burned", 0,
-                                                      state
-                                                        .set("quarantinedStake", state.get("quarantinedStake").delete(validatorPk))
-                                                        .set("mintedEpochs", freshEpochs),
-                                                      *stateUpdateCh
-                                                    )
-                                                  }
-                                                  (false, error) => {
-                                                    stateUpdateCh!(state, (false, "stake burn failed: " ++ error))
-                                                  }
-                                                }
-                                              }
-                                            }
+                                            applyCustodyResolution!("Burned", 0, quarantinedBond + quarantinedReward,
+                                              state
+                                                .set("quarantinedStake", state.get("quarantinedStake").delete(validatorPk))
+                                                .set("burnedValidators", state.get("burnedValidators").add(validatorPk)),
+                                              *stateUpdateCh
+                                            )
                                           }
                                           _ => {
                                             stateUpdateCh!(state, (false, "unknown redemption outcome"))
                                           }
-                                        }
                                       }
+                                    }
                                     }
                                   }
                                 }
                               }
                             }
-                          }
                         }
                       } else {
                         // Either an invalid sysAuthToken OR an unverified/under-quorum
@@ -798,9 +907,9 @@ in {
                                 contract movePendingWithdrawer(@state, returnCh) = {
                                   new movePending in {
                                     @ListOps!("fold", state.get("pendingWithdrawers").toList(), state, *movePending, *returnCh) |
-                                    contract movePending(@(pk, quantine), @updatedState, resultCh) = {
+                                    contract movePending(@(pk, (quantine, generation)), @updatedState, resultCh) = {
                                       resultCh!(updatedState
-                                                .set("withdrawers", updatedState.get("withdrawers").set(pk, (updatedState.get("allBonds").get(pk), quantine)))
+                                                .set("withdrawers", updatedState.get("withdrawers").set(pk, (updatedState.get("allBonds").get(pk), quantine, generation)))
                                                 .set("allBonds", updatedState.get("allBonds").delete(pk))
                                                 .set("pendingWithdrawers", updatedState.get("pendingWithdrawers").delete(pk))
                                                 )
@@ -832,7 +941,7 @@ in {
                                       // design/09-bug-fixes-and-rationale.md §9.13
                                       // (theorem t_9_10_withdraw_transfer_failure_safety,
                                       // formal/rocq/slashing/theories/BugFixWithdrawTransferFailure.v).
-                                      contract payWithdraw(@(pk, (bonds, quantine)), resultCh) = {
+                                      contract payWithdraw(@(pk, (bonds, quantine, generation)), resultCh) = {
                                         new transferResultCh in {
                                           payWithdrawer!((pk, bonds + state.get("committedRewards").getOrElse(pk, 0)), *transferResultCh) |
                                           for (@transferResult <- transferResultCh) {
@@ -862,7 +971,7 @@ in {
                                       }
                                     } |
                                     // Check whether quarantine period is finished.
-                                    contract isQuarantineFinished(@(pk, (bonds, blockNumber)), resultCh) = {
+                                    contract isQuarantineFinished(@(pk, (bonds, blockNumber, generation)), resultCh) = {
                                       resultCh!(currentBlockNumber >= blockNumber)
                                     }
                                   }

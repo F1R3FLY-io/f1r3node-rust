@@ -30,6 +30,7 @@ use casper::rust::slashing_authorization::{
     authorized_slash_candidates, epoch_for_block_number, validate_received_slash_deploys,
 };
 use libfuzzer_sys::fuzz_target;
+use models::rust::bond_generation::BondGeneration;
 use models::rust::casper::protocol::casper_message::{ProcessedSystemDeploy, SystemDeployData};
 use models::rust::validator::Validator;
 use prost::bytes::Bytes;
@@ -47,8 +48,10 @@ struct EvidenceInput {
 #[derive(Arbitrary, Debug)]
 struct DeployInput {
     hash: u8,
+    second_hash: u8,
     issuer: u8,
     target_activation_epoch: i16,
+    pair: bool,
     slash: bool,
     succeeded: bool,
 }
@@ -93,8 +96,11 @@ fn expected_validation_ok(
                 system_deploy:
                     SystemDeployData::Slash {
                         invalid_block_hash,
+                        equivocation_block_hash,
                         issuer_public_key,
                         target_activation_epoch,
+                        target_bond_generation,
+                        ..
                     },
                 ..
             } = system_deploy
@@ -103,8 +109,10 @@ fn expected_validation_ok(
             };
             Some((
                 invalid_block_hash.clone(),
+                equivocation_block_hash.clone(),
                 issuer_public_key.bytes.clone(),
                 *target_activation_epoch,
+                *target_bond_generation,
             ))
         })
         .collect::<Vec<_>>();
@@ -118,9 +126,16 @@ fn expected_validation_ok(
     else {
         return false;
     };
-    let mut seen = BTreeSet::<(Bytes, i64)>::new();
+    let mut seen = BTreeSet::<(Bytes, BondGeneration)>::new();
 
-    for (invalid_block_hash, issuer, target_activation_epoch) in slash_deploys {
+    for (
+        invalid_block_hash,
+        equivocation_block_hash,
+        issuer,
+        target_activation_epoch,
+        target_bond_generation,
+    ) in slash_deploys
+    {
         if issuer != block.sender {
             return false;
         }
@@ -131,14 +146,6 @@ fn expected_validation_ok(
             Ok(Some(metadata)) => metadata,
             _ => return false,
         };
-        if !metadata.invalid {
-            return false;
-        }
-        if epoch_for_block_number(metadata.block_number, epoch_length)
-            != Ok(Epoch::new(target_activation_epoch))
-        {
-            return false;
-        }
         let bond = snapshot
             .on_chain_state
             .bonds_map
@@ -148,7 +155,39 @@ fn expected_validation_ok(
         if bond <= 0 {
             return false;
         }
-        if !seen.insert((metadata.sender, target_activation_epoch)) {
+        if snapshot
+            .on_chain_state
+            .bond_generations
+            .get(&metadata.sender)
+            != Some(&target_bond_generation)
+            || metadata.sender_bond_generation() != Some(target_bond_generation)
+        {
+            return false;
+        }
+        if let Some(second_hash) = equivocation_block_hash {
+            let second = match snapshot.dag.lookup(&second_hash) {
+                Ok(Some(metadata)) => metadata,
+                _ => return false,
+            };
+            if invalid_block_hash >= second_hash
+                || metadata.sender != second.sender
+                || metadata.sequence_number < 0
+                || metadata.sequence_number != second.sequence_number
+                || second.sender_bond_generation() != Some(target_bond_generation)
+                || epoch_for_block_number(second.block_number, epoch_length)
+                    != Ok(Epoch::new(target_activation_epoch))
+            {
+                return false;
+            }
+        } else if !metadata.is_rejected() {
+            return false;
+        }
+        if epoch_for_block_number(metadata.block_number, epoch_length)
+            != Ok(Epoch::new(target_activation_epoch))
+        {
+            return false;
+        }
+        if !seen.insert((metadata.sender, target_bond_generation)) {
             return false;
         }
     }
@@ -178,7 +217,7 @@ fuzz_target!(|input: Input| {
             hash: support::block_hash(evidence.hash),
             sender: validator_at(&validators, evidence.sender),
             block_number: index as i64,
-            sequence_number: i32::from(evidence.sequence_number),
+            sequence_number: i32::from(evidence.sequence_number.rem_euclid(16)),
             invalid: evidence.invalid,
         })
         .collect::<Vec<_>>();
@@ -189,18 +228,65 @@ fuzz_target!(|input: Input| {
         epoch_length,
         bonds,
     );
+    let authority = support::slash_authority(&snapshot);
 
-    let candidate_result =
-        authorized_slash_candidates(&snapshot, &snapshot.on_chain_state.bonds_map);
+    let candidate_result = authorized_slash_candidates(
+        &snapshot,
+        bounded_height(input.max_block_num) + 1,
+        &authority,
+    );
     let current_candidate_epoch =
         epoch_for_block_number(bounded_height(input.max_block_num) + 1, epoch_length);
     match current_candidate_epoch {
         Err(_) => assert!(candidate_result.is_err()),
         Ok(current_epoch) => {
             let candidates = candidate_result.expect("candidate authorization domain");
-            let mut expected = BTreeMap::<Validator, (Bytes, Epoch)>::new();
+            let mut expected = BTreeMap::<Validator, (Bytes, Option<Bytes>, Epoch)>::new();
+            let structural_keys = snapshot.dag.structural_equivocation_keys();
+            let mut objective_offenders = BTreeSet::new();
+            for ((validator, generation, sequence), hashes) in
+                snapshot.dag.equivocation_observations()
+            {
+                if sequence < 0
+                    || authority.generation(&validator) != Some(generation)
+                    || authority.bond(&validator) <= 0
+                {
+                    continue;
+                }
+                let current_hashes = hashes
+                    .into_iter()
+                    .filter(|hash| {
+                        snapshot
+                            .dag
+                            .lookup(hash)
+                            .ok()
+                            .flatten()
+                            .is_some_and(|metadata| {
+                                epoch_for_block_number(metadata.block_number, epoch_length)
+                                    == Ok(current_epoch)
+                            })
+                    })
+                    .collect::<Vec<_>>();
+                if current_hashes.len() < 2 {
+                    continue;
+                }
+                let candidate = (
+                    current_hashes[0].clone(),
+                    Some(current_hashes[1].clone()),
+                    current_epoch,
+                );
+                expected
+                    .entry(validator.clone())
+                    .and_modify(|existing| {
+                        if (&candidate.0, &candidate.1) < (&existing.0, &existing.1) {
+                            *existing = candidate.clone();
+                        }
+                    })
+                    .or_insert(candidate);
+                objective_offenders.insert(validator);
+            }
             for metadata in snapshot.dag.invalid_blocks() {
-                if !metadata.invalid {
+                if !metadata.is_rejected() {
                     continue;
                 }
                 if epoch_for_block_number(metadata.block_number, epoch_length) != Ok(current_epoch)
@@ -216,18 +302,31 @@ fuzz_target!(|input: Input| {
                 if bond <= 0 {
                     continue;
                 }
+                let Some(generation) = metadata.sender_bond_generation() else {
+                    continue;
+                };
+                if authority.generation(&metadata.sender) != Some(generation)
+                    || structural_keys.contains(&(
+                        metadata.sender.clone(),
+                        generation,
+                        metadata.sequence_number,
+                    ))
+                    || objective_offenders.contains(&metadata.sender)
+                {
+                    continue;
+                }
                 // Lex-smallest-hash tie-breaker mirrors the production rule
                 // in `authorized_slash_candidates` — see the BTreeMap
                 // dedup loop there. The oracle must use the *same* rule
                 // or the differential check would fire on every tie.
                 expected
                     .entry(metadata.sender.clone())
-                    .and_modify(|(hash, _)| {
+                    .and_modify(|(hash, _, _)| {
                         if metadata.block_hash < *hash {
                             *hash = metadata.block_hash.clone();
                         }
                     })
-                    .or_insert((metadata.block_hash.clone(), current_epoch));
+                    .or_insert((metadata.block_hash.clone(), None, current_epoch));
             }
             assert_eq!(candidates.len(), expected.len());
             for candidate in candidates {
@@ -235,7 +334,8 @@ fuzz_target!(|input: Input| {
                     .remove(&candidate.offender)
                     .expect("candidate offender is expected");
                 assert_eq!(candidate.invalid_block_hash, expected_candidate.0);
-                assert_eq!(candidate.target_activation_epoch, expected_candidate.1);
+                assert_eq!(candidate.equivocation_block_hash, expected_candidate.1);
+                assert_eq!(candidate.target_activation_epoch, expected_candidate.2);
             }
             assert!(expected.is_empty());
         }
@@ -250,11 +350,20 @@ fuzz_target!(|input: Input| {
             if !deploy.succeeded {
                 support::failed_deploy()
             } else if deploy.slash {
-                support::slash_deploy(
-                    support::block_hash(deploy.hash),
-                    validator_at(&validators, deploy.issuer),
-                    i64::from(deploy.target_activation_epoch),
-                )
+                if deploy.pair {
+                    support::equivocation_slash_deploy(
+                        support::block_hash(deploy.hash),
+                        support::block_hash(deploy.second_hash),
+                        validator_at(&validators, deploy.issuer),
+                        i64::from(deploy.target_activation_epoch),
+                    )
+                } else {
+                    support::slash_deploy(
+                        support::block_hash(deploy.hash),
+                        validator_at(&validators, deploy.issuer),
+                        i64::from(deploy.target_activation_epoch),
+                    )
+                }
             } else {
                 support::close_deploy()
             }
@@ -267,11 +376,6 @@ fuzz_target!(|input: Input| {
         deploys,
     );
     let expected_ok = expected_validation_ok(&block, &snapshot);
-    let actual_ok = validate_received_slash_deploys(
-        &block,
-        &snapshot,
-        &snapshot.on_chain_state.bonds_map,
-    )
-    .is_ok();
+    let actual_ok = validate_received_slash_deploys(&block, &snapshot, &authority).is_ok();
     assert_eq!(actual_ok, expected_ok);
 });

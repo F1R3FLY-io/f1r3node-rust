@@ -75,7 +75,7 @@ fuzz_target!(|input: Input| {
             hash: support::block_hash(evidence.hash),
             sender: validator_at(&validators, evidence.sender),
             block_number: index as i64,
-            sequence_number: i32::from(evidence.sequence_number),
+            sequence_number: i32::from(evidence.sequence_number.rem_euclid(16)),
             invalid: evidence.invalid,
         })
         .collect::<Vec<_>>();
@@ -87,15 +87,14 @@ fuzz_target!(|input: Input| {
         i32::from(input.epoch_length),
         bonds,
     );
+    let authority = support::slash_authority(&snapshot);
 
     // Inputs that fail authorization at the candidate-enumeration stage
     // (e.g. invalid epoch_length) carry no useful signal for *this*
     // harness — the lifecycle test wants snapshots where at least the
     // proposer-side path succeeded. `slash_authorization_paths` covers
     // the candidate-side rejection rules directly.
-    let Ok(candidates) =
-        authorized_slash_candidates(&snapshot, &snapshot.on_chain_state.bonds_map)
-    else {
+    let Ok(candidates) = authorized_slash_candidates(&snapshot, block_number, &authority) else {
         return;
     };
 
@@ -113,12 +112,7 @@ fuzz_target!(|input: Input| {
     let block =
         support::block_with_system_deploys(input.proposer, proposer.clone(), block_number, deploys);
 
-    assert!(validate_received_slash_deploys(
-        &block,
-        &snapshot,
-        &snapshot.on_chain_state.bonds_map,
-    )
-    .is_ok());
+    assert!(validate_received_slash_deploys(&block, &snapshot, &authority,).is_ok());
 
     if let Some(candidate) = candidates.first() {
         let duplicate_block = support::block_with_system_deploys(
@@ -138,11 +132,6 @@ fuzz_target!(|input: Input| {
                 ),
             ],
         );
-        assert!(validate_received_slash_deploys(
-            &duplicate_block,
-            &snapshot,
-            &snapshot.on_chain_state.bonds_map,
-        )
-        .is_err());
+        assert!(validate_received_slash_deploys(&duplicate_block, &snapshot, &authority,).is_err());
     }
 });

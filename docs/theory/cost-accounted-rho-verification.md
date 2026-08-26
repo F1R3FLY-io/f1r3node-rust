@@ -32,7 +32,7 @@ become channels, tokens become messages on those channels, and signed
 processes must consume fuel before they can communicate.
 
 This article presents a machine-checked proof of that claim, mechanized
-in **Rocq 9.1.1** across 112 modules and 41,414 lines of development, and
+in **Rocq 9.1.1** across 117 modules and 42,885 lines of development, and
 complements it with a **TLA+** finite-state model verified by TLC. The required
 aggregate gate also cross-checks symbolic N-ary authority, the typed threat and
 search-frontier models, and replay-root materialization with Apalache. The
@@ -54,7 +54,7 @@ axiom-free forward weak-barb propagation from a replicated body to both
 the primitive replicator and Meredith's reflective replication encoding
 (`preplicate_bang_encoding_body_barbs_sound`,
 `replication_encoding_forward_barb_sound`).
-All 1,715 `Qed.`/`Defined.` proof terms are discharged without any
+All 1,785 `Qed.`/`Defined.` proof terms are discharged without any
 `Admitted`, `admit`, or `Axiom`; the trust base consists of the
 Rocq 9.1.1 kernel, the Rocq Stdlib, and one `hash_process`
 encoding parameter with three explicit section hypotheses (Section 12.1).
@@ -137,7 +137,7 @@ This article proves that claim. Concretely, we contribute:
    calculus, its compositional translation back into pure rho, and the
    infrastructure (`Split`, `Join`, persistent mediators) required to
    discharge the paper's five reduction rules (Section 5). The
-   development spans 112 modules and 41,414 lines, with 1,715 `Qed.` or
+   development spans 117 modules and 42,885 lines, with 1,785 `Qed.` or
    `Defined.` proof obligations and zero `Admitted` / `admit` /
    `Axiom` declarations.
 
@@ -302,9 +302,9 @@ the proof context.
 
 | Metric                                           | Value                                                      |
 |--------------------------------------------------|------------------------------------------------------------|
-| Rocq source files                                | 112 modules                                                |
-| Total lines of Rocq                              | 41,414                                                     |
-| Proven lemmas and theorems (`Qed.` / `Defined.`) | 1,715                                                      |
+| Rocq source files                                | 117 modules                                                |
+| Total lines of Rocq                              | 42,885                                                     |
+| Proven lemmas and theorems (`Qed.` / `Defined.`) | 1,785                                                      |
 | `Admitted` / `admit`                             | **0**                                                      |
 | Named `Axiom` declarations                       | **0**                                                      |
 | Proof assistant                                  | Rocq (Coq) 9.1.1 (also typechecks under 9.1.0)             |
@@ -326,7 +326,7 @@ on any axiom from Section 12.2.1.
 
 ### 1.7 Module Dependency Graph
 
-The foundational 32-module subgraph of the 110-module formalization
+The foundational 32-module subgraph of the 117-module formalization
 (`formal/rocq/cost_accounted_rho/theories`) organizes into **seven dependency
 tiers**. Figure 1.7 renders that foundational subgraph, transitively reduced
 (`tred`) to its minimal skeleton: an edge `A → B` reads "module `B` imports
@@ -336,7 +336,7 @@ tier is its depth in the import order; the tiers refine — and are colour-keyed
 cool→warm to match — the proof-layer narrative of
 [§7.1](#71-the-proof-layers).
 
-![Dependency graph of the foundational cost-accounted-rho proof subgraph. The 32 foundational Rocq modules are arranged in seven cool-to-warm dependency tiers and transitively reduced. The current 110-module catalog extends this subgraph with native syntax, GSLT seams, authority, settlement, admission, spatial/modal checking, and additional refinement modules; the complete ordered module list is the repository's _CoqProject.](diagrams/module-dependency-graph.svg)
+![Dependency graph of the foundational cost-accounted-rho proof subgraph. The 32 foundational Rocq modules are arranged in seven cool-to-warm dependency tiers and transitively reduced. The current 117-module catalog extends this subgraph with native syntax, GSLT seams, authority, settlement, admission, spatial/modal checking, and additional refinement modules; the complete ordered module list is the repository's _CoqProject.](diagrams/module-dependency-graph.svg)
 
 (*Source: [`diagrams/module-dependency-graph.dot`](diagrams/module-dependency-graph.dot) — render with `tred docs/theory/diagrams/module-dependency-graph.dot | dot -Tsvg -o docs/theory/diagrams/module-dependency-graph.svg` (or `./render.sh module-dependency-graph.dot`). Edges are extracted from the foundational modules' `Require Import` statements; `tred` removes transitively redundant edges. The authoritative full ordered catalog is `formal/rocq/cost_accounted_rho/_CoqProject`.*)
 
@@ -3622,7 +3622,7 @@ references.
 ### 11.1 File Listing
 
 The table below preserves the detailed foundational-module inventory. The
-authoritative complete catalog is `_CoqProject`, which currently lists 111
+authoritative complete catalog is `_CoqProject`, which currently lists 117
 modules. The Scale table in Section 1.6 is computed across that complete list;
 the subtotal at the bottom of this table applies only to the foundational
 inventory shown here.
@@ -3655,6 +3655,9 @@ inventory shown here.
 | `Replication.v`             | 2,071      | 56       | Meredith's reflective encoding (`bang_encoding`, `D_encoding`); `bang_encoding_unfolds` (§6.5 Theorem 9.19); forward barb propagation `preplicate_bang_encoding_body_barbs_sound` (§6.5 Theorem 9.20); step inversion `step_PReplicate_inv_se`, `step_PPar_PReplicate_inv_se` (§8.7 Lemma 9.21); closed forward-boundary theorem `replication_encoding_forward_barb_sound` (§6.6 Theorem 9.23) |
 | `MintingInjection.v`        | 630        | 26       | Authenticated protocol minting into canonical SystemVault custody, public-key address injectivity, epoch idempotence, direct fee backing, and exclusion of user-step minting |
 | `MintingHalt.v`             | 179        | 8        | A halted (slashed) validator is never minted and never gains supply; redemption is the only path back to funding (`halted_validator_not_minted`, `halted_validator_supply_not_increased`) |
+| `CanonicalRevRedemption.v`  | 149        | 8        | Canonical REV custody disposition for slash, vindication, strictly partial guilt, and burn; every authorized branch conserves the combined liquid, quarantined, bonded, cooperative, and burned ledger |
+| `RedemptionCustodyAtomicity.v` | 350     | 11       | Generation-scoped redemption receipts, exact lifecycle restoration, strict partial-guilt rejection, retry idempotence, physical PoS-vault coverage, and pointwise commutation for distinct validators |
+| `RedemptionMintResumption.v` | 142       | 11       | Redemption removes only the target's mint halt, never directly credits its SystemVault purse or rewrites the mint ledger, enables one fresh epoch credit, and makes replayed epoch minting idempotent |
 | `Exchange.v`                | 203        | 7        | The blessed conserving 1:1 token Exchange (Stage D): per-channel and total token conservation of the swap, requires-both-inputs join, and Exchange-is-a-`ca_step`-not-a-mint |
 | `SystemStructEquiv.v`       | 474        | 14       | System-level structural equivalence (`sys_equiv`): parallel-unit law `sse_par_unit`, Appendix-B token-stack decomposition `token_decomp`, and source-level free names `sig_free_names` (Def 3.3 axes; §3.5) |
 | `SyntacticSugar.v`          | 196        | 6        | Section 3.8 syntactic sugar at the translation level: uniform-signing and linear-transfer (⊸) defining equations as `proc`-level structural equivalences of the translated images (Option A; ⊸ desugars to nested plain-signature gate layers) |
@@ -3731,12 +3734,12 @@ per large module.
 | §8.7 (this doc)    | Step inv. (bare PReplicate)   | `step_PReplicate_inv_se`               | `Replication.v` Section 13       |
 | §8.7 (this doc)    | Step inv. (PReplicate + rest) | `step_PPar_PReplicate_inv_se` (Lem 9.21) | `Replication.v` Section 14.C   |
 | §6.6 (this doc)    | Closed forward replication boundary | `replication_encoding_forward_barb_sound` (Thm 9.23) | `Replication.v:2059`   |
-| post-merge implementation | `BitmaskOr` typed mergeable diff/merge | `bitmask_diff_merge_round_trip` | `MergeableChannelAccounting.v:147` |
-| post-merge implementation | `BitmaskOr` fold order independence | `mergeable_channel_bitmask_fold_permutation` | `MergeableChannelAccounting.v:201` |
-| post-merge implementation | `IntegerAdd` diff/merge round trip | `integer_add_diff_merge_round_trip` | `MergeableChannelAccounting.v:168` |
+| post-merge implementation | `BitmaskOr` typed mergeable diff/merge | `bitmask_diff_merge_round_trip` | `MergeableChannelAccounting.v:173` |
+| post-merge implementation | `BitmaskOr` fold order independence | `mergeable_channel_bitmask_fold_permutation` | `MergeableChannelAccounting.v:269` |
+| post-merge implementation | `IntegerAdd` diff/merge round trip | `integer_add_diff_merge_round_trip` | `MergeableChannelAccounting.v:194` |
 | post-merge implementation | `IntegerAdd` widened total is permutation invariant | `integer_diff_total_permutation`, `integer_total_result_permutation` | `MergeableChannelAccounting.v` |
 | post-merge implementation | Numeric survivor selection and trie application agree | `integer_selection_application_agree` | `MergeableChannelAccounting.v` |
-| post-merge implementation | Merge type and non-numeric fallback | `mergeable_channel_delta_preserves_type`, `non_numeric_channel_not_mergeable_payload_match` | `MergeableChannelAccounting.v:230` |
+| post-merge implementation | Merge type and non-numeric fallback | `mergeable_channel_delta_preserves_type`, `non_numeric_channel_not_mergeable_payload_match` | `MergeableChannelAccounting.v:298` |
 
 Rows tagged with "—" in the *Paper Section* column are not stated
 in [4]. They split into two groups: the determinism/multiset rows
@@ -3980,16 +3983,19 @@ The following items are deliberately outside the scope of the current
 formalization. For each, we explain *why* it is excluded and *what
 existing results already cover* the essential content.
 
-**Refinement to an implementation.** This article's theorems
-characterize the cost-accounted rho calculus and its translation as
-*mathematical objects* — `ca_step`, `S_tr`, `bisim`, etc. They do
-*not* relate those objects to any concrete implementation: there is
-no Rocq-level refinement statement linking `ca_step` to a particular
-evaluator, and none is in scope. Implementations that wish to rely
-on these results must independently establish (by whatever means
-appropriate to their setting) that their executable artefacts realise
-the same `S_tr`, `ca_step`, and event-counting discipline the proofs
-characterize.
+**Executable refinement boundary.** The foundational theorems characterize
+the cost-accounted rho calculus and its translation as mathematical objects:
+`ca_step`, `S_tr`, and `bisim`. The extended development then proves the
+production abstractions used at each executable boundary: normalization,
+runtime budgets, signed RSpace events, located-purse admission, physical and
+quantitative-byte settlement, atomic SystemVault updates, replay-root
+materialization, merge evidence, validator-local publication, multi-shard
+framing, and redemption custody. These are semantic refinement contracts, not
+verified extraction of the Rust executable. Concrete correspondence is checked
+by paired example and property tests, Loom schedules, play/replay differential
+tests, and multi-node integration. Completion therefore requires both the
+kernel-checked refinement theorems and the executable gates; neither is used as
+a substitute for the other.
 
 **Full abstraction.** The formalization proves **strong bisimilarity**
 (`~~`) between the translated process and the original for all three
@@ -4354,6 +4360,19 @@ This is the direct runtime realization of the token-gated COMM transition in
 the publication; reducer entry, task scheduling, and failed candidate probes
 are not semantic reductions and therefore cannot be execution-cost units.
 
+Transport residency accounting is a separate host-safety refinement. Its
+global service semaphore bounds generated protobuf decoding before reservation;
+checked startup arithmetic composes that decoder envelope with atomic
+byte/item reservations for compressed wire buffers, decoded payloads, queues,
+fanout, and cancellation. These bounds do not debit a RevVault purse or enter
+a block's replay evidence. Economic quantitative-byte accounting begins
+only at the authenticated, canonical RSpace operations described below and is
+recomputed identically during replay. A transport rejection therefore delays
+or prevents admission of a payload; it cannot partially charge a process or
+create a validator-specific semantic cost. The complete host-memory boundary
+and its handoff to byte-bounded Casper admission are specified in
+[P2P Transport Resource and Completion Semantics](../node/transport-resource-lifecycle.md).
+
 ### A.1 Refinement boundary
 
 RSpace calls the cost observer after it has selected and locked a complete
@@ -4590,6 +4609,13 @@ build identity and its source field equals the canonical repository path. An
 LLVM crash therefore cannot be mistaken for a zero-hit record or be paired with
 another test executable.
 
+The exact-source set includes the native Casper balance check, close-block,
+redemption, slashing, vault-cost, vault-payer, and system-deploy construction
+modules. Their line and branch evidence is therefore generated from the same
+full Casper package execution as admission, replay, settlement, and supply;
+governance custody cannot pass only through a focused unit-test profile while
+remaining absent from the release coverage artifact.
+
 LLVM 22's branch-mapping implementation can fail while grouping generic Rust
 instantiations before source filtering occurs. The failure affects reporting,
 not the completed instrumented test process. For affected Casper engine and
@@ -4601,7 +4627,8 @@ declaration-only. This classification preserves the distinction between an
 unexercised executable line, an unavailable unstable branch map, and a source
 file that cannot produce executable coverage.
 
-Coverage scratch databases are placed under `target/llvm-cov/scratch` rather
+Coverage scratch databases are placed in a unique owned directory under
+`target/verification/cost-accounted-rho-coverage/` rather
 than the RAM-backed system temporary directory and are removed on every exit.
 The normal gate always executes all tests. `COVERAGE_REUSE_PROFILES=1` is only a
 local reporting recovery mode after a complete run; it revalidates every raw
@@ -4691,6 +4718,8 @@ test-only consensus path is part of the repair.
 | Explicit authority cannot fall back to the deployment payer | `explicit_region_authority_overrides_the_deploy_default` and `explicit_region_cannot_spend_an_unrelated_default_balance` prove region attribution, underfunding rejection despite abundant ambient custody, and matching-stack-only settlement | Rocq `explicit_regions_do_not_debit_ambient_purse`; TLA+ `LocatedAuthoritySettlement.cfg` checks exact and located authority through execution and replay | `LocatedAuthoritySettlementAmbientPurseUnsafe.cfg` must violate `NoAmbientAuthority` |
 | Native wallet funding composes with authenticated lollipop authority, exact component-wise settlement, and replay | `wallet_funded_lollipop_slot_settles_across_deploys_and_replays` derives distinct public outer and continuation purse addresses, atomically funds both from an authenticated sponsor wallet, retains the unforgeable draw capability, proves an unauthorized public trigger cannot activate or debit the continuation, admits the configured gateway through `rho:system:deployerId`, charges outer and continuation costs to their own purses, separates the gateway fee, and compares play/replay roots; `same_deploy_stack_transfer_is_vault_backed_consumed_and_replayed` proves that candidate-created authority requires prior certified custody | Rocq `WalletFundedLollipop.v` and `VaultBackedByteAccounting.candidate_created_stack_cannot_supply_prestate_byte_capacity`; TLA+ and Apalache `WalletFundedLollipop` safe configurations; component models for runtime-bound authority, located settlement, and atomic vault settlement | Eight `WalletFundedLollipop*Unsafe.cfg` controls must respectively violate conservation, address/capability separation, gateway authentication, canonical payer attribution, funding-before-activation, outer-authority staging, exact refund, or replay equality |
 | Funding-slot bootstrap is admissible, staged, and atomic before lollipop activation | native SystemVault contract tests prove exact dual credit and prove that underfunding, invalid targets, and duplicate targets preserve the source and do not create destination vaults; client tests require both public addresses and emit one batch operation; the live shard workflow finalizes install, dual funding, unauthorized trigger, dual top-up, and authorized activation in order | Rocq `FundingSlotBootstrap.v`; TLC and Apalache `FundingSlotBootstrap` safe configuration; Loom funding/activation, competing-funding, and top-up races | eager install, candidate self-funding, slot-only funding, partial debit, and rejected target creation must each violate its named invariant; no client step may claim the grant funded until the batch deploy and result are final |
+| PoS stake-vault human control is bound to the authenticated blessed deployer and fails closed on incomplete source generation | `CompiledRholangTemplate` complete/incomplete examples and `pos_vault_human_control_uses_the_authenticated_genesis_deployer_and_replays` exercise the generated contract under unauthorized and authorized signatures, exact custody movement, and replay | Rocq `PoSVaultAuthority.v`; TLC and Apalache `PoSVaultAuthority` safe configuration | the literal-controller control must violate authenticated binding and the permissive unresolved-template control must violate compilation completeness |
+| Validator redemption is generation-scoped, failure-atomic, conservative, lifecycle-exact, replay-idempotent, and independent across validator keys | `redemption_restores_exact_pending_and_withdrawing_lifecycle`, `completed_withdrawal_rebond_scopes_slash_and_redemption_to_generation`, `redeem_outcomes_and_multisig_gate`, and `redeem_outcomes_are_play_replay_deterministic`; production authorization properties mutate validator identity, bond generation, outcome tag, and penalty under a reused signature | Rocq `CanonicalRevRedemption.v`, `RedemptionCustodyAtomicity.v`, and `RedemptionMintResumption.v`; TLC and Apalache `ConcurrentRedemptionCustody`; Loom conflicting, stale, invalid, retry, abort, and distinct-validator schedules | no-target-lock, ignored-generation, full-guilty, wrong-phase restoration, partial stake/fuel publication, lost receipt, and conflicting-retry overwrite controls must violate their named invariants |
 | Introduction sponsorship is deterministic without granting stored interaction authority | neutral-stack and peek-restoration regressions keep `cost_authority` absent while charging the active deploy; unmetered genesis/system communication emits no authority or byte trace | 256-case registry property test; Loom atomic fallback/explicit registration and same-/different-payer registration interleavings; Rocq registry, neutral-storage, lollipop-attribution, redirect-resistance, reset, and unmetered theorems; TLC and Apalache `IntroductionAuthorityRegistry` safe configuration | conflicting registration must reject without overwriting the first payer; `IntroductionAuthorityRegistrySplitFallbackUnsafe.cfg` must violate `ResolvedMatchesCommittedRegistry`; a candidate-created stack must not increase authenticated pre-state byte capacity |
 | Certification and execution share authenticated system bindings | funded deployer-ID SystemVault checkpoint/replay regression | Rocq `certification_execution_replay_share_authenticated_environment`; TLA+ `NormalizerEnvironmentRefinement.cfg`; exact state-bound rejection diagnostics | `NormalizerEnvironmentRefinementEmptyUnsafe.cfg` must violate `CertificationExecutionReplayUseSameEnvironment` |
 | Physical allocation is stack-safe and semantically identical | 4,096-event allocator regression and unchanged high-fanout play/replay stress test | mixed-event exact-debit/order proptest; Rocq `worklist_solutions_refine_recursive` and canonical-first theorem; TLA+ independent allocator interleavings | `PhysicalSettlementWorklistRecursiveUnsafe.cfg` must violate `NativeStackBound` |
@@ -4699,6 +4728,7 @@ test-only consensus path is part of the repair.
 | Causal parent selection cannot build below its captured LFB state | `empty_valid_parent_set_falls_back_to_last_finalized_block`, `parent_selection_prunes_dag_covered_parents`, and the merge-rebase regressions | Rocq `finalized_floor_rebased_parent_selection_correct`; TLC exhausts 1,860,017 generated / 163,216 distinct two-node asynchronous states to depth 17 while checking causal coverage, input retention, and liveness; the node-local Apalache symmetry projection checks every invariant through bound 10 | floor-unprotected TLC and Apalache configurations must violate `Inv_ProposalPreservesSnapshotFloor` after certificate-driven LFB advancement |
 | A dual-certified state is discoverable even when secondary to every parent | exact-`FTT=0.1` promotion example, all six parent orders, state-rejection control, and unchanged complete 132-block finalizer regression | generated branch/post-merge depth and parent-order property; Rocq `finalized_floor_certified_promotion_correct`; TLC/Apalache `CertifiedFloorPromotion` safe model | main-spine-only TLC/Apalache configurations must violate complete-evidence promotion |
 | Optimized latest-message coverage preserves the exact clique decision | malformed non-descending edge rejection and linear/multi-parent/changed-snapshot reuse examples | generated pairwise coverage, supporter, corresponding-weight, and clique-verdict equivalence; Rocq `finalized_floor_latest_message_coverage_correct` and `finalized_floor_linear_snapshot_reuse_correct`; TLC/Apalache `LatestMessageCoverage` | unordered worklist must violate `Inv_NoLateCoverage`; broad reuse across a multi-parent parent must remain disabled |
+| Durable finalizer materialization agrees with the all-parent proposal floor | strict 8-of-16 rejection, state-rejected sibling exclusion, state-certified secondary-parent selection, split/reconverged tips, advancement from the selected floor, and the complete finalizer group | exhaustive pairwise candidate oracle; Rocq `FinalizerFloorMaterialization.v` and `finalized_floor_materialization_target_alignment_correct`; TLC/Apalache `FinalizerFloorMaterialization`; frozen-target/latest-message Loom interleaving | main-parent-only discovery must violate `Inv_FinalizerDiscoversCandidate`; causal-only target substitution must violate `Inv_SelectedTargetBindsRequestedCertificate` |
 | Snapshot selection waits for complete state-provenance closure | off-parent latest-message floor materialization and state-preserving fork-choice examples with no cache pre-seeding | Rocq `finalized_floor_snapshot_materialization_correct`; complete TLC interleaving/liveness state space; Apalache safe check through bound 8 | parent-only TLC/Apalache configuration must violate `Inv_SelectedSnapshotHasCompleteProvenance` |
 | Finite located OSLF checking preserves the evidence boundary | `accounting/oslf.rs` examples and disjoint-surface property test; generic `OslfResourceLogic<G>` conformance; native Rho candidate-supply regression | Rocq `CAOSLFSpatialModal.v` and extended `GSLTOSLFCapstone.v`; TLC safe model; Apalache safe check through both independent spends | five unsafe configurations must violate linear no-contraction, linear no-weakening, location isolation, modal-evidence soundness, or authenticated-funding-only respectively |
 | Verification scratch has one aggregate owner and never consumes host tmpfs after the run | `check-cost-accounted-rho-scratch.sh` creates a leaked-LMDB-shaped child in a subprocess that exits with an error, changes working directory like a Cargo build script, and asserts the exit trap removes it | the helper canonicalizes the repository-backed parent before export; the deletion-target guard rejects the parent itself; every child gate inherits one absolute `TMPDIR` | retaining any `tmp.*` child, exporting a relative path, or accepting the parent as a cleanup target fails the gate |
@@ -4765,5 +4795,80 @@ change the RSpace root, cost witness, SystemVault, merge vector, DAG, clique,
 or finalized floor. The abstract retained-heap envelope, required unsafe
 counterexample, platform limitation, metrics, and operator procedure are
 specified in [Block-Heap Lifecycle and Reclamation](cost-accounting-impl/block-heap-lifecycle.md).
+
+### D.5 Validator-redemption custody transaction
+
+A slash quarantines the validator's current bond generation and records the
+exact lifecycle phase from which custody was removed. Redemption is a
+governance system deploy, not an ordinary wallet operation. The node verifies a
+domain-separated secp256k1 multisignature over the validator key, target bond
+generation, outcome tag, and penalty. The PoS contract additionally requires
+the blessed system authority before it can coordinate the PoS lifecycle and
+SystemVault custody transition.
+
+Let $`b`$ and $`r`$ be quarantined bond and reward, $`f`$ be quarantined fuel,
+and $`p`$ be the guilty penalty. A successful transaction has exactly one of
+these dispositions:
+
+| Outcome | Stake disposition | Fuel disposition | Lifecycle and minting |
+| --- | --- | --- | --- |
+| Vindicated | Preserve $`b+r`$ and restore it to its recorded custody path | Preserve $`f`$ | Restore exactly `Bonded`, `PendingWithdraw`, or `Withdrawing`; remove only this validator's mint halt |
+| Guilty | Require $`0 \leq p < b`$; restore $`b-p+r`$ and move $`p`$ to cooperative stake custody | Move $`\min(p,f)`$ to cooperative fuel custody and restore the remainder | Restore the exact recorded phase; remove only this validator's mint halt |
+| Burned | Move $`b+r`$ to the burned-stake ledger | Move $`f`$ to the burned-fuel ledger | Enter `Burned`; retain the mint halt |
+
+The user's wallet balance is outside this adjudication and cannot be used as an
+implicit source or sink. Each accepted branch preserves the corresponding
+canonical totals:
+
+```math
+b+r+w+c_s+d_s = b'+r'+w'+c_s'+d_s'
+```
+
+```math
+f+c_f+d_f = f'+c_f'+d_f'.
+```
+
+Here $`w`$ is liquid wallet custody, $`c_s,c_f`$ are cooperative custody, and
+$`d_s,d_f`$ are burned ledgers. The physical PoS-vault balance continues to
+cover the live bond-plus-reward claim. Redemption itself never mints REV or
+fuel and never rewrites the epoch-mint receipt ledger. Vindication and partial
+guilt merely remove the target's halt, allowing one later, fresh epoch mint;
+replay of an already recorded epoch remains an identity operation.
+
+The implementation follows this transaction boundary:
+
+```text
+resolve(request):
+    verify blessed-system authority and multisignature quorum
+    reject unless request.generation equals the quarantined generation
+    if an identical receipt exists, return the committed result
+    if a different receipt exists, reject without mutation
+    acquire only the target validator's resolution ownership
+    capture its version, quarantine origin, PoS custody, and fuel custody
+    stage the selected stake, fuel, and lifecycle disposition
+    reject a Guilty penalty that consumes the complete bond
+    commit every staged component and the receipt at one checkpoint
+    release target ownership
+    on any failure, publish none of the staged state and release ownership
+```
+
+The ownership key is the validator incarnation `(public key, bond generation)`.
+Ordinary epoch changes do not create a new incarnation. Only a completed
+withdrawal followed by a fresh bond advances the generation, so delayed
+evidence or redemption for an old incarnation is effect-free. Transactions for
+the same key linearize at the receipt/version boundary, while transactions for
+distinct validator keys commute and do not share a global lock.
+
+`ConcurrentRedemptionCustody.tla` independently schedules slash, staged stake,
+staged fuel, PoS restoration, commit, abort, retry, stale-generation requests,
+and distinct-validator resolution. TLC exhausts the full staged graph;
+Apalache checks the complete single-transaction/retry horizon and independently
+reaches the two-commit missing-lock counterexample. Its unsafe controls demonstrate why the
+target lock, generation check, strict partial-guilt bound, exact origin, atomic
+stake/fuel publication, durable receipt, and conflict rejection are all
+necessary. The Rocq refinements quantify conservation, failure atomicity,
+physical custody coverage, exact restoration, idempotence, and distinct-key
+commutation. Loom explores the corresponding Rust memory interleavings, while
+the production Rholang tests compare play and replay roots and balances.
 
 *E Pluribus Potentia*

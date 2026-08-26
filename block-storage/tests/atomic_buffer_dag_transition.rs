@@ -16,19 +16,23 @@
 use std::collections::HashSet;
 
 use block_storage::rust::casperbuffer::casper_buffer_key_value_storage::CasperBufferKeyValueStorage;
-use block_storage::rust::dag::block_dag_key_value_storage::{BlockDagKeyValueStorage, InsertMode};
+use block_storage::rust::dag::block_dag_key_value_storage::{
+    BlockDagKeyValueStorage, CertifiedAdmissionOutcome, CertifiedSenderAuthority, InsertMode,
+};
 use block_storage::rust::dag::buffer_dag_transition::{
     atomic_insert_then_buffer, reconcile_buffer_against_dag, BufferTransition,
 };
 use models::rust::block_hash::BlockHashSerde;
 use models::rust::block_implicits::get_random_block;
+use models::rust::block_metadata::AdmissionRejectionReason;
+use models::rust::bond_generation::BondGeneration;
 use models::rust::casper::protocol::casper_message::BlockMessage;
 use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
 
 fn make_block() -> BlockMessage {
-    get_random_block(
+    let mut block = get_random_block(
         Some(1),
         None,
         None,
@@ -43,7 +47,40 @@ fn make_block() -> BlockMessage {
         Some(vec![]),
         None,
         None,
+    );
+    block.header.version = 5;
+    block.header.sender_bond_generation = Some(BondGeneration::GENESIS);
+    block
+}
+
+fn certificate(block: &BlockMessage) -> CertifiedSenderAuthority {
+    CertifiedSenderAuthority::new(
+        block,
+        block
+            .header
+            .parents_hash_list
+            .first()
+            .cloned()
+            .unwrap_or_else(|| prost::bytes::Bytes::from(vec![3; 32])),
+        block.body.state.pre_state_hash.clone(),
+        prost::bytes::Bytes::from(vec![4; 32]),
+        BondGeneration::GENESIS,
+        1,
     )
+    .unwrap()
+}
+
+fn accepted_outcome(block: &BlockMessage) -> CertifiedAdmissionOutcome {
+    CertifiedAdmissionOutcome::accepted(block, &certificate(block)).unwrap()
+}
+
+fn rejected_outcome(block: &BlockMessage) -> CertifiedAdmissionOutcome {
+    CertifiedAdmissionOutcome::rejected(
+        block,
+        &certificate(block),
+        AdmissionRejectionReason::InvalidTransaction,
+    )
+    .unwrap()
 }
 
 async fn setup_stores() -> (BlockDagKeyValueStorage, CasperBufferKeyValueStorage) {
@@ -65,7 +102,7 @@ async fn setup_stores() -> (BlockDagKeyValueStorage, CasperBufferKeyValueStorage
         None,
         None,
     );
-    dag.insert(&genesis, InsertMode::Approved).unwrap();
+    dag.insert(&genesis, InsertMode::ApprovedGenesis).unwrap();
 
     let mut buf_kvm = InMemoryStoreManager::new();
     let buf_store = buf_kvm.store("parents-map".to_string()).await.unwrap();
@@ -96,6 +133,8 @@ async fn atomic_insert_then_buffer_inserts_into_dag_and_removes_from_buffer() {
         &dag,
         &block,
         InsertMode::Invalid,
+        &certificate(&block),
+        &rejected_outcome(&block),
         &buffer,
         BufferTransition::RemoveFromBuffer(hash_serde.clone()),
     )
@@ -121,6 +160,8 @@ async fn atomic_insert_then_buffer_idempotent_on_absent_hash() {
         &dag,
         &block,
         InsertMode::Invalid,
+        &certificate(&block),
+        &rejected_outcome(&block),
         &buffer,
         BufferTransition::RemoveFromBuffer(hash_serde.clone()),
     )
@@ -146,6 +187,8 @@ async fn atomic_insert_then_buffer_skip_does_not_touch_buffer() {
         &dag,
         &block,
         InsertMode::Normal,
+        &certificate(&block),
+        &accepted_outcome(&block),
         &buffer,
         BufferTransition::Skip,
     )
@@ -159,6 +202,66 @@ async fn atomic_insert_then_buffer_skip_does_not_touch_buffer() {
 }
 
 #[tokio::test]
+async fn certified_outcome_must_match_insert_mode_before_any_state_changes() {
+    for mode in [InsertMode::Normal, InsertMode::Invalid] {
+        let (dag, buffer) = setup_stores().await;
+        let block = make_block();
+        let hash = BlockHashSerde(block.block_hash.clone());
+        let outcome = match mode {
+            InsertMode::Normal => rejected_outcome(&block),
+            InsertMode::Invalid => accepted_outcome(&block),
+            InsertMode::ApprovedGenesis => unreachable!(),
+        };
+        buffer.put_pendant(hash.clone()).unwrap();
+        let error = atomic_insert_then_buffer(
+            &dag,
+            &block,
+            mode,
+            &certificate(&block),
+            &outcome,
+            &buffer,
+            BufferTransition::RemoveFromBuffer(hash.clone()),
+        )
+        .err()
+        .expect("mismatched admission mode must fail");
+
+        assert!(error
+            .to_string()
+            .contains("DAG insert mode disagrees with certified admission outcome"));
+        assert!(!dag
+            .get_representation()
+            .unwrap()
+            .contains(&block.block_hash));
+        assert!(buffer.is_pendant(&hash));
+    }
+}
+
+#[tokio::test]
+async fn certified_reinsertion_requires_the_identical_admission_outcome() {
+    let (dag, _) = setup_stores().await;
+    let block = make_block();
+    let certificate = certificate(&block);
+    let first = rejected_outcome(&block);
+    let different_reason = CertifiedAdmissionOutcome::rejected(
+        &block,
+        &certificate,
+        AdmissionRejectionReason::InvalidParents,
+    )
+    .unwrap();
+
+    dag.insert_certified(&block, InsertMode::Invalid, &certificate, &first)
+        .unwrap();
+    let error = dag
+        .insert_certified(&block, InsertMode::Invalid, &certificate, &different_reason)
+        .err()
+        .expect("conflicting certified outcome must fail");
+
+    assert!(error
+        .to_string()
+        .contains("stored block metadata disagrees with certified admission outcome"));
+}
+
+#[tokio::test]
 async fn reconcile_buffer_against_dag_purges_drifted_pendants() {
     let (dag, buffer) = setup_stores().await;
     let block = make_block();
@@ -167,7 +270,13 @@ async fn reconcile_buffer_against_dag_purges_drifted_pendants() {
     // Manually construct the (c) drift state from §9.20: block in DAG
     // AND pendant in buffer. This is what would result from a crash
     // after dag.insert but before buffer.remove.
-    dag.insert(&block, InsertMode::Invalid).unwrap();
+    dag.insert_certified(
+        &block,
+        InsertMode::Invalid,
+        &certificate(&block),
+        &rejected_outcome(&block),
+    )
+    .unwrap();
     buffer.put_pendant(hash_serde.clone()).unwrap();
     assert!(dag
         .get_representation()
@@ -212,7 +321,13 @@ async fn reconcile_buffer_against_dag_handles_mixed_state() {
 
     let drift_block = make_block();
     let drift_hash = BlockHashSerde(drift_block.block_hash.clone());
-    dag.insert(&drift_block, InsertMode::Invalid).unwrap();
+    dag.insert_certified(
+        &drift_block,
+        InsertMode::Invalid,
+        &certificate(&drift_block),
+        &rejected_outcome(&drift_block),
+    )
+    .unwrap();
     buffer.put_pendant(drift_hash.clone()).unwrap();
 
     let pending_block = make_block();
@@ -240,7 +355,13 @@ async fn reconcile_buffer_against_dag_is_idempotent() {
     let (dag, buffer) = setup_stores().await;
     let block = make_block();
     let hash_serde = BlockHashSerde(block.block_hash.clone());
-    dag.insert(&block, InsertMode::Invalid).unwrap();
+    dag.insert_certified(
+        &block,
+        InsertMode::Invalid,
+        &certificate(&block),
+        &rejected_outcome(&block),
+    )
+    .unwrap();
     buffer.put_pendant(hash_serde.clone()).unwrap();
 
     let dag_rep = dag.get_representation().unwrap();
@@ -268,6 +389,8 @@ async fn atomic_insert_then_buffer_idempotent_on_repeat() {
         &dag,
         &block,
         InsertMode::Invalid,
+        &certificate(&block),
+        &rejected_outcome(&block),
         &buffer,
         BufferTransition::RemoveFromBuffer(hash_serde.clone()),
     );
@@ -277,6 +400,8 @@ async fn atomic_insert_then_buffer_idempotent_on_repeat() {
         &dag,
         &block,
         InsertMode::Invalid,
+        &certificate(&block),
+        &rejected_outcome(&block),
         &buffer,
         BufferTransition::RemoveFromBuffer(hash_serde.clone()),
     );

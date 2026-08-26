@@ -29,6 +29,7 @@ use crypto::rust::signatures::signatures_alg::SignaturesAlg;
 use crypto::rust::signatures::signed::Signed;
 use models::rhoapi::{CostSignature, CostStack, ListParWithRandom, PCost, Par};
 use models::rust::block::state_hash::StateHash;
+use models::rust::bond_generation::BondGeneration;
 use models::rust::casper::protocol::casper_message::{
     BlockMessage, Body, DeployData, Event, F1r3flyState, Header, ProcessedDeploy,
     ProcessedSystemDeploy,
@@ -117,7 +118,10 @@ async fn pos_quarantined_stake(
           for (@(_, PoS) <- poSCh) {{
             @PoS!("getQuarantinedStake", *quarantineCh) |
             for (@quarantine <- quarantineCh) {{
-              return!(quarantine.getOrElse("{}".hexToBytes(), -1))
+              match quarantine.getOrElse("{}".hexToBytes(), Nil) {{
+                (bond, _, _, _, _, _) => {{ return!(bond) }}
+                Nil => {{ return!(-1) }}
+              }}
             }}
           }}
         }}"#,
@@ -129,6 +133,258 @@ async fn pos_quarantined_stake(
         .unwrap();
     assert_eq!(values.len(), 1);
     RhoNumber::unapply(&values[0]).unwrap()
+}
+
+async fn pos_quarantined_reward(
+    runtime_manager: &RuntimeManager,
+    state_hash: &StateHash,
+    validator: &crypto::rust::public_key::PublicKey,
+) -> i64 {
+    let source = format!(
+        r#"
+        new return, poSCh, quarantineCh,
+            rl(`rho:registry:lookup`)
+        in {{
+          rl!(`rho:system:pos`, *poSCh) |
+          for (@(_, PoS) <- poSCh) {{
+            @PoS!("getQuarantinedStake", *quarantineCh) |
+            for (@quarantine <- quarantineCh) {{
+              match quarantine.getOrElse("{}".hexToBytes(), Nil) {{
+                (_, reward, _, _, _, _) => {{ return!(reward) }}
+                Nil => {{ return!(-1) }}
+              }}
+            }}
+          }}
+        }}"#,
+        hex::encode(&validator.bytes)
+    );
+    let (values, _) = runtime_manager
+        .play_exploratory_deploy(source, state_hash, None)
+        .await
+        .unwrap();
+    assert_eq!(values.len(), 1);
+    RhoNumber::unapply(&values[0]).unwrap()
+}
+
+async fn pos_validator_reward(
+    runtime_manager: &RuntimeManager,
+    state_hash: &StateHash,
+    validator: &crypto::rust::public_key::PublicKey,
+) -> i64 {
+    let source = format!(
+        r#"
+        new return, poSCh, rewardsCh,
+            rl(`rho:registry:lookup`)
+        in {{
+          rl!(`rho:system:pos`, *poSCh) |
+          for (@(_, PoS) <- poSCh) {{
+            @PoS!("getRewards", *rewardsCh) |
+            for (@rewards <- rewardsCh) {{
+              return!(rewards.getOrElse("{}".hexToBytes(), 0))
+            }}
+          }}
+        }}"#,
+        hex::encode(&validator.bytes)
+    );
+    let (values, _) = runtime_manager
+        .play_exploratory_deploy(source, state_hash, None)
+        .await
+        .unwrap();
+    assert_eq!(values.len(), 1);
+    RhoNumber::unapply(&values[0]).unwrap()
+}
+
+async fn pos_validator_locked_stake(
+    runtime_manager: &RuntimeManager,
+    state_hash: &StateHash,
+    validator: &crypto::rust::public_key::PublicKey,
+) -> i64 {
+    let source = format!(
+        r#"
+        new return, poSCh, bondsCh, withdrawersCh, quarantineCh,
+            rl(`rho:registry:lookup`)
+        in {{
+          rl!(`rho:system:pos`, *poSCh) |
+          for (@(_, PoS) <- poSCh) {{
+            @PoS!("getBonds", *bondsCh) |
+            @PoS!("getWithdrawers", *withdrawersCh) |
+            @PoS!("getQuarantinedStake", *quarantineCh) |
+            for (@bonds <- bondsCh & @withdrawers <- withdrawersCh & @quarantine <- quarantineCh) {{
+              match quarantine.getOrElse("{}".hexToBytes(), Nil) {{
+                (bond, _, _, _, _, _) => {{ return!(bond) }}
+                Nil => {{
+                  match withdrawers.getOrElse("{}".hexToBytes(), Nil) {{
+                    (bond, _, _) => {{ return!(bond) }}
+                    Nil => {{ return!(bonds.getOrElse("{}".hexToBytes(), -1)) }}
+                  }}
+                }}
+              }}
+            }}
+          }}
+        }}"#,
+        hex::encode(&validator.bytes),
+        hex::encode(&validator.bytes),
+        hex::encode(&validator.bytes)
+    );
+    let (values, _) = runtime_manager
+        .play_exploratory_deploy(source, state_hash, None)
+        .await
+        .unwrap();
+    assert_eq!(values.len(), 1);
+    RhoNumber::unapply(&values[0]).unwrap()
+}
+
+async fn pos_validator_lifecycle(
+    runtime_manager: &RuntimeManager,
+    state_hash: &StateHash,
+    validator: &crypto::rust::public_key::PublicKey,
+) -> String {
+    let source = format!(
+        r#"
+        new return, poSCh, bondsCh, pendingCh, withdrawersCh, quarantineCh,
+            rl(`rho:registry:lookup`)
+        in {{
+          rl!(`rho:system:pos`, *poSCh) |
+          for (@(_, PoS) <- poSCh) {{
+            @PoS!("getBonds", *bondsCh) |
+            @PoS!("getPendingWithdrawer", *pendingCh) |
+            @PoS!("getWithdrawers", *withdrawersCh) |
+            @PoS!("getQuarantinedStake", *quarantineCh) |
+            for (@bonds <- bondsCh & @pending <- pendingCh &
+                 @withdrawers <- withdrawersCh & @quarantine <- quarantineCh) {{
+              if (quarantine.contains("{}".hexToBytes())) {{
+                match quarantine.get("{}".hexToBytes()) {{
+                  (_, _, _, origin, _, _) => {{ return!("Quarantined:" ++ origin) }}
+                }}
+              }} else if (pending.contains("{}".hexToBytes())) {{
+                return!("PendingWithdraw")
+              }} else if (withdrawers.contains("{}".hexToBytes())) {{
+                return!("Withdrawing")
+              }} else if (bonds.contains("{}".hexToBytes())) {{
+                return!("Bonded")
+              }} else {{
+                return!("Absent")
+              }}
+            }}
+          }}
+        }}"#,
+        hex::encode(&validator.bytes),
+        hex::encode(&validator.bytes),
+        hex::encode(&validator.bytes),
+        hex::encode(&validator.bytes),
+        hex::encode(&validator.bytes)
+    );
+    let (values, _) = runtime_manager
+        .play_exploratory_deploy(source, state_hash, None)
+        .await
+        .unwrap();
+    assert_eq!(values.len(), 1);
+    RhoString::unapply(&values[0]).unwrap()
+}
+
+async fn pos_validator_lifecycle_deadline(
+    runtime_manager: &RuntimeManager,
+    state_hash: &StateHash,
+    validator: &crypto::rust::public_key::PublicKey,
+) -> i64 {
+    let source = format!(
+        r#"
+        new return, poSCh, pendingCh, withdrawersCh, quarantineCh,
+            rl(`rho:registry:lookup`)
+        in {{
+          rl!(`rho:system:pos`, *poSCh) |
+          for (@(_, PoS) <- poSCh) {{
+            @PoS!("getPendingWithdrawer", *pendingCh) |
+            @PoS!("getWithdrawers", *withdrawersCh) |
+            @PoS!("getQuarantinedStake", *quarantineCh) |
+            for (@pending <- pendingCh & @withdrawers <- withdrawersCh & @quarantine <- quarantineCh) {{
+              if (quarantine.contains("{}".hexToBytes())) {{
+                match quarantine.get("{}".hexToBytes()) {{
+                  (_, _, _, _, deadline, _) => {{ return!(deadline) }}
+                }}
+              }} else if (pending.contains("{}".hexToBytes())) {{
+                match pending.get("{}".hexToBytes()) {{
+                  (deadline, _) => {{ return!(deadline) }}
+                }}
+              }} else if (withdrawers.contains("{}".hexToBytes())) {{
+                match withdrawers.get("{}".hexToBytes()) {{
+                  (_, deadline, _) => {{ return!(deadline) }}
+                }}
+              }} else {{
+                return!(-1)
+              }}
+            }}
+          }}
+        }}"#,
+        hex::encode(&validator.bytes),
+        hex::encode(&validator.bytes),
+        hex::encode(&validator.bytes),
+        hex::encode(&validator.bytes),
+        hex::encode(&validator.bytes),
+        hex::encode(&validator.bytes)
+    );
+    let (values, _) = runtime_manager
+        .play_exploratory_deploy(source, state_hash, None)
+        .await
+        .unwrap();
+    assert_eq!(values.len(), 1);
+    RhoNumber::unapply(&values[0]).unwrap()
+}
+
+async fn pos_validator_lifecycle_generation(
+    runtime_manager: &RuntimeManager,
+    state_hash: &StateHash,
+    validator: &crypto::rust::public_key::PublicKey,
+) -> i64 {
+    let source = format!(
+        r#"
+        new return, poSCh, generationsCh,
+            rl(`rho:registry:lookup`)
+        in {{
+          rl!(`rho:system:pos`, *poSCh) |
+          for (@(_, PoS) <- poSCh) {{
+            @PoS!("getBondGenerations", *generationsCh) |
+            for (@generations <- generationsCh) {{
+              return!(generations.getOrElse("{}".hexToBytes(), -1))
+            }}
+          }}
+        }}"#,
+        hex::encode(&validator.bytes)
+    );
+    let (values, _) = runtime_manager
+        .play_exploratory_deploy(source, state_hash, None)
+        .await
+        .unwrap();
+    assert_eq!(values.len(), 1);
+    RhoNumber::unapply(&values[0]).unwrap()
+}
+
+async fn pos_validator_is_active(
+    runtime_manager: &RuntimeManager,
+    state_hash: &StateHash,
+    validator: &crypto::rust::public_key::PublicKey,
+) -> bool {
+    let source = format!(
+        r#"
+        new return, poSCh, activeCh,
+            rl(`rho:registry:lookup`)
+        in {{
+          rl!(`rho:system:pos`, *poSCh) |
+          for (@(_, PoS) <- poSCh) {{
+            @PoS!("getActiveValidators", *activeCh) |
+            for (@active <- activeCh) {{
+              return!(active.contains("{}".hexToBytes()))
+            }}
+          }}
+        }}"#,
+        hex::encode(&validator.bytes)
+    );
+    let (values, _) = runtime_manager
+        .play_exploratory_deploy(source, state_hash, None)
+        .await
+        .unwrap();
+    assert_eq!(values.len(), 1);
+    RhoBoolean::unapply(&values[0]).unwrap()
 }
 
 async fn pos_coop_vault_address(
@@ -198,6 +454,41 @@ async fn pos_epoch_length(runtime_manager: &RuntimeManager, state_hash: &StateHa
         .unwrap();
     assert_eq!(values.len(), 1);
     RhoNumber::unapply(&values[0]).unwrap()
+}
+
+fn pos_vault_transfer_source(target: &VaultAddress, result_channel: &str) -> String {
+    format!(
+        r#"
+        new transferResult, poSCh,
+            rl(`rho:registry:lookup`),
+            deployerId(`rho:system:deployerId`)
+        in {{
+          rl!(`rho:system:pos`, *poSCh) |
+          for (@(_, PoS) <- poSCh) {{
+            @PoS!("posVaultTransfer", "{}", 1, *deployerId, *transferResult) |
+            for (@(accepted, _) <- transferResult) {{
+              @"{}"!(accepted)
+            }}
+          }}
+        }}"#,
+        target.to_base58(),
+        result_channel
+    )
+}
+
+async fn stored_boolean(
+    runtime_manager: &RuntimeManager,
+    state_hash: &StateHash,
+    channel: &str,
+) -> bool {
+    let source =
+        format!(r#"new return in {{ for (@value <<- @"{channel}") {{ return!(value) }} }}"#);
+    let (values, _) = runtime_manager
+        .play_exploratory_deploy(source, state_hash, None)
+        .await
+        .unwrap();
+    assert_eq!(values.len(), 1);
+    RhoBoolean::unapply(&values[0]).unwrap()
 }
 
 fn successful_system_state(result: SystemDeployResult<()>) -> StateHash {
@@ -478,6 +769,151 @@ async fn system_vault_atomic_cost_application_is_conservative_and_rolls_back() {
     )
     .await
     .unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn pos_vault_human_control_uses_the_authenticated_genesis_deployer_and_replays() {
+    use casper::rust::genesis::contracts::standard_deploys::{
+        POS_GENERATOR_PK, POS_GENERATOR_PUB_KEY,
+    };
+
+    with_runtime_manager(
+        |runtime_manager, genesis_context, genesis_block| async move {
+            let genesis_state = genesis_block.body.state.post_state_hash.clone();
+            let pos_payer = VaultAddress::from_public_key(&POS_GENERATOR_PUB_KEY).unwrap();
+            let target =
+                VaultAddress::from_public_key(&genesis_context.genesis_vaults[1].1).unwrap();
+            let funded_state =
+                protocol_mint_to_vault(&runtime_manager, &genesis_state, &pos_payer, 1_000_000, 71)
+                    .await;
+            let initial_pos_balance = system_vault_balance(
+                &runtime_manager,
+                &funded_state,
+                &pos_stake_vault_address(&runtime_manager, &funded_state).await,
+            )
+            .await;
+            let initial_target_balance =
+                system_vault_balance(&runtime_manager, &funded_state, &target).await;
+
+            let unauthorized = construct_deploy::source_deploy(
+                pos_vault_transfer_source(&target, "pos-vault-transfer-unauthorized"),
+                71,
+                None,
+                None,
+                Some(genesis_context.genesis_vaults[0].0.clone()),
+                None,
+                Some("root".to_string()),
+            )
+            .unwrap();
+            let unauthorized_block_data = BlockData {
+                time_stamp: unauthorized.data.time_stamp,
+                block_number: 1,
+                sender: genesis_context.validator_pks()[0].clone(),
+                seq_num: 1,
+            };
+            let (unauthorized_state, unauthorized_processed, unauthorized_system) = runtime_manager
+                .compute_state(
+                    &funded_state,
+                    vec![unauthorized],
+                    Vec::new(),
+                    unauthorized_block_data.clone(),
+                    None,
+                )
+                .await
+                .unwrap();
+            assert!(!unauthorized_processed[0].is_failed);
+            assert!(
+                !stored_boolean(
+                    &runtime_manager,
+                    &unauthorized_state,
+                    "pos-vault-transfer-unauthorized"
+                )
+                .await
+            );
+            assert_eq!(
+                system_vault_balance(&runtime_manager, &unauthorized_state, &target).await,
+                initial_target_balance
+            );
+            assert_eq!(
+                runtime_manager
+                    .replay_compute_state(
+                        &funded_state,
+                        unauthorized_processed,
+                        unauthorized_system,
+                        &unauthorized_block_data,
+                        None,
+                        false,
+                    )
+                    .await
+                    .unwrap(),
+                unauthorized_state
+            );
+
+            let pos_key = PrivateKey::from_bytes(
+                &hex::decode(POS_GENERATOR_PK).expect("invalid PoS generator private key"),
+            );
+            let authorized = construct_deploy::source_deploy(
+                pos_vault_transfer_source(&target, "pos-vault-transfer-authorized"),
+                72,
+                None,
+                None,
+                Some(pos_key),
+                None,
+                Some("root".to_string()),
+            )
+            .unwrap();
+            let authorized_block_data = BlockData {
+                time_stamp: authorized.data.time_stamp,
+                block_number: 2,
+                sender: genesis_context.validator_pks()[0].clone(),
+                seq_num: 2,
+            };
+            let (authorized_state, authorized_processed, authorized_system) = runtime_manager
+                .compute_state(
+                    &unauthorized_state,
+                    vec![authorized],
+                    Vec::new(),
+                    authorized_block_data.clone(),
+                    None,
+                )
+                .await
+                .unwrap();
+            assert!(!authorized_processed[0].is_failed);
+            assert!(
+                stored_boolean(
+                    &runtime_manager,
+                    &authorized_state,
+                    "pos-vault-transfer-authorized"
+                )
+                .await
+            );
+            assert_eq!(
+                system_vault_balance(&runtime_manager, &authorized_state, &target).await,
+                initial_target_balance + 1
+            );
+            let pos_vault = pos_stake_vault_address(&runtime_manager, &authorized_state).await;
+            assert_eq!(
+                system_vault_balance(&runtime_manager, &authorized_state, &pos_vault).await,
+                initial_pos_balance - 1
+            );
+            assert_eq!(
+                runtime_manager
+                    .replay_compute_state(
+                        &unauthorized_state,
+                        authorized_processed,
+                        authorized_system,
+                        &authorized_block_data,
+                        None,
+                        false,
+                    )
+                    .await
+                    .unwrap(),
+                authorized_state
+            );
+        },
+    )
+    .await
+    .unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -1232,8 +1668,10 @@ async fn slash_drains_validator_vault_is_play_replay_deterministic() {
             let mut play_ops = RuntimeOps::new(play_runtime);
             let mut play_slash = SlashDeploy {
                 invalid_block_hash: invalid_block_hash.clone(),
+                equivocation_block_hash: None,
                 pk: proposer.clone(),
                 target_activation_epoch: 0,
+                target_bond_generation: models::rust::bond_generation::BondGeneration::GENESIS,
                 initial_rand: system_deploy_util::generate_slash_deploy_random_seed(
                     proposer.bytes.clone(),
                     slash_block_data.seq_num,
@@ -1309,25 +1747,28 @@ async fn slash_drains_validator_vault_is_play_replay_deterministic() {
     .unwrap()
 }
 
-/// Helper: slash `offender` (seeded as the offender of `invalid_block_hash`) on
-/// top of `start_state` as proposer `proposer`, returning the post-slash state
-/// hash. Used by the redemption end-to-end test to reach a quarantined state.
-async fn play_one_slash(
+struct SlashAttemptPosition {
+    target_bond_generation: BondGeneration,
+    block_number: i64,
+    seq_num: i32,
+}
+
+async fn play_slash_attempt(
     runtime_manager: &RuntimeManager,
     start_state: &StateHash,
     proposer: &crypto::rust::public_key::PublicKey,
     offender: &crypto::rust::public_key::PublicKey,
     invalid_block_hash: &prost::bytes::Bytes,
-    seq_num: i32,
-) -> StateHash {
+    position: SlashAttemptPosition,
+) -> (SystemDeployResult<()>, StateHash) {
     use rholang::rust::interpreter::rho_runtime::RhoRuntime as _;
     let mut invalid_blocks: HashMap<prost::bytes::Bytes, prost::bytes::Bytes> = HashMap::new();
     invalid_blocks.insert(invalid_block_hash.clone(), offender.bytes.clone());
     let block_data = BlockData {
         time_stamp: 0,
-        block_number: 1,
+        block_number: position.block_number,
         sender: proposer.clone(),
-        seq_num,
+        seq_num: position.seq_num,
     };
     let runtime = runtime_manager.spawn_runtime().await;
     runtime.set_block_data(block_data.clone()).await;
@@ -1335,18 +1776,47 @@ async fn play_one_slash(
     let mut ops = RuntimeOps::new(runtime);
     let mut slash = SlashDeploy {
         invalid_block_hash: invalid_block_hash.clone(),
+        equivocation_block_hash: None,
         pk: proposer.clone(),
         target_activation_epoch: 0,
+        target_bond_generation: position.target_bond_generation,
         initial_rand: system_deploy_util::generate_slash_deploy_random_seed(
             proposer.bytes.clone(),
-            seq_num,
+            position.seq_num,
             invalid_block_hash,
         ),
     };
-    match ops
+    let result = ops
         .play_system_deploy(start_state, &mut slash)
         .await
-        .unwrap()
+        .unwrap();
+    let current_state = ops.runtime.create_checkpoint().await.root.to_bytes_prost();
+    (result, current_state)
+}
+
+async fn play_one_slash(
+    runtime_manager: &RuntimeManager,
+    start_state: &StateHash,
+    proposer: &crypto::rust::public_key::PublicKey,
+    offender: &crypto::rust::public_key::PublicKey,
+    invalid_block_hash: &prost::bytes::Bytes,
+    block_number: i64,
+    seq_num: i32,
+) -> StateHash {
+    match play_slash_attempt(
+        runtime_manager,
+        start_state,
+        proposer,
+        offender,
+        invalid_block_hash,
+        SlashAttemptPosition {
+            target_bond_generation: BondGeneration::GENESIS,
+            block_number,
+            seq_num,
+        },
+    )
+    .await
+    .0
     {
         SystemDeployResult::PlaySucceeded { state_hash, .. } => state_hash,
         SystemDeployResult::PlayFailed {
@@ -1357,9 +1827,952 @@ async fn play_one_slash(
     }
 }
 
+async fn request_validator_withdrawal(
+    runtime_manager: &RuntimeManager,
+    start_state: &StateHash,
+    proposer: &crypto::rust::public_key::PublicKey,
+    validator_secret: &PrivateKey,
+    block_number: i64,
+    seq_num: i32,
+) -> StateHash {
+    let source = r#"
+        new return, poSCh, deployerId(`rho:system:deployerId`),
+            rl(`rho:registry:lookup`)
+        in {
+          rl!(`rho:system:pos`, *poSCh) |
+          for (@(_, PoS) <- poSCh) {
+            @PoS!("withdraw", *deployerId, *return)
+          }
+        }
+    "#
+    .to_string();
+    let deploy = construct_deploy::source_deploy(
+        source,
+        i64::from(seq_num),
+        None,
+        None,
+        Some(validator_secret.clone()),
+        None,
+        Some("root".to_string()),
+    )
+    .unwrap();
+    let block_data = BlockData {
+        time_stamp: deploy.data.time_stamp,
+        block_number,
+        sender: proposer.clone(),
+        seq_num,
+    };
+    let (state_hash, processed, _) = runtime_manager
+        .compute_state(start_state, vec![deploy], Vec::new(), block_data, None)
+        .await
+        .unwrap();
+    assert_eq!(processed.len(), 1);
+    assert!(!processed[0].is_failed);
+    state_hash
+}
+
+async fn submit_validator_bond(
+    runtime_manager: &RuntimeManager,
+    start_state: &StateHash,
+    proposer: &crypto::rust::public_key::PublicKey,
+    validator_secret: &PrivateKey,
+    amount: i64,
+    block_number: i64,
+    seq_num: i32,
+) -> StateHash {
+    let source = format!(
+        r#"
+        new return, poSCh, deployerId(`rho:system:deployerId`),
+            rl(`rho:registry:lookup`)
+        in {{
+          rl!(`rho:system:pos`, *poSCh) |
+          for (@(_, PoS) <- poSCh) {{
+            @PoS!("bond", *deployerId, {amount}, *return)
+          }}
+        }}
+    "#
+    );
+    let deploy = construct_deploy::source_deploy(
+        source,
+        i64::from(seq_num),
+        None,
+        None,
+        Some(validator_secret.clone()),
+        None,
+        Some("root".to_string()),
+    )
+    .unwrap();
+    let block_data = BlockData {
+        time_stamp: deploy.data.time_stamp,
+        block_number,
+        sender: proposer.clone(),
+        seq_num,
+    };
+    let (state_hash, processed, _) = runtime_manager
+        .compute_state(start_state, vec![deploy], Vec::new(), block_data, None)
+        .await
+        .unwrap();
+    assert_eq!(processed.len(), 1);
+    assert!(!processed[0].is_failed);
+    state_hash
+}
+
+fn authorized_redeem(
+    proposer: &crypto::rust::public_key::PublicKey,
+    offender: &crypto::rust::public_key::PublicKey,
+    target_bond_generation: BondGeneration,
+    outcome: RedemptionOutcome,
+    seq_num: i32,
+) -> RedeemDeploy {
+    use casper::rust::util::rholang::costacc::redeem_deploy::RedemptionAuthorization;
+
+    let secp = Secp256k1;
+    let keypairs = (0..3).map(|_| secp.new_key_pair()).collect::<Vec<_>>();
+    let keyset = keypairs
+        .iter()
+        .map(|(_, public_key)| hex::encode(&public_key.bytes))
+        .collect::<Vec<_>>();
+    let mut redeem = RedeemDeploy::new(
+        offender.bytes.to_vec(),
+        target_bond_generation,
+        outcome,
+        keyset,
+        2,
+        proposer.bytes.clone(),
+        seq_num,
+    );
+    let digest = redeem.auth_digest();
+    redeem.authorizations = keypairs
+        .iter()
+        .take(2)
+        .map(|(private_key, public_key)| RedemptionAuthorization {
+            public_key: public_key.bytes.to_vec(),
+            signature: secp.sign(&digest, &private_key.bytes),
+        })
+        .collect();
+    assert!(redeem.verify_multisig_quorum());
+    redeem
+}
+
+async fn play_redeem_attempt(
+    runtime_manager: &RuntimeManager,
+    start_state: &StateHash,
+    proposer: &crypto::rust::public_key::PublicKey,
+    mut redeem: RedeemDeploy,
+    block_number: i64,
+    seq_num: i32,
+) -> (SystemDeployResult<()>, StateHash) {
+    let block_data = BlockData {
+        time_stamp: 0,
+        block_number,
+        sender: proposer.clone(),
+        seq_num,
+    };
+    let runtime = runtime_manager.spawn_runtime().await;
+    runtime.set_block_data(block_data).await;
+    let mut ops = RuntimeOps::new(runtime);
+    let result = ops
+        .play_system_deploy(start_state, &mut redeem)
+        .await
+        .unwrap();
+    let current_state = ops.runtime.create_checkpoint().await.root.to_bytes_prost();
+    (result, current_state)
+}
+
+async fn play_one_redeem(
+    runtime_manager: &RuntimeManager,
+    start_state: &StateHash,
+    proposer: &crypto::rust::public_key::PublicKey,
+    offender: &crypto::rust::public_key::PublicKey,
+    outcome: RedemptionOutcome,
+    block_number: i64,
+    seq_num: i32,
+) -> StateHash {
+    let redeem = authorized_redeem(
+        proposer,
+        offender,
+        BondGeneration::GENESIS,
+        outcome,
+        seq_num,
+    );
+    match play_redeem_attempt(
+        runtime_manager,
+        start_state,
+        proposer,
+        redeem,
+        block_number,
+        seq_num,
+    )
+    .await
+    .0
+    {
+        SystemDeployResult::PlaySucceeded { state_hash, .. } => state_hash,
+        SystemDeployResult::PlayFailed {
+            processed_system_deploy,
+        } => panic!("redemption failed: {processed_system_deploy:?}"),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn redemption_restores_exact_pending_and_withdrawing_lifecycle() {
+    with_runtime_manager(
+        |runtime_manager, genesis_context, genesis_block| async move {
+            let start_state = genesis_block.body.state.post_state_hash.clone();
+            let proposer = genesis_context.validator_pks()[0].clone();
+            let offender = genesis_context.validator_pks()[1].clone();
+            let offender_secret = genesis_context.validator_key_pairs[1].0.clone();
+            let stake_vault_address = pos_stake_vault_address(&runtime_manager, &start_state).await;
+            let reward_seeded_state = protocol_mint_to_vault(
+                &runtime_manager,
+                &start_state,
+                &stake_vault_address,
+                160,
+                10,
+            )
+            .await;
+            let funded_state = play_close(&runtime_manager, &reward_seeded_state, BlockData {
+                time_stamp: 0,
+                block_number: 0,
+                sender: proposer.clone(),
+                seq_num: 10,
+            })
+            .await;
+            let offender_address = VaultAddress::from_public_key(&offender).unwrap();
+            let coop_address = pos_coop_vault_address(&runtime_manager, &funded_state).await;
+            let pending_state = request_validator_withdrawal(
+                &runtime_manager,
+                &funded_state,
+                &proposer,
+                &offender_secret,
+                1,
+                11,
+            )
+            .await;
+            assert_eq!(
+                pos_validator_lifecycle(&runtime_manager, &pending_state, &offender).await,
+                "PendingWithdraw"
+            );
+            let pending_deadline =
+                pos_validator_lifecycle_deadline(&runtime_manager, &pending_state, &offender).await;
+            let pending_generation =
+                pos_validator_lifecycle_generation(&runtime_manager, &pending_state, &offender)
+                    .await;
+            let pending_active =
+                pos_validator_is_active(&runtime_manager, &pending_state, &offender).await;
+            let pending_fuel =
+                system_vault_balance(&runtime_manager, &pending_state, &offender_address).await;
+            let pending_reward =
+                pos_validator_reward(&runtime_manager, &pending_state, &offender).await;
+            assert!(pending_reward > 0);
+            let pending_stake_vault =
+                system_vault_balance(&runtime_manager, &pending_state, &stake_vault_address).await;
+            let pending_evidence = prost::bytes::Bytes::from_static(b"pending-phase-evidence");
+            let pending_slashed = play_one_slash(
+                &runtime_manager,
+                &pending_state,
+                &proposer,
+                &offender,
+                &pending_evidence,
+                2,
+                12,
+            )
+            .await;
+            assert_eq!(
+                pos_validator_lifecycle(&runtime_manager, &pending_slashed, &offender).await,
+                "Quarantined:PendingWithdraw"
+            );
+            assert_eq!(
+                pos_validator_lifecycle_deadline(&runtime_manager, &pending_slashed, &offender,)
+                    .await,
+                pending_deadline
+            );
+            assert_eq!(
+                pos_quarantined_reward(&runtime_manager, &pending_slashed, &offender).await,
+                pending_reward
+            );
+            let next_generation = BondGeneration::new(1).unwrap();
+            let (stale_pending_slash, stale_pending_slash_root) = play_slash_attempt(
+                &runtime_manager,
+                &pending_slashed,
+                &proposer,
+                &offender,
+                &pending_evidence,
+                SlashAttemptPosition {
+                    target_bond_generation: next_generation,
+                    block_number: 3,
+                    seq_num: 13,
+                },
+            )
+            .await;
+            assert!(matches!(
+                stale_pending_slash,
+                SystemDeployResult::PlayFailed { .. }
+            ));
+            assert_eq!(stale_pending_slash_root, pending_slashed);
+            let stale_pending_redeem = authorized_redeem(
+                &proposer,
+                &offender,
+                next_generation,
+                RedemptionOutcome::Vindicated,
+                14,
+            );
+            let (stale_pending_redemption, stale_pending_redemption_root) = play_redeem_attempt(
+                &runtime_manager,
+                &pending_slashed,
+                &proposer,
+                stale_pending_redeem,
+                4,
+                14,
+            )
+            .await;
+            assert!(matches!(
+                stale_pending_redemption,
+                SystemDeployResult::PlayFailed { .. }
+            ));
+            assert_eq!(stale_pending_redemption_root, pending_slashed);
+            let pending_restored = play_one_redeem(
+                &runtime_manager,
+                &pending_slashed,
+                &proposer,
+                &offender,
+                RedemptionOutcome::Vindicated,
+                3,
+                13,
+            )
+            .await;
+            assert_eq!(
+                pos_validator_lifecycle(&runtime_manager, &pending_restored, &offender).await,
+                "PendingWithdraw"
+            );
+            assert_eq!(
+                pos_validator_lifecycle_deadline(&runtime_manager, &pending_restored, &offender,)
+                    .await,
+                pending_deadline
+            );
+            assert_eq!(
+                pos_validator_lifecycle_generation(&runtime_manager, &pending_restored, &offender,)
+                    .await,
+                pending_generation
+            );
+            assert_eq!(
+                pos_validator_is_active(&runtime_manager, &pending_restored, &offender).await,
+                pending_active
+            );
+            assert_eq!(
+                system_vault_balance(&runtime_manager, &pending_restored, &offender_address).await,
+                pending_fuel
+            );
+            assert_eq!(
+                system_vault_balance(&runtime_manager, &pending_restored, &stake_vault_address,)
+                    .await,
+                pending_stake_vault
+            );
+            assert_eq!(
+                pos_validator_reward(&runtime_manager, &pending_restored, &offender).await,
+                pending_reward
+            );
+
+            let epoch_length = pos_epoch_length(&runtime_manager, &pending_state).await;
+            let withdrawing_state = play_close(&runtime_manager, &pending_state, BlockData {
+                time_stamp: 0,
+                block_number: epoch_length,
+                sender: proposer.clone(),
+                seq_num: 14,
+            })
+            .await;
+            assert_eq!(
+                pos_validator_lifecycle(&runtime_manager, &withdrawing_state, &offender).await,
+                "Withdrawing"
+            );
+            let withdrawing_deadline =
+                pos_validator_lifecycle_deadline(&runtime_manager, &withdrawing_state, &offender)
+                    .await;
+            let withdrawing_generation =
+                pos_validator_lifecycle_generation(&runtime_manager, &withdrawing_state, &offender)
+                    .await;
+            let withdrawing_active =
+                pos_validator_is_active(&runtime_manager, &withdrawing_state, &offender).await;
+            let withdrawing_fuel =
+                system_vault_balance(&runtime_manager, &withdrawing_state, &offender_address).await;
+            let withdrawing_stake =
+                pos_validator_locked_stake(&runtime_manager, &withdrawing_state, &offender).await;
+            let withdrawing_reward =
+                pos_validator_reward(&runtime_manager, &withdrawing_state, &offender).await;
+            let withdrawing_coop =
+                system_vault_balance(&runtime_manager, &withdrawing_state, &coop_address).await;
+            assert!(withdrawing_stake > 1);
+            assert!(withdrawing_reward > 0);
+            let withdrawing_stake_vault =
+                system_vault_balance(&runtime_manager, &withdrawing_state, &stake_vault_address)
+                    .await;
+            let withdrawing_evidence =
+                prost::bytes::Bytes::from_static(b"withdrawing-phase-evidence");
+            let withdrawing_slashed = play_one_slash(
+                &runtime_manager,
+                &withdrawing_state,
+                &proposer,
+                &offender,
+                &withdrawing_evidence,
+                epoch_length + 1,
+                15,
+            )
+            .await;
+            assert_eq!(
+                pos_validator_lifecycle(&runtime_manager, &withdrawing_slashed, &offender).await,
+                "Quarantined:Withdrawing"
+            );
+            assert_eq!(
+                pos_validator_lifecycle_deadline(
+                    &runtime_manager,
+                    &withdrawing_slashed,
+                    &offender,
+                )
+                .await,
+                withdrawing_deadline
+            );
+            assert_eq!(
+                pos_quarantined_reward(&runtime_manager, &withdrawing_slashed, &offender).await,
+                withdrawing_reward
+            );
+            let full_penalty_redeem = authorized_redeem(
+                &proposer,
+                &offender,
+                BondGeneration::GENESIS,
+                RedemptionOutcome::Guilty {
+                    penalty: withdrawing_stake,
+                },
+                16,
+            );
+            let (full_penalty_result, full_penalty_root) = play_redeem_attempt(
+                &runtime_manager,
+                &withdrawing_slashed,
+                &proposer,
+                full_penalty_redeem,
+                epoch_length + 2,
+                16,
+            )
+            .await;
+            assert!(matches!(
+                full_penalty_result,
+                SystemDeployResult::PlayFailed { .. }
+            ));
+            assert_eq!(full_penalty_root, withdrawing_slashed);
+            assert_eq!(
+                pos_quarantined_stake(&runtime_manager, &full_penalty_root, &offender).await,
+                withdrawing_stake
+            );
+            assert_eq!(
+                pos_quarantined_reward(&runtime_manager, &full_penalty_root, &offender).await,
+                withdrawing_reward
+            );
+            let withdrawing_restored = play_one_redeem(
+                &runtime_manager,
+                &withdrawing_slashed,
+                &proposer,
+                &offender,
+                RedemptionOutcome::Guilty { penalty: 1 },
+                epoch_length + 2,
+                17,
+            )
+            .await;
+            assert_eq!(
+                pos_validator_lifecycle(&runtime_manager, &withdrawing_restored, &offender).await,
+                "Withdrawing"
+            );
+            assert_eq!(
+                pos_validator_lifecycle_deadline(
+                    &runtime_manager,
+                    &withdrawing_restored,
+                    &offender,
+                )
+                .await,
+                withdrawing_deadline
+            );
+            assert_eq!(
+                pos_validator_lifecycle_generation(
+                    &runtime_manager,
+                    &withdrawing_restored,
+                    &offender,
+                )
+                .await,
+                withdrawing_generation
+            );
+            assert_eq!(
+                pos_validator_is_active(&runtime_manager, &withdrawing_restored, &offender).await,
+                withdrawing_active
+            );
+            assert_eq!(
+                system_vault_balance(&runtime_manager, &withdrawing_restored, &offender_address,)
+                    .await,
+                withdrawing_fuel - 1_i64.min(withdrawing_fuel)
+            );
+            assert_eq!(
+                pos_validator_locked_stake(&runtime_manager, &withdrawing_restored, &offender)
+                    .await,
+                withdrawing_stake - 1
+            );
+            assert_eq!(
+                pos_validator_reward(&runtime_manager, &withdrawing_restored, &offender).await,
+                withdrawing_reward
+            );
+            assert_eq!(
+                system_vault_balance(
+                    &runtime_manager,
+                    &withdrawing_restored,
+                    &stake_vault_address,
+                )
+                .await,
+                withdrawing_stake_vault - 1
+            );
+            assert_eq!(
+                system_vault_balance(&runtime_manager, &withdrawing_restored, &coop_address).await,
+                withdrawing_coop + 1 + 1_i64.min(withdrawing_fuel)
+            );
+        },
+    )
+    .await
+    .unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn completed_withdrawal_rebond_scopes_slash_and_redemption_to_generation() {
+    with_runtime_manager(
+        |runtime_manager, genesis_context, genesis_block| async move {
+            let start_state = genesis_block.body.state.post_state_hash.clone();
+            let proposer = genesis_context.validator_pks()[0].clone();
+            let offender = genesis_context.validator_pks()[1].clone();
+            let offender_secret = genesis_context.validator_key_pairs[1].0.clone();
+            let offender_address = VaultAddress::from_public_key(&offender).unwrap();
+            let stake_vault_address = pos_stake_vault_address(&runtime_manager, &start_state).await;
+            let reward_seeded_state = protocol_mint_to_vault(
+                &runtime_manager,
+                &start_state,
+                &stake_vault_address,
+                160,
+                31,
+            )
+            .await;
+            let funded_state = play_close(&runtime_manager, &reward_seeded_state, BlockData {
+                time_stamp: 0,
+                block_number: 0,
+                sender: proposer.clone(),
+                seq_num: 31,
+            })
+            .await;
+            let original_bond =
+                pos_validator_bond(&runtime_manager, &funded_state, &offender).await;
+            let original_reward =
+                pos_validator_reward(&runtime_manager, &funded_state, &offender).await;
+            assert!(original_bond > 0);
+            assert!(original_reward > 0);
+            assert_eq!(
+                pos_validator_lifecycle_generation(&runtime_manager, &funded_state, &offender)
+                    .await,
+                0
+            );
+
+            let pending_state = request_validator_withdrawal(
+                &runtime_manager,
+                &funded_state,
+                &proposer,
+                &offender_secret,
+                1,
+                32,
+            )
+            .await;
+            let epoch_length = pos_epoch_length(&runtime_manager, &pending_state).await;
+            let deadline =
+                pos_validator_lifecycle_deadline(&runtime_manager, &pending_state, &offender).await;
+            assert!(deadline > epoch_length);
+            assert_eq!(deadline % epoch_length, 0);
+            let withdrawing_state = play_close(&runtime_manager, &pending_state, BlockData {
+                time_stamp: 0,
+                block_number: epoch_length,
+                sender: proposer.clone(),
+                seq_num: 33,
+            })
+            .await;
+            assert_eq!(
+                pos_validator_lifecycle(&runtime_manager, &withdrawing_state, &offender).await,
+                "Withdrawing"
+            );
+            assert_eq!(
+                pos_validator_locked_stake(&runtime_manager, &withdrawing_state, &offender).await,
+                original_bond
+            );
+            assert_eq!(
+                pos_validator_reward(&runtime_manager, &withdrawing_state, &offender).await,
+                original_reward
+            );
+            let wallet_before_payout =
+                system_vault_balance(&runtime_manager, &withdrawing_state, &offender_address).await;
+            let stake_vault_before_payout =
+                system_vault_balance(&runtime_manager, &withdrawing_state, &stake_vault_address)
+                    .await;
+            let paid_state = play_close(&runtime_manager, &withdrawing_state, BlockData {
+                time_stamp: 0,
+                block_number: deadline,
+                sender: proposer.clone(),
+                seq_num: 34,
+            })
+            .await;
+            assert_eq!(
+                pos_validator_lifecycle(&runtime_manager, &paid_state, &offender).await,
+                "Absent"
+            );
+            assert_eq!(
+                pos_validator_lifecycle_generation(&runtime_manager, &paid_state, &offender).await,
+                0
+            );
+            assert_eq!(
+                pos_validator_locked_stake(&runtime_manager, &paid_state, &offender).await,
+                -1
+            );
+            assert_eq!(
+                pos_validator_reward(&runtime_manager, &paid_state, &offender).await,
+                0
+            );
+            assert_eq!(
+                system_vault_balance(&runtime_manager, &paid_state, &offender_address).await,
+                wallet_before_payout + original_bond + original_reward
+            );
+            assert_eq!(
+                system_vault_balance(&runtime_manager, &paid_state, &stake_vault_address).await,
+                stake_vault_before_payout - original_bond - original_reward
+            );
+
+            let rebonded_state = submit_validator_bond(
+                &runtime_manager,
+                &paid_state,
+                &proposer,
+                &offender_secret,
+                original_bond,
+                deadline + 1,
+                35,
+            )
+            .await;
+            let generation_one = BondGeneration::new(1).unwrap();
+            assert_eq!(
+                pos_validator_lifecycle(&runtime_manager, &rebonded_state, &offender).await,
+                "Bonded"
+            );
+            assert_eq!(
+                pos_validator_bond(&runtime_manager, &rebonded_state, &offender).await,
+                original_bond
+            );
+            assert_eq!(
+                pos_validator_lifecycle_generation(&runtime_manager, &rebonded_state, &offender)
+                    .await,
+                generation_one.get()
+            );
+            let activated_state = play_close(&runtime_manager, &rebonded_state, BlockData {
+                time_stamp: 0,
+                block_number: deadline + epoch_length,
+                sender: proposer.clone(),
+                seq_num: 36,
+            })
+            .await;
+            assert!(pos_validator_is_active(&runtime_manager, &activated_state, &offender).await);
+            let second_reward_seeded_state = protocol_mint_to_vault(
+                &runtime_manager,
+                &activated_state,
+                &stake_vault_address,
+                160,
+                37,
+            )
+            .await;
+            let generation_one_state =
+                play_close(&runtime_manager, &second_reward_seeded_state, BlockData {
+                    time_stamp: 0,
+                    block_number: deadline + 2 * epoch_length,
+                    sender: proposer.clone(),
+                    seq_num: 37,
+                })
+                .await;
+            let generation_one_fuel =
+                system_vault_balance(&runtime_manager, &generation_one_state, &offender_address)
+                    .await;
+            let generation_one_reward =
+                pos_validator_reward(&runtime_manager, &generation_one_state, &offender).await;
+            let generation_one_stake_vault = system_vault_balance(
+                &runtime_manager,
+                &generation_one_state,
+                &stake_vault_address,
+            )
+            .await;
+            let coop_address =
+                pos_coop_vault_address(&runtime_manager, &generation_one_state).await;
+            let generation_one_coop =
+                system_vault_balance(&runtime_manager, &generation_one_state, &coop_address).await;
+            assert!(generation_one_fuel > 0);
+            assert!(generation_one_reward > 0);
+
+            let evidence = prost::bytes::Bytes::from_static(b"generation-one-evidence");
+            let (stale_slash, stale_slash_root) = play_slash_attempt(
+                &runtime_manager,
+                &generation_one_state,
+                &proposer,
+                &offender,
+                &evidence,
+                SlashAttemptPosition {
+                    target_bond_generation: BondGeneration::GENESIS,
+                    block_number: deadline + 2 * epoch_length + 1,
+                    seq_num: 38,
+                },
+            )
+            .await;
+            assert!(matches!(stale_slash, SystemDeployResult::PlayFailed { .. }));
+            assert_eq!(stale_slash_root, generation_one_state);
+
+            let (slash, slash_root) = play_slash_attempt(
+                &runtime_manager,
+                &generation_one_state,
+                &proposer,
+                &offender,
+                &evidence,
+                SlashAttemptPosition {
+                    target_bond_generation: generation_one,
+                    block_number: deadline + 2 * epoch_length + 1,
+                    seq_num: 39,
+                },
+            )
+            .await;
+            let slashed_state = match slash {
+                SystemDeployResult::PlaySucceeded { state_hash, .. } => state_hash,
+                SystemDeployResult::PlayFailed {
+                    processed_system_deploy,
+                } => panic!("generation-one slash failed: {processed_system_deploy:?}"),
+            };
+            assert_eq!(slash_root, slashed_state);
+            assert_eq!(
+                pos_quarantined_stake(&runtime_manager, &slashed_state, &offender).await,
+                original_bond
+            );
+            assert_eq!(
+                pos_quarantined_reward(&runtime_manager, &slashed_state, &offender).await,
+                generation_one_reward
+            );
+            assert_eq!(
+                system_vault_balance(&runtime_manager, &slashed_state, &offender_address).await,
+                0
+            );
+
+            let (duplicate_slash, duplicate_slash_root) = play_slash_attempt(
+                &runtime_manager,
+                &slashed_state,
+                &proposer,
+                &offender,
+                &evidence,
+                SlashAttemptPosition {
+                    target_bond_generation: generation_one,
+                    block_number: deadline + 2 * epoch_length + 1,
+                    seq_num: 39,
+                },
+            )
+            .await;
+            match duplicate_slash {
+                SystemDeployResult::PlaySucceeded { state_hash, .. } => {
+                    assert_eq!(state_hash, duplicate_slash_root)
+                }
+                SystemDeployResult::PlayFailed {
+                    processed_system_deploy,
+                } => panic!("duplicate generation-one slash failed: {processed_system_deploy:?}"),
+            }
+            assert_eq!(
+                pos_quarantined_stake(&runtime_manager, &duplicate_slash_root, &offender).await,
+                original_bond
+            );
+            assert_eq!(
+                pos_quarantined_reward(&runtime_manager, &duplicate_slash_root, &offender).await,
+                generation_one_reward
+            );
+            assert_eq!(
+                system_vault_balance(&runtime_manager, &duplicate_slash_root, &offender_address)
+                    .await,
+                0
+            );
+            assert_eq!(
+                system_vault_balance(
+                    &runtime_manager,
+                    &duplicate_slash_root,
+                    &stake_vault_address,
+                )
+                .await,
+                generation_one_stake_vault
+            );
+            assert_eq!(
+                system_vault_balance(&runtime_manager, &duplicate_slash_root, &coop_address).await,
+                generation_one_coop
+            );
+            let conflicting_evidence =
+                prost::bytes::Bytes::from_static(b"generation-one-conflicting-evidence");
+            let (conflicting_slash, conflicting_slash_root) = play_slash_attempt(
+                &runtime_manager,
+                &slashed_state,
+                &proposer,
+                &offender,
+                &conflicting_evidence,
+                SlashAttemptPosition {
+                    target_bond_generation: generation_one,
+                    block_number: deadline + 2 * epoch_length + 2,
+                    seq_num: 40,
+                },
+            )
+            .await;
+            match conflicting_slash {
+                SystemDeployResult::PlaySucceeded { state_hash, .. } => {
+                    assert_eq!(state_hash, conflicting_slash_root)
+                }
+                SystemDeployResult::PlayFailed {
+                    processed_system_deploy,
+                } => panic!(
+                    "second generation-one evidence failed idempotence: {processed_system_deploy:?}"
+                ),
+            }
+            assert_eq!(
+                pos_quarantined_stake(&runtime_manager, &conflicting_slash_root, &offender).await,
+                original_bond
+            );
+            assert_eq!(
+                pos_quarantined_reward(&runtime_manager, &conflicting_slash_root, &offender).await,
+                generation_one_reward
+            );
+            assert_eq!(
+                system_vault_balance(&runtime_manager, &conflicting_slash_root, &offender_address)
+                    .await,
+                0
+            );
+            assert_eq!(
+                system_vault_balance(
+                    &runtime_manager,
+                    &conflicting_slash_root,
+                    &stake_vault_address,
+                )
+                .await,
+                generation_one_stake_vault
+            );
+            assert_eq!(
+                system_vault_balance(&runtime_manager, &conflicting_slash_root, &coop_address)
+                    .await,
+                generation_one_coop
+            );
+
+            let stale_redeem = authorized_redeem(
+                &proposer,
+                &offender,
+                BondGeneration::GENESIS,
+                RedemptionOutcome::Vindicated,
+                41,
+            );
+            let (stale_redemption, stale_redemption_root) = play_redeem_attempt(
+                &runtime_manager,
+                &slashed_state,
+                &proposer,
+                stale_redeem,
+                deadline + 2 * epoch_length + 3,
+                41,
+            )
+            .await;
+            assert!(matches!(
+                stale_redemption,
+                SystemDeployResult::PlayFailed { .. }
+            ));
+            assert_eq!(stale_redemption_root, slashed_state);
+
+            let vindication = authorized_redeem(
+                &proposer,
+                &offender,
+                generation_one,
+                RedemptionOutcome::Vindicated,
+                42,
+            );
+            let (redemption, redemption_root) = play_redeem_attempt(
+                &runtime_manager,
+                &slashed_state,
+                &proposer,
+                vindication.clone(),
+                deadline + 2 * epoch_length + 4,
+                42,
+            )
+            .await;
+            let restored_state = match redemption {
+                SystemDeployResult::PlaySucceeded { state_hash, .. } => state_hash,
+                SystemDeployResult::PlayFailed {
+                    processed_system_deploy,
+                } => panic!("generation-one vindication failed: {processed_system_deploy:?}"),
+            };
+            assert_eq!(redemption_root, restored_state);
+            assert_eq!(
+                pos_validator_bond(&runtime_manager, &restored_state, &offender).await,
+                original_bond
+            );
+            assert_eq!(
+                pos_validator_reward(&runtime_manager, &restored_state, &offender).await,
+                generation_one_reward
+            );
+            assert_eq!(
+                pos_validator_lifecycle_generation(&runtime_manager, &restored_state, &offender)
+                    .await,
+                generation_one.get()
+            );
+            assert_eq!(
+                system_vault_balance(&runtime_manager, &restored_state, &offender_address).await,
+                generation_one_fuel
+            );
+            assert_eq!(
+                system_vault_balance(&runtime_manager, &restored_state, &stake_vault_address).await,
+                generation_one_stake_vault
+            );
+            assert_eq!(
+                system_vault_balance(&runtime_manager, &restored_state, &coop_address).await,
+                generation_one_coop
+            );
+
+            let (duplicate_redemption, duplicate_redemption_root) = play_redeem_attempt(
+                &runtime_manager,
+                &restored_state,
+                &proposer,
+                vindication,
+                deadline + 2 * epoch_length + 4,
+                42,
+            )
+            .await;
+            assert!(matches!(
+                duplicate_redemption,
+                SystemDeployResult::PlayFailed { .. }
+            ));
+            assert_eq!(duplicate_redemption_root, restored_state);
+            let conflicting_redemption = authorized_redeem(
+                &proposer,
+                &offender,
+                generation_one,
+                RedemptionOutcome::Burned,
+                43,
+            );
+            let (conflicting_redemption, conflicting_redemption_root) = play_redeem_attempt(
+                &runtime_manager,
+                &restored_state,
+                &proposer,
+                conflicting_redemption,
+                deadline + 2 * epoch_length + 5,
+                43,
+            )
+            .await;
+            assert!(matches!(
+                conflicting_redemption,
+                SystemDeployResult::PlayFailed { .. }
+            ));
+            assert_eq!(conflicting_redemption_root, restored_state);
+        },
+    )
+    .await
+    .unwrap()
+}
+
 /// CONSENSUS-CRITICAL Stage-C redemption end-to-end (DR-7/DR-12). Drives the real
 /// `redeemSlashed` Rholang contract through `RedeemDeploy`:
-///   (1) fund + slash an offender (reaching a quarantined, halted, bond-0 state);
+///   (1) fund + slash an offender (reaching a quarantined, halted state whose
+///       bond is removed from the live committee map);
 ///   (2) play a Vindicated redeem with a VALID PoS-multisig quorum — asserts the
 ///       deploy SUCCEEDS, the validator is restored to active, and un-halted;
 ///   (3) play a Vindicated redeem with an UNDER-QUORUM authorization — asserts the
@@ -1424,6 +2837,7 @@ async fn redeem_outcomes_and_multisig_gate() {
                 &offender,
                 &invalid_block_hash,
                 1,
+                1,
             )
             .await;
             assert_eq!(
@@ -1432,7 +2846,7 @@ async fn redeem_outcomes_and_multisig_gate() {
             );
             assert_eq!(
                 pos_validator_bond(&runtime_manager, &slashed_state, &offender).await,
-                0
+                -1
             );
             assert_eq!(
                 pos_quarantined_stake(&runtime_manager, &slashed_state, &offender).await,
@@ -1455,6 +2869,7 @@ async fn redeem_outcomes_and_multisig_gate() {
                 |n_signers: usize, seq: i32, outcome: RedemptionOutcome| -> RedeemDeploy {
                     let mut d = RedeemDeploy::new(
                         offender.bytes.to_vec(),
+                        models::rust::bond_generation::BondGeneration::GENESIS,
                         outcome,
                         keyset.clone(),
                         2,
@@ -1517,7 +2932,7 @@ async fn redeem_outcomes_and_multisig_gate() {
             );
             assert_eq!(
                 pos_validator_bond(&runtime_manager, &under_post_state, &offender).await,
-                0
+                -1
             );
             assert_eq!(
                 pos_quarantined_stake(&runtime_manager, &under_post_state, &offender).await,
@@ -1613,7 +3028,49 @@ async fn redeem_outcomes_and_multisig_gate() {
                 next_epoch_fuel
             );
 
-            let guilty_penalty = 7;
+            let full_guilty_runtime = runtime_manager.spawn_runtime().await;
+            full_guilty_runtime
+                .set_block_data(redeem_block_data.clone())
+                .await;
+            let mut full_guilty_ops = RuntimeOps::new(full_guilty_runtime);
+            let mut full_guilty_redeem = make_redeem(2, 3, RedemptionOutcome::Guilty {
+                penalty: original_bond,
+            });
+            assert!(matches!(
+                full_guilty_ops
+                    .play_system_deploy(&slashed_state, &mut full_guilty_redeem)
+                    .await
+                    .unwrap(),
+                SystemDeployResult::PlayFailed { .. }
+            ));
+            assert_eq!(
+                full_guilty_ops
+                    .runtime
+                    .create_checkpoint()
+                    .await
+                    .root
+                    .to_bytes_prost(),
+                slashed_state
+            );
+            assert_eq!(
+                pos_quarantined_stake(&runtime_manager, &slashed_state, &offender).await,
+                original_bond
+            );
+            assert_eq!(
+                system_vault_balance(&runtime_manager, &slashed_state, &offender_address).await,
+                0
+            );
+            assert_eq!(
+                system_vault_balance(&runtime_manager, &slashed_state, &coop_address).await,
+                original_coop_fuel
+            );
+            assert_eq!(
+                system_vault_balance(&runtime_manager, &slashed_state, &stake_vault_address).await,
+                original_stake_vault_balance
+            );
+
+            let guilty_penalty = original_bond.saturating_sub(1).min(7);
+            assert!(guilty_penalty > 0);
             let guilty_runtime = runtime_manager.spawn_runtime().await;
             guilty_runtime
                 .set_block_data(redeem_block_data.clone())
@@ -1632,7 +3089,7 @@ async fn redeem_outcomes_and_multisig_gate() {
                     processed_system_deploy,
                 } => panic!("valid-quorum guilty redeem failed: {processed_system_deploy:?}"),
             };
-            let stake_penalty = guilty_penalty.min(original_bond);
+            let stake_penalty = guilty_penalty;
             let fuel_penalty = stake_penalty.min(original_fuel);
             assert_eq!(
                 system_vault_balance(&runtime_manager, &guilty_state, &offender_address).await,
@@ -1682,7 +3139,7 @@ async fn redeem_outcomes_and_multisig_gate() {
             );
             assert_eq!(
                 pos_validator_bond(&runtime_manager, &burned_state, &offender).await,
-                0
+                -1
             );
             assert_eq!(
                 pos_quarantined_stake(&runtime_manager, &burned_state, &offender).await,
@@ -1747,6 +3204,7 @@ async fn redeem_outcomes_are_play_replay_deterministic() {
                 &offender,
                 &invalid_block_hash,
                 1,
+                1,
             )
             .await;
 
@@ -1760,7 +3218,7 @@ async fn redeem_outcomes_are_play_replay_deterministic() {
             let keyset: Vec<String> = keypairs.iter().map(|(_, pk)| hex::encode(pk)).collect();
             let outcomes = [
                 RedemptionOutcome::Vindicated,
-                RedemptionOutcome::Guilty { penalty: 7 },
+                RedemptionOutcome::Guilty { penalty: 0 },
                 RedemptionOutcome::Burned,
             ];
             for (index, outcome) in outcomes.into_iter().enumerate() {
@@ -1768,6 +3226,7 @@ async fn redeem_outcomes_are_play_replay_deterministic() {
                 let label = format!("{outcome:?}");
                 let mut redeem = RedeemDeploy::new(
                     offender.bytes.to_vec(),
+                    models::rust::bond_generation::BondGeneration::GENESIS,
                     outcome.clone(),
                     keyset.clone(),
                     2,
@@ -2750,12 +4209,18 @@ async fn physical_rejection_rolls_back_before_later_state_bound_execution() {
                     timestamp: block_data.time_stamp,
                     version: genesis_block.header.version,
                     extra_bytes: Vec::<u8>::new().into(),
+                    sender_bond_generation: Some(
+                        models::rust::bond_generation::BondGeneration::GENESIS,
+                    ),
+                    objective_equivocation_evidence_delta: Vec::new(),
                 },
                 body: Body {
                     state: F1r3flyState {
                         pre_state_hash: seeded_state.clone(),
                         post_state_hash: play_post.clone(),
                         bonds: Vec::new(),
+                        bond_generations: Vec::new(),
+                        active_validators: Vec::new(),
                         block_number: block_data.block_number,
                     },
                     deploys: processed,
@@ -5068,12 +6533,18 @@ async fn rejected_block_final_state_does_not_publish_mergeable_evidence() {
                     timestamp: block_data.time_stamp,
                     version: genesis_block.header.version,
                     extra_bytes: Vec::<u8>::new().into(),
+                    sender_bond_generation: Some(
+                        models::rust::bond_generation::BondGeneration::GENESIS,
+                    ),
+                    objective_equivocation_evidence_delta: Vec::new(),
                 },
                 body: Body {
                     state: F1r3flyState {
                         pre_state_hash: start_state.clone(),
                         post_state_hash: valid_post_state.clone(),
                         bonds: Vec::new(),
+                        bond_generations: Vec::new(),
+                        active_validators: Vec::new(),
                         block_number: block_data.block_number,
                     },
                     deploys: processed_deploys,
@@ -5791,7 +7262,7 @@ async fn bridge_query_survives_multi_parent_merge() {
     dag_storage
         .insert(
             &genesis_block,
-            block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Approved,
+            block_storage::rust::dag::block_dag_key_value_storage::InsertMode::ApprovedGenesis,
         )
         .expect("dag genesis");
 
@@ -5820,6 +7291,10 @@ async fn bridge_query_survives_multi_parent_merge() {
         snapshot.on_chain_state = OnChainCasperState {
             shard_conf,
             bonds_map,
+            bond_generations: HashMap::from([(
+                validator.clone(),
+                models::rust::bond_generation::BondGeneration::GENESIS,
+            )]),
             active_validators: vec![validator.clone()],
         };
         snapshot.deploys_in_scope = std::sync::Arc::new(DashSet::new());
@@ -6158,7 +7633,7 @@ async fn concurrent_registry_inserts_should_not_conflict() {
         .put_block_message(&genesis_block)
         .expect("store genesis");
     dag_storage
-        .insert(&genesis_block, InsertMode::Approved)
+        .insert(&genesis_block, InsertMode::ApprovedGenesis)
         .expect("dag genesis");
 
     let now_millis = || -> i64 {
@@ -6186,6 +7661,10 @@ async fn concurrent_registry_inserts_should_not_conflict() {
         snapshot.on_chain_state = OnChainCasperState {
             shard_conf,
             bonds_map,
+            bond_generations: HashMap::from([(
+                validator.clone(),
+                models::rust::bond_generation::BondGeneration::GENESIS,
+            )]),
             active_validators: vec![validator.clone()],
         };
         snapshot.deploys_in_scope = std::sync::Arc::new(DashSet::new());
@@ -6964,7 +8443,7 @@ async fn stale_diff_application_corrupts_merged_state() {
         .put_block_message(&genesis_block)
         .expect("store genesis");
     dag_storage
-        .insert(&genesis_block, InsertMode::Approved)
+        .insert(&genesis_block, InsertMode::ApprovedGenesis)
         .expect("dag genesis");
 
     let now_millis = || -> i64 {
@@ -6992,6 +8471,10 @@ async fn stale_diff_application_corrupts_merged_state() {
         snapshot.on_chain_state = OnChainCasperState {
             shard_conf,
             bonds_map,
+            bond_generations: HashMap::from([(
+                validator.clone(),
+                models::rust::bond_generation::BondGeneration::GENESIS,
+            )]),
             active_validators: vec![validator.clone()],
         };
         snapshot.deploys_in_scope = std::sync::Arc::new(DashSet::new());
@@ -7437,6 +8920,84 @@ impl SystemDeployTrait for MintPhlogistonDeploy {
             )),
         }
     }
+}
+
+struct MutateThenRejectSystemDeploy {
+    rand: Blake2b512Random,
+}
+
+impl SystemDeployTrait for MutateThenRejectSystemDeploy {
+    type Output = RhoBoolean;
+    type Result = ();
+
+    fn source() -> &'static str {
+        r#"
+          new return(`sys:casper:return`) in {
+            @"system-deploy-rollback-probe"!(1) |
+            return!(false)
+          }
+        "#
+    }
+
+    fn process_result(
+        value: <Self::Output as Extractor>::RustType,
+    ) -> Either<SystemDeployUserError, Self::Result> {
+        if value {
+            Either::Right(())
+        } else {
+            Either::Left(SystemDeployUserError::new(
+                "intentional system deploy rejection".to_string(),
+            ))
+        }
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any { self }
+
+    fn rand(&self) -> Blake2b512Random { self.rand.clone() }
+
+    fn env(&mut self) -> HashMap<String, Par> {
+        let mut env = HashMap::new();
+        let (return_key, return_value) = self.mk_return_channel();
+        env.insert(return_key, return_value);
+        env
+    }
+
+    fn return_channel(&mut self) -> Result<Par, CasperError> {
+        self.env()
+            .get("sys:casper:return")
+            .cloned()
+            .ok_or_else(|| CasperError::RuntimeError("return channel not found".to_string()))
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn rejected_system_deploy_restores_pre_state_root() {
+    with_runtime_manager(
+        |runtime_manager, genesis_context, genesis_block| async move {
+            let start_state = genesis_block.body.state.post_state_hash.clone();
+            let runtime = runtime_manager.spawn_runtime().await;
+            runtime
+                .set_block_data(BlockData {
+                    time_stamp: 0,
+                    block_number: 1,
+                    sender: genesis_context.validator_pks()[0].clone(),
+                    seq_num: 1,
+                })
+                .await;
+            let mut ops = RuntimeOps::new(runtime);
+            let result = ops
+                .play_system_deploy(&start_state, &mut MutateThenRejectSystemDeploy {
+                    rand: Blake2b512Random::create_from_bytes(&[0xE1]),
+                })
+                .await
+                .unwrap();
+            assert!(matches!(result, SystemDeployResult::PlayFailed { .. }));
+            let current_root = ops.runtime.create_checkpoint().await.root.to_bytes_prost();
+            assert_eq!(current_root, start_state);
+        },
+    )
+    .await
+    .unwrap()
 }
 
 /// Accept path: a system deploy holding a real `GSysAuthToken` credits exactly

@@ -15,18 +15,25 @@
 
 #![allow(dead_code)]
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
 use block_storage::rust::dag::block_metadata_store::BlockMetadataStore;
 use casper::rust::casper::{CasperShardConf, CasperSnapshot, OnChainCasperState};
+use casper::rust::causal_equivocation::CertifiedConsensusContext;
+use casper::rust::slashing_authorization::CanonicalSlashAuthority;
 use crypto::rust::public_key::PublicKey;
 use dashmap::DashSet;
 use models::rust::block_hash::BlockHash;
-use models::rust::block_metadata::BlockMetadata;
+use models::rust::block_metadata::{
+    AdmissionRejectionReason, BlockMetadata, CERTIFIED_ADMISSION_PROTOCOL_VERSION,
+    CertifiedAdmissionOutcome, CertifiedSenderAuthority,
+};
+use models::rust::bond_generation::BondGeneration;
 use models::rust::casper::protocol::casper_message::{
-    BlockMessage, Body, F1r3flyState, Header, ProcessedSystemDeploy, SystemDeployData,
+    BlockMessage, Body, Bond, F1r3flyState, Header, ProcessedSystemDeploy, SystemDeployData,
+    ValidatorBondGeneration,
 };
 use models::rust::validator::Validator;
 use parking_lot::RwLock;
@@ -74,9 +81,31 @@ pub fn slash_deploy(
         event_list: vec![],
         system_deploy: SystemDeployData::Slash {
             invalid_block_hash,
+            equivocation_block_hash: None,
             issuer_public_key: PublicKey::from_bytes(&issuer),
             target_activation_epoch,
+            target_bond_generation: BondGeneration::GENESIS,
         },
+        pre_state_hash: Vec::<u8>::new().into(),
+        post_state_hash: Vec::<u8>::new().into(),
+    }
+}
+
+pub fn equivocation_slash_deploy(
+    first_block_hash: BlockHash,
+    second_block_hash: BlockHash,
+    issuer: Validator,
+    target_activation_epoch: i64,
+) -> ProcessedSystemDeploy {
+    ProcessedSystemDeploy::Succeeded {
+        event_list: vec![],
+        system_deploy: SystemDeployData::create_equivocation_slash(
+            first_block_hash,
+            second_block_hash,
+            PublicKey::from_bytes(&issuer),
+            target_activation_epoch,
+            BondGeneration::GENESIS,
+        ),
         pre_state_hash: Vec::<u8>::new().into(),
         post_state_hash: Vec::<u8>::new().into(),
     }
@@ -123,14 +152,18 @@ pub fn block_with_system_deploys(
         header: Header {
             parents_hash_list: vec![],
             timestamp: block_number,
-            version: 1,
+            version: CERTIFIED_ADMISSION_PROTOCOL_VERSION,
             extra_bytes: Bytes::new(),
+            sender_bond_generation: Some(BondGeneration::GENESIS),
+            objective_equivocation_evidence_delta: Vec::new(),
         },
         body: Body {
             state: F1r3flyState {
                 pre_state_hash: repeated(hash_seed.wrapping_add(1), 32),
                 post_state_hash: repeated(hash_seed.wrapping_add(2), 32),
                 bonds: vec![],
+                bond_generations: vec![],
+                active_validators: vec![],
                 block_number,
             },
             deploys: vec![],
@@ -169,9 +202,12 @@ fn empty_dag() -> KeyValueDagRepresentation {
         main_parent_map: imbl::HashMap::new(),
         self_justification_map: imbl::HashMap::new(),
         invalid_blocks_set: imbl::HashSet::new(),
+        equivocation_observations: imbl::HashMap::new(),
         last_finalized_block_hash: Bytes::new(),
         finalized_blocks_set: imbl::HashSet::new(),
-        block_metadata_index: Arc::new(RwLock::new(BlockMetadataStore::new(metadata_store))),
+        block_metadata_index: Arc::new(RwLock::new(
+            BlockMetadataStore::new(metadata_store).unwrap(),
+        )),
         deploy_index: Arc::new(RwLock::new(deploy_store)),
         deploy_occurrence_index: Arc::new(RwLock::new(occurrence_store)),
         floor_index: floor_store,
@@ -180,22 +216,66 @@ fn empty_dag() -> KeyValueDagRepresentation {
 }
 
 fn metadata(evidence: &Evidence) -> BlockMetadata {
-    BlockMetadata {
+    let block = BlockMessage {
         block_hash: evidence.hash.clone(),
-        parents: vec![],
+        header: Header {
+            parents_hash_list: Vec::new(),
+            timestamp: evidence.block_number,
+            version: CERTIFIED_ADMISSION_PROTOCOL_VERSION,
+            extra_bytes: Bytes::new(),
+            sender_bond_generation: Some(BondGeneration::GENESIS),
+            objective_equivocation_evidence_delta: Vec::new(),
+        },
+        body: Body {
+            state: F1r3flyState {
+                pre_state_hash: block_hash(252),
+                post_state_hash: block_hash(evidence.hash[0].wrapping_add(1)),
+                bonds: vec![Bond {
+                    validator: evidence.sender.clone(),
+                    stake: 1,
+                }],
+                bond_generations: vec![ValidatorBondGeneration {
+                    validator: evidence.sender.clone(),
+                    generation: BondGeneration::GENESIS,
+                }],
+                active_validators: vec![evidence.sender.clone()],
+                block_number: evidence.block_number,
+            },
+            deploys: Vec::new(),
+            rejected_deploys: Vec::new(),
+            rejected_state_effects: Vec::new(),
+            system_deploys: Vec::new(),
+            extra_bytes: Bytes::new(),
+        },
+        justifications: Vec::new(),
         sender: evidence.sender.clone(),
-        justifications: vec![],
-        weight_map: BTreeMap::new(),
-        block_number: evidence.block_number,
-        sequence_number: evidence.sequence_number,
-        invalid: evidence.invalid,
-        directly_finalized: false,
-        finalized: false,
-        fault_tolerance_value: 0.0,
-        successful_state_effect_indices: Default::default(),
-        rejected_state_effects: Default::default(),
-        protocol_version: casper::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION,
+        seq_num: evidence.sequence_number,
+        sig: Bytes::new(),
+        sig_algorithm: "fuzz".to_string(),
+        shard_id: "root".to_string(),
+        extra_bytes: Bytes::new(),
+    };
+    let authority = CertifiedSenderAuthority::new(
+        &block,
+        block_hash(251),
+        block_hash(250),
+        block_hash(249),
+        BondGeneration::GENESIS,
+        1,
+    )
+    .expect("sender authority");
+    let outcome = if evidence.invalid {
+        CertifiedAdmissionOutcome::rejected(
+            &block,
+            &authority,
+            AdmissionRejectionReason::InvalidTransaction,
+        )
+    } else {
+        CertifiedAdmissionOutcome::accepted(&block, &authority)
     }
+    .expect("admission outcome");
+    BlockMetadata::from_certified_block(&block, None, None, &authority, &outcome)
+        .expect("certified metadata")
 }
 
 /// Build a `CasperSnapshot` whose DAG and on-chain state are populated
@@ -233,7 +313,19 @@ pub fn snapshot(
             .entry(metadata.block_number)
             .or_insert_with(imbl::HashSet::new)
             .insert(metadata.block_hash.clone());
-        if metadata.invalid {
+        let key = (
+            metadata.sender.clone(),
+            BondGeneration::GENESIS,
+            metadata.sequence_number,
+        );
+        let mut observations = dag
+            .equivocation_observations
+            .get(&key)
+            .cloned()
+            .unwrap_or_default();
+        observations.insert(metadata.block_hash.clone());
+        dag.equivocation_observations.insert(key, observations);
+        if metadata.is_rejected() {
             dag.invalid_blocks_set.insert(metadata.clone());
         }
         dag.block_metadata_index
@@ -242,6 +334,18 @@ pub fn snapshot(
             .expect("metadata insert");
     }
     let bonds_map = bonds.iter().cloned().collect::<HashMap<_, _>>();
+    let bond_generations = bonds_map
+        .keys()
+        .cloned()
+        .map(|validator| (validator, BondGeneration::GENESIS))
+        .collect();
+    let finalized_floor_bonds = bonds
+        .iter()
+        .map(|(validator, stake)| Bond {
+            validator: validator.clone(),
+            stake: *stake,
+        })
+        .collect();
     let active_validators = bonds.into_iter().map(|(validator, _)| validator).collect();
     CasperSnapshot {
         dag,
@@ -249,19 +353,31 @@ pub fn snapshot(
         lca: Bytes::new(),
         tips: vec![],
         parents: vec![],
-        justifications: HashSet::new(),
+        justifications: Vec::new(),
         invalid_blocks: HashMap::new(),
         deploys_in_scope: Arc::new(DashSet::new()),
         rejected_in_scope: Arc::new(DashSet::new()),
         max_block_num,
         max_seq_nums: HashMap::new(),
+        finalized_floor_bonds,
         on_chain_state: OnChainCasperState {
             shard_conf: CasperShardConf {
                 epoch_length,
                 ..CasperShardConf::new()
             },
             bonds_map,
+            bond_generations,
             active_validators,
         },
+        consensus_context: CertifiedConsensusContext::pre_genesis(),
     }
+}
+
+pub fn slash_authority(snapshot: &CasperSnapshot) -> CanonicalSlashAuthority {
+    CanonicalSlashAuthority::from_parts(
+        block_hash(248),
+        snapshot.on_chain_state.bonds_map.clone(),
+        snapshot.on_chain_state.bond_generations.clone(),
+    )
+    .expect("slash authority")
 }
