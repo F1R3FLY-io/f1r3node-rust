@@ -60,13 +60,14 @@ pub struct RSpace<C, P, A, K> {
     event_log: Arc<std::sync::Mutex<Log>>,
     // Striped like phase_a/phase_b_locks below: NUM_LOCK_STRIPES independent
     // shards keyed by channel_hash(produce) % NUM_LOCK_STRIPES, instead of
-    // one global std::sync::Mutex<BTreeMap>. Per-shard mem::take keeps the
-    // same no-data-loss guarantee the single-lock version had (a concurrent
-    // produce() racing a checkpoint either lands in the pre-drain snapshot
-    // or the post-drain empty shard, never both/neither), while the hot path
-    // (log_produce/produce_counters) only ever contends the one shard its
-    // key hashes to. See take_produce_counter/reset_produce_counter/
-    // restore_produce_counter below for the checkpoint-boundary helpers.
+    // one global std::sync::Mutex<BTreeMap>. The hot path (log_produce/
+    // produce_counters) only ever contends the one shard its key hashes to.
+    // Checkpoint boundaries (take/reset/restore_produce_counter below) lock
+    // every shard for the whole operation, in the same fixed index order
+    // every time, restoring the single global lock's point-in-time
+    // linearization for this field specifically — not across it and
+    // event_log, which remain two separate locks taken sequentially, same
+    // as before this change (pre-existing, out of scope here).
     produce_counter: Arc<Vec<std::sync::Mutex<BTreeMap<Produce, i32>>>>,
     matcher: Arc<Box<dyn Match<P, A, K>>>,
     // Fixed-size striped locks replace the growing DashMap<u64, Mutex>.
@@ -545,6 +546,9 @@ where
         Ok((history_repo, hot_store))
     }
 
+    // Single-shard lookup for the hot path (log_produce): a given key always
+    // hashes to the same shard, so per-key correctness holds regardless of
+    // what any other shard is doing concurrently.
     fn produce_counter_shard(
         &self,
         produce_ref: &Produce,
@@ -553,49 +557,81 @@ where
         &self.produce_counter[idx]
     }
 
+    // Groups by shard first so a slice with repeats or same-shard keys locks
+    // each needed shard only once, instead of once per produce_ref.
     fn produce_counters(&self, produce_refs: &[Produce]) -> BTreeMap<Produce, i32> {
-        produce_refs
+        let mut by_shard: HashMap<usize, Vec<&Produce>> = HashMap::new();
+        for p in produce_refs {
+            let idx = (striped_locks::channel_hash(p) as usize) % self.produce_counter.len();
+            by_shard.entry(idx).or_default().push(p);
+        }
+
+        let mut result = BTreeMap::new();
+        for (idx, refs) in by_shard {
+            let guard = self.produce_counter[idx]
+                .lock()
+                .expect("produce counter shard lock");
+            for p in refs {
+                result.insert(p.clone(), guard.get(p).copied().unwrap_or(0));
+            }
+        }
+        result
+    }
+
+    // Locks every shard, in the same fixed index order every helper below
+    // uses, before touching any of them, and holds all guards for the whole
+    // operation. This is the equivalent of the former single global lock's
+    // linearization point, restricted to this field: any produce() racing
+    // take/reset/restore blocks on whichever shard it hashes to until the
+    // full boundary operation finishes on every shard, so the result is a
+    // consistent point-in-time snapshot across shards, not just per-key.
+    //
+    // (This does not make produce_counter atomic *with* event_log — those
+    // remain two separate locks taken sequentially, same as before this
+    // change; that cross-field ordering gap is pre-existing, not introduced
+    // here, and is out of scope until event_log itself is addressed.)
+    fn all_produce_counter_shards(&self) -> Vec<std::sync::MutexGuard<'_, BTreeMap<Produce, i32>>> {
+        self.produce_counter
             .iter()
-            .cloned()
-            .map(|p| {
-                let count = self
-                    .produce_counter_shard(&p)
-                    .lock()
-                    .expect("produce counter shard lock")
-                    .get(&p)
-                    .copied()
-                    .unwrap_or(0);
-                (p, count)
-            })
+            .map(|shard| shard.lock().expect("produce counter shard lock"))
             .collect()
     }
 
-    // Drains all shards into one combined map and leaves every shard empty.
-    // Per-shard mem::take is atomic under that shard's own lock, so a
-    // produce() racing this call either lands in the returned snapshot or
-    // in the now-empty shard afterwards — never both, never neither.
+    // Drains all shards into one combined map and leaves every shard empty,
+    // atomically across the whole field (see all_produce_counter_shards).
     fn take_produce_counter(&self) -> BTreeMap<Produce, i32> {
+        let mut guards = self.all_produce_counter_shards();
         let mut combined = BTreeMap::new();
-        for shard in self.produce_counter.iter() {
-            let mut guard = shard.lock().expect("produce counter shard lock");
-            combined.extend(std::mem::take(&mut *guard));
+        for guard in guards.iter_mut() {
+            combined.extend(std::mem::take(&mut **guard));
         }
         combined
     }
 
+    // Empties every shard atomically across the whole field.
     fn reset_produce_counter(&self) {
-        for shard in self.produce_counter.iter() {
-            *shard.lock().expect("produce counter shard lock") = BTreeMap::new();
+        let mut guards = self.all_produce_counter_shards();
+        for guard in guards.iter_mut() {
+            **guard = BTreeMap::new();
         }
     }
 
+    // Partitions the incoming map by shard before taking any locks, then
+    // installs each partition with one assignment per shard under all
+    // guards held together — avoids the reset-then-insert window a
+    // concurrent produce() could otherwise land in between.
     fn restore_produce_counter(&self, map: BTreeMap<Produce, i32>) {
-        self.reset_produce_counter();
+        let mut partitioned: Vec<BTreeMap<Produce, i32>> = (0..self.produce_counter.len())
+            .map(|_| BTreeMap::new())
+            .collect();
         for (k, v) in map {
-            self.produce_counter_shard(&k)
-                .lock()
-                .expect("produce counter shard lock")
-                .insert(k, v);
+            let idx = (striped_locks::channel_hash(&k) as usize) % self.produce_counter.len();
+            partitioned[idx].insert(k, v);
+        }
+
+        let mut guards = self.all_produce_counter_shards();
+        for (guard, part) in guards.iter_mut().zip(partitioned) {
+            **guard = part;
         }
     }
 
