@@ -43,6 +43,27 @@ use super::transaction::helpers;
 /// whole line of work exists to prevent. The choice is recorded here so
 /// a future change does not silently narrow it.
 ///
+/// ## Unrecognized phase values
+///
+/// A `phase` value that this build does not know (a future proto value,
+/// or malformed data) is classified as unknown. It is not folded into
+/// `UNSPECIFIED`. The policy is asymmetric on purpose:
+///
+/// - On the marked path, this module drops an unknown segment and logs
+///   a warning. It never scans that segment as `USER`, because a future
+///   system phase must not leak system transfers into the user list.
+/// - When every segment is unknown, this module recognizes no marker,
+///   so the report falls to the positional fallback. The fallback scans
+///   those segments. The deployer-sender filter in
+///   `find_transfers_in_report` still applies, so a refund-shaped
+///   transfer cannot leak. Only a precharge that fails the shape check
+///   can leak.
+///
+/// The first rule can drop user transfers that a newer node wrote in a
+/// segment this build cannot name. This is the deliberate trade against
+/// exposure of system transfers. It is the one place where this module
+/// prefers loss over exposure.
+///
 /// ## Fallback path (compatibility)
 ///
 /// When every segment is `UNSPECIFIED` (a node predating this change, or
@@ -106,25 +127,35 @@ pub fn extract_transfers_from_report(
             .map(|b| classify_phase(b.phase))
             .collect();
 
-        if classified.iter().any(Option::is_none) {
-            tracing::warn!(
-                target: "f1r3fly.node.web.enricher",
-                deploy_sig = %deploy_sig,
-                "report contains a segment with an unrecognized phase; \
-                 that segment will not be scanned on the marked path"
-            );
-        }
-
         // A report is "marked" only when some segment carries a
         // recognized phase other than `Unspecified`. An unrecognized
-        // discriminant does not activate the marked path, so it falls
+        // value does not activate the marked path, so the report falls
         // to the positional fallback instead of being scanned as USER.
-        let any_marked = classified.iter().any(|c| {
-            matches!(
-                c,
-                Some(ReportPhase::Precharge | ReportPhase::User | ReportPhase::Refund)
-            )
-        });
+        let any_marked = classified
+            .iter()
+            .any(|c| c.map(is_marker_phase).unwrap_or(false));
+
+        // Warn after the path is known. The two paths treat an
+        // unrecognized segment differently, so one message cannot
+        // describe both.
+        if classified.iter().any(Option::is_none) {
+            if any_marked {
+                tracing::warn!(
+                    target: "f1r3fly.node.web.enricher",
+                    deploy_sig = %deploy_sig,
+                    "report contains a segment with an unrecognized phase; \
+                     that segment is dropped on the marked path"
+                );
+            } else {
+                tracing::warn!(
+                    target: "f1r3fly.node.web.enricher",
+                    deploy_sig = %deploy_sig,
+                    "report carries no recognized phase marker and contains \
+                     unrecognized phase values; those segments are scanned \
+                     by the positional fallback"
+                );
+            }
+        }
 
         let mut user_transfers = Vec::new();
         if any_marked {
@@ -224,33 +255,41 @@ pub fn extract_transfers_from_report(
     transfers_by_deploy
 }
 
-/// Classify a raw proto `phase` discriminant into a recognized
-/// `ReportPhase`, or `None` when the value is not one of the known
-/// discriminants. Mirrors the serde conversion in `ReportPhaseSerde`,
-/// which maps unknown discriminants to `Unspecified`, but keeps the
-/// distinction visible so the marked path can log and ignore unknowns
-/// instead of scanning them as USER.
-fn classify_phase(phase: i32) -> Option<ReportPhase> {
-    use models::casper::ReportPhase as P;
+/// Classify a raw proto `phase` value into a recognized `ReportPhase`,
+/// or `None` when this build does not know the value. Mirrors the serde
+/// conversion in `ReportPhaseSerde`, which maps an unknown value to
+/// `Unspecified`, but keeps the distinction visible so the marked path
+/// can log and drop unknown segments instead of scanning them as USER.
+fn classify_phase(phase: i32) -> Option<ReportPhase> { ReportPhase::try_from(phase).ok() }
+
+/// A recognized phase acts as a marker when it is not `UNSPECIFIED`. A
+/// marker on any segment makes the marked path authoritative for the
+/// whole report.
+///
+/// The match is exhaustive on purpose. A new variant in the proto enum
+/// must break this build and force an explicit decision here and in
+/// `is_system_phase`.
+fn is_marker_phase(phase: ReportPhase) -> bool {
     match phase {
-        v if v == P::Unspecified as i32 => Some(P::Unspecified),
-        v if v == P::Precharge as i32 => Some(P::Precharge),
-        v if v == P::User as i32 => Some(P::User),
-        v if v == P::Refund as i32 => Some(P::Refund),
-        _ => None,
+        ReportPhase::Precharge | ReportPhase::User | ReportPhase::Refund => true,
+        ReportPhase::Unspecified => false,
     }
 }
 
 /// A segment is "system" when its phase is `PRECHARGE` or `REFUND`.
-/// Used only for the per-segment drop decision on the marked path.
-/// The `any_marked` check tests recognized phases and does not call
-/// this helper.
+/// Used only for the per-segment drop decision on the marked path. The
+/// `any_marked` check calls `is_marker_phase` instead.
 ///
-/// Unrecognized proto discriminants are classified as `None` before
-/// this point, so they never reach here; they are logged and ignored
-/// on the marked path rather than scanned as USER.
+/// `classify_phase` maps an unrecognized proto value to `None` before
+/// this point, so an unknown value never reaches here. The marked path
+/// logs and drops such a segment rather than scanning it as USER.
+///
+/// The match is exhaustive for the reason given on `is_marker_phase`.
 fn is_system_phase(phase: ReportPhase) -> bool {
-    matches!(phase, ReportPhase::Precharge | ReportPhase::Refund)
+    match phase {
+        ReportPhase::Precharge | ReportPhase::Refund => true,
+        ReportPhase::Unspecified | ReportPhase::User => false,
+    }
 }
 
 /// Scan a single report for user transfer events on the transfer_unforgeable
