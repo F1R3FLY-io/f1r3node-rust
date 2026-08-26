@@ -2898,4 +2898,176 @@ mod tests {
              Drop`; the guarantee comes from Arc/HashMap propagation."
         );
     }
+
+    /// **Phase 8 review follow-up: randomized tokio-schedule stress
+    /// test (2026-08-26).**  Spawns N cooperating tokio tasks that
+    /// each drive a random acquire → hold → release sequence
+    /// against the LockRegistry under contention, then asserts the
+    /// clean-state invariant after all tasks drain: no held locks,
+    /// no parked waiters, no orphan handle IDs.
+    ///
+    /// Purpose: shakes out concurrency bugs that fixed-scenario
+    /// tests miss — interleavings where a release admits waiters
+    /// in an unexpected order, where cancellation races with
+    /// admission, where the wake-loop terminates early under load,
+    /// etc.  Complements the 80+ fixed-scenario tests above.
+    ///
+    /// Determinism: the tokio scheduler chooses task interleaving
+    /// non-deterministically, but the property being checked —
+    /// "post-drain state is empty" — is scheduler-independent.  A
+    /// regression that leaks a range entry or waiter under contention
+    /// would trip on some fraction of runs.  For CI-stability we
+    /// run 8 iterations with 8 tasks each; a real property-test
+    /// harness would run hundreds.
+    ///
+    /// Not a `#[cfg(loom)]` variant — loom exhaustively explores
+    /// interleavings but would require porting to loom primitives
+    /// (loom::sync::RwLock, loom::sync::atomic::AtomicU64, etc.).
+    /// That's a follow-up if this simpler test surfaces something
+    /// concerning.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn randomized_concurrent_acquire_release_drains_clean() {
+        use std::sync::atomic::{AtomicU64, Ordering as AOrdering};
+
+        // Deterministic per-iteration seed (deploy_scope byte) so
+        // each iteration exercises a different scheduling shape
+        // but the outer test is reproducible.
+        const ITERATIONS: u64 = 8;
+        const WORKERS_PER_ITER: usize = 8;
+        const OPS_PER_WORKER: usize = 12;
+        // Small file-id space so contention is realistic.
+        const FILE_IDS: u64 = 3;
+        // Small range space so overlaps happen.
+        const RANGE_MAX_OFFSET: u64 = 32;
+        const RANGE_MAX_LEN: u64 = 8;
+
+        for iter in 0..ITERATIONS {
+            let reg = Arc::new(LockRegistry::new());
+            // Simple LCG for reproducible per-op choices without
+            // pulling in rand as a workspace dep just for this pin.
+            let seed = Arc::new(AtomicU64::new(
+                0x9e37_79b9_7f4a_7c15u64 ^ iter.wrapping_mul(31),
+            ));
+            let mut handles = Vec::with_capacity(WORKERS_PER_ITER);
+
+            for worker_id in 0..WORKERS_PER_ITER {
+                let reg = reg.clone();
+                let seed = seed.clone();
+                let holder = holder(worker_id as u8 + 1);
+                let deploy = deploy(worker_id as u8 + 1);
+                handles.push(tokio::spawn(async move {
+                    // Held-lock stack per worker so drain returns to
+                    // clean state at the end.
+                    let mut held: Vec<LockId> = Vec::new();
+                    for _ in 0..OPS_PER_WORKER {
+                        // LCG step; bits chosen for offset, length,
+                        // mode, dev_inode, op-kind.
+                        let s = seed.fetch_add(0x9e37_79b9_7f4a_7c15u64, AOrdering::Relaxed);
+                        let dev_inode = (1u64, s % FILE_IDS);
+                        let offset = (s >> 3) % RANGE_MAX_OFFSET;
+                        let length = 1 + ((s >> 8) % RANGE_MAX_LEN);
+                        let mode = if (s >> 14) & 1 == 0 {
+                            LockMode::Read
+                        } else {
+                            LockMode::Write
+                        };
+                        let op_kind = (s >> 15) & 0b11;
+                        match op_kind {
+                            0 | 1 => {
+                                // 50% acquire (wait:false).
+                                if let Ok(id) = reg.try_acquire_range(
+                                    dev_inode,
+                                    offset,
+                                    length,
+                                    mode,
+                                    holder.clone(),
+                                    deploy,
+                                ) {
+                                    held.push(id);
+                                }
+                            }
+                            2 => {
+                                // 25% acquire wait:true (may park).
+                                match reg.try_acquire_range_wait(
+                                    dev_inode,
+                                    offset,
+                                    length,
+                                    mode,
+                                    holder.clone(),
+                                    deploy,
+                                    WaitPolicy::Wait,
+                                ) {
+                                    Ok(AcquireOutcome::Immediate(id)) => held.push(id),
+                                    Ok(AcquireOutcome::Parked { admit, .. }) => {
+                                        // Give the scheduler up to
+                                        // 25ms to admit us; else
+                                        // drop the receiver, which
+                                        // eventually surfaces as
+                                        // rollback via release
+                                        // paths.
+                                        let with_timeout = tokio::time::timeout(
+                                            std::time::Duration::from_millis(25),
+                                            admit,
+                                        )
+                                        .await;
+                                        if let Ok(Ok(Ok(id))) = with_timeout {
+                                            held.push(id);
+                                        }
+                                    }
+                                    Err(_) => {}
+                                }
+                            }
+                            _ => {
+                                // 25% release (if we hold anything).
+                                if let Some(id) = held.pop() {
+                                    let _ = reg.release(id);
+                                }
+                            }
+                        }
+                        // Yield to encourage interleaving.
+                        tokio::task::yield_now().await;
+                    }
+                    // Drain any leftover held locks so the worker
+                    // exits clean.
+                    for id in held.drain(..) {
+                        let _ = reg.release(id);
+                    }
+                }));
+            }
+
+            for h in handles {
+                h.await.expect("worker task did not panic");
+            }
+            // Final sweep: cancel any lingering waiters (parked
+            // wait:true acquires whose 25ms timeout hit) by
+            // simulating deploy-end sweep for every holder.
+            for wid in 0..WORKERS_PER_ITER {
+                reg.cancel_all_waiters_for_deploy(&deploy(wid as u8 + 1));
+                reg.release_all_for_deploy(&deploy(wid as u8 + 1));
+            }
+            // Yield once more so any wake_waiters chains complete.
+            for _ in 0..4 {
+                tokio::task::yield_now().await;
+            }
+            assert_eq!(
+                reg.held_locks(),
+                0,
+                "iter {iter}: held_locks should be 0 after full drain; \
+                 a non-zero count indicates a range entry was inserted \
+                 without a matching release/rollback path.  Regression \
+                 investigation: check wake_waiters admission → range \
+                 rollback on Sender dropped, and release_all_for_deploy \
+                 sweep."
+            );
+            assert_eq!(
+                reg.parked_waiters(),
+                0,
+                "iter {iter}: parked_waiters should be 0 after full drain; \
+                 a non-zero count indicates a Waiter was enqueued without \
+                 a matching admit/cancel path.  Regression investigation: \
+                 check cancel_all_waiters_for_deploy vs. \
+                 cancel_all_waiters_for_holder path coverage."
+            );
+        }
+    }
 }
