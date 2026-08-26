@@ -3379,6 +3379,55 @@ mod tests {
         );
     }
 
+    /// Post-merge polish pin (2026-08-26): the WalSnapshotWrite
+    /// branch inside `apply_finalization_effects` must be idempotency-
+    /// tracked via the same `effect_completed` → work → `record_finalization_effect`
+    /// pattern as the other four effect kinds.  A regression that
+    /// drops the effect-completed check would re-run the snapshot
+    /// write on every retry (harmless but wasteful).  A regression
+    /// that drops the record_finalization_effect call would leave
+    /// the receipt missing and trip `record_round_effects_completed`'s
+    /// "missing WalSnapshotWrite receipt" error, blocking cursor
+    /// advance on that revision.
+    #[test]
+    fn finalization_runner_wal_snapshot_write_is_idempotency_tracked() {
+        let src = include_str!("../engine/multi_parent_casper/finalization_runner.rs");
+        // Fold-in expectation: the branch appears inside
+        // apply_finalization_effects and both the completeness check
+        // and the receipt-recording call reference WalSnapshotWrite.
+        assert!(
+            src.contains("FinalizationEffectKind::WalSnapshotWrite"),
+            "apply_finalization_effects must include the WalSnapshotWrite \
+             branch (post-merge polish 2026-08-26; commit 9b87565b7).  \
+             A regression that removed it would inline the fs_wal \
+             snapshot logic outside the per-effect idempotency machinery \
+             and re-open the retry-safety hazard the fold-in closed."
+        );
+        // Effect-completed guard: prevents duplicate work on retry.
+        assert!(
+            src.contains("finalization_effect_completed(&snapshot_effect)"),
+            "apply_finalization_effects must guard the WalSnapshotWrite \
+             branch with `finalization_effect_completed(&snapshot_effect)` \
+             — otherwise a finalization-round retry re-runs the snapshot \
+             write, wasting work and (worse) risking a second maybe_write \
+             call against the same block_number after the cache was \
+             already consumed."
+        );
+        // Receipt recording: prevents the round from being marked
+        // complete without the WalSnapshotWrite receipt.
+        assert!(
+            src.contains("record_finalization_effect(snapshot_effect)"),
+            "apply_finalization_effects must call \
+             `record_finalization_effect(snapshot_effect)` after the \
+             WalSnapshotWrite branch (regardless of cache hit / miss / \
+             writer_opt None).  Missing this trips \
+             `record_round_effects_completed`'s completeness check \
+             (finalization_ledger.rs:919) which requires ALL five \
+             effect kinds to have receipts before advancing the \
+             EffectsCursor."
+        );
+    }
+
     fn mk_entry(tag: &str) -> WalEntry {
         WalEntry {
             op: WalOp::Write,

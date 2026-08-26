@@ -2379,10 +2379,179 @@ mod tests {
                 "multi-deploy WAL entry {i} differs: leader={l:?}, follower={f:?}"
             );
         }
+        // Explicit Oracular-count-zero assertion (2026-08-26 review
+        // strengthening): the count-equality check above passes even
+        // if BOTH leader and follower spuriously emit Oracular
+        // entries.  Pin the invariant directly by asserting no WAL
+        // entry references "aux.bin" (the Oracular deploy's target).
+        // A regression that made Oracular caps journal to WAL would
+        // trip this on both leader and follower simultaneously.
+        for entry in &leader_wal {
+            let path_str = entry.path.to_string_lossy();
+            assert!(
+                !path_str.contains("aux.bin"),
+                "Oracular deploy (aux.bin) MUST NOT emit any WAL entry; \
+                 found: {entry:?}.  Regression: `journal_write` fires \
+                 on oracular caps at handlers.rs — check the cmode \
+                 branch inside the write handler."
+            );
+        }
         follower
             .check_replay_data()
             .await
             .expect("follower replay data mismatch — tuplespace divergence");
+    }
+
+    /// **Multi-deploy revert-mid-sequence WAL parity pin (2026-08-26
+    /// review strengthening).**  Companion to
+    /// `multi_deploy_wal_is_byte_identical_on_leader_and_follower`
+    /// covering the failure-path leg: one deploy in a multi-deploy
+    /// sequence reverts via `revert_to_soft_checkpoint`, and the
+    /// follower's WAL must reflect the same revert (via
+    /// `wal_snapshot_stack` truncate on H-29-1's stack semantics).
+    ///
+    /// Regression scenario: a WAL entry from the reverted deploy
+    /// slips through and lands in the follower's WAL sequence — a
+    /// consensus divergence (leader post-revert WAL count < follower
+    /// WAL count).  The `revert_to_soft_checkpoint` machinery is the
+    /// load-bearing invariant here; this pin exercises it under
+    /// multi-deploy pressure that the single-deploy
+    /// `revert_soft_checkpoint_truncates_wal` doesn't.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn multi_deploy_wal_survives_mid_sequence_revert() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("data.bin"), vec![0u8; 128]).unwrap();
+
+        let (mut leader, mut follower) = create_leader_and_follower().await;
+        let root_display = dir.path().display().to_string();
+
+        // Successful deploy 1 (Consensus write).  WAL grows by ≥1.
+        let commit_term = format!(
+            r#"
+            new fsOpen(`rho:io:fs:native:1.0.0/open`),
+                fsWrite(`rho:io:fs:native:1.0.0/write`),
+                fsClose(`rho:io:fs:native:1.0.0/close`),
+                oc, wc, cc in {{
+              fsOpen!("{root_display}", "data.bin", "rw", "consensus", *oc) |
+              for (@[true, fd] <- oc) {{
+                fsWrite!(fd, "aabb".hexToBytes(), *wc) |
+                for (@_ <- wc) {{
+                  fsClose!(fd, *cc) |
+                  for (@_ <- cc) {{ Nil }}
+                }}
+              }}
+            }}
+            "#
+        );
+
+        for seed_byte in [1u8, 2u8] {
+            leader
+                .evaluate(
+                    &commit_term,
+                    Cost::unsafe_max(),
+                    std::collections::HashMap::new(),
+                    Blake2b512Random::create_from_bytes(&[seed_byte; 32]),
+                )
+                .await
+                .expect("leader commit deploy");
+        }
+        let post_commit_wal_len = leader.fs_handles.wal.snapshot().len();
+        assert!(
+            post_commit_wal_len >= 2,
+            "two committed Consensus writes must produce >= 2 WAL entries; got {post_commit_wal_len}"
+        );
+
+        // Reverted deploy: create_soft_checkpoint → evaluate a
+        // mutation → revert.  The WAL entries appended between
+        // create and revert MUST be truncated by H-29-1's
+        // wal_snapshot_stack pop.
+        let checkpoint = leader.create_soft_checkpoint().await;
+        leader
+            .evaluate(
+                &commit_term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                Blake2b512Random::create_from_bytes(&[3u8; 32]),
+            )
+            .await
+            .expect("leader mid-sequence evaluate");
+        let pre_revert_wal_len = leader.fs_handles.wal.snapshot().len();
+        assert!(
+            pre_revert_wal_len > post_commit_wal_len,
+            "the reverted deploy must have appended WAL entries before revert; \
+             pre_revert={pre_revert_wal_len}, post_commit={post_commit_wal_len}"
+        );
+        leader.revert_to_soft_checkpoint(checkpoint).await;
+        let post_revert_wal_len = leader.fs_handles.wal.snapshot().len();
+        assert_eq!(
+            post_revert_wal_len, post_commit_wal_len,
+            "H-29-1 regression: revert_to_soft_checkpoint must truncate the WAL \
+             back to the pre-checkpoint mark.  post_commit={post_commit_wal_len}, \
+             pre_revert={pre_revert_wal_len}, post_revert={post_revert_wal_len}.  \
+             Investigation: `rho_runtime.rs::revert_to_soft_checkpoint` should \
+             pop wal_snapshot_stack and call wal.truncate_to."
+        );
+
+        // Successful deploy AFTER revert.  WAL should grow by ≥1.
+        leader
+            .evaluate(
+                &commit_term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                Blake2b512Random::create_from_bytes(&[4u8; 32]),
+            )
+            .await
+            .expect("leader post-revert deploy");
+        let leader_final_wal = leader.fs_handles.wal.snapshot();
+        assert!(
+            leader_final_wal.len() > post_revert_wal_len,
+            "post-revert Consensus deploy must append a WAL entry; \
+             final={}, post_revert={post_revert_wal_len}",
+            leader_final_wal.len(),
+        );
+
+        // Rig follower: reset to leader's post-sequence root + rig
+        // the log.  Follower re-executes the SUCCESSFUL deploys
+        // (1, 2, post-revert) with the same seeds and NOT the
+        // reverted one (its rand + checkpoint were discarded on
+        // leader before the create_checkpoint below).
+        let checkpoint = leader.create_checkpoint().await;
+        follower
+            .reset(&checkpoint.root)
+            .await
+            .expect("follower reset");
+        follower.rig(checkpoint.log).await.expect("follower rig");
+
+        for seed_byte in [1u8, 2u8, 4u8] {
+            follower
+                .evaluate(
+                    &commit_term,
+                    Cost::unsafe_max(),
+                    std::collections::HashMap::new(),
+                    Blake2b512Random::create_from_bytes(&[seed_byte; 32]),
+                )
+                .await
+                .expect("follower evaluate");
+        }
+        let follower_wal = follower.fs_handles.wal.snapshot();
+        assert_eq!(
+            leader_final_wal.len(),
+            follower_wal.len(),
+            "post-revert leader/follower WAL length divergence: \
+             leader={}, follower={} — regression indicates the reverted \
+             deploy's WAL entries were NOT properly truncated on the \
+             leader (they leaked into the checkpoint the follower rigged \
+             against), OR the follower re-executed the reverted deploy \
+             (log ordering broken).",
+            leader_final_wal.len(),
+            follower_wal.len(),
+        );
+        for (i, (l, f)) in leader_final_wal.iter().zip(follower_wal.iter()).enumerate() {
+            assert_eq!(
+                l, f,
+                "post-revert WAL entry {i} differs: leader={l:?}, follower={f:?}"
+            );
+        }
     }
 
     /// **PB-M-14 two-validator E2E scaffold (2026-08-26).**  Ignored

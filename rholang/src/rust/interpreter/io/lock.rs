@@ -3045,9 +3045,19 @@ mod tests {
                 reg.cancel_all_waiters_for_deploy(&deploy(wid as u8 + 1));
                 reg.release_all_for_deploy(&deploy(wid as u8 + 1));
             }
-            // Yield once more so any wake_waiters chains complete.
-            for _ in 0..4 {
-                tokio::task::yield_now().await;
+            // Poll-until-quiescent so any wake_waiters chain that
+            // needs many task-scheduling hops to complete is given
+            // enough runway.  Bounded max (100 iterations × 1ms =
+            // 100ms) so a genuine deadlock still trips the test's
+            // outer tokio timeout rather than hanging indefinitely.
+            // Pre-fix was a hard-coded 4 yields — under CI parallelism
+            // that could produce rare flakes when wake_waiters chains
+            // were longer than 4 hops.
+            for _ in 0..100 {
+                if reg.held_locks() == 0 && reg.parked_waiters() == 0 {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(1)).await;
             }
             assert_eq!(
                 reg.held_locks(),

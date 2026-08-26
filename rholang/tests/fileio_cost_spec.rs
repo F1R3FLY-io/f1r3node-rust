@@ -1084,6 +1084,59 @@ fn arity3_entries_stream_stub_still_returns_fserr_unsupported() {
     );
 }
 
+/// **Phase 8 arity-tightening retirement pin (2026-08-26).**  The
+/// `fs_lock_range` and `fs_lock_sequential` handlers dropped their
+/// legacy arity-7 / arity-4 shim branches in commit `5e8f3e2a0`;
+/// every File.rho caller now threads an explicit `wait: Bool`.
+/// This pin prohibits re-adding a compat shim that silently defaults
+/// `wait=false` for callers that omit it — a regression that would
+/// let malformed callers slip past without a loud "arity mismatch"
+/// signal.
+///
+/// Why not a runtime test: Rholang arity mismatch is enforced at
+/// channel-binding level (the `arity: 8` on `fs_native_def`);
+/// wrong-arity sends sit on the channel with no matching receiver
+/// and simply hang.  The handler's `_ => illegal_argument_error`
+/// arm is only reachable if a Rust caller invokes the handler
+/// directly with wrong args — not from Rholang.  A source-scan pin
+/// on the handler body catches the intended regression:
+/// resurrecting the shim requires either (a) adding an arity-7
+/// match arm (caught by this pin's substring check) OR (b) bumping
+/// the `fs_native_def` arity back to 7 (caught by
+/// `fs_native_def_arities_match_golden_table` in fs_genesis.rs).
+#[test]
+fn lock_range_and_sequential_handlers_reject_arity_shim() {
+    let src = include_str!("../src/rust/interpreter/io/handlers.rs");
+
+    // fs_lock_range must NOT contain a match arm of the legacy
+    // arity-7 shape.  Post-tightening the only arm is the 8-arg
+    // pattern; a resurrected shim would add `[fd, off, len, mode,
+    // holder, cmode, ack]` (7 identifiers) as a second arm.
+    let range_body = method_body(src, "    pub async fn fs_lock_range(")
+        .expect("fs_lock_range handler must exist");
+    assert!(
+        !range_body.contains("[fd, off, len, mode, holder, cmode, ack]"),
+        "arity-tightening regression: fs_lock_range handler contains \
+         the legacy arity-7 match arm `[fd, off, len, mode, holder, \
+         cmode, ack]`.  The shim was retired in commit 5e8f3e2a0; \
+         all File.rho callers now pass arity 8 with explicit wait: \
+         Bool.  If the shim was intentionally resurrected, ALSO bump \
+         `fs_native_def(\"lockRange\", 8)` back to 7 in \
+         rho_runtime.rs — otherwise the dispatch will still enforce \
+         arity 8 at the channel binding and the shim is dead code."
+    );
+
+    let seq_body = method_body(src, "    pub async fn fs_lock_sequential(")
+        .expect("fs_lock_sequential handler must exist");
+    assert!(
+        !seq_body.contains("[fd, holder, cmode, ack]"),
+        "arity-tightening regression: fs_lock_sequential handler \
+         contains the legacy arity-4 match arm `[fd, holder, cmode, \
+         ack]`.  Same rationale as fs_lock_range above.  Companion \
+         golden-table pin: fs_native_def_arities_match_golden_table."
+    );
+}
+
 // -------- Slice 9c-i regression pin --------------------------------
 
 /// **Slice 9c-i regression pin — Stream.rho chunk(n) payload cap.**
