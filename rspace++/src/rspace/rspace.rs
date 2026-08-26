@@ -1458,4 +1458,87 @@ mod tests {
             PAR_BRANCHES * OPS_PER_BRANCH,
         );
     }
+
+    // Disambiguates two candidate explanations for the near-zero wall-clock
+    // speedup measured end-to-end at rholang-par scale (bench_par_branches:
+    // 0.88-0.96x at 32 branches against a worker-thread-bounded ideal — see
+    // issue #50 follow-up):
+    // (a) event_log/produce_counter themselves cost that much, or
+    // (b) something else in produce()'s path (HotStore, the striped
+    //     per-channel lock, tokio scheduling) is the real cost and these
+    //     two locks are not the story despite being std::sync::Mutex.
+    //
+    // Calls log_produce() directly — the exact call log_produce() itself
+    // takes (event_log.push then, for non-persist, produce_counter.insert)
+    // with no produce_lock(), no HotStore, no get_store() RwLock read, no
+    // matcher involved. Isolates these two locks from every other cost
+    // produce() incurs, at the same branch/op counts as bench_par_branches.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+    async fn event_log_and_produce_counter_isolated_cost_at_rholang_par_scale() {
+        const PAR_BRANCHES: usize = 32;
+        const OPS_PER_BRANCH: usize = 5000;
+
+        // Sequential baseline: identical total ops, one after another.
+        let seq_rspace = make_rspace().await;
+        let t_seq = Instant::now();
+        for b in 0..PAR_BRANCHES {
+            for i in 0..OPS_PER_BRANCH {
+                let channel = format!("seq_{}_{}", b, i);
+                let data = "datum".to_string();
+                let produce_ref = Produce::create(&channel, &data, false);
+                seq_rspace.log_produce(&produce_ref, &channel, &data, false);
+            }
+        }
+        let seq_ms = t_seq.elapsed().as_millis().max(1);
+
+        // Concurrent: PAR_BRANCHES tokio tasks, each on its own channel set,
+        // all sharing one RSpace and therefore one event_log/produce_counter.
+        let par_rspace = Arc::new(make_rspace().await);
+        let t_par = Instant::now();
+        let handles: Vec<_> = (0..PAR_BRANCHES)
+            .map(|b| {
+                let s = par_rspace.clone();
+                tokio::spawn(async move {
+                    for i in 0..OPS_PER_BRANCH {
+                        let channel = format!("par_{}_{}", b, i);
+                        let data = "datum".to_string();
+                        let produce_ref = Produce::create(&channel, &data, false);
+                        s.log_produce(&produce_ref, &channel, &data, false);
+                    }
+                })
+            })
+            .collect();
+        for h in handles {
+            h.await.unwrap();
+        }
+        let par_ms = t_par.elapsed().as_millis().max(1);
+
+        // log_produce() is synchronous and the branch loops never await, so
+        // each task holds its worker for the whole loop: at most num_workers
+        // (further capped by the host's cores) branches run at once. That, not
+        // PAR_BRANCHES, is the achievable ideal for the efficiency metric.
+        let num_workers = tokio::runtime::Handle::current().metrics().num_workers();
+        let ideal = PAR_BRANCHES.min(num_workers).min(
+            std::thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(usize::MAX),
+        );
+        let speedup = seq_ms as f64 / par_ms as f64;
+        let efficiency = speedup / ideal as f64 * 100.0;
+
+        eprintln!(
+            "event_log+produce_counter isolated cost: branches={PAR_BRANCHES} \
+             ops_per_branch={OPS_PER_BRANCH} total_ops={} sequential={seq_ms}ms \
+             concurrent={par_ms}ms speedup={:.2}x (ideal {ideal}x: {PAR_BRANCHES} branches on \
+             {num_workers} workers) efficiency={:.1}%",
+            PAR_BRANCHES * OPS_PER_BRANCH,
+            speedup,
+            efficiency,
+        );
+
+        // No assertion: this test is diagnostic, not a regression gate. It
+        // reports the isolated cost of these two locks so it can be compared
+        // against bench_par_branches' end-to-end number for the same
+        // branch/op counts (see issue #50 investigation).
+    }
 }
