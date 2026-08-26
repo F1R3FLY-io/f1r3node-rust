@@ -674,8 +674,16 @@ impl FsProcesses {
         let requested_bytes: u64 = RhoNumber::unapply(n_par)
             .and_then(|n| u64::try_from(n).ok())
             .unwrap_or(0);
+        // Cost-helper audit (2026-08-26): `fs_read_cost` docstring
+        // requires `reserve_incremental_primitive` because
+        // `requested_bytes` can legitimately be 0 (EOF-truncated
+        // read, or non-parseable n_par).  Current base
+        // `FS_SYSCALL_CONST = 100` guarantees positivity, so the
+        // switch is a no-op for today's inputs; defense-in-depth
+        // against a future coefficient change that could drop the
+        // base to 0.
         self.metering
-            .reserve_primitive(costs::fs_read_cost(requested_bytes))?;
+            .reserve_incremental_primitive(costs::fs_read_cost(requested_bytes))?;
         if is_replay {
             // Follower: hash the leader's cached bytes and append a
             // matching WAL entry.  Fd is derivable from the arg;
@@ -733,7 +741,7 @@ impl FsProcesses {
             .and_then(|n| u64::try_from(n).ok())
             .unwrap_or(0);
         self.metering
-            .reserve_primitive(costs::fs_read_at_cost(requested_bytes))?;
+            .reserve_incremental_primitive(costs::fs_read_at_cost(requested_bytes))?;
         if is_replay {
             if let (Some(fd), Some(off), Some(bytes)) = (
                 RhoNumber::unapply(fd_par),
@@ -843,8 +851,10 @@ impl FsProcesses {
             .as_ref()
             .map(|(_, bytes)| bytes.len() as u64)
             .unwrap_or(0);
+        // Cost-helper audit (2026-08-26): mirrors fs_read audit fix —
+        // `requested_bytes` can be 0 (empty write) so use incremental.
         self.metering
-            .reserve_primitive(costs::fs_write_cost(requested_bytes))?;
+            .reserve_incremental_primitive(costs::fs_write_cost(requested_bytes))?;
         // M-R3 review fix (round 2): enforce MAX_WRITE_BYTES BEFORE
         // journaling so an oversized write cannot consume a WAL slot
         // for a call that will error out.  Mirror fs_truncate's
@@ -961,7 +971,7 @@ impl FsProcesses {
             .map(|(_, _, bytes)| bytes.len() as u64)
             .unwrap_or(0);
         self.metering
-            .reserve_primitive(costs::fs_write_at_cost(requested_bytes))?;
+            .reserve_incremental_primitive(costs::fs_write_at_cost(requested_bytes))?;
         // M-R3 review fix (round 2): MAX_WRITE_BYTES check BEFORE
         // journaling; see fs_write for rationale.
         if let Some((_, _, bytes)) = &parsed {
@@ -1629,8 +1639,17 @@ impl FsProcesses {
             // shape mismatch yields `None`, matched by the leader
             // branch charging 0 for the same shape (see below).
             let n_entries = extract_ok_list_len(&previous).unwrap_or(0);
-            self.metering
-                .reserve_primitive(costs::fs_entries_per_entry_supplement_cost(n_entries))?;
+            // Cost-helper audit fix (2026-08-26): use
+            // `reserve_incremental_primitive` — its early-return on
+            // zero cost avoids `BugFoundError` when n_entries = 0
+            // (empty directory).  Pre-fix, an empty-dir fs_entries
+            // populated `EvaluateResult.errors` and skipped the WAL
+            // journal that fires below.  Companion to the
+            // streaming-slice Step 3 fix at handlers.rs:2786 which
+            // dodges the same hazard for `fs_entries_stream_next`.
+            self.metering.reserve_incremental_primitive(
+                costs::fs_entries_per_entry_supplement_cost(n_entries),
+            )?;
             if let Some(p) = journal_path.clone() {
                 if let Some(reply_par) = previous.first() {
                     self.journal_state_read(mode, WalOp::Entries, p, reply_par, ack, None);
@@ -1717,8 +1736,14 @@ impl FsProcesses {
         // the setup portion — matches the follower's behavior on the
         // same shape.
         let n_entries = extract_ok_list_len(std::slice::from_ref(&reply)).unwrap_or(0);
-        self.metering
-            .reserve_primitive(costs::fs_entries_per_entry_supplement_cost(n_entries))?;
+        // Cost-helper audit fix (2026-08-26): mirror the replay-branch
+        // switch to `reserve_incremental_primitive` so the leader
+        // doesn't poison EvaluateResult.errors on empty-dir input
+        // and skip the WAL journal below.  Same-shape reasoning as
+        // the replay branch; see the comment there for details.
+        self.metering.reserve_incremental_primitive(
+            costs::fs_entries_per_entry_supplement_cost(n_entries),
+        )?;
         // M-5: leader journals from fresh reply.
         if let Some(p) = journal_path {
             self.journal_state_read(mode, WalOp::Entries, p, &reply, ack, None);

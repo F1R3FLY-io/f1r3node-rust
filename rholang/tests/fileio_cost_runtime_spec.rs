@@ -209,6 +209,18 @@ mod tests {
     /// confirming the supplement is proportional (0 when n=0) rather
     /// than a fixed floor.  Guards against an off-by-one that would
     /// charge `50 + 32 * (n+1)` = 82 for n=0.
+    ///
+    /// **Strengthened 2026-08-26 (cost-helper audit fix):** now also
+    /// asserts `result.errors.is_empty()`.  Pre-fix, an empty-dir
+    /// call hit `BugFoundError` inside `reserve_primitive(0)` and
+    /// silently populated `EvaluateResult.errors` — cost-invisible
+    /// (the setup charge fires BEFORE the supplement, so `c` still
+    /// fell within `[setup_only, setup_only+2000)`), but the WAL
+    /// journal that would fire AFTER the supplement never ran.
+    /// The switch to `reserve_incremental_primitive` at handlers.rs
+    /// (both leader + follower branches, ~lines 1633 + 1721) fixes
+    /// the poisoning; this pin now regressed both the cost bounds
+    /// AND the errors-empty invariant.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn fs_entries_empty_dir_charges_setup_only_at_runtime() {
         let dir = tempfile::tempdir().unwrap();
@@ -237,6 +249,18 @@ mod tests {
             .await
             .unwrap();
 
+        assert!(
+            result.errors.is_empty(),
+            "empty-dir fs_entries must NOT populate EvaluateResult.errors \
+             — pre-fix, `reserve_primitive(0)` returned BugFoundError and \
+             the `?` propagated into errors, silently poisoning the \
+             deploy and skipping the post-supplement WAL journal.  Fix at \
+             handlers.rs: switch both branches to \
+             `reserve_incremental_primitive` (early-returns on zero cost).  \
+             Errors observed: {:?}",
+            result.errors,
+        );
+
         let c = result.cost.value;
         let setup_only = fs_entries_cost(0).value; // 50
                                                    // Upper bound: setup_only + Rholang harness overhead ceiling.
@@ -247,11 +271,17 @@ mod tests {
              {setup_only}; got {c}"
         );
         assert!(
-            c < setup_only + 2000,
+            c < setup_only + 5000,
             "empty-dir fs_entries consumed {c}, more than {} above the \
              setup-only expectation {setup_only}.  A regression that fires \
              the per-entry supplement with n=1 (off-by-one) would push \
-             consumed to at least {} — trip investigation.",
+             consumed to at least {} — trip investigation.\n\
+             Note: pre-2026-08-26 the ceiling was +2000; the audit fix at \
+             handlers.rs switched the fs_entries supplement to \
+             `reserve_incremental_primitive`, so the empty-dir deploy no \
+             longer short-circuits on BugFoundError.  Post-fix harness \
+             overhead is ~2100 units (full deploy body runs including WAL \
+             journal); ceiling widened to +5000.",
             c - setup_only,
             setup_only + 32,
         );

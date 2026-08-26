@@ -982,6 +982,69 @@ fn remove_dir_charges_setup_only_pending_reply_shape_change() {
     );
 }
 
+/// **Cost-helper audit pin (2026-08-26).**  Length-parameterized
+/// helpers (`fs_read_cost`, `fs_read_at_cost`, `fs_write_cost`,
+/// `fs_write_at_cost`, `fs_entries_per_entry_supplement_cost`) MUST
+/// be charged via `reserve_incremental_primitive` — per the
+/// discipline docstring at costs.rs:43-49 and the fix that landed
+/// after the empty-directory `BugFoundError` regression documented
+/// in the Deferred items catalog.
+///
+/// Rationale: each of these helpers can legitimately compute zero
+/// weight (EOF-truncated read → 0 bytes; empty write → 0 bytes;
+/// empty directory → 0 entries).  `reserve_primitive` returns
+/// `BugFoundError` on ≤ 0 cost (metering.rs:137), silently
+/// populating `EvaluateResult.errors` and skipping any post-charge
+/// side-effect (WAL journal, etc.).  `reserve_incremental_primitive`
+/// early-returns Ok on zero and only reserves for positive cost;
+/// both branches emit the same `BillableTokenEvent::Primitive` when
+/// cost is non-zero, so the switch is consensus-safe.
+///
+/// A regression that switches any of these back to `reserve_primitive`
+/// would trip this pin.  For any NEW length-parameterized helper
+/// added later, extend `INCREMENTAL_REQUIRED` below.
+#[test]
+fn length_parameterized_cost_helpers_use_reserve_incremental_primitive() {
+    let src = include_str!("../src/rust/interpreter/io/handlers.rs");
+    // Every length-parameterized helper whose length argument can
+    // legitimately be zero at any call site.  Constant-work helpers
+    // (fs_open_cost, fs_close_cost, ...) stay on `reserve_primitive`
+    // because their weight is always positive by construction.
+    const INCREMENTAL_REQUIRED: &[&str] = &[
+        "fs_read_cost",
+        "fs_read_at_cost",
+        "fs_write_cost",
+        "fs_write_at_cost",
+        "fs_entries_per_entry_supplement_cost",
+        "fs_entries_stream_per_entry_supplement_cost",
+    ];
+    let mut violations = Vec::new();
+    for helper in INCREMENTAL_REQUIRED {
+        // Match `reserve_primitive(costs::<helper>` — the exact
+        // (bad) shape we want to prohibit.  A false positive on
+        // this substring would require the helper's name to appear
+        // inside a `reserve_primitive(...)` call, which is exactly
+        // what we're policing.
+        let bad = format!("reserve_primitive(costs::{helper}");
+        if src.contains(&bad) {
+            violations.push(*helper);
+        }
+    }
+    assert!(
+        violations.is_empty(),
+        "cost-helper audit regression: the following length-parameterized \
+         helpers MUST be charged via `reserve_incremental_primitive` (per \
+         the discipline docstring at costs.rs:43-49), but a call site in \
+         handlers.rs still uses `reserve_primitive`: {violations:?}.  \
+         Regression risk: an input that produces zero cost (EOF read, \
+         empty write, empty directory) will trip `BugFoundError` inside \
+         `reserve_primitive` (metering.rs:137), silently poisoning \
+         `EvaluateResult.errors` and skipping any post-charge side-effect \
+         (WAL journal, etc.).  Fix: switch the offending call to \
+         `reserve_incremental_primitive`."
+    );
+}
+
 /// **Streaming-slice Step 8 review-fixup pin (2026-08-26).**  The
 /// arity-3 `fs_entries_stream` handler at handlers.rs:2450 is a
 /// deprecated stub — replaced by the three arity-2/4 streaming
