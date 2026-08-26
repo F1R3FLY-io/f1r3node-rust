@@ -97,6 +97,10 @@ pub trait WebApi {
         deploy_sig_hex: String,
     ) -> Result<DeployFinalizationStatusJson>;
 
+    /// Bulk snapshot of pending deploys (deploy_storage + rejected-recovery
+    /// buffer), optionally filtered by deployer public key (hex-encoded).
+    async fn get_pending_deploys(&self, deployer: Option<String>) -> Result<PendingDeploysJson>;
+
     /// Get balance for an address via exploratory deploy against SystemVault.
     /// Queries against `block_hash` if provided, otherwise LFB.
     async fn get_balance(
@@ -152,6 +156,45 @@ pub struct DeployFinalizationStatusJson {
     /// Hex-encoded block hash. Absent (`null`) when the deploy has never
     /// been included in any block.
     pub latest_block_hash: Option<String>,
+}
+
+/// JSON-serializable view of a single pending deploy.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct PendingDeployJson {
+    pub term: String,
+    pub timestamp: i64,
+    #[serde(rename = "phloPrice")]
+    pub phlo_price: i64,
+    #[serde(rename = "phloLimit")]
+    pub phlo_limit: i64,
+    #[serde(rename = "validAfterBlockNumber")]
+    pub valid_after_block_number: i64,
+    #[serde(rename = "shardId")]
+    pub shard_id: String,
+    /// Hex-encoded deployer public key.
+    pub deployer: String,
+    /// Hex-encoded deploy signature.
+    pub sig: String,
+    #[serde(rename = "sigAlgorithm")]
+    pub sig_algorithm: String,
+    #[serde(rename = "expirationTimestamp")]
+    pub expiration_timestamp: Option<i64>,
+    /// `true` when the deploy is in the rejected-recovery buffer
+    /// (recovering after a merge conflict); `false` when it is fresh in
+    /// deploy_storage (not yet proposed).
+    #[serde(rename = "isRejected")]
+    pub is_rejected: bool,
+}
+
+/// JSON-serializable view of a pending-deploys response.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct PendingDeploysJson {
+    pub deploys: Vec<PendingDeployJson>,
+    /// Total count of pending deploys that matched the query before cap
+    /// truncation was applied. Compare with `deploys.len()` to detect
+    /// truncation.
+    #[serde(rename = "totalAvailable")]
+    pub total_available: u32,
 }
 
 fn deploy_state_json_label(
@@ -688,6 +731,51 @@ impl WebApi for WebApiImpl {
             state: deploy_state_json_label(status.state).to_string(),
             rejection_count: status.rejection_count,
             latest_block_hash: status.latest_block_hash.map(|h| hex::encode(&h)),
+        })
+    }
+
+    async fn get_pending_deploys(&self, deployer: Option<String>) -> Result<PendingDeploysJson> {
+        let deployer_bytes = match deployer.as_deref() {
+            None => None,
+            Some(s) if s.trim_start_matches("0x").is_empty() => None,
+            Some(s) => {
+                let hex_str = s.trim_start_matches("0x");
+                Some(hex::decode(hex_str).map_err(|_| {
+                    eyre::Report::new(InvalidPublicKeyError(format!(
+                        "'{}' is not a valid hex deployer public key",
+                        s
+                    )))
+                })?)
+            }
+        };
+
+        let snapshot =
+            BlockAPI::list_pending_deploys(&self.engine_cell, deployer_bytes.as_deref()).await?;
+
+        let deploys = snapshot
+            .deploys
+            .into_iter()
+            .map(|(signed, is_rejected)| {
+                let dd = &signed.data;
+                PendingDeployJson {
+                    term: dd.term.clone(),
+                    timestamp: dd.time_stamp,
+                    phlo_price: dd.phlo_price,
+                    phlo_limit: dd.phlo_limit,
+                    valid_after_block_number: dd.valid_after_block_number,
+                    shard_id: dd.shard_id.clone(),
+                    deployer: hex::encode(&signed.pk.bytes),
+                    sig: hex::encode(&signed.sig),
+                    sig_algorithm: signed.sig_algorithm.name(),
+                    expiration_timestamp: dd.expiration_timestamp,
+                    is_rejected,
+                }
+            })
+            .collect();
+
+        Ok(PendingDeploysJson {
+            deploys,
+            total_available: snapshot.total_available,
         })
     }
 
