@@ -194,13 +194,32 @@ pub enum WalOp {
     /// distinguishes Success replies from Failure(code).
     Stat,
     /// M-5: `fs_entries(root, rel, cmode) -> [record, ...]` —
-    /// journaled on Consensus caps.  length = record count;
+    /// journaled on Consensus caps.  offset = None; length = None
+    /// (the entry count is derivable from the hashed reply, but
+    /// not directly readable from the WAL — verification role only,
+    /// so `journal_state_read` is called with `length = None`);
     /// payload_ref = Hash(stable_hash of the reply Par).
+    ///
+    /// Audit follow-up (2026-08-26): considered populating length
+    /// with `n_entries` for cheaper audit-visibility, but declined
+    /// — the entry count is fully carried by the hashed reply
+    /// (`stable_hash_provider::hash` normalizes the list length
+    /// into its digest), so any joiner that verifies `payload_ref`
+    /// implicitly verifies the count.  Kept None to match `Stat`'s
+    /// no-side-band-metadata shape.
     Entries,
     /// M-5: `fs_size(fd) -> u64` — journaled when the fd's
-    /// `FileHandle.cmode == Consensus`.  offset None;
-    /// length = Some(size); payload_ref = None (the u64 fits
-    /// in the length field so no separate hash needed).
+    /// `FileHandle.cmode == Consensus`.  offset = None;
+    /// length = None; payload_ref = Hash(stable_hash of the reply
+    /// Par) — the u64 size is inside the hashed reply.
+    ///
+    /// Audit follow-up (2026-08-26): the earlier version of this
+    /// docstring claimed `length = Some(size); payload_ref = None`,
+    /// which never matched the implementation.  `journal_state_read`
+    /// treats every state-read op the same way — reply hash carries
+    /// the value, length is a side-band per-call metadata field
+    /// used only where the joiner wants a fast count (currently
+    /// only `EntriesStreamNext` for its 1-per-yield semantics).
     Size,
     /// Streaming-backing slice Step 3 (2026-08-25):
     /// `entriesStreamNext(streamFd)` — one Next call on a
