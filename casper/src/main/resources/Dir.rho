@@ -341,35 +341,30 @@ new Dir, rootP, cmodeP in {
     method removeFile(@rel) {
       match rel {
         r /\ String => {
-          // H-29-3 review fix: path-based mutations on Consensus
-          // caps are not journaled to the WAL in slice 29.  Fail
-          // closed so a replayer cannot diverge.
+          // H-29-3 lift (2026-08-26): Consensus caps now supported —
+          // fs_remove_file journals a RemoveFile WAL entry pre-
+          // syscall, symmetric on leader and follower.  Forward
+          // cmode to the native and let it dispatch.
           for (@params <<- @[*private, *rootP]; @cmode <<- @[*private, *cmodeP]) {
-            match cmode {
-              "consensus" => return!([false, "FSERR_UNSUPPORTED",
-                "removeFile not supported on consensus caps (slice 29 WAL covers only fd-based write/truncate)"])
-              _ => {
-                match params {
-                  (canonRoot, subPath, dirMode, _fileCtor) => {
-                    match dirMode {
-                      "rw" => {
-                        new joinedCh in {
-                          joinRel!(subPath, r, *joinedCh) |
-                          for (@joined <- joinedCh) {
-                            new retCh in {
-                              fsRemoveFile!(canonRoot, joined, cmode, *retCh) |
-                              for (@reply <- retCh) { return!(reply) }
-                            }
-                          }
+            match params {
+              (canonRoot, subPath, dirMode, _fileCtor) => {
+                match dirMode {
+                  "rw" => {
+                    new joinedCh in {
+                      joinRel!(subPath, r, *joinedCh) |
+                      for (@joined <- joinedCh) {
+                        new retCh in {
+                          fsRemoveFile!(canonRoot, joined, cmode, *retCh) |
+                          for (@reply <- retCh) { return!(reply) }
                         }
                       }
-                      _ => return!([false, "FSERR_UNSUPPORTED",
-                        "removeFile requires \"rw\" Dir mode"])
                     }
                   }
-                  _ => return!([false, "FSERR_IO", "root params malformed"])
+                  _ => return!([false, "FSERR_UNSUPPORTED",
+                    "removeFile requires \"rw\" Dir mode"])
                 }
               }
+              _ => return!([false, "FSERR_IO", "root params malformed"])
             }
           }
         }
@@ -426,36 +421,30 @@ new Dir, rootP, cmodeP in {
         f /\ String => {
           match to {
             t /\ String => {
-              // H-29-3: fail-closed on Consensus cap.
+              // H-29-3 lift (2026-08-26): Consensus caps now supported.
               for (@params <<- @[*private, *rootP]; @cmode <<- @[*private, *cmodeP]) {
-                match cmode {
-                  "consensus" => return!([false, "FSERR_UNSUPPORTED",
-                    "rename not supported on consensus caps (slice 29 WAL covers only fd-based write/truncate)"])
-                  _ => {
-                    match params {
-                      (canonRoot, subPath, dirMode, _fileCtor) => {
-                        match dirMode {
-                          "rw" => {
-                            new jFromCh, jToCh in {
-                              joinRel!(subPath, f, *jFromCh) |
-                              joinRel!(subPath, t, *jToCh) |
-                              for (@jFrom <- jFromCh; @jTo <- jToCh) {
-                                new retCh in {
-                                  // Phase 1 fs_rename signature:
-                                  // (fromRootCanon, fromRel, toRootCanon, toRel, ack)
-                                  fsRename!(canonRoot, jFrom, canonRoot, jTo, cmode, *retCh) |
-                                  for (@reply <- retCh) { return!(reply) }
-                                }
-                              }
+                match params {
+                  (canonRoot, subPath, dirMode, _fileCtor) => {
+                    match dirMode {
+                      "rw" => {
+                        new jFromCh, jToCh in {
+                          joinRel!(subPath, f, *jFromCh) |
+                          joinRel!(subPath, t, *jToCh) |
+                          for (@jFrom <- jFromCh; @jTo <- jToCh) {
+                            new retCh in {
+                              // Phase 1 fs_rename signature:
+                              // (fromRootCanon, fromRel, toRootCanon, toRel, cmode, ack)
+                              fsRename!(canonRoot, jFrom, canonRoot, jTo, cmode, *retCh) |
+                              for (@reply <- retCh) { return!(reply) }
                             }
                           }
-                          _ => return!([false, "FSERR_UNSUPPORTED",
-                            "rename requires \"rw\" Dir mode"])
                         }
                       }
-                      _ => return!([false, "FSERR_IO", "root params malformed"])
+                      _ => return!([false, "FSERR_UNSUPPORTED",
+                        "rename requires \"rw\" Dir mode"])
                     }
                   }
+                  _ => return!([false, "FSERR_IO", "root params malformed"])
                 }
               }
             }
@@ -472,34 +461,28 @@ new Dir, rootP, cmodeP in {
         f /\ String => {
           match to {
             t /\ String => {
-              // H-29-3: fail-closed on Consensus cap.
+              // H-29-3 lift (2026-08-26): Consensus caps now supported.
               for (@params <<- @[*private, *rootP]; @cmode <<- @[*private, *cmodeP]) {
-                match cmode {
-                  "consensus" => return!([false, "FSERR_UNSUPPORTED",
-                    "copyFile not supported on consensus caps (slice 29 WAL covers only fd-based write/truncate)"])
-                  _ => {
-                    match params {
-                      (canonRoot, subPath, dirMode, _fileCtor) => {
-                        match dirMode {
-                          "rw" => {
-                            new jFromCh, jToCh in {
-                              joinRel!(subPath, f, *jFromCh) |
-                              joinRel!(subPath, t, *jToCh) |
-                              for (@jFrom <- jFromCh; @jTo <- jToCh) {
-                                new retCh in {
-                                  fsCopyFile!(canonRoot, jFrom, canonRoot, jTo, cmode, *retCh) |
-                                  for (@reply <- retCh) { return!(reply) }
-                                }
-                              }
+                match params {
+                  (canonRoot, subPath, dirMode, _fileCtor) => {
+                    match dirMode {
+                      "rw" => {
+                        new jFromCh, jToCh in {
+                          joinRel!(subPath, f, *jFromCh) |
+                          joinRel!(subPath, t, *jToCh) |
+                          for (@jFrom <- jFromCh; @jTo <- jToCh) {
+                            new retCh in {
+                              fsCopyFile!(canonRoot, jFrom, canonRoot, jTo, cmode, *retCh) |
+                              for (@reply <- retCh) { return!(reply) }
                             }
                           }
-                          _ => return!([false, "FSERR_UNSUPPORTED",
-                            "copyFile requires \"rw\" Dir mode"])
                         }
                       }
-                      _ => return!([false, "FSERR_IO", "root params malformed"])
+                      _ => return!([false, "FSERR_UNSUPPORTED",
+                        "copyFile requires \"rw\" Dir mode"])
                     }
                   }
+                  _ => return!([false, "FSERR_IO", "root params malformed"])
                 }
               }
             }
@@ -516,43 +499,37 @@ new Dir, rootP, cmodeP in {
         r /\ String => {
           match mode {
             m /\ String => {
-              // H-29-3: fail-closed on Consensus cap.
+              // H-29-3 lift (2026-08-26): Consensus caps now supported.
               for (@params <<- @[*private, *rootP]; @cmode <<- @[*private, *cmodeP]) {
-                match cmode {
-                  "consensus" => return!([false, "FSERR_UNSUPPORTED",
-                    "chmod not supported on consensus caps (slice 29 WAL covers only fd-based write/truncate)"])
-                  _ => {
-                    match params {
-                      (canonRoot, subPath, dirMode, _fileCtor) => {
-                        match dirMode {
-                          "rw" => {
-                            new parsedCh in {
-                              parseRwxToBits!(m, *parsedCh) |
-                              for (@parsed <- parsedCh) {
-                                match parsed {
-                                  [true, bits] => {
-                                    new joinedCh in {
-                                      joinRel!(subPath, r, *joinedCh) |
-                                      for (@joined <- joinedCh) {
-                                        new retCh in {
-                                          fsChmod!(canonRoot, joined, bits, cmode, *retCh) |
-                                          for (@reply <- retCh) { return!(reply) }
-                                        }
-                                      }
+                match params {
+                  (canonRoot, subPath, dirMode, _fileCtor) => {
+                    match dirMode {
+                      "rw" => {
+                        new parsedCh in {
+                          parseRwxToBits!(m, *parsedCh) |
+                          for (@parsed <- parsedCh) {
+                            match parsed {
+                              [true, bits] => {
+                                new joinedCh in {
+                                  joinRel!(subPath, r, *joinedCh) |
+                                  for (@joined <- joinedCh) {
+                                    new retCh in {
+                                      fsChmod!(canonRoot, joined, bits, cmode, *retCh) |
+                                      for (@reply <- retCh) { return!(reply) }
                                     }
                                   }
-                                  _ => return!(parsed)
                                 }
                               }
+                              _ => return!(parsed)
                             }
                           }
-                          _ => return!([false, "FSERR_UNSUPPORTED",
-                            "chmod requires \"rw\" Dir mode"])
                         }
                       }
-                      _ => return!([false, "FSERR_IO", "root params malformed"])
+                      _ => return!([false, "FSERR_UNSUPPORTED",
+                        "chmod requires \"rw\" Dir mode"])
                     }
                   }
+                  _ => return!([false, "FSERR_IO", "root params malformed"])
                 }
               }
             }

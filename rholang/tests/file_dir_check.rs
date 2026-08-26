@@ -418,52 +418,47 @@ fn with_libs(test_snippet: &str) -> String {
           }} |
 
           // fs_chmod — records (root, rel, bits, cmode) in chmodLog.
-          // C-R2 round-2 fix: fsChmod native handler now takes cmode
-          // and fails-closed on Consensus (mirrors slice-26 fsChown).
+          // H-29-3 lift (2026-08-26): mock mirrors real handler
+          // post-lift — consensus succeeds (journals a Chmod WAL
+          // entry then invokes fchmodat).  Tests that need to
+          // observe the WAL-journal behavior use fs_wal_spec.rs
+          // against real handlers; this mock exercises the
+          // Rholang-side dispatch plumbing.
           chmodLog!([]) |
           contract fsChmod(@root, @rel, @bits, @cmode, ret) = {{
             for (@log <- chmodLog) {{
               chmodLog!(log ++ [(root, rel, bits, cmode)]) |
-              match cmode {{
-                "consensus" => ret!([false, "FSERR_UNSUPPORTED",
-                  "chmod unavailable in consensus mode"])
-                _ => ret!([true])
-              }}
+              ret!([true])
             }}
           }} |
 
           // fs_chown — records (root, rel, owner, group, cmode) in chownLog.
-          // Slice 26: `cmode` is the 5th arg; consensus caps get
-          // FSERR_UNSUPPORTED from the real handler.  The mock
-          // records everything; per-test consensus-mode assertions
-          // live in the tests themselves.
+          // H-29-3 lift (2026-08-26): consensus succeeds via NSS
+          // resolution; operator-responsible for cross-node uid/gid
+          // symmetry.
           chownLog!([]) |
           contract fsChown(@root, @rel, @owner, @group, @cmode, ret) = {{
             for (@log <- chownLog) {{
               chownLog!(log ++ [(root, rel, owner, group, cmode)]) |
-              match cmode {{
-                "consensus" => ret!([false, "FSERR_UNSUPPORTED",
-                  "chown unavailable in consensus mode"])
-                _ => ret!([true])
-              }}
+              ret!([true])
             }}
           }} |
 
           // fs_removeFile — records (root, rel, cmode) in rmFileLog.
-          // C-R2: cmode arg; fail-closed on consensus.
+          // H-29-3 lift (2026-08-26): consensus succeeds.
           rmFileLog!([]) |
           contract fsRemoveFile(@root, @rel, @cmode, ret) = {{
             for (@log <- rmFileLog) {{
               rmFileLog!(log ++ [(root, rel, cmode)]) |
-              match cmode {{
-                "consensus" => ret!([false, "FSERR_UNSUPPORTED",
-                  "removeFile unavailable in consensus mode"])
-                _ => ret!([true])
-              }}
+              ret!([true])
             }}
           }} |
 
           // fs_removeDir — records (root, rel, recursive, cmode).
+          // H-29-3 stopgap partially lifted (2026-08-26 slice 1);
+          // removeDir recursive remains under design in slice 2 so
+          // this mock keeps the consensus-rejection branch until
+          // slice 2 lands.
           rmDirLog!([]) |
           contract fsRemoveDir(@root, @rel, @recursive, @cmode, ret) = {{
             for (@log <- rmDirLog) {{
@@ -477,30 +472,24 @@ fn with_libs(test_snippet: &str) -> String {
           }} |
 
           // fs_rename — records (fromRoot, from, toRoot, to, cmode).
+          // H-29-3 lift (2026-08-26): consensus succeeds.
           renameLog!([]) |
           contract fsRename(@fromRoot, @from, @toRoot, @to, @cmode, ret) = {{
             for (@log <- renameLog) {{
               renameLog!(log ++ [(fromRoot, from, toRoot, to, cmode)]) |
-              match cmode {{
-                "consensus" => ret!([false, "FSERR_UNSUPPORTED",
-                  "rename unavailable in consensus mode"])
-                _ => ret!([true])
-              }}
+              ret!([true])
             }}
           }} |
 
           // fs_copyFile — records (fromRoot, from, toRoot, to, cmode).
           // Reply includes a fake nBytes = 42 to exercise the [true, nBytes]
-          // shape from spec §Dir.copyFile.
+          // shape from spec §Dir.copyFile.  H-29-3 lift (2026-08-26):
+          // consensus succeeds.
           copyLog!([]) |
           contract fsCopyFile(@fromRoot, @from, @toRoot, @to, @cmode, ret) = {{
             for (@log <- copyLog) {{
               copyLog!(log ++ [(fromRoot, from, toRoot, to, cmode)]) |
-              match cmode {{
-                "consensus" => ret!([false, "FSERR_UNSUPPORTED",
-                  "copyFile unavailable in consensus mode"])
-                _ => ret!([true, 42])
-              }}
+              ret!([true, 42])
             }}
           }} |
 
@@ -15210,10 +15199,16 @@ async fn cross_fs_alice_manipulation_invisible_to_bob() {
 // ---------------------------------------------------------------------
 
 /// A single Fs mint with one oracular and one consensus File entry.
-/// The oracular cap's chown succeeds; the consensus cap's chown
-/// short-circuits.  Verifies that the mode is truly per-cap, not
-/// runtime-wide, and that the routing goes through the mock's
-/// consensus-mode arm in fsChown.
+/// Both chowns must SUCCEED post-H-29-3 lift (2026-08-26 slice 1) —
+/// the per-cap plumbing is verified by inspecting `chownLog` after
+/// both calls and confirming the recorded cmode is "oracular" for
+/// the orc.txt call and "consensus" for the con.txt call.
+///
+/// Pre-lift the assertion was "oracular succeeds; consensus fails
+/// with FSERR_UNSUPPORTED" — that shape reflected the H-29-3
+/// stopgap and no longer holds.  The invariant this pin covers
+/// (mode is truly per-cap, not runtime-wide) is now observed via
+/// the log rather than the reply.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn fs_open_file_consensus_mode_per_cap_chown_routing() {
     let (space, reducer) =
@@ -15229,9 +15224,9 @@ async fn fs_open_file_consensus_mode_per_cap_chown_routing() {
             for (@conOpen <- @fs!?("openFile", "con.txt", {"mode": "rw"})) {
               match [orcOpen, conOpen] {
                 [[true, orcFile], [true, conFile]] => {
-                  for (@orcChown <- @orcFile!?("chown", "alice", "wheel")) {
-                    for (@conChown <- @conFile!?("chown", "alice", "wheel")) {
-                      @"out"!([orcChown, conChown])
+                  for (@_orcChown <- @orcFile!?("chown", "alice", "wheel")) {
+                    for (@_conChown <- @conFile!?("chown", "alice", "wheel")) {
+                      for (@log <<- chownLog) { @"out"!(log) }
                     }
                   }
                 }
@@ -15243,26 +15238,28 @@ async fn fs_open_file_consensus_mode_per_cap_chown_routing() {
         "#,
     );
     let reply = eval_and_read_out(&space, &reducer, &src).await;
-    let outer = match single_expr(&reply).unwrap().expr_instance {
+    let list = match single_expr(&reply).unwrap().expr_instance {
         Some(ExprInstance::EListBody(l)) => l,
-        _ => panic!("expected [orcChown, conChown] list, got {reply:?}"),
+        _ => panic!("expected chownLog list, got {reply:?}"),
     };
-    assert_eq!(outer.ps.len(), 2, "expected exactly two replies");
-
-    // Oracular cap: chown succeeds (mock returns [true]).
-    let (orc_ok, _, _, _) = extract_reply(&outer.ps[0]);
+    assert_eq!(list.ps.len(), 2, "expected exactly two fsChown syscalls");
+    // Each entry is a tuple (root, rel, owner, group, cmode); pull cmode
+    // (index 4) and confirm one is "oracular" and the other is
+    // "consensus".
+    let cmode = |i: usize| -> String {
+        let tup = match single_expr(&list.ps[i]).unwrap().expr_instance {
+            Some(ExprInstance::ETupleBody(t)) => t,
+            _ => panic!("chownLog[{i}] must be a tuple"),
+        };
+        match single_expr(&tup.ps[4]).unwrap().expr_instance {
+            Some(ExprInstance::GString(s)) => s,
+            _ => panic!("cmode must be a String"),
+        }
+    };
+    let modes: std::collections::HashSet<String> = [cmode(0), cmode(1)].into_iter().collect();
     assert!(
-        orc_ok,
-        "oracular cap's chown must succeed; got: {:?}",
-        outer.ps[0]
-    );
-
-    // Consensus cap: chown short-circuits with FSERR_UNSUPPORTED.
-    let (con_ok, con_code, _, _) = extract_reply(&outer.ps[1]);
-    assert!(!con_ok, "consensus cap's chown must fail");
-    assert_eq!(
-        con_code, "FSERR_UNSUPPORTED",
-        "consensus cap must yield FSERR_UNSUPPORTED, got {con_code}"
+        modes.contains("oracular") && modes.contains("consensus"),
+        "chowns must route with per-cap cmode; got modes: {modes:?}"
     );
 }
 
@@ -15300,6 +15297,12 @@ async fn fs_open_file_oracle_and_consensus_caps_over_shared_path_are_independent
         }
         "#,
     );
+    // H-29-3 lift (2026-08-26): both oracular and consensus chowns
+    // now succeed at the reply layer.  Per-cap routing invariant is
+    // verified via chownLog inspection in
+    // fs_open_file_consensus_mode_per_cap_chown_routing above; here
+    // we just assert both reply-oks arrive.  Same-inode independence
+    // continues to be enforced by the fresh-mint fd machinery.
     let reply = eval_and_read_out(&space, &reducer, &src).await;
     let outer = match single_expr(&reply).unwrap().expr_instance {
         Some(ExprInstance::EListBody(l)) => l,
@@ -15308,15 +15311,20 @@ async fn fs_open_file_oracle_and_consensus_caps_over_shared_path_are_independent
     assert_eq!(outer.ps.len(), 2);
     let (o_ok, _, _, _) = extract_reply(&outer.ps[0]);
     assert!(o_ok, "oracular cap on shared path must succeed");
-    let (c_ok, c_code, _, _) = extract_reply(&outer.ps[1]);
-    assert!(!c_ok, "consensus cap on shared path must short-circuit");
-    assert_eq!(c_code, "FSERR_UNSUPPORTED");
+    let (c_ok, _, _, _) = extract_reply(&outer.ps[1]);
+    assert!(
+        c_ok,
+        "consensus cap on shared path must now succeed post-lift"
+    );
 }
 
-/// Dir.chown mirrors File.chown for consensus-mode routing.  A
-/// consensus-cap Dir must reject chown even in "rw" mode.
+/// Dir.chown mirrors File.chown for consensus-mode routing.  H-29-3
+/// lift (2026-08-26): consensus Dir chown now succeeds — pin
+/// success at the reply layer.  Cmode-propagation invariant is
+/// covered by `dir_open_dir_inherits_parent_consensus_cmode` (which
+/// inspects chownLog directly).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn fs_open_dir_consensus_mode_chown_short_circuits() {
+async fn fs_open_dir_consensus_mode_chown_now_succeeds() {
     let (space, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
             .await;
@@ -15339,9 +15347,8 @@ async fn fs_open_dir_consensus_mode_chown_short_circuits() {
         "#,
     );
     let reply = eval_and_read_out(&space, &reducer, &src).await;
-    let (ok, code, _, _) = extract_reply(&reply);
-    assert!(!ok, "Dir.chown on consensus cap must short-circuit");
-    assert_eq!(code, "FSERR_UNSUPPORTED");
+    let (ok, _, _, _) = extract_reply(&reply);
+    assert!(ok, "Dir.chown on consensus cap must succeed post-lift");
 }
 
 // ---------------------------------------------------------------------
@@ -15374,10 +15381,13 @@ async fn file_chown_consensus_r_mode_denies_chown() {
     assert_eq!(code, "FSERR_UNSUPPORTED");
 }
 
-/// Same pin from the other angle: rw-mode chown on Consensus cap
-/// short-circuits with FSERR_UNSUPPORTED via the cmode gate.
+/// H-29-3 lift (2026-08-26): rw-mode chown on a Consensus cap now
+/// SUCCEEDS — the native journals a Chown WAL entry (mock records
+/// the call in chownLog with cmode="consensus" and replies [true]).
+/// The pre-lift version pinned FSERR_UNSUPPORTED from the mock's
+/// cmode gate; slice 1 removed that gate.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn file_chown_consensus_rw_mode_denies_chown() {
+async fn file_chown_consensus_rw_mode_now_succeeds() {
     let (space, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
             .await;
@@ -15389,9 +15399,11 @@ async fn file_chown_consensus_rw_mode_denies_chown() {
         "#,
     );
     let reply = eval_and_read_out(&space, &reducer, &src).await;
-    let (ok, code, _, _) = extract_reply(&reply);
-    assert!(!ok);
-    assert_eq!(code, "FSERR_UNSUPPORTED");
+    let (ok, _, _, _) = extract_reply(&reply);
+    assert!(
+        ok,
+        "rw-mode chown on consensus cap must now succeed post-lift"
+    );
 }
 
 /// MT-26-8: Dir.chown on a Consensus cap opened in `"r"` mode.
@@ -15425,21 +15437,17 @@ async fn dir_chown_consensus_r_mode_returns_unsupported() {
 
 /// MT-26-9: nested `openDir` on a Consensus parent Dir must produce a
 /// Consensus child Dir — no laundering of consensus caps via
-/// composition.  Verified by opening a parent Consensus Dir, then
-/// calling `openDir` on a subdir (mock `fsStat` says `kind: dir`),
-/// then invoking chown on the child cap and asserting the consensus
-/// short-circuit fires.
+/// composition.  H-29-3 lift (2026-08-26): pre-lift this was pinned
+/// via FSERR_UNSUPPORTED on the child's chown call; post-lift chown
+/// succeeds on consensus, so we instead inspect chownLog directly
+/// and verify the `cmode` recorded for the syscall is "consensus".
+/// Same invariant, observed on the mock's syscall log rather than
+/// on a reply-code short-circuit.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn dir_open_dir_inherits_parent_consensus_cmode() {
     let (space, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
             .await;
-    // Bundle points top at "subdir" so the mock `fsStat("/root",
-    // "subdir", ...)` returns `kind: dir` (see the with_libs mock)
-    // and openDirImpl mints a Dir cap for it.  Nested `openDir` off
-    // that then targets "subdir2" (another dir per the mock).  The
-    // child Dir's chown must short-circuit because the parent's
-    // Consensus cmode was inherited.
     let src = with_libs(
         r#"
         for (@fs <- Fs!?(0, 1, 2, {
@@ -15451,8 +15459,8 @@ async fn dir_open_dir_inherits_parent_consensus_cmode() {
                 for (@childOpen <- @top!?("openDir", "subdir2", "rw")) {
                   match childOpen {
                     [true, child] => {
-                      for (@chownReply <- @child!?("chown", "f.txt", "a", "b")) {
-                        @"out"!(chownReply)
+                      for (@_chownReply <- @child!?("chown", "f.txt", "a", "b")) {
+                        for (@log <<- chownLog) { @"out"!(log) }
                       }
                     }
                     _ => @"out"!(childOpen)
@@ -15466,11 +15474,30 @@ async fn dir_open_dir_inherits_parent_consensus_cmode() {
         "#,
     );
     let reply = eval_and_read_out(&space, &reducer, &src).await;
-    let (ok, code, _, _) = extract_reply(&reply);
-    assert!(!ok, "child Dir must inherit consensus cmode");
+    // Reply is chownLog — a list of (root, rel, owner, group, cmode)
+    // tuples.  We expect exactly ONE entry from the child.chown call.
+    let list = match single_expr(&reply).unwrap().expr_instance {
+        Some(ExprInstance::EListBody(l)) => l,
+        _ => panic!("expected chownLog list; got: {reply:?}"),
+    };
     assert_eq!(
-        code, "FSERR_UNSUPPORTED",
-        "child Dir chown must short-circuit; parent's cmode inherited correctly"
+        list.ps.len(),
+        1,
+        "expected exactly one fsChown syscall from child.chown; got {}",
+        list.ps.len(),
+    );
+    // The tuple's 5th element is cmode.
+    let tup = match single_expr(&list.ps[0]).unwrap().expr_instance {
+        Some(ExprInstance::ETupleBody(t)) => t,
+        _ => panic!("chownLog entry must be a tuple"),
+    };
+    let cmode = match single_expr(&tup.ps[4]).unwrap().expr_instance {
+        Some(ExprInstance::GString(s)) => s,
+        _ => panic!("cmode must be a String"),
+    };
+    assert_eq!(
+        cmode, "consensus",
+        "child Dir must inherit parent's Consensus cmode"
     );
 }
 
@@ -15497,10 +15524,13 @@ async fn file_chown_consensus_with_bad_owner_reports_bad_arg() {
 }
 
 /// ST-26-6: consensus cap + `chown(Nil, Nil)` — the no-owner-no-group
-/// form.  On an oracular cap this would be a valid no-op; on a
-/// consensus cap it must still short-circuit.
+/// form.  H-29-3 lift (2026-08-26): pre-lift this short-circuited
+/// with FSERR_UNSUPPORTED at the mock's cmode gate; post-lift chown
+/// succeeds on consensus (mock returns [true] uniformly).  The
+/// Nil/Nil form is a valid no-op — pin that it reaches the native
+/// with the empty-owner/empty-group payload.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn file_chown_consensus_with_nil_nil_short_circuits() {
+async fn file_chown_consensus_with_nil_nil_now_succeeds() {
     let (space, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
             .await;
@@ -15512,9 +15542,8 @@ async fn file_chown_consensus_with_nil_nil_short_circuits() {
         "#,
     );
     let reply = eval_and_read_out(&space, &reducer, &src).await;
-    let (ok, code, _, _) = extract_reply(&reply);
-    assert!(!ok);
-    assert_eq!(code, "FSERR_UNSUPPORTED");
+    let (ok, _, _, _) = extract_reply(&reply);
+    assert!(ok, "Nil/Nil chown on consensus must succeed post-lift");
 }
 
 /// M-26-2 constructor validation: File constructor must REVOKE its
@@ -15783,67 +15812,20 @@ async fn fs_open_file_close_twice_on_same_cap_stable() {
 }
 
 // ----------------------------------------------------------------------
-// H-29-3 review-fix regression pins: path-based mutations on Consensus
-// caps must fail closed with FSERR_UNSUPPORTED.  Slice 29's WAL only
-// journals fd-based Write/WriteAt/Truncate; a path-based mutation on
-// a Consensus cap has no WAL record, so replayers would diverge from
-// a leader that applied it.  The Rholang guard rejects at the agent
-// boundary before the syscall is issued.
+// H-29-3 stopgap remnants (partial lift 2026-08-26 slice 1; slice 2
+// covers removeDir).
+//
+// The original H-29-3 review-fix block asserted that ALL path-based
+// mutations on Consensus caps return FSERR_UNSUPPORTED at the
+// Rholang-agent boundary, because the WAL only journaled fd-based
+// Write/WriteAt/Truncate.  Slice-1 of the 2026-08-26 stopgap lift
+// wires WAL journaling into `fs_chmod`, `fs_chown`, `fs_rename`,
+// `fs_copy_file`, and `fs_remove_file` — those tests were deleted
+// in this commit and replaced by real-handler pins in
+// `fs_wal_spec.rs`.  Only the two `removeDir` pins remain, because
+// `fs_remove_dir` (recursive) waits on the granular reply-manifest
+// design in slice 2.
 // ----------------------------------------------------------------------
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn file_chmod_consensus_returns_unsupported() {
-    let (space, reducer) =
-        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
-            .await;
-    let src = with_libs(
-        r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "consensus")) {
-          for (@r <- @f!?("chmod", "rwxr-xr-x")) { @"out"!(r) }
-        }
-        "#,
-    );
-    let reply = eval_and_read_out(&space, &reducer, &src).await;
-    let (ok, code, _, _) = extract_reply(&reply);
-    assert!(!ok, "chmod on consensus cap must fail (H-29-3)");
-    assert_eq!(code, "FSERR_UNSUPPORTED");
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn dir_chmod_consensus_returns_unsupported() {
-    let (space, reducer) =
-        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
-            .await;
-    let src = with_libs(
-        r#"
-        for (@d <- Dir!?("/root", "", "rw", "consensus", *File)) {
-          for (@r <- @d!?("chmod", "config.json", "rw-r--r--")) { @"out"!(r) }
-        }
-        "#,
-    );
-    let reply = eval_and_read_out(&space, &reducer, &src).await;
-    let (ok, code, _, _) = extract_reply(&reply);
-    assert!(!ok, "Dir.chmod on consensus cap must fail (H-29-3)");
-    assert_eq!(code, "FSERR_UNSUPPORTED");
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn dir_remove_file_consensus_returns_unsupported() {
-    let (space, reducer) =
-        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
-            .await;
-    let src = with_libs(
-        r#"
-        for (@d <- Dir!?("/root", "", "rw", "consensus", *File)) {
-          for (@r <- @d!?("removeFile", "victim.txt")) { @"out"!(r) }
-        }
-        "#,
-    );
-    let reply = eval_and_read_out(&space, &reducer, &src).await;
-    let (ok, code, _, _) = extract_reply(&reply);
-    assert!(!ok, "Dir.removeFile on consensus cap must fail (H-29-3)");
-    assert_eq!(code, "FSERR_UNSUPPORTED");
-}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn dir_remove_dir_consensus_returns_unsupported() {
@@ -15859,195 +15841,10 @@ async fn dir_remove_dir_consensus_returns_unsupported() {
     );
     let reply = eval_and_read_out(&space, &reducer, &src).await;
     let (ok, code, _, _) = extract_reply(&reply);
-    assert!(!ok, "Dir.removeDir on consensus cap must fail (H-29-3)");
-    assert_eq!(code, "FSERR_UNSUPPORTED");
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn dir_rename_consensus_returns_unsupported() {
-    let (space, reducer) =
-        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
-            .await;
-    let src = with_libs(
-        r#"
-        for (@d <- Dir!?("/root", "", "rw", "consensus", *File)) {
-          for (@r <- @d!?("rename", "a.txt", "b.txt")) { @"out"!(r) }
-        }
-        "#,
-    );
-    let reply = eval_and_read_out(&space, &reducer, &src).await;
-    let (ok, code, _, _) = extract_reply(&reply);
-    assert!(!ok, "Dir.rename on consensus cap must fail (H-29-3)");
-    assert_eq!(code, "FSERR_UNSUPPORTED");
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn dir_copy_file_consensus_returns_unsupported() {
-    let (space, reducer) =
-        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
-            .await;
-    let src = with_libs(
-        r#"
-        for (@d <- Dir!?("/root", "", "rw", "consensus", *File)) {
-          for (@r <- @d!?("copyFile", "src.txt", "dst.txt")) { @"out"!(r) }
-        }
-        "#,
-    );
-    let reply = eval_and_read_out(&space, &reducer, &src).await;
-    let (ok, code, _, _) = extract_reply(&reply);
-    assert!(!ok, "Dir.copyFile on consensus cap must fail (H-29-3)");
-    assert_eq!(code, "FSERR_UNSUPPORTED");
-}
-
-// ----------------------------------------------------------------------
-// H7/H8/H9 round-2 review-fix pins: strengthen H-29-3 coverage.
-//   - H7: consensus guard fires on both "r" and "rw" file modes
-//   - H8: guard's distinctive message text is preserved
-//   - H9: syscall side of the operation is NOT invoked when consensus
-//     guard fires (verified by inspecting the mock's log)
-// ----------------------------------------------------------------------
-
-/// H7: File.chmod on (r, consensus) — must fail with FSERR_UNSUPPORTED
-/// even though the r-mode gate ALSO would reject.  Confirms the
-/// consensus guard fires before the mode gate.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn file_chmod_consensus_r_mode_returns_unsupported() {
-    let (space, reducer) =
-        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
-            .await;
-    let src = with_libs(
-        r#"
-        for (@f <- File!?(1, "/root", "test.txt", "r", "consensus")) {
-          for (@r <- @f!?("chmod", "rwxr-xr-x")) { @"out"!(r) }
-        }
-        "#,
-    );
-    let reply = eval_and_read_out(&space, &reducer, &src).await;
-    let (ok, code, _, _) = extract_reply(&reply);
-    assert!(!ok);
-    assert_eq!(code, "FSERR_UNSUPPORTED");
-    // H8: the message identifies which guard fired.  Consensus guard's
-    // message contains "consensus"; r-mode guard's message contains
-    // "write-capable mode".  extract_reply doesn't return the msg, so
-    // pull ps[2] directly.
-    let list = match single_expr(&reply).unwrap().expr_instance {
-        Some(ExprInstance::EListBody(l)) => l,
-        _ => panic!("expected list"),
-    };
-    let msg = match single_expr(&list.ps[2]).unwrap().expr_instance {
-        Some(ExprInstance::GString(s)) => s,
-        _ => panic!("msg not a string"),
-    };
     assert!(
-        msg.contains("consensus"),
-        "consensus guard should fire before r-mode gate; got msg={msg:?}"
+        !ok,
+        "Dir.removeDir on consensus cap must fail (H-29-3 slice 1 remnant)"
     );
-}
-
-/// H9: when the H-29-3 guard fires for `Dir.removeFile` on a consensus
-/// cap, `fsRemoveFile` (the native) must NOT be invoked.  Verified by
-/// inspecting `rmFileLog` — pre-fix the syscall dispatch would happen
-/// before the guard, leaving a log entry.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn dir_remove_file_consensus_does_not_invoke_syscall() {
-    let (space, reducer) =
-        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
-            .await;
-    let src = with_libs(
-        r#"
-        for (@d <- Dir!?("/root", "", "rw", "consensus", *File)) {
-          for (@_ <- @d!?("removeFile", "victim.txt")) {
-            for (@log <<- rmFileLog) { @"out"!(log) }
-          }
-        }
-        "#,
-    );
-    let reply = eval_and_read_out(&space, &reducer, &src).await;
-    // The reply is the log — should be an empty list (no syscall).
-    let log_list = match single_expr(&reply).unwrap().expr_instance {
-        Some(ExprInstance::EListBody(l)) => l,
-        _ => panic!("expected list"),
-    };
-    assert!(
-        log_list.ps.is_empty(),
-        "consensus guard must fire before dispatch; rmFileLog should be empty, \
-         got {} entries",
-        log_list.ps.len()
-    );
-}
-
-/// H9 companion for chmod: `fsChmod` native must NOT be invoked on a
-/// consensus cap via `File.chmod` (Rholang guard fires first).
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn file_chmod_consensus_does_not_invoke_syscall() {
-    let (space, reducer) =
-        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
-            .await;
-    let src = with_libs(
-        r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "consensus")) {
-          for (@_ <- @f!?("chmod", "rwxr-xr-x")) {
-            for (@log <<- chmodLog) { @"out"!(log) }
-          }
-        }
-        "#,
-    );
-    let reply = eval_and_read_out(&space, &reducer, &src).await;
-    let log_list = match single_expr(&reply).unwrap().expr_instance {
-        Some(ExprInstance::EListBody(l)) => l,
-        _ => panic!("expected list"),
-    };
-    assert!(
-        log_list.ps.is_empty(),
-        "File.chmod on consensus must not reach fsChmod native"
-    );
-}
-
-// ----------------------------------------------------------------------
-// C-R2 round-2 pins: native handlers fail-closed on Consensus cmode.
-// These fire even if a caller bypasses the Rholang File.rho / Dir.rho
-// guards — genesis-scope code that URN-binds fs_chmod / fs_removeFile
-// / ... directly still hits the native cmode gate.
-// ----------------------------------------------------------------------
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn native_fs_chmod_consensus_returns_unsupported() {
-    let (space, reducer) =
-        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
-            .await;
-    // The mock fsChmod returns FSERR_UNSUPPORTED on consensus (mirroring
-    // the real native handler's C-R2 behavior).  This test binds fsChmod
-    // directly and calls with cmode="consensus".
-    let src = with_libs(
-        r#"
-        new ret in {
-          fsChmod!("/root", "f.txt", 0, "consensus", *ret) |
-          for (@r <- ret) { @"out"!(r) }
-        }
-        "#,
-    );
-    let reply = eval_and_read_out(&space, &reducer, &src).await;
-    let (ok, code, _, _) = extract_reply(&reply);
-    assert!(!ok, "native fs_chmod must reject consensus cmode (C-R2)");
-    assert_eq!(code, "FSERR_UNSUPPORTED");
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn native_fs_remove_file_consensus_returns_unsupported() {
-    let (space, reducer) =
-        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
-            .await;
-    let src = with_libs(
-        r#"
-        new ret in {
-          fsRemoveFile!("/root", "f.txt", "consensus", *ret) |
-          for (@r <- ret) { @"out"!(r) }
-        }
-        "#,
-    );
-    let reply = eval_and_read_out(&space, &reducer, &src).await;
-    let (ok, code, _, _) = extract_reply(&reply);
-    assert!(!ok);
     assert_eq!(code, "FSERR_UNSUPPORTED");
 }
 
@@ -16060,44 +15857,6 @@ async fn native_fs_remove_dir_consensus_returns_unsupported() {
         r#"
         new ret in {
           fsRemoveDir!("/root", "d", true, "consensus", *ret) |
-          for (@r <- ret) { @"out"!(r) }
-        }
-        "#,
-    );
-    let reply = eval_and_read_out(&space, &reducer, &src).await;
-    let (ok, code, _, _) = extract_reply(&reply);
-    assert!(!ok);
-    assert_eq!(code, "FSERR_UNSUPPORTED");
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn native_fs_rename_consensus_returns_unsupported() {
-    let (space, reducer) =
-        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
-            .await;
-    let src = with_libs(
-        r#"
-        new ret in {
-          fsRename!("/root", "a", "/root", "b", "consensus", *ret) |
-          for (@r <- ret) { @"out"!(r) }
-        }
-        "#,
-    );
-    let reply = eval_and_read_out(&space, &reducer, &src).await;
-    let (ok, code, _, _) = extract_reply(&reply);
-    assert!(!ok);
-    assert_eq!(code, "FSERR_UNSUPPORTED");
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn native_fs_copy_file_consensus_returns_unsupported() {
-    let (space, reducer) =
-        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
-            .await;
-    let src = with_libs(
-        r#"
-        new ret in {
-          fsCopyFile!("/root", "a", "/root", "b", "consensus", *ret) |
           for (@r <- ret) { @"out"!(r) }
         }
         "#,

@@ -386,6 +386,105 @@ impl FsProcesses {
         }
     }
 
+    // ---------------------------------------------------------------
+    // H-29-3 stopgap lift (2026-08-26): path-based mutation journal
+    // helpers.  Every path-based Consensus-cap mutation
+    // (`fs_chmod`, `fs_chown`, `fs_rename`, `fs_copy_file`,
+    // `fs_remove_file`, `fs_remove_dir`) now journals to the WAL
+    // BEFORE the syscall runs, matching the `journal_write` /
+    // `journal_truncate` pattern.  Leader/follower symmetry is
+    // straightforward for these 1-op mutations: the WAL entry is
+    // fully derivable from the caller-supplied args (canon_path,
+    // mode_bits, owner/group, extra_path) — both sides journal
+    // from identical args, both hit `MAX_WAL_ENTRIES` at the same
+    // moment, both finalize `Failure { code }` on syscall error.
+    //
+    // Cmode is passed as an argument (not from a FileHandle) since
+    // these are path-based, not fd-based.  The helpers no-op on
+    // Oracular caps (return `Ok(false)`) so the caller doesn't need
+    // to gate on cmode itself.
+    //
+    // All six helpers return `Err(())` on WAL-cap exhaustion so the
+    // caller can translate to FSERR_QUOTA_EXCEEDED and short-circuit
+    // symmetrically on both leader and follower.
+    // ---------------------------------------------------------------
+
+    /// Journal a path-based mutation entry with a single
+    /// canonical path (used by chmod/chown/removeFile).  Returns
+    /// `Ok(true)` on Consensus append, `Ok(false)` on Oracular
+    /// no-op, `Err(())` on WAL-cap exhaustion.  Payload fields
+    /// (`mode_bits`, `owner`, `group`) are supplied by the caller
+    /// for op-specific data; `extra_path` and `length` are
+    /// unpopulated for single-path ops.
+    #[allow(clippy::result_unit_err)]
+    async fn journal_path_mutation_single(
+        &self,
+        cmode: ConsensusMode,
+        op: WalOp,
+        canon_path: PathBuf,
+        mode_bits: Option<u32>,
+        owner: Option<String>,
+        group: Option<String>,
+        ack: &Par,
+    ) -> Result<bool, ()> {
+        if cmode != ConsensusMode::Consensus {
+            return Ok(false);
+        }
+        self.handles
+            .wal
+            .append_with_ack(
+                WalEntry {
+                    op,
+                    path: canon_path,
+                    extra_path: None,
+                    offset: None,
+                    length: None,
+                    payload_ref: None,
+                    mode_bits,
+                    owner,
+                    group,
+                    outcome: WalOutcome::Success,
+                },
+                ack_channel_hash(ack),
+            )
+            .map(|()| true)
+    }
+
+    /// Journal a two-path mutation entry (Rename, CopyFile).
+    /// Same shape as `journal_path_mutation_single` but populates
+    /// `extra_path` with the destination.
+    #[allow(clippy::result_unit_err)]
+    async fn journal_path_mutation_two(
+        &self,
+        cmode: ConsensusMode,
+        op: WalOp,
+        from_canon_path: PathBuf,
+        to_canon_path: PathBuf,
+        ack: &Par,
+    ) -> Result<bool, ()> {
+        if cmode != ConsensusMode::Consensus {
+            return Ok(false);
+        }
+        self.handles
+            .wal
+            .append_with_ack(
+                WalEntry {
+                    op,
+                    path: from_canon_path,
+                    extra_path: Some(to_canon_path),
+                    offset: None,
+                    length: None,
+                    payload_ref: None,
+                    mode_bits: None,
+                    owner: None,
+                    group: None,
+                    outcome: WalOutcome::Success,
+                },
+                ack_channel_hash(ack),
+            )
+            .map(|()| true)
+    }
+
     /// M-5 fix (2026-08-06): journal a state-read reply on a
     /// Consensus cap.  Called AFTER the syscall completes (both
     /// leader and follower paths — the follower extracts the
@@ -1896,17 +1995,14 @@ impl FsProcesses {
         else {
             return Err(illegal_argument_error("fs_rename"));
         };
-        // C-R2 review fix: `(from_root, from_rel, to_root, to_rel, cmode, ack)`.
-        // Consensus cap short-circuits — see fs_chmod for rationale.
+        // H-29-3 lift (2026-08-26): Consensus caps journal a Rename
+        // entry pre-syscall with `path` = from-canon-path,
+        // `extra_path` = to-canon-path.
         let [from_root_par, from_rel_par, to_root_par, to_rel_par, cmode_par, ack] =
             args.as_slice()
         else {
             return Err(illegal_argument_error("fs_rename"));
         };
-        if is_replay {
-            produce(&previous, ack).await?;
-            return Ok(previous);
-        }
         let cmode = match resolve_cmode(cmode_par) {
             Some(m) => m,
             None => {
@@ -1918,21 +2014,39 @@ impl FsProcesses {
                 return Ok(out);
             }
         };
-        if cmode == ConsensusMode::Consensus {
-            let out = vec![err(
-                FSERR_UNSUPPORTED,
-                "rename unavailable in consensus mode",
-            )];
-            produce(&out, ack).await?;
-            return Ok(out);
-        }
-        let reply = match (
+        let parsed = match (
             RhoString::unapply(from_root_par),
             RhoString::unapply(from_rel_par),
             RhoString::unapply(to_root_par),
             RhoString::unapply(to_rel_par),
         ) {
             (Some(from_root), Some(from_rel), Some(to_root), Some(to_rel)) => {
+                Some((from_root, from_rel, to_root, to_rel))
+            }
+            _ => None,
+        };
+        if let Some((from_root, from_rel, to_root, to_rel)) = &parsed {
+            let from_canon = canonicalize_lexical(from_root, from_rel);
+            let to_canon = canonicalize_lexical(to_root, to_rel);
+            if self
+                .journal_path_mutation_two(cmode, WalOp::Rename, from_canon, to_canon, ack)
+                .await
+                .is_err()
+            {
+                let out = vec![err(FSERR_QUOTA_EXCEEDED, "WAL cap exceeded")];
+                produce(&out, ack).await?;
+                return Ok(out);
+            }
+        }
+        if is_replay {
+            if let Some(code_str) = extract_err_code(&previous) {
+                self.finalize_failure_journal(fserr_to_code(&code_str), ack);
+            }
+            produce(&previous, ack).await?;
+            return Ok(previous);
+        }
+        let reply = match parsed {
+            Some((from_root, from_rel, to_root, to_rel)) => {
                 let from_root_pb = PathBuf::from(from_root);
                 let to_root_pb = PathBuf::from(to_root);
                 let from_expected_id = self.handles.root_registry.get(&from_root_pb);
@@ -1977,8 +2091,11 @@ impl FsProcesses {
                 .await
                 .unwrap_or_else(|_je| err(FSERR_IO, "spawn_blocking task failed"))
             }
-            _ => err(FSERR_BAD_ARG, "expected 4 String args + cmode"),
+            None => err(FSERR_BAD_ARG, "expected 4 String args + cmode"),
         };
+        if let Some(code_str) = extract_err_code(std::slice::from_ref(&reply)) {
+            self.finalize_failure_journal(fserr_to_code(&code_str), ack);
+        }
         let out = vec![reply];
         produce(&out, ack).await?;
         Ok(out)
@@ -2002,16 +2119,15 @@ impl FsProcesses {
         else {
             return Err(illegal_argument_error("fs_copy_file"));
         };
-        // C-R2 review fix: `(from_root, from_rel, to_root, to_rel, cmode, ack)`.
+        // H-29-3 lift (2026-08-26): Consensus caps journal a CopyFile
+        // entry pre-syscall.  Applier-side reconstruction reads the
+        // source file from the follower's reconstructed tree — the
+        // source's bytes are already established by prior WAL entries.
         let [from_root_par, from_rel_par, to_root_par, to_rel_par, cmode_par, ack] =
             args.as_slice()
         else {
             return Err(illegal_argument_error("fs_copy_file"));
         };
-        if is_replay {
-            produce(&previous, ack).await?;
-            return Ok(previous);
-        }
         let cmode = match resolve_cmode(cmode_par) {
             Some(m) => m,
             None => {
@@ -2023,21 +2139,39 @@ impl FsProcesses {
                 return Ok(out);
             }
         };
-        if cmode == ConsensusMode::Consensus {
-            let out = vec![err(
-                FSERR_UNSUPPORTED,
-                "copyFile unavailable in consensus mode",
-            )];
-            produce(&out, ack).await?;
-            return Ok(out);
-        }
-        let reply = match (
+        let parsed = match (
             RhoString::unapply(from_root_par),
             RhoString::unapply(from_rel_par),
             RhoString::unapply(to_root_par),
             RhoString::unapply(to_rel_par),
         ) {
             (Some(from_root), Some(from_rel), Some(to_root), Some(to_rel)) => {
+                Some((from_root, from_rel, to_root, to_rel))
+            }
+            _ => None,
+        };
+        if let Some((from_root, from_rel, to_root, to_rel)) = &parsed {
+            let from_canon = canonicalize_lexical(from_root, from_rel);
+            let to_canon = canonicalize_lexical(to_root, to_rel);
+            if self
+                .journal_path_mutation_two(cmode, WalOp::CopyFile, from_canon, to_canon, ack)
+                .await
+                .is_err()
+            {
+                let out = vec![err(FSERR_QUOTA_EXCEEDED, "WAL cap exceeded")];
+                produce(&out, ack).await?;
+                return Ok(out);
+            }
+        }
+        if is_replay {
+            if let Some(code_str) = extract_err_code(&previous) {
+                self.finalize_failure_journal(fserr_to_code(&code_str), ack);
+            }
+            produce(&previous, ack).await?;
+            return Ok(previous);
+        }
+        let reply = match parsed {
+            Some((from_root, from_rel, to_root, to_rel)) => {
                 let from_pb = PathBuf::from(from_root);
                 let to_pb = PathBuf::from(to_root);
                 spawn_blocking(move || -> Par {
@@ -2068,8 +2202,11 @@ impl FsProcesses {
                 .await
                 .unwrap_or_else(|_je| err(FSERR_IO, "spawn_blocking task failed"))
             }
-            _ => err(FSERR_BAD_ARG, "expected 4 String args + cmode"),
+            None => err(FSERR_BAD_ARG, "expected 4 String args + cmode"),
         };
+        if let Some(code_str) = extract_err_code(std::slice::from_ref(&reply)) {
+            self.finalize_failure_journal(fserr_to_code(&code_str), ack);
+        }
         let out = vec![reply];
         produce(&out, ack).await?;
         Ok(out)
@@ -2092,14 +2229,13 @@ impl FsProcesses {
         else {
             return Err(illegal_argument_error("fs_remove_file"));
         };
-        // C-R2 review fix: `(root, rel, cmode, ack)`.
+        // H-29-3 lift (2026-08-26): Consensus caps now unlink after
+        // WAL-journaling.  Consensus+locked still returns FSERR_BUSY
+        // per plan §Mode-differentiated invariants (see below).
+        // Argument shape: `(root, rel, cmode, ack)`.
         let [root_par, rel_par, cmode_par, ack] = args.as_slice() else {
             return Err(illegal_argument_error("fs_remove_file"));
         };
-        if is_replay {
-            produce(&previous, ack).await?;
-            return Ok(previous);
-        }
         let cmode = match resolve_cmode(cmode_par) {
             Some(m) => m,
             None => {
@@ -2111,20 +2247,49 @@ impl FsProcesses {
                 return Ok(out);
             }
         };
+        let parsed = match (RhoString::unapply(root_par), RhoString::unapply(rel_par)) {
+            (Some(root), Some(rel)) => Some((root, rel)),
+            _ => None,
+        };
+        // Pre-syscall WAL journal (fully derived from args).
+        if let Some((root, rel)) = &parsed {
+            let canon_path = canonicalize_lexical(root, rel);
+            if self
+                .journal_path_mutation_single(
+                    cmode,
+                    WalOp::RemoveFile,
+                    canon_path,
+                    None,
+                    None,
+                    None,
+                    ack,
+                )
+                .await
+                .is_err()
+            {
+                let out = vec![err(FSERR_QUOTA_EXCEEDED, "WAL cap exceeded")];
+                produce(&out, ack).await?;
+                return Ok(out);
+            }
+        }
+        if is_replay {
+            if let Some(code_str) = extract_err_code(&previous) {
+                self.finalize_failure_journal(fserr_to_code(&code_str), ack);
+            }
+            produce(&previous, ack).await?;
+            return Ok(previous);
+        }
         // Phase 8 slice 8a step 6 (2026-08-13): mode-differentiated
-        // unlink gate.  The Consensus branch was previously an early
-        // FSERR_UNSUPPORTED here; step 6 moves the mode dispatch
-        // INTO spawn_blocking so the target's (dev, inode) can be
-        // fstat'd first for the LockRegistry query.  Consensus+locked
-        // returns FSERR_BUSY per plan §Mode-differentiated invariants
-        // ("fs_remove_file consults LockRegistry at handler entry and
-        // refuses if any lock is held on (dev, inode)").  Consensus+
-        // unlocked still returns FSERR_UNSUPPORTED — the H-29-3
-        // stopgap remains in place until WAL journaling for path-
-        // based mutations lands (separate slice).  Oracular+locked
-        // proceeds with the unlink but log-warns for observability.
-        let reply = match (RhoString::unapply(root_par), RhoString::unapply(rel_par)) {
-            (Some(root), Some(rel)) => {
+        // unlink gate.  Consensus+locked returns FSERR_BUSY per plan
+        // §Mode-differentiated invariants ("fs_remove_file consults
+        // LockRegistry at handler entry and refuses if any lock is
+        // held on (dev, inode)").  Oracular+locked proceeds with the
+        // unlink but log-warns for observability.  Post-H-29-3-lift
+        // (2026-08-26): Consensus+unlocked no longer short-circuits
+        // with FSERR_UNSUPPORTED — it proceeds with unlinkat and
+        // relies on the WAL entry journaled above for replay.
+        let reply = match parsed {
+            Some((root, rel)) => {
                 let root_pb = PathBuf::from(root);
                 let expected_root_id = self.handles.root_registry.get(&root_pb);
                 let lock_registry = self.handles.lock_registry.clone();
@@ -2138,89 +2303,59 @@ impl FsProcesses {
                     };
                     // Step 6: fstatat the target for (dev, inode) so we
                     // can query the LockRegistry.  `AT_SYMLINK_NOFOLLOW`
-                    // matches unlinkat's semantics (unlink removes the
-                    // link, not the target).  If fstat fails (target
-                    // doesn't exist, permission denied), fall through
-                    // with is_locked=false — the unlink itself will
-                    // surface the appropriate error.
+                    // matches unlinkat's semantics.
                     let target_dev_inode = target_dev_inode_at(&parent);
                     let target_is_locked = target_dev_inode
                         .map(|di| lock_registry.is_locked(di, (0, u64::MAX)))
                         .unwrap_or(false);
-                    match cmode {
-                        ConsensusMode::Consensus => {
-                            if target_is_locked {
-                                // Plan §Mode-differentiated invariants:
-                                // Consensus refuses on any held lock.
-                                // Closes the "unlink-while-locked →
-                                // lock survives on now-orphan inode"
-                                // race.  Currently unreachable via the
-                                // H-29-3 stopgap below, but positioned
-                                // to activate when Consensus removeFile
-                                // is unblocked (needs WAL journaling
-                                // of path-based mutations, separate
-                                // slice).
-                                return err(
-                                    FSERR_BUSY,
-                                    "cannot remove: lock held on target (dev, inode)",
-                                );
-                            }
-                            // H-29-3 stopgap: consensus removeFile not
-                            // yet supported — WAL journaling for path-
-                            // based mutations not implemented.
-                            err(
-                                FSERR_UNSUPPORTED,
-                                "removeFile unavailable in consensus mode",
-                            )
+                    if cmode == ConsensusMode::Consensus && target_is_locked {
+                        // Plan §Mode-differentiated invariants:
+                        // Consensus refuses on any held lock.
+                        // Closes the "unlink-while-locked → lock
+                        // survives on now-orphan inode" race.
+                        return err(
+                            FSERR_BUSY,
+                            "cannot remove: lock held on target (dev, inode)",
+                        );
+                    }
+                    if cmode == ConsensusMode::Oracular && target_is_locked {
+                        // Plan §Mode-differentiated invariants:
+                        // Oracular does NOT gate on locks (host FS
+                        // semantics — `rm` works even while another
+                        // process has the file open).  Log-warn for
+                        // observability.
+                        if let Some((dev, ino)) = target_dev_inode {
+                            let n_holders = lock_registry.count_locks((dev, ino));
+                            tracing::warn!(
+                                target: "f1r3fly.fs.oracular",
+                                dev = dev,
+                                ino = ino,
+                                n_holders = n_holders,
+                                "oracular unlink of locked file (dev={}, ino={}) — {} \
+                                 holder(s) will observe subsequent errors on path-based \
+                                 calls; fd-based calls remain valid until close",
+                                dev,
+                                ino,
+                                n_holders
+                            );
                         }
-                        ConsensusMode::Oracular => {
-                            if target_is_locked {
-                                // Plan §Mode-differentiated invariants:
-                                // Oracular does NOT gate on locks (host
-                                // FS semantics — `rm` works even while
-                                // another process has the file open).
-                                // Log-warn for observability so
-                                // operators can trace subsequent
-                                // path-based failures back to the
-                                // unlink.  fd-based calls on the
-                                // pre-unlink fd remain valid because
-                                // the kernel keeps the inode alive
-                                // until the last fd closes.  Includes
-                                // holder count per spec-mandated
-                                // `{N} holder(s)` message body (step-6
-                                // review Gap 3 follow-up, 2026-08-13).
-                                if let Some((dev, ino)) = target_dev_inode {
-                                    let n_holders = lock_registry.count_locks((dev, ino));
-                                    tracing::warn!(
-                                        target: "f1r3fly.fs.oracular",
-                                        dev = dev,
-                                        ino = ino,
-                                        n_holders = n_holders,
-                                        "oracular unlink of locked file (dev={}, ino={}) — {} \
-                                         holder(s) will observe subsequent errors on path-based \
-                                         calls; fd-based calls remain valid until close",
-                                        dev,
-                                        ino,
-                                        n_holders
-                                    );
-                                }
-                            }
-                            let rc =
-                                unsafe { libc::unlinkat(parent.as_raw_fd(), parent.leaf_ptr(), 0) };
-                            if rc == 0 {
-                                ok_bare()
-                            } else {
-                                let e = std::io::Error::last_os_error();
-                                err(io_err_code(&e), io_msg_scrub(&e))
-                            }
-                        }
+                    }
+                    let rc = unsafe { libc::unlinkat(parent.as_raw_fd(), parent.leaf_ptr(), 0) };
+                    if rc == 0 {
+                        ok_bare()
+                    } else {
+                        let e = std::io::Error::last_os_error();
+                        err(io_err_code(&e), io_msg_scrub(&e))
                     }
                 })
                 .await
                 .unwrap_or_else(|_je| err(FSERR_IO, "spawn_blocking task failed"))
             }
-            _ => err(FSERR_BAD_ARG, "expected (String, String, String)"),
+            None => err(FSERR_BAD_ARG, "expected (String, String, String)"),
         };
+        if let Some(code_str) = extract_err_code(std::slice::from_ref(&reply)) {
+            self.finalize_failure_journal(fserr_to_code(&code_str), ack);
+        }
         let out = vec![reply];
         produce(&out, ack).await?;
         Ok(out)
@@ -2379,19 +2514,13 @@ impl FsProcesses {
         else {
             return Err(illegal_argument_error("fs_chmod"));
         };
-        // C-R2 review fix (slice 29 round 2): `(root, rel, bits, cmode, ack)`.
-        // A Consensus cap short-circuits with FSERR_UNSUPPORTED — path-based
-        // mutations are not journaled to the WAL in slice 29, so allowing
-        // them on Consensus would silently diverge leader/follower state.
-        // Mirrors slice-26 fs_chown pattern; defense-in-depth beneath the
-        // Rholang-side H-29-3 guards in File.rho / Dir.rho.
+        // H-29-3 lift (2026-08-26): Consensus caps now journal to
+        // the WAL BEFORE the syscall runs (same pattern as
+        // `journal_write` / `journal_truncate`).  Argument shape
+        // is `(root, rel, bits, cmode, ack)`.
         let [root_par, rel_par, mode_par, cmode_par, ack] = args.as_slice() else {
             return Err(illegal_argument_error("fs_chmod"));
         };
-        if is_replay {
-            produce(&previous, ack).await?;
-            return Ok(previous);
-        }
         let cmode = match resolve_cmode(cmode_par) {
             Some(m) => m,
             None => {
@@ -2403,20 +2532,56 @@ impl FsProcesses {
                 return Ok(out);
             }
         };
-        if cmode == ConsensusMode::Consensus {
-            let out = vec![err(
-                FSERR_UNSUPPORTED,
-                "chmod unavailable in consensus mode",
-            )];
-            produce(&out, ack).await?;
-            return Ok(out);
-        }
-        let reply = match (
+        // Parse the remaining args deterministically for both
+        // sides.  Parsing failure → no journal (nothing was going
+        // to happen on the leader either) + FSERR_BAD_ARG reply.
+        let parsed = match (
             RhoString::unapply(root_par),
             RhoString::unapply(rel_par),
             RhoNumber::unapply(mode_par),
         ) {
             (Some(root), Some(rel), Some(bits)) if (0..=0o7777).contains(&bits) => {
+                Some((root, rel, bits as u32))
+            }
+            _ => None,
+        };
+        // Journal pre-syscall on BOTH leader and follower — mirror
+        // of fs_write's C-29-F1 pattern.  The WAL entry is fully
+        // derived from args (canon_path from lexical join, mode
+        // bits from parse) so both sides append identical bytes.
+        if let Some((root, rel, bits)) = &parsed {
+            let canon_path = canonicalize_lexical(root, rel);
+            if self
+                .journal_path_mutation_single(
+                    cmode,
+                    WalOp::Chmod,
+                    canon_path,
+                    Some(*bits),
+                    None,
+                    None,
+                    ack,
+                )
+                .await
+                .is_err()
+            {
+                let out = vec![err(FSERR_QUOTA_EXCEEDED, "WAL cap exceeded")];
+                produce(&out, ack).await?;
+                return Ok(out);
+            }
+        }
+        if is_replay {
+            // Follower: if leader's cached reply was an error,
+            // flip the placeholder to Failure { code } so
+            // reconstruction on a fresh joiner skips the mutation
+            // symmetrically.
+            if let Some(code_str) = extract_err_code(&previous) {
+                self.finalize_failure_journal(fserr_to_code(&code_str), ack);
+            }
+            produce(&previous, ack).await?;
+            return Ok(previous);
+        }
+        let reply = match parsed {
+            Some((root, rel, bits)) => {
                 let root_pb = PathBuf::from(root);
                 let expected_root_id = self.handles.root_registry.get(&root_pb);
                 let bits = bits as libc::mode_t;
@@ -2459,47 +2624,45 @@ impl FsProcesses {
                 .await
                 .unwrap_or_else(|_je| err(FSERR_IO, "spawn_blocking task failed"))
             }
-            _ => err(
+            None => err(
                 FSERR_BAD_ARG,
                 "expected (String, String, u64<=0o7777, String)",
             ),
         };
+        // H-6 mirror: flip placeholder to Failure on syscall error.
+        if let Some(code_str) = extract_err_code(std::slice::from_ref(&reply)) {
+            self.finalize_failure_journal(fserr_to_code(&code_str), ack);
+        }
         let out = vec![reply];
         produce(&out, ack).await?;
         Ok(out)
     }
 
     // -------------------------------------------------------------------
-    // chown — (rootCanon, rel, owner, group) -> [true]
-    // Consensus mode: returns FSERR_UNSUPPORTED.
-    // Oracular: fchownat(AT_SYMLINK_NOFOLLOW).
+    // chown — (rootCanon, rel, owner, group, cmode) -> [true]
+    // Both Consensus and Oracular: fchownat(AT_SYMLINK_NOFOLLOW), with
+    // Consensus additionally journaling to WAL (post-2026-08-26 H-29-3
+    // lift).  Cross-node NSS-mapping is an operator responsibility:
+    // validators MUST agree on the uid/gid resolved from a given
+    // owner/group name for replay to converge on identical on-disk
+    // state.  See `WalEntry::owner` docstring.
     // -------------------------------------------------------------------
     pub async fn fs_chown(
         &self,
         contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
     ) -> Result<Vec<Par>, InterpreterError> {
         // Phase 9 slice 9b-ii: charge fs_chown weight at handler entry.
-        // See fs_open for the rationale on placement before unapply.
         self.metering.reserve_primitive(costs::fs_chown_cost())?;
         let Some((produce, is_replay, previous, args)) =
             self.is_contract_call().unapply(contract_args)
         else {
             return Err(illegal_argument_error("fs_chown"));
         };
-        // Slice 26: `(root, rel, owner, group, cmode, ack)`.  A
-        // `Consensus` cmode short-circuits with FSERR_UNSUPPORTED
-        // without touching the host filesystem, matching plan §369
-        // and spec §Storage cases 2 / 4 / 6.
+        // Slice 26: `(root, rel, owner, group, cmode, ack)`.
         let [root_par, rel_par, owner_par, group_par, cmode_par, ack] = args.as_slice() else {
             return Err(illegal_argument_error("fs_chown"));
         };
-        if is_replay {
-            produce(&previous, ack).await?;
-            return Ok(previous);
-        }
-        // C-26-F1 review fix: fail-closed on unrecognized cmode.  This
-        // check comes BEFORE the Consensus short-circuit so a
-        // malformed cmode never silently reaches the fallback.
+        // C-26-F1 review fix: fail-closed on unrecognized cmode.
         let cmode = match resolve_cmode(cmode_par) {
             Some(m) => m,
             None => {
@@ -2511,23 +2674,61 @@ impl FsProcesses {
                 return Ok(out);
             }
         };
-        let reply = if cmode == ConsensusMode::Consensus {
-            err(FSERR_UNSUPPORTED, "chown unavailable in consensus mode")
-        } else {
-            match (RhoString::unapply(root_par), RhoString::unapply(rel_par)) {
-                (Some(root), Some(rel)) => {
-                    let owner_opt = RhoString::unapply(owner_par);
-                    let group_opt = RhoString::unapply(group_par);
-                    let root_pb = PathBuf::from(root);
-                    let expected_root_id = self.handles.root_registry.get(&root_pb);
-                    chown_impl(&root_pb, rel, owner_opt, group_opt, expected_root_id).await
-                }
-                _ => err(
-                    FSERR_BAD_ARG,
-                    "expected (String, String, String|Nil, String|Nil, String)",
-                ),
-            }
+        // Parse args deterministically for both sides.
+        let parsed = match (RhoString::unapply(root_par), RhoString::unapply(rel_par)) {
+            (Some(root), Some(rel)) => Some((
+                root,
+                rel,
+                RhoString::unapply(owner_par),
+                RhoString::unapply(group_par),
+            )),
+            _ => None,
         };
+        // Journal pre-syscall on both sides (H-29-3 lift, 2026-08-26).
+        // The WAL entry captures owner/group as-supplied String values;
+        // replay is operator-responsible for NSS-matching per
+        // `WalEntry::owner` docstring.
+        if let Some((root, rel, owner_opt, group_opt)) = &parsed {
+            let canon_path = canonicalize_lexical(root, rel);
+            if self
+                .journal_path_mutation_single(
+                    cmode,
+                    WalOp::Chown,
+                    canon_path,
+                    None,
+                    owner_opt.clone(),
+                    group_opt.clone(),
+                    ack,
+                )
+                .await
+                .is_err()
+            {
+                let out = vec![err(FSERR_QUOTA_EXCEEDED, "WAL cap exceeded")];
+                produce(&out, ack).await?;
+                return Ok(out);
+            }
+        }
+        if is_replay {
+            if let Some(code_str) = extract_err_code(&previous) {
+                self.finalize_failure_journal(fserr_to_code(&code_str), ack);
+            }
+            produce(&previous, ack).await?;
+            return Ok(previous);
+        }
+        let reply = match parsed {
+            Some((root, rel, owner_opt, group_opt)) => {
+                let root_pb = PathBuf::from(root);
+                let expected_root_id = self.handles.root_registry.get(&root_pb);
+                chown_impl(&root_pb, rel, owner_opt, group_opt, expected_root_id).await
+            }
+            None => err(
+                FSERR_BAD_ARG,
+                "expected (String, String, String|Nil, String|Nil, String)",
+            ),
+        };
+        if let Some(code_str) = extract_err_code(std::slice::from_ref(&reply)) {
+            self.finalize_failure_journal(fserr_to_code(&code_str), ack);
+        }
         let out = vec![reply];
         produce(&out, ack).await?;
         Ok(out)

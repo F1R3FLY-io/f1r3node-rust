@@ -1383,6 +1383,14 @@ mod tests {
         // on `ell > cap`, and the 4 File.rho callers now pass
         // `67108864` = MAX_WRITE_BYTES.
         //
+        // Anchor roll 2026-08-26 (H-29-3 lift slice 1): Dir.rho methods
+        // removeFile / rename / copyFile / chmod and File.rho::chmod
+        // drop their Consensus-cap fail-closed guards; File.rho::chown
+        // docstring updated to reflect post-lift semantics.  Consensus-
+        // cap path-based mutations now dispatch to the native handlers,
+        // which journal WAL entries + perform the syscall.  See the
+        // "H-29-3 lift" plan-doc entry for full description.
+        //
         // Prior anchor: 1f3e8878 (Phase 8 review cursor-relative TOCTOU docstring, 2026-08-26).
         // Prior anchor: 5efce8f4 (streaming-slice Step 5 Fixup A close-on-malformed, 2026-08-26).
         // Prior anchor: 60035818 (streaming-slice Step 5 initial Dir.rho swap, 2026-08-25).
@@ -1393,7 +1401,8 @@ mod tests {
         // Prior anchor: 126a35ab (slice 9c-i reply-payload cap, 2026-08-23).
         // Prior anchor: 5f41dafe (cost-accounted-rho merge, 2026-08-21).
         // Prior anchor: c243b4db (pre-merge).
-        const EXPECTED: &str = "1e6c53b80fcd0ba539d814de111c42ae8f70b946883b0371840f60b33b7d44f7";
+        // Prior anchor: 1e6c53b8 (pre-H-29-3-lift, 2026-08-26).
+        const EXPECTED: &str = "91adaac8bac6c784bce71e0a37bb97073fb233a8145e00c546e2f00e8241a736";
         assert_eq!(
             hex, EXPECTED,
             "M-12: compose_fs_genesis_source() hash changed.  If intentional \
