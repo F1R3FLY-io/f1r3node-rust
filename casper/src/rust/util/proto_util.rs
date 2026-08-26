@@ -684,7 +684,7 @@ mod fork_choice_b1_repro_tests {
             }
         }
         for b in blocks {
-            bms.add(b).unwrap();
+            assert!(bms.add(b).is_ok(), "test DAG metadata insert failed");
         }
         KeyValueDagRepresentation {
             dag_set,
