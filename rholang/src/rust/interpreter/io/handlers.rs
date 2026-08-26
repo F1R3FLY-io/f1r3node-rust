@@ -4371,37 +4371,14 @@ mod cmode_tests {
         );
     }
 
-    #[test]
-    fn fs_lock_range_legacy_arity_7_defaults_wait_false() {
-        // Transitional shim: while File.rho hasn't been updated to
-        // pass wait yet (sub-4), the 7-arg call must still work and
-        // default wait: false.  Sub-4 removes this branch when
-        // File.rho + hex are rolled.
-        let src = include_str!("handlers.rs");
-        let fn_start = src
-            .find("pub async fn fs_lock_range")
-            .expect("handlers.rs missing fs_lock_range definition");
-        let window = &src[fn_start..std::cmp::min(fn_start + 4000, src.len())];
-        assert!(
-            window.contains("[fd, off, len, mode, holder, cmode, ack]"),
-            "sub-2 shim: fs_lock_range must accept the legacy 7-arg \
-             form (removed in sub-4 when File.rho passes 8 args)"
-        );
-    }
-
-    #[test]
-    fn fs_lock_sequential_legacy_arity_4_defaults_wait_false() {
-        let src = include_str!("handlers.rs");
-        let fn_start = src
-            .find("pub async fn fs_lock_sequential")
-            .expect("handlers.rs missing fs_lock_sequential definition");
-        let window = &src[fn_start..std::cmp::min(fn_start + 4000, src.len())];
-        assert!(
-            window.contains("[fd, holder, cmode, ack]"),
-            "sub-2 shim: fs_lock_sequential must accept the legacy \
-             4-arg form (removed in sub-4)"
-        );
-    }
+    // Retired 2026-08-26 (Phase 8 arity tightening, commit 5e8f3e2a0):
+    // `fs_lock_range_legacy_arity_7_defaults_wait_false` and
+    // `fs_lock_sequential_legacy_arity_4_defaults_wait_false` pinned
+    // the transitional shim that accepted arity-7/4 calls with
+    // wait defaulted to false.  Sub-4 retired the shim; every
+    // File.rho caller now passes arity 8/5 explicitly.  The
+    // inverse invariant (shim is NOT present) is now pinned by
+    // `fileio_cost_spec::lock_range_and_sequential_handlers_reject_arity_shim`.
 
     /// **Sub-6 review round-2 source-scan pin (BL-1)**:
     /// fs_release_all_for_holder MUST invoke
