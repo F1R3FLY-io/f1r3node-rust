@@ -10492,6 +10492,42 @@ boundary. Trie-native continuation and join egress are separately tracked by pgm
 full release-workspace result belongs to the next stable-coordinate revalidation and is not inferred
 from the focused and formal gates above.
 
+#### 5.45.4 Release-mode identity repair and exact recursion-census closure
+
+The first exact release-workspace gate after SS-C18 exposed a build-mode defect in the shared
+semantic-identity insertion helper. The required `PathMap` endpoint mutation was the argument of a
+`debug_assert!`; release compilation therefore removed the insertion itself. Debug tests had
+observed the intended first-representative rule, while release ESet/EMap admission could observe an
+empty identity index. The repair executes `set_val` unconditionally, retains only the
+`previous.is_none()` check as a diagnostic, and adds a non-empty prefix/descendant regression that
+pins first-value preservation at both trie endpoints. This is not a new identity rule: it restores
+debug/release equivalence for the rule already specified and tested.
+
+The same audit found two iterator advances used only to diagnose complete consumption. Those
+advances are now explicitly debug-only locals; neither participates in production traversal.
+Campaign-scoped all-target Clippy with `clippy::debug_assert_with_mut_call` denied passes for
+`models` and `rholang`. The release `models` library gate passes 292/292 tests. Generated/formal
+equivalence gates pass 13/13 manifest cases, 15/15 protobuf differentials, 13/13 schema-meta cases,
+and 12/12 Rholang protobuf-egress cases.
+
+The handwritten recursion census also reported receiver-erased source-identity edges rather than
+runtime recursion: same-spelled region constructors, direct `Display::fmt` delegation, and the
+opaque EPathMap-to-`Par` callback boundary. Constructors now carry source-specific names, display
+delegation uses formatting syntax, and EPathMap value preflight calls the opaque `Par` primitive
+directly. The sole remaining generated EPathMap-to-`Var` apparent self-edge has one exact
+disposition tied to the strictly decreasing descriptor-depth registry; there is no wildcard
+exemption or traversal-depth limit. Debug and release censuses both pass 13/13 tests and classify
+all 713 recursive components: 108 term-family components, 32 mutually recursive components across
+51 files, with all 108 term-family components assigned exactly one disposition.
+
+The principal evidence logs have SHA-256 digests
+`bd57dd6cfb36b338721020f783447f9491e8be37887da2b5242b9e6806decce3` (debug census),
+`3c9f87e3a5be31756ca3e60163d945acb0542d6435889a09fbd4579ec14fed73` (release census),
+`3035f85c282e50a1f98b2e2ce3f39471f4c8fd2d0f2ef676c5be90c7b6ac0a9e` (release models), and
+`9ed97645cbc85f41a175c6e5caee9d97183afdf6ba14464038400bf116996261` (campaign lint). These
+focused results close the defect and census findings; they do not substitute for the exact
+post-commit full release-workspace gate, which remains open at this coordinate.
+
 ---
 
 ## 6. Discussion

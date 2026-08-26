@@ -6231,8 +6231,11 @@ fn init_path(
 fn take_single_path_entry(map: EPathMap) -> Option<OwnedEPathMapEntry> {
     let mut entries = map.into_owned_parts().entries;
     let first = entries.next()?;
+    #[cfg(debug_assertions)]
+    let exactly_one_entry = entries.next().is_none();
+    #[cfg(debug_assertions)]
     debug_assert!(
-        entries.next().is_none(),
+        exactly_one_entry,
         "singleton fast path received multiple entries"
     );
     Some(first)

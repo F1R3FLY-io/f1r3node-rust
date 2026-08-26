@@ -28,8 +28,11 @@ pub(crate) fn insert_semantic_par_identity<V: Clone + Send + Sync + Unpin>(
     if let Some(resident) = zipper.val() {
         Some(resident.clone())
     } else {
-        debug_assert!(zipper.set_val(value).is_none());
-        None
+        // The insertion is observable production work. Keep it outside the
+        // diagnostic assertion so release builds cannot compile it away.
+        let previous = zipper.set_val(value);
+        debug_assert!(previous.is_none());
+        previous
     }
 }
 
@@ -77,5 +80,29 @@ mod tests {
             Some(3)
         );
         assert_eq!(identities.get_val_at(&[]), Some(&3));
+    }
+
+    #[test]
+    fn insert_preserves_first_values_at_nonempty_prefix_and_descendant_endpoints() {
+        let mut identities = PathMap::new();
+
+        assert_eq!(
+            insert_semantic_par_identity(&mut identities, [0x10, 0x20], 3u8),
+            None
+        );
+        assert_eq!(
+            insert_semantic_par_identity(&mut identities, [0x10, 0x20, 0x30], 5u8),
+            None
+        );
+        assert_eq!(
+            insert_semantic_par_identity(&mut identities, [0x10, 0x20], 7u8),
+            Some(3)
+        );
+        assert_eq!(
+            insert_semantic_par_identity(&mut identities, [0x10, 0x20, 0x30], 11u8),
+            Some(5)
+        );
+        assert_eq!(identities.get_val_at(&[0x10, 0x20]), Some(&3));
+        assert_eq!(identities.get_val_at(&[0x10, 0x20, 0x30]), Some(&5));
     }
 }

@@ -534,7 +534,10 @@ fn drive_canonical_par_tree<'a>(
                             ordered_children.push(CanonicalParTask::OwnedPar(child));
                         }
                     }
-                    debug_assert!(tries.next().is_none());
+                    #[cfg(debug_assertions)]
+                    let all_owned_tries_consumed = tries.next().is_none();
+                    #[cfg(debug_assertions)]
+                    debug_assert!(all_owned_tries_consumed);
                 }
                 ordered_children.reverse();
                 work.append(&mut ordered_children);

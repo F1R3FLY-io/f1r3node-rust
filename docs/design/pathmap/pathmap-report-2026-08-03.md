@@ -97,11 +97,13 @@ The reverse-zipper repair's former entry (CBR-046) is retired as a bug fix under
 
 ## Abstract
 
-`EPathMap` — the Rholang path-map value — is stored by PathMap, a prefix-compressed byte trie with
-native zipper, algebra, lattice, and merkle operations. Until this campaign, compatibility boundaries
-repeatedly projected that trie to a flat list of `Par` entries: serialization re-encoded every entry
-from scratch on every encode, the network reader re-filed the list under a 100-level recursion budget,
-and value-free terminating topology was unrepresentable.
+`EPathMap` — the Rholang path-map value — is now stored by PathMap, a prefix-compressed byte trie with
+native zipper, algebra, lattice, and merkle operations. At the campaign's `dev` baseline, however,
+the authoritative protobuf carrier was `ps: Vec<Par>`. Lookup adapters reconstructed a temporary
+`PathMap<Par>` from that vector—rendering each `Par` as text, parsing and encoding its path, and
+cloning its value—before calling `PathMap::get`; serialization and other boundaries also retained or
+reconstructed flat entry lists. The network reader re-filed the list under a 100-level recursion
+budget, and value-free terminating topology was unrepresentable.
 
 The final state eliminates the projection everywhere. **The representation is homogeneous** —
 `Empty | Set(PathMap<()>) | Map(PathMap<Par>)` — with mode selection at the first membership operation
@@ -116,7 +118,10 @@ Headline measurements at a fixed 1,024-entry scale (**MEASURED**, §5.4): EPM1 s
 subject in **6,252 B** against **491,528 B** for the list projection (**78.619×**) and the map subject
 in **87,669 B** against **662,536 B** (**7.557×**); native indexed lookup answers in **32.00 /
 41.86 ns per key** against **$`\approx 258`$ µs** for a linear scan over the projection (**8,060.736× /
-6,183.905×**); the warm snapshot accessor is **20 ns**. Independent cachegrind ladders fit the set and
+6,183.905×**). This lookup ratio is an isolated representation/algorithm control, not a measurement
+of the former end-to-end `dev` lookup path, which rebuilt a temporary trie and then performed the
+indexed query; §5.4.1 reports the separate integration measurement. The warm snapshot accessor is
+**20 ns**. Independent cachegrind ladders fit the set and
 map hashing subjects at Ir exponents **0.9918** and **1.0175** — linear (§5.6). The costs are reported
 with the same candour: the stack-safe canonical-key classifier is **3.79× slower at depth 1** — the
 production-common case — with crossover before depth 8 and **233.874×** at depth 1,024 (§5.5), and
@@ -169,17 +174,20 @@ single-sourcing rule (§5.3).
 
 ## 1. Introduction
 
-### 1.1 The problem: a trie treated as a list
+### 1.1 The problem: a trie repeatedly reconstructed from a list
 
-An `EPathMap` stores a PathMap trie, and the trie is the value: prefix-compressed shared structure,
-value-free terminating topology, $`\mathcal{O}(1)`$ maintained size, native lattice algebra, and
-merkleization. Yet at every compatibility boundary — the two serializers, the network reader, the
-pretty printer, hashing, ordering — the implementation repeatedly flattened it to a list of `Par`
-entries. The projection had four independent costs, each established in this report or its companions:
+The desired `EPathMap` value is a PathMap trie: prefix-compressed shared structure, value-free
+terminating topology, $`\mathcal{O}(1)`$ maintained size, native lattice algebra, and merkleization.
+At the `dev` baseline the protobuf `EPathMap` instead owned `ps: Vec<Par>`. The lookup adapter rebuilt
+a fresh `PathMap<Par>` from that list before an indexed query, while the two serializers, network
+reader, pretty printer, hashing, and ordering retained or reconstructed flat entry projections. The
+split authority had four independent costs, each established in this report or its companions:
 
-1. **Work before the requested operation begins.** A list projection is $`\Theta(n)`$ allocation
-   whatever the caller wanted — a lookup that PathMap answers in nanoseconds paid a full
-   materialization first (**MEASURED**, §5.4: 8,060× on the set subject).
+1. **Work before the requested operation begins.** A lookup that PathMap answers in nanoseconds paid
+   a full $`\Theta(n)`$ rebuild first, including `Par`-to-text-to-path conversion and value cloning.
+   Section 5.4's 8,060× / 6,184× ratios compare the native lookup primitive with a deliberately
+   linear projected control; they do **not** measure that baseline rebuild-plus-lookup path. The
+   integration effect is measured separately in §5.4.1.
 2. **Representation loss.** A `ps: Vec<Par>` structurally cannot say *"this path terminates but
    carries no value"* — value-free topology, which the set mode's semantics require (**DERIVED**,
    the value-free-topology witnesses in `models/tests/epathmap_pathmap_native_zipper.rs`).
@@ -541,7 +549,10 @@ seven-sample timing rows while reproducing the exact serialized sizes. Durable t
 
 **Row definitions.** *EPM1 bytes* = the snapshot length; *list-projection bytes* = the same value
 serialized as the flat entry list EPM1 replaced; *native indexed lookup* = one keyed query answered
-by the trie; *linear projected lookup* = the same query answered by scanning the projection;
+by the trie; *linear projected lookup* = the same query answered by scanning the projection. The
+lookup pair is an isolated algorithmic control: it establishes the cost of discarding the index and
+querying only the flat carrier. It is not the old production `dev` call path, which deserialized
+`ps: Vec<Par>`, reconstructed a temporary `PathMap<Par>`, and then called `get`;
 *cold encode* = first serialization of a clone family (memo empty); *warm snapshot accessor* =
 serialization with the memo filled; the three *decode* rows are the direct EPM1 reader, the
 generated protobuf PDA reading from shared `Bytes`, and the bincode reader over the generated
@@ -567,9 +578,10 @@ the preceding cold release build-plus-run completed in **4 min 34.55 s** at **95
 both without swap.
 
 These are fixed-machine comparative measurements, not universal latency claims. **The engineering
-conclusion is the ratio and the complexity class**: flattening destroys trie compression (78.6× /
-7.6× on bytes) and turns indexed lookup into a linear scan (8,061× / 6,184× at this scale, and
-growing with $`n`$).
+conclusion is the representation and complexity contrast**: flattening destroys trie compression
+(78.6× / 7.6× on bytes), and a consumer restricted to the flat carrier either scans it linearly
+(the 8,061× / 6,184× control) or pays to reconstruct an index before querying it (the historical
+`dev` route). The latter route's integrated effect belongs to §5.4.1.
 
 #### 5.4.1 Integration-path root preservation and E-8b
 
@@ -936,9 +948,11 @@ the neutral empty refuses to guess which of those worlds it is in.
    Map(PathMap<Par>)` — with value-free topology observable end-to-end and refusals
    (`AmbiguousEmpty`, `ValueConflict`) where inference would have to guess.
 3. **The projection's costs are measured, not asserted**: 78.619× / 7.557× serialized-size
-   inflation and 8,060.736× / 6,183.905× lookup inflation at the fixed 1,024-entry scale — and the
-   design's own prices are measured with the same instruments: 3.79× on the shallow classifier
-   case, +8 + $`|U(m)|`$ B for the superseded FORM ②, and no key-stream compression.
+   inflation and an isolated 8,060.736× / 6,183.905× native-index-versus-linear-projection contrast
+   at the fixed 1,024-entry scale. The lookup ratio is not mislabeled as the historical `dev`
+   rebuild-plus-indexed-query speedup; that integration has its own §5.4.1 result. The design's own
+   prices are measured with the same instruments: 3.79× on the shallow classifier case, +8 +
+   $`|U(m)|`$ B for the superseded FORM ②, and no key-stream compression.
 4. **Both directions of both lanes are depth-unbounded**: the per-entry read ceiling died with the
    tag-1 arm, and the generated decode PDAs read EPM1 at depth 4,096 on a 256 KiB stack — closing
    the wire asymmetry recorded as CBR-028.

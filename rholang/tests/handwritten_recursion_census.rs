@@ -605,12 +605,11 @@ const RECURSION_DISPOSITIONS: &[ComponentDisposition] = &[
         disposition: Disposition::Measured("RhoPathCursor::next is an explicit Vec<RhoPathStep> machine; the textual self-loop is BTreeMap::Iter::next, and the cursor gate drives depth and width 20,000"),
     },
     ComponentDisposition {
-        label: "models.rholang.protobuf_encoder.new",
+        label: "models.rholang.protobuf_schema.epathmap_try_encode_certified_egress",
         members: members![
-            ("models/src/rust/rholang/protobuf_encoder.rs", "new", 0),
-            ("models/src/rust/rholang/protobuf_encoder.rs", "new", 1),
+            ("models/src/rust/rholang/protobuf_schema.rs", "try_encode_certified_egress", 1),
         ],
-        disposition: SAME_NAME_OVERLOADS,
+        disposition: Disposition::NotATermDepthCycle("the receiver-erased call is statically EPathMap -> Var and follows the generated strictly decreasing descriptor-depth registry; PathMap<Par> values use the opaque emit_par callback rather than this trait method, so nested term depth cannot close the apparent self-edge"),
     },
     ComponentDisposition {
         label: "models.sorted_par_hash_set.contains",

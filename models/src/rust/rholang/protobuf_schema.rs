@@ -488,7 +488,7 @@ pub enum CertifiedEgressError {
 impl fmt::Display for CertifiedEgressError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Par(error) => error.fmt(formatter),
+            Self::Par(error) => write!(formatter, "{error}"),
             Self::LengthOverflow { context } => {
                 write!(
                     formatter,
@@ -1290,7 +1290,11 @@ fn certified_epathmap_snapshot_len(
     if let Some(values) = map.entry_trie().map_trie() {
         let mut zipper = values.read_zipper();
         while let Some(value) = zipper.to_next_get_val() {
-            let body_len = value.certified_egress_encoded_len(preflight)?;
+            // EPM1 map values are the opaque `Par` cut. Calling the preflight
+            // primitive directly records the same ParBody event while making
+            // it impossible to mistake this edge for recursive EPathMap
+            // trait dispatch.
+            let body_len = preflight.par_encoded_len(value)?;
             checked_egress_add(
                 &mut total,
                 certified_epathmap_value_len(body_len, "EPathMap map value")?,

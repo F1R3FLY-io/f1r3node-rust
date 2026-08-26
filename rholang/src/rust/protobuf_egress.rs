@@ -69,9 +69,9 @@ impl fmt::Display for ProtobufEgressError {
                 formatter,
                 "protobuf body length {body_bytes} overflows the addressable framed buffer"
             ),
-            Self::Encode(error) => error.fmt(formatter),
-            Self::Par(error) => error.fmt(formatter),
-            Self::Certified(error) => error.fmt(formatter),
+            Self::Encode(error) => write!(formatter, "{error}"),
+            Self::Par(error) => write!(formatter, "{error}"),
+            Self::Certified(error) => write!(formatter, "{error}"),
             Self::AccountingOverflow { context } => {
                 write!(formatter, "protobuf egress accounting overflow while counting {context}")
             }

@@ -2200,7 +2200,10 @@ is identical to the retained absolute-key scan, including result order.
   counterexample; TLC explores 2,816 distinct states with no error.
 - At 1,024 entries the explicit list projection is 78.619× the EPM1 set size and 7.557× the EPM1
   map size; on the superseding warm rerun, projected lookup is 8,060.736× and 6,183.905× slower
-  than native indexed lookup (full benchmark: the
+  than native indexed lookup. This is an isolated algorithmic control, not the historical `dev`
+  runtime path: `dev` deserialized `ps: Vec<Par>`, rebuilt a temporary `PathMap<Par>`, and then
+  called `get`. The separate integration-path experiment measures that class of runtime work (full
+  benchmark: the
   [PathMap report §5.4](../design/pathmap/pathmap-report-2026-08-03.md#54-epm1-performance-at-fixed-scale)
   and its durable TSV).
 - Pinned implementation coordinates at `26876b65`: the carrier is
@@ -5502,6 +5505,24 @@ not prove arbitrary protobuf parsing or BLAKE2b collision resistance. At this ch
 full-release workspace and complete generated end-to-end lifecycle remain open. Verdict and
 post-state axes therefore remain `UNVERIFIED`; this continuation reduces the named gap and does not
 prematurely retire CBR-053.
+
+**CBR-053 living continuation (2026-08-26, release identity restoration and census precision).**
+The first exact release-workspace gate after the certified-egress checkpoint found that the
+semantic-identity helper placed its required `PathMap::set_val` mutation inside `debug_assert!`.
+Release compilation removed the mutation, so release-only ESet/EMap admission could fail to retain
+the first representative even though debug builds followed the specified identity rule. The repair
+makes the insertion unconditional and keeps only its prior-value invariant diagnostic. A
+prefix-plus-descendant regression, the release `models` library suite (292/292), and focused
+ESet/EMap admission tests agree with the existing debug behavior and independent identity oracle.
+
+This correction does not introduce a schema, canonical key, hash, COMM-order, matching-authority,
+or metering decision. It restores the already documented first-representative rule across build
+modes; relative to the broken intermediate release checkpoint, observable map/set results are
+corrected. Receiver-erased false edges in the handwritten recursion census were separately made
+source-explicit without adding an exemption or depth bound. Debug and release census gates each
+classify all 713 recursive components and exactly disposition all 108 term-family components. The
+exact post-repair full release-workspace gate remains open, so CBR-053's verdict and post-state axes
+remain `UNVERIFIED`.
 
 ### B.2 The original commit-level exemptions
 

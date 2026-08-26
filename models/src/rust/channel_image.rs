@@ -231,7 +231,9 @@ impl ChannelImageV2 {
         ValidatedChannelImage { bytes: &self.0 }
     }
 
-    pub fn decode_par(&self) -> Result<Par, ChannelImageError> { self.as_validated().decode_par() }
+    pub fn decode_par(&self) -> Result<Par, ChannelImageError> {
+        decode_validated_channel_image(self.as_bytes())
+    }
 
     /// BLAKE2b-256 reference for content-addressed catalogs. The RCI2 domain
     /// prefix is inside the hashed bytes. The digest is never a structural-key
@@ -306,10 +308,14 @@ impl<'a> ValidatedChannelImage<'a> {
     /// Decode to the identity-normalized representative. Top-level
     /// `locally_free` is empty because it is not part of `Par` equality.
     pub fn decode_par(self) -> Result<Par, ChannelImageError> {
-        let (par, consumed) = parse_prefix(self.bytes, true)?;
-        debug_assert_eq!(consumed, self.bytes.len());
-        Ok(par.expect("the decode mode constructs one Par"))
+        decode_validated_channel_image(self.bytes)
     }
+}
+
+fn decode_validated_channel_image(bytes: &[u8]) -> Result<Par, ChannelImageError> {
+    let (par, consumed) = parse_prefix(bytes, true)?;
+    debug_assert_eq!(consumed, bytes.len());
+    Ok(par.expect("the decode mode constructs one Par"))
 }
 
 fn parse_prefix(bytes: &[u8], build: bool) -> Result<(Option<Par>, usize), ChannelImageError> {

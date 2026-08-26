@@ -7,6 +7,9 @@
 #   release profile, one Cargo job, systemd-run MemoryMax=4G MemorySwapMax=0 (zero swap).
 # Command-level: warm run 6.34 s / 104036 KiB peak RSS; preceding cold build+run
 #   4 min 34.55 s / 957940 KiB peak RSS; both without swap.
+# Interpretation: native_indexed_lookup versus linear_projected_lookup is an isolated algorithmic
+#   control, not the historical dev runtime. Dev decoded ps: Vec<Par>, reconstructed a temporary
+#   PathMap<Par>, and then called get; the integration-path experiment records that runtime class.
 # Regenerate: see report Appendix A (models bench epathmap_pathmap_native under the same caps).
 # Columns: measurement = row id; unit = B, ns, ns/key, or x (dimensionless ratio);
 #   set / map = the value for the set-mode and map-mode subject at this fixed scale.

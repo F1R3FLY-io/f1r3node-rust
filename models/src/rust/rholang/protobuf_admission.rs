@@ -532,7 +532,7 @@ enum MessageWait<'src> {
 }
 
 impl<'src> MessageFrame<'src> {
-    fn new(
+    fn from_message_region(
         region: AdmissionRegion<'src>,
         program: &'static RhoMatchProgram,
     ) -> Result<Self, CanonicalProtobufAdmissionError> {
@@ -540,10 +540,10 @@ impl<'src> MessageFrame<'src> {
             .position_at(0)
             .expect("indexed regions own their start")
             .physical;
-        Self::new_at(region, program, region_start)
+        Self::from_message_region_at(region, program, region_start)
     }
 
-    fn new_at(
+    fn from_message_region_at(
         region: AdmissionRegion<'src>,
         program: &'static RhoMatchProgram,
         region_start: CanonicalByteProvenance,
@@ -2036,7 +2036,7 @@ struct MapFrame<'src> {
 }
 
 impl<'src> MapFrame<'src> {
-    fn new(
+    fn from_map_region(
         owner: &'static RhoMatchProgram,
         outer_field: u32,
         value_type_id: u16,
@@ -2152,7 +2152,7 @@ enum EPathMapWait {
 }
 
 impl<'src> EPathMapFrame<'src> {
-    fn new(
+    fn from_epm1_region(
         owner: &'static RhoMatchProgram,
         field: u32,
         snapshot: AdmissionRegion<'src>,
@@ -2681,9 +2681,9 @@ fn message_step<'src>(
                     body: body.clone(),
                     field_position,
                 });
-                Ok(FrameAction::Push(Frame::Message(MessageFrame::new(
-                    body, child,
-                )?)))
+                Ok(FrameAction::Push(Frame::Message(
+                    MessageFrame::from_message_region(body, child)?,
+                )))
             }
             _ => {
                 validate_scalar(frame, &field, variant.protobuf_kind, ScalarPresence::Oneof)?;
@@ -2724,9 +2724,9 @@ fn message_step<'src>(
                     body: body.clone(),
                     field_position,
                 });
-                Ok(FrameAction::Push(Frame::Message(MessageFrame::new(
-                    body, child,
-                )?)))
+                Ok(FrameAction::Push(Frame::Message(
+                    MessageFrame::from_message_region(body, child)?,
+                )))
             }
             RhoMatchFieldKind::StringMessageMap(type_id) => {
                 let field_number = field.number;
@@ -2735,7 +2735,7 @@ fn message_step<'src>(
                     slot,
                     field_position,
                 });
-                Ok(FrameAction::Push(Frame::Map(MapFrame::new(
+                Ok(FrameAction::Push(Frame::Map(MapFrame::from_map_region(
                     frame.program,
                     field_number,
                     type_id,
@@ -2749,11 +2749,9 @@ fn message_step<'src>(
                     slot,
                     field_position,
                 });
-                Ok(FrameAction::Push(Frame::EPathMap(EPathMapFrame::new(
-                    frame.program,
-                    field_number,
-                    body,
-                )?)))
+                Ok(FrameAction::Push(Frame::EPathMap(
+                    EPathMapFrame::from_epm1_region(frame.program, field_number, body)?,
+                )))
             }
             RhoMatchFieldKind::Oneof(_) => {
                 Err(frame.field_error(&field, "unresolved oneof marker reached admission"))
@@ -2824,9 +2822,9 @@ fn map_step<'src>(
             frame.saw_value = true;
             frame.value_position = Some(field_position);
             frame.waiting_value = true;
-            Ok(FrameAction::Push(Frame::Message(MessageFrame::new(
-                value, program,
-            )?)))
+            Ok(FrameAction::Push(Frame::Message(
+                MessageFrame::from_message_region(value, program)?,
+            )))
         }
         1 | 2 => Err(frame.field_error(&field, "canonical protobuf map-entry field is duplicated")),
         _ => Err(frame.field_error(
@@ -2925,11 +2923,16 @@ fn epathmap_step<'src>(
                     });
                     return match completed.obligation.kind {
                         CanonicalPathObligationKind::RawParEscape => Ok(FrameAction::Push(
-                            Frame::Message(MessageFrame::new(body, &PAR_PROTOBUF_REGION_PROGRAM)?),
+                            Frame::Message(MessageFrame::from_message_region(
+                                body,
+                                &PAR_PROTOBUF_REGION_PROGRAM,
+                            )?),
                         )),
-                        CanonicalPathObligationKind::NestedEpm1 => Ok(FrameAction::Push(
-                            Frame::EPathMap(EPathMapFrame::new(frame.owner, frame.field, body)?),
-                        )),
+                        CanonicalPathObligationKind::NestedEpm1 => {
+                            Ok(FrameAction::Push(Frame::EPathMap(
+                                EPathMapFrame::from_epm1_region(frame.owner, frame.field, body)?,
+                            )))
+                        }
                     };
                 }
             }
@@ -2955,10 +2958,9 @@ fn epathmap_step<'src>(
                 }
                 if let Some(value) = value_body {
                     frame.waiting = Some(EPathMapWait::MapValue);
-                    return Ok(FrameAction::Push(Frame::Message(MessageFrame::new(
-                        value,
-                        &PAR_PROTOBUF_REGION_PROGRAM,
-                    )?)));
+                    return Ok(FrameAction::Push(Frame::Message(
+                        MessageFrame::from_message_region(value, &PAR_PROTOBUF_REGION_PROGRAM)?,
+                    )));
                 }
             }
         }
@@ -3005,7 +3007,9 @@ fn validate_canonical_protobuf_inner<'src>(
         byte_native_validations: 1,
         ..CanonicalProtobufAdmissionStats::default()
     };
-    let mut frames: Vec<Frame<'src>> = vec![Frame::Message(MessageFrame::new(input, root)?)];
+    let mut frames: Vec<Frame<'src>> = vec![Frame::Message(MessageFrame::from_message_region(
+        input, root,
+    )?)];
     loop {
         let action = match frames
             .last_mut()

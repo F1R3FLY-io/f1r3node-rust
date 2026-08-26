@@ -175,7 +175,10 @@ Evidence: DERIVED and MEASURED. The complete lineage, fixed-scale measurements, 
 and proofs are recorded in the [EPathMap evidence ledger](pathmap-report-2026-08-03.md). EPM1 set
 serialization measured 6,252 bytes against 491,528 bytes for the list projection at 1,024 entries;
 native set lookup measured 32.00 ns per key against approximately 258 microseconds for the projected
-linear scan. The campaign did not modify the PathMap crate.
+linear scan. That lookup pair is an isolated algorithmic control, not the historical `dev` runtime:
+`dev` deserialized `ps: Vec<Par>`, rebuilt a temporary `PathMap<Par>` through `Par`-to-text-to-path
+conversion and value cloning, and only then called `get`. The campaign did not modify the PathMap
+crate.
 
 Finding: The correct representation is:
 
@@ -2119,6 +2122,24 @@ protobuf schema, canonical bytes, hashes, COMM order, match authority, state roo
 and metering rules are unchanged. It extends CBR-053's neutral implementation evidence rather than
 opening a new consensus record. Trie-native continuation and join egress remain the next distinct
 boundary under pgmcp #6029.
+
+### J-029 — 2026-08-26: distinguish an algorithmic projection control from the `dev` lookup path
+
+**CORRECTION.** The fixed-scale EPM1 experiment validly compares one native `PathMap` exact-key
+query with one linear scan over a materialized entry projection. It does not reproduce the
+historical production lookup route and must not be cited as a direct `dev`-to-current runtime
+speedup. At the campaign baseline, protobuf first decoded `EPathMap.ps` as `Vec<Par>`;
+`PathMapCrateTypeMapper::e_pathmap_to_rholang_pathmap` then called
+`create_pathmap_from_elements`, which rendered every `Par` to a textual S-expression, parsed and
+encoded a byte path, cloned the `Par` into a fresh `PathMap<Par>`, and finally allowed the reducer to
+call `get`.
+
+**DECISION.** Retain the 8,060.736× / 6,183.905× measurement and raw rows as an explicitly labeled
+indexed-versus-linear algorithmic control. Never use those ratios as the branch-to-branch runtime
+claim. Use the preregistered integration experiment—32.281 ms to 18.730 ms and 4,119,482 to 278,527
+allocation events—for the measured effect of retaining the native root and removing repeated
+reconstruction/copy-on-write work. This correction changes interpretation only; no benchmark value,
+runtime byte, consensus axis, or PathMap source changed.
 
 ## Upstream PathMap integration request register
 
