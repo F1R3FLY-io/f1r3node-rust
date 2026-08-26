@@ -19,8 +19,8 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+from paired_benchmark_statistics import benjamini_hochberg, paired_statistics
 from scipy import __version__ as scipy_version
-from scipy.stats import shapiro, ttest_rel, wilcoxon
 
 SCHEMA = "parbag-protobuf-projection-v5"
 SEED = 0x4131_6027_2026_0825
@@ -234,79 +234,6 @@ def read_protocol(
     return raw, meta, loadavg, cells
 
 
-def sample_summary(values: list[float]) -> dict[str, float | int]:
-    return {
-        "n": len(values),
-        "mean": statistics.mean(values),
-        "median": statistics.median(values),
-        "minimum": min(values),
-        "maximum": max(values),
-        "standard_deviation": statistics.stdev(values),
-    }
-
-
-def paired_bootstrap_ratio(
-    controls: list[float], treatments: list[float], replicates: int, seed: int
-) -> dict[str, float]:
-    if replicates < 10_000:
-        raise ValueError("at least 10,000 bootstrap replicates are required")
-    generator = np.random.default_rng(seed)
-    indices = generator.integers(0, len(controls), size=(replicates, len(controls)))
-    control = np.asarray(controls, dtype=np.float64)
-    treatment = np.asarray(treatments, dtype=np.float64)
-    ratios = np.median(treatment[indices], axis=1) / np.median(control[indices], axis=1)
-    low, median, high = np.quantile(ratios, (0.005, 0.5, 0.995))
-    return {
-        "lower_0_5_percent": float(low),
-        "median": float(median),
-        "upper_99_5_percent": float(high),
-    }
-
-
-def paired_statistics(
-    control: list[float], treatment: list[float], replicates: int, seed: int
-) -> dict[str, Any]:
-    differences = [b - a for a, b in zip(control, treatment)]
-    if all(difference == 0 for difference in differences):
-        paired_t_pvalue = 1.0
-        signed_rank_pvalue = 1.0
-        shapiro_pvalue = 1.0
-    else:
-        paired_t_pvalue = float(ttest_rel(treatment, control).pvalue)
-        signed_rank_pvalue = float(
-            wilcoxon(treatment, control, alternative="two-sided").pvalue
-        )
-        shapiro_pvalue = float(shapiro(differences).pvalue)
-    return {
-        "control": sample_summary(control),
-        "treatment": sample_summary(treatment),
-        "paired_difference_ns": sample_summary(differences),
-        "mean_treatment_control_ratio": statistics.mean(treatment)
-        / statistics.mean(control),
-        "median_treatment_control_ratio": statistics.median(treatment)
-        / statistics.median(control),
-        "paired_bootstrap_median_ratio_99_percent": paired_bootstrap_ratio(
-            control, treatment, replicates, seed
-        ),
-        "paired_t_two_sided_pvalue": paired_t_pvalue,
-        "paired_wilcoxon_two_sided_pvalue": signed_rank_pvalue,
-        "shapiro_pvalue_paired_difference": shapiro_pvalue,
-    }
-
-
-def benjamini_hochberg(pvalues: dict[str, float]) -> dict[str, float]:
-    ordered = sorted(pvalues.items(), key=lambda item: (item[1], item[0]))
-    adjusted: dict[str, float] = {}
-    running_minimum = 1.0
-    count = len(ordered)
-    for reverse_index in range(count - 1, -1, -1):
-        key, pvalue = ordered[reverse_index]
-        rank = reverse_index + 1
-        running_minimum = min(running_minimum, pvalue * count / rank)
-        adjusted[key] = min(1.0, running_minimum)
-    return adjusted
-
-
 def cell_name(cell: Cell) -> str:
     family, width, body, depth, multiplicity, output, sink = cell
     return (
@@ -341,6 +268,10 @@ def main() -> None:
                 args.bootstrap_replicates,
                 SEED + cell_index * len(ARMS) + arm_index,
             )
+            comparison["paired_difference_ns"] = comparison.pop("paired_difference")
+            comparison["paired_bootstrap_median_ratio_99_percent"] = comparison[
+                "paired_bootstrap_ratio_of_medians_99_percent"
+            ]
             comparison["position_median_ns"] = {
                 str(position): statistics.median(
                     float(observation[arm]["elapsed_ns"])
