@@ -69,7 +69,15 @@ fn with_libs(test_snippet: &str) -> String {
             writeLinesLoopWithOptions,
             mockFdCell, chmodLog, chownLog, truncLog,
             rmFileLog, rmDirLog, renameLog, copyLog,
-            writeAtLog, entriesCell
+            writeAtLog, entriesCell,
+            // Streaming-backing slice Step 5 (2026-08-25 pickup):
+            // Dir.rho::entries() now dispatches to the three streaming
+            // natives instead of bulk `fsEntries`.  Mocks below (kept
+            // right next to the `fsEntries` mock) reuse `entriesCell`
+            // for staging (`[true, list]` or `[false, code, msg]`) and
+            // walk the list one entry at a time via `streamCursorCell`.
+            fsEntriesStreamOpen, fsEntriesStreamNext, fsEntriesStreamClose,
+            streamCursorCell
         in {{
           // -- Mock in-memory file "syscalls" ------------------------
           //
@@ -326,9 +334,55 @@ fn with_libs(test_snippet: &str) -> String {
           // or [false, code, msg] on failure — matching Phase 1's
           // fs_entries.
           entriesCell!([true, []]) |
-          // Slice 26: `fsEntries` now takes a `cmode` string.
+          // Slice 26: `fsEntries` now takes a `cmode` string.  Kept
+          // as a mock in case a callsite outside Dir.rho::entries()
+          // ever forwards the bulk native — Dir.rho::entries() itself
+          // now goes through the streaming mocks below.
           contract fsEntries(@_root, @_rel, @_cmode, ret) = {{
             for (@reply <<- entriesCell) {{ ret!(reply) }}
+          }} |
+
+          // Streaming-backing slice Step 5 mocks.  Dir.rho::entries()
+          // dispatches to `fsEntriesStreamOpen` (returns [true, fd] or
+          // forwards the staged error), then repeatedly to
+          // `fsEntriesStreamNext` (pops one entry from the cursor;
+          // 2-element [false, "EOS"] on end), then to
+          // `fsEntriesStreamClose` (no-op reply).  The cursor state is
+          // stashed in `streamCursorCell` at open time and drained by
+          // Next; each open resets it, so a test that stages a
+          // different list before a second entries() call sees the
+          // fresh list on the next drain.  Fake fd = 1 (streaming
+          // handler-side fd allocation is out of scope for the mock).
+          streamCursorCell!([]) |
+          contract fsEntriesStreamOpen(@_root, @_rel, @_cmode, ret) = {{
+            for (@reply <<- entriesCell) {{
+              match reply {{
+                [true, list] => {{
+                  for (@_ <- streamCursorCell) {{
+                    streamCursorCell!(list) |
+                    ret!([true, 1])
+                  }}
+                }}
+                _ => ret!(reply)
+              }}
+            }}
+          }} |
+          contract fsEntriesStreamNext(@_fd, ret) = {{
+            for (@cur <- streamCursorCell) {{
+              match cur {{
+                [] => {{
+                  streamCursorCell!([]) |
+                  ret!([false, "EOS"])
+                }}
+                [head ...tail] => {{
+                  streamCursorCell!(tail) |
+                  ret!([true, head])
+                }}
+              }}
+            }}
+          }} |
+          contract fsEntriesStreamClose(@_fd, ret) = {{
+            ret!([true])
           }} |
 
           // fs_truncate — records n in truncLog for test verification.

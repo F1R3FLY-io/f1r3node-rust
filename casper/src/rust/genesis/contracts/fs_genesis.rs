@@ -1318,6 +1318,19 @@ mod tests {
         // of the Genesis deploy content — see the plan's
         // "Hard-fork surfaces flagged during Phase 10" section.
         //
+        // Anchor roll 2026-08-25 (streaming-backing slice Step 5):
+        // Dir.rho::entries() body swapped from bulk `fsEntries` list-
+        // materialization to `entriesStreamOpen`/`Next`/`Close` pull
+        // model.  Same caller-facing Stream API; the bulk `fsEntries`
+        // binding stays in scope but is no longer called by
+        // Dir.rho.  Producer wrapper adapts the 2-element
+        // `[false, "EOS"]` native terminator to the 3-element
+        // `[false, "EOS", msg]` shape Stream.rho expects, and closes
+        // the dir fd on EOS / error branches.  Consumer-drop leaks
+        // are caught by `WalDeployScope::Drop` sweeping the dir fd
+        // table at deploy end (Step 4 wiring; also covered by Step
+        // 5 in a follow-up doc roll).
+        //
         // Anchor roll 2026-08-24 (PB-B-3 shipped): FsGenesis now also
         // invokes `insertVersion("serve", "fs", "1.0.0", fs, ret)`
         // via a direct `v1Api` binding to `rho:registry:v1:internal`,
@@ -1338,13 +1351,14 @@ mod tests {
         // on `ell > cap`, and the 4 File.rho callers now pass
         // `67108864` = MAX_WRITE_BYTES.
         //
+        // Prior anchor: 434a828b (streaming-slice Step 2 three natives, 2026-08-25).
         // Prior anchor: 46db7011 (PB-B-3 insertVersion shipped, 2026-08-24).
         // Prior anchor: af6f10fa (10c reclassification docstrings, 2026-08-23).
         // Prior anchor: fbea2d02 (slice 9c-ii toByteArray cap, 2026-08-23).
         // Prior anchor: 126a35ab (slice 9c-i reply-payload cap, 2026-08-23).
         // Prior anchor: 5f41dafe (cost-accounted-rho merge, 2026-08-21).
         // Prior anchor: c243b4db (pre-merge).
-        const EXPECTED: &str = "434a828bf90f42f233812af544ec843e38cf3529eb062e7ac77eb96f81b95709";
+        const EXPECTED: &str = "60035818fd6991344b31c66bc4f93f520842627d334112b1dc5705f23de5d717";
         assert_eq!(
             hex, EXPECTED,
             "M-12: compose_fs_genesis_source() hash changed.  If intentional \

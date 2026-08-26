@@ -109,42 +109,81 @@ new Dir, rootP, cmodeP in {
     // entry record Maps (see spec §Dir > Listing).  Read op; allowed
     // on both "r" and "rw" Dirs.
     //
-    // Backing native is `fs_entries`, which returns the entries as a
-    // single sorted list capped at MAX_ENTRIES (Phase 1 constant).
-    // We wrap that list in a producer+builder pair and mint a Stream;
-    // callers see the standard §Stream.next() / .chunk(n) / .fold(...)
-    // surface.  A future slice can swap the backing to the real
-    // streaming primitive (fs_entries_stream, currently a Phase 1
-    // stub) without changing the caller API.
+    // Backing native is the per-fd streaming primitive:
+    // `entriesStreamOpen(root, rel, cmode, ack)` allocates a stream fd
+    // and `entriesStreamNext(streamFd, ack)` yields one entry per call
+    // (or a 2-element `[false, "EOS"]` terminator).  The producer
+    // wrapper below adapts the 2-element EOS into the 3-element
+    // `[false, "EOS", msg]` shape the Stream producer contract
+    // expects (Stream.rho §next()).  Callers see the standard
+    // §Stream.next() / .chunk(n) / .fold(...) surface unchanged.
     //
-    // Root-Dir limitation: with subPath == "", the dispatch to
-    // fs_entries with an empty rel triggers Phase 1's safe_descend
-    // "empty rel" rejection (FSERR_BAD_ARG "empty relative path").
-    // Nested Dirs (subPath non-empty) work.  A one-line Phase 1
-    // tweak to fs_entries — accept empty rel as "list root itself" —
-    // enables the root case; deferred until the streaming backing
-    // arrives so both changes land together.
+    // Streaming-backing slice Step 5 (2026-08-25 pickup): swapped
+    // from the prior bulk `fs_entries` list-materialization backing.
+    // The bulk backing was subject to the `MAX_ENTRIES = 65_536` cap
+    // in the native handler; the streaming primitive is uncapped
+    // (one entry per Next call, no per-open list materialization).
+    // Same caller-facing Stream API — no Dir.rho consumer changes.
+    //
+    // Fd lifecycle: `entriesStreamClose` is called from the producer
+    // wrapper on EOS AND on any error branch so the dir fd is
+    // released promptly.  A consumer that drops the Stream before
+    // EOS (via `Stream.close()` or by dropping the cap entirely)
+    // leaks the fd within the deploy — the deploy-boundary sweep
+    // in `WalDeployScope::Drop` (via `DirHandleTable::
+    // close_all_for_deploy`, Step 4) reclaims it before the fd
+    // outlives the deploy.
+    //
+    // Root-Dir limitation carried over from the bulk backing: with
+    // subPath == "", `entriesStreamOpen` with empty rel triggers
+    // safe_descend's "empty relative path" rejection.  Root-Dir
+    // listing is deferred to a native tweak (accept empty rel as
+    // "list root itself").
     method entries() {
       for (@params <<- @[*private, *rootP]; @cmode <<- @[*private, *cmodeP]) {
         match params {
           (canonRoot, subPath, _mode, _fileCtor) => {
-            new retCh in {
-              fsEntries!(canonRoot, subPath, cmode, *retCh) |
-              for (@reply <- retCh) {
-                match reply {
-                  [true, entryList] => {
-                    new listState, entryProducer, entryBuilder in {
-                      listState!(entryList) |
+            new openRetCh in {
+              fsEntriesStreamOpen!(canonRoot, subPath, cmode, *openRetCh) |
+              for (@openReply <- openRetCh) {
+                match openReply {
+                  [true, streamFd] => {
+                    new entryProducer, entryBuilder in {
+                      // Producer wrapper: each `next()` from the
+                      // Stream drives one `entriesStreamNext`.  Reply
+                      // adaptation:
+                      //   [true, entry]        → [true, entry]
+                      //   [false, "EOS"]       → [false, "EOS", "..."]
+                      //     (2-element native terminator → 3-element
+                      //      Stream producer terminator).  Close the
+                      //      dir fd before responding so the fd is
+                      //      released as soon as EOS is observed.
+                      //   [false, code, msg]   → close fd, forward.
                       contract entryProducer(rc) = {
-                        for (@lst <- listState) {
-                          match lst {
-                            []              => {
-                              listState!([]) |
-                              rc!([false, "EOS", "no more entries"])
-                            }
-                            [head ...tail]  => {
-                              listState!(tail) |
-                              rc!([true, head])
+                        new nextRetCh in {
+                          fsEntriesStreamNext!(streamFd, *nextRetCh) |
+                          for (@nextReply <- nextRetCh) {
+                            match nextReply {
+                              [true, entry] => rc!([true, entry])
+                              [false, "EOS"] => {
+                                new closeRetCh in {
+                                  fsEntriesStreamClose!(streamFd, *closeRetCh) |
+                                  for (@_ <- closeRetCh) {
+                                    rc!([false, "EOS", "no more entries"])
+                                  }
+                                }
+                              }
+                              [false, code, msg] => {
+                                new closeRetCh in {
+                                  fsEntriesStreamClose!(streamFd, *closeRetCh) |
+                                  for (@_ <- closeRetCh) {
+                                    rc!([false, code, msg])
+                                  }
+                                }
+                              }
+                              _ => rc!(
+                                [false, "FSERR_IO",
+                                 "entriesStreamNext returned malformed reply"])
                             }
                           }
                         }
@@ -159,7 +198,7 @@ new Dir, rootP, cmodeP in {
                       }
                     }
                   }
-                  _ => return!(reply)
+                  _ => return!(openReply)
                 }
               }
             }
