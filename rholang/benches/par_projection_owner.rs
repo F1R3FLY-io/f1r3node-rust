@@ -95,6 +95,8 @@ impl Arm {
             Self::SelectiveTooSmall => "selective_too_small",
         }
     }
+
+    fn parse(label: &str) -> Option<Self> { Self::ALL.into_iter().find(|arm| arm.label() == label) }
 }
 
 struct Fixture {
@@ -350,12 +352,30 @@ fn selected_or_all(name: &str, values: &[usize]) -> Vec<usize> {
     }
 }
 
+fn selected_arms() -> Vec<Arm> {
+    match std::env::var("PAR_OWNER_PROFILE_ARM") {
+        Ok(label) => vec![Arm::parse(&label).unwrap_or_else(|| {
+            panic!(
+                "PAR_OWNER_PROFILE_ARM={label:?} is not one of adaptive, selective, blanket, selective_too_small"
+            )
+        })],
+        Err(std::env::VarError::NotPresent) => Arm::ALL.to_vec(),
+        Err(error) => panic!("PAR_OWNER_PROFILE_ARM is not valid Unicode: {error}"),
+    }
+}
+
 fn main() {
     let reps = env_usize("PAR_OWNER_REPS", DEFAULT_REPS);
     let warmup = env_usize("PAR_OWNER_WARMUP", DEFAULT_WARMUP);
+    let arms = selected_arms();
+    let ordering = if arms.len() == 1 {
+        "single-arm-profile"
+    } else {
+        "balanced-four-arm-rotation"
+    };
     assert!(reps != 0, "PAR_OWNER_REPS must be nonzero");
     println!(
-        "META\tformat=par-projection-owner-v1\treps={reps}\twarmup={warmup}\tordering=balanced-four-arm-rotation\ttimed=prepare-plus-complete-frame\tfixture=soft-checkpoint-shared-aux"
+        "META\tformat=par-projection-owner-v1\treps={reps}\twarmup={warmup}\tordering={ordering}\ttimed=prepare-plus-complete-frame\tfixture=soft-checkpoint-shared-aux"
     );
     println!(
         "HEADER\twidth\tbody_bytes\treuse\toutput_bytes\tprojected_bytes\tarm\tsample\tposition\telapsed_ns\tallocations\tallocated_bytes\tpathmap_traversals\tattempts\tprepared\talready_prepared\trefused_too_large\tnewly_retained_bytes\tremaining_budget"
@@ -368,8 +388,12 @@ fn main() {
         for body_bytes in selected_values("PAR_OWNER_BODY_BYTES", &BODY_BYTES, 256) {
             for reuse in selected_or_all("PAR_OWNER_REUSE", &REUSE_COUNTS) {
                 for repetition in 0..(warmup + reps) {
-                    for position in 0..Arm::ALL.len() {
-                        let arm = Arm::ALL[(repetition + position) % Arm::ALL.len()];
+                    for position in 0..arms.len() {
+                        let arm = if arms.len() == 1 {
+                            arms[0]
+                        } else {
+                            arms[(repetition + position) % arms.len()]
+                        };
                         let fixture = Fixture::new(width, body_bytes, reuse);
                         let observation = measure(&fixture, arm);
                         if repetition >= warmup {
