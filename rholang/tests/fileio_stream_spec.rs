@@ -214,13 +214,12 @@ mod tests {
     /// to push+pop `dir_handles.snapshot_next_fd()` into the fs
     /// snapshot stack would leak stream fds past a reverted deploy.
     ///
-    /// **Step 4 of the streaming slice is where this snapshot stack
-    /// wiring lands.** This test is currently `#[ignore]` because
-    /// `create_soft_checkpoint` / `revert_to_soft_checkpoint` do not
-    /// yet touch the `DirHandleTable`; once Step 4 wires it in, drop
-    /// the ignore and the test will pin the invariant.
+    /// **Step 4 of the streaming slice wired this in** (2026-08-25) via
+    /// a new `dir_fs_snapshot_stack` on `RhoRuntimeImpl` — push on
+    /// `create_soft_checkpoint`, pop + `truncate_to` on
+    /// `revert_to_soft_checkpoint`, clear on `reset`.  Now serves as
+    /// the regression pin for that wiring.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    #[ignore = "requires streaming-slice Step 4 (WalDeployScope Drop path)"]
     async fn deploy_error_rollback_sweeps_stream_fds() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir(dir.path().join("sub")).unwrap();
@@ -258,6 +257,94 @@ mod tests {
             runtime.fs_handles.dir_handles.get(fd_post).await.is_none(),
             "post-checkpoint stream fd swept by revert"
         );
+    }
+
+    /// Nested checkpoints for dir-stream fds: an inner revert sweeps
+    /// only fds opened between the inner checkpoint and now, leaving
+    /// fds opened between the outer checkpoint and the inner one
+    /// intact.  Direct companion to
+    /// `nested_soft_checkpoints_preserve_outer_fd_snapshot` in
+    /// `fileio_lifecycle_spec.rs` — the file-fd snapshot stack fix
+    /// (H4/M1 round-2) is re-applied to `dir_fs_snapshot_stack` in
+    /// streaming-slice Step 4.  A regression that reverts stack
+    /// semantics back to `Option<u64>` would trip this pin (inner
+    /// create overwrites outer mark; outer revert finds nothing and
+    /// leaks `fd_b`).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn nested_soft_checkpoints_preserve_outer_dir_fd_snapshot() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("a")).unwrap();
+        std::fs::create_dir(dir.path().join("b")).unwrap();
+        std::fs::create_dir(dir.path().join("c")).unwrap();
+
+        let mut runtime = create_runtime().await;
+        let counter_initial = runtime.fs_handles.dir_handles.snapshot_next_fd();
+
+        // Open A before any checkpoint.
+        run_open(&mut runtime, dir.path(), "a").await;
+        let fd_a = counter_initial;
+
+        // Outer checkpoint.  Snapshot = counter after A.
+        let outer = runtime.create_soft_checkpoint().await;
+
+        // Open B between outer and inner.
+        run_open(&mut runtime, dir.path(), "b").await;
+        let fd_b = counter_initial + 1;
+
+        // Inner checkpoint.  Snapshot = counter after B.
+        let inner = runtime.create_soft_checkpoint().await;
+
+        // Open C after inner.
+        run_open(&mut runtime, dir.path(), "c").await;
+        let fd_c = counter_initial + 2;
+
+        // Revert INNER: sweep fd_c only; fd_a and fd_b survive.
+        runtime.revert_to_soft_checkpoint(inner).await;
+        assert!(
+            runtime.fs_handles.dir_handles.get(fd_a).await.is_some(),
+            "fd_a survives inner revert"
+        );
+        assert!(
+            runtime.fs_handles.dir_handles.get(fd_b).await.is_some(),
+            "fd_b survives inner revert"
+        );
+        assert!(
+            runtime.fs_handles.dir_handles.get(fd_c).await.is_none(),
+            "fd_c swept by inner revert"
+        );
+
+        // Revert OUTER: sweep fd_b; fd_a survives.  The regression the
+        // stack fixes is: a single-slot `Option<u64>` cell would be
+        // overwritten by the inner create, so the outer revert would
+        // find no snapshot and sweep nothing — fd_b would leak past
+        // its deploy boundary.
+        runtime.revert_to_soft_checkpoint(outer).await;
+        assert!(
+            runtime.fs_handles.dir_handles.get(fd_a).await.is_some(),
+            "fd_a survives outer revert"
+        );
+        assert!(
+            runtime.fs_handles.dir_handles.get(fd_b).await.is_none(),
+            "fd_b swept by outer revert (regression: nested-snapshot \
+             stack semantics broken — see rho_runtime.rs::create_soft_checkpoint \
+             streaming-slice Step 4 wiring)",
+        );
+    }
+
+    /// Helper for the nested-checkpoint pin: open a dir stream via the
+    /// native URN and drain the ack.  Returns after the deploy
+    /// completes; the fd is left registered in `dir_handles`.
+    async fn run_open(runtime: &mut RhoRuntimeImpl, root: &std::path::Path, rel: &str) {
+        let term = format!(
+            r#"
+            new fsOpen(`rho:io:fs:native:1.0.0/entriesStreamOpen`), o in {{
+              fsOpen!("{root}", "{rel}", "oracular", *o) |
+              for (@[true, _fd] <- o) {{ Nil }}
+            }}
+            "#,
+            root = root.display(),
+        );
+        eval(runtime, &term).await;
     }
 
     // ------------------------------------------------------------------

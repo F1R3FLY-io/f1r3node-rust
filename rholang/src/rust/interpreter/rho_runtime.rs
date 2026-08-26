@@ -270,6 +270,16 @@ pub struct RhoRuntimeImpl {
     /// design was `Option<u64>` which silently dropped the outer
     /// mark on the inner `create`.
     fs_snapshot_stack: Arc<std::sync::Mutex<Vec<u64>>>,
+    /// Stack of dir-stream fd-counter snapshots captured at soft-
+    /// checkpoint time.  Companion to `fs_snapshot_stack` — same
+    /// push-on-create / pop-on-revert / clear-on-reset semantics,
+    /// applied to `fs_handles.dir_handles`.  Kept as its own stack
+    /// (rather than a tuple in `fs_snapshot_stack`) to match the
+    /// existing `wal_snapshot_stack` pattern: one stack per
+    /// consensus-observable counter, so a revert that touches only
+    /// one table doesn't accidentally pop the other's mark.
+    /// Streaming-backing slice Step 4 (2026-08-25).
+    dir_fs_snapshot_stack: Arc<std::sync::Mutex<Vec<u64>>>,
     /// Stack of WAL length snapshots captured at soft-checkpoint
     /// time.  On revert we pop the innermost mark and truncate the
     /// WAL back to it, discarding any entries appended during the
@@ -338,6 +348,7 @@ impl RhoRuntimeImpl {
             merge_chs,
             fs_handles,
             fs_snapshot_stack: Arc::new(std::sync::Mutex::new(Vec::new())),
+            dir_fs_snapshot_stack: Arc::new(std::sync::Mutex::new(Vec::new())),
             wal_snapshot_stack: Arc::new(std::sync::Mutex::new(Vec::new())),
             // Slice 30b: default None inside a fresh RwLock.  Boot
             // typically replaces via `share_fs_snapshot_writer`
@@ -525,6 +536,15 @@ impl RhoRuntime for RhoRuntimeImpl {
             let mut stack = self.fs_snapshot_stack.lock().unwrap();
             stack.push(self.fs_handles.snapshot_next_fd());
         }
+        // Streaming-backing slice Step 4: mirror the file-fd stack for
+        // dir-stream fds so a reverted deploy sweeps stream fds it
+        // opened between checkpoint and revert.  Same nested-stack
+        // semantics as fs_snapshot_stack — the inner create pushes on
+        // top of the outer mark; each revert pops one.
+        {
+            let mut stack = self.dir_fs_snapshot_stack.lock().unwrap();
+            stack.push(self.fs_handles.dir_handles.snapshot_next_fd());
+        }
         // H-29-1 review fix: snapshot the consensus WAL length
         // alongside the fd counter so revert can truncate both.
         {
@@ -578,6 +598,14 @@ impl RhoRuntime for RhoRuntimeImpl {
         let snap = { self.fs_snapshot_stack.lock().unwrap().pop() };
         if let Some(s) = snap {
             self.fs_handles.truncate_to(s).await;
+        }
+        // Streaming-backing slice Step 4: symmetric pop + truncate for
+        // the dir-stream fd table.  Unbalanced revert (no matching
+        // create) is a no-op, same defensive posture as the file-fd
+        // stack.
+        let dir_snap = { self.dir_fs_snapshot_stack.lock().unwrap().pop() };
+        if let Some(s) = dir_snap {
+            self.fs_handles.dir_handles.truncate_to(s).await;
         }
         // H-29-1: same stack semantics for WAL rollback.
         let wal_snap = { self.wal_snapshot_stack.lock().unwrap().pop() };
@@ -667,6 +695,7 @@ impl RhoRuntime for RhoRuntimeImpl {
         // means "start fresh at this state root"; leaving a mark
         // stashed is inconsistent with that.
         self.fs_snapshot_stack.lock().unwrap().clear();
+        self.dir_fs_snapshot_stack.lock().unwrap().clear();
         self.wal_snapshot_stack.lock().unwrap().clear();
         Ok(())
     }
