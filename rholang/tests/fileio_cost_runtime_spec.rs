@@ -59,7 +59,10 @@ mod tests {
     use models::rhoapi::{BindPattern, ListParWithRandom, Par, TaggedContinuation};
     use rholang::rust::interpreter::accounting::costs::Cost;
     use rholang::rust::interpreter::external_services::ExternalServices;
-    use rholang::rust::interpreter::io::costs::{fs_entries_cost, fs_stat_cost};
+    use rholang::rust::interpreter::io::costs::{
+        fs_entries_cost, fs_entries_stream_close_cost, fs_entries_stream_next_cost,
+        fs_entries_stream_open_cost, fs_entries_stream_per_entry_supplement_cost, fs_stat_cost,
+    };
     use rholang::rust::interpreter::matcher::r#match::Matcher;
     use rholang::rust::interpreter::rho_runtime::{create_rho_runtime, RhoRuntime, RhoRuntimeImpl};
     use rspace_plus_plus::rspace::rspace::RSpace;
@@ -251,6 +254,161 @@ mod tests {
              consumed to at least {} — trip investigation.",
             c - setup_only,
             setup_only + 32,
+        );
+    }
+
+    /// Runtime pin for the streaming-primitive per-call two-branch
+    /// charge (streaming-backing slice Step 7, 2026-08-25).
+    /// Companion to `fs_entries_five_children_charges_supplement_at_runtime`:
+    /// same 5-child fixture, driven through the per-fd streaming
+    /// primitive (`entriesStreamOpen` / `entriesStreamNext` ×6 /
+    /// `entriesStreamClose`) instead of the bulk `fs_entries`.
+    ///
+    /// Expected native charges under oracular mode:
+    ///   * `entriesStreamOpen`: `fs_entries_stream_open_cost()` = 50.
+    ///   * `entriesStreamNext` (×5 yielding): each charges
+    ///     `fs_entries_stream_next_cost()` = 50 up-front plus
+    ///     `fs_entries_stream_per_entry_supplement_cost(1)` = 32
+    ///     post-reply, for 82 units per call.
+    ///   * `entriesStreamNext` (×1 EOS): `fs_entries_stream_next_cost()`
+    ///     = 50, then `fs_entries_stream_per_entry_supplement_cost(0)`
+    ///     = 0 (early-return in `reserve_incremental_primitive` — the
+    ///     zero-cost guard that motivated the switch away from
+    ///     `reserve_primitive` for the supplement, ac7bb9b6a commit
+    ///     body).
+    ///   * `entriesStreamClose`: `fs_entries_stream_close_cost()` =
+    ///     `fs_close_cost()` = 100.
+    ///   Total native: 50 + 5*82 + 50 + 100 = 610 units.
+    ///
+    /// The streaming variant does NOT do a per-entry `fs_stat` (unlike
+    /// bulk `fs_entries`, whose row build calls `entry_stat_row` per
+    /// child) — `readdir_one_entry` derives the record from the dirent
+    /// directly.  So no `+ 5 * fs_stat_cost()` term here.
+    ///
+    /// Assertion posture matches the bulk pin: a lower bound (regression
+    /// on any dropped charge fails), plus an upper ceiling of
+    /// `lower_bound + 5000` (Rholang harness overhead is per-COMM so it
+    /// scales with the 8 native calls here — wider than a single-native
+    /// workload but the ceiling still catches wildly-wrong helper values).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn fs_entries_stream_streams_five_children_charges_supplement_at_runtime() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        // Same 5-child shape as the bulk pin: 4 files + 1 subdir.
+        for name in ["a.txt", "b.txt", "c.txt", "d.txt"] {
+            std::fs::write(root.join(name), b"x").unwrap();
+        }
+        std::fs::create_dir(root.join("sub")).unwrap();
+
+        let runtime = create_metered_runtime().await;
+
+        // safe_descend needs a canonRoot + non-empty rel pair, so pass
+        // root's parent as canonRoot and its basename as rel — same
+        // pattern as the bulk pin above.
+        let parent = root.parent().unwrap().to_path_buf();
+        let basename = root.file_name().unwrap().to_str().unwrap().to_string();
+
+        // Six Next calls (5 yields + 1 EOS terminator) driven serially
+        // via a nested `for` chain.  Chaining rather than a recursive
+        // contract keeps the harness overhead deterministic — every
+        // `next` fires against the same fd captured from the open
+        // reply, so the natives run in a fixed order and the readdir
+        // cursor advances one entry at a time.
+        let term = format!(
+            r#"
+            new fsOpen(`rho:io:fs:native:1.0.0/entriesStreamOpen`),
+                fsNext(`rho:io:fs:native:1.0.0/entriesStreamNext`),
+                fsClose(`rho:io:fs:native:1.0.0/entriesStreamClose`),
+                o in {{
+              fsOpen!("{root}", "{rel}", "oracular", *o) |
+              for (@[true, fd] <- o) {{
+                new n1 in {{
+                  fsNext!(fd, *n1) |
+                  for (@_r1 <- n1) {{
+                    new n2 in {{
+                      fsNext!(fd, *n2) |
+                      for (@_r2 <- n2) {{
+                        new n3 in {{
+                          fsNext!(fd, *n3) |
+                          for (@_r3 <- n3) {{
+                            new n4 in {{
+                              fsNext!(fd, *n4) |
+                              for (@_r4 <- n4) {{
+                                new n5 in {{
+                                  fsNext!(fd, *n5) |
+                                  for (@_r5 <- n5) {{
+                                    new n6 in {{
+                                      fsNext!(fd, *n6) |
+                                      for (@_r6 <- n6) {{
+                                        new c in {{
+                                          fsClose!(fd, *c) |
+                                          for (@_cr <- c) {{ Nil }}
+                                        }}
+                                      }}
+                                    }}
+                                  }}
+                                }}
+                              }}
+                            }}
+                          }}
+                        }}
+                      }}
+                    }}
+                  }}
+                }}
+              }}
+            }}
+            "#,
+            root = parent.display(),
+            rel = basename,
+        );
+        let result = runtime
+            .evaluate(
+                &term,
+                Cost::create(INITIAL_PHLO, "cost-harness initial".to_string()),
+                std::collections::HashMap::new(),
+                rand(),
+            )
+            .await
+            .unwrap();
+
+        let c = result.cost.value;
+        // Sum matches the pickup-doc formula for Step 7:
+        //   open + 5*next + 5*supplement(1) + 1*next + close.
+        let open = fs_entries_stream_open_cost().value;
+        let next5 = 5 * fs_entries_stream_next_cost().value;
+        let supp = 5 * fs_entries_stream_per_entry_supplement_cost(1).value;
+        let next_eos = fs_entries_stream_next_cost().value;
+        let close = fs_entries_stream_close_cost().value;
+        let lower_bound = open + next5 + supp + next_eos + close;
+
+        assert!(
+            c >= lower_bound,
+            "streaming entries with 5 children must consume at least \
+             {lower_bound} (open {open} + 5*next {next5} + 5*supplement(1) \
+             {supp} + eos-next {next_eos} + close {close}); got {c}.  A \
+             regression that drops the per-entry supplement (or that \
+             replaces `reserve_incremental_primitive` with `reserve_primitive` \
+             on the EOS branch) would fail this lower bound."
+        );
+        // Ceiling: 30_000 above lower_bound.  The 8 native calls here
+        // (1 open + 6 next + 1 close) each drag a per-COMM Rholang
+        // overhead, and the nested-`for` chain adds match/tuple work
+        // per level, so total harness cost runs ~21_000 units on top
+        // of the ~600-unit native contribution — an order of magnitude
+        // wider than the bulk `fs_entries` pin's ceiling.  The 30_000
+        // cap still catches wildly-wrong helper coefficients: an
+        // accidental `FS_ENTRIES_PER_ENTRY = 3200` typo would add
+        // ~15_950 units per yielded entry (5 * 3168 ≈ 15_840) and
+        // easily blow past the ceiling.
+        assert!(
+            c < lower_bound + 30_000,
+            "streaming entries with 5 children consumed {c}, which is \
+             more than {} above the expected {lower_bound}.  Either the \
+             harness overhead ballooned or a cost helper's coefficient \
+             drifted; investigate `fs_entries_stream_*_cost` in \
+             `rholang/src/rust/interpreter/io/costs.rs`.",
+            c - lower_bound,
         );
     }
 }
