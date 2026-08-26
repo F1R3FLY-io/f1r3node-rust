@@ -339,6 +339,28 @@ where T: ProtobufNode + Message {
     }
 }
 
+#[test]
+fn par_callback_failure_rolls_back_the_complete_append() {
+    let value = Par::default().with_exprs(vec![Expr {
+        expr_instance: Some(ExprInstance::GInt(17)),
+    }]);
+    let mut output = b"existing-prefix".to_vec();
+    let unchanged = output.clone();
+
+    let error = protobuf_encoder::ProtobufEncodePlan::new(&value)
+        .try_encode_into_with_par(&mut output, |_par, output| {
+            output.extend_from_slice(b"partial-callback-output");
+            Err::<(), _>("intentional callback failure")
+        })
+        .expect_err("the injected Par callback must fail");
+
+    assert_eq!(error, "intentional callback failure");
+    assert_eq!(
+        output, unchanged,
+        "a callback error must restore the caller's exact original prefix"
+    );
+}
+
 // ===========================================================================
 // §1  The exhaustive corpus — shared, and not weakened for this direction
 // ===========================================================================

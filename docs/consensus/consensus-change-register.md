@@ -10,7 +10,7 @@
 | **Companion surface** | `mettail-rust`, branch `feature/rho-native-set-automata`. |
 | **Companion reports** | the [stack-safety report](../design/stack-safety/stack-safety-report-2026-07-29.md) and the [PathMap report](../design/pathmap/pathmap-report-2026-08-03.md), which carry the equivalence evidence this register's retirements cite. |
 | **Audience** | F1r3node consensus reviewers deciding whether to accept the fork risk of a coordinated protocol-version bump. |
-| **Date** | 2026-07-29, re-scoped to the final criterion 2026-08-03, revised through 2026-08-25 |
+| **Date** | 2026-07-29, re-scoped to the final criterion 2026-08-03, revised through 2026-08-26 |
 | **Maintenance** | [§7](#7-maintenance). Adding an entry is filling the form in [Appendix A](#appendix-a--the-entry-template). |
 
 ---
@@ -2687,6 +2687,22 @@ neither byte-native production equivalence nor the intended resource bound is cl
 remains `UNVERIFIED` until that replay is eliminated, the typed fallback is removed, and the full
 activation gates above pass.
 
+The 2026-08-26 certified-egress checkpoint changes a separate physical path: protobuf publication
+of outer RSpace graphs that contain PathMap-backed `ParBag` owners. Generated preflight constructs a
+typed completion transcript and an exact frame-local owner census. Singleton owners stream directly;
+the first occurrence of a repeated owner streams its canonical PathMap component body and later
+occurrences replay certified ranges. Exact Prost differentials cover every root family and every
+populated production publication root. Failure injection plus TLC and Verus mutants prove that an
+incomplete transcript, wrong kind/length, owner mismatch, replay overrun, or partial publication
+cannot return bytes. The powered singleton 99% ratio upper bound is 1.024510 and reuse sixteen
+changes 16 PathMap traversals to one, but those resource results are not consensus evidence.
+
+No protobuf schema, Lane-P byte, Lane-B byte, RSpace key, history leaf, digest, COMM order, spatial
+verdict, post-state root, accepted program, or metering rule changes. The checkpoint is therefore an
+equivalence-proven implementation refinement recorded under CBR-053's PathMap/RSpace evidence, not a
+new may-change-consensus entry. It also does not close CBR-053's still-separate generated matcher
+superset and complete schedule/post-state obligations.
+
 #### (b) How it may break consensus
 
 | Axis | Verdict |
@@ -2764,6 +2780,13 @@ the verdict axis.
 
 #### Evidence and retirement gate
 
+- certified outer-RSpace protobuf egress: **10/10** certified model tests, **12/12** runtime egress
+  tests, **13/13** formal-manifest tests, **14/14** PathMap-Par tests, and **15/15** generated
+  protobuf differentials pass. The complete Rocq/Verus/Z3/TLC/mCRL2 gate passes with seven required
+  failing transcript mutants and eleven required failing owner-memo mutants. The powered
+  101-pair singleton upper bound is **1.024510** and reuse-sixteen traversal count is **16 $`\rightarrow`$ 1**.
+  These results prove exact bytes and failure-atomic publication for this egress boundary; they do
+  not prove matcher-superset or schedule equivalence. **MEASURED and PROVEN for egress only.**
 - `retained_set_automaton_spec`: **8/8** exact-terminal, longest-exact-query-prefix,
   post-wildcard residual-filter, root-fallback, repeated-position, direct-match-superset,
   embedded-zero/branching product, singleton diverse/shared 16/256/4,096, and multi-depth linear-

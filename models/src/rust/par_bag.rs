@@ -4136,6 +4136,35 @@ struct ParBagAux {
     concrete_components_locally_free_empty: OnceLock<Option<bool>>,
 }
 
+/// Opaque process-local identity of one copy-on-write [`ParBag`] owner.
+///
+/// Equality is pointer identity, not semantic Bag equality.  The retained
+/// [`Arc`] makes the identity stable for as long as a response-local encoder
+/// keeps the key; no pointer is converted to an integer, ordered, serialized,
+/// or made consensus-visible.
+#[doc(hidden)]
+pub struct ParBagOwnerKey(Arc<ParBagAux>);
+
+impl Clone for ParBagOwnerKey {
+    fn clone(&self) -> Self { Self(Arc::clone(&self.0)) }
+}
+
+impl PartialEq for ParBagOwnerKey {
+    fn eq(&self, other: &Self) -> bool { Arc::ptr_eq(&self.0, &other.0) }
+}
+
+impl Eq for ParBagOwnerKey {}
+
+impl Hash for ParBagOwnerKey {
+    fn hash<H: Hasher>(&self, state: &mut H) { std::ptr::hash(Arc::as_ptr(&self.0), state) }
+}
+
+impl fmt::Debug for ParBagOwnerKey {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("ParBagOwnerKey(..)")
+    }
+}
+
 impl ParBagAux {
     fn new(metrics: ParFamilyMetrics) -> Self {
         Self {
@@ -4445,6 +4474,14 @@ impl ParBag {
     /// This is an optimization witness, not semantic equality: independently
     /// constructed equal bags deliberately return `false`.
     pub fn shares_storage_with(&self, other: &Self) -> bool { Arc::ptr_eq(&self.aux, &other.aux) }
+
+    /// Return a stable, opaque key for response-local copy-on-write reuse.
+    ///
+    /// The key deliberately distinguishes independently constructed equal Bags:
+    /// only actual shared ownership proves that their canonical component bytes
+    /// may be reused without another semantic comparison or trie traversal.
+    #[doc(hidden)]
+    pub fn owner_key(&self) -> ParBagOwnerKey { ParBagOwnerKey(Arc::clone(&self.aux)) }
 
     #[inline]
     fn aux_for_mutation(&mut self) -> &mut ParBagAux {

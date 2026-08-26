@@ -208,6 +208,33 @@ StaleCacheMutationMutant ==
     /\ savedCloneCache' = cloneCache
     /\ UNCHANGED <<target, limit, hasClone, cloneVersion, cloneCache, lastRead>>
 
+PartialReadMutant ==
+    /\ phase = "building"
+    /\ 0 < built
+    /\ built < target
+    /\ lastRead' = "partial"
+    /\ UNCHANGED <<target, limit, built, phase, visible,
+                    writerVersion, writerCache,
+                    hasClone, cloneVersion, cloneCache, sharedAux,
+                    mutated, savedCloneVersion, savedCloneCache>>
+
+CloneLossMutationMutant ==
+    /\ hasClone
+    /\ sharedAux
+    /\ writerVersion = 0
+    /\ cloneCache # NoCache
+    /\ writerVersion' = 1
+    /\ writerCache' = NoCache
+    /\ cloneCache' = NoCache
+    /\ phase' = "cold"
+    /\ visible' = "none"
+    /\ built' = 0
+    /\ sharedAux' = FALSE
+    /\ mutated' = TRUE
+    /\ savedCloneVersion' = cloneVersion
+    /\ savedCloneCache' = cloneCache
+    /\ UNCHANGED <<target, limit, hasClone, cloneVersion, lastRead>>
+
 CapMutantNext == Next \/ StrictCapRefusalMutant
 CapMutantSpec == Init /\ [][CapMutantNext]_vars
 
@@ -216,5 +243,11 @@ PartialMutantSpec == Init /\ [][PartialMutantNext]_vars
 
 StaleMutantNext == Next \/ StaleCacheMutationMutant
 StaleMutantSpec == Init /\ [][StaleMutantNext]_vars
+
+ReadMutantNext == Next \/ PartialReadMutant
+ReadMutantSpec == Init /\ [][ReadMutantNext]_vars
+
+CloneLossMutantNext == Next \/ CloneLossMutationMutant
+CloneLossMutantSpec == Init /\ [][CloneLossMutantNext]_vars
 
 =============================================================================

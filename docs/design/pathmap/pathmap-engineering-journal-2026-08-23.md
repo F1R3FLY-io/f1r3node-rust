@@ -2073,6 +2073,53 @@ publication and acknowledgement follow the required sync barriers. ACT remains a
 snapshot/transport representation, while the integration owns WAL transaction policy. The current
 legacy key-value store does not yet implement that future backend.
 
+### J-028 — 2026-08-26: certify one owner traversal, then replay typed protobuf ranges
+
+**OBSERVED.** A PathMap-backed `ParBag` can appear several times in one outer RSpace protobuf graph
+because distinct `Par` shells may share the same copy-on-write component owner while retaining
+different root metadata. Re-running the canonical component zipper for every occurrence preserved
+bytes but made PathMap work proportional to occurrences rather than distinct owners. Conversely,
+memoizing every owner imposed lookup and retention work on the common singleton case. A 31-pair
+prototype suggested the singleton budget might fail, but that run mixed fixture/reporting work with
+the measured region and did not have enough power to justify changing the architecture.
+
+**DECISION.** The selected encoder performs one exact owner census during generated-schema
+preflight. Owners seen once stream directly. For a repeated owner, the first occurrence streams the
+authoritative `PathMap<Multiplicity>` component bytes through its zipper and records byte ranges;
+later occurrences replay those ranges while emitting their own root metadata. The first reusable
+owner is inline; a hash table is allocated only if a second reusable owner exists. This is not a
+global cache: the census, ranges, and output share one private frame lifetime and disappear after
+publication.
+
+Preflight also constructs a typed pre-order transcript. `MessageBody`, `ParBody`, `MapEntryBody`,
+and `EPathMapSnapshotBody` events are reserved before descent and completed afterward. Sixteen event
+lengths and kinds plus their completion bits remain inline; larger transcripts spill. Emission must
+replay the exact kind/length sequence, exhaust both transcript and owner memo, and match the planned
+body length before the private buffer is returned. Thus a callback error, length disagreement,
+wrong owner, wrong event kind, incomplete completion, replay overrun, or spill corruption returns no
+partial frame. EPathMap snapshot bodies are emitted from their homogeneous `PathMap<()>` or
+`PathMap<Par>` representations; no `Vec<Par>` projection or element sort exists at this boundary.
+
+**MEASURED.** The powered balanced AB/BA run uses 101 retained pairs per reuse cell and 100,000
+pair-preserving bootstrap resamples. At reuse one the treatment/control paired-median ratio is
+**1.017391**, with a 99% interval of **[1.006930, 1.024510]**, below the preregistered 1.05 ceiling.
+Ratios at reuse 2, 4, 8, and 16 are respectively **0.556835**, **0.300896**, **0.175201**, and
+**0.174705**. Reuse sixteen changes PathMap traversals from 16 to 1 per frame. Profile-only,
+report-only Heaptrack changes 99,235 allocation calls and 65,353 temporaries to 8,455 and 4,153 over
+1,000 reuse-16 frames while leaving peak heap output-buffer dominated. `perf stat` attributes the
+same cell to 12.23% of control cycles, 11.44% of instructions, and 10.67% of branches. The complete
+record is
+[`parbag-certified-protobuf-egress-2026-08-26.md`](../stack-safety/measurements/parbag-certified-protobuf-egress-2026-08-26.md).
+
+**FORMAL AND CONSENSUS BOUNDARY.** The exact generated/prost byte differential covers every root
+family and populated production publication root. TLC and Verus check completion, replay,
+owner-census, memo, and atomic-publication laws with independent failing mutants; the complete Rocq,
+Verus, Z3, TLC, and mCRL2 bundle passes. This changes traversal and allocation work only: the
+protobuf schema, canonical bytes, hashes, COMM order, match authority, state root, accepted programs,
+and metering rules are unchanged. It extends CBR-053's neutral implementation evidence rather than
+opening a new consensus record. Trie-native continuation and join egress remain the next distinct
+boundary under pgmcp #6029.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's
@@ -2085,7 +2132,7 @@ still requires measurement.
 | ID | Class and status | Local compatibility layer | Requested upstream contract | Evidence required or available | Removal criterion |
 |---|---|---|---|---|---|
 | PMU-001 | API + correctness hardening; **demonstrated need, local implementation active** | `rspace++/src/rspace/pathmap_codec.rs` validates arbitrary `ACTree03` input into a preorder plan and supplies contiguous/indexed topology and endpoint cursors. | Publish a stable, stack-safe canonical ACT admission plan and cursor API. It should parse each physical node/wrapper once; reject aliases, gaps, overlap, malformed offsets, noncanonical branches/lines/varints, and unreachable bytes before use; retain exact source offsets; expose value count/nonzero/nonsequential summaries; lend a complete one-line endpoint as a source range; support contiguous and fragmented indexed sources; rewind without reparsing; and keep native-stack use constant. | Old/new malformed and topology differentials, forced line-hash collision controls, fragmented provenance tests, deep/wide small-stack tests, and zero-reparse counters already exist locally. Performance/allocation closure remains part of pgmcp `rpb3-single-parse-act-traversal-plan`. | A released PathMap version provides the same admitted language, error/provenance guarantees, cursor event order, value summaries, and measured resource envelope; local consumers pass unchanged equivalence gates after replacing the compatibility layer. |
-| PMU-002 | Performance API; **candidate, ACT-specific measurement pending** | `Bag::compact_bytes` and EPM1 layout currently obtain an owned `ArenaCompactTree` image before a caller can write or hash it. J-026 and J-027 prove the integration-owned destination pattern for chunked hashes and final cold-store values, but cannot stream ACT construction itself. | Add a checked canonical ACT writer that can preflight encoded length and then stream zipper output to fallible byte, `io::Write`, hash, WAL/page, or chunk sinks without constructing a second complete byte buffer. Exact bytes must equal `ArenaCompactTree::from_zipper(...).get_data()`, and sink failure must never imply successful publication. The API should separate byte production from transaction policy: PathMap reports sink failure, while the integration owns WAL commit, sync, catalog publication, and acknowledgement. | J-026 supplies exact chunked-hash/bincode equivalence and a missing-framing negative control. J-027 adds exact final-envelope equality, reader/importer borrowed ranges, 491 package tests, and a 31-pair seven-cell timing/allocation matrix. ACT-specific exact-byte differential, checked-length equality, injected sink failure, one-pass/copy counters, geometric shared-prefix workloads, and headless allocation/RSS evidence remain required before calling the upstream API an optimization. | The upstream sink API passes the differential/resource gates and replaces local destination-specific buffering without changing consensus bytes; the integration retains transaction and publication authority. |
+| PMU-002 | Performance API; **candidate, ACT-specific measurement pending** | `Bag::compact_bytes` and EPM1 layout currently obtain an owned `ArenaCompactTree` image before a caller can write or hash it. J-026 and J-027 prove the integration-owned destination pattern for chunked hashes and final cold-store values; J-028 proves the generated-protobuf analogue with typed atomic replay, but none can stream ACT construction itself. | Add a checked canonical ACT writer that can preflight encoded length and then stream zipper output to fallible byte, `io::Write`, hash, WAL/page, or chunk sinks without constructing a second complete byte buffer. Exact bytes must equal `ArenaCompactTree::from_zipper(...).get_data()`, and sink failure must never imply successful publication. The API should separate byte production from transaction policy: PathMap reports sink failure, while the integration owns WAL commit, sync, catalog publication, and acknowledgement. | J-026 supplies exact chunked-hash/bincode equivalence and a missing-framing negative control. J-027 adds exact final-envelope equality, reader/importer borrowed ranges, 497 package tests, and a 31-pair seven-cell timing/allocation matrix. J-028 adds typed preflight/replay and failure-atomic sink evidence over direct PathMap-to-protobuf emission. ACT-specific exact-byte differential, checked-length equality, injected sink failure, one-pass/copy counters, geometric shared-prefix workloads, and headless allocation/RSS evidence remain required before calling the upstream API an optimization. | The upstream sink API passes the differential/resource gates and replaces local destination-specific buffering without changing consensus bytes; the integration retains transaction and publication authority. |
 | PMU-003 | Construction API; **candidate, profile before proposing** | Canonical Bag/EPathMap import validates ACT once, then reconstructs a live `PathMap` by replaying endpoints through public insertion and `create_path` APIs. | Consider a fallible `PathMap` constructor or write-zipper graft operation from an already validated canonical ACT plan, preserving prefix compression and value-free endpoints without a `Vec` projection or per-key reparsing. The API must not bypass value decoding/validation owned by the caller. | Compare endpoint replay with plan-to-trie construction over deep lines, wide branches, shared prefixes, value-free endpoints, Set, Map, and Bag; require identical zipper topology, lookups, algebra/lattice behavior, CoW sharing, merkleization, drop safety, and consensus encodings. | Adopt only if measurement shows a material win and upstream supplies topology/CoW equivalence; otherwise retain the simpler public insertion route and mark the request rejected. |
 
 The reachable pgmcp tracking item is `pathmap-upstream-integration-request-register` under
@@ -2111,6 +2158,7 @@ contract rather than merely describing local inconvenience.
 | H-012 | A logical RCI2 endpoint transcript plus an equality-invariant RhoPathV2 channel frame improves channel-key construction and matching without changing any selected COMM or legacy hash. | Frozen RhoPathV1/canonical-bincode control; complete equality/order/hash corpus; root-LF and connective counterexamples; repeated/ordered channel groups; play/replay/checkpoint/reset/export/import differential; geometric key-size/prefix-sharing matrix; allocations, peak heap, RSS, instructions/cache, and report-only Heaptrack; explicit legacy bridge and epoch proof. | Open; shadow codec and focused correctness matrix implemented, production activation and performance experiment not yet authorized by those results |
 | H-013 | Maintaining a second PathMap keyed by complete datum identity can remove DATA egress descriptor sorting without costing more across mutation, CoW cloning, checkpointing, and retained space. | Frozen J-023 arena-plus-sort control; exact leaf/root differential; insertion/removal/rollback and clone-family maintenance; checkpoint-frequency matrix; retained bytes/root sharing; allocations, RSS, instructions/cache, and headless Heaptrack. | **Rejected at `8fd6dde61` / experiment 314**; one-pass egress wins every cell, but retained space is 1.672–2.094× and violates the frozen 1.10 ceiling |
 | H-014 | Reordering the single primary RSpace Bag key to a prefix-free channel frame followed by complete canonical datum identity can obtain identity-order zipper egress without retaining a second trie. | Exact channel-prefix and point-operation algebra; matcher/candidate and multiplicity equivalence; play/replay/checkpoint/reset/export/import bytes and roots; mixed-channel/adversarial-prefix corpus; mutation/CoW/egress/rebuild time and allocation matrix; retained/root-sharing, RSS, instructions/cache, and headless Heaptrack against J-023. | Open; no production or shadow primary-layout change exists |
+| H-015 | A frame-local exact owner census plus certified range replay removes repeated ParBag zipper walks without imposing more than 5% singleton latency. | Exact generated/prost bytes; empty/singleton/skewed/dense owner shapes; 101-pair balanced timing; traversal/allocation counters; profile-only headless Heaptrack and hardware counters; malformed/fault rollback; typed transcript and owner-memo mutants. | **Accepted by J-028**; singleton 99% upper bound 1.024510, reuse-16 median ratio 0.174705, 16-to-1 PathMap traversals, and complete focused/formal gates pass |
 
 ## Threats to validity
 

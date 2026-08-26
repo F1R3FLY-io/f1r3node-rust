@@ -32,11 +32,11 @@ pub mod bincode_encoder;
 pub(crate) mod phase7_depth_histogram;
 
 // ---------------------------------------------------------------------------
-// ★ THE SEVEN GENERATED MODULES — ONE build-script pass, seven outputs
+// ★ THE EIGHT GENERATED MODULES — ONE build-script pass, eight outputs
 //
 // `models/codegen/schema.rs` resolves every `rhoapi` message ONCE and emits
-// seven files into `OUT_DIR`; `models/build.rs` writes each one. Six production
-// modules and one test-only equivalence adapter are included here: seven files
+// eight files into `OUT_DIR`; `models/build.rs` writes each one. Seven production
+// modules and one test-only equivalence adapter are included here: eight files
 // written, one walk of the descriptor, and no test registry in production.
 //
 // ⚠★ The two field tables are the SAME resolved fields under TWO SORT KEYS —
@@ -74,6 +74,17 @@ pub mod bincode_schema_tables {
 #[allow(clippy::all, unused_imports)]
 pub mod protobuf_schema_tables {
     include!(concat!(env!("OUT_DIR"), "/rhoapi_protobuf_schema.rs"));
+}
+
+/// Generated complete outer-message protobuf programs for the RSpace and
+/// Rholang FFI response roots, plus the [`protobuf_schema::CertifiedEgressNode`]
+/// implementations for their descriptor-proved acyclic closure. The certified
+/// layer follows imported `rhoapi` bridge messages down to opaque PathMap-backed
+/// `Par`/`EPathMap` cuts and publishes compile-time depth bounds; the general
+/// [`protobuf_schema::ProtobufNode`] PDA remains unchanged for recursive graphs.
+#[allow(clippy::all, unused_imports)]
+pub mod egress_protobuf_schema_tables {
+    include!(concat!(env!("OUT_DIR"), "/egress_protobuf_schema.rs"));
 }
 
 /// The GENERATED **term-operation PDAs**, including the iterative implementations

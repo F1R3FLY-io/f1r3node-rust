@@ -199,6 +199,34 @@ if ! grep -q 'Invariant WriterCacheMatchesIdentity is violated' \
   echo "stack-safe-pda: stale-cache mutant failed without the expected invariant witness" >&2
   exit 1
 fi
+if projection_read_mutant="$({
+  tlc_run "$tla_metadir" \
+    ParBagProjectionReadMutant.cfg ParBagProjectionLifecycle.tla -cleanup
+} 2>&1)"; then
+  printf '%s\n' "$projection_read_mutant"
+  echo "stack-safe-pda: partial projection-read mutant unexpectedly passed" >&2
+  exit 1
+fi
+printf '%s\n' "$projection_read_mutant"
+if ! grep -q 'Invariant EveryReadIsComplete is violated' \
+    <<<"$projection_read_mutant"; then
+  echo "stack-safe-pda: partial-read mutant failed without the expected invariant witness" >&2
+  exit 1
+fi
+if projection_clone_loss_mutant="$({
+  tlc_run "$tla_metadir" \
+    ParBagProjectionCloneLossMutant.cfg ParBagProjectionLifecycle.tla -cleanup
+} 2>&1)"; then
+  printf '%s\n' "$projection_clone_loss_mutant"
+  echo "stack-safe-pda: untouched-clone loss mutant unexpectedly passed" >&2
+  exit 1
+fi
+printf '%s\n' "$projection_clone_loss_mutant"
+if ! grep -q 'Invariant UntouchedCloneSurvivesWriterMutation is violated' \
+    <<<"$projection_clone_loss_mutant"; then
+  echo "stack-safe-pda: clone-loss mutant failed without the expected invariant witness" >&2
+  exit 1
+fi
 tlc_run "$tla_metadir" \
   ParBagProtobufSinkPublication.cfg ParBagProtobufSinkPublication.tla -cleanup
 if sink_public_mutant="$({
@@ -229,6 +257,110 @@ if ! grep -q 'Invariant InvalidInputHasNoPrefix is violated' \
   echo "stack-safe-pda: sink preflight mutant failed without the expected invariant witness" >&2
   exit 1
 fi
+if sink_premature_commit_mutant="$({
+  tlc_run "$tla_metadir" \
+    ParBagProtobufSinkPrematureCommitMutant.cfg ParBagProtobufSinkPublication.tla -cleanup
+} 2>&1)"; then
+  printf '%s\n' "$sink_premature_commit_mutant"
+  echo "stack-safe-pda: premature complete-label sink mutant unexpectedly passed" >&2
+  exit 1
+fi
+printf '%s\n' "$sink_premature_commit_mutant"
+if ! grep -q 'Invariant CommitRequiresCompleteImage is violated' \
+    <<<"$sink_premature_commit_mutant"; then
+  echo "stack-safe-pda: premature-commit mutant failed without the expected invariant witness" >&2
+  exit 1
+fi
+if sink_rollback_mutant="$({
+  tlc_run "$tla_metadir" \
+    ParBagProtobufSinkRollbackMutant.cfg ParBagProtobufSinkPublication.tla -cleanup
+} 2>&1)"; then
+  printf '%s\n' "$sink_rollback_mutant"
+  echo "stack-safe-pda: private-frame rollback mutant unexpectedly passed" >&2
+  exit 1
+fi
+printf '%s\n' "$sink_rollback_mutant"
+if ! grep -q 'Invariant AbortedPrivateFrameIsDiscarded is violated' \
+    <<<"$sink_rollback_mutant"; then
+  echo "stack-safe-pda: rollback mutant failed without the expected discard witness" >&2
+  exit 1
+fi
+tlc_run "$tla_metadir" \
+  ParBagInFrameMemo.cfg ParBagInFrameMemo.tla -cleanup
+for certified_mutant in \
+  CensusSkip:ParBagInFrameMemoCensusSkipMutant.cfg:CensusPrefixIsExact \
+  ReplaySwap:ParBagInFrameMemoReplaySwapMutant.cfg:ReplayConsumesExactOccurrencePrefix \
+  ReplayOverrun:ParBagInFrameMemoReplayOverrunMutant.cfg:ReplayConsumesExactOccurrencePrefix \
+  ReplayRemainingCommit:ParBagInFrameMemoReplayRemainingCommitMutant.cfg:CommitRequiresExactReplay \
+  EmptyMemo:ParBagInFrameMemoEmptyMemoMutant.cfg:MemoOnlyForCensusProvenRepeatedOwners \
+  SingletonMemo:ParBagInFrameMemoSingletonMemoMutant.cfg:MemoOnlyForCensusProvenRepeatedOwners \
+  EarlyEmission:ParBagInFrameMemoEarlyEmissionMutant.cfg:CensusCompletesBeforeEmission; do
+  certified_label="${certified_mutant%%:*}"
+  certified_tail="${certified_mutant#*:}"
+  certified_cfg="${certified_tail%%:*}"
+  certified_invariant="${certified_tail#*:}"
+  if certified_output="$({
+    tlc_run "$tla_metadir" "$certified_cfg" ParBagInFrameMemo.tla -cleanup
+  } 2>&1)"; then
+    printf '%s\n' "$certified_output"
+    echo "stack-safe-pda: ${certified_label} certified-egress mutant unexpectedly passed" >&2
+    exit 1
+  fi
+  printf '%s\n' "$certified_output"
+  if ! grep -q "Invariant ${certified_invariant} is violated" \
+      <<<"$certified_output"; then
+    echo "stack-safe-pda: ${certified_label} mutant failed without ${certified_invariant}" >&2
+    exit 1
+  fi
+done
+for in_frame_mutant in \
+  Swap:ParBagInFrameMemoSwapMutant.cfg \
+  Whole:ParBagInFrameMemoWholeMutant.cfg \
+  WrongOwner:ParBagInFrameMemoWrongOwnerMutant.cfg \
+  OffByOne:ParBagInFrameMemoOffByOneMutant.cfg; do
+  in_frame_label="${in_frame_mutant%%:*}"
+  in_frame_cfg="${in_frame_mutant#*:}"
+  if in_frame_output="$({
+    tlc_run "$tla_metadir" "$in_frame_cfg" ParBagInFrameMemo.tla -cleanup
+  } 2>&1)"; then
+    printf '%s\n' "$in_frame_output"
+    echo "stack-safe-pda: ${in_frame_label} in-frame memo mutant unexpectedly passed" >&2
+    exit 1
+  fi
+  printf '%s\n' "$in_frame_output"
+  if ! grep -q 'Invariant OutputMatchesDirect is violated' <<<"$in_frame_output"; then
+    echo "stack-safe-pda: ${in_frame_label} in-frame mutant failed without the direct-equivalence witness" >&2
+    exit 1
+  fi
+done
+tlc_run "$tla_metadir" \
+  CertifiedEgressTranscript.cfg CertifiedEgressTranscript.tla -cleanup
+for transcript_mutant in \
+  IncompleteSeal:CertifiedEgressTranscriptIncompleteSealMutant.cfg:SealIffWalkDoneAndAllComplete \
+  DuplicateCompletion:CertifiedEgressTranscriptDuplicateCompletionMutant.cfg:CompletionExactlyOnce \
+  EqualLengthKindSwap:CertifiedEgressTranscriptKindSwapMutant.cfg:TypedReplayConsumesExactPrefix \
+  ReplayOverrun:CertifiedEgressTranscriptReplayOverrunMutant.cfg:TypeInvariant \
+  RemainingCommit:CertifiedEgressTranscriptRemainingCommitMutant.cfg:AtomicPublication \
+  SpillSlotCorruption:CertifiedEgressTranscriptSpillCorruptionMutant.cfg:StorageRefinesLogicalTranscript \
+  PartialPublication:CertifiedEgressTranscriptPartialPublicationMutant.cfg:AtomicPublication; do
+  transcript_label="${transcript_mutant%%:*}"
+  transcript_tail="${transcript_mutant#*:}"
+  transcript_cfg="${transcript_tail%%:*}"
+  transcript_invariant="${transcript_tail#*:}"
+  if transcript_output="$({
+    tlc_run "$tla_metadir" "$transcript_cfg" CertifiedEgressTranscript.tla -cleanup
+  } 2>&1)"; then
+    printf '%s\n' "$transcript_output"
+    echo "stack-safe-pda: ${transcript_label} structural-transcript mutant unexpectedly passed" >&2
+    exit 1
+  fi
+  printf '%s\n' "$transcript_output"
+  if ! grep -q "Invariant ${transcript_invariant} is violated" \
+      <<<"$transcript_output"; then
+    echo "stack-safe-pda: ${transcript_label} mutant failed without ${transcript_invariant}" >&2
+    exit 1
+  fi
+done
 tlc_run "$tla_metadir" FreeMapJournal.cfg FreeMapJournal.tla -cleanup
 tlc_run "$tla_metadir" AccountingDemand.cfg AccountingDemand.tla -cleanup
 popd >/dev/null

@@ -92,6 +92,7 @@ use crypto::rust::public_key::PublicKey;
 use models::rhoapi::{BindPattern, ListParWithRandom, Par, TaggedContinuation};
 use models::rholang_scala_rust_types::*;
 use models::rspace_plus_plus_types::*;
+use models::rust::rholang::protobuf_schema::CertifiedEgressNode;
 use prost::Message;
 use rspace_plus_plus::rspace::checkpoint::SoftCheckpoint;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
@@ -112,10 +113,10 @@ use rust::interpreter::rho_runtime::{
 use rust::interpreter::system_processes::{test_framework_contracts, BlockData};
 
 use crate::rust::interpreter::compiler::compiler::Compiler;
-use crate::rust::protobuf_egress::encode_frame;
+use crate::rust::protobuf_egress::encode_frame_native;
 
-fn publish_ffi_frame(message: &impl Message) -> *const u8 {
-    let frame = match encode_frame(message) {
+fn publish_ffi_frame(message: &impl CertifiedEgressNode) -> *const u8 {
+    let frame = match encode_frame_native(message) {
         Ok(frame) => frame,
         Err(error) => {
             eprintln!("Rholang FFI protobuf frame was not published: {error}");

@@ -6,10 +6,12 @@
 //! retained only as normalization summaries; there is no repeated-field or
 //! decoded component shadow.
 
+use std::cell::Cell;
 use std::cmp::Ordering;
 use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::marker::PhantomData;
+use std::ops::Range;
 
 use prost::bytes::{Buf, BufMut};
 use prost::encoding::wire_type::WireType;
@@ -20,7 +22,7 @@ use serde::ser::{SerializeSeq, SerializeStruct};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use super::par_bag::{
-    encode_protobuf_varint_chunk, EncodedParComponent, ParBag, ParBagComponent,
+    encode_protobuf_varint_chunk, EncodedParComponent, ParBag, ParBagComponent, ParBagOwnerKey,
     ParBagProtobufError, ParBagVisitError, ParComponentItem, ParProtobufProjectionPreparation,
 };
 use crate::rhoapi::{Bundle, Connective, Expr, GUnforgeable, If, Match, New, Receive, Send};
@@ -30,6 +32,9 @@ use crate::rust::rholang::sorter::score_tree::{Score, ScoreAtom, Tree};
 pub enum ParProtobufError {
     Components(ParBagProtobufError),
     RootMetadataLengthOverflow,
+    ComponentRangeOwnerMismatch,
+    InvalidComponentRanges,
+    EncodedLengthMismatch { expected: usize, actual: usize },
 }
 
 impl fmt::Display for ParProtobufError {
@@ -39,6 +44,16 @@ impl fmt::Display for ParProtobufError {
             Self::RootMetadataLengthOverflow => {
                 formatter.write_str("Par root metadata overflows the protobuf output length")
             }
+            Self::ComponentRangeOwnerMismatch => formatter.write_str(
+                "protobuf component ranges belong to a different ParBag copy-on-write owner",
+            ),
+            Self::InvalidComponentRanges => formatter.write_str(
+                "protobuf component ranges do not name two ordered regions of the existing output",
+            ),
+            Self::EncodedLengthMismatch { expected, actual } => write!(
+                formatter,
+                "Par protobuf encoded_len predicted {expected} bytes but emission wrote {actual}"
+            ),
         }
     }
 }
@@ -47,8 +62,49 @@ impl std::error::Error for ParProtobufError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Components(error) => Some(error),
-            Self::RootMetadataLengthOverflow => None,
+            Self::RootMetadataLengthOverflow
+            | Self::ComponentRangeOwnerMismatch
+            | Self::InvalidComponentRanges
+            | Self::EncodedLengthMismatch { .. } => None,
         }
+    }
+}
+
+/// Exact protobuf lengths obtained from one ordered ParBag metric pass.
+///
+/// The component length excludes root fields 9 (`locally_free`) and 10
+/// (`connective_used`). Certified outer-message preflight needs both values;
+/// returning them together avoids rereading all nine family metrics while
+/// preserving the established before-root → root → after-root error order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[doc(hidden)]
+pub struct ParProtobufMeasurement {
+    pub encoded_len: usize,
+    pub component_fields_encoded_len: usize,
+}
+
+/// Two component-only regions already resident in a private protobuf frame.
+///
+/// Root fields 9 and 10 are deliberately excluded: two [`Par`] values may
+/// share the same component owner while carrying different root metadata.
+/// Later occurrences therefore copy `before_root`, emit their own metadata,
+/// and then copy `after_root`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[doc(hidden)]
+pub struct ParProtobufComponentRanges {
+    owner: ParBagOwnerKey,
+    before_root: Range<usize>,
+    after_root: Range<usize>,
+}
+
+impl ParProtobufComponentRanges {
+    #[doc(hidden)]
+    pub fn owner_key(&self) -> &ParBagOwnerKey { &self.owner }
+
+    #[doc(hidden)]
+    pub fn component_bytes(&self) -> usize {
+        (self.before_root.end - self.before_root.start)
+            + (self.after_root.end - self.after_root.start)
     }
 }
 
@@ -158,6 +214,7 @@ impl Par {
     /// Whether the complete authoritative component Bag has no endpoints.
     /// This is distinct from historical [`Self::is_empty`], whose Rholang
     /// contract intentionally examines only process-form families.
+    #[inline]
     pub fn components_is_empty(&self) -> bool { self.components.is_empty() }
 
     pub const fn distinct_len(&self) -> usize { self.components.distinct_len() }
@@ -610,10 +667,13 @@ impl Par {
         result
     }
 
-    pub fn protobuf_encoded_len(&self) -> Result<usize, ParProtobufError> {
+    #[doc(hidden)]
+    #[inline]
+    pub fn protobuf_egress_measurement(&self) -> Result<ParProtobufMeasurement, ParProtobufError> {
         let mut total = 0usize;
         self.components
             .add_protobuf_components_before_root_metadata_len(&mut total)?;
+        let root_metadata_start = total;
         if !self.locally_free.is_empty() {
             total = total
                 .checked_add(prost::encoding::bytes::encoded_len(9, &self.locally_free))
@@ -627,9 +687,36 @@ impl Par {
                 ))
                 .ok_or(ParProtobufError::RootMetadataLengthOverflow)?;
         }
+        let root_metadata_len = total - root_metadata_start;
         self.components
             .add_protobuf_components_after_root_metadata_len(&mut total)?;
-        Ok(total)
+        // Every component contribution was added to `total` before or after
+        // the contiguous root-metadata region, so subtracting that region is
+        // exact and cannot underflow.
+        Ok(ParProtobufMeasurement {
+            encoded_len: total,
+            component_fields_encoded_len: total - root_metadata_len,
+        })
+    }
+
+    pub fn protobuf_encoded_len(&self) -> Result<usize, ParProtobufError> {
+        self.protobuf_egress_measurement()
+            .map(|measurement| measurement.encoded_len)
+    }
+
+    /// Exact protobuf bytes contributed by the nine component families,
+    /// excluding root `locally_free` and `connective_used` metadata.
+    ///
+    /// Certified outer-message preflight calls [`Self::protobuf_encoded_len`]
+    /// first to retain its established before-root → root → after-root error
+    /// precedence. This component-only query is then an O(1) read of the
+    /// authoritative ParBag metrics used solely to decide whether owner-local
+    /// component reuse can save work.
+    #[doc(hidden)]
+    pub fn protobuf_component_fields_encoded_len(&self) -> Result<usize, ParProtobufError> {
+        self.components
+            .protobuf_components_encoded_len()
+            .map_err(Into::into)
     }
 
     pub fn encode_protobuf(&self, output: &mut impl BufMut) -> Result<(), ParProtobufError> {
@@ -701,6 +788,149 @@ impl Par {
             })
     }
 
+    /// Opaque identity of the component Bag's copy-on-write auxiliary owner.
+    ///
+    /// This is a response-local optimization witness.  It is neither semantic
+    /// equality nor a serialized identifier: independently constructed equal
+    /// Pars intentionally have different keys.
+    #[doc(hidden)]
+    #[inline]
+    pub fn protobuf_owner_key(&self) -> ParBagOwnerKey { self.components.owner_key() }
+
+    /// Emit one complete `Par` directly into a private frame and remember the
+    /// two component-only ranges that were written.
+    ///
+    /// The authoritative RPB3 PathMap is traversed exactly once. Root metadata
+    /// is emitted between the ranges because it is not part of the shared
+    /// component owner. No projection allocation or live-owner cache is made.
+    #[doc(hidden)]
+    pub fn encode_protobuf_recording_component_ranges(
+        &self,
+        output: &mut Vec<u8>,
+    ) -> Result<ParProtobufComponentRanges, ParProtobufError> {
+        let expected = self.protobuf_encoded_len()?;
+        self.encode_protobuf_recording_component_ranges_prevalidated(output, expected)
+    }
+
+    /// Emit one complete `Par` after an enclosing encoder has already proved
+    /// its exact body length.
+    ///
+    /// This is the cross-crate seam used by the generated certified egress
+    /// traversal. The caller supplies the length captured from this same
+    /// immutable `Par` during the enclosing message's mandatory preflight.
+    /// The method still verifies the emitted delta and rolls the private frame
+    /// back on disagreement; it merely avoids repeating the component-length
+    /// calculation for every occurrence during pass two.
+    #[doc(hidden)]
+    pub fn encode_protobuf_recording_component_ranges_prevalidated(
+        &self,
+        output: &mut Vec<u8>,
+        expected: usize,
+    ) -> Result<ParProtobufComponentRanges, ParProtobufError> {
+        let start = output.len();
+        let written = Cell::new(start);
+        let mut before_root_end = None;
+        let mut after_root_start = None;
+        let mut append = |chunk: &[u8]| {
+            output.extend_from_slice(chunk);
+            written.set(
+                written
+                    .get()
+                    .checked_add(chunk.len())
+                    .expect("private protobuf frame length already fits addressable memory"),
+            );
+            Ok::<_, std::convert::Infallible>(())
+        };
+        let result = self
+            .components
+            .try_visit_protobuf_chunks_direct_around_root_metadata(&mut append, |append| {
+                before_root_end = Some(written.get());
+                self.try_visit_root_metadata_chunks(append)?;
+                after_root_start = Some(written.get());
+                Ok::<_, std::convert::Infallible>(())
+            });
+        match result {
+            Ok(()) => {}
+            Err(never) => match never {},
+        }
+
+        let actual = output.len() - start;
+        if actual != expected {
+            output.truncate(start);
+            return Err(ParProtobufError::EncodedLengthMismatch { expected, actual });
+        }
+        let before_root_end = before_root_end
+            .expect("the component chunk driver must place root metadata exactly once");
+        let after_root_start = after_root_start
+            .expect("the component chunk driver must place root metadata exactly once");
+        Ok(ParProtobufComponentRanges {
+            owner: self.protobuf_owner_key(),
+            before_root: start..before_root_end,
+            after_root: after_root_start..output.len(),
+        })
+    }
+
+    /// Emit this `Par` by copying component bytes already present in `output`.
+    ///
+    /// The ranges must have been recorded for the same copy-on-write owner and
+    /// must name bytes that predate this append. Invalid or mismatched ranges
+    /// leave `output` unchanged. The current value's root metadata is always
+    /// emitted freshly, so metadata-only clones remain byte-exact.
+    #[doc(hidden)]
+    pub fn encode_protobuf_from_component_ranges(
+        &self,
+        output: &mut Vec<u8>,
+        ranges: &ParProtobufComponentRanges,
+    ) -> Result<(), ParProtobufError> {
+        let expected = self.protobuf_encoded_len()?;
+        self.encode_protobuf_from_component_ranges_prevalidated(output, ranges, expected)
+    }
+
+    /// Reuse component ranges after an enclosing encoder has already proved
+    /// this occurrence's exact protobuf body length.
+    ///
+    /// Owner/range validation happens before publication. The final byte delta
+    /// is compared with `expected`, and any disagreement truncates the private
+    /// frame back to its entry length. Consequently the optimization cannot
+    /// publish a partially or incorrectly framed message.
+    #[doc(hidden)]
+    pub fn encode_protobuf_from_component_ranges_prevalidated(
+        &self,
+        output: &mut Vec<u8>,
+        ranges: &ParProtobufComponentRanges,
+        expected: usize,
+    ) -> Result<(), ParProtobufError> {
+        if self.protobuf_owner_key() != ranges.owner {
+            return Err(ParProtobufError::ComponentRangeOwnerMismatch);
+        }
+        let start = output.len();
+        let valid = ranges.before_root.start <= ranges.before_root.end
+            && ranges.before_root.end <= ranges.after_root.start
+            && ranges.after_root.start <= ranges.after_root.end
+            && ranges.after_root.end <= start;
+        if !valid {
+            return Err(ParProtobufError::InvalidComponentRanges);
+        }
+
+        output.extend_from_within(ranges.before_root.clone());
+        let mut append = |chunk: &[u8]| {
+            output.extend_from_slice(chunk);
+            Ok::<_, std::convert::Infallible>(())
+        };
+        match self.try_visit_root_metadata_chunks(&mut append) {
+            Ok(()) => {}
+            Err(never) => match never {},
+        }
+        output.extend_from_within(ranges.after_root.clone());
+
+        let actual = output.len() - start;
+        if actual != expected {
+            output.truncate(start);
+            return Err(ParProtobufError::EncodedLengthMismatch { expected, actual });
+        }
+        Ok(())
+    }
+
     /// Stream the canonical protobuf image as callback-scoped borrowed chunks.
     ///
     /// A prepared component projection is reused when present; otherwise the
@@ -761,6 +991,36 @@ impl Par {
         match self.try_visit_protobuf_chunks_direct_prevalidated(&mut sink) {
             Ok(()) => {}
             Err(never) => match never {},
+        }
+        Ok(())
+    }
+
+    /// Stream a preflighted `Par` directly into a caller-private `Vec`.
+    ///
+    /// Certified outer egress uses this for component-empty values and owners
+    /// that its exact census proved occur only once. It avoids both a repeated
+    /// length calculation and the owner/range bookkeeping needed only by a
+    /// reusable owner. A byte-count disagreement restores the exact entry
+    /// prefix before returning an error.
+    #[doc(hidden)]
+    pub fn encode_protobuf_direct_to_vec_prevalidated(
+        &self,
+        output: &mut Vec<u8>,
+        expected: usize,
+    ) -> Result<(), ParProtobufError> {
+        let start = output.len();
+        let mut sink = |chunk: &[u8]| {
+            output.extend_from_slice(chunk);
+            Ok::<_, std::convert::Infallible>(())
+        };
+        match self.try_visit_protobuf_chunks_direct_prevalidated(&mut sink) {
+            Ok(()) => {}
+            Err(never) => match never {},
+        }
+        let actual = output.len() - start;
+        if actual != expected {
+            output.truncate(start);
+            return Err(ParProtobufError::EncodedLengthMismatch { expected, actual });
         }
         Ok(())
     }

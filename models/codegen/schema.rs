@@ -3,16 +3,19 @@
 //! A **build-script pass**, not a proc-macro. It reads the protobuf
 //! `FileDescriptorSet` that `prost_build` was asked to dump (`build.rs`
 //! `.file_descriptor_set_path(...)`), resolves every `rhoapi` message **once**,
-//! and emits six files into `OUT_DIR`:
+//! and emits eight files into `OUT_DIR`:
 //!
 //! ```text
 //!   rhoapi_bincode_schema.rs    the bincode table — serializer + deserializer
 //!   rhoapi_protobuf_schema.rs   the protobuf table — field order + kinds
+//!   egress_protobuf_schema.rs   complete RSpace/Rholang response programs
 //!   rhoapi_term_ops.rs          generated term-operation PDAs
 //!   rhoapi_schema_meta.rs       child relation, SCC, and derive dispositions
 //!   rhoapi_protobuf_decoder.rs
 //!                               generated protobuf deserializer PDA (§8)
 //!   rhoapi_match_schema.rs      full-schema read-only matching cursor
+//!   rhoapi_schema_test_adapters.rs
+//!                               test-only exhaustive schema fixtures
 //! ```
 //!
 //! Repository-owned names identify the serialized **format**: `bincode_*` or
@@ -176,6 +179,10 @@ const PACKAGE: &str = "rhoapi";
 pub const OUTPUT_BINCODE_SCHEMA: &str = "rhoapi_bincode_schema.rs";
 /// See [`OUTPUT_BINCODE_SCHEMA`].
 pub const OUTPUT_PROTOBUF_SCHEMA: &str = "rhoapi_protobuf_schema.rs";
+/// Generated complete outer-message programs used by response-local protobuf
+/// egress. These are deliberately separate from the recursive `rhoapi` table:
+/// they cover selected acyclic roots in the RSpace and Rholang bridge packages.
+pub const OUTPUT_EGRESS_PROTOBUF_SCHEMA: &str = "egress_protobuf_schema.rs";
 /// See [`OUTPUT_BINCODE_SCHEMA`].
 pub const OUTPUT_TERM_OPS: &str = "rhoapi_term_ops.rs";
 /// See [`OUTPUT_BINCODE_SCHEMA`].
@@ -894,6 +901,20 @@ struct Message<'a> {
 impl<'a> Message<'a> {
     fn leaf_name(&self) -> &str { self.desc.name.as_deref().unwrap_or("") }
 
+    /// Fully-qualified protobuf descriptor name, including every nesting
+    /// segment. Certified-depth evidence uses descriptor identities rather
+    /// than Rust leaf names so cross-package edges cannot be ambiguous.
+    fn descriptor_name(&self, package: &str) -> String {
+        let mut name = format!(".{package}");
+        for parent in &self.parents {
+            name.push('.');
+            name.push_str(parent);
+        }
+        name.push('.');
+        name.push_str(self.leaf_name());
+        name
+    }
+
     /// Rust path relative to `crate::rhoapi`, which the generated file `use`s.
     fn rust_path(&self) -> String {
         let mut path = String::new();
@@ -1125,6 +1146,7 @@ pub fn generate(fds: &FileDescriptorSet) -> Generated {
 
     let bincode = emit_bincode_source(&messages, &resolved, &oneofs, &extern_set);
     let protobuf = emit_protobuf_source(&messages, &resolved, &oneofs, &extern_set);
+    let egress_protobuf = emit_egress_protobuf_source(fds);
     let (term_ops, clone_impls) =
         emit_term_ops_source(&messages, &resolved, &oneofs, &extern_set, &graph, &plan);
     let (schema_meta, derive_row_count) =
@@ -1213,6 +1235,7 @@ pub fn generate(fds: &FileDescriptorSet) -> Generated {
         sources: vec![
             (OUTPUT_BINCODE_SCHEMA, bincode),
             (OUTPUT_PROTOBUF_SCHEMA, protobuf),
+            (OUTPUT_EGRESS_PROTOBUF_SCHEMA, egress_protobuf),
             (OUTPUT_TERM_OPS, term_ops),
             (OUTPUT_SCHEMA_META, schema_meta),
             (OUTPUT_PROTOBUF_DECODER, protobuf_decoder),
@@ -1571,6 +1594,8 @@ fn oneof_const_prefix(oneof_ident: &str) -> &'static str {
         "VarInstance" => "VI_",
         "UnfInstance" => "UF_",
         "TaggedCont" => "TC_",
+        "IoEventType" => "IOE_",
+        "EventType" => "EV_",
         other => panic!(
             "schema: oneof `{other}` has no registered constant prefix. Add one to \
              `oneof_const_prefix` deliberately — an auto-abbreviation could collide with an \
@@ -2971,6 +2996,965 @@ fn emit_protobuf_source(
 
     emit_protobuf_conformance_registry(&mut src, messages, extern_set);
     src
+}
+
+/// Generate complete protobuf programs for the response types that cross the
+/// Rust/Scala FFI boundary with resident `Par` values.
+///
+/// The main schema pass intentionally owns only the recursive `rhoapi` package.
+/// Response-local in-frame memoization, however, must see every outer edge down
+/// to those opaque `Par` leaves.  This second view selects an explicit root set
+/// and computes its complete same-package dependency closure from the very same
+/// descriptor set; a newly reachable message is therefore generated
+/// automatically, while an unrelated service message does not acquire a new
+/// trait implementation or build cost.
+struct EgressPackage<'a> {
+    messages: Vec<Message<'a>>,
+    resolved: Vec<(usize, Vec<Field>)>,
+    oneofs: Vec<Oneof>,
+    selected: BTreeSet<String>,
+}
+
+/// Select and resolve one package's complete local dependency closure. `cuts`
+/// are descriptor messages deliberately treated as opaque endpoints; every
+/// other local message edge is followed, including nested messages reached by
+/// a oneof arm.
+fn resolve_egress_package<'a>(
+    fds: &'a FileDescriptorSet,
+    package: &str,
+    roots: &[&str],
+    cuts: &BTreeSet<&str>,
+) -> EgressPackage<'a> {
+    let mut all_messages = Vec::new();
+    let mut map_entries = BTreeMap::new();
+    for file in &fds.file {
+        if file.package.as_deref() != Some(package) {
+            continue;
+        }
+        for message in &file.message_type {
+            collect(message, &[], &mut all_messages, &mut map_entries);
+        }
+    }
+    assert!(
+        !all_messages.is_empty(),
+        "schema: egress package `{package}` has no descriptor messages"
+    );
+
+    let mut by_leaf = BTreeMap::new();
+    for (index, message) in all_messages.iter().enumerate() {
+        let previous = by_leaf.insert(message.leaf_name().to_string(), index);
+        assert!(
+            previous.is_none(),
+            "schema: egress package `{package}` has duplicate message leaf `{}`",
+            message.leaf_name()
+        );
+    }
+
+    let package_prefix = format!(".{package}.");
+    let mut selected = BTreeSet::new();
+    let mut pending: Vec<String> = roots.iter().map(|root| (*root).to_string()).collect();
+    while let Some(leaf) = pending.pop() {
+        if cuts.contains(leaf.as_str()) || !selected.insert(leaf.clone()) {
+            continue;
+        }
+        let index = *by_leaf.get(&leaf).unwrap_or_else(|| {
+            panic!("schema: egress root/dependency `{leaf}` is absent from package `{package}`")
+        });
+        for field in &all_messages[index].desc.field {
+            if Type::try_from(field.r#type.unwrap_or_default()).ok() != Some(Type::Message) {
+                continue;
+            }
+            let type_name = field.type_name.as_deref().unwrap_or_default();
+            let Some(local) = type_name.strip_prefix(&package_prefix) else {
+                continue;
+            };
+            let child = type_leaf(local);
+            if map_entries.contains_key(child) || cuts.contains(child) {
+                continue;
+            }
+            assert!(
+                by_leaf.contains_key(child),
+                "schema: `{leaf}` reaches missing local egress message `{child}`"
+            );
+            pending.push(child.to_string());
+        }
+    }
+
+    let messages: Vec<Message<'a>> = all_messages
+        .into_iter()
+        .filter(|message| selected.contains(message.leaf_name()))
+        .collect();
+    let known: BTreeSet<String> = messages
+        .iter()
+        .map(|message| message.leaf_name().to_string())
+        .collect();
+    let mut programs = BTreeMap::new();
+    for message in &messages {
+        let previous = programs.insert(message.leaf_name().to_string(), message.program_ident());
+        assert!(previous.is_none());
+    }
+
+    let mut resolved = Vec::with_capacity(messages.len());
+    let mut oneofs = Vec::new();
+    for (index, message) in messages.iter().enumerate() {
+        let (fields, mut message_oneofs, _) =
+            resolve_message(message, &known, cuts, &programs, &map_entries);
+        resolved.push((index, fields));
+        oneofs.append(&mut message_oneofs);
+    }
+    EgressPackage {
+        messages,
+        resolved,
+        oneofs,
+        selected,
+    }
+}
+
+/// Prove acyclicity and derive one compile-time native-call bound per message.
+///
+/// This is deliberately a topological fixed point rather than a recursive DFS:
+/// an unresolved remainder is the descriptor's exact cyclic witness after the
+/// registered cut vertices have been removed.
+fn certified_egress_depths(
+    package: &str,
+    messages: &[Message<'_>],
+    resolved: &[(usize, Vec<Field>)],
+    external_depths: &BTreeMap<String, usize>,
+) -> BTreeMap<String, usize> {
+    let local: BTreeSet<String> = messages
+        .iter()
+        .map(|message| message.leaf_name().to_string())
+        .collect();
+    let fields: BTreeMap<&str, &[Field]> = resolved
+        .iter()
+        .map(|(index, fields)| (messages[*index].leaf_name(), fields.as_slice()))
+        .collect();
+    let mut depths = BTreeMap::new();
+    while depths.len() != messages.len() {
+        let before = depths.len();
+        for message in messages {
+            let leaf = message.leaf_name();
+            if depths.contains_key(leaf) {
+                continue;
+            }
+            let mut child_depth = 0usize;
+            let mut ready = true;
+            for child in fields[leaf].iter().flat_map(|field| field.children.iter()) {
+                let depth = if local.contains(child) {
+                    depths.get(child).copied()
+                } else {
+                    external_depths.get(child).copied()
+                };
+                match depth {
+                    Some(depth) => child_depth = child_depth.max(depth),
+                    None => {
+                        ready = false;
+                        break;
+                    }
+                }
+            }
+            if ready {
+                depths.insert(
+                    leaf.to_string(),
+                    child_depth.checked_add(1).expect("schema depth fits usize"),
+                );
+            }
+        }
+        if depths.len() == before {
+            let unresolved = local
+                .iter()
+                .filter(|leaf| !depths.contains_key(*leaf))
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(", ");
+            panic!(
+                "schema: certified egress package `{package}` is cyclic or reaches an \
+                 uncertified external after the Par/EPathMap cuts: [{unresolved}]"
+            );
+        }
+    }
+    depths
+}
+
+fn emit_certified_egress_imports(src: &mut String) {
+    src.push_str(
+        "    use crate::rust::rholang::protobuf_schema::{\n\
+                 checked_egress_add, certified_length_delimited_field_len,\n\
+                 encode_certified_length_delimited_prefix, CertifiedEgressEncodeError,\n\
+                 CertifiedEgressError, CertifiedEgressNode, CertifiedEgressPreflight,\n\
+                 CertifiedEgressReplay, CertifiedLengthEventKind,\n\
+             };\n",
+    );
+}
+
+fn expected_publish_root_depth(leaf: &str) -> Option<usize> {
+    match leaf {
+        "Par" => Some(1),
+        "EvaluateResultProto" => Some(2),
+        "SoftCheckpointProto" => Some(7),
+        "CheckpointProto" => Some(5),
+        "ConsumeResultReturn" => Some(4),
+        "DatumsProto" => Some(4),
+        "JoinsProto" => Some(3),
+        "WaitingContinuationsProto" => Some(5),
+        "StoreToMapResult" => Some(7),
+        _ => None,
+    }
+}
+
+fn emit_egress_protobuf_source(fds: &FileDescriptorSet) -> String {
+    struct PackageSpec {
+        package: &'static str,
+        rust_module: &'static str,
+        roots: &'static [&'static str],
+    }
+
+    const PACKAGES: &[PackageSpec] = &[
+        PackageSpec {
+            package: "rspace_plus_plus_types",
+            rust_module: "rspace_plus_plus_types",
+            roots: &[
+                "SoftCheckpointProto",
+                "CheckpointProto",
+                "StoreToMapResult",
+                // Not a production publish root; retained as a small canary.
+                "ChannelsProto",
+                "DatumsProto",
+                "WaitingContinuationsProto",
+                "JoinsProto",
+            ],
+        },
+        PackageSpec {
+            package: "rholang_scala_rust_types",
+            rust_module: "rholang_scala_rust_types",
+            roots: &["EvaluateResultProto", "ConsumeResultReturn"],
+        },
+    ];
+    const RHOAPI_BRIDGE_ROOTS: &[&str] =
+        &["BindPattern", "TaggedContinuation", "ListParWithRandom"];
+    const CUTS: &[&str] = &["Par", "EPathMap"];
+
+    let cut_set: BTreeSet<&str> = CUTS.iter().copied().collect();
+    let mut external_depths = BTreeMap::from([
+        ("Par".to_string(), 1usize),
+        // EPathMap is a descriptor cut with a truthful hand-certified wire
+        // boundary. It reaches the generated Var -> WildcardMsg residual path
+        // and PathMap<Par> values, so its endpoint-inclusive depth is three.
+        ("EPathMap".to_string(), 3usize),
+    ]);
+    let bridge = resolve_egress_package(fds, PACKAGE, RHOAPI_BRIDGE_ROOTS, &cut_set);
+    let bridge_depths = certified_egress_depths(
+        PACKAGE,
+        &bridge.messages,
+        &bridge.resolved,
+        &external_depths,
+    );
+    external_depths.extend(
+        bridge_depths
+            .iter()
+            .map(|(leaf, depth)| (leaf.clone(), *depth)),
+    );
+    let mut outer_externals = cut_set.clone();
+    outer_externals.extend(bridge_depths.keys().map(String::as_str));
+
+    let mut src = String::with_capacity(96 * 1024);
+    src.push_str(
+        "// @generated by models/codegen/schema.rs from the protobuf FileDescriptorSet.\n\
+         // DO NOT EDIT. Regenerate by touching an input `.proto` or `models/codegen/schema.rs`.\n\
+         //\n\
+         // Complete response programs plus a descriptor-certified acyclic egress layer.\n\
+         // The certified graph follows cross-package rhoapi bridge messages and cuts only\n\
+         // at hand-certified PathMap-native Par/EPathMap boundaries. Every MAX_SCHEMA_DEPTH below is derived\n\
+         // after that cut; it is a compile-time proof fact, never a run-time cap.\n\n",
+    );
+
+    src.push_str("pub mod rhoapi_bridge {\n");
+    src.push_str("    use prost::bytes::BufMut;\n    use prost::encoding;\n");
+    emit_certified_egress_imports(&mut src);
+    src.push_str("    use crate::rhoapi::*;\n");
+    for oneof in &bridge.oneofs {
+        writeln!(
+            src,
+            "    use crate::rhoapi::{}::{};",
+            oneof.module, oneof.rust_ident
+        )
+        .expect("write");
+    }
+    src.push('\n');
+    for (message, fields) in walk_messages(&bridge.messages, &bridge.resolved, &cut_set) {
+        emit_certified_egress_message(
+            &mut src,
+            message,
+            fields.expect("bridge cut vertices are excluded from the selected closure"),
+            &bridge.oneofs,
+            bridge_depths[message.leaf_name()],
+        );
+    }
+    emit_certified_depth_registry(
+        &mut src,
+        PACKAGE,
+        &bridge.messages,
+        &bridge.resolved,
+        &bridge_depths,
+        &external_depths,
+    );
+    src.push_str("}\n\n");
+
+    for spec in PACKAGES {
+        let package = resolve_egress_package(fds, spec.package, spec.roots, &outer_externals);
+        let depths = certified_egress_depths(
+            spec.package,
+            &package.messages,
+            &package.resolved,
+            &external_depths,
+        );
+        for root in spec.roots {
+            if let Some(expected) = expected_publish_root_depth(root) {
+                assert_eq!(
+                    depths.get(*root).copied(),
+                    Some(expected),
+                    "schema: certified publish root `{root}` changed depth; either the \
+                     descriptor closure changed or a Par-reaching edge was omitted"
+                );
+            }
+        }
+
+        writeln!(src, "pub mod {} {{", spec.rust_module).expect("write");
+        src.push_str(
+            "    use prost::bytes::BufMut;\n\
+                 use prost::encoding;\n\
+                 use crate::rust::rholang::protobuf_schema::{\n\
+                     ProtobufDescent, ProtobufField, ProtobufKind, ProtobufNode,\n\
+                     ProtobufOneof, NO_RESUME,\n\
+                 };\n",
+        );
+        emit_certified_egress_imports(&mut src);
+        writeln!(src, "    use crate::{}::*;", spec.rust_module).expect("write");
+        for oneof in &package.oneofs {
+            writeln!(
+                src,
+                "    use crate::{}::{}::{};",
+                spec.rust_module, oneof.module, oneof.rust_ident
+            )
+            .expect("write");
+        }
+        src.push('\n');
+
+        for (message, fields) in
+            walk_messages(&package.messages, &package.resolved, &outer_externals)
+        {
+            let fields = fields.expect("selected egress messages are never cut vertices");
+            emit_protobuf_message(
+                &mut src,
+                &message.rust_path(),
+                &message.protobuf_program_ident(),
+                message.leaf_name(),
+                fields,
+            );
+            emit_certified_egress_message(
+                &mut src,
+                message,
+                fields,
+                &package.oneofs,
+                depths[message.leaf_name()],
+            );
+        }
+        for oneof in &package.oneofs {
+            emit_protobuf_oneof(&mut src, oneof);
+        }
+
+        src.push_str(
+            "/// Every descriptor-derived message in this egress dependency closure.\n\
+             pub static EGRESS_PROTOBUF_PROGRAM_REGISTRY: &[(&str, &[ProtobufField])] = &[\n",
+        );
+        for message in &package.messages {
+            writeln!(
+                src,
+                "    (\"{}\", {}),",
+                message.leaf_name(),
+                message.protobuf_program_ident()
+            )
+            .expect("write");
+        }
+        src.push_str("    ];\n");
+        emit_certified_depth_registry(
+            &mut src,
+            spec.package,
+            &package.messages,
+            &package.resolved,
+            &depths,
+            &external_depths,
+        );
+        src.push_str("}\n\n");
+
+        assert!(
+            spec.roots
+                .iter()
+                .all(|root| package.selected.contains(*root)),
+            "schema: an egress root disappeared from its generated closure"
+        );
+    }
+
+    src.push_str(
+        "/// The hand-certified cut vertices and their truthful wire depths.\n\
+         /// EPathMap is opaque only to descriptor-cycle analysis: its implementation\n\
+         /// covers the optional Var remainder and every PathMap<Par> value.\n\
+         pub static CERTIFIED_EGRESS_CUT_DEPTH_REGISTRY: &[(&str, usize)] = &[\n\
+             (\"Par\", <crate::rhoapi::Par as crate::rust::rholang::protobuf_schema::CertifiedEgressNode>::MAX_SCHEMA_DEPTH),\n\
+             (\"EPathMap\", <crate::rhoapi::EPathMap as crate::rust::rholang::protobuf_schema::CertifiedEgressNode>::MAX_SCHEMA_DEPTH),\n\
+         ];\n\
+         /// Hand-certified wire edges hidden behind the descriptor cut vertices.\n\
+         /// These complete the generated edge registries: Par is a leaf, while\n\
+         /// EPathMap reaches its Var remainder and each PathMap<Par> value.\n\
+         pub static CERTIFIED_EGRESS_CUT_EDGE_DEPTH_REGISTRY: &[(&str, usize, &str, usize)] = &[\n\
+             (\".rhoapi.EPathMap\", <crate::rhoapi::EPathMap as crate::rust::rholang::protobuf_schema::CertifiedEgressNode>::MAX_SCHEMA_DEPTH, \".rhoapi.Var\", <crate::rhoapi::Var as crate::rust::rholang::protobuf_schema::CertifiedEgressNode>::MAX_SCHEMA_DEPTH),\n\
+             (\".rhoapi.EPathMap\", <crate::rhoapi::EPathMap as crate::rust::rholang::protobuf_schema::CertifiedEgressNode>::MAX_SCHEMA_DEPTH, \".rhoapi.Par\", <crate::rhoapi::Par as crate::rust::rholang::protobuf_schema::CertifiedEgressNode>::MAX_SCHEMA_DEPTH),\n\
+         ];\n\
+         /// The nine production protobuf publish roots and their descriptor-certified depths.\n\
+         /// Naming the concrete types here is a compile-time trait-coverage witness.\n\
+         pub static CERTIFIED_EGRESS_PUBLISH_ROOTS: &[(&str, usize)] = &[\n\
+             (\"Par\", <crate::rhoapi::Par as crate::rust::rholang::protobuf_schema::CertifiedEgressNode>::MAX_SCHEMA_DEPTH),\n\
+             (\"EvaluateResultProto\", <crate::rholang_scala_rust_types::EvaluateResultProto as crate::rust::rholang::protobuf_schema::CertifiedEgressNode>::MAX_SCHEMA_DEPTH),\n\
+             (\"SoftCheckpointProto\", <crate::rspace_plus_plus_types::SoftCheckpointProto as crate::rust::rholang::protobuf_schema::CertifiedEgressNode>::MAX_SCHEMA_DEPTH),\n\
+             (\"CheckpointProto\", <crate::rspace_plus_plus_types::CheckpointProto as crate::rust::rholang::protobuf_schema::CertifiedEgressNode>::MAX_SCHEMA_DEPTH),\n\
+             (\"ConsumeResultReturn\", <crate::rholang_scala_rust_types::ConsumeResultReturn as crate::rust::rholang::protobuf_schema::CertifiedEgressNode>::MAX_SCHEMA_DEPTH),\n\
+             (\"DatumsProto\", <crate::rspace_plus_plus_types::DatumsProto as crate::rust::rholang::protobuf_schema::CertifiedEgressNode>::MAX_SCHEMA_DEPTH),\n\
+             (\"JoinsProto\", <crate::rspace_plus_plus_types::JoinsProto as crate::rust::rholang::protobuf_schema::CertifiedEgressNode>::MAX_SCHEMA_DEPTH),\n\
+             (\"WaitingContinuationsProto\", <crate::rspace_plus_plus_types::WaitingContinuationsProto as crate::rust::rholang::protobuf_schema::CertifiedEgressNode>::MAX_SCHEMA_DEPTH),\n\
+             (\"StoreToMapResult\", <crate::rspace_plus_plus_types::StoreToMapResult as crate::rust::rholang::protobuf_schema::CertifiedEgressNode>::MAX_SCHEMA_DEPTH),\n\
+         ];\n\
+         pub const MAX_SCHEMA_DEPTH: usize = 7;\n",
+    );
+
+    assert!(
+        !src.contains("ParLengthReplay") && !src.contains(".fork()"),
+        "schema: certified emission regenerated a forked length replay"
+    );
+    for (offset, _) in src.match_indices("fn try_encode_certified_egress") {
+        let method = &src[offset..];
+        let end = method
+            .find("\n    }\n}\n\n")
+            .expect("schema: generated certified encode method has a complete impl boundary");
+        assert!(
+            !method[..end].contains("certified_egress_encoded_len"),
+            "schema: certified emission regenerated a nested length rescan"
+        );
+    }
+
+    src
+}
+
+fn certified_oneof_for_field<'a>(
+    message: &Message<'_>,
+    field: &Field,
+    oneofs: &'a [Oneof],
+) -> &'a Oneof {
+    let module = message.oneof_module();
+    oneofs
+        .iter()
+        .find(|oneof| {
+            oneof.module == module && rust_field_name(&oneof.proto_name) == field.rust_name
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "schema: certified egress field `{}.{}` is a oneof but has no resolved enum",
+                message.leaf_name(),
+                field.rust_name
+            )
+        })
+}
+
+fn emit_certified_depth_registry(
+    src: &mut String,
+    package: &str,
+    messages: &[Message<'_>],
+    resolved: &[(usize, Vec<Field>)],
+    depths: &BTreeMap<String, usize>,
+    external_depths: &BTreeMap<String, usize>,
+) {
+    let maximum = depths.values().copied().max().unwrap_or(0);
+    writeln!(
+        src,
+        "/// Descriptor-derived maximum native call depth in this certified closure.\n\
+         pub const MAX_SCHEMA_DEPTH: usize = {maximum};\n\
+         /// Every certified message and its compile-time depth bound.\n\
+         pub static CERTIFIED_EGRESS_DEPTH_REGISTRY: &[(&str, usize)] = &["
+    )
+    .expect("write");
+    for message in messages {
+        writeln!(
+            src,
+            "    (\"{}\", {}),",
+            message.leaf_name(),
+            depths[message.leaf_name()]
+        )
+        .expect("write");
+    }
+    src.push_str("];\n");
+
+    let local_names: BTreeMap<&str, String> = messages
+        .iter()
+        .map(|message| (message.leaf_name(), message.descriptor_name(package)))
+        .collect();
+    let resolved_fields: BTreeMap<&str, &[Field]> = resolved
+        .iter()
+        .map(|(index, fields)| (messages[*index].leaf_name(), fields.as_slice()))
+        .collect();
+    let mut edges = BTreeSet::new();
+    for message in messages {
+        let parent = message.leaf_name();
+        let parent_depth = depths[parent];
+        let mut maximum_child_depth = 0usize;
+        for child in resolved_fields[parent]
+            .iter()
+            .flat_map(|field| field.children.iter())
+        {
+            let (child_name, child_depth) =
+                match (local_names.get(child.as_str()), depths.get(child)) {
+                    (Some(name), Some(depth)) => (name.clone(), *depth),
+                    (None, None) => (
+                        format!(".{PACKAGE}.{child}"),
+                        *external_depths.get(child).unwrap_or_else(|| {
+                            panic!(
+                                "schema: certified edge {} -> {child} has no external depth",
+                                message.descriptor_name(package)
+                            )
+                        }),
+                    ),
+                    _ => panic!(
+                        "schema: certified edge {} -> {child} is inconsistently classified",
+                        message.descriptor_name(package)
+                    ),
+                };
+            assert!(
+                child_depth < parent_depth,
+                "schema: certified edge {} ({parent_depth}) -> {child_name} ({child_depth}) does not decrease",
+                message.descriptor_name(package)
+            );
+            maximum_child_depth = maximum_child_depth.max(child_depth);
+            edges.insert((
+                message.descriptor_name(package),
+                parent_depth,
+                child_name,
+                child_depth,
+            ));
+        }
+        let expected_depth = maximum_child_depth
+            .checked_add(1)
+            .expect("certified descriptor depth fits usize");
+        assert_eq!(
+            parent_depth,
+            expected_depth,
+            "schema: certified depth for {} is not one plus its maximum child depth",
+            message.descriptor_name(package)
+        );
+    }
+
+    src.push_str(
+        "/// Exhaustive descriptor edges and their derived decreasing depth ranks.\n\
+         pub static CERTIFIED_EGRESS_EDGE_DEPTH_REGISTRY: &[(&str, usize, &str, usize)] = &[\n",
+    );
+    for (parent, parent_depth, child, child_depth) in edges {
+        writeln!(
+            src,
+            "    ({parent:?}, {parent_depth}, {child:?}, {child_depth}),"
+        )
+        .expect("write");
+    }
+    src.push_str("];\n");
+}
+
+fn emit_certified_egress_message(
+    src: &mut String,
+    message: &Message<'_>,
+    fields: &[Field],
+    oneofs: &[Oneof],
+    depth: usize,
+) {
+    let rust_ty = message.rust_path();
+    let sorted = protobuf_order(fields);
+    let total_decl = if sorted.is_empty() {
+        "let total = 0usize;"
+    } else {
+        "let mut total = 0usize;"
+    };
+    writeln!(
+        src,
+        "impl CertifiedEgressNode for {rust_ty} {{\n\
+             const MAX_SCHEMA_DEPTH: usize = {depth};\n\n\
+             #[inline]\n\
+             fn certified_egress_encoded_len(\n\
+                 &self,\n\
+                 preflight: &mut CertifiedEgressPreflight,\n\
+             ) -> Result<usize, CertifiedEgressError> {{\n\
+                 let _ = &mut *preflight;\n\
+                 {total_decl}"
+    )
+    .expect("write");
+    for field in &sorted {
+        emit_certified_len_field(src, message, field, oneofs);
+    }
+    src.push_str("        Ok(total)\n    }\n\n");
+
+    src.push_str(
+        "    #[inline]\n\
+             fn try_encode_certified_egress<B, E, F>(\n\
+                 &self,\n\
+                 output: &mut B,\n\
+                 replay: &mut CertifiedEgressReplay<'_>,\n\
+                 emit_par: &mut F,\n\
+             ) -> Result<(), CertifiedEgressEncodeError<E>>\n\
+             where\n\
+                 B: BufMut,\n\
+                 F: FnMut(&crate::rhoapi::Par, usize, &mut B) -> Result<(), E>,\n\
+             {\n\
+                 let _ = (&mut *output, &mut *replay, &mut *emit_par);\n",
+    );
+    for field in &sorted {
+        emit_certified_encode_field(src, message, field, oneofs);
+    }
+    src.push_str("        Ok(())\n    }\n}\n\n");
+}
+
+fn certified_context(message: &Message<'_>, field: &Field) -> String {
+    format!("{}.{}", message.leaf_name(), field.rust_name)
+}
+
+fn emit_certified_len_scalar(
+    src: &mut String,
+    value_ref: &str,
+    guard_value: Option<&str>,
+    ty: Type,
+    tag: u32,
+    context: &str,
+    indent: &str,
+) {
+    let (module, default) = protobuf_scalar_module_and_default(ty);
+    if let Some(guard_value) = guard_value {
+        writeln!(src, "{indent}if {guard_value} != {default} {{").expect("write");
+    }
+    let body_indent = if guard_value.is_some() {
+        format!("{indent}    ")
+    } else {
+        indent.to_string()
+    };
+    writeln!(
+        src,
+        "{body_indent}checked_egress_add(&mut total, encoding::{module}::encoded_len({tag}u32, {value_ref}), {context:?})?;"
+    )
+    .expect("write");
+    if guard_value.is_some() {
+        writeln!(src, "{indent}}}").expect("write");
+    }
+}
+
+fn emit_certified_len_message(
+    src: &mut String,
+    access: &str,
+    leaf: &str,
+    tag: u32,
+    context: &str,
+    indent: &str,
+) {
+    if leaf == "Par" {
+        writeln!(
+            src,
+            "{indent}let body_len = {access}.certified_egress_encoded_len(preflight)?;\n\
+             {indent}let field_len = certified_length_delimited_field_len({tag}u32, body_len, {context:?})?;\n\
+             {indent}checked_egress_add(&mut total, field_len, {context:?})?;"
+        )
+        .expect("write");
+    } else {
+        writeln!(
+            src,
+            "{indent}let length_slot = preflight.reserve_length(CertifiedLengthEventKind::MessageBody)?;\n\
+             {indent}let body_len = {access}.certified_egress_encoded_len(preflight)?;\n\
+             {indent}preflight.complete_length(length_slot, body_len, {context:?})?;\n\
+             {indent}let field_len = certified_length_delimited_field_len({tag}u32, body_len, {context:?})?;\n\
+             {indent}checked_egress_add(&mut total, field_len, {context:?})?;"
+        )
+        .expect("write");
+    }
+}
+
+fn emit_certified_len_field(
+    src: &mut String,
+    message: &Message<'_>,
+    field: &Field,
+    oneofs: &[Oneof],
+) {
+    let name = &field.rust_name;
+    let tag = field.min_tag();
+    let context = certified_context(message, field);
+    match &field.shape {
+        Shape::EmptyBytes => emit_certified_len_scalar(
+            src,
+            &format!("&self.{name}"),
+            Some(&format!("self.{name}")),
+            Type::Bytes,
+            tag,
+            &context,
+            "        ",
+        ),
+        Shape::Scalar(ty) => emit_certified_len_scalar(
+            src,
+            &format!("&self.{name}"),
+            Some(&format!("self.{name}")),
+            *ty,
+            tag,
+            &context,
+            "        ",
+        ),
+        Shape::RepeatedString | Shape::RepeatedBytes => {
+            let ty = if matches!(field.shape, Shape::RepeatedString) {
+                Type::String
+            } else {
+                Type::Bytes
+            };
+            writeln!(src, "        for value in &self.{name} {{").expect("write");
+            emit_certified_len_scalar(src, "value", None, ty, tag, &context, "            ");
+            src.push_str("        }\n");
+        }
+        Shape::Message { leaf } => {
+            writeln!(src, "        if let Some(value) = &self.{name} {{").expect("write");
+            emit_certified_len_message(src, "value", leaf, tag, &context, "            ");
+            src.push_str("        }\n");
+        }
+        Shape::RepeatedMessage { leaf } => {
+            writeln!(src, "        for value in &self.{name} {{").expect("write");
+            emit_certified_len_message(src, "value", leaf, tag, &context, "            ");
+            src.push_str("        }\n");
+        }
+        Shape::Map { key, value_leaf } => {
+            assert_eq!(
+                *key,
+                Type::String,
+                "certified egress map key must be string"
+            );
+            assert_eq!(value_leaf, "Par", "certified egress map value must be Par");
+            writeln!(
+                src,
+                "        let default_map_value = crate::rhoapi::Par::default();\n\
+                         for (key, value) in &self.{name} {{\n\
+                             let entry_slot = preflight.reserve_length(CertifiedLengthEventKind::MapEntryBody)?;\n\
+                             let mut entry_len = 0usize;\n\
+                             if key != \"\" {{\n\
+                                 checked_egress_add(&mut entry_len, encoding::string::encoded_len(1u32, key), {context:?})?;\n\
+                             }}\n\
+                             if value != &default_map_value {{\n\
+                                 let body_len = value.certified_egress_encoded_len(preflight)?;\n\
+                                 let value_len = certified_length_delimited_field_len(2u32, body_len, {context:?})?;\n\
+                                 checked_egress_add(&mut entry_len, value_len, {context:?})?;\n\
+                             }}\n\
+                             preflight.complete_length(entry_slot, entry_len, {context:?})?;\n\
+                             let field_len = certified_length_delimited_field_len({tag}u32, entry_len, {context:?})?;\n\
+                             checked_egress_add(&mut total, field_len, {context:?})?;\n\
+                         }}"
+            )
+            .expect("write");
+        }
+        Shape::Oneof => {
+            let oneof = certified_oneof_for_field(message, field, oneofs);
+            writeln!(
+                src,
+                "        if let Some(value) = &self.{name} {{\n            match value {{"
+            )
+            .expect("write");
+            for variant in &oneof.variants {
+                writeln!(
+                    src,
+                    "                {}::{}(value) => {{",
+                    oneof.rust_ident, variant.rust_ident
+                )
+                .expect("write");
+                if let Some(leaf) = &variant.message_leaf {
+                    emit_certified_len_message(
+                        src,
+                        "value",
+                        leaf,
+                        variant.tag,
+                        &context,
+                        "                    ",
+                    );
+                } else {
+                    emit_certified_len_scalar(
+                        src,
+                        "value",
+                        None,
+                        variant.ty,
+                        variant.tag,
+                        &context,
+                        "                    ",
+                    );
+                }
+                src.push_str("                }\n");
+            }
+            src.push_str("            }\n        }\n");
+        }
+    }
+}
+
+fn emit_certified_encode_scalar(
+    src: &mut String,
+    value_ref: &str,
+    guard_value: Option<&str>,
+    ty: Type,
+    tag: u32,
+    indent: &str,
+) {
+    let (module, default) = protobuf_scalar_module_and_default(ty);
+    if let Some(guard_value) = guard_value {
+        writeln!(src, "{indent}if {guard_value} != {default} {{").expect("write");
+    }
+    let body_indent = if guard_value.is_some() {
+        format!("{indent}    ")
+    } else {
+        indent.to_string()
+    };
+    writeln!(
+        src,
+        "{body_indent}encoding::{module}::encode({tag}u32, {value_ref}, output);"
+    )
+    .expect("write");
+    if guard_value.is_some() {
+        writeln!(src, "{indent}}}").expect("write");
+    }
+}
+
+fn emit_certified_encode_message(
+    src: &mut String,
+    access: &str,
+    leaf: &str,
+    tag: u32,
+    context: &str,
+    indent: &str,
+) {
+    if leaf == "Par" {
+        writeln!(
+            src,
+            "{indent}let body_len = replay.next_body_len(CertifiedLengthEventKind::ParBody, {context:?})?;\n\
+             {indent}encode_certified_length_delimited_prefix({tag}u32, body_len, output, {context:?})?;\n\
+             {indent}emit_par({access}, body_len, output).map_err(CertifiedEgressEncodeError::Par)?;"
+        )
+        .expect("write");
+    } else {
+        writeln!(
+            src,
+            "{indent}let body_len = replay.next_body_len(CertifiedLengthEventKind::MessageBody, {context:?})?;\n\
+             {indent}encode_certified_length_delimited_prefix({tag}u32, body_len, output, {context:?})?;\n\
+             {indent}{access}.try_encode_certified_egress(output, replay, emit_par)?;"
+        )
+        .expect("write");
+    }
+}
+
+fn emit_certified_encode_field(
+    src: &mut String,
+    message: &Message<'_>,
+    field: &Field,
+    oneofs: &[Oneof],
+) {
+    let name = &field.rust_name;
+    let tag = field.min_tag();
+    let context = certified_context(message, field);
+    match &field.shape {
+        Shape::EmptyBytes => emit_certified_encode_scalar(
+            src,
+            &format!("&self.{name}"),
+            Some(&format!("self.{name}")),
+            Type::Bytes,
+            tag,
+            "        ",
+        ),
+        Shape::Scalar(ty) => emit_certified_encode_scalar(
+            src,
+            &format!("&self.{name}"),
+            Some(&format!("self.{name}")),
+            *ty,
+            tag,
+            "        ",
+        ),
+        Shape::RepeatedString => writeln!(
+            src,
+            "        encoding::string::encode_repeated({tag}u32, &self.{name}, output);"
+        )
+        .expect("write"),
+        Shape::RepeatedBytes => writeln!(
+            src,
+            "        encoding::bytes::encode_repeated({tag}u32, &self.{name}, output);"
+        )
+        .expect("write"),
+        Shape::Message { leaf } => {
+            writeln!(src, "        if let Some(value) = &self.{name} {{").expect("write");
+            emit_certified_encode_message(src, "value", leaf, tag, &context, "            ");
+            src.push_str("        }\n");
+        }
+        Shape::RepeatedMessage { leaf } => {
+            writeln!(src, "        for value in &self.{name} {{").expect("write");
+            emit_certified_encode_message(src, "value", leaf, tag, &context, "            ");
+            src.push_str("        }\n");
+        }
+        Shape::Map { key, value_leaf } => {
+            assert_eq!(
+                *key,
+                Type::String,
+                "certified egress map key must be string"
+            );
+            assert_eq!(value_leaf, "Par", "certified egress map value must be Par");
+            writeln!(
+                src,
+                "        let default_map_value = crate::rhoapi::Par::default();\n\
+                         for (key, value) in &self.{name} {{\n\
+                             let entry_len = replay.next_body_len(CertifiedLengthEventKind::MapEntryBody, {context:?})?;\n\
+                             encode_certified_length_delimited_prefix({tag}u32, entry_len, output, {context:?})?;\n\
+                             if key != \"\" {{ encoding::string::encode(1u32, key, output); }}\n\
+                             if value != &default_map_value {{\n\
+                                 let body_len = replay.next_body_len(CertifiedLengthEventKind::ParBody, {context:?})?;\n\
+                                 encode_certified_length_delimited_prefix(2u32, body_len, output, {context:?})?;\n\
+                                 emit_par(value, body_len, output).map_err(CertifiedEgressEncodeError::Par)?;\n\
+                             }}\n\
+                         }}"
+            )
+            .expect("write");
+        }
+        Shape::Oneof => {
+            let oneof = certified_oneof_for_field(message, field, oneofs);
+            writeln!(
+                src,
+                "        if let Some(value) = &self.{name} {{\n            match value {{"
+            )
+            .expect("write");
+            for variant in &oneof.variants {
+                writeln!(
+                    src,
+                    "                {}::{}(value) => {{",
+                    oneof.rust_ident, variant.rust_ident
+                )
+                .expect("write");
+                if let Some(leaf) = &variant.message_leaf {
+                    emit_certified_encode_message(
+                        src,
+                        "value",
+                        leaf,
+                        variant.tag,
+                        &context,
+                        "                    ",
+                    );
+                } else {
+                    emit_certified_encode_scalar(
+                        src,
+                        "value",
+                        None,
+                        variant.ty,
+                        variant.tag,
+                        "                    ",
+                    );
+                }
+                src.push_str("                }\n");
+            }
+            src.push_str("            }\n        }\n");
+        }
+    }
 }
 
 fn emit_protobuf_message(

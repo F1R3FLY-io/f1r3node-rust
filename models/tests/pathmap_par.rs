@@ -379,6 +379,142 @@ fn prepared_empty_component_projection_emits_only_nonempty_chunks() {
 }
 
 #[test]
+fn protobuf_root_split_matrix_is_exact_for_direct_prepared_and_in_frame_reuse() {
+    let before_only = Par::default().with_exprs(vec![Expr {
+        expr_instance: Some(ExprInstance::GInt(31)),
+    }]);
+    let after_only = Par::default().with_bundles(vec![Bundle {
+        body: Some(integer(32)),
+        ..Bundle::default()
+    }]);
+    let both = before_only.clone().with_bundles(vec![Bundle {
+        body: Some(integer(33)),
+        ..Bundle::default()
+    }]);
+    let neither = Par::default();
+
+    for (label, value, has_before, has_after) in [
+        ("before-only", before_only, true, false),
+        ("after-only", after_only, false, true),
+        ("both", both, true, true),
+        ("neither", neither, false, false),
+    ] {
+        let value = value
+            .with_locally_free(vec![0x81, 0x01])
+            .with_connective_used(true);
+        let parts = legacy_repeated_field_oracle_parts(&value);
+        assert_eq!(!parts.before_root.is_empty(), has_before, "{label}");
+        assert!(!parts.root.is_empty(), "{label}");
+        assert_eq!(!parts.after_root.is_empty(), has_after, "{label}");
+        let expected = legacy_repeated_field_oracle(&value);
+        let expected_len = value.protobuf_encoded_len().expect("Par preflight length");
+
+        let mut direct = Vec::new();
+        value
+            .encode_protobuf_direct(&mut direct)
+            .expect("direct split-matrix encode");
+        assert_eq!(direct, expected, "{label}: direct");
+
+        let mut direct_prevalidated = vec![0x5a];
+        value
+            .encode_protobuf_direct_to_vec_prevalidated(&mut direct_prevalidated, expected_len)
+            .expect("direct split-matrix encode after preflight");
+        assert_eq!(
+            &direct_prevalidated[1..],
+            expected,
+            "{label}: direct after preflight"
+        );
+        let unchanged = direct_prevalidated.clone();
+        assert!(matches!(
+            value.encode_protobuf_direct_to_vec_prevalidated(
+                &mut direct_prevalidated,
+                expected_len + 1,
+            ),
+            Err(models::rust::par::ParProtobufError::EncodedLengthMismatch { .. })
+        ));
+        assert_eq!(
+            direct_prevalidated, unchanged,
+            "{label}: bad direct preflight is atomic"
+        );
+        assert_eq!(value.encode_to_vec(), expected, "{label}: prost");
+        assert_eq!(
+            models::rust::rholang::protobuf_encoder::encode_to_vec(&value),
+            expected,
+            "{label}: generated PDA"
+        );
+
+        let component_bytes = value
+            .protobuf_component_fields_encoded_len()
+            .expect("component length");
+        value
+            .prepare_protobuf_projection(component_bytes)
+            .expect("exact projection cap");
+        let mut prepared = Vec::new();
+        value
+            .try_visit_protobuf_chunks(|chunk| {
+                assert!(!chunk.is_empty(), "{label}: prepared callback");
+                prepared.extend_from_slice(chunk);
+                Ok::<_, std::convert::Infallible>(())
+            })
+            .expect("prepared split-matrix stream");
+        assert_eq!(prepared, expected, "{label}: prepared");
+
+        let mut frame = vec![0xa5];
+        let ranges = value
+            .encode_protobuf_recording_component_ranges_prevalidated(&mut frame, expected_len)
+            .expect("record direct component ranges after preflight");
+        assert_eq!(&frame[1..], expected, "{label}: first in-frame image");
+        assert_eq!(ranges.component_bytes(), component_bytes, "{label}");
+
+        let unchanged = frame.clone();
+        assert!(matches!(
+            value.encode_protobuf_recording_component_ranges_prevalidated(
+                &mut frame,
+                expected_len + 1,
+            ),
+            Err(models::rust::par::ParProtobufError::EncodedLengthMismatch { .. })
+        ));
+        assert_eq!(frame, unchanged, "{label}: bad preflight is atomic");
+
+        let metadata_variant = value
+            .with_locally_free(vec![0x05, 0x80])
+            .with_connective_used(false);
+        let variant_expected = legacy_repeated_field_oracle(&metadata_variant);
+        let variant_len = metadata_variant
+            .protobuf_encoded_len()
+            .expect("metadata-variant preflight length");
+        let variant_start = frame.len();
+        metadata_variant
+            .encode_protobuf_from_component_ranges_prevalidated(&mut frame, &ranges, variant_len)
+            .expect("reuse component ranges with different root metadata after preflight");
+        assert_eq!(
+            &frame[variant_start..],
+            variant_expected,
+            "{label}: metadata-specific in-frame image"
+        );
+
+        let unchanged = frame.clone();
+        assert!(matches!(
+            metadata_variant.encode_protobuf_from_component_ranges_prevalidated(
+                &mut frame,
+                &ranges,
+                variant_len + 1,
+            ),
+            Err(models::rust::par::ParProtobufError::EncodedLengthMismatch { .. })
+        ));
+        assert_eq!(frame, unchanged, "{label}: bad reuse preflight is atomic");
+
+        let independent = Par::decode(expected.as_slice()).expect("independent equal owner");
+        let unchanged = frame.clone();
+        assert!(matches!(
+            independent.encode_protobuf_from_component_ranges(&mut frame, &ranges),
+            Err(models::rust::par::ParProtobufError::ComponentRangeOwnerMismatch)
+        ));
+        assert_eq!(frame, unchanged, "{label}: owner mismatch is atomic");
+    }
+}
+
+#[test]
 fn protobuf_merge_accumulates_multiplicity_without_repeated_storage() {
     let occurrence = integer(11);
     let mut bytes = occurrence.encode_to_vec();

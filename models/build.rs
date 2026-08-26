@@ -233,7 +233,7 @@ fn main() {
     fs::write(&file_path, &modified_content).expect("Unable to write file");
 
     // -----------------------------------------------------------------------
-    // Stage 2: the schema-codegen pass — one walk, seven outputs
+    // Stage 2: the schema-codegen pass — one descriptor pass, eight outputs
     // -----------------------------------------------------------------------
     //
     // This extends an existing two-stage pipeline: the textual pass above
@@ -287,14 +287,14 @@ fn main() {
     check_debug_join(&debug_stripped, &counts.clone_cut_set);
     check_message_join(&message_stripped, &counts.clone_cut_set);
 
-    // ── the seven outputs of the one pass ──
+    // ── the eight outputs of the one descriptor pass ──
     assert_eq!(
         generated.sources.len(),
-        7,
-        "models/build.rs: schema codegen must produce exactly seven outputs \
-         (bincode table, protobuf table, term-op slot, schema meta, protobuf deserializer, \
-         matching cursor, test-only schema adapters); it produced {}. \
-         `models/src/rust/rholang/mod.rs` includes all seven modules and a \
+        8,
+        "models/build.rs: schema codegen must produce exactly eight outputs \
+         (bincode table, recursive protobuf table, outer-egress protobuf table, term-op slot, \
+         schema meta, protobuf deserializer, matching cursor, test-only schema adapters); it \
+         produced {}. `models/src/rust/rholang/mod.rs` includes all eight modules and a \
          missing file is a compile error whose message names `OUT_DIR`, not this pass.",
         generated.sources.len()
     );

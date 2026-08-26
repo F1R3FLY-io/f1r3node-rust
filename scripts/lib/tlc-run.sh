@@ -80,7 +80,7 @@ tlc_bounded() {
     "$@"
     return
   fi
-  if command -v systemd-run >/dev/null 2>&1 && systemd-run --user --scope true >/dev/null 2>&1; then
+  if command -v systemd-run >/dev/null 2>&1 && systemctl --user show-environment >/dev/null 2>&1; then
     echo "+ systemd-run --user --scope -p MemoryMax=$TLC_RSS -p MemorySwapMax=0 -- $*" >&2
     systemd-run --user --scope -p "MemoryMax=$TLC_RSS" -p "MemorySwapMax=0" -- "$@"
     return

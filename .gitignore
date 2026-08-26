@@ -95,6 +95,10 @@ run-local/data/
 # Agent and developer scratch artifacts
 scratch/
 
+# Python analysis caches
+__pycache__/
+*.py[cod]
+
 # Aider
 .aider*
 

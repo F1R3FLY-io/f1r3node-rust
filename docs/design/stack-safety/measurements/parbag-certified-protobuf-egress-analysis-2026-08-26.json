@@ -1,0 +1,1818 @@
+{
+  "arms": [
+    "adaptive",
+    "in_frame_production"
+  ],
+  "bootstrap_replicates": 100000,
+  "bootstrap_seed": "0x4131602720260826",
+  "cells": {
+    "width=16/body=256/reuse=1/output=4240/projected=4208": {
+      "comparisons_against_adaptive": {
+        "in_frame_production": {
+          "control": {
+            "maximum": 12193.0,
+            "mean": 3125.0,
+            "median": 2886.0,
+            "minimum": 2856.0,
+            "n": 101,
+            "standard_deviation": 1332.372725628981
+          },
+          "mean_treatment_control_ratio": 0.9537267326732674,
+          "median_treatment_control_ratio": 1.0173250173250172,
+          "paired_bootstrap_median_of_ratios_99_percent": {
+            "lower_0_5_percent": 1.006930006930007,
+            "median": 1.017391304347826,
+            "upper_99_5_percent": 1.0245098039215685
+          },
+          "paired_bootstrap_ratio_of_medians_99_percent": {
+            "lower_0_5_percent": 1.0135135135135136,
+            "median": 1.0176776429809358,
+            "upper_99_5_percent": 1.0277296360485269
+          },
+          "paired_difference_ns": {
+            "maximum": 1032.0,
+            "mean": -144.6039603960396,
+            "median": 50.0,
+            "minimum": -9107.0,
+            "n": 101,
+            "standard_deviation": 1310.1500378140506
+          },
+          "paired_ratio": {
+            "maximum": 1.3588317107093184,
+            "mean": 1.00559471993692,
+            "median": 1.017391304347826,
+            "minimum": 0.25309603871073566,
+            "n": 101,
+            "standard_deviation": 0.13295635969503933
+          },
+          "paired_t_benjamini_hochberg_qvalue": 0.2699933595128306,
+          "paired_t_two_sided_pvalue": 0.2699933595128306,
+          "paired_wilcoxon_benjamini_hochberg_qvalue": 6.205556319302612e-08,
+          "paired_wilcoxon_two_sided_pvalue": 6.205556319302612e-08,
+          "position_median_ns": {
+            "0": 2906.0,
+            "1": 2976.0
+          },
+          "shapiro_pvalue_paired_difference": 1.4961323511407085e-20,
+          "treatment": {
+            "maximum": 3908.0,
+            "mean": 2980.3960396039606,
+            "median": 2936.0,
+            "minimum": 2835.0,
+            "n": 101,
+            "standard_deviation": 145.36891546736675
+          }
+        }
+      },
+      "resources": {
+        "adaptive": {
+          "allocated_bytes": [
+            6992
+          ],
+          "allocations": [
+            7
+          ],
+          "already_prepared": [
+            0
+          ],
+          "attempts": [
+            0
+          ],
+          "census_owner_spilled": [
+            false
+          ],
+          "component_empty_occurrences": [
+            0
+          ],
+          "direct_only_component_bytes": [
+            0
+          ],
+          "direct_only_occurrences": [
+            0
+          ],
+          "eligible_occurrences": [
+            0
+          ],
+          "memo_owner_spilled": [
+            false
+          ],
+          "newly_retained_bytes": [
+            0
+          ],
+          "par_occurrences": [
+            0
+          ],
+          "pathmap_traversals": [
+            1
+          ],
+          "prepared": [
+            0
+          ],
+          "range_copied_component_bytes": [
+            0
+          ],
+          "range_copied_occurrences": [
+            0
+          ],
+          "range_recorded_component_bytes": [
+            0
+          ],
+          "range_recorded_owners": [
+            0
+          ],
+          "refused_too_large": [
+            0
+          ],
+          "remaining_budget": [
+            0
+          ],
+          "repeated_component_bytes": [
+            0
+          ],
+          "repeated_occurrences": [
+            0
+          ],
+          "repeated_owners": [
+            0
+          ],
+          "reusable_component_bytes": [
+            0
+          ],
+          "transcript_events": [
+            0
+          ],
+          "transcript_spilled": [
+            false
+          ],
+          "unique_component_bytes": [
+            0
+          ],
+          "unique_owners": [
+            0
+          ]
+        },
+        "in_frame_production": {
+          "allocated_bytes": [
+            6992
+          ],
+          "allocations": [
+            7
+          ],
+          "already_prepared": [
+            0
+          ],
+          "attempts": [
+            0
+          ],
+          "census_owner_spilled": [
+            false
+          ],
+          "component_empty_occurrences": [
+            0
+          ],
+          "direct_only_component_bytes": [
+            0
+          ],
+          "direct_only_occurrences": [
+            0
+          ],
+          "eligible_occurrences": [
+            0
+          ],
+          "memo_owner_spilled": [
+            false
+          ],
+          "newly_retained_bytes": [
+            0
+          ],
+          "par_occurrences": [
+            0
+          ],
+          "pathmap_traversals": [
+            1
+          ],
+          "prepared": [
+            0
+          ],
+          "range_copied_component_bytes": [
+            0
+          ],
+          "range_copied_occurrences": [
+            0
+          ],
+          "range_recorded_component_bytes": [
+            0
+          ],
+          "range_recorded_owners": [
+            0
+          ],
+          "refused_too_large": [
+            0
+          ],
+          "remaining_budget": [
+            0
+          ],
+          "repeated_component_bytes": [
+            0
+          ],
+          "repeated_occurrences": [
+            0
+          ],
+          "repeated_owners": [
+            0
+          ],
+          "reusable_component_bytes": [
+            0
+          ],
+          "transcript_events": [
+            0
+          ],
+          "transcript_spilled": [
+            false
+          ],
+          "unique_component_bytes": [
+            0
+          ],
+          "unique_owners": [
+            0
+          ]
+        }
+      }
+    },
+    "width=16/body=256/reuse=16/output=67496/projected=4208": {
+      "comparisons_against_adaptive": {
+        "in_frame_production": {
+          "control": {
+            "maximum": 63560.0,
+            "mean": 47740.64356435643,
+            "median": 46608.0,
+            "minimum": 46067.0,
+            "n": 101,
+            "standard_deviation": 3011.759713470377
+          },
+          "mean_treatment_control_ratio": 0.18127361019369304,
+          "median_treatment_control_ratio": 0.17625729488499828,
+          "paired_bootstrap_median_of_ratios_99_percent": {
+            "lower_0_5_percent": 0.17176475649630013,
+            "median": 0.1747045877048655,
+            "upper_99_5_percent": 0.17701950765366878
+          },
+          "paired_bootstrap_ratio_of_medians_99_percent": {
+            "lower_0_5_percent": 0.17352303697504237,
+            "median": 0.1761561252093263,
+            "upper_99_5_percent": 0.1781353099961438
+          },
+          "paired_difference_ns": {
+            "maximum": -31550.0,
+            "mean": -39086.52475247525,
+            "median": -38413.0,
+            "minimum": -54853.0,
+            "n": 101,
+            "standard_deviation": 3102.602258086136
+          },
+          "paired_ratio": {
+            "maximum": 0.41127393688753033,
+            "mean": 0.18120287403346344,
+            "median": 0.1747045877048655,
+            "minimum": 0.1369886721208307,
+            "n": 101,
+            "standard_deviation": 0.03764302480352682
+          },
+          "paired_t_benjamini_hochberg_qvalue": 5.531175860363499e-112,
+          "paired_t_two_sided_pvalue": 3.3187055162180995e-112,
+          "paired_wilcoxon_benjamini_hochberg_qvalue": 3.510427658857598e-18,
+          "paired_wilcoxon_two_sided_pvalue": 2.6623421171108772e-18,
+          "position_median_ns": {
+            "0": 8000.5,
+            "1": 8315.0
+          },
+          "shapiro_pvalue_paired_difference": 4.158265469038751e-14,
+          "treatment": {
+            "maximum": 22873.0,
+            "mean": 8654.118811881188,
+            "median": 8215.0,
+            "minimum": 7744.0,
+            "n": 101,
+            "standard_deviation": 2034.2701752084392
+          }
+        }
+      },
+      "resources": {
+        "adaptive": {
+          "allocated_bytes": [
+            111528
+          ],
+          "allocations": [
+            97
+          ],
+          "already_prepared": [
+            0
+          ],
+          "attempts": [
+            0
+          ],
+          "census_owner_spilled": [
+            false
+          ],
+          "component_empty_occurrences": [
+            0
+          ],
+          "direct_only_component_bytes": [
+            0
+          ],
+          "direct_only_occurrences": [
+            0
+          ],
+          "eligible_occurrences": [
+            0
+          ],
+          "memo_owner_spilled": [
+            false
+          ],
+          "newly_retained_bytes": [
+            0
+          ],
+          "par_occurrences": [
+            0
+          ],
+          "pathmap_traversals": [
+            16
+          ],
+          "prepared": [
+            0
+          ],
+          "range_copied_component_bytes": [
+            0
+          ],
+          "range_copied_occurrences": [
+            0
+          ],
+          "range_recorded_component_bytes": [
+            0
+          ],
+          "range_recorded_owners": [
+            0
+          ],
+          "refused_too_large": [
+            0
+          ],
+          "remaining_budget": [
+            0
+          ],
+          "repeated_component_bytes": [
+            0
+          ],
+          "repeated_occurrences": [
+            0
+          ],
+          "repeated_owners": [
+            0
+          ],
+          "reusable_component_bytes": [
+            0
+          ],
+          "transcript_events": [
+            0
+          ],
+          "transcript_spilled": [
+            false
+          ],
+          "unique_component_bytes": [
+            0
+          ],
+          "unique_owners": [
+            0
+          ]
+        },
+        "in_frame_production": {
+          "allocated_bytes": [
+            70760
+          ],
+          "allocations": [
+            8
+          ],
+          "already_prepared": [
+            0
+          ],
+          "attempts": [
+            0
+          ],
+          "census_owner_spilled": [
+            false
+          ],
+          "component_empty_occurrences": [
+            0
+          ],
+          "direct_only_component_bytes": [
+            0
+          ],
+          "direct_only_occurrences": [
+            0
+          ],
+          "eligible_occurrences": [
+            0
+          ],
+          "memo_owner_spilled": [
+            false
+          ],
+          "newly_retained_bytes": [
+            0
+          ],
+          "par_occurrences": [
+            0
+          ],
+          "pathmap_traversals": [
+            1
+          ],
+          "prepared": [
+            0
+          ],
+          "range_copied_component_bytes": [
+            0
+          ],
+          "range_copied_occurrences": [
+            0
+          ],
+          "range_recorded_component_bytes": [
+            0
+          ],
+          "range_recorded_owners": [
+            0
+          ],
+          "refused_too_large": [
+            0
+          ],
+          "remaining_budget": [
+            0
+          ],
+          "repeated_component_bytes": [
+            0
+          ],
+          "repeated_occurrences": [
+            0
+          ],
+          "repeated_owners": [
+            0
+          ],
+          "reusable_component_bytes": [
+            0
+          ],
+          "transcript_events": [
+            0
+          ],
+          "transcript_spilled": [
+            false
+          ],
+          "unique_component_bytes": [
+            0
+          ],
+          "unique_owners": [
+            0
+          ]
+        }
+      }
+    },
+    "width=16/body=256/reuse=2/output=8458/projected=4208": {
+      "comparisons_against_adaptive": {
+        "in_frame_production": {
+          "control": {
+            "maximum": 6913.0,
+            "mean": 5608.554455445545,
+            "median": 5570.0,
+            "minimum": 5540.0,
+            "n": 101,
+            "standard_deviation": 182.7517701828097
+          },
+          "mean_treatment_control_ratio": 0.5793201333182691,
+          "median_treatment_control_ratio": 0.5576301615798923,
+          "paired_bootstrap_median_of_ratios_99_percent": {
+            "lower_0_5_percent": 0.551624548736462,
+            "median": 0.5568345323741007,
+            "upper_99_5_percent": 0.5674322224140909
+          },
+          "paired_bootstrap_ratio_of_medians_99_percent": {
+            "lower_0_5_percent": 0.553137924833663,
+            "median": 0.5576301615798923,
+            "upper_99_5_percent": 0.5684021543985638
+          },
+          "paired_difference_ns": {
+            "maximum": 501.0,
+            "mean": -2359.4059405940593,
+            "median": -2466.0,
+            "minimum": -2835.0,
+            "n": 101,
+            "standard_deviation": 403.56003712503104
+          },
+          "paired_ratio": {
+            "maximum": 1.0889717634523175,
+            "mean": 0.5789146407642914,
+            "median": 0.5568345323741007,
+            "minimum": 0.5318673767393919,
+            "n": 101,
+            "standard_deviation": 0.07237649999070546
+          },
+          "paired_t_benjamini_hochberg_qvalue": 3.0079366515554987e-79,
+          "paired_t_two_sided_pvalue": 2.406349321244399e-79,
+          "paired_wilcoxon_benjamini_hochberg_qvalue": 3.510427658857598e-18,
+          "paired_wilcoxon_two_sided_pvalue": 2.8083421270860787e-18,
+          "position_median_ns": {
+            "0": 3066.0,
+            "1": 3166.0
+          },
+          "shapiro_pvalue_paired_difference": 3.645560940709095e-17,
+          "treatment": {
+            "maximum": 6132.0,
+            "mean": 3249.1485148514853,
+            "median": 3106.0,
+            "minimum": 3016.0,
+            "n": 101,
+            "standard_deviation": 444.4124972621408
+          }
+        }
+      },
+      "resources": {
+        "adaptive": {
+          "allocated_bytes": [
+            13962
+          ],
+          "allocations": [
+            13
+          ],
+          "already_prepared": [
+            0
+          ],
+          "attempts": [
+            0
+          ],
+          "census_owner_spilled": [
+            false
+          ],
+          "component_empty_occurrences": [
+            0
+          ],
+          "direct_only_component_bytes": [
+            0
+          ],
+          "direct_only_occurrences": [
+            0
+          ],
+          "eligible_occurrences": [
+            0
+          ],
+          "memo_owner_spilled": [
+            false
+          ],
+          "newly_retained_bytes": [
+            0
+          ],
+          "par_occurrences": [
+            0
+          ],
+          "pathmap_traversals": [
+            2
+          ],
+          "prepared": [
+            0
+          ],
+          "range_copied_component_bytes": [
+            0
+          ],
+          "range_copied_occurrences": [
+            0
+          ],
+          "range_recorded_component_bytes": [
+            0
+          ],
+          "range_recorded_owners": [
+            0
+          ],
+          "refused_too_large": [
+            0
+          ],
+          "remaining_budget": [
+            0
+          ],
+          "repeated_component_bytes": [
+            0
+          ],
+          "repeated_occurrences": [
+            0
+          ],
+          "repeated_owners": [
+            0
+          ],
+          "reusable_component_bytes": [
+            0
+          ],
+          "transcript_events": [
+            0
+          ],
+          "transcript_spilled": [
+            false
+          ],
+          "unique_component_bytes": [
+            0
+          ],
+          "unique_owners": [
+            0
+          ]
+        },
+        "in_frame_production": {
+          "allocated_bytes": [
+            11210
+          ],
+          "allocations": [
+            7
+          ],
+          "already_prepared": [
+            0
+          ],
+          "attempts": [
+            0
+          ],
+          "census_owner_spilled": [
+            false
+          ],
+          "component_empty_occurrences": [
+            0
+          ],
+          "direct_only_component_bytes": [
+            0
+          ],
+          "direct_only_occurrences": [
+            0
+          ],
+          "eligible_occurrences": [
+            0
+          ],
+          "memo_owner_spilled": [
+            false
+          ],
+          "newly_retained_bytes": [
+            0
+          ],
+          "par_occurrences": [
+            0
+          ],
+          "pathmap_traversals": [
+            1
+          ],
+          "prepared": [
+            0
+          ],
+          "range_copied_component_bytes": [
+            0
+          ],
+          "range_copied_occurrences": [
+            0
+          ],
+          "range_recorded_component_bytes": [
+            0
+          ],
+          "range_recorded_owners": [
+            0
+          ],
+          "refused_too_large": [
+            0
+          ],
+          "remaining_budget": [
+            0
+          ],
+          "repeated_component_bytes": [
+            0
+          ],
+          "repeated_occurrences": [
+            0
+          ],
+          "repeated_owners": [
+            0
+          ],
+          "reusable_component_bytes": [
+            0
+          ],
+          "transcript_events": [
+            0
+          ],
+          "transcript_spilled": [
+            false
+          ],
+          "unique_component_bytes": [
+            0
+          ],
+          "unique_owners": [
+            0
+          ]
+        }
+      }
+    },
+    "width=16/body=256/reuse=4/output=16896/projected=4208": {
+      "comparisons_against_adaptive": {
+        "in_frame_production": {
+          "control": {
+            "maximum": 11582.0,
+            "mean": 10861.465346534653,
+            "median": 10821.0,
+            "minimum": 10760.0,
+            "n": 101,
+            "standard_deviation": 138.606534070832
+          },
+          "mean_treatment_control_ratio": 0.30863494158657,
+          "median_treatment_control_ratio": 0.30182053414656684,
+          "paired_bootstrap_median_of_ratios_99_percent": {
+            "lower_0_5_percent": 0.2987155963302752,
+            "median": 0.3008964051381573,
+            "upper_99_5_percent": 0.30526315789473685
+          },
+          "paired_bootstrap_ratio_of_medians_99_percent": {
+            "lower_0_5_percent": 0.29904814712133815,
+            "median": 0.30184842883548985,
+            "upper_99_5_percent": 0.30644117918861474
+          },
+          "paired_difference_ns": {
+            "maximum": -4028.0,
+            "mean": -7509.237623762377,
+            "median": -7565.0,
+            "minimum": -8356.0,
+            "n": 101,
+            "standard_deviation": 400.90899587100444
+          },
+          "paired_ratio": {
+            "maximum": 0.6277608354126236,
+            "mean": 0.3086889385244555,
+            "median": 0.3008964051381573,
+            "minimum": 0.27853565878086683,
+            "n": 101,
+            "standard_deviation": 0.034831850129044065
+          },
+          "paired_t_benjamini_hochberg_qvalue": 5.849588528341596e-129,
+          "paired_t_two_sided_pvalue": 2.3398354113366386e-129,
+          "paired_wilcoxon_benjamini_hochberg_qvalue": 3.510427658857598e-18,
+          "paired_wilcoxon_two_sided_pvalue": 2.6532284653270254e-18,
+          "position_median_ns": {
+            "0": 3226.0,
+            "1": 3337.0
+          },
+          "shapiro_pvalue_paired_difference": 1.090286385979475e-17,
+          "treatment": {
+            "maximum": 6793.0,
+            "mean": 3352.227722772277,
+            "median": 3266.0,
+            "minimum": 3166.0,
+            "n": 101,
+            "standard_deviation": 374.14039827818965
+          }
+        }
+      },
+      "resources": {
+        "adaptive": {
+          "allocated_bytes": [
+            27904
+          ],
+          "allocations": [
+            25
+          ],
+          "already_prepared": [
+            0
+          ],
+          "attempts": [
+            0
+          ],
+          "census_owner_spilled": [
+            false
+          ],
+          "component_empty_occurrences": [
+            0
+          ],
+          "direct_only_component_bytes": [
+            0
+          ],
+          "direct_only_occurrences": [
+            0
+          ],
+          "eligible_occurrences": [
+            0
+          ],
+          "memo_owner_spilled": [
+            false
+          ],
+          "newly_retained_bytes": [
+            0
+          ],
+          "par_occurrences": [
+            0
+          ],
+          "pathmap_traversals": [
+            4
+          ],
+          "prepared": [
+            0
+          ],
+          "range_copied_component_bytes": [
+            0
+          ],
+          "range_copied_occurrences": [
+            0
+          ],
+          "range_recorded_component_bytes": [
+            0
+          ],
+          "range_recorded_owners": [
+            0
+          ],
+          "refused_too_large": [
+            0
+          ],
+          "remaining_budget": [
+            0
+          ],
+          "repeated_component_bytes": [
+            0
+          ],
+          "repeated_occurrences": [
+            0
+          ],
+          "repeated_owners": [
+            0
+          ],
+          "reusable_component_bytes": [
+            0
+          ],
+          "transcript_events": [
+            0
+          ],
+          "transcript_spilled": [
+            false
+          ],
+          "unique_component_bytes": [
+            0
+          ],
+          "unique_owners": [
+            0
+          ]
+        },
+        "in_frame_production": {
+          "allocated_bytes": [
+            19648
+          ],
+          "allocations": [
+            7
+          ],
+          "already_prepared": [
+            0
+          ],
+          "attempts": [
+            0
+          ],
+          "census_owner_spilled": [
+            false
+          ],
+          "component_empty_occurrences": [
+            0
+          ],
+          "direct_only_component_bytes": [
+            0
+          ],
+          "direct_only_occurrences": [
+            0
+          ],
+          "eligible_occurrences": [
+            0
+          ],
+          "memo_owner_spilled": [
+            false
+          ],
+          "newly_retained_bytes": [
+            0
+          ],
+          "par_occurrences": [
+            0
+          ],
+          "pathmap_traversals": [
+            1
+          ],
+          "prepared": [
+            0
+          ],
+          "range_copied_component_bytes": [
+            0
+          ],
+          "range_copied_occurrences": [
+            0
+          ],
+          "range_recorded_component_bytes": [
+            0
+          ],
+          "range_recorded_owners": [
+            0
+          ],
+          "refused_too_large": [
+            0
+          ],
+          "remaining_budget": [
+            0
+          ],
+          "repeated_component_bytes": [
+            0
+          ],
+          "repeated_occurrences": [
+            0
+          ],
+          "repeated_owners": [
+            0
+          ],
+          "reusable_component_bytes": [
+            0
+          ],
+          "transcript_events": [
+            0
+          ],
+          "transcript_spilled": [
+            false
+          ],
+          "unique_component_bytes": [
+            0
+          ],
+          "unique_owners": [
+            0
+          ]
+        }
+      }
+    },
+    "width=16/body=256/reuse=8/output=33761/projected=4208": {
+      "comparisons_against_adaptive": {
+        "in_frame_production": {
+          "control": {
+            "maximum": 22392.0,
+            "mean": 21638.574257425742,
+            "median": 21571.0,
+            "minimum": 21451.0,
+            "n": 101,
+            "standard_deviation": 177.1927394976811
+          },
+          "mean_treatment_control_ratio": 0.17827852350221643,
+          "median_treatment_control_ratio": 0.17555977933336425,
+          "paired_bootstrap_median_of_ratios_99_percent": {
+            "lower_0_5_percent": 0.17328821102406008,
+            "median": 0.17520115343472398,
+            "upper_99_5_percent": 0.17931640534665372
+          },
+          "paired_bootstrap_ratio_of_medians_99_percent": {
+            "lower_0_5_percent": 0.17370543785638126,
+            "median": 0.17548656163113993,
+            "upper_99_5_percent": 0.17956555972395905
+          },
+          "paired_difference_ns": {
+            "maximum": -17002.0,
+            "mean": -17780.881188118812,
+            "median": -17784.0,
+            "minimum": -18755.0,
+            "n": 101,
+            "standard_deviation": 267.5948537296154
+          },
+          "paired_ratio": {
+            "maximum": 0.22110254890337877,
+            "mean": 0.17828302687429587,
+            "median": 0.17520115343472398,
+            "minimum": 0.16242408002858164,
+            "n": 101,
+            "standard_deviation": 0.009934764492949055
+          },
+          "paired_t_benjamini_hochberg_qvalue": 1.3532628711614245e-183,
+          "paired_t_two_sided_pvalue": 2.706525742322849e-184,
+          "paired_wilcoxon_benjamini_hochberg_qvalue": 3.510427658857598e-18,
+          "paired_wilcoxon_two_sided_pvalue": 2.659104847467093e-18,
+          "position_median_ns": {
+            "0": 3712.0,
+            "1": 3898.0
+          },
+          "shapiro_pvalue_paired_difference": 1.1886633832744348e-05,
+          "treatment": {
+            "maximum": 4849.0,
+            "mean": 3857.6930693069307,
+            "median": 3787.0,
+            "minimum": 3627.0,
+            "n": 101,
+            "standard_deviation": 216.3018142584226
+          }
+        }
+      },
+      "resources": {
+        "adaptive": {
+          "allocated_bytes": [
+            55777
+          ],
+          "allocations": [
+            49
+          ],
+          "already_prepared": [
+            0
+          ],
+          "attempts": [
+            0
+          ],
+          "census_owner_spilled": [
+            false
+          ],
+          "component_empty_occurrences": [
+            0
+          ],
+          "direct_only_component_bytes": [
+            0
+          ],
+          "direct_only_occurrences": [
+            0
+          ],
+          "eligible_occurrences": [
+            0
+          ],
+          "memo_owner_spilled": [
+            false
+          ],
+          "newly_retained_bytes": [
+            0
+          ],
+          "par_occurrences": [
+            0
+          ],
+          "pathmap_traversals": [
+            8
+          ],
+          "prepared": [
+            0
+          ],
+          "range_copied_component_bytes": [
+            0
+          ],
+          "range_copied_occurrences": [
+            0
+          ],
+          "range_recorded_component_bytes": [
+            0
+          ],
+          "range_recorded_owners": [
+            0
+          ],
+          "refused_too_large": [
+            0
+          ],
+          "remaining_budget": [
+            0
+          ],
+          "repeated_component_bytes": [
+            0
+          ],
+          "repeated_occurrences": [
+            0
+          ],
+          "repeated_owners": [
+            0
+          ],
+          "reusable_component_bytes": [
+            0
+          ],
+          "transcript_events": [
+            0
+          ],
+          "transcript_spilled": [
+            false
+          ],
+          "unique_component_bytes": [
+            0
+          ],
+          "unique_owners": [
+            0
+          ]
+        },
+        "in_frame_production": {
+          "allocated_bytes": [
+            37025
+          ],
+          "allocations": [
+            8
+          ],
+          "already_prepared": [
+            0
+          ],
+          "attempts": [
+            0
+          ],
+          "census_owner_spilled": [
+            false
+          ],
+          "component_empty_occurrences": [
+            0
+          ],
+          "direct_only_component_bytes": [
+            0
+          ],
+          "direct_only_occurrences": [
+            0
+          ],
+          "eligible_occurrences": [
+            0
+          ],
+          "memo_owner_spilled": [
+            false
+          ],
+          "newly_retained_bytes": [
+            0
+          ],
+          "par_occurrences": [
+            0
+          ],
+          "pathmap_traversals": [
+            1
+          ],
+          "prepared": [
+            0
+          ],
+          "range_copied_component_bytes": [
+            0
+          ],
+          "range_copied_occurrences": [
+            0
+          ],
+          "range_recorded_component_bytes": [
+            0
+          ],
+          "range_recorded_owners": [
+            0
+          ],
+          "refused_too_large": [
+            0
+          ],
+          "remaining_budget": [
+            0
+          ],
+          "repeated_component_bytes": [
+            0
+          ],
+          "repeated_occurrences": [
+            0
+          ],
+          "repeated_owners": [
+            0
+          ],
+          "reusable_component_bytes": [
+            0
+          ],
+          "transcript_events": [
+            0
+          ],
+          "transcript_spilled": [
+            false
+          ],
+          "unique_component_bytes": [
+            0
+          ],
+          "unique_owners": [
+            0
+          ]
+        }
+      }
+    }
+  },
+  "decision_gate": {
+    "failures": [],
+    "passed": true,
+    "rules": {
+      "aggregate_reusable_99_percent_upper_max": 0.9,
+      "each_reusable_cell_99_percent_upper_strict_max": 1.0,
+      "reuse_one_99_percent_upper_max": 1.05,
+      "reuse_one_certified_allocations_lte_control": true
+    }
+  },
+  "input": "scratch/certified-egress/par-projection-owner-v5-compact-production-101-pinned-cpu1.tsv",
+  "input_sha256": "998efc63634fd753fb858972fbcf4769c04ef3ce6ab9fb9813c19fa17a466709",
+  "loadavg": [
+    "14.42 41.16 31.70 8/3549 1214444"
+  ],
+  "meta": {
+    "fixture": "soft-checkpoint-shared-aux",
+    "format": "par-projection-owner-v5",
+    "ordering": "balanced-two-arm-production-rotation",
+    "reps": "101",
+    "timed": "policy-plus-complete-frame",
+    "traversal_counter": "emission-only",
+    "warmup": "20"
+  },
+  "numpy": "2.5.2",
+  "paired_samples_per_cell": 101,
+  "primary_eligible_in_frame_production_aggregate": {
+    "control": {
+      "maximum": 63560.0,
+      "mean": 21462.309405940596,
+      "median": 16516.5,
+      "minimum": 5540.0,
+      "n": 404,
+      "standard_deviation": 16324.858677018492
+    },
+    "decision_role": "primary",
+    "eligibility": "reuse >= 2",
+    "mean_treatment_control_ratio": 0.22263666688079597,
+    "median_treatment_control_ratio": 0.2223231314140405,
+    "paired_bootstrap_median_of_ratios_99_percent": {
+      "lower_0_5_percent": 0.1868383667109665,
+      "median": 0.2938985387372484,
+      "upper_99_5_percent": 0.2981515711645102
+    },
+    "paired_bootstrap_ratio_of_medians_99_percent": {
+      "lower_0_5_percent": 0.1698174706649283,
+      "median": 0.2224655855510838,
+      "upper_99_5_percent": 0.3362363777301537
+    },
+    "paired_difference_ns": {
+      "maximum": 501.0,
+      "mean": -16684.012376237624,
+      "median": -12679.0,
+      "minimum": -54853.0,
+      "n": 404,
+      "standard_deviation": 14180.61729775033
+    },
+    "paired_ratio": {
+      "maximum": 1.0889717634523175,
+      "mean": 0.31177237004912656,
+      "median": 0.2938985387372484,
+      "minimum": 0.1369886721208307,
+      "n": 404,
+      "standard_deviation": 0.1691256406449004
+    },
+    "paired_t_two_sided_pvalue": 3.582372336380236e-78,
+    "paired_wilcoxon_two_sided_pvalue": 6.146600571292644e-68,
+    "shapiro_pvalue_paired_difference": 1.7917713688605662e-20,
+    "treatment": {
+      "maximum": 22873.0,
+      "mean": 4778.297029702971,
+      "median": 3672.0,
+      "minimum": 3016.0,
+      "n": 404,
+      "standard_deviation": 2489.003849867687
+    },
+    "treatment_arm": "in_frame_production",
+    "unit_keys": [
+      "width=16/body=256/reuse=2/output=8458/projected=4208/sample=0",
+      "width=16/body=256/reuse=2/output=8458/projected=4208/sample=1",
+      "width=16/body=256/reuse=2/output=8458/projected=4208/sample=2",
+      "width=16/body=256/reuse=2/output=8458/projected=4208/sample=3",
+      "width=16/body=256/reuse=2/output=8458/projected=4208/sample=4",
+      "width=16/body=256/reuse=2/output=8458/projected=4208/sample=5",
+      "width=16/body=256/reuse=2/output=8458/projected=4208/sample=6",
+      "width=16/body=256/reuse=2/output=8458/projected=4208/sample=7",
+      "width=16/body=256/reuse=2/output=8458/projected=4208/sample=8",
+      "width=16/body=256/reuse=2/output=8458/projected=4208/sample=9",
+      "width=16/body=256/reuse=2/output=8458/projected=4208/sample=10",
+      "width=16/body=256/reuse=2/output=8458/projected=4208/sample=11",
+      "width=16/body=256/reuse=2/output=8458/projected=4208/sample=12",
+      "width=16/body=256/reuse=2/output=8458/projected=4208/sample=13",
+      "width=16/body=256/reuse=2/output=8458/projected=4208/sample=14",
+      "width=16/body=256/reuse=2/output=8458/projected=4208/sample=15",
+      "width=16/body=256/reuse=2/output=8458/projected=4208/sample=16",
+      "width=16/body=256/reuse=2/output=8458/projected=4208/sample=17",
+      "width=16/body=256/reuse=2/output=8458/projected=4208/sample=18",
+      "width=16/body=256/reuse=2/output=8458/projected=4208/sample=19",
+      "width=16/body=256/reuse=2/output=8458/projected=4208/sample=20",
+      "width=16/body=256/reuse=2/output=8458/projected=4208/sample=21",
+      "width=16/body=256/reuse=2/output=8458/projected=4208/sample=22",
+      "width=16/body=256/reuse=2/output=8458/projected=4208/sample=23",
+      "width=16/body=256/reuse=2/output=8458/projected=4208/sample=24",
+      "width=16/body=256/reuse=2/output=8458/projected=4208/sample=25",
+      "width=16/body=256/reuse=2/output=8458/projected=4208/sample=26",
+      "width=16/body=256/reuse=2/output=8458/projected=4208/sample=27",
+      "width=16/body=256/reuse=2/output=8458/projected=4208/sample=28",
+      "width=16/body=256/reuse=2/output=8458/projected=4208/sample=29",
+      "width=16/body=256/reuse=2/output=8458/projected=4208/sample=30",
+      "width=16/body=256/reuse=2/output=8458/projected=4208/sample=31",
+      "width=16/body=256/reuse=2/output=8458/projected=4208/sample=32",
+      "width=16/body=256/reuse=2/output=8458/projected=4208/sample=33",
+      "width=16/body=256/reuse=2/output=8458/projected=4208/sample=34",
+      "width=16/body=256/reuse=2/output=8458/projected=4208/sample=35",
+      "width=16/body=256/reuse=2/output=8458/projected=4208/sample=36",
+      "width=16/body=256/reuse=2/output=8458/projected=4208/sample=37",
+      "width=16/body=256/reuse=2/output=8458/projected=4208/sample=38",
+      "width=16/body=256/reuse=2/output=8458/projected=4208/sample=39",
+      "width=16/body=256/reuse=2/output=8458/projected=4208/sample=40",
+      "width=16/body=256/reuse=2/output=8458/projected=4208/sample=41",
+      "width=16/body=256/reuse=2/output=8458/projected=4208/sample=42",
+      "width=16/body=256/reuse=2/output=8458/projected=4208/sample=43",
+      "width=16/body=256/reuse=2/output=8458/projected=4208/sample=44",
+      "width=16/body=256/reuse=2/output=8458/projected=4208/sample=45",
+      "width=16/body=256/reuse=2/output=8458/projected=4208/sample=46",
+      "width=16/body=256/reuse=2/output=8458/projected=4208/sample=47",
+      "width=16/body=256/reuse=2/output=8458/projected=4208/sample=48",
+      "width=16/body=256/reuse=2/output=8458/projected=4208/sample=49",
+      "width=16/body=256/reuse=2/output=8458/projected=4208/sample=50",
+      "width=16/body=256/reuse=2/output=8458/projected=4208/sample=51",
+      "width=16/body=256/reuse=2/output=8458/projected=4208/sample=52",
+      "width=16/body=256/reuse=2/output=8458/projected=4208/sample=53",
+      "width=16/body=256/reuse=2/output=8458/projected=4208/sample=54",
+      "width=16/body=256/reuse=2/output=8458/projected=4208/sample=55",
+      "width=16/body=256/reuse=2/output=8458/projected=4208/sample=56",
+      "width=16/body=256/reuse=2/output=8458/projected=4208/sample=57",
+      "width=16/body=256/reuse=2/output=8458/projected=4208/sample=58",
+      "width=16/body=256/reuse=2/output=8458/projected=4208/sample=59",
+      "width=16/body=256/reuse=2/output=8458/projected=4208/sample=60",
+      "width=16/body=256/reuse=2/output=8458/projected=4208/sample=61",
+      "width=16/body=256/reuse=2/output=8458/projected=4208/sample=62",
+      "width=16/body=256/reuse=2/output=8458/projected=4208/sample=63",
+      "width=16/body=256/reuse=2/output=8458/projected=4208/sample=64",
+      "width=16/body=256/reuse=2/output=8458/projected=4208/sample=65",
+      "width=16/body=256/reuse=2/output=8458/projected=4208/sample=66",
+      "width=16/body=256/reuse=2/output=8458/projected=4208/sample=67",
+      "width=16/body=256/reuse=2/output=8458/projected=4208/sample=68",
+      "width=16/body=256/reuse=2/output=8458/projected=4208/sample=69",
+      "width=16/body=256/reuse=2/output=8458/projected=4208/sample=70",
+      "width=16/body=256/reuse=2/output=8458/projected=4208/sample=71",
+      "width=16/body=256/reuse=2/output=8458/projected=4208/sample=72",
+      "width=16/body=256/reuse=2/output=8458/projected=4208/sample=73",
+      "width=16/body=256/reuse=2/output=8458/projected=4208/sample=74",
+      "width=16/body=256/reuse=2/output=8458/projected=4208/sample=75",
+      "width=16/body=256/reuse=2/output=8458/projected=4208/sample=76",
+      "width=16/body=256/reuse=2/output=8458/projected=4208/sample=77",
+      "width=16/body=256/reuse=2/output=8458/projected=4208/sample=78",
+      "width=16/body=256/reuse=2/output=8458/projected=4208/sample=79",
+      "width=16/body=256/reuse=2/output=8458/projected=4208/sample=80",
+      "width=16/body=256/reuse=2/output=8458/projected=4208/sample=81",
+      "width=16/body=256/reuse=2/output=8458/projected=4208/sample=82",
+      "width=16/body=256/reuse=2/output=8458/projected=4208/sample=83",
+      "width=16/body=256/reuse=2/output=8458/projected=4208/sample=84",
+      "width=16/body=256/reuse=2/output=8458/projected=4208/sample=85",
+      "width=16/body=256/reuse=2/output=8458/projected=4208/sample=86",
+      "width=16/body=256/reuse=2/output=8458/projected=4208/sample=87",
+      "width=16/body=256/reuse=2/output=8458/projected=4208/sample=88",
+      "width=16/body=256/reuse=2/output=8458/projected=4208/sample=89",
+      "width=16/body=256/reuse=2/output=8458/projected=4208/sample=90",
+      "width=16/body=256/reuse=2/output=8458/projected=4208/sample=91",
+      "width=16/body=256/reuse=2/output=8458/projected=4208/sample=92",
+      "width=16/body=256/reuse=2/output=8458/projected=4208/sample=93",
+      "width=16/body=256/reuse=2/output=8458/projected=4208/sample=94",
+      "width=16/body=256/reuse=2/output=8458/projected=4208/sample=95",
+      "width=16/body=256/reuse=2/output=8458/projected=4208/sample=96",
+      "width=16/body=256/reuse=2/output=8458/projected=4208/sample=97",
+      "width=16/body=256/reuse=2/output=8458/projected=4208/sample=98",
+      "width=16/body=256/reuse=2/output=8458/projected=4208/sample=99",
+      "width=16/body=256/reuse=2/output=8458/projected=4208/sample=100",
+      "width=16/body=256/reuse=4/output=16896/projected=4208/sample=0",
+      "width=16/body=256/reuse=4/output=16896/projected=4208/sample=1",
+      "width=16/body=256/reuse=4/output=16896/projected=4208/sample=2",
+      "width=16/body=256/reuse=4/output=16896/projected=4208/sample=3",
+      "width=16/body=256/reuse=4/output=16896/projected=4208/sample=4",
+      "width=16/body=256/reuse=4/output=16896/projected=4208/sample=5",
+      "width=16/body=256/reuse=4/output=16896/projected=4208/sample=6",
+      "width=16/body=256/reuse=4/output=16896/projected=4208/sample=7",
+      "width=16/body=256/reuse=4/output=16896/projected=4208/sample=8",
+      "width=16/body=256/reuse=4/output=16896/projected=4208/sample=9",
+      "width=16/body=256/reuse=4/output=16896/projected=4208/sample=10",
+      "width=16/body=256/reuse=4/output=16896/projected=4208/sample=11",
+      "width=16/body=256/reuse=4/output=16896/projected=4208/sample=12",
+      "width=16/body=256/reuse=4/output=16896/projected=4208/sample=13",
+      "width=16/body=256/reuse=4/output=16896/projected=4208/sample=14",
+      "width=16/body=256/reuse=4/output=16896/projected=4208/sample=15",
+      "width=16/body=256/reuse=4/output=16896/projected=4208/sample=16",
+      "width=16/body=256/reuse=4/output=16896/projected=4208/sample=17",
+      "width=16/body=256/reuse=4/output=16896/projected=4208/sample=18",
+      "width=16/body=256/reuse=4/output=16896/projected=4208/sample=19",
+      "width=16/body=256/reuse=4/output=16896/projected=4208/sample=20",
+      "width=16/body=256/reuse=4/output=16896/projected=4208/sample=21",
+      "width=16/body=256/reuse=4/output=16896/projected=4208/sample=22",
+      "width=16/body=256/reuse=4/output=16896/projected=4208/sample=23",
+      "width=16/body=256/reuse=4/output=16896/projected=4208/sample=24",
+      "width=16/body=256/reuse=4/output=16896/projected=4208/sample=25",
+      "width=16/body=256/reuse=4/output=16896/projected=4208/sample=26",
+      "width=16/body=256/reuse=4/output=16896/projected=4208/sample=27",
+      "width=16/body=256/reuse=4/output=16896/projected=4208/sample=28",
+      "width=16/body=256/reuse=4/output=16896/projected=4208/sample=29",
+      "width=16/body=256/reuse=4/output=16896/projected=4208/sample=30",
+      "width=16/body=256/reuse=4/output=16896/projected=4208/sample=31",
+      "width=16/body=256/reuse=4/output=16896/projected=4208/sample=32",
+      "width=16/body=256/reuse=4/output=16896/projected=4208/sample=33",
+      "width=16/body=256/reuse=4/output=16896/projected=4208/sample=34",
+      "width=16/body=256/reuse=4/output=16896/projected=4208/sample=35",
+      "width=16/body=256/reuse=4/output=16896/projected=4208/sample=36",
+      "width=16/body=256/reuse=4/output=16896/projected=4208/sample=37",
+      "width=16/body=256/reuse=4/output=16896/projected=4208/sample=38",
+      "width=16/body=256/reuse=4/output=16896/projected=4208/sample=39",
+      "width=16/body=256/reuse=4/output=16896/projected=4208/sample=40",
+      "width=16/body=256/reuse=4/output=16896/projected=4208/sample=41",
+      "width=16/body=256/reuse=4/output=16896/projected=4208/sample=42",
+      "width=16/body=256/reuse=4/output=16896/projected=4208/sample=43",
+      "width=16/body=256/reuse=4/output=16896/projected=4208/sample=44",
+      "width=16/body=256/reuse=4/output=16896/projected=4208/sample=45",
+      "width=16/body=256/reuse=4/output=16896/projected=4208/sample=46",
+      "width=16/body=256/reuse=4/output=16896/projected=4208/sample=47",
+      "width=16/body=256/reuse=4/output=16896/projected=4208/sample=48",
+      "width=16/body=256/reuse=4/output=16896/projected=4208/sample=49",
+      "width=16/body=256/reuse=4/output=16896/projected=4208/sample=50",
+      "width=16/body=256/reuse=4/output=16896/projected=4208/sample=51",
+      "width=16/body=256/reuse=4/output=16896/projected=4208/sample=52",
+      "width=16/body=256/reuse=4/output=16896/projected=4208/sample=53",
+      "width=16/body=256/reuse=4/output=16896/projected=4208/sample=54",
+      "width=16/body=256/reuse=4/output=16896/projected=4208/sample=55",
+      "width=16/body=256/reuse=4/output=16896/projected=4208/sample=56",
+      "width=16/body=256/reuse=4/output=16896/projected=4208/sample=57",
+      "width=16/body=256/reuse=4/output=16896/projected=4208/sample=58",
+      "width=16/body=256/reuse=4/output=16896/projected=4208/sample=59",
+      "width=16/body=256/reuse=4/output=16896/projected=4208/sample=60",
+      "width=16/body=256/reuse=4/output=16896/projected=4208/sample=61",
+      "width=16/body=256/reuse=4/output=16896/projected=4208/sample=62",
+      "width=16/body=256/reuse=4/output=16896/projected=4208/sample=63",
+      "width=16/body=256/reuse=4/output=16896/projected=4208/sample=64",
+      "width=16/body=256/reuse=4/output=16896/projected=4208/sample=65",
+      "width=16/body=256/reuse=4/output=16896/projected=4208/sample=66",
+      "width=16/body=256/reuse=4/output=16896/projected=4208/sample=67",
+      "width=16/body=256/reuse=4/output=16896/projected=4208/sample=68",
+      "width=16/body=256/reuse=4/output=16896/projected=4208/sample=69",
+      "width=16/body=256/reuse=4/output=16896/projected=4208/sample=70",
+      "width=16/body=256/reuse=4/output=16896/projected=4208/sample=71",
+      "width=16/body=256/reuse=4/output=16896/projected=4208/sample=72",
+      "width=16/body=256/reuse=4/output=16896/projected=4208/sample=73",
+      "width=16/body=256/reuse=4/output=16896/projected=4208/sample=74",
+      "width=16/body=256/reuse=4/output=16896/projected=4208/sample=75",
+      "width=16/body=256/reuse=4/output=16896/projected=4208/sample=76",
+      "width=16/body=256/reuse=4/output=16896/projected=4208/sample=77",
+      "width=16/body=256/reuse=4/output=16896/projected=4208/sample=78",
+      "width=16/body=256/reuse=4/output=16896/projected=4208/sample=79",
+      "width=16/body=256/reuse=4/output=16896/projected=4208/sample=80",
+      "width=16/body=256/reuse=4/output=16896/projected=4208/sample=81",
+      "width=16/body=256/reuse=4/output=16896/projected=4208/sample=82",
+      "width=16/body=256/reuse=4/output=16896/projected=4208/sample=83",
+      "width=16/body=256/reuse=4/output=16896/projected=4208/sample=84",
+      "width=16/body=256/reuse=4/output=16896/projected=4208/sample=85",
+      "width=16/body=256/reuse=4/output=16896/projected=4208/sample=86",
+      "width=16/body=256/reuse=4/output=16896/projected=4208/sample=87",
+      "width=16/body=256/reuse=4/output=16896/projected=4208/sample=88",
+      "width=16/body=256/reuse=4/output=16896/projected=4208/sample=89",
+      "width=16/body=256/reuse=4/output=16896/projected=4208/sample=90",
+      "width=16/body=256/reuse=4/output=16896/projected=4208/sample=91",
+      "width=16/body=256/reuse=4/output=16896/projected=4208/sample=92",
+      "width=16/body=256/reuse=4/output=16896/projected=4208/sample=93",
+      "width=16/body=256/reuse=4/output=16896/projected=4208/sample=94",
+      "width=16/body=256/reuse=4/output=16896/projected=4208/sample=95",
+      "width=16/body=256/reuse=4/output=16896/projected=4208/sample=96",
+      "width=16/body=256/reuse=4/output=16896/projected=4208/sample=97",
+      "width=16/body=256/reuse=4/output=16896/projected=4208/sample=98",
+      "width=16/body=256/reuse=4/output=16896/projected=4208/sample=99",
+      "width=16/body=256/reuse=4/output=16896/projected=4208/sample=100",
+      "width=16/body=256/reuse=8/output=33761/projected=4208/sample=0",
+      "width=16/body=256/reuse=8/output=33761/projected=4208/sample=1",
+      "width=16/body=256/reuse=8/output=33761/projected=4208/sample=2",
+      "width=16/body=256/reuse=8/output=33761/projected=4208/sample=3",
+      "width=16/body=256/reuse=8/output=33761/projected=4208/sample=4",
+      "width=16/body=256/reuse=8/output=33761/projected=4208/sample=5",
+      "width=16/body=256/reuse=8/output=33761/projected=4208/sample=6",
+      "width=16/body=256/reuse=8/output=33761/projected=4208/sample=7",
+      "width=16/body=256/reuse=8/output=33761/projected=4208/sample=8",
+      "width=16/body=256/reuse=8/output=33761/projected=4208/sample=9",
+      "width=16/body=256/reuse=8/output=33761/projected=4208/sample=10",
+      "width=16/body=256/reuse=8/output=33761/projected=4208/sample=11",
+      "width=16/body=256/reuse=8/output=33761/projected=4208/sample=12",
+      "width=16/body=256/reuse=8/output=33761/projected=4208/sample=13",
+      "width=16/body=256/reuse=8/output=33761/projected=4208/sample=14",
+      "width=16/body=256/reuse=8/output=33761/projected=4208/sample=15",
+      "width=16/body=256/reuse=8/output=33761/projected=4208/sample=16",
+      "width=16/body=256/reuse=8/output=33761/projected=4208/sample=17",
+      "width=16/body=256/reuse=8/output=33761/projected=4208/sample=18",
+      "width=16/body=256/reuse=8/output=33761/projected=4208/sample=19",
+      "width=16/body=256/reuse=8/output=33761/projected=4208/sample=20",
+      "width=16/body=256/reuse=8/output=33761/projected=4208/sample=21",
+      "width=16/body=256/reuse=8/output=33761/projected=4208/sample=22",
+      "width=16/body=256/reuse=8/output=33761/projected=4208/sample=23",
+      "width=16/body=256/reuse=8/output=33761/projected=4208/sample=24",
+      "width=16/body=256/reuse=8/output=33761/projected=4208/sample=25",
+      "width=16/body=256/reuse=8/output=33761/projected=4208/sample=26",
+      "width=16/body=256/reuse=8/output=33761/projected=4208/sample=27",
+      "width=16/body=256/reuse=8/output=33761/projected=4208/sample=28",
+      "width=16/body=256/reuse=8/output=33761/projected=4208/sample=29",
+      "width=16/body=256/reuse=8/output=33761/projected=4208/sample=30",
+      "width=16/body=256/reuse=8/output=33761/projected=4208/sample=31",
+      "width=16/body=256/reuse=8/output=33761/projected=4208/sample=32",
+      "width=16/body=256/reuse=8/output=33761/projected=4208/sample=33",
+      "width=16/body=256/reuse=8/output=33761/projected=4208/sample=34",
+      "width=16/body=256/reuse=8/output=33761/projected=4208/sample=35",
+      "width=16/body=256/reuse=8/output=33761/projected=4208/sample=36",
+      "width=16/body=256/reuse=8/output=33761/projected=4208/sample=37",
+      "width=16/body=256/reuse=8/output=33761/projected=4208/sample=38",
+      "width=16/body=256/reuse=8/output=33761/projected=4208/sample=39",
+      "width=16/body=256/reuse=8/output=33761/projected=4208/sample=40",
+      "width=16/body=256/reuse=8/output=33761/projected=4208/sample=41",
+      "width=16/body=256/reuse=8/output=33761/projected=4208/sample=42",
+      "width=16/body=256/reuse=8/output=33761/projected=4208/sample=43",
+      "width=16/body=256/reuse=8/output=33761/projected=4208/sample=44",
+      "width=16/body=256/reuse=8/output=33761/projected=4208/sample=45",
+      "width=16/body=256/reuse=8/output=33761/projected=4208/sample=46",
+      "width=16/body=256/reuse=8/output=33761/projected=4208/sample=47",
+      "width=16/body=256/reuse=8/output=33761/projected=4208/sample=48",
+      "width=16/body=256/reuse=8/output=33761/projected=4208/sample=49",
+      "width=16/body=256/reuse=8/output=33761/projected=4208/sample=50",
+      "width=16/body=256/reuse=8/output=33761/projected=4208/sample=51",
+      "width=16/body=256/reuse=8/output=33761/projected=4208/sample=52",
+      "width=16/body=256/reuse=8/output=33761/projected=4208/sample=53",
+      "width=16/body=256/reuse=8/output=33761/projected=4208/sample=54",
+      "width=16/body=256/reuse=8/output=33761/projected=4208/sample=55",
+      "width=16/body=256/reuse=8/output=33761/projected=4208/sample=56",
+      "width=16/body=256/reuse=8/output=33761/projected=4208/sample=57",
+      "width=16/body=256/reuse=8/output=33761/projected=4208/sample=58",
+      "width=16/body=256/reuse=8/output=33761/projected=4208/sample=59",
+      "width=16/body=256/reuse=8/output=33761/projected=4208/sample=60",
+      "width=16/body=256/reuse=8/output=33761/projected=4208/sample=61",
+      "width=16/body=256/reuse=8/output=33761/projected=4208/sample=62",
+      "width=16/body=256/reuse=8/output=33761/projected=4208/sample=63",
+      "width=16/body=256/reuse=8/output=33761/projected=4208/sample=64",
+      "width=16/body=256/reuse=8/output=33761/projected=4208/sample=65",
+      "width=16/body=256/reuse=8/output=33761/projected=4208/sample=66",
+      "width=16/body=256/reuse=8/output=33761/projected=4208/sample=67",
+      "width=16/body=256/reuse=8/output=33761/projected=4208/sample=68",
+      "width=16/body=256/reuse=8/output=33761/projected=4208/sample=69",
+      "width=16/body=256/reuse=8/output=33761/projected=4208/sample=70",
+      "width=16/body=256/reuse=8/output=33761/projected=4208/sample=71",
+      "width=16/body=256/reuse=8/output=33761/projected=4208/sample=72",
+      "width=16/body=256/reuse=8/output=33761/projected=4208/sample=73",
+      "width=16/body=256/reuse=8/output=33761/projected=4208/sample=74",
+      "width=16/body=256/reuse=8/output=33761/projected=4208/sample=75",
+      "width=16/body=256/reuse=8/output=33761/projected=4208/sample=76",
+      "width=16/body=256/reuse=8/output=33761/projected=4208/sample=77",
+      "width=16/body=256/reuse=8/output=33761/projected=4208/sample=78",
+      "width=16/body=256/reuse=8/output=33761/projected=4208/sample=79",
+      "width=16/body=256/reuse=8/output=33761/projected=4208/sample=80",
+      "width=16/body=256/reuse=8/output=33761/projected=4208/sample=81",
+      "width=16/body=256/reuse=8/output=33761/projected=4208/sample=82",
+      "width=16/body=256/reuse=8/output=33761/projected=4208/sample=83",
+      "width=16/body=256/reuse=8/output=33761/projected=4208/sample=84",
+      "width=16/body=256/reuse=8/output=33761/projected=4208/sample=85",
+      "width=16/body=256/reuse=8/output=33761/projected=4208/sample=86",
+      "width=16/body=256/reuse=8/output=33761/projected=4208/sample=87",
+      "width=16/body=256/reuse=8/output=33761/projected=4208/sample=88",
+      "width=16/body=256/reuse=8/output=33761/projected=4208/sample=89",
+      "width=16/body=256/reuse=8/output=33761/projected=4208/sample=90",
+      "width=16/body=256/reuse=8/output=33761/projected=4208/sample=91",
+      "width=16/body=256/reuse=8/output=33761/projected=4208/sample=92",
+      "width=16/body=256/reuse=8/output=33761/projected=4208/sample=93",
+      "width=16/body=256/reuse=8/output=33761/projected=4208/sample=94",
+      "width=16/body=256/reuse=8/output=33761/projected=4208/sample=95",
+      "width=16/body=256/reuse=8/output=33761/projected=4208/sample=96",
+      "width=16/body=256/reuse=8/output=33761/projected=4208/sample=97",
+      "width=16/body=256/reuse=8/output=33761/projected=4208/sample=98",
+      "width=16/body=256/reuse=8/output=33761/projected=4208/sample=99",
+      "width=16/body=256/reuse=8/output=33761/projected=4208/sample=100",
+      "width=16/body=256/reuse=16/output=67496/projected=4208/sample=0",
+      "width=16/body=256/reuse=16/output=67496/projected=4208/sample=1",
+      "width=16/body=256/reuse=16/output=67496/projected=4208/sample=2",
+      "width=16/body=256/reuse=16/output=67496/projected=4208/sample=3",
+      "width=16/body=256/reuse=16/output=67496/projected=4208/sample=4",
+      "width=16/body=256/reuse=16/output=67496/projected=4208/sample=5",
+      "width=16/body=256/reuse=16/output=67496/projected=4208/sample=6",
+      "width=16/body=256/reuse=16/output=67496/projected=4208/sample=7",
+      "width=16/body=256/reuse=16/output=67496/projected=4208/sample=8",
+      "width=16/body=256/reuse=16/output=67496/projected=4208/sample=9",
+      "width=16/body=256/reuse=16/output=67496/projected=4208/sample=10",
+      "width=16/body=256/reuse=16/output=67496/projected=4208/sample=11",
+      "width=16/body=256/reuse=16/output=67496/projected=4208/sample=12",
+      "width=16/body=256/reuse=16/output=67496/projected=4208/sample=13",
+      "width=16/body=256/reuse=16/output=67496/projected=4208/sample=14",
+      "width=16/body=256/reuse=16/output=67496/projected=4208/sample=15",
+      "width=16/body=256/reuse=16/output=67496/projected=4208/sample=16",
+      "width=16/body=256/reuse=16/output=67496/projected=4208/sample=17",
+      "width=16/body=256/reuse=16/output=67496/projected=4208/sample=18",
+      "width=16/body=256/reuse=16/output=67496/projected=4208/sample=19",
+      "width=16/body=256/reuse=16/output=67496/projected=4208/sample=20",
+      "width=16/body=256/reuse=16/output=67496/projected=4208/sample=21",
+      "width=16/body=256/reuse=16/output=67496/projected=4208/sample=22",
+      "width=16/body=256/reuse=16/output=67496/projected=4208/sample=23",
+      "width=16/body=256/reuse=16/output=67496/projected=4208/sample=24",
+      "width=16/body=256/reuse=16/output=67496/projected=4208/sample=25",
+      "width=16/body=256/reuse=16/output=67496/projected=4208/sample=26",
+      "width=16/body=256/reuse=16/output=67496/projected=4208/sample=27",
+      "width=16/body=256/reuse=16/output=67496/projected=4208/sample=28",
+      "width=16/body=256/reuse=16/output=67496/projected=4208/sample=29",
+      "width=16/body=256/reuse=16/output=67496/projected=4208/sample=30",
+      "width=16/body=256/reuse=16/output=67496/projected=4208/sample=31",
+      "width=16/body=256/reuse=16/output=67496/projected=4208/sample=32",
+      "width=16/body=256/reuse=16/output=67496/projected=4208/sample=33",
+      "width=16/body=256/reuse=16/output=67496/projected=4208/sample=34",
+      "width=16/body=256/reuse=16/output=67496/projected=4208/sample=35",
+      "width=16/body=256/reuse=16/output=67496/projected=4208/sample=36",
+      "width=16/body=256/reuse=16/output=67496/projected=4208/sample=37",
+      "width=16/body=256/reuse=16/output=67496/projected=4208/sample=38",
+      "width=16/body=256/reuse=16/output=67496/projected=4208/sample=39",
+      "width=16/body=256/reuse=16/output=67496/projected=4208/sample=40",
+      "width=16/body=256/reuse=16/output=67496/projected=4208/sample=41",
+      "width=16/body=256/reuse=16/output=67496/projected=4208/sample=42",
+      "width=16/body=256/reuse=16/output=67496/projected=4208/sample=43",
+      "width=16/body=256/reuse=16/output=67496/projected=4208/sample=44",
+      "width=16/body=256/reuse=16/output=67496/projected=4208/sample=45",
+      "width=16/body=256/reuse=16/output=67496/projected=4208/sample=46",
+      "width=16/body=256/reuse=16/output=67496/projected=4208/sample=47",
+      "width=16/body=256/reuse=16/output=67496/projected=4208/sample=48",
+      "width=16/body=256/reuse=16/output=67496/projected=4208/sample=49",
+      "width=16/body=256/reuse=16/output=67496/projected=4208/sample=50",
+      "width=16/body=256/reuse=16/output=67496/projected=4208/sample=51",
+      "width=16/body=256/reuse=16/output=67496/projected=4208/sample=52",
+      "width=16/body=256/reuse=16/output=67496/projected=4208/sample=53",
+      "width=16/body=256/reuse=16/output=67496/projected=4208/sample=54",
+      "width=16/body=256/reuse=16/output=67496/projected=4208/sample=55",
+      "width=16/body=256/reuse=16/output=67496/projected=4208/sample=56",
+      "width=16/body=256/reuse=16/output=67496/projected=4208/sample=57",
+      "width=16/body=256/reuse=16/output=67496/projected=4208/sample=58",
+      "width=16/body=256/reuse=16/output=67496/projected=4208/sample=59",
+      "width=16/body=256/reuse=16/output=67496/projected=4208/sample=60",
+      "width=16/body=256/reuse=16/output=67496/projected=4208/sample=61",
+      "width=16/body=256/reuse=16/output=67496/projected=4208/sample=62",
+      "width=16/body=256/reuse=16/output=67496/projected=4208/sample=63",
+      "width=16/body=256/reuse=16/output=67496/projected=4208/sample=64",
+      "width=16/body=256/reuse=16/output=67496/projected=4208/sample=65",
+      "width=16/body=256/reuse=16/output=67496/projected=4208/sample=66",
+      "width=16/body=256/reuse=16/output=67496/projected=4208/sample=67",
+      "width=16/body=256/reuse=16/output=67496/projected=4208/sample=68",
+      "width=16/body=256/reuse=16/output=67496/projected=4208/sample=69",
+      "width=16/body=256/reuse=16/output=67496/projected=4208/sample=70",
+      "width=16/body=256/reuse=16/output=67496/projected=4208/sample=71",
+      "width=16/body=256/reuse=16/output=67496/projected=4208/sample=72",
+      "width=16/body=256/reuse=16/output=67496/projected=4208/sample=73",
+      "width=16/body=256/reuse=16/output=67496/projected=4208/sample=74",
+      "width=16/body=256/reuse=16/output=67496/projected=4208/sample=75",
+      "width=16/body=256/reuse=16/output=67496/projected=4208/sample=76",
+      "width=16/body=256/reuse=16/output=67496/projected=4208/sample=77",
+      "width=16/body=256/reuse=16/output=67496/projected=4208/sample=78",
+      "width=16/body=256/reuse=16/output=67496/projected=4208/sample=79",
+      "width=16/body=256/reuse=16/output=67496/projected=4208/sample=80",
+      "width=16/body=256/reuse=16/output=67496/projected=4208/sample=81",
+      "width=16/body=256/reuse=16/output=67496/projected=4208/sample=82",
+      "width=16/body=256/reuse=16/output=67496/projected=4208/sample=83",
+      "width=16/body=256/reuse=16/output=67496/projected=4208/sample=84",
+      "width=16/body=256/reuse=16/output=67496/projected=4208/sample=85",
+      "width=16/body=256/reuse=16/output=67496/projected=4208/sample=86",
+      "width=16/body=256/reuse=16/output=67496/projected=4208/sample=87",
+      "width=16/body=256/reuse=16/output=67496/projected=4208/sample=88",
+      "width=16/body=256/reuse=16/output=67496/projected=4208/sample=89",
+      "width=16/body=256/reuse=16/output=67496/projected=4208/sample=90",
+      "width=16/body=256/reuse=16/output=67496/projected=4208/sample=91",
+      "width=16/body=256/reuse=16/output=67496/projected=4208/sample=92",
+      "width=16/body=256/reuse=16/output=67496/projected=4208/sample=93",
+      "width=16/body=256/reuse=16/output=67496/projected=4208/sample=94",
+      "width=16/body=256/reuse=16/output=67496/projected=4208/sample=95",
+      "width=16/body=256/reuse=16/output=67496/projected=4208/sample=96",
+      "width=16/body=256/reuse=16/output=67496/projected=4208/sample=97",
+      "width=16/body=256/reuse=16/output=67496/projected=4208/sample=98",
+      "width=16/body=256/reuse=16/output=67496/projected=4208/sample=99",
+      "width=16/body=256/reuse=16/output=67496/projected=4208/sample=100"
+    ]
+  },
+  "protocol_validation": "passed",
+  "python": "3.14.7",
+  "reuse_one_in_frame_production_non_regression": {
+    "control": {
+      "maximum": 12193.0,
+      "mean": 3125.0,
+      "median": 2886.0,
+      "minimum": 2856.0,
+      "n": 101,
+      "standard_deviation": 1332.372725628981
+    },
+    "decision_role": "non-regression",
+    "eligibility": "reuse == 1",
+    "mean_treatment_control_ratio": 0.9537267326732674,
+    "median_treatment_control_ratio": 1.0173250173250172,
+    "paired_bootstrap_median_of_ratios_99_percent": {
+      "lower_0_5_percent": 1.006930006930007,
+      "median": 1.017391304347826,
+      "upper_99_5_percent": 1.0245098039215685
+    },
+    "paired_bootstrap_ratio_of_medians_99_percent": {
+      "lower_0_5_percent": 1.0135135135135136,
+      "median": 1.0176776429809358,
+      "upper_99_5_percent": 1.0277296360485269
+    },
+    "paired_difference_ns": {
+      "maximum": 1032.0,
+      "mean": -144.6039603960396,
+      "median": 50.0,
+      "minimum": -9107.0,
+      "n": 101,
+      "standard_deviation": 1310.1500378140506
+    },
+    "paired_ratio": {
+      "maximum": 1.3588317107093184,
+      "mean": 1.00559471993692,
+      "median": 1.017391304347826,
+      "minimum": 0.25309603871073566,
+      "n": 101,
+      "standard_deviation": 0.13295635969503933
+    },
+    "paired_t_two_sided_pvalue": 0.2699933595128306,
+    "paired_wilcoxon_two_sided_pvalue": 6.205556319302612e-08,
+    "shapiro_pvalue_paired_difference": 1.4961323511407085e-20,
+    "treatment": {
+      "maximum": 3908.0,
+      "mean": 2980.3960396039606,
+      "median": 2936.0,
+      "minimum": 2835.0,
+      "n": 101,
+      "standard_deviation": 145.36891546736675
+    },
+    "treatment_arm": "in_frame_production",
+    "unit_keys": [
+      "width=16/body=256/reuse=1/output=4240/projected=4208/sample=0",
+      "width=16/body=256/reuse=1/output=4240/projected=4208/sample=1",
+      "width=16/body=256/reuse=1/output=4240/projected=4208/sample=2",
+      "width=16/body=256/reuse=1/output=4240/projected=4208/sample=3",
+      "width=16/body=256/reuse=1/output=4240/projected=4208/sample=4",
+      "width=16/body=256/reuse=1/output=4240/projected=4208/sample=5",
+      "width=16/body=256/reuse=1/output=4240/projected=4208/sample=6",
+      "width=16/body=256/reuse=1/output=4240/projected=4208/sample=7",
+      "width=16/body=256/reuse=1/output=4240/projected=4208/sample=8",
+      "width=16/body=256/reuse=1/output=4240/projected=4208/sample=9",
+      "width=16/body=256/reuse=1/output=4240/projected=4208/sample=10",
+      "width=16/body=256/reuse=1/output=4240/projected=4208/sample=11",
+      "width=16/body=256/reuse=1/output=4240/projected=4208/sample=12",
+      "width=16/body=256/reuse=1/output=4240/projected=4208/sample=13",
+      "width=16/body=256/reuse=1/output=4240/projected=4208/sample=14",
+      "width=16/body=256/reuse=1/output=4240/projected=4208/sample=15",
+      "width=16/body=256/reuse=1/output=4240/projected=4208/sample=16",
+      "width=16/body=256/reuse=1/output=4240/projected=4208/sample=17",
+      "width=16/body=256/reuse=1/output=4240/projected=4208/sample=18",
+      "width=16/body=256/reuse=1/output=4240/projected=4208/sample=19",
+      "width=16/body=256/reuse=1/output=4240/projected=4208/sample=20",
+      "width=16/body=256/reuse=1/output=4240/projected=4208/sample=21",
+      "width=16/body=256/reuse=1/output=4240/projected=4208/sample=22",
+      "width=16/body=256/reuse=1/output=4240/projected=4208/sample=23",
+      "width=16/body=256/reuse=1/output=4240/projected=4208/sample=24",
+      "width=16/body=256/reuse=1/output=4240/projected=4208/sample=25",
+      "width=16/body=256/reuse=1/output=4240/projected=4208/sample=26",
+      "width=16/body=256/reuse=1/output=4240/projected=4208/sample=27",
+      "width=16/body=256/reuse=1/output=4240/projected=4208/sample=28",
+      "width=16/body=256/reuse=1/output=4240/projected=4208/sample=29",
+      "width=16/body=256/reuse=1/output=4240/projected=4208/sample=30",
+      "width=16/body=256/reuse=1/output=4240/projected=4208/sample=31",
+      "width=16/body=256/reuse=1/output=4240/projected=4208/sample=32",
+      "width=16/body=256/reuse=1/output=4240/projected=4208/sample=33",
+      "width=16/body=256/reuse=1/output=4240/projected=4208/sample=34",
+      "width=16/body=256/reuse=1/output=4240/projected=4208/sample=35",
+      "width=16/body=256/reuse=1/output=4240/projected=4208/sample=36",
+      "width=16/body=256/reuse=1/output=4240/projected=4208/sample=37",
+      "width=16/body=256/reuse=1/output=4240/projected=4208/sample=38",
+      "width=16/body=256/reuse=1/output=4240/projected=4208/sample=39",
+      "width=16/body=256/reuse=1/output=4240/projected=4208/sample=40",
+      "width=16/body=256/reuse=1/output=4240/projected=4208/sample=41",
+      "width=16/body=256/reuse=1/output=4240/projected=4208/sample=42",
+      "width=16/body=256/reuse=1/output=4240/projected=4208/sample=43",
+      "width=16/body=256/reuse=1/output=4240/projected=4208/sample=44",
+      "width=16/body=256/reuse=1/output=4240/projected=4208/sample=45",
+      "width=16/body=256/reuse=1/output=4240/projected=4208/sample=46",
+      "width=16/body=256/reuse=1/output=4240/projected=4208/sample=47",
+      "width=16/body=256/reuse=1/output=4240/projected=4208/sample=48",
+      "width=16/body=256/reuse=1/output=4240/projected=4208/sample=49",
+      "width=16/body=256/reuse=1/output=4240/projected=4208/sample=50",
+      "width=16/body=256/reuse=1/output=4240/projected=4208/sample=51",
+      "width=16/body=256/reuse=1/output=4240/projected=4208/sample=52",
+      "width=16/body=256/reuse=1/output=4240/projected=4208/sample=53",
+      "width=16/body=256/reuse=1/output=4240/projected=4208/sample=54",
+      "width=16/body=256/reuse=1/output=4240/projected=4208/sample=55",
+      "width=16/body=256/reuse=1/output=4240/projected=4208/sample=56",
+      "width=16/body=256/reuse=1/output=4240/projected=4208/sample=57",
+      "width=16/body=256/reuse=1/output=4240/projected=4208/sample=58",
+      "width=16/body=256/reuse=1/output=4240/projected=4208/sample=59",
+      "width=16/body=256/reuse=1/output=4240/projected=4208/sample=60",
+      "width=16/body=256/reuse=1/output=4240/projected=4208/sample=61",
+      "width=16/body=256/reuse=1/output=4240/projected=4208/sample=62",
+      "width=16/body=256/reuse=1/output=4240/projected=4208/sample=63",
+      "width=16/body=256/reuse=1/output=4240/projected=4208/sample=64",
+      "width=16/body=256/reuse=1/output=4240/projected=4208/sample=65",
+      "width=16/body=256/reuse=1/output=4240/projected=4208/sample=66",
+      "width=16/body=256/reuse=1/output=4240/projected=4208/sample=67",
+      "width=16/body=256/reuse=1/output=4240/projected=4208/sample=68",
+      "width=16/body=256/reuse=1/output=4240/projected=4208/sample=69",
+      "width=16/body=256/reuse=1/output=4240/projected=4208/sample=70",
+      "width=16/body=256/reuse=1/output=4240/projected=4208/sample=71",
+      "width=16/body=256/reuse=1/output=4240/projected=4208/sample=72",
+      "width=16/body=256/reuse=1/output=4240/projected=4208/sample=73",
+      "width=16/body=256/reuse=1/output=4240/projected=4208/sample=74",
+      "width=16/body=256/reuse=1/output=4240/projected=4208/sample=75",
+      "width=16/body=256/reuse=1/output=4240/projected=4208/sample=76",
+      "width=16/body=256/reuse=1/output=4240/projected=4208/sample=77",
+      "width=16/body=256/reuse=1/output=4240/projected=4208/sample=78",
+      "width=16/body=256/reuse=1/output=4240/projected=4208/sample=79",
+      "width=16/body=256/reuse=1/output=4240/projected=4208/sample=80",
+      "width=16/body=256/reuse=1/output=4240/projected=4208/sample=81",
+      "width=16/body=256/reuse=1/output=4240/projected=4208/sample=82",
+      "width=16/body=256/reuse=1/output=4240/projected=4208/sample=83",
+      "width=16/body=256/reuse=1/output=4240/projected=4208/sample=84",
+      "width=16/body=256/reuse=1/output=4240/projected=4208/sample=85",
+      "width=16/body=256/reuse=1/output=4240/projected=4208/sample=86",
+      "width=16/body=256/reuse=1/output=4240/projected=4208/sample=87",
+      "width=16/body=256/reuse=1/output=4240/projected=4208/sample=88",
+      "width=16/body=256/reuse=1/output=4240/projected=4208/sample=89",
+      "width=16/body=256/reuse=1/output=4240/projected=4208/sample=90",
+      "width=16/body=256/reuse=1/output=4240/projected=4208/sample=91",
+      "width=16/body=256/reuse=1/output=4240/projected=4208/sample=92",
+      "width=16/body=256/reuse=1/output=4240/projected=4208/sample=93",
+      "width=16/body=256/reuse=1/output=4240/projected=4208/sample=94",
+      "width=16/body=256/reuse=1/output=4240/projected=4208/sample=95",
+      "width=16/body=256/reuse=1/output=4240/projected=4208/sample=96",
+      "width=16/body=256/reuse=1/output=4240/projected=4208/sample=97",
+      "width=16/body=256/reuse=1/output=4240/projected=4208/sample=98",
+      "width=16/body=256/reuse=1/output=4240/projected=4208/sample=99",
+      "width=16/body=256/reuse=1/output=4240/projected=4208/sample=100"
+    ]
+  },
+  "schema": "par-projection-owner-v5",
+  "scipy": "1.18.1"
+}

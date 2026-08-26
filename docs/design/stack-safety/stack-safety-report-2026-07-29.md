@@ -12,10 +12,11 @@
 
 **Repository** `f1r3node-rust-mettail`, branch `feature/mettail`
 **Companion repository** `mettail-rust`, branch `feature/rho-native-set-automata` (§5.6)
-**Report date** 2026-07-29, revised through 2026-08-25
+**Report date** 2026-07-29, revised through 2026-08-26
 **Measurement anchor** `f1r3node-rust-mettail@e67a6aaa` · `mettail-rust@b0aa4e09` (original measurement tree `8853f839`)
 **Living closure head** this checkpoint, based on `f1r3node-rust-mettail@3061b2501`
-(final persisted-value canonical DATA egress and borrowed cold-store admission following
+(certified frame-local ParBag protobuf egress with typed atomic replay following final
+persisted-value canonical DATA egress and borrowed cold-store admission following
 presence-safe protobuf-region rendering and proof-carrying post-zipper EPathMap decode following
 drive-local `FreeMap` journaling and byte-native exact FreeVar capture following complete byte-native
 recursive matcher-family coverage, and complete transient `ParConstruction` planning across normalization, substitution, and evaluation,
@@ -314,6 +315,7 @@ Abbreviations used throughout are ABI (application binary interface), CBR (conse
 | **SS-C15** | `bdaf93a5f`; pgmcp #6023 | f1r3node | Bag/EPathMap canonical ACT admission and every production endpoint/topology consumer share one validated preorder plan; generated EPM1 decoding retains only the current borrowed value body | physical primary-record parses $`4S-2 \rightarrow S`$, wrapper parses $`2W \rightarrow W`$, node reparses and event-time metadata reads $`\rightarrow 0`$; native stack remains $`O(1)`$ | **yes for the ACT replay slope**; 12/12 plan, 24/24 EPM1, 28/28 Bag, 74/74 rspace library, and 279/279 models library gates | [5.42](#542-single-admission-act-plan-and-epm1-consumer-closure-ss-c15) |
 | **SS-C16** | `583f21e44`; pgmcp #6026 | f1r3node | frozen single-`Vec<u8>` history leaves: second complete bincode wrapper buffer $`\rightarrow`$ two borrowed hash chunks | secondary $`8+|p|`$-byte allocation $`\rightarrow 0`$ by construction; native stack remains $`O(1)`$ | **yes for exact leaf hashes**; all three leaf types, framing negative control, and 76/76 rspace library gate | [5.43](#543-chunked-history-leaf-hashing-ss-c16) |
 | **SS-C17** | `3061b2501`, `70fae0a9d`; pgmcp #6026/#6030 | f1r3node | canonical DATA: PathMap $`\rightarrow`$ leaf payload $`\rightarrow`$ second final-value serialization; reads/imports: final value $`\rightarrow`$ copied payload | one checked allocation constructs the final envelope; reader/importer lend canonically admitted ranges; treatment/control median-time ratio **0.0323–0.3745**, with **24 to 36,878 fewer allocation calls**; native stack remains $`O(1)`$ | **yes for final persisted DATA bytes**; exact framing/admission, three lifecycle mutants, two final-byte mutants, formal gates, and 497/497 package tests | [5.44](#544-final-persisted-value-egress-and-borrowed-admission-ss-c17) |
+| **SS-C18** | this checkpoint; pgmcp #6025/#6027/#6030 | f1r3node | repeated ParBag owner occurrences in one protobuf frame: repeated PathMap zipper walks $`\rightarrow`$ one exact owner census, direct first emission, and certified typed-range replay | native stack remains $`O(1)`$; reuse-1 99% ratio upper bound **1.024510**; reuse-16 median ratio **0.174705**, traversals **16 $`\rightarrow`$ 1**, allocation calls **99,235 $`\rightarrow`$ 8,455** in the profile-only loop | **no** — heap/time refinement of the generated stack-safe codec; exact Prost bytes, owner-shape/fault differentials, seven transcript mutants, eleven owner-memo mutants, and full formal bundle | [5.45](#545-certified-parbag-protobuf-egress-and-atomic-replay-ss-c18) |
 | **SS-D1** | `d2591fa1` | f1r3node | task-spawn boundary per-branch deep clone | 2,867 $`\rightarrow`$ **0** *(this site)* | **yes** | [5.5.3](#553-the-three-repairs) |
 | **SS-D2** | `94dc983f` | f1r3node | ownership to the substitution; **15** deep copies | incl. $`O(n^2)`$ $`\rightarrow`$ $`O(n)`$ | **yes** | [5.5.3](#553-the-three-repairs) |
 | **SS-D3** | `9082d12c` | f1r3node | `inj_attempt` read-back clone $`\rightarrow`$ by-move | 2,852 $`\rightarrow`$ **0** | **yes** | [5.5.3](#553-the-three-repairs) |
@@ -540,6 +542,7 @@ register rows (SS-C5…SS-C14, SS-Y6) and the stack-safety consequences.
   - [5.42 Single-admission ACT plan and EPM1 consumer closure [SS-C15]](#542-single-admission-act-plan-and-epm1-consumer-closure-ss-c15)
   - [5.43 Chunked history-leaf hashing [SS-C16]](#543-chunked-history-leaf-hashing-ss-c16)
   - [5.44 Final persisted-value egress and borrowed admission [SS-C17]](#544-final-persisted-value-egress-and-borrowed-admission-ss-c17)
+  - [5.45 Certified ParBag protobuf egress and atomic replay [SS-C18]](#545-certified-parbag-protobuf-egress-and-atomic-replay-ss-c18)
 - [6. Discussion](#6-discussion)
   - [6.1 Why the explicit-worklist shape, and why it is *smaller* than what it replaces](#61-why-the-explicit-worklist-shape-and-why-it-is-smaller-than-what-it-replaces)
   - [6.2 Why the SCC is the unit of conversion](#62-why-the-scc-is-the-unit-of-conversion)
@@ -10400,6 +10403,97 @@ acknowledgement obligations.
 
 ---
 
+### 5.45 Certified ParBag protobuf egress and atomic replay [SS-C18]
+
+#### 5.45.1 Mechanism and stack boundary
+
+The generated protobuf machine was already stack-safe, but an outer RSpace frame could visit the
+same copy-on-write `ParBag` owner once for every `Par` shell that referenced it. The former adaptive
+path therefore performed $`r`$ authoritative PathMap traversals for reuse count $`r`$. A global
+cache would have introduced lifetime, invalidation, retained-memory, and concurrency obligations
+that do not belong at a serializer boundary. Caching every frame-local owner would also tax the
+common singleton case.
+
+SS-C18 performs one exact preflight census over the generated outer schema. Component-empty `Par`
+values remain direct because they have no PathMap component body. Singleton owners remain direct.
+For a repeated owner, the first occurrence emits the canonical component body from the
+`PathMap<Multiplicity>` zipper and records ranges in the private output; later occurrences replay
+those ranges and emit their own root metadata. One reusable owner stays inline. A hash table is
+allocated only when a second reusable owner is first recorded. Correctness is independent of the
+optional statistics observer.
+
+The same preflight builds a typed pre-order transcript. It reserves each `MessageBody`, `ParBody`,
+`MapEntryBody`, or `EPathMapSnapshotBody` event before descending and completes it after the child
+succeeds. Sixteen event kinds and lengths plus a `u16` completion set are inline; larger schedules
+spill to one vector. Emission must replay the exact type and length sequence, exhaust every recorded
+owner range, and produce the planned body length. The frame is private until all checks pass, so a
+failure cannot publish a prefix. EPathMap snapshot bodies continue to use the homogeneous
+`PathMap<()>` or `PathMap<Par>` representation directly; there is no element-list projection or
+sorting step.
+
+All control paths use $`O(1)`$ native stack. Transcript space is $`\Theta(e)`$ for $`e`$ generated
+schema events, output is $`\Theta(n)`$ for $`n`$ published bytes, and owner bookkeeping is
+$`\Theta(o_r)`$ for the number $`o_r`$ of distinct repeated owners. PathMap component traversal
+work changes from $`\Theta(\sum_i r_i b_i)`$ to $`\Theta(\sum_i b_i)`$, where $`b_i`$ is owner
+$`i`$'s component-body size and $`r_i`$ its occurrence count.
+
+#### 5.45.2 Powered timing and physical attribution
+
+The locked width-16/body-256 matrix uses 20 warmups and 101 balanced AB/BA retained pairs per reuse
+cell. Every sample checks byte equality, output length, allocation counters, and PathMap traversal
+counts before admission. The analysis uses 100,000 pair-preserving bootstrap resamples.
+
+| Reuse | Treatment/control paired median | 99% interval | PathMap traversals, control $`\rightarrow`$ treatment |
+|---:|---:|---:|---:|
+| 1 | 1.017391 | [1.006930, 1.024510] | 1 $`\rightarrow`$ 1 |
+| 2 | 0.556835 | [0.551625, 0.567432] | 2 $`\rightarrow`$ 1 |
+| 4 | 0.300896 | [0.298716, 0.305263] | 4 $`\rightarrow`$ 1 |
+| 8 | 0.175201 | [0.173288, 0.179316] | 8 $`\rightarrow`$ 1 |
+| 16 | 0.174705 | [0.171765, 0.177020] | 16 $`\rightarrow`$ 1 |
+
+The preregistered singleton ceiling is 1.05; its 99% upper bound is 1.024510. A prior 31-pair run
+that appeared to miss the budget is retained as an underpowered negative result and is not used to
+select a workaround. The powered run resolves the question without changing the production design.
+
+Headless Heaptrack uses a profile-only loop: fixture construction and warmup finish before
+recording, and one aggregate line is printed afterward. At reuse one both arms make 35,327
+allocation calls and 20,093 temporary allocations over 5,000 frames. At reuse sixteen, the control
+makes 99,235 calls and 65,353 temporaries, while the treatment makes 8,455 and 4,153 over 1,000
+frames. Peak heap remains output-buffer dominated at 223.58/224.09 KiB. One-run `perf stat`
+attribution at reuse sixteen reports treatment/control ratios of 0.1223 for cycles, 0.1144 for
+instructions, and 0.1067 for branches. Timing confidence intervals and exact traversal counts, not
+multiplexed cache events, decide acceptance.
+
+The complete command, provenance, hashes, raw observations, statistics, allocation results, and
+counter table live in
+[`measurements/parbag-certified-protobuf-egress-2026-08-26.md`](measurements/parbag-certified-protobuf-egress-2026-08-26.md).
+
+#### 5.45.3 Equivalence and anti-vacuity
+
+Executable differentials cover empty, singleton, skewed, and dense owner shapes; all production
+publication roots with populated fixtures; every generated root family; unrepresentable sizes;
+planned/emitted length disagreement; aggregate/per-value budgets; and callback failure. The final
+focused result is 10/10 certified-egress model tests, 12/12 Rholang egress tests, 13/13 manifest
+tests, 14/14 PathMap-Par tests, and 15/15 generated protobuf differentials.
+
+TLC and Verus model typed completion and replay, owner-census exactness, first-emission ownership,
+memo cardinality, range exhaustion, and publish-once behavior. Seven transcript mutants introduce
+duplicate completion, incomplete sealing, event-kind substitution, partial publication,
+remaining-count commit, replay overrun, or spill corruption. Eleven owner-memo mutants skip census,
+publish early, memoize empty/singleton owners, alter counts/order/identity, or commit with work
+remaining. Every mutant is required to fail. The complete Rocq, Verus, Z3, TLC, and mCRL2 gate
+passes at log SHA-256
+`bc1ecbf6f0c2954a9a183cfbb530d2ea17bffd1ff86d19dbafa65a3c8cab6f3f`.
+
+This checkpoint is a heap/time refinement inside the existing generated PDA, not a new recursion
+conversion. It changes no protobuf schema or bytes, RSpace key, history image, hash, COMM order,
+matching authority, state root, accepted program, or metering rule. CBR-053 records that neutral
+boundary. Trie-native continuation and join egress are separately tracked by pgmcp #6029; the exact
+full release-workspace result belongs to the next stable-coordinate revalidation and is not inferred
+from the focused and formal gates above.
+
+---
+
 ## 6. Discussion
 
 ### 6.1 Why the explicit-worklist shape, and why it is *smaller* than what it replaces
@@ -11302,6 +11396,10 @@ It passes 4,502/4,502 tests with 53 skipped in 139.111 seconds. The log SHA-256 
 | [`measurements/accounting-demand-byte-region-2026-08-21.tsv`](measurements/accounting-demand-byte-region-2026-08-21.tsv) | SS-A17/SS-Y11 exploratory Criterion populations, allocation slope, corrected headless Heaptrack, locked paired decision summary, Callgrind instruction slopes, Massif peak attribution, and AMD uProf hotspots (§5.32) |
 | [`measurements/accounting-demand-experiment-303-paired-2026-08-21.tsv`](measurements/accounting-demand-experiment-303-paired-2026-08-21.tsv) | experiment 303's exact 3-warm-up plus 30-retained-pair AB/BA raw observations, per-arm witnesses, callback states, CPU identities, and pinned revisions (§5.32) |
 | [`measurements/accounting-demand-experiment-303-analysis-2026-08-21.json`](measurements/accounting-demand-experiment-303-analysis-2026-08-21.json) | protocol-validated locked timing summaries, Welch test, Cohen effect, order diagnostics, and 200,000-replicate paired bootstrap decision (§5.32) |
+| [`measurements/parbag-certified-protobuf-egress-2026-08-26.md`](measurements/parbag-certified-protobuf-egress-2026-08-26.md) | SS-C18's protocol, system provenance, powered decision, report-only Heaptrack, hardware counters, formal mutants, artifact hashes, and residual boundary (§5.45) |
+| [`measurements/parbag-certified-protobuf-egress-2026-08-26.tsv`](measurements/parbag-certified-protobuf-egress-2026-08-26.tsv) | SS-C18's complete 101-pair balanced raw matrix with exact allocation, traversal, census, transcript, and memo counters (§5.45) |
+| [`measurements/parbag-certified-protobuf-egress-analysis-2026-08-26.json`](measurements/parbag-certified-protobuf-egress-analysis-2026-08-26.json) | SS-C18's locked 100,000-resample paired analysis, confidence intervals, corrected tests, and resource invariants (§5.45) |
+| [`measurements/parbag-certified-protobuf-egress-summary-2026-08-26.tsv`](measurements/parbag-certified-protobuf-egress-summary-2026-08-26.tsv) | SS-C18's five-cell decision table (§5.45) |
 | [`../pathmap/measurements/epm1-fixed-scale-2026-08-03.tsv`](../pathmap/measurements/epm1-fixed-scale-2026-08-03.tsv) | the EPM1 fixed-scale benchmark (PathMap report §5.4) |
 
 **Volatile (`/tmp`) run logs** — these do not survive a reboot; the regeneration commands of

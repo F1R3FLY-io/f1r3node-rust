@@ -542,11 +542,15 @@ impl<'a> LenMachine<'a> {
     }
 
     /// Measure `root` and hand back the finished table.
-    fn measure<const TRACK: bool>(mut self, root: &'a dyn ProtobufNode) -> LenTable {
+    fn measure<const TRACK: bool>(mut self, root: &'a dyn ProtobufNode) -> LenTable<'a> {
         // ⚠ An opaque ROOT still needs an id, so pass 2's cursor arithmetic is
         // uniform. `open` gives it one; its walk adds the opaque length.
         self.open(root, ROOT_TAG);
         self.run::<TRACK>();
+        assert!(
+            self.ops.is_empty(),
+            "protobuf_encoder: the length pass stopped with pending operations"
+        );
         assert!(
             self.frames.is_empty(),
             "protobuf_encoder: {} frame(s) outlived the length pass — a node was opened and never \
@@ -564,15 +568,85 @@ impl<'a> LenMachine<'a> {
         LenTable {
             lens: self.lens,
             high_water: self.high_water,
+            recycled_ops: self.ops,
+            recycled_map_iters: self.map_iters,
+            recycled_epm_iters: self.epm_iters,
         }
     }
 }
 
 /// The memoized length table: `lens[id]` is the `encoded_len` of the node with
 /// pre-order id `id`. `lens[0]` is the root's.
-struct LenTable {
+struct LenTable<'a> {
     lens: Vec<u32>,
     high_water: usize,
+    /// Empty pass-one buffers whose allocations can serve pass two. The two
+    /// passes never overlap, so dropping these capacities and immediately
+    /// allocating identical emit buffers is pure allocator traffic.
+    recycled_ops: Vec<Op<'a>>,
+    recycled_map_iters: Vec<btree_map::Iter<'a, String, Par>>,
+    recycled_epm_iters: Vec<EpmValueIter<'a>>,
+}
+
+/// One measured protobuf traversal paired with the exact value it describes.
+///
+/// The lifetime prevents a length table from being reused for a different
+/// message.  Response encoders can therefore inspect the root length, allocate
+/// one exact private frame, and emit through the same table without paying a
+/// second measurement pass.
+#[doc(hidden)]
+pub struct ProtobufEncodePlan<'a, T: ProtobufNode> {
+    value: &'a T,
+    table: LenTable<'a>,
+}
+
+impl<'a, T: ProtobufNode> ProtobufEncodePlan<'a, T> {
+    pub fn new(value: &'a T) -> Self {
+        Self {
+            value,
+            table: LenMachine::new().measure::<false>(value),
+        }
+    }
+
+    pub fn encoded_len(&self) -> usize { self.table.lens[0] as usize }
+
+    /// Emit through a trusted `Par` leaf hook.
+    ///
+    /// The hook must write the exact protobuf body of the supplied `Par`.
+    /// Callback errors restore `out` to its entry length. This experimental
+    /// general-PDA seam exists only as a benchmark/control for the generated
+    /// certified egress path; it is not a public extension mechanism.
+    #[doc(hidden)]
+    pub fn try_encode_into_with_par<E>(
+        self,
+        out: &mut Vec<u8>,
+        mut emit_par: impl FnMut(&Par, &mut Vec<u8>) -> Result<(), E>,
+    ) -> Result<(), E> {
+        let start = out.len();
+        let LenTable {
+            lens,
+            high_water: _,
+            recycled_ops,
+            recycled_map_iters,
+            recycled_epm_iters,
+        } = self.table;
+        let mut machine = EmitMachine::from_recycled_measurement(
+            &lens,
+            recycled_ops,
+            recycled_map_iters,
+            recycled_epm_iters,
+        );
+        machine.ops.push(Op::Node {
+            node: self.value,
+            field: 0,
+        });
+        if let Err(error) = machine.run_with_par::<false, true, _, _>(out, &mut emit_par) {
+            out.truncate(start);
+            return Err(error);
+        }
+        machine.finish_emit();
+        Ok(())
+    }
 }
 
 // ===========================================================================
@@ -591,13 +665,30 @@ struct EmitMachine<'a, 'l> {
 }
 
 impl<'a, 'l> EmitMachine<'a, 'l> {
-    fn new(lens: &'l [u32]) -> Self {
+    fn from_recycled_measurement(
+        lens: &'l [u32],
+        ops: Vec<Op<'a>>,
+        map_iters: Vec<btree_map::Iter<'a, String, Par>>,
+        epm_iters: Vec<EpmValueIter<'a>>,
+    ) -> Self {
+        assert!(
+            ops.is_empty(),
+            "protobuf_encoder: recycled length-pass operations are not empty"
+        );
+        assert!(
+            map_iters.is_empty(),
+            "protobuf_encoder: recycled map iterators are not empty"
+        );
+        assert!(
+            epm_iters.is_empty(),
+            "protobuf_encoder: recycled EPathMap iterators are not empty"
+        );
         EmitMachine {
-            ops: Vec::with_capacity(OP_STACK_CAPACITY),
+            ops,
             lens,
             cursor: 1,
-            map_iters: Vec::new(),
-            epm_iters: Vec::new(),
+            map_iters,
+            epm_iters,
             high_water: 0,
         }
     }
@@ -654,7 +745,11 @@ impl<'a, 'l> EmitMachine<'a, 'l> {
         }
     }
 
-    fn run<const TRACK: bool>(&mut self, out: &mut impl BufMut) {
+    fn run_with_par<const TRACK: bool, const INTERCEPT_PAR: bool, B: BufMut, E>(
+        &mut self,
+        out: &mut B,
+        emit_par: &mut impl FnMut(&Par, &mut B) -> Result<(), E>,
+    ) -> Result<(), E> {
         loop {
             if TRACK && self.ops.len() > self.high_water {
                 self.high_water = self.ops.len();
@@ -662,6 +757,12 @@ impl<'a, 'l> EmitMachine<'a, 'l> {
             let Some(op) = self.ops.pop() else { break };
             match op {
                 Op::Node { node, field } => {
+                    if INTERCEPT_PAR {
+                        if let Some(par) = node.as_par() {
+                            emit_par(par, out)?;
+                            continue;
+                        }
+                    }
                     match node.protobuf_emit(field as usize, out) {
                         ProtobufDescent::Done => {}
                         ProtobufDescent::Node {
@@ -798,6 +899,15 @@ impl<'a, 'l> EmitMachine<'a, 'l> {
                 ),
             }
         }
+        Ok(())
+    }
+
+    fn run<const TRACK: bool>(&mut self, out: &mut impl BufMut) {
+        let mut unreachable_par = |_par: &Par, _out: &mut _| Ok::<_, std::convert::Infallible>(());
+        match self.run_with_par::<TRACK, false, _, _>(out, &mut unreachable_par) {
+            Ok(()) => {}
+            Err(never) => match never {},
+        }
     }
 
     /// Assert the cursor consumed the table EXACTLY.
@@ -851,8 +961,19 @@ pub fn encoded_len<T: ProtobufNode>(value: &T) -> usize {
 /// Byte-identical to `prost::Message::encode_raw`, in Θ(depth) native stack and
 /// Θ(n) work.
 pub fn encode_into<T: ProtobufNode>(value: &T, out: &mut impl BufMut) {
-    let table = LenMachine::new().measure::<false>(value);
-    let mut machine = EmitMachine::new(&table.lens);
+    let LenTable {
+        lens,
+        high_water: _,
+        recycled_ops,
+        recycled_map_iters,
+        recycled_epm_iters,
+    } = LenMachine::new().measure::<false>(value);
+    let mut machine = EmitMachine::from_recycled_measurement(
+        &lens,
+        recycled_ops,
+        recycled_map_iters,
+        recycled_epm_iters,
+    );
     machine.ops.push(Op::Node {
         node: value,
         field: 0,
@@ -866,9 +987,20 @@ pub fn encode_into<T: ProtobufNode>(value: &T, out: &mut impl BufMut) {
 /// this exact framing; exposing it here keeps their nested `Par` values inside
 /// the generated protobuf PDA and avoids one temporary `Vec<u8>` per entry.
 pub(crate) fn encode_length_delimited_body_into<T: ProtobufNode>(value: &T, out: &mut impl BufMut) {
-    let table = LenMachine::new().measure::<false>(value);
-    encode_varint(table.lens[0] as u64, out);
-    let mut machine = EmitMachine::new(&table.lens);
+    let LenTable {
+        lens,
+        high_water: _,
+        recycled_ops,
+        recycled_map_iters,
+        recycled_epm_iters,
+    } = LenMachine::new().measure::<false>(value);
+    encode_varint(lens[0] as u64, out);
+    let mut machine = EmitMachine::from_recycled_measurement(
+        &lens,
+        recycled_ops,
+        recycled_map_iters,
+        recycled_epm_iters,
+    );
     machine.ops.push(Op::Node {
         node: value,
         field: 0,
@@ -885,9 +1017,20 @@ pub(crate) fn encode_length_delimited_body_into<T: ProtobufNode>(value: &T, out:
 /// this allocates once and never grows — where `encode_to_vec` pays a full
 /// recursive `encoded_len()` walk for the same information.
 pub fn encode_to_vec<T: ProtobufNode>(value: &T) -> Vec<u8> {
-    let table = LenMachine::new().measure::<false>(value);
-    let mut out = Vec::with_capacity(table.lens[0] as usize);
-    let mut machine = EmitMachine::new(&table.lens);
+    let LenTable {
+        lens,
+        high_water: _,
+        recycled_ops,
+        recycled_map_iters,
+        recycled_epm_iters,
+    } = LenMachine::new().measure::<false>(value);
+    let mut out = Vec::with_capacity(lens[0] as usize);
+    let mut machine = EmitMachine::from_recycled_measurement(
+        &lens,
+        recycled_ops,
+        recycled_map_iters,
+        recycled_epm_iters,
+    );
     machine.ops.push(Op::Node {
         node: value,
         field: 0,
@@ -1106,16 +1249,27 @@ pub fn try_visit_par_slots<E>(
 /// The measurement runs the production loops with `TRACK = true`, so it cannot
 /// drift into describing a different machine.
 pub fn op_stack_high_water<T: ProtobufNode>(value: &T) -> (usize, usize) {
-    let table = LenMachine::new().measure::<true>(value);
+    let LenTable {
+        lens,
+        high_water: length_high_water,
+        recycled_ops,
+        recycled_map_iters,
+        recycled_epm_iters,
+    } = LenMachine::new().measure::<true>(value);
     let mut out = Vec::with_capacity(OUT_CAPACITY);
-    let mut machine = EmitMachine::new(&table.lens);
+    let mut machine = EmitMachine::from_recycled_measurement(
+        &lens,
+        recycled_ops,
+        recycled_map_iters,
+        recycled_epm_iters,
+    );
     machine.ops.push(Op::Node {
         node: value,
         field: 0,
     });
     machine.run::<true>(&mut out);
     machine.finish_emit();
-    (table.high_water, machine.high_water)
+    (length_high_water, machine.high_water)
 }
 
 /// How many message nodes the length table held — the Θ(n) space this encoder

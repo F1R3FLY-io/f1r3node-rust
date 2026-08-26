@@ -88,6 +88,7 @@ pub open spec fn preflight_step_spec(
 /// `encode_canonical_persisted_data_at_prefix` payload preflight. The implementation performs
 /// no write: publication receives an exact cardinality and capacity only after
 /// every record has passed this boundary.
+#[verifier::spinoff_prover]
 pub fn checked_preflight_step(
     datum_count: u64,
     encoded_len: usize,
@@ -520,17 +521,6 @@ pub open spec fn projection_publication_valid(
     visible.is_none() || visible == Some(complete)
 }
 
-/// Extending a private build prefix preserves public invisibility.
-pub proof fn private_projection_build_is_invisible(
-    old_private_prefix: Seq<u8>,
-    next_private_prefix: Seq<u8>,
-    complete: Seq<u8>,
-)
-    ensures
-        projection_publication_valid(None, complete),
-        None::<Seq<u8>> == None,
-{}
-
 /// Publication is legal only after the private image equals the complete
 /// projection; publishing it establishes the public invariant.
 pub proof fn complete_projection_publication_is_atomic(
@@ -586,6 +576,693 @@ pub proof fn complete_sink_publishes_exact_image(
         public_sink_after_result(true, old_public, complete, complete)
             == complete,
 {}
+
+// ---------------------------------------------------------------------------
+// Descriptor-certified bounded egress: depth, census, replay, and publication
+// ---------------------------------------------------------------------------
+
+/// A generated schema edge is certifiable only when its child's rank is
+/// strictly below its parent's. Opaque `Par`/`EPathMap` cut vertices terminate
+/// the generated traversal and therefore do not introduce recursive edges.
+pub open spec fn certified_rank_edge(parent_rank: nat, child_rank: nat) -> bool {
+    child_rank < parent_rank
+}
+
+/// The number of statically dispatched message frames on a three-node path is
+/// bounded by the root rank plus one. The production maximum really is three:
+/// `EPathMap -> Var -> WildcardMsg`; map values reach opaque `Par` at depth two.
+pub proof fn certified_rank_path_is_bounded(
+    root_rank: nat,
+    var_rank: nat,
+    wildcard_rank: nat,
+)
+    requires
+        certified_rank_edge(root_rank, var_rank),
+        certified_rank_edge(var_rank, wildcard_rank),
+        wildcard_rank == 0,
+    ensures 3 <= root_rank + 1,
+{}
+
+/// A self edge can never receive a strictly descending rank certificate.
+pub proof fn self_cycle_has_no_valid_depth_certificate(rank: nat)
+    ensures !certified_rank_edge(rank, rank),
+{}
+
+/// Nor can both directions of a mutually recursive pair descend.
+pub proof fn mutual_cycle_has_no_valid_depth_certificate(left: nat, right: nat)
+    ensures
+        !(certified_rank_edge(left, right)
+          && certified_rank_edge(right, left)),
+{}
+
+/// Calibration witness: the concrete EPathMap/Var/WildcardMsg path is valid,
+/// has three message frames, and therefore rejects an advertised bound of two.
+pub proof fn underreported_root_bound_mutant_is_rejected()
+    ensures
+        certified_rank_edge(2, 1),
+        certified_rank_edge(1, 0),
+        !((3 as nat) <= (2 as nat)),
+{
+    certified_rank_path_is_bounded(2, 1, 0);
+}
+
+/// Semantic kind of one length-delimited body in the sealed structural
+/// transcript. Keeping the kind independent of the length ensures that
+/// equal-sized generated shapes cannot be exchanged silently.
+pub enum CertifiedLengthEventKindSpec {
+    MessageBody,
+    ParBody,
+    MapEntryBody,
+    EPathMapSnapshotBody,
+}
+
+pub struct CertifiedLengthEventSpec {
+    pub kind: CertifiedLengthEventKindSpec,
+    pub body_len: nat,
+    pub completed: bool,
+}
+
+pub struct CertifiedLengthSlotSpec {
+    pub index: int,
+    pub kind: CertifiedLengthEventKindSpec,
+}
+
+/// Mathematical counterpart of the sealed `CertifiedLengthTranscript`: the
+/// mandatory preflight records every generated message, Par, map-entry, and
+/// EPathMap-snapshot body in emission preorder.
+pub struct CertifiedLengthTranscriptReplay {
+    pub events: Seq<CertifiedLengthEventSpec>,
+    pub index: int,
+}
+
+pub open spec fn reserve_transcript_slot(
+    events: Seq<CertifiedLengthEventSpec>,
+    kind: CertifiedLengthEventKindSpec,
+) -> (Seq<CertifiedLengthEventSpec>, CertifiedLengthSlotSpec) {
+    (
+        events.push(CertifiedLengthEventSpec {
+            kind,
+            body_len: 0,
+            completed: false,
+        }),
+        CertifiedLengthSlotSpec {
+            index: events.len() as int,
+            kind,
+        },
+    )
+}
+
+pub open spec fn complete_transcript_slot(
+    events: Seq<CertifiedLengthEventSpec>,
+    slot: CertifiedLengthSlotSpec,
+    body_len: nat,
+) -> Option<Seq<CertifiedLengthEventSpec>> {
+    if 0 <= slot.index < events.len()
+        && events[slot.index].kind == slot.kind
+        && !events[slot.index].completed
+    {
+        Some(events.update(
+            slot.index,
+            CertifiedLengthEventSpec {
+                kind: slot.kind,
+                body_len,
+                completed: true,
+            },
+        ))
+    } else {
+        None
+    }
+}
+
+pub open spec fn transcript_is_sealable(events: Seq<CertifiedLengthEventSpec>) -> bool {
+    forall|index: int| 0 <= index < events.len() ==> events[index].completed
+}
+
+pub open spec fn certified_transcript_replay_valid(
+    replay: CertifiedLengthTranscriptReplay,
+) -> bool {
+    0 <= replay.index <= replay.events.len()
+        && transcript_is_sealable(replay.events)
+}
+
+pub open spec fn replay_next_typed_event(
+    replay: CertifiedLengthTranscriptReplay,
+    expected: CertifiedLengthEventKindSpec,
+) -> Option<(CertifiedLengthEventSpec, CertifiedLengthTranscriptReplay)> {
+    if certified_transcript_replay_valid(replay)
+        && replay.index < replay.events.len()
+        && replay.events[replay.index].kind == expected
+    {
+        Some((
+            replay.events[replay.index],
+            CertifiedLengthTranscriptReplay {
+                events: replay.events,
+                index: replay.index + 1,
+            },
+        ))
+    } else {
+        None
+    }
+}
+
+pub open spec fn typed_replay_is_finished(replay: CertifiedLengthTranscriptReplay) -> bool {
+    certified_transcript_replay_valid(replay)
+        && replay.index == replay.events.len()
+}
+
+/// Reserving a parent before descending appends one incomplete event and
+/// returns its stable old-length index without changing any earlier slot.
+pub proof fn reservation_appends_one_stable_slot(
+    events: Seq<CertifiedLengthEventSpec>,
+    kind: CertifiedLengthEventKindSpec,
+)
+    ensures
+        reserve_transcript_slot(events, kind).0.len() == events.len() + 1,
+        reserve_transcript_slot(events, kind).1.index == events.len(),
+        reserve_transcript_slot(events, kind).1.kind == kind,
+        reserve_transcript_slot(events, kind).0.subrange(0, events.len() as int) == events,
+{}
+
+/// Completing a well-typed slot changes only that slot. The returned event is
+/// immutable and complete; all earlier and later events remain equal.
+pub proof fn completion_updates_only_the_reserved_slot(
+    events: Seq<CertifiedLengthEventSpec>,
+    slot: CertifiedLengthSlotSpec,
+    body_len: nat,
+)
+    requires
+        0 <= slot.index < events.len(),
+        events[slot.index].kind == slot.kind,
+        !events[slot.index].completed,
+    ensures
+        complete_transcript_slot(events, slot, body_len).is_some(),
+        complete_transcript_slot(events, slot, body_len).unwrap()[slot.index].kind
+            == slot.kind,
+        complete_transcript_slot(events, slot, body_len).unwrap()[slot.index].body_len
+            == body_len,
+        complete_transcript_slot(events, slot, body_len).unwrap()[slot.index].completed,
+        forall|index: int| 0 <= index < events.len() && index != slot.index
+            ==> complete_transcript_slot(events, slot, body_len).unwrap()[index]
+                == events[index],
+{}
+
+pub proof fn duplicate_completion_mutant_is_rejected(
+    events: Seq<CertifiedLengthEventSpec>,
+    slot: CertifiedLengthSlotSpec,
+    body_len: nat,
+)
+    requires
+        0 <= slot.index < events.len(),
+        events[slot.index].kind == slot.kind,
+        !events[slot.index].completed,
+    ensures
+        complete_transcript_slot(
+            complete_transcript_slot(events, slot, body_len).unwrap(),
+            slot,
+            body_len,
+        ).is_none(),
+{}
+
+pub proof fn wrong_kind_completion_mutant_is_rejected(
+    events: Seq<CertifiedLengthEventSpec>,
+    slot: CertifiedLengthSlotSpec,
+    wrong_kind: CertifiedLengthEventKindSpec,
+    body_len: nat,
+)
+    requires
+        0 <= slot.index < events.len(),
+        events[slot.index].kind == slot.kind,
+        slot.kind != wrong_kind,
+    ensures
+        complete_transcript_slot(
+            events,
+            CertifiedLengthSlotSpec { index: slot.index, kind: wrong_kind },
+            body_len,
+        ).is_none(),
+{}
+
+/// Inline-to-spill transition copies the logical prefix exactly. Appending any
+/// descendant suffix therefore preserves every previously returned slot index.
+pub open spec fn spill_materialization(
+    inline: Seq<CertifiedLengthEventSpec>,
+    descendants: Seq<CertifiedLengthEventSpec>,
+) -> Seq<CertifiedLengthEventSpec> {
+    inline + descendants
+}
+
+pub proof fn inline_to_spill_preserves_parent_slot(
+    inline: Seq<CertifiedLengthEventSpec>,
+    descendants: Seq<CertifiedLengthEventSpec>,
+    parent: CertifiedLengthSlotSpec,
+)
+    requires
+        0 <= parent.index < inline.len(),
+        inline[parent.index].kind == parent.kind,
+    ensures
+        spill_materialization(inline, descendants)[parent.index]
+            == inline[parent.index],
+{}
+
+/// Typed replay returns the exact current event and advances once.
+pub proof fn replay_next_consumes_exact_recorded_event(
+    replay: CertifiedLengthTranscriptReplay,
+)
+    requires
+        certified_transcript_replay_valid(replay),
+        replay.index < replay.events.len(),
+    ensures
+        replay_next_typed_event(replay, replay.events[replay.index].kind).is_some(),
+        replay_next_typed_event(replay, replay.events[replay.index].kind)
+            .unwrap().0 == replay.events[replay.index],
+        replay_next_typed_event(replay, replay.events[replay.index].kind)
+            .unwrap().1.index == replay.index + 1,
+{}
+
+/// Successful finish is equivalent to exact structural exhaustion—neither an
+/// overrun nor an unconsumed message/map/snapshot/Par body may be committed.
+pub proof fn replay_finish_iff_exactly_exhausted(
+    replay: CertifiedLengthTranscriptReplay,
+)
+    requires certified_transcript_replay_valid(replay),
+    ensures typed_replay_is_finished(replay) <==> replay.index == replay.events.len(),
+{}
+
+pub open spec fn equal_length_typed_pair() -> Seq<CertifiedLengthEventSpec> {
+    seq![
+        CertifiedLengthEventSpec {
+            kind: CertifiedLengthEventKindSpec::MessageBody,
+            body_len: 7,
+            completed: true,
+        },
+        CertifiedLengthEventSpec {
+            kind: CertifiedLengthEventKindSpec::ParBody,
+            body_len: 7,
+            completed: true,
+        },
+    ]
+}
+
+pub open spec fn dropped_typed_event_mutant() -> Seq<CertifiedLengthEventSpec> {
+    seq![equal_length_typed_pair()[0]]
+}
+
+pub open spec fn duplicated_typed_event_mutant() -> Seq<CertifiedLengthEventSpec> {
+    equal_length_typed_pair().push(equal_length_typed_pair()[1])
+}
+
+pub open spec fn equal_length_kind_swap_mutant() -> Seq<CertifiedLengthEventSpec> {
+    seq![equal_length_typed_pair()[1], equal_length_typed_pair()[0]]
+}
+
+pub proof fn dropped_replay_event_mutant_is_rejected()
+    ensures dropped_typed_event_mutant() != equal_length_typed_pair(),
+{
+    assert(dropped_typed_event_mutant().len() == 1);
+    assert(equal_length_typed_pair().len() == 2);
+}
+
+pub proof fn duplicated_replay_event_mutant_is_rejected()
+    ensures duplicated_typed_event_mutant() != equal_length_typed_pair(),
+{
+    assert(duplicated_typed_event_mutant().len() == 3);
+    assert(equal_length_typed_pair().len() == 2);
+}
+
+pub proof fn equal_length_kind_swap_mutant_is_rejected()
+    ensures
+        equal_length_kind_swap_mutant() != equal_length_typed_pair(),
+        equal_length_kind_swap_mutant()[0].body_len
+            == equal_length_typed_pair()[0].body_len,
+{
+    assert(equal_length_kind_swap_mutant()[0].kind
+        == CertifiedLengthEventKindSpec::ParBody);
+    assert(equal_length_typed_pair()[0].kind
+        == CertifiedLengthEventKindSpec::MessageBody);
+}
+
+/// Policy facts computed by the exact owner census. Component-empty Pars have
+/// no reusable owner. A non-empty owner is memo-eligible iff it occurs twice
+/// or more in this response.
+pub struct CertifiedOwnerCensusFacts {
+    pub component_empty: bool,
+    pub occurrences: nat,
+}
+
+pub open spec fn census_policy_uses_direct(facts: CertifiedOwnerCensusFacts) -> bool {
+    facts.component_empty || facts.occurrences <= 1
+}
+
+pub open spec fn census_policy_uses_memo(facts: CertifiedOwnerCensusFacts) -> bool {
+    !facts.component_empty && facts.occurrences > 1
+}
+
+pub proof fn census_policy_directs_empty_and_singleton_owners(
+    facts: CertifiedOwnerCensusFacts,
+)
+    requires facts.component_empty || facts.occurrences == 1,
+    ensures
+        census_policy_uses_direct(facts),
+        !census_policy_uses_memo(facts),
+{}
+
+pub proof fn census_policy_memoizes_only_repeated_owners(
+    facts: CertifiedOwnerCensusFacts,
+)
+    requires census_policy_uses_memo(facts),
+    ensures !facts.component_empty && facts.occurrences > 1,
+{}
+
+pub proof fn empty_owner_memo_mutant_is_rejected()
+    ensures
+        !census_policy_uses_memo(CertifiedOwnerCensusFacts {
+            component_empty: true,
+            occurrences: 4,
+        }),
+{}
+
+pub proof fn singleton_owner_memo_mutant_is_rejected()
+    ensures
+        !census_policy_uses_memo(CertifiedOwnerCensusFacts {
+            component_empty: false,
+            occurrences: 1,
+        }),
+{}
+
+/// A certified frame is publishable only when both independent preflight
+/// obligations are exact: the private byte count and the structural transcript
+/// replay cursor.
+pub open spec fn certified_frame_is_complete(
+    written: int,
+    expected: int,
+    replay_index: int,
+    replay_len: int,
+) -> bool {
+    0 <= written
+        && written == expected
+        && 0 <= replay_index
+        && replay_index == replay_len
+}
+
+pub open spec fn certified_frame_public_after_result(
+    succeeded: bool,
+    old_public: Seq<u8>,
+    private_frame: Seq<u8>,
+    expected_len: int,
+    replay_index: int,
+    replay_len: int,
+) -> Seq<u8> {
+    if succeeded
+        && certified_frame_is_complete(
+            private_frame.len() as int,
+            expected_len,
+            replay_index,
+            replay_len,
+        )
+    {
+        private_frame
+    } else {
+        old_public
+    }
+}
+
+/// Any generation, Par emission, length, or replay error discards the complete
+/// private attempt and preserves the previously public frame.
+pub proof fn certified_frame_error_discards_private_and_preserves_public(
+    old_public: Seq<u8>,
+    private_prefix: Seq<u8>,
+    expected_len: int,
+    replay_index: int,
+    replay_len: int,
+)
+    ensures
+        certified_frame_public_after_result(
+            false,
+            old_public,
+            private_prefix,
+            expected_len,
+            replay_index,
+            replay_len,
+        ) == old_public,
+{}
+
+pub proof fn certified_frame_commit_requires_exact_length_and_replay(
+    old_public: Seq<u8>,
+    complete: Seq<u8>,
+    replay_len: int,
+)
+    requires 0 <= replay_len,
+    ensures
+        certified_frame_public_after_result(
+            true,
+            old_public,
+            complete,
+            complete.len() as int,
+            replay_len,
+            replay_len,
+        ) == complete,
+{}
+
+pub proof fn premature_replay_commit_mutant_is_rejected()
+    ensures
+        !certified_frame_is_complete(2, 2, 1, 2),
+        certified_frame_public_after_result(
+            true,
+            seq![9u8],
+            seq![1u8, 2u8],
+            2,
+            1,
+            2,
+        ) == seq![9u8],
+{}
+
+/// Semantic component image attached to one opaque response-local CoW owner.
+/// Rust differentials bind these sequences to Par fields 1..8 and 11/12.
+pub struct InFrameComponentImage {
+    pub owner: u64,
+    pub before: Seq<u8>,
+    pub after: Seq<u8>,
+}
+
+/// Component-only ranges recorded in an append-only response frame. Root
+/// fields 9/10 occupy the gap and are deliberately absent from both ranges.
+pub struct InFrameComponentRanges {
+    pub owner: u64,
+    pub before_start: int,
+    pub before_end: int,
+    pub after_start: int,
+    pub after_end: int,
+}
+
+pub open spec fn in_frame_component_ranges_admitted(
+    source: Seq<u8>,
+    current: InFrameComponentImage,
+    ranges: InFrameComponentRanges,
+) -> bool {
+    0 <= ranges.before_start <= ranges.before_end <= ranges.after_start
+        && ranges.after_start <= ranges.after_end <= source.len()
+        && current.owner == ranges.owner
+        && source.subrange(ranges.before_start, ranges.before_end) == current.before
+        && source.subrange(ranges.after_start, ranges.after_end) == current.after
+}
+
+pub open spec fn direct_in_frame_par_append(
+    source: Seq<u8>,
+    current: InFrameComponentImage,
+    current_root: Seq<u8>,
+) -> Seq<u8> {
+    source + current.before + current_root + current.after
+}
+
+/// `None` rejects before mutation. An admitted result preserves `source`, copies
+/// only its component ranges, and inserts the current root between them.
+pub open spec fn try_in_frame_component_range_reuse(
+    source: Seq<u8>,
+    current: InFrameComponentImage,
+    current_root: Seq<u8>,
+    ranges: InFrameComponentRanges,
+) -> Option<Seq<u8>> {
+    if in_frame_component_ranges_admitted(source, current, ranges) {
+        Some(
+            source
+                + source.subrange(ranges.before_start, ranges.before_end)
+                + current_root
+                + source.subrange(ranges.after_start, ranges.after_end),
+        )
+    } else {
+        None
+    }
+}
+
+/// Admitted reuse is exactly `before || current-root || after`, and the complete
+/// source frame remains an unchanged prefix of the result.
+pub proof fn admitted_in_frame_reuse_equals_direct_and_preserves_prefix(
+    source: Seq<u8>,
+    current: InFrameComponentImage,
+    current_root: Seq<u8>,
+    ranges: InFrameComponentRanges,
+)
+    requires in_frame_component_ranges_admitted(source, current, ranges),
+    ensures
+        try_in_frame_component_range_reuse(source, current, current_root, ranges)
+            == Some(direct_in_frame_par_append(source, current, current_root)),
+        direct_in_frame_par_append(source, current, current_root)
+            .subrange(0, source.len() as int) == source,
+{
+    let result = direct_in_frame_par_append(source, current, current_root);
+    assert(result.subrange(0, source.len() as int) =~= source);
+}
+
+spec fn in_frame_witness_source() -> Seq<u8> {
+    seq![0u8, 1u8, 9u8, 2u8, 3u8]
+}
+
+spec fn in_frame_witness_image(owner: u64) -> InFrameComponentImage {
+    InFrameComponentImage { owner, before: seq![1u8], after: seq![2u8, 3u8] }
+}
+
+spec fn in_frame_witness_ranges(owner: u64) -> InFrameComponentRanges {
+    InFrameComponentRanges {
+        owner,
+        before_start: 1,
+        before_end: 2,
+        after_start: 3,
+        after_end: 5,
+    }
+}
+
+spec fn swapped_in_frame_witness_ranges(owner: u64) -> InFrameComponentRanges {
+    InFrameComponentRanges {
+        owner,
+        before_start: 3,
+        before_end: 5,
+        after_start: 1,
+        after_end: 2,
+    }
+}
+
+spec fn short_after_in_frame_witness_ranges(owner: u64) -> InFrameComponentRanges {
+    InFrameComponentRanges {
+        owner,
+        before_start: 1,
+        before_end: 2,
+        after_start: 3,
+        after_end: 4,
+    }
+}
+
+spec fn omitted_after_in_frame_witness_ranges(owner: u64) -> InFrameComponentRanges {
+    InFrameComponentRanges {
+        owner,
+        before_start: 1,
+        before_end: 2,
+        after_start: 5,
+        after_end: 5,
+    }
+}
+
+spec fn whole_prior_par_in_frame_witness_ranges(owner: u64) -> InFrameComponentRanges {
+    InFrameComponentRanges {
+        owner,
+        before_start: 1,
+        before_end: 5,
+        after_start: 5,
+        after_end: 5,
+    }
+}
+
+spec fn swapped_in_frame_component_ranges_mutant(
+    source: Seq<u8>,
+    root: Seq<u8>,
+    ranges: InFrameComponentRanges,
+) -> Seq<u8> {
+    source + source.subrange(ranges.after_start, ranges.after_end)
+        + root + source.subrange(ranges.before_start, ranges.before_end)
+}
+
+spec fn whole_prior_par_stale_root_mutant(
+    source: Seq<u8>,
+    ranges: InFrameComponentRanges,
+) -> Seq<u8> {
+    source + source.subrange(ranges.before_start, ranges.after_end)
+}
+
+spec fn omitted_after_range_mutant(
+    source: Seq<u8>,
+    root: Seq<u8>,
+    ranges: InFrameComponentRanges,
+) -> Seq<u8> {
+    source + source.subrange(ranges.before_start, ranges.before_end) + root
+}
+
+/// A satisfiable correct memo and five concrete mutants calibrate every
+/// admission/equivalence clause: swapped coordinates/order, whole-prior-Par
+/// stale-root reuse, wrong owner, omitted after bytes, and an off-by-one end.
+proof fn in_frame_component_range_mutants_are_rejected()
+    ensures
+        in_frame_component_ranges_admitted(
+            in_frame_witness_source(),
+            in_frame_witness_image(7),
+            in_frame_witness_ranges(7),
+        ),
+        !in_frame_component_ranges_admitted(
+            in_frame_witness_source(),
+            in_frame_witness_image(7),
+            swapped_in_frame_witness_ranges(7),
+        ),
+        try_in_frame_component_range_reuse(
+            in_frame_witness_source(),
+            in_frame_witness_image(8),
+            seq![8u8],
+            in_frame_witness_ranges(7),
+        ).is_none(),
+        try_in_frame_component_range_reuse(
+            in_frame_witness_source(),
+            in_frame_witness_image(7),
+            seq![8u8],
+            short_after_in_frame_witness_ranges(7),
+        ).is_none(),
+        try_in_frame_component_range_reuse(
+            in_frame_witness_source(),
+            in_frame_witness_image(7),
+            seq![8u8],
+            omitted_after_in_frame_witness_ranges(7),
+        ).is_none(),
+        try_in_frame_component_range_reuse(
+            in_frame_witness_source(),
+            in_frame_witness_image(7),
+            seq![8u8],
+            whole_prior_par_in_frame_witness_ranges(7),
+        ).is_none(),
+        swapped_in_frame_component_ranges_mutant(
+            in_frame_witness_source(), seq![8u8], in_frame_witness_ranges(7),
+        ) != direct_in_frame_par_append(
+            in_frame_witness_source(), in_frame_witness_image(7), seq![8u8],
+        ),
+        whole_prior_par_stale_root_mutant(
+            in_frame_witness_source(), in_frame_witness_ranges(7),
+        ) != direct_in_frame_par_append(
+            in_frame_witness_source(), in_frame_witness_image(7), seq![8u8],
+        ),
+        omitted_after_range_mutant(
+            in_frame_witness_source(), seq![8u8], in_frame_witness_ranges(7),
+        ) != direct_in_frame_par_append(
+            in_frame_witness_source(), in_frame_witness_image(7), seq![8u8],
+        ),
+{
+    let source = in_frame_witness_source();
+    let ranges = in_frame_witness_ranges(7);
+    let direct = direct_in_frame_par_append(source, in_frame_witness_image(7), seq![8u8]);
+    assert(source.subrange(1, 2) =~= seq![1u8]);
+    assert(source.subrange(3, 5) =~= seq![2u8, 3u8]);
+    assert(source.subrange(3, 4).len() == 1);
+    assert(in_frame_witness_image(7).after.len() == 2);
+    assert(swapped_in_frame_component_ranges_mutant(source, seq![8u8], ranges)[5] == 2u8);
+    assert(direct[5] == 1u8);
+    assert(whole_prior_par_stale_root_mutant(source, ranges)[6] == 9u8);
+    assert(direct[6] == 8u8);
+    assert(omitted_after_range_mutant(source, seq![8u8], ranges).len() == 7);
+    assert(direct.len() == 9);
+}
 
 }
 

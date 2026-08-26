@@ -19,7 +19,8 @@ use models::rspace_plus_plus_types::{
 };
 use models::rust::par_bag::ParBag;
 use rholang::rust::protobuf_egress::{
-    encode_frame, try_visit_soft_checkpoint_par_slots, ProjectionPreparationBudget,
+    encode_frame, encode_frame_native, encode_frame_native_with_statistics,
+    try_visit_soft_checkpoint_par_slots, FrameMemoStatistics, ProjectionPreparationBudget,
     ProjectionPreparationStatistics,
 };
 
@@ -28,6 +29,11 @@ const BODY_BYTES: [usize; 3] = [16, 256, 4_096];
 const REUSE_COUNTS: [usize; 5] = [1, 2, 4, 8, 16];
 const DEFAULT_REPS: usize = 31;
 const DEFAULT_WARMUP: usize = 5;
+/// Set while compiling the preregistered production gate. Because this is a
+/// compile-time constant, the diagnostic statistics monomorphization and the
+/// four persistent-projection controls are unreachable and linker-dead in that
+/// binary; the gate therefore measures the exact production code layout.
+const PRODUCTION_GATE: bool = option_env!("PAR_OWNER_PRODUCTION_GATE").is_some();
 
 struct CountingAllocator;
 
@@ -74,22 +80,29 @@ unsafe impl GlobalAlloc for CountingAllocator {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Arm {
     Adaptive,
+    InFrameProduction,
+    InFrameMemo,
     Selective,
     Blanket,
     SelectiveTooSmall,
 }
 
 impl Arm {
-    const ALL: [Self; 4] = [
+    const ALL: [Self; 6] = [
         Self::Adaptive,
+        Self::InFrameProduction,
+        Self::InFrameMemo,
         Self::Selective,
         Self::Blanket,
         Self::SelectiveTooSmall,
     ];
+    const PRODUCTION: [Self; 2] = [Self::Adaptive, Self::InFrameProduction];
 
     const fn label(self) -> &'static str {
         match self {
             Self::Adaptive => "adaptive",
+            Self::InFrameProduction => "in_frame_production",
+            Self::InFrameMemo => "in_frame_memo",
             Self::Selective => "selective",
             Self::Blanket => "blanket",
             Self::SelectiveTooSmall => "selective_too_small",
@@ -224,13 +237,16 @@ struct Observation {
     allocations: u64,
     allocated_bytes: u64,
     pathmap_traversals: u64,
-    statistics: ProjectionPreparationStatistics,
+    preparation: ProjectionPreparationStatistics,
+    frame_memo: FrameMemoStatistics,
     remaining_budget: usize,
 }
 
 fn measure(fixture: &Fixture, arm: Arm) -> Observation {
     let mut budget = match arm {
-        Arm::Adaptive => ProjectionPreparationBudget::new(0, 0),
+        Arm::Adaptive | Arm::InFrameProduction | Arm::InFrameMemo => {
+            ProjectionPreparationBudget::new(0, 0)
+        }
         Arm::Selective | Arm::Blanket => {
             ProjectionPreparationBudget::new(fixture.projected_bytes, fixture.projected_bytes)
         }
@@ -247,7 +263,7 @@ fn measure(fixture: &Fixture, arm: Arm) -> Observation {
     COUNT_ALLOCATIONS.store(true, Ordering::SeqCst);
 
     match arm {
-        Arm::Adaptive => {}
+        Arm::Adaptive | Arm::InFrameProduction | Arm::InFrameMemo => {}
         Arm::Selective | Arm::SelectiveTooSmall => {
             budget
                 .prepare(black_box(fixture.anchor()))
@@ -260,16 +276,33 @@ fn measure(fixture: &Fixture, arm: Arm) -> Observation {
             .expect("benchmark preparation length is representable");
         }
     }
-    let output = encode_frame(black_box(&fixture.message)).expect("benchmark frame encodes");
+    let (output, frame_memo) = match arm {
+        Arm::InFrameProduction => (
+            encode_frame_native(black_box(&fixture.message))
+                .expect("production native benchmark frame encodes"),
+            None,
+        ),
+        Arm::InFrameMemo => {
+            let (output, statistics) =
+                encode_frame_native_with_statistics(black_box(&fixture.message))
+                    .expect("native benchmark frame encodes");
+            (output, Some(statistics))
+        }
+        Arm::Adaptive | Arm::Selective | Arm::Blanket | Arm::SelectiveTooSmall => (
+            encode_frame(black_box(&fixture.message)).expect("benchmark frame encodes"),
+            None,
+        ),
+    };
 
     COUNT_ALLOCATIONS.store(false, Ordering::SeqCst);
     let elapsed_ns = started.elapsed().as_nanos();
     std::sync::atomic::compiler_fence(Ordering::SeqCst);
     assert_eq!(output, fixture.expected);
-    let statistics = budget.statistics();
+    let preparation = budget.statistics();
+    let frame_memo = frame_memo.unwrap_or_default();
     match arm {
         Arm::Adaptive => {
-            assert_eq!(statistics.attempts, 0);
+            assert_eq!(preparation.attempts, 0);
             assert_eq!(
                 ParBag::take_protobuf_pathmap_traversals_experiment(),
                 fixture.reuse as u64
@@ -279,26 +312,64 @@ fn measure(fixture: &Fixture, arm: Arm) -> Observation {
                 allocations: ALLOCATIONS.load(Ordering::Relaxed),
                 allocated_bytes: ALLOCATED_BYTES.load(Ordering::Relaxed),
                 pathmap_traversals: fixture.reuse as u64,
-                statistics,
+                preparation,
+                frame_memo,
                 remaining_budget: budget.remaining_new_retention_bytes(),
             };
         }
+        Arm::InFrameMemo => {
+            assert_eq!(preparation, ProjectionPreparationStatistics::default());
+            assert_eq!(frame_memo.census.unique_owners, 1);
+            assert_eq!(
+                frame_memo.census.repeated_owners,
+                usize::from(fixture.reuse > 1)
+            );
+            assert_eq!(
+                frame_memo.direct_only_occurrences,
+                usize::from(fixture.reuse == 1)
+            );
+            assert_eq!(
+                frame_memo.range_recorded_owners,
+                usize::from(fixture.reuse > 1)
+            );
+            assert_eq!(frame_memo.range_copied_occurrences, fixture.reuse - 1);
+            assert!(!frame_memo.memo_owner_spilled);
+            assert_eq!(
+                frame_memo.direct_only_component_bytes,
+                fixture.projected_bytes * usize::from(fixture.reuse == 1)
+            );
+            assert_eq!(
+                frame_memo.range_recorded_component_bytes,
+                fixture.projected_bytes * usize::from(fixture.reuse > 1)
+            );
+            assert_eq!(
+                frame_memo.range_copied_component_bytes,
+                fixture
+                    .projected_bytes
+                    .checked_mul(fixture.reuse - 1)
+                    .expect("preregistered fixture copy count fits usize")
+            );
+        }
+        Arm::InFrameProduction => {
+            assert_eq!(preparation, ProjectionPreparationStatistics::default());
+            assert_eq!(frame_memo, FrameMemoStatistics::default());
+        }
         Arm::Selective => {
-            assert_eq!(statistics.prepared, 1);
-            assert_eq!(statistics.refused_too_large, 0);
+            assert_eq!(preparation.prepared, 1);
+            assert_eq!(preparation.refused_too_large, 0);
         }
         Arm::Blanket => {
-            assert_eq!(statistics.prepared, 1);
-            assert_eq!(statistics.already_prepared, fixture.reuse - 1);
+            assert_eq!(preparation.prepared, 1);
+            assert_eq!(preparation.already_prepared, fixture.reuse - 1);
         }
         Arm::SelectiveTooSmall => {
-            assert_eq!(statistics.prepared, 0);
-            assert_eq!(statistics.refused_too_large, 1);
+            assert_eq!(preparation.prepared, 0);
+            assert_eq!(preparation.refused_too_large, 1);
         }
     }
     let pathmap_traversals = ParBag::take_protobuf_pathmap_traversals_experiment();
     let expected_traversals = match arm {
-        Arm::Selective | Arm::Blanket => 1,
+        Arm::InFrameProduction | Arm::InFrameMemo | Arm::Selective | Arm::Blanket => 1,
         Arm::SelectiveTooSmall => fixture.reuse as u64,
         Arm::Adaptive => unreachable!(),
     };
@@ -308,8 +379,58 @@ fn measure(fixture: &Fixture, arm: Arm) -> Observation {
         allocations: ALLOCATIONS.load(Ordering::Relaxed),
         allocated_bytes: ALLOCATED_BYTES.load(Ordering::Relaxed),
         pathmap_traversals,
-        statistics,
+        preparation,
+        frame_memo,
         remaining_budget: budget.remaining_new_retention_bytes(),
+    }
+}
+
+/// Minimal timing wrapper for the compile-time production gate.
+///
+/// It deliberately cannot call the diagnostic statistics API or any retained-
+/// projection control. Both arms still cover the complete private FFI frame,
+/// allocation counters, byte equality, and emission-only PathMap traversals.
+fn measure_production_gate(fixture: &Fixture, arm: Arm) -> Observation {
+    assert!(Arm::PRODUCTION.contains(&arm));
+    ParBag::reset_protobuf_pathmap_traversals_experiment();
+    ALLOCATIONS.store(0, Ordering::Relaxed);
+    ALLOCATED_BYTES.store(0, Ordering::Relaxed);
+    std::sync::atomic::compiler_fence(Ordering::SeqCst);
+    let started = Instant::now();
+    COUNT_ALLOCATIONS.store(true, Ordering::SeqCst);
+
+    let output = match arm {
+        Arm::Adaptive => {
+            encode_frame(black_box(&fixture.message)).expect("control benchmark frame encodes")
+        }
+        Arm::InFrameProduction => encode_frame_native(black_box(&fixture.message))
+            .expect("production native benchmark frame encodes"),
+        Arm::InFrameMemo | Arm::Selective | Arm::Blanket | Arm::SelectiveTooSmall => {
+            unreachable!("production gate admits exactly two arms")
+        }
+    };
+
+    COUNT_ALLOCATIONS.store(false, Ordering::SeqCst);
+    let elapsed_ns = started.elapsed().as_nanos();
+    std::sync::atomic::compiler_fence(Ordering::SeqCst);
+    assert_eq!(output, fixture.expected);
+    let pathmap_traversals = ParBag::take_protobuf_pathmap_traversals_experiment();
+    let expected_traversals = match arm {
+        Arm::Adaptive => fixture.reuse as u64,
+        Arm::InFrameProduction => 1,
+        Arm::InFrameMemo | Arm::Selective | Arm::Blanket | Arm::SelectiveTooSmall => {
+            unreachable!("production gate admits exactly two arms")
+        }
+    };
+    assert_eq!(pathmap_traversals, expected_traversals);
+    Observation {
+        elapsed_ns,
+        allocations: ALLOCATIONS.load(Ordering::Relaxed),
+        allocated_bytes: ALLOCATED_BYTES.load(Ordering::Relaxed),
+        pathmap_traversals,
+        preparation: ProjectionPreparationStatistics::default(),
+        frame_memo: FrameMemoStatistics::default(),
+        remaining_budget: 0,
     }
 }
 
@@ -353,32 +474,136 @@ fn selected_or_all(name: &str, values: &[usize]) -> Vec<usize> {
 }
 
 fn selected_arms() -> Vec<Arm> {
+    let available = if PRODUCTION_GATE {
+        &Arm::PRODUCTION[..]
+    } else {
+        &Arm::ALL[..]
+    };
     match std::env::var("PAR_OWNER_PROFILE_ARM") {
-        Ok(label) => vec![Arm::parse(&label).unwrap_or_else(|| {
-            panic!(
-                "PAR_OWNER_PROFILE_ARM={label:?} is not one of adaptive, selective, blanket, selective_too_small"
-            )
-        })],
-        Err(std::env::VarError::NotPresent) => Arm::ALL.to_vec(),
+        Ok(label) => vec![Arm::parse(&label)
+            .filter(|arm| available.contains(arm))
+            .unwrap_or_else(|| {
+                panic!(
+                    "PAR_OWNER_PROFILE_ARM={label:?} is not available in this benchmark protocol"
+                )
+            })],
+        Err(std::env::VarError::NotPresent) => available.to_vec(),
         Err(error) => panic!("PAR_OWNER_PROFILE_ARM is not valid Unicode: {error}"),
     }
 }
 
+fn profile_iterations() -> Option<usize> {
+    match std::env::var("PAR_OWNER_PROFILE_ITERATIONS") {
+        Ok(value) => Some(value.parse::<usize>().unwrap_or_else(|error| {
+            panic!("PAR_OWNER_PROFILE_ITERATIONS={value:?} is not a usize: {error}")
+        })),
+        Err(std::env::VarError::NotPresent) => None,
+        Err(error) => panic!("PAR_OWNER_PROFILE_ITERATIONS is not valid Unicode: {error}"),
+    }
+}
+
+/// Low-noise whole-encoder loop for external profilers.
+///
+/// Fixture construction, expected-byte construction, warmup, and stdout are
+/// outside the sampled loop. A rolling checksum and an exact aggregate
+/// PathMap-traversal assertion prevent a profiler run from becoming vacuous.
+fn run_profile_only(
+    iterations: usize,
+    warmup: usize,
+    arm: Arm,
+    width: usize,
+    body_bytes: usize,
+    reuse: usize,
+) {
+    assert!(
+        iterations != 0,
+        "PAR_OWNER_PROFILE_ITERATIONS must be nonzero"
+    );
+    assert!(
+        matches!(arm, Arm::Adaptive | Arm::InFrameProduction),
+        "profile-only mode compares the legacy and production encoders"
+    );
+    let fixture = Fixture::new(width, body_bytes, reuse);
+    let encode = |fixture: &Fixture| match arm {
+        Arm::Adaptive => {
+            encode_frame(black_box(&fixture.message)).expect("profile control frame encodes")
+        }
+        Arm::InFrameProduction => encode_frame_native(black_box(&fixture.message))
+            .expect("profile production frame encodes"),
+        Arm::InFrameMemo | Arm::Selective | Arm::Blanket | Arm::SelectiveTooSmall => {
+            unreachable!("profile-only mode admits exactly two arms")
+        }
+    };
+
+    for _ in 0..warmup {
+        let output = encode(&fixture);
+        assert_eq!(output, fixture.expected);
+        black_box(output);
+    }
+
+    ParBag::reset_protobuf_pathmap_traversals_experiment();
+    let mut checksum = 0u64;
+    for _ in 0..iterations {
+        let output = encode(&fixture);
+        assert_eq!(output, fixture.expected);
+        checksum = checksum
+            .rotate_left(9)
+            .wrapping_mul(0x9e37_79b9_7f4a_7c15)
+            .wrapping_add(output.len() as u64)
+            ^ u64::from(output[0])
+            ^ (u64::from(output[output.len() - 1]) << 8);
+        black_box(&output);
+    }
+    black_box(checksum);
+
+    let pathmap_traversals = ParBag::take_protobuf_pathmap_traversals_experiment();
+    let expected_traversals = match arm {
+        Arm::Adaptive => (reuse as u64)
+            .checked_mul(iterations as u64)
+            .expect("profile control traversal count is representable"),
+        Arm::InFrameProduction => iterations as u64,
+        Arm::InFrameMemo | Arm::Selective | Arm::Blanket | Arm::SelectiveTooSmall => {
+            unreachable!("profile-only mode admits exactly two arms")
+        }
+    };
+    assert_eq!(pathmap_traversals, expected_traversals);
+    println!(
+        "PROFILE\tarm={}\twidth={width}\tbody_bytes={body_bytes}\treuse={reuse}\titerations={iterations}\twarmup={warmup}\toutput_bytes={}\tpathmap_traversals={pathmap_traversals}\tchecksum={checksum}",
+        arm.label(),
+        fixture.expected.len(),
+    );
+}
+
 fn main() {
-    let reps = env_usize("PAR_OWNER_REPS", DEFAULT_REPS);
     let warmup = env_usize("PAR_OWNER_WARMUP", DEFAULT_WARMUP);
     let arms = selected_arms();
+    if let Some(iterations) = profile_iterations() {
+        assert_eq!(
+            arms.len(),
+            1,
+            "profile-only mode requires PAR_OWNER_PROFILE_ARM"
+        );
+        let width = selected_values("PAR_OWNER_WIDTH", &WIDTHS, 16)[0];
+        let body_bytes = selected_values("PAR_OWNER_BODY_BYTES", &BODY_BYTES, 256)[0];
+        let reuse = selected_values("PAR_OWNER_REUSE", &REUSE_COUNTS, 1)[0];
+        run_profile_only(iterations, warmup, arms[0], width, body_bytes, reuse);
+        return;
+    }
+
+    let reps = env_usize("PAR_OWNER_REPS", DEFAULT_REPS);
     let ordering = if arms.len() == 1 {
         "single-arm-profile"
+    } else if PRODUCTION_GATE {
+        "balanced-two-arm-production-rotation"
     } else {
-        "balanced-four-arm-rotation"
+        "balanced-six-arm-rotation"
     };
     assert!(reps != 0, "PAR_OWNER_REPS must be nonzero");
     println!(
-        "META\tformat=par-projection-owner-v1\treps={reps}\twarmup={warmup}\tordering={ordering}\ttimed=prepare-plus-complete-frame\tfixture=soft-checkpoint-shared-aux"
+        "META\tformat=par-projection-owner-v5\treps={reps}\twarmup={warmup}\tordering={ordering}\ttimed=policy-plus-complete-frame\tfixture=soft-checkpoint-shared-aux\ttraversal_counter=emission-only"
     );
     println!(
-        "HEADER\twidth\tbody_bytes\treuse\toutput_bytes\tprojected_bytes\tarm\tsample\tposition\telapsed_ns\tallocations\tallocated_bytes\tpathmap_traversals\tattempts\tprepared\talready_prepared\trefused_too_large\tnewly_retained_bytes\tremaining_budget"
+        "HEADER\twidth\tbody_bytes\treuse\toutput_bytes\tprojected_bytes\tarm\tsample\tposition\telapsed_ns\tallocations\tallocated_bytes\tpathmap_traversals\tattempts\tprepared\talready_prepared\trefused_too_large\tnewly_retained_bytes\tremaining_budget\tpar_occurrences\tcomponent_empty_occurrences\teligible_occurrences\tunique_owners\trepeated_occurrences\trepeated_owners\tunique_component_bytes\treusable_component_bytes\trepeated_component_bytes\tcensus_owner_spilled\ttranscript_events\ttranscript_spilled\tdirect_only_occurrences\trange_recorded_owners\trange_copied_occurrences\tmemo_owner_spilled\tdirect_only_component_bytes\trange_recorded_component_bytes\trange_copied_component_bytes"
     );
     if let Ok(loadavg) = std::fs::read_to_string("/proc/loadavg") {
         println!("LOADAVG\t{}", loadavg.trim());
@@ -395,11 +620,23 @@ fn main() {
                             arms[(repetition + position) % arms.len()]
                         };
                         let fixture = Fixture::new(width, body_bytes, reuse);
-                        let observation = measure(&fixture, arm);
+                        let observation = if PRODUCTION_GATE {
+                            measure_production_gate(&fixture, arm)
+                        } else {
+                            measure(&fixture, arm)
+                        };
                         if repetition >= warmup {
-                            let statistics = observation.statistics;
+                            let preparation = observation.preparation;
+                            let frame_memo = observation.frame_memo;
                             println!(
-                                "OBS\t{width}\t{body_bytes}\t{reuse}\t{}\t{}\t{}\t{}\t{position}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                                concat!(
+                                    "OBS\t{width}\t{body_bytes}\t{reuse}",
+                                    "\t{}\t{}\t{}\t{}\t{position}",
+                                    "\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                                    "\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                                    "\t{}\t{}\t{}",
+                                    "\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                                ),
                                 fixture.expected.len(),
                                 fixture.projected_bytes,
                                 arm.label(),
@@ -408,12 +645,35 @@ fn main() {
                                 observation.allocations,
                                 observation.allocated_bytes,
                                 observation.pathmap_traversals,
-                                statistics.attempts,
-                                statistics.prepared,
-                                statistics.already_prepared,
-                                statistics.refused_too_large,
-                                statistics.newly_retained_bytes,
+                                preparation.attempts,
+                                preparation.prepared,
+                                preparation.already_prepared,
+                                preparation.refused_too_large,
+                                preparation.newly_retained_bytes,
                                 observation.remaining_budget,
+                                frame_memo.census.par_occurrences,
+                                frame_memo.census.component_empty_occurrences,
+                                frame_memo.census.eligible_occurrences,
+                                frame_memo.census.unique_owners,
+                                frame_memo.census.repeated_occurrences,
+                                frame_memo.census.repeated_owners,
+                                frame_memo.census.unique_component_bytes,
+                                frame_memo.census.reusable_component_bytes,
+                                frame_memo.census.repeated_component_bytes,
+                                frame_memo.census_owner_spilled,
+                                frame_memo.transcript_events,
+                                frame_memo.transcript_spilled,
+                                frame_memo.direct_only_occurrences,
+                                frame_memo.range_recorded_owners,
+                                frame_memo.range_copied_occurrences,
+                                frame_memo.memo_owner_spilled,
+                                frame_memo.direct_only_component_bytes,
+                                frame_memo.range_recorded_component_bytes,
+                                frame_memo.range_copied_component_bytes,
+                                width = width,
+                                body_bytes = body_bytes,
+                                reuse = reuse,
+                                position = position,
                             );
                         }
                     }

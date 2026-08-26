@@ -677,3 +677,225 @@ fn freemap_journal_four_backend_bundle_and_mutants_are_manifested() {
         );
     }
 }
+
+#[test]
+fn certified_egress_census_replay_depth_and_rollback_bundle_is_manifested() {
+    use models::rust::rholang::egress_protobuf_schema_tables::{
+        rhoapi_bridge, rholang_scala_rust_types, rspace_plus_plus_types,
+        CERTIFIED_EGRESS_CUT_EDGE_DEPTH_REGISTRY,
+    };
+
+    // Bind the abstract strict-rank theorem to every generated descriptor edge
+    // and to the two hand-certified edges hidden behind opaque cut vertices.
+    let depth_registries = [
+        rhoapi_bridge::CERTIFIED_EGRESS_EDGE_DEPTH_REGISTRY,
+        rholang_scala_rust_types::CERTIFIED_EGRESS_EDGE_DEPTH_REGISTRY,
+        rspace_plus_plus_types::CERTIFIED_EGRESS_EDGE_DEPTH_REGISTRY,
+        CERTIFIED_EGRESS_CUT_EDGE_DEPTH_REGISTRY,
+    ];
+    let mut certified_edges = 0usize;
+    for registry in depth_registries {
+        for &(parent, parent_depth, child, child_depth) in registry {
+            assert!(
+                parent_depth > child_depth,
+                "certified edge `{parent}` ({parent_depth}) -> `{child}` ({child_depth}) does not decrease"
+            );
+            certified_edges += 1;
+        }
+    }
+    assert!(
+        certified_edges > 0,
+        "the generated depth binding is vacuous"
+    );
+    assert_eq!(
+        CERTIFIED_EGRESS_CUT_EDGE_DEPTH_REGISTRY,
+        &[
+            (".rhoapi.EPathMap", 3, ".rhoapi.Var", 2),
+            (".rhoapi.EPathMap", 3, ".rhoapi.Par", 1),
+        ],
+        "the formal depth-3 EPathMap certificate drifted from generated code"
+    );
+
+    let proof = read_repository_file("formal/verus/rspace_canonical_egress.rs");
+    for marker in [
+        "pub proof fn certified_rank_path_is_bounded(",
+        "pub proof fn self_cycle_has_no_valid_depth_certificate(",
+        "pub proof fn mutual_cycle_has_no_valid_depth_certificate(",
+        "pub proof fn underreported_root_bound_mutant_is_rejected(",
+        "EPathMap -> Var -> WildcardMsg",
+        "pub enum CertifiedLengthEventKindSpec {",
+        "pub proof fn reservation_appends_one_stable_slot(",
+        "pub proof fn completion_updates_only_the_reserved_slot(",
+        "pub proof fn duplicate_completion_mutant_is_rejected(",
+        "pub proof fn wrong_kind_completion_mutant_is_rejected(",
+        "pub proof fn inline_to_spill_preserves_parent_slot(",
+        "pub proof fn replay_next_consumes_exact_recorded_event(",
+        "pub proof fn replay_finish_iff_exactly_exhausted(",
+        "pub proof fn dropped_replay_event_mutant_is_rejected(",
+        "pub proof fn duplicated_replay_event_mutant_is_rejected(",
+        "pub proof fn equal_length_kind_swap_mutant_is_rejected(",
+        "pub proof fn census_policy_directs_empty_and_singleton_owners(",
+        "pub proof fn census_policy_memoizes_only_repeated_owners(",
+        "pub proof fn empty_owner_memo_mutant_is_rejected(",
+        "pub proof fn singleton_owner_memo_mutant_is_rejected(",
+        "pub proof fn certified_frame_error_discards_private_and_preserves_public(",
+        "pub proof fn certified_frame_commit_requires_exact_length_and_replay(",
+        "pub proof fn premature_replay_commit_mutant_is_rejected(",
+    ] {
+        assert!(
+            proof.contains(marker),
+            "certified-egress Verus proof is missing `{marker}`"
+        );
+    }
+    for forbidden in ["assume(", "admit(", "external_body"] {
+        assert!(
+            !proof.contains(forbidden),
+            "certified-egress Verus proof contains forbidden escape `{forbidden}`"
+        );
+    }
+
+    let tla = read_repository_file("formal/tlaplus/stack_safe_pda/ParBagInFrameMemo.tla");
+    for marker in [
+        "Lanes == {\"direct\", \"record\", \"reuse\"}",
+        "CensusPrefixIsExact ==",
+        "CensusCompletesBeforeEmission ==",
+        "ReplayConsumesExactOccurrencePrefix ==",
+        "ReplayExhaustionIffEmissionComplete ==",
+        "DirectLaneForEmptyAndSingleton ==",
+        "MemoOnlyForCensusProvenRepeatedOwners ==",
+        "OutputMatchesDirect ==",
+        "CommitRequiresExactReplay ==",
+        "CensusSkipMutantSpec ==",
+        "ReplaySwapMutantSpec ==",
+        "ReplayOverrunMutantSpec ==",
+        "ReplayRemainingCommitMutantSpec ==",
+        "EmptyMemoMutantSpec ==",
+        "SingletonMemoMutantSpec ==",
+        "EarlyEmissionMutantSpec ==",
+        "SwapMutantSpec ==",
+        "WholeMutantSpec ==",
+        "WrongOwnerMutantSpec ==",
+        "OffByOneMutantSpec ==",
+    ] {
+        assert!(
+            tla.contains(marker),
+            "certified-egress TLA+ model is missing `{marker}`"
+        );
+    }
+    let main_config = read_repository_file("formal/tlaplus/stack_safe_pda/ParBagInFrameMemo.cfg");
+    for invariant in [
+        "INVARIANT CensusPrefixIsExact",
+        "INVARIANT CensusCompletesBeforeEmission",
+        "INVARIANT ReplayConsumesExactOccurrencePrefix",
+        "INVARIANT ReplayExhaustionIffEmissionComplete",
+        "INVARIANT DirectLaneForEmptyAndSingleton",
+        "INVARIANT MemoOnlyForCensusProvenRepeatedOwners",
+        "INVARIANT OutputMatchesDirect",
+        "INVARIANT CommitRequiresExactReplay",
+    ] {
+        assert!(
+            main_config.contains(invariant),
+            "certified-egress TLC configuration is missing `{invariant}`"
+        );
+    }
+
+    let transcript =
+        read_repository_file("formal/tlaplus/stack_safe_pda/CertifiedEgressTranscript.tla");
+    for marker in [
+        "GeneratedKinds ==",
+        "AppendEvent(event, nextPc) ==",
+        "CompleteSlot(slot, bodyLen, nextPc) ==",
+        "ReservedPreorderIsGeneratedPrefix ==",
+        "CompletionAfterDescendants ==",
+        "CompletionExactlyOnce ==",
+        "SealIffWalkDoneAndAllComplete ==",
+        "StorageRefinesLogicalTranscript ==",
+        "TypedReplayConsumesExactPrefix ==",
+        "FinishIffExactExhaustion ==",
+        "AtomicPublication ==",
+        "EqualLengthKindSwapMutantSpec ==",
+        "SpillSlotCorruptionMutantSpec ==",
+    ] {
+        assert!(
+            transcript.contains(marker),
+            "structural-transcript TLA+ model is missing `{marker}`"
+        );
+    }
+    let transcript_config =
+        read_repository_file("formal/tlaplus/stack_safe_pda/CertifiedEgressTranscript.cfg");
+    for invariant in [
+        "INVARIANT ReservedPreorderIsGeneratedPrefix",
+        "INVARIANT CompletionAfterDescendants",
+        "INVARIANT CompletionExactlyOnce",
+        "INVARIANT SealIffWalkDoneAndAllComplete",
+        "INVARIANT StorageRefinesLogicalTranscript",
+        "INVARIANT TypedReplayConsumesExactPrefix",
+        "INVARIANT FinishIffExactExhaustion",
+        "INVARIANT AtomicPublication",
+    ] {
+        assert!(
+            transcript_config.contains(invariant),
+            "structural-transcript TLC configuration is missing `{invariant}`"
+        );
+    }
+
+    let sink =
+        read_repository_file("formal/tlaplus/stack_safe_pda/ParBagProtobufSinkPublication.tla");
+    assert!(sink.contains("AbortedPrivateFrameIsDiscarded =="));
+    assert!(sink.contains("RollbackMutantSpec =="));
+    let sink_config =
+        read_repository_file("formal/tlaplus/stack_safe_pda/ParBagProtobufSinkPublication.cfg");
+    assert!(sink_config.contains("INVARIANT AbortedPrivateFrameIsDiscarded"));
+
+    let runner = read_repository_file("scripts/check-stack-safe-pda-proofs.sh");
+    for marker in [
+        "formal/verus/rspace_canonical_egress.rs",
+        "--no-cheating --num-threads 1",
+        "ParBagProtobufSinkRollbackMutant.cfg",
+        "Invariant AbortedPrivateFrameIsDiscarded is violated",
+        "ParBagInFrameMemoCensusSkipMutant.cfg:CensusPrefixIsExact",
+        "ParBagInFrameMemoReplaySwapMutant.cfg:ReplayConsumesExactOccurrencePrefix",
+        "ParBagInFrameMemoReplayOverrunMutant.cfg:ReplayConsumesExactOccurrencePrefix",
+        "ParBagInFrameMemoReplayRemainingCommitMutant.cfg:CommitRequiresExactReplay",
+        "ParBagInFrameMemoEmptyMemoMutant.cfg:MemoOnlyForCensusProvenRepeatedOwners",
+        "ParBagInFrameMemoSingletonMemoMutant.cfg:MemoOnlyForCensusProvenRepeatedOwners",
+        "ParBagInFrameMemoEarlyEmissionMutant.cfg:CensusCompletesBeforeEmission",
+        "CertifiedEgressTranscript.cfg CertifiedEgressTranscript.tla",
+        "CertifiedEgressTranscriptIncompleteSealMutant.cfg:SealIffWalkDoneAndAllComplete",
+        "CertifiedEgressTranscriptDuplicateCompletionMutant.cfg:CompletionExactlyOnce",
+        "CertifiedEgressTranscriptKindSwapMutant.cfg:TypedReplayConsumesExactPrefix",
+        "CertifiedEgressTranscriptReplayOverrunMutant.cfg:TypeInvariant",
+        "CertifiedEgressTranscriptRemainingCommitMutant.cfg:AtomicPublication",
+        "CertifiedEgressTranscriptSpillCorruptionMutant.cfg:StorageRefinesLogicalTranscript",
+        "CertifiedEgressTranscriptPartialPublicationMutant.cfg:AtomicPublication",
+    ] {
+        assert!(
+            runner.contains(marker),
+            "certified-egress formal runner is missing `{marker}`"
+        );
+    }
+
+    for config in [
+        "ParBagInFrameMemoCensusSkipMutant.cfg",
+        "ParBagInFrameMemoReplaySwapMutant.cfg",
+        "ParBagInFrameMemoReplayOverrunMutant.cfg",
+        "ParBagInFrameMemoReplayRemainingCommitMutant.cfg",
+        "ParBagInFrameMemoEmptyMemoMutant.cfg",
+        "ParBagInFrameMemoSingletonMemoMutant.cfg",
+        "ParBagInFrameMemoEarlyEmissionMutant.cfg",
+        "ParBagProtobufSinkRollbackMutant.cfg",
+        "CertifiedEgressTranscriptIncompleteSealMutant.cfg",
+        "CertifiedEgressTranscriptDuplicateCompletionMutant.cfg",
+        "CertifiedEgressTranscriptKindSwapMutant.cfg",
+        "CertifiedEgressTranscriptReplayOverrunMutant.cfg",
+        "CertifiedEgressTranscriptRemainingCommitMutant.cfg",
+        "CertifiedEgressTranscriptSpillCorruptionMutant.cfg",
+        "CertifiedEgressTranscriptPartialPublicationMutant.cfg",
+    ] {
+        let path = format!("formal/tlaplus/stack_safe_pda/{config}");
+        assert!(
+            repository_root().join(&path).is_file(),
+            "certified-egress mutant configuration is absent: {path}"
+        );
+    }
+}
