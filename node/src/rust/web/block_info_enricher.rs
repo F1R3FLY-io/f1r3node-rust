@@ -199,8 +199,13 @@ pub fn extract_transfers_from_report(
 }
 
 /// A segment is "system" when its phase is `PRECHARGE` or `REFUND`.
-/// Used by both the `any_marked` check and the per-segment drop test so
-/// the two stay in sync.
+/// Used by the per-segment drop test on the marked path. The
+/// `any_marked` check compares directly against `Unspecified` and does
+/// not call this helper.
+///
+/// Unknown (future) proto phase values are intentionally treated as
+/// non-system / user-scanned here, so new phases stay visible on the
+/// marked path until they are explicitly classified as system.
 fn is_system_phase(phase: i32) -> bool {
     phase == ReportPhase::Precharge as i32 || phase == ReportPhase::Refund as i32
 }

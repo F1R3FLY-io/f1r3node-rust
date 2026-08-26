@@ -114,6 +114,15 @@ where
     K: Clone + Debug + Default + Serialize + 'static + Sync + Send,
 {
     replay_rspace: ReplayRSpace<C, P, A, K>,
+    // Global lock order (hold this order in every path, and never acquire
+    // an earlier lock while holding a later one): soft_report -> report ->
+    // current_phase. `collect_report_locked` holds the `soft_report`
+    // guard (passed in by the caller) across the `report` push and the
+    // `current_phase` read so the flush + phase read stay atomic
+    // relative to concurrent logger writes. `get_report` and
+    // `set_report_phase` retain that guard through the phase write too,
+    // so no event can be recorded between a flush and the phase change
+    // that would otherwise tag it with the wrong phase.
     /// The report buffer, segmented and phase-tagged at each soft
     /// checkpoint / phase boundary.
     report: Arc<Mutex<Vec<ReportBatch<C, P, A, K>>>>,
@@ -185,18 +194,19 @@ where
     }
 
     fn collect_report(&self) -> Result<(), RSpaceError> {
-        let soft_report_guard = self.soft_report.lock().unwrap();
-        self.collect_report_locked(soft_report_guard)
+        let mut soft_report_guard = self.soft_report.lock().unwrap();
+        self.collect_report_locked(&mut soft_report_guard)
     }
 
     fn collect_report_locked(
         &self,
-        mut soft_report_guard: std::sync::MutexGuard<'_, Vec<ReportingEvent<C, P, A, K>>>,
+        soft_report_guard: &mut std::sync::MutexGuard<'_, Vec<ReportingEvent<C, P, A, K>>>,
     ) -> Result<(), RSpaceError> {
         if !soft_report_guard.is_empty() {
-            let soft_report_content = std::mem::take(&mut *soft_report_guard);
+            let soft_report_content = std::mem::take(&mut **soft_report_guard);
+            let mut report_guard = self.report.lock().unwrap();
             let phase = *self.current_phase.lock().unwrap();
-            self.report.lock().unwrap().push(ReportBatch {
+            report_guard.push(ReportBatch {
                 phase,
                 events: soft_report_content,
             });
@@ -206,15 +216,23 @@ where
     }
 
     pub fn get_report(&self) -> Result<Vec<ReportBatch<C, P, A, K>>, RSpaceError> {
-        self.collect_report()?;
+        let mut soft_report_guard = self.soft_report.lock().unwrap();
+        self.collect_report_locked(&mut soft_report_guard)?;
 
-        let mut report_guard = self.report.lock().unwrap();
-        let drained = std::mem::take(&mut *report_guard);
+        let drained = {
+            let mut report_guard = self.report.lock().unwrap();
+            std::mem::take(&mut *report_guard)
+        };
 
         // Reset the phase so the next deploy starts unmarked. System
         // deploys, which never call `set_report_phase`, therefore
         // produce only `Unspecified` segments. User deploys set their
         // own phases before each phase emits events.
+        //
+        // `soft_report` is still held here, so a concurrent
+        // write cannot land between the flush above and this reset and
+        // get tagged with the stale phase. `report` was released in the
+        // block above so this does not nest `report -> current_phase`.
         *self.current_phase.lock().unwrap() = ReportPhase::Unspecified;
 
         Ok(drained)
@@ -228,7 +246,8 @@ where
     pub async fn create_checkpoint(&self) -> Result<Checkpoint, RSpaceError> {
         let checkpoint = self.replay_rspace.create_checkpoint().await?;
 
-        self.soft_report.lock().unwrap().clear();
+        let mut soft_report_guard = self.soft_report.lock().unwrap();
+        soft_report_guard.clear();
         self.report.lock().unwrap().clear();
         *self.current_phase.lock().unwrap() = ReportPhase::Unspecified;
 
@@ -393,8 +412,8 @@ where
     /// by the shared replay path at each phase boundary. The trait
     /// default is a no-op, so plain replay spaces are unaffected.
     async fn set_report_phase(&self, phase: ReportPhase) {
-        let soft_report_guard = self.soft_report.lock().unwrap();
-        if let Err(err) = self.collect_report_locked(soft_report_guard) {
+        let mut soft_report_guard = self.soft_report.lock().unwrap();
+        if let Err(err) = self.collect_report_locked(&mut soft_report_guard) {
             tracing::warn!(
                 target: "f1r3fly.rspace.reporting",
                 error = %err,

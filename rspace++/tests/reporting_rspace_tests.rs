@@ -353,3 +353,71 @@ async fn create_checkpoint_clears_buffers_and_resets_phase() {
         "checkpoint reset the phase to Unspecified"
     );
 }
+
+/// Regression test for the lock-order inversion between `get_report` and
+/// `set_report_phase`
+#[tokio::test]
+async fn concurrent_get_report_and_set_report_phase_do_not_deadlock() {
+    let (_space, reporting) = build_reporting_rspace();
+    emit_one_event(&reporting).await;
+
+    let r = Arc::new(reporting);
+
+    let phases = vec![
+        ReportPhase::Precharge,
+        ReportPhase::User,
+        ReportPhase::Refund,
+        ReportPhase::Unspecified,
+    ];
+
+    let mut handles = Vec::new();
+    for _ in 0..4 {
+        let r = r.clone();
+        let phases = phases.clone();
+        handles.push(tokio::spawn(async move {
+            for phase in &phases {
+                r.set_report_phase(*phase).await;
+            }
+        }));
+    }
+    for _ in 0..4 {
+        let r = r.clone();
+        handles.push(tokio::spawn(async move {
+            let _ = r.get_report();
+        }));
+    }
+    for _ in 0..8 {
+        let r = r.clone();
+        handles.push(tokio::spawn(async move {
+            let _ = r.produce("ch1".to_string(), "d".to_string(), false).await;
+        }));
+    }
+
+    let all = futures::future::join_all(handles);
+    match tokio::time::timeout(std::time::Duration::from_secs(10), all).await {
+        Ok(join_results) => {
+            for res in join_results {
+                res.expect("spawned task panicked");
+            }
+        }
+        Err(_) => panic!(
+            "get_report / set_report_phase / produce deadlocked under concurrency (lock-order \
+             inversion reintroduced)"
+        ),
+    }
+
+    let report = r.get_report().unwrap();
+    for batch in &report {
+        assert!(
+            matches!(
+                batch.phase,
+                ReportPhase::Unspecified |
+                    ReportPhase::Precharge |
+                    ReportPhase::User |
+                    ReportPhase::Refund
+            ),
+            "concurrent transition produced a segment with an unexpected phase: {:?}",
+            batch.phase
+        );
+    }
+}
