@@ -72,10 +72,8 @@ async fn create_space(retained_paths: bool) -> BenchSpace {
         .await
         .expect("in-memory RSpace stores");
     let history = Arc::new(
-        HistoryRepositoryInstances::<String, Pattern, String, String>::lmdb_repository(
-            stores.history,
-            stores.roots,
-            stores.cold,
+        HistoryRepositoryInstances::<String, Pattern, String, String>::repository(
+            stores.authority(),
         )
         .expect("history repository"),
     );

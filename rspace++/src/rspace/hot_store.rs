@@ -2,10 +2,11 @@ use std::collections::hash_map::Entry;
 use std::collections::{BTreeSet, HashMap};
 use std::fmt::Debug;
 use std::hash::Hash;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use pathmap::PathMap;
 #[cfg(test)]
 use proptest::prelude::*;
 #[cfg(test)]
@@ -16,11 +17,12 @@ use tracing::warn;
 use super::bag::{BagDelta, BagError};
 use super::data_index::{CandidatePool, DataIndexError, RSpaceDataStore};
 use super::errors::RSpaceError;
+use crate::rspace::hashing::stable_hash_provider::StableHashSerialize;
 use crate::rspace::history::history_reader::HistoryReaderBase;
 use crate::rspace::hot_store_action::{
-    DeleteAction, DeleteCanonicalData, DeleteContinuations, DeleteData, DeleteJoins,
-    HotStoreAction, InsertAction, InsertCanonicalData, InsertContinuations, InsertData,
-    InsertJoins,
+    DeleteAction, DeleteCanonicalCollection, DeleteCanonicalData, DeleteContinuations, DeleteData,
+    DeleteJoins, HotStoreAction, InsertAction, InsertCanonicalCollection, InsertCanonicalData,
+    InsertContinuations, InsertData, InsertJoins,
 };
 use crate::rspace::internal::{Datum, Row, WaitingContinuation};
 use crate::rspace::metrics_constants::{
@@ -45,8 +47,12 @@ use crate::rspace::metrics_constants::{
     HOT_STORE_STATE_INSTALLED_JOINS_ITEMS_METRIC, HOT_STORE_STATE_INSTALLED_JOINS_SIZE_METRIC,
     HOT_STORE_STATE_JOINS_ITEMS_METRIC, HOT_STORE_STATE_JOINS_SIZE_METRIC, RSPACE_METRICS_SOURCE,
 };
-use crate::rspace::rho_path::RhoPathEncode;
+use crate::rspace::record_index::{RSpaceContinuationStore, RSpaceJoinStore, RecordIndexError};
+use crate::rspace::rho_path::{RhoPathEncode, RhoPathV1};
 use crate::rspace::serializers::cold_store_decode::ColdStoreDecode;
+use crate::rspace::serializers::serializers::{
+    encode_continuation_identity, encode_continuation_source_into,
+};
 use crate::rspace::trace::event::Consume;
 
 const MAX_HISTORY_STORE_CACHE_ENTRIES: usize = 512;
@@ -114,13 +120,38 @@ pub trait HotStore<C: Clone + Hash + Eq, P: Clone, A: Clone, K: Clone>: Sync + S
 struct ContinuationEpoch;
 
 #[derive(Clone, Debug)]
-pub struct ContinuationVersion(Arc<ContinuationEpoch>);
+pub struct ContinuationVersion {
+    epoch: Arc<ContinuationEpoch>,
+    group_prefix: Arc<[u8]>,
+    ordinary_paths: Arc<OnceLock<Arc<[Arc<[u8]>]>>>,
+}
 
 impl PartialEq for ContinuationVersion {
-    fn eq(&self, other: &Self) -> bool { Arc::ptr_eq(&self.0, &other.0) }
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.epoch, &other.epoch) && self.group_prefix == other.group_prefix
+    }
 }
 
 impl Eq for ContinuationVersion {}
+
+impl ContinuationVersion {
+    fn new(epoch: Arc<ContinuationEpoch>, group_prefix: Arc<[u8]>) -> Self {
+        Self {
+            epoch,
+            group_prefix,
+            ordinary_paths: Arc::new(OnceLock::new()),
+        }
+    }
+
+    fn bind_paths(&self, paths: Vec<Arc<[u8]>>) { let _ = self.ordinary_paths.set(paths.into()); }
+
+    fn path(&self, index: usize) -> Option<Arc<[u8]>> {
+        self.ordinary_paths
+            .get()
+            .and_then(|paths| paths.get(index))
+            .cloned()
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct ContinuationAddress {
@@ -196,97 +227,120 @@ where
 
 struct InMemHotStoreState<C, P, A, K>
 where
-    C: Eq + Hash,
-    A: Clone,
-    P: Clone,
-    K: Clone,
+    C: Clone + Eq + Hash + Send + Sync,
+    A: Clone + Send + Sync,
+    P: Clone + Send + Sync,
+    K: Clone + Send + Sync,
 {
-    continuations: HashMap<Vec<C>, Vec<WaitingContinuation<P, K>>>,
-    installed_continuations: HashMap<Vec<C>, WaitingContinuation<P, K>>,
+    continuations: RSpaceContinuationStore<C, P, K>,
     data: RSpaceDataStore<C, A>,
-    joins: HashMap<C, Vec<Vec<C>>>,
-    installed_joins: HashMap<C, Vec<Vec<C>>>,
+    joins: RSpaceJoinStore<C>,
     continuation_base_epoch: Arc<ContinuationEpoch>,
-    continuation_epochs: HashMap<Vec<C>, Arc<ContinuationEpoch>>,
+    continuation_epochs: PathMap<Arc<ContinuationEpoch>>,
 }
 
 impl<C, P, A, K> InMemHotStoreState<C, P, A, K>
 where
-    C: Clone + Eq + Hash + RhoPathEncode + ColdStoreDecode,
-    P: Clone,
-    A: Clone + Serialize + RhoPathEncode + ColdStoreDecode,
-    K: Clone,
+    C: Clone + Eq + Hash + RhoPathEncode + ColdStoreDecode + Send + Sync,
+    P: Clone + StableHashSerialize + Send + Sync,
+    A: Clone + Serialize + RhoPathEncode + ColdStoreDecode + Send + Sync,
+    K: Clone + StableHashSerialize + Send + Sync,
 {
     fn from_snapshot(snapshot: HotStoreState<C, P, A, K>) -> Result<Self, DataIndexError> {
+        let mut continuations = RSpaceContinuationStore::new();
+        for (channels, values) in snapshot.continuations {
+            continuations.set_group(channels, values);
+        }
+        for (channels, value) in snapshot.installed_continuations {
+            continuations.install(&channels, value);
+        }
         let mut data = RSpaceDataStore::new();
         for (channel, datums) in snapshot.data {
             data.set_channel(channel, datums)?;
         }
+        let mut joins = RSpaceJoinStore::new();
+        for (channel, values) in snapshot.joins {
+            joins.set_channel(channel, values);
+        }
+        for (channel, values) in snapshot.installed_joins {
+            for value in values {
+                joins.install(&channel, &value);
+            }
+        }
         Ok(Self {
-            continuations: snapshot.continuations,
-            installed_continuations: snapshot.installed_continuations,
+            continuations,
             data,
-            joins: snapshot.joins,
-            installed_joins: snapshot.installed_joins,
+            joins,
             continuation_base_epoch: Arc::new(ContinuationEpoch),
-            continuation_epochs: HashMap::new(),
+            continuation_epochs: PathMap::new(),
         })
     }
 
     fn snapshot(&self) -> Result<HotStoreState<C, P, A, K>, DataIndexError> {
         Ok(HotStoreState {
-            continuations: self.continuations.clone(),
-            installed_continuations: self.installed_continuations.clone(),
+            continuations: self
+                .continuations
+                .loaded_records()
+                .into_iter()
+                .map(|(channels, values)| (channels.to_vec(), values))
+                .collect(),
+            installed_continuations: self
+                .continuations
+                .installed_records()
+                .into_iter()
+                .map(|(channels, value)| (channels.to_vec(), value))
+                .collect(),
             data: self.data.loaded_records()?.into_iter().collect(),
-            joins: self.joins.clone(),
-            installed_joins: self.installed_joins.clone(),
+            joins: self.joins.loaded_records().into_iter().collect(),
+            installed_joins: self.joins.installed_records().into_iter().collect(),
         })
     }
 }
 
 impl<C, P, A, K> Default for InMemHotStoreState<C, P, A, K>
 where
-    C: Eq + Hash,
-    A: Clone,
-    P: Clone,
-    K: Clone,
+    C: Clone + Eq + Hash + Send + Sync,
+    A: Clone + Send + Sync,
+    P: Clone + Send + Sync,
+    K: Clone + Send + Sync,
 {
     fn default() -> Self {
         Self {
-            continuations: HashMap::new(),
-            installed_continuations: HashMap::new(),
+            continuations: RSpaceContinuationStore::default(),
             data: RSpaceDataStore::new(),
-            joins: HashMap::new(),
-            installed_joins: HashMap::new(),
+            joins: RSpaceJoinStore::default(),
             continuation_base_epoch: Arc::new(ContinuationEpoch),
-            continuation_epochs: HashMap::new(),
+            continuation_epochs: PathMap::new(),
         }
     }
 }
 
 impl<C, P, A, K> InMemHotStoreState<C, P, A, K>
 where
-    C: Clone + Eq + Hash,
-    A: Clone,
-    P: Clone,
-    K: Clone,
+    C: Clone + Eq + Hash + Send + Sync,
+    A: Clone + Send + Sync,
+    P: Clone + Send + Sync,
+    K: Clone + Send + Sync,
 {
-    fn continuation_version(&self, channels: &[C]) -> Option<ContinuationVersion> {
+    fn continuation_version(&self, channels: &[C]) -> Option<ContinuationVersion>
+    where C: RhoPathEncode {
+        let group_prefix = RhoPathV1::continuation_prefix(channels);
         let epoch = self
             .continuation_epochs
-            .get(channels)
+            .get(&group_prefix)
             .unwrap_or(&self.continuation_base_epoch);
-        Some(ContinuationVersion(Arc::clone(epoch)))
+        Some(ContinuationVersion::new(Arc::clone(epoch), group_prefix.into()))
     }
 
-    fn bump_continuation_revision(&mut self, channels: &[C]) {
+    fn bump_continuation_revision(&mut self, channels: &[C])
+    where C: RhoPathEncode {
         self.continuation_epochs
-            .insert(channels.to_vec(), Arc::new(ContinuationEpoch));
+            .insert(RhoPathV1::continuation_prefix(channels), Arc::new(ContinuationEpoch));
     }
 
     fn bump_continuation_generation(&mut self) {
         self.continuation_base_epoch = Arc::new(ContinuationEpoch);
-        self.continuation_epochs.clear();
+        self.continuation_epochs = PathMap::new();
     }
 }
 
@@ -349,7 +403,7 @@ where
 
 struct InMemHotStore<C, P, A, K>
 where
-    C: Eq + Hash + Sync + Send,
+    C: Clone + Eq + Hash + Sync + Send,
     A: Clone + Sync + Send,
     P: Clone + Sync + Send,
     K: Clone + Sync + Send,
@@ -413,10 +467,18 @@ fn hot_state_write<T>(lock: &std::sync::RwLock<T>) -> HotStateWriteGuard<'_, T> 
 // See rspace/src/main/scala/coop/rchain/rspace/HotStore.scala
 impl<C, P, A, K> HotStore<C, P, A, K> for InMemHotStore<C, P, A, K>
 where
-    C: Clone + Debug + Hash + Eq + RhoPathEncode + ColdStoreDecode + Send + Sync,
-    P: Clone + Debug + Send + Sync,
+    C: Clone
+        + Debug
+        + Hash
+        + Eq
+        + RhoPathEncode
+        + StableHashSerialize
+        + ColdStoreDecode
+        + Send
+        + Sync,
+    P: Clone + Debug + StableHashSerialize + Send + Sync,
     A: Clone + Debug + Serialize + RhoPathEncode + ColdStoreDecode + Send + Sync,
-    K: Clone + Debug + Send + Sync,
+    K: Clone + Debug + StableHashSerialize + Send + Sync,
 {
     fn snapshot(&self) -> HotStoreState<C, P, A, K> {
         let state = self.state.read().expect("hot store state read lock");
@@ -438,11 +500,22 @@ where
         metrics::counter!(HOT_STORE_GET_CONT_CALLS_METRIC, "source" => RSPACE_METRICS_SOURCE)
             .increment(1);
         let state = self.state.read().expect("hot store state read lock");
-        if let Some(continuations) = state.continuations.get(channels) {
+        if let Some(records) = state.continuations.resting_records(channels) {
             let version = state.continuation_version(channels);
+            if let Some(version) = &version {
+                version.bind_paths(
+                    records
+                        .iter()
+                        .map(|record| Arc::clone(record.path()))
+                        .collect(),
+                );
+            }
             let result = with_installed(
-                state.installed_continuations.get(channels).cloned(),
-                continuations.clone(),
+                state.continuations.installed(channels),
+                records
+                    .into_iter()
+                    .map(|record| record.value().clone())
+                    .collect(),
             );
             return (version, result);
         }
@@ -451,14 +524,29 @@ where
             .increment(1);
         let from_history_store = self.get_cont_from_history_store(channels);
         let mut state = self.state.write().expect("hot store state write lock");
-        let continuations = state
+        if !state.continuations.is_loaded(channels) {
+            state
+                .continuations
+                .set_group(channels.to_vec(), from_history_store);
+        }
+        let records = state
             .continuations
-            .entry(channels.to_vec())
-            .or_insert(from_history_store);
-        let result = continuations.clone();
-        let installed = state.installed_continuations.get(channels).cloned();
+            .resting_records(channels)
+            .expect("history-filled continuation group must be loaded");
         let version = state.continuation_version(channels);
-        (version, with_installed(installed, result))
+        if let Some(version) = &version {
+            version.bind_paths(
+                records
+                    .iter()
+                    .map(|record| Arc::clone(record.path()))
+                    .collect(),
+            );
+        }
+        let result = records
+            .into_iter()
+            .map(|record| record.value().clone())
+            .collect();
+        (version, with_installed(state.continuations.installed(channels), result))
     }
 
     fn put_continuation(&self, channels: &[C], wc: WaitingContinuation<P, K>) -> Option<bool> {
@@ -466,14 +554,12 @@ where
         metrics::counter!(HOT_STORE_PUT_CONT_CALLS_METRIC, "source" => RSPACE_METRICS_SOURCE)
             .increment(1);
 
-        let mut inserted = false;
         let has_existing = self
             .state
             .read()
             .expect("hot store state read lock")
             .continuations
-            .get(channels)
-            .is_some();
+            .is_loaded(channels);
         let from_history_store = if has_existing {
             None
         } else {
@@ -483,53 +569,32 @@ where
         };
 
         let mut state = self.state.write().expect("hot store state write lock");
+        if !state.continuations.is_loaded(channels) {
+            state
+                .continuations
+                .set_group(channels.to_vec(), from_history_store.unwrap_or_default());
+        }
+        let existing_count = state.continuations.resting_len(channels).unwrap_or(0) as u64;
+        metrics::counter!(HOT_STORE_PUT_CONT_EXISTING_COUNT_METRIC, "source" => RSPACE_METRICS_SOURCE)
+            .increment(existing_count);
+
         let __ident_build_start = std::time::Instant::now();
-        let wc_identity = Self::continuation_identity(&wc);
+        let wc_identity = encode_continuation_identity(&wc);
+        let mut canonical = wc_identity.clone();
+        encode_continuation_source_into(&wc, &mut canonical);
         metrics::counter!(HOT_STORE_PUT_CONT_IDENTITY_BUILD_NS_METRIC, "source" => RSPACE_METRICS_SOURCE)
             .increment(__ident_build_start.elapsed().as_nanos() as u64);
-        match state.continuations.entry(channels.to_vec()) {
-            Entry::Occupied(mut occupied) => {
-                let existing_count = occupied.get().len() as u64;
-                metrics::counter!(HOT_STORE_PUT_CONT_EXISTING_COUNT_METRIC, "source" => RSPACE_METRICS_SOURCE)
-                    .increment(existing_count);
-                let __cmp_start = std::time::Instant::now();
-                let dup = occupied
-                    .get()
-                    .iter()
-                    .any(|existing| Self::continuation_identity(existing) == wc_identity);
-                metrics::counter!(HOT_STORE_PUT_CONT_IDENTITY_COMPARE_NS_METRIC, "source" => RSPACE_METRICS_SOURCE)
-                    .increment(__cmp_start.elapsed().as_nanos() as u64);
-                if !dup {
-                    occupied.get_mut().insert(0, wc);
-                    inserted = true;
-                } else {
-                    metrics::counter!(HOT_STORE_PUT_CONT_DUPLICATES_METRIC, "source" => RSPACE_METRICS_SOURCE)
-                        .increment(1);
-                }
-            }
-            Entry::Vacant(vacant) => {
-                let mut new_continuations = from_history_store.unwrap_or_default();
-                let existing_count = new_continuations.len() as u64;
-                metrics::counter!(HOT_STORE_PUT_CONT_EXISTING_COUNT_METRIC, "source" => RSPACE_METRICS_SOURCE)
-                    .increment(existing_count);
-                let __cmp_start = std::time::Instant::now();
-                let dup = new_continuations
-                    .iter()
-                    .any(|existing| Self::continuation_identity(existing) == wc_identity);
-                metrics::counter!(HOT_STORE_PUT_CONT_IDENTITY_COMPARE_NS_METRIC, "source" => RSPACE_METRICS_SOURCE)
-                    .increment(__cmp_start.elapsed().as_nanos() as u64);
-                if !dup {
-                    new_continuations.insert(0, wc);
-                    inserted = true;
-                } else {
-                    metrics::counter!(HOT_STORE_PUT_CONT_DUPLICATES_METRIC, "source" => RSPACE_METRICS_SOURCE)
-                        .increment(1);
-                }
-                vacant.insert(new_continuations);
-            }
-        }
+        let __cmp_start = std::time::Instant::now();
+        let inserted = state
+            .continuations
+            .put_prepared(channels, wc, wc_identity, canonical);
+        metrics::counter!(HOT_STORE_PUT_CONT_IDENTITY_COMPARE_NS_METRIC, "source" => RSPACE_METRICS_SOURCE)
+            .increment(__cmp_start.elapsed().as_nanos() as u64);
         if inserted {
             state.bump_continuation_revision(channels);
+        } else {
+            metrics::counter!(HOT_STORE_PUT_CONT_DUPLICATES_METRIC, "source" => RSPACE_METRICS_SOURCE)
+                .increment(1);
         }
         metrics::counter!(HOT_STORE_PUT_CONT_TIME_NS_METRIC, "source" => RSPACE_METRICS_SOURCE)
             .increment(__put_start.elapsed().as_nanos() as u64);
@@ -538,14 +603,20 @@ where
 
     fn install_continuation(&self, channels: &[C], wc: WaitingContinuation<P, K>) -> Option<()> {
         let mut state = self.state.write().expect("hot store state write lock");
-        state.installed_continuations.insert(channels.to_vec(), wc);
+        state.continuations.install(channels, wc);
         state.bump_continuation_revision(channels);
         Some(())
     }
 
     fn remove_continuation(&self, channels: &[C], index: i32) -> Option<()> {
         let mut state = hot_state_write(&self.state);
-        let is_installed = state.installed_continuations.get(channels).is_some();
+        if !state.continuations.is_loaded(channels) {
+            let from_history_store = self.get_cont_from_history_store(channels);
+            state
+                .continuations
+                .set_group(channels.to_vec(), from_history_store);
+        }
+        let is_installed = state.continuations.contains_installed(channels);
         let removing_installed = is_installed && index == 0;
         let removed_index = if is_installed { index - 1 } else { index };
 
@@ -553,31 +624,19 @@ where
             warn!("Attempted to remove an installed continuation");
             None
         } else {
-            match state.continuations.entry(channels.to_vec()) {
-                Entry::Occupied(mut occupied) => {
-                    let len = occupied.get().len();
-                    let out_of_bounds = removed_index < 0 || removed_index as usize >= len;
-                    if out_of_bounds {
-                        warn!(index, "Index out of bounds when removing continuation");
-                        None
-                    } else {
-                        occupied.get_mut().remove(removed_index as usize);
-                        Some(())
-                    }
-                }
-                Entry::Vacant(vacant) => {
-                    let mut from_history_store = self.get_cont_from_history_store(channels);
-                    let len = from_history_store.len();
-                    let out_of_bounds = removed_index < 0 || removed_index as usize >= len;
-                    if out_of_bounds {
-                        warn!(index, "Index out of bounds when removing continuation");
-                        vacant.insert(from_history_store);
-                        None
-                    } else {
-                        from_history_store.remove(removed_index as usize);
-                        vacant.insert(from_history_store);
-                        Some(())
-                    }
+            let records = state
+                .continuations
+                .resting_records(channels)
+                .expect("continuation group was loaded before removal");
+            let path = usize::try_from(removed_index)
+                .ok()
+                .and_then(|index| records.get(index))
+                .map(|record| Arc::clone(record.path()));
+            match path {
+                Some(path) => state.continuations.remove_path(channels, &path).map(|_| ()),
+                None => {
+                    warn!(index, "Index out of bounds when removing continuation");
+                    None
                 }
             }
         };
@@ -734,7 +793,7 @@ where
             transition
                 .join_channels
                 .iter()
-                .filter(|channel| !state.joins.contains_key(*channel))
+                .filter(|channel| !state.joins.is_loaded(*channel))
                 .cloned()
                 .collect::<Vec<_>>()
         };
@@ -749,15 +808,15 @@ where
         let mut state = hot_state_write(&self.state);
 
         let mut authoritative_continuation = None;
-        let mut ordinary_removal_index = None;
+        let mut ordinary_removal_path = None;
         if let Some(expected) = &transition.continuation {
             let current_version = state.continuation_version(&transition.channels);
             if expected.address.version.is_none() || expected.address.version != current_version {
                 return Ok(AcceptedMatchOutcome::Stale);
             }
 
-            let installed = state.installed_continuations.get(&transition.channels);
-            let (current, ordinary_index, is_installed) =
+            let installed = state.continuations.installed(&transition.channels);
+            let (current, ordinary_path, is_installed) =
                 if installed.is_some() && expected.address.index == 0 {
                     (installed, None, true)
                 } else {
@@ -769,14 +828,16 @@ where
                     let Some(index) = adjusted.and_then(|index| usize::try_from(index).ok()) else {
                         return Ok(AcceptedMatchOutcome::Stale);
                     };
-                    (
-                        state
-                            .continuations
-                            .get(&transition.channels)
-                            .and_then(|continuations| continuations.get(index)),
-                        Some(index),
-                        false,
-                    )
+                    let path = expected
+                        .address
+                        .version
+                        .as_ref()
+                        .and_then(|version| version.path(index));
+                    let current = path
+                        .as_deref()
+                        .and_then(|path| state.continuations.get_path(&transition.channels, path))
+                        .map(|record| record.value().clone());
+                    (current, path, false)
                 };
             let Some(current) = current else {
                 return Ok(AcceptedMatchOutcome::Stale);
@@ -790,7 +851,7 @@ where
             }
             authoritative_continuation = Some(current.clone());
             if !current.persist && !is_installed {
-                ordinary_removal_index = ordinary_index;
+                ordinary_removal_path = ordinary_path;
             }
         }
 
@@ -810,40 +871,29 @@ where
             Err(error) => return Err(error.into()),
         }
 
-        if let Some(index) = ordinary_removal_index {
+        if let Some(path) = ordinary_removal_path {
             state
                 .continuations
-                .get_mut(&transition.channels)
-                .expect("a validated continuation group must remain loaded")
-                .remove(index);
+                .remove_path(&transition.channels, &path)
+                .expect("a validated continuation path must remain present");
             state.bump_continuation_revision(&transition.channels);
 
-            let group_remains = state
-                .installed_continuations
-                .contains_key(&transition.channels) ||
+            let group_remains = state.continuations.contains_installed(&transition.channels) ||
                 state
                     .continuations
-                    .get(&transition.channels)
-                    .is_some_and(|continuations| !continuations.is_empty());
+                    .resting_len(&transition.channels)
+                    .is_some_and(|len| len != 0);
             if !group_remains {
                 for channel in transition.join_channels {
-                    let joins = match state.joins.entry(channel) {
-                        Entry::Occupied(occupied) => occupied.into_mut(),
-                        Entry::Vacant(vacant) => {
-                            let prepared = prepared_joins
-                                .iter_mut()
-                                .find(|(prepared_channel, _)| prepared_channel == vacant.key())
-                                .map(|(_, joins)| std::mem::take(joins))
-                                .unwrap_or_default();
-                            vacant.insert(prepared)
-                        }
-                    };
-                    if let Some(index) = joins
-                        .iter()
-                        .position(|join| join.as_slice() == transition.channels.as_slice())
-                    {
-                        joins.remove(index);
+                    if !state.joins.is_loaded(&channel) {
+                        let prepared = prepared_joins
+                            .iter_mut()
+                            .find(|(prepared_channel, _)| prepared_channel == &channel)
+                            .map(|(_, joins)| std::mem::take(joins))
+                            .unwrap_or_default();
+                        state.joins.set_channel(channel.clone(), prepared);
                     }
+                    let _ = state.joins.remove(&channel, &transition.channels);
                 }
             }
         }
@@ -859,16 +909,13 @@ where
         metrics::counter!(HOT_STORE_GET_JOINS_CALLS_METRIC, "source" => RSPACE_METRICS_SOURCE)
             .increment(1);
         let state = self.state.read().expect("hot store state read lock");
-        let joins = state.joins.get(channel).cloned();
-        let installed_joins = state.installed_joins.get(channel).cloned();
+        let joins = state.joins.resting_values(channel);
+        let installed_joins = state.joins.installed_values(channel);
         drop(state);
 
         match joins {
             Some(joins_data) => {
-                let mut result = Vec::new();
-                if let Some(installed) = installed_joins {
-                    result.extend(installed);
-                }
+                let mut result = installed_joins;
                 result.extend(joins_data);
                 result
             }
@@ -876,16 +923,17 @@ where
                 metrics::counter!(HOT_STORE_GET_JOINS_HISTORY_FILL_METRIC, "source" => RSPACE_METRICS_SOURCE)
                     .increment(1);
                 let from_history_store = self.get_joins_from_history_store(channel);
-                self.state
-                    .write()
-                    .expect("hot store state write lock")
-                    .joins
-                    .insert(channel.clone(), from_history_store.clone());
-                let mut result = Vec::new();
-                if let Some(installed) = installed_joins {
-                    result.extend(installed);
+                let mut state = self.state.write().expect("hot store state write lock");
+                if !state.joins.is_loaded(channel) {
+                    state.joins.set_channel(channel.clone(), from_history_store);
                 }
-                result.extend(from_history_store);
+                let mut result = state.joins.installed_values(channel);
+                result.extend(
+                    state
+                        .joins
+                        .resting_values(channel)
+                        .expect("history-filled join channel must be loaded"),
+                );
                 result
             }
         }
@@ -900,8 +948,7 @@ where
             .read()
             .expect("hot store state read lock")
             .joins
-            .get(channel)
-            .is_some();
+            .is_loaded(channel);
         let from_history_store = if has_existing {
             None
         } else {
@@ -911,20 +958,12 @@ where
         };
 
         let mut state = self.state.write().expect("hot store state write lock");
-        match state.joins.entry(channel.clone()) {
-            Entry::Occupied(mut occupied) => {
-                if !occupied.get().iter().any(|j| j.as_slice() == join) {
-                    occupied.get_mut().insert(0, join.to_vec());
-                }
-            }
-            Entry::Vacant(vacant) => {
-                let mut joins = from_history_store.unwrap_or_default();
-                if !joins.iter().any(|j| j.as_slice() == join) {
-                    joins.insert(0, join.to_vec());
-                }
-                vacant.insert(joins);
-            }
+        if !state.joins.is_loaded(channel) {
+            state
+                .joins
+                .set_channel(channel.clone(), from_history_store.unwrap_or_default());
         }
+        let _ = state.joins.put(channel, join);
         metrics::counter!(HOT_STORE_PUT_JOIN_TIME_NS_METRIC, "source" => RSPACE_METRICS_SOURCE)
             .increment(__start.elapsed().as_nanos() as u64);
         Some(())
@@ -932,33 +971,23 @@ where
 
     fn install_join(&self, channel: &C, join: &[C]) -> Option<()> {
         let mut state = self.state.write().expect("hot store state write lock");
-        match state.installed_joins.entry(channel.clone()) {
-            Entry::Occupied(mut occupied) => {
-                if !occupied.get().iter().any(|j| j.as_slice() == join) {
-                    occupied.get_mut().insert(0, join.to_vec());
-                }
-            }
-            Entry::Vacant(vacant) => {
-                vacant.insert(vec![join.to_vec()]);
-            }
-        }
+        let _ = state.joins.install(channel, join);
         Some(())
     }
 
     fn remove_join(&self, channel: &C, join: &[C]) -> Option<()> {
         let mut state = hot_state_write(&self.state);
-        let has_join_in_state = state.joins.get(channel).is_some();
+        let has_join_in_state = state.joins.is_loaded(channel);
         let current_continuations = {
             let mut conts = state
-                .installed_continuations
-                .get(join)
+                .continuations
+                .installed(join)
                 .map(|c| vec![c.clone()])
                 .unwrap_or_default();
             conts.extend(
                 state
                     .continuations
-                    .get(join)
-                    .cloned()
+                    .resting_values(join)
                     .unwrap_or_else(|| self.get_cont_from_history_store(join)),
             );
             conts
@@ -969,158 +998,151 @@ where
         if !do_remove {
             if !has_join_in_state {
                 let joins_in_history_store = self.get_joins_from_history_store(channel);
-                state.joins.insert(channel.clone(), joins_in_history_store);
+                state
+                    .joins
+                    .set_channel(channel.clone(), joins_in_history_store);
             }
             Some(())
         } else {
-            match state.joins.entry(channel.clone()) {
-                Entry::Occupied(mut occupied) => {
-                    if let Some(idx) = occupied.get().iter().position(|x| x.as_slice() == join) {
-                        occupied.get_mut().remove(idx);
-                    } else {
-                        warn!("Join not found when removing join");
-                    }
-                    Some(())
-                }
-                Entry::Vacant(vacant) => {
-                    let mut joins_in_history_store = self.get_joins_from_history_store(channel);
-                    if let Some(idx) = joins_in_history_store
-                        .iter()
-                        .position(|x| x.as_slice() == join)
-                    {
-                        joins_in_history_store.remove(idx);
-                    } else {
-                        warn!("Join not found when removing join");
-                    }
-                    vacant.insert(joins_in_history_store);
-                    Some(())
-                }
+            if !has_join_in_state {
+                let joins_in_history_store = self.get_joins_from_history_store(channel);
+                state
+                    .joins
+                    .set_channel(channel.clone(), joins_in_history_store);
             }
+            if state.joins.remove(channel, join).is_none() {
+                warn!("Join not found when removing join");
+            }
+            Some(())
         }
     }
 
     fn changes(&self) -> Vec<HotStoreAction<C, P, A, K>> {
         let cache = self.state.read().expect("hot store state read lock");
-        let continuations: Vec<HotStoreAction<C, P, A, K>> = cache
+        let capacity = cache
             .continuations
-            .iter()
-            .map(|(k, v)| {
-                if v.is_empty() {
+            .loaded_group_count()
+            .checked_add(cache.data.loaded_channel_count())
+            .and_then(|count| count.checked_add(cache.joins.loaded_channel_count()))
+            .expect("resident group counts must fit the address space that stores them");
+        let mut actions = Vec::with_capacity(capacity);
+
+        cache
+            .continuations
+            .visit_loaded_records(|channels, continuations| {
+                actions.push(if continuations.is_empty() {
                     HotStoreAction::Delete(DeleteAction::DeleteContinuations(DeleteContinuations {
-                        channels: k.clone(),
+                        channels: channels.to_vec(),
                     }))
                 } else {
                     HotStoreAction::Insert(InsertAction::InsertContinuations(InsertContinuations {
-                        channels: k.clone(),
-                        continuations: v.clone(),
+                        channels: channels.to_vec(),
+                        continuations,
                     }))
-                }
-            })
-            .collect();
+                });
+            });
 
-        let data: Vec<HotStoreAction<C, P, A, K>> = cache
+        cache
             .data
-            .loaded_records()
-            .expect("PathMap-backed hot store must decode values it encoded")
-            .into_iter()
-            .map(|entry| {
-                let (k, v) = entry;
-                if v.is_empty() {
-                    HotStoreAction::Delete(DeleteAction::DeleteData(DeleteData { channel: k }))
+            .try_visit_loaded_records(|channel, data| {
+                actions.push(if data.is_empty() {
+                    HotStoreAction::Delete(DeleteAction::DeleteData(DeleteData { channel }))
                 } else {
-                    HotStoreAction::Insert(InsertAction::InsertData(InsertData {
-                        channel: k,
-                        data: v,
-                    }))
-                }
+                    HotStoreAction::Insert(InsertAction::InsertData(InsertData { channel, data }))
+                });
+                Ok(())
             })
-            .collect();
+            .expect("PathMap-backed hot store must decode values it encoded");
 
-        let joins: Vec<HotStoreAction<C, P, A, K>> = cache
-            .joins
-            .iter()
-            .map(|entry| {
-                let (k, v) = entry;
-                if v.is_empty() {
-                    HotStoreAction::Delete(DeleteAction::DeleteJoins(DeleteJoins {
-                        channel: k.clone(),
-                    }))
-                } else {
-                    HotStoreAction::Insert(InsertAction::InsertJoins(InsertJoins {
-                        channel: k.clone(),
-                        joins: v.clone(),
-                    }))
-                }
-            })
-            .collect();
+        cache.joins.visit_loaded_records(|channel, joins| {
+            actions.push(if joins.is_empty() {
+                HotStoreAction::Delete(DeleteAction::DeleteJoins(DeleteJoins { channel }))
+            } else {
+                HotStoreAction::Insert(InsertAction::InsertJoins(InsertJoins { channel, joins }))
+            });
+        });
 
-        [continuations, data, joins].concat()
+        actions
     }
 
     fn checkpoint_changes(&self) -> Result<Vec<HotStoreAction<C, P, A, K>>, RSpaceError> {
         let cache = self.state.read().expect("hot store state read lock");
-        let continuations: Vec<HotStoreAction<C, P, A, K>> = cache
+        let group_count = cache
             .continuations
-            .iter()
-            .map(|(channels, values)| {
-                if values.is_empty() {
-                    HotStoreAction::Delete(DeleteAction::DeleteContinuations(DeleteContinuations {
-                        channels: channels.clone(),
-                    }))
-                } else {
-                    HotStoreAction::Insert(InsertAction::InsertContinuations(InsertContinuations {
-                        channels: channels.clone(),
-                        continuations: values.clone(),
-                    }))
-                }
-            })
-            .collect();
+            .loaded_group_count()
+            .checked_add(cache.data.loaded_channel_count())
+            .and_then(|count| count.checked_add(cache.joins.loaded_channel_count()))
+            .ok_or(RecordIndexError::EncodedCardinalityOverflow(u128::MAX))?;
+        let mut actions = Vec::new();
+        actions
+            .try_reserve_exact(group_count)
+            .map_err(|_| RecordIndexError::AllocationFailure(group_count))?;
 
-        let data: Vec<HotStoreAction<C, P, A, K>> = cache
-            .data
-            .loaded_canonical_records()?
-            .into_iter()
-            .map(|record| {
-                if record.datum_count == 0 {
-                    HotStoreAction::Delete(DeleteAction::DeleteCanonicalData(DeleteCanonicalData {
-                        hash: record.channel_hash,
-                    }))
+        cache
+            .continuations
+            .try_visit_loaded_canonical_records(|record| {
+                actions.push(if record.record_count == 0 {
+                    HotStoreAction::Delete(DeleteAction::DeleteCanonicalCollection(
+                        DeleteCanonicalCollection::new(record.kind, record.history_key_hash),
+                    ))
                 } else {
-                    HotStoreAction::Insert(InsertAction::InsertCanonicalData(InsertCanonicalData {
-                        hash: record.channel_hash,
-                        encoded_persisted_data: record.encoded_persisted_data,
-                        datum_count: record.datum_count,
-                    }))
-                }
-            })
-            .collect();
+                    HotStoreAction::Insert(InsertAction::InsertCanonicalCollection(
+                        InsertCanonicalCollection::from_trusted_parts(
+                            record.kind,
+                            record.history_key_hash,
+                            record.encoded_persisted_data,
+                            record.record_count,
+                        ),
+                    ))
+                });
+                Ok(())
+            })?;
 
-        let joins: Vec<HotStoreAction<C, P, A, K>> = cache
-            .joins
-            .iter()
-            .map(|(channel, values)| {
-                if values.is_empty() {
-                    HotStoreAction::Delete(DeleteAction::DeleteJoins(DeleteJoins {
-                        channel: channel.clone(),
-                    }))
-                } else {
-                    HotStoreAction::Insert(InsertAction::InsertJoins(InsertJoins {
-                        channel: channel.clone(),
-                        joins: values.clone(),
-                    }))
-                }
-            })
-            .collect();
+        cache.data.try_visit_loaded_canonical_records(|record| {
+            actions.push(if record.datum_count == 0 {
+                HotStoreAction::Delete(DeleteAction::DeleteCanonicalData(DeleteCanonicalData::new(
+                    record.channel_hash,
+                )))
+            } else {
+                HotStoreAction::Insert(InsertAction::InsertCanonicalData(
+                    InsertCanonicalData::from_trusted_parts(
+                        record.channel_hash,
+                        record.encoded_persisted_data,
+                        record.datum_count,
+                    ),
+                ))
+            });
+            Ok(())
+        })?;
 
-        Ok([continuations, data, joins].concat())
+        cache.joins.try_visit_loaded_canonical_records(|record| {
+            actions.push(if record.record_count == 0 {
+                HotStoreAction::Delete(DeleteAction::DeleteCanonicalCollection(
+                    DeleteCanonicalCollection::new(record.kind, record.history_key_hash),
+                ))
+            } else {
+                HotStoreAction::Insert(InsertAction::InsertCanonicalCollection(
+                    InsertCanonicalCollection::from_trusted_parts(
+                        record.kind,
+                        record.history_key_hash,
+                        record.encoded_persisted_data,
+                        record.record_count,
+                    ),
+                ))
+            });
+            Ok(())
+        })?;
+
+        debug_assert_eq!(actions.len(), group_count);
+        Ok(actions)
     }
 
     fn to_map(&self) -> HashMap<Vec<C>, Row<P, A, K>> {
         let state = self.state.read().expect("hot store state read lock");
         let mut map = HashMap::with_capacity(
             state.data.loaded_channel_count() +
-                state.continuations.len() +
-                state.installed_continuations.len(),
+                state.continuations.loaded_group_count() +
+                state.continuations.installed_count(),
         );
 
         // Data and continuations use different key shapes: a datum is indexed
@@ -1140,26 +1162,26 @@ where
             }
         }
 
-        for (channels, continuations) in &state.continuations {
+        for (channels, continuations) in state.continuations.loaded_records() {
             if !continuations.is_empty() {
-                map.entry(channels.clone())
+                map.entry(channels.to_vec())
                     .or_insert_with(|| Row {
                         data: Vec::new(),
                         wks: Vec::new(),
                     })
                     .wks
-                    .extend(continuations.iter().cloned());
+                    .extend(continuations);
             }
         }
 
-        for (channels, continuation) in &state.installed_continuations {
-            map.entry(channels.clone())
+        for (channels, continuation) in state.continuations.installed_records() {
+            map.entry(channels.to_vec())
                 .or_insert_with(|| Row {
                     data: Vec::new(),
                     wks: Vec::new(),
                 })
                 .wks
-                .push(continuation.clone());
+                .push(continuation);
         }
 
         map
@@ -1170,14 +1192,12 @@ where
         println!("\nHot Store");
 
         println!("Continuations:");
-        for entry in hot_store_state.continuations.iter() {
-            let (key, value) = (entry.0, entry.1);
+        for (key, value) in hot_store_state.continuations.loaded_records() {
             println!("Key: {:?}, Value: {:?}", key, value);
         }
 
         println!("\nInstalled Continuations:");
-        for entry in hot_store_state.installed_continuations.iter() {
-            let (key, value) = (entry.0, entry.1);
+        for (key, value) in hot_store_state.continuations.installed_records() {
             println!("Key: {:?}, Value: {:?}", key, value);
         }
 
@@ -1191,14 +1211,12 @@ where
         }
 
         println!("\nJoins:");
-        for entry in hot_store_state.joins.iter() {
-            let (key, value) = (entry.0, entry.1);
+        for (key, value) in hot_store_state.joins.loaded_records() {
             println!("Key: {:?}, Value: {:?}", key, value);
         }
 
         println!("\nInstalled Joins:");
-        for entry in hot_store_state.installed_joins.iter() {
-            let (key, value) = (entry.0, entry.1);
+        for (key, value) in hot_store_state.joins.installed_records() {
             println!("Key: {:?}, Value: {:?}", key, value);
         }
 
@@ -1228,10 +1246,8 @@ where
         let mut state = self.state.write().expect("hot store state write lock");
         state.bump_continuation_generation();
         state.continuations.clear();
-        state.installed_continuations.clear();
         state.data.clear();
         state.joins.clear();
-        state.installed_joins.clear();
         drop(state);
 
         let mut history_cache = self
@@ -1269,12 +1285,10 @@ where
 
     // See rspace/src/test/scala/coop/rchain/rspace/test/package.scala
     fn is_empty(&self) -> bool {
-        let store_actions = self.changes();
-        let has_insert_actions = store_actions
-            .into_iter()
-            .any(|action| matches!(action, HotStoreAction::Insert(_)));
-
-        !has_insert_actions
+        let state = self.state.read().expect("hot store state read lock");
+        !state.continuations.has_nonempty_loaded_group() &&
+            !state.data.has_nonempty_loaded_channel() &&
+            !state.joins.has_nonempty_loaded_group()
     }
 
     fn set_state(&self, new_state: HotStoreState<C, P, A, K>) {
@@ -1291,14 +1305,10 @@ where
 impl<C, P, A, K> InMemHotStore<C, P, A, K>
 where
     C: Clone + Debug + Hash + Eq + RhoPathEncode + ColdStoreDecode + Sync + Send,
-    P: Clone + Debug + Sync + Send,
+    P: Clone + Debug + StableHashSerialize + Sync + Send,
     A: Clone + Debug + Serialize + RhoPathEncode + ColdStoreDecode + Sync + Send,
-    K: Clone + Debug + Sync + Send,
+    K: Clone + Debug + StableHashSerialize + Sync + Send,
 {
-    fn continuation_identity(wc: &WaitingContinuation<P, K>) -> String {
-        format!("{:?}|{:?}|{}|{:?}", wc.patterns, wc.continuation, wc.persist, wc.peeks)
-    }
-
     fn now_millis() -> u64 {
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -1338,22 +1348,22 @@ where
             return;
         }
 
-        let cont_items: usize = state.continuations.values().map(|v| v.len()).sum();
+        let cont_items = state.continuations.resting_record_count();
         let data_items = state.data.cardinality();
-        let joins_items: usize = state.joins.values().map(|v| v.len()).sum();
-        let installed_cont_items = state.installed_continuations.len();
-        let installed_joins_items: usize = state.installed_joins.values().map(|v| v.len()).sum();
+        let joins_items = state.joins.resting_record_count();
+        let installed_cont_items = state.continuations.installed_count();
+        let installed_joins_items = state.joins.installed_record_count();
 
         metrics::gauge!(HOT_STORE_STATE_CONT_SIZE_METRIC, "source" => RSPACE_METRICS_SOURCE)
-            .set(state.continuations.len() as f64);
+            .set(state.continuations.loaded_group_count() as f64);
         metrics::gauge!(HOT_STORE_STATE_DATA_SIZE_METRIC, "source" => RSPACE_METRICS_SOURCE)
             .set(state.data.loaded_channel_count() as f64);
         metrics::gauge!(HOT_STORE_STATE_JOINS_SIZE_METRIC, "source" => RSPACE_METRICS_SOURCE)
-            .set(state.joins.len() as f64);
+            .set(state.joins.loaded_channel_count() as f64);
         metrics::gauge!(HOT_STORE_STATE_INSTALLED_CONT_SIZE_METRIC, "source" => RSPACE_METRICS_SOURCE)
-            .set(state.installed_continuations.len() as f64);
+            .set(state.continuations.installed_count() as f64);
         metrics::gauge!(HOT_STORE_STATE_INSTALLED_JOINS_SIZE_METRIC, "source" => RSPACE_METRICS_SOURCE)
-            .set(state.installed_joins.len() as f64);
+            .set(state.joins.installed_channel_count() as f64);
         metrics::gauge!(HOT_STORE_STATE_CONT_ITEMS_METRIC, "source" => RSPACE_METRICS_SOURCE)
             .set(cont_items as f64);
         metrics::gauge!(HOT_STORE_STATE_DATA_ITEMS_METRIC, "source" => RSPACE_METRICS_SOURCE)
@@ -1502,6 +1512,10 @@ where
     }
 }
 
+#[cfg(test)]
+#[path = "../../tests/hot_store/group_scoped_version.rs"]
+mod group_scoped_version_tests;
+
 #[cfg(feature = "accepted-match-transition-experiment")]
 #[doc(hidden)]
 #[path = "../../tests/hot_store/accepted_match_transition_experiment.rs"]
@@ -1525,7 +1539,7 @@ impl HotStoreInstances {
             + Send
             + Sync
             + 'static,
-        P: Default + Clone + Debug + Send + Sync + 'static,
+        P: Default + Clone + Debug + StableHashSerialize + Send + Sync + 'static,
         A: Default
             + Clone
             + Debug
@@ -1535,7 +1549,7 @@ impl HotStoreInstances {
             + Send
             + Sync
             + 'static,
-        K: Default + Clone + Debug + Send + Sync + 'static,
+        K: Default + Clone + Debug + StableHashSerialize + Send + Sync + 'static,
     {
         Box::new(InMemHotStore {
             state: std::sync::RwLock::new(
@@ -1561,7 +1575,7 @@ impl HotStoreInstances {
             + 'static
             + Send
             + Sync,
-        P: Default + Clone + Debug + 'static + Send + Sync,
+        P: Default + Clone + Debug + StableHashSerialize + 'static + Send + Sync,
         A: Default
             + Clone
             + Debug
@@ -1571,7 +1585,7 @@ impl HotStoreInstances {
             + 'static
             + Send
             + Sync,
-        K: Default + Clone + Debug + 'static + Send + Sync,
+        K: Default + Clone + Debug + StableHashSerialize + 'static + Send + Sync,
     {
         HotStoreInstances::create_from_hs_and_hr(HotStoreState::default(), history_reader)
     }

@@ -6,8 +6,12 @@ use shared::rust::{Byte, ByteVector};
 
 use crate::rspace::errors::RootError;
 use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+use crate::rspace::history::cold_store::{ColdLeafAddress, ColdLeafStoreError};
+use crate::rspace::history::instances::radix_history::RadixHistory;
 use crate::rspace::history::radix_tree::{ExportData, ExportDataSettings, sequential_export};
-use crate::rspace::shared::trie_exporter::{KeyHash, TrieExporter, TrieNode};
+use crate::rspace::shared::trie_exporter::{
+    AuthenticatedTraversalPage, KeyHash, StateExportError, TrieExporter, TrieNode,
+};
 
 pub trait RSpaceExporter: TrieExporter + Send + Sync {
     // Get current root
@@ -17,62 +21,98 @@ pub trait RSpaceExporter: TrieExporter + Send + Sync {
 pub struct RSpaceExporterInstance;
 
 impl RSpaceExporterInstance {
-    pub fn traverse_history(
+    pub fn traverse_history_page(
         start_path: Vec<(Blake2b256Hash, Option<Byte>)>,
         skip: i32,
         take: i32,
-        get_from_history: Arc<dyn Fn(&ByteVector) -> Option<ByteVector>>,
-    ) -> Vec<TrieNode<Blake2b256Hash>> {
+        get_from_history: Arc<
+            dyn Fn(
+                &ByteVector,
+            )
+                -> Result<Option<ByteVector>, crate::rspace::errors::RadixTreeError>,
+        >,
+    ) -> Result<AuthenticatedTraversalPage<Blake2b256Hash>, StateExportError> {
         let settings = ExportDataSettings {
             flag_node_prefixes: false,
             flag_node_keys: true,
             flag_node_values: false,
-            flag_leaf_prefixes: false,
+            flag_leaf_prefixes: true,
             flag_leaf_values: true,
         };
 
-        fn create_last_prefix(prefix_vec: Vec<Blake2b256Hash>) -> Option<ByteVector> {
+        fn create_last_prefix(
+            prefix_vec: Vec<Blake2b256Hash>,
+        ) -> Result<Option<ByteVector>, StateExportError> {
             if prefix_vec.is_empty() {
-                None // Start from root
+                Ok(None)
             } else {
-                // Max prefix length = 127 bytes.
-                // Prefix coded 5 Blake256 elements (0 - size, 1..4 - value of prefix).
-                assert!(prefix_vec.len() >= 5, "RSpace Exporter: Invalid path during export");
+                if prefix_vec.len() != 5 {
+                    return Err(StateExportError::InvalidPath(format!(
+                        "cursor must contain exactly five prefix components, found {}",
+                        prefix_vec.len()
+                    )));
+                }
+                if prefix_vec.iter().any(|component| component.0.len() != 32) {
+                    return Err(StateExportError::InvalidPath(
+                        "cursor prefix components must contain 32 bytes".to_string(),
+                    ));
+                }
 
                 let (size_prefix, vec): (usize, Vec<Blake2b256Hash>) =
                     (prefix_vec[0].bytes()[0] as usize & 0xff, prefix_vec[1..].to_vec());
-
+                if size_prefix > 127 {
+                    return Err(StateExportError::InvalidPath(format!(
+                        "cursor prefix length {size_prefix} exceeds 127 bytes"
+                    )));
+                }
                 let mut prefix128 = vec[0].bytes();
                 prefix128.extend(vec[1].bytes());
                 prefix128.extend(vec[2].bytes());
                 prefix128.extend(vec[3].bytes());
 
-                Some(prefix128.iter().take(size_prefix).cloned().collect())
+                Ok(Some(prefix128.into_iter().take(size_prefix).collect()))
             }
         }
 
         fn construct_nodes(
+            leaf_prefixes: Vec<Vec<u8>>,
             leaf_keys: Vec<Vec<u8>>,
             node_keys: Vec<Vec<u8>>,
-        ) -> Vec<TrieNode<Blake2b256Hash>> {
+        ) -> Result<Vec<TrieNode<Blake2b256Hash>>, StateExportError> {
+            if leaf_prefixes.len() != leaf_keys.len() {
+                return Err(StateExportError::InvalidPath(format!(
+                    "radix traversal returned {} leaf prefixes for {} leaf digests",
+                    leaf_prefixes.len(),
+                    leaf_keys.len()
+                )));
+            }
             let mut data_keys: Vec<TrieNode<Blake2b256Hash>> = leaf_keys
                 .into_iter()
-                .map(|key| {
-                    let hash = Blake2b256Hash::from_bytes(key);
-                    TrieNode::new(hash, true, Vec::new())
+                .zip(leaf_prefixes)
+                .map(|(key, prefix)| {
+                    let address = ColdLeafAddress::from_history_prefix(
+                        &prefix,
+                        Blake2b256Hash::from_bytes(key),
+                    )?;
+                    Ok(TrieNode::leaf(address))
                 })
-                .collect();
+                .collect::<Result<_, ColdLeafStoreError>>()?;
 
-            let history_keys: Vec<TrieNode<Blake2b256Hash>> = node_keys
+            let history_keys = node_keys
                 .into_iter()
                 .map(|key| {
-                    let hash = Blake2b256Hash::from_bytes(key);
-                    TrieNode::new(hash, false, Vec::new())
+                    if key.len() != 32 {
+                        return Err(StateExportError::InvalidPath(format!(
+                            "history digest must contain 32 bytes, found {}",
+                            key.len()
+                        )));
+                    }
+                    Ok(TrieNode::history(Blake2b256Hash::from_bytes(key)))
                 })
-                .collect();
+                .collect::<Result<Vec<_>, _>>()?;
 
             data_keys.extend(history_keys);
-            data_keys
+            Ok(data_keys)
         }
 
         fn construct_last_path(
@@ -103,23 +143,33 @@ impl RSpaceExporterInstance {
             ]
         }
 
-        fn construct_last_node(
-            last_key: ByteVector,
-            last_path: Vec<(Blake2b256Hash, Option<Byte>)>,
-        ) -> Vec<TrieNode<Blake2b256Hash>> {
-            let hash = Blake2b256Hash::from_bytes(last_key);
-            vec![TrieNode::new(hash, false, last_path)]
-        }
-
         if start_path.is_empty() {
-            Vec::new()
+            Err(StateExportError::InvalidPath(
+                "state-export cursor has no root component".to_string(),
+            ))
         } else {
+            let requested_start_path = start_path.clone();
             let path_vec: Vec<Blake2b256Hash> =
                 start_path.iter().map(|path| path.0.clone()).collect();
-            let (root_hash, prefix_vec) =
-                (path_vec.first().unwrap(), path_vec.split_first().map(|(_, tail)| tail).unwrap());
+            let (root_hash, prefix_vec) = path_vec.split_first().ok_or_else(|| {
+                StateExportError::InvalidPath("state-export path has no root".to_string())
+            })?;
 
-            let last_prefix = create_last_prefix(prefix_vec.to_vec());
+            let last_prefix = create_last_prefix(prefix_vec.to_vec())?;
+
+            // The canonical empty history root is content-addressed but is not
+            // required to be materialized in the history store.  Its complete
+            // export is consequently the zero-object terminal page.
+            if skip == 0 &&
+                prefix_vec.is_empty() &&
+                *root_hash == RadixHistory::empty_root_node_hash()
+            {
+                return AuthenticatedTraversalPage::from_raw_cursor(
+                    requested_start_path.clone(),
+                    Vec::new(),
+                    requested_start_path,
+                );
+            }
             // println!("\nroot_hash bytes: {:?}", root_hash.bytes());
             // println!("\nlast_prefix: {:?}", last_prefix);
 
@@ -130,8 +180,7 @@ impl RSpaceExporterInstance {
                 take,
                 get_from_history,
                 settings,
-            )
-            .expect("RSpace Exporter: Failed to export");
+            )?;
 
             // println!("\nexported: {:?}", exp_res);
 
@@ -140,29 +189,16 @@ impl RSpaceExporterInstance {
                 node_prefixes: _,
                 node_keys,
                 node_values: _,
-                leaf_prefixes: _,
+                leaf_prefixes,
                 leaf_values: leaf_keys,
             } = data;
 
-            let nodes = construct_nodes(leaf_keys, node_keys.clone());
-            let mut nodes_without_last = if !nodes.is_empty() {
-                nodes[..nodes.len() - 1].to_vec()
-            } else {
-                Vec::new()
-            };
-
-            let last_path = match new_last_prefix_opt {
+            let nodes = construct_nodes(leaf_prefixes, leaf_keys, node_keys)?;
+            let raw_next_path = match new_last_prefix_opt {
                 Some(bytes) => construct_last_path(bytes, root_hash.clone()),
                 None => Vec::new(),
             };
-
-            let last_history_node = match node_keys.last() {
-                Some(bytes) => construct_last_node(bytes.clone(), last_path),
-                None => Vec::new(),
-            };
-
-            nodes_without_last.extend(last_history_node);
-            nodes_without_last
+            AuthenticatedTraversalPage::from_raw_cursor(requested_start_path, nodes, raw_next_path)
         }
     }
 

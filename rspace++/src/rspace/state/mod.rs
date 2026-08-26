@@ -1,5 +1,9 @@
+pub(crate) mod closure_verifier;
+pub(crate) mod legacy_state_migration;
+pub mod import_session;
 pub mod rspace_exporter;
 pub mod rspace_importer;
 pub mod instances;
 pub mod exporters;
 pub mod rspace_state_manager;
+pub mod rspace_state_authority;

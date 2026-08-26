@@ -912,6 +912,14 @@ impl RSpaceDataIndex {
 
     pub fn is_empty(&self) -> bool { self.bag.is_empty() }
 
+    fn has_values_at_prefix(&self, prefix: &[u8]) -> bool {
+        self.bag
+            .as_pathmap()
+            .read_zipper_at_borrowed_path(prefix)
+            .val_count() !=
+            0
+    }
+
     pub fn clear_channel<C: RhoPathEncode>(&mut self, channel: &C) -> (usize, u64) {
         self.bag.remove_prefix(&RhoPathV1::datum_prefix(channel))
     }
@@ -1469,28 +1477,51 @@ impl<C, A: Clone> RSpaceDataStore<C, A> {
         Ok(records)
     }
 
+    pub(crate) fn try_visit_loaded_records(
+        &self,
+        mut visitor: impl FnMut(C, Vec<Datum<A>>) -> Result<(), DataIndexError>,
+    ) -> Result<(), DataIndexError>
+    where
+        C: Clone + ColdStoreDecode + RhoPathEncode,
+        A: Clone + ColdStoreDecode,
+    {
+        for (path, _) in self.loaded_channels.iter() {
+            let view = RhoPathV1::parse_datum_prefix(&path)?;
+            let channel = C::cold_decode(&view.channel_identity())?;
+            let datums = self.channel_data(&channel)?.unwrap_or_default();
+            visitor(channel, datums)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn has_nonempty_loaded_channel(&self) -> bool {
+        for (prefix, _) in self.loaded_channels.iter() {
+            if self.index.has_values_at_prefix(&prefix) {
+                return true;
+            }
+        }
+        false
+    }
+
     /// Return checkpoint-ready DATA records without decoding resident datum
     /// identities back into typed values.
-    pub(crate) fn loaded_canonical_records(
+    pub(crate) fn try_visit_loaded_canonical_records(
         &self,
-    ) -> Result<Vec<CanonicalDataRecord>, DataIndexError> {
-        let mut records = Vec::new();
-        records
-            .try_reserve_exact(self.loaded_channel_count)
-            .map_err(|_| DataIndexError::AllocationFailure(self.loaded_channel_count))?;
+        mut visitor: impl FnMut(CanonicalDataRecord) -> Result<(), DataIndexError>,
+    ) -> Result<(), DataIndexError> {
         for (prefix, _) in self.loaded_channels.iter() {
             let view = RhoPathV1::parse_datum_prefix(&prefix)?;
             let channel_hash = Blake2b256Hash::new(&view.channel_identity());
             let (encoded_persisted_data, datum_count) = self
                 .index
                 .encode_canonical_persisted_data_at_prefix(&prefix)?;
-            records.push(CanonicalDataRecord {
+            visitor(CanonicalDataRecord {
                 channel_hash,
                 encoded_persisted_data,
                 datum_count,
-            });
+            })?;
         }
-        Ok(records)
+        Ok(())
     }
 }
 

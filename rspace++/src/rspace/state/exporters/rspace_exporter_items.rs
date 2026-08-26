@@ -3,6 +3,8 @@ use std::sync::{Arc, Mutex};
 use shared::rust::{Byte, ByteVector};
 
 use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+use crate::rspace::history::cold_store::ColdLeafAddress;
+use crate::rspace::shared::trie_exporter::StateExportError;
 use crate::rspace::state::rspace_exporter::RSpaceExporter;
 
 //See rspace/src/main/scala/coop/rchain/rspace/state/exporters/
@@ -21,35 +23,26 @@ impl RSpaceExporterItems {
         start_path: Vec<(Blake2b256Hash, Option<Byte>)>,
         skip: i32,
         take: i32,
-    ) -> StoreItems<Blake2b256Hash, ByteVector> {
-        let exporter = exporter.lock().unwrap();
+    ) -> Result<StoreItems<Blake2b256Hash, ByteVector>, StateExportError> {
+        let exporter = exporter
+            .lock()
+            .map_err(|_| StateExportError::InvalidPath("exporter lock is poisoned".to_string()))?;
 
-        let nodes = exporter.get_nodes(start_path.clone(), skip, take);
+        let page = exporter.get_page(start_path, skip, take)?;
 
-        // Empty traversal: subtree exhausted (start_path is a leaf or unknown).
-        // Return last_path == start_path so the requester treats it as a
-        // terminal cursor (no follow-up request, chunk -> Done).
-        let Some(last_entry) = nodes.last() else {
-            return StoreItems {
-                items: vec![],
-                last_path: start_path,
-            };
-        };
-
-        let history_keys: Vec<_> = nodes.iter().filter(|node| !node.is_leaf).collect();
+        let history_keys: Vec<_> = page.nodes.iter().filter(|node| !node.is_leaf).collect();
         let keys: Vec<Blake2b256Hash> = history_keys
             .iter()
             .map(|key| key.hash.clone())
-            .collect::<std::collections::HashSet<_>>()
+            .collect::<std::collections::BTreeSet<_>>()
             .into_iter()
             .collect();
-        let items = exporter
-            .get_history_items(keys)
-            .expect("Failed to get history items in rspace_exporter_items");
+        let items = exporter.get_history_items(keys)?;
 
-        let mut last_path = last_entry.path.clone();
-        last_path.push((last_entry.hash.clone(), None));
-        StoreItems { items, last_path }
+        Ok(StoreItems {
+            items,
+            last_path: page.next_path,
+        })
     }
 
     pub fn get_data(
@@ -58,35 +51,30 @@ impl RSpaceExporterItems {
         start_path: Vec<(Blake2b256Hash, Option<Byte>)>,
         skip: i32,
         take: i32,
-    ) -> StoreItems<Blake2b256Hash, ByteVector> {
-        let exporter = exporter.lock().unwrap();
+    ) -> Result<StoreItems<Blake2b256Hash, ByteVector>, StateExportError> {
+        let exporter = exporter
+            .lock()
+            .map_err(|_| StateExportError::InvalidPath("exporter lock is poisoned".to_string()))?;
 
-        let nodes = exporter.get_nodes(start_path.clone(), skip, take);
+        let page = exporter.get_page(start_path, skip, take)?;
 
-        // Empty traversal: subtree exhausted (start_path is a leaf or unknown).
-        // Return last_path == start_path so the requester treats it as a
-        // terminal cursor (no follow-up request, chunk -> Done).
-        let Some(last_entry) = nodes.last() else {
-            return StoreItems {
-                items: vec![],
-                last_path: start_path,
-            };
-        };
-
-        let data_keys: Vec<_> = nodes.iter().filter(|node| !node.is_leaf).collect();
-        let keys: Vec<Blake2b256Hash> = data_keys
+        let data_keys: Vec<_> = page.nodes.iter().filter(|node| node.is_leaf).collect();
+        let addresses: Vec<ColdLeafAddress> = data_keys
             .iter()
-            .map(|key| key.hash.clone())
-            .collect::<std::collections::HashSet<_>>()
+            .map(|node| {
+                node.leaf_address
+                    .clone()
+                    .ok_or(StateExportError::MissingLeafAddress)
+            })
+            .collect::<Result<std::collections::BTreeSet<_>, _>>()?
             .into_iter()
             .collect();
-        let items = exporter
-            .get_data_items(keys)
-            .expect("Failed to get history items in rspace_exporter_items");
+        let items = exporter.get_data_items(addresses)?;
 
-        let mut last_path = last_entry.path.clone();
-        last_path.push((last_entry.hash.clone(), None));
-        StoreItems { items, last_path }
+        Ok(StoreItems {
+            items,
+            last_path: page.next_path,
+        })
     }
 
     pub fn get_history_and_data(
@@ -94,52 +82,48 @@ impl RSpaceExporterItems {
         start_path: Vec<(Blake2b256Hash, Option<Byte>)>,
         skip: i32,
         take: i32,
-    ) -> (StoreItems<Blake2b256Hash, ByteVector>, StoreItems<Blake2b256Hash, ByteVector>) {
+    ) -> Result<
+        (StoreItems<Blake2b256Hash, ByteVector>, StoreItems<Blake2b256Hash, ByteVector>),
+        StateExportError,
+    > {
         // Traverse and collect tuple space nodes
-        let nodes = exporter.get_nodes(start_path, skip, take);
-
-        // Get last entry / raise exception if empty (partial function)
-        let last_entry = nodes.last().expect("EmptyHistoryException");
+        let page = exporter.get_page(start_path, skip, take)?;
 
         // Split by leaf nodes
-        let (leafs, non_leafs): (Vec<_>, Vec<_>) = nodes.iter().partition(|node| node.is_leaf);
+        let (leafs, non_leafs): (Vec<_>, Vec<_>) = page.nodes.iter().partition(|node| node.is_leaf);
         let history_keys: Vec<Blake2b256Hash> = non_leafs
             .iter()
             .map(|key| key.hash.clone())
-            .collect::<std::collections::HashSet<_>>()
+            .collect::<std::collections::BTreeSet<_>>()
             .into_iter()
             .collect();
-        let data_keys: Vec<Blake2b256Hash> = leafs
+        let data_addresses: Vec<ColdLeafAddress> = leafs
             .iter()
-            .map(|key| key.hash.clone())
-            .collect::<std::collections::HashSet<_>>()
+            .map(|node| {
+                node.leaf_address
+                    .clone()
+                    .ok_or(StateExportError::MissingLeafAddress)
+            })
+            .collect::<Result<std::collections::BTreeSet<_>, _>>()?
             .into_iter()
             .collect();
 
         // Load all history and data items
-        let history_items = exporter
-            .get_history_items(history_keys)
-            .expect("Failed to get history items in rspace_exporter_items");
-        let data_items = exporter
-            .get_data_items(data_keys)
-            .expect("Failed to get history items in rspace_exporter_items");
+        let history_items = exporter.get_history_items(history_keys)?;
+        let data_items = exporter.get_data_items(data_addresses)?;
 
         // println!("\ndata_items in exporter_items: {:?}", data_items);
 
-        let mut history_last_path = last_entry.path.clone();
-        history_last_path.push((last_entry.hash.clone(), None));
         let history = StoreItems {
             items: history_items,
-            last_path: history_last_path,
+            last_path: page.next_path.clone(),
         };
 
-        let mut data_last_path = last_entry.path.clone();
-        data_last_path.push((last_entry.hash.clone(), None));
         let data = StoreItems {
             items: data_items,
-            last_path: data_last_path,
+            last_path: page.next_path,
         };
 
-        (history, data)
+        Ok((history, data))
     }
 }

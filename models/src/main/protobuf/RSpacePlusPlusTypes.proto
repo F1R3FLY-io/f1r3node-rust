@@ -308,6 +308,23 @@ message KeysProto {
   repeated HashProto keys = 1;
 }
 
+/** Stable leaf kind required to disambiguate equal content digests. */
+enum PersistedDataKindProto {
+  PERSISTED_DATA_KIND_UNSPECIFIED = 0;
+  PERSISTED_DATA_KIND_DATA = 1;
+  PERSISTED_DATA_KIND_CONTINUATIONS = 2;
+  PERSISTED_DATA_KIND_JOINS = 3;
+}
+
+message ColdLeafAddressProto {
+  bytes digest = 1;
+  PersistedDataKindProto kind = 2;
+}
+
+message ColdLeafAddressesProto {
+  repeated ColdLeafAddressProto addresses = 1;
+}
+
 message StoreItemsProto {
   repeated ItemProto items = 1;
   repeated PathElement last_path = 2;
@@ -318,10 +335,95 @@ message HistoryAndDataItems {
   StoreItemsProto data_items = 2;
 }
 
-message ValidateStateParams {
-  repeated ItemProto history_items = 1;
-  repeated ItemProto data_items = 2;
-  repeated PathElement start_path = 3;
-  int32 chunk_size = 4;
-  int32 skip = 5;
+/**
+ * Publication authority requested when an affine state-import session begins.
+ * PRESERVE_CURRENT verifies and catalogs every target root without moving the
+ * active root. ACTIVATE atomically catalogs the roots and activates the
+ * separately supplied activation_root.
+ */
+enum StateImportPublicationModeProto {
+  STATE_IMPORT_PUBLICATION_MODE_UNSPECIFIED = 0;
+  STATE_IMPORT_PUBLICATION_MODE_PRESERVE_CURRENT = 1;
+  STATE_IMPORT_PUBLICATION_MODE_ACTIVATE = 2;
+}
+
+message StateImportSpecProto {
+  repeated bytes target_roots = 1;
+  StateImportPublicationModeProto publication_mode = 2;
+  bytes activation_root = 3;
+}
+
+/**
+ * One complete authenticated radix page. advertised_next_path is supplied by
+ * the peer but accepted only when it equals the cursor derived from the page's
+ * authenticated history projection.
+ */
+message StateImportPageProto {
+  repeated PathElement start_path = 1;
+  repeated PathElement advertised_next_path = 2;
+  int32 skip = 3;
+  int32 take = 4;
+  repeated ItemProto history_items = 5;
+  repeated ItemProto data_items = 6;
+}
+
+message StateImportPageReceiptProto {
+  repeated PathElement authenticated_next_path = 1;
+  bool terminal = 2;
+  uint64 history_objects_staged = 3;
+  uint64 cold_leaves_staged = 4;
+}
+
+message StateImportActivationProto {
+  bytes root = 1;
+  uint64 generation = 2;
+}
+
+message StateImportPublicationProto {
+  repeated bytes verified_roots = 1;
+  StateImportActivationProto activation = 2;
+}
+
+enum StateImportErrorCodeProto {
+  STATE_IMPORT_ERROR_CODE_UNSPECIFIED = 0;
+  STATE_IMPORT_ERROR_CODE_NULL_POINTER = 1;
+  STATE_IMPORT_ERROR_CODE_INVALID_LENGTH = 2;
+  STATE_IMPORT_ERROR_CODE_PROTOBUF_DECODE = 3;
+  STATE_IMPORT_ERROR_CODE_INVALID_HANDLE_STATE = 4;
+  STATE_IMPORT_ERROR_CODE_SPACE_STATE = 5;
+  STATE_IMPORT_ERROR_CODE_IMPORT = 6;
+  STATE_IMPORT_ERROR_CODE_PANIC = 7;
+}
+
+message StateImportErrorProto {
+  StateImportErrorCodeProto code = 1;
+  string operation = 2;
+  string message = 3;
+}
+
+enum StateImportSuccessKindProto {
+  STATE_IMPORT_SUCCESS_KIND_UNSPECIFIED = 0;
+  STATE_IMPORT_SUCCESS_KIND_OPENED = 1;
+  STATE_IMPORT_SUCCESS_KIND_PAGE_STAGED = 2;
+  STATE_IMPORT_SUCCESS_KIND_SEALED = 3;
+  STATE_IMPORT_SUCCESS_KIND_PUBLISHED = 4;
+  STATE_IMPORT_SUCCESS_KIND_ABORTED = 5;
+}
+
+message StateImportSuccessProto {
+  StateImportSuccessKindProto kind = 1;
+  StateImportPageReceiptProto page_receipt = 2;
+  StateImportPublicationProto publication = 3;
+}
+
+/**
+ * Every affine import FFI operation returns one length-prefixed instance of
+ * this message. Handles are deliberately returned through typed out-pointers,
+ * never encoded as integers in protobuf.
+ */
+message StateImportResultProto {
+  oneof outcome {
+    StateImportSuccessProto success = 1;
+    StateImportErrorProto error = 2;
+  }
 }

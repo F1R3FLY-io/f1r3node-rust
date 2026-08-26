@@ -18,16 +18,14 @@ use comm::rust::rp::connect::ConnectionsCell;
 use comm::rust::rp::rp_conf::RPConf;
 use comm::rust::transport::transport_layer::TransportLayer;
 use dashmap::DashSet;
-use futures::stream::StreamExt;
+use futures::stream::{StreamExt, TryStreamExt};
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{
     ApprovedBlock, BlockMessage, CasperMessage, MergeableEntryRequest, MergeableEntryResponse,
-    StoreItemsMessage, StoreItemsMessageRequest,
+    StoreItemsCursorProtocol, StoreItemsMessage, StoreItemsMessageRequest,
 };
-use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::history::Either;
-use rspace_plus_plus::rspace::state::rspace_importer::{RSpaceImporter, RSpaceImporterInstance};
 use rspace_plus_plus::rspace::state::rspace_state_manager::RSpaceStateManager;
 use shared::rust::shared::f1r3fly_event::F1r3flyEvent;
 use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
@@ -285,11 +283,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> Engine for Initializing<
                     .map_err(CasperError::CommError)
             }
             CasperMessage::StoreItemsMessage(store_items_message) => {
-                tracing::info!(
-                    "Received {} from {}.",
-                    store_items_message.clone().pretty(),
-                    peer
-                );
+                tracing::info!("Received {} from {}.", store_items_message.pretty(), peer);
                 // Enqueue into tuple space channel for requester stream
                 let sender = self.tuple_space_tx.lock().unwrap().as_ref().cloned();
                 if let Some(tx) = sender {
@@ -634,9 +628,26 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
         // **Scala equivalent**: `tupleSpaceLogStream = tupleSpaceStream ++ fs2.Stream.eval(Log[F].info(...)).drain`
         // Process tuple space stream and log completion message
         let tuple_space_future = async move {
-            // Stream items are processed by the stream itself, we just consume them to completion
+            // An operational failure is a stream item, never normal EOF.
             let mut stream = Box::pin(tuple_space_stream);
-            while let Some(_) = stream.next().await {}
+            let mut final_state = None;
+            while let Some(state) = stream.try_next().await? {
+                final_state = Some(state);
+            }
+            match final_state {
+                Some(state) if state.is_finished() => {}
+                Some(_) => {
+                    return Err(CasperError::StreamError(
+                        "Tuple-space import ended with authenticated cursors still active"
+                            .to_string(),
+                    ));
+                }
+                None => {
+                    return Err(CasperError::StreamError(
+                        "Tuple-space import stream produced no state".to_string(),
+                    ));
+                }
+            }
             tracing::info!("Rholang state received and saved to store.");
             Ok::<(), CasperError>(())
         };
@@ -702,7 +713,6 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
                 // `lfs_tuple_space_requester::stream` is consumed above:
                 // drive to completion, then check the final ST.is_finished()
                 // to detect incomplete sync.
-                use futures::StreamExt;
                 let horizon_requester =
                     HorizonRequester::new(&self.transport_layer, &self.rp_conf_ask);
                 let rm_for_has_root = self.runtime_manager.clone();
@@ -724,7 +734,7 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
                     Ok(stream) => {
                         let mut stream = Box::pin(stream);
                         let mut final_state = None;
-                        while let Some(st) = stream.next().await {
+                        while let Some(st) = stream.try_next().await? {
                             final_state = Some(st);
                         }
                         Ok(final_state)
@@ -1305,11 +1315,13 @@ impl<T: TransportLayer + Send + Sync> TupleSpaceRequesterOps for TupleSpaceReque
         &self,
         path: &StatePartPath,
         page_size: i32,
+        cursor_protocol: StoreItemsCursorProtocol,
     ) -> Result<(), CasperError> {
         let message = StoreItemsMessageRequest {
             start_path: path.clone(),
             skip: 0,
             take: page_size,
+            cursor_protocol,
         };
 
         let message_proto = message.to_proto();
@@ -1317,26 +1329,6 @@ impl<T: TransportLayer + Send + Sync> TupleSpaceRequesterOps for TupleSpaceReque
         self.transport_layer
             .send_to_bootstrap(self.rp_conf_ask, Arc::new(message_proto))
             .await?;
-        Ok(())
-    }
-
-    fn validate_tuple_space_items(
-        &self,
-        history_items: Vec<(Blake2b256Hash, Vec<u8>)>,
-        data_items: Vec<(Blake2b256Hash, Vec<u8>)>,
-        start_path: StatePartPath,
-        page_size: i32,
-        skip: i32,
-        get_from_history: Arc<dyn RSpaceImporter>,
-    ) -> Result<(), CasperError> {
-        RSpaceImporterInstance::validate_state_items(
-            history_items,
-            data_items,
-            start_path,
-            page_size,
-            skip,
-            get_from_history,
-        );
         Ok(())
     }
 }
@@ -1368,11 +1360,13 @@ impl<T: TransportLayer + Send + Sync>
         &self,
         path: &StatePartPath,
         page_size: i32,
+        cursor_protocol: StoreItemsCursorProtocol,
     ) -> Result<(), CasperError> {
         let message = StoreItemsMessageRequest {
             start_path: path.clone(),
             skip: 0,
             take: page_size,
+            cursor_protocol,
         };
         let message_proto = message.to_proto();
         self.transport_layer

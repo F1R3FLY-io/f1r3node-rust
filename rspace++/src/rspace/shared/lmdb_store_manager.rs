@@ -13,6 +13,8 @@ use tokio::sync::Mutex;
 
 use crate::rspace::shared::env_cache;
 use crate::rspace::shared::key_value_store_manager::KeyValueStoreManager;
+use crate::rspace::shared::lmdb_dir_store_manager::{ReadOnlyStore, authority_store_parts};
+use crate::rspace::state::rspace_state_authority::RSpaceStateAuthority;
 
 // See shared/src/main/scala/coop/rchain/store/LmdbStoreManager.scala
 pub struct LmdbStoreManager {
@@ -21,6 +23,7 @@ pub struct LmdbStoreManager {
     max_dbs: u32,
     env: Arc<Mutex<Option<Arc<Env>>>>,
     dbs: Arc<Mutex<HashMap<String, DbEnv>>>,
+    authorities: Arc<Mutex<HashMap<String, Arc<RSpaceStateAuthority>>>>,
 }
 
 #[derive(Clone)]
@@ -41,6 +44,7 @@ impl LmdbStoreManager {
             max_dbs,
             env: Arc::new(Mutex::new(None)),
             dbs: Arc::new(Mutex::new(HashMap::new())),
+            authorities: Arc::new(Mutex::new(HashMap::new())),
         })
     }
 
@@ -83,6 +87,18 @@ impl LmdbStoreManager {
 #[async_trait]
 impl KeyValueStoreManager for LmdbStoreManager {
     async fn store(&mut self, name: String) -> Result<Arc<dyn KeyValueStore>, heed::Error> {
+        if let Some((prefix, domain)) = authority_store_parts(&name) {
+            let prefix = prefix.to_owned();
+            let domain = domain.to_owned();
+            let authority = self.state_authority(&prefix).await?;
+            let inner = match domain.as_str() {
+                "history" => authority.history_store(),
+                "cold" => authority.cold_store(),
+                "roots" => authority.roots_store_for_inspection(),
+                _ => unreachable!("authority_store_parts admitted an unavailable domain"),
+            };
+            return Ok(Arc::new(ReadOnlyStore::new(inner)));
+        }
         let db_env = self.get_current_env(&name).await?;
         Ok(Arc::new(LmdbKeyValueStore::new(db_env.env, db_env.db)))
     }
@@ -95,7 +111,28 @@ impl KeyValueStoreManager for LmdbStoreManager {
         dbs.clear();
         let mut env_slot = self.env.lock().await;
         *env_slot = None;
+        self.authorities.lock().await.clear();
         Ok(())
+    }
+
+    async fn state_authority(
+        &mut self,
+        db_prefix: &str,
+    ) -> Result<Arc<RSpaceStateAuthority>, heed::Error> {
+        let mut authorities = self.authorities.lock().await;
+        if let Some(authority) = authorities.get(db_prefix).cloned() {
+            return Ok(authority);
+        }
+        let authority = RSpaceStateAuthority::open_lmdb(
+            &self.dir_path,
+            db_prefix,
+            None,
+            None,
+            self.max_env_size,
+            self.max_dbs,
+        )?;
+        authorities.insert(db_prefix.to_owned(), Arc::clone(&authority));
+        Ok(authority)
     }
 }
 
@@ -107,6 +144,9 @@ impl Drop for LmdbStoreManager {
         }
         if let Ok(mut env_slot) = self.env.try_lock() {
             *env_slot = None;
+        }
+        if let Ok(mut authorities) = self.authorities.try_lock() {
+            authorities.clear();
         }
     }
 }

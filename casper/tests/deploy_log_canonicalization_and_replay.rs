@@ -80,7 +80,6 @@ use rholang::rust::interpreter::matcher::r#match::Matcher;
 use rspace_plus_plus::rspace::replay_rspace::ReplayRSpace;
 use rspace_plus_plus::rspace::rspace::{RSpace, RSpaceStore};
 use rspace_plus_plus::rspace::rspace_interface::ISpace;
-use rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore;
 use rspace_plus_plus::rspace::trace::event::Event as RspaceEvent;
 
 // ---------------------------------------------------------------------------
@@ -468,13 +467,7 @@ fn the_named_canonicalization_equals_the_inline_sort_it_replaced() {
 
 type RholangReplay = ReplayRSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>;
 
-fn in_memory_store() -> RSpaceStore {
-    RSpaceStore {
-        history: Arc::new(InMemoryKeyValueStore::new()),
-        roots: Arc::new(InMemoryKeyValueStore::new()),
-        cold: Arc::new(InMemoryKeyValueStore::new()),
-    }
-}
+fn in_memory_store() -> RSpaceStore { RSpaceStore::in_memory() }
 
 fn fresh_replay_space() -> RholangReplay {
     let (_play, replay) =

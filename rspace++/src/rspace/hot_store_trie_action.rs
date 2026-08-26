@@ -1,4 +1,5 @@
 use super::hashing::blake2b256_hash::Blake2b256Hash;
+use super::history::cold_store::CanonicalCollectionKind;
 use crate::rspace::internal::{Datum, WaitingContinuation};
 
 // See rspace/src/main/scala/coop/rchain/rspace/HotStoreTrieAction.scala
@@ -12,6 +13,7 @@ pub enum HotStoreTrieAction<C: Clone, P: Clone, A: Clone, K: Clone> {
 pub enum TrieInsertAction<C: Clone, P: Clone, A: Clone, K: Clone> {
     TrieInsertProduce(TrieInsertProduce<A>),
     TrieInsertCanonicalProduce(TrieInsertCanonicalProduce),
+    TrieInsertCanonicalCollection(TrieInsertCanonicalCollection),
     TrieInsertJoins(TrieInsertJoins<C>),
     TrieInsertConsume(TrieInsertConsume<P, K>),
     TrieInsertBinaryProduce(TrieInsertBinaryProduce),
@@ -33,9 +35,17 @@ impl<A: Clone> TrieInsertProduce<A> {
 
 #[derive(Debug, Clone)]
 pub struct TrieInsertCanonicalProduce {
-    pub hash: Blake2b256Hash,
-    pub encoded_persisted_data: Vec<u8>,
-    pub datum_count: u64,
+    pub(crate) hash: Blake2b256Hash,
+    pub(crate) encoded_persisted_data: Vec<u8>,
+    pub(crate) datum_count: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct TrieInsertCanonicalCollection {
+    pub(crate) kind: CanonicalCollectionKind,
+    pub(crate) hash: Blake2b256Hash,
+    pub(crate) encoded_persisted_data: Vec<u8>,
+    pub(crate) record_count: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -86,6 +96,7 @@ pub enum TrieDeleteAction {
     TrieDeleteProduce(TrieDeleteProduce),
     TrieDeleteJoins(TrieDeleteJoins),
     TrieDeleteConsume(TrieDeleteConsume),
+    TrieDeleteCanonicalCollection(TrieDeleteCanonicalCollection),
 }
 
 #[derive(Debug, Clone)]
@@ -109,6 +120,12 @@ impl TrieDeleteJoins {
 #[derive(Debug, Clone)]
 pub struct TrieDeleteConsume {
     pub hash: Blake2b256Hash,
+}
+
+#[derive(Debug, Clone)]
+pub struct TrieDeleteCanonicalCollection {
+    pub(crate) kind: CanonicalCollectionKind,
+    pub(crate) hash: Blake2b256Hash,
 }
 
 impl TrieDeleteConsume {

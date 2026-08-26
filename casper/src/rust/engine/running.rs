@@ -18,6 +18,7 @@ use models::rust::casper::protocol::casper_message::{
     self, ApprovedBlock, ApprovedBlockCandidate, BlockHashMessage, BlockMessage, BlockRequest,
     CasperMessage, HasBlock, HasBlockRequest,
 };
+use prost::Message;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::state::exporters::rspace_exporter_items::RSpaceExporterItems;
 use rspace_plus_plus::rspace::state::rspace_exporter::RSpaceExporterInstance;
@@ -27,6 +28,10 @@ use crate::rust::casper::MultiParentCasper;
 use crate::rust::engine::block_retriever::{self, BlockRetriever};
 use crate::rust::engine::engine::{self, Engine};
 use crate::rust::engine::engine_cell::EngineCell;
+use crate::rust::engine::state_export_admission::{
+    require_verified_root, validate_request as validate_state_export_request,
+    validate_response as validate_state_export_response, StateExportConcurrencyGate,
+};
 use crate::rust::errors::CasperError;
 use crate::rust::metrics_constants::{
     BLOCK_HASH_RECEIVED_METRIC, BLOCK_REQUEST_RECEIVED_METRIC, RUNNING_METRICS_SOURCE,
@@ -277,8 +282,9 @@ impl<T: TransportLayer + Send + Sync + 'static> Engine for Running<T> {
                     self.handle_state_items_message_request(
                         peer,
                         req.start_path,
-                        req.skip as u32,
-                        req.take as u32,
+                        req.skip,
+                        req.take,
+                        req.cursor_protocol,
                     )
                     .await
                 } else {
@@ -328,6 +334,7 @@ pub struct Running<T: TransportLayer + Send + Sync> {
     transport: Arc<T>,
     conf: RPConf,
     block_retriever: BlockRetriever<T>,
+    state_export_gate: StateExportConcurrencyGate,
 }
 
 const MAX_BLOCKS_IN_PROCESSING: usize = 2_048;
@@ -362,6 +369,7 @@ impl<T: TransportLayer + Send + Sync> Running<T> {
             transport,
             conf,
             block_retriever,
+            state_export_gate: StateExportConcurrencyGate::new(),
         }
     }
 
@@ -564,20 +572,41 @@ impl<T: TransportLayer + Send + Sync> Running<T> {
         &self,
         peer: PeerNode,
         start_path: Vec<(Blake2b256Hash, Option<u8>)>,
-        skip: u32,
-        take: u32,
+        skip: i32,
+        take: i32,
+        cursor_protocol: casper_message::StoreItemsCursorProtocol,
     ) -> Result<(), CasperError> {
+        let (root, cursor_protocol) =
+            validate_state_export_request(&start_path, skip, take, cursor_protocol)?;
+        let _export_permit = self.state_export_gate.try_enter()?;
+        require_verified_root(root, self.casper.runtime_manager().has_root(root)?)?;
         let exporter = self.casper.get_history_exporter().await;
 
-        let (history, data) = RSpaceExporterItems::get_history_and_data(
-            exporter,
-            start_path.clone(),
-            skip as i32,
-            take as i32,
-        );
+        let (history, data) =
+            RSpaceExporterItems::get_history_and_data(exporter, start_path.clone(), skip, take)?;
+        let history_item_count = history.items.len();
+        let data_item_count = data.items.len();
+        let canonical_last_path = history.last_path;
+        let terminal = canonical_last_path == start_path;
+        if !terminal && canonical_last_path.is_empty() {
+            return Err(CasperError::RuntimeError(
+                "state exporter returned an empty non-terminal cursor".to_string(),
+            ));
+        }
+        let last_path = match cursor_protocol {
+            casper_message::StoreItemsCursorProtocol::LegacyEmptyTerminal if terminal => Vec::new(),
+            casper_message::StoreItemsCursorProtocol::LegacyEmptyTerminal
+            | casper_message::StoreItemsCursorProtocol::AuthenticatedTerminal => {
+                canonical_last_path
+            }
+            casper_message::StoreItemsCursorProtocol::Unspecified
+            | casper_message::StoreItemsCursorProtocol::Unknown(_) => {
+                unreachable!("require_supported rejected an unavailable cursor protocol")
+            }
+        };
         let resp = casper_message::StoreItemsMessage {
             start_path,
-            last_path: history.last_path,
+            last_path,
             history_items: history
                 .items
                 .into_iter()
@@ -588,8 +617,16 @@ impl<T: TransportLayer + Send + Sync> Running<T> {
                 .into_iter()
                 .map(|(k, v)| (k, prost::bytes::Bytes::from(v)))
                 .collect(),
+            cursor_protocol,
+            terminal,
         };
         let resp_proto = resp.to_proto();
+        validate_state_export_response(
+            history_item_count,
+            data_item_count,
+            take,
+            resp_proto.encoded_len(),
+        )?;
 
         self.transport
             .stream_message_to_peer(&self.conf, &peer, Arc::new(resp_proto))

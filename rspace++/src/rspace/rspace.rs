@@ -16,7 +16,6 @@ pub static LOCK_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 use async_trait::async_trait;
 use dashmap::DashMap;
 use serde::Serialize;
-use shared::rust::store::key_value_store::KeyValueStore;
 use tracing::{Level, event};
 
 use super::candidate_order::order_candidates_with_index;
@@ -62,9 +61,25 @@ use crate::rspace::space_matcher::SpaceMatcher;
 
 #[derive(Clone)]
 pub struct RSpaceStore {
-    pub history: Arc<dyn KeyValueStore>,
-    pub roots: Arc<dyn KeyValueStore>,
-    pub cold: Arc<dyn KeyValueStore>,
+    authority: Arc<crate::rspace::state::rspace_state_authority::RSpaceStateAuthority>,
+}
+
+impl RSpaceStore {
+    pub fn new(
+        authority: Arc<crate::rspace::state::rspace_state_authority::RSpaceStateAuthority>,
+    ) -> Self {
+        Self { authority }
+    }
+
+    pub fn in_memory() -> Self {
+        Self::new(crate::rspace::state::rspace_state_authority::RSpaceStateAuthority::in_memory())
+    }
+
+    pub fn authority(
+        &self,
+    ) -> Arc<crate::rspace::state::rspace_state_authority::RSpaceStateAuthority> {
+        Arc::clone(&self.authority)
+    }
 }
 
 struct CachedRetainedSetAutomaton {
@@ -75,7 +90,7 @@ struct CachedRetainedSetAutomaton {
 #[repr(C)]
 #[derive(Clone)]
 pub struct RSpace<C, P, A, K> {
-    pub history_repository:
+    history_repository:
         Arc<std::sync::RwLock<Arc<Box<dyn HistoryRepository<C, P, A, K> + Send + Sync + 'static>>>>,
     pub store: Arc<std::sync::RwLock<Arc<Box<dyn HotStore<C, P, A, K>>>>>,
     installs: Arc<std::sync::Mutex<HashMap<Vec<C>, Install<P, K>>>>,
@@ -267,7 +282,7 @@ where
         let next_history = {
             let _history_span =
                 tracing::info_span!(target: "f1r3fly.rspace", HISTORY_CHECKPOINT_SPAN).entered();
-            self.get_history_repository().checkpoint(changes)
+            self.get_history_repository().checkpoint(changes)?
         };
         *self.history_repository.write().expect("history write lock") = Arc::new(next_history);
 
@@ -744,8 +759,7 @@ where
         A: Clone + Debug + Default + Send + Sync + Serialize + ColdStoreDecode + 'static,
         K: Clone + Debug + Default + Send + Sync + Serialize + ColdStoreDecode + 'static,
     {
-        let history_repo =
-            HistoryRepositoryInstances::lmdb_repository(store.history, store.roots, store.cold)?;
+        let history_repo = HistoryRepositoryInstances::repository(store.authority)?;
 
         let history_reader = history_repo.get_history_reader(&history_repo.root())?;
 

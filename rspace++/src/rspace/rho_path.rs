@@ -6,9 +6,15 @@ use super::hashing::stable_hash_provider::StableHashSerialize;
 
 const MAGIC: [u8; 4] = *b"RHP\x01";
 const DATUM_KIND: u8 = 1;
+const CONTINUATION_KIND: u8 = 2;
+const JOIN_KIND: u8 = 3;
 const ESCAPE: u8 = 0;
 const ESCAPED_ZERO: u8 = 0xFF;
 const FRAME_END: u8 = 0;
+// An impossible pair between escaped frames. Frame data encode zero as
+// `[0, 255]` and frame termination as `[0, 0]`, so `[0, 1]` can safely mark
+// the end of an exact channel group before a record-identity suffix begins.
+const GROUP_END: [u8; 2] = [ESCAPE, 1];
 
 pub const RHO_MATCH_PATH_VERSION: [u8; 4] = *b"RMP\x02";
 pub const RHO_MATCH_NODE_START: u8 = 0x01;
@@ -650,6 +656,56 @@ impl RhoPathV1 {
         output.push(DATUM_KIND);
         append_frame(&mut output, &structure);
         append_frame(&mut output, &identity);
+        output
+    }
+
+    /// Exact prefix for one ordered receive-channel group.
+    ///
+    /// Channel identities are individually escaped and framed, so common
+    /// leading channels remain common trie prefixes while sequence boundaries
+    /// are collision-free. No channel hash is used as semantic identity.
+    pub(crate) fn continuation_prefix<C: RhoPathEncode>(channels: &[C]) -> Vec<u8> {
+        let mut output = Vec::with_capacity(MAGIC.len() + 2 + channels.len().saturating_mul(2));
+        output.extend_from_slice(&MAGIC);
+        output.push(CONTINUATION_KIND);
+        output.push(1);
+        for channel in channels {
+            append_frame(&mut output, &channel.rho_path_identity());
+        }
+        output.extend_from_slice(&GROUP_END);
+        output
+    }
+
+    /// Exact prefix for the join memberships indexed by one channel.
+    pub(crate) fn join_prefix<C: RhoPathEncode>(channel: &C) -> Vec<u8> {
+        let mut output = Vec::with_capacity(MAGIC.len() + 4);
+        output.extend_from_slice(&MAGIC);
+        output.push(JOIN_KIND);
+        output.push(1);
+        append_frame(&mut output, &channel.rho_path_identity());
+        output.extend_from_slice(&GROUP_END);
+        output
+    }
+
+    /// Address one source-free continuation identity below its group prefix.
+    ///
+    /// The zero-byte escape is order preserving and the two-byte terminator
+    /// makes every complete identity prefix-free. Consequently PathMap zipper
+    /// order is exactly the lexicographic order of the unframed canonical
+    /// identity bytes even when one identity is a prefix of another. This is
+    /// the non-authoritative continuation deduplication lookup; canonical
+    /// egress traverses a separate primary trie keyed by complete raw record
+    /// bytes, so it imposes no prefix-code contract on generic
+    /// [`StableHashSerialize`] implementations.
+    pub(crate) fn collection_record_path(prefix: &[u8], identity: &[u8]) -> Vec<u8> {
+        let mut output = Vec::with_capacity(
+            prefix
+                .len()
+                .saturating_add(identity.len())
+                .saturating_add(2),
+        );
+        output.extend_from_slice(prefix);
+        append_frame(&mut output, identity);
         output
     }
 

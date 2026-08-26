@@ -3,6 +3,7 @@
 use shared::rust::store::key_value_store::KvStoreError;
 
 use super::data_index::DataIndexError;
+use super::record_index::RecordIndexError;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum RSpaceError {
@@ -11,6 +12,7 @@ pub enum RSpaceError {
     RadixTreeError(RadixTreeError),
     KvStoreError(KvStoreError),
     DataIndexError(DataIndexError),
+    RecordIndexError(String),
     BugFoundError(String),
     ReportingError(String),
 }
@@ -23,6 +25,7 @@ impl std::fmt::Display for RSpaceError {
             RSpaceError::RadixTreeError(err) => write!(f, "Radix Tree Error: {}", err),
             RSpaceError::KvStoreError(err) => write!(f, "Key Value Store Error: {}", err),
             RSpaceError::DataIndexError(err) => write!(f, "RSpace Data Index Error: {}", err),
+            RSpaceError::RecordIndexError(err) => write!(f, "RSpace Record Index Error: {}", err),
             RSpaceError::BugFoundError(err) => write!(f, "RSpace Bug Found Error: {}", err),
             RSpaceError::ReportingError(err) => write!(f, "Reporting Error: {}", err),
         }
@@ -39,6 +42,10 @@ impl From<KvStoreError> for RSpaceError {
 
 impl From<DataIndexError> for RSpaceError {
     fn from(error: DataIndexError) -> Self { RSpaceError::DataIndexError(error) }
+}
+
+impl From<RecordIndexError> for RSpaceError {
+    fn from(error: RecordIndexError) -> Self { RSpaceError::RecordIndexError(error.to_string()) }
 }
 
 impl From<HistoryError> for RSpaceError {
@@ -153,6 +160,14 @@ impl From<KvStoreError> for RadixTreeError {
 pub enum RootError {
     KvStoreError(String),
     UnknownRootError(String),
+    InvalidRootHash(String),
+    CorruptRootCatalog(String),
+    LegacyRootCatalog(String),
+    RootCatalogConflict {
+        expected_generation: Option<u64>,
+        actual_generation: Option<u64>,
+    },
+    RootCatalogGenerationOverflow,
 }
 
 impl std::fmt::Display for RootError {
@@ -160,6 +175,20 @@ impl std::fmt::Display for RootError {
         match self {
             RootError::KvStoreError(err) => write!(f, "Key Value Store Error: {}", err),
             RootError::UnknownRootError(err) => write!(f, "Unknown root: {}", err),
+            RootError::InvalidRootHash(err) => write!(f, "Invalid root hash: {}", err),
+            RootError::CorruptRootCatalog(err) => write!(f, "Corrupt root catalog: {}", err),
+            RootError::LegacyRootCatalog(err) => write!(f, "Legacy root catalog: {}", err),
+            RootError::RootCatalogConflict {
+                expected_generation,
+                actual_generation,
+            } => write!(
+                f,
+                "Root catalog generation conflict: expected {:?}, actual {:?}",
+                expected_generation, actual_generation
+            ),
+            RootError::RootCatalogGenerationOverflow => {
+                write!(f, "Root catalog generation overflow")
+            }
         }
     }
 }

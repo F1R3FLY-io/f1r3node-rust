@@ -24,6 +24,17 @@ pub trait StableHashSerialize: Serialize {
     fn stable_hash_bytes(&self) -> Vec<u8> {
         bincode::serialize(self).expect("StableHashSerialize: bincode serialization must not fail")
     }
+
+    /// Append the frozen bincode-1 representation to an existing arena.
+    ///
+    /// The default body preserves the historical [`Self::stable_hash_bytes`]
+    /// contract. Rholang's recursive rhoapi values override both methods with
+    /// the same generated, explicit-worklist encoder, allowing compound
+    /// RSpace records to be assembled without either recursive serde or one
+    /// temporary allocation per component.
+    fn stable_hash_encode_into(&self, output: &mut Vec<u8>) {
+        output.extend_from_slice(&self.stable_hash_bytes());
+    }
 }
 
 // Reference forwarding: `&T` hashes as `T` (serde serializes through
@@ -32,6 +43,10 @@ pub trait StableHashSerialize: Serialize {
 // reached through references too).
 impl<T: StableHashSerialize + ?Sized> StableHashSerialize for &T {
     fn stable_hash_bytes(&self) -> Vec<u8> { (**self).stable_hash_bytes() }
+
+    fn stable_hash_encode_into(&self, output: &mut Vec<u8>) {
+        (**self).stable_hash_encode_into(output);
+    }
 }
 
 // Default-body impls for the rspace++ test-double instantiations (no
@@ -60,6 +75,10 @@ pub fn hash<C: StableHashSerialize>(channel: &C) -> Blake2b256Hash {
 }
 
 pub fn hash_vec<C: StableHashSerialize>(channels: &Vec<C>) -> Vec<Blake2b256Hash> {
+    hash_slice(channels)
+}
+
+fn hash_slice<C: StableHashSerialize>(channels: &[C]) -> Vec<Blake2b256Hash> {
     let mut hashes: Vec<Blake2b256Hash> = channels
         .iter()
         .map(|channel| Blake2b256Hash::new(&channel.stable_hash_bytes()))
@@ -69,7 +88,12 @@ pub fn hash_vec<C: StableHashSerialize>(channels: &Vec<C>) -> Vec<Blake2b256Hash
 }
 
 pub fn hash_from_vec<C: StableHashSerialize>(channels: &Vec<C>) -> Blake2b256Hash {
-    let hashes = hash_vec(channels);
+    hash_from_slice(channels)
+}
+
+/// Hash a consume channel group without cloning it into a temporary `Vec`.
+pub fn hash_from_slice<C: StableHashSerialize>(channels: &[C]) -> Blake2b256Hash {
+    let hashes = hash_slice(channels);
     hash_from_hashes(&hashes)
 }
 

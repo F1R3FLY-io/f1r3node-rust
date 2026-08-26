@@ -420,7 +420,7 @@ pub fn merge(
     let apply_trie_actions_fn = |actions| {
         history_repository
             .reset(lfb_post_state)
-            .map(|reset_repo| reset_repo.do_checkpoint(actions))
+            .and_then(|reset_repo| reset_repo.do_checkpoint(actions))
             .map(|checkpoint| checkpoint.root())
             .map_err(|e| e.into())
     };

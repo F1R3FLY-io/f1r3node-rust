@@ -33,10 +33,8 @@ fn build_reporting_rspace()
     let store = futures::executor::block_on(kvm.r_space_stores()).unwrap();
 
     let history_repo = Arc::new(
-        HistoryRepositoryInstances::<String, Pattern, String, String>::lmdb_repository(
-            store.history.clone(),
-            store.roots.clone(),
-            store.cold.clone(),
+        HistoryRepositoryInstances::<String, Pattern, String, String>::repository(
+            store.authority(),
         )
         .unwrap(),
     );
@@ -73,10 +71,8 @@ async fn reporting_rspace_should_capture_comm_event_in_soft_report() {
     let store = kvm.r_space_stores().await.unwrap();
 
     let history_repo = Arc::new(
-        HistoryRepositoryInstances::<String, Pattern, String, String>::lmdb_repository(
-            store.history.clone(),
-            store.roots.clone(),
-            store.cold.clone(),
+        HistoryRepositoryInstances::<String, Pattern, String, String>::repository(
+            store.authority(),
         )
         .unwrap(),
     );

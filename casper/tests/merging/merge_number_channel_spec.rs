@@ -319,10 +319,10 @@ async fn test_case(
     let apply_trie_actions = |actions: Vec<
         HotStoreTrieAction<Par, BindPattern, ListParWithRandom, TaggedContinuation>,
     >| {
-        rm.get_history_repo().reset(&base_cp.root).map(|r1| {
-            let r2 = r1.do_checkpoint(actions);
-            r2.root()
-        })
+        rm.get_history_repo()
+            .reset(&base_cp.root)
+            .and_then(|repository| repository.do_checkpoint(actions))
+            .map(|repository| repository.root())
     };
 
     let mut actual_set: HashableSet<DeployChainIndex> = left_deploy_chains.into_iter().collect();

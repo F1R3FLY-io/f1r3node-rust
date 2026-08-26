@@ -82,17 +82,11 @@ where
     }
 
     pub fn put_if_absent(&self, kv_pairs: Vec<(K, V)>) -> Result<(), KvStoreError> {
-        let keys: Vec<K> = kv_pairs.iter().map(|(k, _)| k.clone()).collect();
-        let if_absent = self.contains(keys)?;
-        let kv_if_absent: Vec<_> = kv_pairs.into_iter().zip(if_absent).collect();
-        let kv_absent: Vec<_> = kv_if_absent
-            .clone()
+        let encoded = kv_pairs
             .into_iter()
-            .filter(|(_, is_present)| !is_present)
-            .map(|(kv, _)| kv)
-            .collect();
-
-        self.put(kv_absent)
+            .map(|(key, value)| Ok((self.encode_key(&key)?, self.encode_value(&value)?)))
+            .collect::<Result<Vec<_>, KvStoreError>>()?;
+        self.store.put_if_absent_or_verify_equal(encoded)
     }
 
     pub fn contains_key(&self, key: K) -> Result<bool, KvStoreError> {

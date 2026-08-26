@@ -158,10 +158,8 @@ async fn fixture() -> (TestSpace, TestReplaySpace, GuardingMatch) {
     let store = kvm.r_space_stores().await.expect("in-memory rspace stores");
 
     let history_repo = Arc::new(
-        HistoryRepositoryInstances::<String, Pattern, String, GuardedContinuation>::lmdb_repository(
-            store.history.clone(),
-            store.roots.clone(),
-            store.cold.clone(),
+        HistoryRepositoryInstances::<String, Pattern, String, GuardedContinuation>::repository(
+            store.authority(),
         )
         .expect("history repository"),
     );
@@ -202,10 +200,8 @@ async fn space_with_state(
     let mut kvm = InMemoryStoreManager::new();
     let store = kvm.r_space_stores().await.expect("in-memory rspace stores");
     let history_repo = Arc::new(
-        HistoryRepositoryInstances::<String, Pattern, String, GuardedContinuation>::lmdb_repository(
-            store.history,
-            store.roots,
-            store.cold,
+        HistoryRepositoryInstances::<String, Pattern, String, GuardedContinuation>::repository(
+            store.authority(),
         )
         .expect("history repository"),
     );

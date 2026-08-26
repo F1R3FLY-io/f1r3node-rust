@@ -12,6 +12,7 @@ use std::sync::Arc;
 use serde::Deserialize;
 use serde::Serialize;
 
+use crate::rspace::hashing::stable_hash_provider::StableHashSerialize;
 use crate::rspace::internal::{Datum, WaitingContinuation};
 use crate::rspace::serializers::cold_store_decode::{
     ColdStoreDecode, ColdStoreDecodeError, cold_decode_vec_prefix, legacy_tail,
@@ -134,6 +135,104 @@ fn continuation_ser<'a, P: Clone, K: Clone>(
     }
 }
 
+/// Append the legacy continuation identity used for hot-store deduplication.
+///
+/// The source event is intentionally excluded, matching the historical
+/// `patterns | continuation | persist | peeks` rule. Unlike the former
+/// `Debug` string, this representation is injective with respect to the frozen
+/// bincode layouts of those fields and is assembled from stack-safe rhoapi
+/// component encoders in production.
+pub(crate) fn encode_continuation_identity_into<P, K>(
+    continuation: &WaitingContinuation<P, K>,
+    output: &mut Vec<u8>,
+) where
+    P: Clone + StableHashSerialize,
+    K: Clone + StableHashSerialize,
+{
+    let pattern_count = u64::try_from(continuation.patterns.len())
+        .expect("continuation pattern count must fit the frozen bincode u64 length");
+    output.extend_from_slice(&pattern_count.to_le_bytes());
+    for pattern in continuation.patterns.iter() {
+        pattern.stable_hash_encode_into(output);
+    }
+    continuation.continuation.stable_hash_encode_into(output);
+    output.push(u8::from(continuation.persist));
+
+    let peek_count = u64::try_from(continuation.peeks.len())
+        .expect("continuation peek count must fit the frozen bincode u64 length");
+    output.extend_from_slice(&peek_count.to_le_bytes());
+    for peek in &continuation.peeks {
+        output.extend_from_slice(&peek.to_le_bytes());
+    }
+}
+
+pub(crate) fn encode_continuation_identity<P, K>(
+    continuation: &WaitingContinuation<P, K>,
+) -> Vec<u8>
+where
+    P: Clone + StableHashSerialize,
+    K: Clone + StableHashSerialize,
+{
+    let mut output = Vec::new();
+    encode_continuation_identity_into(continuation, &mut output);
+    output
+}
+
+/// Append one complete frozen continuation record.
+#[cfg(test)]
+pub(crate) fn encode_continuation_record_into<P, K>(
+    continuation: &WaitingContinuation<P, K>,
+    output: &mut Vec<u8>,
+) where
+    P: Clone + StableHashSerialize,
+    K: Clone + StableHashSerialize,
+{
+    encode_continuation_identity_into(continuation, output);
+    encode_continuation_source_into(continuation, output);
+}
+
+/// Append only the source suffix of a frozen continuation record.
+///
+/// Callers that retain the source-free identity for PathMap deduplication can
+/// clone those already-built bytes and append this suffix instead of encoding
+/// every pattern and continuation body a second time.
+pub(crate) fn encode_continuation_source_into<P: Clone, K: Clone>(
+    continuation: &WaitingContinuation<P, K>,
+    output: &mut Vec<u8>,
+) {
+    bincode::serialize_into(output, &continuation.source)
+        .expect("Serializers: Unable to serialize continuation source");
+}
+
+#[cfg(test)]
+pub(crate) fn encode_continuation_record<P, K>(continuation: &WaitingContinuation<P, K>) -> Vec<u8>
+where
+    P: Clone + StableHashSerialize,
+    K: Clone + StableHashSerialize,
+{
+    let mut output = Vec::new();
+    encode_continuation_record_into(continuation, &mut output);
+    output
+}
+
+/// Append one frozen join record (`Vec<C>`) without materializing per-channel
+/// buffers. The channel encoder may itself be the generated stack-safe rhoapi
+/// machine.
+pub(crate) fn encode_join_record_into<C: StableHashSerialize>(join: &[C], output: &mut Vec<u8>) {
+    let channel_count = u64::try_from(join.len())
+        .expect("join channel count must fit the frozen bincode u64 length");
+    output.extend_from_slice(&channel_count.to_le_bytes());
+    for channel in join {
+        channel.stable_hash_encode_into(output);
+    }
+}
+
+pub(crate) fn encode_join_record<C: StableHashSerialize>(join: &[C]) -> Vec<u8> {
+    let mut output = Vec::new();
+    encode_join_record_into(join, &mut output);
+    output
+}
+
 /// The deterministic candidate-ordering bytes used by vector-backed
 /// continuation ordering and PathMap-backed datum ordering. Candidate ordering
 /// participates in replay-visible COMM selection, so these bytes must equal
@@ -247,7 +346,7 @@ pub fn encode_continuations<P: Clone + Serialize, K: Clone + Serialize>(
 /// `patterns` and `continuation` are both `Par`-bearing prefixes and go through
 /// the machine; the remaining three fields are bounded and decode as one
 /// bincode tuple.
-fn decode_continuation<P, K>(
+pub(crate) fn decode_continuation<P, K>(
     vec_bytes: &[u8],
 ) -> Result<WaitingContinuation<P, K>, ColdStoreDecodeError>
 where
@@ -295,6 +394,12 @@ pub fn encode_joins<C: Clone + Serialize>(joins: &Vec<Vec<C>>) -> Vec<u8> {
     bincode::serialize(&serialized_joins).expect("Serializers: Unable to serialize joins")
 }
 
+pub(crate) fn decode_join<C: Clone + ColdStoreDecode>(
+    bytes: &[u8],
+) -> Result<Vec<C>, ColdStoreDecodeError> {
+    cold_decode_vec_prefix::<C>(bytes).map(|(join, _consumed)| join)
+}
+
 /// The cold-store JOINS leaf: a `Vec<Vec<u8>>` whose inner elements are each a
 /// `Vec<C>` encoding (a channel list). `C` is `Par` in production.
 pub fn decode_joins<C: Clone + ColdStoreDecode>(
@@ -303,8 +408,7 @@ pub fn decode_joins<C: Clone + ColdStoreDecode>(
     let encoded_joins: Vec<Vec<u8>> = legacy_tail(vec_bytes)?;
     let mut joins = Vec::with_capacity(encoded_joins.len());
     for bytes in &encoded_joins {
-        let (join, _consumed) = cold_decode_vec_prefix::<C>(bytes)?;
-        joins.push(join);
+        joins.push(decode_join(bytes)?);
     }
     Ok(joins)
 }
@@ -401,6 +505,39 @@ mod tests {
         let machine = decode_continuation::<String, String>(&bytes).expect("machine");
         assert_eq!(machine, oracle);
         assert_eq!(machine, continuation());
+    }
+
+    #[test]
+    fn append_only_continuation_encoders_match_the_frozen_bincode_layout() {
+        let continuation = continuation();
+        let complete = bincode::serialize(&continuation_ser(&continuation)).expect("oracle");
+        assert_eq!(encode_continuation_record(&continuation), complete);
+
+        let identity_oracle = bincode::serialize(&(
+            continuation.patterns.as_ref(),
+            continuation.continuation.as_ref(),
+            continuation.persist,
+            &continuation.peeks,
+        ))
+        .expect("identity oracle");
+        assert_eq!(encode_continuation_identity(&continuation), identity_oracle);
+
+        let mut appended = b"resident-prefix".to_vec();
+        encode_continuation_record_into(&continuation, &mut appended);
+        assert_eq!(&appended[..15], b"resident-prefix");
+        assert_eq!(&appended[15..], complete);
+    }
+
+    #[test]
+    fn append_only_join_encoder_matches_the_frozen_bincode_layout() {
+        let join = vec!["alpha".to_string(), "beta".to_string()];
+        let oracle = bincode::serialize(&join).expect("oracle");
+        assert_eq!(encode_join_record(&join), oracle);
+
+        let mut appended = b"prefix".to_vec();
+        encode_join_record_into(&join, &mut appended);
+        assert_eq!(&appended[..6], b"prefix");
+        assert_eq!(&appended[6..], oracle);
     }
 
     /// The REJECTION SET at the record level. A `Datum` that decodes its `a`

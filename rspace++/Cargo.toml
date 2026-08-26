@@ -19,6 +19,9 @@ candidate-checkpoint-experiment = []
 # Measurement-only comparison between the typed legacy DATA checkpoint route
 # and the production canonical-identity zipper/arena route.
 canonical-egress-experiment = []
+# Measurement-only comparison of operational continuation/join order
+# projection against two secondary PathMap order-index representations.
+record-order-index-experiment = []
 # Measurement-only access to the accepted-match transaction and its frozen
 # pre-transaction split-call control. Neither arm is compiled by default.
 accepted-match-transition-experiment = []
@@ -119,6 +122,11 @@ required-features = ["canonical-egress-experiment"]
 name = "rspace_identity_order_index"
 harness = false
 required-features = ["canonical-egress-experiment"]
+
+[[bench]]
+name = "rspace_record_order_index"
+harness = false
+required-features = ["record-order-index-experiment"]
 
 [[bench]]
 name = "rspace_accepted_match"

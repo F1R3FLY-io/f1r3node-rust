@@ -3,8 +3,8 @@
 //! This module is compiled only by `canonical-egress-experiment`. Keeping both
 //! arms beside `RSpaceDataStore` lets the legacy control call the actual typed
 //! `loaded_records` path and the treatment call the private production
-//! `loaded_canonical_records` path. The benchmark therefore cannot drift into
-//! a reconstructed approximation of either algorithm.
+//! `try_visit_loaded_canonical_records` path. The benchmark therefore cannot
+//! drift into a reconstructed approximation of either algorithm.
 
 use super::*;
 use crate::rspace::hashing::stable_hash_provider::hash;
@@ -152,9 +152,12 @@ impl CanonicalEgressFixture {
     }
 
     fn canonical_arena(&self) -> CanonicalEgressOutcome {
-        let mut records = self
-            .store
-            .loaded_canonical_records()
+        let mut records = Vec::new();
+        self.store
+            .try_visit_loaded_canonical_records(|record| {
+                records.push(record);
+                Ok(())
+            })
             .expect("canonical checkpoint projection");
         assert_eq!(records.len(), 1, "benchmark fixture has one channel");
         let record = records.pop().expect("one canonical record");

@@ -521,7 +521,7 @@ mod tests {
 
         fn print_store(&self) -> Result<(), KvStoreError> { Ok(()) }
 
-        fn size_bytes(&self) -> usize { todo!() }
+        fn size_bytes(&self) -> Result<usize, KvStoreError> { todo!() }
 
         fn non_empty(&self) -> Result<bool, KvStoreError> { todo!() }
     }
@@ -558,7 +558,7 @@ mod tests {
 
         fn print_store(&self) -> Result<(), KvStoreError> { todo!() }
 
-        fn size_bytes(&self) -> usize { todo!() }
+        fn size_bytes(&self) -> Result<usize, KvStoreError> { todo!() }
 
         fn non_empty(&self) -> Result<bool, KvStoreError> { todo!() }
     }

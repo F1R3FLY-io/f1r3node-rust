@@ -2,34 +2,38 @@
 // scala
 
 use std::collections::{BTreeSet, HashSet};
-use std::sync::{Arc, Mutex};
+use std::ops::Deref;
+use std::sync::Arc;
 
 use rand::prelude::SliceRandom;
 use rspace_plus_plus::rspace::errors::{HistoryError, RootError};
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
-use rspace_plus_plus::rspace::hashing::stable_hash_provider::hash;
-use rspace_plus_plus::rspace::history::history::HistoryInstances;
-use rspace_plus_plus::rspace::history::history_repository::HistoryRepository;
-use rspace_plus_plus::rspace::history::history_repository_impl::HistoryRepositoryImpl;
+use rspace_plus_plus::rspace::hashing::stable_hash_provider::{hash, hash_from_slice};
+use rspace_plus_plus::rspace::history::history_repository::{
+    HistoryRepository, HistoryRepositoryInstances,
+};
 use rspace_plus_plus::rspace::history::instances::radix_history::RadixHistory;
-use rspace_plus_plus::rspace::history::root_repository::RootRepository;
-use rspace_plus_plus::rspace::history::roots_store::RootsStore;
 use rspace_plus_plus::rspace::hot_store_action::{
-    DeleteAction, DeleteContinuations, DeleteData, DeleteJoins, HotStoreAction, InsertAction,
-    InsertCanonicalData, InsertContinuations, InsertData, InsertJoins,
+    DeleteAction, DeleteCanonicalCollection, DeleteContinuations, DeleteData, DeleteJoins,
+    HotStoreAction, InsertAction, InsertCanonicalCollection, InsertCanonicalData,
+    InsertContinuations, InsertData, InsertJoins,
+};
+use rspace_plus_plus::rspace::hot_store_trie_action::{
+    HotStoreTrieAction, TrieInsertAction, TrieInsertBinaryConsume, TrieInsertBinaryJoins,
+    TrieInsertBinaryProduce,
 };
 use rspace_plus_plus::rspace::internal::{Datum, WaitingContinuation};
-use rspace_plus_plus::rspace::serializers::serializers::encode_datums;
-use rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore;
-use rspace_plus_plus::rspace::shared::trie_exporter::{
-    KeyHash, NodePath, TrieExporter, TrieNode, Value,
+use rspace_plus_plus::rspace::serializers::serializers::{
+    encode_continuations, encode_datums, encode_joins,
 };
-use rspace_plus_plus::rspace::shared::trie_importer::TrieImporter;
-use rspace_plus_plus::rspace::state::rspace_exporter::RSpaceExporter;
+use rspace_plus_plus::rspace::shared::trie_exporter::KeyHash;
+use rspace_plus_plus::rspace::state::import_session::{
+    StateImportError, StateImportSession, StateImportSpec,
+};
 use rspace_plus_plus::rspace::state::rspace_importer::RSpaceImporter;
+use rspace_plus_plus::rspace::state::rspace_state_authority::RSpaceStateAuthority;
 use rspace_plus_plus::rspace::trace::event::{Consume, Produce};
 use shared::rust::ByteVector;
-use shared::rust::store::key_value_store::{KeyValueStore, KvStoreError};
 
 use crate::history::history_action_tests::{random_blake, zeros_blake};
 
@@ -42,8 +46,9 @@ async fn history_repository_should_process_insert_one_datum() {
         data: vec![test_datum.clone()],
     };
 
-    let next_repo =
-        repo.checkpoint(vec![HotStoreAction::Insert(InsertAction::InsertData(insert_data))]);
+    let next_repo = repo
+        .checkpoint(vec![HotStoreAction::Insert(InsertAction::InsertData(insert_data))])
+        .unwrap();
     let history_reader = next_repo.get_history_reader(&next_repo.root());
     let data = history_reader
         .unwrap()
@@ -55,25 +60,61 @@ async fn history_repository_should_process_insert_one_datum() {
 }
 
 #[tokio::test]
+async fn malformed_equal_payloads_of_all_kinds_are_rejected_atomically() {
+    let repo = create_empty_repository();
+    let initial_root = repo.root();
+    let payload = vec![b"same-record".to_vec()];
+    let data_key = Blake2b256Hash::new(b"data-key");
+    let continuation_key = Blake2b256Hash::new(b"continuation-key");
+    let joins_key = Blake2b256Hash::new(b"joins-key");
+    let result = repo.do_checkpoint(vec![
+        HotStoreTrieAction::TrieInsertAction(TrieInsertAction::TrieInsertBinaryProduce(
+            TrieInsertBinaryProduce {
+                hash: data_key.clone(),
+                data: payload.clone(),
+            },
+        )),
+        HotStoreTrieAction::TrieInsertAction(TrieInsertAction::TrieInsertBinaryConsume(
+            TrieInsertBinaryConsume {
+                hash: continuation_key.clone(),
+                continuations: payload.clone(),
+            },
+        )),
+        HotStoreTrieAction::TrieInsertAction(TrieInsertAction::TrieInsertBinaryJoins(
+            TrieInsertBinaryJoins {
+                hash: joins_key.clone(),
+                joins: payload.clone(),
+            },
+        )),
+    ]);
+
+    assert!(matches!(result, Err(HistoryError::ActionError(_))));
+    assert_eq!(repo.authority.current_root().unwrap(), initial_root);
+}
+
+#[tokio::test]
 async fn canonical_data_action_is_root_equivalent_to_typed_data_action() {
     let channel = test_channel_data_prefix();
     let first = datum(1);
     let second = datum(2);
     let data = vec![second, first.clone(), first];
 
-    let typed = create_empty_repository().checkpoint(vec![HotStoreAction::Insert(
-        InsertAction::InsertData(InsertData {
+    let typed = create_empty_repository()
+        .checkpoint(vec![HotStoreAction::Insert(InsertAction::InsertData(InsertData {
             channel: channel.clone(),
             data: data.clone(),
-        }),
-    )]);
-    let canonical = create_empty_repository().checkpoint(vec![HotStoreAction::Insert(
-        InsertAction::InsertCanonicalData(InsertCanonicalData::from_encoded_datums(
-            hash(&channel),
-            encode_datums(&data),
-            data.len() as u64,
-        )),
-    )]);
+        }))])
+        .unwrap();
+    let canonical = create_empty_repository()
+        .checkpoint(vec![HotStoreAction::Insert(InsertAction::InsertCanonicalData(
+            InsertCanonicalData::try_from_encoded_datums(
+                hash(&channel),
+                encode_datums(&data),
+                data.len() as u64,
+            )
+            .expect("typed datum bytes form a valid canonical action"),
+        ))])
+        .unwrap();
 
     assert_eq!(canonical.root(), typed.root());
     let fetched = canonical
@@ -82,6 +123,118 @@ async fn canonical_data_action_is_root_equivalent_to_typed_data_action() {
         .base()
         .get_data(&channel);
     assert_eq!(encode_datums(&fetched), encode_datums(&data));
+}
+
+#[tokio::test]
+async fn canonical_continuation_action_is_root_and_delete_equivalent_to_typed_action() {
+    let channels = vec![test_channel_continuations_prefix(), "second-channel".to_string()];
+    let first = continuation(1);
+    let mut second = continuation(2);
+    second.persist = false;
+    let continuations = vec![second, first];
+
+    let typed = create_empty_repository()
+        .checkpoint(vec![HotStoreAction::Insert(InsertAction::InsertContinuations(
+            InsertContinuations {
+                channels: channels.clone(),
+                continuations: continuations.clone(),
+            },
+        ))])
+        .unwrap();
+    let canonical = create_empty_repository()
+        .checkpoint(vec![HotStoreAction::Insert(InsertAction::InsertCanonicalCollection(
+            InsertCanonicalCollection::try_from_encoded_continuations(
+                hash_from_slice(&channels),
+                encode_continuations(&continuations),
+                continuations.len() as u64,
+            )
+            .expect("typed continuation bytes form a valid canonical action"),
+        ))])
+        .unwrap();
+
+    assert_eq!(canonical.root(), typed.root());
+    let fetched = canonical
+        .get_history_reader(&canonical.root())
+        .expect("canonical checkpoint reader")
+        .base()
+        .get_continuations(&channels);
+    assert_eq!(encode_continuations(&fetched), encode_continuations(&continuations));
+
+    let typed_deleted = typed
+        .checkpoint(vec![HotStoreAction::Delete(DeleteAction::DeleteContinuations(
+            DeleteContinuations {
+                channels: channels.clone(),
+            },
+        ))])
+        .unwrap();
+    let canonical_deleted = canonical
+        .checkpoint(vec![HotStoreAction::Delete(DeleteAction::DeleteCanonicalCollection(
+            DeleteCanonicalCollection::continuations(hash_from_slice(&channels)),
+        ))])
+        .unwrap();
+    assert_eq!(canonical_deleted.root(), typed_deleted.root());
+    assert!(
+        canonical_deleted
+            .get_history_reader(&canonical_deleted.root())
+            .unwrap()
+            .base()
+            .get_continuations(&channels)
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn canonical_join_action_preserves_duplicate_multiplicity_and_typed_roots() {
+    let channel = test_channel_joins_prefix();
+    let repeated = vec!["repeated".to_string(), "suffix".to_string()];
+    let other = vec!["other".to_string()];
+    let joins = vec![repeated.clone(), other, repeated];
+
+    let typed = create_empty_repository()
+        .checkpoint(vec![HotStoreAction::Insert(InsertAction::InsertJoins(InsertJoins {
+            channel: channel.clone(),
+            joins: joins.clone(),
+        }))])
+        .unwrap();
+    let canonical = create_empty_repository()
+        .checkpoint(vec![HotStoreAction::Insert(InsertAction::InsertCanonicalCollection(
+            InsertCanonicalCollection::try_from_encoded_joins(
+                hash(&channel),
+                encode_joins(&joins),
+                joins.len() as u64,
+            )
+            .expect("typed join bytes form a valid canonical action"),
+        ))])
+        .unwrap();
+
+    assert_eq!(canonical.root(), typed.root());
+    let fetched = canonical
+        .get_history_reader(&canonical.root())
+        .expect("canonical checkpoint reader")
+        .base()
+        .get_joins(&channel);
+    assert_eq!(encode_joins(&fetched), encode_joins(&joins));
+    assert_eq!(fetched.len(), joins.len());
+
+    let typed_deleted = typed
+        .checkpoint(vec![HotStoreAction::Delete(DeleteAction::DeleteJoins(DeleteJoins {
+            channel: channel.clone(),
+        }))])
+        .unwrap();
+    let canonical_deleted = canonical
+        .checkpoint(vec![HotStoreAction::Delete(DeleteAction::DeleteCanonicalCollection(
+            DeleteCanonicalCollection::joins(hash(&channel)),
+        ))])
+        .unwrap();
+    assert_eq!(canonical_deleted.root(), typed_deleted.root());
+    assert!(
+        canonical_deleted
+            .get_history_reader(&canonical_deleted.root())
+            .unwrap()
+            .base()
+            .get_joins(&channel)
+            .is_empty()
+    );
 }
 
 #[tokio::test]
@@ -107,11 +260,13 @@ async fn history_repository_should_allow_insert_of_joins_datum_continuation_on_s
         continuations: vec![test_continuation.clone()],
     };
 
-    let next_repo = repo.checkpoint(vec![
-        HotStoreAction::Insert(InsertAction::InsertData(data)),
-        HotStoreAction::Insert(InsertAction::InsertJoins(joins.clone())),
-        HotStoreAction::Insert(InsertAction::InsertContinuations(continuations)),
-    ]);
+    let next_repo = repo
+        .checkpoint(vec![
+            HotStoreAction::Insert(InsertAction::InsertData(data)),
+            HotStoreAction::Insert(InsertAction::InsertJoins(joins.clone())),
+            HotStoreAction::Insert(InsertAction::InsertContinuations(continuations)),
+        ])
+        .unwrap();
     let history_reader = next_repo.get_history_reader(&next_repo.root());
     let reader = history_reader.as_ref().unwrap().base();
 
@@ -177,7 +332,7 @@ async fn history_repository_should_process_insert_and_delete_of_thirty_mixed_ele
 
     let delete_elems: Vec<_> = [&data_delete[..], &joins_delete[..], &conts_delete[..]].concat();
 
-    let next_repo = repo.checkpoint(elems);
+    let next_repo = repo.checkpoint(elems).unwrap();
     let history_reader = next_repo.get_history_reader(&next_repo.root()).unwrap();
     let next_reader = history_reader.base();
 
@@ -225,7 +380,7 @@ async fn history_repository_should_process_insert_and_delete_of_thirty_mixed_ele
         .collect();
     assert_eq!(all_joins, expected_joins);
 
-    let deleted_repo = next_repo.checkpoint(delete_elems);
+    let deleted_repo = next_repo.checkpoint(delete_elems).unwrap();
     let history_reader = deleted_repo
         .get_history_reader(&deleted_repo.root())
         .unwrap();
@@ -309,8 +464,8 @@ async fn history_repository_should_not_allow_switching_to_a_not_existing_root() 
     match repo.reset(&zeros_blake()) {
         Err(HistoryError::RootError(RootError::UnknownRootError(err))) => {
             assert!(
-                err.contains("unknown root"),
-                "Expected error containing 'unknown root', got: {}",
+                err.contains("unknown verified root"),
+                "Expected error containing 'unknown verified root', got: {}",
                 err
             )
         }
@@ -328,12 +483,12 @@ async fn history_repository_should_record_next_root_as_valid() {
         data: vec![test_datum.clone()],
     };
 
-    let next_repo =
-        repo.checkpoint(vec![HotStoreAction::Insert(InsertAction::InsertData(insert_data))]);
+    let next_repo = repo
+        .checkpoint(vec![HotStoreAction::Insert(InsertAction::InsertData(insert_data))])
+        .unwrap();
     let _ = repo.reset(&RadixHistory::empty_root_node_hash());
-    let binding = next_repo.history();
-    let next_repo_history = binding.lock().expect("Failed to acquire history lock");
-    let _ = repo.reset(&next_repo_history.root());
+    let next_root = next_repo.root();
+    let _ = repo.reset(&next_root).unwrap();
 }
 
 fn test_channel_data_prefix() -> String { "channel-data".to_string() }
@@ -409,115 +564,59 @@ fn datum(s: i32) -> Datum<String> {
     }
 }
 
-fn create_empty_repository() -> HistoryRepositoryImpl<String, String, String, String> {
-    let past_roots = root_repository();
-    let empty_history = HistoryInstances::create(
-        RadixHistory::empty_root_node_hash(),
-        Arc::new(InMemoryKeyValueStore::new()),
-    )
-    .unwrap();
+type DynTestHistoryRepository =
+    dyn HistoryRepository<String, String, String, String> + Send + Sync + 'static;
 
-    let _ = past_roots.commit(&RadixHistory::empty_root_node_hash());
-
-    HistoryRepositoryImpl {
-        current_history: Arc::new(Mutex::new(Box::new(empty_history))),
-        roots_repository: Arc::new(Mutex::new(past_roots)),
-        leaf_store: create_inmem_cold_store(),
-        rspace_exporter: Arc::new(EmptyExporter),
-        rspace_importer: Arc::new(EmptyImporter),
-        _marker: std::marker::PhantomData,
-    }
+struct TestHistoryRepository {
+    repository: Box<DynTestHistoryRepository>,
+    authority: Arc<RSpaceStateAuthority>,
 }
 
-struct InmemRootsStore {
-    roots: Arc<Mutex<HashSet<Blake2b256Hash>>>,
-    maybe_current_root: Arc<Mutex<Option<Blake2b256Hash>>>,
+impl Deref for TestHistoryRepository {
+    type Target = DynTestHistoryRepository;
+
+    fn deref(&self) -> &Self::Target { self.repository.as_ref() }
 }
 
-impl RootsStore for InmemRootsStore {
-    fn current_root(&self) -> Result<Option<Blake2b256Hash>, RootError> {
-        Ok(self.maybe_current_root.lock().unwrap().clone())
-    }
-
-    fn validate_and_set_current_root(
-        &self,
-        key: Blake2b256Hash,
-    ) -> Result<Option<Blake2b256Hash>, RootError> {
-        let roots_lock = self.roots.lock().unwrap();
-        let mut maybe_current_root_lock = self.maybe_current_root.lock().unwrap();
-
-        if roots_lock.contains(&key) {
-            *maybe_current_root_lock = Some(key);
-            Ok(maybe_current_root_lock.clone())
-        } else {
-            Ok(None)
-        }
-    }
-
-    fn record_root(&self, key: &Blake2b256Hash) -> Result<(), RootError> {
-        let mut roots_lock = self.roots.lock().unwrap();
-        let mut maybe_current_root_lock = self.maybe_current_root.lock().unwrap();
-
-        *maybe_current_root_lock = Some(key.clone());
-        let _ = roots_lock.insert(key.clone());
-        Ok(())
-    }
-
-    fn contains_root(&self, key: &Blake2b256Hash) -> Result<bool, RootError> {
-        Ok(self.roots.lock().unwrap().contains(key))
-    }
-}
-
-impl InmemRootsStore {
-    fn new() -> InmemRootsStore {
-        InmemRootsStore {
-            roots: Arc::new(Mutex::new(HashSet::new())),
-            maybe_current_root: Arc::new(Mutex::new(None)),
-        }
-    }
-}
-
-fn root_repository() -> RootRepository {
-    RootRepository {
-        roots_store: Box::new(InmemRootsStore::new()),
-    }
-}
-
-fn create_inmem_cold_store() -> Arc<dyn KeyValueStore> { Arc::new(InMemoryKeyValueStore::new()) }
-
-struct EmptyExporter;
-
-impl RSpaceExporter for EmptyExporter {
-    fn get_root(&self) -> Result<KeyHash, RootError> { todo!() }
-}
-
-impl TrieExporter for EmptyExporter {
-    fn get_nodes(&self, _start_path: NodePath, _skip: i32, _take: i32) -> Vec<TrieNode<KeyHash>> {
-        todo!()
-    }
-
-    fn get_history_items(
-        &self,
-        _keys: Vec<KeyHash>,
-    ) -> Result<Vec<(KeyHash, Value)>, KvStoreError> {
-        todo!()
-    }
-
-    fn get_data_items(&self, _keys: Vec<KeyHash>) -> Result<Vec<(KeyHash, Value)>, KvStoreError> {
-        todo!()
+fn create_empty_repository() -> TestHistoryRepository {
+    let authority = RSpaceStateAuthority::in_memory();
+    let repository =
+        HistoryRepositoryInstances::<String, String, String, String>::repository(authority.clone())
+            .expect("authority-backed history repository");
+    TestHistoryRepository {
+        repository,
+        authority,
     }
 }
 
 struct EmptyImporter;
 
 impl RSpaceImporter for EmptyImporter {
-    fn get_history_item(&self, _hash: KeyHash) -> Option<ByteVector> { todo!() }
+    fn begin_import(
+        &self,
+        _spec: StateImportSpec,
+    ) -> Result<Box<dyn StateImportSession>, StateImportError> {
+        Err(StateImportError::InternalInvariant(
+            "the history-repository fixture has no state-import stores".to_string(),
+        ))
+    }
+
+    fn get_history_item(&self, _hash: KeyHash) -> Result<Option<ByteVector>, StateImportError> {
+        Ok(None)
+    }
 }
 
-impl TrieImporter for EmptyImporter {
-    fn set_history_items(&self, _data: Vec<(KeyHash, Value)>) -> () { todo!() }
-
-    fn set_data_items(&self, _data: Vec<(KeyHash, Value)>) -> () { todo!() }
-
-    fn set_root(&self, _key: &KeyHash) -> () { todo!() }
+#[test]
+fn repository_only_importer_mock_rejects_mutation_authority_without_panicking() {
+    let root = RadixHistory::empty_root_node_hash();
+    let spec = rspace_plus_plus::rspace::state::import_session::StateImportSpec::new(
+        [root.clone()],
+        rspace_plus_plus::rspace::state::import_session::StateImportPublicationMode::Activate(root),
+    )
+    .unwrap();
+    let error = match EmptyImporter.begin_import(spec) {
+        Ok(_) => panic!("repository-only fixture unexpectedly granted import authority"),
+        Err(error) => error,
+    };
+    assert!(matches!(error, StateImportError::InternalInvariant(_)));
 }

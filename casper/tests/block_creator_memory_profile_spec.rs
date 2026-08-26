@@ -57,7 +57,7 @@ fn delta_kb(curr: Option<usize>, prev: Option<usize>) -> isize {
 
 async fn store_size_kb(kvm: &mut InMemoryStoreManager, name: &str) -> usize {
     match kvm.store(name.to_string()).await {
-        Ok(store) => store.size_bytes() / 1024,
+        Ok(store) => store.size_bytes().map(|bytes| bytes / 1024).unwrap_or(0),
         Err(_) => 0,
     }
 }

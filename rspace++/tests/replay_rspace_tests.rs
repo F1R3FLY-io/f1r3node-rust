@@ -1957,10 +1957,8 @@ async fn fixture() -> StateSetup {
     let store = kvm.r_space_stores().await.unwrap();
 
     let history_repo = Arc::new(
-        HistoryRepositoryInstances::<String, Pattern, String, String>::lmdb_repository(
-            store.history.clone(),
-            store.roots.clone(),
-            store.cold.clone(),
+        HistoryRepositoryInstances::<String, Pattern, String, String>::repository(
+            store.authority(),
         )
         .unwrap(),
     );

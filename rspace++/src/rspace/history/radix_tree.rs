@@ -4,10 +4,9 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use dashmap::DashMap;
-use itertools::Itertools;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
-use shared::rust::store::key_value_store::KeyValueStore;
+use shared::rust::store::key_value_store::{KeyValueStore, KeyValueStoreMutation};
 use shared::rust::{Byte, ByteVector};
 
 use super::history_action::{DeleteAction, HistoryAction, InsertAction};
@@ -200,7 +199,7 @@ pub fn encode(node: &Node) -> ByteVector {
 
 /** Deserialization [[ByteVector]] to [[Node]]
  */
-pub fn decode(bv: ByteVector) -> Node {
+pub fn decode(bv: ByteVector) -> Result<Node, RadixTreeError> {
     let max_size = bv.len();
 
     // If first bit 0 - return true, otherwise false.
@@ -209,17 +208,39 @@ pub fn decode(bv: ByteVector) -> Node {
     let mut node = empty_node();
     let mut pos0 = 0;
     while pos0 < max_size {
+        if max_size - pos0 < HEAD_SIZE {
+            return Err(RadixTreeError::SerializationError(format!(
+                "Radix Tree: encoded node has {} trailing header byte(s)",
+                max_size - pos0
+            )));
+        }
         let idx_item = byte_to_int(bv[pos0]); // Take first byte - it's item's index
-        assert!(
-            node[idx_item] == Item::EmptyItem,
-            "Error during deserialization: wrong index of item."
-        );
+        if node[idx_item] != Item::EmptyItem {
+            return Err(RadixTreeError::SerializationError(format!(
+                "Radix Tree: encoded node repeats item index {idx_item}"
+            )));
+        }
         let pos1 = pos0 + 1;
         let second_byte = bv[pos1]; // Take second byte
 
         // Decoding prefix
         let prefix_size = (second_byte & 0x7F) as usize; // Lower 7 bits - it's size of prefix (0..127).
         let pos_prefix_start = pos1 + 1;
+        let encoded_item_len = HEAD_SIZE
+            .checked_add(prefix_size)
+            .and_then(|size| size.checked_add(DEF_SIZE))
+            .ok_or_else(|| {
+                RadixTreeError::SerializationError(
+                    "Radix Tree: encoded item length overflows usize".to_string(),
+                )
+            })?;
+        if encoded_item_len > max_size - pos0 {
+            return Err(RadixTreeError::SerializationError(format!(
+                "Radix Tree: encoded item {idx_item} declares {encoded_item_len} bytes but only \
+                 {} remain",
+                max_size - pos0
+            )));
+        }
         let prefix = bv[pos_prefix_start..pos_prefix_start + prefix_size].to_vec();
 
         // Decoding leaf or nodePtr data
@@ -243,7 +264,7 @@ pub fn decode(bv: ByteVector) -> Node {
         pos0 = pos_val_or_ptr_start + DEF_SIZE;
     }
 
-    node
+    Ok(node)
 }
 
 fn common_prefix(b1: ByteVector, b2: ByteVector) -> (ByteVector, ByteVector, ByteVector) {
@@ -351,9 +372,25 @@ pub fn sequential_export(
     last_prefix: Option<ByteVector>,
     skip_size: i32,
     take_size: i32,
-    get_node_data_from_store: Arc<dyn Fn(&ByteVector) -> Option<ByteVector>>,
+    get_node_data_from_store: Arc<
+        dyn Fn(&ByteVector) -> Result<Option<ByteVector>, RadixTreeError>,
+    >,
     settings: ExportDataSettings,
 ) -> Result<(ExportData, Option<ByteVector>), RadixTreeError> {
+    fn decode_authenticated_node(
+        expected_hash: &[u8],
+        bytes: ByteVector,
+    ) -> Result<Node, RadixTreeError> {
+        let actual_hash = Blake2b256Hash::new(&bytes).bytes();
+        if actual_hash != expected_hash {
+            return Err(RadixTreeError::CollisionError(format!(
+                "Radix Tree - Export error: node hash mismatch; expected {}, computed {}",
+                hex::encode(expected_hash),
+                hex::encode(actual_hash)
+            )));
+        }
+        decode(bytes)
+    }
     #[derive(Clone)]
     struct NodeData {
         prefix: ByteVector,
@@ -386,82 +423,62 @@ pub fn sequential_export(
     let init_node_path: Box<
         dyn Fn(NodePathData) -> Result<Either<NodePathData, Path>, RadixTreeError>,
     > = Box::new(|p: NodePathData| {
-        let process_child_item = |node: Node| {
-            let item_idx = byte_to_int(*p.rest_prefix.first().unwrap());
-            match node.get(item_idx) {
-                Some(Item::NodePtr {
-                    prefix: ptr_prefix,
-                    ptr,
-                }) => {
-                    let (_, rest_prefix_tail) = p.rest_prefix.split_first().unwrap();
-                    let (mut prefix_common, prefix_rest, ptr_prefix_rest) =
-                        common_prefix(rest_prefix_tail.to_vec(), ptr_prefix.to_vec());
-
-                    assert!(ptr_prefix_rest.is_empty(), "{}", {
-                        let mut node_prefix_cloned = p.node_prefix.clone();
-                        let mut rest_prefix_cloned = p.rest_prefix.clone();
-                        node_prefix_cloned.append(&mut rest_prefix_cloned);
-
-                        format!(
-                            "Radix Tree - Export error: node with prefix {} not found.",
-                            hex::encode(node_prefix_cloned)
-                        )
-                    });
-
-                    let mut node_prefix_appended = p.node_prefix.clone();
-                    node_prefix_appended.push(*p.rest_prefix.first().unwrap());
-                    node_prefix_appended.append(&mut prefix_common);
-
-                    Either::Left(NodePathData {
-                        hash: ptr.to_vec(),
-                        node_prefix: node_prefix_appended,
-                        rest_prefix: prefix_rest,
-                        path: {
-                            let mut new_path = Vec::new();
-                            new_path.push(NodeData::new(
-                                p.node_prefix.clone(),
-                                node,
-                                p.rest_prefix.first().copied(),
-                            ));
-
-                            new_path.extend(p.path.clone());
-                            new_path
-                        },
-                    })
-                }
-                _ => {
-                    assert!(false, "{}", {
-                        let mut node_prefix_cloned = p.node_prefix.clone();
-                        let mut rest_prefix_cloned = p.rest_prefix.clone();
-                        node_prefix_cloned.append(&mut rest_prefix_cloned);
-
-                        format!(
-                            "Radix Tree - Export error: node with prefix {} not found.",
-                            hex::encode(node_prefix_cloned)
-                        )
-                    });
-
-                    Either::Right(Vec::<NodeData>::new()) // Not found
-                }
-            }
-        };
-
-        let node_opt = get_node_data_from_store(&p.hash);
-        if node_opt.is_none() {
-            Err(RadixTreeError::KeyNotFound(format!(
+        let node_opt = get_node_data_from_store(&p.hash)?;
+        match node_opt {
+            None => Err(RadixTreeError::KeyNotFound(format!(
                 "Radix Tree - Export error: node with key {} not found.",
                 { hex::encode(p.hash) }
-            )))
-        } else {
-            let decoded_node = decode(node_opt.unwrap());
-            if p.rest_prefix.is_empty() {
-                let mut new_path = Vec::new();
-                new_path.push(NodeData::new(p.node_prefix, decoded_node, None));
-
-                new_path.extend(p.path);
-                Ok(Either::Right(new_path)) // Happy end
-            } else {
-                Ok(process_child_item(decoded_node)) // Go dipper
+            ))),
+            Some(bytes) => {
+                let decoded_node = decode_authenticated_node(&p.hash, bytes)?;
+                if p.rest_prefix.is_empty() {
+                    let mut new_path = Vec::new();
+                    new_path.push(NodeData::new(p.node_prefix, decoded_node, None));
+                    new_path.extend(p.path);
+                    Ok(Either::Right(new_path))
+                } else {
+                    let (item_index, rest_prefix_tail) =
+                        p.rest_prefix.split_first().ok_or_else(|| {
+                            RadixTreeError::PrefixError(
+                                "Radix Tree - Export error: missing continuation prefix"
+                                    .to_string(),
+                            )
+                        })?;
+                    let item_idx = byte_to_int(*item_index);
+                    let (ptr_prefix, ptr) = match decoded_node.get(item_idx) {
+                        Some(Item::NodePtr { prefix, ptr }) => (prefix.clone(), ptr.clone()),
+                        _ => {
+                            let mut full_prefix = p.node_prefix.clone();
+                            full_prefix.extend_from_slice(&p.rest_prefix);
+                            return Err(RadixTreeError::KeyNotFound(format!(
+                                "Radix Tree - Export error: node with prefix {} not found.",
+                                hex::encode(full_prefix)
+                            )));
+                        }
+                    };
+                    let (mut prefix_common, prefix_rest, ptr_prefix_rest) =
+                        common_prefix(rest_prefix_tail.to_vec(), ptr_prefix);
+                    if !ptr_prefix_rest.is_empty() {
+                        let mut full_prefix = p.node_prefix.clone();
+                        full_prefix.extend_from_slice(&p.rest_prefix);
+                        return Err(RadixTreeError::PrefixError(format!(
+                            "Radix Tree - Export error: node with prefix {} not found.",
+                            hex::encode(full_prefix)
+                        )));
+                    }
+                    let mut node_prefix = p.node_prefix.clone();
+                    node_prefix.push(*item_index);
+                    node_prefix.append(&mut prefix_common);
+                    let mut path =
+                        vec![NodeData::new(p.node_prefix, decoded_node, Some(*item_index))];
+                    path.extend(p.path);
+                    Ok(Either::Left(NodePathData {
+                        hash: ptr,
+                        node_prefix,
+                        rest_prefix: prefix_rest,
+                        path,
+                    }))
+                }
             }
         }
     });
@@ -480,27 +497,27 @@ pub fn sequential_export(
         last_idx_opt: Option<Byte>,
         settings: ExportDataSettings,
     ) -> Option<(Byte, Item)> {
-        if last_idx_opt == Some(0xFF) {
-            None
-        } else {
-            let cur_idx_int = last_idx_opt.map(|b| byte_to_int(b) + 1).unwrap_or(0);
-            let cur_item = node.get(cur_idx_int).unwrap();
-            let cur_idx = cur_idx_int as u8;
+        let mut cur_idx_int = last_idx_opt.map(|b| byte_to_int(b) + 1).unwrap_or(0);
+        while cur_idx_int < node.len() {
+            let cur_item = &node[cur_idx_int];
+            let cur_idx = cur_idx_int as Byte;
             match cur_item {
-                Item::EmptyItem => find_next_non_empty_item(node, Some(cur_idx), settings),
+                Item::EmptyItem => {}
                 Item::Leaf {
                     prefix: _,
                     value: _,
                 } => {
                     if settings.flag_leaf_prefixes || settings.flag_leaf_values {
-                        Some((cur_idx, cur_item.clone()))
-                    } else {
-                        find_next_non_empty_item(node, Some(cur_idx), settings)
+                        return Some((cur_idx, cur_item.clone()));
                     }
                 }
-                Item::NodePtr { prefix: _, ptr: _ } => Some((cur_idx, cur_item.clone())),
+                Item::NodePtr { prefix: _, ptr: _ } => {
+                    return Some((cur_idx, cur_item.clone()));
+                }
             }
+            cur_idx_int += 1;
         }
+        None
     }
 
     #[derive(Clone)]
@@ -621,27 +638,27 @@ pub fn sequential_export(
                     StepData::new(child_path, p.skip, p.take - 1, new_data)
                 };
 
-            let child_node_opt = get_node_data_from_store(&ptr);
-            if child_node_opt.is_none() {
-                Err(RadixTreeError::KeyNotFound(format!(
+            let child_node_opt = get_node_data_from_store(&ptr)?;
+            match child_node_opt {
+                None => Err(RadixTreeError::KeyNotFound(format!(
                     "Radix Tree - Export error: node with key {} not found. here",
                     { hex::encode(ptr) }
-                )))
-            } else {
-                let child_nv = child_node_opt.unwrap();
-                let child_decoded = decode(child_nv.clone());
-                let mut child_np = curr_node_prefix;
-                child_np.push(item_index);
-                child_np.append(&mut ptr_prefix.clone());
+                ))),
+                Some(child_nv) => {
+                    let child_decoded = decode_authenticated_node(&ptr, child_nv.clone())?;
+                    let mut child_np = curr_node_prefix;
+                    child_np.push(item_index);
+                    child_np.append(&mut ptr_prefix.clone());
 
-                let child_node_data = NodeData::new(child_np.clone(), child_decoded, None);
-                let mut child_path = vec![child_node_data];
-                child_path.append(&mut new_path.clone());
+                    let child_node_data = NodeData::new(child_np.clone(), child_decoded, None);
+                    let mut child_path = vec![child_node_data];
+                    child_path.append(&mut new_path.clone());
 
-                if p.skip > 0 {
-                    Ok(StepData::new(child_path, p.skip - 1, p.take, p.exp_data))
-                } else {
-                    Ok(construct_node_ptr_data(child_path, child_np, child_nv))
+                    if p.skip > 0 {
+                        Ok(StepData::new(child_path, p.skip - 1, p.take, p.exp_data))
+                    } else {
+                        Ok(construct_node_ptr_data(child_path, child_np, child_nv))
+                    }
                 }
             }
         },
@@ -715,15 +732,9 @@ pub fn sequential_export(
         }
     });
 
-    fn init_conditions_exception() {
-        panic!("Export error: invalid initial conditions (skipSize, takeSize)==(0,0).")
-    }
-
     fn empty_export_data() -> ExportData {
         ExportData::new(Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new())
     }
-
-    fn empty_result() -> (ExportData, Option<ByteVector>) { (empty_export_data(), None) }
 
     let do_export: Box<
         dyn Fn(ByteVector) -> Result<(ExportData, Option<ByteVector>), RadixTreeError>,
@@ -796,13 +807,21 @@ pub fn sequential_export(
     });
 
     if (skip_size, take_size) == (0, 0) {
-        init_conditions_exception()
+        return Err(RadixTreeError::PrefixError(
+            "Radix Tree - Export error: skip and take cannot both be zero".to_string(),
+        ));
     }
 
-    let root_node_ser_opt = get_node_data_from_store(&root_hash);
+    let root_node_ser_opt = get_node_data_from_store(&root_hash)?;
     match root_node_ser_opt {
-        Some(bytes) => do_export(bytes),
-        None => Ok(empty_result()),
+        Some(bytes) => {
+            decode_authenticated_node(&root_hash, bytes.clone())?;
+            do_export(bytes)
+        }
+        None => Err(RadixTreeError::KeyNotFound(format!(
+            "Radix Tree - Export error: root node {} not found.",
+            hex::encode(&root_hash)
+        ))),
     }
 }
 
@@ -847,8 +866,15 @@ impl RadixTreeImpl {
 
         match get_result {
             Some(bytes) => {
-                let deserialized_node = decode(bytes);
-                Ok(Some(deserialized_node))
+                let actual = Blake2b256Hash::new(&bytes).bytes();
+                if actual != *node_ptr {
+                    return Err(RadixTreeError::CollisionError(format!(
+                        "Radix Tree: persisted node hash mismatch; expected {}, computed {}",
+                        hex::encode(node_ptr),
+                        hex::encode(actual)
+                    )));
+                }
+                Ok(Some(decode(bytes)?))
             }
             None => Ok(None),
         }
@@ -864,9 +890,9 @@ impl RadixTreeImpl {
     pub fn load_node(
         &self,
         node_ptr: ByteVector,
-        no_assert: Option<bool>,
+        allow_missing_empty_root: Option<bool>,
     ) -> Result<Node, RadixTreeError> {
-        self.load_node_arc(node_ptr, no_assert)
+        self.load_node_arc(node_ptr, allow_missing_empty_root)
             .map(|node| node.as_ref().clone())
     }
 
@@ -890,20 +916,9 @@ impl RadixTreeImpl {
     pub fn load_node_arc(
         &self,
         node_ptr: ByteVector,
-        no_assert: Option<bool>,
+        allow_missing_empty_root: Option<bool>,
     ) -> Result<Arc<Node>, RadixTreeError> {
-        let no_assert = no_assert.unwrap_or(false);
-
-        let error_msg = |node_ptr: &[u8]| {
-            assert!(
-                no_assert,
-                "Missing node in database. ptr={:?}",
-                node_ptr
-                    .iter()
-                    .map(|byte| format!("{:02x}", byte))
-                    .collect::<Vec<_>>()
-            );
-        };
+        let allow_missing_empty_root = allow_missing_empty_root.unwrap_or(false);
 
         let cache_miss: Box<dyn Fn(ByteVector) -> Result<Arc<Node>, RadixTreeError>> =
             Box::new(|node_ptr: ByteVector| {
@@ -917,8 +932,14 @@ impl RadixTreeImpl {
                         Ok(node_arc)
                     }
                     None => {
-                        error_msg(&node_ptr);
-                        Ok(Arc::new(empty_node()))
+                        if allow_missing_empty_root {
+                            Ok(Arc::new(empty_node()))
+                        } else {
+                            Err(RadixTreeError::KeyNotFound(format!(
+                                "missing radix node {}",
+                                hex::encode(node_ptr)
+                            )))
+                        }
                     }
                 }
             });
@@ -967,74 +988,91 @@ impl RadixTreeImpl {
         node_bytes_hash
     }
 
+    /// Return the immutable content-addressed objects prepared by the current
+    /// mutation without writing them to the backing store.
+    ///
+    /// Local RSpace checkpoints use this plan so one authority-owned
+    /// transaction can publish cold leaves, history nodes, and the verified
+    /// root together.  The cache is cleared only after the complete plan has
+    /// been copied and validated, so a failed checkpoint cannot contaminate a
+    /// later attempt with stale nodes.
+    pub(crate) fn take_validated_write_batch(
+        &self,
+    ) -> Result<BTreeMap<ByteVector, ByteVector>, RadixTreeError> {
+        let mut batch = BTreeMap::new();
+        for entry in &self.cache_w {
+            let key = entry.key().clone();
+            let value = entry.value().clone();
+            let actual = Blake2b256Hash::new(&value).bytes();
+            if actual != key {
+                self.clear_write_cache();
+                return Err(RadixTreeError::CollisionError(format!(
+                    "prepared history object key {} does not match content digest {}",
+                    hex::encode(key),
+                    hex::encode(actual)
+                )));
+            }
+            batch.insert(key, value);
+        }
+        self.clear_write_cache();
+        Ok(batch)
+    }
+
     /**
      * Save all [[cacheW]] to [[store]]
      *
      * If detected collision with older KVDB data - execute Exception
      */
     pub fn commit(&self) -> Result<(), RadixTreeError> {
-        fn collision_panic(collisions: Vec<(ByteVector, ByteVector)>) -> RadixTreeError {
-            RadixTreeError::CollisionError(format!(
-                "{} collisions in KVDB (first collision with key = {}.",
-                collisions.len(),
-                hex::encode(collisions.first().unwrap().0.clone()),
-            ))
-        }
-
-        let kv_pairs: Vec<(ByteVector, ByteVector)> = self
-            .cache_w
+        let batch = self.take_validated_write_batch()?;
+        let entries = batch.into_iter().collect::<Vec<_>>();
+        let keys = entries
             .iter()
-            .map(|entry| (entry.key().clone(), entry.value().clone()))
-            .collect();
+            .map(|(key, _)| key.clone())
+            .collect::<Vec<_>>();
+        loop {
+            let observed = self.store.get(&keys)?;
+            if observed.len() != entries.len() {
+                return Err(RadixTreeError::KvStoreError(
+                    shared::rust::store::key_value_store::KvStoreError::IoError(format!(
+                        "key-value store returned {} values for {} radix objects",
+                        observed.len(),
+                        entries.len()
+                    )),
+                ));
+            }
+            let collisions = entries
+                .iter()
+                .zip(&observed)
+                .filter_map(|((key, value), actual)| {
+                    actual
+                        .as_ref()
+                        .is_some_and(|actual| actual != value)
+                        .then(|| (key.clone(), value.clone()))
+                })
+                .collect::<Vec<_>>();
+            if !collisions.is_empty() {
+                return Err(RadixTreeError::CollisionError(format!(
+                    "{} collisions in KVDB (first collision with key = {}.",
+                    collisions.len(),
+                    hex::encode(&collisions[0].0)
+                )));
+            }
 
-        let if_absent: Vec<bool> = self
-            .store
-            .contains(&kv_pairs.clone().into_iter().map(|(k, _)| k).collect_vec())?;
-        let kv_if_absent: Vec<((ByteVector, ByteVector), bool)> =
-            kv_pairs.into_iter().zip(if_absent.into_iter()).collect();
-
-        let kv_exist: Vec<(ByteVector, ByteVector)> = kv_if_absent
-            .iter()
-            .filter(|&(_, absent)| *absent)
-            .map(|(kv, _)| kv.clone())
-            .collect();
-
-        let value_exist_in_store: Vec<Option<ByteVector>> = self
-            .store
-            .get(&kv_exist.clone().into_iter().map(|(k, _)| k).collect_vec())?;
-
-        let kvv_exist: Vec<((ByteVector, ByteVector), ByteVector)> = kv_exist
-            .into_iter()
-            .zip(
-                value_exist_in_store
-                    .into_iter()
-                    .map(|v| v.unwrap_or_else(|| Vec::new())),
-            )
-            .collect();
-
-        let kv_collision: Vec<(ByteVector, ByteVector)> = kvv_exist
-            .into_iter()
-            .filter(|kvv| !(kvv.0.1 == kvv.1))
-            .map(|(kv, _)| kv)
-            .collect();
-
-        if !kv_collision.is_empty() {
-            return Err(collision_panic(kv_collision));
+            let mutations = entries
+                .iter()
+                .zip(&observed)
+                .filter(|(_, actual)| actual.is_none())
+                .map(|((key, value), _)| KeyValueStoreMutation::Put(key.clone(), value.clone()))
+                .collect::<Vec<_>>();
+            if mutations.is_empty() {
+                return Ok(());
+            }
+            let conditions = keys.iter().cloned().zip(observed).collect::<Vec<_>>();
+            if self.store.compare_and_swap_batch(&conditions, &mutations)? {
+                return Ok(());
+            }
         }
-
-        let kv_absent: Vec<(ByteVector, ByteVector)> = kv_if_absent
-            .into_iter()
-            .filter(|&(_, absent)| !absent)
-            .map(|(kv, _)| kv)
-            .collect();
-
-        let serialized_kv_absent = kv_absent
-            .into_iter()
-            .map(|(key, value)| (key, value))
-            .collect();
-
-        self.store.put(serialized_kv_absent)?;
-        Ok(())
     }
 
     /**

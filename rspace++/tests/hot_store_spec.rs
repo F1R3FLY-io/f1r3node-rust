@@ -9,16 +9,21 @@ use proptest_derive::Arbitrary;
 use rand::prelude::SliceRandom;
 use rand::thread_rng;
 use rspace_plus_plus::rspace::candidate_order::deterministic_candidate_hash;
-use rspace_plus_plus::rspace::hashing::stable_hash_provider::hash;
-use rspace_plus_plus::rspace::history::cold_store::{DataLeaf, PersistedData};
+use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+use rspace_plus_plus::rspace::hashing::stable_hash_provider::{hash, hash_from_slice};
+use rspace_plus_plus::rspace::history::cold_store::{
+    ContinuationsLeaf, DataLeaf, JoinsLeaf, PersistedData, PersistedDataKind,
+};
 use rspace_plus_plus::rspace::history::history_reader::HistoryReaderBase;
 use rspace_plus_plus::rspace::hot_store::{HotStore, HotStoreInstances, HotStoreState};
 use rspace_plus_plus::rspace::hot_store_action::{
-    DeleteAction, DeleteCanonicalData, DeleteContinuations, DeleteData, DeleteJoins,
-    HotStoreAction, InsertAction, InsertContinuations, InsertData, InsertJoins,
+    DeleteAction, DeleteContinuations, DeleteData, DeleteJoins, HotStoreAction, InsertAction,
+    InsertContinuations, InsertData, InsertJoins,
 };
 use rspace_plus_plus::rspace::internal::{Datum, WaitingContinuation};
-use rspace_plus_plus::rspace::serializers::serializers::{CandidateOrderingBytes, encode_datums};
+use rspace_plus_plus::rspace::serializers::serializers::{
+    CandidateOrderingBytes, encode_continuations, encode_datums, encode_joins,
+};
 use rstest::*;
 use serde::Serialize;
 
@@ -851,19 +856,24 @@ fn checkpoint_changes_reuse_sorted_canonical_identities_and_preserve_multiplicit
             _ => None,
         })
         .expect("non-empty loaded channel must produce canonical DATA bytes");
-    assert_eq!(canonical.hash, hash(&channel));
-    assert_eq!(canonical.datum_count, data.len() as u64);
+    assert_eq!(canonical.hash(), &hash(&channel));
+    assert_eq!(canonical.datum_count(), data.len() as u64);
     assert_eq!(canonical.encoded_datums(), expected);
     assert_eq!(
-        canonical.encoded_persisted_data,
+        canonical.encoded_persisted_data(),
         bincode::serialize(&PersistedData::Data(DataLeaf { bytes: expected })).unwrap()
     );
 
-    assert!(actions.contains(&HotStoreAction::Delete(DeleteAction::DeleteCanonicalData(
-        DeleteCanonicalData {
-            hash: hash(&empty_channel),
-        }
-    ),)));
+    let deleted_hashes = actions
+        .iter()
+        .filter_map(|action| match action {
+            HotStoreAction::Delete(DeleteAction::DeleteCanonicalData(delete)) => {
+                Some(delete.hash().clone())
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(deleted_hashes, vec![hash(&empty_channel)]);
 }
 
 proptest! {
@@ -903,15 +913,122 @@ proptest! {
                 _ => None,
             })
             .expect("the generated bag is nonempty");
-        prop_assert_eq!(canonical.hash.clone(), hash(&channel));
-        prop_assert_eq!(canonical.datum_count, data.len() as u64);
+        prop_assert_eq!(canonical.hash(), &hash(&channel));
+        prop_assert_eq!(canonical.datum_count(), data.len() as u64);
         let expected = encode_datums(&data);
         prop_assert_eq!(canonical.encoded_datums(), &expected);
         prop_assert_eq!(
-            &canonical.encoded_persisted_data,
+            canonical.encoded_persisted_data(),
             &bincode::serialize(&PersistedData::Data(DataLeaf { bytes: expected })).unwrap()
         );
     }
+}
+
+#[test]
+fn checkpoint_changes_emit_exact_canonical_continuation_join_actions_and_deletes() {
+    let (_, hot_store) = fixture();
+    let channels = vec!["continuation-a".to_string(), "continuation-b".to_string()];
+    let empty_channels = vec!["empty-continuation".to_string()];
+    let installed_channels = vec!["installed-continuation".to_string()];
+    let mut first = Continuation::default();
+    first.patterns = Arc::new(vec![Pattern::StringMatch("first".to_string())]);
+    let mut source_alias = first.clone();
+    source_alias.source.hash = Blake2b256Hash::from_bytes(vec![0xa5; 32]);
+    let mut other = Continuation::default();
+    other.patterns = Arc::new(vec![Pattern::StringMatch("other".to_string())]);
+    other.persist = true;
+    let visible_continuations = vec![first.clone(), other.clone()];
+
+    let join_channel = "join-channel".to_string();
+    let empty_join_channel = "empty-join-channel".to_string();
+    let installed_join_channel = "installed-join-channel".to_string();
+    let repeated_join = vec!["repeated".to_string(), "suffix".to_string()];
+    let other_join = vec!["other".to_string()];
+    let joins = vec![repeated_join.clone(), other_join, repeated_join];
+
+    hot_store.set_state(HotStoreState {
+        continuations: HashMap::from([
+            (channels.clone(), vec![first, source_alias, other]),
+            (empty_channels.clone(), Vec::new()),
+        ]),
+        installed_continuations: HashMap::from([(
+            installed_channels.clone(),
+            Continuation::default(),
+        )]),
+        data: HashMap::new(),
+        joins: HashMap::from([
+            (join_channel.clone(), joins.clone()),
+            (empty_join_channel.clone(), Vec::new()),
+        ]),
+        installed_joins: HashMap::from([(installed_join_channel.clone(), vec![vec![
+            "installed".to_string(),
+        ]])]),
+    });
+
+    let actions = hot_store
+        .checkpoint_changes()
+        .expect("checkpoint preflight");
+    assert_eq!(actions.len(), 4, "installed-only records are not persisted");
+
+    let continuation_insert = actions
+        .iter()
+        .find_map(|action| match action {
+            HotStoreAction::Insert(InsertAction::InsertCanonicalCollection(insert))
+                if insert.persisted_kind() == PersistedDataKind::Continuations =>
+            {
+                Some(insert)
+            }
+            _ => None,
+        })
+        .expect("loaded continuation group emits a canonical insert");
+    assert_eq!(continuation_insert.hash(), &hash_from_slice(&channels));
+    assert_eq!(continuation_insert.record_count(), 2);
+    assert_eq!(
+        continuation_insert.encoded_persisted_data(),
+        bincode::serialize(&PersistedData::Continuations(ContinuationsLeaf {
+            bytes: encode_continuations(&visible_continuations),
+        }))
+        .expect("typed continuation checkpoint image")
+    );
+
+    let join_insert = actions
+        .iter()
+        .find_map(|action| match action {
+            HotStoreAction::Insert(InsertAction::InsertCanonicalCollection(insert))
+                if insert.persisted_kind() == PersistedDataKind::Joins =>
+            {
+                Some(insert)
+            }
+            _ => None,
+        })
+        .expect("loaded join group emits a canonical insert");
+    assert_eq!(join_insert.hash(), &hash(&join_channel));
+    assert_eq!(join_insert.record_count(), joins.len() as u64);
+    assert_eq!(
+        join_insert.encoded_persisted_data(),
+        bincode::serialize(&PersistedData::Joins(JoinsLeaf {
+            bytes: encode_joins(&joins),
+        }))
+        .expect("typed join checkpoint image")
+    );
+
+    let deletes = actions
+        .iter()
+        .filter_map(|action| match action {
+            HotStoreAction::Delete(DeleteAction::DeleteCanonicalCollection(delete)) => {
+                Some((delete.persisted_kind(), delete.hash().clone()))
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        deletes.contains(&(PersistedDataKind::Continuations, hash_from_slice(&empty_channels),))
+    );
+    assert!(deletes.contains(&(PersistedDataKind::Joins, hash(&empty_join_channel))));
+    assert!(!deletes.iter().any(|(_, action_hash)| {
+        action_hash == &hash_from_slice(&installed_channels) ||
+            action_hash == &hash(&installed_join_channel)
+    }));
 }
 
 fn check_removal_works_or_fails_on_error<T>(
@@ -1170,7 +1287,7 @@ fn continuation_versions_change_only_for_the_mutated_group() {
     let (second_v0, second_values) = hot_store.get_continuations_versioned(&second);
     assert!(first_values.is_empty());
     assert!(second_values.is_empty());
-    assert_eq!(first_v0, second_v0);
+    assert_ne!(first_v0, second_v0);
 
     assert_eq!(hot_store.put_continuation(&first, waiting.clone()), Some(true));
     let (first_v1, first_values) = hot_store.get_continuations_versioned(&first);

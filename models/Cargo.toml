@@ -291,6 +291,10 @@ path = "tests/bincode_schema_conformance.rs"
 name = "test_target_registry_gate"
 path = "tests/test_target_registry_gate.rs"
 
+[[test]]
+name = "store_items_cursor_protocol"
+path = "tests/store_items_cursor_protocol.rs"
+
 [lib]
 name = "models"
 path = "src/lib.rs"

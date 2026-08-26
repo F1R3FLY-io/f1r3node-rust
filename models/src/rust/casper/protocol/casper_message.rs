@@ -100,12 +100,18 @@ impl CasperMessage {
         )?))
     }
 
-    pub fn from_store_items_message_request(proto: StoreItemsMessageRequestProto) -> Self {
-        CasperMessage::StoreItemsMessageRequest(StoreItemsMessageRequest::from_proto(proto))
+    pub fn from_store_items_message_request(
+        proto: StoreItemsMessageRequestProto,
+    ) -> Result<Self, String> {
+        Ok(CasperMessage::StoreItemsMessageRequest(
+            StoreItemsMessageRequest::from_proto(proto)?,
+        ))
     }
 
-    pub fn from_store_items_message(proto: StoreItemsMessageProto) -> Self {
-        CasperMessage::StoreItemsMessage(StoreItemsMessage::from_proto(proto))
+    pub fn from_store_items_message(proto: StoreItemsMessageProto) -> Result<Self, String> {
+        Ok(CasperMessage::StoreItemsMessage(
+            StoreItemsMessage::from_proto(proto)?,
+        ))
     }
 
     pub fn from_mergeable_entry_request(proto: MergeableEntryRequestProto) -> Self {
@@ -1765,6 +1771,46 @@ impl Bond {
 
 // Last finalized state
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StoreItemsCursorProtocol {
+    Unspecified,
+    LegacyEmptyTerminal,
+    AuthenticatedTerminal,
+    Unknown(i32),
+}
+
+impl StoreItemsCursorProtocol {
+    pub fn from_proto(value: i32) -> Self {
+        match value {
+            0 => Self::Unspecified,
+            1 => Self::LegacyEmptyTerminal,
+            2 => Self::AuthenticatedTerminal,
+            value => Self::Unknown(value),
+        }
+    }
+
+    pub fn to_proto(self) -> i32 {
+        match self {
+            Self::Unspecified => 0,
+            Self::LegacyEmptyTerminal => 1,
+            Self::AuthenticatedTerminal => 2,
+            Self::Unknown(value) => value,
+        }
+    }
+
+    pub fn require_supported(self) -> Result<Self, String> {
+        match self {
+            Self::LegacyEmptyTerminal | Self::AuthenticatedTerminal => Ok(self),
+            Self::Unspecified => {
+                Err("store-items cursor protocol must be selected explicitly".to_string())
+            }
+            Self::Unknown(value) => Err(format!(
+                "unsupported store-items cursor protocol epoch {value}"
+            )),
+        }
+    }
+}
+
 pub struct StoreNodeKey {
     pub hash: Blake2b256Hash,
     pub index: Option<Byte>,
@@ -1774,18 +1820,24 @@ impl StoreNodeKey {
     // Encoding of non-existent index for store node (Skip or Leaf node)
     const NONE_INDEX: i32 = 0x100;
 
-    pub fn from_proto(proto: StoreNodeKeyProto) -> (Blake2b256Hash, Option<Byte>) {
-        // Key hash
-        let hash_bytes = Blake2b256Hash::from_bytes(proto.hash.to_vec());
-
-        // Relative branch index / max 8-bit
-        let idx = if proto.index == Self::NONE_INDEX {
-            None
-        } else {
-            Some(proto.index as u8)
+    pub fn from_proto(proto: StoreNodeKeyProto) -> Result<(Blake2b256Hash, Option<Byte>), String> {
+        if proto.hash.len() != 32 {
+            return Err(format!(
+                "store-node cursor hash must contain exactly 32 bytes, found {}",
+                proto.hash.len()
+            ));
+        }
+        let index = match proto.index {
+            Self::NONE_INDEX => None,
+            0..=255 => Some(proto.index as u8),
+            index => {
+                return Err(format!(
+                    "store-node cursor index must be in 0..=255 or sentinel {}, found {index}",
+                    Self::NONE_INDEX
+                ));
+            }
         };
-
-        (hash_bytes, idx)
+        Ok((Blake2b256Hash::from_bytes(proto.hash.to_vec()), index))
     }
 
     pub fn to_proto(s: &(Blake2b256Hash, Option<Byte>)) -> StoreNodeKeyProto {
@@ -1801,19 +1853,21 @@ pub struct StoreItemsMessageRequest {
     pub start_path: Vec<(Blake2b256Hash, Option<Byte>)>,
     pub skip: i32,
     pub take: i32,
+    pub cursor_protocol: StoreItemsCursorProtocol,
 }
 
 impl StoreItemsMessageRequest {
-    pub fn from_proto(proto: StoreItemsMessageRequestProto) -> Self {
-        Self {
+    pub fn from_proto(proto: StoreItemsMessageRequestProto) -> Result<Self, String> {
+        Ok(Self {
             start_path: proto
                 .start_path
                 .into_iter()
                 .map(StoreNodeKey::from_proto)
-                .collect(),
+                .collect::<Result<Vec<_>, _>>()?,
             skip: proto.skip,
             take: proto.take,
-        }
+            cursor_protocol: StoreItemsCursorProtocol::from_proto(proto.cursor_protocol),
+        })
     }
 
     pub fn to_proto(self) -> StoreItemsMessageRequestProto {
@@ -1821,6 +1875,7 @@ impl StoreItemsMessageRequest {
             start_path: self.start_path.iter().map(StoreNodeKey::to_proto).collect(),
             skip: self.skip,
             take: self.take,
+            cursor_protocol: self.cursor_protocol.to_proto(),
         }
     }
 }
@@ -1831,10 +1886,12 @@ pub struct StoreItemsMessage {
     pub last_path: Vec<(Blake2b256Hash, Option<Byte>)>,
     pub history_items: Vec<(Blake2b256Hash, ByteString)>,
     pub data_items: Vec<(Blake2b256Hash, ByteString)>,
+    pub cursor_protocol: StoreItemsCursorProtocol,
+    pub terminal: bool,
 }
 
 impl StoreItemsMessage {
-    pub fn pretty(self) -> String {
+    pub fn pretty(&self) -> String {
         let start: String = self
             .start_path
             .iter()
@@ -1851,23 +1908,83 @@ impl StoreItemsMessage {
         let data_size = self.data_items.len();
 
         format!(
-            "StoreItemsMessage(history: {:?}, data: {:?}, start: {:?}, last: {:?})",
-            history_size, data_size, start, last
+            "StoreItemsMessage(history: {:?}, data: {:?}, start: {:?}, last: {:?}, protocol: {:?}, terminal: {})",
+            history_size, data_size, start, last, self.cursor_protocol, self.terminal
         )
     }
 
-    pub fn from_proto(proto: StoreItemsMessageProto) -> Self {
-        Self {
+    /// Validate the explicit cursor epoch and normalize only the deliberately
+    /// negotiated legacy terminal sentinel for authenticated trie validation.
+    ///
+    /// No protobuf default or cursor shape selects legacy behavior.  V2 keeps
+    /// the authenticated cursor byte-for-byte; V1 maps an explicitly claimed
+    /// terminal empty cursor back to the requested start cursor before the
+    /// importer independently authenticates it.
+    pub fn canonical_advertised_next_path(
+        &self,
+        expected_protocol: StoreItemsCursorProtocol,
+    ) -> Result<Vec<(Blake2b256Hash, Option<Byte>)>, String> {
+        let expected_protocol = expected_protocol.require_supported()?;
+        let response_protocol = self.cursor_protocol.require_supported()?;
+        if response_protocol != expected_protocol {
+            return Err(format!(
+                "store-items cursor protocol mismatch: requested {:?}, received {:?}",
+                expected_protocol, response_protocol
+            ));
+        }
+
+        match response_protocol {
+            StoreItemsCursorProtocol::LegacyEmptyTerminal => {
+                if self.terminal {
+                    if !self.last_path.is_empty() {
+                        return Err(
+                            "legacy terminal response must use an empty lastPath".to_string()
+                        );
+                    }
+                    Ok(self.start_path.clone())
+                } else if self.last_path.is_empty() || self.last_path == self.start_path {
+                    Err(
+                        "legacy non-terminal response must carry a distinct continuation cursor"
+                            .to_string(),
+                    )
+                } else {
+                    Ok(self.last_path.clone())
+                }
+            }
+            StoreItemsCursorProtocol::AuthenticatedTerminal => {
+                if self.terminal {
+                    if self.last_path != self.start_path {
+                        return Err(
+                            "authenticated terminal response must repeat startPath as lastPath"
+                                .to_string(),
+                        );
+                    }
+                } else if self.last_path.is_empty() || self.last_path == self.start_path {
+                    return Err(
+                        "authenticated non-terminal response must carry a distinct continuation cursor"
+                            .to_string(),
+                    );
+                }
+                Ok(self.last_path.clone())
+            }
+            StoreItemsCursorProtocol::Unspecified | StoreItemsCursorProtocol::Unknown(_) => {
+                unreachable!("require_supported rejected an unavailable cursor protocol")
+            }
+        }
+    }
+
+    pub fn from_proto(proto: StoreItemsMessageProto) -> Result<Self, String> {
+        Ok(Self {
             start_path: proto
                 .start_path
                 .into_iter()
                 .map(StoreNodeKey::from_proto)
-                .collect(),
+                .collect::<Result<Vec<_>, _>>()?,
             last_path: proto
                 .last_path
                 .into_iter()
                 .map(StoreNodeKey::from_proto)
-                .collect(),
+                .collect::<Result<Vec<_>, _>>()?,
             history_items: proto
                 .history_items
                 .into_iter()
@@ -1888,7 +2005,9 @@ impl StoreItemsMessage {
                     )
                 })
                 .collect(),
-        }
+            cursor_protocol: StoreItemsCursorProtocol::from_proto(proto.cursor_protocol),
+            terminal: proto.terminal,
+        })
     }
 
     pub fn to_proto(self) -> StoreItemsMessageProto {
@@ -1911,6 +2030,8 @@ impl StoreItemsMessage {
                     value,
                 })
                 .collect(),
+            cursor_protocol: self.cursor_protocol.to_proto(),
+            terminal: self.terminal,
         }
     }
 }

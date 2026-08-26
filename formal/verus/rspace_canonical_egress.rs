@@ -54,24 +54,24 @@ pub fn checked_final_value_len(payload_len: usize) -> (result: Option<usize>)
     }
 }
 
-/// Mathematical acceptance boundary for one preflighted canonical identity.
+/// Mathematical acceptance boundary for one preflighted canonical record.
 /// A successful step adds `multiplicity` logical datums and that many framed
-/// copies of the identity to the final output length. Mathematical integers
+/// copies of the record to the final output length. Mathematical integers
 /// prevent modular arithmetic from hiding either overflow.
 pub open spec fn preflight_step_spec(
     datum_count: int,
     encoded_len: int,
-    identity_len: int,
+    record_len: int,
     multiplicity: int,
 ) -> Option<(int, int)> {
     if datum_count < 0
         || encoded_len < 0
-        || identity_len < 0
+        || record_len < 0
         || multiplicity < 0
         || datum_count + multiplicity > u64::MAX as int
-        || identity_len > usize::MAX as int - BINCODE_U64_BYTES as int
+        || record_len > usize::MAX as int - BINCODE_U64_BYTES as int
         || encoded_len
-            + multiplicity * (BINCODE_U64_BYTES as int + identity_len)
+            + multiplicity * (BINCODE_U64_BYTES as int + record_len)
             > usize::MAX as int
     {
         None
@@ -79,7 +79,7 @@ pub open spec fn preflight_step_spec(
         Some((
             datum_count + multiplicity,
             encoded_len
-                + multiplicity * (BINCODE_U64_BYTES as int + identity_len),
+                + multiplicity * (BINCODE_U64_BYTES as int + record_len),
         ))
     }
 }
@@ -92,7 +92,7 @@ pub open spec fn preflight_step_spec(
 pub fn checked_preflight_step(
     datum_count: u64,
     encoded_len: usize,
-    identity_len: usize,
+    record_len: usize,
     multiplicity: u64,
 ) -> (result: Option<(u64, usize)>)
     requires 0 < multiplicity,
@@ -101,13 +101,13 @@ pub fn checked_preflight_step(
             Some((next_count, next_len)) => preflight_step_spec(
                 datum_count as int,
                 encoded_len as int,
-                identity_len as int,
+                record_len as int,
                 multiplicity as int,
             ) == Some((next_count as int, next_len as int)),
             None => preflight_step_spec(
                 datum_count as int,
                 encoded_len as int,
-                identity_len as int,
+                record_len as int,
                 multiplicity as int,
             ).is_none(),
         },
@@ -117,17 +117,17 @@ pub fn checked_preflight_step(
         assert(preflight_step_spec(
             datum_count as int,
             encoded_len as int,
-            identity_len as int,
+            record_len as int,
             multiplicity as int,
         ).is_none());
         None
-    } else if identity_len > usize::MAX - BINCODE_U64_BYTES {
-        assert(identity_len as int
+    } else if record_len > usize::MAX - BINCODE_U64_BYTES {
+        assert(record_len as int
             > usize::MAX as int - BINCODE_U64_BYTES as int);
         assert(preflight_step_spec(
             datum_count as int,
             encoded_len as int,
-            identity_len as int,
+            record_len as int,
             multiplicity as int,
         ).is_none());
         None
@@ -135,11 +135,11 @@ pub fn checked_preflight_step(
         let next_count = datum_count + multiplicity;
         assert(next_count as int == datum_count as int + multiplicity as int);
         assert(datum_count as int + multiplicity as int <= u64::MAX as int);
-        assert(identity_len as int
+        assert(record_len as int
             <= usize::MAX as int - BINCODE_U64_BYTES as int);
-        let framed_len = identity_len + BINCODE_U64_BYTES;
+        let framed_len = record_len + BINCODE_U64_BYTES;
         assert(framed_len as int
-            == identity_len as int + BINCODE_U64_BYTES as int);
+            == record_len as int + BINCODE_U64_BYTES as int);
         assert(framed_len as int <= usize::MAX as int);
         assert(multiplicity as int <= u64::MAX as int);
         assert(usize::MAX as int <= u64::MAX as int);
@@ -151,18 +151,18 @@ pub fn checked_preflight_step(
         assert(remaining as int == usize::MAX as int - encoded_len as int);
         if repeated_len > remaining as u128 {
             assert(repeated_len as int
-                == (BINCODE_U64_BYTES as int + identity_len as int)
+                == (BINCODE_U64_BYTES as int + record_len as int)
                     * multiplicity as int);
             assert(repeated_len as int > remaining as int);
             assert(encoded_len as int + repeated_len as int > usize::MAX as int);
             assert(encoded_len as int
                 + multiplicity as int
-                    * (BINCODE_U64_BYTES as int + identity_len as int)
+                    * (BINCODE_U64_BYTES as int + record_len as int)
                 > usize::MAX as int);
             assert(preflight_step_spec(
                 datum_count as int,
                 encoded_len as int,
-                identity_len as int,
+                record_len as int,
                 multiplicity as int,
             ).is_none());
             None
@@ -173,16 +173,16 @@ pub fn checked_preflight_step(
             assert(repeated_len_usize <= remaining);
             let final_len = encoded_len + repeated_len_usize;
             assert(repeated_len as int
-                == (BINCODE_U64_BYTES as int + identity_len as int)
+                == (BINCODE_U64_BYTES as int + record_len as int)
                     * multiplicity as int);
             assert(final_len as int
                 == encoded_len as int
                     + multiplicity as int
-                        * (BINCODE_U64_BYTES as int + identity_len as int));
+                        * (BINCODE_U64_BYTES as int + record_len as int));
             assert(preflight_step_spec(
                 datum_count as int,
                 encoded_len as int,
-                identity_len as int,
+                record_len as int,
                 multiplicity as int,
             ) == Some((next_count as int, final_len as int)));
             Some((next_count, final_len))
@@ -190,43 +190,43 @@ pub fn checked_preflight_step(
     }
 }
 
-/// Repeat one canonical identity exactly as the legacy `Vec<Vec<u8>>`
-/// semantics require. `identity` is an injective formal name for the complete
+/// Repeat one canonical record exactly as the legacy `Vec<Vec<u8>>`
+/// semantics require. `record` is an injective formal name for the complete
 /// resident byte string; Rust differentials establish that equal names mean
-/// byte-identical admitted identities.
-pub open spec fn repeat_identity(identity: u64, multiplicity: nat) -> Seq<u64>
+/// byte-identical admitted records.
+pub open spec fn repeat_canonical_record(record: u64, multiplicity: nat) -> Seq<u64>
     decreases multiplicity,
 {
     if multiplicity == 0 {
         Seq::empty()
     } else {
-        seq![identity] + repeat_identity(identity, (multiplicity - 1) as nat)
+        seq![record] + repeat_canonical_record(record, (multiplicity - 1) as nat)
     }
 }
 
-pub proof fn repeat_identity_length(identity: u64, multiplicity: nat)
-    ensures repeat_identity(identity, multiplicity).len() == multiplicity,
+pub proof fn repeat_canonical_record_length(record: u64, multiplicity: nat)
+    ensures repeat_canonical_record(record, multiplicity).len() == multiplicity,
     decreases multiplicity,
 {
     if multiplicity > 0 {
-        repeat_identity_length(identity, (multiplicity - 1) as nat);
+        repeat_canonical_record_length(record, (multiplicity - 1) as nat);
     }
 }
 
-/// Frozen recursive specification: expand the first sorted identity, then the
+/// Frozen recursive specification: expand the first sorted canonical record, then the
 /// recursively encoded tail.
 pub open spec fn legacy_expand(
-    identities: Seq<u64>,
+    records: Seq<u64>,
     multiplicities: Seq<nat>,
 ) -> Seq<u64>
-    recommends identities.len() == multiplicities.len(),
-    decreases identities.len(),
+    recommends records.len() == multiplicities.len(),
+    decreases records.len(),
 {
-    if identities.len() == 0 {
+    if records.len() == 0 {
         Seq::empty()
     } else {
-        repeat_identity(identities[0], multiplicities[0])
-            + legacy_expand(identities.drop_first(), multiplicities.drop_first())
+        repeat_canonical_record(records[0], multiplicities[0])
+            + legacy_expand(records.drop_first(), multiplicities.drop_first())
     }
 }
 
@@ -234,44 +234,44 @@ pub open spec fn legacy_expand(
 /// an explicit record cursor. This is the control structure used by the
 /// stack-safe zipper-to-sink implementation.
 pub open spec fn pda_expand_suffix(
-    identities: Seq<u64>,
+    records: Seq<u64>,
     multiplicities: Seq<nat>,
     cursor: int,
 ) -> Seq<u64>
     recommends
-        identities.len() == multiplicities.len(),
-        0 <= cursor <= identities.len(),
-    decreases identities.len() - cursor,
+        records.len() == multiplicities.len(),
+        0 <= cursor <= records.len(),
+    decreases records.len() - cursor,
 {
-    if cursor >= identities.len() {
+    if cursor >= records.len() {
         Seq::empty()
     } else {
-        repeat_identity(identities[cursor], multiplicities[cursor])
-            + pda_expand_suffix(identities, multiplicities, cursor + 1)
+        repeat_canonical_record(records[cursor], multiplicities[cursor])
+            + pda_expand_suffix(records, multiplicities, cursor + 1)
     }
 }
 
 proof fn expansion_suffix_equivalent(
-    identities: Seq<u64>,
+    records: Seq<u64>,
     multiplicities: Seq<nat>,
     cursor: int,
 )
     requires
-        identities.len() == multiplicities.len(),
-        0 <= cursor <= identities.len(),
+        records.len() == multiplicities.len(),
+        0 <= cursor <= records.len(),
     ensures
-        pda_expand_suffix(identities, multiplicities, cursor)
+        pda_expand_suffix(records, multiplicities, cursor)
             == legacy_expand(
-                identities.subrange(cursor, identities.len() as int),
+                records.subrange(cursor, records.len() as int),
                 multiplicities.subrange(cursor, multiplicities.len() as int),
             ),
-    decreases identities.len() - cursor,
+    decreases records.len() - cursor,
 {
-    if cursor < identities.len() {
-        expansion_suffix_equivalent(identities, multiplicities, cursor + 1);
+    if cursor < records.len() {
+        expansion_suffix_equivalent(records, multiplicities, cursor + 1);
         assert(
-            identities.subrange(cursor, identities.len() as int).drop_first()
-                == identities.subrange(cursor + 1, identities.len() as int)
+            records.subrange(cursor, records.len() as int).drop_first()
+                == records.subrange(cursor + 1, records.len() as int)
         );
         assert(
             multiplicities.subrange(cursor, multiplicities.len() as int).drop_first()
@@ -281,19 +281,19 @@ proof fn expansion_suffix_equivalent(
 }
 
 /// The generated/iterative descriptor machine and the frozen recursive
-/// reference produce exactly the same identity sequence, including duplicate
+/// reference produce exactly the same canonical-record sequence, including duplicate
 /// expansion from multiplicity.
 pub proof fn canonical_egress_expansion_equivalent(
-    identities: Seq<u64>,
+    records: Seq<u64>,
     multiplicities: Seq<nat>,
 )
-    requires identities.len() == multiplicities.len(),
+    requires records.len() == multiplicities.len(),
     ensures
-        pda_expand_suffix(identities, multiplicities, 0)
-            == legacy_expand(identities, multiplicities),
+        pda_expand_suffix(records, multiplicities, 0)
+            == legacy_expand(records, multiplicities),
 {
-    expansion_suffix_equivalent(identities, multiplicities, 0);
-    assert(identities.subrange(0, identities.len() as int) == identities);
+    expansion_suffix_equivalent(records, multiplicities, 0);
+    assert(records.subrange(0, records.len() as int) == records);
     assert(multiplicities.subrange(0, multiplicities.len() as int) == multiplicities);
 }
 
@@ -309,23 +309,413 @@ pub open spec fn multiplicity_sum(multiplicities: Seq<nat>) -> nat
 }
 
 pub proof fn legacy_expansion_cardinality(
-    identities: Seq<u64>,
+    records: Seq<u64>,
     multiplicities: Seq<nat>,
 )
-    requires identities.len() == multiplicities.len(),
+    requires records.len() == multiplicities.len(),
     ensures
-        legacy_expand(identities, multiplicities).len()
+        legacy_expand(records, multiplicities).len()
             == multiplicity_sum(multiplicities),
-    decreases identities.len(),
+    decreases records.len(),
 {
-    if identities.len() > 0 {
-        repeat_identity_length(identities[0], multiplicities[0]);
+    if records.len() > 0 {
+        repeat_canonical_record_length(records[0], multiplicities[0]);
         legacy_expansion_cardinality(
-            identities.drop_first(),
+            records.drop_first(),
             multiplicities.drop_first(),
         );
     }
 }
+
+/// One authoritative canonical-record endpoint in the split continuation/join
+/// index. Continuations carry an identity and have multiplicity one; joins
+/// carry no continuation identity and compress one or more logical orders.
+pub struct CanonicalRecordCellSpec {
+    pub group: u64,
+    pub canonical_record: u64,
+    pub continuation_identity: Option<u64>,
+    pub multiplicity: int,
+    pub encoded_len: int,
+}
+
+/// Exact aggregate metadata published with the group, canonical-record, and
+/// continuation-identity roots.
+pub struct SplitIndexCountersSpec {
+    pub group_count: int,
+    pub canonical_record_count: int,
+    pub continuation_identity_count: int,
+    pub logical_record_count: int,
+    pub encoded_len: int,
+}
+
+pub open spec fn canonical_record_cell_is_well_formed(
+    cell: CanonicalRecordCellSpec,
+) -> bool {
+    cell.multiplicity > 0
+        && cell.encoded_len >= 0
+        && (cell.continuation_identity.is_none() || cell.multiplicity == 1)
+}
+
+pub open spec fn split_index_counters_are_coherent(
+    counters: SplitIndexCountersSpec,
+) -> bool {
+    0 <= counters.group_count <= counters.canonical_record_count
+        && 0 <= counters.continuation_identity_count
+        && counters.continuation_identity_count <= counters.canonical_record_count
+        && counters.canonical_record_count <= counters.logical_record_count
+        && 0 <= counters.encoded_len
+}
+
+pub open spec fn first_wins_continuation_identity(
+    existing: Option<u64>,
+    candidate_canonical_record: u64,
+) -> Option<u64> {
+    match existing {
+        Some(first) => Some(first),
+        None => Some(candidate_canonical_record),
+    }
+}
+
+pub open spec fn last_wins_continuation_identity_mutant(
+    existing: Option<u64>,
+    candidate_canonical_record: u64,
+) -> Option<u64> {
+    Some(candidate_canonical_record)
+}
+
+/// Repeated continuation identities preserve the first canonical-record
+/// binding. This is the secondary-index half of split-index coherence.
+pub proof fn continuation_identity_binding_is_first_wins(
+    first_canonical_record: u64,
+    later_canonical_record: u64,
+)
+    ensures
+        first_wins_continuation_identity(
+            Some(first_canonical_record),
+            later_canonical_record,
+        ) == Some(first_canonical_record),
+{}
+
+/// A last-wins implementation is observably different whenever two admitted
+/// canonical records share one continuation identity.
+pub proof fn last_wins_continuation_identity_mutant_is_rejected()
+    ensures
+        last_wins_continuation_identity_mutant(Some(11u64), 22u64)
+            != first_wins_continuation_identity(Some(11u64), 22u64),
+{}
+
+pub open spec fn insert_canonical_record(
+    counters: SplitIndexCountersSpec,
+    cell: CanonicalRecordCellSpec,
+    creates_group: bool,
+    creates_identity_binding: bool,
+) -> SplitIndexCountersSpec {
+    SplitIndexCountersSpec {
+        group_count: counters.group_count + if creates_group { 1int } else { 0int },
+        canonical_record_count: counters.canonical_record_count + 1,
+        continuation_identity_count: counters.continuation_identity_count
+            + if creates_identity_binding { 1int } else { 0int },
+        logical_record_count: counters.logical_record_count + cell.multiplicity,
+        encoded_len: counters.encoded_len + cell.encoded_len,
+    }
+}
+
+/// Publishing one canonical-record endpoint debits no prior aggregate and
+/// credits each exact contribution once. The identity-root count may increase
+/// only for a continuation whose first-wins binding did not already exist.
+pub proof fn canonical_record_insert_has_exact_counts_and_length(
+    counters: SplitIndexCountersSpec,
+    cell: CanonicalRecordCellSpec,
+    creates_group: bool,
+    creates_identity_binding: bool,
+)
+    requires
+        canonical_record_cell_is_well_formed(cell),
+        !creates_identity_binding || cell.continuation_identity.is_some(),
+    ensures
+        insert_canonical_record(
+            counters,
+            cell,
+            creates_group,
+            creates_identity_binding,
+        ).group_count
+            == counters.group_count + if creates_group { 1int } else { 0int },
+        insert_canonical_record(
+            counters,
+            cell,
+            creates_group,
+            creates_identity_binding,
+        ).canonical_record_count == counters.canonical_record_count + 1,
+        insert_canonical_record(
+            counters,
+            cell,
+            creates_group,
+            creates_identity_binding,
+        ).logical_record_count == counters.logical_record_count + cell.multiplicity,
+        insert_canonical_record(
+            counters,
+            cell,
+            creates_group,
+            creates_identity_binding,
+        ).encoded_len == counters.encoded_len + cell.encoded_len,
+        insert_canonical_record(
+            counters,
+            cell,
+            creates_group,
+            creates_identity_binding,
+        ).continuation_identity_count
+            == counters.continuation_identity_count
+                + if creates_identity_binding { 1int } else { 0int },
+{}
+
+pub proof fn canonical_record_insert_preserves_split_index_coherence(
+    counters: SplitIndexCountersSpec,
+    cell: CanonicalRecordCellSpec,
+    creates_group: bool,
+    creates_identity_binding: bool,
+)
+    requires
+        split_index_counters_are_coherent(counters),
+        canonical_record_cell_is_well_formed(cell),
+        !creates_identity_binding || cell.continuation_identity.is_some(),
+    ensures
+        split_index_counters_are_coherent(insert_canonical_record(
+            counters,
+            cell,
+            creates_group,
+            creates_identity_binding,
+        )),
+{}
+
+/// A multiplicity-compressed join has one canonical endpoint, no continuation
+/// identity endpoint, and its full logical and encoded contribution.
+pub proof fn join_multiplicity_is_accounted_exactly(
+    counters: SplitIndexCountersSpec,
+    group: u64,
+    canonical_record: u64,
+    multiplicity: int,
+    encoded_len: int,
+)
+    requires multiplicity > 0, encoded_len >= 0,
+    ensures {
+        let join = CanonicalRecordCellSpec {
+            group,
+            canonical_record,
+            continuation_identity: None,
+            multiplicity,
+            encoded_len,
+        };
+        let inserted = insert_canonical_record(counters, join, false, false);
+        inserted.canonical_record_count == counters.canonical_record_count + 1
+            && inserted.continuation_identity_count
+                == counters.continuation_identity_count
+            && inserted.logical_record_count
+                == counters.logical_record_count + multiplicity
+            && inserted.encoded_len == counters.encoded_len + encoded_len
+    },
+{}
+
+pub open spec fn collapsed_join_multiplicity_mutant(
+    counters: SplitIndexCountersSpec,
+    cell: CanonicalRecordCellSpec,
+) -> SplitIndexCountersSpec {
+    SplitIndexCountersSpec {
+        group_count: counters.group_count,
+        canonical_record_count: counters.canonical_record_count + 1,
+        continuation_identity_count: counters.continuation_identity_count,
+        logical_record_count: counters.logical_record_count + 1,
+        encoded_len: counters.encoded_len + cell.encoded_len,
+    }
+}
+
+pub proof fn collapsed_join_multiplicity_mutant_is_rejected(
+    counters: SplitIndexCountersSpec,
+    group: u64,
+    canonical_record: u64,
+    encoded_len: int,
+)
+    ensures {
+        let join = CanonicalRecordCellSpec {
+            group,
+            canonical_record,
+            continuation_identity: None,
+            multiplicity: 2,
+            encoded_len,
+        };
+        collapsed_join_multiplicity_mutant(counters, join).logical_record_count
+            != insert_canonical_record(counters, join, false, false).logical_record_count
+    },
+{}
+
+pub open spec fn delete_owned_canonical_record(
+    counters: SplitIndexCountersSpec,
+    requested_group: u64,
+    cell: CanonicalRecordCellSpec,
+    removes_group: bool,
+    removes_identity_binding: bool,
+) -> Option<SplitIndexCountersSpec> {
+    if requested_group != cell.group
+        || counters.canonical_record_count < 1
+        || counters.logical_record_count < cell.multiplicity
+        || counters.encoded_len < cell.encoded_len
+        || (removes_group && counters.group_count < 1)
+        || (removes_identity_binding && counters.continuation_identity_count < 1)
+        || (removes_identity_binding && cell.continuation_identity.is_none())
+    {
+        None
+    } else {
+        Some(SplitIndexCountersSpec {
+            group_count: counters.group_count - if removes_group { 1int } else { 0int },
+            canonical_record_count: counters.canonical_record_count - 1,
+            continuation_identity_count: counters.continuation_identity_count
+                - if removes_identity_binding { 1int } else { 0int },
+            logical_record_count: counters.logical_record_count - cell.multiplicity,
+            encoded_len: counters.encoded_len - cell.encoded_len,
+        })
+    }
+}
+
+/// A successful owned deletion removes one canonical endpoint and the exact
+/// logical-record and byte contributions stored in that endpoint.
+pub proof fn owned_deletion_has_exact_counts_and_length(
+    counters: SplitIndexCountersSpec,
+    requested_group: u64,
+    cell: CanonicalRecordCellSpec,
+    removes_group: bool,
+    removes_identity_binding: bool,
+    deleted: SplitIndexCountersSpec,
+)
+    requires
+        canonical_record_cell_is_well_formed(cell),
+        delete_owned_canonical_record(
+            counters,
+            requested_group,
+            cell,
+            removes_group,
+            removes_identity_binding,
+        ) == Some(deleted),
+    ensures
+        requested_group == cell.group,
+        deleted.group_count
+            == counters.group_count - if removes_group { 1int } else { 0int },
+        deleted.canonical_record_count == counters.canonical_record_count - 1,
+        deleted.logical_record_count
+            == counters.logical_record_count - cell.multiplicity,
+        deleted.encoded_len == counters.encoded_len - cell.encoded_len,
+        deleted.continuation_identity_count
+            == counters.continuation_identity_count
+                - if removes_identity_binding { 1int } else { 0int },
+{}
+
+pub proof fn owned_deletion_preserves_split_index_coherence(
+    counters: SplitIndexCountersSpec,
+    requested_group: u64,
+    cell: CanonicalRecordCellSpec,
+    removes_group: bool,
+    removes_identity_binding: bool,
+    deleted: SplitIndexCountersSpec,
+)
+    requires
+        split_index_counters_are_coherent(counters),
+        canonical_record_cell_is_well_formed(cell),
+        delete_owned_canonical_record(
+            counters,
+            requested_group,
+            cell,
+            removes_group,
+            removes_identity_binding,
+        ) == Some(deleted),
+        removes_group || counters.group_count < counters.canonical_record_count,
+        removes_identity_binding
+            || counters.continuation_identity_count < counters.canonical_record_count,
+        counters.logical_record_count - cell.multiplicity
+            >= counters.canonical_record_count - 1,
+    ensures split_index_counters_are_coherent(deleted),
+{}
+
+pub open spec fn delete_without_group_ownership_mutant(
+    counters: SplitIndexCountersSpec,
+    cell: CanonicalRecordCellSpec,
+) -> Option<SplitIndexCountersSpec> {
+    if counters.canonical_record_count < 1
+        || counters.logical_record_count < cell.multiplicity
+        || counters.encoded_len < cell.encoded_len
+    {
+        None
+    } else {
+        Some(SplitIndexCountersSpec {
+            group_count: counters.group_count,
+            canonical_record_count: counters.canonical_record_count - 1,
+            continuation_identity_count: counters.continuation_identity_count,
+            logical_record_count: counters.logical_record_count - cell.multiplicity,
+            encoded_len: counters.encoded_len - cell.encoded_len,
+        })
+    }
+}
+
+/// The production deletion predicate rejects a canonical path presented under
+/// another group; a transition that omits ownership admits the same witness.
+pub proof fn cross_group_deletion_mutant_is_rejected()
+    ensures {
+        let counters = SplitIndexCountersSpec {
+            group_count: 1,
+            canonical_record_count: 1,
+            continuation_identity_count: 0,
+            logical_record_count: 2,
+            encoded_len: 24,
+        };
+        let cell = CanonicalRecordCellSpec {
+            group: 7,
+            canonical_record: 41,
+            continuation_identity: None,
+            multiplicity: 2,
+            encoded_len: 24,
+        };
+        delete_owned_canonical_record(counters, 8, cell, false, false).is_none()
+            && delete_without_group_ownership_mutant(counters, cell).is_some()
+    },
+{}
+
+pub open spec fn delete_without_encoded_length_debit_mutant(
+    counters: SplitIndexCountersSpec,
+    cell: CanonicalRecordCellSpec,
+) -> SplitIndexCountersSpec {
+    SplitIndexCountersSpec {
+        group_count: counters.group_count,
+        canonical_record_count: counters.canonical_record_count - 1,
+        continuation_identity_count: counters.continuation_identity_count,
+        logical_record_count: counters.logical_record_count - cell.multiplicity,
+        encoded_len: counters.encoded_len,
+    }
+}
+
+pub proof fn deletion_length_mutant_is_rejected()
+    ensures {
+        let counters = SplitIndexCountersSpec {
+            group_count: 1,
+            canonical_record_count: 1,
+            continuation_identity_count: 0,
+            logical_record_count: 2,
+            encoded_len: 24,
+        };
+        let cell = CanonicalRecordCellSpec {
+            group: 7,
+            canonical_record: 41,
+            continuation_identity: None,
+            multiplicity: 2,
+            encoded_len: 24,
+        };
+        delete_without_encoded_length_debit_mutant(counters, cell).encoded_len != 0
+            && delete_owned_canonical_record(counters, 7, cell, false, false)
+                == Some(SplitIndexCountersSpec {
+                    group_count: 1,
+                    canonical_record_count: 0,
+                    continuation_identity_count: 0,
+                    logical_record_count: 0,
+                    encoded_len: 0,
+                })
+    },
+{}
 
 /// Canonical protobuf transcript produced by one cold RPB3 zipper traversal.
 /// `before` contains component fields 1..8, `root` fields 9/10, and `after`

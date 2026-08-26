@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Debug;
 
 use crate::rust::ByteBuffer;
@@ -8,6 +8,17 @@ pub trait KeyValueStore: Send + Sync {
     fn get(&self, keys: &Vec<ByteBuffer>) -> Result<Vec<Option<ByteBuffer>>, KvStoreError>;
 
     fn put(&self, kv_pairs: Vec<(ByteBuffer, ByteBuffer)>) -> Result<(), KvStoreError>;
+
+    fn compare_and_swap_batch(
+        &self,
+        conditions: &[(ByteBuffer, Option<ByteBuffer>)],
+        mutations: &[KeyValueStoreMutation],
+    ) -> Result<bool, KvStoreError> {
+        validate_atomic_batch(conditions, mutations)?;
+        Err(KvStoreError::InvalidArgument(
+            "atomic compare-and-swap is not supported by this key-value store".to_string(),
+        ))
+    }
 
     fn delete(&self, keys: Vec<ByteBuffer>) -> Result<usize, KvStoreError>;
 
@@ -47,21 +58,98 @@ pub trait KeyValueStore: Send + Sync {
         self.put(vec![(key, value)])
     }
 
-    fn put_if_absent(&self, kv_pairs: Vec<(ByteBuffer, ByteBuffer)>) -> Result<(), KvStoreError> {
-        let keys: Vec<ByteBuffer> = kv_pairs.iter().map(|(k, _)| k.clone()).collect();
-        let if_absent = self.contains(&keys)?;
-        let kv_if_absent: Vec<_> = kv_pairs.into_iter().zip(if_absent).collect();
-        let kv_absent: Vec<_> = kv_if_absent
-            .clone()
-            .into_iter()
-            .filter(|(_, is_present)| !is_present)
-            .map(|(kv, _)| kv)
-            .collect();
+    fn put_if_absent_or_verify_equal(
+        &self,
+        kv_pairs: Vec<(ByteBuffer, ByteBuffer)>,
+    ) -> Result<(), KvStoreError> {
+        let mut requested = BTreeMap::new();
+        for (key, value) in kv_pairs {
+            match requested.get(&key) {
+                Some(existing) if existing != &value => {
+                    return Err(KvStoreError::InvalidArgument(
+                        "put-if-absent batch assigns different values to the same key".to_string(),
+                    ));
+                }
+                Some(_) => {}
+                None => {
+                    requested.insert(key, value);
+                }
+            }
+        }
 
-        self.put(kv_absent)
+        let keys: Vec<_> = requested.keys().cloned().collect();
+        loop {
+            let observed = self.get(&keys)?;
+            if observed.len() != keys.len() {
+                return Err(KvStoreError::IoError(format!(
+                    "key-value store returned {} values for {} requested keys",
+                    observed.len(),
+                    keys.len()
+                )));
+            }
+            let mut conditions = Vec::with_capacity(keys.len());
+            let mut mutations = Vec::new();
+
+            for ((key, value), actual) in requested.iter().zip(observed) {
+                if let Some(actual_value) = actual.as_ref() {
+                    if actual_value != value {
+                        return Err(KvStoreError::InvalidArgument(format!(
+                            "put-if-absent found a different value for key {}",
+                            hex::encode(key)
+                        )));
+                    }
+                } else {
+                    mutations.push(KeyValueStoreMutation::Put(key.clone(), value.clone()));
+                }
+                conditions.push((key.clone(), actual));
+            }
+
+            if mutations.is_empty() || self.compare_and_swap_batch(&conditions, &mutations)? {
+                return Ok(());
+            }
+        }
     }
 
-    fn size_bytes(&self) -> usize;
+    fn size_bytes(&self) -> Result<usize, KvStoreError>;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum KeyValueStoreMutation {
+    Put(ByteBuffer, ByteBuffer),
+    Delete(ByteBuffer),
+}
+
+impl KeyValueStoreMutation {
+    pub(crate) fn key(&self) -> &ByteBuffer {
+        match self {
+            Self::Put(key, _) | Self::Delete(key) => key,
+        }
+    }
+}
+
+pub fn validate_atomic_batch(
+    conditions: &[(ByteBuffer, Option<ByteBuffer>)],
+    mutations: &[KeyValueStoreMutation],
+) -> Result<(), KvStoreError> {
+    let mut condition_keys = BTreeSet::new();
+    for (key, _) in conditions {
+        if !condition_keys.insert(key.as_slice()) {
+            return Err(KvStoreError::InvalidArgument(
+                "atomic compare-and-swap contains a duplicate condition key".to_string(),
+            ));
+        }
+    }
+
+    let mut mutation_keys = BTreeSet::new();
+    for mutation in mutations {
+        if !mutation_keys.insert(mutation.key().as_slice()) {
+            return Err(KvStoreError::InvalidArgument(
+                "atomic compare-and-swap contains a duplicate mutation key".to_string(),
+            ));
+        }
+    }
+
+    Ok(())
 }
 
 impl Clone for Box<dyn KeyValueStore> {

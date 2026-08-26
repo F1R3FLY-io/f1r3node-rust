@@ -1,10 +1,9 @@
 // FFI boundary -- raw pointer args are required by the Scala JNA caller
 // surface. clippy::not_unsafe_ptr_arg_deref would otherwise force every
-// extern "C" wrapper to be marked unsafe, which would change the Scala
-// side too. This file is slated for removal in the FFI cleanup PR
-// (see docs/sync-todo.md TODO 2).
+// extern "C" wrapper to be marked unsafe, which would change the Scala side.
 #![allow(clippy::not_unsafe_ptr_arg_deref, clippy::unnecessary_unwrap)]
 
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use tokio::runtime::Runtime;
@@ -32,14 +31,20 @@ use rholang::rust::interpreter::matcher::r#match::Matcher;
 use rholang::rust::interpreter::matcher::spatial_matcher::SpatialMatcherContext;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::hashing::stable_hash_provider::{hash, hash_from_vec};
+use rspace_plus_plus::rspace::history::cold_store::{ColdLeafAddress, PersistedDataKind};
 use rspace_plus_plus::rspace::replay_rspace::ReplayRSpace;
 use rspace_plus_plus::rspace::rspace::RSpace;
 use rspace_plus_plus::rspace::rspace_interface::ISpace;
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 use rspace_plus_plus::rspace::shared::lmdb_dir_store_manager::GB;
 use rspace_plus_plus::rspace::shared::rspace_store_manager::mk_rspace_store_manager;
+use rspace_plus_plus::rspace::shared::trie_exporter::NodePath;
 use rspace_plus_plus::rspace::state::exporters::rspace_exporter_items::RSpaceExporterItems;
-use rspace_plus_plus::rspace::state::rspace_importer::RSpaceImporterInstance;
+use rspace_plus_plus::rspace::state::import_session::{
+    SealedStateImport, StateImportError, StateImportPage, StateImportPageReceipt,
+    StateImportPublication, StateImportPublicationMode, StateImportSession, StateImportSpec,
+};
+use rspace_plus_plus::rspace::state::rspace_importer::RSpaceImporter;
 use rspace_plus_plus::rspace::trace::event::{Event, IOEvent};
 use shared::rust::ByteVector;
 
@@ -1349,13 +1354,29 @@ pub extern "C" fn get_data_items(
     payload_bytes_len: usize,
 ) -> *const u8 {
     let payload_slice = unsafe { std::slice::from_raw_parts(payload_pointer, payload_bytes_len) };
-    let keys_proto = KeysProto::decode(payload_slice).unwrap();
+    let Ok(protobuf_addresses) = ColdLeafAddressesProto::decode(payload_slice) else {
+        return std::ptr::null();
+    };
 
-    let keys = keys_proto
-        .keys
+    let addresses = protobuf_addresses
+        .addresses
         .into_iter()
-        .map(|key| Blake2b256Hash::from_bytes(key.hash))
-        .collect();
+        .map(|protobuf_address| {
+            let kind = match PersistedDataKindProto::try_from(protobuf_address.kind).ok()? {
+                PersistedDataKindProto::PersistedDataKindData => PersistedDataKind::Data,
+                PersistedDataKindProto::PersistedDataKindContinuations => {
+                    PersistedDataKind::Continuations
+                }
+                PersistedDataKindProto::PersistedDataKindJoins => PersistedDataKind::Joins,
+                PersistedDataKindProto::PersistedDataKindUnspecified => return None,
+            };
+            let digest = Blake2b256Hash::from_bytes(protobuf_address.digest);
+            ColdLeafAddress::new(kind, digest).ok()
+        })
+        .collect::<Option<Vec<_>>>();
+    let Some(addresses) = addresses else {
+        return std::ptr::null();
+    };
 
     let data_items = unsafe {
         (*rspace)
@@ -1364,8 +1385,10 @@ pub extern "C" fn get_data_items(
             .unwrap()
             .get_history_repository()
             .exporter()
-            .get_data_items(keys)
-            .unwrap()
+            .get_data_items(addresses)
+    };
+    let Ok(data_items) = data_items else {
+        return std::ptr::null();
     };
 
     let data_items_proto = ItemsProto {
@@ -1428,10 +1451,12 @@ pub extern "C" fn get_history_and_data(
         exporter_params.skip,
         exporter_params.take,
     );
+    let Ok((history_items, data_items)) = history_and_data_items else {
+        return std::ptr::null();
+    };
 
     let history_items_proto = StoreItemsProto {
-        items: history_and_data_items
-            .0
+        items: history_items
             .items
             .into_iter()
             .map(|history_item| ItemProto {
@@ -1439,8 +1464,7 @@ pub extern "C" fn get_history_and_data(
                 value: history_item.1,
             })
             .collect(),
-        last_path: history_and_data_items
-            .0
+        last_path: history_items
             .last_path
             .into_iter()
             .map(|path| PathElement {
@@ -1457,8 +1481,7 @@ pub extern "C" fn get_history_and_data(
     };
 
     let data_items_proto = StoreItemsProto {
-        items: history_and_data_items
-            .1
+        items: data_items
             .items
             .into_iter()
             .map(|data_item| ItemProto {
@@ -1466,8 +1489,7 @@ pub extern "C" fn get_history_and_data(
                 value: data_item.1,
             })
             .collect(),
-        last_path: history_and_data_items
-            .1
+        last_path: data_items
             .last_path
             .into_iter()
             .map(|path| PathElement {
@@ -1592,137 +1614,593 @@ pub extern "C" fn get_exporter_root(rspace: *mut Space) -> *const u8 {
 
 /* Importer */
 
-#[no_mangle]
-pub extern "C" fn validate_state_items(
-    rspace: *mut Space,
-    payload_pointer: *const u8,
-    payload_bytes_len: usize,
-) {
-    let payload_slice = unsafe { std::slice::from_raw_parts(payload_pointer, payload_bytes_len) };
-    let params = ValidateStateParams::decode(payload_slice).unwrap();
-
-    let history_items: Vec<(Blake2b256Hash, ByteVector)> = params
-        .history_items
-        .into_iter()
-        .map(|history_item_proto| {
-            (Blake2b256Hash::from_bytes(history_item_proto.key_hash), history_item_proto.value)
-        })
-        .collect();
-
-    let data_items: Vec<(Blake2b256Hash, ByteVector)> = params
-        .data_items
-        .into_iter()
-        .map(|data_item_proto| {
-            (Blake2b256Hash::from_bytes(data_item_proto.key_hash), data_item_proto.value)
-        })
-        .collect();
-
-    let start_path: Vec<(Blake2b256Hash, Option<u8>)> = params
-        .start_path
-        .into_iter()
-        .map(|path_element| {
-            (
-                Blake2b256Hash::from_bytes(path_element.key_hash),
-                if !path_element.optional_byte.is_empty() {
-                    Some(path_element.optional_byte[0])
-                } else {
-                    None
-                },
-            )
-        })
-        .collect();
-
-    let importer = unsafe {
-        (*rspace)
-            .rspace
-            .lock()
-            .unwrap()
-            .get_history_repository()
-            .importer()
-    };
-
-    RSpaceImporterInstance::validate_state_items(
-        history_items,
-        data_items,
-        start_path,
-        params.chunk_size,
-        params.skip,
-        importer,
-    );
+/// Opaque, mutable state-import capability returned by [`state_import_begin`].
+///
+/// The field is private so foreign callers cannot manufacture or inspect the
+/// capability. `state_import_seal` and `state_import_abort_open` consume the
+/// allocation exactly once; using the pointer again is a foreign-caller error.
+#[repr(C)]
+pub struct OpenStateImportHandle {
+    session: Mutex<Option<Box<dyn StateImportSession>>>,
 }
 
-#[no_mangle]
-pub extern "C" fn set_history_items(
-    rspace: *mut Space,
-    payload_pointer: *const u8,
-    payload_bytes_len: usize,
-) {
-    let payload_slice = unsafe { std::slice::from_raw_parts(payload_pointer, payload_bytes_len) };
-    let items_proto = ItemsProto::decode(payload_slice).unwrap();
-
-    let data: Vec<(Blake2b256Hash, ByteVector)> = items_proto
-        .items
-        .into_iter()
-        .map(|item| {
-            let key_hash = Blake2b256Hash::from_bytes(item.key_hash);
-            let value: ByteVector = item.value;
-
-            (key_hash, value)
-        })
-        .collect();
-
-    unsafe {
-        let space = (*rspace).rspace.lock().unwrap();
-        space
-            .get_history_repository()
-            .importer()
-            .set_history_items(data)
-    };
+/// Opaque, fully verified root-publication capability returned by
+/// [`state_import_seal`]. `state_import_publish` and
+/// `state_import_abort_sealed` consume the allocation exactly once.
+#[repr(C)]
+pub struct SealedStateImportHandle {
+    session: Mutex<Option<Box<dyn SealedStateImport>>>,
 }
 
-#[no_mangle]
-pub extern "C" fn set_data_items(
-    rspace: *mut Space,
-    payload_pointer: *const u8,
-    payload_bytes_len: usize,
-) {
-    let payload_slice = unsafe { std::slice::from_raw_parts(payload_pointer, payload_bytes_len) };
-    let items_proto = ItemsProto::decode(payload_slice).unwrap();
+const PROTOBUF_STATE_IMPORT_ERROR_NULL_POINTER: i32 =
+    StateImportErrorCodeProto::StateImportErrorCodeNullPointer as i32;
+const PROTOBUF_STATE_IMPORT_ERROR_INVALID_LENGTH: i32 =
+    StateImportErrorCodeProto::StateImportErrorCodeInvalidLength as i32;
+const PROTOBUF_STATE_IMPORT_ERROR_DECODE: i32 =
+    StateImportErrorCodeProto::StateImportErrorCodeProtobufDecode as i32;
+const PROTOBUF_STATE_IMPORT_ERROR_INVALID_HANDLE_STATE: i32 =
+    StateImportErrorCodeProto::StateImportErrorCodeInvalidHandleState as i32;
+const PROTOBUF_STATE_IMPORT_ERROR_SPACE_STATE: i32 =
+    StateImportErrorCodeProto::StateImportErrorCodeSpaceState as i32;
+const PROTOBUF_STATE_IMPORT_ERROR_IMPORT: i32 =
+    StateImportErrorCodeProto::StateImportErrorCodeImport as i32;
+const PROTOBUF_STATE_IMPORT_ERROR_PANIC: i32 =
+    StateImportErrorCodeProto::StateImportErrorCodePanic as i32;
 
-    let data: Vec<(Blake2b256Hash, ByteVector)> = items_proto
-        .items
-        .into_iter()
-        .map(|item| {
-            let key_hash = Blake2b256Hash::from_bytes(item.key_hash);
-            let value: ByteVector = item.value;
+const PROTOBUF_STATE_IMPORT_SUCCESS_OPENED: i32 =
+    StateImportSuccessKindProto::StateImportSuccessKindOpened as i32;
+const PROTOBUF_STATE_IMPORT_SUCCESS_PAGE_STAGED: i32 =
+    StateImportSuccessKindProto::StateImportSuccessKindPageStaged as i32;
+const PROTOBUF_STATE_IMPORT_SUCCESS_SEALED: i32 =
+    StateImportSuccessKindProto::StateImportSuccessKindSealed as i32;
+const PROTOBUF_STATE_IMPORT_SUCCESS_PUBLISHED: i32 =
+    StateImportSuccessKindProto::StateImportSuccessKindPublished as i32;
+const PROTOBUF_STATE_IMPORT_SUCCESS_ABORTED: i32 =
+    StateImportSuccessKindProto::StateImportSuccessKindAborted as i32;
 
-            (key_hash, value)
-        })
-        .collect();
-
-    unsafe {
-        let space = (*rspace).rspace.lock().unwrap();
-        space
-            .get_history_repository()
-            .importer()
-            .set_data_items(data)
-    };
+#[derive(Debug)]
+struct StateImportFfiFailure {
+    code: i32,
+    message: String,
 }
 
-#[no_mangle]
-pub extern "C" fn set_root(rspace: *mut Space, root_pointer: *const u8, root_bytes_len: usize) {
-    let root_slice = unsafe { std::slice::from_raw_parts(root_pointer, root_bytes_len) };
-    let root = Blake2b256Hash::from_bytes(root_slice.to_vec());
-
-    unsafe {
-        (*rspace)
-            .rspace
-            .lock()
-            .unwrap()
-            .get_history_repository()
-            .importer()
-            .set_root(&root)
+impl StateImportFfiFailure {
+    fn new(code: i32, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            message: message.into(),
+        }
     }
+
+    fn null_pointer(field: &'static str) -> Self {
+        Self::new(PROTOBUF_STATE_IMPORT_ERROR_NULL_POINTER, format!("{field} is null"))
+    }
+
+    fn invalid_length(field: &'static str, expected: &'static str, actual: usize) -> Self {
+        Self::new(
+            PROTOBUF_STATE_IMPORT_ERROR_INVALID_LENGTH,
+            format!("{field} must contain {expected}, found {actual} bytes"),
+        )
+    }
+
+    fn numeric_range(field: &'static str, actual: usize) -> Self {
+        Self::new(
+            PROTOBUF_STATE_IMPORT_ERROR_INVALID_LENGTH,
+            format!("{field} value {actual} is not representable by protobuf uint64"),
+        )
+    }
+
+    fn decode(message: impl Into<String>) -> Self {
+        Self::new(PROTOBUF_STATE_IMPORT_ERROR_DECODE, message)
+    }
+
+    fn invalid_handle(message: impl Into<String>) -> Self {
+        Self::new(PROTOBUF_STATE_IMPORT_ERROR_INVALID_HANDLE_STATE, message)
+    }
+
+    fn space_state(message: impl Into<String>) -> Self {
+        Self::new(PROTOBUF_STATE_IMPORT_ERROR_SPACE_STATE, message)
+    }
+
+    fn import(error: StateImportError) -> Self {
+        Self::new(PROTOBUF_STATE_IMPORT_ERROR_IMPORT, error.to_string())
+    }
+}
+
+fn protobuf_state_import_success(
+    kind: i32,
+    page_receipt: Option<StateImportPageReceiptProto>,
+    publication: Option<StateImportPublicationProto>,
+) -> StateImportSuccessProto {
+    StateImportSuccessProto {
+        kind,
+        page_receipt,
+        publication,
+    }
+}
+
+fn protobuf_state_import_result(
+    operation: &'static str,
+    result: Result<StateImportSuccessProto, StateImportFfiFailure>,
+) -> StateImportResultProto {
+    use state_import_result_proto::Outcome;
+
+    let outcome = match result {
+        Ok(protobuf_success) => Outcome::Success(protobuf_success),
+        Err(error) => Outcome::Error(StateImportErrorProto {
+            code: error.code,
+            operation: operation.to_string(),
+            message: error.message,
+        }),
+    };
+    StateImportResultProto {
+        outcome: Some(outcome),
+    }
+}
+
+fn leak_length_prefixed_state_import_result(
+    mut protobuf_result: StateImportResultProto,
+) -> *const u8 {
+    let mut protobuf_bytes = protobuf_result.encode_to_vec();
+    if u32::try_from(protobuf_bytes.len()).is_err() {
+        protobuf_result = protobuf_state_import_result(
+            "state_import_result",
+            Err(StateImportFfiFailure::new(
+                PROTOBUF_STATE_IMPORT_ERROR_INVALID_LENGTH,
+                "encoded state-import result exceeds the u32 JNA framing length",
+            )),
+        );
+        protobuf_bytes = protobuf_result.encode_to_vec();
+    }
+
+    // The fallback above contains only fixed-size fields and one short literal.
+    let protobuf_len = protobuf_bytes.len() as u32;
+    let mut framed = Vec::with_capacity(4 + protobuf_bytes.len());
+    framed.extend_from_slice(&protobuf_len.to_le_bytes());
+    framed.append(&mut protobuf_bytes);
+    let framed_len = framed.len();
+    let pointer = Box::leak(framed.into_boxed_slice()).as_ptr();
+    ALLOCATED_BYTES.fetch_add(framed_len, Ordering::SeqCst);
+    pointer
+}
+
+fn panic_payload_message(payload: &(dyn std::any::Any + std::marker::Send)) -> String {
+    if let Some(message) = payload.downcast_ref::<&str>() {
+        (*message).to_string()
+    } else if let Some(message) = payload.downcast_ref::<String>() {
+        message.clone()
+    } else {
+        "state-import operation panicked with a non-string payload".to_string()
+    }
+}
+
+/// Run one import operation behind an unwind barrier and serialize exactly one
+/// structured result. The second barrier prevents even result construction
+/// from unwinding through an `extern "C"` frame.
+fn state_import_ffi_boundary<F>(operation: &'static str, call: F) -> *const u8
+where F: FnOnce() -> Result<StateImportSuccessProto, StateImportFfiFailure> {
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        leak_length_prefixed_state_import_result(protobuf_state_import_result(operation, call()))
+    }));
+    match result {
+        Ok(pointer) => pointer,
+        Err(payload) => catch_unwind(AssertUnwindSafe(|| {
+            leak_length_prefixed_state_import_result(protobuf_state_import_result(
+                operation,
+                Err(StateImportFfiFailure::new(
+                    PROTOBUF_STATE_IMPORT_ERROR_PANIC,
+                    panic_payload_message(payload.as_ref()),
+                )),
+            ))
+        }))
+        .unwrap_or(std::ptr::null()),
+    }
+}
+
+unsafe fn required_protobuf_input<'a>(
+    pointer: *const u8,
+    length: usize,
+    field: &'static str,
+) -> Result<&'a [u8], StateImportFfiFailure> {
+    if pointer.is_null() {
+        return Err(StateImportFfiFailure::null_pointer(field));
+    }
+    // SAFETY: after the explicit null check, the foreign caller owns the ABI
+    // obligation that `pointer` names at least `length` readable bytes for the
+    // duration of this call.
+    Ok(unsafe { std::slice::from_raw_parts(pointer, length) })
+}
+
+fn protobuf_digest(
+    bytes: Vec<u8>,
+    field: &'static str,
+) -> Result<Blake2b256Hash, StateImportFfiFailure> {
+    if bytes.len() != 32 {
+        return Err(StateImportFfiFailure::invalid_length(field, "exactly 32 bytes", bytes.len()));
+    }
+    Ok(Blake2b256Hash::from_bytes(bytes))
+}
+
+fn protobuf_node_path(
+    protobuf_path: Vec<PathElement>,
+    field: &'static str,
+) -> Result<NodePath, StateImportFfiFailure> {
+    protobuf_path
+        .into_iter()
+        .map(|protobuf_element| {
+            let digest = protobuf_digest(protobuf_element.key_hash, field)?;
+            let edge = match protobuf_element.optional_byte.as_slice() {
+                [] => None,
+                [edge] => Some(*edge),
+                bytes => {
+                    return Err(StateImportFfiFailure::invalid_length(
+                        field,
+                        "zero or one edge byte",
+                        bytes.len(),
+                    ));
+                }
+            };
+            Ok((digest, edge))
+        })
+        .collect()
+}
+
+fn protobuf_items(
+    protobuf_items: Vec<ItemProto>,
+    field: &'static str,
+) -> Result<Vec<(Blake2b256Hash, ByteVector)>, StateImportFfiFailure> {
+    protobuf_items
+        .into_iter()
+        .map(|protobuf_item| {
+            Ok((protobuf_digest(protobuf_item.key_hash, field)?, protobuf_item.value))
+        })
+        .collect()
+}
+
+fn state_import_spec_from_protobuf(
+    protobuf_spec: StateImportSpecProto,
+) -> Result<StateImportSpec, StateImportFfiFailure> {
+    let roots = protobuf_spec
+        .target_roots
+        .into_iter()
+        .map(|root| protobuf_digest(root, "state-import target root"))
+        .collect::<Result<Vec<_>, _>>()?;
+    let protobuf_publication_mode = StateImportPublicationModeProto::try_from(
+        protobuf_spec.publication_mode,
+    )
+    .map_err(|_| {
+        StateImportFfiFailure::decode(format!(
+            "unknown state-import publication mode {}",
+            protobuf_spec.publication_mode
+        ))
+    })?;
+    let publication_mode = match protobuf_publication_mode {
+        StateImportPublicationModeProto::StateImportPublicationModePreserveCurrent => {
+            if !protobuf_spec.activation_root.is_empty() {
+                return Err(StateImportFfiFailure::invalid_length(
+                    "preserve-current activation root",
+                    "zero bytes",
+                    protobuf_spec.activation_root.len(),
+                ));
+            }
+            StateImportPublicationMode::PreserveCurrent
+        }
+        StateImportPublicationModeProto::StateImportPublicationModeActivate => {
+            StateImportPublicationMode::Activate(protobuf_digest(
+                protobuf_spec.activation_root,
+                "state-import activation root",
+            )?)
+        }
+        StateImportPublicationModeProto::StateImportPublicationModeUnspecified => {
+            return Err(StateImportFfiFailure::decode(
+                "state-import publication mode is unspecified",
+            ));
+        }
+    };
+    StateImportSpec::new(roots, publication_mode).map_err(StateImportFfiFailure::import)
+}
+
+fn state_import_page_from_protobuf(
+    protobuf_page: StateImportPageProto,
+) -> Result<StateImportPage, StateImportFfiFailure> {
+    Ok(StateImportPage {
+        start_path: protobuf_node_path(protobuf_page.start_path, "state-import start path")?,
+        advertised_next_path: protobuf_node_path(
+            protobuf_page.advertised_next_path,
+            "state-import advertised next path",
+        )?,
+        skip: protobuf_page.skip,
+        take: protobuf_page.take,
+        history_items: protobuf_items(protobuf_page.history_items, "state-import history digest")?,
+        data_items: protobuf_items(protobuf_page.data_items, "state-import cold-leaf digest")?,
+    })
+}
+
+fn path_to_protobuf(path: NodePath) -> Vec<PathElement> {
+    path.into_iter()
+        .map(|(digest, edge)| PathElement {
+            key_hash: digest.bytes(),
+            optional_byte: edge.into_iter().collect(),
+        })
+        .collect()
+}
+
+fn receipt_to_protobuf(
+    receipt: StateImportPageReceipt,
+) -> Result<StateImportPageReceiptProto, StateImportFfiFailure> {
+    let history_objects_staged = u64::try_from(receipt.history_objects_staged).map_err(|_| {
+        StateImportFfiFailure::numeric_range(
+            "history-object staging count",
+            receipt.history_objects_staged,
+        )
+    })?;
+    let cold_leaves_staged = u64::try_from(receipt.cold_leaves_staged).map_err(|_| {
+        StateImportFfiFailure::numeric_range("cold-leaf staging count", receipt.cold_leaves_staged)
+    })?;
+    Ok(StateImportPageReceiptProto {
+        authenticated_next_path: path_to_protobuf(receipt.next_path),
+        terminal: receipt.terminal,
+        history_objects_staged,
+        cold_leaves_staged,
+    })
+}
+
+fn publication_to_protobuf(publication: StateImportPublication) -> StateImportPublicationProto {
+    StateImportPublicationProto {
+        verified_roots: publication
+            .verified_roots
+            .into_iter()
+            .map(|root| root.bytes())
+            .collect(),
+        activation: publication
+            .activation
+            .map(|activation| StateImportActivationProto {
+                root: activation.root.bytes(),
+                generation: activation.generation,
+            }),
+    }
+}
+
+unsafe fn importer_from_space(
+    rspace: *mut Space,
+) -> Result<Arc<dyn RSpaceImporter>, StateImportFfiFailure> {
+    // SAFETY: the caller-created `Space` allocation remains live for the call;
+    // null is rejected before dereference.
+    let space =
+        unsafe { rspace.as_ref() }.ok_or_else(|| StateImportFfiFailure::null_pointer("rspace"))?;
+    let repository = space
+        .rspace
+        .lock()
+        .map_err(|_| StateImportFfiFailure::space_state("rspace mutex is poisoned"))?
+        .get_history_repository();
+    Ok(repository.importer())
+}
+
+unsafe fn initialize_open_handle_output(
+    output: *mut *mut OpenStateImportHandle,
+) -> Result<(), StateImportFfiFailure> {
+    if output.is_null() {
+        return Err(StateImportFfiFailure::null_pointer("open-handle output"));
+    }
+    // SAFETY: the non-null out-pointer is writable by the foreign caller.
+    unsafe { output.write(std::ptr::null_mut()) };
+    Ok(())
+}
+
+unsafe fn initialize_sealed_handle_output(
+    output: *mut *mut SealedStateImportHandle,
+) -> Result<(), StateImportFfiFailure> {
+    if output.is_null() {
+        return Err(StateImportFfiFailure::null_pointer("sealed-handle output"));
+    }
+    // SAFETY: the non-null out-pointer is writable by the foreign caller.
+    unsafe { output.write(std::ptr::null_mut()) };
+    Ok(())
+}
+
+unsafe fn consume_open_handle(
+    handle: *mut OpenStateImportHandle,
+) -> Result<Box<dyn StateImportSession>, StateImportFfiFailure> {
+    if handle.is_null() {
+        return Err(StateImportFfiFailure::null_pointer("open state-import handle"));
+    }
+    // SAFETY: open handles originate exclusively from `state_import_begin` and
+    // this consuming operation owns the allocation exactly once.
+    let handle = unsafe { Box::from_raw(handle) };
+    let session = handle.session.into_inner().map_err(|_| {
+        StateImportFfiFailure::invalid_handle(
+            "open state-import handle was poisoned by an earlier panic",
+        )
+    })?;
+    session.ok_or_else(|| StateImportFfiFailure::invalid_handle("open handle is already consumed"))
+}
+
+unsafe fn consume_sealed_handle(
+    handle: *mut SealedStateImportHandle,
+) -> Result<Box<dyn SealedStateImport>, StateImportFfiFailure> {
+    if handle.is_null() {
+        return Err(StateImportFfiFailure::null_pointer("sealed state-import handle"));
+    }
+    // SAFETY: sealed handles originate exclusively from `state_import_seal`
+    // and this consuming operation owns the allocation exactly once.
+    let handle = unsafe { Box::from_raw(handle) };
+    let session = handle.session.into_inner().map_err(|_| {
+        StateImportFfiFailure::invalid_handle(
+            "sealed state-import handle was poisoned by an earlier panic",
+        )
+    })?;
+    session
+        .ok_or_else(|| StateImportFfiFailure::invalid_handle("sealed handle is already consumed"))
+}
+
+/// Begin one affine state-import transaction.
+///
+/// On success `out_open_handle` receives a new opaque capability and the
+/// returned pointer names a length-prefixed `StateImportResultProto`. On every
+/// failure the out-pointer is set to null and the result contains a structured
+/// error.
+///
+/// # Safety
+///
+/// `rspace` must be null or point to a live [`Space`]. `payload_pointer` must
+/// point to `payload_bytes_len` readable bytes. `out_open_handle` must be null
+/// or point to writable storage for one pointer, and must not race another
+/// access for the duration of this call.
+#[no_mangle]
+pub unsafe extern "C" fn state_import_begin(
+    rspace: *mut Space,
+    payload_pointer: *const u8,
+    payload_bytes_len: usize,
+    out_open_handle: *mut *mut OpenStateImportHandle,
+) -> *const u8 {
+    state_import_ffi_boundary("state_import_begin", || {
+        unsafe { initialize_open_handle_output(out_open_handle) }?;
+        let payload =
+            unsafe { required_protobuf_input(payload_pointer, payload_bytes_len, "import spec") }?;
+        let protobuf_spec = StateImportSpecProto::decode(payload).map_err(|error| {
+            StateImportFfiFailure::decode(format!("cannot decode state-import spec: {error}"))
+        })?;
+        let spec = state_import_spec_from_protobuf(protobuf_spec)?;
+        let importer = unsafe { importer_from_space(rspace) }?;
+        let session = importer
+            .begin_import(spec)
+            .map_err(StateImportFfiFailure::import)?;
+        let handle = Box::into_raw(Box::new(OpenStateImportHandle {
+            session: Mutex::new(Some(session)),
+        }));
+        // SAFETY: initialization above established a non-null writable out-pointer.
+        unsafe { out_open_handle.write(handle) };
+        Ok(protobuf_state_import_success(PROTOBUF_STATE_IMPORT_SUCCESS_OPENED, None, None))
+    })
+}
+
+/// Validate and stage one complete authenticated page without publishing any
+/// root authority. The open handle remains valid after an ordinary validation
+/// error, but becomes poisoned if the underlying implementation panics.
+///
+/// # Safety
+///
+/// `open_handle` must be null or a live capability returned by
+/// [`state_import_begin`], and it must not be concurrently consumed.
+/// `payload_pointer` must point to `payload_bytes_len` readable bytes.
+#[no_mangle]
+pub unsafe extern "C" fn state_import_stage_page(
+    open_handle: *mut OpenStateImportHandle,
+    payload_pointer: *const u8,
+    payload_bytes_len: usize,
+) -> *const u8 {
+    state_import_ffi_boundary("state_import_stage_page", || {
+        if open_handle.is_null() {
+            return Err(StateImportFfiFailure::null_pointer("open state-import handle"));
+        }
+        let payload =
+            unsafe { required_protobuf_input(payload_pointer, payload_bytes_len, "import page") }?;
+        let protobuf_page = StateImportPageProto::decode(payload).map_err(|error| {
+            StateImportFfiFailure::decode(format!("cannot decode state-import page: {error}"))
+        })?;
+        let page = state_import_page_from_protobuf(protobuf_page)?;
+        // SAFETY: the handle is non-null, live, and not concurrently consumed;
+        // the mutex permits sequential hand-off between foreign threads.
+        let handle = unsafe { &*open_handle };
+        let mut session = handle.session.lock().map_err(|_| {
+            StateImportFfiFailure::invalid_handle(
+                "open state-import handle was poisoned by an earlier panic",
+            )
+        })?;
+        let session = session.as_deref_mut().ok_or_else(|| {
+            StateImportFfiFailure::invalid_handle("open state-import handle is consumed")
+        })?;
+        let receipt = session
+            .validate_and_stage_page(page)
+            .map_err(StateImportFfiFailure::import)?;
+        Ok(protobuf_state_import_success(
+            PROTOBUF_STATE_IMPORT_SUCCESS_PAGE_STAGED,
+            Some(receipt_to_protobuf(receipt)?),
+            None,
+        ))
+    })
+}
+
+/// Consume an open capability, verify the complete staged closure, and return
+/// a distinct sealed publication capability.
+///
+/// # Safety
+///
+/// `open_handle` must be null or a live, uniquely owned capability returned by
+/// [`state_import_begin`]. A non-null handle is consumed exactly once by this
+/// call, even when sealing fails. `out_sealed_handle` must be null or point to
+/// writable storage for one pointer.
+#[no_mangle]
+pub unsafe extern "C" fn state_import_seal(
+    open_handle: *mut OpenStateImportHandle,
+    out_sealed_handle: *mut *mut SealedStateImportHandle,
+) -> *const u8 {
+    state_import_ffi_boundary("state_import_seal", || {
+        unsafe { initialize_sealed_handle_output(out_sealed_handle) }?;
+        let session = unsafe { consume_open_handle(open_handle) }?;
+        let sealed = session.seal().map_err(StateImportFfiFailure::import)?;
+        let handle = Box::into_raw(Box::new(SealedStateImportHandle {
+            session: Mutex::new(Some(sealed)),
+        }));
+        // SAFETY: initialization above established a non-null writable out-pointer.
+        unsafe { out_sealed_handle.write(handle) };
+        Ok(protobuf_state_import_success(PROTOBUF_STATE_IMPORT_SUCCESS_SEALED, None, None))
+    })
+}
+
+/// Consume a sealed capability and atomically publish its verified roots.
+///
+/// # Safety
+///
+/// `sealed_handle` must be null or a live, uniquely owned capability returned
+/// by [`state_import_seal`]. A non-null handle is consumed exactly once.
+#[no_mangle]
+pub unsafe extern "C" fn state_import_publish(
+    sealed_handle: *mut SealedStateImportHandle,
+) -> *const u8 {
+    state_import_ffi_boundary("state_import_publish", || {
+        let sealed = unsafe { consume_sealed_handle(sealed_handle) }?;
+        let publication = sealed.publish().map_err(StateImportFfiFailure::import)?;
+        Ok(protobuf_state_import_success(
+            PROTOBUF_STATE_IMPORT_SUCCESS_PUBLISHED,
+            None,
+            Some(publication_to_protobuf(publication)),
+        ))
+    })
+}
+
+/// Consume and drop an unpublished open capability.
+///
+/// # Safety
+///
+/// `open_handle` must be null or a live, uniquely owned capability returned by
+/// [`state_import_begin`]. A non-null handle is consumed exactly once.
+#[no_mangle]
+pub unsafe extern "C" fn state_import_abort_open(
+    open_handle: *mut OpenStateImportHandle,
+) -> *const u8 {
+    state_import_ffi_boundary("state_import_abort_open", || {
+        let session = unsafe { consume_open_handle(open_handle) }?;
+        drop(session);
+        Ok(protobuf_state_import_success(PROTOBUF_STATE_IMPORT_SUCCESS_ABORTED, None, None))
+    })
+}
+
+/// Consume and drop an unpublished sealed capability.
+///
+/// # Safety
+///
+/// `sealed_handle` must be null or a live, uniquely owned capability returned
+/// by [`state_import_seal`]. A non-null handle is consumed exactly once.
+#[no_mangle]
+pub unsafe extern "C" fn state_import_abort_sealed(
+    sealed_handle: *mut SealedStateImportHandle,
+) -> *const u8 {
+    state_import_ffi_boundary("state_import_abort_sealed", || {
+        let session = unsafe { consume_sealed_handle(sealed_handle) }?;
+        drop(session);
+        Ok(protobuf_state_import_success(PROTOBUF_STATE_IMPORT_SUCCESS_ABORTED, None, None))
+    })
 }
 
 #[no_mangle]
@@ -1744,9 +2222,9 @@ pub extern "C" fn get_history_item(
             .get_history_item(hash)
     };
 
-    if history_item.is_some() {
+    if let Ok(Some(history_item)) = history_item {
         let history_item_proto = ByteVectorProto {
-            byte_vector: history_item.unwrap(),
+            byte_vector: history_item,
         };
 
         let mut bytes = history_item_proto.encode_to_vec();
@@ -2426,3 +2904,7 @@ pub extern "C" fn deallocate_memory(ptr: *mut u8, len: usize) {
     }
     ALLOCATED_BYTES.fetch_sub(len, Ordering::SeqCst);
 }
+
+#[cfg(test)]
+#[path = "../tests/affine_state_import_ffi/mod.rs"]
+mod affine_state_import_ffi_tests;

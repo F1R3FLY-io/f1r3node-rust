@@ -1,53 +1,42 @@
-//! Forward-horizon rspace history sync.
+//! Forward-horizon RSpace history synchronization.
 //!
-//! Companion to `lfs_block_requester` (per-block message sync) and
-//! `lfs_tuple_space_requester` (LFB-state subtree sync). This module
-//! syncs rspace post-state roots for every block within the
-//! forward-horizon window — every block that an honest proposer could
-//! legitimately reference as a parent of an upcoming proposal.
-//!
-//! Together with `validate::parents`' parent-depth check, this guarantees
-//! that every legitimately-validatable block has its parents' rspace state
-//! local at validation time. No `UnknownRootError` can fire on
-//! consensus-valid blocks; out-of-horizon blocks are rejected on consensus
-//! rules in `validate::parents`.
-//!
-//! ## Streaming-parallel orchestration
-//!
-//! Mirrors `lfs_tuple_space_requester` and `lfs_block_requester`. Each
-//! horizon root enters an `ST<StatePartPath>` state machine as
-//! `Init → Requested → Received → Done`. A request loop fans out all
-//! pending paths in parallel via `try_join_all`, while a response loop
-//! demultiplexes incoming `StoreItemsMessage`s by `start_path`, applies
-//! items, paginates within each root, and on the terminal cursor calls
-//! `set_root` + verifies via `runtime_manager.has_root` (loud-fail on
-//! byzantine peer).
-//!
-//! Wire format (`StoreItemsMessageRequest` / `StoreItemsMessage`) is shared
-//! with `lfs_tuple_space_requester`. Pagination semantics: a response with
-//! `last_path == start_path` is the terminal cursor; non-terminal responses
-//! enqueue `last_path` as the next chunk to request for that same root.
+//! Every root missing from the local verified-root catalog is imported under
+//! one affine [`StateImportSession`]. Pages become durable only after their
+//! content-addresses and authenticated export projection have been checked;
+//! roots become authoritative only after the complete multi-root closure is
+//! sealed and published atomically. Forward-horizon synchronization never
+//! changes the repository's active root.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap};
 use std::hash::Hash;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
 use futures::Stream;
-use models::rust::casper::protocol::casper_message::StoreItemsMessage;
+use models::rust::casper::protocol::casper_message::{StoreItemsCursorProtocol, StoreItemsMessage};
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+use rspace_plus_plus::rspace::state::import_session::{
+    StateImportError, StateImportPage, StateImportPublicationMode, StateImportSession,
+    StateImportSpec,
+};
 use rspace_plus_plus::rspace::state::rspace_importer::RSpaceImporter;
 use tokio::sync::mpsc;
 
 use crate::rust::engine::lfs_tuple_space_requester::StatePartPath;
 use crate::rust::errors::CasperError;
 
-/// Per-chunk page size for state-item requests. Matches the value used
-/// by `lfs_tuple_space_requester` for LFB-state subtree pagination.
+/// Per-page history-object limit used by forward-horizon synchronization.
 pub const PAGE_SIZE: i32 = 1024;
 
-/// Per-chunk request status. Mirrors `lfs_tuple_space_requester::ReqStatus`.
+/// Maximum number of root-page requests awaiting responses at once.
+///
+/// This bounds network pressure, the `try_join_all` future set, and peer
+/// response buffering independently of the number or depth of horizon roots.
+/// It is a concurrency window, not a traversal-depth limit: every pending
+/// cursor is admitted as an earlier request completes.
+pub const MAX_IN_FLIGHT_REQUESTS: usize = 32;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReqStatus {
     Init,
@@ -56,9 +45,11 @@ pub enum ReqStatus {
     Done,
 }
 
-/// State to control processing of horizon-root requests. Keyed by chunk
-/// path so that pagination cursors and initial root requests live in the
-/// same data structure (matches `lfs_tuple_space_requester::ST`).
+/// Active pagination cursors and terminal root markers.
+///
+/// A non-terminal page replaces its received cursor rather than appending a
+/// new entry, so retained state is bounded by the number of target roots and
+/// cannot slope with pagination depth.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ST<Key: Hash + Eq + Clone> {
     d: HashMap<Key, ReqStatus>,
@@ -66,68 +57,70 @@ pub struct ST<Key: Hash + Eq + Clone> {
 
 impl<Key: Hash + Eq + Clone> ST<Key> {
     pub fn new(initial: Vec<Key>) -> Self {
-        let d = initial
-            .into_iter()
-            .map(|key| (key, ReqStatus::Init))
-            .collect();
-        Self { d }
-    }
-
-    pub fn add(&self, keys: HashSet<Key>) -> Self {
-        let mut new_d = self.d.clone();
-        for key in keys {
-            if !self.d.contains_key(&key) {
-                new_d.insert(key, ReqStatus::Init);
-            }
+        Self {
+            d: initial
+                .into_iter()
+                .map(|key| (key, ReqStatus::Init))
+                .collect(),
         }
-        Self { d: new_d }
     }
 
-    /// Returns the next batch of keys to request. Init keys always; if
-    /// `resend` is true, also Requested keys (for timeout-driven retries).
-    pub fn get_next(&self, resend: bool) -> (Self, Vec<Key>) {
-        let mut new_d = self.d.clone();
+    fn take_next(&mut self, resend: bool) -> Vec<Key> {
+        if resend {
+            return self
+                .d
+                .iter()
+                .filter(|(_, status)| **status == ReqStatus::Requested)
+                .take(MAX_IN_FLIGHT_REQUESTS)
+                .map(|(key, _)| key.clone())
+                .collect();
+        }
+
+        let available = MAX_IN_FLIGHT_REQUESTS.saturating_sub(self.requested_count());
         let mut requested_keys = Vec::new();
-        for (key, status) in &self.d {
-            let should_request = match status {
-                ReqStatus::Init => true,
-                ReqStatus::Requested if resend => true,
-                _ => false,
-            };
-            if should_request {
-                new_d.insert(key.clone(), ReqStatus::Requested);
+        for (key, status) in &mut self.d {
+            if requested_keys.len() == available {
+                break;
+            }
+            if *status == ReqStatus::Init {
+                *status = ReqStatus::Requested;
                 requested_keys.push(key.clone());
             }
         }
-        (Self { d: new_d }, requested_keys)
+        requested_keys
     }
 
-    pub fn received(&self, k: Key) -> (Self, bool) {
-        let current_status = self.d.get(&k);
-        let is_valid = current_status == Some(&ReqStatus::Requested)
-            || current_status == Some(&ReqStatus::Init);
-        let new_d = if is_valid {
-            let mut updated_d = self.d.clone();
-            updated_d.insert(k, ReqStatus::Received);
-            updated_d
-        } else {
-            self.d.clone()
-        };
-        (Self { d: new_d }, is_valid)
-    }
-
-    pub fn done(&self, k: Key) -> Self {
-        let is_received = self.d.get(&k) == Some(&ReqStatus::Received);
-        if is_received {
-            let mut new_d = self.d.clone();
-            new_d.insert(k, ReqStatus::Done);
-            Self { d: new_d }
-        } else {
-            self.clone()
+    /// Atomically retire a validated response. A continuation replaces its
+    /// predecessor; a terminal response leaves one bounded Done marker.
+    fn complete_page(&mut self, current: &Key, next: Key, terminal: bool) -> bool {
+        if self.d.get(current) != Some(&ReqStatus::Requested) {
+            return false;
         }
+        if (terminal && current != &next)
+            || (!terminal && (current == &next || self.d.contains_key(&next)))
+        {
+            return false;
+        }
+        self.d.insert(current.clone(), ReqStatus::Received);
+        if terminal {
+            self.d.insert(current.clone(), ReqStatus::Done);
+        } else {
+            self.d.remove(current);
+            self.d.insert(next, ReqStatus::Init);
+        }
+        true
     }
 
-    pub fn is_finished(&self) -> bool { !self.d.values().any(|status| *status != ReqStatus::Done) }
+    fn status(&self, key: &Key) -> Option<ReqStatus> { self.d.get(key).copied() }
+
+    fn requested_count(&self) -> usize {
+        self.d
+            .values()
+            .filter(|status| **status == ReqStatus::Requested)
+            .count()
+    }
+
+    pub fn is_finished(&self) -> bool { self.d.values().all(|status| *status == ReqStatus::Done) }
 
     pub fn len(&self) -> usize { self.d.len() }
 
@@ -136,278 +129,169 @@ impl<Key: Hash + Eq + Clone> ST<Key> {
     pub fn done_count(&self) -> usize { self.d.values().filter(|s| **s == ReqStatus::Done).count() }
 }
 
-/// Network operations needed by the horizon requester. Decoupled from
-/// `TransportLayer` so unit tests can stub it without spinning up a
-/// transport stack. Mirrors `lfs_tuple_space_requester::TupleSpaceRequesterOps`.
 #[async_trait]
 pub trait HorizonRequesterOps: Send + Sync {
-    /// Send a `StoreItemsMessageRequest` for the given chunk path. The
-    /// production impl unicasts to bootstrap; the response arrives on the
-    /// shared `mpsc::Receiver<StoreItemsMessage>` correlated by `start_path`.
     async fn request_for_horizon_chunk(
         &self,
         path: &StatePartPath,
         page_size: i32,
+        cursor_protocol: StoreItemsCursorProtocol,
     ) -> Result<(), CasperError>;
 }
 
-/// Per-root pagination accounting. Used to detect the "terminal cursor on
-/// first chunk + zero items" byzantine signal (peer doesn't have this root).
-#[derive(Debug, Clone, Default)]
-struct RootProgress {
-    chunk_count: usize,
-    total_history: usize,
-    total_data: usize,
-}
-
-/// Closure type for "is this root already in the joiner's roots store?".
-/// Decoupled from `RuntimeManager` so the orchestrator can be unit-tested
-/// against a fake roots store without spinning up the runtime stack.
+/// Read-only verified-root membership query used before import. Root
+/// publication authority belongs exclusively to the affine import session.
 pub type HasRootFn = Arc<dyn Fn(&Blake2b256Hash) -> Result<bool, CasperError> + Send + Sync>;
 
 struct HorizonStreamProcessor<T: HorizonRequesterOps> {
     request_ops: T,
-    has_root: HasRootFn,
-    state_importer: Arc<dyn RSpaceImporter>,
-    st: Arc<Mutex<ST<StatePartPath>>>,
-    /// Maps each chunk path to the SET of roots paginating through it.
-    /// Initial paths `[(root, None)]` map to `{root}`. When two roots'
-    /// pagination chains converge on a shared cursor (radix tries derived
-    /// from sibling chain states routinely share suffix paths), the cursor
-    /// maps to BOTH roots; one wire request satisfies both, and the
-    /// terminal completion fires `set_root` for each.
-    path_to_root: Arc<Mutex<HashMap<StatePartPath, HashSet<Blake2b256Hash>>>>,
-    /// Per-root chunk-count + byte counters for byzantine-peer detection.
-    root_progress: Arc<Mutex<HashMap<Blake2b256Hash, RootProgress>>>,
-    request_tx: mpsc::Sender<bool>,
+    session: Option<Box<dyn StateImportSession>>,
+    target_roots: Vec<Blake2b256Hash>,
+    cursor_protocol: StoreItemsCursorProtocol,
+    st: ST<StatePartPath>,
 }
 
 impl<T: HorizonRequesterOps> HorizonStreamProcessor<T> {
-    async fn process_store_items_message(
-        &self,
+    fn process_store_items_message(
+        &mut self,
         message: StoreItemsMessage,
-    ) -> Result<(), CasperError> {
+    ) -> Result<bool, CasperError> {
+        if self.st.status(&message.start_path) != Some(ReqStatus::Requested) {
+            tracing::debug!(
+                "LFS forward-horizon: ignoring unsolicited, duplicate, or stale page response"
+            );
+            return Ok(false);
+        }
+
+        let advertised_next_path = message
+            .canonical_advertised_next_path(self.cursor_protocol)
+            .map_err(CasperError::RuntimeError)?;
+        let advertised_terminal = message.terminal;
         let StoreItemsMessage {
             start_path,
-            last_path,
             history_items,
             data_items,
+            ..
         } = message;
 
-        let history_items: Vec<(Blake2b256Hash, Vec<u8>)> = history_items
-            .into_iter()
-            .map(|(hash, bytes)| (hash, bytes.to_vec()))
-            .collect();
-        let data_items: Vec<(Blake2b256Hash, Vec<u8>)> = data_items
-            .into_iter()
-            .map(|(hash, bytes)| (hash, bytes.to_vec()))
-            .collect();
-
-        // Mark this chunk as Received in the state machine. If the path
-        // wasn't previously Requested (or Init, in the fast in-memory test
-        // case), treat the chunk as stale and ignore.
-        let was_known = {
-            let mut state = self.st.lock().expect("ST lock");
-            let (new_state, is_valid) = state.received(start_path.clone());
-            *state = new_state;
-            is_valid
-        };
-        if !was_known {
-            tracing::debug!("LFS forward-horizon: ignoring chunk for unknown/stale path");
-            return Ok(());
+        let session = self.session.as_mut().ok_or_else(|| {
+            CasperError::RuntimeError(
+                "LFS forward-horizon: import session was already consumed".to_string(),
+            )
+        })?;
+        let receipt = session.validate_and_stage_page(StateImportPage {
+            start_path: start_path.clone(),
+            advertised_next_path,
+            skip: 0,
+            take: PAGE_SIZE,
+            history_items: history_items
+                .into_iter()
+                .map(|(hash, bytes)| (hash, bytes.to_vec()))
+                .collect(),
+            data_items: data_items
+                .into_iter()
+                .map(|(hash, bytes)| (hash, bytes.to_vec()))
+                .collect(),
+        })?;
+        if receipt.terminal != advertised_terminal {
+            return Err(CasperError::RuntimeError(
+                "LFS forward-horizon: response terminal claim disagrees with authenticated traversal"
+                    .to_string(),
+            ));
         }
 
-        // Find which roots this chunk's pagination chain belongs to.
-        // Multiple roots may share the same cursor — the chunk's content
-        // satisfies all of them in one shot.
-        let roots: Vec<Blake2b256Hash> = {
-            let map = self.path_to_root.lock().expect("path_to_root lock");
-            match map.get(&start_path) {
-                Some(set) => set.iter().cloned().collect(),
-                None => Vec::new(),
-            }
-        };
-        if roots.is_empty() {
-            tracing::warn!(
-                "LFS forward-horizon: received chunk for path with no root mapping; ignoring"
-            );
-            return Ok(());
+        // The authenticated traversal, not a transport-side root map,
+        // determines which root owns the continuation cursor.
+        let response_root = cursor_root(&start_path)?;
+        let receipt_root = cursor_root(&receipt.next_path)?;
+        if receipt_root != response_root {
+            return Err(CasperError::RuntimeError(format!(
+                "LFS forward-horizon: authenticated cursor crossed roots ({} -> {})",
+                response_root, receipt_root
+            )));
         }
 
-        // Apply items to local rspace. Radix nodes are content-addressed so
-        // the importer can validate keys against contents internally.
-        let history_count = history_items.len();
-        let data_count = data_items.len();
-        self.state_importer.set_history_items(history_items);
-        self.state_importer.set_data_items(data_items);
-
-        // Update per-root progress for every root sharing this chunk.
+        // Only validated/staged pages may advance transport state.
+        if !self
+            .st
+            .complete_page(&start_path, receipt.next_path, receipt.terminal)
         {
-            let mut progress_map = self.root_progress.lock().expect("root_progress lock");
-            for root in &roots {
-                let entry = progress_map.entry(root.clone()).or_default();
-                entry.chunk_count += 1;
-                entry.total_history += history_count;
-                entry.total_data += data_count;
-            }
+            return Err(CasperError::RuntimeError(
+                "LFS forward-horizon: validated page could not make a unique forward cursor transition"
+                    .to_string(),
+            ));
         }
-
-        let is_terminal = last_path == start_path;
-
-        if is_terminal {
-            // Byzantine signal: terminal cursor on first chunk + no data
-            // means the peer doesn't have this root. Fail loud if ANY root
-            // sharing this terminal saw only an empty first chunk — that's
-            // still an unrecoverable signal even if other roots happened to
-            // have legitimate data on a prior path.
-            {
-                let progress_map = self.root_progress.lock().expect("root_progress lock");
-                for root in &roots {
-                    let progress = progress_map.get(root).cloned().unwrap_or_default();
-                    if progress.chunk_count == 1
-                        && progress.total_history == 0
-                        && progress.total_data == 0
-                    {
-                        return Err(CasperError::RuntimeError(format!(
-                            "LFS forward-horizon: bootstrap signalled empty/missing root {} \
-                             (terminal cursor on first chunk)",
-                            root
-                        )));
-                    }
-                }
-            }
-
-            // Record the root tag in roots_store and verify the import
-            // reconstructed each expected root.
-            for root in &roots {
-                self.state_importer.set_root(root);
-                let now_have = (self.has_root)(root)?;
-                if !now_have {
-                    return Err(CasperError::RuntimeError(format!(
-                        "LFS forward-horizon: root {} not in store after import; \
-                         peer shipped invalid data",
-                        root
-                    )));
-                }
-                let progress = {
-                    let progress_map = self.root_progress.lock().expect("root_progress lock");
-                    progress_map.get(root).cloned().unwrap_or_default()
-                };
-                tracing::debug!(
-                    "LFS forward-horizon: completed root {} ({} chunks, {} history, {} data)",
-                    root,
-                    progress.chunk_count,
-                    progress.total_history,
-                    progress.total_data
-                );
-            }
-
-            // Mark the path Done and free its multi-root mapping. ST
-            // tracks paths, not roots, so a single done() retires the
-            // shared chunk for all associated roots.
-            {
-                let mut state = self.st.lock().expect("ST lock");
-                let new_state = state.done(start_path.clone());
-                *state = new_state;
-            }
-            {
-                let mut map = self.path_to_root.lock().expect("path_to_root lock");
-                map.remove(&start_path);
-            }
-
-            // Trigger another request cycle so any unstarted Init paths get
-            // sent now that one has finished.
-            let _ = self.request_tx.try_send(false);
-        } else {
-            // Non-terminal: continuation cursor inherits the full root set.
-            // If `last_path` is already tracked (another root's chunk
-            // already converged on the same cursor), merge into the
-            // existing set so its terminal completion fires set_root for
-            // every root, not just the first writer.
-            {
-                let mut map = self.path_to_root.lock().expect("path_to_root lock");
-                let entry = map.entry(last_path.clone()).or_default();
-                for root in &roots {
-                    entry.insert(root.clone());
-                }
-            }
-            {
-                let mut state = self.st.lock().expect("ST lock");
-                let mut next = HashSet::new();
-                next.insert(last_path);
-                let new_state = state.add(next);
-                // Mark the just-processed chunk Done so it doesn't keep
-                // counting against is_finished. (Pagination continues via
-                // the freshly-added Init entry.)
-                let new_state = new_state.done(start_path.clone());
-                *state = new_state;
-            }
-            {
-                let mut map = self.path_to_root.lock().expect("path_to_root lock");
-                map.remove(&start_path);
-            }
-
-            let _ = self.request_tx.try_send(false);
-        }
-
-        Ok(())
+        Ok(true)
     }
 
-    async fn request_next(&self, resend: bool) -> Result<(), CasperError> {
-        // Snapshot is_finished and pull next-paths under one lock.
-        let (is_finished, paths) = {
-            let mut state = self.st.lock().expect("ST lock");
-            if state.is_finished() {
-                (true, Vec::new())
-            } else {
-                let (new_state, paths) = state.get_next(resend);
-                *state = new_state;
-                (false, paths)
-            }
-        };
-        if is_finished || paths.is_empty() {
+    async fn request_next(&mut self, resend: bool) -> Result<(), CasperError> {
+        let paths = self.st.take_next(resend);
+        if paths.is_empty() {
             return Ok(());
         }
 
         if resend {
             tracing::info!(
-                "LFS forward-horizon: resending {} pending chunk requests",
+                "LFS forward-horizon: resending {} pending page requests",
                 paths.len()
             );
         } else {
             tracing::debug!(
-                "LFS forward-horizon: dispatching {} chunk requests in parallel",
+                "LFS forward-horizon: dispatching {} page requests in parallel",
                 paths.len()
             );
         }
 
-        // Parallel fan-out. Same shape as
-        // `lfs_tuple_space_requester::request_next` (Scala:
-        // `broadcastStreams(ids).parJoinUnbounded`).
-        let request_futures: Vec<_> = paths
-            .iter()
-            .map(|path| async move {
-                self.request_ops
-                    .request_for_horizon_chunk(path, PAGE_SIZE)
-                    .await
-            })
-            .collect();
-        futures::future::try_join_all(request_futures).await?;
+        let requests = paths.iter().map(|path| {
+            self.request_ops
+                .request_for_horizon_chunk(path, PAGE_SIZE, self.cursor_protocol)
+        });
+        futures::future::try_join_all(requests).await?;
+        Ok(())
+    }
 
+    fn seal_and_publish(&mut self) -> Result<(), CasperError> {
+        if !self.st.is_finished() {
+            return Err(CasperError::RuntimeError(
+                "LFS forward-horizon: attempted publication before every root terminated"
+                    .to_string(),
+            ));
+        }
+        let session = self.session.take().ok_or_else(|| {
+            CasperError::RuntimeError(
+                "LFS forward-horizon: import session publication was already consumed".to_string(),
+            )
+        })?;
+        let publication = session.seal()?.publish()?;
+        if publication.verified_roots != self.target_roots {
+            return Err(CasperError::RuntimeError(format!(
+                "LFS forward-horizon: importer published an inexact root set (expected {}, got {})",
+                self.target_roots.len(),
+                publication.verified_roots.len()
+            )));
+        }
+        if publication.activation.is_some() {
+            return Err(CasperError::RuntimeError(
+                "LFS forward-horizon: PreserveCurrent import unexpectedly activated a root"
+                    .to_string(),
+            ));
+        }
         Ok(())
     }
 }
 
-/// Streaming forward-horizon sync orchestrator. Roots already present in
-/// the joiner's roots_store (per `runtime_manager.has_root`) are filtered
-/// out before the stream starts. The remaining roots are enqueued in `ST`
-/// and processed in parallel via the streaming select-loop below.
+fn cursor_root(path: &StatePartPath) -> Result<&Blake2b256Hash, CasperError> {
+    path.first().map(|(root, _)| root).ok_or_else(|| {
+        CasperError::RuntimeError("LFS forward-horizon: cursor has no root component".to_string())
+    })
+}
+
+/// Synchronize all missing forward-horizon roots through one affine import.
 ///
-/// Returns a `Stream<Item = ST<StatePartPath>>` that emits an updated state
-/// snapshot on each response/request cycle and terminates when all roots
-/// reach `Done`. Caller should consume the stream to completion and check
-/// `is_finished()` on the final state to ensure no roots were left
-/// unsynced (incomplete sync = caller must NOT transition to Running).
+/// The returned try-stream yields request-state snapshots and surfaces every
+/// transport, validation, closure, and publication failure as an `Err` item.
+/// Empty input and all-present input produce exactly one successful empty
+/// state without constructing an import session.
 pub async fn stream<T: HorizonRequesterOps>(
     horizon_roots: Vec<Blake2b256Hash>,
     has_root: HasRootFn,
@@ -415,387 +299,326 @@ pub async fn stream<T: HorizonRequesterOps>(
     request_ops: T,
     mut store_items_message_receiver: mpsc::Receiver<StoreItemsMessage>,
     request_timeout: Duration,
-) -> Result<impl Stream<Item = ST<StatePartPath>>, CasperError> {
-    let total_input = horizon_roots.len();
+) -> Result<impl Stream<Item = Result<ST<StatePartPath>, CasperError>>, CasperError> {
+    if request_timeout.is_zero() {
+        return Err(CasperError::RuntimeError(
+            "LFS forward-horizon: request timeout must be positive".to_string(),
+        ));
+    }
 
-    // Pre-filter roots already present (LFB root is the typical hit, since
-    // `lfs_tuple_space_requester` has already imported it).
-    let mut filtered: Vec<Blake2b256Hash> = Vec::with_capacity(total_input);
-    let mut skipped = 0usize;
-    for root in horizon_roots {
-        if has_root(&root)? {
-            skipped += 1;
-        } else {
-            filtered.push(root);
+    let total_input = horizon_roots.len();
+    let canonical_roots = horizon_roots.into_iter().collect::<BTreeSet<_>>();
+    for root in &canonical_roots {
+        if root.0.len() != 32 {
+            return Err(StateImportError::InvalidDigestWidth {
+                field: "forward-horizon root",
+                available: root.0.len(),
+            }
+            .into());
+        }
+    }
+
+    let mut missing_roots = Vec::new();
+    for root in canonical_roots {
+        if !(has_root)(&root)? {
+            missing_roots.push(root);
         }
     }
 
     tracing::info!(
-        "LFS forward-horizon: starting parallel sync for {} roots ({} already present, {} input)",
-        filtered.len(),
-        skipped,
+        "LFS forward-horizon: {} missing canonical roots ({} input entries)",
+        missing_roots.len(),
         total_input
     );
 
-    // Build initial ST: one path per root, of the form `[(root, None)]`.
-    // Each initial path uniquely identifies its root, so the singleton
-    // sets here will only ever grow when pagination cursors converge.
-    let mut initial_paths: Vec<StatePartPath> = Vec::with_capacity(filtered.len());
-    let mut path_to_root_init: HashMap<StatePartPath, HashSet<Blake2b256Hash>> = HashMap::new();
-    for root in &filtered {
-        let path: StatePartPath = vec![(root.clone(), None)];
-        let mut set = HashSet::new();
-        set.insert(root.clone());
-        path_to_root_init.insert(path.clone(), set);
-        initial_paths.push(path);
-    }
-
-    let st = Arc::new(Mutex::new(ST::new(initial_paths)));
-    let path_to_root = Arc::new(Mutex::new(path_to_root_init));
-    let root_progress = Arc::new(Mutex::new(HashMap::new()));
-
-    // Bounded request queue (cap 2 — one resend + one new). Matches
-    // tuple_space_requester::stream channel sizing.
-    let (request_tx, mut request_rx) = mpsc::channel::<bool>(2);
-
-    // Tracked-out-of-band so byzantine-detection / has_root errors inside
-    // the response handler can be surfaced to the caller via the wrapper
-    // below. async_stream! yields ST snapshots only.
-    let last_error: Arc<Mutex<Option<CasperError>>> = Arc::new(Mutex::new(None));
-
-    let processor = Arc::new(HorizonStreamProcessor {
-        request_ops,
-        has_root,
-        state_importer,
-        st: st.clone(),
-        path_to_root,
-        root_progress,
-        request_tx: request_tx.clone(),
-    });
-
-    // Empty-input shortcut: yield a finished ST and exit so callers see
-    // the same streaming contract regardless of input size.
-    let nothing_to_do = filtered.is_empty();
-    let last_error_for_stream = last_error.clone();
-    let st_for_stream = st.clone();
-
-    // Initial request kick-off (only if we have roots to fetch).
-    if !nothing_to_do {
-        request_tx.send(false).await.map_err(|_| {
-            CasperError::RuntimeError(
-                "LFS forward-horizon: initial request enqueue failed".to_string(),
-            )
-        })?;
-    }
+    let processor = if missing_roots.is_empty() {
+        None
+    } else {
+        let spec = StateImportSpec::new(
+            missing_roots.iter().cloned(),
+            StateImportPublicationMode::PreserveCurrent,
+        )?;
+        let session = state_importer.begin_import(spec.clone())?;
+        if session.spec() != &spec {
+            return Err(CasperError::RuntimeError(
+                "LFS forward-horizon: importer returned a session for a different specification"
+                    .to_string(),
+            ));
+        }
+        let initial_paths = missing_roots
+            .iter()
+            .cloned()
+            .map(|root| vec![(root, None)])
+            .collect();
+        Some(HorizonStreamProcessor {
+            request_ops,
+            session: Some(session),
+            target_roots: missing_roots,
+            cursor_protocol: StoreItemsCursorProtocol::AuthenticatedTerminal,
+            st: ST::new(initial_paths),
+        })
+    };
 
     let max_request_timeout = Duration::from_secs(128);
-
-    let stream = async_stream::stream! {
-        if nothing_to_do {
-            let final_state = st_for_stream.lock().expect("ST lock").clone();
-            yield final_state;
+    let output = async_stream::try_stream! {
+        let Some(mut processor) = processor else {
+            yield ST::new(Vec::new());
             return;
-        }
+        };
+
+        processor.request_next(false).await?;
+        yield processor.st.clone();
 
         let mut current_timeout = request_timeout;
         let mut idle_timeout = Box::pin(tokio::time::sleep(current_timeout));
-
         loop {
-            tokio::select! {
-                // biased: prefer responses (drain side) over new requests so
-                // we don't starve the demux while issuing more sends.
+            let message = tokio::select! {
                 biased;
+                message = store_items_message_receiver.recv() => Some(message),
+                _ = &mut idle_timeout => None,
+            };
 
-                Some(message) = store_items_message_receiver.recv() => {
-                    if let Err(e) = processor.process_store_items_message(message).await {
-                        tracing::error!(
-                            "LFS forward-horizon: stream terminating due to processing error: {:?}",
-                            e
-                        );
-                        *last_error_for_stream.lock().expect("last_error lock") = Some(e);
-                        break;
+            match message {
+                Some(message) => {
+                    let message = message.ok_or_else(|| {
+                        CasperError::RuntimeError(
+                            "LFS forward-horizon: response channel closed before import completed"
+                                .to_string(),
+                        )
+                    })?;
+                    let accepted = processor.process_store_items_message(message)?;
+                    if !accepted {
+                        continue;
                     }
 
-                    let current_state = st_for_stream
-                        .lock()
-                        .expect("ST lock")
-                        .clone();
-                    let is_finished = current_state.is_finished();
-
-                    if is_finished {
+                    if processor.st.is_finished() {
+                        processor.seal_and_publish()?;
                         tracing::info!(
-                            "LFS forward-horizon: complete (all {} roots synced)",
-                            current_state.len()
+                            "LFS forward-horizon: atomically published {} verified roots without activation",
+                            processor.target_roots.len()
                         );
-                        yield current_state;
-                        break;
+                        yield processor.st.clone();
+                        return;
                     }
 
-                    // Activity = reset backoff.
+                    processor.request_next(false).await?;
                     current_timeout = request_timeout;
                     idle_timeout = Box::pin(tokio::time::sleep(current_timeout));
-                    yield current_state;
+                    yield processor.st.clone();
                 }
-
-                Some(resend_flag) = request_rx.recv() => {
-                    if let Err(e) = processor.request_next(resend_flag).await {
-                        tracing::error!(
-                            "LFS forward-horizon: stream terminating due to request error: {:?}",
-                            e
-                        );
-                        *last_error_for_stream.lock().expect("last_error lock") = Some(e);
-                        break;
-                    }
-
-                    let current_state = st_for_stream
-                        .lock()
-                        .expect("ST lock")
-                        .clone();
-                    if current_state.is_finished() {
-                        yield current_state;
-                        break;
-                    }
-
-                    current_timeout = request_timeout;
-                    idle_timeout = Box::pin(tokio::time::sleep(current_timeout));
-                    yield current_state;
-                }
-
-                _ = &mut idle_timeout => {
-                    let next_timeout = current_timeout.saturating_mul(2).min(max_request_timeout);
+                None => {
+                    processor.request_next(true).await?;
+                    current_timeout = current_timeout
+                        .saturating_mul(2)
+                        .min(max_request_timeout);
                     tracing::warn!(
-                        "LFS forward-horizon: no responses for {:?}; resending. backoff -> {:?}",
-                        current_timeout, next_timeout
+                        "LFS forward-horizon: response timeout; next retry in {:?}",
+                        current_timeout
                     );
-                    if request_tx.try_send(true).is_err() {
-                        tracing::warn!(
-                            "LFS forward-horizon: request queue full on resend trigger"
-                        );
-                    }
-                    current_timeout = next_timeout;
                     idle_timeout = Box::pin(tokio::time::sleep(current_timeout));
                 }
             }
         }
-
-        // Final state emission so the caller sees the terminal ST snapshot
-        // even if the loop exited via break (error path).
-        let final_state = st_for_stream
-            .lock()
-            .expect("ST lock")
-            .clone();
-        yield final_state;
     };
 
-    // Keep last_error alive in the same scope as the stream by wrapping it
-    // in a struct... actually, the stream already captures last_error_for_stream
-    // by move and writes to it. The wrapper below reads it. We stash an Arc
-    // clone in the stream's parent scope (here) — but stream() returns the
-    // stream and drops the local Arc. That's fine: last_error_for_stream
-    // (moved into the async block) shares the Arc with the wrapper's clone.
-
-    // last_error is captured by the async block via last_error_for_stream;
-    // however, we don't expose it through this stream's public surface.
-    // Callers detect failure via `final ST.is_finished() == false`.
-    // Specific error context is logged via `tracing::error!` in the loop.
-    let _ = last_error;
-
-    Ok(stream)
+    Ok(output)
 }
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
+
+    use futures::{StreamExt, TryStreamExt};
+    use rspace_plus_plus::rspace::history::instances::radix_history::RadixHistory;
+    use rspace_plus_plus::rspace::state::import_session::{
+        SealedStateImport, StateImportActivation, StateImportPageReceipt, StateImportPublication,
+    };
+    use tokio::sync::{mpsc as test_mpsc, Barrier};
+
     use super::*;
 
-    // ── ST<Key> state machine ────────────────────────────────────────────
-    //
-    // Mirrors the `Init → Requested → Received → Done` lifecycle that the
-    // streaming orchestrator drives every horizon root through. These tests
-    // pin the algebraic semantics so future changes to the orchestrator or
-    // the `lfs_tuple_space_requester` parallel structure can't silently
-    // diverge from the contract the stream loop assumes.
+    #[test]
+    fn st_accepts_only_requested_responses() {
+        let mut st: ST<i32> = ST::new(vec![1]);
+        assert!(!st.complete_page(&1, 1, true));
+        let requested = st.take_next(false);
+        assert_eq!(requested, vec![1]);
+        assert!(st.complete_page(&1, 1, true));
+        assert!(!st.complete_page(&1, 1, true));
+    }
 
     #[test]
-    fn st_new_initializes_all_entries_as_init() {
-        let st: ST<i32> = ST::new(vec![1, 2, 3]);
-        assert_eq!(st.len(), 3);
-        assert_eq!(st.done_count(), 0);
+    fn st_replaces_paginated_cursor_and_remains_bounded() {
+        let mut st = ST::new(vec![1]);
+        st.take_next(false);
+        assert!(st.complete_page(&1, 2, false));
+        assert_eq!(st.len(), 1);
+        assert_eq!(st.status(&1), None);
+        assert_eq!(st.status(&2), Some(ReqStatus::Init));
+    }
+
+    #[test]
+    fn st_finishes_only_after_received_entries_are_done() {
+        let mut st: ST<i32> = ST::new(vec![1, 2]);
+        st.take_next(false);
+        assert!(st.complete_page(&1, 1, true));
         assert!(!st.is_finished());
-    }
-
-    #[test]
-    fn st_add_inserts_new_keys_as_init_and_leaves_existing() {
-        // Existing key in Requested state must NOT be reset to Init by add().
-        let st: ST<i32> = ST::new(vec![1]);
-        let (st, _) = st.get_next(false); // 1 -> Requested
-        let mut new_keys = HashSet::new();
-        new_keys.insert(2);
-        new_keys.insert(1); // existing
-        let st = st.add(new_keys);
-        // 2 should be Init now; 1 should still be Requested → only 2 picked.
-        let (_, requested) = st.get_next(false);
-        assert_eq!(requested, vec![2]);
-    }
-
-    #[test]
-    fn st_get_next_without_resend_picks_only_init() {
-        let st: ST<i32> = ST::new(vec![1, 2]);
-        let (st, batch) = st.get_next(false);
-        let mut sorted = batch.clone();
-        sorted.sort();
-        assert_eq!(sorted, vec![1, 2]);
-        // Calling again without resend yields nothing: both are Requested.
-        let (_, batch2) = st.get_next(false);
-        assert!(batch2.is_empty());
-    }
-
-    #[test]
-    fn st_get_next_with_resend_picks_init_and_requested() {
-        let st: ST<i32> = ST::new(vec![1]);
-        let (st, _) = st.get_next(false); // 1 -> Requested
-        let (_, batch) = st.get_next(true); // resend: pick Requested again
-        assert_eq!(batch, vec![1]);
-    }
-
-    #[test]
-    fn st_received_valid_only_on_requested_or_init() {
-        let st: ST<i32> = ST::new(vec![1, 2]);
-        // Init: received() accepts (handles fast in-memory test scenarios
-        // where responses arrive before the request loop runs).
-        let (st, valid) = st.received(1);
-        assert!(valid);
-        // Requested: received() accepts.
-        let (st, _) = st.get_next(false); // 2 -> Requested
-        let (st, valid) = st.received(2);
-        assert!(valid);
-        // Already-Received: received() rejects (idempotent).
-        let (_, valid) = st.received(1);
-        assert!(!valid);
-    }
-
-    #[test]
-    fn st_done_only_valid_on_received() {
-        let st: ST<i32> = ST::new(vec![1]);
-        // Init -> done() is a no-op (key NOT advanced).
-        let st = st.done(1);
-        assert!(!st.is_finished());
-        // After received() -> done() advances.
-        let (st, _) = st.received(1);
-        let st = st.done(1);
+        assert!(st.complete_page(&2, 2, true));
         assert!(st.is_finished());
-    }
-
-    #[test]
-    fn st_is_finished_only_when_all_done() {
-        let st: ST<i32> = ST::new(vec![1, 2]);
-        let (st, _) = st.received(1);
-        let st = st.done(1);
-        assert!(!st.is_finished()); // 2 still Init
-        let (st, _) = st.received(2);
-        let st = st.done(2);
-        assert!(st.is_finished());
-    }
-
-    #[test]
-    fn st_done_count_matches_done_entries() {
-        let st: ST<i32> = ST::new(vec![1, 2, 3]);
-        let (st, _) = st.received(1);
-        let st = st.done(1);
-        let (st, _) = st.received(2);
-        let st = st.done(2);
         assert_eq!(st.done_count(), 2);
-        assert_eq!(st.len() - st.done_count(), 1);
     }
 
-    // ── stream() behavioral tests with mock HorizonRequesterOps ─────────
-    //
-    // These tests construct the orchestrator with a mock network layer so
-    // we can assert on:
-    //   - skip-already-present pre-filter (mock has_root returns true)
-    //   - terminal cursor handling (single-chunk happy path)
-    //   - byzantine peer detection (terminal+empty on first chunk)
-    //   - pagination (non-terminal cursor enqueues continuation)
-    //   - parallel fan-out (mock counts max simultaneous in-flight requests)
-    //
-    // The mock RSpaceImporter is a no-op since the orchestrator only uses
-    // it as a passive sink for items we feed via canned responses.
+    #[test]
+    fn st_timeout_resends_only_the_bounded_requested_window() {
+        let mut st = ST::new((0..MAX_IN_FLIGHT_REQUESTS + 8).collect::<Vec<_>>());
+        let first = st.take_next(false);
+        assert_eq!(first.len(), MAX_IN_FLIGHT_REQUESTS);
+        assert_eq!(st.requested_count(), MAX_IN_FLIGHT_REQUESTS);
 
-    use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
-
-    use futures::StreamExt;
-    use rspace_plus_plus::rspace::shared::trie_importer::TrieImporter;
-    use rspace_plus_plus::rspace::state::rspace_importer::RSpaceImporter;
-    use tokio::sync::mpsc as test_mpsc;
-
-    /// No-op RSpaceImporter — orchestrator just calls set_history_items /
-    /// set_data_items / set_root with the bytes we feed it; tests don't
-    /// inspect what was imported, only what the stream did with the calls.
-    struct NoopImporter;
-
-    impl TrieImporter for NoopImporter {
-        fn set_history_items(&self, _data: Vec<(Blake2b256Hash, Vec<u8>)>) -> () {}
-        fn set_data_items(&self, _data: Vec<(Blake2b256Hash, Vec<u8>)>) -> () {}
-        fn set_root(&self, _key: &Blake2b256Hash) -> () {}
+        let resend = st.take_next(true);
+        assert_eq!(resend.len(), MAX_IN_FLIGHT_REQUESTS);
+        assert_eq!(
+            first.into_iter().collect::<BTreeSet<_>>(),
+            resend.into_iter().collect::<BTreeSet<_>>()
+        );
+        assert_eq!(st.requested_count(), MAX_IN_FLIGHT_REQUESTS);
     }
 
-    impl RSpaceImporter for NoopImporter {
-        fn get_history_item(&self, _hash: Blake2b256Hash) -> Option<Vec<u8>> { None }
+    #[derive(Clone, Debug, Default)]
+    struct ImportTrace {
+        begin_specs: Vec<StateImportSpec>,
+        pages: Vec<StateImportPage>,
+        seal_count: usize,
+        publish_count: usize,
+        fail_stage: bool,
+        fail_seal: bool,
+        fail_publish: bool,
+        receipt_override: Option<StateImportPageReceipt>,
+        publication_override: Option<StateImportPublication>,
     }
 
-    /// Recording RSpaceImporter — captures every root passed to `set_root`.
-    /// Pair with a `has_root` closure that reads from the same set so the
-    /// orchestrator's post-import verification reflects what was recorded.
-    struct RecordingImporter {
-        recorded: Arc<Mutex<HashSet<Blake2b256Hash>>>,
+    struct MockImporter {
+        trace: Arc<Mutex<ImportTrace>>,
     }
 
-    impl RecordingImporter {
-        fn new() -> (Self, Arc<Mutex<HashSet<Blake2b256Hash>>>) {
-            let recorded = Arc::new(Mutex::new(HashSet::new()));
+    impl MockImporter {
+        fn new() -> (Arc<dyn RSpaceImporter>, Arc<Mutex<ImportTrace>>) {
+            let trace = Arc::new(Mutex::new(ImportTrace::default()));
             (
-                Self {
-                    recorded: recorded.clone(),
-                },
-                recorded,
+                Arc::new(Self {
+                    trace: Arc::clone(&trace),
+                }),
+                trace,
             )
         }
     }
 
-    impl TrieImporter for RecordingImporter {
-        fn set_history_items(&self, _data: Vec<(Blake2b256Hash, Vec<u8>)>) -> () {}
-        fn set_data_items(&self, _data: Vec<(Blake2b256Hash, Vec<u8>)>) -> () {}
-        fn set_root(&self, key: &Blake2b256Hash) -> () {
-            self.recorded.lock().unwrap().insert(key.clone());
+    impl RSpaceImporter for MockImporter {
+        fn begin_import(
+            &self,
+            spec: StateImportSpec,
+        ) -> Result<Box<dyn StateImportSession>, StateImportError> {
+            self.trace.lock().unwrap().begin_specs.push(spec.clone());
+            Ok(Box::new(MockSession {
+                spec,
+                trace: Arc::clone(&self.trace),
+            }))
+        }
+
+        fn get_history_item(
+            &self,
+            _hash: Blake2b256Hash,
+        ) -> Result<Option<Vec<u8>>, StateImportError> {
+            Ok(None)
         }
     }
 
-    impl RSpaceImporter for RecordingImporter {
-        fn get_history_item(&self, _hash: Blake2b256Hash) -> Option<Vec<u8>> { None }
+    struct MockSession {
+        spec: StateImportSpec,
+        trace: Arc<Mutex<ImportTrace>>,
     }
 
-    /// Mock HorizonRequesterOps: records every send and tracks max
-    /// simultaneous in-flight requests. Each send increments the in-flight
-    /// counter and returns immediately; the test loop is responsible for
-    /// feeding canned responses and decrementing. For the parallel-fan-out
-    /// test we observe `max_in_flight` AFTER request_next has dispatched
-    /// the batch but BEFORE responses arrive.
+    impl StateImportSession for MockSession {
+        fn spec(&self) -> &StateImportSpec { &self.spec }
+
+        fn validate_and_stage_page(
+            &mut self,
+            page: StateImportPage,
+        ) -> Result<StateImportPageReceipt, StateImportError> {
+            let mut trace = self.trace.lock().unwrap();
+            if trace.fail_stage {
+                return Err(StateImportError::InvalidPagination(
+                    "injected page rejection".to_string(),
+                ));
+            }
+            let terminal = page.start_path == page.advertised_next_path;
+            let default_receipt = StateImportPageReceipt {
+                next_path: page.advertised_next_path.clone(),
+                terminal,
+                history_objects_staged: page.history_items.len(),
+                cold_leaves_staged: page.data_items.len(),
+            };
+            trace.pages.push(page);
+            Ok(trace.receipt_override.take().unwrap_or(default_receipt))
+        }
+
+        fn seal(self: Box<Self>) -> Result<Box<dyn SealedStateImport>, StateImportError> {
+            let mut trace = self.trace.lock().unwrap();
+            trace.seal_count += 1;
+            if trace.fail_seal {
+                return Err(StateImportError::IncompletePagination(Vec::new()));
+            }
+            drop(trace);
+            Ok(Box::new(MockSealed {
+                spec: self.spec,
+                trace: self.trace,
+            }))
+        }
+    }
+
+    struct MockSealed {
+        spec: StateImportSpec,
+        trace: Arc<Mutex<ImportTrace>>,
+    }
+
+    impl SealedStateImport for MockSealed {
+        fn spec(&self) -> &StateImportSpec { &self.spec }
+
+        fn publish(self: Box<Self>) -> Result<StateImportPublication, StateImportError> {
+            let mut trace = self.trace.lock().unwrap();
+            trace.publish_count += 1;
+            if trace.fail_publish {
+                return Err(StateImportError::InternalInvariant(
+                    "injected publication rejection".to_string(),
+                ));
+            }
+            Ok(trace
+                .publication_override
+                .clone()
+                .unwrap_or_else(|| StateImportPublication {
+                    verified_roots: self.spec.roots().to_vec(),
+                    activation: None,
+                }))
+        }
+    }
+
+    #[derive(Clone, Default)]
     struct MockOps {
         sends: Arc<Mutex<Vec<StatePartPath>>>,
-        in_flight: Arc<AtomicUsize>,
-        max_in_flight: Arc<AtomicUsize>,
+        barrier: Option<Arc<Barrier>>,
+        barrier_limit: usize,
+        request_ordinal: Arc<AtomicUsize>,
+        fail_requests: bool,
     }
 
     impl MockOps {
-        fn new() -> Self {
+        fn with_barrier(participants: usize) -> Self {
             Self {
-                sends: Arc::new(Mutex::new(Vec::new())),
-                in_flight: Arc::new(AtomicUsize::new(0)),
-                max_in_flight: Arc::new(AtomicUsize::new(0)),
+                barrier: Some(Arc::new(Barrier::new(participants))),
+                barrier_limit: participants,
+                ..Self::default()
             }
-        }
-
-        fn handles(&self) -> (Arc<Mutex<Vec<StatePartPath>>>, Arc<AtomicUsize>) {
-            (self.sends.clone(), self.max_in_flight.clone())
         }
     }
 
@@ -804,15 +627,28 @@ mod tests {
         async fn request_for_horizon_chunk(
             &self,
             path: &StatePartPath,
-            _page_size: i32,
+            page_size: i32,
+            cursor_protocol: StoreItemsCursorProtocol,
         ) -> Result<(), CasperError> {
+            assert_eq!(page_size, PAGE_SIZE);
+            assert_eq!(
+                cursor_protocol,
+                StoreItemsCursorProtocol::AuthenticatedTerminal
+            );
             self.sends.lock().unwrap().push(path.clone());
-            let now = self.in_flight.fetch_add(1, AtomicOrdering::SeqCst) + 1;
-            self.max_in_flight.fetch_max(now, AtomicOrdering::SeqCst);
-            // Simulate the request being "outstanding" — the test loop
-            // decrements via a shared counter when it feeds a response.
-            // We don't decrement here because the response handler
-            // is what unblocks the next request cycle.
+            if self.fail_requests {
+                return Err(CasperError::RuntimeError(
+                    "injected request failure".to_string(),
+                ));
+            }
+            let ordinal = self.request_ordinal.fetch_add(1, Ordering::SeqCst);
+            if ordinal < self.barrier_limit {
+                let barrier = self
+                    .barrier
+                    .as_ref()
+                    .expect("a positive barrier limit requires a barrier");
+                barrier.wait().await;
+            }
             Ok(())
         }
     }
@@ -823,220 +659,310 @@ mod tests {
         Blake2b256Hash::from_bytes(bytes)
     }
 
-    fn make_response(
-        start_path: StatePartPath,
-        last_path: StatePartPath,
-        history_item: Option<Blake2b256Hash>,
-    ) -> StoreItemsMessage {
-        let history_items = history_item
-            .map(|h| vec![(h, prost::bytes::Bytes::from_static(b"x"))])
-            .unwrap_or_default();
+    fn path(root: &Blake2b256Hash) -> StatePartPath { vec![(root.clone(), None)] }
+
+    fn continuation(root: &Blake2b256Hash, seed: u8) -> StatePartPath {
+        vec![(root.clone(), None), (hash_for(seed), Some(seed))]
+    }
+
+    fn response(start_path: StatePartPath, last_path: StatePartPath) -> StoreItemsMessage {
+        let terminal = start_path == last_path;
         StoreItemsMessage {
             start_path,
             last_path,
-            history_items,
-            data_items: vec![],
+            history_items: Vec::new(),
+            data_items: Vec::new(),
+            cursor_protocol: StoreItemsCursorProtocol::AuthenticatedTerminal,
+            terminal,
         }
     }
 
-    /// Helper to drain an `impl Stream` to its final `ST`.
-    async fn drain<S>(stream: S) -> Option<ST<StatePartPath>>
-    where S: Stream<Item = ST<StatePartPath>> {
-        let mut stream = Box::pin(stream);
-        let mut last = None;
-        while let Some(st) = stream.next().await {
-            last = Some(st);
-        }
-        last
+    async fn drain<S>(stream: S) -> Result<Vec<ST<StatePartPath>>, CasperError>
+    where S: Stream<Item = Result<ST<StatePartPath>, CasperError>> {
+        Box::pin(stream).try_collect().await
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn stream_skips_already_present_roots() {
-        // has_root returns true for all roots → filtered set is empty.
-        // Stream yields a finished ST and exits without any request.
-        let r1 = hash_for(1);
-        let r2 = hash_for(2);
-        let has_root: HasRootFn = Arc::new(|_| Ok(true));
-        let importer: Arc<dyn RSpaceImporter> = Arc::new(NoopImporter);
-        let ops = MockOps::new();
-        let (sends, _) = ops.handles();
-        let (_tx, rx) = test_mpsc::channel::<StoreItemsMessage>(2);
-
-        let stream = stream(
-            vec![r1, r2],
-            has_root,
-            importer,
-            ops,
-            rx,
-            Duration::from_secs(5),
+    #[tokio::test]
+    async fn empty_input_is_one_item_noop_without_import_session() {
+        let (importer, trace) = MockImporter::new();
+        let ops = MockOps::default();
+        let sends = Arc::clone(&ops.sends);
+        let (_tx, rx) = test_mpsc::channel(1);
+        let states = drain(
+            stream(
+                Vec::new(),
+                Arc::new(|_| Ok(false)),
+                importer,
+                ops,
+                rx,
+                Duration::from_secs(1),
+            )
+            .await
+            .unwrap(),
         )
         .await
         .unwrap();
-        let final_st = drain(stream).await.expect("stream yields final state");
-        assert!(final_st.is_finished());
-        assert_eq!(final_st.len(), 0);
-        assert!(
-            sends.lock().unwrap().is_empty(),
-            "no requests should have been sent for already-present roots"
-        );
+
+        assert_eq!(states.len(), 1);
+        assert!(states[0].is_empty());
+        assert!(trace.lock().unwrap().begin_specs.is_empty());
+        assert!(sends.lock().unwrap().is_empty());
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn stream_completes_on_terminal_cursor_with_data() {
-        // Single root, single chunk. Response is terminal (last_path ==
-        // start_path) and contains one history item → root marked Done.
-        let root = hash_for(7);
-        let importer: Arc<dyn RSpaceImporter> = Arc::new(NoopImporter);
-        // has_root flips: false on the pre-filter call (so the root gets
-        // added to ST), then true on the post-import verification (so the
-        // import is accepted as having reconstructed the root).
-        let post_import_has_root: HasRootFn = {
-            let r = root.clone();
-            let imported = Arc::new(Mutex::new(false));
-            Arc::new(move |q| {
-                if *q == r && *imported.lock().unwrap() {
-                    Ok(true)
-                } else {
-                    let was = *imported.lock().unwrap();
-                    *imported.lock().unwrap() = true;
-                    Ok(was)
-                }
-            })
+    #[tokio::test]
+    async fn all_present_duplicate_roots_are_one_item_noop() {
+        let root = hash_for(1);
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let calls_for_query = Arc::clone(&calls);
+        let has_root: HasRootFn = Arc::new(move |root| {
+            calls_for_query.lock().unwrap().push(root.clone());
+            Ok(true)
+        });
+        let (importer, trace) = MockImporter::new();
+        let ops = MockOps::default();
+        let (_tx, rx) = test_mpsc::channel(1);
+        let states = drain(
+            stream(
+                vec![root.clone(), root.clone(), root.clone()],
+                has_root,
+                importer,
+                ops,
+                rx,
+                Duration::from_secs(1),
+            )
+            .await
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(states.len(), 1);
+        assert!(states[0].is_empty());
+        assert_eq!(calls.lock().unwrap().as_slice(), &[root]);
+        assert!(trace.lock().unwrap().begin_specs.is_empty());
+    }
+
+    #[tokio::test]
+    async fn mixed_roots_use_one_canonical_preserve_current_session() {
+        let present = hash_for(2);
+        let missing = hash_for(3);
+        let has_root: HasRootFn = {
+            let present = present.clone();
+            Arc::new(move |root| Ok(root == &present))
         };
-        let ops = MockOps::new();
-        let (tx, rx) = test_mpsc::channel::<StoreItemsMessage>(4);
-
-        // Pre-feed the response.
-        let start = vec![(root.clone(), None)];
-        tx.send(make_response(
-            start.clone(),
-            start.clone(),
-            Some(hash_for(8)),
-        ))
-        .await
-        .unwrap();
-        // Drop tx so the receiver eventually sees channel-closed if loop
-        // doesn't terminate via is_finished.
-        drop(tx);
-
-        let stream = stream(
-            vec![root],
-            post_import_has_root,
-            importer,
-            ops,
-            rx,
-            Duration::from_secs(5),
-        )
-        .await
-        .unwrap();
-        let final_st = drain(stream).await.expect("stream yields final state");
-        assert!(
-            final_st.is_finished(),
-            "single-root happy path must mark all paths Done; final state: {:?}",
-            final_st
-        );
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn stream_detects_byzantine_peer_terminal_empty_first_chunk() {
-        // Single root. Response is terminal AND empty (no history items,
-        // no data items) on the FIRST chunk. This is the contract for
-        // "peer doesn't have this root" — orchestrator must error out.
-        let root = hash_for(5);
-        let has_root: HasRootFn = Arc::new(|_| Ok(false));
-        let importer: Arc<dyn RSpaceImporter> = Arc::new(NoopImporter);
-        let ops = MockOps::new();
-        let (tx, rx) = test_mpsc::channel::<StoreItemsMessage>(4);
-
-        let start = vec![(root.clone(), None)];
-        tx.send(make_response(start.clone(), start.clone(), None))
+        let (importer, trace) = MockImporter::new();
+        let ops = MockOps::default();
+        let sends = Arc::clone(&ops.sends);
+        let (tx, rx) = test_mpsc::channel(2);
+        tx.send(response(path(&missing), path(&missing)))
             .await
             .unwrap();
         drop(tx);
 
-        let stream = stream(
-            vec![root],
-            has_root,
-            importer,
-            ops,
-            rx,
-            Duration::from_secs(5),
+        let states = drain(
+            stream(
+                vec![missing.clone(), present, missing.clone()],
+                has_root,
+                importer,
+                ops,
+                rx,
+                Duration::from_secs(1),
+            )
+            .await
+            .unwrap(),
         )
         .await
         .unwrap();
-        let final_st = drain(stream).await.expect("stream yields final state");
-        // Byzantine signal causes the loop to break before marking Done →
-        // final ST is NOT finished. Caller's loud-fail check then triggers.
-        assert!(
-            !final_st.is_finished(),
-            "byzantine peer (terminal+empty) must NOT mark the root Done"
+
+        assert!(states.last().unwrap().is_finished());
+        assert_eq!(states.last().unwrap().len(), 1);
+        assert_eq!(sends.lock().unwrap().as_slice(), &[path(&missing)]);
+        let trace = trace.lock().unwrap();
+        assert_eq!(trace.begin_specs.len(), 1);
+        assert_eq!(trace.begin_specs[0].roots(), &[missing]);
+        assert_eq!(
+            trace.begin_specs[0].publication_mode(),
+            &StateImportPublicationMode::PreserveCurrent
         );
+        assert_eq!(trace.seal_count, 1);
+        assert_eq!(trace.publish_count, 1);
+    }
+
+    #[tokio::test]
+    async fn canonical_empty_root_accepts_an_empty_terminal_page() {
+        let root = RadixHistory::empty_root_node_hash();
+        let (importer, trace) = MockImporter::new();
+        let ops = MockOps::default();
+        let (tx, rx) = test_mpsc::channel(2);
+        tx.send(response(path(&root), path(&root))).await.unwrap();
+        drop(tx);
+
+        let states = drain(
+            stream(
+                vec![root],
+                Arc::new(|_| Ok(false)),
+                importer,
+                ops,
+                rx,
+                Duration::from_secs(1),
+            )
+            .await
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+        assert!(states.last().unwrap().is_finished());
+        assert_eq!(trace.lock().unwrap().pages.len(), 1);
+    }
+
+    async fn protocol_rejection_does_not_stage_or_publish(message: StoreItemsMessage) -> String {
+        let root = message.start_path[0].0.clone();
+        let (importer, trace) = MockImporter::new();
+        let ops = MockOps::default();
+        let (tx, rx) = test_mpsc::channel(2);
+        tx.send(message).await.unwrap();
+        drop(tx);
+
+        let error = drain(
+            stream(
+                vec![root],
+                Arc::new(|_| Ok(false)),
+                importer,
+                ops,
+                rx,
+                Duration::from_secs(1),
+            )
+            .await
+            .unwrap(),
+        )
+        .await
+        .unwrap_err();
+        let trace = trace.lock().unwrap();
+        assert!(trace.pages.is_empty());
+        assert_eq!(trace.seal_count, 0);
+        assert_eq!(trace.publish_count, 0);
+        error.to_string()
+    }
+
+    #[tokio::test]
+    async fn unspecified_cursor_epoch_is_rejected_before_staging() {
+        let root = hash_for(4);
+        let mut message = response(path(&root), path(&root));
+        message.cursor_protocol = StoreItemsCursorProtocol::Unspecified;
+        assert!(protocol_rejection_does_not_stage_or_publish(message)
+            .await
+            .contains("selected explicitly"));
+    }
+
+    #[tokio::test]
+    async fn explicitly_legacy_response_cannot_answer_an_authenticated_request() {
+        let root = hash_for(5);
+        let mut message = response(path(&root), path(&root));
+        message.cursor_protocol = StoreItemsCursorProtocol::LegacyEmptyTerminal;
+        message.last_path.clear();
+        assert!(protocol_rejection_does_not_stage_or_publish(message)
+            .await
+            .contains("protocol mismatch"));
+    }
+
+    #[tokio::test]
+    async fn forged_terminal_claim_is_rejected_before_staging() {
+        let root = hash_for(6);
+        let mut message = response(path(&root), continuation(&root, 42));
+        message.terminal = true;
+        assert!(protocol_rejection_does_not_stage_or_publish(message)
+            .await
+            .contains("must repeat startPath"));
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn stream_paginates_non_terminal_responses() {
-        // Single root, two chunks. Response 1 is non-terminal: last_path
-        // points at a continuation. Response 2 is terminal at that
-        // continuation. Orchestrator must enqueue Response 2's start_path
-        // (= Response 1's last_path) as a new Init entry, then fan a
-        // request out for it, then mark Done on terminal arrival.
-        //
-        // Responses are fed by a separate task with a small yield between
-        // sends so the orchestrator's `request_next` cycle can fire for the
-        // continuation path before response 2 lands. Without this, the
-        // biased-response select drains both responses before any request
-        // ever ships and the test would assert against an empty sends log.
-        let root = hash_for(9);
-        let cont_path = vec![(hash_for(10), Some(0u8))];
-        let post_import_has_root: HasRootFn = {
-            let r = root.clone();
-            let imported = Arc::new(Mutex::new(false));
-            Arc::new(move |q| {
-                if *q == r && *imported.lock().unwrap() {
-                    Ok(true)
-                } else {
-                    let was = *imported.lock().unwrap();
-                    *imported.lock().unwrap() = true;
-                    Ok(was)
-                }
-            })
-        };
-        let importer: Arc<dyn RSpaceImporter> = Arc::new(NoopImporter);
-        let ops = MockOps::new();
-        let (sends, _) = ops.handles();
-        let (tx, rx) = test_mpsc::channel::<StoreItemsMessage>(8);
+    async fn distinct_roots_keep_distinct_authenticated_pagination_chains() {
+        let root_a = hash_for(10);
+        let root_b = hash_for(11);
+        let start_a = path(&root_a);
+        let start_b = path(&root_b);
+        let next_a = continuation(&root_a, 40);
+        let next_b = continuation(&root_b, 41);
+        let (importer, trace) = MockImporter::new();
+        let ops = MockOps::default();
+        let sends = Arc::clone(&ops.sends);
+        let (tx, rx) = test_mpsc::channel(8);
 
-        let start = vec![(root.clone(), None)];
-        let resp1 = make_response(start.clone(), cont_path.clone(), Some(hash_for(11)));
-        let resp2 = make_response(cont_path.clone(), cont_path.clone(), Some(hash_for(12)));
-
-        let feeder_sends = sends.clone();
-        let feeder_start = start.clone();
-        let feeder_cont = cont_path.clone();
-        let feeder = tokio::spawn(async move {
-            // Wait until the initial start_path has actually been requested.
-            loop {
-                if feeder_sends.lock().unwrap().contains(&feeder_start) {
-                    break;
+        let feeder_sends = Arc::clone(&sends);
+        let feeder = tokio::spawn({
+            let start_a = start_a.clone();
+            let start_b = start_b.clone();
+            let next_a = next_a.clone();
+            let next_b = next_b.clone();
+            async move {
+                loop {
+                    let both_sent = {
+                        let sent = feeder_sends.lock().unwrap();
+                        sent.contains(&start_a) && sent.contains(&start_b)
+                    };
+                    if both_sent {
+                        break;
+                    }
+                    tokio::task::yield_now().await;
                 }
-                tokio::task::yield_now().await;
-            }
-            tx.send(resp1).await.unwrap();
-            // Wait for the continuation path to be requested (proves the
-            // orchestrator enqueued it after processing response 1).
-            loop {
-                if feeder_sends.lock().unwrap().contains(&feeder_cont) {
-                    break;
+                tx.send(response(start_a.clone(), next_a.clone()))
+                    .await
+                    .unwrap();
+                tx.send(response(start_b.clone(), next_b.clone()))
+                    .await
+                    .unwrap();
+                loop {
+                    let both_sent = {
+                        let sent = feeder_sends.lock().unwrap();
+                        sent.contains(&next_a) && sent.contains(&next_b)
+                    };
+                    if both_sent {
+                        break;
+                    }
+                    tokio::task::yield_now().await;
                 }
-                tokio::task::yield_now().await;
+                tx.send(response(next_a.clone(), next_a)).await.unwrap();
+                tx.send(response(next_b.clone(), next_b)).await.unwrap();
             }
-            tx.send(resp2).await.unwrap();
-            drop(tx);
         });
 
+        let states = drain(
+            stream(
+                vec![root_b.clone(), root_a.clone()],
+                Arc::new(|_| Ok(false)),
+                importer,
+                ops,
+                rx,
+                Duration::from_secs(1),
+            )
+            .await
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+        feeder.await.unwrap();
+
+        assert!(states.last().unwrap().is_finished());
+        assert!(states.iter().all(|state| state.len() <= 2));
+        let trace = trace.lock().unwrap();
+        assert_eq!(trace.pages.len(), 4);
+        assert_eq!(trace.publish_count, 1);
+        assert_eq!(trace.begin_specs[0].roots(), &[root_a, root_b]);
+    }
+
+    #[tokio::test]
+    async fn duplicate_response_is_ignored_without_staging_scheduling_or_yielding() {
+        let root = hash_for(12);
+        let start = path(&root);
+        let next = continuation(&root, 43);
+        let first_page = response(start.clone(), next.clone());
+        let (importer, trace) = MockImporter::new();
+        let ops = MockOps::default();
+        let sends = Arc::clone(&ops.sends);
+        let (tx, rx) = test_mpsc::channel(4);
         let stream = stream(
             vec![root],
-            post_import_has_root,
+            Arc::new(|_| Ok(false)),
             importer,
             ops,
             rx,
@@ -1044,37 +970,291 @@ mod tests {
         )
         .await
         .unwrap();
-        let final_st = drain(stream).await.expect("stream yields final state");
-        feeder.await.unwrap();
+        let mut stream = Box::pin(stream);
+
+        stream
+            .try_next()
+            .await
+            .expect("initial request dispatch")
+            .expect("initial state");
+        tx.send(first_page.clone()).await.unwrap();
+        stream
+            .try_next()
+            .await
+            .expect("accepted first page")
+            .expect("paginated state");
+        assert_eq!(trace.lock().unwrap().pages.len(), 1);
+        assert_eq!(sends.lock().unwrap().len(), 2);
+
+        tx.send(first_page).await.unwrap();
         assert!(
-            final_st.is_finished(),
-            "after 2 chunks (paginated) the root should be Done"
+            tokio::time::timeout(Duration::from_millis(50), stream.try_next())
+                .await
+                .is_err(),
+            "an ignored duplicate must not yield a state snapshot"
         );
-        let sent_paths = sends.lock().unwrap().clone();
-        assert!(sent_paths.contains(&start), "initial start_path was sent");
-        assert!(
-            sent_paths.contains(&cont_path),
-            "continuation path (= response 1's last_path) was enqueued and sent"
-        );
+        assert_eq!(trace.lock().unwrap().pages.len(), 1);
+        assert_eq!(sends.lock().unwrap().len(), 2);
+
+        tx.send(response(next.clone(), next)).await.unwrap();
+        let final_state = stream
+            .try_next()
+            .await
+            .expect("accepted terminal page")
+            .expect("final state");
+        assert!(final_state.is_finished());
+        assert_eq!(trace.lock().unwrap().pages.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn rejected_page_is_reported_without_publication() {
+        let root = hash_for(20);
+        let (importer, trace) = MockImporter::new();
+        trace.lock().unwrap().fail_stage = true;
+        let ops = MockOps::default();
+        let (tx, rx) = test_mpsc::channel(2);
+        tx.send(response(path(&root), path(&root))).await.unwrap();
+
+        let error = drain(
+            stream(
+                vec![root],
+                Arc::new(|_| Ok(false)),
+                importer,
+                ops,
+                rx,
+                Duration::from_secs(1),
+            )
+            .await
+            .unwrap(),
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(error, CasperError::StateImportError(_)));
+        let trace = trace.lock().unwrap();
+        assert_eq!(trace.seal_count, 0);
+        assert_eq!(trace.publish_count, 0);
+    }
+
+    #[tokio::test]
+    async fn authenticated_cursor_cannot_cross_into_another_root() {
+        let root = hash_for(27);
+        let other_root = hash_for(28);
+        let (importer, trace) = MockImporter::new();
+        trace.lock().unwrap().receipt_override = Some(StateImportPageReceipt {
+            next_path: continuation(&other_root, 42),
+            terminal: false,
+            history_objects_staged: 0,
+            cold_leaves_staged: 0,
+        });
+        let ops = MockOps::default();
+        let (tx, rx) = test_mpsc::channel(2);
+        tx.send(response(path(&root), continuation(&root, 41)))
+            .await
+            .unwrap();
+
+        let error = drain(
+            stream(
+                vec![root],
+                Arc::new(|_| Ok(false)),
+                importer,
+                ops,
+                rx,
+                Duration::from_secs(1),
+            )
+            .await
+            .unwrap(),
+        )
+        .await
+        .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("authenticated cursor crossed roots"));
+        assert_eq!(trace.lock().unwrap().publish_count, 0);
+    }
+
+    #[tokio::test]
+    async fn publication_must_not_activate_a_root() {
+        let root = hash_for(21);
+        let (importer, trace) = MockImporter::new();
+        trace.lock().unwrap().publication_override = Some(StateImportPublication {
+            verified_roots: vec![root.clone()],
+            activation: Some(StateImportActivation {
+                root: root.clone(),
+                generation: 1,
+            }),
+        });
+        let ops = MockOps::default();
+        let (tx, rx) = test_mpsc::channel(2);
+        tx.send(response(path(&root), path(&root))).await.unwrap();
+
+        let error = drain(
+            stream(
+                vec![root],
+                Arc::new(|_| Ok(false)),
+                importer,
+                ops,
+                rx,
+                Duration::from_secs(1),
+            )
+            .await
+            .unwrap(),
+        )
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("unexpectedly activated"));
+        assert_eq!(trace.lock().unwrap().publish_count, 1);
+    }
+
+    #[tokio::test]
+    async fn publication_with_an_inexact_root_set_is_a_visible_error() {
+        let root = hash_for(24);
+        let (importer, trace) = MockImporter::new();
+        trace.lock().unwrap().publication_override = Some(StateImportPublication {
+            verified_roots: Vec::new(),
+            activation: None,
+        });
+        let ops = MockOps::default();
+        let (tx, rx) = test_mpsc::channel(2);
+        tx.send(response(path(&root), path(&root))).await.unwrap();
+
+        let error = drain(
+            stream(
+                vec![root],
+                Arc::new(|_| Ok(false)),
+                importer,
+                ops,
+                rx,
+                Duration::from_secs(1),
+            )
+            .await
+            .unwrap(),
+        )
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("inexact root set"));
+        assert_eq!(trace.lock().unwrap().publish_count, 1);
+    }
+
+    #[tokio::test]
+    async fn seal_failure_is_a_visible_error_and_prevents_publication() {
+        let root = hash_for(25);
+        let (importer, trace) = MockImporter::new();
+        trace.lock().unwrap().fail_seal = true;
+        let ops = MockOps::default();
+        let (tx, rx) = test_mpsc::channel(2);
+        tx.send(response(path(&root), path(&root))).await.unwrap();
+
+        let error = drain(
+            stream(
+                vec![root],
+                Arc::new(|_| Ok(false)),
+                importer,
+                ops,
+                rx,
+                Duration::from_secs(1),
+            )
+            .await
+            .unwrap(),
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(error, CasperError::StateImportError(_)));
+        let trace = trace.lock().unwrap();
+        assert_eq!(trace.seal_count, 1);
+        assert_eq!(trace.publish_count, 0);
+    }
+
+    #[tokio::test]
+    async fn publish_failure_is_a_visible_error() {
+        let root = hash_for(26);
+        let (importer, trace) = MockImporter::new();
+        trace.lock().unwrap().fail_publish = true;
+        let ops = MockOps::default();
+        let (tx, rx) = test_mpsc::channel(2);
+        tx.send(response(path(&root), path(&root))).await.unwrap();
+
+        let error = drain(
+            stream(
+                vec![root],
+                Arc::new(|_| Ok(false)),
+                importer,
+                ops,
+                rx,
+                Duration::from_secs(1),
+            )
+            .await
+            .unwrap(),
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(error, CasperError::StateImportError(_)));
+        assert_eq!(trace.lock().unwrap().publish_count, 1);
+    }
+
+    #[tokio::test]
+    async fn closed_response_channel_is_a_visible_error() {
+        let root = hash_for(22);
+        let (importer, trace) = MockImporter::new();
+        let ops = MockOps::default();
+        let (tx, rx) = test_mpsc::channel(1);
+        drop(tx);
+        let error = drain(
+            stream(
+                vec![root],
+                Arc::new(|_| Ok(false)),
+                importer,
+                ops,
+                rx,
+                Duration::from_secs(1),
+            )
+            .await
+            .unwrap(),
+        )
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("response channel closed"));
+        assert_eq!(trace.lock().unwrap().publish_count, 0);
+    }
+
+    #[tokio::test]
+    async fn request_failure_is_a_visible_error() {
+        let root = hash_for(23);
+        let (importer, trace) = MockImporter::new();
+        let ops = MockOps {
+            fail_requests: true,
+            ..MockOps::default()
+        };
+        let (_tx, rx) = test_mpsc::channel(1);
+        let error = drain(
+            stream(
+                vec![root],
+                Arc::new(|_| Ok(false)),
+                importer,
+                ops,
+                rx,
+                Duration::from_secs(1),
+            )
+            .await
+            .unwrap(),
+        )
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("injected request failure"));
+        assert_eq!(trace.lock().unwrap().publish_count, 0);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn stream_fans_out_in_parallel() {
-        // Four roots. Don't feed any responses. Observe `max_in_flight`
-        // after the request loop dispatches the initial batch. With
-        // try_join_all the orchestrator dispatches all 4 requests
-        // simultaneously before any response would be needed.
-        let roots: Vec<Blake2b256Hash> = (1..=4u8).map(hash_for).collect();
-        let has_root: HasRootFn = Arc::new(|_| Ok(false));
-        let importer: Arc<dyn RSpaceImporter> = Arc::new(NoopImporter);
-        let ops = MockOps::new();
-        let (_, max_in_flight) = ops.handles();
-        let (_tx, rx) = test_mpsc::channel::<StoreItemsMessage>(8);
-
-        // Launch the stream and let it pump the initial request cycle.
+    async fn request_window_is_bounded_and_refilled_as_slots_complete() {
+        let roots = (0..MAX_IN_FLIGHT_REQUESTS + 8)
+            .map(|index| hash_for((index + 30) as u8))
+            .collect::<Vec<_>>();
+        let (importer, _trace) = MockImporter::new();
+        let ops = MockOps::with_barrier(MAX_IN_FLIGHT_REQUESTS);
+        let sends = Arc::clone(&ops.sends);
+        let (tx, rx) = test_mpsc::channel(2);
         let stream = stream(
-            roots.clone(),
-            has_root,
+            roots,
+            Arc::new(|_| Ok(false)),
             importer,
             ops,
             rx,
@@ -1082,130 +1262,27 @@ mod tests {
         )
         .await
         .unwrap();
-        // Pull one item (the post-request_next snapshot) which proves the
-        // initial fan-out completed. We don't drain to completion because
-        // there are no responses.
         let mut stream = Box::pin(stream);
-        let _first = stream.next().await;
+        let first = tokio::time::timeout(Duration::from_secs(1), stream.next())
+            .await
+            .expect("all request futures must reach their shared barrier")
+            .expect("stream item")
+            .expect("successful initial dispatch");
+        assert_eq!(first.len(), MAX_IN_FLIGHT_REQUESTS + 8);
+        assert_eq!(first.requested_count(), MAX_IN_FLIGHT_REQUESTS);
+        assert_eq!(sends.lock().unwrap().len(), MAX_IN_FLIGHT_REQUESTS);
 
-        let observed = max_in_flight.load(AtomicOrdering::SeqCst);
-        assert_eq!(
-            observed, 4,
-            "orchestrator must dispatch all 4 root requests in parallel; \
-             max_in_flight={}",
-            observed
-        );
-    }
-
-    /// Regression: two roots whose first chunks return the SAME continuation
-    /// cursor must BOTH receive `set_root` after the shared continuation
-    /// terminates. Without per-path multi-root tracking, the orchestrator's
-    /// HashMap<Path, Hash> mapping silently drops all but the last writer,
-    /// `set_root` fires for only one root, and the other is left with an
-    /// imported trie but no roots-store tag — causing later `reset(root)` to
-    /// fail with `RootRepositoryDivergence`. Radix-trie pagination shares
-    /// suffix cursors across roots derived from sibling chain states, so
-    /// this collision is the common case, not an edge case.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn stream_completes_all_roots_when_first_chunks_share_last_path() {
-        let r1 = hash_for(20);
-        let r2 = hash_for(21);
-        let shared_cont = vec![(hash_for(99), Some(0u8))];
-
-        let (importer_inner, recorded) = RecordingImporter::new();
-        let importer: Arc<dyn RSpaceImporter> = Arc::new(importer_inner);
-
-        // has_root: read from the recorded set so post-import verify sees
-        // what set_root just wrote. Pre-filter sees nothing → both roots
-        // enter the orchestrator.
-        let recorded_for_has_root = recorded.clone();
-        let has_root: HasRootFn =
-            Arc::new(move |q| Ok(recorded_for_has_root.lock().unwrap().contains(q)));
-
-        let ops = MockOps::new();
-        let (sends, _) = ops.handles();
-        let (tx, rx) = test_mpsc::channel::<StoreItemsMessage>(8);
-
-        let start1 = vec![(r1.clone(), None)];
-        let start2 = vec![(r2.clone(), None)];
-
-        // Both first chunks are non-terminal and end at the same cursor.
-        let resp1 = make_response(start1.clone(), shared_cont.clone(), Some(hash_for(101)));
-        let resp2 = make_response(start2.clone(), shared_cont.clone(), Some(hash_for(102)));
-        // The shared continuation terminates with one item (proves it's not
-        // an empty-byzantine signal).
-        let resp3 = make_response(
-            shared_cont.clone(),
-            shared_cont.clone(),
-            Some(hash_for(103)),
-        );
-
-        let feeder_sends = sends.clone();
-        let feeder_start1 = start1.clone();
-        let feeder_start2 = start2.clone();
-        let feeder_cont = shared_cont.clone();
-        let feeder = tokio::spawn(async move {
-            // Wait until both initial start_paths have been requested before
-            // feeding either response, so the orchestrator has both roots in
-            // ST when it processes them.
-            loop {
-                let both_sent = {
-                    let s = feeder_sends.lock().unwrap();
-                    s.contains(&feeder_start1) && s.contains(&feeder_start2)
-                };
-                if both_sent {
-                    break;
-                }
-                tokio::task::yield_now().await;
-            }
-            tx.send(resp1).await.unwrap();
-            tx.send(resp2).await.unwrap();
-            // Wait for the shared continuation to be requested.
-            loop {
-                if feeder_sends.lock().unwrap().contains(&feeder_cont) {
-                    break;
-                }
-                tokio::task::yield_now().await;
-            }
-            tx.send(resp3).await.unwrap();
-            drop(tx);
-        });
-
-        let stream = stream(
-            vec![r1.clone(), r2.clone()],
-            has_root,
-            importer,
-            ops,
-            rx,
-            Duration::from_secs(5),
-        )
-        .await
-        .unwrap();
-        let final_st = drain(stream).await.expect("stream yields final state");
-        feeder.await.unwrap();
-
-        assert!(
-            final_st.is_finished(),
-            "orchestrator should mark all paths Done; final state: {:?}",
-            final_st
-        );
-
-        let recorded = recorded.lock().unwrap();
-        assert!(
-            recorded.contains(&r1),
-            "set_root must fire for r1 (was silently dropped by HashMap collision); recorded = {:?}",
-            recorded
-        );
-        assert!(
-            recorded.contains(&r2),
-            "set_root must fire for r2; recorded = {:?}",
-            recorded
-        );
-        assert_eq!(
-            recorded.len(),
-            2,
-            "exactly 2 roots should have been recorded; recorded = {:?}",
-            recorded
-        );
+        let completed_path = sends.lock().unwrap()[0].clone();
+        tx.send(response(completed_path.clone(), completed_path))
+            .await
+            .unwrap();
+        let second = tokio::time::timeout(Duration::from_secs(1), stream.next())
+            .await
+            .expect("a completed slot must admit another Init root")
+            .expect("stream item")
+            .expect("successful window refill");
+        assert_eq!(second.requested_count(), MAX_IN_FLIGHT_REQUESTS);
+        assert_eq!(second.done_count(), 1);
+        assert_eq!(sends.lock().unwrap().len(), MAX_IN_FLIGHT_REQUESTS + 1);
     }
 }

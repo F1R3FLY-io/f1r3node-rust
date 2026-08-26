@@ -102,13 +102,13 @@ impl KeyValueStore for MockKeyValueStore {
         Ok(())
     }
 
-    fn size_bytes(&self) -> usize {
+    fn size_bytes(&self) -> Result<usize, KvStoreError> {
         let data = self.data.lock().unwrap();
-        // Rough estimate: key size + value size + HashMap overhead
-        data.iter()
+        Ok(data
+            .iter()
             .map(|(k, v)| k.len() + v.len() + 16)
             .sum::<usize>()
-            + data.len() * 8
+            + data.len() * 8)
     }
 
     fn non_empty(&self) -> Result<bool, KvStoreError> { Ok(!self.data.lock().unwrap().is_empty()) }
@@ -156,9 +156,7 @@ impl KeyValueStore for EmptyKeyValueStore {
         Ok(())
     }
 
-    fn size_bytes(&self) -> usize {
-        0 // Always empty
-    }
+    fn size_bytes(&self) -> Result<usize, KvStoreError> { Ok(0) }
 
     fn non_empty(&self) -> Result<bool, KvStoreError> { Ok(false) }
 }
@@ -223,6 +221,6 @@ mod tests {
         let contains_results = store.contains(&vec![key]).unwrap();
         assert_eq!(contains_results, vec![false]);
 
-        assert_eq!(store.size_bytes(), 0);
+        assert_eq!(store.size_bytes().unwrap(), 0);
     }
 }

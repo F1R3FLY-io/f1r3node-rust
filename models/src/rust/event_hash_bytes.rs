@@ -24,14 +24,20 @@ pub fn event_hash_bytes_tagged_continuation(continuation: &TaggedContinuation) -
 
 impl StableHashSerialize for ListParWithRandom {
     fn stable_hash_bytes(&self) -> Vec<u8> { event_hash_bytes_list_par_with_random(self) }
+
+    fn stable_hash_encode_into(&self, output: &mut Vec<u8>) { self.cold_encode_into(output); }
 }
 
 impl StableHashSerialize for BindPattern {
     fn stable_hash_bytes(&self) -> Vec<u8> { event_hash_bytes_bind_pattern(self) }
+
+    fn stable_hash_encode_into(&self, output: &mut Vec<u8>) { self.cold_encode_into(output); }
 }
 
 impl StableHashSerialize for TaggedContinuation {
     fn stable_hash_bytes(&self) -> Vec<u8> { event_hash_bytes_tagged_continuation(self) }
+
+    fn stable_hash_encode_into(&self, output: &mut Vec<u8>) { self.cold_encode_into(output); }
 }
 
 impl StableHashSerialize for Par {
@@ -39,6 +45,12 @@ impl StableHashSerialize for Par {
         #[cfg(feature = "phase7-depth-histograms")]
         crate::rust::rholang::phase7_depth_histogram::record_par("bincode_encoder", self);
         bincode_encoder::encode(self)
+    }
+
+    fn stable_hash_encode_into(&self, output: &mut Vec<u8>) {
+        #[cfg(feature = "phase7-depth-histograms")]
+        crate::rust::rholang::phase7_depth_histogram::record_par("bincode_encoder", self);
+        bincode_encoder::encode_into(self, output);
     }
 }
 
@@ -50,5 +62,14 @@ impl StableHashSerialize for ParWithRandom {
             self,
         );
         bincode_encoder::encode(self)
+    }
+
+    fn stable_hash_encode_into(&self, output: &mut Vec<u8>) {
+        #[cfg(feature = "phase7-depth-histograms")]
+        crate::rust::rholang::phase7_depth_histogram::record_par_with_random(
+            "bincode_encoder",
+            self,
+        );
+        bincode_encoder::encode_into(self, output);
     }
 }

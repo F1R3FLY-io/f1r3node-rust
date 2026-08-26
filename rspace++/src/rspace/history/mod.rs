@@ -4,8 +4,8 @@ pub mod history_repository;
 pub mod history_action;
 pub mod instances;
 pub mod radix_tree;
-pub mod roots_store;
-pub mod root_repository;
+pub(crate) mod roots_store;
+pub use roots_store::CurrentRoot;
 pub mod cold_store;
 pub mod history_repository_impl;
 

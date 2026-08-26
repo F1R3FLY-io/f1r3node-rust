@@ -5527,6 +5527,81 @@ immutable commit `0065278e3`, the exact post-repair release-workspace command pa
 post-state axes remain `UNVERIFIED` because complete generated continuation/join lifecycle evidence
 is still outstanding, not because this release gate remains open.
 
+**CBR-053 living continuation (2026-08-26, authenticated RSpace transfer and affine
+publication).** RSpace transfer now represents pagination explicitly: each internal page binds its
+history traversal proof, typed cold-leaf projection, advertised successor cursor, and terminal
+status before any imported record is staged. The physical cold-store address is domain-separated by
+format version and record kind in addition to the existing logical digest. Logical leaf digests,
+history references, and history roots are unchanged; equal payloads belonging to distinct record
+kinds can no longer alias one physical local-store key.
+
+The former independent history, DATA, validation, and root setters are removed from the process
+FFI. One affine `open -> sealed -> published` session owns import authority. Sealing requires a
+complete iterative closure proof; publication atomically adds the verified roots to a versioned
+local catalog. Tuple bootstrap may activate exactly its requested root subject to a captured catalog
+generation. Horizon synchronization is `PreserveCurrent` and cannot move current-root authority.
+Stale, duplicate, unsolicited, malformed, incomplete, seal-failing, and publish-failing transfers
+cannot transition initialization into `Running`.
+
+The six-operation FFI schema is a process-local ABI. Separately, the peer-transfer protobuf schema
+does change: `StoreItemsRequest` carries an explicit cursor-protocol epoch, and
+`StoreItemsMessage` echoes that epoch and carries an authenticated terminal claim. The fields are
+additive on the wire, but absence decodes to `UNSPECIFIED` and is rejected. Consequently mixed
+old/new deployment requires explicit rollout coordination; the implementation does not infer V1
+from an empty cursor. Explicit V1 alone accepts the legacy empty terminal, while V2 requires the
+terminal cursor to equal the requested start cursor. In both epochs the transport claim must equal
+the importer-authenticated staging receipt before the session advances.
+
+For valid states, this checkpoint changes no canonical Rholang protobuf or bincode bytes, block or
+event hash, COMM order, spatial verdict, match bindings, post-state root, or metering. The typed
+physical key and verified-root catalog are local storage metadata. Relative to the former fail-open
+transfer surface, malformed or incomplete state sync is correctively rejected; this is
+availability/failure behavior outside valid consensus execution, not a new state-transition rule.
+
+Resource-capped focused evidence covers 64 import, catalog, tuple, horizon, and FFI cases. The TLA+
+control explores 148 generated states, 68 distinct states, and depth 10; required incomplete-seal,
+stale-activation, and preserve-current-mutation variants each violate their named invariant. This
+evidence closes the transfer/publication lifecycle only. It does not activate the planned binary
+WAL/content-addressed PathMap-DAG backend, does not claim mixed-version rollout without an explicit
+version gate, and does not retire CBR-053's independent generated continuation/join verdict and
+post-state obligations.
+
+**CBR-053 living continuation (2026-08-26, atomic local state authority and typed legacy
+adoption).** Local RSpace checkpoints now publish immutable history objects, typed cold leaves,
+verified-root membership, current root, and its monotonic generation in one authority transaction.
+A prepared checkpoint is bound to the exact base `(root, generation)`; same-root ABA reuse, stale
+plans, missing closure objects, malformed records, and immutable-key collisions publish no partial
+state. The public store-manager views of authority-owned `rspace-*` and `eval-*` namespaces are
+read-only, so root appointment cannot bypass the typed transaction through a raw database handle.
+
+Legacy split and `rspace/casper/v2` state is adopted through a namespace-bound two-phase protocol.
+The structural phase iteratively verifies content-addressed radix objects and canonical cold-leaf
+envelopes, stages immutable objects, and commits only a pending manifest. It publishes neither a
+verified membership nor a current root. The typed phase runs the concrete generated datum,
+continuation, and join decoders against the complete retained closure and publishes catalog keys,
+current generation, completion receipt, and legacy-catalog cleanup in the same LMDB transaction.
+If split and v2 sources coexist they must normalize to the same current root, retained-root set,
+and closure fingerprint. Completion receipts are bound to `rspace` or `eval`; legacy sources may be
+removed after completion, while the receipt remains provenance rather than a constraint on later
+current-root advancement.
+
+For valid pre-existing state, canonical Rholang protobuf and bincode records, logical cold-leaf
+digests, history node bytes, history roots, COMM order, spatial matching, bindings, post-state, and
+metering are unchanged. The new keys and typed physical cold address are local storage metadata.
+Relative to malformed or incomplete legacy stores, startup now fails closed instead of silently
+initializing an empty or partially authorized state; this is a corrective availability boundary,
+not a newly accepted state transition. The accompanying TLA+ control and three required mutants
+cover all-namespace publication, exact-generation comparison, and closure-backed membership. This
+continuation still does not activate the planned binary WAL or persistent PathMap/ACT backend, and
+CBR-053 remains `UNVERIFIED` for its independent generated continuation/join schedule and post-state
+obligations.
+
+The executable compatibility gate passes `rspace_plus_plus` library **147/147** and consolidated
+integration **164/164**, plus the exact release regressions that had previously failed: the scratch
+staging control **1/1**, `MakeMintTest.rho` with all seven registered tests completing, and
+`PoSTest.rho` with all eleven registered tests completing. These are compatibility and
+non-vacuity observations; they do not expand this continuation's persistence or consensus claims.
+
 ### B.2 The original commit-level exemptions
 
 Every commit in `7293d57c..dc383ed1` touching the consensus-critical path set, that is **not** a

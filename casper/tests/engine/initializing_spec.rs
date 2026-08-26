@@ -20,7 +20,7 @@ use models::casper::Signature;
 use models::routing::protocol::Message as ProtocolMessage;
 use models::rust::casper::protocol::casper_message::{
     ApprovedBlock, ApprovedBlockRequest, BlockMessage, BlockRequest, CasperMessage,
-    StoreItemsMessage, StoreItemsMessageRequest,
+    StoreItemsCursorProtocol, StoreItemsMessage, StoreItemsMessageRequest,
 };
 use prost::bytes::Bytes;
 use prost::Message;
@@ -106,12 +106,14 @@ impl InitializingSpec {
             ),
             String,
         > {
-            let (history_store_items, data_store_items) = RSpaceExporterItems::get_history_and_data(
-                genesis_exporter,
-                start_path,
-                exporter_params.skip,
-                exporter_params.take,
-            );
+            let (history_store_items, data_store_items) =
+                RSpaceExporterItems::get_history_and_data(
+                    genesis_exporter,
+                    start_path,
+                    exporter_params.skip,
+                    exporter_params.take,
+                )
+                .map_err(|error| error.to_string())?;
             Ok((
                 history_store_items.items,
                 data_store_items.items,
@@ -124,11 +126,7 @@ impl InitializingSpec {
         let start_path1 = vec![(post_state_hash, None::<u8>)];
 
         let rspace_store = &fixture.rspace_store;
-        let genesis_exporter_impl = RSpaceExporterStore::create(
-            rspace_store.history.clone(),
-            rspace_store.cold.clone(),
-            rspace_store.roots.clone(),
-        );
+        let genesis_exporter_impl = RSpaceExporterStore::create(rspace_store.authority());
         let genesis_exporter_arc = Arc::new(genesis_exporter_impl);
 
         // Build all StoreItems requests/responses dynamically until exporter indicates completion.
@@ -147,6 +145,7 @@ impl InitializingSpec {
                 start_path: next_start_path.clone(),
                 skip: 0,
                 take: chunk_size,
+                cursor_protocol: StoreItemsCursorProtocol::AuthenticatedTerminal,
             };
 
             let (history_items, data_items, last_path) = genesis_export(
@@ -156,9 +155,14 @@ impl InitializingSpec {
             )
             .expect("Failed to export history and data items");
 
+            let terminal = last_path.is_empty() || last_path == next_start_path;
             let response = StoreItemsMessage {
                 start_path: next_start_path.clone(),
-                last_path: last_path.clone(),
+                last_path: if terminal {
+                    next_start_path.clone()
+                } else {
+                    last_path.clone()
+                },
                 history_items: history_items
                     .into_iter()
                     .map(|(hash, bytes)| (hash, Bytes::from(bytes)))
@@ -167,6 +171,8 @@ impl InitializingSpec {
                     .into_iter()
                     .map(|(hash, bytes)| (hash, Bytes::from(bytes)))
                     .collect(),
+                cursor_protocol: StoreItemsCursorProtocol::AuthenticatedTerminal,
+                terminal,
             };
 
             store_request_messages.push(request);

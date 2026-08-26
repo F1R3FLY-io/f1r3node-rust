@@ -27,6 +27,10 @@ pub mod tuplespace_interface;
 pub mod replay_rspace_interface;
 pub mod errors;
 pub mod replay_rspace;
+pub(crate) mod record_index;
+#[cfg(feature = "record-order-index-experiment")]
+#[doc(hidden)]
+pub use record_index::order_index_experiment;
 pub mod retained_set_automaton;
 pub mod merger;
 pub mod reporting_rspace;

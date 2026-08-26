@@ -7,7 +7,8 @@ use shared::rust::store::key_value_store::KeyValueStore;
 use tracing::{Level, debug};
 
 use super::cold_store::{
-    ContinuationsLeaf, DataLeaf, JoinsLeaf, PersistedDataKind, PersistedDataView,
+    CanonicalCollectionKind, ColdLeafAddress, ColdLeafStoreError, ContinuationsLeaf, DataLeaf,
+    JoinsLeaf, PersistedDataKind, PersistedRecordSequenceView,
 };
 use super::history_action::{DeleteAction, HistoryAction, InsertAction};
 use super::history_reader::HistoryReader;
@@ -19,36 +20,37 @@ use crate::rspace::hashing::stable_hash_provider::{StableHashSerialize, hash, ha
 use crate::rspace::history::cold_store::PersistedData;
 use crate::rspace::history::history::History;
 use crate::rspace::history::history_repository::HistoryRepository;
-use crate::rspace::history::root_repository::RootRepository;
 use crate::rspace::hot_store_action::DeleteAction::{
-    DeleteCanonicalData, DeleteContinuations, DeleteData, DeleteJoins,
+    DeleteCanonicalCollection, DeleteCanonicalData, DeleteContinuations, DeleteData, DeleteJoins,
 };
 use crate::rspace::hot_store_action::HotStoreAction;
 use crate::rspace::hot_store_action::InsertAction::{
-    InsertCanonicalData, InsertContinuations, InsertData, InsertJoins,
+    InsertCanonicalCollection, InsertCanonicalData, InsertContinuations, InsertData, InsertJoins,
 };
 use crate::rspace::hot_store_trie_action::{
-    HotStoreTrieAction, TrieDeleteAction, TrieDeleteConsume, TrieDeleteJoins, TrieDeleteProduce,
-    TrieInsertAction, TrieInsertCanonicalProduce, TrieInsertConsume, TrieInsertJoins,
-    TrieInsertProduce,
+    HotStoreTrieAction, TrieDeleteAction, TrieDeleteCanonicalCollection, TrieDeleteConsume,
+    TrieDeleteJoins, TrieDeleteProduce, TrieInsertAction, TrieInsertCanonicalCollection,
+    TrieInsertCanonicalProduce, TrieInsertConsume, TrieInsertJoins, TrieInsertProduce,
 };
 use crate::rspace::serializers::cold_store_decode::ColdStoreDecode;
 use crate::rspace::serializers::serializers::{encode_continuations, encode_datums, encode_joins};
+use crate::rspace::state::instances::rspace_importer_store::record_validator;
 use crate::rspace::state::rspace_exporter::RSpaceExporter;
 use crate::rspace::state::rspace_importer::RSpaceImporter;
+use crate::rspace::state::rspace_state_authority::RSpaceStateAuthority;
 
 // See rspace/src/main/scala/coop/rchain/rspace/history/HistoryRepositoryImpl.
 // scala
 pub struct HistoryRepositoryImpl<C, P, A, K> {
-    pub current_history: Arc<Mutex<Box<dyn History>>>,
-    pub roots_repository: Arc<Mutex<RootRepository>>,
-    pub leaf_store: Arc<dyn KeyValueStore>,
-    pub rspace_exporter: Arc<dyn RSpaceExporter>,
-    pub rspace_importer: Arc<dyn RSpaceImporter>,
-    pub _marker: PhantomData<(C, P, A, K)>,
+    current_history: Arc<Mutex<Box<dyn History>>>,
+    authority: Arc<RSpaceStateAuthority>,
+    leaf_store: Arc<dyn KeyValueStore>,
+    rspace_exporter: Arc<dyn RSpaceExporter>,
+    rspace_importer: Arc<dyn RSpaceImporter>,
+    _marker: PhantomData<(C, P, A, K)>,
 }
 
-type ColdAction = (Blake2b256Hash, Option<Vec<u8>>);
+type ColdAction = Option<(ColdLeafAddress, Vec<u8>)>;
 const CHECKPOINT_PARALLEL_ACTIONS_THRESHOLD: usize = 256;
 
 /// Hash the frozen bincode-1 representation of a leaf whose sole field is a
@@ -65,6 +67,27 @@ fn hash_single_byte_vec_leaf(bytes: &[u8]) -> Blake2b256Hash {
     Blake2b256Hash::new_from_chunks([len.as_slice(), bytes])
 }
 
+fn canonical_collection_prefix(kind: CanonicalCollectionKind) -> u8 {
+    match kind {
+        CanonicalCollectionKind::Joins => PREFIX_JOINS,
+        CanonicalCollectionKind::Continuations => PREFIX_KONT,
+    }
+}
+
+fn canonical_collection_label(kind: CanonicalCollectionKind) -> &'static str {
+    match kind {
+        CanonicalCollectionKind::Joins => "join",
+        CanonicalCollectionKind::Continuations => "continuation",
+    }
+}
+
+fn cold_leaf_history_error(error: ColdLeafStoreError) -> HistoryError {
+    match error {
+        ColdLeafStoreError::Store(error) => HistoryError::KvStoreError(error),
+        error => HistoryError::ActionError(error.to_string()),
+    }
+}
+
 impl<C, P, A, K> HistoryRepositoryImpl<C, P, A, K>
 where
     C: Clone + Send + Sync + StableHashSerialize,
@@ -72,6 +95,23 @@ where
     A: Clone + Send + Sync + Serialize,
     K: Clone + Send + Sync + Serialize,
 {
+    pub(crate) fn new(
+        history: Box<dyn History>,
+        authority: Arc<RSpaceStateAuthority>,
+        leaf_store: Arc<dyn KeyValueStore>,
+        rspace_exporter: Arc<dyn RSpaceExporter>,
+        rspace_importer: Arc<dyn RSpaceImporter>,
+    ) -> Self {
+        Self {
+            current_history: Arc::new(Mutex::new(history)),
+            authority,
+            leaf_store,
+            rspace_exporter,
+            rspace_importer,
+            _marker: PhantomData,
+        }
+    }
+
     fn checkpoint_noop_clone(
         &self,
     ) -> Box<dyn HistoryRepository<C, P, A, K> + Send + Sync + 'static>
@@ -83,7 +123,7 @@ where
     {
         Box::new(HistoryRepositoryImpl {
             current_history: self.current_history.clone(),
-            roots_repository: self.roots_repository.clone(),
+            authority: self.authority.clone(),
             leaf_store: self.leaf_store.clone(),
             rspace_exporter: self.rspace_exporter.clone(),
             rspace_importer: self.rspace_importer.clone(),
@@ -116,13 +156,32 @@ where
                     format!("{};insert-data;{};{}", hex::encode(key), data.len(), i.data.len())
                 }
                 HotStoreAction::Insert(InsertCanonicalData(i)) => {
-                    let view = PersistedDataView::parse_canonical(&i.encoded_persisted_data)
-                        .expect("canonical DATA egress must construct a valid persisted envelope");
+                    let view = PersistedRecordSequenceView::parse_canonical(
+                        i.encoded_persisted_data(),
+                        PersistedDataKind::Data,
+                        Some(i.datum_count()),
+                    )
+                    .expect("canonical DATA egress must construct a valid record sequence");
                     format!(
                         "{};insert-data;{};{}",
-                        hex::encode(i.hash.bytes()),
+                        hex::encode(i.hash().bytes()),
                         view.payload().len(),
-                        i.datum_count
+                        i.datum_count()
+                    )
+                }
+                HotStoreAction::Insert(InsertCanonicalCollection(i)) => {
+                    let view = PersistedRecordSequenceView::parse_canonical(
+                        i.encoded_persisted_data(),
+                        i.persisted_kind(),
+                        Some(i.record_count()),
+                    )
+                    .expect("canonical collection egress must construct a valid record sequence");
+                    format!(
+                        "{};insert-{};{};{}",
+                        hex::encode(i.hash().bytes()),
+                        canonical_collection_label(i.kind()),
+                        view.payload().len(),
+                        i.record_count()
                     )
                 }
                 HotStoreAction::Insert(InsertContinuations(i)) => {
@@ -145,8 +204,13 @@ where
                     format!("{};delete-data;0", hex::encode(key))
                 }
                 HotStoreAction::Delete(DeleteCanonicalData(d)) => {
-                    format!("{};delete-data;0", hex::encode(d.hash.bytes()))
+                    format!("{};delete-data;0", hex::encode(d.hash().bytes()))
                 }
+                HotStoreAction::Delete(DeleteCanonicalCollection(d)) => format!(
+                    "{};delete-{};0",
+                    hex::encode(d.hash().bytes()),
+                    canonical_collection_label(d.kind())
+                ),
                 HotStoreAction::Delete(DeleteContinuations(d)) => {
                     let key = hash_from_vec(&d.channels).bytes();
                     format!("{};delete-continuation;0", hex::encode(key))
@@ -162,8 +226,8 @@ where
     fn calculate_storage_actions(
         &self,
         action: HotStoreTrieAction<C, P, A, K>,
-    ) -> (ColdAction, HistoryAction) {
-        match action {
+    ) -> Result<(ColdAction, HistoryAction), HistoryError> {
+        let (kind, digest, encoded, history_action) = match action {
             HotStoreTrieAction::TrieInsertAction(TrieInsertAction::TrieInsertProduce(i)) => {
                 let data = encode_datums(&i.data);
                 let data_leaf = DataLeaf { bytes: data };
@@ -171,7 +235,9 @@ where
                 let encoded = PersistedData::Data(data_leaf).into_legacy_bincode();
 
                 (
-                    (data_hash.clone(), Some(encoded)),
+                    Some(PersistedDataKind::Data),
+                    data_hash.clone(),
+                    Some(encoded),
                     HistoryAction::Insert(InsertAction {
                         key: prepend_bytes(PREFIX_DATUM, &i.hash.bytes()),
                         hash: data_hash,
@@ -182,20 +248,43 @@ where
                 i,
             )) => {
                 let encoded = i.encoded_persisted_data;
-                let view = PersistedDataView::parse_canonical(&encoded)
-                    .expect("canonical DATA egress must construct a valid persisted envelope");
-                assert_eq!(
-                    view.kind(),
+                let view = PersistedRecordSequenceView::parse_canonical(
+                    &encoded,
                     PersistedDataKind::Data,
-                    "canonical DATA egress constructed the wrong persisted variant"
-                );
+                    Some(i.datum_count),
+                )
+                .map_err(|error| HistoryError::ActionError(error.to_string()))?;
                 let data_hash = Blake2b256Hash::new(view.leaf_encoding());
 
                 (
-                    (data_hash.clone(), Some(encoded)),
+                    Some(PersistedDataKind::Data),
+                    data_hash.clone(),
+                    Some(encoded),
                     HistoryAction::Insert(InsertAction {
                         key: prepend_bytes(PREFIX_DATUM, &i.hash.bytes()),
                         hash: data_hash,
+                    }),
+                )
+            }
+            HotStoreTrieAction::TrieInsertAction(
+                TrieInsertAction::TrieInsertCanonicalCollection(i),
+            ) => {
+                let encoded = i.encoded_persisted_data;
+                let view = PersistedRecordSequenceView::parse_canonical(
+                    &encoded,
+                    i.kind.persisted_kind(),
+                    Some(i.record_count),
+                )
+                .map_err(|error| HistoryError::ActionError(error.to_string()))?;
+                let leaf_hash = Blake2b256Hash::new(view.leaf_encoding());
+
+                (
+                    Some(i.kind.persisted_kind()),
+                    leaf_hash.clone(),
+                    Some(encoded),
+                    HistoryAction::Insert(InsertAction {
+                        key: prepend_bytes(canonical_collection_prefix(i.kind), &i.hash.bytes()),
+                        hash: leaf_hash,
                     }),
                 )
             }
@@ -207,7 +296,9 @@ where
                     PersistedData::Continuations(continuations_leaf).into_legacy_bincode();
 
                 (
-                    (continuations_hash.clone(), Some(encoded)),
+                    Some(PersistedDataKind::Continuations),
+                    continuations_hash.clone(),
+                    Some(encoded),
                     HistoryAction::Insert(InsertAction {
                         key: prepend_bytes(PREFIX_KONT, &i.hash.bytes()),
                         hash: continuations_hash,
@@ -221,7 +312,9 @@ where
                 let encoded = PersistedData::Joins(joins_leaf).into_legacy_bincode();
 
                 (
-                    (joins_hash.clone(), Some(encoded)),
+                    Some(PersistedDataKind::Joins),
+                    joins_hash.clone(),
+                    Some(encoded),
                     HistoryAction::Insert(InsertAction {
                         key: prepend_bytes(PREFIX_JOINS, &i.hash.bytes()),
                         hash: joins_hash,
@@ -233,14 +326,16 @@ where
                 // insertion order
                 let mut sorted_data = i.data;
                 sorted_data.sort();
-                let data =
-                    bincode::serialize(&sorted_data).expect("Failed to serialize Vec<Vec<u8>>");
+                let data = bincode::serialize(&sorted_data)
+                    .map_err(|error| HistoryError::ActionError(error.to_string()))?;
                 let data_leaf = DataLeaf { bytes: data };
                 let data_hash = hash_single_byte_vec_leaf(&data_leaf.bytes);
                 let encoded = PersistedData::Data(data_leaf).into_legacy_bincode();
 
                 (
-                    (data_hash.clone(), Some(encoded)),
+                    Some(PersistedDataKind::Data),
+                    data_hash.clone(),
+                    Some(encoded),
                     HistoryAction::Insert(InsertAction {
                         key: prepend_bytes(PREFIX_DATUM, &i.hash.bytes()),
                         hash: data_hash,
@@ -253,14 +348,16 @@ where
                 let mut sorted_continuations = i.continuations;
                 sorted_continuations.sort();
                 let data = bincode::serialize(&sorted_continuations)
-                    .expect("Failed to serialize Vec<Vec<u8>>");
+                    .map_err(|error| HistoryError::ActionError(error.to_string()))?;
                 let continuations_leaf = ContinuationsLeaf { bytes: data };
                 let continuations_hash = hash_single_byte_vec_leaf(&continuations_leaf.bytes);
                 let encoded =
                     PersistedData::Continuations(continuations_leaf).into_legacy_bincode();
 
                 (
-                    (continuations_hash.clone(), Some(encoded)),
+                    Some(PersistedDataKind::Continuations),
+                    continuations_hash.clone(),
+                    Some(encoded),
                     HistoryAction::Insert(InsertAction {
                         key: prepend_bytes(PREFIX_KONT, &i.hash.bytes()),
                         hash: continuations_hash,
@@ -272,14 +369,16 @@ where
                 // insertion order
                 let mut sorted_joins = i.joins;
                 sorted_joins.sort();
-                let data =
-                    bincode::serialize(&sorted_joins).expect("Failed to serialize Vec<Vec<u8>>");
+                let data = bincode::serialize(&sorted_joins)
+                    .map_err(|error| HistoryError::ActionError(error.to_string()))?;
                 let joins_leaf = JoinsLeaf { bytes: data };
                 let joins_hash = hash_single_byte_vec_leaf(&joins_leaf.bytes);
                 let encoded = PersistedData::Joins(joins_leaf).into_legacy_bincode();
 
                 (
-                    (joins_hash.clone(), Some(encoded)),
+                    Some(PersistedDataKind::Joins),
+                    joins_hash.clone(),
+                    Some(encoded),
                     HistoryAction::Insert(InsertAction {
                         key: prepend_bytes(PREFIX_JOINS, &i.hash.bytes()),
                         hash: joins_hash,
@@ -287,24 +386,53 @@ where
                 )
             }
             HotStoreTrieAction::TrieDeleteAction(TrieDeleteAction::TrieDeleteProduce(d)) => (
-                (d.hash.clone(), None),
+                None,
+                d.hash.clone(),
+                None,
                 HistoryAction::Delete(DeleteAction {
                     key: prepend_bytes(PREFIX_DATUM, &d.hash.bytes()),
                 }),
             ),
             HotStoreTrieAction::TrieDeleteAction(TrieDeleteAction::TrieDeleteConsume(d)) => (
-                (d.hash.clone(), None),
+                None,
+                d.hash.clone(),
+                None,
                 HistoryAction::Delete(DeleteAction {
                     key: prepend_bytes(PREFIX_KONT, &d.hash.bytes()),
                 }),
             ),
             HotStoreTrieAction::TrieDeleteAction(TrieDeleteAction::TrieDeleteJoins(d)) => (
-                (d.hash.clone(), None),
+                None,
+                d.hash.clone(),
+                None,
                 HistoryAction::Delete(DeleteAction {
                     key: prepend_bytes(PREFIX_JOINS, &d.hash.bytes()),
                 }),
             ),
-        }
+            HotStoreTrieAction::TrieDeleteAction(
+                TrieDeleteAction::TrieDeleteCanonicalCollection(d),
+            ) => (
+                None,
+                d.hash.clone(),
+                None,
+                HistoryAction::Delete(DeleteAction {
+                    key: prepend_bytes(canonical_collection_prefix(d.kind), &d.hash.bytes()),
+                }),
+            ),
+        };
+        let cold_action = match (kind, encoded) {
+            (Some(kind), Some(encoded)) => Some((
+                ColdLeafAddress::new(kind, digest).map_err(cold_leaf_history_error)?,
+                encoded,
+            )),
+            (None, None) => None,
+            _ => {
+                return Err(HistoryError::ActionError(
+                    "cold-leaf action kind and bytes disagree".to_string(),
+                ));
+            }
+        };
+        Ok((cold_action, history_action))
     }
 
     fn transform(
@@ -319,12 +447,28 @@ where
                 ))
             }
             HotStoreAction::Insert(InsertCanonicalData(i)) => HotStoreTrieAction::TrieInsertAction(
-                TrieInsertAction::TrieInsertCanonicalProduce(TrieInsertCanonicalProduce {
-                    hash: i.hash,
-                    encoded_persisted_data: i.encoded_persisted_data,
-                    datum_count: i.datum_count,
+                TrieInsertAction::TrieInsertCanonicalProduce({
+                    let (hash, encoded_persisted_data, datum_count) = i.into_parts();
+                    TrieInsertCanonicalProduce {
+                        hash,
+                        encoded_persisted_data,
+                        datum_count,
+                    }
                 }),
             ),
+            HotStoreAction::Insert(InsertCanonicalCollection(i)) => {
+                let (kind, hash, encoded_persisted_data, record_count) = i.into_parts();
+                HotStoreTrieAction::TrieInsertAction(
+                    TrieInsertAction::TrieInsertCanonicalCollection(
+                        TrieInsertCanonicalCollection {
+                            kind,
+                            hash,
+                            encoded_persisted_data,
+                            record_count,
+                        },
+                    ),
+                )
+            }
             HotStoreAction::Insert(InsertContinuations(i)) => {
                 let key = hash_from_vec(&i.channels);
                 HotStoreTrieAction::TrieInsertAction(TrieInsertAction::TrieInsertConsume(
@@ -344,8 +488,16 @@ where
                 ))
             }
             HotStoreAction::Delete(DeleteCanonicalData(d)) => HotStoreTrieAction::TrieDeleteAction(
-                TrieDeleteAction::TrieDeleteProduce(TrieDeleteProduce::new(d.hash)),
+                TrieDeleteAction::TrieDeleteProduce(TrieDeleteProduce::new(d.into_hash())),
             ),
+            HotStoreAction::Delete(DeleteCanonicalCollection(d)) => {
+                let (kind, hash) = d.into_parts();
+                HotStoreTrieAction::TrieDeleteAction(
+                    TrieDeleteAction::TrieDeleteCanonicalCollection(
+                        TrieDeleteCanonicalCollection { kind, hash },
+                    ),
+                )
+            }
             HotStoreAction::Delete(DeleteContinuations(d)) => {
                 let key = hash_from_vec(&d.channels);
                 HotStoreTrieAction::TrieDeleteAction(TrieDeleteAction::TrieDeleteConsume(
@@ -372,9 +524,9 @@ where
     fn checkpoint(
         &self,
         actions: Vec<HotStoreAction<C, P, A, K>>,
-    ) -> Box<dyn HistoryRepository<C, P, A, K> + Send + Sync + 'static> {
+    ) -> Result<Box<dyn HistoryRepository<C, P, A, K> + Send + Sync + 'static>, HistoryError> {
         if actions.is_empty() {
-            return self.checkpoint_noop_clone();
+            return Ok(self.checkpoint_noop_clone());
         }
 
         self.measure(&actions);
@@ -397,9 +549,9 @@ where
     fn do_checkpoint(
         &self,
         trie_actions: Vec<HotStoreTrieAction<C, P, A, K>>,
-    ) -> Box<dyn HistoryRepository<C, P, A, K> + Send + Sync + 'static> {
+    ) -> Result<Box<dyn HistoryRepository<C, P, A, K> + Send + Sync + 'static>, HistoryError> {
         if trie_actions.is_empty() {
-            return self.checkpoint_noop_clone();
+            return Ok(self.checkpoint_noop_clone());
         }
 
         let storage_actions: Vec<(ColdAction, HistoryAction)> =
@@ -407,71 +559,41 @@ where
                 trie_actions
                     .into_par_iter()
                     .map(|a| self.calculate_storage_actions(a))
-                    .collect()
+                    .collect::<Result<Vec<_>, _>>()?
             } else {
                 trie_actions
                     .into_iter()
                     .map(|a| self.calculate_storage_actions(a))
-                    .collect()
+                    .collect::<Result<Vec<_>, _>>()?
             };
 
-        let mut cold_actions: Vec<(Blake2b256Hash, Vec<u8>)> = Vec::new();
+        let mut cold_actions = Vec::new();
         let mut history_actions: Vec<HistoryAction> = Vec::with_capacity(storage_actions.len());
-        for ((key, maybe_data), history) in storage_actions {
-            if let Some(data) = maybe_data {
-                cold_actions.push((key, data));
+        for (cold_action, history) in storage_actions {
+            if let Some(cold_action) = cold_action {
+                cold_actions.push(cold_action);
             }
             history_actions.push(history);
         }
 
-        // save new root for state after checkpoint
-        let store_root = |root| {
-            let roots_repo_lock = self
-                .roots_repository
-                .lock()
-                .expect("History Repository Impl: Unable to acquire roots repository lock");
-            roots_repo_lock.commit(root)
-        };
+        let history_lock = self
+            .current_history
+            .lock()
+            .expect("History Repository Impl: Unable to acquire history lock");
+        let (new_history, prepared) = history_lock.prepare_checkpoint(history_actions)?;
+        let validator = record_validator::<C, P, A, K>();
+        self.authority
+            .commit_local_checkpoint(&prepared, cold_actions, &validator)?;
+        drop(history_lock);
 
-        // store cold data
-        {
-            let serialized_cold_actions = cold_actions
-                .into_iter()
-                .map(|(key, encoded_value)| {
-                    let serialized_key = bincode::serialize(&key)
-                        .expect("History Respository Impl: Failed to serialize");
-                    (serialized_key, encoded_value)
-                })
-                .collect();
-
-            self.leaf_store
-                .put_if_absent(serialized_cold_actions)
-                .expect("History Repository Impl: Failed to put if absent");
-        };
-
-        // store everything related to history (history data, new root and populate
-        // cache for new root)
-        let new_history = {
-            let history_lock = self
-                .current_history
-                .lock()
-                .expect("History Repository Impl: Unable to acquire history lock");
-            history_lock.process(history_actions).unwrap()
-        };
-
-        let new_root = new_history.root();
-        store_root(&new_root).expect("History Repository Impl: Unable to store root");
-
-        ();
-
-        Box::new(HistoryRepositoryImpl {
+        Ok(Box::new(HistoryRepositoryImpl {
             current_history: Arc::new(Mutex::new(new_history)),
-            roots_repository: self.roots_repository.clone(),
+            authority: self.authority.clone(),
             leaf_store: self.leaf_store.clone(),
             rspace_exporter: self.rspace_exporter.clone(),
             rspace_importer: self.rspace_importer.clone(),
             _marker: PhantomData,
-        })
+        }))
     }
 
     fn reset(
@@ -480,29 +602,25 @@ where
     ) -> Result<Box<dyn HistoryRepository<C, P, A, K> + Send + Sync + 'static>, HistoryError> {
         debug!("[HistoryRepositoryImpl] reset to {}", root);
 
-        let roots_lock = self
-            .roots_repository
-            .lock()
-            .expect("History Repository Impl: Unable to acquire roots repository lock");
-        roots_lock.validate_and_set_current_root(root.clone())?;
-
-        let history_lock = self
-            .current_history
-            .lock()
-            .expect("History Repository Impl: Unable to acquire history lock");
-        let next = history_lock.reset(root)?;
+        let known = self.authority.known_verified_root(root)?;
+        let next = {
+            let history_lock = self
+                .current_history
+                .lock()
+                .expect("History Repository Impl: Unable to acquire history lock");
+            history_lock.reset(root)?
+        };
+        self.authority.activate_known(known)?;
 
         Ok(Box::new(HistoryRepositoryImpl {
             current_history: Arc::new(Mutex::new(next)),
-            roots_repository: self.roots_repository.clone(),
+            authority: self.authority.clone(),
             leaf_store: self.leaf_store.clone(),
             rspace_exporter: self.rspace_exporter.clone(),
             rspace_importer: self.rspace_importer.clone(),
             _marker: PhantomData,
         }))
     }
-
-    fn history(&self) -> Arc<Mutex<Box<dyn History>>> { self.current_history.clone() }
 
     fn exporter(&self) -> Arc<dyn RSpaceExporter> { self.rspace_exporter.clone() }
 
@@ -540,20 +658,10 @@ where
         history_lock.root()
     }
 
-    fn record_root(&self, root: &Blake2b256Hash) -> Result<(), HistoryError> {
-        let roots_repo = self
-            .roots_repository
-            .lock()
-            .expect("History Repository Impl: Unable to acquire roots_repository lock");
-        roots_repo.commit(root).map_err(HistoryError::from)
-    }
-
-    fn contains_root(&self, root: &Blake2b256Hash) -> Result<bool, HistoryError> {
-        let roots_repo = self
-            .roots_repository
-            .lock()
-            .expect("History Repository Impl: Unable to acquire roots_repository lock");
-        roots_repo.contains_root(root).map_err(HistoryError::from)
+    fn contains_verified_root(&self, root: &Blake2b256Hash) -> Result<bool, HistoryError> {
+        self.authority
+            .contains_verified_root(root)
+            .map_err(HistoryError::from)
     }
 }
 

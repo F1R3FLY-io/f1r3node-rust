@@ -316,6 +316,7 @@ Abbreviations used throughout are ABI (application binary interface), CBR (conse
 | **SS-C16** | `583f21e44`; pgmcp #6026 | f1r3node | frozen single-`Vec<u8>` history leaves: second complete bincode wrapper buffer $`\rightarrow`$ two borrowed hash chunks | secondary $`8+|p|`$-byte allocation $`\rightarrow 0`$ by construction; native stack remains $`O(1)`$ | **yes for exact leaf hashes**; all three leaf types, framing negative control, and 76/76 rspace library gate | [5.43](#543-chunked-history-leaf-hashing-ss-c16) |
 | **SS-C17** | `3061b2501`, `70fae0a9d`; pgmcp #6026/#6030 | f1r3node | canonical DATA: PathMap $`\rightarrow`$ leaf payload $`\rightarrow`$ second final-value serialization; reads/imports: final value $`\rightarrow`$ copied payload | one checked allocation constructs the final envelope; reader/importer lend canonically admitted ranges; treatment/control median-time ratio **0.0323–0.3745**, with **24 to 36,878 fewer allocation calls**; native stack remains $`O(1)`$ | **yes for final persisted DATA bytes**; exact framing/admission, three lifecycle mutants, two final-byte mutants, formal gates, and 497/497 package tests | [5.44](#544-final-persisted-value-egress-and-borrowed-admission-ss-c17) |
 | **SS-C18** | this checkpoint; pgmcp #6025/#6027/#6030 | f1r3node | repeated ParBag owner occurrences in one protobuf frame: repeated PathMap zipper walks $`\rightarrow`$ one exact owner census, direct first emission, and certified typed-range replay | native stack remains $`O(1)`$; reuse-1 99% ratio upper bound **1.024510**; reuse-16 median ratio **0.174705**, traversals **16 $`\rightarrow`$ 1**, allocation calls **99,235 $`\rightarrow`$ 8,455** in the profile-only loop | **no** — heap/time refinement of the generated stack-safe codec; exact Prost bytes, owner-shape/fault differentials, seven transcript mutants, eleven owner-memo mutants, and full formal bundle | [5.45](#545-certified-parbag-protobuf-egress-and-atomic-replay-ss-c18) |
+| **SS-C19** | this checkpoint; campaign 4131 authenticated-egress/import slice | f1r3node | implicit node-derived pagination and independent history/DATA/root mutators $`\rightarrow`$ authenticated pages, iterative closure verification, typed immutable leaves, and one consuming `open -> sealed -> published` capability | native stack remains $`O(1)`$; decoded-node cache fixed at 1,024 entries/8 MiB, verified-leaf cache fixed at 4,096 addresses, horizon network window fixed at 32; no traversal-depth ceiling or full-state leaf visited set | **yes for transfer lifecycle and resource bounds**; 64 focused requester/import/catalog/FFI cases, caller type-check, one passing TLA+ model, and three required failing mutants | [5.46](#546-authenticated-rspace-egress-and-affine-import-lifecycle-ss-c19) |
 | **SS-D1** | `d2591fa1` | f1r3node | task-spawn boundary per-branch deep clone | 2,867 $`\rightarrow`$ **0** *(this site)* | **yes** | [5.5.3](#553-the-three-repairs) |
 | **SS-D2** | `94dc983f` | f1r3node | ownership to the substitution; **15** deep copies | incl. $`O(n^2)`$ $`\rightarrow`$ $`O(n)`$ | **yes** | [5.5.3](#553-the-three-repairs) |
 | **SS-D3** | `9082d12c` | f1r3node | `inj_attempt` read-back clone $`\rightarrow`$ by-move | 2,852 $`\rightarrow`$ **0** | **yes** | [5.5.3](#553-the-three-repairs) |
@@ -543,6 +544,7 @@ register rows (SS-C5…SS-C14, SS-Y6) and the stack-safety consequences.
   - [5.43 Chunked history-leaf hashing [SS-C16]](#543-chunked-history-leaf-hashing-ss-c16)
   - [5.44 Final persisted-value egress and borrowed admission [SS-C17]](#544-final-persisted-value-egress-and-borrowed-admission-ss-c17)
   - [5.45 Certified ParBag protobuf egress and atomic replay [SS-C18]](#545-certified-parbag-protobuf-egress-and-atomic-replay-ss-c18)
+  - [5.46 Authenticated RSpace egress and affine import lifecycle [SS-C19]](#546-authenticated-rspace-egress-and-affine-import-lifecycle-ss-c19)
 - [6. Discussion](#6-discussion)
   - [6.1 Why the explicit-worklist shape, and why it is *smaller* than what it replaces](#61-why-the-explicit-worklist-shape-and-why-it-is-smaller-than-what-it-replaces)
   - [6.2 Why the SCC is the unit of conversion](#62-why-the-scc-is-the-unit-of-conversion)
@@ -10532,6 +10534,139 @@ completed under a 12 GiB, zero-swap systemd scope pinned to CPUs 0--15: 4,677/4,
 `a8ae8af71bd10a3d665fab91ab999eb8ea5e30ddc95c1dc54fc80bca852514be`. This closes the
 post-repair release-workspace obligation for SS-C18; trie-native continuation/join egress and the
 separately governed persistent PathMap-DAG backend remain later campaign work.
+
+---
+
+### 5.46 Authenticated RSpace egress and affine import lifecycle [SS-C19]
+
+#### 5.46.1 Mechanism and authority boundary
+
+The former transfer interface exposed separate history, DATA, and root setters and inferred a
+continuation from the final returned trie node. That divided one logical state-transfer transaction
+into independently callable mutations: a caller could stage only part of a graph, appoint a root
+before closure verification, or silently interpret an import error as stream completion. A
+digest-only physical cold key also allowed distinct record kinds with equal payload digests to name
+the same storage address.
+
+SS-C19 makes pagination explicit and authenticated. Each page carries its traversal proof, exact
+typed leaf projection, advertised next cursor, and terminal flag. Admission authenticates the page
+and verifies its leaf count before decoding record bodies or mutating a store. Cold objects use a
+domain-separated physical address over version, record kind, and logical digest; history edges and
+roots continue to carry the unchanged logical digest. Empty state is one authenticated zero-object
+terminal page rather than a special sentinel inferred from an empty vector.
+
+One affine import session owns all staging authority. `seal` consumes an open session only after an
+iterative verifier has proved the complete reachable closure. `publish` consumes the sealed session
+and atomically publishes its verified-root set through a versioned root catalog. An `Activate`
+session may advance current-root authority only if its captured generation still wins the catalog
+comparison; a `PreserveCurrent` session cannot move that authority. Aborting either state consumes
+the capability without publication. The process FFI preserves those ownership states with distinct
+opaque open and sealed handles and exports no independent mutator compatibility shim.
+
+Tuple-space bootstrap owns one `Activate(root)` session. Horizon synchronization owns one
+`PreserveCurrent` session spanning all missing roots. Request states accept only the exact live
+cursor; they stage before retiring it and use only the authenticated staging receipt to schedule the
+successor. Stale, duplicate, or unsolicited pages perform no store mutation and create no new
+request. Seal, publish, transport, and importer failures remain errors in the returned stream, and
+initialization requires its terminal publication receipt before entering `Running`.
+
+#### 5.46.2 Stack, heap, and concurrency bounds
+
+Exporter traversal, page authentication, staging, and closure verification are explicit-loop
+machines and consume `O(1)` native stack with respect to trie depth. No operation introduces
+`RUST_MIN_STACK`, `stacker`, a recursive fallback, or an artificial traversal-depth limit. The
+closure verifier uses a fixed 1,024-entry/8 MiB CLOCK cache for decoded nodes and a fixed
+4,096-address CLOCK cache for already verified cold leaves. It therefore avoids the former
+input-sized leaf visited set while preserving bounded reuse for shared leaves. The remaining heap
+frontier is the unresolved graph worklist required by the traversal, not a native-stack slope or a
+second flattened state representation.
+
+Horizon synchronization admits at most 32 live network requests and refills that window as cursors
+complete. Timeouts resend only those bounded outstanding requests. Tuple transfer retains one live
+cursor independent of page count; a 64-page regression holds active request-state cardinality at
+one. Both drivers retain only authenticated cursor/session state, not `Vec<Par>` projections of
+PathMap contents.
+
+These are derived and executable resource bounds, not comparative timing or persistence-throughput
+claims. The future binary WAL and content-addressed PathMap/ACT object store require separate crash,
+recovery, compaction, and LMDB-control measurements.
+
+#### 5.46.3 Verification and anti-vacuity
+
+Resource-capped focused results are 17/17 state/authentication cases, 5/5 verified-root catalog
+cases, 6/6 export/import cases, 12/12 tuple requester effects, 19/19 horizon requester effects, and
+5/5 FFI lifecycle/error/unwind cases. The Casper test targets type-check with the fallible streams,
+and symbol inspection finds exactly the six affine import operations while proving the four former
+mutator symbols absent.
+
+The TLA+ lifecycle control explores 148 generated states, 68 distinct states, and depth 10. Its
+invariants require publication to consume a complete seal, at most one racing activation to publish,
+and preserve-current import never to move current-root authority. Three independent required
+mutants respectively publish an incomplete session, admit a stale activation, or let
+preserve-current mutate authority; each fails its named invariant. The formal manifest requires the
+control and all negative controls, so success cannot be obtained by removing publication, racing
+activation, or preservation behavior from the model.
+
+This checkpoint changes no canonical Rholang byte, logical cold-leaf hash, history root, COMM order,
+matching verdict, post-state root, or metering rule. It does change the peer transfer schema:
+requests carry an explicit cursor-protocol epoch and responses echo it with an authenticated
+terminal claim. Those protobuf fields are additive, but an absent epoch is `UNSPECIFIED` and is
+rejected; mixed old/new deployment therefore requires an explicit rollout bridge rather than
+inference from an empty cursor. Explicit V1 alone uses the legacy empty terminal. V2 requires the
+terminal cursor to equal the requested start cursor, and either protocol must agree with the
+importer-authenticated staging receipt before state advances. CBR-053 records this state-byte-neutral,
+corrective, network-rollout-visible boundary. It does not claim the planned persistent
+PathMap-DAG/WAL backend or close CBR-053's independent continuation/join verdict and post-state axes.
+
+#### 5.46.4 Atomic local checkpoints and typed legacy-state adoption
+
+A **state authority** is the sole component permitted to mutate the history-object, typed
+cold-leaf, verified-root, and current-root namespaces. Local checkpoints now enter that authority
+as a `PreparedHistoryCheckpoint` bound to the exact base pair `(root, generation)`. One successful
+memory lock or LMDB write transaction validates immutable-object collisions and the complete typed
+closure, writes every new object, records verified membership, and advances the current root.
+Failure, including a stale same-root ABA plan, leaves all four namespaces byte-for-byte unchanged;
+a no-op advances neither bytes nor generation. Raw `rspace-*` and `eval-*` store-manager views are
+read-only, and authorized `History::process` cannot bypass the transaction by committing a detached
+radix root.
+
+Legacy split stores and the older `rspace/casper/v2` layout use two phases. Structural staging
+walks retained radix closures iteratively, verifies every content digest and canonical typed-leaf
+envelope, copies immutable objects in batches of 256, and writes a versioned **pending manifest**.
+That manifest binds the namespace, normalized retained-root set, selected current root, and closure
+fingerprint. Split and v2 sources are accepted together only when they are exact mirrors. No root
+membership or current-root authority is published during staging. When concrete RSpace types are
+known, the generated datum, continuation, and join decoders validate every framed record through a
+single transaction-bound closure verifier; that same transaction publishes the catalog, writes the
+completed receipt, and removes the pending and raw legacy catalog keys. A completed receipt permits
+legacy source files to be removed and does not pin the live current root after later checkpoints.
+Receipts for `rspace` and `eval` are not interchangeable.
+
+Both paths remain stack-safe. Radix traversal uses explicit worklists, and every logical history
+path is constrained by the existing 33-byte RSpace key schema rather than an artificial traversal
+cap. Closure verification retains the fixed CLOCK caches from §5.46.2. Migration's visited key is
+the pair `(content hash, logical prefix)`, never the hash alone, because a shared immutable node may
+appear at different typed logical paths. Phase-A orphan objects after a crash are harmless
+content-addressed data; verified membership, current-root authority, and the completed receipt are
+visible together or not at all.
+
+Resource-capped executable evidence includes 11/11 local checkpoint authority cases, the typed
+legacy-migration matrix for split, v2, namespace binding, removed sources, strict manifests, and
+malformed record refusal, plus the transaction-bound verifier suite. The
+`RSpaceAtomicCheckpointAuthority` TLA+ control explores 357 generated states, 127 distinct states,
+and depth 7. Three required mutants independently expose split object publication, root-only ABA
+comparison, and trust in a caller-supplied target without a complete closure; each violates its
+named invariant. These results establish atomicity, authority, stack, and recovery-boundary
+properties. They are not an implementation or throughput claim for the later binary WAL and
+persistent PathMap/ACT object store.
+
+The post-integration executable gate passes the complete `rspace_plus_plus` library suite
+**147/147** and its consolidated integration target **164/164** under zero-swap systemd scopes.
+The release regressions that previously exposed incomplete campaign verification now also pass:
+the corrected scratch-directory staging control **1/1**, `MakeMintTest.rho` **1/1** with all seven
+registered cases completing, and `PoSTest.rho` **1/1** with all eleven registered cases completing.
+The last result is an anti-vacuity completion observation, not merely a prefix of successful
+assertions: each RhoSpec emitted its terminal `testSuiteCompleted` signal.
 
 ---
 

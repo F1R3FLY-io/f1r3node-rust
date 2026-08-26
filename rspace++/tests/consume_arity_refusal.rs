@@ -133,10 +133,8 @@ async fn play_and_replay() -> (Play, Replay) {
         .expect("the in-memory store manager yields rspace stores");
 
     let history_repo = Arc::new(
-        HistoryRepositoryInstances::<String, Pattern, String, String>::lmdb_repository(
-            store.history.clone(),
-            store.roots.clone(),
-            store.cold.clone(),
+        HistoryRepositoryInstances::<String, Pattern, String, String>::repository(
+            store.authority(),
         )
         .expect("the history repository is constructible over in-memory stores"),
     );

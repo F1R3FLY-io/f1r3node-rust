@@ -4,7 +4,9 @@ use std::sync::{Arc, Mutex};
 use heed::types::SerdeBincode;
 use heed::{Database, Env};
 
-use super::key_value_store::{KeyValueStore, KvStoreError};
+use super::key_value_store::{
+    validate_atomic_batch, KeyValueStore, KeyValueStoreMutation, KvStoreError,
+};
 use crate::rust::ByteBuffer;
 
 pub struct LmdbKeyValueStore {
@@ -43,6 +45,38 @@ impl KeyValueStore for LmdbKeyValueStore {
         writer.commit()?;
 
         Ok(())
+    }
+
+    fn compare_and_swap_batch(
+        &self,
+        conditions: &[(ByteBuffer, Option<ByteBuffer>)],
+        mutations: &[KeyValueStoreMutation],
+    ) -> Result<bool, KvStoreError> {
+        validate_atomic_batch(conditions, mutations)?;
+        let db = self.db.lock().map_err(|_| {
+            KvStoreError::LockError(
+                "LMDB Key Value Store: Failed to acquire lock on db".to_string(),
+            )
+        })?;
+
+        let mut writer = self.env.write_txn()?;
+        for (key, expected) in conditions {
+            let actual = db.get(&writer, key)?;
+            if actual.as_ref() != expected.as_ref() {
+                return Ok(false);
+            }
+        }
+
+        for mutation in mutations {
+            match mutation {
+                KeyValueStoreMutation::Put(key, value) => db.put(&mut writer, key, value)?,
+                KeyValueStoreMutation::Delete(key) => {
+                    let _ = db.delete(&mut writer, key)?;
+                }
+            }
+        }
+        writer.commit()?;
+        Ok(true)
     }
 
     fn delete(&self, keys: Vec<ByteBuffer>) -> Result<usize, KvStoreError> {
@@ -122,8 +156,27 @@ impl KeyValueStore for LmdbKeyValueStore {
         Ok(map)
     }
 
-    // This is only needed for testing purposes
-    fn size_bytes(&self) -> usize { todo!() }
+    fn size_bytes(&self) -> Result<usize, KvStoreError> {
+        let db = self.db.lock().map_err(|_| {
+            KvStoreError::LockError(
+                "LMDB Key Value Store: Failed to acquire lock on db".to_string(),
+            )
+        })?;
+        let reader = self.env.read_txn()?;
+        let mut total = 0usize;
+        for result in db.iter(&reader)? {
+            let (key, value) = result?;
+            total = total
+                .checked_add(key.len())
+                .and_then(|size| size.checked_add(value.len()))
+                .ok_or_else(|| {
+                    KvStoreError::InvalidArgument(
+                        "key-value store byte size exceeds usize".to_string(),
+                    )
+                })?;
+        }
+        Ok(total)
+    }
 
     fn print_store(&self) -> Result<(), KvStoreError> {
         let kv_store_map = self.to_map()?;

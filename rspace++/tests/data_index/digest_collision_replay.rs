@@ -76,10 +76,8 @@ async fn fixture() -> (Play, Replay) {
         .await
         .expect("in-memory RSpace stores");
     let history = Arc::new(
-        HistoryRepositoryInstances::<String, String, CollisionAtom, String>::lmdb_repository(
-            stores.history.clone(),
-            stores.roots.clone(),
-            stores.cold.clone(),
+        HistoryRepositoryInstances::<String, String, CollisionAtom, String>::repository(
+            stores.authority(),
         )
         .expect("history repository"),
     );

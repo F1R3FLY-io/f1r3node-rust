@@ -63,51 +63,95 @@ use crate::rust::casper::CasperShardConf;
 /// would otherwise never reach the joiner because they are not any block's
 /// `post_state_hash`. See module-level docs for the full rationale.
 ///
-/// Returns an empty vec if the LFB is at depth 0 (genesis) or if the
-/// horizon would extend below genesis (clamped to height 0).
+/// An unbounded parent depth covers every DAG height through genesis.
 pub fn compute_forward_horizon_roots(
     dag: &KeyValueDagRepresentation,
     block_store: &KeyValueBlockStore,
     lfb: &BlockMessage,
     casper_shard_conf: &CasperShardConf,
 ) -> Result<Vec<Blake2b256Hash>, KvStoreError> {
-    if casper_shard_conf.max_parent_depth == i32::MAX {
-        // Depth check disabled — joiner can validate against any historical
-        // block. Fall back to no horizon sync; caller can opt into full
-        // replay (`disable-lfs = true`) instead.
-        return Ok(Vec::new());
+    if casper_shard_conf.max_parent_depth < 0
+        || casper_shard_conf.mergeable_channels_gc_depth_buffer < 0
+    {
+        return Err(KvStoreError::InvalidArgument(
+            "LFS forward-horizon depths must be nonnegative".to_string(),
+        ));
     }
 
     let lfb_height = lfb.body.state.block_number;
-    let horizon_depth = (casper_shard_conf.max_parent_depth as i64)
-        + (casper_shard_conf.mergeable_channels_gc_depth_buffer as i64);
-    let min_height = std::cmp::max(0, lfb_height - horizon_depth);
+    if lfb_height < 0 {
+        return Err(KvStoreError::InvalidArgument(format!(
+            "LFS forward-horizon LFB height must be nonnegative, found {lfb_height}"
+        )));
+    }
+    if !dag.contains(&lfb.block_hash) {
+        return Err(KvStoreError::KeyNotFound(format!(
+            "forward-horizon LFB {} is missing from the DAG",
+            models::rust::casper::pretty_printer::PrettyPrinter::build_string_bytes(
+                &lfb.block_hash
+            )
+        )));
+    }
+    if dag.block_number(&lfb.block_hash) != Some(lfb_height) {
+        return Err(KvStoreError::InvalidArgument(format!(
+            "forward-horizon LFB height {lfb_height} disagrees with the DAG index"
+        )));
+    }
+    let min_height = if casper_shard_conf.max_parent_depth == i32::MAX {
+        0
+    } else {
+        let horizon_depth = i64::from(casper_shard_conf.max_parent_depth)
+            .checked_add(i64::from(
+                casper_shard_conf.mergeable_channels_gc_depth_buffer,
+            ))
+            .ok_or_else(|| {
+                KvStoreError::InvalidArgument(
+                    "LFS forward-horizon depth arithmetic overflowed".to_string(),
+                )
+            })?;
+        lfb_height
+            .checked_sub(horizon_depth)
+            .unwrap_or(i64::MIN)
+            .max(0)
+    };
 
     if min_height > lfb_height {
         return Ok(Vec::new());
     }
 
-    // topo_sort returns Vec<Vec<BlockHash>> — one inner vec per height,
-    // covering all blocks at that height (main chain + side branches).
-    // Ordering: ascending by height. Reverse to get LFB-side first.
-    let layers = dag.topo_sort(min_height, Some(lfb_height))?;
-
     let mut roots: Vec<Blake2b256Hash> = Vec::new();
     let mut seen: HashSet<Blake2b256Hash> = HashSet::new();
-    for layer in layers.iter().rev() {
+    for (height, layer) in dag.height_map.range(min_height..=lfb_height).rev() {
         for block_hash in layer {
+            if !dag.contains(block_hash) || dag.block_number(block_hash) != Some(*height) {
+                return Err(KvStoreError::InvalidArgument(format!(
+                    "forward-horizon DAG indices disagree for block {} at height {height}",
+                    models::rust::casper::pretty_printer::PrettyPrinter::build_string_bytes(
+                        block_hash
+                    )
+                )));
+            }
             let block = match block_store.get(block_hash)? {
                 Some(b) => b,
                 None => {
-                    tracing::warn!(
-                        "compute_forward_horizon_roots: block {} in DAG but missing from block_store",
+                    return Err(KvStoreError::KeyNotFound(format!(
+                        "forward-horizon DAG block {} is missing from block_store",
                         models::rust::casper::pretty_printer::PrettyPrinter::build_string_bytes(
                             block_hash
                         )
-                    );
-                    continue;
+                    )));
                 }
             };
+            if block.body.state.block_number != *height {
+                return Err(KvStoreError::InvalidArgument(format!(
+                    "forward-horizon block-store height {} disagrees with DAG height {height} for \
+                     block {}",
+                    block.body.state.block_number,
+                    models::rust::casper::pretty_printer::PrettyPrinter::build_string_bytes(
+                        block_hash
+                    )
+                )));
+            }
             let post = Blake2b256Hash::from_bytes_prost(&block.body.state.post_state_hash);
             if seen.insert(post.clone()) {
                 roots.push(post);
@@ -137,7 +181,7 @@ pub fn compute_forward_horizon_roots(
 /// Take the lower of the two bounds (= older floor) so LFS coverage spans
 /// both windows. The `i32::MAX` sentinel for `max_parent_depth` disables
 /// the parent-depth check — in that mode the forward-horizon is unbounded
-/// and `deploy_lifespan` alone determines the floor.
+/// and the lower bound is genesis so LFS can supply the complete horizon.
 ///
 /// Negative results clamp to 0 (genesis) so the bound is always a valid
 /// block number.
@@ -147,16 +191,25 @@ pub fn lfs_min_block_number(
     max_parent_depth: i32,
     depth_buffer: i32,
 ) -> i64 {
-    let lifespan_bound = std::cmp::max(0, start_block_number - deploy_lifespan);
-    let horizon_bound = if max_parent_depth as i64 >= i32::MAX as i64 {
-        // Sentinel: depth check disabled. Forward-horizon is unbounded,
-        // so the lifespan bound alone determines the floor.
-        lifespan_bound
+    let lifespan_bound = if deploy_lifespan < 0 {
+        0
     } else {
-        std::cmp::max(
-            0,
-            start_block_number - (max_parent_depth as i64) - (depth_buffer as i64),
-        )
+        start_block_number
+            .checked_sub(deploy_lifespan)
+            .unwrap_or(i64::MIN)
+            .max(0)
+    };
+    let horizon_bound = if max_parent_depth == i32::MAX || max_parent_depth < 0 || depth_buffer < 0
+    {
+        0
+    } else {
+        let horizon_depth = i64::from(max_parent_depth)
+            .checked_add(i64::from(depth_buffer))
+            .unwrap_or(i64::MAX);
+        start_block_number
+            .checked_sub(horizon_depth)
+            .unwrap_or(i64::MIN)
+            .max(0)
     };
     std::cmp::min(lifespan_bound, horizon_bound)
 }
@@ -197,11 +250,16 @@ mod tests {
     }
 
     #[test]
-    fn min_block_number_disabled_depth_falls_back_to_lifespan() {
-        // max_parent_depth=i32::MAX (sentinel) → horizon_bound=lifespan_bound
-        // The function returns lifespan_bound directly (no horizon clamping).
-        assert_eq!(lfs_min_block_number(200, 50, i32::MAX, 10), 150);
-        assert_eq!(lfs_min_block_number(200, 50, i32::MAX, 0), 150);
+    fn min_block_number_disabled_depth_covers_genesis() {
+        assert_eq!(lfs_min_block_number(200, 50, i32::MAX, 10), 0);
+        assert_eq!(lfs_min_block_number(200, 50, i32::MAX, 0), 0);
+    }
+
+    #[test]
+    fn min_block_number_invalid_depths_fail_closed_to_genesis() {
+        assert_eq!(lfs_min_block_number(200, 50, -1, 0), 0);
+        assert_eq!(lfs_min_block_number(200, 50, 10, -1), 0);
+        assert_eq!(lfs_min_block_number(200, -1, 10, 0), 0);
     }
 
     #[test]

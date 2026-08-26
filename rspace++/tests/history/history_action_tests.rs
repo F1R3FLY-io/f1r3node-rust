@@ -259,17 +259,17 @@ fn adding_already_existing_records_should_not_change_history() {
 
     let (empty_history, in_mem_store) = create_empty_history_and_store();
 
-    let empty_history_size = in_mem_store.size_bytes();
+    let empty_history_size = in_mem_store.size_bytes().unwrap();
 
     let history_one = empty_history.process(inserts.clone());
     assert!(history_one.is_ok());
 
-    let history_one_size = in_mem_store.size_bytes();
+    let history_one_size = in_mem_store.size_bytes().unwrap();
 
     let history_two = history_one.as_ref().unwrap().process(inserts);
     assert!(history_two.is_ok());
 
-    let history_two_size = in_mem_store.size_bytes();
+    let history_two_size = in_mem_store.size_bytes().unwrap();
 
     assert_eq!(history_one.unwrap().root(), history_two.unwrap().root());
     assert_eq!(empty_history_size, 0_usize);

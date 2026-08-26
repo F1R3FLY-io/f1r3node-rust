@@ -899,3 +899,237 @@ fn certified_egress_census_replay_depth_and_rollback_bundle_is_manifested() {
         );
     }
 }
+
+#[test]
+fn rspace_split_index_authority_proofs_and_mutants_are_manifested() {
+    let proof = read_repository_file("formal/verus/rspace_canonical_egress.rs");
+    for marker in [
+        "pub open spec fn repeat_canonical_record(",
+        "pub struct CanonicalRecordCellSpec {",
+        "pub struct SplitIndexCountersSpec {",
+        "pub proof fn continuation_identity_binding_is_first_wins(",
+        "pub proof fn last_wins_continuation_identity_mutant_is_rejected(",
+        "pub proof fn canonical_record_insert_has_exact_counts_and_length(",
+        "pub proof fn canonical_record_insert_preserves_split_index_coherence(",
+        "pub proof fn join_multiplicity_is_accounted_exactly(",
+        "pub proof fn collapsed_join_multiplicity_mutant_is_rejected(",
+        "pub proof fn owned_deletion_has_exact_counts_and_length(",
+        "pub proof fn owned_deletion_preserves_split_index_coherence(",
+        "pub proof fn cross_group_deletion_mutant_is_rejected(",
+        "pub proof fn deletion_length_mutant_is_rejected(",
+    ] {
+        assert!(
+            proof.contains(marker),
+            "split-index Verus proof is missing `{marker}`"
+        );
+    }
+    for stale_term in [
+        "pub open spec fn repeat_identity(",
+        "one preflighted canonical identity",
+        "same identity sequence",
+    ] {
+        assert!(
+            !proof.contains(stale_term),
+            "canonical-record egress still uses stale identity-as-record term `{stale_term}`"
+        );
+    }
+
+    let model = read_repository_file("formal/tlaplus/stack_safe_pda/RSpaceSplitIndexAuthority.tla");
+    for marker in [
+        "Roots == {\"groups\", \"records\", \"identities\", \"counters\"}",
+        "StageRoot(root) ==",
+        "SealCompleteAuthority ==",
+        "PublishCompleteAuthority ==",
+        "PrivateStagingIsInvisible ==",
+        "VisibleRootsAreAtomic ==",
+        "PublicationRequiresSealedAuthority ==",
+        "PublishPartialRootsMutant ==",
+        "SealIncompleteAuthorityMutant ==",
+        "PublishBeforeSealMutant ==",
+    ] {
+        assert!(
+            model.contains(marker),
+            "split-index TLA+ model is missing `{marker}`"
+        );
+    }
+
+    let main_config =
+        read_repository_file("formal/tlaplus/stack_safe_pda/RSpaceSplitIndexAuthority.cfg");
+    for invariant in [
+        "INVARIANT PrivateStagingIsInvisible",
+        "INVARIANT SealRequiresCompleteStaging",
+        "INVARIANT PublishedAuthorityIsComplete",
+        "INVARIANT VisibleRootsAreAtomic",
+        "INVARIANT PublicationRequiresSealedAuthority",
+        "INVARIANT PublicationIsExactlyOnce",
+        "INVARIANT CountersCoPublishWithCanonicalRecords",
+        "INVARIANT IdentityBindingsCoPublishWithGroups",
+    ] {
+        assert!(
+            main_config.contains(invariant),
+            "split-index TLC configuration is missing `{invariant}`"
+        );
+    }
+
+    let runner = read_repository_file("scripts/check-stack-safe-pda-proofs.sh");
+    for marker in [
+        "RSpaceSplitIndexAuthority.cfg RSpaceSplitIndexAuthority.tla",
+        "RSpaceSplitIndexAuthorityPartialRootsMutant.cfg:VisibleRootsAreAtomic",
+        "RSpaceSplitIndexAuthorityIncompleteSealMutant.cfg:SealRequiresCompleteStaging",
+        "RSpaceSplitIndexAuthorityPublishBeforeSealMutant.cfg:PublicationRequiresSealedAuthority",
+    ] {
+        assert!(
+            runner.contains(marker),
+            "split-index formal runner is missing `{marker}`"
+        );
+    }
+
+    for config in [
+        "RSpaceSplitIndexAuthorityPartialRootsMutant.cfg",
+        "RSpaceSplitIndexAuthorityIncompleteSealMutant.cfg",
+        "RSpaceSplitIndexAuthorityPublishBeforeSealMutant.cfg",
+    ] {
+        let path = format!("formal/tlaplus/stack_safe_pda/{config}");
+        assert!(
+            repository_root().join(&path).is_file(),
+            "split-index authority mutant configuration is absent: {path}"
+        );
+    }
+}
+
+#[test]
+fn rspace_affine_import_lifecycle_and_negative_controls_are_manifested() {
+    let model =
+        read_repository_file("formal/tlaplus/stack_safe_pda/RSpaceAffineImportLifecycle.tla");
+    for marker in [
+        "StageTerminalPage(session) ==",
+        "SealComplete(session) ==",
+        "PublishPreservingCurrent(session) ==",
+        "PublishActivation(session) ==",
+        "RejectStaleActivation(session) ==",
+        "PublicationRequiresConsumedSeal ==",
+        "AtMostOneRacingActivationPublishes ==",
+        "ActivationGenerationIsCASProtected ==",
+        "PreserveCurrentNeverMovesAuthority ==",
+        "PublishIncompleteMutant(session) ==",
+        "PublishStaleActivationMutant(session) ==",
+        "MoveCurrentOnPreserveMutant(session) ==",
+    ] {
+        assert!(
+            model.contains(marker),
+            "affine-import lifecycle model is missing `{marker}`"
+        );
+    }
+
+    let main_config =
+        read_repository_file("formal/tlaplus/stack_safe_pda/RSpaceAffineImportLifecycle.cfg");
+    for invariant in [
+        "INVARIANT SealRequiresCompleteClosure",
+        "INVARIANT PublicationRequiresConsumedSeal",
+        "INVARIANT CurrentRootIsVerified",
+        "INVARIANT AtMostOneRacingActivationPublishes",
+        "INVARIANT ActivationGenerationIsCASProtected",
+        "INVARIANT PreserveCurrentNeverMovesAuthority",
+    ] {
+        assert!(
+            main_config.contains(invariant),
+            "affine-import TLC configuration is missing `{invariant}`"
+        );
+    }
+
+    let runner = read_repository_file("scripts/check-stack-safe-pda-proofs.sh");
+    for marker in [
+        "RSpaceAffineImportLifecycle.cfg RSpaceAffineImportLifecycle.tla",
+        "RSpaceAffineImportLifecycleIncompleteMutant.cfg:PublicationRequiresConsumedSeal",
+        "RSpaceAffineImportLifecycleStaleActivationMutant.cfg:AtMostOneRacingActivationPublishes",
+        "RSpaceAffineImportLifecyclePreserveMutationMutant.cfg:PreserveCurrentNeverMovesAuthority",
+    ] {
+        assert!(
+            runner.contains(marker),
+            "affine-import formal runner is missing `{marker}`"
+        );
+    }
+
+    for config in [
+        "RSpaceAffineImportLifecycleIncompleteMutant.cfg",
+        "RSpaceAffineImportLifecycleStaleActivationMutant.cfg",
+        "RSpaceAffineImportLifecyclePreserveMutationMutant.cfg",
+    ] {
+        let path = format!("formal/tlaplus/stack_safe_pda/{config}");
+        assert!(
+            repository_root().join(&path).is_file(),
+            "affine-import mutant configuration is absent: {path}"
+        );
+    }
+}
+
+#[test]
+fn rspace_atomic_checkpoint_authority_and_negative_controls_are_manifested() {
+    let model =
+        read_repository_file("formal/tlaplus/stack_safe_pda/RSpaceAtomicCheckpointAuthority.tla");
+    for marker in [
+        "CommitPrepared(plan) ==",
+        "CommitNoOp ==",
+        "RejectPlan(plan) ==",
+        "ReactivateOld ==",
+        "CurrentRootIsVerified ==",
+        "VerifiedRootsHaveCompleteClosure ==",
+        "ContentKeysAreImmutable ==",
+        "NoUnpublishedCheckpointObjects ==",
+        "GenerationAdvancesExactlyOnActivation ==",
+        "CommitUsesExactBase ==",
+        "FailedCommitLeavesAuthorityUnchanged ==",
+        "NoOpLeavesAuthorityUnchanged ==",
+        "SplitObjectWriteMutant(plan) ==",
+        "RootOnlyCompareMutant(plan) ==",
+        "TrustCallerTargetMutant ==",
+    ] {
+        assert!(
+            model.contains(marker),
+            "atomic-checkpoint authority TLA+ model is missing `{marker}`"
+        );
+    }
+
+    let main_config =
+        read_repository_file("formal/tlaplus/stack_safe_pda/RSpaceAtomicCheckpointAuthority.cfg");
+    for invariant in [
+        "INVARIANT CurrentRootIsVerified",
+        "INVARIANT VerifiedRootsHaveCompleteClosure",
+        "INVARIANT ContentKeysAreImmutable",
+        "INVARIANT NoUnpublishedCheckpointObjects",
+        "INVARIANT GenerationAdvancesExactlyOnActivation",
+        "INVARIANT CommitUsesExactBase",
+        "INVARIANT FailedCommitLeavesAuthorityUnchanged",
+        "INVARIANT NoOpLeavesAuthorityUnchanged",
+    ] {
+        assert!(
+            main_config.contains(invariant),
+            "atomic-checkpoint TLC configuration is missing `{invariant}`"
+        );
+    }
+
+    let runner = read_repository_file("scripts/check-stack-safe-pda-proofs.sh");
+    for marker in [
+        "RSpaceAtomicCheckpointAuthority.cfg RSpaceAtomicCheckpointAuthority.tla",
+        "RSpaceAtomicCheckpointAuthoritySplitMutant.cfg:NoUnpublishedCheckpointObjects",
+        "RSpaceAtomicCheckpointAuthorityRootOnlyMutant.cfg:CommitUsesExactBase",
+        "RSpaceAtomicCheckpointAuthorityTrustTargetMutant.cfg:VerifiedRootsHaveCompleteClosure",
+    ] {
+        assert!(
+            runner.contains(marker),
+            "atomic-checkpoint formal runner is missing `{marker}`"
+        );
+    }
+
+    for config in [
+        "RSpaceAtomicCheckpointAuthoritySplitMutant.cfg",
+        "RSpaceAtomicCheckpointAuthorityRootOnlyMutant.cfg",
+        "RSpaceAtomicCheckpointAuthorityTrustTargetMutant.cfg",
+    ] {
+        let path = format!("formal/tlaplus/stack_safe_pda/{config}");
+        assert!(
+            repository_root().join(&path).is_file(),
+            "atomic-checkpoint authority mutant configuration is absent: {path}"
+        );
+    }
+}

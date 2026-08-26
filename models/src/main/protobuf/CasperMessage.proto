@@ -423,11 +423,23 @@ message StoreNodeKeyProto {
   int32 index = 2;
 }
 
+// Pagination protocol for authenticated RSpace state transfer.
+//
+// UNSPECIFIED is deliberately not a compatibility alias.  A peer must select
+// an epoch explicitly so an empty lastPath can never be reinterpreted as a
+// terminal cursor merely because an older protobuf omitted new fields.
+enum StoreItemsCursorProtocolProto {
+  STORE_ITEMS_CURSOR_PROTOCOL_UNSPECIFIED = 0;
+  STORE_ITEMS_CURSOR_PROTOCOL_LEGACY_EMPTY_TERMINAL = 1;
+  STORE_ITEMS_CURSOR_PROTOCOL_AUTHENTICATED_TERMINAL = 2;
+}
+
 message StoreItemsMessageRequestProto {
   option (scalapb.message).extends = "CasperMessageProto";
   repeated StoreNodeKeyProto startPath = 1 [(scalapb.field).collection_type="collection.immutable.List"];
   int32 skip                           = 2;
   int32 take                           = 3;
+  StoreItemsCursorProtocolProto cursorProtocol = 4;
 }
 
 message StoreItemProto {
@@ -441,6 +453,12 @@ message StoreItemsMessageProto {
   repeated StoreNodeKeyProto lastPath  = 2 [(scalapb.field).collection_type="collection.immutable.List"];
   repeated StoreItemProto historyItems = 3 [(scalapb.field).collection_type="collection.immutable.List"];
   repeated StoreItemProto dataItems    = 4 [(scalapb.field).collection_type="collection.immutable.List"];
+  // Echoes the explicitly requested protocol. A mismatched or unspecified
+  // response is rejected before any imported bytes are staged.
+  StoreItemsCursorProtocolProto cursorProtocol = 5;
+  // Explicit transport claim checked against both the epoch-specific cursor
+  // representation and the independently authenticated trie traversal.
+  bool terminal = 6;
 }
 
 // --------- End Last finalized state  --------

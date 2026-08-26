@@ -54,7 +54,7 @@ use crate::rspace::space_matcher::SpaceMatcher;
 #[repr(C)]
 #[derive(Clone)]
 pub struct ReplayRSpace<C, P, A, K> {
-    pub history_repository:
+    history_repository:
         Arc<std::sync::RwLock<Arc<Box<dyn HistoryRepository<C, P, A, K> + Send + Sync + 'static>>>>,
     pub store: Arc<std::sync::RwLock<Arc<Box<dyn HotStore<C, P, A, K>>>>>,
     installs: Arc<Mutex<HashMap<Vec<C>, Install<P, K>>>>,
@@ -247,7 +247,7 @@ where
         self.check_replay_data().await?;
 
         let changes = self.get_store().checkpoint_changes()?;
-        let next_history = self.get_history_repository().checkpoint(changes);
+        let next_history = self.get_history_repository().checkpoint(changes)?;
         *self.history_repository.write().expect("history write lock") = Arc::new(next_history);
 
         let history_reader = self

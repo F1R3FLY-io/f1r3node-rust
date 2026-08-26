@@ -3,6 +3,8 @@ use std::fmt;
 use comm::rust::errors::CommError;
 use rholang::rust::interpreter::errors::InterpreterError;
 use rspace_plus_plus::rspace::errors::HistoryError;
+use rspace_plus_plus::rspace::shared::trie_exporter::StateExportError;
+use rspace_plus_plus::rspace::state::import_session::StateImportError;
 use shared::rust::store::key_value_store::KvStoreError;
 
 use super::slashing_authorization::SlashAuthError;
@@ -19,6 +21,8 @@ pub enum CasperError {
     ReplayFailure(ReplayFailure),
     CommError(CommError),
     HistoryError(HistoryError),
+    StateExportError(StateExportError),
+    StateImportError(StateImportError),
     StreamError(String),
     LockError(String),
     /// Phase 9 (R-2): typed `Slash`-deploy authorization failure. Carries
@@ -59,6 +63,8 @@ impl fmt::Display for CasperError {
             CasperError::ReplayFailure(error) => write!(f, "Replay failure: {}", error),
             CasperError::CommError(error) => write!(f, "Comm error: {}", error),
             CasperError::HistoryError(error) => write!(f, "History error: {}", error),
+            CasperError::StateExportError(error) => write!(f, "State export error: {}", error),
+            CasperError::StateImportError(error) => write!(f, "State import error: {}", error),
             CasperError::StreamError(error) => write!(f, "Stream error: {}", error),
             CasperError::LockError(error) => write!(f, "Lock error: {}", error),
             CasperError::SlashAuth(error) => write!(f, "Slash authorization error: {}", error),
@@ -100,6 +106,14 @@ impl From<ReplayFailure> for CasperError {
 
 impl From<CommError> for CasperError {
     fn from(error: CommError) -> Self { CasperError::CommError(error) }
+}
+
+impl From<StateImportError> for CasperError {
+    fn from(error: StateImportError) -> Self { CasperError::StateImportError(error) }
+}
+
+impl From<StateExportError> for CasperError {
+    fn from(error: StateExportError) -> Self { CasperError::StateExportError(error) }
 }
 
 /// Conversion from un-typed `String` errors. Used by `?` propagation

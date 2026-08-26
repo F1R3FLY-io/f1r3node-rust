@@ -2166,6 +2166,144 @@ performance shortcut. PathMap mutation, zipper movement required by semantics, a
 must occur outside diagnostics. This repaired the integration; no upstream PathMap change is
 required.
 
+### J-031 — 2026-08-26: authenticate immutable state before consuming affine publication authority
+
+**OBSERVATION.** The legacy RSpace transfer boundary exposed history, DATA, and current-root setters
+as independent operations. A caller could therefore make a partially imported graph visible or
+appoint a root before the imported closure was known to exist. Pagination also encoded its
+continuation implicitly in the final returned trie node, cold leaves shared one physical
+digest-only key across distinct record kinds, the closure verifier retained an input-sized set of
+every verified leaf, and the LFS request streams could turn import failures into apparent end of
+stream. Those are publication-authority and resource-lifetime defects; they are not reasons to
+flatten a PathMap or reconstruct an RSpace through a `Vec`.
+
+**DECISION.** State transfer now uses an explicit authenticated page and a one-way
+`open -> sealed -> published` import session. A page carries its advertised next cursor and
+terminal status; admission authenticates the traversal proof and exact typed leaf projection before
+any record body is decoded or staged. Immutable cold objects use a domain-separated physical key
+`RSLF | version | record-kind | logical-digest`, while their existing logical digest, history
+reference, and history root remain unchanged. Sealing verifies the complete reachable closure with
+an iterative worklist and fixed-capacity CLOCK caches. Publication then atomically adds the verified
+root set to a versioned root catalog and, only for an `Activate` session, compares and advances the
+current-root generation. `PreserveCurrent` sessions cannot move current-root authority.
+
+The tuple-space requester owns one `Activate(root)` capability for the complete transfer. The
+horizon requester owns one canonical `PreserveCurrent` capability for all missing roots and keeps at
+most 32 network requests live. Both accept only the exact requested cursor, stage a valid page before
+retiring that cursor, and obtain the next cursor only from the staging receipt. Stale, duplicate, and
+unsolicited responses neither mutate storage nor advance the schedule. Seal and publish failures are
+observable stream errors, and initialization cannot enter `Running` without the terminal publication
+receipt. The process FFI exposes the same affine types as six operations—begin, stage, seal, publish,
+abort-open, and abort-sealed—and exports none of the former independent mutators.
+
+**PATHMAP BOUNDARY.** The imported state remains a content-addressed trie graph. Traversal is by
+authenticated cursor and the closure check is by explicit node/leaf worklists; no state page is
+projected to `Vec<Par>`, sorted, or rebuilt as a list. The verifier retains only a 1,024-entry/8 MiB
+decoded-node cache and a 4,096-address verified-leaf cache. Its native stack is `O(1)`; required
+frontier storage is proportional to the currently unresolved graph frontier, not to traversal depth,
+and repeated shared leaves do not create an unbounded visited set. The persistent PathMap-DAG/WAL
+backend is deliberately not claimed here: this checkpoint supplies the authenticated immutable
+objects, verified-root catalog, and consuming publication authority that its recovery protocol must
+use.
+
+**EVIDENCE.** Resource-capped focused suites pass 17/17 state/authentication cases, 5/5 root-catalog
+atomicity cases, 6/6 export/import cases, 12/12 tuple requester effects, 19/19 horizon requester
+effects, and 5/5 FFI lifecycle/error cases. `casper --tests` type-checks. The TLA+ lifecycle model
+explores 148 generated states, 68 distinct states, and depth 10; three required mutants independently
+violate consumed-seal publication, single-winner activation, and preserve-current authority. The
+formal manifest pins the control and all three negative controls. These results prove lifecycle and
+bounded-control properties; they are not persistence-throughput or crash-recovery measurements.
+
+**CONSENSUS BOUNDARY.** Canonical Rholang bytes, logical cold-leaf hashes, history roots, COMM order,
+match authority, post-state roots, and metering are unchanged. The peer transfer schema is not
+unchanged: `StoreItemsRequest` now explicitly negotiates a cursor-protocol epoch and
+`StoreItemsMessage` echoes that epoch plus an authenticated terminal claim. The fields are additive
+at the protobuf encoding layer, but absence decodes to `UNSPECIFIED` and fails closed; therefore an
+old unversioned peer and a new peer are intentionally unavailable during a mixed deployment unless
+the rollout supplies an explicit negotiation bridge. V1 accepts an empty terminal cursor only when
+V1 was requested and echoed. V2 requires the terminal cursor to equal the requested start cursor,
+and the transport claim must agree with importer-authenticated traversal. The typed physical key,
+root catalog, FFI schema, and affine import session are local storage or process-boundary
+mechanisms. Malformed or incomplete transfers now fail closed instead of publishing partial
+authority. The corresponding CBR-053 continuation records this corrective state-byte-neutral but
+network-rollout-visible boundary.
+
+### J-032 — 2026-08-26: make the verified root catalog the only local state authority
+
+**OBSERVATION.** An affine network importer is insufficient if a local checkpoint, legacy database,
+or raw store-manager handle can still appoint a root independently. The intermediate implementation
+also opened LMDB before the concrete RSpace record types were known. Structural radix validation
+alone cannot prove that a length-framed cold record decodes as the datum, continuation, or join kind
+authenticated by its logical path. Publishing a catalog at that point would turn structurally sound
+but type-invalid bytes into current-root authority.
+
+**DECISION.** One `RSpaceStateAuthority` now owns history objects, typed cold leaves, verified-root
+membership, and `(current root, generation)`. A prepared local checkpoint carries its exact base
+pair and complete immutable object set. Validation and publication use one memory lock or LMDB write
+transaction. Authority-owned raw database names are exposed only through read-only views, repository
+fields no longer expose mutation-capable stores, and an authorized `History` refuses the old
+detached `process` commit route.
+
+Legacy state follows a two-phase adoption protocol. Phase A iteratively authenticates radix hashes,
+logical 33-byte paths, typed cold addresses, canonical envelopes, and record framing; it stages only
+immutable objects and a versioned pending manifest. The manifest binds `rspace` or `eval`, its
+normalized root set, selected current root, and closure fingerprint. Simultaneous split and v2
+sources must be exact mirrors. Phase B begins only after the concrete generated record decoders are
+available. A getter-based closure PDA borrows one LMDB write transaction for every history and cold
+read, and the same transaction publishes verified memberships, current generation, completion
+receipt, and raw-catalog cleanup.
+
+The operational state machine is:
+
+```text
+open authority
+  if completed receipt exists:
+      audit any retained legacy source against normalized provenance
+  else if pending manifest exists:
+      preserve it; publish no root
+  else if a legacy source exists:
+      authenticate and batch-stage immutable closure
+      commit namespace-bound pending manifest
+
+construct typed repository
+  open one write transaction
+  re-read the exact pending manifest
+  decode and authenticate every reachable typed record
+  atomically publish memberships + current generation + completed receipt
+  atomically remove pending + raw legacy catalog
+```
+
+**PATHMAP AND RESOURCE CONSEQUENCE.** The state remains a content-addressed trie graph throughout;
+neither migration nor verification projects it to `Vec<Par>`, sorts entries, or reconstructs a
+list. Traversal uses explicit worklists. Phase A batches at 256 immutable objects, deduplicates only
+the sound pair `(node hash, logical prefix)`, and holds a stable read snapshot for an external v2
+source. Phase B reuses the bounded 1,024-node/8 MiB and 4,096-leaf CLOCK caches. Native stack is
+$`O(1)`$ in radix depth, and the only path bound is the pre-existing RSpace key schema. A crash may
+leave unreachable content-addressed objects, but it cannot split verified membership from current
+authority; a retry either resumes the exact manifest or fails on changed provenance.
+
+**EVIDENCE.** The RSpace library suite passes 147/147 and its consolidated integration target passes
+164/164 under zero-swap resource scopes; the latter includes the frozen collision-error contract
+after replacing its former check-then-put race with an atomic compare-and-set retry. Focused
+authority tests pass 11/11. The migration suite separately covers split and v2 adoption, strict and
+namespace-bound manifests, source removal after completion, and typed refusal without partial
+publication. The transaction-bound closure-verifier suite passes 6/6. Release regressions pass for
+the scratch staging control (1/1), MakeMint (all seven registered cases), and PoS (all eleven
+registered cases), with both RhoSpecs observing terminal suite completion. The
+`RSpaceAtomicCheckpointAuthority` TLA+ control explores 357 generated states, 127 distinct states,
+and depth 7; required split-publication, root-only ABA, and trust-target mutants violate
+`NoUnpublishedCheckpointObjects`, `CommitUsesExactBase`, and
+`VerifiedRootsHaveCompleteClosure`, respectively. The formal manifest and capped runner require the
+control and all three witnesses.
+
+**CONSENSUS AND PERSISTENCE BOUNDARY.** Canonical Rholang values, logical leaf hashes, history bytes,
+history roots, matching, COMM order, post-state, and metering are unchanged. Namespace-bound
+manifests and typed physical addresses are local metadata; malformed legacy state now fails closed.
+This checkpoint is the prerequisite authority contract for a binary differential WAL and persistent
+PathMap/ACT object graph. It does not implement that backend, claim LMDB replacement, or supply
+persistence throughput, recovery-time, storage-footprint, swizzled-pointer, or caching-overlay
+measurements.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

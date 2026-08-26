@@ -2,6 +2,8 @@
 // reachability calculation. See `casper/src/rust/util/rspace_history_horizon.rs`
 // for the production code under test.
 
+use std::sync::Arc;
+
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use block_storage::rust::test::indexed_block_dag_storage::IndexedBlockDagStorage;
 use casper::rust::casper::CasperShardConf;
@@ -9,6 +11,8 @@ use casper::rust::util::rspace_history_horizon::compute_forward_horizon_roots;
 use models::rust::casper::protocol::casper_message::{BlockMessage, Bond};
 use prost::bytes::Bytes;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+use rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore;
+use shared::rust::store::key_value_store::KvStoreError;
 
 use crate::helper::block_dag_storage_fixture::with_storage;
 use crate::helper::block_generator::{create_block, create_genesis_block};
@@ -77,7 +81,7 @@ fn build_chain(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn returns_empty_when_max_parent_depth_is_unlimited() {
+async fn unbounded_parent_depth_covers_the_full_dag() {
     with_storage(|mut block_store, mut block_dag_storage| async move {
         let v0 = generate_validator(Some("Validator0"));
         let bonds = vec![Bond {
@@ -86,14 +90,69 @@ async fn returns_empty_when_max_parent_depth_is_unlimited() {
         }];
         let chain = build_chain(&mut block_store, &mut block_dag_storage, 5, bonds, v0);
 
-        let dag = block_dag_storage.get_representation().expect("dag representation");
+        let dag = block_dag_storage
+            .get_representation()
+            .expect("dag representation");
         let conf = mk_conf(i32::MAX, 0);
 
         let roots = compute_forward_horizon_roots(&dag, &block_store, &chain[4], &conf).unwrap();
-        assert!(
-            roots.is_empty(),
-            "horizon should be empty when max_parent_depth is unlimited (caller falls back to disable-lfs replay)"
+        for block in &chain {
+            let post = Blake2b256Hash::from_bytes_prost(&block.body.state.post_state_hash);
+            assert!(roots.contains(&post));
+        }
+        let lfb_post = Blake2b256Hash::from_bytes_prost(&chain[4].body.state.post_state_hash);
+        assert_eq!(roots.first(), Some(&lfb_post));
+    })
+    .await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn rejects_negative_horizon_configuration() {
+    with_storage(|mut block_store, mut block_dag_storage| async move {
+        let v0 = generate_validator(Some("Validator0"));
+        let bonds = vec![Bond {
+            validator: v0.clone(),
+            stake: 10,
+        }];
+        let chain = build_chain(&mut block_store, &mut block_dag_storage, 2, bonds, v0);
+        let dag = block_dag_storage
+            .get_representation()
+            .expect("dag representation");
+
+        let negative_depth =
+            compute_forward_horizon_roots(&dag, &block_store, &chain[1], &mk_conf(-1, 0))
+                .unwrap_err();
+        let negative_buffer =
+            compute_forward_horizon_roots(&dag, &block_store, &chain[1], &mk_conf(1, -1))
+                .unwrap_err();
+        assert!(matches!(negative_depth, KvStoreError::InvalidArgument(_)));
+        assert!(matches!(negative_buffer, KvStoreError::InvalidArgument(_)));
+    })
+    .await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn rejects_dag_block_missing_from_block_store() {
+    with_storage(|mut block_store, mut block_dag_storage| async move {
+        let v0 = generate_validator(Some("Validator0"));
+        let bonds = vec![Bond {
+            validator: v0.clone(),
+            stake: 10,
+        }];
+        let chain = build_chain(&mut block_store, &mut block_dag_storage, 3, bonds, v0);
+        let dag = block_dag_storage
+            .get_representation()
+            .expect("dag representation");
+        let empty_block_store = KeyValueBlockStore::new(
+            Arc::new(InMemoryKeyValueStore::new()),
+            Arc::new(InMemoryKeyValueStore::new()),
         );
+
+        let error =
+            compute_forward_horizon_roots(&dag, &empty_block_store, &chain[2], &mk_conf(2, 0))
+                .unwrap_err();
+        assert!(matches!(error, KvStoreError::KeyNotFound(message)
+            if message.contains("missing from block_store")));
     })
     .await
 }

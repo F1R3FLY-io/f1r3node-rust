@@ -8,7 +8,8 @@ use crate::rspace::errors::HistoryError;
 use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use crate::rspace::hashing::stable_hash_provider::{StableHashSerialize, hash, hash_from_vec};
 use crate::rspace::history::cold_store::{
-    PERSISTED_DATA_HEADER_LEN, PersistedDataKind, PersistedDataView,
+    ColdLeafAddress, ColdLeafLocation, ColdLeafStoreError, PERSISTED_DATA_HEADER_LEN,
+    PersistedDataKind, PersistedDataView, load_cold_leaf,
 };
 use crate::rspace::history::history::History;
 use crate::rspace::history::history_reader::{HistoryReader, HistoryReaderBase};
@@ -62,65 +63,54 @@ impl<C, P, A, K> RSpaceHistoryReaderImpl<C, P, A, K> {
             .increment(1);
 
         let __trie_start = std::time::Instant::now();
-        let read_bytes = self
-            .target_history
-            .read(prepend_bytes(prefix, &key.bytes()))?;
+        let history_key = prepend_bytes(prefix, &key.bytes());
+        let read_bytes = self.target_history.read(history_key.clone())?;
         metrics::counter!(HISTORY_FETCH_DATA_TRIE_READ_NS_METRIC, "source" => RSPACE_METRICS_SOURCE)
             .increment(__trie_start.elapsed().as_nanos() as u64);
 
         let result = match read_bytes {
             Some(ref bytes) => {
-                // Two leaf-store key shapes are supported: raw hash bytes
-                // (modern path) and the bincode-serialized hash bytes (the
-                // legacy_fallback below). Some staging-resident persisted
-                // leaves still live under the bincode key; the fallback is
-                // required to read them without `ConsumeFailed`.
                 let __leaf_start = std::time::Instant::now();
-                let mut get_opt = self.leaf_store.get_one(bytes)?;
-                if get_opt.is_none() {
+                let address = ColdLeafAddress::from_history_prefix(
+                    &history_key,
+                    Blake2b256Hash::from_bytes(bytes.clone()),
+                )
+                .map_err(cold_leaf_history_error)?;
+                let loaded = load_cold_leaf(self.leaf_store.as_ref(), &address)
+                    .map_err(cold_leaf_history_error)?;
+                if loaded.location() != ColdLeafLocation::Typed {
                     metrics::counter!(HISTORY_FETCH_DATA_LEGACY_FALLBACK_METRIC, "source" => RSPACE_METRICS_SOURCE)
                         .increment(1);
-                    let serialized_read_hash = bincode::serialize(bytes).map_err(|e| {
-                        HistoryError::ActionError(format!(
-                            "RSpace History Reader Impl: Unable to serialize read hash bytes: {}",
-                            e
-                        ))
-                    })?;
-                    get_opt = self.leaf_store.get_one(&serialized_read_hash)?;
                 }
                 metrics::counter!(HISTORY_FETCH_DATA_LEAF_GET_NS_METRIC, "source" => RSPACE_METRICS_SOURCE)
                     .increment(__leaf_start.elapsed().as_nanos() as u64);
 
-                match get_opt {
-                    Some(store_value_bytes) => {
-                        let __deser_start = std::time::Instant::now();
-                        let view = PersistedDataView::parse_canonical(&store_value_bytes).map_err(
-                            |e| {
-                                HistoryError::ActionError(format!(
-                                    "RSpace History Reader Impl: Failed to validate persisted \
-                                     leaf: {}",
-                                    e
-                                ))
-                            },
-                        )?;
-                        let kind = view.kind();
-                        let payload_end = PERSISTED_DATA_HEADER_LEN + view.payload().len();
-                        metrics::counter!(HISTORY_FETCH_DATA_DESERIALIZE_NS_METRIC, "source" => RSPACE_METRICS_SOURCE)
-                            .increment(__deser_start.elapsed().as_nanos() as u64);
-                        Ok(Some(FetchedPersistedData {
-                            bytes: store_value_bytes,
-                            kind,
-                            payload: PERSISTED_DATA_HEADER_LEN..payload_end,
-                        }))
-                    }
-                    None => Ok(None),
-                }
+                let __deser_start = std::time::Instant::now();
+                let store_value_bytes = loaded.into_bytes();
+                let view = PersistedDataView::parse_canonical(&store_value_bytes)
+                    .map_err(|error| HistoryError::DecodeError(error.to_string()))?;
+                let kind = view.kind();
+                let payload_end = PERSISTED_DATA_HEADER_LEN + view.payload().len();
+                metrics::counter!(HISTORY_FETCH_DATA_DESERIALIZE_NS_METRIC, "source" => RSPACE_METRICS_SOURCE)
+                    .increment(__deser_start.elapsed().as_nanos() as u64);
+                Ok(Some(FetchedPersistedData {
+                    bytes: store_value_bytes,
+                    kind,
+                    payload: PERSISTED_DATA_HEADER_LEN..payload_end,
+                }))
             }
             None => Ok(None),
         };
         metrics::counter!(HISTORY_FETCH_DATA_TIME_NS_METRIC, "source" => RSPACE_METRICS_SOURCE)
             .increment(__fetch_start.elapsed().as_nanos() as u64);
         result
+    }
+}
+
+fn cold_leaf_history_error(error: ColdLeafStoreError) -> HistoryError {
+    match error {
+        ColdLeafStoreError::Store(error) => HistoryError::KvStoreError(error),
+        error => HistoryError::DecodeError(error.to_string()),
     }
 }
 
@@ -138,12 +128,10 @@ where
             Some(data) if data.kind == PersistedDataKind::Data => {
                 decode_datums(data.payload()).map_err(|e| HistoryError::DecodeError(e.to_string()))
             }
-            Some(p) => {
-                panic!(
-                    "Found unexpected leaf while looking for data at key {:?}, data: {:?}",
-                    key, p
-                );
-            }
+            Some(p) => Err(HistoryError::ActionError(format!(
+                "Found unexpected {:?} leaf while looking for data at key {:?}",
+                p.kind, key
+            ))),
             None => Ok(Vec::new()),
         }
     }
@@ -151,15 +139,13 @@ where
     fn get_data_proj_binary(&self, key: &Blake2b256Hash) -> Result<Vec<Vec<u8>>, HistoryError> {
         match self.fetch_data(PREFIX_DATUM, key)? {
             Some(data) if data.kind == PersistedDataKind::Data => {
-                Ok(bincode::deserialize(data.payload())
-                    .expect("RSpace History Reader Impl: Failed to deserialize"))
+                bincode::deserialize(data.payload())
+                    .map_err(|error| HistoryError::DecodeError(error.to_string()))
             }
-            Some(p) => {
-                panic!(
-                    "Found unexpected leaf while looking for data at key {:?}, data: {:?}",
-                    key, p
-                );
-            }
+            Some(p) => Err(HistoryError::ActionError(format!(
+                "Found unexpected {:?} leaf while looking for data at key {:?}",
+                p.kind, key
+            ))),
             None => Ok(Vec::new()),
         }
     }
@@ -173,12 +159,10 @@ where
                 decode_continuations(data.payload())
                     .map_err(|e| HistoryError::DecodeError(e.to_string()))
             }
-            Some(p) => {
-                panic!(
-                    "Found unexpected leaf while looking for continuations at key {:?}, data: {:?}",
-                    key, p
-                );
-            }
+            Some(p) => Err(HistoryError::ActionError(format!(
+                "Found unexpected {:?} leaf while looking for continuations at key {:?}",
+                p.kind, key
+            ))),
             None => Ok(Vec::new()),
         }
     }
@@ -189,15 +173,13 @@ where
     ) -> Result<Vec<Vec<u8>>, HistoryError> {
         match self.fetch_data(PREFIX_KONT, key)? {
             Some(data) if data.kind == PersistedDataKind::Continuations => {
-                Ok(bincode::deserialize(data.payload())
-                    .expect("RSpace History Reader Impl: Failed to deserialize"))
+                bincode::deserialize(data.payload())
+                    .map_err(|error| HistoryError::DecodeError(error.to_string()))
             }
-            Some(p) => {
-                panic!(
-                    "Found unexpected leaf while looking for continuations at key {:?}, data: {:?}",
-                    key, p
-                );
-            }
+            Some(p) => Err(HistoryError::ActionError(format!(
+                "Found unexpected {:?} leaf while looking for continuations at key {:?}",
+                p.kind, key
+            ))),
             None => Ok(Vec::new()),
         }
     }
@@ -207,12 +189,10 @@ where
             Some(data) if data.kind == PersistedDataKind::Joins => {
                 decode_joins(data.payload()).map_err(|e| HistoryError::DecodeError(e.to_string()))
             }
-            Some(p) => {
-                panic!(
-                    "Found unexpected leaf while looking for joins at key {:?}, data: {:?}",
-                    key, p
-                );
-            }
+            Some(p) => Err(HistoryError::ActionError(format!(
+                "Found unexpected {:?} leaf while looking for joins at key {:?}",
+                p.kind, key
+            ))),
             None => Ok(Vec::new()),
         }
     }
@@ -220,15 +200,13 @@ where
     fn get_joins_proj_binary(&self, key: &Blake2b256Hash) -> Result<Vec<Vec<u8>>, HistoryError> {
         match self.fetch_data(PREFIX_JOINS, key)? {
             Some(data) if data.kind == PersistedDataKind::Joins => {
-                Ok(bincode::deserialize(data.payload())
-                    .expect("RSpace History Reader Impl: Failed to deserialize"))
+                bincode::deserialize(data.payload())
+                    .map_err(|error| HistoryError::DecodeError(error.to_string()))
             }
-            Some(p) => {
-                panic!(
-                    "Found unexpected leaf while looking for joins at key {:?}, data: {:?}",
-                    key, p
-                );
-            }
+            Some(p) => Err(HistoryError::ActionError(format!(
+                "Found unexpected {:?} leaf while looking for joins at key {:?}",
+                p.kind, key
+            ))),
             None => Ok(Vec::new()),
         }
     }

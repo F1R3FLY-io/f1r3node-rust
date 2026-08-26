@@ -156,6 +156,84 @@ if ! grep -q 'Invariant PreflightCompletesBeforeBuild is violated' \
   exit 1
 fi
 tlc_run "$tla_metadir" \
+  RSpaceSplitIndexAuthority.cfg RSpaceSplitIndexAuthority.tla -cleanup
+for split_authority_mutant in \
+  "partial-roots:RSpaceSplitIndexAuthorityPartialRootsMutant.cfg:VisibleRootsAreAtomic" \
+  "incomplete-seal:RSpaceSplitIndexAuthorityIncompleteSealMutant.cfg:SealRequiresCompleteStaging" \
+  "publish-before-seal:RSpaceSplitIndexAuthorityPublishBeforeSealMutant.cfg:PublicationRequiresSealedAuthority"
+do
+  split_authority_label="${split_authority_mutant%%:*}"
+  split_authority_tail="${split_authority_mutant#*:}"
+  split_authority_cfg="${split_authority_tail%%:*}"
+  split_authority_invariant="${split_authority_tail#*:}"
+  if split_authority_output="$({
+    tlc_run "$tla_metadir" \
+      "$split_authority_cfg" RSpaceSplitIndexAuthority.tla -cleanup
+  } 2>&1)"; then
+    printf '%s\n' "$split_authority_output"
+    echo "stack-safe-pda: ${split_authority_label} split-index authority mutant unexpectedly passed" >&2
+    exit 1
+  fi
+  printf '%s\n' "$split_authority_output"
+  if ! grep -q "Invariant ${split_authority_invariant} is violated" \
+      <<<"$split_authority_output"; then
+    echo "stack-safe-pda: ${split_authority_label} split-index authority mutant failed without ${split_authority_invariant}" >&2
+    exit 1
+  fi
+done
+tlc_run "$tla_metadir" \
+  RSpaceAffineImportLifecycle.cfg RSpaceAffineImportLifecycle.tla -cleanup
+for affine_import_mutant in \
+  "incomplete:RSpaceAffineImportLifecycleIncompleteMutant.cfg:PublicationRequiresConsumedSeal" \
+  "stale-activation:RSpaceAffineImportLifecycleStaleActivationMutant.cfg:AtMostOneRacingActivationPublishes" \
+  "preserve-mutation:RSpaceAffineImportLifecyclePreserveMutationMutant.cfg:PreserveCurrentNeverMovesAuthority"
+do
+  affine_import_label="${affine_import_mutant%%:*}"
+  affine_import_tail="${affine_import_mutant#*:}"
+  affine_import_cfg="${affine_import_tail%%:*}"
+  affine_import_invariant="${affine_import_tail#*:}"
+  if affine_import_output="$({
+    tlc_run "$tla_metadir" \
+      "$affine_import_cfg" RSpaceAffineImportLifecycle.tla -cleanup
+  } 2>&1)"; then
+    printf '%s\n' "$affine_import_output"
+    echo "stack-safe-pda: ${affine_import_label} affine-import mutant unexpectedly passed" >&2
+    exit 1
+  fi
+  printf '%s\n' "$affine_import_output"
+  if ! grep -q "Invariant ${affine_import_invariant} is violated" \
+      <<<"$affine_import_output"; then
+    echo "stack-safe-pda: ${affine_import_label} affine-import mutant failed without ${affine_import_invariant}" >&2
+    exit 1
+  fi
+done
+tlc_run "$tla_metadir" \
+  RSpaceAtomicCheckpointAuthority.cfg RSpaceAtomicCheckpointAuthority.tla -cleanup
+for checkpoint_authority_mutant in \
+  "split:RSpaceAtomicCheckpointAuthoritySplitMutant.cfg:NoUnpublishedCheckpointObjects" \
+  "root-only:RSpaceAtomicCheckpointAuthorityRootOnlyMutant.cfg:CommitUsesExactBase" \
+  "trust-target:RSpaceAtomicCheckpointAuthorityTrustTargetMutant.cfg:VerifiedRootsHaveCompleteClosure"
+do
+  checkpoint_authority_label="${checkpoint_authority_mutant%%:*}"
+  checkpoint_authority_tail="${checkpoint_authority_mutant#*:}"
+  checkpoint_authority_cfg="${checkpoint_authority_tail%%:*}"
+  checkpoint_authority_invariant="${checkpoint_authority_tail#*:}"
+  if checkpoint_authority_output="$({
+    tlc_run "$tla_metadir" \
+      "$checkpoint_authority_cfg" RSpaceAtomicCheckpointAuthority.tla -cleanup
+  } 2>&1)"; then
+    printf '%s\n' "$checkpoint_authority_output"
+    echo "stack-safe-pda: ${checkpoint_authority_label} atomic-checkpoint authority mutant unexpectedly passed" >&2
+    exit 1
+  fi
+  printf '%s\n' "$checkpoint_authority_output"
+  if ! grep -q "Invariant ${checkpoint_authority_invariant} is violated" \
+      <<<"$checkpoint_authority_output"; then
+    echo "stack-safe-pda: ${checkpoint_authority_label} atomic-checkpoint authority mutant failed without ${checkpoint_authority_invariant}" >&2
+    exit 1
+  fi
+done
+tlc_run "$tla_metadir" \
   ParBagProjectionLifecycle.cfg ParBagProjectionLifecycle.tla -cleanup
 if projection_cap_mutant="$({
   tlc_run "$tla_metadir" \

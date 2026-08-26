@@ -53,16 +53,9 @@ fn reporting_env_config() -> LmdbEnvConfig { LmdbEnvConfig::new("reporting".to_s
 
 fn transaction_env_config() -> LmdbEnvConfig { LmdbEnvConfig::new("transaction".to_string(), GB) }
 
-// Legacy RSpace paths
-fn legacy_env_config(dir: &str) -> LmdbEnvConfig {
-    LmdbEnvConfig::new(format!("{}/{}", "rspace/casper/v2", dir), TB)
-}
-
 // Database name to store instance name mapping (sub-folder for LMDB store)
 // - keys with the same instance will be in one LMDB file (environment)
-pub fn rnode_db_mapping(legacy_rspace_paths: Option<bool>) -> Vec<(Db, LmdbEnvConfig)> {
-    let legacy_rspace_paths = legacy_rspace_paths.unwrap_or(false);
-
+pub fn rnode_db_mapping(_legacy_rspace_paths: Option<bool>) -> Vec<(Db, LmdbEnvConfig)> {
     let mut mappings = vec![
         // Block storage
         (
@@ -145,40 +138,43 @@ pub fn rnode_db_mapping(legacy_rspace_paths: Option<bool>) -> Vec<(Db, LmdbEnvCo
         ),
     ];
 
-    // RSpace
-    if !legacy_rspace_paths {
-        // History and roots maps are part of the same LMDB file (environment)
-        mappings.push((
-            Db::new("rspace-history".to_string(), None),
-            rspace_history_env_config(),
-        ));
-        mappings.push((
-            Db::new("rspace-roots".to_string(), None),
-            rspace_history_env_config(),
-        ));
-        mappings.push((
-            Db::new("rspace-cold".to_string(), None),
-            rspace_cold_env_config(),
-        ));
-    } else {
-        // Legacy config has the same database name for all maps
-        mappings.push((
-            Db::new("rspace-history".to_string(), Some("db".to_string())),
-            legacy_env_config("history"),
-        ));
-        mappings.push((
-            Db::new("rspace-roots".to_string(), Some("db".to_string())),
-            legacy_env_config("roots"),
-        ));
-        mappings.push((
-            Db::new("rspace-cold".to_string(), Some("db".to_string())),
-            legacy_env_config("cold"),
-        ));
-        mappings.push((
-            Db::new("rspace-channels".to_string(), Some("db".to_string())),
-            legacy_env_config("channels"),
-        ));
-    }
+    // The live destination is canonical regardless of the compatibility flag.
+    // Legacy v2 environments are read-only migration inputs, never live stores.
+    mappings.push((
+        Db::new("rspace-history".to_string(), None),
+        rspace_history_env_config(),
+    ));
+    mappings.push((
+        Db::new("rspace-roots".to_string(), None),
+        rspace_history_env_config(),
+    ));
+    mappings.push((
+        Db::new("rspace-cold".to_string(), None),
+        rspace_cold_env_config(),
+    ));
 
     mappings
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rspace_layout(legacy: Option<bool>) -> Vec<(String, String)> {
+        rnode_db_mapping(legacy)
+            .into_iter()
+            .filter(|(db, _)| matches!(db.id(), "rspace-history" | "rspace-roots" | "rspace-cold"))
+            .map(|(db, env)| (db.id().to_string(), env.name))
+            .collect()
+    }
+
+    #[test]
+    fn legacy_flag_never_changes_the_canonical_rspace_destination() {
+        let expected = rspace_layout(None);
+        assert_eq!(rspace_layout(Some(false)), expected);
+        assert_eq!(rspace_layout(Some(true)), expected);
+        assert!(expected.contains(&("rspace-history".to_string(), "rspace/history".to_string())));
+        assert!(expected.contains(&("rspace-roots".to_string(), "rspace/history".to_string())));
+        assert!(expected.contains(&("rspace-cold".to_string(), "rspace/cold".to_string())));
+    }
 }
