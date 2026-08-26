@@ -1092,13 +1092,34 @@ mod tests {
             8,
         )
         .expect("stage split legacy state");
+        let staged_manifest = {
+            let txn = env.read_txn().expect("first staged read");
+            roots_db
+                .get(&txn, &PENDING_MIGRATION_KEY.to_vec())
+                .unwrap()
+                .expect("pending manifest after structural staging")
+        };
+
+        // Simulate process interruption between structural staging and typed
+        // publication. Reopening the migration protocol must recover the
+        // exact manifest without appointing a root or rewriting provenance.
+        migrate_legacy_state(
+            Arc::clone(&env),
+            history,
+            cold,
+            roots_db,
+            "rspace",
+            None,
+            None,
+            16 * 1024 * 1024,
+            8,
+        )
+        .expect("resume structurally staged split state");
         {
             let txn = env.read_txn().expect("staged read");
-            assert!(
-                roots_db
-                    .get(&txn, &PENDING_MIGRATION_KEY.to_vec())
-                    .unwrap()
-                    .is_some()
+            assert_eq!(
+                roots_db.get(&txn, &PENDING_MIGRATION_KEY.to_vec()).unwrap(),
+                Some(staged_manifest)
             );
             assert!(
                 roots_db
@@ -1196,13 +1217,39 @@ mod tests {
                 .get(&txn, &CURRENT_ROOT_KEY.to_vec())
                 .unwrap()
                 .map(|bytes| decode_current(&bytes).unwrap()),
-            Some((empty, 0))
+            Some((empty.clone(), 0))
         );
         assert!(
             roots_db
                 .get(&txn, &MIGRATION_KEY.to_vec())
                 .unwrap()
                 .is_some()
+        );
+        drop(txn);
+
+        // A retained source that changes after completion is evidence of a
+        // different legacy authority, not permission to revise the receipt.
+        let conflicting = root(23);
+        seed_legacy_catalog(&roots_env, legacy_roots, &conflicting);
+        migrate_legacy_state(
+            Arc::clone(&env),
+            history,
+            cold,
+            roots_db,
+            "rspace",
+            None,
+            Some(&v2),
+            16 * 1024 * 1024,
+            8,
+        )
+        .expect_err("completed receipt must reject a changed retained source");
+        let txn = env.read_txn().expect("conflict leaves publication intact");
+        assert_eq!(
+            roots_db
+                .get(&txn, &CURRENT_ROOT_KEY.to_vec())
+                .unwrap()
+                .map(|bytes| decode_current(&bytes).unwrap()),
+            Some((empty, 0))
         );
     }
 
@@ -1262,6 +1309,73 @@ mod tests {
         )
         .expect_err("divergent legacy authorities must not be merged");
         let txn = env.read_txn().expect("divergent read");
+        assert!(
+            roots_db
+                .get(&txn, &PENDING_MIGRATION_KEY.to_vec())
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            roots_db
+                .get(&txn, &CURRENT_ROOT_KEY.to_vec())
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn malformed_legacy_catalog_and_history_never_reach_pending_publication() {
+        let scratch = test_scratch::acquire("rspace-legacy-corrupt-catalog-");
+
+        for (label, seed) in [("bad-current", 1_u8), ("bad-membership", 2), ("orphan-current", 3)] {
+            let path = scratch.path().join(label);
+            let (env, db) = legacy_database(&path);
+            let mut txn = env.write_txn().expect("corrupt catalog write");
+            match label {
+                "bad-current" => {
+                    db.put(&mut txn, &root(seed).0, &LEGACY_ROOT_MEMBERSHIP_VALUE.to_vec())
+                        .unwrap();
+                    db.put(&mut txn, &LEGACY_CURRENT_ROOT_KEY.to_vec(), &vec![seed; 31])
+                        .unwrap();
+                }
+                "bad-membership" => {
+                    db.put(&mut txn, &root(seed).0, &b"not-tag".to_vec())
+                        .unwrap();
+                }
+                "orphan-current" => {
+                    db.put(&mut txn, &LEGACY_CURRENT_ROOT_KEY.to_vec(), &root(seed).0)
+                        .unwrap();
+                }
+                _ => unreachable!(),
+            }
+            txn.commit().expect("corrupt catalog commit");
+            assert!(read_legacy_catalog(&ReadDb { env, db }).is_err(), "{label}");
+        }
+
+        let (env, history, cold, roots_db) =
+            databases(&scratch.path().join("malformed-history"), "rspace");
+        let malformed_node = b"not-a-radix-node".to_vec();
+        let retained_root = Blake2b256Hash::new(&malformed_node);
+        let mut txn = env.write_txn().expect("malformed history write");
+        history
+            .put(&mut txn, &retained_root.0, &malformed_node)
+            .expect("content-addressed malformed history object");
+        txn.commit().expect("malformed history commit");
+        seed_legacy_catalog(&env, roots_db, &retained_root);
+
+        migrate_legacy_state(
+            Arc::clone(&env),
+            history,
+            cold,
+            roots_db,
+            "rspace",
+            None,
+            None,
+            16 * 1024 * 1024,
+            8,
+        )
+        .expect_err("malformed history object must fail structural staging");
+        let txn = env.read_txn().expect("malformed history audit");
         assert!(
             roots_db
                 .get(&txn, &PENDING_MIGRATION_KEY.to_vec())

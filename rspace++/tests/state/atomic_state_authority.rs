@@ -1,7 +1,9 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use super::{AuthorityBackend, RSpaceStateAuthority};
+use shared::rust::test_scratch;
+
+use super::{AuthorityBackend, CURRENT_ROOT_KEY, RSpaceStateAuthority, verified_root_key};
 use crate::rspace::errors::{HistoryError, RootError};
 use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use crate::rspace::history::cold_store::{
@@ -336,4 +338,110 @@ fn lmdb_success_and_stale_conflict_match_memory_atomicity() {
     assert_eq!(authority.history_store().to_map().unwrap(), history_before);
     assert_eq!(authority.cold_store().to_map().unwrap(), cold_before);
     assert_eq!(authority.current_verified_root().unwrap(), current_before);
+}
+
+#[test]
+fn lmdb_reopen_preserves_exact_catalog_and_known_root_activation() {
+    let scratch = test_scratch::acquire("rspace-authority-reopen-");
+    let authority =
+        RSpaceStateAuthority::open_lmdb(scratch.path(), "rspace", None, None, 16 * 1024 * 1024, 8)
+            .expect("open first authority");
+    authority
+        .initialize_for_records(&validator())
+        .expect("initialize first authority");
+    let empty = authority.current_verified_root().unwrap().unwrap();
+    let history = history_at_current(&authority);
+    let (cold, bytes) = data_leaf(b"reopen-root");
+    let (next_history, prepared) = prepare_insert(history.as_ref(), 13, &cold);
+    let committed = authority
+        .commit_local_checkpoint(&prepared, vec![(cold, bytes)], &validator())
+        .expect("commit before reopen");
+    drop(next_history);
+    drop(prepared);
+    drop(history);
+    drop(authority);
+
+    let reopened =
+        RSpaceStateAuthority::open_lmdb(scratch.path(), "rspace", None, None, 16 * 1024 * 1024, 8)
+            .expect("reopen authority");
+    reopened
+        .initialize_for_records(&validator())
+        .expect("initialize reopened authority");
+    assert_eq!(reopened.current_verified_root().unwrap(), Some(committed.clone()));
+    assert!(reopened.contains_verified_root(committed.root()).unwrap());
+    assert!(reopened.contains_verified_root(empty.root()).unwrap());
+
+    let at_empty = reopened
+        .activate_known(reopened.known_verified_root(empty.root()).unwrap())
+        .expect("reset to the retained empty root");
+    assert_eq!(at_empty.root(), empty.root());
+    assert_eq!(at_empty.generation(), committed.generation() + 1);
+
+    let restored = reopened
+        .activate_known(reopened.known_verified_root(committed.root()).unwrap())
+        .expect("reactivate the retained checkpoint root");
+    assert_eq!(restored.root(), committed.root());
+    assert_eq!(restored.generation(), at_empty.generation() + 1);
+}
+
+#[test]
+fn lmdb_rejects_malformed_current_and_membership_records() {
+    let current_scratch = test_scratch::acquire("rspace-authority-bad-current-");
+    let current_authority = RSpaceStateAuthority::open_lmdb(
+        current_scratch.path(),
+        "rspace",
+        None,
+        None,
+        16 * 1024 * 1024,
+        8,
+    )
+    .expect("open current-record authority");
+    current_authority
+        .initialize_for_records(&validator())
+        .expect("initialize current-record authority");
+    let AuthorityBackend::Lmdb(current_state) = &current_authority.backend else {
+        unreachable!()
+    };
+    let mut txn = current_state
+        .env
+        .write_txn()
+        .expect("corrupt current write");
+    current_state
+        .roots
+        .put(&mut txn, &CURRENT_ROOT_KEY.to_vec(), &b"malformed-current".to_vec())
+        .expect("write malformed current");
+    txn.commit().expect("commit malformed current");
+    assert!(current_authority.current_verified_root().is_err());
+
+    let member_scratch = test_scratch::acquire("rspace-authority-bad-membership-");
+    let member_authority = RSpaceStateAuthority::open_lmdb(
+        member_scratch.path(),
+        "rspace",
+        None,
+        None,
+        16 * 1024 * 1024,
+        8,
+    )
+    .expect("open membership authority");
+    member_authority
+        .initialize_for_records(&validator())
+        .expect("initialize membership authority");
+    let current = member_authority.current_verified_root().unwrap().unwrap();
+    let AuthorityBackend::Lmdb(member_state) = &member_authority.backend else {
+        unreachable!()
+    };
+    let mut txn = member_state
+        .env
+        .write_txn()
+        .expect("corrupt membership write");
+    member_state
+        .roots
+        .put(&mut txn, &verified_root_key(current.root()), &b"malformed-membership".to_vec())
+        .expect("write malformed membership");
+    txn.commit().expect("commit malformed membership");
+    assert!(
+        member_authority
+            .contains_verified_root(current.root())
+            .is_err()
+    );
 }

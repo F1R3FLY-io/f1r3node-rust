@@ -2282,12 +2282,14 @@ $`O(1)`$ in radix depth, and the only path bound is the pre-existing RSpace key 
 leave unreachable content-addressed objects, but it cannot split verified membership from current
 authority; a retry either resumes the exact manifest or fails on changed provenance.
 
-**EVIDENCE.** The RSpace library suite passes 147/147 and its consolidated integration target passes
+**EVIDENCE.** The RSpace library suite passes 150/150 and its consolidated integration target passes
 164/164 under zero-swap resource scopes; the latter includes the frozen collision-error contract
 after replacing its former check-then-put race with an atomic compare-and-set retry. Focused
-authority tests pass 11/11. The migration suite separately covers split and v2 adoption, strict and
-namespace-bound manifests, source removal after completion, and typed refusal without partial
-publication. The transaction-bound closure-verifier suite passes 6/6. Release regressions pass for
+authority tests pass 13/13. The migration suite passes 10/10 and separately covers split and v2
+adoption, strict and namespace-bound manifests, interrupted/resumed staging, source removal and
+changed-source refusal after completion, malformed catalog/history refusal, exact reopen/reset,
+and typed refusal without partial publication. The transaction-bound closure-verifier suite passes
+6/6. Release regressions pass for
 the scratch staging control (1/1), MakeMint (all seven registered cases), and PoS (all eleven
 registered cases), with both RhoSpecs observing terminal suite completion. The
 `RSpaceAtomicCheckpointAuthority` TLA+ control explores 357 generated states, 127 distinct states,

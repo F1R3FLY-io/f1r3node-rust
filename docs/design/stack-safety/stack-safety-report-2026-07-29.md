@@ -10650,9 +10650,10 @@ appear at different typed logical paths. Phase-A orphan objects after a crash ar
 content-addressed data; verified membership, current-root authority, and the completed receipt are
 visible together or not at all.
 
-Resource-capped executable evidence includes 11/11 local checkpoint authority cases, the typed
-legacy-migration matrix for split, v2, namespace binding, removed sources, strict manifests, and
-malformed record refusal, plus the transaction-bound verifier suite. The
+Resource-capped executable evidence includes 13/13 local checkpoint authority cases, the 10/10
+typed legacy-migration matrix for split, v2, namespace binding, interrupted/resumed staging,
+removed and changed retained sources, strict manifests, malformed catalogs/history, and malformed
+record refusal, plus the transaction-bound verifier suite. The
 `RSpaceAtomicCheckpointAuthority` TLA+ control explores 357 generated states, 127 distinct states,
 and depth 7. Three required mutants independently expose split object publication, root-only ABA
 comparison, and trust in a caller-supplied target without a complete closure; each violates its
@@ -10661,7 +10662,7 @@ properties. They are not an implementation or throughput claim for the later bin
 persistent PathMap/ACT object store.
 
 The post-integration executable gate passes the complete `rspace_plus_plus` library suite
-**147/147** and its consolidated integration target **164/164** under zero-swap systemd scopes.
+**150/150** and its consolidated integration target **164/164** under zero-swap systemd scopes.
 The release regressions that previously exposed incomplete campaign verification now also pass:
 the corrected scratch-directory staging control **1/1**, `MakeMintTest.rho` **1/1** with all seven
 registered cases completing, and `PoSTest.rho` **1/1** with all eleven registered cases completing.

@@ -5596,7 +5596,7 @@ continuation still does not activate the planned binary WAL or persistent PathMa
 CBR-053 remains `UNVERIFIED` for its independent generated continuation/join schedule and post-state
 obligations.
 
-The executable compatibility gate passes `rspace_plus_plus` library **147/147** and consolidated
+The executable compatibility gate passes `rspace_plus_plus` library **150/150** and consolidated
 integration **164/164**, plus the exact release regressions that had previously failed: the scratch
 staging control **1/1**, `MakeMintTest.rho` with all seven registered tests completing, and
 `PoSTest.rho` with all eleven registered tests completing. These are compatibility and
