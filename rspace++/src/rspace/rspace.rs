@@ -59,7 +59,18 @@ pub struct RSpace<C, P, A, K> {
     pub store: Arc<std::sync::RwLock<Arc<Box<dyn HotStore<C, P, A, K>>>>>,
     installs: Arc<std::sync::Mutex<HashMap<Vec<C>, Install<P, K>>>>,
     event_log: Arc<std::sync::Mutex<Log>>,
-    produce_counter: Arc<std::sync::Mutex<BTreeMap<Produce, i32>>>,
+    // Striped like phase_a/phase_b_locks below: NUM_LOCK_STRIPES independent
+    // shards keyed by channel_hash(produce) % NUM_LOCK_STRIPES, instead of
+    // one global std::sync::Mutex<BTreeMap>. The hot path (log_produce/
+    // produce_counters) only ever contends the one shard its key hashes to.
+    // Checkpoint boundaries (take/reset/restore_produce_counter in
+    // trace_log.rs) lock
+    // every shard for the whole operation, in the same fixed index order
+    // every time, restoring the single global lock's point-in-time
+    // linearization for this field specifically — not across it and
+    // event_log, which remain two separate locks taken sequentially, same
+    // as before this change (pre-existing, out of scope here).
+    produce_counter: Arc<Vec<std::sync::Mutex<BTreeMap<Produce, i32>>>>,
     matcher: Arc<Box<dyn Match<P, A, K>>>,
     // Fixed-size striped locks replace the growing DashMap<u64, Mutex>.
     // See striped_locks.rs for the stripe count and hashing/lock scheme.

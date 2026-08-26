@@ -40,7 +40,11 @@ where
             matcher,
             installs: Arc::new(std::sync::Mutex::new(HashMap::new())),
             event_log: Arc::new(std::sync::Mutex::new(Vec::new())),
-            produce_counter: Arc::new(std::sync::Mutex::new(BTreeMap::new())),
+            produce_counter: Arc::new(
+                (0..striped_locks::NUM_LOCK_STRIPES)
+                    .map(|_| std::sync::Mutex::new(BTreeMap::new()))
+                    .collect(),
+            ),
             phase_a_locks: striped_locks::new_striped_locks(),
             phase_b_locks: striped_locks::new_striped_locks(),
         }

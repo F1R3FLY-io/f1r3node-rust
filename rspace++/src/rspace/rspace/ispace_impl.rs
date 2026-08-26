@@ -3,7 +3,7 @@
 // locked operation internals live in ops_consume.rs / ops_produce.rs /
 // ops_install.rs.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap};
 use std::fmt::Debug;
 use std::hash::Hash;
 use std::sync::Arc;
@@ -60,7 +60,7 @@ where
         *self.history_repository.write().expect("history write lock") = Arc::new(next_history);
 
         let log = std::mem::take(&mut *self.event_log.lock().expect("event log lock"));
-        let _ = std::mem::take(&mut *self.produce_counter.lock().expect("produce counter lock"));
+        self.reset_produce_counter();
 
         let history_repo = self.get_history_repository();
         let history_reader = history_repo.get_history_reader(&history_repo.root())?;
@@ -83,7 +83,7 @@ where
         *self.history_repository.write().expect("history write lock") = Arc::new(next_history);
 
         *self.event_log.lock().expect("event log lock") = Vec::new();
-        *self.produce_counter.lock().expect("produce counter lock") = BTreeMap::new();
+        self.reset_produce_counter();
 
         // Striped locks are fixed-size and stateless (Mutex<()>); nothing to
         // clear on reset — they are reused across checkpoints.
@@ -122,8 +122,7 @@ where
     async fn create_soft_checkpoint(&self) -> SoftCheckpoint<C, P, A, K> {
         let cache_snapshot = self.get_store().snapshot();
         let curr_event_log = std::mem::take(&mut *self.event_log.lock().expect("event log lock"));
-        let curr_produce_counter =
-            std::mem::take(&mut *self.produce_counter.lock().expect("produce counter lock"));
+        let curr_produce_counter = self.take_produce_counter();
 
         SoftCheckpoint {
             cache_snapshot,
@@ -134,7 +133,7 @@ where
 
     async fn take_event_log(&self) -> Log {
         let curr_event_log = std::mem::take(&mut *self.event_log.lock().expect("event log lock"));
-        let _ = std::mem::take(&mut *self.produce_counter.lock().expect("produce counter lock"));
+        self.reset_produce_counter();
         curr_event_log
     }
 
@@ -153,7 +152,7 @@ where
 
         *self.store.write().expect("store write lock") = Arc::new(hot_store);
         *self.event_log.lock().expect("event log lock") = checkpoint.log;
-        *self.produce_counter.lock().expect("produce counter lock") = checkpoint.produce_counter;
+        self.restore_produce_counter(checkpoint.produce_counter);
 
         Ok(())
     }
