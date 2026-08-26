@@ -185,6 +185,16 @@ if [ "$pytest_status" -ne 0 ] || [ "$report_status" -ne 0 ]; then
 	result=failed
 fi
 printf '%s\n' "$result" >"$OUTPUT_DIR/result"
+# On failure, keep the per-node shard logs. The pytest log carries the
+# scanner's forbidden-line excerpts, but diagnosing a consensus failure
+# needs the surrounding node context (justification maps, floor traces,
+# verdict streams). The soak job's always() artifact upload ships
+# $OUTPUT_DIR wholesale, and a passed preflight deletes log-archive right
+# after this script returns — so failure is the only moment to save them.
+LOG_ARCHIVE=$SYSTEM_INTEGRATION_DIR/integration-tests/log-archive
+if [ "$result" != passed ] && [ -d "$LOG_ARCHIVE" ]; then
+	cp -R "$LOG_ARCHIVE" "$OUTPUT_DIR/log-archive"
+fi
 printf '## Integration preflight\n\n- Result: `%s`\n- Provider: `%s`\n- Suite roots: `%s`\n- Collected tests: `%s`\n- Elapsed seconds: `%s`\n- Report: `%s`\n' \
 	"$result" "$PROVIDER" "${#TESTS[@]}" "$collected_tests" "$elapsed" "$(head -1 "$REPORT")" >"$OUTPUT_DIR/summary.md"
 [ "$result" = passed ]

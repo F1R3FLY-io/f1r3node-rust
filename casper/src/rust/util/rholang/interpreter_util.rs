@@ -1671,6 +1671,29 @@ pub async fn compute_parents_post_state(
                     settled_walk_bound,
                 )
             };
+            // Settled-floor probe for the merge's settled-content protection
+            // (#341): the same settled definition as the post-merge
+            // `assert_no_settled_rejection` tripwire, evaluated BEFORE
+            // adjudication so a settled chain is protected rather than
+            // rejected-then-tripped. Derived from the block's frozen
+            // justification snapshot (the settled floors), so replay
+            // answers identically.
+            let sig_settled_in_floor = |sig: &Bytes| -> Result<bool, CasperError> {
+                for floor in &settled_floors {
+                    let min_height = floor
+                        .block_number
+                        .saturating_sub(s.on_chain_state.shard_conf.deploy_lifespan);
+                    if crate::rust::finality::deploy_lifecycle::effect_in_state_of(
+                        block_store,
+                        &floor.hash,
+                        sig,
+                        min_height,
+                    )? {
+                        return Ok(true);
+                    }
+                }
+                Ok(false)
+            };
             let merger_result = dag_merger::merge(
                 &s.dag,
                 &scope_anchor_hash,
@@ -1686,6 +1709,7 @@ pub async fn compute_parents_post_state(
                 floor_block_number,
                 s.on_chain_state.shard_conf.deploy_lifespan,
                 &sig_settled_in_base,
+                &sig_settled_in_floor,
                 &base_lineage_blocks,
             )?;
             let merge_ms = merge_started.elapsed().as_millis();
