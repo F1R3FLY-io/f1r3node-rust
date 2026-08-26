@@ -292,10 +292,9 @@ async fn three_validator_neutral_base_applies_prior_loss_priority() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[serial]
-#[ignore = "issue #294 phase 2: RED by design pending the base-bias decision — the merge \
-            proposer bases on its own contender block, so the retry's chain is structurally \
-            stale and no within-merge priority can win this shape. See the blocked B4 entry \
-            in docs/tdd-plans/key-contention-starvation-2026-08-20T04-52-46Z.md."]
+#[ignore = "issue #294 expected RED base-bias sentinel: a fixed contender-owner proposer \
+            keeps the retry structurally stale. Start C1 only if soak evidence shows \
+            residual expiry."]
 async fn repeatedly_rejected_deploy_gains_priority_and_lands() {
     let ctx = build_genesis(2).await;
     let shard_id = ctx.genesis_block.shard_id.clone();
@@ -438,5 +437,179 @@ async fn repeatedly_rejected_deploy_gains_priority_and_lands() {
         "starved deploy never landed in {} contention rounds: every merge \
          rejected it on content order and its recorded losses bought no priority",
         max_rounds
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[serial]
+async fn rotating_merge_proposers_land_repeatedly_rejected_deploy_before_expiry() {
+    let ctx = build_genesis(2).await;
+    let shard_id = ctx.genesis_block.shard_id.clone();
+    let mut nodes = TestNode::create_network(ctx, 2, None, None, None, None)
+        .await
+        .expect("create_network");
+    for node in nodes.iter_mut() {
+        node.allow_empty_blocks = true;
+    }
+    let starved_sec = construct_deploy::DEFAULT_SEC.clone();
+    let contender_sec = construct_deploy::DEFAULT_SEC2.clone();
+
+    let init = construct_deploy::source_deploy_now_full(
+        r#"@"m"!({})"#.to_string(),
+        None,
+        None,
+        Some(starved_sec.clone()),
+        None,
+        Some(shard_id.clone()),
+    )
+    .expect("build init");
+    nodes[0].casper.deploy(init).expect("init deploy");
+    let init_block = nodes[0].create_block_unsafe(&[]).await.expect("init block");
+    for node in nodes.iter_mut() {
+        node.process_block(init_block.clone())
+            .await
+            .expect("process init");
+    }
+
+    let starved = cheap_write("starved", &starved_sec, &shard_id);
+    let starved_sig = starved.sig.clone();
+    let sibling_starved = nodes[0]
+        .add_block_from_deploys(std::slice::from_ref(&starved))
+        .await
+        .expect("starved sibling");
+    let contender = costly_write("y1", 1, &contender_sec, &shard_id);
+    let sibling_contender = nodes[1]
+        .add_block_from_deploys(std::slice::from_ref(&contender))
+        .await
+        .expect("contender sibling");
+    for node in nodes.iter_mut() {
+        node.process_block(sibling_starved.clone())
+            .await
+            .expect("cross-add starved sibling");
+        node.process_block(sibling_contender.clone())
+            .await
+            .expect("cross-add contender sibling");
+    }
+    let merge1 = nodes[0]
+        .create_block_unsafe(&[])
+        .await
+        .expect("first merge block");
+    for node in nodes.iter_mut() {
+        node.process_block(merge1.clone())
+            .await
+            .expect("validators accept first merge");
+    }
+    assert!(
+        merge1
+            .body
+            .rejected_deploys
+            .iter()
+            .any(|r| r.sig == starved_sig),
+        "FIXTURE: round 1 must reject the cheap write on content order; \
+         raise the contender's arithmetic cost if this fails"
+    );
+
+    let mut rejected_again = false;
+    for round in 2..=3 {
+        let contender = costly_write(
+            &format!("y{}", round),
+            round as i64,
+            &contender_sec,
+            &shard_id,
+        );
+        nodes[1].casper.deploy(contender).expect("contender deploy");
+        let contender_block = nodes[1]
+            .create_block_unsafe(&[])
+            .await
+            .expect("contender sibling");
+        let owner_block = nodes[0]
+            .create_block_unsafe(&[])
+            .await
+            .expect("owner sibling");
+        for node in nodes.iter_mut() {
+            node.process_block(contender_block.clone())
+                .await
+                .expect("validators accept contender sibling");
+            node.process_block(owner_block.clone())
+                .await
+                .expect("validators accept owner sibling");
+        }
+        let merge = nodes[1]
+            .create_block_unsafe(&[])
+            .await
+            .expect("contender-owner merge");
+        for node in nodes.iter_mut() {
+            node.process_block(merge.clone())
+                .await
+                .expect("validators accept contender-owner merge");
+        }
+        rejected_again |= merge
+            .body
+            .rejected_deploys
+            .iter()
+            .any(|rejected| rejected.sig == starved_sig);
+    }
+    assert!(
+        rejected_again,
+        "FIXTURE: the racing retry must receive a second rejection before proposer rotation"
+    );
+
+    let max_rounds = 16;
+    let mut first_eligible_round = None;
+    let mut landed_round = None;
+    for round in 4..=max_rounds {
+        let contender = costly_write(
+            &format!("y{}", round),
+            round as i64,
+            &contender_sec,
+            &shard_id,
+        );
+        nodes[1].casper.deploy(contender).expect("contender deploy");
+        let contender_block = nodes[1]
+            .create_block_unsafe(&[])
+            .await
+            .expect("contender block");
+        for node in nodes.iter_mut() {
+            node.process_block(contender_block.clone())
+                .await
+                .expect("validators accept contender block");
+        }
+        let owner_block = nodes[0]
+            .create_block_unsafe(&[])
+            .await
+            .expect("owner block");
+        for node in nodes.iter_mut() {
+            node.process_block(owner_block.clone())
+                .await
+                .expect("validators accept owner block");
+        }
+        if owner_block
+            .body
+            .deploys
+            .iter()
+            .any(|processed| processed.deploy.sig == starved_sig)
+        {
+            first_eligible_round.get_or_insert(round);
+        }
+        if key_landed(
+            &nodes[0],
+            &owner_block.body.state.post_state_hash,
+            "starved",
+        )
+        .await
+        {
+            landed_round = Some(round);
+            break;
+        }
+    }
+
+    assert!(
+        first_eligible_round.is_some(),
+        "the rejected deploy was not eligible within {} rotating-proposer rounds",
+        max_rounds
+    );
+    assert_eq!(
+        landed_round, first_eligible_round,
+        "the rejected deploy must land on its first eligible covered-frontier round"
     );
 }
