@@ -31,12 +31,23 @@
                           │       │ COMM (a spatial match is an error)
    ─────────────────────────────────────────────────────────────────────────
 
-   Modeling notes.
-   - Guard determinism (C3) is BY CONSTRUCTION: play and replay apply the
-     same Rocq function [guard_eval]. The Section Variable is a premise of
-     the closed theorem, not an axiom.
-   - COMMs are keyed by op index (comm_id), mirroring replay_data's keyed
-     map: replay decides per-op from the log, not positionally.
+   Modeling notes — seam premises (assumed here, enforced by Rust; see the
+   claim's "Seam premises" section for the full list):
+   - Guard determinism (C3) is a PREMISE, not a proof: play and replay
+     apply the same Rocq function [guard_eval] (a Section Variable that
+     becomes a hypothesis of the closed theorems). The theorems establish
+     that IF the guard is one pure function THEN parity holds; purity and
+     receive-bind-order agreement remain Rust-side obligations.
+   - COMMs are keyed by op index (comm_id), standing in for replay_data's
+     hash-keyed map. The index/hash-key correspondence (including
+     collision freedom) is assumed, not derived.
+   - The replay gate is id-membership only. Rust's replay consume also
+     binds candidate data to the recorded COMM's produces (the `matches`
+     filter); that binding is abstracted into the gate here.
+   - Comm carries guard + data only; peeks, times_repeated, and Produce
+     nondeterminism metadata are out of scope. Theorems speak about COMM
+     sequences, not store state (state equality is a separate premise of
+     the wider replay-soundness argument).
    - Replay's consume path does NOT evaluate the guard (the D2 asymmetry);
      the main theorem shows the log gate substitutes for it exactly.
 

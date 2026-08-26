@@ -41,8 +41,8 @@ form a COMM consults `check_commit` before committing:
   continuation and rolls back plus continues on veto
   (`space_matcher.rs:161`).
 
-**C2 — Replay equivalence.** For any event log that play produced, replay
-reaches the same COMM set and the same final state:
+**C2 — Replay COMM-sequence equivalence.** For any event log that play
+produced, replay commits the same COMM sequence:
 
 - Replay consume commits only COMMs recorded in the log: candidate data is
   pre-filtered to a recorded COMM's produces (`run_matcher_consume`,
@@ -52,12 +52,22 @@ reaches the same COMM set and the same final state:
   (`replay_rspace.rs:1383-1403`) uses the same `extract_first_match`, so
   the guard runs again during replay. Equivalence therefore requires C3.
 
-**C3 — Guard determinism.** `check_commit` is a pure function of the
-continuation's guard expression and the matched data: no side effects, no
-dependence on node-local state, randomness, or time. `guard_passes`
-(rho-pure-eval) returns the same verdict for the same inputs at play time
-and at replay time, and both call sites present the matched data in the
-same receive-bind order.
+Final-STATE equivalence is a consequence of C2 only under the additional
+premise that the post-state is a deterministic function of the operation
+sequence and its COMM decisions (store determinism). That premise is part
+of the wider replay soundness argument, not of this claim, and the
+mechanization does not prove it (see Seam premises).
+
+**C3 — Guard determinism (seam premise).** `check_commit` is a pure
+function of the continuation's guard expression and the matched data: no
+side effects, no dependence on node-local state, randomness, or time.
+`guard_passes` (rho-pure-eval) returns the same verdict for the same
+inputs at play time and at replay time, and both call sites present the
+matched data in the same receive-bind order. C3 is ASSUMED by the
+mechanization, not proved: the model shows that IF the guard is one pure
+function shared by play and replay, THEN parity holds. The purity and
+bind-order obligations remain Rust-side (rho-pure-eval's evaluator and
+the two `matched` constructions).
 
 ## Known deviations (in scope for discharge or explicit waiver)
 
@@ -102,12 +112,37 @@ of COMM formation. Capstones, each "Closed under the global context"
 | `rspace_replay_equivalent` | C2 (replay of a play log = play COMMs) |
 | `rspace_replay_guard_complete` | C2∘C1 (replayed COMMs all passed guards) |
 
-C3 is by construction (one shared `guard_eval` premise serves play and
-replay; guard purity and bind-order agreement are the seam premises Rust
-enforces). D1 is by construction of the model (`OpInstall` has no commit
-branch), matching the code; the code-level install deviation (guard not
-consulted before the "installing only on startup" error) remains open as a
-bounded, conservative behavior.
+### Seam premises (assumed by the model, enforced by Rust)
+
+The mechanization is an abstract model. The following are premises of the
+theorems, deliberately NOT proved, in the same "Rocq assumes what Rust
+enforces" style as `fork_choice`'s GuardBridge seams:
+
+1. **Guard purity and bind order (C3).** `guard_eval` is a Section
+   Variable — one pure function shared by the play and replay models.
+   Rust must enforce that `guard_passes` is deterministic and that both
+   `matched` constructions agree on receive-bind order.
+2. **Op-identity keying.** The model keys COMMs by op index (`comm_id`),
+   standing in for `replay_data`'s hash-keyed map
+   (`IOEvent::Produce/Consume` identity). The correspondence between the
+   model's index keying and Rust's cryptographic-hash keying — including
+   hash-collision freedom — is assumed, not derived.
+3. **Log-gate data binding.** The model's replay gate is id-membership in
+   the log. Rust's replay consume additionally binds candidate data to
+   the recorded COMM's produces (`self.matches(comm, ..)` filtering); the
+   model abstracts that filter into the gate and does not verify it.
+4. **COMM structure and nondeterminism metadata.** The model's `Comm`
+   carries guard + data only. `peeks`, `times_repeated`, and the
+   `Produce` nondeterminism fields (`is_deterministic`, `output_value`,
+   `failed`) are outside the model's scope.
+5. **Store determinism.** State equality is not modeled; theorems speak
+   about COMM sequences only (see C2's narrowed statement).
+
+D1 is by construction of the model (`OpInstall` has no commit branch),
+matching the code; the code-level install deviation (guard not consulted
+before the "installing only on startup" error) remains open as a bounded,
+conservative residual — deliberately out of scope for this change, to be
+fixed or formally waived in a follow-up.
 
 ## Acceptance
 
