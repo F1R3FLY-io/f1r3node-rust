@@ -31,7 +31,7 @@ mod tests {
     use models::rhoapi::{BindPattern, ListParWithRandom, Par, TaggedContinuation};
     use rholang::rust::interpreter::accounting::costs::Cost;
     use rholang::rust::interpreter::external_services::ExternalServices;
-    use rholang::rust::interpreter::io::wal::{PayloadRef, WalOp};
+    use rholang::rust::interpreter::io::wal::{PayloadRef, WalEntry, WalOp, WalOutcome};
     use rholang::rust::interpreter::matcher::r#match::Matcher;
     use rholang::rust::interpreter::rho_runtime::{
         create_replay_rho_runtime, create_rho_runtime, RhoRuntime, RhoRuntimeImpl,
@@ -2552,6 +2552,521 @@ mod tests {
                 "post-revert WAL entry {i} differs: leader={l:?}, follower={f:?}"
             );
         }
+    }
+
+    // ---------------------------------------------------------------
+    // PB-M-14 file-state-identity via WAL-only replay (2026-08-26).
+    //
+    // Path A(ii) of the fresh-follower Layer-2 harness plan
+    // (implementation-plan.md:1461-1464): a small "WAL applier"
+    // reconstructs on-disk file contents on a fresh tree from a
+    // captured WAL slice + a hash→bytes sidecar (what a Phase 7b
+    // joiner would obtain via `get_wal_payload`).  This closes the
+    // FILE-STATE-IDENTITY half of PB-M-14 that the leader/follower
+    // WAL-byte-identity pins above explicitly do not cover.
+    //
+    // Payloads sidecar: WAL entries carry `PayloadRef::Hash(...)`,
+    // NOT the raw bytes (§369 of the plan doc — hash-only WAL).
+    // Production followers rehydrate bytes via the Phase 7b sub-
+    // protocol; for tests, the driver knows the bytes it fed to
+    // `fsWrite!` and supplies them directly by hash key.
+    // ---------------------------------------------------------------
+
+    /// Recursively compare two directory trees for byte-identical
+    /// file contents + identical relative directory structure.
+    /// Ignores mtime, uid/gid, and any files listed in `ignore`.
+    fn assert_dir_trees_byte_identical(
+        a_root: &std::path::Path,
+        b_root: &std::path::Path,
+        ignore: &[&str],
+    ) {
+        fn collect(
+            root: &std::path::Path,
+            base: &std::path::Path,
+            ignore: &[&str],
+            out: &mut std::collections::BTreeMap<std::path::PathBuf, Option<Vec<u8>>>,
+        ) {
+            for entry in std::fs::read_dir(root).expect("read_dir") {
+                let entry = entry.expect("dir entry");
+                let path = entry.path();
+                let rel = path.strip_prefix(base).unwrap().to_path_buf();
+                let name = rel.to_string_lossy().to_string();
+                if ignore
+                    .iter()
+                    .any(|p| name == *p || name.starts_with(&format!("{p}/")))
+                {
+                    continue;
+                }
+                let ft = entry.file_type().expect("file_type");
+                if ft.is_dir() {
+                    out.insert(rel.clone(), None); // directory marker
+                    collect(&path, base, ignore, out);
+                } else if ft.is_file() {
+                    let bytes = std::fs::read(&path).expect("read file");
+                    out.insert(rel, Some(bytes));
+                }
+                // Symlinks / other kinds are unexpected in fileio-consensus
+                // trees (boot-time validation rejects them); skip silently
+                // to keep the helper focused.
+            }
+        }
+        let mut a_map = std::collections::BTreeMap::new();
+        let mut b_map = std::collections::BTreeMap::new();
+        collect(a_root, a_root, ignore, &mut a_map);
+        collect(b_root, b_root, ignore, &mut b_map);
+        assert_eq!(
+            a_map.keys().collect::<Vec<_>>(),
+            b_map.keys().collect::<Vec<_>>(),
+            "tree layout differs: leader={:?}, follower={:?}",
+            a_map.keys().collect::<Vec<_>>(),
+            b_map.keys().collect::<Vec<_>>(),
+        );
+        for (rel, a_val) in &a_map {
+            let b_val = b_map.get(rel).unwrap();
+            match (a_val, b_val) {
+                (None, None) => {} // both directories
+                (Some(a_bytes), Some(b_bytes)) => {
+                    assert_eq!(
+                        a_bytes,
+                        b_bytes,
+                        "byte divergence at {rel:?}: leader_len={}, follower_len={}",
+                        a_bytes.len(),
+                        b_bytes.len(),
+                    );
+                }
+                _ => panic!(
+                    "kind divergence at {rel:?} (leader={:?}, follower={:?})",
+                    a_val.as_ref().map(|_| "file"),
+                    b_val.as_ref().map(|_| "file"),
+                ),
+            }
+        }
+    }
+
+    /// Rewrite an absolute path from `leader_root/rel` to
+    /// `follower_root/rel`.  Panics if the path isn't rooted under
+    /// `leader_root` — that's a WAL entry the applier can't handle
+    /// safely (an out-of-tree canon_path would mean the leader saw a
+    /// symlink escape, which boot-time validation forbids in the
+    /// consensus-static trees this test targets).
+    fn translate_path(
+        leader_root: &std::path::Path,
+        follower_root: &std::path::Path,
+        p: &std::path::Path,
+    ) -> std::path::PathBuf {
+        let rel = p.strip_prefix(leader_root).unwrap_or_else(|_| {
+            panic!(
+                "WAL entry path {p:?} is not rooted under leader_root {leader_root:?}; \
+                 test harness invariant violated"
+            )
+        });
+        follower_root.join(rel)
+    }
+
+    /// Apply a captured WAL slice to a fresh follower tree.
+    /// `payload_bytes` maps `PayloadRef::Hash(h) → bytes` for every
+    /// `WriteAt` entry the WAL references; a missing hash is a hard
+    /// error (a real Phase 7b joiner would `get_wal_payload` for it —
+    /// in a test, missing means the driver mis-populated the sidecar).
+    ///
+    /// **Supported ops (WAL is self-sufficient):**
+    ///   * `WriteAt` — carries absolute `offset`, so the applier can
+    ///     land bytes at the exact position without any fd-lifecycle
+    ///     state.
+    ///   * `Truncate` — carries the new file length in `offset`.
+    ///   * Failure-outcome entries — skipped per H-6 (the leader
+    ///     never mutated disk on Failure, so the follower must not).
+    ///   * Observation-only variants (`Read`, `ReadAt`, `Stat`,
+    ///     `Entries`, `Size`, `EntriesStreamNext`) — skipped; they
+    ///     don't change disk state.
+    ///
+    /// **Sequential `Write` is NOT supported.**  Sequential writes
+    /// land at the fd's current file-position, but the current WAL
+    /// shape carries no fd identity nor position: only `path` +
+    /// `length` + `payload_ref`.  To reconstruct where each
+    /// sequential Write landed, the applier would need one of:
+    ///   (a) new `Open` / `Close` / `Seek` WAL entries so it can
+    ///       simulate fd-position evolution per file, OR
+    ///   (b) promoting `Write` to always carry an absolute offset
+    ///       (making it structurally identical to `WriteAt`).
+    ///
+    /// The applier panics on sequential `Write` with a pointer to
+    /// this design gap so a future slice that closes it will surface
+    /// here loudly.  Callers targeting file-state-identity today
+    /// should route through `WriteAt` (i.e., Rholang `fsWriteAt`) —
+    /// which is a legitimate architectural constraint on
+    /// consensus-static content, since `WriteAt` is the only write
+    /// variant whose leader/follower on-disk state can be
+    /// reconstructed from the WAL by non-consensus tooling (a joiner
+    /// without a Rholang runtime).
+    ///
+    /// Path-based mutation variants (`Chmod`, `Chown`, `RemoveFile`,
+    /// `RemoveDir`, `Rename`, `CopyFile`) are not yet wired into the
+    /// production handler set for the WAL append side; this applier
+    /// panics on them so a future slice that adds the handler wiring
+    /// will surface the applier-side gap loudly rather than silently
+    /// diverge on replay.
+    fn apply_wal_to_fresh_tree(
+        wal: &[WalEntry],
+        payload_bytes: &std::collections::HashMap<[u8; 32], Vec<u8>>,
+        leader_root: &std::path::Path,
+        follower_root: &std::path::Path,
+    ) {
+        use std::io::{Seek, SeekFrom, Write};
+        for (i, entry) in wal.iter().enumerate() {
+            if matches!(entry.outcome, WalOutcome::Failure { .. }) {
+                continue; // H-6: leader never mutated disk on Failure
+            }
+            match entry.op {
+                WalOp::Write => panic!(
+                    "WAL entry {i}: sequential `Write` cannot be replayed \
+                     against a fresh tree from the WAL alone — the entry \
+                     carries no fd identity or file-position, so the applier \
+                     can't determine where the bytes landed.  Extend the WAL \
+                     (Open/Close/Seek entries, or absolute offset on Write) \
+                     before applying sequential writes here.  For today's \
+                     PB-M-14 file-state-identity coverage, tests should route \
+                     through `WriteAt`."
+                ),
+                WalOp::WriteAt => {
+                    let dst = translate_path(leader_root, follower_root, &entry.path);
+                    let hash = match entry.payload_ref {
+                        Some(PayloadRef::Hash(h)) => h,
+                        Some(PayloadRef::DeployRef { .. }) => panic!(
+                            "WAL entry {i}: DeployRef payload_ref not yet supported \
+                             by the fresh-tree applier — needs on-chain deploy \
+                             data lookup (Phase 7b-2 reducer)"
+                        ),
+                        None => panic!(
+                            "WAL entry {i}: WriteAt without payload_ref — invariant \
+                             violation in the write handler"
+                        ),
+                    };
+                    let bytes = payload_bytes.get(&hash).unwrap_or_else(|| {
+                        panic!(
+                            "WAL entry {i}: hash {} missing from payload sidecar; \
+                             a real Phase 7b joiner would `get_wal_payload` for it, \
+                             but the test driver mis-populated the sidecar",
+                            hex::encode(hash),
+                        )
+                    });
+                    let off = entry.offset.expect("WriteAt must carry offset");
+                    let mut f = std::fs::OpenOptions::new()
+                        .create(true)
+                        .write(true)
+                        .truncate(false)
+                        .open(&dst)
+                        .unwrap_or_else(|e| panic!("open {dst:?}: {e}"));
+                    f.seek(SeekFrom::Start(off))
+                        .unwrap_or_else(|e| panic!("seek {dst:?}: {e}"));
+                    f.write_all(bytes)
+                        .unwrap_or_else(|e| panic!("write {dst:?}: {e}"));
+                }
+                WalOp::Truncate => {
+                    let dst = translate_path(leader_root, follower_root, &entry.path);
+                    let n = entry.offset.expect("Truncate must carry offset");
+                    let f = std::fs::OpenOptions::new()
+                        .write(true)
+                        .open(&dst)
+                        .unwrap_or_else(|e| panic!("open-for-truncate {dst:?}: {e}"));
+                    f.set_len(n)
+                        .unwrap_or_else(|e| panic!("set_len {dst:?}: {e}"));
+                }
+                // Observation-only — nothing to reconstruct on disk.
+                WalOp::Read
+                | WalOp::ReadAt
+                | WalOp::Stat
+                | WalOp::Entries
+                | WalOp::Size
+                | WalOp::EntriesStreamNext => {}
+                // Not yet wired to the WAL append side; if a future
+                // slice adds them, extend the applier here.
+                WalOp::Chmod
+                | WalOp::Chown
+                | WalOp::RemoveFile
+                | WalOp::RemoveDir
+                | WalOp::Rename
+                | WalOp::CopyFile => panic!(
+                    "WAL entry {i}: {:?} is not yet handled by the fresh-tree \
+                     applier — extend `apply_wal_to_fresh_tree` when the \
+                     production handler for this op wires WAL append",
+                    entry.op
+                ),
+            }
+        }
+    }
+
+    /// **PB-M-14 file-state-identity pin (2026-08-26).**  Closes the
+    /// second half of the PB-M-14 property — the first being WAL-byte-
+    /// identity between leader and follower (covered by
+    /// `multi_deploy_wal_is_byte_identical_on_leader_and_follower`).
+    ///
+    /// Structure:
+    ///   1. Two identical base trees at different temp dirs
+    ///      (leader_dir + follower_dir, each seeded with the same
+    ///      initial file bytes at the same relative paths).
+    ///   2. A leader runtime evaluates a sequence of Consensus
+    ///      `fsWriteAt` / `fsTruncate` deploys against leader_dir.
+    ///      The driver knows the exact bytes it passes to `fsWriteAt!`
+    ///      and hashes them into a payload sidecar keyed by
+    ///      `PayloadRef::hash(bytes)` — the same key the WAL entries
+    ///      carry (a real Phase 7b joiner obtains this sidecar from
+    ///      peers via `get_wal_payload`).
+    ///   3. `apply_wal_to_fresh_tree` replays the WAL onto follower_dir
+    ///      using ONLY the WAL entries + sidecar (no rig, no shared
+    ///      store, no Rholang re-execution).
+    ///   4. `assert_dir_trees_byte_identical` verifies leader_dir and
+    ///      follower_dir are byte-identical after replay.
+    ///
+    /// **Restricted to `WriteAt` + `Truncate` on purpose.**  See the
+    /// docstring on `apply_wal_to_fresh_tree` for why sequential
+    /// `Write` cannot be replayed from the current WAL shape (no fd
+    /// identity or file-position recorded).  The Deferred items
+    /// catalog entry "WAL fresh-tree applier: sequential-Write
+    /// reconstruction" tracks the follow-up gap.  Both `WriteAt` and
+    /// `Truncate` carry sufficient info in the WAL entry alone.
+    ///
+    /// Regression scenarios this pin catches:
+    /// * A WAL entry mis-records `offset` for a `WriteAt` (follower
+    ///   writes at the wrong place → byte divergence).
+    /// * A `Failure` outcome that the handler wrongly marked
+    ///   `Success` on the leader (follower attempts a write that
+    ///   the leader never performed → byte divergence).
+    /// * `payload_ref` computed over a different byte slice than
+    ///   the one actually written (follower's sidecar lookup finds
+    ///   no matching hash → applier panics).
+    /// * `canon_path` on the WAL entry loses the `rel` component
+    ///   (all writes collapse onto canon_root itself → follower's
+    ///   `rel` file never gets touched → byte divergence).
+    /// * `Truncate` mis-records the target length (byte divergence
+    ///   on file size / tail contents).
+    ///
+    /// Not covered here (still Path B or a follow-up slice):
+    /// * Full E2E through Casper block-processing on a two-node
+    ///   network (`pb_m_14_two_validator_scaffold` docstring).
+    /// * Sequential-Write reconstruction (needs Open/Close/Seek WAL
+    ///   entries or absolute-offset Write; see applier docstring).
+    /// * Path-based mutations (chmod/chown/remove/rename/copy) — the
+    ///   handler-side WAL append for those is not yet wired.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn pb_m_14_file_state_identity_via_wal_replay() {
+        // Two dirs with IDENTICAL base contents at IDENTICAL relative
+        // paths.  The leader mutates leader_dir; the applier
+        // reconstructs the same state on follower_dir purely from the
+        // WAL + payload sidecar.
+        let leader_dir = tempfile::tempdir().unwrap();
+        let follower_dir = tempfile::tempdir().unwrap();
+        for base in [leader_dir.path(), follower_dir.path()] {
+            std::fs::write(base.join("data.bin"), vec![0u8; 128]).unwrap();
+            std::fs::write(base.join("log.txt"), vec![0u8; 64]).unwrap();
+        }
+
+        let leader = create_runtime().await;
+        let leader_root_str = leader_dir.path().display().to_string();
+
+        // Deploy 1: WriteAt(0, "aabb") to data.bin (Consensus).
+        // Deploy 2: WriteAt(10, "ccdd") + Truncate(32) on data.bin.
+        // Deploy 3: WriteAt(3, "ff") to log.txt.
+        //
+        // Payload sidecar is populated by hashing the exact bytes the
+        // Rholang literal is decoded to.  Any mismatch between the
+        // sidecar keys and the WAL's payload_ref hashes would trip
+        // the applier's `missing hash` panic — closing that loop is
+        // part of the point of this test.
+        let mut sidecar: std::collections::HashMap<[u8; 32], Vec<u8>> =
+            std::collections::HashMap::new();
+        let mut record = |bytes: &[u8]| {
+            if let PayloadRef::Hash(h) = PayloadRef::hash(bytes) {
+                sidecar.insert(h, bytes.to_vec());
+            }
+        };
+        record(&[0xaa, 0xbb]);
+        record(&[0xcc, 0xdd]);
+        record(&[0xff]);
+
+        let deploys: Vec<(String, [u8; 32])> = vec![
+            (
+                format!(
+                    r#"
+                    new fsOpen(`rho:io:fs:native:1.0.0/open`),
+                        fsWriteAt(`rho:io:fs:native:1.0.0/writeAt`),
+                        fsClose(`rho:io:fs:native:1.0.0/close`),
+                        oc, wc, cc in {{
+                      fsOpen!("{leader_root_str}", "data.bin", "rw", "consensus", *oc) |
+                      for (@[true, fd] <- oc) {{
+                        fsWriteAt!(fd, 0, "aabb".hexToBytes(), *wc) |
+                        for (@_ <- wc) {{
+                          fsClose!(fd, *cc) |
+                          for (@_ <- cc) {{ Nil }}
+                        }}
+                      }}
+                    }}
+                    "#
+                ),
+                [1u8; 32],
+            ),
+            (
+                format!(
+                    r#"
+                    new fsOpen(`rho:io:fs:native:1.0.0/open`),
+                        fsWriteAt(`rho:io:fs:native:1.0.0/writeAt`),
+                        fsTruncate(`rho:io:fs:native:1.0.0/truncate`),
+                        fsClose(`rho:io:fs:native:1.0.0/close`),
+                        oc, wc, tc, cc in {{
+                      fsOpen!("{leader_root_str}", "data.bin", "rw", "consensus", *oc) |
+                      for (@[true, fd] <- oc) {{
+                        fsWriteAt!(fd, 10, "ccdd".hexToBytes(), *wc) |
+                        for (@_ <- wc) {{
+                          fsTruncate!(fd, 32, *tc) |
+                          for (@_ <- tc) {{
+                            fsClose!(fd, *cc) |
+                            for (@_ <- cc) {{ Nil }}
+                          }}
+                        }}
+                      }}
+                    }}
+                    "#
+                ),
+                [2u8; 32],
+            ),
+            (
+                format!(
+                    r#"
+                    new fsOpen(`rho:io:fs:native:1.0.0/open`),
+                        fsWriteAt(`rho:io:fs:native:1.0.0/writeAt`),
+                        fsClose(`rho:io:fs:native:1.0.0/close`),
+                        oc, wc, cc in {{
+                      fsOpen!("{leader_root_str}", "log.txt", "rw", "consensus", *oc) |
+                      for (@[true, fd] <- oc) {{
+                        fsWriteAt!(fd, 3, "ff".hexToBytes(), *wc) |
+                        for (@_ <- wc) {{
+                          fsClose!(fd, *cc) |
+                          for (@_ <- cc) {{ Nil }}
+                        }}
+                      }}
+                    }}
+                    "#
+                ),
+                [3u8; 32],
+            ),
+        ];
+
+        for (term, seed) in &deploys {
+            leader
+                .evaluate(
+                    term,
+                    Cost::unsafe_max(),
+                    std::collections::HashMap::new(),
+                    Blake2b512Random::create_from_bytes(seed),
+                )
+                .await
+                .expect("leader evaluate");
+        }
+
+        let wal = leader.fs_handles.wal.snapshot();
+        assert!(
+            !wal.is_empty(),
+            "leader must have journaled at least one Consensus write"
+        );
+
+        // Pre-condition sanity: every WriteAt entry's payload_ref
+        // MUST be a key in the sidecar.  A miss here means the
+        // driver's hashed-bytes don't match the WAL's — a bug in
+        // this test, or a regression in payload_ref computation.
+        for (i, entry) in wal.iter().enumerate() {
+            if entry.op == WalOp::WriteAt && matches!(entry.outcome, WalOutcome::Success) {
+                if let Some(PayloadRef::Hash(h)) = entry.payload_ref {
+                    assert!(
+                        sidecar.contains_key(&h),
+                        "WAL entry {i} references hash {} not in the driver's \
+                         sidecar — either the driver didn't record the bytes it \
+                         fed to fsWriteAt, or the handler's payload_ref hash \
+                         diverged from the actual bytes written",
+                        hex::encode(h),
+                    );
+                }
+            }
+        }
+
+        apply_wal_to_fresh_tree(&wal, &sidecar, leader_dir.path(), follower_dir.path());
+
+        assert_dir_trees_byte_identical(leader_dir.path(), follower_dir.path(), &[]);
+    }
+
+    /// **PB-M-14 file-state-identity + failure-skip pin (2026-08-26).**
+    /// Companion to `pb_m_14_file_state_identity_via_wal_replay` that
+    /// exercises the H-6 `WalOutcome::Failure` skip branch of the
+    /// applier: a WAL entry whose `outcome == Failure` MUST NOT be
+    /// applied to the follower tree — otherwise the follower would
+    /// write bytes that the leader's syscall never committed to disk.
+    ///
+    /// Uses a synthetic WAL directly (bypassing the runtime) so the
+    /// Failure entry carries a `payload_ref` hash that is NOT in the
+    /// sidecar.  If the applier respects `outcome`, the missing-hash
+    /// panic never fires and the follower's tree matches the leader's;
+    /// if the applier ignores `outcome`, the panic fires — either
+    /// mode catches the regression cleanly.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn wal_applier_skips_failure_outcome_entries() {
+        use std::io::{Seek, SeekFrom, Write};
+        let leader_dir = tempfile::tempdir().unwrap();
+        let follower_dir = tempfile::tempdir().unwrap();
+        std::fs::write(leader_dir.path().join("real.bin"), vec![0u8; 16]).unwrap();
+        std::fs::write(follower_dir.path().join("real.bin"), vec![0u8; 16]).unwrap();
+
+        let real_payload: &[u8] = &[0x99, 0xAA];
+        let real_offset: u64 = 4;
+        let mut sidecar: std::collections::HashMap<[u8; 32], Vec<u8>> =
+            std::collections::HashMap::new();
+        if let PayloadRef::Hash(h) = PayloadRef::hash(real_payload) {
+            sidecar.insert(h, real_payload.to_vec());
+        }
+
+        // Success WriteAt(4, [0x99, 0xAA]) + Failure WriteAt(8, ...)
+        // with a BOGUS hash that is NOT in the sidecar.  The
+        // Failure entry must be skipped, otherwise the applier's
+        // `hash missing from payload sidecar` panic fires and
+        // this test fails loudly.
+        let bogus_hash = [0xEEu8; 32];
+        let wal = vec![
+            WalEntry {
+                op: WalOp::WriteAt,
+                path: leader_dir.path().join("real.bin"),
+                extra_path: None,
+                offset: Some(real_offset),
+                length: Some(real_payload.len() as u64),
+                payload_ref: Some(PayloadRef::hash(real_payload)),
+                mode_bits: None,
+                owner: None,
+                group: None,
+                outcome: WalOutcome::Success,
+            },
+            WalEntry {
+                op: WalOp::WriteAt,
+                path: leader_dir.path().join("real.bin"),
+                extra_path: None,
+                offset: Some(8),
+                length: Some(4),
+                payload_ref: Some(PayloadRef::Hash(bogus_hash)),
+                mode_bits: None,
+                owner: None,
+                group: None,
+                outcome: WalOutcome::Failure { code: 5 },
+            },
+        ];
+
+        apply_wal_to_fresh_tree(&wal, &sidecar, leader_dir.path(), follower_dir.path());
+
+        // Emulate the leader's successful syscall on leader_dir so
+        // the tree-identity check has a reference.  (In the real
+        // E2E flow this is a side effect of the leader's syscall.)
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .open(leader_dir.path().join("real.bin"))
+            .unwrap();
+        f.seek(SeekFrom::Start(real_offset)).unwrap();
+        f.write_all(real_payload).unwrap();
+        assert_dir_trees_byte_identical(leader_dir.path(), follower_dir.path(), &[]);
     }
 
     /// **PB-M-14 two-validator E2E scaffold (2026-08-26).**  Ignored
