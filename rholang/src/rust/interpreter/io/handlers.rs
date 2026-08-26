@@ -160,16 +160,29 @@ impl FsProcesses {
         offset: Option<u64>,
         ack: &Par,
     ) -> Result<bool, ()> {
+        // For sequential Write (offset=None from caller), pull the
+        // fd's shadow position — that's the absolute offset the
+        // subsequent libc::write will land at.  Both leader and
+        // follower evolve `position` deterministically from the same
+        // sequence of contract-arg values (see FileHandle::position
+        // docstring), so this read is symmetric.  For WriteAt, the
+        // caller supplied the explicit offset.
+        //
+        // Position-follow-up (2026-08-26): a WAL entry with
+        // `offset=Some(pos)` for sequential Write is what unblocks
+        // the fresh-tree applier (`apply_wal_to_fresh_tree` in
+        // `fs_wal_spec.rs`) to reconstruct file state from the WAL
+        // alone.  Prior to this, sequential Write recorded
+        // `offset=None` and the applier had to panic on it.
         let wal_meta = self
             .handles
-            .with_mut(fd, |h| (h.cmode, h.canon_path.clone()))
+            .with_mut(fd, |h| (h.cmode, h.canon_path.clone(), h.position))
             .await;
         match wal_meta {
-            Some((ConsensusMode::Consensus, canon_path)) => {
-                let op = if offset.is_some() {
-                    WalOp::WriteAt
-                } else {
-                    WalOp::Write
+            Some((ConsensusMode::Consensus, canon_path, position)) => {
+                let (op, resolved_offset) = match offset {
+                    Some(off) => (WalOp::WriteAt, Some(off)),
+                    None => (WalOp::Write, Some(position)),
                 };
                 self.handles
                     .wal
@@ -178,7 +191,7 @@ impl FsProcesses {
                             op,
                             path: canon_path,
                             extra_path: None,
-                            offset,
+                            offset: resolved_offset,
                             length: Some(bytes.len() as u64),
                             payload_ref: Some(PayloadRef::hash(bytes)),
                             mode_bits: None,
@@ -225,16 +238,28 @@ impl FsProcesses {
         offset: Option<u64>,
         ack: &Par,
     ) -> Result<bool, ()> {
+        // Sequential Read journals with shadow-position as absolute
+        // offset — same rationale as sequential Write; joining
+        // validators can now verify a Read against reconstructed
+        // state at the correct file position.  See journal_write
+        // for the position-follow-up (2026-08-26) design note.
+        //
+        // journal_read is called AFTER the syscall completes
+        // successfully — at which point the handler has NOT yet
+        // advanced FileHandle.position.  So the position read here
+        // reflects the PRE-read position, which is exactly the
+        // absolute offset the leader's libc::read consumed bytes
+        // from.  The handler then advances position by
+        // `bytes.len()` after this call.
         let wal_meta = self
             .handles
-            .with_mut(fd, |h| (h.cmode, h.canon_path.clone()))
+            .with_mut(fd, |h| (h.cmode, h.canon_path.clone(), h.position))
             .await;
         match wal_meta {
-            Some((ConsensusMode::Consensus, canon_path)) => {
-                let op = if offset.is_some() {
-                    WalOp::ReadAt
-                } else {
-                    WalOp::Read
+            Some((ConsensusMode::Consensus, canon_path, position)) => {
+                let (op, resolved_offset) = match offset {
+                    Some(off) => (WalOp::ReadAt, Some(off)),
+                    None => (WalOp::Read, Some(position)),
                 };
                 self.handles
                     .wal
@@ -243,7 +268,7 @@ impl FsProcesses {
                             op,
                             path: canon_path,
                             extra_path: None,
-                            offset,
+                            offset: resolved_offset,
                             length: Some(bytes.len() as u64),
                             payload_ref: Some(PayloadRef::hash(bytes)),
                             mode_bits: None,
@@ -500,6 +525,13 @@ impl FsProcesses {
                         canon_path: canonicalize_lexical(&root, &rel),
                         mode: intent.map(|i| i.mode).unwrap_or(AccessMode::Read),
                         cmode,
+                        // Shadow position starts at 0 — POSIX default for
+                        // O_RDONLY/O_WRONLY/O_RDWR without O_APPEND.  The
+                        // leader's open_impl below rejects Consensus +
+                        // append modes at the args-check, so on the
+                        // replay branch we never see a shadow handle
+                        // whose real fd was O_APPEND.
+                        position: 0,
                     };
                     // Ignore the return value: if the slot is already
                     // occupied (shouldn't happen on a fresh follower),
@@ -548,6 +580,24 @@ impl FsProcesses {
             Some(i) => i,
             None => return err(FSERR_BAD_ARG, format!("unknown fopen mode {mode:?}")),
         };
+        // Consensus caps + O_APPEND is not supported (see
+        // `FileHandle::position` docstring).  O_APPEND writes are
+        // atomically retargeted to file-end by the kernel; the
+        // shadow-position model that lets sequential writes record
+        // deterministic absolute offsets in the WAL doesn't extend
+        // cleanly to O_APPEND without per-canon_path EOF simulation
+        // on the follower.  Rather than silently produce a WAL that
+        // followers can't replay, reject at open time.  Consensus
+        // authors should use non-append modes + explicit `fs_seek`
+        // if they need append-like behavior.
+        if cmode == ConsensusMode::Consensus && intent.append {
+            return err(
+                FSERR_BAD_ARG,
+                "append modes (\"a\", \"a+\") are not supported on Consensus caps — \
+                 use a non-append mode plus fs_seek(SEEK_END) if append semantics \
+                 are required, or open the cap as Oracular",
+            );
+        }
         let root_pb = PathBuf::from(&root);
         let intent_copy = intent;
         // C-29-1 review fix: keep `rel` accessible for canon_path
@@ -592,6 +642,15 @@ impl FsProcesses {
             canon_path: canonicalize_lexical(&root, &rel),
             mode: intent.mode,
             cmode,
+            // Shadow position starts at 0 for all supported modes.
+            // Non-append modes (r/rw/w/w+/wx/w+x) all leave the fd at
+            // position 0 after open.  Append modes are rejected above
+            // for Consensus; for Oracular they're allowed but no WAL
+            // consumer reads `position`, so 0 is a safe default (the
+            // kernel handles O_APPEND retargeting at write time, and
+            // our sequential-write path doesn't consult `position`
+            // when the WAL journal is a no-op).
+            position: 0,
         };
         match self.handles.insert(handle).await {
             Ok(fd) => ok_u64(fd),
@@ -695,7 +754,20 @@ impl FsProcesses {
                 // fd is a u64 bit-pattern via GInt; reinterpret
                 // unsigned.  n is a legitimate length so no
                 // sign-guard removal there.
-                let _ = self.journal_read(fd as u64, &bytes, None, ack).await;
+                //
+                // Order matters: journal_read reads the PRE-read
+                // shadow position from FileHandle; then the
+                // subsequent with_mut advances position by
+                // bytes.len().  If we advanced first, journal_read
+                // would record the post-read offset which is
+                // wrong.  Mirrors the leader path below.
+                let fd_u = fd as u64;
+                let _ = self.journal_read(fd_u, &bytes, None, ack).await;
+                let n = bytes.len() as u64;
+                let _ = self
+                    .handles
+                    .with_mut(fd_u, |h| h.position = h.position.saturating_add(n))
+                    .await;
             }
             produce(&previous, ack).await?;
             return Ok(previous);
@@ -706,7 +778,16 @@ impl FsProcesses {
                 // Journal on success.  extract_ok_bytes returns None
                 // for error replies, so this is a clean guard.
                 if let Some(bytes) = extract_ok_bytes(std::slice::from_ref(&r)) {
-                    let _ = self.journal_read(fd as u64, &bytes, None, ack).await;
+                    let fd_u = fd as u64;
+                    // Same order as the is_replay branch: journal
+                    // reads the pre-read position, THEN we advance
+                    // by actual bytes returned.
+                    let _ = self.journal_read(fd_u, &bytes, None, ack).await;
+                    let n = bytes.len() as u64;
+                    let _ = self
+                        .handles
+                        .with_mut(fd_u, |h| h.position = h.position.saturating_add(n))
+                        .await;
                 }
                 r
             }
@@ -890,10 +971,24 @@ impl FsProcesses {
             // the actual bytes on partial writes.  Full-length
             // writes leave the pre-syscall placeholder in place
             // (already correct).
-            if let (Some((_fd, bytes)), Some(n)) = (&parsed, extract_ok_u64(&previous)) {
+            if let (Some((fd, bytes)), Some(n)) = (&parsed, extract_ok_u64(&previous)) {
                 if n < bytes.len() as u64 {
                     self.finalize_write_journal(bytes, n, ack);
                 }
+                // Position-follow-up (2026-08-26): advance shadow
+                // position by ACTUAL bytes written (sequential
+                // write, so pwrite semantics don't apply here —
+                // this is fs_write, not fs_write_at).  Mirrors the
+                // leader path below so both sides evolve position
+                // identically.  A partial write (n < requested)
+                // advances by n; a failed write (previous is an
+                // error reply) advances by 0 (n=None from
+                // extract_ok_u64).
+                let fd_copy = *fd;
+                let _ = self
+                    .handles
+                    .with_mut(fd_copy, |h| h.position = h.position.saturating_add(n))
+                    .await;
             }
             // H-6 fix (2026-08-06): if the leader's cached reply
             // was an error, follower flips the placeholder to
@@ -925,6 +1020,14 @@ impl FsProcesses {
                 );
                 self.finalize_write_journal(bytes, n, ack);
             }
+            // Position-follow-up (2026-08-26): advance shadow
+            // position by ACTUAL bytes written.  See is_replay
+            // branch for the follower-mirror rationale.
+            let fd_copy = *fd;
+            let _ = self
+                .handles
+                .with_mut(fd_copy, |h| h.position = h.position.saturating_add(n))
+                .await;
         }
         // H-6 fix (2026-08-06): if the syscall returned an error
         // reply, flip the WAL placeholder to Failure { code }.
@@ -1101,6 +1204,20 @@ impl FsProcesses {
             return Err(illegal_argument_error("fs_seek"));
         };
         if is_replay {
+            // Position-follow-up (2026-08-26): the follower must
+            // update its shadow position from the leader's cached
+            // reply so subsequent sequential fs_write / fs_read
+            // journal the correct absolute offset.  Extract the
+            // new position from `previous` (leader cached
+            // ok_u64(new_pos) on success; error replies leave
+            // position unchanged, mirroring POSIX lseek's
+            // failure-doesn't-move-position semantics).
+            if let (Some(fd), Some(new_pos)) =
+                (RhoNumber::unapply(fd_par), extract_ok_u64(&previous))
+            {
+                let fd_u = fd as u64;
+                let _ = self.handles.with_mut(fd_u, |h| h.position = new_pos).await;
+            }
             produce(&previous, ack).await?;
             return Ok(previous);
         }
@@ -1133,7 +1250,16 @@ impl FsProcesses {
                             match r {
                                 Err(_je) => err(FSERR_IO, "spawn_blocking task failed"),
                                 Ok(Err(e)) => err(io_err_code(&e), io_msg_scrub(&e)),
-                                Ok(Ok(pos)) => ok_u64(pos),
+                                Ok(Ok(pos)) => {
+                                    // Position-follow-up: sync shadow
+                                    // to real position.  Follower
+                                    // mirrors this via the
+                                    // extract_ok_u64(&previous) path
+                                    // in the is_replay branch above.
+                                    let fd_u = fd as u64;
+                                    let _ = self.handles.with_mut(fd_u, |h| h.position = pos).await;
+                                    ok_u64(pos)
+                                }
                             }
                         }
                     },

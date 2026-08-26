@@ -115,7 +115,14 @@ mod tests {
         );
         let e = &entries[0];
         assert_eq!(e.op, WalOp::Write);
-        assert_eq!(e.offset, None);
+        // Position-follow-up (2026-08-26): sequential Write on a
+        // fresh fd (opened "rw", position=0) records offset=Some(0)
+        // — the pre-write shadow position pulled from FileHandle
+        // in journal_write.  Pre-position-follow-up this was None;
+        // the change unblocks the fresh-tree WAL applier from
+        // reconstructing sequential-write file state (see
+        // `apply_wal_to_fresh_tree` in this file).
+        assert_eq!(e.offset, Some(0));
         assert_eq!(e.length, Some(payload.len() as u64));
         // Payload hash must match Blake2b256 of the actual bytes.
         let expected_hash: Vec<u8> = Blake2b256::hash(payload.to_vec());
@@ -1747,7 +1754,13 @@ mod tests {
         assert_eq!(entries.len(), 1, "expected 1 Read WAL entry");
         let e = &entries[0];
         assert_eq!(e.op, WalOp::Read);
-        assert_eq!(e.offset, None);
+        // Position-follow-up (2026-08-26): sequential Read on a
+        // fresh fd (opened "rw", position=0) records offset=Some(0)
+        // — the pre-read shadow position, so a joining validator
+        // can verify the read against reconstructed state at the
+        // exact position the leader consumed bytes from.  See
+        // `FileHandle::position` for the position-tracking model.
+        assert_eq!(e.offset, Some(0));
         assert_eq!(e.length, Some(payload.len() as u64));
         let expected_hash: Vec<u8> = Blake2b256::hash(payload.to_vec());
         match &e.payload_ref {
@@ -2665,14 +2678,16 @@ mod tests {
 
     /// Apply a captured WAL slice to a fresh follower tree.
     /// `payload_bytes` maps `PayloadRef::Hash(h) → bytes` for every
-    /// `WriteAt` entry the WAL references; a missing hash is a hard
-    /// error (a real Phase 7b joiner would `get_wal_payload` for it —
-    /// in a test, missing means the driver mis-populated the sidecar).
+    /// `Write` / `WriteAt` entry the WAL references; a missing hash
+    /// is a hard error (a real Phase 7b joiner would
+    /// `get_wal_payload` for it — in a test, missing means the
+    /// driver mis-populated the sidecar).
     ///
     /// **Supported ops (WAL is self-sufficient):**
-    ///   * `WriteAt` — carries absolute `offset`, so the applier can
-    ///     land bytes at the exact position without any fd-lifecycle
-    ///     state.
+    ///   * `Write` — sequential write; carries the fd's pre-write
+    ///     shadow position in `offset` (position-tracking follow-up
+    ///     2026-08-26 to PB-M-14 file-state-identity).
+    ///   * `WriteAt` — positional write; `offset` from the caller.
     ///   * `Truncate` — carries the new file length in `offset`.
     ///   * Failure-outcome entries — skipped per H-6 (the leader
     ///     never mutated disk on Failure, so the follower must not).
@@ -2680,25 +2695,12 @@ mod tests {
     ///     `Entries`, `Size`, `EntriesStreamNext`) — skipped; they
     ///     don't change disk state.
     ///
-    /// **Sequential `Write` is NOT supported.**  Sequential writes
-    /// land at the fd's current file-position, but the current WAL
-    /// shape carries no fd identity nor position: only `path` +
-    /// `length` + `payload_ref`.  To reconstruct where each
-    /// sequential Write landed, the applier would need one of:
-    ///   (a) new `Open` / `Close` / `Seek` WAL entries so it can
-    ///       simulate fd-position evolution per file, OR
-    ///   (b) promoting `Write` to always carry an absolute offset
-    ///       (making it structurally identical to `WriteAt`).
-    ///
-    /// The applier panics on sequential `Write` with a pointer to
-    /// this design gap so a future slice that closes it will surface
-    /// here loudly.  Callers targeting file-state-identity today
-    /// should route through `WriteAt` (i.e., Rholang `fsWriteAt`) —
-    /// which is a legitimate architectural constraint on
-    /// consensus-static content, since `WriteAt` is the only write
-    /// variant whose leader/follower on-disk state can be
-    /// reconstructed from the WAL by non-consensus tooling (a joiner
-    /// without a Rholang runtime).
+    /// The applier does NOT distinguish Write from WriteAt: both
+    /// carry an absolute `offset` and are replayed by seek-then-
+    /// write.  Determinism relies on the FileHandle shadow-position
+    /// tracking on both leader and follower (see
+    /// `FileHandle::position` docstring); the applier just reads
+    /// what the WAL says.
     ///
     /// Path-based mutation variants (`Chmod`, `Chown`, `RemoveFile`,
     /// `RemoveDir`, `Rename`, `CopyFile`) are not yet wired into the
@@ -2718,17 +2720,7 @@ mod tests {
                 continue; // H-6: leader never mutated disk on Failure
             }
             match entry.op {
-                WalOp::Write => panic!(
-                    "WAL entry {i}: sequential `Write` cannot be replayed \
-                     against a fresh tree from the WAL alone — the entry \
-                     carries no fd identity or file-position, so the applier \
-                     can't determine where the bytes landed.  Extend the WAL \
-                     (Open/Close/Seek entries, or absolute offset on Write) \
-                     before applying sequential writes here.  For today's \
-                     PB-M-14 file-state-identity coverage, tests should route \
-                     through `WriteAt`."
-                ),
-                WalOp::WriteAt => {
+                WalOp::Write | WalOp::WriteAt => {
                     let dst = translate_path(leader_root, follower_root, &entry.path);
                     let hash = match entry.payload_ref {
                         Some(PayloadRef::Hash(h)) => h,
@@ -2738,8 +2730,9 @@ mod tests {
                              data lookup (Phase 7b-2 reducer)"
                         ),
                         None => panic!(
-                            "WAL entry {i}: WriteAt without payload_ref — invariant \
-                             violation in the write handler"
+                            "WAL entry {i}: {:?} without payload_ref — invariant \
+                             violation in the write handler",
+                            entry.op,
                         ),
                     };
                     let bytes = payload_bytes.get(&hash).unwrap_or_else(|| {
@@ -2750,7 +2743,17 @@ mod tests {
                             hex::encode(hash),
                         )
                     });
-                    let off = entry.offset.expect("WriteAt must carry offset");
+                    // Both Write and WriteAt carry absolute offset
+                    // post-position-follow-up (2026-08-26).
+                    let off = entry.offset.unwrap_or_else(|| {
+                        panic!(
+                            "WAL entry {i}: {:?} without offset — position-follow-up \
+                             regression? journal_write should populate offset from \
+                             FileHandle.position (sequential Write) or the caller-\
+                             supplied offset (WriteAt)",
+                            entry.op,
+                        )
+                    });
                     let mut f = std::fs::OpenOptions::new()
                         .create(true)
                         .write(true)
@@ -2818,14 +2821,6 @@ mod tests {
     ///   4. `assert_dir_trees_byte_identical` verifies leader_dir and
     ///      follower_dir are byte-identical after replay.
     ///
-    /// **Restricted to `WriteAt` + `Truncate` on purpose.**  See the
-    /// docstring on `apply_wal_to_fresh_tree` for why sequential
-    /// `Write` cannot be replayed from the current WAL shape (no fd
-    /// identity or file-position recorded).  The Deferred items
-    /// catalog entry "WAL fresh-tree applier: sequential-Write
-    /// reconstruction" tracks the follow-up gap.  Both `WriteAt` and
-    /// `Truncate` carry sufficient info in the WAL entry alone.
-    ///
     /// Regression scenarios this pin catches:
     /// * A WAL entry mis-records `offset` for a `WriteAt` (follower
     ///   writes at the wrong place → byte divergence).
@@ -2844,10 +2839,15 @@ mod tests {
     /// Not covered here (still Path B or a follow-up slice):
     /// * Full E2E through Casper block-processing on a two-node
     ///   network (`pb_m_14_two_validator_scaffold` docstring).
-    /// * Sequential-Write reconstruction (needs Open/Close/Seek WAL
-    ///   entries or absolute-offset Write; see applier docstring).
     /// * Path-based mutations (chmod/chown/remove/rename/copy) — the
     ///   handler-side WAL append for those is not yet wired.
+    ///
+    /// Sequential `Write` reconstruction: covered by the sibling
+    /// test `pb_m_14_file_state_identity_sequential_write` after the
+    /// position-follow-up (2026-08-26) — sequential Write now
+    /// records absolute offset in the WAL from the FileHandle's
+    /// shadow position, so the applier handles it identically to
+    /// WriteAt.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn pb_m_14_file_state_identity_via_wal_replay() {
         // Two dirs with IDENTICAL base contents at IDENTICAL relative
@@ -3067,6 +3067,325 @@ mod tests {
         f.seek(SeekFrom::Start(real_offset)).unwrap();
         f.write_all(real_payload).unwrap();
         assert_dir_trees_byte_identical(leader_dir.path(), follower_dir.path(), &[]);
+    }
+
+    /// **PB-M-14 file-state-identity — sequential-Write leg
+    /// (position-follow-up, 2026-08-26).**  Companion to
+    /// `pb_m_14_file_state_identity_via_wal_replay` covering the
+    /// path the earlier test explicitly did not: sequential
+    /// `fsWrite` (offset absent from Rholang, filled in by the
+    /// handler from `FileHandle.position`).
+    ///
+    /// After the position-follow-up, sequential Write records
+    /// absolute offset in the WAL derived from the fd's shadow
+    /// position at journal time (which both leader and follower
+    /// evolve deterministically).  The applier then handles it
+    /// identically to WriteAt.  This test drives a three-write
+    /// sequence on a single fd (positions 0 → 4 → 12 across the
+    /// three writes) so the shadow-position update between writes
+    /// is exercised, plus a Seek and a Write-after-Seek to
+    /// exercise the seek-position sync.
+    ///
+    /// Regression scenarios this pin catches (on top of the
+    /// existing WriteAt/Truncate coverage):
+    /// * `journal_write` records `offset=None` for sequential
+    ///   Write (regression to the pre-follow-up shape) → applier's
+    ///   `{:?} without offset` panic fires.
+    /// * Shadow position not advanced after successful write →
+    ///   subsequent sequential Write records offset=0 (same as
+    ///   first write) → applier overwrites earlier bytes → byte
+    ///   divergence.
+    /// * `fs_seek` doesn't update shadow position → subsequent
+    ///   sequential Write records wrong offset → byte divergence.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn pb_m_14_file_state_identity_sequential_write() {
+        let leader_dir = tempfile::tempdir().unwrap();
+        let follower_dir = tempfile::tempdir().unwrap();
+        // Base file: 64 zero bytes.  Sequential writes will land
+        // at offsets 0, 4, 12 (via a mid-sequence Seek); then
+        // truncate to 20 bytes so tail-comparison is meaningful.
+        for base in [leader_dir.path(), follower_dir.path()] {
+            std::fs::write(base.join("data.bin"), vec![0u8; 64]).unwrap();
+        }
+
+        let leader = create_runtime().await;
+        let leader_root_str = leader_dir.path().display().to_string();
+
+        // Sidecar for every byte-payload the driver expects to hash.
+        let mut sidecar: std::collections::HashMap<[u8; 32], Vec<u8>> =
+            std::collections::HashMap::new();
+        let mut record = |bytes: &[u8]| {
+            if let PayloadRef::Hash(h) = PayloadRef::hash(bytes) {
+                sidecar.insert(h, bytes.to_vec());
+            }
+        };
+        record(&[0x11, 0x22, 0x33, 0x44]); // write 1 @ pos 0 → advances to 4
+        record(&[0x55, 0x66, 0x77, 0x88]); // write 2 @ pos 4 → advances to 8
+        record(&[0x99, 0xAA, 0xBB, 0xCC]); // write 3 @ pos 12 (after seek)
+
+        // Single deploy that opens once, writes three times (with
+        // a seek in the middle), truncates, and closes.  Runs
+        // multiple sequential writes on the SAME fd so the shadow-
+        // position advance between writes is on the critical
+        // path.
+        let term = format!(
+            r#"
+            new fsOpen(`rho:io:fs:native:1.0.0/open`),
+                fsWrite(`rho:io:fs:native:1.0.0/write`),
+                fsSeek(`rho:io:fs:native:1.0.0/seek`),
+                fsTruncate(`rho:io:fs:native:1.0.0/truncate`),
+                fsClose(`rho:io:fs:native:1.0.0/close`),
+                oc, w1, w2, sk, w3, tc, cc in {{
+              fsOpen!("{leader_root_str}", "data.bin", "rw", "consensus", *oc) |
+              for (@[true, fd] <- oc) {{
+                fsWrite!(fd, "11223344".hexToBytes(), *w1) |
+                for (@_ <- w1) {{
+                  fsWrite!(fd, "55667788".hexToBytes(), *w2) |
+                  for (@_ <- w2) {{
+                    fsSeek!(fd, 12, "set", *sk) |
+                    for (@_ <- sk) {{
+                      fsWrite!(fd, "99aabbcc".hexToBytes(), *w3) |
+                      for (@_ <- w3) {{
+                        fsTruncate!(fd, 20, *tc) |
+                        for (@_ <- tc) {{
+                          fsClose!(fd, *cc) |
+                          for (@_ <- cc) {{ Nil }}
+                        }}
+                      }}
+                    }}
+                  }}
+                }}
+              }}
+            }}
+            "#
+        );
+        leader
+            .evaluate(
+                &term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                Blake2b512Random::create_from_bytes(&[7u8; 32]),
+            )
+            .await
+            .expect("leader evaluate");
+
+        let wal = leader.fs_handles.wal.snapshot();
+        // Expect: three Write entries + one Truncate = 4 WAL
+        // entries.  fs_seek is NOT journaled (no WalOp::Seek).
+        assert_eq!(
+            wal.len(),
+            4,
+            "expected 3 Write + 1 Truncate entries, got {} entries: {wal:?}",
+            wal.len(),
+        );
+        // Verify the three Writes carry the expected shadow-position
+        // offsets: 0, 4, 12 (post-seek).
+        assert_eq!(wal[0].op, WalOp::Write);
+        assert_eq!(wal[0].offset, Some(0), "first sequential write @ pos 0");
+        assert_eq!(wal[1].op, WalOp::Write);
+        assert_eq!(
+            wal[1].offset,
+            Some(4),
+            "second sequential write @ pos 4 (after 4-byte first write)",
+        );
+        assert_eq!(wal[2].op, WalOp::Write);
+        assert_eq!(
+            wal[2].offset,
+            Some(12),
+            "third sequential write @ pos 12 (post-Seek SET to 12)",
+        );
+        assert_eq!(wal[3].op, WalOp::Truncate);
+        assert_eq!(wal[3].offset, Some(20));
+
+        // Sanity: every write's payload_ref is in the sidecar.
+        for (i, entry) in wal.iter().enumerate() {
+            if entry.op == WalOp::Write {
+                if let Some(PayloadRef::Hash(h)) = entry.payload_ref {
+                    assert!(
+                        sidecar.contains_key(&h),
+                        "WAL entry {i} references hash {} not in sidecar",
+                        hex::encode(h),
+                    );
+                }
+            }
+        }
+
+        apply_wal_to_fresh_tree(&wal, &sidecar, leader_dir.path(), follower_dir.path());
+        assert_dir_trees_byte_identical(leader_dir.path(), follower_dir.path(), &[]);
+    }
+
+    /// **Position-tracking leader/follower symmetry (2026-08-26).**
+    /// The FileHandle shadow-position must evolve identically on
+    /// leader and follower for `journal_write` to record byte-
+    /// identical offsets on both sides.  Runs a mixed sequential-
+    /// Write + Seek + Read + WriteAt sequence on a leader, drives
+    /// the same sequence on a rig-based follower via
+    /// `create_leader_and_follower`, and asserts the WAL entries
+    /// are byte-identical — the same shape as the existing
+    /// `wal_is_byte_identical_on_leader_and_follower` pin, extended
+    /// to exercise the position-affecting ops (Seek + sequential
+    /// Write/Read).
+    ///
+    /// A regression that only advanced shadow position on the
+    /// leader (missing the follower's is_replay mirror) would
+    /// produce a Write entry with offset=Some(pos) on the leader
+    /// but offset=Some(0) on the follower for the second write —
+    /// the byte-identity assertion catches it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn wal_position_stays_in_sync_on_leader_and_follower() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("data.bin"), vec![0u8; 128]).unwrap();
+        let (mut leader, mut follower) = create_leader_and_follower().await;
+
+        let term = format!(
+            r#"
+            new fsOpen(`rho:io:fs:native:1.0.0/open`),
+                fsWrite(`rho:io:fs:native:1.0.0/write`),
+                fsSeek(`rho:io:fs:native:1.0.0/seek`),
+                fsRead(`rho:io:fs:native:1.0.0/read`),
+                fsWriteAt(`rho:io:fs:native:1.0.0/writeAt`),
+                oc, w1, s1, r1, w2 in {{
+              fsOpen!("{root}", "data.bin", "rw", "consensus", *oc) |
+              for (@[true, fd] <- oc) {{
+                fsWrite!(fd, "aabb".hexToBytes(), *w1) |
+                for (@_ <- w1) {{
+                  fsSeek!(fd, 0, "set", *s1) |
+                  for (@_ <- s1) {{
+                    fsRead!(fd, 2, *r1) |
+                    for (@_ <- r1) {{
+                      fsWriteAt!(fd, 10, "ccdd".hexToBytes(), *w2) |
+                      for (@_ <- w2) {{ Nil }}
+                    }}
+                  }}
+                }}
+              }}
+            }}
+            "#,
+            root = dir.path().display(),
+        );
+        let r = Blake2b512Random::create_from_bytes(&[42; 32]);
+        leader
+            .evaluate(
+                &term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                r.clone(),
+            )
+            .await
+            .expect("leader evaluate");
+        let leader_wal = leader.fs_handles.wal.snapshot();
+        assert!(!leader_wal.is_empty());
+
+        // Rig follower + replay.
+        let checkpoint = leader.create_checkpoint().await;
+        follower
+            .reset(&checkpoint.root)
+            .await
+            .expect("follower reset");
+        follower.rig(checkpoint.log).await.expect("follower rig");
+        follower
+            .evaluate(
+                &term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                r,
+            )
+            .await
+            .expect("follower evaluate");
+        let follower_wal = follower.fs_handles.wal.snapshot();
+
+        assert_eq!(
+            leader_wal.len(),
+            follower_wal.len(),
+            "position-follow-up regression: leader/follower WAL count differs \
+             ({} vs {}) — likely one side advanced FileHandle.position but the \
+             other did not, causing journal_write to record different offsets \
+             (which would trip the entry-by-entry check below in principle, \
+             but count-divergence indicates a deeper mismatch)",
+            leader_wal.len(),
+            follower_wal.len(),
+        );
+        for (i, (l, f)) in leader_wal.iter().zip(follower_wal.iter()).enumerate() {
+            assert_eq!(
+                l, f,
+                "WAL entry {i} differs between leader and follower — most \
+                 likely a position-tracking asymmetry in fs_write / fs_read / \
+                 fs_seek.  leader={l:?}, follower={f:?}"
+            );
+        }
+        // The read entry (index 2) must carry offset=Some(0) — the
+        // Seek(SET, 0) between write and read reset shadow position
+        // to 0, so the Read journaled from position 0.  A regression
+        // that dropped the fs_seek shadow-position update would
+        // record offset=Some(4) (post-first-write position).
+        let read_entry = leader_wal
+            .iter()
+            .find(|e| e.op == WalOp::Read)
+            .expect("must have a Read entry");
+        assert_eq!(
+            read_entry.offset,
+            Some(0),
+            "sequential Read after Seek(SET,0) must record offset=Some(0); \
+             fs_seek shadow-position update regression would set this to \
+             Some(4) (post-first-write position).  Got {:?}",
+            read_entry.offset,
+        );
+        follower
+            .check_replay_data()
+            .await
+            .expect("follower replay data mismatch");
+    }
+
+    /// **Consensus + O_APPEND rejection (2026-08-26).**  The
+    /// position-follow-up rejects `fsOpen` with mode `a` or `a+`
+    /// when the cap is Consensus, because O_APPEND semantics don't
+    /// fit the shadow-position model (kernel-retargets writes to
+    /// file-end atomically; the follower can't fstat).  Regression
+    /// scenario: a future refactor removes the guard → Consensus
+    /// append writes journal offset from stale shadow position →
+    /// follower replays writes to the wrong place → byte
+    /// divergence.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn consensus_append_open_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("data.bin"), b"").unwrap();
+        let runtime = create_runtime().await;
+
+        // Try mode "a" on a Consensus cap — must return FSERR_BAD_ARG.
+        let term = format!(
+            r#"
+            new fsOpen(`rho:io:fs:native:1.0.0/open`), oc in {{
+              fsOpen!("{root}", "data.bin", "a", "consensus", *oc) |
+              for (@reply <- oc) {{
+                match reply {{
+                  [false, "FSERR_BAD_ARG", _] => Nil
+                  _ => @"UNEXPECTED_REPLY"!(reply)
+                }}
+              }}
+            }}
+            "#,
+            root = dir.path().display(),
+        );
+        let result = runtime
+            .evaluate(
+                &term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                rand(),
+            )
+            .await
+            .expect("evaluate");
+        assert!(
+            result.errors.is_empty(),
+            "consensus + append should reply cleanly (not raise); got errors: {:?}",
+            result.errors,
+        );
+        // WAL stays empty — the open was rejected before any
+        // journal-eligible op ran.
+        assert!(
+            runtime.fs_handles.wal.is_empty(),
+            "consensus + append rejection must not journal any WAL entry",
+        );
     }
 
     /// **PB-M-14 two-validator E2E scaffold (2026-08-26).**  Ignored

@@ -70,6 +70,41 @@ pub struct FileHandle {
     /// `handles.with_mut` to decide whether to journal the op into
     /// the consensus WAL.
     pub cmode: ConsensusMode,
+    /// Shadow file-position (2026-08-26, follow-up to PB-M-14 file-
+    /// state-identity via WAL replay).  Tracks the notional
+    /// position the fd would be at after every sequential
+    /// `fs_write` / `fs_read` / `fs_seek`, so `journal_write` /
+    /// `journal_read` can record the ABSOLUTE offset for sequential
+    /// ops into the Consensus WAL — enabling a joining validator's
+    /// applier to reconstruct file state from the WAL alone (no fd,
+    /// no position-simulation, no `Open`/`Close`/`Seek` WAL
+    /// variants required).
+    ///
+    /// Updates:
+    /// * `fs_open` non-append modes → `0` (POSIX default for
+    ///   O_RDONLY/O_WRONLY/O_RDWR without O_APPEND).
+    /// * `fs_open` append modes (`a` / `a+`) on Consensus caps →
+    ///   fs_open rejects with `FSERR_BAD_ARG`.  Rationale: O_APPEND
+    ///   moves the write offset to file-end atomically at each
+    ///   write; without fstat-per-write plus a matching shadow-EOF
+    ///   simulation on the follower, WAL offset cannot be recorded
+    ///   correctly.  A future slice may lift this restriction by
+    ///   tracking per-canon_path EOF on both sides.
+    /// * Successful sequential `fs_write(n)` / `fs_read(n)` →
+    ///   `position += n` (both leader and follower, `n` from
+    ///   syscall reply on leader / `previous` cache on follower).
+    /// * Successful `fs_seek` → `position = new_pos` (leader from
+    ///   lseek reply / follower from `previous`).
+    /// * `fs_write_at` / `fs_read_at` / `fs_truncate` — POSIX
+    ///   pwrite/pread/ftruncate DO NOT move the fd position, so
+    ///   `position` is untouched.
+    ///
+    /// Consensus symmetry: both leader and follower evolve
+    /// `position` deterministically from the same sequence of
+    /// contract-arg values + reply values, so `journal_write`
+    /// reads identical `position` on both sides for the same
+    /// syscall and produces byte-identical WAL entries.
+    pub position: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -416,6 +451,7 @@ mod tests {
             canon_path: path,
             mode: AccessMode::Read,
             cmode: ConsensusMode::Oracular,
+            position: 0,
         }
     }
 
@@ -425,6 +461,7 @@ mod tests {
             canon_path: path,
             mode: AccessMode::Read,
             cmode,
+            position: 0,
         }
     }
 
