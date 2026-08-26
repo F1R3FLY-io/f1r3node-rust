@@ -519,27 +519,17 @@ fn with_libs(test_snippet: &str) -> String {
           // ignored, matching the "single-file" simplification the
           // rest of this preamble uses.
 
-          contract fsLockRange(@_fd, @_off, @_len, @_mode, @_holder, @_cmode, ret) = {{
-            ret!([true, 1])
-          }} |
-
-          // Slice-8b sub-2 arity-8 mock (wait: Bool at slot 7).  Same
-          // always-succeed behavior as the arity-7 mock — most tests
-          // exercise the syntactic wraps, not the parking logic.  The
-          // sub-5 wait:true smoke tests below assert this mock IS the
-          // one invoked (rather than the arity-7 mock) when File.rho's
-          // arity-4 lockRange method threads wait through.
+          // Post-Phase-8-arity-tightening (2026-08-26): the arity-7
+          // fsLockRange and arity-4 fsLockSequential shim mocks were
+          // removed alongside the native handler branches, since all
+          // File.rho callers now pass arity 8 / 5 with an explicit
+          // wait: Bool at the penultimate slot.  The arity-8 / 5
+          // mocks below always succeed — most tests exercise the
+          // syntactic wraps, not the parking logic.
           contract fsLockRange(@_fd, @_off, @_len, @_mode, @_holder, @_cmode, @_wait, ret) = {{
             ret!([true, 1])
           }} |
 
-          contract fsLockSequential(@_fd, @_holder, @_cmode, ret) = {{
-            ret!([true, 2])
-          }} |
-
-          // Slice-8b sub-2 arity-5 mock for fsLockSequential (wait: Bool
-          // at slot 3).  No caller in sub-5 exercises this yet — added
-          // for symmetry with fsLockRange and future sub-4b work.
           contract fsLockSequential(@_fd, @_holder, @_cmode, @_wait, ret) = {{
             ret!([true, 2])
           }} |
@@ -702,7 +692,7 @@ const STATEFUL_LOCK_MOCKS: &str = r#"
           activeKind!(Nil) |
           activeLockId!(0) |
 
-          contract fsLockRange(@_fd, @_o, @_l, @_m, @holder, @_cm, ret) = {
+          contract fsLockRange(@_fd, @_o, @_l, @_m, @holder, @_cm, @_wait, ret) = {
             for (@ch <- activeHolder; @ck <- activeKind; @cid <- activeLockId) {
               match ck {
                 Nil => {
@@ -736,7 +726,7 @@ const STATEFUL_LOCK_MOCKS: &str = r#"
             }
           } |
 
-          contract fsLockSequential(@_fd, @holder, @_cm, ret) = {
+          contract fsLockSequential(@_fd, @holder, @_cm, @_wait, ret) = {
             for (@ch <- activeHolder; @ck <- activeKind; @cid <- activeLockId) {
               match ck {
                 Nil => {
@@ -2111,8 +2101,8 @@ async fn file_close_propagates_fs_close_error() {
           // sweep native is invoked before fsClose (step 4f) and must
           // succeed so the fsClose failure remains the observable
           // outcome the test asserts on.
-          contract fsLockRange(@_fd, @_o, @_l, @_m, @_h, @_cm, ret) = {{ ret!([true, 1]) }} |
-          contract fsLockSequential(@_fd, @_h, @_cm, ret) = {{ ret!([true, 2]) }} |
+          contract fsLockRange(@_fd, @_o, @_l, @_m, @_h, @_cm, @_wait, ret) = {{ ret!([true, 1]) }} |
+          contract fsLockSequential(@_fd, @_h, @_cm, @_wait, ret) = {{ ret!([true, 2]) }} |
           contract fsReleaseLock(@_id, ret) = {{ ret!([true]) }} |
           contract fsReleaseAllForHolder(@_h, ret) = {{ ret!([true, 0]) }} |
           // parseRwxToBits stub — this test doesn't exercise it, but
@@ -6519,8 +6509,8 @@ async fn file_write_line_lf_write_failure_is_forwarded() {
           // Phase 8 slice 8a — always-succeed lock-native stubs; this
           // bespoke test drives writeLine's LF-write-failure path, not
           // lock semantics.
-          contract fsLockRange(@_fd, @_o, @_l, @_m, @_h, @_cm, ret) = {{ ret!([true, 1]) }} |
-          contract fsLockSequential(@_fd, @_h, @_cm, ret) = {{ ret!([true, 2]) }} |
+          contract fsLockRange(@_fd, @_o, @_l, @_m, @_h, @_cm, @_wait, ret) = {{ ret!([true, 1]) }} |
+          contract fsLockSequential(@_fd, @_h, @_cm, @_wait, ret) = {{ ret!([true, 2]) }} |
           contract fsReleaseLock(@_id, ret) = {{ ret!([true]) }} |
           contract fsReleaseAllForHolder(@_h, ret) = {{ ret!([true, 0]) }} |
 
@@ -16637,10 +16627,10 @@ async fn file_close_sweep_causes_subsequent_release_to_return_fserr_closed() {
         in {{
           // Stateful lock mocks — key to this test's assertion.
           releasedFlag!(false) |
-          contract fsLockRange(@_fd, @_o, @_l, @_m, @_h, @_cm, ret) = {{
+          contract fsLockRange(@_fd, @_o, @_l, @_m, @_h, @_cm, @_wait, ret) = {{
             ret!([true, 42])
           }} |
-          contract fsLockSequential(@_fd, @_h, @_cm, ret) = {{
+          contract fsLockSequential(@_fd, @_h, @_cm, @_wait, ret) = {{
             ret!([true, 42])
           }} |
           contract fsReleaseLock(@_id, ret) = {{

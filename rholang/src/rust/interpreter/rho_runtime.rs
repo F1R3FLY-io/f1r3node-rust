@@ -1454,16 +1454,22 @@ fn std_system_processes() -> Vec<Definition> {
         fs_native_def(
             "rho:io:fs:native:1.0.0/lockRange",
             FixedChannels::fs_lock_range(),
-            // (fd, offset, length, mode, holder, cmode, ack)
-            7,
+            // Phase 8 arity tightening (2026-08-26): arity bumped
+            // 7 → 8 with an explicit `wait: Bool` at slot 7.  The
+            // legacy arity-7 shim in the handler was retired at the
+            // same time; File.rho callers all thread wait through.
+            // (fd, offset, length, mode, holder, cmode, wait, ack)
+            8,
             BodyRefs::FS_LOCK_RANGE,
             |sp, args| Box::pin(async move { sp.fs.fs_lock_range(args).await }),
         ),
         fs_native_def(
             "rho:io:fs:native:1.0.0/lockSequential",
             FixedChannels::fs_lock_sequential(),
-            // (fd, holder, cmode, ack)
-            4,
+            // Phase 8 arity tightening (2026-08-26): arity bumped
+            // 4 → 5 with an explicit `wait: Bool` at slot 3.
+            // (fd, holder, cmode, wait, ack)
+            5,
             BodyRefs::FS_LOCK_SEQUENTIAL,
             |sp, args| Box::pin(async move { sp.fs.fs_lock_sequential(args).await }),
         ),

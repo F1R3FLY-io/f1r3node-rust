@@ -116,7 +116,7 @@ in {
                           new lockCh in {
                             // holder MUST be *this — cross-cap
                             // coordination depends on it.
-                            fsLockSequential!(fd, *this, cmode, *lockCh) |
+                            fsLockSequential!(fd, *this, cmode, false, *lockCh) |
                             for (@lockReply <- lockCh) {
                               match lockReply {
                                 [true, lid] => {
@@ -853,7 +853,7 @@ in {
                                                 // `*stateP` (or any other MODULE-level binding)
                                                 // would collapse every cap to a single holder
                                                 // and break §Range locks' different-holder rule.
-                                                fsLockRange!(fd, off, len, m, *this, cmode, *lockCh) |
+                                                fsLockRange!(fd, off, len, m, *this, cmode, false, *lockCh) |
                                                 for (@reply <- lockCh) {
                                                   @[*private, *stateP]!("open") |
                                                   match reply {
@@ -1188,7 +1188,7 @@ in {
                   new lockCh in {
                     // holder MUST be *this — cross-cap coordination
                     // depends on it.
-                    fsLockSequential!(fd, *this, cmode, *lockCh) |
+                    fsLockSequential!(fd, *this, cmode, false, *lockCh) |
                     for (@lockReply <- lockCh) {
                       match lockReply {
                         [true, lid] => {
@@ -1564,7 +1564,7 @@ in {
                                           new lockCh in {
                                             // holder MUST be *this — cross-cap
                                             // coordination depends on it.
-                                            fsLockRange!(fd, off, lockLen, "r", *this, cmode, *lockCh) |
+                                            fsLockRange!(fd, off, lockLen, "r", *this, cmode, false, *lockCh) |
                                             for (@lockReply <- lockCh) {
                                               match lockReply {
                                                 [true, lid] => {
@@ -2080,7 +2080,7 @@ in {
                       new lockCh in {
                         // holder MUST be *this — cross-cap coordination
                         // depends on it.
-                        fsLockSequential!(fd, *this, cmode, *lockCh) |
+                        fsLockSequential!(fd, *this, cmode, false, *lockCh) |
                         for (@lockReply <- lockCh) {
                           match lockReply {
                             [true, lid] => {
@@ -2251,7 +2251,7 @@ in {
                                           new lockCh in {
                                             // holder MUST be *this — cross-cap
                                             // coordination depends on it.
-                                            fsLockRange!(fd, off, mx, "w", *this, cmode, *lockCh) |
+                                            fsLockRange!(fd, off, mx, "w", *this, cmode, false, *lockCh) |
                                             for (@lockReply <- lockCh) {
                                               match lockReply {
                                                 [true, lid] => {
@@ -2452,7 +2452,7 @@ in {
                   new lockCh in {
                     // holder MUST be *this — cross-cap coordination
                     // depends on it.
-                    fsLockSequential!(fd, *this, cmode, *lockCh) |
+                    fsLockSequential!(fd, *this, cmode, false, *lockCh) |
                     for (@lockReply <- lockCh) {
                       match lockReply {
                         [true, lid] => {
@@ -3105,7 +3105,7 @@ in {
                   new lockCh in {
                     // holder MUST be *this — cross-cap coordination
                     // depends on it.
-                    fsLockSequential!(fd, *this, cmode, *lockCh) |
+                    fsLockSequential!(fd, *this, cmode, false, *lockCh) |
                     for (@lockReply <- lockCh) {
                       match lockReply {
                         [true, lid] => {
@@ -3973,7 +3973,7 @@ in {
                   new lockCh in {
                     // holder MUST be *this — cross-cap coordination
                     // depends on it.
-                    fsLockSequential!(fd, *this, cmode, *lockCh) |
+                    fsLockSequential!(fd, *this, cmode, false, *lockCh) |
                     for (@lockReply <- lockCh) {
                       match lockReply {
                         [true, lid] => {
@@ -5178,7 +5178,7 @@ in {
                       new lockCh in {
                         // holder MUST be *this — cross-cap coordination
                         // depends on it.
-                        fsLockSequential!(fd, *this, cmode, *lockCh) |
+                        fsLockSequential!(fd, *this, cmode, false, *lockCh) |
                         for (@lockReply <- lockCh) {
                           match lockReply {
                             [true, lid] => {
@@ -5321,7 +5321,7 @@ in {
                       new lockCh in {
                         // holder MUST be *this — cross-cap coordination
                         // depends on it.
-                        fsLockSequential!(fd, *this, cmode, *lockCh) |
+                        fsLockSequential!(fd, *this, cmode, false, *lockCh) |
                         for (@lockReply <- lockCh) {
                           match lockReply {
                             [true, lid] => {
@@ -5783,7 +5783,7 @@ in {
                                                 new lockCh in {
                                                   // holder MUST be *this — cross-cap
                                                   // coordination depends on it.
-                                                  fsLockRange!(fd, tellPos, remBytes, "r", *this, cmode, *lockCh) |
+                                                  fsLockRange!(fd, tellPos, remBytes, "r", *this, cmode, false, *lockCh) |
                                                   for (@lockReply <- lockCh) {
                                                     match lockReply {
                                                       [true, lid] => {
@@ -6174,7 +6174,7 @@ in {
                                         new lockCh in {
                                           // holder MUST be *this — cross-cap
                                           // coordination depends on it.
-                                          fsLockRange!(fd, tellPos, bytes.length(), "w", *this, cmode, *lockCh) |
+                                          fsLockRange!(fd, tellPos, bytes.length(), "w", *this, cmode, false, *lockCh) |
                                           for (@lockReply <- lockCh) {
                                             match lockReply {
                                               [true, lid] => {
@@ -6396,7 +6396,7 @@ in {
                                               }
                                               false => {
                                                 new lockCh in {
-                                                  fsLockRange!(fd, off, remBytes, "r", *this, cmode, *lockCh) |
+                                                  fsLockRange!(fd, off, remBytes, "r", *this, cmode, false, *lockCh) |
                                                   for (@lockReply <- lockCh) {
                                                     match lockReply {
                                                       [true, lid] => {
@@ -6715,7 +6715,7 @@ in {
                                       }
                                       false => {
                                         new lockCh in {
-                                          fsLockRange!(fd, off, bytes.length(), "w", *this, cmode, *lockCh) |
+                                          fsLockRange!(fd, off, bytes.length(), "w", *this, cmode, false, *lockCh) |
                                           for (@lockReply <- lockCh) {
                                             match lockReply {
                                               [true, lid] => {

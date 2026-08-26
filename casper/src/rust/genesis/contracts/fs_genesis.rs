@@ -933,9 +933,12 @@ mod tests {
             // Phase 8 slice 8a — range-lock natives (fd-based after
             // review-2 fix, 2026-08-12: keys correctly under oracular
             // file swap; path-based keying was semantically wrong).
-            ("lockRange", 7),      // (fd, offset, length, mode, holder, cmode, ack)
-            ("lockSequential", 4), // (fd, holder, cmode, ack)
-            ("releaseLock", 2),    // (lockId, ack)
+            // Phase 8 arity tightening (2026-08-26): retired the legacy
+            // arity-7/4 shim; every File.rho caller now threads an
+            // explicit wait: Bool at the penultimate slot.
+            ("lockRange", 8), // (fd, offset, length, mode, holder, cmode, wait, ack)
+            ("lockSequential", 5), // (fd, holder, cmode, wait, ack)
+            ("releaseLock", 2), // (lockId, ack)
             // Phase 8 slice 8a step-4 — File.close sweep native (X-1 §901).
             ("releaseAllForHolder", 2), // (holder, ack)
         ];
@@ -1318,6 +1321,17 @@ mod tests {
         // of the Genesis deploy content — see the plan's
         // "Hard-fork surfaces flagged during Phase 10" section.
         //
+        // Anchor roll 2026-08-26 (Phase 8 arity tightening — retire
+        // arity-7/4 shims for fsLockRange / fsLockSequential): every
+        // File.rho caller now passes an explicit `wait: Bool` at the
+        // penultimate slot (arity 8 / 5 respectively).  The legacy
+        // arity-7/4 branches in the native handlers and the mock
+        // shim contracts in the file_dir_check preamble were
+        // retired.  Arity table in `fs_native_urn_suffixes_covers_composed_source`
+        // + `fs_native_def_arities_match_golden_table` bumped
+        // (lockRange 7→8, lockSequential 4→5).  A future stray
+        // arity-7/4 invocation falls to `illegal_argument_error`.
+        //
         // Anchor roll 2026-08-26 (Phase 8 review follow-up cursor-
         // relative TOCTOU docstring): File.rho::readInto gains a new
         // documentation section explaining why the fsTell→fsLockRange
@@ -1369,6 +1383,7 @@ mod tests {
         // on `ell > cap`, and the 4 File.rho callers now pass
         // `67108864` = MAX_WRITE_BYTES.
         //
+        // Prior anchor: 1f3e8878 (Phase 8 review cursor-relative TOCTOU docstring, 2026-08-26).
         // Prior anchor: 5efce8f4 (streaming-slice Step 5 Fixup A close-on-malformed, 2026-08-26).
         // Prior anchor: 60035818 (streaming-slice Step 5 initial Dir.rho swap, 2026-08-25).
         // Prior anchor: 434a828b (streaming-slice Step 2 three natives, 2026-08-25).
@@ -1378,7 +1393,7 @@ mod tests {
         // Prior anchor: 126a35ab (slice 9c-i reply-payload cap, 2026-08-23).
         // Prior anchor: 5f41dafe (cost-accounted-rho merge, 2026-08-21).
         // Prior anchor: c243b4db (pre-merge).
-        const EXPECTED: &str = "1f3e8878df25f6845619ef2e8e2450aa99e836312652bf701dccbcd15a1f3787";
+        const EXPECTED: &str = "1e6c53b80fcd0ba539d814de111c42ae8f70b946883b0371840f60b33b7d44f7";
         assert_eq!(
             hex, EXPECTED,
             "M-12: compose_fs_genesis_source() hash changed.  If intentional \

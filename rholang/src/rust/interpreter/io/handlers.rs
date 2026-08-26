@@ -2966,13 +2966,13 @@ impl FsProcesses {
         else {
             return Err(illegal_argument_error("fs_lock_range"));
         };
-        // Slice-8b sub-2 (2026-08-12): accept arity 8 (fd, off, len,
-        // mode, holder, cmode, wait, ack) with `wait: Bool` at slot
-        // 7.  Legacy arity 7 (no `wait`) is also accepted and
-        // defaults `wait = false` — a transitional shim so this
-        // sub-commit is Rust-only.  Sub-4 tightens File.rho to always
-        // pass 8 args and REMOVES the 7-arg branch in the same commit
-        // as the composed-source arity-table bump + genesis hex roll.
+        // Slice-8b sub-4 arity tightening (2026-08-26): accept only
+        // arity 8 (fd, off, len, mode, holder, cmode, wait, ack)
+        // with `wait: Bool` at slot 7.  The legacy arity-7 (no
+        // `wait`) branch was retired now that every File.rho caller
+        // threads an explicit wait argument.  A stray arity-7
+        // invocation falls to `illegal_argument_error` — mirrors
+        // the sub-2 commit's transitional-shim removal plan.
         let (fd_par, off_par, len_par, mode_par, holder_par, cmode_par, wait, ack) =
             match args.as_slice() {
                 [fd, off, len, mode, holder, cmode, wait_par, ack] => {
@@ -2984,9 +2984,6 @@ impl FsProcesses {
                             return Ok(out);
                         }
                     }
-                }
-                [fd, off, len, mode, holder, cmode, ack] => {
-                    (fd, off, len, mode, holder, cmode, false, ack)
                 }
                 _ => return Err(illegal_argument_error("fs_lock_range")),
             };
@@ -3116,9 +3113,10 @@ impl FsProcesses {
         else {
             return Err(illegal_argument_error("fs_lock_sequential"));
         };
-        // Slice-8b sub-2: flexible arity — 5 (fd, holder, cmode, wait,
-        // ack) or 4 (legacy, wait defaults false).  Sub-4 tightens to
-        // 5-only + File.rho update + hex roll.
+        // Slice-8b sub-4 arity tightening (2026-08-26): accept only
+        // arity 5 (fd, holder, cmode, wait, ack).  The legacy arity-4
+        // branch was retired now that every File.rho caller threads
+        // an explicit wait argument.
         let (fd_par, holder_par, cmode_par, wait, ack) = match args.as_slice() {
             [fd, holder, cmode, wait_par, ack] => match RhoBoolean::unapply(wait_par) {
                 Some(b) => (fd, holder, cmode, b, ack),
@@ -3128,7 +3126,6 @@ impl FsProcesses {
                     return Ok(out);
                 }
             },
-            [fd, holder, cmode, ack] => (fd, holder, cmode, false, ack),
             _ => return Err(illegal_argument_error("fs_lock_sequential")),
         };
         if is_replay {
