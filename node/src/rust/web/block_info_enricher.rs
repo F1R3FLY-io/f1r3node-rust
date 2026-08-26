@@ -100,21 +100,43 @@ pub fn extract_transfers_from_report(
             continue;
         }
 
-        let any_marked = deploy
+        let classified: Vec<Option<ReportPhase>> = deploy
             .report
             .iter()
-            .any(|b| b.phase != ReportPhase::Unspecified as i32);
+            .map(|b| classify_phase(b.phase))
+            .collect();
+
+        if classified.iter().any(Option::is_none) {
+            tracing::warn!(
+                target: "f1r3fly.node.web.enricher",
+                deploy_sig = %deploy_sig,
+                "report contains a segment with an unrecognized phase; \
+                 that segment will not be scanned on the marked path"
+            );
+        }
+
+        // A report is "marked" only when some segment carries a
+        // recognized phase other than `Unspecified`. An unrecognized
+        // discriminant does not activate the marked path, so it falls
+        // to the positional fallback instead of being scanned as USER.
+        let any_marked = classified.iter().any(|c| {
+            matches!(
+                c,
+                Some(ReportPhase::Precharge | ReportPhase::User | ReportPhase::Refund)
+            )
+        });
 
         let mut user_transfers = Vec::new();
         if any_marked {
             // Marked path (also covers mixed reports): keep USER and
-            // UNSPECIFIED (treated as USER). Drop PRECHARGE and REFUND
-            // wholesale. No positional skip, no shape check, no amount
-            // arithmetic on this path.
-            let has_unspecified = deploy
-                .report
+            // real UNSPECIFIED (treated as USER). Drop PRECHARGE and
+            // REFUND wholesale. Ignore unrecognized discriminants
+            // (warned above) so a future or malformed phase is never
+            // scanned as USER. No positional skip, no shape check, no
+            // amount arithmetic on this path.
+            let has_unspecified = classified
                 .iter()
-                .any(|b| b.phase == ReportPhase::Unspecified as i32);
+                .any(|c| matches!(c, Some(ReportPhase::Unspecified)));
             if has_unspecified {
                 tracing::debug!(
                     target: "f1r3fly.node.web.enricher",
@@ -123,13 +145,17 @@ pub fn extract_transfers_from_report(
                      treating them as USER"
                 );
             }
-            for single_report in &deploy.report {
-                if !is_system_phase(single_report.phase) {
-                    user_transfers.extend(find_transfers_in_report(
-                        single_report,
-                        transfer_unforgeable,
-                        deployer_addr.as_deref(),
-                    ));
+            for (single_report, c) in deploy.report.iter().zip(classified.iter()) {
+                match c {
+                    Some(phase) if is_system_phase(*phase) => continue,
+                    Some(_) => {
+                        user_transfers.extend(find_transfers_in_report(
+                            single_report,
+                            transfer_unforgeable,
+                            deployer_addr.as_deref(),
+                        ));
+                    }
+                    None => continue,
                 }
             }
         } else {
@@ -198,16 +224,33 @@ pub fn extract_transfers_from_report(
     transfers_by_deploy
 }
 
+/// Classify a raw proto `phase` discriminant into a recognized
+/// `ReportPhase`, or `None` when the value is not one of the known
+/// discriminants. Mirrors the serde conversion in `ReportPhaseSerde`,
+/// which maps unknown discriminants to `Unspecified`, but keeps the
+/// distinction visible so the marked path can log and ignore unknowns
+/// instead of scanning them as USER.
+fn classify_phase(phase: i32) -> Option<ReportPhase> {
+    use models::casper::ReportPhase as P;
+    match phase {
+        v if v == P::Unspecified as i32 => Some(P::Unspecified),
+        v if v == P::Precharge as i32 => Some(P::Precharge),
+        v if v == P::User as i32 => Some(P::User),
+        v if v == P::Refund as i32 => Some(P::Refund),
+        _ => None,
+    }
+}
+
 /// A segment is "system" when its phase is `PRECHARGE` or `REFUND`.
-/// Used by the per-segment drop test on the marked path. The
-/// `any_marked` check compares directly against `Unspecified` and does
-/// not call this helper.
+/// Used only for the per-segment drop decision on the marked path.
+/// The `any_marked` check tests recognized phases and does not call
+/// this helper.
 ///
-/// Unknown (future) proto phase values are intentionally treated as
-/// non-system / user-scanned here, so new phases stay visible on the
-/// marked path until they are explicitly classified as system.
-fn is_system_phase(phase: i32) -> bool {
-    phase == ReportPhase::Precharge as i32 || phase == ReportPhase::Refund as i32
+/// Unrecognized proto discriminants are classified as `None` before
+/// this point, so they never reach here; they are logged and ignored
+/// on the marked path rather than scanned as USER.
+fn is_system_phase(phase: ReportPhase) -> bool {
+    matches!(phase, ReportPhase::Precharge | ReportPhase::Refund)
 }
 
 /// Scan a single report for user transfer events on the transfer_unforgeable
@@ -972,7 +1015,6 @@ mod tests {
 
         // report[0] is the USER transfer (amount 700, not the precharge
         // amount 100). On the fallback path this would trigger the
-        // amount 100). On the fallback path this would trigger the
         // shape-check warning. On the marked path it does not.
         let user = make_transfer_report_phase(
             &transfer_unforgeable,
@@ -1014,7 +1056,7 @@ mod tests {
         assert_eq!(
             transfers.len(),
             1,
-            "marked path is positional: only the USER batch is kept, \
+            "marked path is NOT positional: only the USER batch is kept, \
              even when it is not report[0]"
         );
         assert_eq!(transfers[0].to_addr, "receiver_addr");
@@ -1148,5 +1190,102 @@ mod tests {
             transfers.is_empty(),
             "PRECHARGE dropped by marker; no user transfers remain"
         );
+    }
+
+    // Regression test. An unrecognized phase discriminant must not be scanned as USER on
+    // the marked path.
+    #[test]
+    fn unknown_phase_on_marked_report_is_ignored_not_scanned_as_user() {
+        init_logger();
+        let transfer_unforgeable = make_transfer_unforgeable();
+        let (deployer_hex, deployer_addr) = make_deployer();
+
+        let precharge = make_transfer_report_phase(
+            &transfer_unforgeable,
+            &deployer_addr,
+            "pos_vault_addr",
+            100,
+            ReportPhase::Precharge,
+        );
+        // phase 99 is not a known ReportPhase discriminant.
+        let unknown = SingleReport {
+            events: vec![ReportProto {
+                report: Some(report_proto::Report::Comm(make_comm_event(
+                    &transfer_unforgeable,
+                    &deployer_addr,
+                    "receiver_addr",
+                    500,
+                ))),
+            }],
+            phase: 99,
+        };
+        let report = make_block_event(DeployInfoWithEventData {
+            deploy_info: Some(make_deploy_info_with_charge(
+                "deploy_unknown_phase",
+                &deployer_hex,
+                100,
+                1,
+            ))
+            .into(),
+            report: vec![precharge, unknown],
+        });
+
+        let result = extract_transfers_from_report(&report, &transfer_unforgeable);
+
+        let transfers = result
+            .get("deploy_unknown_phase")
+            .expect("should have deploy entry");
+        assert!(
+            transfers.is_empty(),
+            "unknown phase segment must not be scanned as USER; \
+             precharge dropped, unknown ignored"
+        );
+    }
+
+    // A report where every segment carries an unknown phase value does
+    // not activate the marked path, so it falls to the positional
+    // fallback. The fallback scans the segments (after the shape check
+    // on report[0]); here report[0] fails the precharge shape check
+    // (amount 500 != 100), so nothing is skipped and the transfer is
+    // returned via the compatibility path.
+    #[test]
+    fn all_unknown_phase_report_falls_to_fallback_path() {
+        init_logger();
+        let transfer_unforgeable = make_transfer_unforgeable();
+        let (deployer_hex, deployer_addr) = make_deployer();
+
+        let unknown = SingleReport {
+            events: vec![ReportProto {
+                report: Some(report_proto::Report::Comm(make_comm_event(
+                    &transfer_unforgeable,
+                    &deployer_addr,
+                    "receiver_addr",
+                    500,
+                ))),
+            }],
+            phase: 99,
+        };
+        let report = make_block_event(DeployInfoWithEventData {
+            deploy_info: Some(make_deploy_info_with_charge(
+                "deploy_all_unknown",
+                &deployer_hex,
+                100,
+                1,
+            ))
+            .into(),
+            report: vec![unknown],
+        });
+
+        let result = extract_transfers_from_report(&report, &transfer_unforgeable);
+
+        let transfers = result
+            .get("deploy_all_unknown")
+            .expect("should have deploy entry");
+        assert_eq!(
+            transfers.len(),
+            1,
+            "unknown-only report uses the fallback path; the transfer is returned, not dropped"
+        );
+        assert_eq!(transfers[0].amount, 500);
     }
 }

@@ -193,7 +193,7 @@ where
         Ok(reporting_rspace)
     }
 
-    fn collect_report(&self) -> Result<(), RSpaceError> {
+    fn collect_report(&self) {
         let mut soft_report_guard = self.soft_report.lock().unwrap();
         self.collect_report_locked(&mut soft_report_guard)
     }
@@ -201,9 +201,16 @@ where
     fn collect_report_locked(
         &self,
         soft_report_guard: &mut std::sync::MutexGuard<'_, Vec<ReportingEvent<C, P, A, K>>>,
-    ) -> Result<(), RSpaceError> {
+    ) {
         if !soft_report_guard.is_empty() {
             let soft_report_content = std::mem::take(&mut **soft_report_guard);
+            // Acquire `report` before `current_phase` to preserve the
+            // documented global order (soft_report -> report ->
+            // current_phase). The `current_phase` guard is intentionally
+            // transient; never extend its lifetime while `report` is held
+            // in a way that another path could invert, or refactor to hold
+            // it across the `report` push — that would re-introduce the
+            // A-then-B / B-then-A inversion this structure documents away.
             let mut report_guard = self.report.lock().unwrap();
             let phase = *self.current_phase.lock().unwrap();
             report_guard.push(ReportBatch {
@@ -211,13 +218,11 @@ where
                 events: soft_report_content,
             });
         }
-
-        Ok(())
     }
 
     pub fn get_report(&self) -> Result<Vec<ReportBatch<C, P, A, K>>, RSpaceError> {
         let mut soft_report_guard = self.soft_report.lock().unwrap();
-        self.collect_report_locked(&mut soft_report_guard)?;
+        self.collect_report_locked(&mut soft_report_guard);
 
         let drained = {
             let mut report_guard = self.report.lock().unwrap();
@@ -255,7 +260,7 @@ where
     }
 
     pub async fn create_soft_checkpoint(&self) -> Result<SoftCheckpoint<C, P, A, K>, RSpaceError> {
-        self.collect_report()?;
+        self.collect_report();
         Ok(self.replay_rspace.create_soft_checkpoint().await)
     }
 
@@ -411,15 +416,16 @@ where
     /// now) and then record the new phase for subsequent events. Called
     /// by the shared replay path at each phase boundary. The trait
     /// default is a no-op, so plain replay spaces are unaffected.
+    ///
+    /// Atomicity: the `soft_report` guard is held across both the flush
+    /// and the `current_phase` write, so the two form a single atomic
+    /// step. No concurrent logger event can land in the window between
+    /// them and be tagged with the wrong phase. The phase boundary is
+    /// therefore atomic at the rspace layer and does not rely on
+    /// external serialization.
     async fn set_report_phase(&self, phase: ReportPhase) {
         let mut soft_report_guard = self.soft_report.lock().unwrap();
-        if let Err(err) = self.collect_report_locked(&mut soft_report_guard) {
-            tracing::warn!(
-                target: "f1r3fly.rspace.reporting",
-                error = %err,
-                "collect_report failed at phase boundary; the segment may be lost"
-            );
-        }
+        self.collect_report_locked(&mut soft_report_guard);
         *self.current_phase.lock().unwrap() = phase;
     }
 }

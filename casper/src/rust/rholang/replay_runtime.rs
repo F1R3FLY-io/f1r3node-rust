@@ -211,7 +211,11 @@ impl ReplayRuntimeOps {
         } else {
             String::new()
         };
-        tracing::debug!(target: "f1r3fly.casper.replay_rho_runtime", deploy = %dsig, "replay.deploy ENTER (rig recorded COMMs)");
+        tracing::debug!(
+            target: "f1r3fly.casper.replay_rho_runtime",
+            deploy = %dsig,
+            "replay.deploy ENTER (rig recorded COMMs)"
+        );
         let rig_start = Instant::now();
         // Set the initial reporting phase before rig so the recorded
         // (rigged) events are tagged with the deploy's first phase,
