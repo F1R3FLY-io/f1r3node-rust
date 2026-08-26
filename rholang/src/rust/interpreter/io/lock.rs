@@ -2843,4 +2843,59 @@ mod tests {
         // real close() path, the entry would leak until deploy-end.
         assert_eq!(reg.held_locks(), 1);
     }
+
+    /// **Phase 8 review follow-up N4 (2026-08-26).**  Registry drop
+    /// must surface `Err(LockError::Cancelled)` (or the underlying
+    /// `RecvError` mapped to Cancelled by callers) to every parked
+    /// waiter.  Pins the behavior documented in:
+    ///   * `LockRegistry` doc lines 47-50 ("signals
+    ///     `Err(LockError::Cancelled)` through the oneshot")
+    ///   * `Waiter.admit` doc line 308-311 ("Dropping the sender
+    ///     (registry drop / waiter removal without signal) surfaces
+    ///     to `ParkedHandle.wait` as `Cancelled`")
+    ///
+    /// The mechanism is Rust's `Sender::drop` → `Receiver::recv`
+    /// returns `Err(RecvError)`.  `LockRegistry` has no explicit
+    /// `impl Drop`; the guarantee comes from the `Arc<RwLock<...>>`
+    /// dropping its inner HashMap, which drops every `Waiter`,
+    /// which drops the `admit: oneshot::Sender`.  A regression that
+    /// adds a `Drop` for LockRegistry that swaps out the inner
+    /// state (e.g., `mem::take` into a static) without also draining
+    /// waiter senders would leak parked deploys — this pin catches
+    /// that class of change.
+    #[tokio::test]
+    async fn registry_drop_surfaces_recverror_to_parked_waiter() {
+        let reg = LockRegistry::new();
+        let _held = reg
+            .try_acquire_range((1, 42), 0, 100, LockMode::Write, holder(1), deploy(1))
+            .expect("initial acquire");
+        let (_wait_id, wait_rx) = expect_parked(
+            reg.try_acquire_range_wait(
+                (1, 42),
+                0,
+                100,
+                LockMode::Write,
+                holder(2),
+                deploy(2),
+                WaitPolicy::Wait,
+            )
+            .unwrap(),
+        );
+        // Drop the registry — the inner HashMap (holding the Waiter,
+        // which owns the oneshot::Sender for `wait_rx`) is dropped.
+        drop(reg);
+        // Receiver observes `RecvError` — callers translate this to
+        // `LockError::Cancelled` at the ParkedHandle::wait layer
+        // (see the docstring at Waiter.admit line 308-311).  Here
+        // we assert the raw signal.
+        assert!(
+            wait_rx.await.is_err(),
+            "registry drop must surface RecvError to parked waiter — \
+             regression scenario: a future `impl Drop for LockRegistry` \
+             that mem::swaps the inner state out (without draining \
+             waiter senders first) would leave the sender alive and \
+             the receiver hung.  Current implementation has no `impl \
+             Drop`; the guarantee comes from Arc/HashMap propagation."
+        );
+    }
 }

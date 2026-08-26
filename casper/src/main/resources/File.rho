@@ -5688,10 +5688,43 @@ in {
     //   8. Reply [true, [actualN, eof]] where eof reflects whether
     //      the ORIGINAL fsRead returned 0 bytes.
     //
+    // ## Cursor-relative TOCTOU (2026-08-26 clarification — Phase 8
+    // review follow-up F-cursor)
+    //
+    // The lock range `[cursor, cursor + remBytes)` is derived from a
+    // `fsTell` snapshot taken IMMEDIATELY BEFORE `fsLockRange`.
+    // Between that snapshot and the `fsRead` that actually consumes
+    // bytes at the cursor, no other method on the same cap can
+    // advance the cursor:
+    //
+    //   * The outer `for (@state <- @[*private, *stateP])` at the
+    //     top of `readInto` LINEAR-receives the state token.  Any
+    //     concurrent method on the same File cap blocks on the
+    //     `stateP` cell until this method re-parks it (`stateP!(
+    //     "open")` on every exit path).
+    //   * fsTell → fsLockRange → fsRead all happen while stateP is
+    //     held, so no in-cap method can advance the cursor between
+    //     snapshot and syscall.
+    //
+    // What the lock does NOT protect:
+    //
+    //   * Cross-cap access from a DIFFERENT File cap opened on the
+    //     same `(dev, inode)` (spec §938 shared-Fs caveat).  Range
+    //     locks are keyed on `(dev, inode)`, so a second cap's
+    //     `fsRead`/`fsWrite` at the same range WILL be serialized
+    //     via `fsLockRange` — that IS the point of the lock.
+    //   * Raw `fs_read`/`fs_write` from a hostile deploy that
+    //     bypasses File.rho entirely.  Phase 8 assumes File.rho is
+    //     the sole path.
+    //
+    // Rejected alternatives (see plan doc §Concurrency partition
+    // 2026-08-12 refinement): no lock (violates spec §978); whole-
+    // file lock (pessimistic beyond need); pass cursor via caller
+    // (FIP-breaking API change).
+    //
     // ## Deferred (Phase 8)
     //
-    // Range-lock check per spec §974 — Phase 8 range-lock interval
-    // tree.  Multi-fsRead loop for POSIX short reads — a follow-up
+    // Multi-fsRead loop for POSIX short reads — a follow-up
     // slice can wrap this in a retry loop until buffer fills or EOF.
     //
     // ## Reachability caveat (Phase 6 MVP)

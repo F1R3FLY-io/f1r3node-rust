@@ -1318,6 +1318,13 @@ mod tests {
         // of the Genesis deploy content — see the plan's
         // "Hard-fork surfaces flagged during Phase 10" section.
         //
+        // Anchor roll 2026-08-26 (Phase 8 review follow-up cursor-
+        // relative TOCTOU docstring): File.rho::readInto gains a new
+        // documentation section explaining why the fsTell→fsLockRange
+        // sequence is safe (stateP-linear-receive blocks concurrent
+        // in-cap methods between snapshot and syscall).  Comment-only
+        // change; no runtime behavior difference.
+        //
         // Anchor roll 2026-08-26 (streaming-slice Step 5 review-fixup):
         // Dir.rho::entries() producer wrapper's malformed-reply arm
         // now calls `fsEntriesStreamClose` before responding
@@ -1362,6 +1369,7 @@ mod tests {
         // on `ell > cap`, and the 4 File.rho callers now pass
         // `67108864` = MAX_WRITE_BYTES.
         //
+        // Prior anchor: 5efce8f4 (streaming-slice Step 5 Fixup A close-on-malformed, 2026-08-26).
         // Prior anchor: 60035818 (streaming-slice Step 5 initial Dir.rho swap, 2026-08-25).
         // Prior anchor: 434a828b (streaming-slice Step 2 three natives, 2026-08-25).
         // Prior anchor: 46db7011 (PB-B-3 insertVersion shipped, 2026-08-24).
@@ -1370,7 +1378,7 @@ mod tests {
         // Prior anchor: 126a35ab (slice 9c-i reply-payload cap, 2026-08-23).
         // Prior anchor: 5f41dafe (cost-accounted-rho merge, 2026-08-21).
         // Prior anchor: c243b4db (pre-merge).
-        const EXPECTED: &str = "5efce8f422d240b2e271fd7407d0a80e6c2a62302195fb8cce42c13dabf00c5e";
+        const EXPECTED: &str = "1f3e8878df25f6845619ef2e8e2450aa99e836312652bf701dccbcd15a1f3787";
         assert_eq!(
             hex, EXPECTED,
             "M-12: compose_fs_genesis_source() hash changed.  If intentional \
@@ -1460,6 +1468,128 @@ mod tests {
     /// (e.g.) `Dir.entries` would silently bind to a fresh
     /// unforgeable and never fire.
     ///
+    /// **Phase 8 review follow-up F-2 (2026-08-26).**  Every top-
+    /// level helper contract defined in a `.rho` library
+    /// (`File.rho`, `Dir.rho`, `Stream.rho`, `Buffer.rho`,
+    /// `Fs.rho`) MUST be bound in the composed FsGenesis outer
+    /// `new` scope (`fs_genesis.rs:625-661`).  Otherwise, a Rholang
+    /// call site referencing the helper by name silently binds to
+    /// a fresh unforgeable name at parse time — no compile error,
+    /// but the intended contract is never invoked and the caller's
+    /// ret channel hangs forever.
+    ///
+    /// Existing behavioral coverage: `with_libs_composes` in
+    /// `file_dir_check.rs` compiles the composed source and would
+    /// fail on a genuinely-unbound reference.  This pin is defense-
+    /// in-depth: catches the more subtle drift where a helper is
+    /// DEFINED at module scope inside a lib but MISSING from the
+    /// composed outer `new`, which currently compiles cleanly
+    /// (Rholang creates a fresh name for the unbound reference)
+    /// but silently mis-routes.
+    ///
+    /// Heuristic: top-level helpers are indented exactly 2 spaces
+    /// (module scope inside the lib's outer `new`).  Nested
+    /// contracts (`contract fooProducer(...)` inside a method body)
+    /// use ≥4 spaces and are excluded.  A regression that adds a
+    /// new top-level `contract <name>` to any lib without also
+    /// binding it in the composed source trips this pin with a
+    /// clear remediation message.
+    #[test]
+    fn every_lib_top_level_helper_is_bound_in_composed_outer_new() {
+        // (lib_path, source) — same set that `lib_body` composes.
+        let libs: &[(&str, &str)] = &[
+            ("File.rho", include_str!("../../../main/resources/File.rho")),
+            ("Dir.rho", include_str!("../../../main/resources/Dir.rho")),
+            (
+                "Stream.rho",
+                include_str!("../../../main/resources/Stream.rho"),
+            ),
+            (
+                "Buffer.rho",
+                include_str!("../../../main/resources/Buffer.rho"),
+            ),
+            ("Fs.rho", include_str!("../../../main/resources/Fs.rho")),
+        ];
+        let composed = compose_fs_genesis_source("00", "00", &[], None);
+
+        let Some(new_block_end) = composed.find("in {") else {
+            panic!("composed source missing `in {{` — structure changed");
+        };
+        let outer_new_block = &composed[..new_block_end];
+
+        let mut missing: Vec<(String, String)> = Vec::new();
+        for (lib_path, src) in libs {
+            // Collect this lib's own `new ..., <name>, ... in {`
+            // bindings.  A helper bound in the lib's own inner `new`
+            // is in scope for cross-references within the same lib
+            // body (e.g., Stream.rho's foldConcurrentDispatch et al
+            // are bound in a nested `new` inside the outer Stream
+            // scope) and does NOT need to appear in the composed
+            // outer `new`.  Only cross-lib references require the
+            // composed-outer-new binding.
+            let mut own_new_bindings: std::collections::HashSet<&str> =
+                std::collections::HashSet::new();
+            for line in src.lines() {
+                let trimmed = line.trim_start();
+                let Some(rest) = trimmed.strip_prefix("new ") else {
+                    continue;
+                };
+                // Everything up to " in " on this line (or up to
+                // end-of-line if the `new ... in {` spans multiple
+                // lines — but the parser tolerates comma-separated
+                // names in a single-line binding, which is the
+                // convention across the .rho libs).
+                let names_end = rest.find(" in ").unwrap_or(rest.len());
+                let names_chunk = &rest[..names_end];
+                for tok in names_chunk.split(|c: char| !c.is_alphanumeric() && c != '_') {
+                    if !tok.is_empty() {
+                        own_new_bindings.insert(tok);
+                    }
+                }
+            }
+
+            for line in src.lines() {
+                let Some(rest) = line.strip_prefix("  contract ") else {
+                    continue;
+                };
+                if line.starts_with("   contract ") {
+                    continue;
+                }
+                let name_end = rest
+                    .find(|c: char| !c.is_alphanumeric() && c != '_')
+                    .unwrap_or(rest.len());
+                let name = &rest[..name_end];
+                if name.is_empty() {
+                    continue;
+                }
+                // Scope check: bound in this lib's own `new`, OR
+                // bound in the composed outer `new`.
+                if own_new_bindings.contains(name) {
+                    continue;
+                }
+                let bound = outer_new_block
+                    .split(|c: char| !c.is_alphanumeric() && c != '_')
+                    .any(|tok| tok == name);
+                if !bound {
+                    missing.push((lib_path.to_string(), name.to_string()));
+                }
+            }
+        }
+
+        assert!(
+            missing.is_empty(),
+            "F-2 helper-binding drift regression: the following top-level \
+             `contract <name>` definitions in .rho libs are NOT bound in the \
+             composed FsGenesis outer `new` scope (`fs_genesis.rs:625-661`): \
+             {missing:?}.  Add each missing name to the outer `new` binding \
+             list; otherwise callers referencing the helper by name silently \
+             bind to a fresh unforgeable and hang.  Existing coverage: \
+             `with_libs_composes` catches genuinely-unbound references but \
+             cannot detect this class (Rholang creates a fresh name for the \
+             unbound reference and compiles cleanly)."
+        );
+    }
+
     /// Post-M-3, both directions are pinned.  A future URN
     /// added to either side without the other trips this test.
     #[test]
