@@ -259,6 +259,139 @@ mod tests {
         );
     }
 
+    /// **Streaming-slice Step 4 review-fixup pin (2026-08-26).**
+    /// `reset()` must clear `dir_fs_snapshot_stack` so a subsequent
+    /// `revert_to_soft_checkpoint` without a matching `create` cannot
+    /// pop a stale mark and truncate the dir table to a pre-reset
+    /// watermark.  Companion invariant to the M6 round-2 fix for the
+    /// file-fd + WAL stacks documented at rho_runtime.rs::reset.
+    ///
+    /// Regression scenario: if `reset()` forgets to clear
+    /// `dir_fs_snapshot_stack`, an unbalanced revert pops the stale
+    /// mark (=post_open_1_value, some small number) and calls
+    /// `truncate_to(mark)`, which sweeps every dir fd >= mark.  Post-
+    /// reset, the fd counter is re-seeded from state hash to a much
+    /// larger watermark, so newly-allocated fds fall above the stale
+    /// mark and get incorrectly swept.  This test opens a stream
+    /// post-reset and confirms it survives the unbalanced revert.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn reset_clears_dir_fs_snapshot_stack() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("sub")).unwrap();
+        let mut runtime = create_runtime().await;
+
+        // (1) Open a dir stream pre-reset to seed a mark.
+        run_open_dir_stream(&mut runtime, dir.path(), "sub").await;
+
+        // (2) Capture a checkpoint — pushes a mark on
+        // `dir_fs_snapshot_stack` (private field; observed indirectly
+        // via the revert behavior below).
+        let stale_checkpoint = runtime.create_soft_checkpoint().await;
+
+        // (3) Reset to the current root — MUST clear the stack.
+        let root = runtime.get_root().await;
+        runtime.reset(&root).await.unwrap();
+
+        // (4) Open a new dir stream — allocated at a post-reset
+        // watermark (state-hash-seeded, much larger than the pre-
+        // reset mark).
+        run_open_dir_stream(&mut runtime, dir.path(), "sub").await;
+        let post_reset_fd = runtime.fs_handles.dir_handles.snapshot_next_fd() - 1;
+
+        // (5) Unbalanced revert — the stack was cleared by reset, so
+        // this must be a no-op.  If reset forgot to clear the stack,
+        // the pop would find the stale mark and truncate every fd >=
+        // that mark, including `post_reset_fd`.
+        runtime.revert_to_soft_checkpoint(stale_checkpoint).await;
+
+        assert!(
+            runtime
+                .fs_handles
+                .dir_handles
+                .get(post_reset_fd)
+                .await
+                .is_some(),
+            "post-reset dir stream fd {post_reset_fd} must survive an \
+             unbalanced revert (reset must have cleared \
+             dir_fs_snapshot_stack).  A regression that drops the \
+             `self.dir_fs_snapshot_stack.lock().unwrap().clear()` line \
+             in rho_runtime.rs::reset would trip this pin: the pre-reset \
+             mark (small) would be popped and truncate_to would sweep \
+             the post-reset fd (large)."
+        );
+    }
+
+    /// **Streaming-slice Step 4 review-fixup pin (2026-08-26).**
+    /// `revert_to_soft_checkpoint` with no matching `create` is a
+    /// defensive no-op on the dir stack — the docstring at
+    /// rho_runtime.rs pins this contract.  Mirror pin exists
+    /// implicitly for the file-fd stack (would hit the same
+    /// `if let Some(s) = snap` guard), but no companion test
+    /// exercises the dir stack path.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn unbalanced_dir_revert_without_matching_create_is_no_op() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("sub")).unwrap();
+        let mut runtime = create_runtime().await;
+
+        // Open a dir stream and capture a checkpoint.
+        run_open_dir_stream(&mut runtime, dir.path(), "sub").await;
+        let checkpoint = runtime.create_soft_checkpoint().await;
+        let fd_before = runtime.fs_handles.dir_handles.snapshot_next_fd() - 1;
+
+        // Balanced revert — sweeps nothing new (the fd was opened
+        // before the checkpoint).
+        runtime.revert_to_soft_checkpoint(checkpoint).await;
+        assert!(
+            runtime
+                .fs_handles
+                .dir_handles
+                .get(fd_before)
+                .await
+                .is_some(),
+            "pre-checkpoint dir fd survives balanced revert"
+        );
+
+        // Second (unbalanced) revert — no matching create exists, so
+        // the stack is empty; the revert must be a no-op.  Get a
+        // fresh checkpoint value to hand in (any SoftCheckpoint from
+        // reducer.space.create_soft_checkpoint works — the WalOp
+        // stacks are what matter for our pin).
+        let unbalanced = runtime.reducer.space.create_soft_checkpoint().await;
+        runtime.revert_to_soft_checkpoint(unbalanced).await;
+        assert!(
+            runtime
+                .fs_handles
+                .dir_handles
+                .get(fd_before)
+                .await
+                .is_some(),
+            "unbalanced revert must be a no-op: the fd must survive \
+             (regression: `if let Some(s) = dir_snap` guard removed)"
+        );
+    }
+
+    async fn run_open_dir_stream(runtime: &mut RhoRuntimeImpl, root: &std::path::Path, rel: &str) {
+        let term = format!(
+            r#"
+            new fsOpen(`rho:io:fs:native:1.0.0/entriesStreamOpen`), o in {{
+              fsOpen!("{root}", "{rel}", "oracular", *o) |
+              for (@[true, _fd] <- o) {{ Nil }}
+            }}
+            "#,
+            root = root.display(),
+        );
+        runtime
+            .evaluate(
+                &term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                rand(),
+            )
+            .await
+            .unwrap();
+    }
+
     async fn run_open(runtime: &mut RhoRuntimeImpl, root: &std::path::Path, rel: &str) {
         let term = format!(
             r#"

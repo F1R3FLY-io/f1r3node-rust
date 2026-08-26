@@ -411,4 +411,93 @@ mod tests {
             c - lower_bound,
         );
     }
+
+    /// **Streaming-slice Step 7 review-fixup companion pin
+    /// (2026-08-26).**  Boundary variant of
+    /// `fs_entries_stream_streams_five_children_charges_supplement_at_runtime`:
+    /// drive open + one Next (EOS) + close against an EMPTY
+    /// directory and verify only the setup + EOS + close charges
+    /// fire, with NO per-entry supplement.  Guards against an off-
+    /// by-one where the EOS branch charges supplement(1) instead of
+    /// the `reserve_incremental_primitive`'s early-return at 0.
+    ///
+    /// This is the same class of hazard documented for bulk
+    /// `fs_entries` in the Deferred items catalog (bulk uses
+    /// `reserve_primitive` and would trip `BugFoundError` on the
+    /// zero-cost supplement — the streaming primitive uses
+    /// `reserve_incremental_primitive` per handlers.rs:2786 to dodge
+    /// exactly this failure mode).  If a future refactor swaps back
+    /// to `reserve_primitive` on the streaming supplement, this pin
+    /// would trip: the deploy would surface a `BugFoundError` in
+    /// `EvaluateResult.errors` and the whole workload would fail
+    /// its `runtime.evaluate().await.unwrap()` at the Rust harness
+    /// level, causing the test to panic before reaching any
+    /// assertion.
+    ///
+    /// Expected native charges: open (50) + 1 EOS-Next (50 + 0) +
+    /// close (100) = 200 units total; ceiling `+5000` because the
+    /// harness has only 3 native COMMs (single-native workloads run
+    /// ~500-2500 harness overhead per the bulk empty-dir pin, so
+    /// 3× that is comfortable).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn fs_entries_stream_empty_dir_charges_setup_only_at_runtime() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        let empty_sub = root.join("empty");
+        std::fs::create_dir(&empty_sub).unwrap();
+
+        let runtime = create_metered_runtime().await;
+
+        let term = format!(
+            r#"
+            new fsOpen(`rho:io:fs:native:1.0.0/entriesStreamOpen`),
+                fsNext(`rho:io:fs:native:1.0.0/entriesStreamNext`),
+                fsClose(`rho:io:fs:native:1.0.0/entriesStreamClose`),
+                o in {{
+              fsOpen!("{root}", "empty", "oracular", *o) |
+              for (@[true, fd] <- o) {{
+                new n in {{
+                  fsNext!(fd, *n) |
+                  for (@_r <- n) {{
+                    new c in {{
+                      fsClose!(fd, *c) |
+                      for (@_cr <- c) {{ Nil }}
+                    }}
+                  }}
+                }}
+              }}
+            }}
+            "#,
+            root = root.display(),
+        );
+        let result = runtime
+            .evaluate(
+                &term,
+                Cost::create(INITIAL_PHLO, "cost-harness initial".to_string()),
+                std::collections::HashMap::new(),
+                rand(),
+            )
+            .await
+            .unwrap();
+
+        let c = result.cost.value;
+        let setup_only = fs_entries_stream_open_cost().value
+            + fs_entries_stream_next_cost().value
+            + fs_entries_stream_close_cost().value; // 50 + 50 + 100 = 200
+        assert!(
+            c >= setup_only,
+            "empty-dir streaming must consume at least the setup cost \
+             {setup_only} (open 50 + eos-next 50 + close 100); got {c}"
+        );
+        assert!(
+            c < setup_only + 10_000,
+            "empty-dir streaming consumed {c}, more than {} above the \
+             setup-only expectation {setup_only}.  A regression that \
+             charges the per-entry supplement with n=1 on the EOS branch \
+             (off-by-one) would push consumed to at least {} — trip \
+             investigation.",
+            c - setup_only,
+            setup_only + 32,
+        );
+    }
 }

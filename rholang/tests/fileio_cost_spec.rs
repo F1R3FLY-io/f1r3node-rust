@@ -982,6 +982,45 @@ fn remove_dir_charges_setup_only_pending_reply_shape_change() {
     );
 }
 
+/// **Streaming-slice Step 8 review-fixup pin (2026-08-26).**  The
+/// arity-3 `fs_entries_stream` handler at handlers.rs:2450 is a
+/// deprecated stub — replaced by the three arity-2/4 streaming
+/// natives (`fs_entries_stream_open` / `_next` / `_close`) landed in
+/// Steps 2-3.  It stays in the composed source for URN-backward-
+/// compatibility (`rho:io:fs:native:1.0.0/entriesStream` remains
+/// bound at `fs_genesis.rs:682`) but is unreachable from any
+/// production caller after Step 5 swapped Dir.rho to the streaming
+/// primitives.
+///
+/// The prior deferred-charge pin (dropped in Step 8) implicitly
+/// guarded against a silent "upgrade" of this stub to a real
+/// implementation without wiring the paired supplement charge.
+/// This pin re-instates that guard by requiring the stub to
+/// explicitly return `FSERR_UNSUPPORTED`: a PR that flips the
+/// return to `[true, ...]` without ALSO wiring the two-branch
+/// supplement pattern would trip this pin — forcing the author to
+/// justify why the arity-3 shape is being resurrected when arity-2
+/// streaming already covers the use case.
+#[test]
+fn arity3_entries_stream_stub_still_returns_fserr_unsupported() {
+    let src = include_str!("../src/rust/interpreter/io/handlers.rs");
+    // Anchor at the arity-3 handler — signature line grep is
+    // sufficient to disambiguate from arity-2 / arity-4 variants.
+    let signature_prefix = "    pub async fn fs_entries_stream(";
+    let body = method_body(src, signature_prefix)
+        .expect("fs_entries_stream handler (arity-3 stub) must exist");
+    assert!(
+        body.contains("FSERR_UNSUPPORTED"),
+        "arity-3 fs_entries_stream stub must return FSERR_UNSUPPORTED — \
+         it is deprecated post-Step-5, replaced by the arity-2/4 streaming \
+         primitives.  Resurrecting the arity-3 shape requires wiring the \
+         two-branch supplement charge on BOTH branches AND replacing this \
+         pin with a `_charges_supplement_on_both_branches` shape.  \
+         Confirm with a review pass that the URN backward-compatibility \
+         binding at fs_genesis.rs is still the right disposition."
+    );
+}
+
 // -------- Slice 9c-i regression pin --------------------------------
 
 /// **Slice 9c-i regression pin — Stream.rho chunk(n) payload cap.**

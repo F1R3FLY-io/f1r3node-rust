@@ -76,8 +76,11 @@ fn with_libs(test_snippet: &str) -> String {
             // right next to the `fsEntries` mock) reuse `entriesCell`
             // for staging (`[true, list]` or `[false, code, msg]`) and
             // walk the list one entry at a time via `streamCursorCell`.
+            // `streamCloseLog` records each fsEntriesStreamClose call
+            // so tests can assert the producer wrapper closes on EOS +
+            // error paths (Step 5 review-fixup).
             fsEntriesStreamOpen, fsEntriesStreamNext, fsEntriesStreamClose,
-            streamCursorCell
+            streamCursorCell, streamCloseLog
         in {{
           // -- Mock in-memory file "syscalls" ------------------------
           //
@@ -354,6 +357,7 @@ fn with_libs(test_snippet: &str) -> String {
           // fresh list on the next drain.  Fake fd = 1 (streaming
           // handler-side fd allocation is out of scope for the mock).
           streamCursorCell!([]) |
+          streamCloseLog!(0) |
           contract fsEntriesStreamOpen(@_root, @_rel, @_cmode, ret) = {{
             for (@reply <<- entriesCell) {{
               match reply {{
@@ -367,6 +371,14 @@ fn with_libs(test_snippet: &str) -> String {
               }}
             }}
           }} |
+          // Next mock supports mid-stream error injection: if a
+          // cursor element matches the sentinel shape
+          // `("__err", code, msg)`, return `[false, code, msg]`
+          // instead of `[true, head]`.  Tests stage this by putting
+          // the sentinel into the entriesCell list at the position
+          // where the mid-stream error should fire.  Sentinel uses
+          // the `__err` prefix so it can't collide with a real
+          // entry-record Map key.
           contract fsEntriesStreamNext(@_fd, ret) = {{
             for (@cur <- streamCursorCell) {{
               match cur {{
@@ -375,14 +387,25 @@ fn with_libs(test_snippet: &str) -> String {
                   ret!([false, "EOS"])
                 }}
                 [head ...tail] => {{
-                  streamCursorCell!(tail) |
-                  ret!([true, head])
+                  match head {{
+                    ("__err", code, msg) => {{
+                      streamCursorCell!(tail) |
+                      ret!([false, code, msg])
+                    }}
+                    _ => {{
+                      streamCursorCell!(tail) |
+                      ret!([true, head])
+                    }}
+                  }}
                 }}
               }}
             }}
           }} |
           contract fsEntriesStreamClose(@_fd, ret) = {{
-            ret!([true])
+            for (@n <- streamCloseLog) {{
+              streamCloseLog!(n + 1) |
+              ret!([true])
+            }}
           }} |
 
           // fs_truncate — records n in truncLog for test verification.
@@ -4621,6 +4644,131 @@ async fn dir_entries_forwards_native_error() {
     let (ok, code, _, _) = extract_reply(&reply);
     assert!(!ok);
     assert_eq!(code, "FSERR_QUOTA_EXCEEDED");
+}
+
+/// **Streaming-slice Step 5 review-fixup pin (2026-08-26).**
+/// Mid-stream error path: after yielding one entry, `entriesStreamNext`
+/// returns `[false, code, msg]`; Dir.rho's producer wrapper must
+/// forward the error AND call `fsEntriesStreamClose` before
+/// responding on `rc`.  Regression scenario: dropping the
+/// `fsEntriesStreamClose!(streamFd, *closeRetCh)` from the
+/// error-branch of the entries() producer would leak the stream fd
+/// until deploy-boundary (currently unwired — see Deferred items).
+///
+/// Verified via the `streamCloseLog` counter added to the mock
+/// preamble: incremented on every `fsEntriesStreamClose` call, so
+/// a value of 1 after draining `[entry_a, mid-stream error]` proves
+/// the producer's error-branch close fired.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn dir_entries_mid_stream_error_closes_stream_fd() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_libs(
+        r#"
+        for (@_ <- entriesCell) {
+          entriesCell!([true, [
+            {"name": "entry_a"},
+            ("__err", "FSERR_IO", "mid-stream failure")
+          ]]) |
+          for (@d <- Dir!?("/root", "sub", "r", "oracular", *File)) {
+            for (@entriesReply <- @d!?("entries")) {
+              match entriesReply {
+                [true, stream] => {
+                  for (@n1 <- @stream!?("next")) {
+                    for (@n2 <- @stream!?("next")) {
+                      for (@closeCount <<- streamCloseLog) {
+                        @"out"!([n1, n2, closeCount])
+                      }
+                    }
+                  }
+                }
+                _ => @"out"!([entriesReply, Nil, 0])
+              }
+            }
+          }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let outer = match single_expr(&reply).unwrap().expr_instance {
+        Some(ExprInstance::EListBody(l)) => l,
+        _ => panic!("out payload not a list"),
+    };
+    let (ok1, _, _, _) = extract_reply(&outer.ps[0]);
+    assert!(ok1, "first entry must succeed before the mid-stream error");
+    let (ok2, code2, _, _) = extract_reply(&outer.ps[1]);
+    assert!(!ok2, "second reply must be an error");
+    assert_eq!(code2, "FSERR_IO", "mid-stream error code passes through");
+    let close_count = match single_expr(&outer.ps[2]).unwrap().expr_instance {
+        Some(ExprInstance::GInt(n)) => n,
+        _ => panic!("closeCount not an Int"),
+    };
+    assert_eq!(
+        close_count, 1,
+        "fsEntriesStreamClose must fire exactly once after a mid-stream \
+         error (Dir.rho::entries() producer wrapper error-branch close).  \
+         A regression that drops the close on the error path would leave \
+         close_count at 0 — trip investigation."
+    );
+}
+
+/// **Streaming-slice Step 5 review-fixup pin (2026-08-26).**
+/// EOS close path: after draining to EOS, `fsEntriesStreamClose`
+/// must fire exactly once (from the producer wrapper's EOS branch).
+/// Companion to `dir_entries_mid_stream_error_closes_stream_fd`
+/// covering the happy-path close.  Guards against a regression that
+/// removes the close call from the EOS branch of the producer
+/// wrapper — would leak the fd on every successful drain.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn dir_entries_eos_closes_stream_fd() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_libs(
+        r#"
+        for (@_ <- entriesCell) {
+          entriesCell!([true, [{"name": "only"}]]) |
+          for (@d <- Dir!?("/root", "sub", "r", "oracular", *File)) {
+            for (@entriesReply <- @d!?("entries")) {
+              match entriesReply {
+                [true, stream] => {
+                  for (@n1 <- @stream!?("next")) {
+                    for (@eos <- @stream!?("next")) {
+                      for (@closeCount <<- streamCloseLog) {
+                        @"out"!([n1, eos, closeCount])
+                      }
+                    }
+                  }
+                }
+                _ => @"out"!([entriesReply, Nil, 0])
+              }
+            }
+          }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let outer = match single_expr(&reply).unwrap().expr_instance {
+        Some(ExprInstance::EListBody(l)) => l,
+        _ => panic!("out payload not a list"),
+    };
+    let (ok1, _, _, _) = extract_reply(&outer.ps[0]);
+    assert!(ok1, "first entry must succeed");
+    let (ok2, code2, _, _) = extract_reply(&outer.ps[1]);
+    assert!(!ok2, "second reply must be EOS");
+    assert_eq!(code2, "EOS", "second reply must be the EOS terminator");
+    let close_count = match single_expr(&outer.ps[2]).unwrap().expr_instance {
+        Some(ExprInstance::GInt(n)) => n,
+        _ => panic!("closeCount not an Int"),
+    };
+    assert_eq!(
+        close_count, 1,
+        "fsEntriesStreamClose must fire exactly once on EOS drain \
+         (Dir.rho::entries() producer wrapper EOS-branch close).  A \
+         regression that drops the close on EOS would leak the stream \
+         fd on every successful drain — trip investigation."
+    );
 }
 
 /// entries() works on both "r" and "rw" Dirs (read op — no mode gate).

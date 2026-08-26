@@ -468,6 +468,62 @@ mod tests {
         eval(&mut runtime, &term).await;
     }
 
+    /// **Streaming-slice review-fixup pin (2026-08-26).**  Open-
+    /// without-close leaves the fd in `dir_handles.table` — documents
+    /// the fd-leak behavior that motivates the "close_all_for_deploy
+    /// sweep not wired" deferred item.  If a future PR wires
+    /// `DirHandleTable::close_all_for_deploy` into
+    /// `WalDeployScope::Drop` (or an equivalent deploy-end hook),
+    /// this test's expectation flips — the fd should be swept after
+    /// the deploy ends — and the assertion needs updating.
+    ///
+    /// Also serves as a contrast to
+    /// `stream_close_is_idempotent`: this test does NOT call
+    /// `entriesStreamClose`, so the fd remains present in the table.
+    /// The Rust-side `DirHandleTable::truncate_to` path (Step 4) is
+    /// the ONLY current mechanism that sweeps un-closed dir fds,
+    /// and it only fires on deploy revert — not on deploy commit.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn open_without_close_leaves_fd_in_table() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("sub")).unwrap();
+        std::fs::write(dir.path().join("sub/a"), b"x").unwrap();
+
+        let mut runtime = create_runtime().await;
+        let counter_initial = runtime.fs_handles.dir_handles.snapshot_next_fd();
+
+        // Open and drain the ack, but do NOT close.  The Rholang
+        // deploy commits successfully.
+        let term = format!(
+            r#"
+            new fsOpen(`rho:io:fs:native:1.0.0/entriesStreamOpen`), o in {{
+              fsOpen!("{root}", "sub", "oracular", *o) |
+              for (@[true, _fd] <- o) {{ Nil }}
+            }}
+            "#,
+            root = dir.path().display(),
+        );
+        eval(&mut runtime, &term).await;
+
+        let leaked_fd = counter_initial;
+        assert!(
+            runtime
+                .fs_handles
+                .dir_handles
+                .get(leaked_fd)
+                .await
+                .is_some(),
+            "fd {leaked_fd} must remain in table after deploy commit \
+             (documents the deploy-end-sweep gap; WalDeployScope::Drop \
+             does not call dir_handles.close_all_for_deploy today)."
+        );
+        assert_eq!(
+            runtime.fs_handles.dir_handles.snapshot_next_fd(),
+            counter_initial + 1,
+            "counter advanced monotonically"
+        );
+    }
+
     /// Next with a non-int fd argument returns `FSERR_BAD_ARG`.
     /// Guards against a regression that unwrapped the fd Par
     /// unconditionally and panicked (or silently coerced) on
