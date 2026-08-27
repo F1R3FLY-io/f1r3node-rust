@@ -1,0 +1,36 @@
+{- ---------------------------------------------------------------------------
+   bad/CaseMotiveUnused.module
+
+   The dependent eliminator as the withdrawn `language!` block wrote it: the
+   motive is passed but never spelled. Under the positional BNFC form this
+   was invisible. G6 makes it a diagnostic.
+
+   Expected: [argument-use] `mot`
+--------------------------------------------------------------------------- -}
+
+Module BadCaseMotive {
+
+  Theory CoreLike() {
+    Types {
+      Term;
+      Tag;
+      CaseBranch;
+    }
+    Exports {
+      Term;
+      Tag;
+      CaseBranch;
+    }
+    Terms {
+      Inj    . lbl:Tag, val:Term |- "inj" lbl val : Term;
+      CaseBr . lbl:Tag, ^x.body:[Term -> Term]
+             |- lbl " " x "=>" body : CaseBranch;
+
+      -- `mot` never appears between `|-` and `:`.
+      Case   . scrut:Term, mot:Term, brs:HashBag(CaseBranch)
+             |- "case" scrut "of" "{" brs.*sep(";") "}" : Term;
+    }
+  }
+
+  theory CoreLike()
+}

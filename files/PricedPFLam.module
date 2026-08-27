@@ -1,0 +1,78 @@
+{- ---------------------------------------------------------------------------
+   PricedPFLam.module
+
+   The pricing delta of `publications/plausible-fiction/priced-pf.tex`
+   (revision of 2026-08-26), section 5.
+
+   Under the withdrawn `language!` form this delta could only be a listing
+   annotated "only additions shown". Here it is a PARAMETRIC theory taking
+   PFLam as its parameter, so the extension is checked against PFLam rather
+   than described alongside it. If a future revision renames `Hole` or
+   changes its arity, the elaborator reports the break here instead of
+   letting two listings drift apart.
+
+   It also exercises the import path (D6): `pf.PFLam` is resolved across a
+   module boundary, the way a venue's theory will be resolved by URL.
+
+   `val` -- the PJES denotation of a term as a demand price over its
+   conditional demand tree -- is NOT here. It is a pure analysis returning a
+   `Price`, not a `Term`, so it is a host operation at the bridge, stated
+   once. That leaves this theory escape-free, as PFLam now is.
+--------------------------------------------------------------------------- -}
+
+import "PFLam.module" as pf
+
+Module PricedPF {
+
+  -- `Price` and `Obsv` are declared as categories with no constructors, for
+  -- the same reason `HoleId` is in PFLam.module: they are pinned to host
+  -- ground types, and how a `Types` declaration expresses that pinning is
+  -- plan 9.4. `ObsOne` is the one exception -- the constant-one observable
+  -- has to exist for the scaling unit law to be statable inside the theory
+  -- rather than beside it.
+  Theory PricedPFLam(base: pf.PFLam) {
+    base
+      Types {
+        Price;
+        Obsv;
+      }
+      Exports {
+        Price;
+        Obsv;
+      }
+      Terms {
+        -- A reservation price on a hole. Note that this does NOT change the
+        -- hole's TYPE: admissibility (q |= T) is untouched, so PF's
+        -- decidability and termination results carry over verbatim.
+        Priced . h:HoleId, ty:Term, p:Price
+               |- "?" h ":" ty "@" p : Term;
+
+        -- PJES scale(o, c): scale a sub-demand by an observable.
+        Scale  . o:Obsv, c:Term |- "scale" "(" o "," c ")" : Term;
+
+        -- PJES give: reverse polarity. Swaps which side funds the leg, hence
+        -- swaps bid against ask when the bridge prices it.
+        Give   . c:Term |- "give" "(" c ")" : Term;
+
+        ObsOne . |- "one" : Obsv;
+      }
+      Equations {
+        (Give (Give c)) == c;
+        (Scale (ObsOne) c) == c;
+      }
+  }
+
+  -- A market's language is PFLam plus prices over ONE PFLam instance. If a
+  -- venue later joins a reputation theory over the same `HoleId`, the join
+  -- is a pushout over this same instance and identifies `HoleId` once.
+  -- Passing two independently instantiated copies of PFLam would be
+  -- rejected -- correctly, since it would assert that the priced holes and
+  -- the reputed holes are different holes.
+  Theory PFMarket() {
+    let base = pf.FreePFLam() in (
+    PricedPFLam(base)
+    )
+  }
+
+  theory PFMarket()
+}

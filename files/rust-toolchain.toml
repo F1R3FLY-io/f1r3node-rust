@@ -1,0 +1,16 @@
+# The repository root pins nightly-2026-02-09, and rustup walks upward from
+# the working directory, so without this file a build inside mettail-elab/
+# would inherit that nightly even though the crate does not need it.
+#
+# mettail-elab is a separate workspace on a client compile path: Embers takes
+# it as a git dependency (plan D6/D7, elaboration is client-side at compile
+# time), and Embers should not be forced onto the node's nightly. The crate is
+# dependency-free, edition 2021, and builds and tests clean on stable —
+# verified on rustc 1.75.0, which is the floor, not the target.
+#
+# If this crate ever needs a nightly feature, delete this file and say so in
+# the commit; do not let the inheritance happen silently.
+[toolchain]
+channel = "stable"
+components = ["rustfmt", "clippy"]
+profile = "minimal"

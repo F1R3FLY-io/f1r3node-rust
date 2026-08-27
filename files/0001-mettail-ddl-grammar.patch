@@ -1,0 +1,187 @@
+--- /tmp/grammar.orig.js	2026-08-19 21:32:09.614177634 +0000
++++ rholang-rs/rholang-tree-sitter/grammar.js	2026-08-19 21:32:15.321038637 +0000
+@@ -50,7 +50,174 @@
+ 
+     rules: {
+         // Starting point of the grammar
+-        source_file: $ => repeat($._proc),
++        source_file: $ => repeat(choice($._proc, $.module)),
++
++        // ------------------------------------------------------------------
++        //  MeTTaIL DDL and module system.
++        //
++        //  Plan: docs/plans/mettail-ddl-and-modules-2026-08-19.md
++        //  Decisions D1-D10; the six additions of plan section 3.4 are marked
++        //  G1..G6 below.
++        //
++        //  NOTE ON KEYWORDS. None of `Module`, `Theory`, `theory`, `import`,
++        //  `as`, `from`, `Types`, `Exports`, `Replacements`, `Terms`,
++        //  `Equations`, `Rewrites`, `free`, or `subst` is added to the global
++        //  `reserved` set. They are disambiguated by context, exactly as
++        //  `agent`, `constructor`, `method`, `default` and `private` already
++        //  are. Reserving them globally would break existing Rholang that
++        //  uses these words as identifiers.
++        // ------------------------------------------------------------------
++
++        module: $ => seq(
++            repeat($.import),
++            'Module',
++            field('name', $.var),
++            '{',
++            repeat(choice($.theory_decl, $.theory_stmt)),
++            '}'
++        ),
++
++        // D6: imports resolve by URL.
++        import: $ => choice(
++            seq('import', field('url', $.string_literal), 'as', field('alias', $.var)),
++            seq('import', field('name', $.var), 'from', field('url', $.string_literal))
++        ),
++
++        theory_decl: $ => seq(
++            'Theory',
++            field('name', $.var),
++            '(', commaSep($.theory_param), ')',
++            '{', field('body', $._theory_expr), '}'
++        ),
++
++        theory_param: $ => seq(field('name', $.var), ':', field('type', $.dotted_path)),
++
++        // The entry point: the last `theory ...` in the entry module.
++        theory_stmt: $ => seq('theory', field('body', $._theory_expr)),
++
++        dotted_path: $ => sep1($.var, '.'),
++
++        // Theory expression. Precedence, loosest first: \  then  \/  then
++        // /\  then the postfix builder chain.
++        _theory_expr: $ => choice(
++            $.theory_diff, $.theory_join, $.theory_meet, $._theory_builders
++        ),
++        theory_diff: $ => prec.left(1, seq($._theory_expr, '\\', $._theory_expr)),
++        theory_join: $ => prec.left(2, seq($._theory_expr, '\\/', $._theory_expr)),
++        theory_meet: $ => prec.left(3, seq($._theory_expr, '/\\', $._theory_expr)),
++
++        // G5: a body opening with a builder takes `Empty` as its implicit
++        // base, so `Theory T() { Types { .. } .. }` needs no explicit atom.
++        _theory_builders: $ => prec.left(4, choice(
++            seq($._theory_atom, repeat($._builder)),
++            repeat1($._builder)
++        )),
++
++        _theory_atom: $ => choice(
++            $.theory_empty,
++            $.theory_free,
++            $.theory_apply,
++            $.theory_let,
++            seq('{', $._theory_expr, '}'),
++            seq('(', $._theory_expr, ')')
++        ),
++        theory_empty: $ => 'Empty',
++        theory_free: $ => seq('free', '(', $.dotted_path, ')'),
++        theory_apply: $ => seq(
++            field('head', $.dotted_path),
++            optional(seq('(', commaSep($._theory_expr), ')'))
++        ),
++        // Elaborated once and shared: this is what makes the D3 join a
++        // pushout rather than a union.
++        theory_let: $ => seq(
++            'let', field('name', $.var), '=', field('bound', $._theory_expr),
++            'in', '(', field('body', $._theory_expr), ')'
++        ),
++
++        _builder: $ => choice(
++            $.types_block, $.exports_block, $.replacements_block,
++            $.terms_block, $.equations_block, $.rewrites_block
++        ),
++
++        // G1: category declaration, distinct from export visibility.
++        types_block: $ => seq('Types', '{', repeat(seq($.var, ';')), '}'),
++
++        exports_block: $ => seq('Exports', '{', repeat($.export), '}'),
++        export: $ => seq(
++            field('cat', $.var),
++            optional(seq('=>', field('as', $.var))),
++            ';'
++        ),
++
++        // No integer permutation profile: arguments are named, so permutation
++        // is expressed by naming (plan section 3.2).
++        replacements_block: $ => seq('Replacements', '{', repeat($.replacement), '}'),
++        replacement: $ => seq(field('target', $.var), '=>', $.term_rule),
++
++        terms_block: $ => seq('Terms', '{', repeat($.term_rule), '}'),
++
++        // D2/G6: judgement form. The right-hand side interleaves string
++        // terminals with ARGUMENT NAMES drawn from the context, not with
++        // category nonterminals by position.
++        term_rule: $ => seq(
++            field('label', $.var), '.',
++            commaSep($._binding),
++            '|-',
++            repeat($._item),
++            ':', field('result', $.var), ';'
++        ),
++
++        _binding: $ => choice($.plain_binding, $.binder_binding),
++        plain_binding: $ => seq(field('name', $.var), ':', $._sort),
++        // G4: `^x.p:[Name -> Proc]` -- `x` binds in `p`.
++        binder_binding: $ => seq(
++            '^', field('binder', $.var), '.', field('body', $.var),
++            ':', '[', field('from', $.var), '->', field('to', $.var), ']'
++        ),
++
++        // G2: collection sorts. `Product` is deliberately absent pending
++        // plan item 9.3.
++        _sort: $ => choice($.cat_sort, $.coll_sort),
++        cat_sort: $ => $.var,
++        coll_sort: $ => seq(
++            field('kind', choice('HashBag', 'Set', 'List')),
++            '(', field('of', $.var), ')'
++        ),
++
++        _item: $ => choice($.terminal_item, $.arg_ref, $.projection),
++        terminal_item: $ => $.string_literal,
++        arg_ref: $ => $.var,
++        projection: $ => seq(field('arg', $.var), '.', '*', 'sep', '(', $.string_literal, ')'),
++
++        equations_block: $ => seq('Equations', '{', repeat($.equation), '}'),
++        equation: $ => seq(
++            repeat($.freshness),
++            field('lhs', $._ast), '==', field('rhs', $._ast), ';'
++        ),
++        freshness: $ => seq('if', $.var, '#', $.var, 'then'),
++
++        rewrites_block: $ => seq('Rewrites', '{', repeat($.rewrite_decl), '}'),
++        rewrite_decl: $ => seq(
++            field('name', $.var), ':',
++            repeat($.premise),
++            field('lhs', $._ast), '~>', field('rhs', $._ast), ';'
++        ),
++        // D2 spelling: `if S ~> T then ...`, replacing `let S ~> T in ...`.
++        premise: $ => seq('if', $.var, '~>', $.var, 'then'),
++
++        _ast: $ => choice(
++            $.ast_var, $.ast_sexp, $.ast_subst, $.ast_abs, $.ast_coll, $.ast_remainder
++        ),
++        ast_var: $ => $.var,
++        ast_sexp: $ => seq('(', field('label', $.var), repeat($._ast), ')'),
++        // G4: two arguments, because the abstraction carries its own binder.
++        ast_subst: $ => seq('(', 'subst', $._ast, $._ast, ')'),
++        ast_abs: $ => seq('^', field('binder', $.var), '.', $._ast),
++        ast_coll: $ => seq('{', commaSep($._ast), '}'),
++        // G3: required by COMM -- bind the unmatched remainder of a bag and
++        // reconstitute it on the right.
++        ast_remainder: $ => seq('...', field('name', $.var)),
++
+ 
+         _proc: $ => choice(
+             $.par,
+@@ -516,3 +683,8 @@
+ function conc1(rule) {
+     return seq(rule, repeat(seq('&', rule)))
+ }
++
++// Generic separated list, for `dotted_path`.
++function sep1(rule, separator) {
++    return seq(rule, repeat(seq(separator, rule)))
++}
