@@ -179,6 +179,28 @@ pub struct RuntimeManager {
     /// coordination must live above the fd table.  See X-1 memo in
     /// the plan.
     pub lock_registry: rholang::rust::interpreter::io::lock::LockRegistry,
+
+    /// Phase 7b-2 (2026-08-27): shared write-payload store bundle.
+    /// Boot pipeline populates via `set_payload_store` from a
+    /// `PayloadStoreBundle::from_directory(...)` pointed at
+    /// `<data-dir>/wal_payload_store/` (DD-7b-1 (a)).  The bundle
+    /// carries both trait-object aspects of the same underlying
+    /// store — `PayloadPersistence` (write side, threaded into
+    /// every spawned runtime via
+    /// `FileHandleTable::share_payload_store`) and `PayloadLookup`
+    /// (read side, threaded into `WalPayloadContext.payload_lookup`).
+    ///
+    /// `None` when the operator has no consensus-static provisioning
+    /// (observer nodes, dev-mode nodes) OR when the boot pipeline
+    /// hasn't fired yet.  Handlers see `None` and skip the persist
+    /// step; joiners can still fetch from other peers.
+    ///
+    /// Wrapped in `Arc<RwLock<Option<...>>>` for the same reason as
+    /// `fs_snapshot_writer` — a boot-time set on one clone is
+    /// visible to all others.
+    pub payload_store: Arc<
+        tokio::sync::RwLock<Option<crate::rust::engine::wal_payload_server::PayloadStoreBundle>>,
+    >,
 }
 
 #[derive(Clone)]
@@ -509,6 +531,21 @@ impl RuntimeManager {
         runtime
             .fs_handles
             .share_lock_registry(self.lock_registry.clone());
+        // Phase 7b-2 (2026-08-27): share the payload persistence
+        // backend so every Consensus-cap write stashes bytes into
+        // a single on-disk directory the WalPayloadContext reads
+        // back from.  A `None` slot (observer nodes without
+        // consensus-static provisioning) becomes a no-op inside
+        // `journal_write`.
+        runtime
+            .fs_handles
+            .share_payload_store(
+                self.payload_store
+                    .read()
+                    .await
+                    .as_ref()
+                    .map(|b| b.persistence.clone()),
+            );
         metrics::histogram!(RUNTIME_SPAWN_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
             .record(start.elapsed().as_secs_f64());
 
@@ -560,6 +597,20 @@ impl RuntimeManager {
         runtime
             .fs_handles
             .share_lock_registry(self.lock_registry.clone());
+        // Phase 7b-2 (2026-08-27): share the payload persistence
+        // backend so replay runtimes see the same shape as play
+        // runtimes.  Replay runtimes don't write bytes themselves
+        // in practice (leader-side journal_write does), but
+        // keeping parity avoids leader/follower divergence.
+        runtime
+            .fs_handles
+            .share_payload_store(
+                self.payload_store
+                    .read()
+                    .await
+                    .as_ref()
+                    .map(|b| b.persistence.clone()),
+            );
         metrics::histogram!(RUNTIME_SPAWN_REPLAY_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
             .record(start.elapsed().as_secs_f64());
 
@@ -1890,6 +1941,9 @@ impl RuntimeManager {
             // Phase 8 slice 8a: empty range-lock registry at boot.
             // Populated per-acquire by `fs_lock_range` handlers.
             lock_registry: rholang::rust::interpreter::io::lock::LockRegistry::new(),
+            // Phase 7b-2 (2026-08-27): default None; boot sets via
+            // `set_payload_store`.
+            payload_store: Arc::new(tokio::sync::RwLock::new(None)),
         }
     }
 
@@ -1937,6 +1991,37 @@ impl RuntimeManager {
         writer: Option<rholang::rust::interpreter::io::snapshot::SnapshotWriter>,
     ) {
         *self.fs_snapshot_writer.write().await = writer;
+    }
+
+    /// Phase 7b-2 (2026-08-27): boot hook — install (or clear) the
+    /// shared payload persistence backend.  Every subsequent
+    /// `spawn_runtime` / `spawn_replay_runtime` call attaches the
+    /// current value to the returned runtime's
+    /// `fs_handles.payload_store`.  Mirrors
+    /// `set_fs_snapshot_writer`'s hot-reload semantics: writes to
+    /// the RwLock are picked up on the next spawn.
+    ///
+    /// Consensus-safety: `journal_write` reads the store slot per
+    /// call; a boot-time set is immediately visible to every
+    /// live runtime.  Store identity (which dir, which retention)
+    /// is a per-node local concern and does not affect consensus —
+    /// only the WAL entries themselves are consensus-observable.
+    pub async fn set_payload_store(
+        &self,
+        bundle: Option<crate::rust::engine::wal_payload_server::PayloadStoreBundle>,
+    ) {
+        *self.payload_store.write().await = bundle;
+    }
+
+    /// Phase 7b-2 diagnostic — read the currently-installed
+    /// payload store bundle.  Used at boot to thread the same
+    /// underlying store into `WalPayloadContext.payload_lookup`
+    /// (via `bundle.lookup`) so joiner-side reads and leader-side
+    /// writes hit the same on-disk dir.
+    pub async fn get_payload_store(
+        &self,
+    ) -> Option<crate::rust::engine::wal_payload_server::PayloadStoreBundle> {
+        self.payload_store.read().await.clone()
     }
 
     pub fn create_with_store(
@@ -2125,6 +2210,153 @@ mod snapshot_writer_wiring_tests {
         manager.set_fs_snapshot_writer(Some(writer)).await;
         let replay_rt = manager.spawn_replay_runtime().await;
         assert!(replay_rt.fs_snapshot_writer.read().await.is_some());
+    }
+}
+
+#[cfg(test)]
+mod payload_store_wiring_tests {
+    //! Phase 7b-2 (2026-08-27): parity pins for the `payload_store`
+    //! bundle slot on `RuntimeManager`.  Same shape as the
+    //! `snapshot_writer_wiring_tests` above — a regression that
+    //! forgot `share_payload_store` in `spawn_runtime` /
+    //! `spawn_replay_runtime` would silently disable
+    //! leader-side payload persistence and leave joining
+    //! validators unable to fetch any bytes.
+    use std::sync::Arc;
+
+    use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
+    use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
+
+    use super::*;
+    use crate::rust::engine::wal_payload_server::{
+        DirectoryPayloadStore, InMemoryPayloadStore, PayloadStoreBundle,
+    };
+
+    async fn empty_manager() -> RuntimeManager {
+        let mut kvm = InMemoryStoreManager::new();
+        let store = kvm.r_space_stores().await.unwrap();
+        let mergeable_store = RuntimeManager::mergeable_store(&mut kvm).await.unwrap();
+        RuntimeManager::create_with_store(
+            store,
+            mergeable_store,
+            Arc::new(HashMap::new()),
+            ExternalServices::noop(),
+        )
+    }
+
+    /// Set-before-spawn: the bundle set on the manager is visible
+    /// to a subsequently spawned runtime's fs_handles.
+    #[tokio::test]
+    async fn manager_set_before_spawn_visible_to_runtime() {
+        let manager = empty_manager().await;
+        let bundle = PayloadStoreBundle::from_in_memory(InMemoryPayloadStore::new());
+        manager.set_payload_store(Some(bundle)).await;
+        let runtime = manager.spawn_runtime().await;
+        assert!(
+            runtime.fs_handles.payload_store().is_some(),
+            "spawned runtime must see the manager's set payload store"
+        );
+    }
+
+    /// Post-manager-set is NOT retroactively visible to a
+    /// previously-spawned runtime.  `set_payload_store` updates
+    /// the manager's own slot; only the next `spawn_runtime` /
+    /// `spawn_replay_runtime` propagates the new value into the
+    /// runtime.  Hot-reload of the payload store therefore
+    /// requires a runtime respawn (matches the operator mental
+    /// model for the payload dir since it's tied to the on-disk
+    /// data directory).
+    #[tokio::test]
+    async fn post_spawn_manager_set_does_not_retroactively_attach() {
+        let manager = empty_manager().await;
+        let runtime = manager.spawn_runtime().await;
+        assert!(runtime.fs_handles.payload_store().is_none());
+        let bundle = PayloadStoreBundle::from_in_memory(InMemoryPayloadStore::new());
+        manager.set_payload_store(Some(bundle)).await;
+        // Existing runtime still None — manager set went into the
+        // manager's own slot, not the already-spawned runtime.
+        assert!(runtime.fs_handles.payload_store().is_none());
+        // Next spawn picks up the new manager slot.
+        let runtime2 = manager.spawn_runtime().await;
+        assert!(runtime2.fs_handles.payload_store().is_some());
+    }
+
+    /// Replay runtimes also get the shared bundle (parity with
+    /// leader runtimes).
+    #[tokio::test]
+    async fn replay_runtimes_also_share_the_payload_store() {
+        let manager = empty_manager().await;
+        let bundle = PayloadStoreBundle::from_in_memory(InMemoryPayloadStore::new());
+        manager.set_payload_store(Some(bundle)).await;
+        let replay_rt = manager.spawn_replay_runtime().await;
+        assert!(replay_rt.fs_handles.payload_store().is_some());
+    }
+
+    /// Interior-mutability pin: attaching a payload store on the
+    /// runtime's `fs_handles` after spawn MUST also be visible
+    /// through the `FsProcesses` clone (the reducer's clone
+    /// taken at `create_rho_runtime` time).  Documents that the
+    /// field's `Arc<RwLock<...>>` shape enables post-spawn shares
+    /// to cross the clone boundary — the "obvious" `Option<Arc<>>`
+    /// design would leave FsProcesses's clone with a stale None
+    /// and break `journal_write`'s persist hook.
+    #[tokio::test]
+    async fn post_spawn_share_on_runtime_is_visible_to_fs_handles_clones() {
+        let manager = empty_manager().await;
+        let runtime = manager.spawn_runtime().await;
+        // Take a clone of runtime.fs_handles the same way
+        // FsProcesses does at reducer-setup time (which happens
+        // BEFORE any post-spawn share).
+        let clone_of_handles = runtime.fs_handles.clone();
+        assert!(clone_of_handles.payload_store().is_none());
+        // Now share a store on the runtime's copy — this is the
+        // path `RuntimeManager::spawn_runtime` uses, after the
+        // FsProcesses clone was already taken.
+        let store: Arc<
+            dyn rholang::rust::interpreter::io::wal::PayloadPersistence,
+        > = Arc::new(InMemoryPayloadStore::new());
+        runtime.fs_handles.share_payload_store(Some(store));
+        // The clone MUST see the newly-attached store.
+        assert!(
+            clone_of_handles.payload_store().is_some(),
+            "post-spawn share_payload_store must propagate through Arc<RwLock<>> \
+             interior mutability — otherwise FsProcesses's clone would strand \
+             the store forever"
+        );
+    }
+
+    /// `get_payload_store` round-trip: what boot installs is what
+    /// the casper-launch / initializing / genesis-ceremony-master
+    /// wire-up sees when threading the same bundle into
+    /// `WalPayloadContext.payload_lookup`.
+    #[tokio::test]
+    async fn get_payload_store_returns_the_installed_bundle() {
+        let manager = empty_manager().await;
+        assert!(manager.get_payload_store().await.is_none());
+        let bundle = PayloadStoreBundle::from_in_memory(InMemoryPayloadStore::new());
+        manager.set_payload_store(Some(bundle)).await;
+        let got = manager.get_payload_store().await;
+        assert!(got.is_some(), "installed bundle must be readable back");
+    }
+
+    /// Directory-backed bundle round-trip:
+    /// leader-side `journal_write` populates the store via the
+    /// PayloadPersistence trait object, and the joiner-side wire
+    /// dispatch reads bytes back via the PayloadLookup trait
+    /// object.  Both trait objects must resolve to the same
+    /// underlying directory.
+    #[tokio::test]
+    async fn directory_backed_bundle_round_trip_between_trait_objects() {
+        let dir = tempfile::tempdir().unwrap();
+        let bundle = PayloadStoreBundle::from_directory(DirectoryPayloadStore::new(
+            dir.path().to_path_buf(),
+        ));
+        let payload = b"cross-trait round trip".to_vec();
+        // Write via the persistence side (what journal_write uses).
+        let h = bundle.persistence.persist(&payload).unwrap();
+        // Read via the lookup side (what serve_payload uses).
+        let got = bundle.lookup.get(&h).unwrap().unwrap();
+        assert_eq!(got, payload);
     }
 }
 

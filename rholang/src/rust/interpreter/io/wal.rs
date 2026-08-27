@@ -296,6 +296,34 @@ impl PayloadRef {
     }
 }
 
+/// Phase 7b-2 (2026-08-27): serving-side persistence hook.  A
+/// leader validator's `journal_write` calls `persist(bytes)` after
+/// computing `PayloadRef::hash(bytes)` so the bytes are stashed
+/// content-addressed on disk; joining validators later request them
+/// via `GetWalPayloadRequest` and the server side reads them back
+/// via a matching `PayloadLookup` impl (see `wal_payload_server.rs`
+/// in the casper crate).
+///
+/// The trait is intentionally minimal — one method, sync (writes
+/// are small and infrequent relative to Rholang execution) — and
+/// lives in this crate so the fs-write handlers can call it without
+/// depending on the casper crate.  The concrete impl
+/// (`DirectoryPayloadStore`) lives in casper because it's paired
+/// with the reader half `PayloadLookup`, and both are consumed by
+/// the wire-message dispatch.
+pub trait PayloadPersistence: Send + Sync + std::fmt::Debug {
+    /// Persist `bytes` content-addressed under `Blake2b256(bytes)`.
+    /// Returns the computed hash so the caller can echo it into the
+    /// WAL entry.  Idempotent — a second call with the same bytes
+    /// is a no-op (or an overwrite with identical content).
+    ///
+    /// Errors are stringified — the caller side just logs (not a
+    /// hard failure because the joiner-side fetch protocol will
+    /// find the bytes on other peers, and hard-failing here would
+    /// abort the deploy for a defense-in-depth backup hop).
+    fn persist(&self, bytes: &[u8]) -> Result<[u8; 32], String>;
+}
+
 /// Per-runtime append-only WAL buffer.  Cloneable (shares the
 /// underlying `Arc<Mutex<Vec<...>>>` via reference-counting) so every
 /// handler closure can journal into the same list.

@@ -134,6 +134,281 @@ mod tests {
         }
     }
 
+    /// Phase 7b-2 (2026-08-27): a Consensus-cap write with an
+    /// attached `PayloadPersistence` MUST persist the bytes
+    /// content-addressed under the WAL entry's `Hash(...)` key,
+    /// so joining validators can fetch them via the wire protocol.
+    /// Oracular caps must NOT persist (they never journal, so
+    /// there's no hash to key off of).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn consensus_write_persists_bytes_to_attached_payload_store() {
+        use std::collections::HashMap;
+        use std::sync::{Arc, Mutex};
+
+        use rholang::rust::interpreter::io::wal::PayloadPersistence;
+
+        /// Minimal test double — records every persist call and
+        /// echoes the computed hash back like the real store.
+        #[derive(Debug, Default)]
+        struct RecordingStore {
+            calls: Mutex<HashMap<[u8; 32], Vec<u8>>>,
+        }
+        impl PayloadPersistence for RecordingStore {
+            fn persist(&self, bytes: &[u8]) -> Result<[u8; 32], String> {
+                let h: Vec<u8> = Blake2b256::hash(bytes.to_vec());
+                let mut buf = [0u8; 32];
+                buf.copy_from_slice(&h);
+                self.calls.lock().unwrap().insert(buf, bytes.to_vec());
+                Ok(buf)
+            }
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("data.bin");
+        std::fs::write(&path, b"").unwrap();
+
+        let runtime = create_runtime().await;
+        let store = Arc::new(RecordingStore::default());
+        runtime
+            .fs_handles
+            .share_payload_store(Some(store.clone() as Arc<dyn PayloadPersistence>));
+
+        let payload = b"hello world";
+        let term = format!(
+            r#"
+            new fsOpen(`rho:io:fs:native:1.0.0/open`),
+                fsWrite(`rho:io:fs:native:1.0.0/write`),
+                fsClose(`rho:io:fs:native:1.0.0/close`),
+                openCh, writeCh, closeCh
+            in {{
+              fsOpen!("{root}", "data.bin", "rw", "consensus", *openCh) |
+              for (@[true, fd] <- openCh) {{
+                fsWrite!(fd, "68656c6c6f20776f726c64".hexToBytes(), *writeCh) |
+                for (@_ <- writeCh) {{
+                  fsClose!(fd, *closeCh)
+                }}
+              }}
+            }}
+            "#,
+            root = dir.path().display(),
+        );
+        runtime
+            .evaluate(
+                &term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                rand(),
+            )
+            .await
+            .expect("evaluate must succeed");
+
+        // The store must contain the exact bytes under the
+        // Blake2b256 hash the WAL entry references.
+        let expected_hash: Vec<u8> = Blake2b256::hash(payload.to_vec());
+        let mut expected = [0u8; 32];
+        expected.copy_from_slice(&expected_hash);
+        let calls = store.calls.lock().unwrap();
+        assert_eq!(calls.len(), 1, "expected exactly one persist call");
+        assert_eq!(
+            calls.get(&expected).map(|v| v.as_slice()),
+            Some(payload.as_ref())
+        );
+        // Sanity: WAL entry keys off the same hash.
+        let entries = runtime.fs_handles.wal.snapshot();
+        assert_eq!(entries.len(), 1);
+        match &entries[0].payload_ref {
+            Some(PayloadRef::Hash(h)) => assert_eq!(*h, expected),
+            other => panic!("expected PayloadRef::Hash, got {other:?}"),
+        }
+    }
+
+    /// Phase 7b-2 review-pin (2026-08-27): a Consensus-cap write
+    /// on a runtime with NO payload store attached MUST still
+    /// journal the WAL entry.  Sanity check that the persist hook
+    /// is a no-op when the field is None (test harnesses and
+    /// observer nodes hit this path).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn consensus_write_without_payload_store_still_journals() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("data.bin");
+        std::fs::write(&path, b"").unwrap();
+
+        let runtime = create_runtime().await;
+        // No share_payload_store call — the field stays None.
+        assert!(runtime.fs_handles.payload_store().is_none());
+
+        let term = format!(
+            r#"
+            new fsOpen(`rho:io:fs:native:1.0.0/open`),
+                fsWrite(`rho:io:fs:native:1.0.0/write`),
+                openCh, writeCh
+            in {{
+              fsOpen!("{root}", "data.bin", "rw", "consensus", *openCh) |
+              for (@[true, fd] <- openCh) {{
+                fsWrite!(fd, "68656c6c6f".hexToBytes(), *writeCh) |
+                for (@_ <- writeCh) {{ Nil }}
+              }}
+            }}
+            "#,
+            root = dir.path().display(),
+        );
+        runtime
+            .evaluate(
+                &term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                rand(),
+            )
+            .await
+            .expect("evaluate must succeed even without a payload store");
+
+        // WAL entry MUST land regardless of persistence.
+        let entries = runtime.fs_handles.wal.snapshot();
+        assert_eq!(
+            entries.len(),
+            1,
+            "Consensus write must journal even without a payload store"
+        );
+        assert_eq!(entries[0].op, WalOp::Write);
+    }
+
+    /// Phase 7b-2 review-pin (2026-08-27): a `persist(bytes)` call
+    /// that returns `Err(...)` MUST be logged and swallowed — the
+    /// deploy continues, the WAL entry lands.  Otherwise a
+    /// transient disk-full or permission-denied error on the
+    /// payload dir would abort the leader mid-deploy, forking
+    /// consensus with peers whose disks are still healthy.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn persist_error_does_not_abort_consensus_write() {
+        use std::sync::{Arc, Mutex};
+
+        use rholang::rust::interpreter::io::wal::PayloadPersistence;
+
+        #[derive(Debug, Default)]
+        struct FailingStore {
+            calls: Mutex<usize>,
+        }
+        impl PayloadPersistence for FailingStore {
+            fn persist(&self, _bytes: &[u8]) -> Result<[u8; 32], String> {
+                *self.calls.lock().unwrap() += 1;
+                Err("simulated disk failure".to_string())
+            }
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("data.bin");
+        std::fs::write(&path, b"").unwrap();
+
+        let runtime = create_runtime().await;
+        let store = Arc::new(FailingStore::default());
+        runtime
+            .fs_handles
+            .share_payload_store(Some(store.clone() as Arc<dyn PayloadPersistence>));
+
+        let term = format!(
+            r#"
+            new fsOpen(`rho:io:fs:native:1.0.0/open`),
+                fsWrite(`rho:io:fs:native:1.0.0/write`),
+                openCh, writeCh
+            in {{
+              fsOpen!("{root}", "data.bin", "rw", "consensus", *openCh) |
+              for (@[true, fd] <- openCh) {{
+                fsWrite!(fd, "ff00".hexToBytes(), *writeCh) |
+                for (@_ <- writeCh) {{ Nil }}
+              }}
+            }}
+            "#,
+            root = dir.path().display(),
+        );
+        runtime
+            .evaluate(
+                &term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                rand(),
+            )
+            .await
+            .expect(
+                "persist Err MUST NOT abort the deploy — that would fork consensus with \
+                 peers whose payload dir is healthy",
+            );
+
+        // persist was called at least once (may be 2 if partial-write finalize also fires).
+        assert!(
+            *store.calls.lock().unwrap() >= 1,
+            "persist was expected to be called on the Consensus write"
+        );
+        // WAL entry still lands — the deploy proceeded past the
+        // failed persist.
+        let entries = runtime.fs_handles.wal.snapshot();
+        assert_eq!(entries.len(), 1, "WAL entry MUST land even on persist Err");
+        assert_eq!(entries[0].op, WalOp::Write);
+    }
+
+    /// Phase 7b-2 (2026-08-27): an Oracular-cap write on a
+    /// runtime with an attached payload store must NOT persist —
+    /// Oracular caps never journal (no WAL entry, no hash to key
+    /// off of, no fetchable payload for joiners).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn oracular_write_does_not_persist_to_attached_payload_store() {
+        use std::sync::{Arc, Mutex};
+
+        use rholang::rust::interpreter::io::wal::PayloadPersistence;
+
+        #[derive(Debug, Default)]
+        struct CountingStore {
+            n: Mutex<usize>,
+        }
+        impl PayloadPersistence for CountingStore {
+            fn persist(&self, _bytes: &[u8]) -> Result<[u8; 32], String> {
+                *self.n.lock().unwrap() += 1;
+                Ok([0u8; 32])
+            }
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("data.bin");
+        std::fs::write(&path, b"").unwrap();
+
+        let runtime = create_runtime().await;
+        let store = Arc::new(CountingStore::default());
+        runtime
+            .fs_handles
+            .share_payload_store(Some(store.clone() as Arc<dyn PayloadPersistence>));
+
+        let term = format!(
+            r#"
+            new fsOpen(`rho:io:fs:native:1.0.0/open`),
+                fsWrite(`rho:io:fs:native:1.0.0/write`),
+                openCh, writeCh
+            in {{
+              fsOpen!("{root}", "data.bin", "rw", "oracular", *openCh) |
+              for (@[true, fd] <- openCh) {{
+                fsWrite!(fd, "abcd".hexToBytes(), *writeCh) |
+                for (@_ <- writeCh) {{ Nil }}
+              }}
+            }}
+            "#,
+            root = dir.path().display(),
+        );
+        runtime
+            .evaluate(
+                &term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                rand(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            *store.n.lock().unwrap(),
+            0,
+            "oracular cap must not call persist; got {} calls",
+            *store.n.lock().unwrap()
+        );
+    }
+
     /// An Oracular-cap write must NOT produce any WAL entry.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn write_on_oracular_cap_does_not_append_wal() {

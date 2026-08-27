@@ -441,6 +441,27 @@ impl FsProcesses {
                     Some(off) => (WalOp::WriteAt, Some(off)),
                     None => (WalOp::Write, Some(position)),
                 };
+                // Phase 7b-2 (2026-08-27): stash the write payload
+                // content-addressed on disk BEFORE appending the
+                // WAL entry so a joining validator's fetch protocol
+                // sees the bytes as soon as the WAL entry lands.
+                // Failure is logged but not fatal — the joiner-side
+                // fetch protocol will find the bytes on other
+                // serving peers (or fall back to the reducer once
+                // wired).  We do the persist unconditionally on
+                // Consensus caps whenever a store is attached; a
+                // downstream retention pass evicts stale bytes on
+                // snapshot-cycle boundaries.
+                if let Some(store) = self.handles.payload_store() {
+                    if let Err(e) = store.persist(bytes) {
+                        tracing::warn!(
+                            target: "f1r3fly.fs_wal.payload_store",
+                            error = %e,
+                            "payload store persist failed on Consensus write; \
+                             joiners will need to fetch from another peer"
+                        );
+                    }
+                }
                 self.handles
                     .wal
                     .append_with_ack(
@@ -580,6 +601,23 @@ impl FsProcesses {
     fn finalize_write_journal(&self, requested_bytes: &[u8], actual_n: u64, ack: &Par) {
         let n = (actual_n as usize).min(requested_bytes.len());
         let actual_slice = &requested_bytes[..n];
+        // Phase 7b-2 (2026-08-27): re-persist under the truncated
+        // slice's hash.  On full-length writes `n == requested`
+        // and the pre-syscall persist already covered the same
+        // bytes (idempotent).  On partial-write `n < requested`,
+        // the WAL entry's `payload_ref` is updated to point at the
+        // truncated slice's hash — the payload store must have
+        // those bytes too, or the joiner side will fail to fetch.
+        // Failure is logged but not fatal.
+        if let Some(store) = self.handles.payload_store() {
+            if let Err(e) = store.persist(actual_slice) {
+                tracing::warn!(
+                    target: "f1r3fly.fs_wal.payload_store",
+                    error = %e,
+                    "payload store persist failed on partial-write finalize"
+                );
+            }
+        }
         let _ = self
             .handles
             .wal

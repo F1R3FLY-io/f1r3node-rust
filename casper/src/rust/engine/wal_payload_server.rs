@@ -179,6 +179,45 @@ impl PayloadLookup for InMemoryPayloadStore {
 /// Directory-backed store.  Bytes live under `<dir>/<hex(hash)>`.
 /// Matches the on-disk shape of the snapshot dir; fits the
 /// operator-provisioned content case cleanly.
+///
+/// # Security posture (Phase 7b-2 review, 2026-08-27)
+///
+/// **Path traversal:** `path_for(hash)` joins `hex(hash)` which is
+/// `[0-9a-f]{64}` only — no separator characters, cannot escape
+/// `self.dir`.
+///
+/// **Symlink races:** an attacker with write access to `self.dir`
+/// could plant a symlink to redirect writes elsewhere, but such an
+/// attacker already owns the node's data directory (via the
+/// broader `<data-dir>` control implied by the setup.rs boot
+/// pipeline).  Pre-existing environmental assumption.
+///
+/// **Concurrent same-hash writes:** two deploys writing identical
+/// bytes on Consensus caps produce the same hash → same file path
+/// → interleaved `std::fs::write` calls with byte-identical
+/// content.  A concurrent reader mid-write could see partial
+/// bytes, but the joiner-side re-hash check (`serve_payload`
+/// docstring in this file) rejects partial content, so the reader
+/// just asks another peer.  No correctness bug.
+///
+/// **Sync IO in an async caller:** `insert(bytes)` calls
+/// `std::fs::write` which blocks the caller thread for the
+/// duration of the write.  Callers are typically async fs
+/// handlers on a multi-threaded tokio runtime — a large write
+/// (up to `MAX_PAYLOAD_BYTES = 64 MiB`) blocks a worker for
+/// potentially hundreds of milliseconds on slow disk.  Consistent
+/// with the existing fs-handler pattern (they use `nix::unistd::write`
+/// synchronously); a future async migration of the whole fs
+/// stack would move this behind `spawn_blocking`.
+///
+/// **Unbounded disk growth:** `insert` has no retention policy.
+/// A Consensus deploy writing MAX_WAL_ENTRIES (65,536) × maximum
+/// payload (64 MiB) can produce ~4 TiB of on-disk cache per
+/// runtime lifetime.  Per-deploy cost accounting bounds this in
+/// practice (any such deploy would exhaust the block's REV
+/// budget).  DD-7b-1(y) retention (one snapshot cycle behind
+/// earliest retained snapshot) is a follow-up task; until then,
+/// operators should monitor `<data-dir>/wal_payload_store/` size.
 #[derive(Debug, Clone)]
 pub struct DirectoryPayloadStore {
     dir: PathBuf,
@@ -206,6 +245,84 @@ impl PayloadLookup for DirectoryPayloadStore {
             Ok(b) => Ok(Some(b)),
             Err(ref e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
             Err(e) => Err(format!("read {p:?}: {e}")),
+        }
+    }
+}
+
+/// Phase 7b-2 (2026-08-27): the serving-side write path.  A leader
+/// validator's `journal_write` calls this after computing
+/// `PayloadRef::hash(bytes)` so the bytes are stashed content-
+/// addressed on disk.  Implemented on top of the existing `insert`
+/// method — the trait method exists to bridge the rholang crate
+/// (which owns the fs-write handlers) and the casper crate
+/// (which owns the payload store) without introducing a circular
+/// dependency.
+impl rholang::rust::interpreter::io::wal::PayloadPersistence for DirectoryPayloadStore {
+    fn persist(&self, bytes: &[u8]) -> Result<[u8; 32], String> {
+        self.insert(bytes)
+    }
+}
+
+/// Phase 7b-2 (2026-08-27): same trait impl for the in-memory
+/// store, so tests can wire an in-process persistence backend
+/// without touching disk.
+impl rholang::rust::interpreter::io::wal::PayloadPersistence for InMemoryPayloadStore {
+    fn persist(&self, bytes: &[u8]) -> Result<[u8; 32], String> {
+        Ok(self.insert(bytes.to_vec()))
+    }
+}
+
+/// Phase 7b-2 (2026-08-27): a bundled handle to a payload store
+/// that lets the same underlying bytes be reached through TWO
+/// trait objects — `PayloadPersistence` (the write path, called
+/// from the interpreter's `journal_write`) and `PayloadLookup`
+/// (the read path, called from the wire-message dispatch).
+///
+/// The bundle exists because Rust's trait-object system can't
+/// automatically coerce `Arc<dyn PayloadPersistence>` into
+/// `Arc<dyn PayloadLookup>` even when the concrete type
+/// implements both, and the two traits live in different crates
+/// (PayloadPersistence in rholang, PayloadLookup in casper) so
+/// they can't share a supertrait.  Construction sites clone one
+/// concrete `Arc<T>` twice and coerce each clone to the
+/// appropriate trait object.
+#[derive(Clone)]
+pub struct PayloadStoreBundle {
+    /// Write-side handle used by the interpreter's fs-write
+    /// handlers via `FileHandleTable::payload_store`.
+    pub persistence: Arc<dyn rholang::rust::interpreter::io::wal::PayloadPersistence>,
+    /// Read-side handle used by the wire dispatch's
+    /// `serve_payload` / `has_wal_payload_announcement` via
+    /// `WalPayloadContext::payload_lookup`.
+    pub lookup: Arc<dyn PayloadLookup>,
+}
+
+impl std::fmt::Debug for PayloadStoreBundle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PayloadStoreBundle").finish_non_exhaustive()
+    }
+}
+
+impl PayloadStoreBundle {
+    /// Build a bundle from a `DirectoryPayloadStore` (the boot
+    /// pipeline's normal path).  Both trait objects point at the
+    /// same underlying directory.
+    pub fn from_directory(store: DirectoryPayloadStore) -> Self {
+        let arc = Arc::new(store);
+        Self {
+            persistence: arc.clone() as Arc<dyn rholang::rust::interpreter::io::wal::PayloadPersistence>,
+            lookup: arc as Arc<dyn PayloadLookup>,
+        }
+    }
+
+    /// Build a bundle from an in-memory store (test / dev-mode
+    /// path).  Both trait objects point at the same underlying
+    /// `HashMap` guarded by a std `RwLock`.
+    pub fn from_in_memory(store: InMemoryPayloadStore) -> Self {
+        let arc = Arc::new(store);
+        Self {
+            persistence: arc.clone() as Arc<dyn rholang::rust::interpreter::io::wal::PayloadPersistence>,
+            lookup: arc as Arc<dyn PayloadLookup>,
         }
     }
 }

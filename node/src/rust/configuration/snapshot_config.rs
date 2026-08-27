@@ -637,6 +637,37 @@ mod tests {
         );
     }
 
+    /// Phase 7b-2 (2026-08-27): setup.rs must install a
+    /// `DirectoryPayloadStore` bundle at boot so leader-side
+    /// `journal_write` persists Consensus write bytes for joining
+    /// validators to fetch.  A regression that removes the boot
+    /// call silently reverts production to un-persisted mode
+    /// (every joiner request → UnknownPayload) and this pin
+    /// catches it.
+    #[test]
+    fn boot_pipeline_installs_payload_store() {
+        let setup_rs = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/rust/runtime/setup.rs",
+        ))
+        .expect("read setup.rs");
+        assert!(
+            setup_rs.contains("DirectoryPayloadStore"),
+            "setup.rs must construct a DirectoryPayloadStore at boot (Phase 7b-2 \
+             item b).  If you refactored, update this test's needle."
+        );
+        assert!(
+            setup_rs.contains("wal_payload_store"),
+            "setup.rs must name the payload store sibling dir as `wal_payload_store` \
+             (DD-7b-1 (a) committed choice)."
+        );
+        assert!(
+            setup_rs.contains("set_payload_store"),
+            "setup.rs must attach the bundle to RuntimeManager via \
+             set_payload_store(Some(bundle)).await."
+        );
+    }
+
     // Slice 30b: build_snapshot_writer tests.
 
     #[test]

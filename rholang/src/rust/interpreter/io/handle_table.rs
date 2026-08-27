@@ -164,6 +164,34 @@ pub struct FileHandleTable {
     /// runtimes via `RuntimeManager` — dir-stream lifetimes are
     /// per-runtime just like file-handle lifetimes.
     pub dir_handles: super::dir_handle_table::DirHandleTable,
+    /// Phase 7b-2 (2026-08-27): optional shared payload persistence
+    /// backend.  When set (via `share_payload_store` at
+    /// `RuntimeManager::spawn_runtime` time), `journal_write` calls
+    /// `store.persist(bytes)` for every Consensus-cap write so the
+    /// bytes are stashed content-addressed on disk.  Joining
+    /// validators fetch them via the Phase 7b-2 wire protocol
+    /// (`GetWalPayloadRequest`).
+    ///
+    /// `None` on nodes without an operator-configured payload store
+    /// (observer nodes, test harnesses); when None, `journal_write`
+    /// still appends the WAL entry but the bytes are not persisted
+    /// on the serving side.  This is safe for a joiner-only
+    /// posture (they never serve payloads); a serving validator
+    /// SHOULD wire this at boot.
+    ///
+    /// **Interior mutability:** wrapped in `Arc<std::sync::RwLock<Option<...>>>`
+    /// so a post-`spawn_runtime` `share_payload_store` call is
+    /// visible through every `FileHandleTable` clone — including
+    /// the copy `FsProcesses` snapshotted at reducer-setup time.
+    /// (The simpler `Option<Arc<dyn>>` shape would strand the
+    /// FsProcesses clone with a stale None because the field
+    /// replacement doesn't cross the earlier clone boundary.)  The
+    /// std `RwLock` is chosen over `tokio::sync::RwLock` for the
+    /// same reason `InMemoryPayloadStore` uses one: the guard is
+    /// never held across an `.await`, and using a tokio lock from
+    /// inside a sync trait method would risk executor deadlock.
+    pub payload_store:
+        Arc<std::sync::RwLock<Option<Arc<dyn super::wal::PayloadPersistence>>>>,
 }
 
 #[derive(Debug)]
@@ -192,6 +220,12 @@ impl FileHandleTable {
             // guard clears it back to sentinel on drop.
             current_deploy_scope: Arc::new(std::sync::RwLock::new([0u8; 32])),
             dir_handles: super::dir_handle_table::DirHandleTable::new(),
+            // Phase 7b-2: unset by default; the boot pipeline
+            // populates via `share_payload_store` from a shared
+            // manager slot.  Tests that don't wire a store see None
+            // and journal_write skips the persist step (matches
+            // pre-7b-2 behavior).
+            payload_store: Arc::new(std::sync::RwLock::new(None)),
         }
     }
 
@@ -211,6 +245,39 @@ impl FileHandleTable {
     /// spawn_runtime` and `spawn_replay_runtime`.
     pub fn share_lock_registry(&mut self, shared: super::lock::LockRegistry) {
         self.lock_registry = shared;
+    }
+
+    /// Phase 7b-2 (2026-08-27): attach the manager-shared payload
+    /// persistence backend.  Called from
+    /// `RuntimeManager::spawn_runtime` /
+    /// `spawn_replay_runtime` (post-spawn, but the interior
+    /// `Arc<RwLock<_>>` ensures the write is visible through every
+    /// clone).  A `None` argument clears any previously-attached
+    /// store; a `Some(store)` sets it.
+    ///
+    /// After attachment, `journal_write` on every mutating fs
+    /// handler for a Consensus cap will call `store.persist(bytes)`
+    /// so the serving side accumulates the bytes joiners will
+    /// need to fetch.
+    ///
+    /// Takes `&self` (not `&mut self`) because the RwLock provides
+    /// interior mutability — matches the shape used by
+    /// `RootIdentityRegistry::register` for the same reason.
+    pub fn share_payload_store(
+        &self,
+        shared: Option<Arc<dyn super::wal::PayloadPersistence>>,
+    ) {
+        *self.payload_store.write().expect("payload_store lock poisoned") = shared;
+    }
+
+    /// Phase 7b-2 diagnostic — read the currently-installed
+    /// persistence backend, if any.  Used by `journal_write` to
+    /// look up the store on every write.
+    pub fn payload_store(&self) -> Option<Arc<dyn super::wal::PayloadPersistence>> {
+        self.payload_store
+            .read()
+            .expect("payload_store lock poisoned")
+            .clone()
     }
 
     /// Allocate a fresh fd and register the handle.

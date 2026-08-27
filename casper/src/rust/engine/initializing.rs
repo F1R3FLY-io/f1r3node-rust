@@ -1157,8 +1157,11 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
             .await;
 
         // Phase 7b-2 (2026-08-27): build a WAL payload-fetch
-        // context.  Mirrors the casper-launch shape — a fresh
-        // retriever + sync driver + in-memory payload store.
+        // context.  Payload lookup comes from the shared
+        // `RuntimeManager.payload_store` bundle so joiner-side
+        // reads hit the same on-disk dir the leader-side writes
+        // populate.  Fresh `InMemoryPayloadStore` fallback for
+        // test harnesses that don't wire the boot pipeline.
         let wal_payload_ctx = {
             use std::sync::Arc as StdArc;
 
@@ -1169,7 +1172,10 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
             let retriever = StdArc::new(WalPayloadRetriever::new());
             let sync_driver = StdArc::new(WalPayloadSyncDriver::new(StdArc::clone(&retriever)));
             let lookup: StdArc<dyn crate::rust::engine::wal_payload_server::PayloadLookup> =
-                StdArc::new(InMemoryPayloadStore::new());
+                match self.runtime_manager.get_payload_store().await {
+                    Some(b) => b.lookup,
+                    None => StdArc::new(InMemoryPayloadStore::new()),
+                };
             Some(WalPayloadContext {
                 sync_driver,
                 payload_lookup: lookup,

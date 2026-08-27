@@ -161,9 +161,12 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> GenesisCeremonyMaster<T>
                     .await;
 
                 // Phase 7b-2 (2026-08-27): WAL payload-fetch
-                // context.  Uses an in-memory payload store as the
-                // initial backing; a follow-up slice will populate
-                // it from journal writes.
+                // context.  Payload lookup comes from the shared
+                // `RuntimeManager.payload_store` bundle (setup.rs
+                // installed a `DirectoryPayloadStore` pointed at
+                // `<data-dir>/wal_payload_store/`); serving-side
+                // dispatch reads bytes from the same on-disk dir
+                // the interpreter's `journal_write` populates.
                 let wal_payload_ctx = {
                     use std::sync::Arc as StdArc;
 
@@ -175,7 +178,10 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> GenesisCeremonyMaster<T>
                     let sync_driver =
                         StdArc::new(WalPayloadSyncDriver::new(StdArc::clone(&retriever)));
                     let lookup: StdArc<dyn crate::rust::engine::wal_payload_server::PayloadLookup> =
-                        StdArc::new(InMemoryPayloadStore::new());
+                        match runtime_manager.get_payload_store().await {
+                            Some(b) => b.lookup,
+                            None => StdArc::new(InMemoryPayloadStore::new()),
+                        };
                     Some(WalPayloadContext {
                         sync_driver,
                         payload_lookup: lookup,

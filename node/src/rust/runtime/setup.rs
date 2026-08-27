@@ -85,6 +85,12 @@ pub(crate) async fn setup_node_program<T: TransportLayer + Send + Sync + Clone +
 > {
     info!(data_dir = ?conf.storage.data_dir, "Initializing key-value store manager");
 
+    // Snapshot the node's data directory before it's consumed by
+    // `new_key_value_store_manager` below.  Downstream Phase 7b-2
+    // wiring uses this to derive `<data-dir>/wal_payload_store/`
+    // for the shared `DirectoryPayloadStore` (DD-7b-1 (a)).
+    let data_dir_snapshot: std::path::PathBuf = conf.storage.data_dir.clone();
+
     // RNode key-value store manager / manages LMDB databases
     let mut rnode_store_manager = {
         use casper::rust::storage::rnode_key_value_store_manager::new_key_value_store_manager;
@@ -329,6 +335,51 @@ pub(crate) async fn setup_node_program<T: TransportLayer + Send + Sync + Clone +
             );
         }
         runtime_manager.set_fs_snapshot_writer(writer).await;
+
+        // Phase 7b-2 (2026-08-27): install the shared payload
+        // persistence backend.  DD-7b-1 (a) commits to a sibling
+        // dir under the node's data directory
+        // (`<data-dir>/wal_payload_store/<hex(hash)>`); lifecycle
+        // stays independent of the snapshot dir so a snapshot
+        // cleanup can't accidentally delete live payloads.
+        //
+        // Installed on EVERY node (not just consensus-provisioned
+        // ones): observer nodes never run a Consensus-cap write
+        // handler so the store stays empty, but a node that
+        // starts as observer and later gains a validator key
+        // won't need a restart to start persisting write bytes.
+        //
+        // The same `Arc<DirectoryPayloadStore>` is also threaded
+        // into `WalPayloadContext.payload_lookup` at the three
+        // boot sites (`casper_launch`, `initializing`,
+        // `genesis_ceremony_master`) via
+        // `RuntimeManager::get_payload_store` — leader-side writes
+        // and joiner-side reads hit the same on-disk dir.
+        {
+            use casper::rust::engine::wal_payload_server::{
+                DirectoryPayloadStore, PayloadStoreBundle,
+            };
+            let payload_dir = data_dir_snapshot.join("wal_payload_store");
+            if let Err(e) = std::fs::create_dir_all(&payload_dir) {
+                tracing::warn!(
+                    target: "f1r3fly.fs_wal.payload_store",
+                    error = %e,
+                    dir = ?payload_dir,
+                    "Phase 7b-2: could not create wal_payload_store dir; \
+                     leader-side write persistence will fail per-op with the same \
+                     error, but the node can still run as a joiner"
+                );
+            }
+            let bundle =
+                PayloadStoreBundle::from_directory(DirectoryPayloadStore::new(payload_dir.clone()));
+            runtime_manager.set_payload_store(Some(bundle)).await;
+            tracing::info!(
+                target: "f1r3fly.fs_wal.payload_store",
+                dir = ?payload_dir,
+                "Phase 7b-2: payload store attached — Consensus-cap writes will \
+                 be persisted content-addressed for joining validators"
+            );
+        }
 
         // H-5 fix (2026-08-06): populate the root-identity registry
         // with (dev, inode) captured from each provisioned root at

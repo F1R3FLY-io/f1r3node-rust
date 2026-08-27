@@ -458,24 +458,30 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             .await;
 
         // Phase 7b-2 (2026-08-27): build the WAL payload-fetch
-        // context.  Uses an InMemoryPayloadStore as the initial
-        // backing store — a follow-up slice will wire the on-disk
-        // DirectoryPayloadStore + populate it from journal writes.
-        // On nodes without an fs_snapshot_writer we still enable
-        // this so the joiner side (retriever) is live; the empty
-        // in-memory store just declines all inbound
-        // GetWalPayloadRequests, which is safe.
+        // context.  The payload lookup is derived from the shared
+        // `RuntimeManager.payload_store` bundle, which the boot
+        // pipeline populated with a `DirectoryPayloadStore`
+        // pointing at `<data-dir>/wal_payload_store/`.  Leader-side
+        // writes and joiner-side reads hit the same on-disk dir.
+        //
+        // Falls back to an empty in-memory store if the runtime
+        // manager slot is None (test harnesses that don't wire the
+        // boot pipeline).  The empty store just returns
+        // UnknownPayload on every request, which is safe.
         let wal_payload_ctx = {
             use std::sync::Arc as StdArc;
 
             use crate::rust::engine::running::WalPayloadContext;
             use crate::rust::engine::wal_payload_retriever::WalPayloadRetriever;
-            use crate::rust::engine::wal_payload_server::InMemoryPayloadStore;
+            use crate::rust::engine::wal_payload_server::{InMemoryPayloadStore, PayloadLookup};
             use crate::rust::engine::wal_payload_sync::WalPayloadSyncDriver;
             let retriever = StdArc::new(WalPayloadRetriever::new());
             let sync_driver = StdArc::new(WalPayloadSyncDriver::new(StdArc::clone(&retriever)));
-            let lookup: StdArc<dyn crate::rust::engine::wal_payload_server::PayloadLookup> =
-                StdArc::new(InMemoryPayloadStore::new());
+            let lookup: StdArc<dyn PayloadLookup> =
+                match self.runtime_manager.get_payload_store().await {
+                    Some(b) => b.lookup,
+                    None => StdArc::new(InMemoryPayloadStore::new()),
+                };
             Some(WalPayloadContext {
                 sync_driver,
                 payload_lookup: lookup,
