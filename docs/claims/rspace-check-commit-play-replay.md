@@ -49,7 +49,7 @@ produced, replay commits the same COMM sequence:
   `replay_rspace.rs:787-811`), so play's guard verdict is encoded in the
   log and replay does not need to re-evaluate it on the consume side.
 - Replay produce re-evaluates the guard: its `run_matcher_for_channels`
-  (`replay_rspace.rs:1383-1403`) uses the same `extract_first_match`, so
+  (`replay_rspace.rs:1335-1355`) uses the same `extract_first_match`, so
   the guard runs again during replay. Equivalence therefore requires C3.
 
 Final-STATE equivalence is a consequence of C2 only under the additional
@@ -72,7 +72,7 @@ the two `matched` constructions).
 ## Known deviations (in scope for discharge or explicit waiver)
 
 **D1 — Install path ignores the guard.** `locked_install_internal` (play,
-`ops_install.rs`; replay twin at `replay_rspace.rs:1271`) runs
+`ops_install.rs`; replay twin at `replay_rspace.rs:1242`) runs
 `extract_data_candidates` without `check_commit` and treats any spatial
 match as the error "Installing can be done only on startup". A spatial
 match whose guard would fail still errors, although guard semantics say it
@@ -145,6 +145,10 @@ conservative residual — deliberately out of scope for this change, to be
 fixed or formally waived in a follow-up.
 
 ## Acceptance
+
+`status: mechanized` means obligations 1-3 are mechanized in Rocq; it is
+not `discharged`. Discharge is blocked on obligation 4 — D1 must be fixed
+or formally waived — which remains open.
 
 The claim is discharged when obligations 1-3 hold with cited evidence and
 obligation 4 is resolved, recorded in `docs/cbc-evidence/` with this file

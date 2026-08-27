@@ -11,9 +11,10 @@
 #      rspace_replay_guard_complete) are axiom-free ("Closed under the global
 #      context"). Any failure here fails the gate.
 #
-# POLICY: this script is for LOCAL use only. Do NOT wire it (or any Rocq step)
-# into .github/workflows/* — an earlier formal-CI workflow was deliberately
-# removed.
+# POLICY: this script is for LOCAL use only; do NOT wire it into
+# .github/workflows/* directly. CI runs the same capstone assertions through
+# scripts/ci/check-formal-invariants.sh --rocq (rocq-build job in
+# slashing-tests.yml).
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
