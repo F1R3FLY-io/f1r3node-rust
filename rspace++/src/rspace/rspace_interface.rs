@@ -198,4 +198,7 @@ pub trait ISpace<
     async fn is_replay(&self) -> bool;
 
     async fn update_produce(&self, produce: Produce) -> ();
+
+    /// Mark the reporting phase that the next flushed segment belongs to
+    async fn set_report_phase(&self, _phase: super::reporting_rspace::ReportPhase) {}
 }
