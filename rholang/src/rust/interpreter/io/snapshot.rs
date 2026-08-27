@@ -239,6 +239,15 @@ pub struct SnapshotBlob {
     pub bytes: Vec<u8>,
     /// Blake2b256 of `bytes`.  The content address.
     pub root: [u8; 32],
+    /// Phase 7b-1 Merkle root over per-chunk hashes.  Derived from
+    /// `bytes` via `snapshot_chunk::chunk_snapshot` +
+    /// `snapshot_merkle_root`.  Empty snapshot → `EMPTY_SNAPSHOT_ROOT`
+    /// = `[0u8; 32]`.  This is the anchor a joining validator uses
+    /// to verify individual chunks fetched via the `get_snapshot_chunk`
+    /// wire opcode (follow-up slice).  See
+    /// `rholang/src/rust/interpreter/io/snapshot_chunk.rs` for the
+    /// chunker primitives.
+    pub merkle_root: [u8; 32],
 }
 
 /// Encode a WAL slice to canonical bytes.  Deterministic across
@@ -269,11 +278,21 @@ pub fn compute_wal_root(entries: &[WalEntry]) -> [u8; 32] {
     hash_of(&bytes)
 }
 
-/// Encode + hash together.
+/// Encode + hash together.  Post-2026-08-27 also computes the
+/// Phase 7b-1 Merkle root over per-chunk hashes so joining
+/// validators can verify individual 4 MiB chunks against a
+/// canonical anchor.  See `SnapshotBlob::merkle_root`.
 pub fn snapshot_blob(entries: &[WalEntry]) -> SnapshotBlob {
+    use super::snapshot_chunk::{chunk_snapshot, snapshot_merkle_root};
     let bytes = encode_wal_slice(entries);
     let root = hash_of(&bytes);
-    SnapshotBlob { bytes, root }
+    let chunk_hashes: Vec<[u8; 32]> = chunk_snapshot(&bytes).into_iter().map(|c| c.hash).collect();
+    let merkle_root = snapshot_merkle_root(&chunk_hashes);
+    SnapshotBlob {
+        bytes,
+        root,
+        merkle_root,
+    }
 }
 
 fn hash_of(bytes: &[u8]) -> [u8; 32] {
@@ -489,11 +508,14 @@ pub fn snapshot_path(snapshot_dir: &Path, root: &[u8; 32]) -> PathBuf {
 /// Write a snapshot to `snapshot_dir` under its content-addressed
 /// filename.  Idempotent: writing the same content twice produces the
 /// same file (overwrites atomically via a tmp+rename dance).  Returns
-/// the on-disk path.
+/// `(path, root, merkle_root)` where `root` is the atomic Blake2b256
+/// of the whole blob (content-addressed filename) and `merkle_root`
+/// is the Phase 7b-1 Merkle root over 4 MiB chunk hashes (used by
+/// joiners to verify chunks fetched via `get_snapshot_chunk`).
 pub fn write_snapshot(
     snapshot_dir: &Path,
     entries: &[WalEntry],
-) -> Result<(PathBuf, [u8; 32]), SnapshotError> {
+) -> Result<(PathBuf, [u8; 32], [u8; 32]), SnapshotError> {
     let blob = snapshot_blob(entries);
     let final_path = snapshot_path(snapshot_dir, &blob.root);
     // Ensure directory exists.  Callers should have validated this at
@@ -586,7 +608,7 @@ pub fn write_snapshot(
             }
         }
     }
-    Ok((final_path, blob.root))
+    Ok((final_path, blob.root, blob.merkle_root))
 }
 
 /// M-30b-3 review fix (slice 30b round 2): sweep stale `.wal.tmp`
@@ -713,7 +735,12 @@ pub struct SnapshotWriter {
 impl SnapshotWriter {
     /// Try to persist a snapshot for `block_number` given the block's
     /// consensus WAL contribution.  Returns Ok(None) on cadence miss
-    /// (no snapshot written), Ok(Some(root)) on successful persist.
+    /// (no snapshot written), Ok(Some((root, merkle_root))) on
+    /// successful persist.  `root` is the atomic content-address
+    /// (Blake2b256 of the whole blob) used as the on-disk filename;
+    /// `merkle_root` is the Phase 7b-1 Merkle root over 4 MiB chunk
+    /// hashes, used by joiners to verify individual chunks fetched
+    /// via `get_snapshot_chunk`.
     ///
     /// Cadence math: writes on blocks where `block_number % cadence == 0`.
     /// Genesis (block_number = 0) writes a snapshot too — cheap and
@@ -722,7 +749,7 @@ impl SnapshotWriter {
         &self,
         block_number: i64,
         entries: &[WalEntry],
-    ) -> Result<Option<[u8; 32]>, SnapshotError> {
+    ) -> Result<Option<([u8; 32], [u8; 32])>, SnapshotError> {
         // Block number is i64 in the block-data ref; treat negative
         // as "no block yet" and skip.
         if block_number < 0 {
@@ -751,13 +778,21 @@ impl SnapshotWriter {
             let _ = append_manifest_entry(&self.dir, sentinel);
             return Ok(None);
         }
-        let (_, root) = write_snapshot(&self.dir, entries)?;
+        let (_, root, merkle_root) = write_snapshot(&self.dir, entries)?;
         tracing::info!(
             target: "f1r3fly.fs_wal.snapshot",
             block_number,
             root = %{
                 let mut s = String::with_capacity(16);
                 for b in &root[..8] {
+                    use std::fmt::Write;
+                    let _ = write!(s, "{b:02x}");
+                }
+                s
+            },
+            merkle_root = %{
+                let mut s = String::with_capacity(16);
+                for b in &merkle_root[..8] {
                     use std::fmt::Write;
                     let _ = write!(s, "{b:02x}");
                 }
@@ -792,7 +827,7 @@ impl SnapshotWriter {
         // Best-effort retention prune.  Failures logged, not
         // propagated — retention is bounded by future writes anyway.
         let _ = prune_snapshot_dir(&self.dir, self.retain);
-        Ok(Some(root))
+        Ok(Some((root, merkle_root)))
     }
 }
 
@@ -1460,7 +1495,7 @@ mod tests {
             group: None,
             outcome: WalOutcome::Success,
         }];
-        let (path, root) = write_snapshot(dir.path(), &entries).unwrap();
+        let (path, root, _merkle_root) = write_snapshot(dir.path(), &entries).unwrap();
         assert!(path.exists(), "snapshot file must be created");
         let hex_name = path.file_name().unwrap().to_string_lossy();
         assert!(
@@ -1476,7 +1511,7 @@ mod tests {
     fn read_snapshot_rejects_tampered_file() {
         let dir = tempfile::tempdir().unwrap();
         let entries = vec![mk_write_entry(b"aa", "/root/x")];
-        let (path, root) = write_snapshot(dir.path(), &entries).unwrap();
+        let (path, root, _merkle_root) = write_snapshot(dir.path(), &entries).unwrap();
         // Tamper: append a byte.
         let mut tampered = std::fs::read(&path).unwrap();
         tampered.push(0xff);
@@ -1492,8 +1527,8 @@ mod tests {
     fn write_snapshot_is_idempotent_for_same_content() {
         let dir = tempfile::tempdir().unwrap();
         let entries = vec![mk_write_entry(b"aa", "/root/x")];
-        let (p1, r1) = write_snapshot(dir.path(), &entries).unwrap();
-        let (p2, r2) = write_snapshot(dir.path(), &entries).unwrap();
+        let (p1, r1, _m1) = write_snapshot(dir.path(), &entries).unwrap();
+        let (p2, r2, _m2) = write_snapshot(dir.path(), &entries).unwrap();
         assert_eq!(p1, p2, "same content → same path");
         assert_eq!(r1, r2, "same content → same root");
         assert!(p1.exists());
@@ -1510,7 +1545,7 @@ mod tests {
     #[test]
     fn write_snapshot_of_empty_slice_round_trips() {
         let dir = tempfile::tempdir().unwrap();
-        let (path, root) = write_snapshot(dir.path(), &[]).unwrap();
+        let (path, root, _merkle_root) = write_snapshot(dir.path(), &[]).unwrap();
         assert!(path.exists(), "empty-slice write must produce a file");
         // Exactly 5 bytes: version + u32-be count(0).
         let contents = std::fs::read(&path).unwrap();
@@ -1922,7 +1957,7 @@ mod tests {
         let mut roots = Vec::new();
         for i in 0..5u8 {
             let entries = vec![mk_write_entry(&[i], "/x")];
-            let (_, root) = write_snapshot(dir.path(), &entries).unwrap();
+            let (_, root, _merkle_root) = write_snapshot(dir.path(), &entries).unwrap();
             roots.push(root);
             // L-30-COV-1 review fix: bump from 20ms to 1100ms so
             // macOS APFS (which historically had 1-second mtime
@@ -1974,6 +2009,57 @@ mod tests {
     // Slice 30b: SnapshotWriter cadence + retention tests.
     // ------------------------------------------------------------------
 
+    /// Phase 7b-1 (2026-08-27): `SnapshotBlob` now carries a
+    /// `merkle_root` derived from the 4 MiB chunker + Merkle tree.
+    /// For a single-chunk snapshot the Merkle root equals the
+    /// chunk hash, which is `Blake2b256(bytes)` — i.e., identical
+    /// to `SnapshotBlob.root` (the atomic content-address).
+    /// Multi-chunk snapshots diverge (Merkle root is
+    /// `hash(chunk_hashes[0] || chunk_hashes[1] || ...)`), so a
+    /// regression that collapsed the two fields would trip the
+    /// distinct-in-multi-chunk pin below.
+    #[test]
+    fn snapshot_blob_carries_merkle_root() {
+        let entries = vec![mk_write_entry(b"hi", "/x")];
+        let blob = snapshot_blob(&entries);
+        assert_ne!(blob.merkle_root, [0u8; 32]);
+        // Single-chunk case: merkle_root == blob.root == hash(bytes).
+        // The blob is well under 4 MiB, so one chunk.
+        assert!(blob.bytes.len() < crate::rust::interpreter::io::snapshot_chunk::CHUNK_SIZE);
+        assert_eq!(
+            blob.merkle_root, blob.root,
+            "single-chunk snapshot's merkle_root == chunk_hash == blob.root"
+        );
+    }
+
+    /// Multi-chunk divergence pin: a snapshot bigger than
+    /// `CHUNK_SIZE` produces a `merkle_root` that differs from
+    /// `Blake2b256(whole_blob)`.  Real WAL slices are capped at
+    /// `MAX_WAL_ENTRIES = 65536` (< 4 MiB), so we can't hit multi-
+    /// chunk via `snapshot_blob(entries)` at runtime.  We exercise
+    /// the divergence at the primitive level: chunk a raw >4 MiB
+    /// blob and check `snapshot_merkle_root` != `Blake2b256`.
+    /// Guards against a regression that computed
+    /// `merkle_root = Blake2b256(bytes)` (defeating the chunker's
+    /// point).  See `snapshot_chunk::tests` for chunker-specific
+    /// coverage.
+    #[test]
+    fn multi_chunk_merkle_root_differs_from_atomic_hash() {
+        use crate::rust::interpreter::io::snapshot_chunk::{
+            chunk_snapshot, snapshot_merkle_root, CHUNK_SIZE,
+        };
+        let bytes = vec![0x77u8; CHUNK_SIZE + 100];
+        let chunks = chunk_snapshot(&bytes);
+        let hashes: Vec<[u8; 32]> = chunks.iter().map(|c| c.hash).collect();
+        let merkle = snapshot_merkle_root(&hashes);
+        let atomic = hash_of(&bytes);
+        assert_ne!(
+            merkle, atomic,
+            "multi-chunk merkle root MUST differ from atomic Blake2b256(bytes); \
+             a regression that returned atomic would defeat per-chunk verification",
+        );
+    }
+
     #[test]
     fn snapshot_writer_cadence_skips_non_boundary_blocks() {
         let dir = tempfile::tempdir().unwrap();
@@ -1990,9 +2076,10 @@ mod tests {
         assert!(writer.maybe_write(3, &entries).unwrap().is_none());
         assert!(writer.maybe_write(4, &entries).unwrap().is_none());
         // Block 5: cadence hit.
-        let root = writer.maybe_write(5, &entries).unwrap();
-        assert!(root.is_some(), "cadence-hit block must persist");
-        assert!(snapshot_path(dir.path(), &root.unwrap()).exists());
+        let res = writer.maybe_write(5, &entries).unwrap();
+        assert!(res.is_some(), "cadence-hit block must persist");
+        let (root, _merkle) = res.unwrap();
+        assert!(snapshot_path(dir.path(), &root).exists());
     }
 
     #[test]
@@ -2154,7 +2241,7 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
         let entries = vec![mk_write_entry(b"aa", "/x")];
-        let (path, _) = write_snapshot(dir.path(), &entries).unwrap();
+        let (path, _root, _merkle_root) = write_snapshot(dir.path(), &entries).unwrap();
         let perms = std::fs::metadata(&path).unwrap().permissions();
         let mode = perms.mode() & 0o777;
         assert_eq!(
@@ -2253,8 +2340,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let block_1 = vec![mk_write_entry(b"a", "/x"), mk_write_entry(b"b", "/y")];
         let block_2 = vec![mk_write_entry(b"c", "/z")];
-        let (_, root_1) = write_snapshot(dir.path(), &block_1).unwrap();
-        let (_, root_2) = write_snapshot(dir.path(), &block_2).unwrap();
+        let (_, root_1, _merkle_1) = write_snapshot(dir.path(), &block_1).unwrap();
+        let (_, root_2, _merkle_2) = write_snapshot(dir.path(), &block_2).unwrap();
         // Read each snapshot back independently.
         let bytes_1 = read_snapshot_bytes(dir.path(), &root_1).unwrap();
         let bytes_2 = read_snapshot_bytes(dir.path(), &root_2).unwrap();
@@ -2517,7 +2604,7 @@ mod tests {
             group: None,
             outcome: WalOutcome::Success,
         }];
-        let (_, root) = write_snapshot(dir.path(), &entries).unwrap();
+        let (_, root, _merkle_root) = write_snapshot(dir.path(), &entries).unwrap();
         let bytes = read_snapshot_bytes(dir.path(), &root).expect("v1 round-trip");
         assert_eq!(bytes.first().copied(), Some(SNAPSHOT_FORMAT_VERSION));
     }
@@ -2865,7 +2952,7 @@ mod tests {
             group: None,
             outcome: WalOutcome::Success,
         }];
-        let root = writer.maybe_write(5, &entries).unwrap().unwrap();
+        let (root, _merkle) = writer.maybe_write(5, &entries).unwrap().unwrap();
         let manifest = read_manifest(dir.path()).unwrap();
         assert_eq!(manifest.len(), 1);
         assert_eq!(manifest[0].block_number, 5);

@@ -2100,7 +2100,7 @@ mod tests {
             res.is_some(),
             "cadence hit + non-empty entries must persist a snapshot"
         );
-        let root = res.unwrap();
+        let (root, _merkle_root) = res.unwrap();
 
         // Read back by content hash — this is the joining-validator
         // path.  `read_snapshot_bytes` re-hashes and compares against

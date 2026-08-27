@@ -135,6 +135,31 @@ pub struct RuntimeManager {
         >,
     >,
 
+    /// Phase 7b-1 (2026-08-27): per-block snapshot Merkle roots
+    /// keyed by finalized block hash.  Populated by the
+    /// `WalSnapshotWrite` finalization effect after `maybe_write`
+    /// returns `Some((root, merkle_root))`; consumed by the
+    /// follow-up wire-fetch layer (`SnapshotChunkRetriever`) so
+    /// joiners can verify chunks received over `get_snapshot_chunk`
+    /// against a locally-anchored Merkle root without a per-request
+    /// disk read.
+    ///
+    /// Values are `(atomic_root, merkle_root)` — the atomic root is
+    /// the Blake2b256 content-address (also on-disk filename) and
+    /// the merkle_root is the Phase 7b-1 anchor over 4 MiB chunk
+    /// hashes.  See `rholang/src/rust/interpreter/io/snapshot_chunk.rs`.
+    ///
+    /// Cache eviction: entries are added on each finalized
+    /// cadence-hit block and never evicted from this cache
+    /// individually — the Merkle root is small (32 bytes) and the
+    /// caller (SnapshotChunkRetriever) needs random access by
+    /// block hash for arbitrary joiner requests.  Bounded by the
+    /// natural rate of finalized cadence hits; on-disk persistence
+    /// is a follow-up when the RuntimeManager gains a snapshot-
+    /// dedicated store.
+    pub snapshot_merkle_roots:
+        Arc<tokio::sync::RwLock<std::collections::HashMap<Vec<u8>, ([u8; 32], [u8; 32])>>>,
+
     /// H-5 fix (2026-08-06): shared root-identity registry.
     /// Populated once at node boot from operator-provisioned
     /// root paths (`(dev, inode)` captured via
@@ -1851,6 +1876,13 @@ impl RuntimeManager {
             pending_wal_slices: Arc::new(
                 tokio::sync::RwLock::new(std::collections::HashMap::new()),
             ),
+            // Phase 7b-1 (2026-08-27): empty cache at boot.
+            // Populated by finalization_runner's WalSnapshotWrite
+            // branch after maybe_write returns; consumed by the
+            // follow-up SnapshotChunkRetriever.
+            snapshot_merkle_roots: Arc::new(tokio::sync::RwLock::new(
+                std::collections::HashMap::new(),
+            )),
             // H-5 (2026-08-06): empty registry at boot.  Boot
             // pipeline calls `register_root_identity` for each
             // provisioned root path before any deploy runs.

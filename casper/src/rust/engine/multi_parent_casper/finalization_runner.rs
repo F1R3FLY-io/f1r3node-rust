@@ -404,7 +404,24 @@ async fn apply_finalization_effects(
                         })
                         .await;
                         match snapshot_result {
-                            Ok(Ok(_)) => {}
+                            Ok(Ok(Some((root, merkle_root)))) => {
+                                // Phase 7b-1 (2026-08-27): remember
+                                // the (atomic_root, merkle_root) pair
+                                // keyed by block hash so a follow-up
+                                // SnapshotChunkRetriever can serve
+                                // joiner requests without a per-request
+                                // disk read.
+                                ctx.runtime_manager
+                                    .snapshot_merkle_roots
+                                    .write()
+                                    .await
+                                    .insert(block.block_hash.to_vec(), (root, merkle_root));
+                            }
+                            Ok(Ok(None)) => {
+                                // Cadence miss OR empty slice sentinel
+                                // — no snapshot on disk, no Merkle
+                                // root to cache.
+                            }
                             Ok(Err(error)) => tracing::warn!(
                                 target: "f1r3fly.casper.fs_wal",
                                 block_number = bn,

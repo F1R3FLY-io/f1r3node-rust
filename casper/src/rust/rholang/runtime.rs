@@ -3426,6 +3426,21 @@ mod tests {
              effect kinds to have receipts before advancing the \
              EffectsCursor."
         );
+        // Phase 7b-1 (2026-08-27): on successful maybe_write the
+        // branch must persist the returned (root, merkle_root) into
+        // `snapshot_merkle_roots` so a joiner's SnapshotChunkRetriever
+        // can look up the Merkle-root anchor by block hash.  A
+        // regression that dropped this insert would leave joiners
+        // unable to verify individual 4 MiB chunks against a per-
+        // block anchor, forcing them to fall back to atomic full-
+        // snapshot download (defeating Phase 7b's whole purpose).
+        assert!(
+            src.contains("snapshot_merkle_roots"),
+            "apply_finalization_effects must persist the returned \
+             (atomic_root, merkle_root) into snapshot_merkle_roots on \
+             successful maybe_write.  See runtime_manager.rs for the \
+             field definition and Phase 7b-1 docstring."
+        );
     }
 
     fn mk_entry(tag: &str) -> WalEntry {
@@ -4372,7 +4387,7 @@ mod tests {
 
         // maybe_write on a cadence=1 block writes.
         let block_number = 5i64;
-        let write_root = writer
+        let (write_root, _write_merkle) = writer
             .maybe_write(block_number, &block_fs_wal)
             .expect("maybe_write must succeed with valid writer")
             .expect("cadence=1, non-empty entries: must produce a snapshot");
