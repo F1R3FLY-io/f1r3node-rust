@@ -63,9 +63,17 @@ pub struct RSpace<C, P, A, K> {
     // which scales badly under many concurrent readers on some platforms
     // (confirmed: isolated read-lock-only benchmark measured *negative*
     // scaling, concurrent slower than sequential — see issue #50 follow-up).
-    // ArcSwap is lock-free for this exact "read-mostly, rare wholesale swap"
-    // pattern: load() is an atomic pointer read, store() an atomic pointer
-    // write, no reader-count bookkeeping.
+    // ArcSwap is lock-free for this "read-mostly, rare wholesale swap"
+    // pattern: store() below is a single atomic pointer write, no
+    // reader-count bookkeeping and no lock-release RMW to pay on the write
+    // side either. get_store() uses load_full() (returns an owned Arc, not a
+    // short-lived Guard, since callers keep the result across further work),
+    // which still does one atomic refcount increment — cheaper than RwLock's
+    // read-lock-plus-unlock pair, but not literally free.
+    //
+    // history_repository above has the identical RwLock<Arc<...>> shape but
+    // is deliberately left alone: its only reader is spawn() (rare, not on
+    // the produce/consume hot path), so it doesn't have this problem.
     pub store: Arc<arc_swap::ArcSwap<Box<dyn HotStore<C, P, A, K>>>>,
     installs: Arc<std::sync::Mutex<HashMap<Vec<C>, Install<P, K>>>>,
     event_log: Arc<std::sync::Mutex<Log>>,
@@ -261,6 +269,14 @@ where
             history_reader.base(),
         );
 
+        // Invariant this relies on (unchanged from before the RwLock->ArcSwap
+        // switch, now just more visible since there's no lock to obscure it):
+        // no produce/consume can be concurrently in flight while store/
+        // event_log/produce_counter are swapped here — callers already only
+        // clone the store Arc and drop any lock immediately, so a reader that
+        // started before this swap keeps running against the old store either
+        // way. If that ever stops holding, this three-field update needs its
+        // own coordination, not just three independent atomic swaps.
         self.store.store(Arc::new(hot_store));
         *self.event_log.lock().expect("event log lock") = checkpoint.log;
         self.restore_produce_counter(checkpoint.produce_counter);
@@ -1109,6 +1125,8 @@ where
         history_reader: Box<dyn HistoryReader<Blake2b256Hash, C, P, A, K>>,
     ) {
         let next_hot_store = HotStoreInstances::create_from_hr(history_reader.base());
+        // Same no-concurrent-produce/consume invariant as
+        // revert_to_soft_checkpoint's store.store() call above.
         self.store.store(Arc::new(next_hot_store));
     }
 
@@ -1621,21 +1639,27 @@ mod tests {
             efficiency,
         );
 
-        // No assertion: diagnostic only, mirrors
-        // event_log_and_produce_counter_isolated_cost_at_rholang_par_scale but
-        // with produce_counter excluded to attribute cost specifically to
-        // event_log now that produce_counter is fixed.
+        // Diagnostic, not a tight bound: absolute timings swing widely with
+        // build profile (debug vs --release) and op count (see issue #50
+        // follow-up), so this only catches catastrophic regressions back to
+        // real lock-based contention, not general slowdowns.
+        assert!(
+            par_ms <= seq_ms.saturating_mul(5),
+            "event_log regressed: concurrent ({par_ms}ms) more than 5x slower than sequential \
+             ({seq_ms}ms) at {PAR_BRANCHES} branches x {OPS_PER_BRANCH} ops — see issue #50"
+        );
     }
 
-    // get_store() (rspace.rs:87-89) is `self.store.read().expect(...).clone()`
-    // — a std::sync::RwLock read lock, called twice per produce() (once inside
-    // produce_lock(), once inside locked_produce()). No writer ever contends
-    // it during the hot path (writes only happen at checkpoint boundaries),
-    // but RwLock read acquisition still does atomic RMW on shared state, which
-    // can scale badly under many concurrent readers on some platforms. This
-    // isolates just that call, at 2x the op count (matching produce()'s two
-    // calls per op), to check whether it explains the remaining gap between
-    // event_log_isolated (~5x) and bench_par_branches' full path (~0.92x).
+    // Historical note: before this PR, get_store() was
+    // `self.store.read().expect(...).clone()` — a std::sync::RwLock read
+    // lock, called at least 3x per produce()/consume(). No writer ever
+    // contended it on the hot path (writes only happen at checkpoint/spawn
+    // boundaries), but RwLock read acquisition still does atomic RMW on
+    // shared state, which measured genuine negative scaling under concurrent
+    // reads (this test's own numbers, pre-fix: sequential 16ms, concurrent
+    // 173ms — 10x slower under concurrency). This PR replaced `store` with
+    // `arc_swap::ArcSwap`, which this test now measures instead — kept as a
+    // regression sentinel against reintroducing a lock on this path.
     #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
     async fn get_store_read_lock_isolated_cost_at_rholang_par_scale() {
         const PAR_BRANCHES: usize = 32;
@@ -1677,7 +1701,7 @@ mod tests {
         let efficiency = speedup / ideal as f64 * 100.0;
 
         eprintln!(
-            "get_store() RwLock read isolated cost (2 calls/op): branches={PAR_BRANCHES} \
+            "get_store() ArcSwap load isolated cost (2 calls/op): branches={PAR_BRANCHES} \
              ops_per_branch={OPS_PER_BRANCH} total_calls={} sequential={seq_ms}ms \
              concurrent={par_ms}ms speedup={:.2}x (ideal {ideal}x) efficiency={:.1}%",
             PAR_BRANCHES * OPS_PER_BRANCH * 2,
@@ -1685,6 +1709,16 @@ mod tests {
             efficiency,
         );
 
-        // No assertion: diagnostic only (see issue #50 investigation).
+        // Diagnostic, not a tight bound: see the comment on
+        // event_log_isolated_cost_at_rholang_par_scale above for why. This
+        // threshold is deliberately generous — the pre-fix RwLock regressed
+        // by more than 10x under concurrency, so 5x is a safe catastrophic-
+        // regression floor without flaking on ordinary build/scale noise.
+        assert!(
+            par_ms <= seq_ms.saturating_mul(5),
+            "get_store() regressed: concurrent ({par_ms}ms) more than 5x slower than sequential \
+             ({seq_ms}ms) at {PAR_BRANCHES} branches x {OPS_PER_BRANCH} ops x2 calls/op — see \
+             issue #50"
+        );
     }
 }
