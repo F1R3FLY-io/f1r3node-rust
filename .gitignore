@@ -127,3 +127,4 @@ MC_TE.out
 docs/discoveries/*.md
 .tmp/
 .pi/
+/graphify-out
