@@ -298,7 +298,7 @@ where
         patterns: Vec<P>,
         continuation: K,
     ) -> Result<Option<(K, Vec<A>)>, RSpaceError> {
-        self.locked_install_internal(channels, patterns, continuation, true)
+        self.locked_install_internal(channels, patterns, continuation)
     }
 
     async fn rig_and_reset(&self, start_root: Blake2b256Hash, log: Log) -> Result<(), RSpaceError> {
@@ -737,7 +737,7 @@ where
                             )
                         );
 
-                        let _ = self.store_persistent_data(data_candidates.clone(), &peeks);
+                        self.store_persistent_data(&data_candidates);
                         self.remove_bindings_for(comm_ref);
                         tracing::trace!(target: "f1r3fly.rspace.ops", channels = ?consume_ref.channel_hashes, "replay.consume OK: COMM reproduced");
                         Ok(self.wrap_result(channels, wk, consume_ref, data_candidates))
@@ -1022,7 +1022,7 @@ where
             self.mark_replay_waiting_continuation_match();
         }
 
-        let _ = self.remove_matched_datum_and_join(channels.clone(), data_candidates.clone());
+        self.remove_matched_datum_and_join(&channels, &data_candidates);
         self.remove_bindings_for(comm_ref);
         self.wrap_result(channels, continuation.clone(), consume_ref.clone(), data_candidates)
     }
@@ -1198,52 +1198,24 @@ where
         None
     }
 
-    fn store_persistent_data(
-        &self,
-        mut data_candidates: Vec<ConsumeCandidate<C, A>>,
-        _peeks: &BTreeSet<i32>,
-    ) -> Option<Vec<()>> {
-        data_candidates.sort_by(|a, b| b.datum_index.cmp(&a.datum_index));
-        let results: Vec<_> = data_candidates
-            .into_iter()
-            .rev()
-            .map(|consume_candidate| {
-                let ConsumeCandidate {
-                    channel,
-                    datum: Datum { persist, .. },
-                    removed_datum: _,
-                    datum_index,
-                } = consume_candidate;
-
-                if !persist {
-                    self.get_store().remove_datum(&channel, datum_index).ok()
-                } else {
-                    Some(())
-                }
-            })
-            .collect();
-
-        if results.iter().any(|res| res.is_none()) {
-            None
-        } else {
-            Some(results.into_iter().flatten().collect())
+    fn store_persistent_data(&self, data_candidates: &[ConsumeCandidate<C, A>]) {
+        let mut sorted_candidates: Vec<_> = data_candidates.iter().collect();
+        sorted_candidates.sort_by_key(|candidate| candidate.datum_index);
+        let store = self.get_store();
+        for consume_candidate in sorted_candidates {
+            if !consume_candidate.datum.persist {
+                let _ =
+                    store.remove_datum(&consume_candidate.channel, consume_candidate.datum_index);
+            }
         }
     }
 
     fn restore_installs(&self) {
         // Move out the install map to avoid cloning the whole structure on each
         // restore.
-        let installs = {
-            let mut installs_lock = self.installs.lock().unwrap();
-            std::mem::take(&mut *installs_lock)
-        };
-        {
-            let mut installs_lock = self.installs.lock().unwrap();
-            installs_lock.reserve(installs.len());
-        }
-
+        let installs = std::mem::take(&mut *self.installs.lock().unwrap());
         for (channels, install) in installs {
-            self.locked_install_internal(channels, install.patterns, install.continuation, true)
+            self.locked_install_internal(channels, install.patterns, install.continuation)
                 .unwrap();
         }
     }
@@ -1253,7 +1225,6 @@ where
         channels: Vec<C>,
         patterns: Vec<P>,
         continuation: K,
-        record_install: bool,
     ) -> Result<Option<(K, Vec<A>)>, RSpaceError> {
         if channels.len() != patterns.len() {
             Err(RSpaceError::BugFoundError(
@@ -1274,27 +1245,25 @@ where
 
             match options {
                 None => {
-                    if record_install {
-                        self.installs
-                            .lock()
-                            .unwrap()
-                            .insert(channels.clone(), Install {
-                                patterns: patterns.clone(),
-                                continuation: continuation.clone(),
-                            });
-                    }
-
-                    self.get_store()
-                        .install_continuation(&channels, WaitingContinuation {
-                            patterns,
-                            continuation,
-                            persist: true,
-                            peeks: BTreeSet::default(),
-                            source: consume_ref,
+                    self.installs
+                        .lock()
+                        .unwrap()
+                        .insert(channels.clone(), Install {
+                            patterns: patterns.clone(),
+                            continuation: continuation.clone(),
                         });
 
+                    let store = self.get_store();
+                    store.install_continuation(&channels, WaitingContinuation {
+                        patterns,
+                        continuation,
+                        persist: true,
+                        peeks: BTreeSet::default(),
+                        source: consume_ref,
+                    });
+
                     for channel in channels.iter() {
-                        self.get_store().install_join(channel, &channels);
+                        store.install_join(channel, &channels);
                     }
                     Ok(None)
                 }
@@ -1343,40 +1312,23 @@ where
 
     fn remove_matched_datum_and_join(
         &self,
-        channels: Vec<C>,
-        mut data_candidates: Vec<ConsumeCandidate<C, A>>,
-    ) -> Option<Vec<()>> {
-        data_candidates.sort_by(|a, b| b.datum_index.cmp(&a.datum_index));
-        let results: Vec<_> = data_candidates
-            .into_iter()
-            .rev()
-            .map(|consume_candidate| {
-                let ConsumeCandidate {
-                    channel,
-                    datum: Datum { persist, .. },
-                    removed_datum: _,
-                    datum_index,
-                } = consume_candidate;
+        channels: &[C],
+        data_candidates: &[ConsumeCandidate<C, A>],
+    ) {
+        let mut sorted_candidates: Vec<_> = data_candidates.iter().collect();
+        sorted_candidates.sort_by_key(|candidate| candidate.datum_index);
+        let store = self.get_store();
+        for consume_candidate in sorted_candidates {
+            let channel = &consume_candidate.channel;
+            let datum_index = consume_candidate.datum_index;
 
-                let channels_clone = channels.clone();
-                if datum_index >= 0 &&
-                    !persist &&
-                    self.get_store()
-                        .remove_datum(&channel, datum_index)
-                        .is_err()
-                {
-                    return None;
-                }
-                self.get_store().remove_join(&channel, &channels_clone);
-
-                Some(())
-            })
-            .collect();
-
-        if results.iter().any(|res| res.is_none()) {
-            None
-        } else {
-            Some(results.into_iter().flatten().collect())
+            if datum_index >= 0 &&
+                !consume_candidate.datum.persist &&
+                store.remove_datum(channel, datum_index).is_err()
+            {
+                continue;
+            }
+            store.remove_join(channel, channels);
         }
     }
 
