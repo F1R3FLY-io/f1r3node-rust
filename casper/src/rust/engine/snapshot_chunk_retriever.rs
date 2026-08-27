@@ -73,6 +73,24 @@ pub const MAX_RETRIES: u32 = 5;
 pub const REQUEST_TIMEOUT_MS: u64 = 30_000;
 pub const STALE_EVICTION_MS: u64 = 300_000;
 
+/// Security cap: max acceptable size for `chunk_bytes` in a
+/// `SnapshotChunkResponse`.  A well-formed chunk is
+/// `CHUNK_SIZE = 4 MiB` for all-but-final chunks and shorter for
+/// the tail.  An oversized `chunk_bytes` from a byzantine peer
+/// would otherwise force us to hash arbitrary bytes before the
+/// merkle-proof check catches it — a per-response CPU exhaustion
+/// vector.  Rejected with `AdmitOutcome::ChunkHashMismatch` so the
+/// sender is blacklisted at the sync-driver layer.
+pub const MAX_CHUNK_BYTES: usize = 4 * 1024 * 1024; // == CHUNK_SIZE
+
+/// Security cap: max merkle-proof depth accepted from a peer.  A
+/// well-formed proof for a snapshot of N chunks has depth
+/// `ceil(log2(N))` ≤ 32 for `chunk_count: u32`; anything beyond
+/// that is either malformed or a proof-length DoS attempt.  We
+/// pad to 40 for safety.  Rejected with
+/// `AdmitOutcome::MerkleProofInvalid`.
+pub const MAX_MERKLE_PROOF_STEPS: usize = 40;
+
 /// Snapshot's expected shape as announced by peers.  Populated
 /// from a HasSnapshotResponse OR from local `snapshot_merkle_roots`
 /// lookup.  The joiner pins the snapshot's merkle_root + chunk
@@ -193,6 +211,27 @@ impl SnapshotChunkRetriever {
     /// `ChunkAccepted`.  On failure, returns the specific
     /// mismatch variant so the caller can log + retry appropriately.
     pub async fn admit_response(&self, response: &SnapshotChunkResponse) -> AdmitOutcome {
+        // Security caps — cheap, checked FIRST so byzantine
+        // oversized payloads / proofs are rejected before we do
+        // any hashing or map lookups.
+        if response.chunk_bytes.len() > MAX_CHUNK_BYTES {
+            debug!(
+                target: "f1r3fly.casper.snapshot_chunk_retriever",
+                chunk_bytes_len = response.chunk_bytes.len(),
+                cap = MAX_CHUNK_BYTES,
+                "chunk_bytes exceeds MAX_CHUNK_BYTES; rejecting"
+            );
+            return AdmitOutcome::ChunkHashMismatch;
+        }
+        if response.merkle_proof.len() > MAX_MERKLE_PROOF_STEPS {
+            debug!(
+                target: "f1r3fly.casper.snapshot_chunk_retriever",
+                proof_len = response.merkle_proof.len(),
+                cap = MAX_MERKLE_PROOF_STEPS,
+                "merkle_proof exceeds MAX_MERKLE_PROOF_STEPS; rejecting"
+            );
+            return AdmitOutcome::MerkleProofInvalid;
+        }
         if response.block_hash.as_ref() != self.target.block_hash.as_slice() {
             return AdmitOutcome::WrongTarget;
         }
@@ -500,6 +539,44 @@ mod tests {
         assert_eq!(state.peers_tried.len(), 2);
         assert!(state.last_request_ms > 0);
         assert!(state.initial_request_ms > 0);
+    }
+
+    /// Security cap: a chunk_bytes payload larger than
+    /// MAX_CHUNK_BYTES is rejected before we do any hashing.
+    /// Defends against a per-response CPU-exhaustion attack.
+    #[tokio::test]
+    async fn rejects_oversized_chunk_bytes_before_hashing() {
+        let (target, mut response) = make_target_and_response(&[0xC1; 32], CHUNK_SIZE + 100, 0);
+        // Blow past the cap by a byte.
+        response.chunk_bytes = Bytes::from(vec![0u8; MAX_CHUNK_BYTES + 1]);
+        let retriever = SnapshotChunkRetriever::new(target);
+        assert_eq!(
+            retriever.admit_response(&response).await,
+            AdmitOutcome::ChunkHashMismatch,
+            "oversized chunk_bytes must be rejected before hashing",
+        );
+    }
+
+    /// Security cap: a merkle_proof deeper than
+    /// MAX_MERKLE_PROOF_STEPS is rejected before we run any hash
+    /// verification.  Defends against a proof-length-DoS attack.
+    #[tokio::test]
+    async fn rejects_oversized_merkle_proof_before_verification() {
+        let (target, mut response) = make_target_and_response(&[0xC2; 32], CHUNK_SIZE + 100, 0);
+        // Pad the proof past the cap with garbage siblings.  These
+        // would be expensive to verify if the cap check were absent.
+        for _ in 0..(MAX_MERKLE_PROOF_STEPS + 5) {
+            response.merkle_proof.push(MerkleProofStep {
+                sibling_hash: Bytes::from_static(&[0u8; 32]),
+                is_sibling_right: false,
+            });
+        }
+        let retriever = SnapshotChunkRetriever::new(target);
+        assert_eq!(
+            retriever.admit_response(&response).await,
+            AdmitOutcome::MerkleProofInvalid,
+            "oversized merkle_proof must be rejected before verification",
+        );
     }
 
     #[tokio::test]

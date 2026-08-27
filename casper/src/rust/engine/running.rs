@@ -276,14 +276,23 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> Engine for Running<T> {
             // otherwise falls through as a silent no-op.
             CasperMessage::GetSnapshotChunkRequest(req) => {
                 if let Some(ctx) = self.snapshot_chunk_ctx() {
-                    let anchors = ctx.snapshot_merkle_roots.read().await.clone();
+                    // Look up ONLY the requested block hash instead
+                    // of cloning the entire map — O(1) instead of
+                    // O(N) per request.  Anchor is `Copy` so the
+                    // closure returns a value, no borrow held.
+                    let anchor: Option<([u8; 32], [u8; 32])> = ctx
+                        .snapshot_merkle_roots
+                        .read()
+                        .await
+                        .get(req.block_hash.as_ref())
+                        .copied();
                     handle_get_snapshot_chunk_request(
                         &*self.transport,
                         &self.conf,
                         &peer,
                         &req,
                         &ctx.snapshot_dir,
-                        |bh| anchors.get(bh).copied(),
+                        |_| anchor,
                     )
                     .await;
                 }
@@ -291,14 +300,19 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> Engine for Running<T> {
             }
             CasperMessage::HasSnapshotRequest(req) => {
                 if let Some(ctx) = self.snapshot_chunk_ctx() {
-                    let anchors = ctx.snapshot_merkle_roots.read().await.clone();
+                    let anchor: Option<([u8; 32], [u8; 32])> = ctx
+                        .snapshot_merkle_roots
+                        .read()
+                        .await
+                        .get(req.block_hash.as_ref())
+                        .copied();
                     handle_has_snapshot_request(
                         &*self.transport,
                         &self.conf,
                         &peer,
                         &req,
                         &ctx.snapshot_dir,
-                        |bh| anchors.get(bh).copied(),
+                        |_| anchor,
                     )
                     .await;
                 }

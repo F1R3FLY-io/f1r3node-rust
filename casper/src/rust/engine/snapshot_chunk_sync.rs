@@ -56,6 +56,13 @@ use crate::rust::engine::snapshot_chunk_wire::{
     broadcast_has_snapshot_request, send_get_snapshot_chunk_request,
 };
 
+/// Security caps on per-snapshot peer sets.  Under normal use both
+/// stay well below these limits (typical joiner sees ~10 sources
+/// and blacklists ~0); the caps defend against an attacker
+/// rotating peer identities to exhaust memory.
+pub const MAX_SOURCES_PER_SNAPSHOT: usize = 256;
+pub const MAX_BLACKLISTED_PER_SNAPSHOT: usize = 1024;
+
 /// Per-snapshot sync state: retriever + known peers + round-robin
 /// cursor for peer rotation.
 #[derive(Debug)]
@@ -71,6 +78,17 @@ pub struct SnapshotSyncState {
     /// HasSnapshotRequest.  Avoids duplicate broadcasts on repeat
     /// ticks before we've seen any HasSnapshot replies.
     pub broadcasted_has_request: bool,
+}
+
+/// Insert into the per-snapshot blacklist with a size cap.
+/// Silent no-op once the cap is reached — the pathological case
+/// where an attacker has flooded us with `MAX_BLACKLISTED_PER_SNAPSHOT`
+/// distinct malicious identities is exceedingly rare; degrading
+/// to "we can't blacklist more" is preferable to unbounded memory.
+fn add_blacklist_capped(set: &mut HashSet<PeerNode>, peer: PeerNode) {
+    if set.len() < MAX_BLACKLISTED_PER_SNAPSHOT {
+        set.insert(peer);
+    }
 }
 
 impl SnapshotSyncState {
@@ -166,7 +184,7 @@ impl SnapshotChunkSyncDriver {
                 len = announcement.merkle_root.len(),
                 "HasSnapshot merkle_root has wrong length; blacklisting sender"
             );
-            state.blacklisted_sources.insert(sender);
+            add_blacklist_capped(&mut state.blacklisted_sources, sender);
             return;
         }
         new_merkle.copy_from_slice(announcement.merkle_root.as_ref());
@@ -195,13 +213,15 @@ impl SnapshotChunkSyncDriver {
                     target: "f1r3fly.casper.snapshot_chunk_sync",
                     "HasSnapshot disagrees with pinned target; blacklisting sender"
                 );
-                state.blacklisted_sources.insert(sender);
+                add_blacklist_capped(&mut state.blacklisted_sources, sender);
                 return;
             }
             // Consistent reply — add sender as another source if
-            // we don't already know them.
+            // we don't already know them AND we're under the
+            // security cap.
             if !state.sources.iter().any(|p| p == &sender)
                 && !state.blacklisted_sources.contains(&sender)
+                && state.sources.len() < MAX_SOURCES_PER_SNAPSHOT
             {
                 state.sources.push_back(sender);
             }
@@ -244,7 +264,7 @@ impl SnapshotChunkSyncDriver {
                         outcome = ?outcome,
                         "byzantine response; blacklisting sender"
                     );
-                    state.blacklisted_sources.insert(sender);
+                    add_blacklist_capped(&mut state.blacklisted_sources, sender);
                 }
                 _ => {}
             }
@@ -713,6 +733,107 @@ mod tests {
         assert_eq!(n, 1, "only block_b should be enqueued (block_a is on disk)");
         assert!(driver.snapshots.read().await.contains_key(&block_b));
         assert!(!driver.snapshots.read().await.contains_key(&block_a));
+    }
+
+    /// Security cap: the per-snapshot sources set stops growing
+    /// at MAX_SOURCES_PER_SNAPSHOT.  Defends against a peer-flood
+    /// memory-exhaustion attack.
+    #[tokio::test]
+    async fn sources_set_stops_growing_at_cap() {
+        let dir = tempfile::tempdir().unwrap();
+        let driver = SnapshotChunkSyncDriver::new(dir.path().to_path_buf());
+        let block_hash = vec![0x51u8; 32];
+        driver.enqueue_snapshot(block_hash.clone()).await;
+        let merkle = [0x77u8; 32];
+        let chunk_count = 8u32;
+
+        // First reply installs target + adds the first source.
+        driver
+            .on_has_snapshot(mk_peer("peer0"), &HasSnapshot {
+                block_hash: Bytes::copy_from_slice(&block_hash),
+                merkle_root: Bytes::copy_from_slice(&merkle),
+                chunk_count,
+            })
+            .await;
+
+        // Flood with distinct peers past the cap.
+        for i in 1..(MAX_SOURCES_PER_SNAPSHOT + 20) {
+            driver
+                .on_has_snapshot(mk_peer(&format!("peer{i}")), &HasSnapshot {
+                    block_hash: Bytes::copy_from_slice(&block_hash),
+                    merkle_root: Bytes::copy_from_slice(&merkle),
+                    chunk_count,
+                })
+                .await;
+        }
+
+        let g = driver.snapshots.read().await;
+        assert_eq!(
+            g[&block_hash].sources.len(),
+            MAX_SOURCES_PER_SNAPSHOT,
+            "sources set must stop at MAX_SOURCES_PER_SNAPSHOT"
+        );
+    }
+
+    /// Security cap: the per-snapshot blacklist stops growing at
+    /// MAX_BLACKLISTED_PER_SNAPSHOT.  Silent no-op past the cap.
+    #[tokio::test]
+    async fn blacklist_stops_growing_at_cap() {
+        let dir = tempfile::tempdir().unwrap();
+        let driver = SnapshotChunkSyncDriver::new(dir.path().to_path_buf());
+        let block_hash = vec![0x52u8; 32];
+        driver.enqueue_snapshot(block_hash.clone()).await;
+        // First reply installs target.
+        driver
+            .on_has_snapshot(mk_peer("honest"), &HasSnapshot {
+                block_hash: Bytes::copy_from_slice(&block_hash),
+                merkle_root: Bytes::from_static(&[0xAA; 32]),
+                chunk_count: 4,
+            })
+            .await;
+        // Flood with byzantine (disagreeing merkle_root) replies from
+        // distinct peers past the cap.
+        for i in 0..(MAX_BLACKLISTED_PER_SNAPSHOT + 20) {
+            driver
+                .on_has_snapshot(mk_peer(&format!("byz{i}")), &HasSnapshot {
+                    block_hash: Bytes::copy_from_slice(&block_hash),
+                    merkle_root: Bytes::from_static(&[0xBB; 32]),
+                    chunk_count: 4,
+                })
+                .await;
+        }
+        let g = driver.snapshots.read().await;
+        assert_eq!(
+            g[&block_hash].blacklisted_sources.len(),
+            MAX_BLACKLISTED_PER_SNAPSHOT,
+            "blacklist must stop at MAX_BLACKLISTED_PER_SNAPSHOT"
+        );
+    }
+
+    /// next_source rotation: consecutive picks land on different
+    /// non-blacklisted peers.  Blacklisted peers are silently
+    /// skipped in the rotation.
+    #[tokio::test]
+    async fn next_source_rotates_and_skips_blacklisted() {
+        let mut state = SnapshotSyncState {
+            retriever: Arc::new(SnapshotChunkRetriever::new(SnapshotTarget {
+                block_hash: vec![0; 32],
+                merkle_root: [0; 32],
+                chunk_count: 4,
+            })),
+            sources: VecDeque::from(vec![mk_peer("alice"), mk_peer("byz"), mk_peer("bob")]),
+            blacklisted_sources: HashSet::from([mk_peer("byz")]),
+            broadcasted_has_request: false,
+        };
+        // First two picks should be alice, bob (skipping byz).
+        // Third pick rotates back to alice.
+        let a = state.next_source().unwrap();
+        let b = state.next_source().unwrap();
+        let c = state.next_source().unwrap();
+        assert_ne!(a.id.key, b.id.key, "consecutive picks must differ");
+        assert_eq!(a.id.key, c.id.key, "3rd pick rotates back to 1st");
+        assert!(!a.id.key.iter().eq(b"byz".iter()));
+        assert!(!b.id.key.iter().eq(b"byz".iter()));
     }
 
     /// A byzantine chunk response blacklists the sender.
