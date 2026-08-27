@@ -10,6 +10,9 @@ use std::fmt::{Display, Formatter};
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use blake2::digest::consts::U32;
+use blake2::{Blake2b, Digest};
+
 use super::CommittedObjectIndexV1;
 use super::io::{DurableDirectoryV1, DurableFileV1, DurableIoError, DurableWriterLeaseV1};
 use super::startup::{
@@ -17,10 +20,10 @@ use super::startup::{
     PhysicallyRecoveredDurableWriterV1, read_catalog_token,
 };
 use crate::rspace::persistence::canonical::{
-    CanonicalFormatError, ObjectDigest, ObjectRefV1, checked_len,
+    CanonicalFormatError, CanonicalSink, ObjectDigest, ObjectRefV1, checked_len,
 };
 use crate::rspace::persistence::checkpoint::{
-    CheckpointObjectInventoryV1, GenerationCheckpointDescriptorV1, GenerationCheckpointErrorV1,
+    GenerationCheckpointDescriptorV1, GenerationCheckpointErrorV1,
 };
 use crate::rspace::persistence::closure::{
     ClosureError, RetainedUnionClosureLimitsV1, RetainedUnionClosureReportV1,
@@ -114,6 +117,15 @@ pub(crate) enum DurableObjectReadErrorV1 {
         limit: u64,
         attempted: u64,
     },
+    MissingObject(ObjectDigest),
+    ObjectReferenceMismatch {
+        requested: ObjectRefV1,
+        indexed: ObjectRefV1,
+    },
+    CopiedDigestMismatch {
+        expected: ObjectDigest,
+        actual: ObjectDigest,
+    },
 }
 
 impl Display for DurableObjectReadErrorV1 {
@@ -172,6 +184,18 @@ impl Display for DurableObjectReadErrorV1 {
                 formatter,
                 "durable semantic admission {resource} limit {limit} exceeded by {attempted}"
             ),
+            Self::MissingObject(digest) => {
+                write!(formatter, "durable object {digest:?} is absent from the committed index")
+            }
+            Self::ObjectReferenceMismatch { requested, indexed } => write!(
+                formatter,
+                "durable object reference {requested:?} conflicts with indexed reference \
+                 {indexed:?}"
+            ),
+            Self::CopiedDigestMismatch { expected, actual } => write!(
+                formatter,
+                "durable object changed while streaming: expected {expected}, got {actual}"
+            ),
         }
     }
 }
@@ -187,6 +211,30 @@ impl std::error::Error for DurableObjectReadErrorV1 {
 
 impl From<DurableIoError> for DurableObjectReadErrorV1 {
     fn from(error: DurableIoError) -> Self { Self::Io(error) }
+}
+
+#[derive(Debug)]
+pub(crate) enum DurableObjectCopyErrorV1<E> {
+    Object(DurableObjectReadErrorV1),
+    Sink(E),
+}
+
+impl<E: Display> Display for DurableObjectCopyErrorV1<E> {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Object(error) => Display::fmt(error, formatter),
+            Self::Sink(error) => write!(formatter, "durable object sink failed: {error}"),
+        }
+    }
+}
+
+impl<E: std::error::Error + 'static> std::error::Error for DurableObjectCopyErrorV1<E> {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Object(error) => Some(error),
+            Self::Sink(error) => Some(error),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -406,10 +454,26 @@ impl DurableIndexedObjectStoreV1 {
         Ok(Some(record))
     }
 
-    fn read_record(
+    fn lookup_exact(
+        &self,
+        reference: ObjectRefV1,
+    ) -> Result<Option<ObjectIndexRecordV1>, DurableObjectReadErrorV1> {
+        let Some(record) = self.index.get(reference.digest()) else {
+            return Ok(None);
+        };
+        if record.reference() != reference {
+            return Err(DurableObjectReadErrorV1::ObjectReferenceMismatch {
+                requested: reference,
+                indexed: record.reference(),
+            });
+        }
+        Ok(Some(record))
+    }
+
+    fn locate_record(
         &self,
         record: ObjectIndexRecordV1,
-    ) -> Result<Box<[u8]>, DurableObjectReadErrorV1> {
+    ) -> Result<(&PinnedPackV1, u64), DurableObjectReadErrorV1> {
         let reference = record.reference();
         let location = record.location();
         let pack = location.pack_id();
@@ -439,12 +503,12 @@ impl DurableIndexedObjectStoreV1 {
                     active: self.active_pack,
                 })?;
         debug_assert_eq!(pinned.id, pack);
-        let length = reference.encoded_len();
-        let end = location.canonical_offset().checked_add(length).ok_or(
+        let offset = location.canonical_offset();
+        let end = offset.checked_add(reference.encoded_len()).ok_or(
             DurableObjectReadErrorV1::ObjectExtentOverflow {
                 digest: reference.digest(),
-                offset: location.canonical_offset(),
-                length,
+                offset,
+                length: reference.encoded_len(),
             },
         )?;
         if end > pinned.authorized_tail {
@@ -455,6 +519,16 @@ impl DurableIndexedObjectStoreV1 {
                 tail: pinned.authorized_tail,
             });
         }
+        Ok((pinned, offset))
+    }
+
+    fn read_record(
+        &self,
+        record: ObjectIndexRecordV1,
+    ) -> Result<Box<[u8]>, DurableObjectReadErrorV1> {
+        let reference = record.reference();
+        let (pinned, offset) = self.locate_record(record)?;
+        let length = reference.encoded_len();
         let length_usize = usize::try_from(length).map_err(|_| {
             DurableObjectReadErrorV1::MaterializationAddressSpace {
                 digest: reference.digest(),
@@ -469,11 +543,87 @@ impl DurableIndexedObjectStoreV1 {
             }
         })?;
         bytes.resize(length_usize, 0);
-        pinned
-            .file
-            .read_exact_at(location.canonical_offset(), &mut bytes)?;
+        pinned.file.read_exact_at(offset, &mut bytes)?;
         Ok(bytes.into_boxed_slice())
     }
+
+    pub(crate) fn copy_verified_canonical<S: CanonicalSink>(
+        &self,
+        reference: ObjectRefV1,
+        sink: &mut S,
+    ) -> Result<(), DurableObjectCopyErrorV1<S::Error>> {
+        let record = self
+            .lookup_exact(reference)
+            .map_err(DurableObjectCopyErrorV1::Object)?
+            .ok_or(DurableObjectCopyErrorV1::Object(DurableObjectReadErrorV1::MissingObject(
+                reference.digest(),
+            )))?;
+        let (pinned, offset) = self
+            .locate_record(record)
+            .map_err(DurableObjectCopyErrorV1::Object)?;
+        copy_verified_canonical_with(reference, sink, |relative, destination| {
+            let absolute = offset.checked_add(relative).ok_or(
+                DurableObjectReadErrorV1::ObjectExtentOverflow {
+                    digest: reference.digest(),
+                    offset,
+                    length: relative,
+                },
+            )?;
+            pinned.file.read_exact_at(absolute, destination)?;
+            Ok(())
+        })
+    }
+}
+
+const DURABLE_COPY_BUFFER_LEN: usize = 64 * 1024;
+
+pub(crate) fn copy_verified_canonical_with<S: CanonicalSink>(
+    reference: ObjectRefV1,
+    sink: &mut S,
+    mut read: impl FnMut(u64, &mut [u8]) -> Result<(), DurableObjectReadErrorV1>,
+) -> Result<(), DurableObjectCopyErrorV1<S::Error>> {
+    let capacity = usize::try_from(reference.encoded_len().min(DURABLE_COPY_BUFFER_LEN as u64))
+        .expect("bounded durable copy scratch fits usize");
+    let mut scratch = Vec::new();
+    scratch.try_reserve_exact(capacity).map_err(|_| {
+        DurableObjectCopyErrorV1::Object(DurableObjectReadErrorV1::MaterializationAllocation {
+            digest: reference.digest(),
+            attempted: capacity as u64,
+        })
+    })?;
+    scratch.resize(capacity, 0);
+    let mut hasher = Blake2b::<U32>::new();
+    let mut copied = 0u64;
+    while copied < reference.encoded_len() {
+        let remaining = reference.encoded_len() - copied;
+        let chunk_len = usize::try_from(remaining.min(scratch.len() as u64))
+            .expect("bounded durable copy chunk fits usize");
+        let chunk = &mut scratch[..chunk_len];
+        read(copied, chunk).map_err(DurableObjectCopyErrorV1::Object)?;
+        hasher.update(&*chunk);
+        sink.write_all(chunk)
+            .map_err(DurableObjectCopyErrorV1::Sink)?;
+        copied = copied.checked_add(chunk_len as u64).ok_or_else(|| {
+            DurableObjectCopyErrorV1::Object(DurableObjectReadErrorV1::ObjectExtentOverflow {
+                digest: reference.digest(),
+                offset: 0,
+                length: reference.encoded_len(),
+            })
+        })?;
+    }
+    let hash = hasher.finalize();
+    let mut digest = [0u8; 32];
+    digest.copy_from_slice(&hash);
+    let actual = ObjectDigest::from_array(digest);
+    if actual != reference.digest() {
+        return Err(DurableObjectCopyErrorV1::Object(
+            DurableObjectReadErrorV1::CopiedDigestMismatch {
+                expected: reference.digest(),
+                actual,
+            },
+        ));
+    }
+    Ok(())
 }
 
 impl ImmutableObjectStore for DurableIndexedObjectStoreV1 {
@@ -640,16 +790,12 @@ impl<P: SemanticProfile> SemanticallyAdmittedDurableWriterV1<P> {
     ) -> Result<GenerationCheckpointDescriptorV1, GenerationCheckpointErrorV1> {
         let pack = self.authority.slot().pack();
         let retention_manifest = pack.retention_manifest();
-        let inventory = CheckpointObjectInventoryV1::from_retained_union(
-            &self.retained_closure,
-            retention_manifest,
-        )?;
-        GenerationCheckpointDescriptorV1::new(
+        GenerationCheckpointDescriptorV1::from_retained_union(
             P::ID,
             self.version,
             retention_manifest,
             pack.current_state_canonical_bytes(),
-            inventory,
+            &self.retained_closure,
         )
     }
 

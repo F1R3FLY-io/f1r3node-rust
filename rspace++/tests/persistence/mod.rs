@@ -3,6 +3,7 @@ mod checkpoint_codec;
 mod closure_validation;
 mod closure_union_inventory;
 mod durable_catalog;
+mod durable_object_stream;
 mod durable_index_recovery;
 mod durable_recovery;
 mod durable_startup;

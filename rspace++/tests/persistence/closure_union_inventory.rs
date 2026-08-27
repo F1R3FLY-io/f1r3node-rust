@@ -101,9 +101,12 @@ fn retained_union_deduplicates_shared_objects_without_losing_per_state_inventori
     let retention = ObjectRefV1::new(ObjectDigest::from_array([0xFF; 32]), 64).unwrap();
     let checkpoint = CheckpointObjectInventoryV1::from_retained_union(&ledger, retention).unwrap();
     assert_eq!(checkpoint.retained_union_objects(), union.distinct_objects);
-    assert_eq!(checkpoint.retained_union_canonical_bytes(), union.canonical_bytes);
+    assert_eq!(checkpoint.retained_union_canonical_bytes().get(), union.canonical_bytes);
     assert_eq!(checkpoint.data_objects(), union.distinct_objects + 1);
-    assert_eq!(checkpoint.data_canonical_bytes(), union.canonical_bytes + retention.encoded_len());
+    assert_eq!(
+        checkpoint.data_canonical_bytes().get(),
+        union.canonical_bytes + retention.encoded_len()
+    );
 }
 
 #[test]

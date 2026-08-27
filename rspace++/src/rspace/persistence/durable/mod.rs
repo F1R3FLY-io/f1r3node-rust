@@ -17,8 +17,8 @@ mod startup;
 
 pub(crate) use admission::{
     DurableAdmissionErrorV1, DurableAdmissionLimitsV1, DurableAdmissionReportV1,
-    DurableIndexedObjectStoreV1, DurableObjectReadErrorV1, InventoryMismatchKindV1,
-    SemanticallyAdmittedDurableWriterV1,
+    DurableIndexedObjectStoreV1, DurableObjectCopyErrorV1, DurableObjectReadErrorV1,
+    InventoryMismatchKindV1, SemanticallyAdmittedDurableWriterV1, copy_verified_canonical_with,
 };
 pub use catalog::{
     CATALOG_IMAGE_LEN, CATALOG_SLOT_LEN, CatalogAuthorityTokenV1, CatalogPackStateV1,

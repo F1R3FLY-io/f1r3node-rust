@@ -29,10 +29,39 @@ pub(crate) const GENERATION_CHECKPOINT_CANONICAL_LEN: u64 =
     OBJECT_ENVELOPE_HEADER_LEN + CHECKPOINT_BODY_LEN;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct OrderedObjectInventoryDigestV1(ObjectDigest);
+pub(crate) struct OrderedObjectInventoryDigestV1([u8; 32]);
 
 impl OrderedObjectInventoryDigestV1 {
-    pub(crate) const fn as_bytes(&self) -> &[u8; 32] { self.0.as_array() }
+    pub(crate) const fn from_array(bytes: [u8; 32]) -> Self { Self(bytes) }
+
+    pub(crate) const fn as_bytes(&self) -> &[u8; 32] { &self.0 }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct CurrentClosureCanonicalBytesV1(u64);
+
+impl CurrentClosureCanonicalBytesV1 {
+    pub(crate) const fn new(bytes: u64) -> Self { Self(bytes) }
+
+    pub(crate) const fn get(self) -> u64 { self.0 }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct RetainedUnionCanonicalBytesV1(u64);
+
+impl RetainedUnionCanonicalBytesV1 {
+    pub(crate) const fn new(bytes: u64) -> Self { Self(bytes) }
+
+    pub(crate) const fn get(self) -> u64 { self.0 }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct CheckpointInlineCanonicalBytesV1(u64);
+
+impl CheckpointInlineCanonicalBytesV1 {
+    pub(crate) const fn new(bytes: u64) -> Self { Self(bytes) }
+
+    pub(crate) const fn get(self) -> u64 { self.0 }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -52,18 +81,24 @@ impl OrderedObjectInventoryV1 {
 
 pub(crate) struct OrderedObjectInventoryBuilderV1 {
     hasher: Blake2b<U32>,
+    expected_objects: u64,
+    expected_canonical_bytes: u64,
     previous: Option<ObjectRefV1>,
     objects: u64,
     canonical_bytes: u64,
 }
 
 impl OrderedObjectInventoryBuilderV1 {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(expected_objects: u64, expected_canonical_bytes: u64) -> Self {
         let mut hasher = Blake2b::<U32>::new();
         hasher.update(ORDERED_INVENTORY_DOMAIN);
         hasher.update(FORMAT_VERSION_V1.to_le_bytes());
+        hasher.update(expected_objects.to_le_bytes());
+        hasher.update(expected_canonical_bytes.to_le_bytes());
         Self {
             hasher,
+            expected_objects,
+            expected_canonical_bytes,
             previous: None,
             objects: 0,
             canonical_bytes: 0,
@@ -102,6 +137,14 @@ impl OrderedObjectInventoryBuilderV1 {
             .ok_or(GenerationCheckpointErrorV1::CounterOverflow(
                 "checkpoint inventory canonical bytes",
             ))?;
+        if objects > self.expected_objects || canonical_bytes > self.expected_canonical_bytes {
+            return Err(GenerationCheckpointErrorV1::InventoryIncoherent {
+                expected_objects: self.expected_objects,
+                actual_objects: objects,
+                expected_bytes: self.expected_canonical_bytes,
+                actual_bytes: canonical_bytes,
+            });
+        }
         self.hasher.update(reference.digest().as_bytes());
         self.hasher.update(reference.encoded_len().to_le_bytes());
         self.previous = Some(reference);
@@ -110,28 +153,34 @@ impl OrderedObjectInventoryBuilderV1 {
         Ok(())
     }
 
-    pub(crate) fn finish(self) -> OrderedObjectInventoryV1 {
+    pub(crate) fn finish(self) -> Result<OrderedObjectInventoryV1, GenerationCheckpointErrorV1> {
+        if self.objects != self.expected_objects ||
+            self.canonical_bytes != self.expected_canonical_bytes
+        {
+            return Err(GenerationCheckpointErrorV1::InventoryIncoherent {
+                expected_objects: self.expected_objects,
+                actual_objects: self.objects,
+                expected_bytes: self.expected_canonical_bytes,
+                actual_bytes: self.canonical_bytes,
+            });
+        }
         let hash = self.hasher.finalize();
         let mut digest = [0_u8; 32];
         digest.copy_from_slice(&hash);
-        OrderedObjectInventoryV1 {
-            digest: OrderedObjectInventoryDigestV1(ObjectDigest::from_array(digest)),
+        Ok(OrderedObjectInventoryV1 {
+            digest: OrderedObjectInventoryDigestV1(digest),
             objects: self.objects,
             canonical_bytes: self.canonical_bytes,
-        }
+        })
     }
-}
-
-impl Default for OrderedObjectInventoryBuilderV1 {
-    fn default() -> Self { Self::new() }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct CheckpointObjectInventoryV1 {
     retained_union_objects: u64,
-    retained_union_canonical_bytes: u64,
+    retained_union_canonical_bytes: RetainedUnionCanonicalBytesV1,
     data_objects: u64,
-    data_canonical_bytes: u64,
+    data_canonical_bytes: CheckpointInlineCanonicalBytesV1,
     ordered_digest: OrderedObjectInventoryDigestV1,
 }
 
@@ -141,7 +190,20 @@ impl CheckpointObjectInventoryV1 {
         retention_manifest: ObjectRefV1,
     ) -> Result<Self, GenerationCheckpointErrorV1> {
         let report = ledger.retained_union_report();
-        let mut builder = OrderedObjectInventoryBuilderV1::new();
+        if report.distinct_objects == 0 {
+            return Err(GenerationCheckpointErrorV1::EmptyRetainedUnion);
+        }
+        let data_objects = report
+            .distinct_objects
+            .checked_add(1)
+            .ok_or(GenerationCheckpointErrorV1::CounterOverflow("checkpoint DATA objects"))?;
+        let data_canonical_bytes = report
+            .canonical_bytes
+            .checked_add(retention_manifest.encoded_len())
+            .ok_or(GenerationCheckpointErrorV1::CounterOverflow(
+                "checkpoint DATA canonical bytes",
+            ))?;
+        let mut builder = OrderedObjectInventoryBuilderV1::new(data_objects, data_canonical_bytes);
         let mut retention_pending = true;
         ledger.try_visit_retained_union(|reference| {
             if retention_pending {
@@ -165,14 +227,17 @@ impl CheckpointObjectInventoryV1 {
         if retention_pending {
             builder.push(retention_manifest)?;
         }
-        Self::from_ordered(report, retention_manifest, builder.finish())
+        Self::from_ordered(report, retention_manifest, builder.finish()?)
     }
 
-    pub(crate) fn from_ordered(
+    fn from_ordered(
         report: RetainedUnionClosureReportV1,
         retention_manifest: ObjectRefV1,
         ordered: OrderedObjectInventoryV1,
     ) -> Result<Self, GenerationCheckpointErrorV1> {
+        if report.distinct_objects == 0 {
+            return Err(GenerationCheckpointErrorV1::EmptyRetainedUnion);
+        }
         let data_objects = report
             .distinct_objects
             .checked_add(1)
@@ -193,22 +258,35 @@ impl CheckpointObjectInventoryV1 {
         }
         Ok(Self {
             retained_union_objects: report.distinct_objects,
-            retained_union_canonical_bytes: report.canonical_bytes,
+            retained_union_canonical_bytes: RetainedUnionCanonicalBytesV1::new(
+                report.canonical_bytes,
+            ),
             data_objects,
-            data_canonical_bytes,
+            data_canonical_bytes: CheckpointInlineCanonicalBytesV1::new(data_canonical_bytes),
             ordered_digest: ordered.digest(),
         })
     }
 
+    #[cfg(test)]
+    pub(crate) fn from_test_ordered(
+        report: RetainedUnionClosureReportV1,
+        retention_manifest: ObjectRefV1,
+        ordered: OrderedObjectInventoryV1,
+    ) -> Result<Self, GenerationCheckpointErrorV1> {
+        Self::from_ordered(report, retention_manifest, ordered)
+    }
+
     pub(crate) const fn retained_union_objects(self) -> u64 { self.retained_union_objects }
 
-    pub(crate) const fn retained_union_canonical_bytes(self) -> u64 {
+    pub(crate) const fn retained_union_canonical_bytes(self) -> RetainedUnionCanonicalBytesV1 {
         self.retained_union_canonical_bytes
     }
 
     pub(crate) const fn data_objects(self) -> u64 { self.data_objects }
 
-    pub(crate) const fn data_canonical_bytes(self) -> u64 { self.data_canonical_bytes }
+    pub(crate) const fn data_canonical_bytes(self) -> CheckpointInlineCanonicalBytesV1 {
+        self.data_canonical_bytes
+    }
 
     pub(crate) const fn ordered_digest(self) -> OrderedObjectInventoryDigestV1 {
         self.ordered_digest
@@ -220,31 +298,77 @@ pub(crate) struct GenerationCheckpointDescriptorV1 {
     profile_id: SemanticProfileId,
     state: StateVersionV1,
     retention_manifest: ObjectRefV1,
-    current_state_canonical_bytes: u64,
+    current_state_canonical_bytes: CurrentClosureCanonicalBytesV1,
     inventory: CheckpointObjectInventoryV1,
 }
 
 impl GenerationCheckpointDescriptorV1 {
-    pub(crate) fn new(
+    pub(crate) fn from_retained_union(
+        profile_id: SemanticProfileId,
+        state: StateVersionV1,
+        retention_manifest: ObjectRefV1,
+        current_state_canonical_bytes: u64,
+        ledger: &StructuralClosureLedgerV1,
+    ) -> Result<Self, GenerationCheckpointErrorV1> {
+        let inventory =
+            CheckpointObjectInventoryV1::from_retained_union(ledger, retention_manifest)?;
+        Self::from_admitted_inventory(
+            profile_id,
+            state,
+            retention_manifest,
+            current_state_canonical_bytes,
+            inventory,
+        )
+    }
+
+    fn from_admitted_inventory(
         profile_id: SemanticProfileId,
         state: StateVersionV1,
         retention_manifest: ObjectRefV1,
         current_state_canonical_bytes: u64,
         inventory: CheckpointObjectInventoryV1,
     ) -> Result<Self, GenerationCheckpointErrorV1> {
-        if current_state_canonical_bytes > inventory.retained_union_canonical_bytes() {
+        if current_state_canonical_bytes < state.manifest().encoded_len() {
+            return Err(GenerationCheckpointErrorV1::CurrentBelowManifest {
+                minimum: state.manifest().encoded_len(),
+                actual: current_state_canonical_bytes,
+            });
+        }
+        if inventory.retained_union_objects() == 0 {
+            return Err(GenerationCheckpointErrorV1::EmptyRetainedUnion);
+        }
+        if current_state_canonical_bytes > inventory.retained_union_canonical_bytes().get() {
             return Err(GenerationCheckpointErrorV1::CurrentExceedsRetained {
                 current: current_state_canonical_bytes,
-                retained: inventory.retained_union_canonical_bytes(),
+                retained: inventory.retained_union_canonical_bytes().get(),
             });
         }
         Ok(Self {
             profile_id,
             state,
             retention_manifest,
-            current_state_canonical_bytes,
+            current_state_canonical_bytes: CurrentClosureCanonicalBytesV1::new(
+                current_state_canonical_bytes,
+            ),
             inventory,
         })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn from_test_inventory(
+        profile_id: SemanticProfileId,
+        state: StateVersionV1,
+        retention_manifest: ObjectRefV1,
+        current_state_canonical_bytes: u64,
+        inventory: CheckpointObjectInventoryV1,
+    ) -> Result<Self, GenerationCheckpointErrorV1> {
+        Self::from_admitted_inventory(
+            profile_id,
+            state,
+            retention_manifest,
+            current_state_canonical_bytes,
+            inventory,
+        )
     }
 
     pub(crate) const fn profile_id(self) -> SemanticProfileId { self.profile_id }
@@ -253,7 +377,7 @@ impl GenerationCheckpointDescriptorV1 {
 
     pub(crate) const fn retention_manifest(self) -> ObjectRefV1 { self.retention_manifest }
 
-    pub(crate) const fn current_state_canonical_bytes(self) -> u64 {
+    pub(crate) const fn current_state_canonical_bytes(self) -> CurrentClosureCanonicalBytesV1 {
         self.current_state_canonical_bytes
     }
 
@@ -269,18 +393,26 @@ impl CanonicalEncode for GenerationCheckpointDescriptorV1 {
         write_u64(sink, self.state.generation())?;
         self.state.manifest().write(sink)?;
         self.retention_manifest.write(sink)?;
-        write_u64(sink, self.current_state_canonical_bytes)?;
-        write_u64(sink, self.inventory.retained_union_canonical_bytes())?;
+        write_u64(sink, self.current_state_canonical_bytes.get())?;
+        write_u64(sink, self.inventory.retained_union_canonical_bytes().get())?;
         write_u64(sink, self.inventory.retained_union_objects())?;
         write_u64(sink, self.inventory.data_objects())?;
-        write_u64(sink, self.inventory.data_canonical_bytes())?;
+        write_u64(sink, self.inventory.data_canonical_bytes().get())?;
         sink.write_all(self.inventory.ordered_digest().as_bytes())
     }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct GenerationCheckpointDescriptorViewV1 {
-    descriptor: GenerationCheckpointDescriptorV1,
+    profile_id: SemanticProfileId,
+    state: StateVersionV1,
+    retention_manifest: ObjectRefV1,
+    current_state_canonical_bytes: CurrentClosureCanonicalBytesV1,
+    retained_union_canonical_bytes: RetainedUnionCanonicalBytesV1,
+    retained_union_objects: u64,
+    data_objects: u64,
+    data_canonical_bytes: CheckpointInlineCanonicalBytesV1,
+    ordered_digest: OrderedObjectInventoryDigestV1,
 }
 
 impl GenerationCheckpointDescriptorViewV1 {
@@ -301,7 +433,8 @@ impl GenerationCheckpointDescriptorViewV1 {
         let retained_union_objects = cursor.read_u64()?;
         let data_objects = cursor.read_u64()?;
         let data_canonical_bytes = cursor.read_u64()?;
-        let ordered_digest = OrderedObjectInventoryDigestV1(cursor.read_digest()?);
+        let ordered_digest =
+            OrderedObjectInventoryDigestV1::from_array(*cursor.read_digest()?.as_array());
         cursor.finish()?;
 
         let expected_objects = retained_union_objects
@@ -320,24 +453,63 @@ impl GenerationCheckpointDescriptorViewV1 {
                 actual_bytes: data_canonical_bytes,
             });
         }
-        let inventory = CheckpointObjectInventoryV1 {
-            retained_union_objects,
-            retained_union_canonical_bytes,
-            data_objects,
-            data_canonical_bytes,
-            ordered_digest,
-        };
-        let descriptor = GenerationCheckpointDescriptorV1::new(
+        if current_state_canonical_bytes < state.manifest().encoded_len() {
+            return Err(GenerationCheckpointErrorV1::CurrentBelowManifest {
+                minimum: state.manifest().encoded_len(),
+                actual: current_state_canonical_bytes,
+            });
+        }
+        if retained_union_objects == 0 {
+            return Err(GenerationCheckpointErrorV1::EmptyRetainedUnion);
+        }
+        if current_state_canonical_bytes > retained_union_canonical_bytes {
+            return Err(GenerationCheckpointErrorV1::CurrentExceedsRetained {
+                current: current_state_canonical_bytes,
+                retained: retained_union_canonical_bytes,
+            });
+        }
+        Ok(Self {
             profile_id,
             state,
             retention_manifest,
-            current_state_canonical_bytes,
-            inventory,
-        )?;
-        Ok(Self { descriptor })
+            current_state_canonical_bytes: CurrentClosureCanonicalBytesV1::new(
+                current_state_canonical_bytes,
+            ),
+            retained_union_canonical_bytes: RetainedUnionCanonicalBytesV1::new(
+                retained_union_canonical_bytes,
+            ),
+            retained_union_objects,
+            data_objects,
+            data_canonical_bytes: CheckpointInlineCanonicalBytesV1::new(data_canonical_bytes),
+            ordered_digest,
+        })
     }
 
-    pub(crate) const fn descriptor(self) -> GenerationCheckpointDescriptorV1 { self.descriptor }
+    pub(crate) const fn profile_id(self) -> SemanticProfileId { self.profile_id }
+
+    pub(crate) const fn state(self) -> StateVersionV1 { self.state }
+
+    pub(crate) const fn retention_manifest(self) -> ObjectRefV1 { self.retention_manifest }
+
+    pub(crate) const fn current_state_canonical_bytes(self) -> CurrentClosureCanonicalBytesV1 {
+        self.current_state_canonical_bytes
+    }
+
+    pub(crate) const fn retained_union_canonical_bytes(self) -> RetainedUnionCanonicalBytesV1 {
+        self.retained_union_canonical_bytes
+    }
+
+    pub(crate) const fn retained_union_objects(self) -> u64 { self.retained_union_objects }
+
+    pub(crate) const fn data_objects(self) -> u64 { self.data_objects }
+
+    pub(crate) const fn data_canonical_bytes(self) -> CheckpointInlineCanonicalBytesV1 {
+        self.data_canonical_bytes
+    }
+
+    pub(crate) const fn ordered_digest(self) -> OrderedObjectInventoryDigestV1 {
+        self.ordered_digest
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -363,6 +535,11 @@ pub(crate) enum GenerationCheckpointErrorV1 {
         current: u64,
         retained: u64,
     },
+    CurrentBelowManifest {
+        minimum: u64,
+        actual: u64,
+    },
+    EmptyRetainedUnion,
 }
 
 impl Display for GenerationCheckpointErrorV1 {
@@ -398,6 +575,13 @@ impl Display for GenerationCheckpointErrorV1 {
                 "checkpoint current-state inventory {current} exceeds retained inventory \
                  {retained}"
             ),
+            Self::CurrentBelowManifest { minimum, actual } => write!(
+                formatter,
+                "checkpoint current-state inventory {actual} is below its {minimum}-byte manifest"
+            ),
+            Self::EmptyRetainedUnion => {
+                formatter.write_str("checkpoint retained closure cannot be empty")
+            }
         }
     }
 }
