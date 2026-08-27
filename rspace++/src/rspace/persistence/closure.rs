@@ -173,6 +173,18 @@ where
                 let first_visit = !state.counted;
                 state.counted = true;
 
+                let admitted_canonical_bytes = if first_visit {
+                    let attempted = report
+                        .canonical_bytes
+                        .checked_add(reference.encoded_len())
+                        .ok_or_else(|| {
+                            format_error(CanonicalFormatError::CounterOverflow("canonical bytes"))
+                        })?;
+                    check_limit("canonical bytes", limits.max_canonical_bytes, attempted)?;
+                    Some(attempted)
+                } else {
+                    None
+                };
                 let bytes = load_reference(store, reference)?;
                 let bytes = bytes.as_ref();
                 if first_visit {
@@ -182,16 +194,8 @@ where
                         limits.max_distinct_objects,
                         report.distinct_objects,
                     )?;
-                    increment(
-                        &mut report.canonical_bytes,
-                        checked_len(bytes.len(), "closure object").map_err(format_error)?,
-                        "canonical bytes",
-                    )?;
-                    check_limit(
-                        "canonical bytes",
-                        limits.max_canonical_bytes,
-                        report.canonical_bytes,
-                    )?;
+                    report.canonical_bytes =
+                        admitted_canonical_bytes.expect("first visits preflight canonical bytes");
                 }
                 let object = CanonicalObjectView::parse(bytes).map_err(format_error)?;
                 push_work(
@@ -360,7 +364,7 @@ where
     S: ImmutableObjectStore,
 {
     let bytes = store
-        .get(&reference.digest())
+        .get_bounded(&reference.digest(), reference.encoded_len())
         .map_err(ClosureError::Store)?
         .ok_or_else(|| format_error(CanonicalFormatError::MissingObject(reference.digest())))?;
     let canonical = bytes.as_ref();

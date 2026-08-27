@@ -10,6 +10,12 @@ pub(crate) const ACCELERATOR_MANIFEST_DOMAIN: &[u8; OBJECT_DOMAIN_LEN] = b"RSpac
 const SEMANTIC_ROOT_COUNT: u64 = 3;
 pub(crate) const SEMANTIC_SCHEMA_EPOCH_V1: u64 = 1;
 const OBJECT_REF_LEN: u64 = (OBJECT_DIGEST_LEN + 8) as u64;
+pub(crate) const SEMANTIC_MANIFEST_MAX_CANONICAL_LEN: u64 = OBJECT_ENVELOPE_HEADER_LEN +
+    8 +
+    8 +
+    SEMANTIC_ROOT_COUNT * (8 + OBJECT_REF_LEN) +
+    1 +
+    OBJECT_DIGEST_LEN as u64;
 
 pub type NamespaceRoot = ObjectRefV1;
 

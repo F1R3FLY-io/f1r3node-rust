@@ -2,9 +2,11 @@
 //!
 //! Arithmetic and first-wins operations are the resident producer semantics.
 //! The durable form is deliberately stronger: every changed path carries its
-//! exact before and after state.  That makes stale-base replay observable,
-//! already-applied replay idempotent, and the live CoW and persistent-DAG
-//! applicators consumers of one transition language.
+//! exact before and after state. That makes stale-base replay observable,
+//! makes same-base recompilation deterministic, and gives the later
+//! manifest/WAL recovery layer enough evidence to recognize a wholly
+//! committed target without accepting mixed endpoint states. The live CoW and
+//! persistent-DAG applicators therefore consume one transition language.
 
 use std::fmt::{Display, Formatter};
 

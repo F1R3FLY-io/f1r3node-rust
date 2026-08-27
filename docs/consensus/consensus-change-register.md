@@ -5706,6 +5706,31 @@ durable DAG, publishes a manifest, changes LMDB, or alters legacy history bytes.
 must re-enter this register with affected-frontier rewrite equivalence, private-stage failure
 atomicity, binary WAL crash recovery, and mixed-version/migration evidence.
 
+The 2026-08-27 affected-frontier continuation discharges the first two of those later obligations
+without activating persistence. A borrowed mutation view now authenticates its exact base-manifest
+reference and derives all three semantic roots from it; callers cannot supply an unrelated root.
+The compiler accepts only a transaction-private staging overlay. It uses an iterative radix editor
+with adjacent-key longest-common-prefix cursor retention, on-demand child opening, compressed-prefix
+split/merge, bottom-up enter/exit finalization, and content-addressed reuse of untouched children.
+The compiler performs a transition only from exact `before`; an `after` state or any third state in
+the declared immutable base rejects the complete rewrite. Recompilation against that same base is
+deterministic. Later recovery must recognize a wholly committed transaction by comparing the
+authenticated catalog with exact base and target manifests, never by accepting mixed endpoint
+states.
+
+This is `NO_PRODUCTION_CHANGE_DERIVED`. The module has no production caller and cannot write the
+durable base or appoint a current manifest. The complete persistence matrix passes **69/69**;
+rewrite-specific evidence passes **22/22**, including all adaptive branch boundaries, all three
+roots, strict CAS and after-state refusal, deterministic recompilation, manifest authority,
+private later-namespace failure, cumulative and allocation-preflight budgets, refusal before
+edited-node copies or reads, bounded physical reads, staged reachability, untouched-subtree reuse, a
+100,000-byte key, and a 20,000-node rewrite on a 256 KiB native stack. Therefore no Rholang syntax,
+accepted program, COMM selection/order,
+protobuf/bincode byte, history root, replay result, metering rule, network message, or existing LMDB
+state changes at this checkpoint. Physical prepare/commit WAL framing, verified target-manifest
+promotion, sync/catalog order, crash recovery, compaction, legacy migration, and comparative
+performance remain mandatory before this entry can authorize a production cutover.
+
 ### B.2 The original commit-level exemptions
 
 Every commit in `7293d57c..dc383ed1` touching the consensus-critical path set, that is **not** a

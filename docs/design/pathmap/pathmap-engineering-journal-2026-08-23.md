@@ -2525,11 +2525,106 @@ total resource limits, and a 100,000-byte key encoded and decoded on a 256 KiB n
 production-library Clippy gate
 passes with only the persistence module's intentionally dormant reachability allowances.
 
-**BOUNDARY.** This checkpoint defines the canonical mutation payload and pure normalization. The
-iterative affected-frontier DAG rewrite, private staging overlay, resident transition sidecars,
-physical binary WAL frames, pack/catalog synchronization, crash recovery, compaction, migration,
-and LMDB comparison remain subsequent measured milestones. No production caller can yet change
-checkpoint or recovery behavior.
+**BOUNDARY.** At the J-035 checkpoint, this result defined the canonical mutation payload and pure
+normalization only. J-036 subsequently implements the iterative affected-frontier DAG rewrite and
+private staging overlay. Resident transition sidecars, physical binary WAL frames, pack/catalog
+synchronization, crash recovery, compaction, migration, and LMDB comparison remain subsequent
+measured milestones. No production caller can yet change checkpoint or recovery behavior.
+
+### J-036 — 2026-08-27: rewrite only the affected radix frontier in a private object overlay
+
+**TERMS.** An **affected frontier** is the union of canonical radix-DAG nodes lying on paths named
+by a normalized mutation batch. A **staging overlay** is a transaction-private, content-addressed
+map read together with the durable base but never admitted into that base during compilation. A
+**Merkle reference** is the digest-and-length identity of one immutable object. **Compaction** is a
+later storage operation that traces Merkle references from retained manifests and reclaims
+unreachable physical pack records; it is not Merkleization itself.
+
+**PROBLEM.** Rebuilding all three RSpace tries after each checkpoint would discard PathMap's CoW
+sharing and make mutation cost proportional to total state. Writing newly encoded nodes directly
+to the durable object store would leave unreachable objects when a later namespace, semantic
+validator, or catalog comparison fails. Accepting roots separately from the mutation would also
+sever the batch's base-manifest authority.
+
+**DECISION.** `rewrite_semantic_roots` accepts a validated borrowed mutation view and an immutable
+base store. It accepts no independent root argument. The function creates and owns a private
+`StagingObjectStore`, authenticates the exact manifest reference carried by the batch, derives all
+three roots from that manifest, and applies endpoint CAS transitions in canonical key order. For
+an endpoint inside that declared immutable base whose actual state is:
+
+| Actual state | Interpretation | Action |
+|---|---|---|
+| `before` | exact base transition | install `after` |
+| `after` | inconsistent declared base | reject the complete rewrite |
+| any third state | stale or divergent declared base | reject the complete rewrite |
+
+Recompiling the same canonical mutation against the same immutable base is deterministic and
+produces the same target roots and staged digests. Later whole-transaction recovery must compare an
+authenticated catalog manifest with the transaction's exact base and target manifests: current
+base means compile/publish, current target means verify/skip, and every other manifest means reject.
+It must never obtain idempotence by accepting a mixture of `after` endpoints while compiling the
+declared base.
+
+The editor retains the adjacent keys' longest common prefix as a cursor. It opens a child only when
+a changed key enters that child, splits compressed prefixes at the first differing byte, and leaves
+every untouched child as its existing `ObjectRefV1`. An explicit enter/exit worklist finalizes edit
+nodes bottom-up. Deletion removes empty nonroots and merges endpoint-free unary nodes into their
+only child. Edited children are staged only when the finalized parent will reference them, so
+transient nodes eliminated by compression do not become staged garbage.
+
+**ALGORITHM.** The production traversal is the following pushdown automaton (PDA):
+
+```text
+authenticate mutation.base.manifest and obtain its three roots
+for namespace in [DataBag, ContinuationMap, JoinBag]:
+    load the root into an edit arena
+    for transition in the borrowed, strictly ordered section:
+        retain cursor nodes within LCP(previous_key, transition.key)
+        descend by adaptive child lookup, opening referenced nodes on demand
+        split compressed prefixes only where the key diverges
+        require actual = before, then install after
+    push Enter(root)
+    while work is nonempty:
+        Enter(node): push Exit(node), then edited children
+        Exit(node): remove empty, compress unary, or encode canonical node
+    stage the finalized reachable root and its edited descendants
+return three new roots and measured work counters
+```
+
+For $`k`$ mutations with $`b`$ total key bytes, $`p`$ opened/created frontier nodes, and $`e`$
+emitted canonical bytes, runtime is $`O(b+p+e)`$ apart from the canonical adaptive-branch lookup
+constants. Native-stack space is $`O(1)`$ in trie depth. Heap retention is $`O(b+p)`$ for the
+borrowed-key cursor, edit arena, and explicit finalization worklist. Caller-supplied limits cover
+mutations, loaded nodes and canonical bytes, edited nodes, copied prefix bytes (including
+unary-merge edges), emitted nodes and bytes, cursor nodes, and finalization work. Bounded store
+reads reject an oversized physical record before materializing it. Exact canonical-length
+preflight occurs before unary-prefix growth and emitted-byte allocation. Exhausted edited-node
+budgets are rejected before inserted-suffix copies, split-fragment allocation, or referenced-child
+materialization. These are total-resource budgets, never semantic path-depth limits.
+
+**EVIDENCE.** A separate test oracle rebuilds a canonical radix DAG from an ordered logical map and
+compares the resulting root references. The rewrite matrix passes **22/22** cases; the staging
+overlay passes **4/4**; and the complete persistence module passes **69/69** under a 6 GiB RSS
+ceiling, zero swap, and eight compiler cores. Coverage includes insertion, update, deletion,
+key-is-prefix, existing-is-prefix, mid-prefix divergence, cascading unary collapse, adaptive
+boundaries 4/5, 16/17, 48/49, 255/256, all three endpoint policies, strict base-state CAS,
+after-state and divergent-state refusal, deterministic same-base recompilation, missing manifest
+authority, later-namespace failure isolation, cumulative cross-namespace budgets, loaded-byte and
+unary-allocation preflight, edited-node refusal before suffix/split copying or child reads,
+staged-object reachability, and proof that an untouched sibling reference is neither opened nor
+rewritten. A 100,000-byte shared prefix has no depth refusal. A separate chain of 20,000
+endpoint-bearing canonical nodes rewrites on a 256 KiB native stack and equals an independently
+rebuilt target root. The complete test transcript is
+`target/scratch/persistence-rewrite-preflight-tests.log` (SHA-256
+`3ff9bf0e32d95723c837c32c93c59e48162a6893474e1e0c03bb57ffeec4e776`).
+
+**BOUNDARY.** This is still a dormant compiler over an in-memory immutable-object interface. Its
+successful result owns the private staging overlay, but that overlay is not yet a sealed
+publication receipt. It does not promote staged objects, create and authenticate the target
+manifest, sync a binary WAL,
+compare-and-swap the durable catalog, recover torn writes, compact packs, migrate LMDB, or claim a
+latency, allocation, RSS, or disk-footprint win. J-037 must bind the verified target manifest into
+the physical prepare/commit/recovery protocol before any object becomes current-root authority.
 
 ## Upstream PathMap integration request register
 

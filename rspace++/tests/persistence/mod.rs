@@ -3,5 +3,7 @@ mod manifest_codec;
 mod mutation_codec;
 mod object_codec;
 mod object_store_collision;
+mod rewrite_differential;
 mod semantic_validation;
+mod staging_store;
 mod support;

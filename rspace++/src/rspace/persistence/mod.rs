@@ -10,6 +10,7 @@ mod closure;
 mod manifest;
 mod mutation;
 mod object;
+mod rewrite;
 mod semantic;
 mod store;
 
@@ -35,8 +36,17 @@ pub use object::{
     CanonicalDagNodeView, CanonicalObjectKind, CanonicalObjectView, DagChild, DagChildrenIter,
     DagChildrenView, EndpointValue,
 };
+pub use rewrite::{
+    CompareAndSwapFailure, DagRewriteLimits, DagRewriteReport, PreparedDagRewrite, RewriteError,
+    rewrite_semantic_roots, rewrite_semantic_roots_with_limits,
+};
+#[cfg(test)]
+pub(crate) use rewrite::{preflight_sensitive_copy_bytes, reset_preflight_sensitive_copy_bytes};
 pub use semantic::{SemanticValidationLimits, SemanticValidationReport, verify_rspace_semantics};
-pub use store::{CanonicalObjectStore, ImmutableObjectStore, ObjectAdmission};
+pub use store::{
+    CanonicalObjectStore, ImmutableObjectStore, LayeredObject, ObjectAdmission, StagingObjectStore,
+    StagingStoreError, VisitStagedError,
+};
 
 #[cfg(test)]
 #[path = "../../../tests/persistence/mod.rs"]

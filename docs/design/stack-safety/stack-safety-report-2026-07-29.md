@@ -10803,8 +10803,9 @@ after state. Data and joins use zero-or-positive `u64` counts; continuations use
 content references. A PathMap per namespace coalesces sequential changes, checks that the next
 observed state equals the prior result, retains the original base state, and removes inverse
 transitions that return to that base. This compare-and-swap form is the smallest replay language
-that both rejects a stale base and recognizes an already-installed target without applying an
-arithmetic delta twice.
+that rejects a stale base and lets the later authenticated manifest/WAL layer recognize a wholly
+installed target without applying an arithmetic delta twice. The base-to-target DAG compiler
+itself accepts only exact `before` states; it never recognizes a target by mixing endpoint states.
 
 Canonical preflight and emission retain immutable CoW roots and traverse them with read zippers.
 For $`m`$ changed endpoints and $`b`$ total changed-key bytes, both passes take $`O(m+b)`$ time.
@@ -10826,12 +10827,53 @@ payload, a fallible sink proves direct replay stops on destination failure, and 
 provenance proves borrowed keys remain within the admitted input image. The production-library
 Clippy gate also passes under the same dormant-module allowances used by SS-C21.
 
-This result proves the in-memory normalization and canonical streaming payload only. The next
-stack-safety proof must cover the affected-frontier DAG rewrite's bottom-up frame machine and its
-private staging overlay. Physical WAL scanning, pack recovery, catalog publication, and pack
-compaction remain unimplemented and make no performance or crash-consistency claim here. PathMap
-journal J-035 gives the byte/transaction rationale; consensus register CBR-053 retains the dormant
-classification.
+At SS-C22, this result proved the in-memory normalization and canonical streaming payload only.
+SS-C23 now covers the affected-frontier DAG rewrite's bottom-up frame machine and private staging
+overlay. Physical WAL scanning, pack recovery, catalog publication, and pack compaction remain
+unimplemented and make no performance or crash-consistency claim here. PathMap journal J-035 gives
+the byte/transaction rationale; consensus register CBR-053 retains the dormant classification.
+
+### 5.50 Iterative affected-frontier radix-DAG rewrite [SS-C23]
+
+The persistent compiler consumes the validated borrowed SS-C22 mutation view without rebuilding
+its producer-side PathMaps. It authenticates the batch's exact base manifest and derives the
+DataBag, ContinuationMap, and JoinBag roots from that sole authority. Its API requires a private
+staging overlay rather than the generic immutable-store trait, so a failed later namespace or
+resource check cannot publish a prefix of a transaction into the durable base.
+
+For each ordered section, an adjacent-key cursor retains edit nodes only through the longest common
+prefix. Referenced children are opened on demand; untouched subtrees remain content-addressed CoW
+references. Prefix splits and deletion merges modify a flat edit arena. Finalization uses explicit
+`Enter(node)` and `Exit(node)` frames: children complete before their parent, empty nonroots vanish,
+endpoint-free unary nodes merge, and only nodes reachable from the finalized root enter staging.
+No production call in this path is recursive.
+
+The CAS driver compiles one exact immutable base: `actual = before` performs the mutation, while
+`actual = after` and every third state reject the complete batch. Recompiling from that same base
+is deterministic. Whole-transaction idempotence belongs to a later authenticated catalog
+base/target comparison, never mixed endpoint acceptance. Explicit budgets bound total mutations,
+loaded nodes/bytes, edited nodes, retained prefix bytes (including unary-merge edges), emitted
+nodes/bytes, cursor nodes, and finalization frames. Store reads are length-bounded before
+materialization, and unary merges preflight retained and emitted bytes before allocation. These are
+hostile-input work limits and impose no trie-depth or Rholang-term-depth cap. Edited-node exhaustion
+is also preflighted before suffix copies, split-fragment allocations, or referenced-child reads.
+
+The focused rewrite matrix passes **22/22**, the staging-overlay matrix passes **4/4**, and the
+complete persistence module passes **69/69**. Fixed differentials cover every compressed-prefix
+relation, cascading deletion compression, the 4/5, 16/17, 48/49, and 255/256 adaptive boundaries,
+all three typed roots, exact CAS, after/divergent-state refusal, deterministic same-base
+recompilation, manifest authority, private later-namespace failure, cumulative resource refusal,
+bounded physical reads, unary-allocation preflight, edited-node refusal before copying or reading,
+staged reachability, and untouched-subtree nonloading. A 100,000-byte key tests unbounded
+compressed-prefix handling. The anti-vacuity depth gate constructs 20,000
+endpoint-bearing canonical nodes, changes the deepest endpoint on a 256 KiB native stack, and
+matches a separately rebuilt target root. The resource-capped transcript SHA-256 is
+`3ff9bf0e32d95723c837c32c93c59e48162a6893474e1e0c03bb57ffeec4e776`.
+
+SS-C23 proves native-stack flatness and canonical CoW rewrite equivalence only. It does not prove
+physical WAL scanning, durable object promotion, target-manifest validation, sync ordering,
+catalog CAS, crash recovery, pack compaction, or LMDB migration/performance. Those operations must
+receive their own explicit-worklist and failure-injection evidence before production activation.
 
 ---
 

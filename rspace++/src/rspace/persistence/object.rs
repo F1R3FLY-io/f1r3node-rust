@@ -139,34 +139,8 @@ impl CanonicalDagNode {
         let prefix = prefix.into();
         let children = children.into();
         validate_node_shape(&prefix, endpoint, &children)?;
-
-        let prefix_len = checked_len(prefix.len(), "node prefix")?;
-        let child_count = checked_len(children.len(), "node child count")?;
-        let child_refs = child_count.checked_mul(OBJECT_REF_LEN as u64).ok_or(
-            CanonicalFormatError::LengthOverflow {
-                field: "node child references",
-            },
-        )?;
-        let child_bytes = match BranchKind::for_child_count(children.len()) {
-            BranchKind::Leaf => 0,
-            BranchKind::Node4 | BranchKind::Node16 => child_count
-                .checked_mul(SMALL_CHILD_LEN as u64)
-                .ok_or(CanonicalFormatError::LengthOverflow {
-                    field: "node child pairs",
-                })?,
-            BranchKind::Node48 => {
-                checked_sum(NODE48_SLOT_TABLE_LEN as u64, child_refs, "node48 children")?
-            }
-            BranchKind::Node256 => {
-                checked_sum(CHILD_BITMAP_LEN as u64, child_refs, "node256 children")?
-            }
-        };
-        let mut body_len = 8_u64;
-        body_len = checked_sum(body_len, prefix_len, "DAG node body")?;
-        body_len = checked_sum(body_len, endpoint.canonical_len(), "DAG node body")?;
-        body_len = checked_sum(body_len, 1 + 8, "DAG node body")?;
-        body_len = checked_sum(body_len, child_bytes, "DAG node body")?;
-        let canonical_len = checked_sum(OBJECT_ENVELOPE_HEADER_LEN, body_len, "DAG node envelope")?;
+        let (body_len, canonical_len) =
+            Self::canonical_lengths_for_shape(prefix.len(), endpoint, children.len())?;
 
         Ok(Self {
             prefix,
@@ -189,6 +163,59 @@ impl CanonicalDagNode {
     pub fn children(&self) -> &[DagChild] { &self.children }
 
     pub fn branch_kind(&self) -> BranchKind { BranchKind::for_child_count(self.children.len()) }
+
+    /// Compute the exact canonical length before allocating a node's owned
+    /// prefix/child representation. This is used by hostile-input resource
+    /// preflight in the differential DAG editor.
+    pub(crate) fn canonical_len_for_shape(
+        prefix_len: usize,
+        endpoint: EndpointValue,
+        child_count: usize,
+    ) -> Result<u64, CanonicalFormatError> {
+        Self::canonical_lengths_for_shape(prefix_len, endpoint, child_count)
+            .map(|(_, canonical_len)| canonical_len)
+    }
+
+    fn canonical_lengths_for_shape(
+        prefix_len: usize,
+        endpoint: EndpointValue,
+        child_count: usize,
+    ) -> Result<(u64, u64), CanonicalFormatError> {
+        if child_count > 256 {
+            return Err(CanonicalFormatError::NonCanonicalBranchClass {
+                tag: BranchKind::Node256 as u8,
+                child_count: checked_len(child_count, "node child count")?,
+            });
+        }
+        let prefix_len = checked_len(prefix_len, "node prefix")?;
+        let child_count_u64 = checked_len(child_count, "node child count")?;
+        let child_refs = child_count_u64.checked_mul(OBJECT_REF_LEN as u64).ok_or(
+            CanonicalFormatError::LengthOverflow {
+                field: "node child references",
+            },
+        )?;
+        let child_bytes = match BranchKind::for_child_count(child_count) {
+            BranchKind::Leaf => 0,
+            BranchKind::Node4 | BranchKind::Node16 => child_count_u64
+                .checked_mul(SMALL_CHILD_LEN as u64)
+                .ok_or(CanonicalFormatError::LengthOverflow {
+                    field: "node child pairs",
+                })?,
+            BranchKind::Node48 => {
+                checked_sum(NODE48_SLOT_TABLE_LEN as u64, child_refs, "node48 children")?
+            }
+            BranchKind::Node256 => {
+                checked_sum(CHILD_BITMAP_LEN as u64, child_refs, "node256 children")?
+            }
+        };
+        let mut body_len = 8_u64;
+        body_len = checked_sum(body_len, prefix_len, "DAG node body")?;
+        body_len = checked_sum(body_len, endpoint.canonical_len(), "DAG node body")?;
+        body_len = checked_sum(body_len, 1 + 8, "DAG node body")?;
+        body_len = checked_sum(body_len, child_bytes, "DAG node body")?;
+        let canonical_len = checked_sum(OBJECT_ENVELOPE_HEADER_LEN, body_len, "DAG node envelope")?;
+        Ok((body_len, canonical_len))
+    }
 
     pub fn object_ref(&self) -> ObjectRefV1 {
         ObjectRefV1::new(self.canonical_digest(), self.canonical_len)

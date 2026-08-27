@@ -581,7 +581,7 @@ where
     S: ImmutableObjectStore,
 {
     let bytes = store
-        .get(&reference.digest())
+        .get_bounded(&reference.digest(), reference.encoded_len())
         .map_err(ClosureError::Store)?
         .ok_or_else(|| format_error(CanonicalFormatError::MissingObject(reference.digest())))?;
     let canonical = bytes.as_ref();
