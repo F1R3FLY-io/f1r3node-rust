@@ -113,7 +113,7 @@ it covered and the bound it was computed under.
 | `walk_memo_false_stable` premise | `checked_below` early stop (`effect_in_state_of_above`) |
 
 The gate `scripts/check-finalized-floor-ALL.sh` builds the theory and
-asserts the three headline results axiom-free alongside the domain
+asserts all four probe theorems axiom-free alongside the domain
 capstones.
 
 ## Discharge plan for the remediation
