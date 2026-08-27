@@ -317,6 +317,7 @@ Abbreviations used throughout are ABI (application binary interface), CBR (conse
 | **SS-C17** | `3061b2501`, `70fae0a9d`; pgmcp #6026/#6030 | f1r3node | canonical DATA: PathMap $`\rightarrow`$ leaf payload $`\rightarrow`$ second final-value serialization; reads/imports: final value $`\rightarrow`$ copied payload | one checked allocation constructs the final envelope; reader/importer lend canonically admitted ranges; treatment/control median-time ratio **0.0323–0.3745**, with **24 to 36,878 fewer allocation calls**; native stack remains $`O(1)`$ | **yes for final persisted DATA bytes**; exact framing/admission, three lifecycle mutants, two final-byte mutants, formal gates, and 497/497 package tests | [5.44](#544-final-persisted-value-egress-and-borrowed-admission-ss-c17) |
 | **SS-C18** | this checkpoint; pgmcp #6025/#6027/#6030 | f1r3node | repeated ParBag owner occurrences in one protobuf frame: repeated PathMap zipper walks $`\rightarrow`$ one exact owner census, direct first emission, and certified typed-range replay | native stack remains $`O(1)`$; reuse-1 99% ratio upper bound **1.024510**; reuse-16 median ratio **0.174705**, traversals **16 $`\rightarrow`$ 1**, allocation calls **99,235 $`\rightarrow`$ 8,455** in the profile-only loop | **no** — heap/time refinement of the generated stack-safe codec; exact Prost bytes, owner-shape/fault differentials, seven transcript mutants, eleven owner-memo mutants, and full formal bundle | [5.45](#545-certified-parbag-protobuf-egress-and-atomic-replay-ss-c18) |
 | **SS-C19** | this checkpoint; campaign 4131 authenticated-egress/import slice | f1r3node | implicit node-derived pagination and independent history/DATA/root mutators $`\rightarrow`$ authenticated pages, iterative closure verification, typed immutable leaves, and one consuming `open -> sealed -> published` capability | native stack remains $`O(1)`$; decoded-node cache fixed at 1,024 entries/8 MiB, verified-leaf cache fixed at 4,096 addresses, horizon network window fixed at 32; no traversal-depth ceiling or full-state leaf visited set | **yes for transfer lifecycle and resource bounds**; 64 focused requester/import/catalog/FFI cases, caller type-check, one passing TLA+ model, and three required failing mutants | [5.46](#546-authenticated-rspace-egress-and-affine-import-lifecycle-ss-c19) |
+| **SS-C20** | this checkpoint; pgmcp #6029/#6030/#6079 | f1r3node | continuation/join cold egress: repeated record materialization $`\rightarrow`$ immutable checked CoW-root plan and fallible zipper-to-sink replay; retained occurrence-expanded order tries rejected | native stack remains $`O(1)`$; depth **20,000** on **256 KiB**; zero record decode, `Vec<Par>` projection, or element sort; one exactly reserved buffer only at the legacy LMDB action boundary | **yes for the complete continuation/join lifecycle**; independent HashMap/Vec differential through bind/select/checkpoint/reset/export/import/play/replay/post-state, nine killed mutants, 165/165 integration cases, and the full Rocq/Verus/Z3/TLC/mCRL2 gate | [5.47](#547-continuationjoin-pathmap-authority-and-rejected-retained-order-indexes-ss-c20) |
 | **SS-D1** | `d2591fa1` | f1r3node | task-spawn boundary per-branch deep clone | 2,867 $`\rightarrow`$ **0** *(this site)* | **yes** | [5.5.3](#553-the-three-repairs) |
 | **SS-D2** | `94dc983f` | f1r3node | ownership to the substitution; **15** deep copies | incl. $`O(n^2)`$ $`\rightarrow`$ $`O(n)`$ | **yes** | [5.5.3](#553-the-three-repairs) |
 | **SS-D3** | `9082d12c` | f1r3node | `inj_attempt` read-back clone $`\rightarrow`$ by-move | 2,852 $`\rightarrow`$ **0** | **yes** | [5.5.3](#553-the-three-repairs) |
@@ -10713,11 +10714,29 @@ boundary; hashing, WAL, and page writers can consume the same plan without such 
 performs no `Vec<Par>` projection, record decoding, or element sort, and a sink failure cannot be
 published.
 
-The complete legacy-versus-PathMap bind/select/COMM/checkpoint/reset/export/import/play/replay/
-post-state differential remains open at this reporting coordinate. The binary-WAL/content-addressed
-PathMap-DAG persistence backend is also still a design, not an implementation or throughput result.
-Those boundaries prevent this negative index experiment and cursor boundary from being misreported
-as complete lifecycle or persistence closure.
+The complete legacy-versus-PathMap lifecycle differential now runs a production PathMap store beside
+an independent `HashMap`/`Vec` oracle over one deliberately non-vacuous fixture. The fixture preserves
+the first representative of a source-free continuation identity, retains duplicate join
+occurrences, and chooses two records whose digest-first scheduler order opposes their canonical
+cold-store byte order. It then compares typed initial and final history roots, authenticated history
+and cold-leaf closures, reset state, two distinct play COMMs, exact replay selection, final post-state,
+and final export/import state. Nine named mutations change the observation: last-wins identity,
+collapsed join multiplicity, reversed scheduler order, omitted COMM, lost reset join, lost checkpoint
+occurrence, incomplete export closure, wrong replay selection, and retained removed continuation.
+
+The resource-capped consolidated integration target passes **165/165** in **105.62 s** with log
+SHA-256 `ff7843d7d89305fd8c8e9c0116279afa1cbd22575891256ee4d679f5d726d5ca`.
+The composite proof runner closes the six axiom-free RSpace-commit Rocq capstones, verifies the
+canonical-egress and continuation/join laws in Verus without cheating, obtains the expected Z3
+`unsat`, accepts the TLA+ controls, rejects every named mutant with its required invariant witness,
+and completes the mCRL2 checks. Its log ends in the five-tool success sentinel and has SHA-256
+`6424ceb403d6af09c3648af5b38c00bc74ecc96c7668bb48ce0605a27eabe7c3`.
+The full method and non-vacuity account are preserved in
+[`measurements/rspace-continuation-join-lifecycle-equivalence-2026-08-26.md`](measurements/rspace-continuation-join-lifecycle-equivalence-2026-08-26.md).
+
+This closes SS-C20's lifecycle and post-state equivalence obligation. The binary-WAL/
+content-addressed PathMap-DAG persistence backend remains a separate implementation and throughput
+obligation; none of the lifecycle evidence claims that it exists yet.
 
 ---
 

@@ -602,7 +602,7 @@ is a *future* fork, not a present one).
 | [CBR-042](#cbr-042) | N | …and on the **bincode** wire too — `U(m)` verbatim and contiguous, then the values (FORM ②), so the reader never decodes a trie key | `3a32cf07` | ○ | ○ | ● | ○ | ● | ○ | ○ | CORRECTIVE | **W** |
 | [CBR-043](#cbr-043) | N | …but of **the entries that surface WRITES**. FORM ② keyed lf-blanked values by the *unblanked* entries, putting an entry's `locally_free` on the event hash | `8cf0b770` | ○ | ○ | ● | ○ | ● | ○ | ○ | CORRECTIVE | **W** |
 | [CBR-044](#cbr-044) | N | EPathMap becomes a homogeneous PathMap set/map and both codecs carry one versioned EPM1 trie snapshot; generated protobuf PDAs remove the read ceiling | `26876b65` | ● | ● | ● | ● | ● | ● | ○ | CORRECTIVE | **W** |
-| [CBR-053](#cbr-053) | N | Retained PathMap indexes and synchronized datum-first/receive-first/inner-AC query products skip candidates that cannot match a compiled counterpart | `a89cbc294`, `f149cef2b`, `ea8c39f92`, `564dac0b4`, `0b601ce67`, `f43858ec2`, `b6b53d1b3`, `e1a587c9f`, `5a56376b4`, `697db373b`, `250e96c80`, `2d91c4394`, `bbe91b90f`, `3a70ddc58`, `ad5d37a59`, `26b72b096`, `0d7a6a3f8`, `1560f4371`, `46aaa6472`, `8e4938ec6`, `cd01ea721`, `21ece399d`, `0f9beb5f0`, `87679597d`, `9a746f2bf`, `514659e2b`, `27557c374`, `ad395c357`, `61accc170`, `92240a452`, `03685f4c7`, `4f022ad9b`; this checkpoint; benchmarks `7bc5c6994`, `7b3254573`, `48e6f7d3c`; pgmcp experiments 224, 225, 226, 229, 233, 248, 5984, 5990 | ○ | ? | ○ | ○ | ? | ○ | ○ | UNVERIFIED | **?** |
+| [CBR-053](#cbr-053) | N | Retained PathMap indexes and synchronized datum-first/receive-first/inner-AC query products skip candidates that cannot match a compiled counterpart | `a89cbc294`, `f149cef2b`, `ea8c39f92`, `564dac0b4`, `0b601ce67`, `f43858ec2`, `b6b53d1b3`, `e1a587c9f`, `5a56376b4`, `697db373b`, `250e96c80`, `2d91c4394`, `bbe91b90f`, `3a70ddc58`, `ad5d37a59`, `26b72b096`, `0d7a6a3f8`, `1560f4371`, `46aaa6472`, `8e4938ec6`, `cd01ea721`, `21ece399d`, `0f9beb5f0`, `87679597d`, `9a746f2bf`, `514659e2b`, `27557c374`, `ad395c357`, `61accc170`, `92240a452`, `03685f4c7`, `4f022ad9b`; this checkpoint; benchmarks `7bc5c6994`, `7b3254573`, `48e6f7d3c`; pgmcp experiments 224, 225, 226, 229, 233, 248, 5984, 5990 | ○ | ○ | ○ | ○ | ○ | ○ | ○ | NEUTRAL | **NM** |
 | [CBR-L07](#cbr-l07) | L | `List.last()` in MeTTaIL's Rholang | `bbceb6d9`, `6e543c01` | · | · | · | · | · | ● | · | PERMISSIVE | **W** |
 | [CBR-L08](#cbr-l08) | L | The kv element-category gate — a Name in a kv slot is refused, not silently dropped | *in flight* | ● | ● | ● | ● | ● | ● | ○ | REGRESSIVE | **W** |
 | [CBR-L10](#cbr-l10) | L | A pathmap's entries come from a projection, not a field | `832d510f` | ○ | ● | ● | ● | ● | ○ | ○ | CORRECTIVE | **W** |
@@ -614,11 +614,11 @@ is a *future* fork, not a present one).
 | [CBR-L24](#cbr-l24) | L | Generated identity-beta root spines select the certified finite-route persistent R3 driver; the general quiescence PDA remains the fallback | `57239207` | ○ | ○ | ● | ● | ● | ○ | ● | CORRECTIVE | **W** |
 
 **Totals — 24 entries**: **15 on Surface N, 9 on Surface L**; **23 landed, 1 in flight**
-(**CBR-L08**); one open verification hazard (**CBR-053**). By evidence grade: **21 WITNESSED**, 1
-MECHANISM-ONLY (**CBR-013**), 1 LATENT (**CBR-L14**), and 1 UNVERIFIED (**CBR-053**). By direction:
-**15 CORRECTIVE, 4 PERMISSIVE, 4 REGRESSIVE, 1 UNVERIFIED**. Axis cells reading `UNVERIFIED`: **2** —
-CBR-053's verdict and post-state axes. The register's historical CBR-L07 metering `?` remains
-resolved under the token model (§3.3). The 70 retired entries are
+(**CBR-L08**); no open verification hazards. By evidence grade: **21 WITNESSED**, 1
+MECHANISM-ONLY (**CBR-013**), 1 LATENT (**CBR-L14**), and 1 NEUTRALITY-MEASURED (**CBR-053**).
+By direction: **15 CORRECTIVE, 4 PERMISSIVE, 4 REGRESSIVE, 1 NEUTRAL**. Axis cells reading
+`UNVERIFIED`: **0**. The register's historical CBR-L07 metering `?` remains resolved under the token
+model (§3.3). The 70 retired entries are
 [Appendix B.1](#b1-retired-register-entries); 24 + 70 = 94 historical identifiers, none reused.
 
 ### 4.2 Entry template
@@ -2334,9 +2334,9 @@ Legacy protobuf fields are read-only migration inputs; removing them is a later 
 | | |
 |---|---|
 | Commit(s) | `a89cbc294`, `f149cef2b`, `ea8c39f92`, `564dac0b4`, `0b601ce67`, `f43858ec2`, `b6b53d1b3`, `e1a587c9f`, `5a56376b4`, `697db373b`, `250e96c80`, `2d91c4394`, `bbe91b90f`, `3a70ddc58`, `ad5d37a59`, `26b72b096`, `0d7a6a3f8`, `1560f4371`, `46aaa6472`, `8e4938ec6`, `cd01ea721`, `21ece399d`, `0f9beb5f0`, `87679597d`, `9a746f2bf`, `514659e2b`, `27557c374`, `ad395c357`, `61accc170`, `92240a452`, `03685f4c7`, `4f022ad9b`; benchmarks `7bc5c6994`, `7b3254573`, `48e6f7d3c`; pgmcp experiments 224, 225, 226, 229, 233, 248 |
-| Status | LANDED ON CAMPAIGN BRANCH; VERIFICATION OPEN |
-| Direction | UNVERIFIED |
-| Evidence grade | UNVERIFIED |
+| Status | LANDED ON CAMPAIGN BRANCH; VERIFICATION CLOSED |
+| Direction | NEUTRAL |
+| Evidence grade | NEUTRALITY-MEASURED |
 | Files | `rspace++/src/rspace/{bag.rs,data_index.rs,match.rs,hot_store.rs,pathmap_codec.rs,retained_set_automaton.rs,rho_path.rs,rspace.rs,space_matcher.rs}`, `models/src/rust/{epathmap_trie_codec.rs,rholang/match_path.rs,rholang/match_schema.rs}`, `rholang/src/rust/interpreter/matcher/{match.rs,spatial_matcher_pda.rs}` |
 
 #### (a) The issue
@@ -5628,11 +5628,28 @@ placement only; the frozen canonical body and legacy leaf framing remain byte-id
 This is `NO_PRODUCTION_CHANGE_MEASURED`. No Rholang value, collection authority, selected
 continuation, join multiplicity, COMM order, canonical protobuf or bincode byte, logical leaf hash,
 history root, post-state, metering rule, or PathMap crate source moves. Stack-safety report §5.47
-and its durable report/raw/statistical artifacts preserve the negative result. CBR-053's verdict
-and post-state axes remain `UNVERIFIED`: the ruling does not substitute for the pending complete
-legacy-versus-PathMap continuation/join bind/select/checkpoint/reset/export/import/play/replay
-lifecycle differential. It also does not implement or authorize the planned binary-WAL/
-content-addressed PathMap-DAG persistence backend.
+and its durable report/raw/statistical artifacts preserve the negative result.
+
+**CBR-053 living closure (2026-08-26, continuation/join lifecycle and post-state).** A test-only
+`HashMap`/`Vec` oracle now drives the complete bind/select/checkpoint/reset/authenticated-export/
+affine-import/play/replay lifecycle beside the production PathMap store. The fixture makes the
+previously open rules observable: duplicate source-free continuation identities retain the first
+source, duplicate joins retain multiplicity, digest-first candidate order is deliberately opposite
+canonical cold-store order, two distinct persistent arrivals select two different continuations,
+and replay consumes those exact COMMs. Initial/final typed-history roots, authenticated history and
+cold-leaf object sets, reset state, final state, and re-imported final state are identical.
+
+Nine named mutations are rejected: last-wins continuation identity, collapsed join multiplicity,
+reversed operational order, omitted COMM, dropped reset join, dropped checkpoint occurrence,
+dropped export object, next-continuation replay, and retained removed continuation. The consolidated
+RSpace integration target passes **165/165**. The composed formal runner closes all six RSpace-commit
+Rocq capstones, verifies the canonical-egress and continuation/join laws in Verus without cheating,
+obtains Z3 `unsat`, accepts the TLA+ controls and rejects their required mutants, and completes the
+mCRL2 checks. The executable and formal logs are content-addressed in stack-safety report §5.47.
+
+The verdict and post-state axes are therefore closed as **NO** and the entry is
+`NEUTRALITY-MEASURED`. This closure does not implement or authorize the separately planned binary
+WAL/content-addressed PathMap-DAG persistence backend.
 
 ### B.2 The original commit-level exemptions
 

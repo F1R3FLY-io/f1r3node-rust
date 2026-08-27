@@ -6,4 +6,7 @@ mod hot_store_spec;
 mod replay_rspace_tests;
 mod retained_set_automaton_spec;
 
+#[path = "record_index/continuation_join_lifecycle_equivalence.rs"]
+mod continuation_join_lifecycle_equivalence;
+
 mod concurrent_rspace_architecture_repro_tests;

@@ -2357,10 +2357,22 @@ without a body allocation. The existing LMDB-compatible action materializes one 
 `Vec<u8>` as its final compatibility sink; future hash, WAL, and page sinks can consume the same
 plan directly. A failed sink remains private and cannot become a published checkpoint action.
 
-**BOUNDARY.** The cursor result removes repeated collection projection and makes the final legacy
-buffer a boundary choice, not authority. It does not itself close the complete continuation/join
-RSpace lifecycle differential, and it does not implement the binary-WAL/content-DAG persistence
-backend. Both remain separately tracked and unclaimed at this coordinate.
+**LIFECYCLE CLOSURE.** The cursor result is now exercised inside a complete PathMap-versus-legacy
+RSpace lifecycle differential. The independent side is a test-only `HashMap`/`Vec` oracle; it does
+not call the production PathMap store, cursor, candidate-order helper, or checkpoint encoder. Its
+fixture makes the first-wins identity rule observable, preserves duplicate join occurrences, and
+selects two continuation records for which digest-first scheduler order opposes canonical record
+byte order. Exact initial/final roots, authenticated object closures, reset state, two distinct
+COMMs, replay selections, post-state, and final export/import state agree. Nine lifecycle mutants
+are killed. The consolidated integration target passes 165/165, and the combined Rocq, Verus, Z3,
+TLA+, and mCRL2 runner reaches its success sentinel. The scientific account and immutable log
+digests are in
+[`../stack-safety/measurements/rspace-continuation-join-lifecycle-equivalence-2026-08-26.md`](../stack-safety/measurements/rspace-continuation-join-lifecycle-equivalence-2026-08-26.md).
+
+**BOUNDARY.** The result closes continuation/join authority, canonical egress, lifecycle, replay,
+and post-state equivalence. It makes the final legacy buffer a boundary choice, not authority. It
+does not implement the binary-WAL/content-DAG persistence backend; durable object publication,
+recovery, compaction, and LMDB comparison remain separately tracked and unclaimed.
 
 ## Upstream PathMap integration request register
 
