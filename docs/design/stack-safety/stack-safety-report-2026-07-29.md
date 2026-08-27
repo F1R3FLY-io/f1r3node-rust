@@ -324,8 +324,9 @@ Abbreviations used throughout are ABI (application binary interface), CBR (conse
 | **SS-C22** | this checkpoint; pgmcp #6099 | f1r3node | normalized three-namespace mutation journal $`\rightarrow`$ immutable CoW PathMap compare-and-swap (CAS) tries with zipper preflight/replay and a zero-copy borrowed recovery view | native stack $`O(1)`$ in path depth; **100,000-byte** key on **256 KiB**; no entry vector, semantic sort, or arithmetic replay | **yes for dormant mutation bytes**; 14/14 mutation and 43/43 combined persistence cases | [5.49](#549-normalized-pathmap-mutation-journal-cursor-ss-c22) |
 | **SS-C23** | this checkpoint; pgmcp #6099 | f1r3node | whole-state rebuild/direct admission $`\rightarrow`$ transaction-private affected-frontier radix editor with adjacent-key cursor, CoW child reuse, and enter/exit finalization PDA | native stack $`O(1)`$; **20,000** endpoint-bearing nodes on **256 KiB**; cost follows changed key bytes and opened/emitted frontier, not total state | **yes for dormant canonical rewrite**; 22/22 rewrite, 4/4 staging, and 69/69 combined persistence cases | [5.50](#550-iterative-affected-frontier-radix-dag-rewrite-ss-c23) |
 | **SS-C24** | this checkpoint; pgmcp #6190 | f1r3node | unsealed private rewrite $`\rightarrow`$ profile-typed `verified -> open -> content-ready -> rewritten -> manifested -> validated -> sealed` transaction with path-exact inherited-boundary proof | native stack $`O(1)`$; **100,000-byte** seal and independent rebuild oracle on **256 KiB**; one update reads at most **8 objects** through base cardinality 4,096; exact-path/provenance/staging budgets aggregate | **yes for dormant transaction sealing**; 96/96 persistence cases including authority, portability, determinism, semantic coherence, hostile budgets, exact-path failure atomicity, and 20,000-level gates | [5.51](#551-profile-typed-differential-transaction-sealing-ss-c24) |
-| **SS-C25** | this checkpoint; pgmcp #6189 | f1r3node | sealed in-memory delta $`\rightarrow`$ preflighted DATA/REUSE plan, single-copy streaming prepare, fixed authenticated commit, and zero-copy bounded recovery view | native stack $`O(1)`$ in path/object depth; **100,000-byte** transition on **256 KiB**; $`O(n)`$ one-disposition plan and $`O(1)`$ writer state for $`n`$ sealed objects; no body copy, frame buffer, entry projection, or semantic sort | **yes for dormant log-pack codecs**; 13/13 focused cases, including warm reuse/full-byte collision refusal, checked-u64 checksums, every prepare/commit truncation, sink/invariant nonpublication, frozen V1 bytes, and negative commit-field binding | [5.52](#552-single-copy-transactional-log-pack-codecs-ss-c25) |
+| **SS-C25** | this checkpoint; pgmcp #6189 | f1r3node | sealed in-memory delta $`\rightarrow`$ preflighted DATA/REUSE plan, single-copy streaming prepare, fixed authenticated commit, and zero-copy bounded recovery view | native stack $`O(1)`$ in path/object depth; **100,000-byte** transition on **256 KiB**; $`O(n)`$ one-disposition plan and $`O(1)`$ writer state for $`n`$ sealed objects; no body copy, frame buffer, entry projection, or semantic sort | **yes for dormant log-pack codecs**; 14/14 focused cases, including warm reuse/full-byte collision refusal, checked-u64 checksums, every prepare/commit truncation, sink/invariant nonpublication, frozen V1 bytes, exact prepared offsets, and negative commit-field binding | [5.52](#552-single-copy-transactional-log-pack-codecs-ss-c25) |
 | **SS-C26** | this checkpoint; pgmcp #6189 | f1r3node | retained-root vector/catalog ambiguity $`\rightarrow`$ canonical borrowed retention iterator plus exact two-slot catalog/commit authority | native stack $`O(1)`$; iterator retains one current 56-byte state record; fixed 336-byte catalog slots and 384-byte commit; total retained roots/bytes are checked `u64` work budgets, never depth caps | **yes for dormant formats**; catalog 6/6 and retention 4/4, including every truncation/observable tear, strict root order, reserved/checksum/index/tail mutants, and exact terminal-commit binding | [5.53](#553-retained-root-manifest-and-exact-catalog-authority-ss-c26) |
+| **SS-C27** | this checkpoint; pgmcp #6189 | f1r3node | duplicated pack/index offset arithmetic $`\rightarrow`$ one prepared WAL object-layout iterator plus fixed portable pack and rebuildable index codecs | native stack $`O(1)`$; exact 128-byte pack header, 64-byte index header, and 72-byte index records; index append is one lazy pass with no body copy, record reparse, entry projection, or sort | **yes for dormant physical layouts**; pack 5/5, index 6/6, WAL 14/14, and aggregate persistence 131/131, including all truncations, frozen images, linkage/overflow/store/tail mutants, and exact DATA/REUSE location derivation | [5.54](#554-portable-log-pack-and-rebuildable-object-index-layouts-ss-c27) |
 | **SS-D1** | `d2591fa1` | f1r3node | task-spawn boundary per-branch deep clone | 2,867 $`\rightarrow`$ **0** *(this site)* | **yes** | [5.5.3](#553-the-three-repairs) |
 | **SS-D2** | `94dc983f` | f1r3node | ownership to the substitution; **15** deep copies | incl. $`O(n^2)`$ $`\rightarrow`$ $`O(n)`$ | **yes** | [5.5.3](#553-the-three-repairs) |
 | **SS-D3** | `9082d12c` | f1r3node | `inj_attempt` read-back clone $`\rightarrow`$ by-move | 2,852 $`\rightarrow`$ **0** | **yes** | [5.5.3](#553-the-three-repairs) |
@@ -561,6 +562,7 @@ register rows (SS-C5…SS-C14, SS-Y6) and the stack-safety consequences.
   - [5.51 Profile-typed differential transaction sealing [SS-C24]](#551-profile-typed-differential-transaction-sealing-ss-c24)
   - [5.52 Single-copy transactional log-pack codecs [SS-C25]](#552-single-copy-transactional-log-pack-codecs-ss-c25)
   - [5.53 Retained-root manifest and exact catalog authority [SS-C26]](#553-retained-root-manifest-and-exact-catalog-authority-ss-c26)
+  - [5.54 Portable log-pack and rebuildable object-index layouts [SS-C27]](#554-portable-log-pack-and-rebuildable-object-index-layouts-ss-c27)
 - [6. Discussion](#6-discussion)
   - [6.1 Why the explicit-worklist shape, and why it is *smaller* than what it replaces](#61-why-the-explicit-worklist-shape-and-why-it-is-smaller-than-what-it-replaces)
   - [6.2 Why the SCC is the unit of conversion](#62-why-the-scc-is-the-unit-of-conversion)
@@ -11006,18 +11008,19 @@ $`O(1)`$ state outside the canonical payload parsers. All are $`O(1)`$ in
 native stack with respect to RhoPath, trie, and transaction depth. Total record, mutation, object,
 entry, and key-byte limits bound hostile work without imposing a traversal-depth limit.
 
-The focused matrix passes **13/13**. It checks every
+The focused matrix passes **14/14**. It checks every
 prepare and commit truncation; independent authenticated-header and payload corruption; resource
 refusal before payload parsing; exact prepare/commit round trips; fixed commit size; valid-record
 negative rebinding of store, sequence, address length, prepare digest, and receipt; prior-commit and
 address digest sensitivity; unrelated-receipt and invalid-extent construction refusal; borrowed
-object order; a destination failure that cannot produce a prepare identity; cold DATA versus warm
+object order; exact agreement between the prepared layout iterator and parsed object offsets; a
+destination failure that cannot produce a prepare identity; cold DATA versus warm
 REUSE; collision refusal before writer construction; and nonzero checksum high-bit refusal. A
 frozen V1 fixture pins the exact prepare header, 1,123-byte cold-prepare length/checksum/digest, and
 complete 384-byte commit image. A transition containing a 100,000-byte identity seals, streams,
 and validates on a 256 KiB native stack. The independent CRC test pins Castagnoli/iSCSI CRC32C of
 `123456789` to `0xe3069283`. Captured transcript:
-`target/scratch/wal-codec-v1-final-2026-08-27.log`.
+`target/scratch/wal-codec-packid-final-2026-08-27.log`.
 
 This is a codec/resource class result, not yet a crash-durability result. No file is opened and no
 data-sync, commit-sync, catalog-slot, directory-sync, recovery, index rebuild, compaction, garbage
@@ -11067,6 +11070,58 @@ and 20,000-level native-stack gates; transcript:
 SS-C26 remains a dormant format result. Positional writes, data/catalog/directory synchronization,
 index rebuild, recovery roll-forward, retained-root tracing, generation leases, compaction, and LMDB
 cutover remain unclaimed.
+
+### 5.54 Portable log-pack and rebuildable object-index layouts [SS-C27]
+
+SS-C27 closes the physical-layout ambiguity between SS-C25's transaction records and SS-C26's
+catalog frontier. `PackId` is a nonzero `u64`; zero is reserved solely for the genesis predecessor
+sentinel. Genesis is pack 1 at sequence 1. A successor advances pack identifier and first sequence
+consecutively and authenticates the prior pack identifier plus terminal-commit BLAKE2b-256 digest.
+The exact **128-byte** header has fixed domain/version/width, store and chain identity, flags,
+reserved-zero bytes, and zero-extended CRC32C. The parser rejects all truncations, counter overflow,
+nonconsecutive links, identity substitutions, unsupported flags, reserved bytes, and checksum-width
+mutants without recursion or input-sized allocation.
+
+Each rebuildable object-index generation begins with an exact **64-byte** store/generation header.
+One **72-byte** record binds `ObjectRefV1` to a nonzero pack, canonical-body offset, and transaction
+sequence. A borrowed file view admits only the exact catalog-appointed `64 + 72n` prefix and ignores
+the physical suffix; records remain lazily fallible so corruption requests rebuild rather than
+changing semantic state. Pack and index widths are centralized in the durable layout module and are
+the same constants enforced by terminal-commit and catalog construction.
+
+The WAL preflight is the sole object-offset calculator. Its exact-size layout iterator walks the
+already digest-ordered sealed objects and DATA/REUSE disposition slice together, carrying the
+record-relative body offset. The index append plan verifies store identity, pack-header exclusion,
+complete prepare extent, aligned old tail, and checked new-tail arithmetic. It converts DATA
+layouts directly to absolute index locations and skips REUSE. Thus the index path performs no
+second record parse, canonical-body copy, `Vec<Par>` projection, semantic sort, or duplicate offset
+arithmetic.
+
+For $`n`$ sealed objects and $`d`$ DATA objects, layout traversal is $`\Theta(n)`$ time with
+$`O(1)`$ iterator state; index emission is $`\Theta(d)`$ time with $`O(1)`$ writer state. Native
+stack is $`O(1)`$ in object count, trie depth, and key length. The persistent sealed transaction
+still owns the $`O(n)`$ disposition plan required for pre-write collision classification.
+
+The pack suite passes **5/5**, the index suite **6/6**, and the affected WAL suite **14/14**.
+Frozen little-endian images pin all 128, 64, and 72 bytes. Negative matrices cover every
+truncation, corrupted and valid-checksum-mutated fields, nonzero/counter/link invariants,
+catalog-tail alignment and suffix exclusion, store mismatch, prepare-offset/extent overflow, index
+tail overflow, DATA/REUSE location derivation, and canonical-object extent overflow. The aggregate
+persistence gate passes **131/131** in **1.70 s** under 4 GiB, zero swap, and a four-core quota.
+Captured transcripts are `target/scratch/pack-codec-v1-final-2026-08-27.log`,
+`target/scratch/wal-codec-packid-final-2026-08-27.log`, and
+`target/scratch/persistence-durable-layout-final-2026-08-27.log`.
+
+Storage accounting deliberately has two ledgers. The deterministic current-state canonical closure
+delta is the future consensus-metering input. DATA/REUSE ratio, pack/index/catalog framing,
+filesystem allocation, dead tails, historical retention, obsolete generations, and compaction
+cadence are physical implementation metrics. SS-C27 adds exact physical widths but does not permit
+those local-policy costs to influence a consensus charge.
+
+This remains a dormant codec and append-plan result. Writer leasing, positional writes,
+data/index/commit/catalog/directory synchronization, selected-location validation, deterministic
+index rebuild, failpoint recovery, retained-root tracing, pack compaction, LMDB migration, and
+comparative time/space evidence remain unclaimed.
 
 ---
 

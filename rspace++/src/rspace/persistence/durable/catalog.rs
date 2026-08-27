@@ -1,4 +1,5 @@
 use super::error::DurableFormatError;
+use super::{INDEX_HEADER_LEN_V1, INDEX_RECORD_LEN_V1};
 use crate::rspace::persistence::canonical::{OBJECT_DIGEST_LEN, ObjectRefV1, ReadCursor};
 use crate::rspace::persistence::checksum::{
     CHECKSUM_FIELD_LEN, crc32c, decode_crc32c, encode_crc32c,
@@ -20,7 +21,6 @@ const CATALOG_VERSION: u64 = 1;
 const CATALOG_REFERENCE_RESERVED_OFFSET: usize = 256;
 const CATALOG_RESERVED_OFFSET: usize = 288;
 const CATALOG_RESERVED_LEN: usize = CATALOG_AUTH_LEN - CATALOG_RESERVED_OFFSET;
-const INDEX_HEADER_LEN: u64 = 64;
 
 /// Durable locations and byte inventories governed by one catalog authority.
 ///
@@ -63,8 +63,8 @@ impl CatalogPackStateV1 {
         if index_generation == 0 {
             return Err(DurableFormatError::ZeroCatalogIndexGeneration);
         }
-        if durable_index_tail < INDEX_HEADER_LEN ||
-            (durable_index_tail - INDEX_HEADER_LEN) % 72 != 0
+        if durable_index_tail < INDEX_HEADER_LEN_V1 ||
+            (durable_index_tail - INDEX_HEADER_LEN_V1) % INDEX_RECORD_LEN_V1 != 0
         {
             return Err(DurableFormatError::CatalogIndexTail(durable_index_tail));
         }

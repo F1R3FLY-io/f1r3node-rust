@@ -36,6 +36,8 @@ impl<E: std::error::Error + 'static> std::error::Error for LogPackWriteError<E> 
 pub enum LogPackFormatError {
     Canonical(CanonicalFormatError),
     Mutation(MutationError),
+    ZeroPackId,
+    PackIdOverflow(u64),
     ZeroSequence,
     SequenceOverflow(u64),
     InvalidDomain,
@@ -132,6 +134,10 @@ impl Display for LogPackFormatError {
         match self {
             Self::Canonical(error) => Display::fmt(error, formatter),
             Self::Mutation(error) => Display::fmt(error, formatter),
+            Self::ZeroPackId => formatter.write_str("log-pack ID zero is reserved"),
+            Self::PackIdOverflow(value) => {
+                write!(formatter, "log-pack ID {value} has no successor")
+            }
             Self::ZeroSequence => formatter.write_str("log-pack sequence zero is reserved"),
             Self::SequenceOverflow(value) => {
                 write!(formatter, "log-pack sequence {value} has no successor")

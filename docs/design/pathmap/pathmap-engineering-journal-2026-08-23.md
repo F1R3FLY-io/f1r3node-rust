@@ -2835,17 +2835,18 @@ plan, the sealed transaction, and the destination's own buffering. Validation re
 and uses $`O(1)`$ auxiliary memory beyond nested canonical-object parsers; native stack is $`O(1)`$
 in RhoPath and trie depth. Resource ceilings bound total work and bytes, never traversal depth.
 
-**EVIDENCE.** Thirteen focused cases cover exact prepare/commit round trips, direct borrowed object
+**EVIDENCE.** Fourteen focused cases cover exact prepare/commit round trips, direct borrowed object
 iteration, sink-failure nonpublication, every prepare and commit truncation, independent header and
 payload bit corruption, pre-parse resource refusal, fixed commit length/corruption, unrelated
 receipt and invalid/overflowing extent refusal, valid-CRC negative rebinding of store, sequence,
 prepare length, prepare digest and receipt fields, and a transition with a 100,000-byte identity
 written and validated on a 256 KiB native stack. The matrix additionally compares cold DATA with
 warm REUSE, proves that only the equal body length disappears, refuses a forced collision before
-writer construction, and rejects nonzero high checksum bits. A frozen V1 fixture pins the exact
+writer construction, rejects nonzero high checksum bits, and proves that the prepared layout
+iterator is the single source for every parsed object offset. A frozen V1 fixture pins the exact
 232-byte authenticated prepare header, **1,123-byte** cold prepare length/CRC/BLAKE2b-256 identity,
 and all **384 commit bytes** independently of the paired parser. Captured capped evidence is
-`target/scratch/wal-codec-v1-final-2026-08-27.log`; **13/13** pass. These are correctness and
+`target/scratch/wal-codec-packid-final-2026-08-27.log`; **14/14** pass. These are correctness and
 resource-shape results; latency, allocation, write-amplification, recovery-time, and disk-footprint
 comparisons against LMDB are not yet made.
 
@@ -2946,6 +2947,74 @@ bytes and physical index/WAL bytes must be reported separately.
 interned boundary preserves useful prefixes and its extra dictionary lookups amortize. PathMap's
 existing structural sharing raises the break-even point; the experiment, not analogy to postings,
 must decide whether another dictionary earns its authority, memory, and churn costs.
+
+### J-041 — 2026-08-27: freeze portable pack and object-index layouts before durable I/O
+
+**TERMS.** A **pack header** identifies one immutable append-only log-pack and authenticates its
+place in the store's pack chain. A **canonical-object index** maps an `ObjectRefV1` to one DATA
+body's physical pack location; it is a rebuildable lookup accelerator, never semantic or
+publication authority. The **durable index tail** is the exact byte frontier appointed by the
+catalog; any physical suffix after that frontier is an uncommitted candidate tail.
+
+**PROBLEM.** J-038 defined transaction records and J-039 defined terminal catalog authority, but
+the enclosing pack and index still lacked frozen byte images. Recomputing object offsets by
+reparsing emitted records would duplicate framing logic. Allowing pack zero to escape as an address
+would confuse a real pack with the on-disk predecessor sentinel. Trusting a file's physical end as
+the index frontier would let a torn or speculative suffix influence object lookup before catalog
+publication.
+
+**DECISION.** `PackId` is a checked nonzero `u64`; zero exists only as the genesis predecessor
+sentinel. Genesis is exactly pack 1 at transaction sequence 1. Each successor advances both pack
+identifier and sequence by one and binds the preceding pack identifier and terminal-commit
+BLAKE2b-256 digest. The V1 pack header is exactly **128 bytes**: domain, version, declared width,
+store identifier, pack identifier, first sequence, predecessor identifier/digest, flags,
+reserved-zero bytes, and a zero-extended CRC32C. Counter overflow, nonconsecutive linkage,
+identity mismatch, reserved bytes, checksum width, truncation, and valid-checksum field mutants all
+fail closed.
+
+Each V1 object-index generation begins with an exact **64-byte** header binding store and nonzero
+generation. Every following **72-byte** record stores one object digest and encoded length plus a
+nonzero pack identifier, absolute canonical-body offset, owning transaction sequence, and
+zero-extended CRC32C. The parser admits only an exact `64 + 72n` catalog-appointed prefix and
+deliberately ignores a physical suffix. Records are borrowed and checked lazily; a damaged index
+must be rebuilt from committed DATA records rather than interpreted as semantic-state loss.
+
+The prepared WAL transaction exposes one checked object-layout iterator over its existing sealed
+object order and DATA/REUSE plan. It yields record-relative offsets without copying a body,
+projecting entries, or reparsing emitted bytes. A preflighted index append verifies store identity,
+pack-header exclusion, complete prepare extent, old-tail alignment, and checked new-tail arithmetic.
+Only DATA produces an index record; REUSE remains address-free and retains its existing committed
+location. Thus WAL emission and index publication share one offset calculation and one object
+order.
+
+For deterministic current-state canonical bytes $`L`$, new physical DATA bytes $`D`$, pack/index
+framing $`F`$, terminal commit bytes $`K`$, catalog bytes $`G`$, and obsolete retained generations
+$`O`$, restored consensus storage metering consumes the logical transition $`\Delta L`$. Durability
+experiments report $`D+F+K+G+O`$ separately. Filesystem allocation units, retained-history policy,
+REUSE hit rate, torn tails, compaction cadence, and index generations must not influence a
+consensus charge.
+
+**EVIDENCE.** Pack codecs pass **5/5**, index codecs pass **6/6**, and WAL codecs pass **14/14**.
+The matrices cover every header/record truncation, frozen little-endian images, independent
+checksum and valid-checksum field mutants, nonzero and overflowed identifiers, successor linkage,
+durable-tail alignment and suffix exclusion, DATA/REUSE offset derivation, store/prepare/tail
+preflight refusal, and object-extent overflow. The aggregate persistence module passes **131/131**
+in **1.70 s** under a 4 GiB memory ceiling, zero swap, and a four-core quota. Captured transcripts
+are `target/scratch/pack-codec-v1-final-2026-08-27.log`,
+`target/scratch/wal-codec-packid-final-2026-08-27.log`, and
+`target/scratch/persistence-durable-layout-final-2026-08-27.log`.
+
+**PATHMAP LEARNING.** A content-addressed PathMap DAG needs a physical index, but that index should
+point directly into the single-copy canonical DATA stream rather than materialize trie entries.
+Merkle identity supplies logical deduplication; the rebuildable index supplies location. Keeping
+those roles separate preserves CoW/Merkle sharing while permitting index replacement or recovery
+without changing an RSpace root.
+
+**BOUNDARY.** This checkpoint freezes portable in-memory codecs and checked append plans. It does
+not yet acquire a writer lease, position-write or synchronize a pack/index/catalog, validate a
+selected index location against its owning DATA record, rebuild an index, recover a candidate tail,
+compact retained roots, migrate LMDB, alter the REPL, or claim a persistence performance/storage
+win.
 
 ## Upstream PathMap integration request register
 

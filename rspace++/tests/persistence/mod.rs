@@ -1,10 +1,12 @@
 mod canonical_rebuild_oracle;
 mod closure_validation;
 mod durable_catalog;
+mod index_codec;
 mod manifest_codec;
 mod mutation_codec;
 mod object_codec;
 mod object_store_collision;
+mod pack_codec;
 mod path_provenance;
 mod retention_manifest;
 mod rewrite_differential;

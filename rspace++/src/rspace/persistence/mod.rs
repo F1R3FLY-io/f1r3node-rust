@@ -31,7 +31,10 @@ pub use closure::{
 };
 pub use durable::{
     CATALOG_IMAGE_LEN, CATALOG_SLOT_LEN, CatalogPackStateV1, CatalogSelectionV1, CatalogSlotV1,
-    DurableFormatError,
+    DurableFormatError, INDEX_HEADER_LEN_V1, INDEX_RECORD_LEN_V1, IndexFormatError,
+    IndexGenerationV1, ObjectIndexFileViewV1, ObjectIndexHeaderV1, ObjectIndexRecordIter,
+    ObjectIndexRecordV1, ObjectLocationV1, PACK_HEADER_LEN_V1, PackFormatError, PackHeaderV1,
+    PackTerminalIdentityV1,
 };
 pub use manifest::{
     AcceleratorArtifact, AcceleratorArtifactKind, AcceleratorManifestV1, AcceleratorManifestView,
@@ -79,7 +82,7 @@ pub use wal::{
     CommitPublicationV1, CommittedObjectComparison, CommittedObjectLookup, LogPackAddress,
     LogPackDecodeLimits, LogPackFormatError, LogPackObjectDispositionV1, LogPackObjectIter,
     LogPackObjectPlanError, LogPackObjectPlanV1, LogPackObjectView, LogPackSequence,
-    LogPackWriteError, PrepareRecordIdentityV1, PreparedLogPackTransactionV1,
+    LogPackWriteError, PackId, PrepareRecordIdentityV1, PreparedLogPackTransactionV1,
     TRANSACTION_COMMIT_RECORD_LEN_V1, TransactionCommitRecordV1, TransactionCommitViewV1,
     TransactionPrepareRecordViewV1,
 };

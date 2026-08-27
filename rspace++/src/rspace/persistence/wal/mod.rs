@@ -10,6 +10,7 @@ mod disposition;
 mod error;
 mod types;
 
+pub(crate) use codec::PreparedObjectLayoutV1;
 pub use codec::{
     LogPackObjectIter, LogPackObjectView, PrepareRecordIdentityV1, PreparedLogPackTransactionV1,
     TRANSACTION_COMMIT_RECORD_LEN_V1, TransactionCommitRecordV1, TransactionCommitViewV1,
@@ -20,4 +21,6 @@ pub use disposition::{
     LogPackObjectPlanError, LogPackObjectPlanV1,
 };
 pub use error::{LogPackFormatError, LogPackWriteError};
-pub use types::{CommitPublicationV1, LogPackAddress, LogPackDecodeLimits, LogPackSequence};
+pub use types::{
+    CommitPublicationV1, LogPackAddress, LogPackDecodeLimits, LogPackSequence, PackId,
+};

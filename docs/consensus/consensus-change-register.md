@@ -5799,11 +5799,11 @@ This checkpoint remains `NO_PRODUCTION_CHANGE_DERIVED`. The codec is dormant and
 neither prepare emission nor a complete sink write appoints durable authority. No existing LMDB
 root, checkpoint, replay route, startup path, matcher, COMM, network message, metering calculation,
 REPL result, protobuf/bincode byte, history hash, or accepted Rholang program changes. The focused
-codec matrix passes **13/13**, including every
+codec matrix passes **14/14**, including every
 prepare/commit truncation, header/payload corruption, sink refusal, invalid receipt/extent
 construction, valid-CRC commit-field rebinding mutants, cold/warm reuse, forced collision refusal,
-checked-u64 checksum mutants, frozen V1 bytes, resource preflight, and a 100,000-byte transition on
-a 256 KiB stack. Data/commit/catalog/directory
+checked-u64 checksum mutants, frozen V1 bytes, exact prepared/parsed object-offset agreement,
+resource preflight, and a 100,000-byte transition on a 256 KiB stack. Data/commit/catalog/directory
 synchronization, exact catalog CAS, restart recovery, index rebuilding, retained-root compaction,
 migration, and measured LMDB comparison remain mandatory before this entry can authorize
 production cutover.
@@ -5835,6 +5835,39 @@ catalog-to-terminal-commit substitution, incompatible-slot, and frozen-image gat
 synchronization, restart recovery, index rebuilding, compaction/GC, migration, and comparative LMDB
 evidence remain mandatory before production activation. The aggregate dormant persistence gate is
 **119/119** under a 4 GiB memory ceiling and zero swap.
+
+**CBR-053 living continuation (2026-08-27, portable pack and rebuildable object-index layouts).**
+The dormant physical layer now assigns every real log-pack a nonzero `u64` `PackId`; zero remains
+only the genesis predecessor sentinel. Genesis is exactly pack 1 at sequence 1, and each successor
+advances both coordinates consecutively while binding its predecessor's terminal-commit
+BLAKE2b-256 digest. The frozen 128-byte V1 pack header binds domain, version, width, store, pack,
+first sequence, predecessor, flags, reserved-zero ranges, and checked-u64 CRC32C.
+
+A rebuildable canonical-object index uses one frozen 64-byte store/generation header followed by
+72-byte digest/length/location records. Only the exact catalog-appointed `64 + 72n` prefix is
+admitted; a physical suffix has no authority. The prepared WAL transaction is the single source of
+record-relative canonical-body offsets. Index append preflight converts only DATA to absolute
+locations and emits no new location for address-free REUSE, without reparsing emitted records,
+copying canonical bodies, projecting trie entries, or sorting semantic elements. Index damage is an
+accelerator failure requiring deterministic rebuild from committed DATA; it does not redefine or
+destroy the retained semantic roots.
+
+The two-ledger rule remains explicit for the storage-cost branch that will later merge into this
+worktree. Consensus metering consumes the deterministic logical current-state canonical-closure
+transition. Pack/index/catalog framing, DATA/REUSE hit rate, filesystem allocation, torn tails,
+retained history, obsolete generations, and compaction cadence are measured physical costs and
+must not alter a charge. This checkpoint freezes physical widths; it does not activate storage
+metering or choose a filesystem policy.
+
+This continuation is `NO_PRODUCTION_CHANGE_DERIVED`. No production file is opened and no existing
+LMDB root, checkpoint, replay/startup route, matcher, COMM, post-state, history hash, protobuf or
+bincode byte, network message, accepted program, REPL result, compute charge, or storage charge
+changes. Pack **5/5**, index **6/6**, and WAL **14/14** focused suites pass; all truncations, frozen
+images, linkage/counter/checksum/store/offset/tail mutants, and exact DATA/REUSE locations are
+covered. The aggregate dormant persistence module passes **131/131** in **1.70 s** under a 4 GiB,
+zero-swap, four-core scope. Writer leasing, sync/publication order, selected-location validation,
+deterministic rebuild, crash recovery, compaction/garbage collection, LMDB migration, and measured
+LMDB comparison remain mandatory before production activation.
 
 ### B.2 The original commit-level exemptions
 

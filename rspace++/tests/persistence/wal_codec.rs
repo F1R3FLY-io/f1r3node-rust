@@ -115,6 +115,36 @@ fn prepare_stream_round_trips_without_projecting_objects() {
 }
 
 #[test]
+fn prepared_layouts_are_the_single_source_for_parsed_object_offsets() {
+    let store = CanonicalObjectStore::new();
+    let base = base_state(&store, 56, None);
+    let mutation = data_batch(base, "prepared-layouts");
+    let sealed = seal_data(&store, &mutation);
+    let reused = sealed.objects()[0].reference();
+    let prepared = PreparedLogPackTransactionV1::<TestSemanticProfile>::new(
+        &sealed,
+        LogPackObjectPlanV1::classify(&sealed, &EqualOnly(reused)).unwrap(),
+        StoreId::from_array([0x62; 16]),
+        LogPackSequence::new(10).unwrap(),
+        LogPackDecodeLimits::UNBOUNDED,
+    )
+    .unwrap();
+    let mut bytes = Vec::new();
+    prepared.write_to(&mut bytes).unwrap();
+    let parsed =
+        TransactionPrepareRecordViewV1::parse(&bytes, LogPackDecodeLimits::UNBOUNDED).unwrap();
+    let planned = prepared.object_layouts().collect::<Vec<_>>();
+    let observed = parsed.objects().collect::<Vec<_>>();
+    assert_eq!(planned.len(), observed.len());
+    for (planned, observed) in planned.into_iter().zip(observed) {
+        assert_eq!(planned.disposition(), observed.disposition());
+        assert_eq!(planned.reference(), observed.reference());
+        assert_eq!(planned.record_offset(), observed.record_offset());
+        assert_eq!(planned.canonical_offset(), observed.canonical_offset());
+    }
+}
+
+#[test]
 fn warm_store_reuse_omits_only_the_equal_body_and_collision_prevents_preflight() {
     let store = CanonicalObjectStore::new();
     let base = base_state(&store, 55, None);
@@ -333,7 +363,7 @@ fn commit_has_a_fixed_portable_image_and_rejects_corruption() {
         receipt,
         store_id,
         PhysicalDigest::ZERO,
-        LogPackAddress::new(0, 0, prepare.record_len()).unwrap(),
+        LogPackAddress::new(1, 0, prepare.record_len()).unwrap(),
         crate::rspace::persistence::PrepareRecordIdentityV1::from_record_view(prepare),
         publication(64),
     )
@@ -496,7 +526,7 @@ fn commit_construction_rejects_an_unrelated_receipt_and_invalid_extent() {
         receipt.mutation_digest(),
         receipt.profile_id(),
     );
-    let address = LogPackAddress::new(0, 4096, prepare.record_len()).unwrap();
+    let address = LogPackAddress::new(1, 4096, prepare.record_len()).unwrap();
     assert!(matches!(
         TransactionCommitRecordV1::new(
             unrelated,
@@ -509,10 +539,11 @@ fn commit_construction_rejects_an_unrelated_receipt_and_invalid_extent() {
         Err(LogPackFormatError::ReceiptMismatch)
     ));
     assert!(matches!(
-        LogPackAddress::new(0, u64::MAX, 1),
+        LogPackAddress::new(1, u64::MAX, 1),
         Err(LogPackFormatError::AddressOverflow { .. })
     ));
-    assert!(matches!(LogPackAddress::new(0, 0, 0), Err(LogPackFormatError::ZeroAddressLength)));
+    assert!(matches!(LogPackAddress::new(1, 0, 0), Err(LogPackFormatError::ZeroAddressLength)));
+    assert!(matches!(LogPackAddress::new(0, 0, 1), Err(LogPackFormatError::ZeroPackId)));
 }
 
 #[test]

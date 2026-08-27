@@ -27,7 +27,9 @@ use crate::rspace::persistence::physical::{
     PHYSICAL_DIGEST_LEN, PhysicalDigest, STORE_ID_LEN, StoreId,
 };
 use crate::rspace::persistence::semantic::SemanticProfile;
-use crate::rspace::persistence::transaction::{SealedDagTransaction, SealedTransitionV1};
+use crate::rspace::persistence::transaction::{
+    SealedDagTransaction, SealedObject, SealedTransitionV1,
+};
 
 const PREPARE_DOMAIN: &[u8; OBJECT_DOMAIN_LEN] = b"RSpaceWAL.Prep\0\0";
 const COMMIT_DOMAIN: &[u8; OBJECT_DOMAIN_LEN] = b"RSpaceWAL.Comm\0\0";
@@ -95,6 +97,82 @@ pub struct PreparedLogPackTransactionV1<'transaction, 'mutation, P: SemanticProf
     object_plan: LogPackObjectPlanV1,
     _profile: PhantomData<fn() -> P>,
 }
+
+/// Checked physical layout of one sealed object in a prepared record.
+///
+/// This is the publisher/index bridge. It carries no copied body and prevents
+/// index construction from reparsing bytes just emitted or independently
+/// reimplementing WAL offset arithmetic.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct PreparedObjectLayoutV1 {
+    disposition: LogPackObjectDispositionV1,
+    reference: ObjectRefV1,
+    record_offset: u64,
+    canonical_offset: Option<u64>,
+}
+
+impl PreparedObjectLayoutV1 {
+    pub(crate) const fn disposition(self) -> LogPackObjectDispositionV1 { self.disposition }
+
+    pub(crate) const fn reference(self) -> ObjectRefV1 { self.reference }
+
+    pub(crate) const fn record_offset(self) -> u64 { self.record_offset }
+
+    pub(crate) const fn canonical_offset(self) -> Option<u64> { self.canonical_offset }
+}
+
+pub(crate) struct PreparedObjectLayoutIter<'a> {
+    objects: std::slice::Iter<'a, SealedObject>,
+    dispositions: std::slice::Iter<'a, LogPackObjectDispositionV1>,
+    next_record_offset: u64,
+    expected_payload_end: u64,
+}
+
+impl Iterator for PreparedObjectLayoutIter<'_> {
+    type Item = PreparedObjectLayoutV1;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let object = match self.objects.next() {
+            Some(object) => object,
+            None => {
+                debug_assert!(self.dispositions.next().is_none());
+                debug_assert_eq!(self.next_record_offset, self.expected_payload_end);
+                return None;
+            }
+        };
+        let disposition = *self
+            .dispositions
+            .next()
+            .expect("validated object plan has one disposition per sealed object");
+        let record_offset = self.next_record_offset;
+        let body_offset = record_offset
+            .checked_add(OBJECT_RECORD_HEADER_LEN)
+            .expect("preflighted object record offset cannot overflow");
+        let canonical_offset = match disposition {
+            LogPackObjectDispositionV1::Data => Some(body_offset),
+            LogPackObjectDispositionV1::Reuse => None,
+        };
+        self.next_record_offset = match disposition {
+            LogPackObjectDispositionV1::Data => body_offset
+                .checked_add(object.reference().encoded_len())
+                .expect("preflighted inline object extent cannot overflow"),
+            LogPackObjectDispositionV1::Reuse => body_offset,
+        };
+        Some(PreparedObjectLayoutV1 {
+            disposition,
+            reference: object.reference(),
+            record_offset,
+            canonical_offset,
+        })
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let remaining = self.objects.len();
+        (remaining, Some(remaining))
+    }
+}
+
+impl ExactSizeIterator for PreparedObjectLayoutIter<'_> {}
 
 impl<'transaction, 'mutation, P: SemanticProfile>
     PreparedLogPackTransactionV1<'transaction, 'mutation, P>
@@ -204,6 +282,28 @@ impl<'transaction, 'mutation, P: SemanticProfile>
     }
 
     pub const fn record_len(&self) -> u64 { self.record_len }
+
+    pub(crate) const fn store_id(&self) -> StoreId { self.store_id }
+
+    pub(crate) const fn sequence(&self) -> LogPackSequence { self.sequence }
+
+    pub(crate) const fn inline_count(&self) -> u64 { self.object_plan.inline_count() }
+
+    pub(crate) fn object_layouts(&self) -> PreparedObjectLayoutIter<'_> {
+        let first_record_offset = PREPARE_HEADER_LEN
+            .checked_add(self.mutation_len)
+            .expect("preflighted prepare payload offset cannot overflow");
+        let expected_payload_end = self
+            .record_len
+            .checked_sub(PREPARE_TRAILER_LEN)
+            .expect("preflighted prepare contains its trailer");
+        PreparedObjectLayoutIter {
+            objects: self.transaction.objects().iter(),
+            dispositions: self.object_plan.dispositions().iter(),
+            next_record_offset: first_record_offset,
+            expected_payload_end,
+        }
+    }
 
     pub fn write_to<S: CanonicalSink>(
         &self,
