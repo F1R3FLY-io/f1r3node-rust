@@ -7,20 +7,45 @@
 mod catalog;
 mod error;
 mod index;
+mod io;
 mod layout;
 mod limits;
 mod pack;
+mod recovery;
+mod startup;
 
 pub use catalog::{
     CATALOG_IMAGE_LEN, CATALOG_SLOT_LEN, CatalogAuthorityTokenV1, CatalogPackStateV1,
     CatalogSelectionV1, CatalogSlotV1,
 };
 pub use error::DurableFormatError;
-pub(crate) use index::{CommittedObjectIndexV1, PreparedIndexAppendV1};
+pub(crate) use index::{
+    CanonicalIndexStreamV1, CommittedObjectIndexV1, ObjectIndexPrefixVerifierV1,
+    PreparedIndexAppendV1,
+};
 pub use index::{
     IndexFormatError, IndexGenerationV1, ObjectIndexFileViewV1, ObjectIndexHeaderV1,
     ObjectIndexRecordIter, ObjectIndexRecordV1, ObjectLocationV1,
 };
+#[cfg(test)]
+pub(crate) use index::{committed_index_constructions, reset_committed_index_constructions};
+pub(crate) use io::{
+    CATALOG_FILE_NAME_V1, CatalogSlotIndexV1, DurableDirectoryV1, DurableFileV1, DurableIoError,
+    DurableIoOperation, DurableWriterLeaseV1, FileLengthExpectation, WRITER_LOCK_FILE_NAME_V1,
+    index_file_name, pack_file_name,
+};
+#[cfg(test)]
+pub(crate) use io::{DurableIoFailpointV1, arm_durable_io_failpoint};
 pub use layout::{INDEX_HEADER_LEN_V1, INDEX_RECORD_LEN_V1, PACK_HEADER_LEN_V1};
 pub use limits::{DurableLimitConfig, DurableLimitError, DurableLimitKind, DurableLimits};
 pub use pack::{PackFormatError, PackHeaderV1, PackTerminalIdentityV1};
+pub(crate) use recovery::{
+    CatalogPackProviderV1, DurableReadAt, RecoveryError, replay_catalog_authorized_pack_chain,
+    scan_catalog_authorized_pack_chain,
+};
+pub(crate) use startup::{
+    DurableStartupErrorV1, DurableStartupWorkV1, IndexBindingDispositionV1,
+    IndexBoundPhysicalRecoveryV1, PhysicallyRecoveredDurableWriterV1,
+};
+#[cfg(test)]
+pub(crate) use startup::{DurableStartupHookPointV1, arm_durable_startup_hook};

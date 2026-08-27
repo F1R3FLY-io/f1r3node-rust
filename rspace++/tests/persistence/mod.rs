@@ -1,6 +1,9 @@
 mod canonical_rebuild_oracle;
 mod closure_validation;
 mod durable_catalog;
+mod durable_index_recovery;
+mod durable_recovery;
+mod durable_startup;
 mod index_codec;
 mod manifest_codec;
 mod mutation_codec;

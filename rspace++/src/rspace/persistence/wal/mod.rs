@@ -10,12 +10,13 @@ mod disposition;
 mod error;
 mod types;
 
-pub(crate) use codec::PreparedObjectLayoutV1;
 pub use codec::{
     LogPackObjectIter, LogPackObjectView, PrepareRecordIdentityV1, PreparedLogPackTransactionV1,
     TRANSACTION_COMMIT_RECORD_LEN_V1, TRANSACTION_PREPARE_HEADER_LEN_V1, TransactionCommitRecordV1,
     TransactionCommitViewV1, TransactionPrepareRecordViewV1, preflight_prepare_record_len_v1,
+    preflight_prepare_record_v1,
 };
+pub(crate) use codec::{PrepareRecordPreflightV1, PreparedObjectLayoutV1};
 pub use disposition::{
     CommittedObjectComparison, CommittedObjectLookup, LogPackObjectDispositionV1,
     LogPackObjectPlanError, LogPackObjectPlanV1,

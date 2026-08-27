@@ -496,6 +496,31 @@ struct PrepareHeaderV1 {
     object_bytes: u64,
 }
 
+/// Authenticated resource declaration extracted from a fixed prepare prefix.
+///
+/// Durable recovery uses this descriptor to charge aggregate scan/object work
+/// before allocating the record buffer or issuing any variable-size read. The
+/// values are trustworthy for admission because the prefix CRC covers every
+/// field exposed here; the complete record CRC and canonical parser remain
+/// mandatory after admission.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PrepareRecordPreflightV1 {
+    record_len: u64,
+    mutation_len: u64,
+    object_count: u64,
+    object_bytes: u64,
+}
+
+impl PrepareRecordPreflightV1 {
+    pub const fn record_len(self) -> u64 { self.record_len }
+
+    pub const fn mutation_len(self) -> u64 { self.mutation_len }
+
+    pub const fn object_count(self) -> u64 { self.object_count }
+
+    pub const fn object_bytes(self) -> u64 { self.object_bytes }
+}
+
 /// Validate the fixed prepare prefix before a durable reader trusts its
 /// declared record extent. The checksum covers every length/count field, and
 /// explicit limits are applied before allocation or a variable-size read.
@@ -503,7 +528,25 @@ pub fn preflight_prepare_record_len_v1(
     prefix: &[u8],
     limits: LogPackDecodeLimits,
 ) -> Result<u64, LogPackFormatError> {
-    Ok(parse_prepare_header_v1(prefix, limits)?.declared_len)
+    Ok(preflight_prepare_record_v1(prefix, limits)?.record_len())
+}
+
+/// Authenticate and validate all fixed-prefix resource declarations.
+///
+/// Unlike [`preflight_prepare_record_len_v1`], this interface lets a caller
+/// reserve aggregate object work as well as record bytes before it trusts the
+/// variable body.
+pub fn preflight_prepare_record_v1(
+    prefix: &[u8],
+    limits: LogPackDecodeLimits,
+) -> Result<PrepareRecordPreflightV1, LogPackFormatError> {
+    let header = parse_prepare_header_v1(prefix, limits)?;
+    Ok(PrepareRecordPreflightV1 {
+        record_len: header.declared_len,
+        mutation_len: header.mutation_len,
+        object_count: header.object_count,
+        object_bytes: header.object_bytes,
+    })
 }
 
 fn parse_prepare_header_v1(

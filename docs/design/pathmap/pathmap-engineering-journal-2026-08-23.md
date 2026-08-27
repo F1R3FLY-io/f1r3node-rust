@@ -2894,12 +2894,15 @@ publication tuple before a selected slot can be accepted by recovery. The typed 
 constructor itself rejects an index tail that is not exactly `64 + 72n` bytes, so an unaligned
 frontier cannot survive between commit parsing and catalog validation.
 
-For current closure $`C`$, retained-root union $`R`$, mutation $`M`$, physical prepare $`P`$, index
-$`I`$, terminal commit $`K`$, and catalog overwrite $`G`$, consensus storage metering uses the
-deterministic logical transition $`\Delta C`$. Local durability profiling reports
-$`P+I+K+G`$ and the retained physical generations separately. It must never substitute $`R`$ or
-WAL growth for $`C`$. This boundary anticipates restored storage charges without importing local
-filesystem policy into consensus.
+For current closure $`C`$, retained-root union $`R`$, physical prepare $`P`$, physical index $`X`$,
+terminal commit $`K`$, and catalog overwrite $`G`$, $`C`$ and $`R`$ are authenticated logical-size
+inventories while local durability profiling reports $`P+X+K+G`$ and retained generations
+separately. They are not inputs to the restored consensus tariff. That tariff remains the
+versioned event equation $`Q(e)=r_i I(e)+r_d D(e)+r_t T(e)`$, where $`I`$ is canonical-protobuf
+introduction bytes, $`D`$ is delivered-payload bytes, and $`T`$ is committed trace bytes, without
+removal credits. A future closure-size rent rule would require its own version, evidence, and
+consensus decision. This separation prevents local filesystem policy from leaking into either the
+current tariff or such a future rule.
 
 **EVIDENCE.** The catalog suite passes **6/6** and covers adjacent selection, every observably torn
 inactive prefix, the safe checked-u64 zero-suffix case, incompatible stores/epoch gaps, corrupt-only
@@ -2987,12 +2990,13 @@ Only DATA produces an index record; REUSE remains address-free and retains its e
 location. Thus WAL emission and index publication share one offset calculation and one object
 order.
 
-For deterministic current-state canonical bytes $`L`$, new physical DATA bytes $`D`$, pack/index
+For deterministic current-state canonical bytes $`L`$, new physical DATA bytes $`B`$, pack/index
 framing $`F`$, terminal commit bytes $`K`$, catalog bytes $`G`$, and obsolete retained generations
-$`O`$, restored consensus storage metering consumes the logical transition $`\Delta L`$. Durability
-experiments report $`D+F+K+G+O`$ separately. Filesystem allocation units, retained-history policy,
-REUSE hit rate, torn tails, compaction cadence, and index generations must not influence a
-consensus charge.
+$`O`$, $`L`$ is a deterministic logical inventory, not an input to the restored event tariff
+$`Q(e)=r_i I(e)+r_d D(e)+r_t T(e)`$. Durability experiments report $`B+F+K+G+O`$ separately.
+Filesystem allocation units, retained-history policy, REUSE hit rate, torn tails, compaction
+cadence, and index generations must influence neither that tariff nor a separately versioned
+future closure-size rule.
 
 **EVIDENCE.** Pack codecs pass **5/5**, index codecs pass **6/6**, and WAL codecs pass **14/14**.
 The matrices cover every header/record truncation, frozen little-endian images, independent
@@ -3068,6 +3072,87 @@ and CoW snapshots, while the compact physical location remains the value.
 **BOUNDARY.** This hardening still performs no filesystem write or synchronization. It prepares
 the exact authority token, bounded scanner prefix, and deterministic in-memory index that the
 single-writer publisher and restart recovery state machine consume next.
+
+### J-043 — 2026-08-27: bind physical recovery to one PathMap and an affine writer lease
+
+**TERMS.** A **physical recovery** proves the exact catalog-authorized pack chain and its
+rebuildable location index; it does not yet prove the semantic closure named by the recovered root.
+An **affine writer lease** is a capability that has one owner and cannot be copied. A **repair
+replay sink** checks a second or third WAL pass against the first pass's authoritative PathMap
+without constructing another trie. **Startup work** is I/O performed during one restart; it is not
+stored footprint or a consensus byte inventory.
+
+**DECISION.** Unix startup pins an owner-controlled directory descriptor, acquires one advisory
+writer lock, and opens every ordinary child relative to that descriptor with no-follow semantics.
+Authority files must be regular, single-link, owner-only, and owned by the effective user. Exact
+positional reads and writes retry interruption, reject short or zero progress, and use checked
+`u64` offsets. The security boundary includes cooperative processes under the same user identity:
+the advisory lock cannot stop a deliberately noncooperating process with equal filesystem
+authority from rewriting the directory.
+
+The first iterative WAL pass reconstructs one
+`PathMap<ObjectIndexRecordV1>` keyed by the canonical 32-byte digest and simultaneously compares an
+existing exact-length index. Missing, truncated, extended, reordered, checksum-damaged, or
+wrong-identity index bytes are repairable accelerator failures. Unsafe file types, links,
+ownership, permissions, and unrelated I/O errors remain fatal.
+
+Repair pre-admits exactly three copies of the catalog-appointed WAL span before creating a
+candidate. The second pass streams a canonical 64-byte header and 72-byte DATA records directly to
+one generation-specific candidate; the first PathMap is the oracle for DATA identity and strictly
+backward REUSE. After exact truncation and full-file synchronization, a consuming typestate permits
+atomic replacement and pinned-directory synchronization. The third pass reopens the installed
+file, verifies every record in WAL order, and compares the complete 672-byte catalog image again.
+Both replay passes retain constant index state, so exactly one full PathMap is constructed. The
+returned type is deliberately named `IndexBoundPhysicalRecoveryV1`; raw mutation consumes it before
+the lease can be recovered, preventing stale catalog/index authority from coexisting with writes.
+
+In literate pseudocode, where `scan` is the stack-constant pack PDA and `A` is the exact catalog
+image:
+
+```text
+A := select_exact_catalog_image()
+(S, H, probe) := scan(A, BuildPathMapAndProbeIndex)
+require catalog_image() = A
+if probe is exact then return PhysicallyRecovered(H, one_pass_work)
+require 3 * S <= aggregate_scan_budget
+scan(A, StreamCandidateAgainst(H))
+require catalog_image() = A
+sync_exact_candidate(); atomic_replace(); sync_directory()
+scan(A, VerifyInstalledIndexAgainst(H))
+require catalog_image() = A
+return PhysicallyRecovered(H, three_pass_work)
+```
+
+**COMPLEXITY.** Let $`S`$ be the catalog-authorized pack bytes and $`d`$ the number of distinct
+DATA records in the live generation. Ordinary verified startup takes $`\Theta(S+d)`$ time and one
+$`O(d)`$ PathMap. Repair takes $`\Theta(3S+2d)`$ I/O work but still one $`O(d)`$ PathMap; replay
+state and native stack are $`O(1)`$ in pack count, record count, digest depth, and Rholang term
+depth. Required ceilings bound total work, never traversal depth.
+
+**EVIDENCE.** Eleven durable-I/O tests cover pinned identity, exclusive leasing, exact positional
+progress, nontruncating creation, permissions, symlink, hard-link, FIFO, directory-symlink, and
+fixed-length catalog behavior. Seven startup tests cover missing and exact indexes, all recoverable
+damage classes, one-PathMap construction, exact `3S` admission and `3S-1` pre-mutation refusal,
+fatal unsafe identity, injected write/truncate/file-sync/replace/directory-sync failures, catalog
+interleavings, and post-install damage. Pre-replacement failures leave the official index
+byte-identical; post-replacement failures leave a complete image that the next startup verifies.
+The complete dormant persistence matrix passes **153/153** in **1.69 s** under a 5 GiB high/6 GiB
+hard memory cap, zero swap, and an eight-core quota. Captured transcripts are
+`target/scratch/durable-io-after-startup-2026-08-27.log`,
+`target/scratch/durable-startup-failpoints-2026-08-27.log`, and
+`target/scratch/persistence-durable-startup-checkpoint-2026-08-27.log`.
+
+**ACCOUNTING.** `DurableStartupWorkV1` reports WAL passes/bytes, index bytes read/written, and sync
+counts separately. `scanned_bytes` is authorized recovery work, not stored size. Likewise,
+`current_state_canonical_bytes` and `retained_canonical_bytes` remain untrusted metadata until a
+subsequent semantic/inventory-admission typestate derives exact reachability. Neither inventory is
+the active I/D/T consensus tariff.
+
+**BOUNDARY.** The implementation remains dormant and Unix-only; non-Unix durable directory opening
+fails closed pending the native Windows handle/ACL implementation. Physical recovery does not yet
+admit the current semantic closure, validate the retained-root union, compact generations, collect
+garbage, replace LMDB, or claim comparative throughput or disk-space gains. Those are later gates,
+not implicit consequences of this checkpoint.
 
 ## Upstream PathMap integration request register
 

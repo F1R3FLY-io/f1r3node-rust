@@ -18,9 +18,14 @@ use crate::rspace::persistence::checksum::{
 use crate::rspace::persistence::physical::{STORE_ID_LEN, StoreId};
 use crate::rspace::persistence::semantic::SemanticProfile;
 use crate::rspace::persistence::wal::{
-    LogPackFormatError, LogPackObjectDispositionV1, LogPackSequence, PackId,
+    LogPackFormatError, LogPackObjectDispositionV1, LogPackObjectView, LogPackSequence, PackId,
     PreparedLogPackTransactionV1, PreparedObjectLayoutV1,
 };
+
+#[cfg(test)]
+thread_local! {
+    static COMMITTED_INDEX_CONSTRUCTIONS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
 
 const INDEX_DOMAIN: &[u8; 16] = b"RSpaceIndex.V1\0\0";
 const INDEX_VERSION: u64 = 1;
@@ -195,6 +200,8 @@ pub(crate) struct CommittedObjectIndexV1 {
 
 impl CommittedObjectIndexV1 {
     pub(crate) fn new() -> Self {
+        #[cfg(test)]
+        COMMITTED_INDEX_CONSTRUCTIONS.with(|count| count.set(count.get() + 1));
         Self {
             records: PathMap::new(),
             record_count: 0,
@@ -237,6 +244,16 @@ impl Default for CommittedObjectIndexV1 {
     fn default() -> Self { Self::new() }
 }
 
+#[cfg(test)]
+pub(crate) fn reset_committed_index_constructions() {
+    COMMITTED_INDEX_CONSTRUCTIONS.with(|count| count.set(0));
+}
+
+#[cfg(test)]
+pub(crate) fn committed_index_constructions() -> u64 {
+    COMMITTED_INDEX_CONSTRUCTIONS.with(std::cell::Cell::get)
+}
+
 impl ObjectIndexRecordV1 {
     pub fn new(
         reference: ObjectRefV1,
@@ -274,6 +291,27 @@ impl ObjectIndexRecordV1 {
             },
         )?;
         Self::new(layout.reference(), ObjectLocationV1::new(pack_id, canonical_offset, sequence)?)
+    }
+
+    pub(crate) fn from_data_view(
+        pack_id: PackId,
+        prepare_offset: u64,
+        sequence: LogPackSequence,
+        object: LogPackObjectView<'_>,
+    ) -> Result<Self, IndexFormatError> {
+        if object.disposition() != LogPackObjectDispositionV1::Data {
+            return Err(IndexFormatError::ReuseHasNoIndexLocation(object.reference()));
+        }
+        let relative = object
+            .canonical_offset()
+            .ok_or(IndexFormatError::InlineObjectMissingOffset(object.reference()))?;
+        let canonical_offset = prepare_offset.checked_add(relative).ok_or(
+            IndexFormatError::AbsoluteOffsetOverflow {
+                prepare_offset,
+                relative_offset: relative,
+            },
+        )?;
+        Self::new(object.reference(), ObjectLocationV1::new(pack_id, canonical_offset, sequence)?)
     }
 
     pub const fn reference(self) -> ObjectRefV1 { self.reference }
@@ -412,6 +450,145 @@ impl Iterator for ObjectIndexRecordIter<'_> {
 }
 
 impl ExactSizeIterator for ObjectIndexRecordIter<'_> {}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct CanonicalIndexRecordImageV1 {
+    offset: u64,
+    bytes: [u8; INDEX_RECORD_LEN_V1 as usize],
+}
+
+impl CanonicalIndexRecordImageV1 {
+    pub(crate) const fn offset(self) -> u64 { self.offset }
+
+    pub(crate) const fn bytes(&self) -> &[u8; INDEX_RECORD_LEN_V1 as usize] { &self.bytes }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct CanonicalIndexStreamV1 {
+    header: ObjectIndexHeaderV1,
+    next_offset: u64,
+    record_count: u64,
+}
+
+impl CanonicalIndexStreamV1 {
+    pub(crate) const fn new(header: ObjectIndexHeaderV1) -> Self {
+        Self {
+            header,
+            next_offset: INDEX_HEADER_LEN_V1,
+            record_count: 0,
+        }
+    }
+
+    pub(crate) fn header_image(self) -> [u8; INDEX_HEADER_LEN_V1 as usize] { self.header.encode() }
+
+    pub(crate) const fn durable_tail(self) -> u64 { self.next_offset }
+
+    pub(crate) fn next_record(
+        &mut self,
+        record: ObjectIndexRecordV1,
+    ) -> Result<CanonicalIndexRecordImageV1, IndexFormatError> {
+        let offset = self.next_offset;
+        let next_offset = self.next_offset.checked_add(INDEX_RECORD_LEN_V1).ok_or(
+            IndexFormatError::CanonicalStreamTailOverflow {
+                offset: self.next_offset,
+            },
+        )?;
+        let record_count = self
+            .record_count
+            .checked_add(1)
+            .ok_or(IndexFormatError::RecordCountOverflow)?;
+        self.next_offset = next_offset;
+        self.record_count = record_count;
+        Ok(CanonicalIndexRecordImageV1 {
+            offset,
+            bytes: record.encode(),
+        })
+    }
+
+    pub(crate) fn verify_appointed_tail(self, appointed_tail: u64) -> Result<(), IndexFormatError> {
+        if self.next_offset != appointed_tail {
+            return Err(IndexFormatError::CanonicalStreamTail {
+                expected: self.next_offset,
+                appointed: appointed_tail,
+            });
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ObjectIndexPrefixVerifierV1 {
+    stream: CanonicalIndexStreamV1,
+    appointed_tail: u64,
+    header_verified: bool,
+}
+
+impl ObjectIndexPrefixVerifierV1 {
+    pub(crate) fn new(
+        header: ObjectIndexHeaderV1,
+        appointed_tail: u64,
+        available: u64,
+    ) -> Result<Self, IndexFormatError> {
+        if appointed_tail < INDEX_HEADER_LEN_V1 ||
+            (appointed_tail - INDEX_HEADER_LEN_V1) % INDEX_RECORD_LEN_V1 != 0
+        {
+            return Err(IndexFormatError::UnalignedDurableTail(appointed_tail));
+        }
+        if appointed_tail > available {
+            return Err(IndexFormatError::DurableTailBeyondFile {
+                durable_tail: appointed_tail,
+                available,
+            });
+        }
+        Ok(Self {
+            stream: CanonicalIndexStreamV1::new(header),
+            appointed_tail,
+            header_verified: false,
+        })
+    }
+
+    pub(crate) fn verify_header(&mut self, bytes: &[u8]) -> Result<(), IndexFormatError> {
+        let actual = ObjectIndexHeaderV1::parse_exact(bytes)?;
+        actual.verify_identity(self.stream.header.store_id(), self.stream.header.generation())?;
+        self.header_verified = true;
+        Ok(())
+    }
+
+    pub(crate) const fn next_record_offset(&self) -> u64 { self.stream.durable_tail() }
+
+    pub(crate) fn verify_next_record(
+        &mut self,
+        expected: ObjectIndexRecordV1,
+        bytes: &[u8],
+    ) -> Result<(), IndexFormatError> {
+        if !self.header_verified {
+            return Err(IndexFormatError::IndexHeaderNotVerified);
+        }
+        let image = self.stream.next_record(expected)?;
+        if self.stream.durable_tail() > self.appointed_tail {
+            return Err(IndexFormatError::DerivedRecordBeyondAppointedTail {
+                record_offset: image.offset(),
+                appointed_tail: self.appointed_tail,
+            });
+        }
+        let actual = ObjectIndexRecordV1::parse_exact(bytes)?;
+        if actual != expected {
+            return Err(IndexFormatError::RecordMismatch {
+                offset: image.offset(),
+                expected,
+                actual,
+            });
+        }
+        Ok(())
+    }
+
+    pub(crate) fn finish(self) -> Result<(), IndexFormatError> {
+        if !self.header_verified {
+            return Err(IndexFormatError::IndexHeaderNotVerified);
+        }
+        self.stream.verify_appointed_tail(self.appointed_tail)
+    }
+}
 
 /// Preflighted append of every new DATA body in one prepared transaction.
 ///
@@ -567,6 +744,23 @@ pub enum IndexFormatError {
         candidate: ObjectRefV1,
     },
     RecordCountOverflow,
+    IndexHeaderNotVerified,
+    CanonicalStreamTailOverflow {
+        offset: u64,
+    },
+    CanonicalStreamTail {
+        expected: u64,
+        appointed: u64,
+    },
+    DerivedRecordBeyondAppointedTail {
+        record_offset: u64,
+        appointed_tail: u64,
+    },
+    RecordMismatch {
+        offset: u64,
+        expected: ObjectIndexRecordV1,
+        actual: ObjectIndexRecordV1,
+    },
     DurableTailBeyondFile {
         durable_tail: u64,
         available: u64,
@@ -686,6 +880,38 @@ impl Display for IndexFormatError {
             Self::RecordCountOverflow => {
                 formatter.write_str("committed object index record count overflows u64")
             }
+            Self::IndexHeaderNotVerified => {
+                formatter.write_str("physical index header was not verified before its records")
+            }
+            Self::CanonicalStreamTailOverflow { offset } => write!(
+                formatter,
+                "canonical index stream cannot advance its tail from offset {offset}"
+            ),
+            Self::CanonicalStreamTail {
+                expected,
+                appointed,
+            } => write!(
+                formatter,
+                "WAL-derived canonical index tail {expected} does not equal catalog-appointed \
+                 tail {appointed}"
+            ),
+            Self::DerivedRecordBeyondAppointedTail {
+                record_offset,
+                appointed_tail,
+            } => write!(
+                formatter,
+                "WAL-derived index record at offset {record_offset} extends beyond \
+                 catalog-appointed tail {appointed_tail}"
+            ),
+            Self::RecordMismatch {
+                offset,
+                expected,
+                actual,
+            } => write!(
+                formatter,
+                "physical index record at offset {offset} is {actual:?}, but committed WAL \
+                 requires {expected:?}"
+            ),
             Self::DurableTailBeyondFile {
                 durable_tail,
                 available,

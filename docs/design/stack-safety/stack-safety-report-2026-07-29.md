@@ -327,6 +327,7 @@ Abbreviations used throughout are ABI (application binary interface), CBR (conse
 | **SS-C25** | this checkpoint; pgmcp #6189 | f1r3node | sealed in-memory delta $`\rightarrow`$ preflighted DATA/REUSE plan, single-copy streaming prepare, fixed authenticated commit, and zero-copy bounded recovery view | native stack $`O(1)`$ in path/object depth; **100,000-byte** transition on **256 KiB**; $`O(n)`$ one-disposition plan and $`O(1)`$ writer state for $`n`$ sealed objects; no body copy, frame buffer, entry projection, or semantic sort | **yes for dormant log-pack codecs**; 14/14 focused cases, including warm reuse/full-byte collision refusal, checked-u64 checksums, every prepare/commit truncation, sink/invariant nonpublication, frozen V1 bytes, exact prepared offsets, and negative commit-field binding | [5.52](#552-single-copy-transactional-log-pack-codecs-ss-c25) |
 | **SS-C26** | this checkpoint; pgmcp #6189 | f1r3node | retained-root vector/catalog ambiguity $`\rightarrow`$ canonical borrowed retention iterator plus exact two-slot catalog/commit authority | native stack $`O(1)`$; iterator retains one current 56-byte state record; fixed 336-byte catalog slots and 384-byte commit; total retained roots/bytes are checked `u64` work budgets, never depth caps | **yes for dormant formats**; catalog 6/6 and retention 4/4, including every truncation/observable tear, strict root order, reserved/checksum/index/tail mutants, and exact terminal-commit binding | [5.53](#553-retained-root-manifest-and-exact-catalog-authority-ss-c26) |
 | **SS-C27** | this checkpoint; pgmcp #6189 | f1r3node | duplicated pack/index offset arithmetic $`\rightarrow`$ one prepared WAL object-layout iterator plus fixed portable pack and rebuildable index codecs | native stack $`O(1)`$; exact 128-byte pack header, 64-byte index header, and 72-byte index records; index append is one lazy pass with no body copy, record reparse, entry projection, or sort | **yes for dormant physical layouts**; aggregate persistence 134/134 after authenticated 240-byte prefix preflight, exact 672-byte catalog CAS token, explicit aggregate work limits, and CoW PathMap recovery-index duplicate refusal | [5.54](#554-portable-log-pack-and-rebuildable-object-index-layouts-ss-c27) |
+| **SS-C28** | this checkpoint; pgmcp #6189/#6100 | f1r3node | unbound filesystem recovery $`\rightarrow`$ pinned-directory affine lease plus mandatory exact index verification or synchronized atomic rebuild | native stack $`O(1)`$; ordinary startup one WAL pass, repair three pre-admitted passes; exactly one $`O(d)`$ PathMap for $`d`$ DATA records and $`O(1)`$ replay state | **yes for dormant Unix physical recovery**; I/O 11/11, startup/failpoints 7/7, persistence 153/153; semantic/inventory admission, Windows handles, compaction, LMDB cutover, and comparative performance remain open | [5.55](#555-affine-durable-startup-and-single-pathmap-index-repair-ss-c28) |
 | **SS-D1** | `d2591fa1` | f1r3node | task-spawn boundary per-branch deep clone | 2,867 $`\rightarrow`$ **0** *(this site)* | **yes** | [5.5.3](#553-the-three-repairs) |
 | **SS-D2** | `94dc983f` | f1r3node | ownership to the substitution; **15** deep copies | incl. $`O(n^2)`$ $`\rightarrow`$ $`O(n)`$ | **yes** | [5.5.3](#553-the-three-repairs) |
 | **SS-D3** | `9082d12c` | f1r3node | `inj_attempt` read-back clone $`\rightarrow`$ by-move | 2,852 $`\rightarrow`$ **0** | **yes** | [5.5.3](#553-the-three-repairs) |
@@ -563,6 +564,7 @@ register rows (SS-C5…SS-C14, SS-Y6) and the stack-safety consequences.
   - [5.52 Single-copy transactional log-pack codecs [SS-C25]](#552-single-copy-transactional-log-pack-codecs-ss-c25)
   - [5.53 Retained-root manifest and exact catalog authority [SS-C26]](#553-retained-root-manifest-and-exact-catalog-authority-ss-c26)
   - [5.54 Portable log-pack and rebuildable object-index layouts [SS-C27]](#554-portable-log-pack-and-rebuildable-object-index-layouts-ss-c27)
+  - [5.55 Affine durable startup and single-PathMap index repair [SS-C28]](#555-affine-durable-startup-and-single-pathmap-index-repair-ss-c28)
 - [6. Discussion](#6-discussion)
   - [6.1 Why the explicit-worklist shape, and why it is *smaller* than what it replaces](#61-why-the-explicit-worklist-shape-and-why-it-is-smaller-than-what-it-replaces)
   - [6.2 Why the SCC is the unit of conversion](#62-why-the-scc-is-the-unit-of-conversion)
@@ -11124,16 +11126,80 @@ bytes as the compare-and-swap token, so an inactive-slot mutation cannot hide be
 state. These additions retain $`O(1)`$ native stack and bounded retained memory per record; actual
 iterative pack scanning and filesystem synchronization remain the next claimed boundary.
 
-Storage accounting deliberately has two ledgers. The deterministic current-state canonical closure
-delta is the future consensus-metering input. DATA/REUSE ratio, pack/index/catalog framing,
-filesystem allocation, dead tails, historical retention, obsolete generations, and compaction
-cadence are physical implementation metrics. SS-C27 adds exact physical widths but does not permit
-those local-policy costs to influence a consensus charge.
+Storage accounting deliberately separates logical inventory from physical telemetry. The
+deterministic current-state canonical closure is a possible input to a separately versioned future
+rent rule, not the restored tariff. The restored consensus equation remains
+$`Q(e)=r_i I(e)+r_d D(e)+r_t T(e)`$ over canonical-protobuf introduction bytes, delivered-payload
+bytes, and committed trace bytes. DATA/REUSE ratio, pack/index/catalog framing, filesystem
+allocation, dead tails, historical retention, obsolete generations, and compaction cadence are
+physical implementation metrics. SS-C27 adds exact physical widths but permits none of those
+local-policy costs to influence the active tariff.
 
 This remains a dormant codec and append-plan result. Writer leasing, positional writes,
 data/index/commit/catalog/directory synchronization, selected-location validation, deterministic
 index rebuild, failpoint recovery, retained-root tracing, pack compaction, LMDB migration, and
 comparative time/space evidence remain unclaimed.
+
+### 5.55 Affine durable startup and single-PathMap index repair [SS-C28]
+
+SS-C28 implements the first filesystem-backed restart boundary without promoting it to semantic
+RSpace authority. On Unix, `DurableDirectoryV1` pins an owner-controlled directory descriptor and
+opens generated one-component names relative to it with no-follow behavior. A process-wide affine
+writer lease owns the pinned directory and advisory lock. Regular-file, single-link, owner,
+owner-only-mode, exact-length, short-I/O, and checked-offset invariants fail closed. The threat
+boundary assumes processes sharing the same user identity cooperate with the lock; an equally
+privileged noncooperating process already has authority to rewrite the store and is outside this
+lease protocol.
+
+The first iterative pack scan constructs the only
+`PathMap<ObjectIndexRecordV1>` and compares any existing exact-length physical index record by
+record. Repairable shape or checksum damage never becomes semantic-state loss. Repair pre-admits
+three times the exact catalog-appointed pack span, streams the second pass directly into a fixed
+candidate, synchronizes its exact length, atomically replaces the generation, synchronizes the
+pinned directory, and verifies the installed file in a third pass. The second and third passes use
+constant-state sinks that require every DATA record to equal the first-pass PathMap location and
+every REUSE to resolve strictly backward; neither allocates another trie or a record vector.
+
+The authority sequence is:
+
+```text
+exact catalog image
+  -> bounded WAL scan + one PathMap + optional index probe
+  -> exact catalog comparison
+  -> [verify existing] or [stream candidate -> sync file -> replace -> sync directory]
+  -> replay WAL against installed index and first PathMap
+  -> exact catalog comparison
+  -> IndexBoundPhysicalRecoveryV1
+```
+
+The writer object owns the lease while the physical snapshot is observable. Raw mutation consumes
+that snapshot first, so no caller can retain an old catalog token beside unrestricted writable
+handles. A later mandatory typestate must load objects through the bound index, prove the current
+semantic closure, derive exact current and retained-union byte inventories, and validate the
+retention manifest before production code may treat the root as semantic RSpace authority.
+
+For catalog-appointed WAL bytes $`S`$ and distinct DATA records $`d`$, verified startup performs one
+$`\Theta(S+d)`$ pass. Repair performs $`\Theta(3S+2d)`$ physical work but retains one $`O(d)`$
+PathMap and $`O(1)`$ replay state. Native stack remains $`O(1)`$ in pack count, record count, key
+depth, and term depth. `DurableStartupWorkV1` reports WAL passes and bytes, index bytes read and
+written, and synchronization counts; these are restart-work diagnostics, not persisted footprint
+or consensus charges.
+
+The Unix I/O suite passes **11/11**; the startup/failpoint suite passes **7/7**; and the complete
+dormant persistence matrix passes **153/153** in **1.69 s** under a 5 GiB high/6 GiB hard memory
+cap, zero swap, and an eight-core quota. Failure injection covers candidate write, exact truncate,
+file sync, pre-replace, post-replace/pre-directory-sync, directory sync, catalog changes at each
+verification phase, and post-install index damage. The construction counter proves repair creates
+one committed PathMap total. Logs are
+`target/scratch/durable-io-after-startup-2026-08-27.log`,
+`target/scratch/durable-startup-failpoints-2026-08-27.log`, and
+`target/scratch/persistence-durable-startup-checkpoint-2026-08-27.log`.
+
+This remains a dormant Unix physical-recovery result. Windows native handle/ACL operations,
+semantic and retention-inventory admission, bounded generation compaction, reader-safe garbage
+collection, LMDB migration, REPL activation, and comparative latency/allocation/disk evidence remain
+unclaimed. The active I/D/T consensus tariff is unchanged; closure-size inventories are only
+deterministic metadata until separately admitted and versioned.
 
 ---
 

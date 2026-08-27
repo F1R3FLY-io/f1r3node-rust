@@ -86,6 +86,7 @@ pub use wal::{
     LogPackWriteError, PackId, PrepareRecordIdentityV1, PreparedLogPackTransactionV1,
     TRANSACTION_COMMIT_RECORD_LEN_V1, TRANSACTION_PREPARE_HEADER_LEN_V1, TransactionCommitRecordV1,
     TransactionCommitViewV1, TransactionPrepareRecordViewV1, preflight_prepare_record_len_v1,
+    preflight_prepare_record_v1,
 };
 
 #[cfg(test)]

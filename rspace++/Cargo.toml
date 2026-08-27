@@ -71,6 +71,13 @@ metrics = "0.23"
 tracing-subscriber = { workspace = true }
 pathmap = { version = "0.2.2", features = ["arena_compact"] }
 
+# Durable storage opens every authority file relative to a pinned directory
+# descriptor with O_NOFOLLOW and explicit 0600 creation permissions.  libc is
+# used only for that small Unix openat boundary; all subsequent I/O remains in
+# safe std APIs.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 # Canonical ACTree03 validation must reproduce PathMap 0.2.2's deterministic
 # line-reuse hash on every architecture where PathMap selects gxhash.
 [target.'cfg(not(any(miri,target_arch="riscv64")))'.dependencies]

@@ -5255,6 +5255,7 @@ dependencies = [
  "hex",
  "itertools 0.14.0",
  "lazy_static",
+ "libc",
  "metrics 0.23.1",
  "metrics-util 0.17.0",
  "monadic",

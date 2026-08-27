@@ -5822,10 +5822,13 @@ commit digest, target state, semantic profile, and the complete publication tupl
 commit-side publication constructor and catalog both require an index frontier of `64 + 72n`, so an
 unaligned authenticated commit is refused before it can become a candidate authority.
 
-Current-state canonical closure bytes are reserved as the deterministic input to restored consensus
-storage metering. Retained histories, WAL/index/catalog framing, dead tails, and obsolete pack
-generations are separately reported physical costs and cannot be substituted into a charge. This
-format separation does not itself restore or change any charge.
+Current-state canonical closure bytes are reserved as a deterministic logical inventory and a
+possible input to a separately versioned future rent rule. They are not the restored tariff. The
+restored tariff remains $`Q(e)=r_i I(e)+r_d D(e)+r_t T(e)`$ over canonical-protobuf introduction
+bytes, delivered-payload bytes, and committed trace bytes, without removal credits. Retained
+histories, WAL/index/catalog framing, dead tails, and obsolete pack generations are separately
+reported physical costs and cannot be substituted into either schedule. This format separation
+does not itself restore or change any charge.
 
 This continuation is `NO_PRODUCTION_CHANGE_DERIVED`. No positional write, sync, recovery, current-
 root caller, matcher, COMM, replay, metering route, network message, or LMDB cutover consumes these
@@ -5852,12 +5855,13 @@ copying canonical bodies, projecting trie entries, or sorting semantic elements.
 accelerator failure requiring deterministic rebuild from committed DATA; it does not redefine or
 destroy the retained semantic roots.
 
-The two-ledger rule remains explicit for the storage-cost branch that will later merge into this
-worktree. Consensus metering consumes the deterministic logical current-state canonical-closure
-transition. Pack/index/catalog framing, DATA/REUSE hit rate, filesystem allocation, torn tails,
+The accounting separation remains explicit for the storage-cost branch that will later merge into
+this worktree. The active consensus tariff consumes I/D/T event bytes; current-state canonical
+closure is a deterministic inventory for admission and a possible future separately versioned rent
+surface. Pack/index/catalog framing, DATA/REUSE hit rate, filesystem allocation, torn tails,
 retained history, obsolete generations, and compaction cadence are measured physical costs and
-must not alter a charge. This checkpoint freezes physical widths; it does not activate storage
-metering or choose a filesystem policy.
+must not alter the active tariff. This checkpoint freezes physical widths; it does not activate a
+closure-size schedule or choose a filesystem policy.
 
 This continuation is `NO_PRODUCTION_CHANGE_DERIVED`. No production file is opened and no existing
 LMDB root, checkpoint, replay/startup route, matcher, COMM, post-state, history hash, protobuf or
@@ -5885,13 +5889,49 @@ digest with a small `Copy` value. Equal duplicate DATA and conflicting same-dige
 fail closed, giving one deterministic rebuild image; committed equality after the first DATA is
 represented as REUSE.
 
-The storage-cost split is unchanged. Logical current-state canonical closure bytes are the future
-consensus-metering input. Recovery scans, collision comparisons, index bytes, WAL framing,
-filesystem blocks, retention, candidate tails, repair, and compaction are separately measured
-physical work and storage. The current **134/134** dormant persistence tests pass in **1.67 s**
+The accounting split is unchanged. Logical current-state canonical closure bytes are deterministic
+inventory metadata and a possible future separately versioned rent input, not the active I/D/T
+tariff. Recovery scans, collision comparisons, index bytes, WAL framing, filesystem blocks,
+retention, candidate tails, repair, and compaction are separately measured physical work and
+storage. The current **134/134** dormant persistence tests pass in **1.67 s**
 under a 4 GiB, zero-swap, eight-core scope. This remains `NO_PRODUCTION_CHANGE_DERIVED`: no file is
 opened, no authority is published or recovered, and no matcher, COMM, root, accepted program,
 network byte, compute charge, or storage charge changes.
+
+**CBR-053 living continuation (2026-08-27, affine Unix recovery and mandatory index binding).** A
+dormant Unix startup state machine now pins an owner-controlled directory descriptor, acquires one
+affine writer lease, and opens generated child authorities relative to the pinned directory with
+no-follow behavior. Authority files must be regular, single-link, owner-only, and owned by the
+effective user. Exact positional I/O retries interruption and rejects short/zero progress. The
+lease protocol assumes cooperative processes under the same user identity; it does not claim to
+protect a store from a deliberately noncooperating process with equal filesystem authority.
+
+The first bounded WAL pass constructs one `PathMap<ObjectIndexRecordV1>` and either verifies every
+byte of the exact physical index or classifies shape/checksum/identity damage as rebuildable
+accelerator loss. Repair pre-admits all three catalog-appointed WAL scans before candidate
+creation. The second and third scans replay against the first PathMap, requiring exact DATA
+locations and strictly backward REUSE, so repair builds one trie total and no record vector. A
+candidate must pass exact truncation and full-file synchronization before its typestate permits
+atomic replacement; the pinned directory is then synchronized and the installed index is reopened
+and verified. The complete 672-byte catalog image is compared at every authority boundary.
+
+The returned type is explicitly `IndexBoundPhysicalRecoveryV1`, not semantic RSpace authority. It
+owns the writer lease, and exposing a raw mutable lease consumes the physical snapshot first. A
+later mandatory type must derive the current closure and retained-root union through the bound
+index, prove semantic admission, and validate both caller-supplied byte inventories before any
+production startup path or future closure-size schedule can consume them. The active consensus
+tariff remains $`Q(e)=r_i I(e)+r_d D(e)+r_t T(e)`$; startup scan/index/sync counters are diagnostic
+work only.
+
+This continuation is `NO_PRODUCTION_CHANGE_DERIVED`. The Unix I/O suite passes **11/11**, the
+startup/failpoint suite **7/7**, and the complete dormant persistence matrix **153/153** in
+**1.69 s** under a 5 GiB high/6 GiB hard cap, zero swap, and eight-core quota. Failure injection
+covers every candidate write/truncate/sync/replace boundary, catalog interleavings, and
+post-install damage; one construction counter proves repair creates one committed PathMap. Windows
+native handles/ACLs, semantic and inventory admission, compaction/GC, LMDB migration, REPL
+activation, and comparative performance/storage evidence remain mandatory. No production file,
+root, matcher, COMM, replay/startup result, history hash, protobuf/bincode byte, network message,
+accepted program, compute charge, or storage charge changes at this checkpoint.
 
 ### B.2 The original commit-level exemptions
 
