@@ -1156,6 +1156,26 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
             )
             .await;
 
+        // Phase 7b-2 (2026-08-27): build a WAL payload-fetch
+        // context.  Mirrors the casper-launch shape — a fresh
+        // retriever + sync driver + in-memory payload store.
+        let wal_payload_ctx = {
+            use std::sync::Arc as StdArc;
+
+            use crate::rust::engine::running::WalPayloadContext;
+            use crate::rust::engine::wal_payload_retriever::WalPayloadRetriever;
+            use crate::rust::engine::wal_payload_server::InMemoryPayloadStore;
+            use crate::rust::engine::wal_payload_sync::WalPayloadSyncDriver;
+            let retriever = StdArc::new(WalPayloadRetriever::new());
+            let sync_driver = StdArc::new(WalPayloadSyncDriver::new(StdArc::clone(&retriever)));
+            let lookup: StdArc<dyn crate::rust::engine::wal_payload_server::PayloadLookup> =
+                StdArc::new(InMemoryPayloadStore::new());
+            Some(WalPayloadContext {
+                sync_driver,
+                payload_lookup: lookup,
+            })
+        };
+
         transition_to_running(
             self.block_processing_queue_tx.clone(),
             self.blocks_in_processing.clone(),
@@ -1170,6 +1190,7 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
                 connections_cell: self.connections_cell.clone(),
             }),
             snapshot_chunk_ctx,
+            wal_payload_ctx,
             &self.engine_cell,
             &self.event_publisher,
         )

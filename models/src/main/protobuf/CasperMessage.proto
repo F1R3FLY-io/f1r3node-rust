@@ -87,6 +87,47 @@ message HasSnapshotProto {
   uint32 chunk_count = 3;   // how many chunks to expect
 }
 
+// -------- Phase 7b-2 between-snapshot WAL payload fetch (2026-08-27) --------
+// After a joiner has assembled the latest snapshot, the WAL between
+// that snapshot and the head block still references payload bytes
+// by Blake2b256 hash.  For each hash that the joiner can't
+// reproduce locally (deterministic-Rholang / deploy-data reducer
+// misses), it asks peers for the bytes by hash.  The response
+// echoes the hash + the raw bytes; the joiner rehashes the bytes
+// to verify against the requested hash before applying.
+//
+// Payload sizes are bounded by write-op semantics: single fs_write
+// / fs_read replies map to one hash.  Cap enforced at
+// MAX_PAYLOAD_BYTES = 4 MiB (same as CHUNK_SIZE — a natural upper
+// bound; anything larger would already be chunked by Phase 7b-1
+// during snapshot).
+
+message GetWalPayloadRequestProto {
+  option (scalapb.message).extends = "CasperMessageProto";
+  bytes payload_hash = 1;   // Blake2b256(payload bytes) — 32 bytes
+}
+
+message WalPayloadResponseProto {
+  option (scalapb.message).extends = "CasperMessageProto";
+  bytes payload_hash  = 1;  // echo of the request's payload_hash
+  bytes payload_bytes = 2;  // raw payload bytes; joiner rehashes to verify
+}
+
+// Sent by a joiner asking "do you have bytes for this payload
+// hash?"  Broadcast + point-to-point; serving nodes reply with
+// HasWalPayloadProto when they can serve it.  Mirrors the
+// HasSnapshotRequestProto / HasSnapshotProto pattern.
+message HasWalPayloadRequestProto {
+  option (scalapb.message).extends = "CasperMessageProto";
+  bytes payload_hash = 1;
+}
+
+message HasWalPayloadProto {
+  option (scalapb.message).extends = "CasperMessageProto";
+  bytes  payload_hash = 1;
+  uint32 payload_size = 2;   // bytes we would send back; joiner can budget
+}
+
 message ForkChoiceTipRequestProto {
   option (scalapb.message).extends = "CasperMessageProto";
 }

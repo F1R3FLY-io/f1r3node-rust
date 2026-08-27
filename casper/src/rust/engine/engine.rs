@@ -220,6 +220,10 @@ pub async fn transition_to_running<U: TransportLayer + Send + Sync + Clone + 'st
     // task is spawned to drive outbound requests on a live
     // schedule.  None on nodes without an fs_snapshot_writer.
     snapshot_chunk_ctx: Option<crate::rust::engine::running::SnapshotChunkContext>,
+    // Phase 7b-2 (2026-08-27): optional WAL payload-fetch context.
+    // Same shape as `snapshot_chunk_ctx` — Some enables between-
+    // snapshot payload fetch dispatch + tick loop; None disables.
+    wal_payload_ctx: Option<crate::rust::engine::running::WalPayloadContext>,
     engine_cell: &EngineCell,
     event_log: &F1r3flyEvents,
 ) -> Result<(), CasperError> {
@@ -270,8 +274,22 @@ pub async fn transition_to_running<U: TransportLayer + Send + Sync + Clone + 'st
     // lifetime of the running engine.
     if let Some(ctx) = snapshot_chunk_ctx {
         running.install_snapshot_chunk_context(ctx.clone());
-        if let Some(rec) = recovery_context {
+        if let Some(rec) = recovery_context.as_ref() {
             let _tick_handle = crate::rust::engine::snapshot_chunk_sync::spawn_periodic_tick(
+                Arc::clone(&ctx.sync_driver),
+                transport.clone(),
+                conf.clone(),
+                rec.connections_cell.clone(),
+            );
+        }
+    }
+
+    // Phase 7b-2 (2026-08-27): install WAL payload-fetch context
+    // + tick loop.  Same install-before-publish shape as 7b-1.
+    if let Some(ctx) = wal_payload_ctx {
+        running.install_wal_payload_context(ctx.clone());
+        if let Some(rec) = recovery_context.as_ref() {
+            let _tick_handle = crate::rust::engine::wal_payload_sync::spawn_periodic_tick(
                 Arc::clone(&ctx.sync_driver),
                 transport.clone(),
                 conf.clone(),

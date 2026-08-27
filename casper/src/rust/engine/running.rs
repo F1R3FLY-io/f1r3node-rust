@@ -30,6 +30,11 @@ use crate::rust::engine::snapshot_chunk_sync::SnapshotChunkSyncDriver;
 use crate::rust::engine::snapshot_chunk_wire::{
     handle_get_snapshot_chunk_request, handle_has_snapshot_request,
 };
+use crate::rust::engine::wal_payload_server::PayloadLookup;
+use crate::rust::engine::wal_payload_sync::WalPayloadSyncDriver;
+use crate::rust::engine::wal_payload_wire::{
+    handle_get_wal_payload_request, handle_has_wal_payload_request,
+};
 use crate::rust::errors::CasperError;
 use crate::rust::metrics_constants::{
     BLOCK_HASH_RECEIVED_METRIC, BLOCK_REQUEST_RECEIVED_METRIC, RUNNING_METRICS_SOURCE,
@@ -330,6 +335,48 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> Engine for Running<T> {
                 }
                 Ok(())
             }
+            // Phase 7b-2 WAL payload-fetch dispatch (2026-08-27).
+            // Only routed if a WalPayloadContext has been installed
+            // (via `install_wal_payload_context`); otherwise falls
+            // through as a silent no-op.
+            CasperMessage::GetWalPayloadRequest(req) => {
+                if let Some(ctx) = self.wal_payload_ctx() {
+                    handle_get_wal_payload_request(
+                        &*self.transport,
+                        &self.conf,
+                        &peer,
+                        &req,
+                        &*ctx.payload_lookup,
+                    )
+                    .await;
+                }
+                Ok(())
+            }
+            CasperMessage::HasWalPayloadRequest(req) => {
+                if let Some(ctx) = self.wal_payload_ctx() {
+                    handle_has_wal_payload_request(
+                        &*self.transport,
+                        &self.conf,
+                        &peer,
+                        &req,
+                        &*ctx.payload_lookup,
+                    )
+                    .await;
+                }
+                Ok(())
+            }
+            CasperMessage::WalPayloadResponse(resp) => {
+                if let Some(ctx) = self.wal_payload_ctx() {
+                    ctx.sync_driver.on_payload_response(peer, &resp).await;
+                }
+                Ok(())
+            }
+            CasperMessage::HasWalPayload(hs) => {
+                if let Some(ctx) = self.wal_payload_ctx() {
+                    ctx.sync_driver.on_has_wal_payload(peer, &hs).await;
+                }
+                Ok(())
+            }
             _ => Ok(()),
         }
     }
@@ -381,6 +428,15 @@ pub struct Running<T: TransportLayer + Send + Sync> {
     /// no-op — nothing in the codebase currently re-installs, so
     /// idempotence-with-overwrite was never load-bearing.
     snapshot_chunk_ctx: std::sync::OnceLock<SnapshotChunkContext>,
+    /// Phase 7b-2 (2026-08-27): WAL payload-fetch dispatch context.
+    /// Same OnceLock semantics as `snapshot_chunk_ctx` — install-
+    /// once at boot, lock-free reads on every subsequent packet.
+    /// Uninitialized on nodes without a payload backing store
+    /// (observer nodes, test harnesses); when set, incoming
+    /// GetWalPayloadRequest / HasWalPayloadRequest are served from
+    /// `payload_lookup`; incoming WalPayloadResponse / HasWalPayload
+    /// are routed to `sync_driver`.
+    wal_payload_ctx: std::sync::OnceLock<WalPayloadContext>,
 }
 
 #[derive(Clone)]
@@ -411,6 +467,24 @@ pub struct SnapshotChunkContext {
         Arc<tokio::sync::RwLock<std::collections::HashMap<Vec<u8>, ([u8; 32], [u8; 32])>>>,
 }
 
+/// Phase 7b-2 (2026-08-27): WAL payload-fetch context threaded
+/// through the running engine's packet dispatch.  Optional so
+/// nodes without a payload backing store don't have to wire it up.
+///
+/// * `sync_driver` — the joiner-side orchestrator that admits
+///   incoming `WalPayloadResponse` / `HasWalPayload` replies via
+///   its `on_payload_response` / `on_has_wal_payload` hooks.
+/// * `payload_lookup` — the backing store used to serve outbound
+///   `GetWalPayloadRequest` / `HasWalPayloadRequest` responses.
+///   Trait-object so operators can plug in an in-memory,
+///   directory-backed, or hybrid impl without touching the
+///   dispatch path.
+#[derive(Clone)]
+pub struct WalPayloadContext {
+    pub sync_driver: Arc<WalPayloadSyncDriver>,
+    pub payload_lookup: Arc<dyn PayloadLookup>,
+}
+
 impl<T: TransportLayer + Send + Sync> Running<T> {
     pub fn new(
         block_processing_queue_tx: BlockProcessingQueueSender,
@@ -439,6 +513,7 @@ impl<T: TransportLayer + Send + Sync> Running<T> {
             block_retriever,
             recovery_context,
             snapshot_chunk_ctx: std::sync::OnceLock::new(),
+            wal_payload_ctx: std::sync::OnceLock::new(),
         }
     }
 
@@ -456,6 +531,16 @@ impl<T: TransportLayer + Send + Sync> Running<T> {
     /// Lock-free read of the snapshot chunk-fetch context.  Single
     /// acquire-load of the `OnceLock`; no mutex, no clone.
     fn snapshot_chunk_ctx(&self) -> Option<&SnapshotChunkContext> { self.snapshot_chunk_ctx.get() }
+
+    /// Phase 7b-2 boot hook: attach the WAL payload-fetch context
+    /// AFTER construction.  Same OnceLock install-once semantics as
+    /// `install_snapshot_chunk_context`.
+    pub fn install_wal_payload_context(&self, ctx: WalPayloadContext) {
+        let _ = self.wal_payload_ctx.set(ctx);
+    }
+
+    /// Lock-free read of the WAL payload-fetch context.
+    fn wal_payload_ctx(&self) -> Option<&WalPayloadContext> { self.wal_payload_ctx.get() }
 
     fn ignore_casper_message(&self, hash: BlockHash) -> Result<bool, CasperError> {
         let blocks_in_processing = self.blocks_in_processing.contains(&hash);

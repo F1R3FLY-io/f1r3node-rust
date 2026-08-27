@@ -5,10 +5,11 @@ use comm::rust::rp::protocol_helper;
 use models::casper::{
     ApprovedBlockProto, ApprovedBlockRequestProto, BlockApprovalProto, BlockHashMessageProto,
     BlockMessageProto, BlockRequestProto, ForkChoiceTipRequestProto, GetSnapshotChunkRequestProto,
-    HasBlockProto, HasBlockRequestProto, HasSnapshotProto, HasSnapshotRequestProto,
+    GetWalPayloadRequestProto, HasBlockProto, HasBlockRequestProto, HasSnapshotProto,
+    HasSnapshotRequestProto, HasWalPayloadProto, HasWalPayloadRequestProto,
     MergeableEntryRequestProto, MergeableEntryResponseProto, NoApprovedBlockAvailableProto,
     SnapshotChunkResponseProto, StoreItemsMessageProto, StoreItemsMessageRequestProto,
-    UnapprovedBlockProto,
+    UnapprovedBlockProto, WalPayloadResponseProto,
 };
 use models::routing::{Packet, Protocol};
 use models::rust::block_hash::BlockHash;
@@ -79,6 +80,11 @@ pub enum CasperMessageProto {
     SnapshotChunkResponse(SnapshotChunkResponseProto),
     HasSnapshotRequest(HasSnapshotRequestProto),
     HasSnapshot(HasSnapshotProto),
+    // Phase 7b-2 between-snapshot WAL payload fetch (2026-08-27).
+    GetWalPayloadRequest(GetWalPayloadRequestProto),
+    WalPayloadResponse(WalPayloadResponseProto),
+    HasWalPayloadRequest(HasWalPayloadRequestProto),
+    HasWalPayload(HasWalPayloadProto),
 }
 
 /// Extract a Packet from a Protocol message
@@ -108,6 +114,10 @@ pub fn to_casper_message_proto(packet: &Packet) -> PacketParseResult<CasperMessa
         "SnapshotChunkResponse" => convert_snapshot_chunk_response(packet),
         "HasSnapshotRequest" => convert_has_snapshot_request(packet),
         "HasSnapshot" => convert_has_snapshot(packet),
+        "GetWalPayloadRequest" => convert_get_wal_payload_request(packet),
+        "WalPayloadResponse" => convert_wal_payload_response(packet),
+        "HasWalPayloadRequest" => convert_has_wal_payload_request(packet),
+        "HasWalPayload" => convert_has_wal_payload(packet),
         _ => PacketParseResult::IllegalPacket(format!("Unrecognized typeId: {}", packet.type_id)),
     }
 }
@@ -158,6 +168,16 @@ pub fn casper_message_from_proto(proto: CasperMessageProto) -> Result<CasperMess
             Ok(CasperMessage::from_has_snapshot_request(proto))
         }
         CasperMessageProto::HasSnapshot(proto) => Ok(CasperMessage::from_has_snapshot(proto)),
+        CasperMessageProto::GetWalPayloadRequest(proto) => {
+            Ok(CasperMessage::from_get_wal_payload_request(proto))
+        }
+        CasperMessageProto::WalPayloadResponse(proto) => {
+            Ok(CasperMessage::from_wal_payload_response(proto))
+        }
+        CasperMessageProto::HasWalPayloadRequest(proto) => {
+            Ok(CasperMessage::from_has_wal_payload_request(proto))
+        }
+        CasperMessageProto::HasWalPayload(proto) => Ok(CasperMessage::from_has_wal_payload(proto)),
     }
 }
 
@@ -242,6 +262,22 @@ fn convert_has_snapshot_request(packet: &Packet) -> PacketParseResult<CasperMess
 
 fn convert_has_snapshot(packet: &Packet) -> PacketParseResult<CasperMessageProto> {
     parse_packet::<HasSnapshotProto>(packet).map(CasperMessageProto::HasSnapshot)
+}
+
+fn convert_get_wal_payload_request(packet: &Packet) -> PacketParseResult<CasperMessageProto> {
+    parse_packet::<GetWalPayloadRequestProto>(packet).map(CasperMessageProto::GetWalPayloadRequest)
+}
+
+fn convert_wal_payload_response(packet: &Packet) -> PacketParseResult<CasperMessageProto> {
+    parse_packet::<WalPayloadResponseProto>(packet).map(CasperMessageProto::WalPayloadResponse)
+}
+
+fn convert_has_wal_payload_request(packet: &Packet) -> PacketParseResult<CasperMessageProto> {
+    parse_packet::<HasWalPayloadRequestProto>(packet).map(CasperMessageProto::HasWalPayloadRequest)
+}
+
+fn convert_has_wal_payload(packet: &Packet) -> PacketParseResult<CasperMessageProto> {
+    parse_packet::<HasWalPayloadProto>(packet).map(CasperMessageProto::HasWalPayload)
 }
 
 /// Generic function to parse a packet into a specific protobuf message type

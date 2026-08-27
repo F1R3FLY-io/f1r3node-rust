@@ -43,6 +43,11 @@ pub enum CasperMessage {
     SnapshotChunkResponse(SnapshotChunkResponse),
     HasSnapshotRequest(HasSnapshotRequest),
     HasSnapshot(HasSnapshot),
+    // Phase 7b-2 between-snapshot WAL payload fetch (2026-08-27)
+    GetWalPayloadRequest(GetWalPayloadRequest),
+    WalPayloadResponse(WalPayloadResponse),
+    HasWalPayloadRequest(HasWalPayloadRequest),
+    HasWalPayload(HasWalPayload),
 }
 
 impl CasperMessage {
@@ -139,6 +144,23 @@ impl CasperMessage {
 
     pub fn from_has_snapshot(proto: HasSnapshotProto) -> Self {
         CasperMessage::HasSnapshot(HasSnapshot::from_proto(proto))
+    }
+
+    // Phase 7b-2 between-snapshot WAL payload fetch (2026-08-27).
+    pub fn from_get_wal_payload_request(proto: GetWalPayloadRequestProto) -> Self {
+        CasperMessage::GetWalPayloadRequest(GetWalPayloadRequest::from_proto(proto))
+    }
+
+    pub fn from_wal_payload_response(proto: WalPayloadResponseProto) -> Self {
+        CasperMessage::WalPayloadResponse(WalPayloadResponse::from_proto(proto))
+    }
+
+    pub fn from_has_wal_payload_request(proto: HasWalPayloadRequestProto) -> Self {
+        CasperMessage::HasWalPayloadRequest(HasWalPayloadRequest::from_proto(proto))
+    }
+
+    pub fn from_has_wal_payload(proto: HasWalPayloadProto) -> Self {
+        CasperMessage::HasWalPayload(HasWalPayload::from_proto(proto))
     }
 }
 
@@ -2510,6 +2532,86 @@ impl HasSnapshot {
             block_hash: self.block_hash,
             merkle_root: self.merkle_root,
             chunk_count: self.chunk_count,
+        }
+    }
+}
+
+// -------- Phase 7b-2 between-snapshot WAL payload fetch (2026-08-27) --------
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct GetWalPayloadRequest {
+    pub payload_hash: ByteString,
+}
+
+impl GetWalPayloadRequest {
+    pub fn from_proto(proto: GetWalPayloadRequestProto) -> Self {
+        Self {
+            payload_hash: proto.payload_hash,
+        }
+    }
+    pub fn to_proto(self) -> GetWalPayloadRequestProto {
+        GetWalPayloadRequestProto {
+            payload_hash: self.payload_hash,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct WalPayloadResponse {
+    pub payload_hash: ByteString,
+    pub payload_bytes: ByteString,
+}
+
+impl WalPayloadResponse {
+    pub fn from_proto(proto: WalPayloadResponseProto) -> Self {
+        Self {
+            payload_hash: proto.payload_hash,
+            payload_bytes: proto.payload_bytes,
+        }
+    }
+    pub fn to_proto(self) -> WalPayloadResponseProto {
+        WalPayloadResponseProto {
+            payload_hash: self.payload_hash,
+            payload_bytes: self.payload_bytes,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct HasWalPayloadRequest {
+    pub payload_hash: ByteString,
+}
+
+impl HasWalPayloadRequest {
+    pub fn from_proto(proto: HasWalPayloadRequestProto) -> Self {
+        Self {
+            payload_hash: proto.payload_hash,
+        }
+    }
+    pub fn to_proto(self) -> HasWalPayloadRequestProto {
+        HasWalPayloadRequestProto {
+            payload_hash: self.payload_hash,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct HasWalPayload {
+    pub payload_hash: ByteString,
+    pub payload_size: u32,
+}
+
+impl HasWalPayload {
+    pub fn from_proto(proto: HasWalPayloadProto) -> Self {
+        Self {
+            payload_hash: proto.payload_hash,
+            payload_size: proto.payload_size,
+        }
+    }
+    pub fn to_proto(self) -> HasWalPayloadProto {
+        HasWalPayloadProto {
+            payload_hash: self.payload_hash,
+            payload_size: self.payload_size,
         }
     }
 }

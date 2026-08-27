@@ -1,0 +1,467 @@
+// Phase 7b-2 WalPayloadRetriever (2026-08-27).
+//
+// Consumer-side counterpart of `WalPayloadResponse`.  Tracks which
+// `payload_hash`es a joining validator still needs to reconstruct
+// its WAL slice between the latest snapshot and the head block;
+// verifies each incoming response's bytes against the requested
+// hash (Blake2b256 self-consistency); returns verified bytes ready
+// to be applied to the joiner's local filesystem via the WAL
+// applier.
+//
+// Mirrors the shape of `SnapshotChunkRetriever` at
+// `casper/src/rust/engine/snapshot_chunk_retriever.rs` but keyed on
+// `payload_hash: [u8; 32]` instead of `(block_hash, chunk_index)`.
+// There is no anchored Merkle root here — a payload_hash IS its own
+// anchor: rehashing the returned bytes and comparing to the
+// requested hash is the entire verification.  This makes byzantine
+// response detection cheap (one Blake2b256 hash + one 32-byte
+// compare).
+//
+// # Layers of separation
+//
+// This module deliberately does NOT touch the comm layer directly.
+// It exposes:
+//
+//   * `PayloadRequestState` per pending payload — peers tried, last
+//     request timestamp, retry count.
+//   * `admit_response(response)` — verification + accept path.
+//     Returns `AdmitOutcome` describing what to do next.
+//
+// The comm-layer glue (peer selection, wire send, timeout ticker)
+// lives in the sibling `wal_payload_wire` / `wal_payload_sync`
+// modules.
+
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+use crypto::rust::hash::blake2b256::Blake2b256;
+use models::rust::casper::protocol::casper_message::WalPayloadResponse;
+use tokio::sync::RwLock;
+use tracing::debug;
+
+/// Per-payload request state.  One entry per `payload_hash` the
+/// joiner is trying to fetch.
+#[derive(Debug, Clone)]
+pub struct PayloadRequestState {
+    /// The 32-byte Blake2b256 hash identifying this payload.  Also
+    /// serves as the map key.
+    pub payload_hash: [u8; 32],
+    /// Unix timestamp (ms) of the last outbound request for this
+    /// payload.  Zero if never requested (fresh entry).
+    pub last_request_ms: u64,
+    /// Unix timestamp (ms) of the FIRST outbound request.  Used
+    /// for stale-eviction: an entry idle for too long gets
+    /// dropped.
+    pub initial_request_ms: u64,
+    /// Peers we've asked so far.  Used to rotate through peers on
+    /// retry rather than re-asking the same node.  Represented as
+    /// opaque `Vec<u8>` peer identifiers.
+    pub peers_tried: Vec<Vec<u8>>,
+    /// Number of retry attempts across peers.  Increments on each
+    /// timeout without a valid response.  Retriever gives up after
+    /// `MAX_RETRIES` and marks the request Failed.
+    pub retry_count: u32,
+    /// Verified payload bytes, or None while pending.
+    pub bytes: Option<Vec<u8>>,
+}
+
+/// Configuration constants.  Tuned for typical joiner scenarios;
+/// values mirror SnapshotChunkRetriever's defaults so operators
+/// have one set of knobs to tune.
+pub const MAX_RETRIES: u32 = 5;
+pub const REQUEST_TIMEOUT_MS: u64 = 30_000;
+pub const STALE_EVICTION_MS: u64 = 300_000;
+
+/// Security cap: max acceptable size for `payload_bytes` in a
+/// `WalPayloadResponse`.  Legit payloads are bounded by write-op
+/// semantics (single fs_write / fs_read reply).  Anything larger
+/// than the snapshot chunk size would already have been sharded by
+/// Phase 7b-1's chunker, so a between-snapshot payload above this
+/// cap is either malformed or a byzantine attempt to force us to
+/// hash arbitrary bytes.  Rejected with
+/// `AdmitOutcome::PayloadOversized` before any hashing runs.
+pub const MAX_PAYLOAD_BYTES: usize = 4 * 1024 * 1024; // == CHUNK_SIZE
+
+/// Outcome of `admit_response`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AdmitOutcome {
+    /// The payload verified and its bytes are now available.
+    /// Caller can hand them to the WAL applier.
+    PayloadAccepted,
+    /// The `payload_hash` has no matching request — the response
+    /// is unsolicited or belongs to a different join.  Drop
+    /// silently (log at debug).
+    UnknownRequest,
+    /// The response's `payload_hash` is not a 32-byte Blake2b256
+    /// digest.  Malformed peer.
+    MalformedPayloadHash,
+    /// The response's `payload_bytes` exceeds `MAX_PAYLOAD_BYTES`.
+    /// Byzantine peer trying to force us to hash arbitrary bytes.
+    PayloadOversized,
+    /// `Blake2b256(payload_bytes) != payload_hash`.  Peer's
+    /// response is byzantine or malformed.
+    PayloadHashMismatch,
+}
+
+/// Retriever state.  One instance per joiner covering all
+/// between-snapshot payloads simultaneously.  Unlike
+/// SnapshotChunkRetriever (per-snapshot), the WAL payload namespace
+/// is flat by hash, so a single retriever handles all pending
+/// payloads across arbitrarily many WAL slices.
+#[derive(Debug, Clone, Default)]
+pub struct WalPayloadRetriever {
+    /// Per-payload request state, keyed by payload_hash.
+    pub payloads: Arc<RwLock<HashMap<[u8; 32], PayloadRequestState>>>,
+}
+
+impl WalPayloadRetriever {
+    pub fn new() -> Self { Self::default() }
+
+    /// Register a payload_hash we need to fetch.  Idempotent: if
+    /// the hash is already tracked, this is a no-op.
+    pub async fn enqueue(&self, payload_hash: [u8; 32]) {
+        let mut g = self.payloads.write().await;
+        g.entry(payload_hash).or_insert(PayloadRequestState {
+            payload_hash,
+            last_request_ms: 0,
+            initial_request_ms: 0,
+            peers_tried: Vec::new(),
+            retry_count: 0,
+            bytes: None,
+        });
+    }
+
+    /// Number of payloads still pending (unverified).
+    pub async fn pending_count(&self) -> usize {
+        let g = self.payloads.read().await;
+        g.values().filter(|c| c.bytes.is_none()).count()
+    }
+
+    /// True iff every enqueued payload has been received + verified.
+    pub async fn is_complete(&self) -> bool { self.pending_count().await == 0 }
+
+    /// Enumerate payload hashes that still need to be fetched.
+    /// Ordered by hash for deterministic peer request patterns.
+    pub async fn pending_hashes(&self) -> Vec<[u8; 32]> {
+        let g = self.payloads.read().await;
+        let mut out: Vec<[u8; 32]> = g
+            .values()
+            .filter(|c| c.bytes.is_none())
+            .map(|c| c.payload_hash)
+            .collect();
+        out.sort();
+        out
+    }
+
+    /// Retrieve the verified bytes for a payload hash, if any.
+    /// Returns None if the payload is unknown or not yet received.
+    pub async fn get_bytes(&self, payload_hash: &[u8; 32]) -> Option<Vec<u8>> {
+        let g = self.payloads.read().await;
+        g.get(payload_hash).and_then(|s| s.bytes.clone())
+    }
+
+    /// Ingest a `WalPayloadResponse`.  Verifies:
+    ///   1. payload_bytes.len() <= MAX_PAYLOAD_BYTES.
+    ///   2. payload_hash is 32 bytes.
+    ///   3. Blake2b256(payload_bytes) == payload_hash.
+    ///
+    /// On success, stores the verified bytes and returns
+    /// `PayloadAccepted`.  On failure, returns the specific
+    /// mismatch variant so the caller can log + retry appropriately.
+    pub async fn admit_response(&self, response: &WalPayloadResponse) -> AdmitOutcome {
+        // Security cap — cheap, checked FIRST so byzantine oversized
+        // payloads are rejected before we do any hashing or map
+        // lookups.
+        if response.payload_bytes.len() > MAX_PAYLOAD_BYTES {
+            debug!(
+                target: "f1r3fly.casper.wal_payload_retriever",
+                payload_bytes_len = response.payload_bytes.len(),
+                cap = MAX_PAYLOAD_BYTES,
+                "payload_bytes exceeds MAX_PAYLOAD_BYTES; rejecting"
+            );
+            return AdmitOutcome::PayloadOversized;
+        }
+        let requested_hash = match slice_to_hash(&response.payload_hash) {
+            Some(h) => h,
+            None => return AdmitOutcome::MalformedPayloadHash,
+        };
+        // Verify the payload's self-consistency: Blake2b256 of the
+        // returned bytes must equal the requested hash.  This is
+        // the ONLY cryptographic check for WAL payloads — the hash
+        // IS the anchor, unlike snapshot chunks which need a
+        // Merkle-inclusion proof against a separately-anchored
+        // root.
+        let hash_of_bytes = hash_bytes(&response.payload_bytes);
+        if hash_of_bytes != requested_hash {
+            return AdmitOutcome::PayloadHashMismatch;
+        }
+        // Check that we actually asked for this hash.  Unsolicited
+        // responses are dropped silently.  (Doing this AFTER the
+        // hash check is deliberate: an unsolicited-but-correct
+        // response is still cheap to reject; an
+        // unsolicited-and-byzantine one is rejected on the same
+        // cheap path either way, and doing the hash check first
+        // gives us diagnostic information if a peer is spamming
+        // both.)
+        let mut g = self.payloads.write().await;
+        match g.get_mut(&requested_hash) {
+            Some(state) => {
+                if state.bytes.is_some() {
+                    // Duplicate arrival for a payload we already
+                    // verified.  Idempotent: drop silently.
+                    debug!(
+                        target: "f1r3fly.casper.wal_payload_retriever",
+                        "duplicate response for already-accepted payload"
+                    );
+                    return AdmitOutcome::PayloadAccepted;
+                }
+                state.bytes = Some(response.payload_bytes.to_vec());
+                AdmitOutcome::PayloadAccepted
+            }
+            None => AdmitOutcome::UnknownRequest,
+        }
+    }
+
+    /// Mark a payload request as sent — updates timestamps + peer
+    /// tracking.  Called by the outbound-request pipeline.
+    pub async fn record_request_sent(&self, payload_hash: &[u8; 32], peer_id: &[u8]) {
+        let now = now_ms();
+        let mut g = self.payloads.write().await;
+        if let Some(state) = g.get_mut(payload_hash) {
+            if state.initial_request_ms == 0 {
+                state.initial_request_ms = now;
+            }
+            state.last_request_ms = now;
+            if !state.peers_tried.iter().any(|p| p == peer_id) {
+                state.peers_tried.push(peer_id.to_vec());
+            }
+        }
+    }
+
+    /// Enumerate payload hashes whose last request has timed out
+    /// AND still have retries left.  The caller should re-issue
+    /// requests for these to alternative peers.
+    pub async fn timed_out_hashes(&self) -> Vec<[u8; 32]> {
+        let now = now_ms();
+        let g = self.payloads.read().await;
+        g.values()
+            .filter(|c| {
+                c.bytes.is_none()
+                    && c.last_request_ms > 0
+                    && now.saturating_sub(c.last_request_ms) >= REQUEST_TIMEOUT_MS
+                    && c.retry_count < MAX_RETRIES
+            })
+            .map(|c| c.payload_hash)
+            .collect()
+    }
+
+    /// Increment the retry count for a payload (called after
+    /// requeuing it to a new peer).
+    pub async fn record_retry(&self, payload_hash: &[u8; 32]) {
+        let mut g = self.payloads.write().await;
+        if let Some(state) = g.get_mut(payload_hash) {
+            state.retry_count += 1;
+        }
+    }
+
+    /// Drop payloads whose first-request timestamp is older than
+    /// STALE_EVICTION_MS.  Called periodically by the tick driver.
+    /// Returns how many were evicted (for metrics).
+    pub async fn evict_stale(&self) -> usize {
+        let now = now_ms();
+        let mut g = self.payloads.write().await;
+        let before = g.len();
+        g.retain(|_, state| {
+            state.bytes.is_some()
+                || state.initial_request_ms == 0
+                || now.saturating_sub(state.initial_request_ms) < STALE_EVICTION_MS
+        });
+        before - g.len()
+    }
+}
+
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or(Duration::from_secs(0))
+        .as_millis() as u64
+}
+
+fn hash_bytes(bytes: &[u8]) -> [u8; 32] {
+    let h = Blake2b256::hash(bytes.to_vec());
+    assert_eq!(h.len(), 32, "Blake2b256 must produce 32-byte digest");
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&h);
+    out
+}
+
+fn slice_to_hash(slice: &[u8]) -> Option<[u8; 32]> {
+    if slice.len() != 32 {
+        return None;
+    }
+    let mut out = [0u8; 32];
+    out.copy_from_slice(slice);
+    Some(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use prost::bytes::Bytes;
+
+    use super::*;
+
+    fn hash(bytes: &[u8]) -> [u8; 32] { hash_bytes(bytes) }
+
+    fn make_response(payload: &[u8]) -> WalPayloadResponse {
+        let h = hash(payload);
+        WalPayloadResponse {
+            payload_hash: Bytes::copy_from_slice(&h),
+            payload_bytes: Bytes::copy_from_slice(payload),
+        }
+    }
+
+    #[tokio::test]
+    async fn accepts_valid_payload_response() {
+        let payload = b"hello, wal payload".to_vec();
+        let response = make_response(&payload);
+        let retriever = WalPayloadRetriever::new();
+        retriever.enqueue(hash(&payload)).await;
+        assert_eq!(retriever.pending_count().await, 1);
+        let outcome = retriever.admit_response(&response).await;
+        assert_eq!(outcome, AdmitOutcome::PayloadAccepted);
+        assert_eq!(retriever.pending_count().await, 0);
+        assert!(retriever.is_complete().await);
+        let got = retriever.get_bytes(&hash(&payload)).await;
+        assert_eq!(got, Some(payload));
+    }
+
+    #[tokio::test]
+    async fn rejects_tampered_payload_bytes() {
+        let payload = b"the truth".to_vec();
+        let mut response = make_response(&payload);
+        // Corrupt the bytes so the hash no longer matches.
+        response.payload_bytes = Bytes::from_static(b"a lie");
+        let retriever = WalPayloadRetriever::new();
+        retriever.enqueue(hash(&payload)).await;
+        assert_eq!(
+            retriever.admit_response(&response).await,
+            AdmitOutcome::PayloadHashMismatch
+        );
+        // Still pending — the failed response did not consume the slot.
+        assert_eq!(retriever.pending_count().await, 1);
+    }
+
+    #[tokio::test]
+    async fn rejects_unsolicited_payload() {
+        let payload = b"unsolicited".to_vec();
+        let response = make_response(&payload);
+        let retriever = WalPayloadRetriever::new();
+        // Note: we did NOT enqueue.
+        assert_eq!(
+            retriever.admit_response(&response).await,
+            AdmitOutcome::UnknownRequest
+        );
+    }
+
+    #[tokio::test]
+    async fn rejects_malformed_payload_hash() {
+        let mut response = make_response(b"payload");
+        // Truncate the hash to 16 bytes.
+        response.payload_hash = Bytes::copy_from_slice(&[0u8; 16]);
+        let retriever = WalPayloadRetriever::new();
+        assert_eq!(
+            retriever.admit_response(&response).await,
+            AdmitOutcome::MalformedPayloadHash
+        );
+    }
+
+    /// Security cap: an oversized payload_bytes is rejected BEFORE
+    /// we hash anything.  Defends against per-response CPU
+    /// exhaustion.
+    #[tokio::test]
+    async fn rejects_oversized_payload_before_hashing() {
+        let bogus_hash = [0u8; 32];
+        let response = WalPayloadResponse {
+            payload_hash: Bytes::copy_from_slice(&bogus_hash),
+            payload_bytes: Bytes::from(vec![0u8; MAX_PAYLOAD_BYTES + 1]),
+        };
+        let retriever = WalPayloadRetriever::new();
+        retriever.enqueue(bogus_hash).await;
+        assert_eq!(
+            retriever.admit_response(&response).await,
+            AdmitOutcome::PayloadOversized,
+        );
+    }
+
+    #[tokio::test]
+    async fn duplicate_response_for_accepted_payload_is_idempotent() {
+        let payload = b"idempotent".to_vec();
+        let response = make_response(&payload);
+        let retriever = WalPayloadRetriever::new();
+        retriever.enqueue(hash(&payload)).await;
+        assert_eq!(
+            retriever.admit_response(&response).await,
+            AdmitOutcome::PayloadAccepted
+        );
+        assert_eq!(
+            retriever.admit_response(&response).await,
+            AdmitOutcome::PayloadAccepted
+        );
+        assert_eq!(retriever.pending_count().await, 0);
+    }
+
+    #[tokio::test]
+    async fn enqueue_is_idempotent() {
+        let payload = b"e".to_vec();
+        let retriever = WalPayloadRetriever::new();
+        retriever.enqueue(hash(&payload)).await;
+        retriever.enqueue(hash(&payload)).await;
+        assert_eq!(retriever.pending_count().await, 1);
+    }
+
+    #[tokio::test]
+    async fn record_request_sent_tracks_peers_and_timestamps() {
+        let payload = b"track".to_vec();
+        let h = hash(&payload);
+        let retriever = WalPayloadRetriever::new();
+        retriever.enqueue(h).await;
+        retriever.record_request_sent(&h, b"peer-alice").await;
+        retriever.record_request_sent(&h, b"peer-bob").await;
+        retriever.record_request_sent(&h, b"peer-alice").await; // dup
+        let g = retriever.payloads.read().await;
+        let state = g.get(&h).unwrap();
+        assert_eq!(state.peers_tried.len(), 2);
+        assert!(state.last_request_ms > 0);
+        assert!(state.initial_request_ms > 0);
+    }
+
+    #[tokio::test]
+    async fn pending_hashes_are_sorted() {
+        let retriever = WalPayloadRetriever::new();
+        let mut hashes: Vec<[u8; 32]> = (0u8..4).map(|i| hash(&[i; 8])).collect();
+        for h in &hashes {
+            retriever.enqueue(*h).await;
+        }
+        hashes.sort();
+        assert_eq!(retriever.pending_hashes().await, hashes);
+    }
+
+    #[tokio::test]
+    async fn evict_stale_drops_old_pending_entries() {
+        let payload = b"stale".to_vec();
+        let h = hash(&payload);
+        let retriever = WalPayloadRetriever::new();
+        retriever.enqueue(h).await;
+        // Fake an initial_request_ms in the distant past.
+        {
+            let mut g = retriever.payloads.write().await;
+            let s = g.get_mut(&h).unwrap();
+            s.initial_request_ms = 1; // ~= epoch
+            s.last_request_ms = 1;
+        }
+        let evicted = retriever.evict_stale().await;
+        assert_eq!(evicted, 1);
+        assert_eq!(retriever.pending_count().await, 0);
+    }
+}

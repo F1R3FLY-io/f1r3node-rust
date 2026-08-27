@@ -5,10 +5,11 @@ use prost::Message;
 use crate::casper::{
     ApprovedBlockProto, ApprovedBlockRequestProto, BlockApprovalProto, BlockHashMessageProto,
     BlockMessageProto, BlockRequestProto, ForkChoiceTipRequestProto, GetSnapshotChunkRequestProto,
-    HasBlockProto, HasBlockRequestProto, HasSnapshotProto, HasSnapshotRequestProto,
+    GetWalPayloadRequestProto, HasBlockProto, HasBlockRequestProto, HasSnapshotProto,
+    HasSnapshotRequestProto, HasWalPayloadProto, HasWalPayloadRequestProto,
     MergeableEntryRequestProto, MergeableEntryResponseProto, NoApprovedBlockAvailableProto,
     SnapshotChunkResponseProto, StoreItemsMessageProto, StoreItemsMessageRequestProto,
-    UnapprovedBlockProto,
+    UnapprovedBlockProto, WalPayloadResponseProto,
 };
 use crate::routing::Packet;
 
@@ -57,3 +58,8 @@ impl_packet!(GetSnapshotChunkRequestProto, "GetSnapshotChunkRequest");
 impl_packet!(SnapshotChunkResponseProto, "SnapshotChunkResponse");
 impl_packet!(HasSnapshotRequestProto, "HasSnapshotRequest");
 impl_packet!(HasSnapshotProto, "HasSnapshot");
+// Phase 7b-2 between-snapshot WAL payload fetch (2026-08-27).
+impl_packet!(GetWalPayloadRequestProto, "GetWalPayloadRequest");
+impl_packet!(WalPayloadResponseProto, "WalPayloadResponse");
+impl_packet!(HasWalPayloadRequestProto, "HasWalPayloadRequest");
+impl_packet!(HasWalPayloadProto, "HasWalPayload");

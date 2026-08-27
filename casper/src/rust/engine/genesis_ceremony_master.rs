@@ -160,6 +160,28 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> GenesisCeremonyMaster<T>
                     )
                     .await;
 
+                // Phase 7b-2 (2026-08-27): WAL payload-fetch
+                // context.  Uses an in-memory payload store as the
+                // initial backing; a follow-up slice will populate
+                // it from journal writes.
+                let wal_payload_ctx = {
+                    use std::sync::Arc as StdArc;
+
+                    use crate::rust::engine::running::WalPayloadContext;
+                    use crate::rust::engine::wal_payload_retriever::WalPayloadRetriever;
+                    use crate::rust::engine::wal_payload_server::InMemoryPayloadStore;
+                    use crate::rust::engine::wal_payload_sync::WalPayloadSyncDriver;
+                    let retriever = StdArc::new(WalPayloadRetriever::new());
+                    let sync_driver =
+                        StdArc::new(WalPayloadSyncDriver::new(StdArc::clone(&retriever)));
+                    let lookup: StdArc<dyn crate::rust::engine::wal_payload_server::PayloadLookup> =
+                        StdArc::new(InMemoryPayloadStore::new());
+                    Some(WalPayloadContext {
+                        sync_driver,
+                        payload_lookup: lookup,
+                    })
+                };
+
                 transition_to_running(
                     block_processing_queue_tx.clone(),
                     blocks_in_processing.clone(),
@@ -172,6 +194,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> GenesisCeremonyMaster<T>
                     block_retriever.clone(),
                     None,
                     snapshot_chunk_ctx,
+                    wal_payload_ctx,
                     &engine_cell,
                     event_publisher,
                 )
