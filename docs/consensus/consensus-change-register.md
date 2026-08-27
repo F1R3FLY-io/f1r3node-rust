@@ -5688,6 +5688,24 @@ contracts, adaptive child lookup, explicit budgets, and a 20,000-object structur
 not implement the mutation WAL, crash recovery, pack compaction, legacy differential migration, or
 LMDB performance/storage comparison, and it does not authorize production cutover.
 
+The 2026-08-27 normalized-mutation continuation adds a second dormant layer. A mutation batch is
+bound to the exact base manifest and catalog generation, requires the checked immediately following
+target generation, and carries exact before/after states for DataBag, ContinuationMap, and JoinBag.
+Sequential changes are admitted only when their boundary states agree; inverse changes disappear.
+Canonical bytes come from immutable CoW mutation tries in zipper order, with an independent payload
+version, fixed namespace order, strict unique RhoPathV1 keys, exact consumption, and total
+entry/key-byte budgets. Recovery may iterate a validated borrowed payload without rebuilding those
+tries; producer errors poison the whole batch. Focused mutation evidence passes 14/14 cases; the
+combined persistence module passes 43/43, including a fixed payload digest, fallible-sink failure,
+borrowed-range provenance, the full `u64` count domain, and a 100,000-byte key on a 256 KiB native
+stack. `LegacyHistoryRoot` remains ancestry metadata and cannot authorize a recovery transition.
+
+This remains `NO_PRODUCTION_CHANGE_DERIVED`. The normalized codec has no production checkpoint,
+history, startup, matcher, COMM, or catalog caller. It neither writes a physical WAL nor rewrites a
+durable DAG, publishes a manifest, changes LMDB, or alters legacy history bytes. Later activation
+must re-enter this register with affected-frontier rewrite equivalence, private-stage failure
+atomicity, binary WAL crash recovery, and mixed-version/migration evidence.
+
 ### B.2 The original commit-level exemptions
 
 Every commit in `7293d57c..dc383ed1` touching the consensus-critical path set, that is **not** a

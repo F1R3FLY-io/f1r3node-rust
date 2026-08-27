@@ -10796,6 +10796,43 @@ next stack/resource obligation begins when the normalized mutation WAL streams t
 objects into durable packs. PathMap journal J-034 records the representation decision; CBR-053
 records that the format remains dormant and consensus-neutral at this checkpoint.
 
+### 5.49 Normalized PathMap mutation-journal cursor [SS-C22]
+
+The next persistence component represents each touched semantic endpoint by its exact before and
+after state. Data and joins use zero-or-positive `u64` counts; continuations use optional immutable
+content references. A PathMap per namespace coalesces sequential changes, checks that the next
+observed state equals the prior result, retains the original base state, and removes inverse
+transitions that return to that base. This compare-and-swap form is the smallest replay language
+that both rejects a stale base and recognizes an already-installed target without applying an
+arithmetic delta twice.
+
+Canonical preflight and emission retain immutable CoW roots and traverse them with read zippers.
+For $`m`$ changed endpoints and $`b`$ total changed-key bytes, both passes take $`O(m+b)`$ time.
+The retained mutation authority is the prefix-compressed trie itself, so no $`O(m)`$ entry
+projection or sort is introduced. Decoder heap space is $`O(m+b)`$ for the admitted mutation tries;
+native-stack use is $`O(1)`$ in key depth. Total entry and key-byte limits bound hostile input but
+do not limit an individual path's depth.
+
+Recovery can retain a validated borrowed view and iterate key ranges from the payload itself; it
+does not need the producer-side PathMaps or an intermediate entry collection. Any producer error
+poisons the complete builder, preventing publication of an earlier accumulated prefix.
+
+The executable gate passes **14/14** focused mutation cases and **43/43** complete persistence
+cases. Its depth anti-vacuity witness round-trips a 100,000-byte RhoPathV1 datum key on a 256 KiB
+native stack. Malformed tests cover generation discontinuity, section permutation, duplicate or
+descending keys, invalid RhoPath syntax, equal states, reference/presence corruption, trailing
+bytes, and independent entry/key resource ceilings. A fixed digest pins the independently versioned
+payload, a fallible sink proves direct replay stops on destination failure, and zero-copy pointer
+provenance proves borrowed keys remain within the admitted input image. The production-library
+Clippy gate also passes under the same dormant-module allowances used by SS-C21.
+
+This result proves the in-memory normalization and canonical streaming payload only. The next
+stack-safety proof must cover the affected-frontier DAG rewrite's bottom-up frame machine and its
+private staging overlay. Physical WAL scanning, pack recovery, catalog publication, and pack
+compaction remain unimplemented and make no performance or crash-consistency claim here. PathMap
+journal J-035 gives the byte/transaction rationale; consensus register CBR-053 retains the dormant
+classification.
+
 ---
 
 ## 6. Discussion

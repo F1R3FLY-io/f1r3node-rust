@@ -8,6 +8,7 @@
 mod canonical;
 mod closure;
 mod manifest;
+mod mutation;
 mod object;
 mod semantic;
 mod store;
@@ -23,6 +24,11 @@ pub use manifest::{
     AcceleratorArtifact, AcceleratorArtifactKind, AcceleratorManifestV1, AcceleratorManifestView,
     LegacyHistoryRoot, NamespaceRoot, SemanticNamespace, SemanticRoots, SemanticStateManifestV1,
     SemanticStateManifestView,
+};
+pub use mutation::{
+    ContentMutationEntry, ContentMutationIter, ContentTransition, CountMutationEntry,
+    CountMutationIter, CountTransition, MutationBatchPlanV1, MutationBatchViewV1,
+    MutationDecodeLimits, MutationError, RSpaceMutationBatchV1, StateVersionV1,
 };
 pub use object::{
     BranchKind, CanonicalBlob, CanonicalBlobKind, CanonicalBlobView, CanonicalDagNode,

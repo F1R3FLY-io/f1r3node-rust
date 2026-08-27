@@ -2452,6 +2452,85 @@ milestone must build the normalized three-namespace mutation journal against thi
 fully verified manifest may become durable current-root authority. Consensus register CBR-053 and
 stack-safety report §5.48 carry the corresponding dormant-format and resource claims.
 
+### J-035 — 2026-08-27: journal exact state transitions, not arithmetic commands
+
+**PROBLEM.** An addition/removal-only write-ahead log is insufficient for safe recovery. Replaying
+`add(path, 3)` cannot distinguish the intended base state from a stale state, and replaying it after
+the target was already installed applies the change twice. Continuation insertion is even more
+order-sensitive: the resident contract retains the first source admitted for a source-free
+identity, so an unqualified `put` does not state whether the endpoint was observed absent.
+
+**DECISION.** `RSpaceMutationBatchV1` is bound to a base semantic-manifest reference and catalog
+generation. Its target generation is exactly the checked successor. Every changed endpoint is one
+compare-and-swap (CAS) transition:
+
+| Namespace | Normalized value | Absent representation |
+|---|---|---|
+| `DataBag` | `(before: u64, after: u64)` | count zero |
+| `ContinuationMap` | `(before: Option<ObjectRefV1>, after: Option<ObjectRefV1>)` | `None` |
+| `JoinBag` | `(before: u64, after: u64)` | count zero |
+
+Equal before/after pairs are absent from the batch. Sequential changes to one path must be
+continuous: the next `before` equals the retained `after`; normalization retains the first
+`before`, updates only the final `after`, and deletes the entry when it returns to its base value.
+Thus producer operations retain their natural meaning—checked Bag arithmetic and continuation
+first-wins insertion—while both the resident CoW applicator and the durable DAG applicator receive
+the same exact transition. Reapplying a committed batch to its target recognizes the `after`
+state; applying it to a third state fails rather than guessing.
+
+The canonical journal payload has a fixed 16-byte domain, an independently versioned mutation
+schema, base/target generation, exact base manifest reference, and exactly three ordered sections.
+Each mutation family is itself a PathMap.
+Preflight and replay visit its zipper directly in strict byte order; there is no base-state scan,
+entry vector, semantic sort, ACT construction, or path-depth cap. The parser enforces exact section
+order and consumption, strict unique keys, complete RhoPathV1 syntax, non-noop transitions,
+contiguous generation, valid optional-reference tags, and caller-supplied total entry/key-byte
+budgets.
+
+**ALGORITHM.** For one path, normalization is the following small state machine:
+
+```text
+if path is untouched:
+    retain (observed_before, successful_after) unless they are equal
+else:
+    require retained.after = observed_before
+    replace retained.after with successful_after
+    remove the transition if retained.before = retained.after
+```
+
+For a frozen checkpoint, one immutable CoW clone of each mutation trie forms a streaming plan.
+Length preflight and emission traverse the same retained roots, so later live mutations cannot
+change the WAL transcript. Any producer error poisons the complete builder; a caller cannot ignore
+one rejected operation and publish the previously accumulated prefix. Recovery obtains a validated
+borrowed view whose iterators lend key ranges directly from the payload rather than rebuilding the
+three producer PathMaps. The payload exposes its digest as a transaction identifier, not a generic
+`ObjectRefV1`, because the semantic object store deliberately rejects journal domains. The future
+DAG compiler must place newly generated objects in a private
+overlay, validate the complete target through `base_store + staging_store`, and only then admit the
+prepared object set. Immediate per-object admission is not transaction publication: it would leave
+unreachable objects after a later compilation failure. Such unreachable bytes are harmless to
+authority but are avoidable before the physical pack layer exists.
+
+`LegacyHistoryRoot` remains preserved ancestry metadata after a mutation descended from an imported
+legacy state. It is never evidence that a later manifest equals that legacy root and never
+authorizes WAL recovery; the external verified catalog binding owns that decision.
+
+**EVIDENCE.** The focused mutation matrix passes **14/14** cases and the complete persistence module
+passes **43/43** under a 6 GiB RSS ceiling, zero swap, and eight compiler cores. Tests cover all
+three sections, byte-for-byte decode/re-encode, insertion-order invariance, multi-step coalescing,
+inverse cancellation, whole-batch poisoning after discontinuity, immutable-plan CoW isolation,
+zero-copy borrowed iteration, a pinned payload digest, fallible-sink propagation, the complete
+`u64` multiplicity domain, generation/section/order/key/noop/reference/presence/trailing corruption,
+total resource limits, and a 100,000-byte key encoded and decoded on a 256 KiB native stack. The
+production-library Clippy gate
+passes with only the persistence module's intentionally dormant reachability allowances.
+
+**BOUNDARY.** This checkpoint defines the canonical mutation payload and pure normalization. The
+iterative affected-frontier DAG rewrite, private staging overlay, resident transition sidecars,
+physical binary WAL frames, pack/catalog synchronization, crash recovery, compaction, migration,
+and LMDB comparison remain subsequent measured milestones. No production caller can yet change
+checkpoint or recovery behavior.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's
