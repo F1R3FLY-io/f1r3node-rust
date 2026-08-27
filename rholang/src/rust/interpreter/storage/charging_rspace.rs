@@ -223,6 +223,13 @@ impl ChargingRSpace {
             async fn update_produce(&self, produce: Produce) -> () {
                 self.space.update_produce(produce).await
             }
+
+            async fn set_report_phase(
+                &self,
+                phase: rspace_plus_plus::rspace::reporting_rspace::ReportPhase,
+            ) {
+                self.space.set_report_phase(phase).await
+            }
         }
 
         ChargingRSpace { space, cost }

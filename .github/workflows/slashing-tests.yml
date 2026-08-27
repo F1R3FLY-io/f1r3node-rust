@@ -236,7 +236,7 @@ jobs:
           bash scripts/ci/check-formal-invariants.sh "${args[@]}"
 
   rocq-build:
-    name: Rocq slashing and fork-choice rebuild
+    name: Rocq slashing, fork-choice and rspace-guards rebuild
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
