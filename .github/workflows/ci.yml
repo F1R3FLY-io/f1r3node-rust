@@ -457,15 +457,11 @@ jobs:
     name: Test (${{ matrix.crate }})
     needs: [build_base, lint]
     runs-on: ubuntu-latest
-    # casper gets 45: its suite takes ~23 minutes on a nominal runner, so a
-    # slow-runner day (2026-08-27: 9m36s rebuild + degraded test throughput)
-    # overruns a flat 30. All other crates finish in under 10 minutes.
-    timeout-minutes: ${{ matrix.crate == 'casper' && 45 || 30 }}
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
         crate:
-          - casper
           - rspace_plus_plus
           - rholang
           - shared
@@ -529,6 +525,108 @@ jobs:
           name: test-logs-${{ matrix.crate }}
           path: /tmp/test-logs/
           retention-days: 7
+
+  # casper is the one crate whose suite does not reliably fit the shared
+  # 30-minute test-job ceiling: ~23 minutes on a nominal runner (7m build +
+  # 15m tests), which a degraded runner overran on 2026-08-27 with every
+  # completed test passing. It runs here as two nextest count-partition
+  # shards so each leg carries roughly half the test wall-clock. Larger
+  # GitHub-hosted runners are not an option: the org's plan does not support
+  # them, and OCI ephemeral runners are reserved for the approval-gated
+  # heavy pipeline (shared daily instance quota).
+  test_casper:
+    name: Test (casper ${{ matrix.partition }}/2)
+    needs: [build_base, lint]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        partition: [1, 2]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.build_base.outputs.TARGET_SHA }}
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2026-02-09
+
+      - name: Cache dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: test-casper
+
+      - name: Install system dependencies
+        run: bash .github/scripts/install-system-dependencies.sh
+
+      - name: Install nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: nextest
+
+      - name: Run tests (shard ${{ matrix.partition }}/2)
+        env:
+          RUSTFLAGS: "-C target-feature=+aes,+sse2 -D warnings"
+          RUST_BACKTRACE: "1"
+          RUST_MIN_STACK: "8388608"
+        # Explicit pipefail: cargo's exit status survives the `tee` pipe, and
+        # `|| var=$?` captures it without tripping `-e`. This avoids the
+        # PIPESTATUS idiom, which silently depends on pipefail staying off.
+        shell: bash -euo pipefail {0}
+        run: |
+          ulimit -n 65536
+          mkdir -p /tmp/test-logs
+          # `count:m/2` deals tests round-robin across the two shards, so the
+          # slow convergence/recursion specs spread over both legs instead of
+          # landing together. `--no-tests=pass` tolerates an empty shard.
+          nt=0
+          cargo nextest run --release -p casper --no-tests=pass \
+            --partition count:${{ matrix.partition }}/2 2>&1 \
+            | tee /tmp/test-logs/casper-${{ matrix.partition }}.txt || nt=$?
+          # nextest does NOT run doctests, and doctests cannot be partitioned;
+          # shard 1 runs them once for the whole crate.
+          dt=0
+          if [ "${{ matrix.partition }}" = "1" ]; then
+            cargo test --release -p casper --doc 2>&1 \
+              | tee /tmp/test-logs/casper-doc.txt || dt=$?
+          fi
+          echo "nextest exit=$nt doctest exit=$dt"
+          [ "$nt" -eq 0 ] && [ "$dt" -eq 0 ]
+
+      - name: Upload test logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-logs-casper-${{ matrix.partition }}
+          path: /tmp/test-logs/
+          retention-days: 7
+
+  # Ruleset gate. The branch ruleset requires a status check named exactly
+  # `Test (casper)` (formerly the matrix leg's name). This collapses the two
+  # shard jobs into that one required context, in the same style as the
+  # per-arch integration aggregators below. `needs` on a matrix job resolves
+  # to success only when every shard succeeds.
+  test_casper_gate:
+    name: Test (casper)
+    needs: test_casper
+    # Skip (rather than fail) when the shards never ran — e.g. lint failed —
+    # matching how the former single `Test (casper)` leg reported.
+    if: always() && needs.test_casper.result != 'skipped'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check casper shards
+        shell: bash -e {0}
+        run: |
+          result="${{ needs.test_casper.result }}"
+          if [ "$result" != "success" ]; then
+            echo "casper shard matrix concluded: $result"
+            exit 1
+          fi
+          echo "Both casper shards succeeded"
 
   # Heavy pipeline (native Docker build -> ephemeral OCI runner launch ->
   # integration matrix -> smoke) lives in the reusable _integration-pipeline.yml.
