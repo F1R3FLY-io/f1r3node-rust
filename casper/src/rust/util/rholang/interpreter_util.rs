@@ -1259,6 +1259,9 @@ pub async fn compute_parents_post_state(
                 buffer_populated: rejected_deploy_buffer.is_some(),
             };
             if let Some(cached) = runtime_manager.get_cached_parents_post_state(&cache_key) {
+                let cache_lookup_elapsed = cache_lookup_started.elapsed();
+                metrics::histogram!(PARENTS_POST_STATE_CACHE_LOOKUP_TIME_METRIC, "source" => CASPER_METRICS_SOURCE, "result" => "hit")
+                    .record(cache_lookup_elapsed.as_secs_f64());
                 tracing::debug!(
                     target: "f1r3fly.casper.compute_parents_post_state.cache",
                     "compute_parents_post_state cache hit: parents={}, rejected_deploys={}, rejected_slashes={}",
@@ -1270,7 +1273,7 @@ pub async fn compute_parents_post_state(
                     target: "f1r3fly.casper.compute_parents_post_state.timing",
                     "compute_parents_post_state timing: path=cache_hit, parents={}, cache_lookup_ms={}, total_ms={}",
                     cache_key.sorted_parent_hashes.len(),
-                    cache_lookup_started.elapsed().as_millis(),
+                    cache_lookup_elapsed.as_millis(),
                     total_started.elapsed().as_millis()
                 );
                 tracing::debug!(
@@ -1284,9 +1287,10 @@ pub async fn compute_parents_post_state(
                 );
                 return Ok(cached);
             }
-            let cache_lookup_ms = cache_lookup_started.elapsed().as_millis();
-            metrics::histogram!(PARENTS_POST_STATE_CACHE_LOOKUP_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
-                .record(cache_lookup_started.elapsed().as_secs_f64());
+            let cache_lookup_elapsed = cache_lookup_started.elapsed();
+            let cache_lookup_ms = cache_lookup_elapsed.as_millis();
+            metrics::histogram!(PARENTS_POST_STATE_CACHE_LOOKUP_TIME_METRIC, "source" => CASPER_METRICS_SOURCE, "result" => "miss")
+                .record(cache_lookup_elapsed.as_secs_f64());
 
             // Function to get or compute BlockIndex for each parent block hash
             let block_index_f = |v: &BlockHash| -> Result<BlockIndex, CasperError> {
@@ -1354,9 +1358,10 @@ pub async fn compute_parents_post_state(
                         .await?
                 }
             };
-            let floor_derive_ms = floor_derive_started.elapsed().as_millis();
+            let floor_derive_elapsed = floor_derive_started.elapsed();
+            let floor_derive_ms = floor_derive_elapsed.as_millis();
             metrics::histogram!(PARENTS_POST_STATE_FLOOR_DERIVE_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
-                .record(floor_derive_started.elapsed().as_secs_f64());
+                .record(floor_derive_elapsed.as_secs_f64());
 
             // The merge base is the MAIN PARENT, not the floor. A block extends
             // its main parent on the spine, so building its state from anywhere
@@ -1686,6 +1691,11 @@ pub async fn compute_parents_post_state(
             // but their effects are already in the base and re-applying would
             // double them. The floor context's memo is keyed on the floor and
             // cannot answer this question.
+            // The probe closures run per unique sig from inside the merge, so
+            // the counter handles are registered once here; only the plain
+            // increments run on the hot path.
+            let settled_probe_calls = metrics::counter!(PARENTS_POST_STATE_SETTLED_PROBE_CALLS_METRIC, "source" => CASPER_METRICS_SOURCE);
+            let settled_probe_time_ns = metrics::counter!(PARENTS_POST_STATE_SETTLED_PROBE_TIME_NS_METRIC, "source" => CASPER_METRICS_SOURCE);
             let sig_settled_in_base = |sig: &Bytes| -> Result<bool, CasperError> {
                 let probe_started = std::time::Instant::now();
                 let result = crate::rust::finality::deploy_lifecycle::effect_in_state_of(
@@ -1694,10 +1704,8 @@ pub async fn compute_parents_post_state(
                     sig,
                     settled_walk_bound,
                 );
-                metrics::counter!(PARENTS_POST_STATE_SETTLED_PROBE_CALLS_METRIC, "source" => CASPER_METRICS_SOURCE)
-                    .increment(1);
-                metrics::counter!(PARENTS_POST_STATE_SETTLED_PROBE_TIME_NS_METRIC, "source" => CASPER_METRICS_SOURCE)
-                    .increment(probe_started.elapsed().as_nanos() as u64);
+                settled_probe_calls.increment(1);
+                settled_probe_time_ns.increment(probe_started.elapsed().as_nanos() as u64);
                 result
             };
             // Prior-rejection counts (issue #294): kept records from every
@@ -1745,9 +1753,10 @@ pub async fn compute_parents_post_state(
                         .ok_or_else(|| CasperError::BlockNotHeld(hash.clone()))
                 })?
             };
-            let prior_rejection_counts_ms = prior_rejection_started.elapsed().as_millis();
+            let prior_rejection_elapsed = prior_rejection_started.elapsed();
+            let prior_rejection_counts_ms = prior_rejection_elapsed.as_millis();
             metrics::histogram!(PARENTS_POST_STATE_PRIOR_REJECTION_COUNTS_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
-                .record(prior_rejection_started.elapsed().as_secs_f64());
+                .record(prior_rejection_elapsed.as_secs_f64());
             // Settled-floor probe for the merge's settled-content protection
             // (#341): the same settled definition as the post-merge
             // `assert_no_settled_rejection` tripwire, evaluated BEFORE
@@ -1773,10 +1782,8 @@ pub async fn compute_parents_post_state(
                     }
                     Ok(false)
                 })();
-                metrics::counter!(PARENTS_POST_STATE_SETTLED_PROBE_CALLS_METRIC, "source" => CASPER_METRICS_SOURCE)
-                    .increment(1);
-                metrics::counter!(PARENTS_POST_STATE_SETTLED_PROBE_TIME_NS_METRIC, "source" => CASPER_METRICS_SOURCE)
-                    .increment(probe_started.elapsed().as_nanos() as u64);
+                settled_probe_calls.increment(1);
+                settled_probe_time_ns.increment(probe_started.elapsed().as_nanos() as u64);
                 result
             };
             let merge_started = std::time::Instant::now();
@@ -1799,9 +1806,10 @@ pub async fn compute_parents_post_state(
                 &base_lineage_blocks,
                 &prior_rejection_counts,
             )?;
-            let merge_ms = merge_started.elapsed().as_millis();
+            let merge_elapsed = merge_started.elapsed();
+            let merge_ms = merge_elapsed.as_millis();
             metrics::histogram!(PARENTS_POST_STATE_MERGE_CALL_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
-                .record(merge_started.elapsed().as_secs_f64());
+                .record(merge_elapsed.as_secs_f64());
             let post_merge_started = std::time::Instant::now();
 
             let (state, mut rejected_user_records, rejected_slash_pairs, applied_user_sigs) =
@@ -2085,8 +2093,9 @@ pub async fn compute_parents_post_state(
                 "merge.cpps: cache put merged parents-post-state"
             );
             runtime_manager.put_cached_parents_post_state(cache_key, merged.clone());
+            let post_merge_elapsed = post_merge_started.elapsed();
             metrics::histogram!(PARENTS_POST_STATE_POST_MERGE_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
-                .record(post_merge_started.elapsed().as_secs_f64());
+                .record(post_merge_elapsed.as_secs_f64());
             tracing::debug!(
                 target: "f1r3fly.casper.compute_parents_post_state.timing",
                 "compute_parents_post_state timing: path=merged, parents={}, cache_lookup_ms={}, collect_ancestors_ms={}, flatten_visible_ms={}, floor_derive_ms={}, prior_rejection_counts_ms={}, merge_ms={}, post_merge_ms={}, visible_blocks={}, rejected_deploys={}, rejected_slashes={}, total_ms={}",
@@ -2097,7 +2106,7 @@ pub async fn compute_parents_post_state(
                 floor_derive_ms,
                 prior_rejection_counts_ms,
                 merge_ms,
-                post_merge_started.elapsed().as_millis(),
+                post_merge_elapsed.as_millis(),
                 visible_blocks_len,
                 merged.rejected_user.len(),
                 merged.rejected_slashes.len(),
