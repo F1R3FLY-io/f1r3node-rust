@@ -500,6 +500,42 @@ impl SnapshotChunkSyncDriver {
     pub fn snapshot_dir(&self) -> &std::path::Path { &self.snapshot_dir }
 }
 
+/// Boot-time factory: assemble the joiner-side snapshot chunk-fetch
+/// wiring from a live RuntimeManager.  Returns `None` when the node
+/// has no `fs_snapshot_writer` configured — that includes:
+///   * Observer nodes without a snapshot cache directory.
+///   * Test harnesses that construct RuntimeManager without a
+///     writer.
+///   * Boot windows before `set_fs_snapshot_writer` runs (callers
+///     should invoke this AFTER the writer is installed).
+///
+/// The returned `SnapshotChunkContext` holds an `Arc` to the
+/// runtime_manager's `snapshot_merkle_roots` cache (shared with
+/// finalization_runner's write side) and a fresh
+/// `SnapshotChunkSyncDriver` that owns its own per-block sync state.
+/// Callers thread the context into `Running::install_snapshot_chunk_context`
+/// AND `spawn_periodic_tick`.
+pub async fn build_snapshot_chunk_context(
+    runtime_manager: &crate::rust::util::rholang::runtime_manager::RuntimeManager,
+) -> Option<crate::rust::engine::running::SnapshotChunkContext> {
+    let writer_opt = runtime_manager.fs_snapshot_writer.read().await.clone();
+    let writer = writer_opt?;
+    let snapshot_dir = writer.dir.clone();
+    let sync_driver = Arc::new(SnapshotChunkSyncDriver::new(snapshot_dir.clone()));
+    // Boot enumerator: any anchors we already know about but
+    // haven't materialized on disk get enqueued for fetch.
+    let _ = enumerate_and_enqueue_missing_snapshots(
+        &sync_driver,
+        &runtime_manager.snapshot_merkle_roots,
+    )
+    .await;
+    Some(crate::rust::engine::running::SnapshotChunkContext {
+        sync_driver,
+        snapshot_dir,
+        snapshot_merkle_roots: Arc::clone(&runtime_manager.snapshot_merkle_roots),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use prost::bytes::Bytes;

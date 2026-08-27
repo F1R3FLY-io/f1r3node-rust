@@ -213,6 +213,13 @@ pub async fn transition_to_running<U: TransportLayer + Send + Sync + Clone + 'st
     conf: RPConf,
     block_retriever: BlockRetriever<U>,
     recovery_context: Option<crate::rust::engine::running::RunningRecoveryContext>,
+    // Phase 7b-1 (2026-08-27): optional snapshot chunk-fetch
+    // context.  When Some, the running engine's packet dispatch
+    // routes snapshot-related CasperMessage variants to the
+    // sync driver + server handlers.  A companion periodic tick
+    // task is spawned to drive outbound requests on a live
+    // schedule.  None on nodes without an fs_snapshot_writer.
+    snapshot_chunk_ctx: Option<crate::rust::engine::running::SnapshotChunkContext>,
     engine_cell: &EngineCell,
     event_log: &F1r3flyEvents,
 ) -> Result<(), CasperError> {
@@ -248,11 +255,30 @@ pub async fn transition_to_running<U: TransportLayer + Send + Sync + Clone + 'st
         approved_block,
         the_init,
         disable_state_exporter,
-        transport,
-        conf,
+        transport.clone(),
+        conf.clone(),
         block_retriever,
-        recovery_context,
+        recovery_context.clone(),
     );
+
+    // Phase 7b-1 (2026-08-27): install snapshot chunk-fetch
+    // context before publishing the engine so the very first
+    // incoming CasperMessage is dispatched under the full wiring
+    // (avoids a race window where messages arrive before the
+    // context install).  Also spawn the tick loop; the JoinHandle
+    // is intentionally dropped — the tick task lives for the
+    // lifetime of the running engine.
+    if let Some(ctx) = snapshot_chunk_ctx {
+        running.install_snapshot_chunk_context(ctx.clone());
+        if let Some(rec) = recovery_context {
+            let _tick_handle = crate::rust::engine::snapshot_chunk_sync::spawn_periodic_tick(
+                Arc::clone(&ctx.sync_driver),
+                transport.clone(),
+                conf.clone(),
+                rec.connections_cell.clone(),
+            );
+        }
+    }
 
     engine_cell.set(Arc::new(running)).await;
 

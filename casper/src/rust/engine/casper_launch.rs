@@ -447,6 +447,16 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
         // Direct-to-running path: emit init metrics that are otherwise produced in Initializing.
         record_direct_to_running_init_metrics();
 
+        // Phase 7b-1 (2026-08-27): build the snapshot chunk-fetch
+        // context if this node has an fs_snapshot_writer.  On
+        // observer nodes or misconfigured deployments this returns
+        // None and snapshot dispatch stays disabled.
+        let snapshot_chunk_ctx =
+            crate::rust::engine::snapshot_chunk_sync::build_snapshot_chunk_context(
+                &self.runtime_manager,
+            )
+            .await;
+
         // Scala equivalent: Engine.transitionToRunning[F](...)
         transition_to_running(
             self.block_processing_queue_tx.clone(),
@@ -461,6 +471,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             Some(RunningRecoveryContext {
                 connections_cell: self.connections_cell.clone(),
             }),
+            snapshot_chunk_ctx,
             &self.engine_cell,
             &self.event_publisher,
         )

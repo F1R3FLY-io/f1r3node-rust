@@ -150,6 +150,16 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> GenesisCeremonyMaster<T>
                 // Direct-to-running path: emit init metrics that are otherwise produced in Initializing.
                 record_direct_to_running_init_metrics();
 
+                // Phase 7b-1 (2026-08-27): genesis ceremony master
+                // typically runs on a bootstrap node with a full
+                // snapshot writer.  Build the context so snapshot
+                // dispatch is live from the first block.
+                let snapshot_chunk_ctx =
+                    crate::rust::engine::snapshot_chunk_sync::build_snapshot_chunk_context(
+                        &runtime_manager,
+                    )
+                    .await;
+
                 transition_to_running(
                     block_processing_queue_tx.clone(),
                     blocks_in_processing.clone(),
@@ -161,6 +171,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> GenesisCeremonyMaster<T>
                     rp_conf_ask.clone(),
                     block_retriever.clone(),
                     None,
+                    snapshot_chunk_ctx,
                     &engine_cell,
                     event_publisher,
                 )

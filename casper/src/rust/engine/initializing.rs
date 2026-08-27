@@ -1148,6 +1148,14 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
                 as Pin<Box<dyn Future<Output = Result<(), CasperError>> + Send>>
         });
 
+        // Phase 7b-1 (2026-08-27): build snapshot chunk-fetch
+        // context if this node has an fs_snapshot_writer.
+        let snapshot_chunk_ctx =
+            crate::rust::engine::snapshot_chunk_sync::build_snapshot_chunk_context(
+                &self.runtime_manager,
+            )
+            .await;
+
         transition_to_running(
             self.block_processing_queue_tx.clone(),
             self.blocks_in_processing.clone(),
@@ -1161,6 +1169,7 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
             Some(RunningRecoveryContext {
                 connections_cell: self.connections_cell.clone(),
             }),
+            snapshot_chunk_ctx,
             &self.engine_cell,
             &self.event_publisher,
         )
