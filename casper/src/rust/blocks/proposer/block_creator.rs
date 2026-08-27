@@ -152,6 +152,7 @@ const ORDINARY_DEPLOY_PROPOSAL_CAP: usize = 128;
 const USER_DEPLOY_BYTE_PROPOSAL_BUDGET: usize = 2 * 1024 * 1024;
 const USER_DEPLOY_BACKPRESSURE_BYTE_PROPOSAL_BUDGET: usize = 512 * 1024;
 const RETRY_DEPLOY_REPROPOSAL_CAP: usize = 32;
+const RETRY_FRONTIER_DEFERRAL_LEASE_BLOCKS: i64 = 3;
 const NON_LEADER_FALLBACK_ORDINARY_DEPLOY_CAP: usize = 8;
 const NON_LEADER_FALLBACK_MIN_ORDINARY_DEPLOY_CAP: usize = 4;
 const NON_LEADER_FALLBACK_MEDIUM_ORDINARY_DEPLOY_CAP: usize = 16;
@@ -169,6 +170,10 @@ const FINALITY_LAG_HARD_BACKPRESSURE_BLOCKS: i64 = 8;
 /// `deploy_sig_prefix(&d.sig)` at four
 /// sites in `log_deploy_pool_filtering`.
 fn deploy_sig_prefix(sig: &Bytes) -> String { hex::encode(&sig[..std::cmp::min(8, sig.len())]) }
+
+fn retry_frontier_deferral_lease_expired(next_block: i64, rejection_height: i64) -> bool {
+    next_block.saturating_sub(rejection_height) > RETRY_FRONTIER_DEFERRAL_LEASE_BLOCKS
+}
 
 /// One line per deferred retry with the gate's basis — a recurring deferral
 /// for one sig is the starvation tripwire, and the basis says which of the
@@ -920,6 +925,88 @@ async fn prepare_user_deploys_with_policy(
             "Prepare user deploys: {} pool retr(y/ies) deferred by the retry gate",
             gated_pool_retries
         );
+    }
+    if !retry_candidates.is_empty() {
+        let mut retry_frontier_merged = false;
+        'parents: for parent in &casper_snapshot.parents {
+            for justification in &casper_snapshot.justifications {
+                if !casper_snapshot
+                    .invalid_blocks
+                    .contains_key(&justification.latest_block_hash)
+                    && !casper_snapshot
+                        .dag
+                        .is_dag_ancestor(&justification.latest_block_hash, &parent.block_hash)?
+                {
+                    continue 'parents;
+                }
+            }
+            retry_frontier_merged = true;
+            break;
+        }
+        if !retry_frontier_merged {
+            let latest_message_count = casper_snapshot
+                .justifications
+                .iter()
+                .filter(|justification| {
+                    !casper_snapshot
+                        .invalid_blocks
+                        .contains_key(&justification.latest_block_hash)
+                })
+                .count();
+            let rejection_heights = match floor_ctx {
+                Some(ctx) => ctx.latest_kept_rejection_heights(
+                    block_store,
+                    earliest_block_number,
+                    retry_candidates.iter().map(|deploy| &deploy.sig),
+                )?,
+                None => HashMap::new(),
+            };
+            let mut deferred_sigs = HashSet::new();
+            for deploy in &retry_candidates {
+                let rejection_height = rejection_heights.get(&deploy.sig).copied().flatten();
+                // Deferral is bounded ONLY by the lease. A candidate whose
+                // rejection height cannot be resolved has no lease clock, so
+                // it escapes now: the gate (proposer and validators alike)
+                // still bounds validity, and an unbounded packaging deferral
+                // is the starvation the lease exists to stop.
+                let escape_reason = match rejection_height {
+                    None => Some("rejection_height_unknown"),
+                    Some(height) if retry_frontier_deferral_lease_expired(block_number, height) => {
+                        Some("deferral_lease_expired")
+                    }
+                    Some(_) => None,
+                };
+                if let Some(reason) = escape_reason {
+                    tracing::info!(
+                        target: "f1r3fly.casper.deploy_lifecycle",
+                        event = "retry_frontier_escape",
+                        deploy_sig = %hex::encode(&deploy.sig),
+                        reason,
+                        next_block = block_number,
+                        rejection_height,
+                        deferral_lease_blocks = RETRY_FRONTIER_DEFERRAL_LEASE_BLOCKS,
+                        selected_parent_count = casper_snapshot.parents.len(),
+                        latest_message_count,
+                        "deploy lifecycle"
+                    );
+                } else {
+                    tracing::info!(
+                        target: "f1r3fly.casper.deploy_lifecycle",
+                        event = "retry_frontier_deferred",
+                        deploy_sig = %hex::encode(&deploy.sig),
+                        reason = "no_covering_parent",
+                        next_block = block_number,
+                        rejection_height,
+                        deferral_lease_blocks = RETRY_FRONTIER_DEFERRAL_LEASE_BLOCKS,
+                        selected_parent_count = casper_snapshot.parents.len(),
+                        latest_message_count,
+                        "deploy lifecycle"
+                    );
+                    deferred_sigs.insert(deploy.sig.clone());
+                }
+            }
+            retry_candidates.retain(|deploy| !deferred_sigs.contains(&deploy.sig));
+        }
     }
     let ordinary_candidates: HashSet<Signed<DeployData>> = valid_unique
         .iter()
@@ -6106,6 +6193,232 @@ mod tests {
             prepared.deploys.iter().any(|d| d.sig == retry.sig),
             "retry admission is floor-clock: a tip-expired floor-live \
              rejected deploy stays selectable"
+        );
+    }
+
+    #[tokio::test]
+    async fn retry_frontier_defers_then_accepts_covering_parent_or_lease_escape() {
+        use block_storage::rust::dag::block_dag_key_value_storage::{
+            BlockDagKeyValueStorage, InsertMode,
+        };
+
+        let mut kvm = InMemoryStoreManager::new();
+        let deploy_storage = Arc::new(parking_lot::Mutex::new(
+            KeyValueDeployStorage::new(&mut kvm)
+                .await
+                .expect("deploy storage"),
+        ));
+        let rejected_deploy_buffer = Arc::new(Mutex::new(
+            KeyValueRejectedDeployBuffer::new(&mut kvm)
+                .await
+                .expect("rejected deploy buffer"),
+        ));
+        let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
+            .await
+            .expect("block store");
+        let dag_storage = BlockDagKeyValueStorage::new(&mut kvm)
+            .await
+            .expect("dag storage");
+        let mut snapshot =
+            crate::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
+        snapshot
+            .on_chain_state
+            .shard_conf
+            .max_user_deploys_per_block = 10;
+        snapshot.on_chain_state.shard_conf.deploy_lifespan = 50;
+
+        let retry = construct_deploy::source_deploy(
+            "@71!(71)".to_string(),
+            1_000,
+            None,
+            None,
+            None,
+            Some(20),
+            Some("test".to_string()),
+        )
+        .expect("retry deploy");
+        let mut floor = test_block(
+            invalid_block_hash(0xB0),
+            validator(1),
+            Vec::new(),
+            59,
+            Vec::new(),
+        );
+        floor.body.rejected_deploys = vec![
+            models::rust::casper::protocol::casper_message::RejectedDeploy {
+                sig: retry.sig.clone(),
+                duplicate: false,
+                carrier: floor.block_hash.clone(),
+            },
+        ];
+        let left = test_block(
+            invalid_block_hash(0xB1),
+            validator(1),
+            vec![floor.block_hash.clone()],
+            60,
+            Vec::new(),
+        );
+        let right = test_block(
+            invalid_block_hash(0xB2),
+            validator(2),
+            vec![floor.block_hash.clone()],
+            60,
+            Vec::new(),
+        );
+        for block in [&floor, &left, &right] {
+            block_store.put_block_message(block).expect("store block");
+        }
+        dag_storage
+            .insert(&floor, InsertMode::Approved)
+            .expect("insert floor");
+        dag_storage
+            .insert(&left, InsertMode::Normal)
+            .expect("insert left parent");
+        dag_storage
+            .insert(&right, InsertMode::Normal)
+            .expect("insert right parent");
+        snapshot.dag = dag_storage.get_representation().expect("dag");
+        snapshot.justifications = [
+            Justification {
+                validator: validator(1),
+                latest_block_hash: left.block_hash.clone(),
+            },
+            Justification {
+                validator: validator(2),
+                latest_block_hash: right.block_hash.clone(),
+            },
+        ]
+        .into_iter()
+        .collect();
+        snapshot.parents = vec![left.clone(), right.clone()];
+
+        deploy_storage
+            .lock()
+            .add(vec![retry.clone()])
+            .expect("seed deploy storage");
+        rejected_deploy_buffer
+            .lock()
+            .expect("rejected buffer lock")
+            .add(vec![retry.clone()])
+            .expect("seed rejected buffer");
+
+        let prepared = prepare_user_deploys(
+            &snapshot,
+            61,
+            10_000,
+            deploy_storage.clone(),
+            rejected_deploy_buffer.clone(),
+            &block_store,
+            true,
+            true,
+        )
+        .await
+        .expect("prepare deploys without covering parent");
+
+        assert!(
+            prepared.deploys.is_empty(),
+            "merged-frontier retry packaging must defer a retry over visible sibling parents"
+        );
+
+        let covering = test_block(
+            invalid_block_hash(0xB3),
+            validator(1),
+            vec![left.block_hash.clone(), right.block_hash.clone()],
+            61,
+            Vec::new(),
+        );
+        block_store
+            .put_block_message(&covering)
+            .expect("store covering parent");
+        dag_storage
+            .insert(&covering, InsertMode::Normal)
+            .expect("insert covering parent");
+        snapshot.dag = dag_storage.get_representation().expect("updated dag");
+        snapshot.parents = vec![covering, left.clone()];
+
+        let prepared = prepare_user_deploys(
+            &snapshot,
+            62,
+            10_000,
+            deploy_storage.clone(),
+            rejected_deploy_buffer.clone(),
+            &block_store,
+            true,
+            true,
+        )
+        .await
+        .expect("prepare deploys with covering parent");
+
+        assert!(
+            prepared
+                .deploys
+                .iter()
+                .any(|deploy| deploy.sig == retry.sig),
+            "a covering parent must admit the retry when another selected parent is redundant"
+        );
+
+        // Reflexive cover: a selected parent that IS the sole valid latest
+        // message covers the frontier by itself, inside the lease.
+        snapshot.justifications = [Justification {
+            validator: validator(1),
+            latest_block_hash: left.block_hash.clone(),
+        }]
+        .into_iter()
+        .collect();
+        snapshot.parents = vec![left.clone()];
+        let prepared = prepare_user_deploys(
+            &snapshot,
+            61,
+            10_000,
+            deploy_storage.clone(),
+            rejected_deploy_buffer.clone(),
+            &block_store,
+            true,
+            true,
+        )
+        .await
+        .expect("prepare deploys with a parent that is a latest message");
+
+        assert!(
+            prepared
+                .deploys
+                .iter()
+                .any(|deploy| deploy.sig == retry.sig),
+            "a parent that is itself the latest message must count as covering it"
+        );
+
+        snapshot.justifications = [
+            Justification {
+                validator: validator(1),
+                latest_block_hash: left.block_hash.clone(),
+            },
+            Justification {
+                validator: validator(2),
+                latest_block_hash: right.block_hash.clone(),
+            },
+        ]
+        .into_iter()
+        .collect();
+        snapshot.parents = vec![left, right];
+        let prepared = prepare_user_deploys(
+            &snapshot,
+            63,
+            10_000,
+            deploy_storage,
+            rejected_deploy_buffer,
+            &block_store,
+            true,
+            true,
+        )
+        .await
+        .expect("prepare deploys after frontier deferral lease");
+
+        assert!(
+            prepared
+                .deploys
+                .iter()
+                .any(|deploy| deploy.sig == retry.sig),
+            "the bounded lease must prevent frontier deferral from consuming the validity window"
         );
     }
 }
