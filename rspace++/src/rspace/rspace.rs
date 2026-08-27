@@ -55,7 +55,18 @@ pub struct RSpaceStore {
 pub struct RSpace<C, P, A, K> {
     pub history_repository:
         Arc<std::sync::RwLock<Arc<Box<dyn HistoryRepository<C, P, A, K> + Send + Sync + 'static>>>>,
-    pub store: Arc<std::sync::RwLock<Arc<Box<dyn HotStore<C, P, A, K>>>>>,
+    // get_store() is called multiple times per produce()/consume() (produce_lock,
+    // locked_produce, store_data, extract_produce_candidate) and never
+    // contends a writer on that path — writes only happen at checkpoint/spawn
+    // boundaries, replacing the whole pointer wholesale. std::sync::RwLock
+    // still does atomic RMW on shared reader-count state per read-lock/unlock,
+    // which scales badly under many concurrent readers on some platforms
+    // (confirmed: isolated read-lock-only benchmark measured *negative*
+    // scaling, concurrent slower than sequential — see issue #50 follow-up).
+    // ArcSwap is lock-free for this exact "read-mostly, rare wholesale swap"
+    // pattern: load() is an atomic pointer read, store() an atomic pointer
+    // write, no reader-count bookkeeping.
+    pub store: Arc<arc_swap::ArcSwap<Box<dyn HotStore<C, P, A, K>>>>,
     installs: Arc<std::sync::Mutex<HashMap<Vec<C>, Install<P, K>>>>,
     event_log: Arc<std::sync::Mutex<Log>>,
     // Striped like phase_a/phase_b_locks below: NUM_LOCK_STRIPES independent
@@ -84,9 +95,7 @@ where
     A: Clone + Debug + Default + Serialize + 'static + Sync + Send,
     K: Clone + Debug + Default + Serialize + 'static + Sync + Send,
 {
-    pub fn get_store(&self) -> Arc<Box<dyn HotStore<C, P, A, K>>> {
-        self.store.read().expect("store read lock").clone()
-    }
+    pub fn get_store(&self) -> Arc<Box<dyn HotStore<C, P, A, K>>> { self.store.load_full() }
 
     async fn consume_lock(&self, channel_hashes: &[u64]) -> (ChannelLockGuard, ChannelLockGuard) {
         striped_locks::consume_lock(&self.phase_a_locks, &self.phase_b_locks, channel_hashes).await
@@ -252,7 +261,7 @@ where
             history_reader.base(),
         );
 
-        *self.store.write().expect("store write lock") = Arc::new(hot_store);
+        self.store.store(Arc::new(hot_store));
         *self.event_log.lock().expect("event log lock") = checkpoint.log;
         self.restore_produce_counter(checkpoint.produce_counter);
 
@@ -432,7 +441,7 @@ where
     {
         RSpace {
             history_repository: Arc::new(std::sync::RwLock::new(history_repository)),
-            store: Arc::new(std::sync::RwLock::new(Arc::new(store))),
+            store: Arc::new(arc_swap::ArcSwap::new(Arc::new(store))),
             matcher,
             installs: Arc::new(std::sync::Mutex::new(HashMap::new())),
             event_log: Arc::new(std::sync::Mutex::new(Vec::new())),
@@ -1100,7 +1109,7 @@ where
         history_reader: Box<dyn HistoryReader<Blake2b256Hash, C, P, A, K>>,
     ) {
         let next_hot_store = HotStoreInstances::create_from_hr(history_reader.base());
-        *self.store.write().expect("store write lock") = Arc::new(next_hot_store);
+        self.store.store(Arc::new(next_hot_store));
     }
 
     fn wrap_result(
@@ -1540,5 +1549,142 @@ mod tests {
         // reports the isolated cost of these two locks so it can be compared
         // against bench_par_branches' end-to-end number for the same
         // branch/op counts (see issue #50 investigation).
+    }
+
+    // With produce_counter now sharded (issue #50, part 1), this isolates
+    // what's left: event_log alone, pushing directly to the field (bypassing
+    // log_produce()/produce_counter entirely) at the same branch/op scale.
+    // Confirms whether event_log on its own still accounts for the residual
+    // near-zero speedup, and gives a before/after number for its own fix.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+    async fn event_log_isolated_cost_at_rholang_par_scale() {
+        const PAR_BRANCHES: usize = 32;
+        const OPS_PER_BRANCH: usize = 5000;
+
+        // Sequential baseline: identical total ops, one after another.
+        let seq_rspace = make_rspace().await;
+        let t_seq = Instant::now();
+        for b in 0..PAR_BRANCHES {
+            for i in 0..OPS_PER_BRANCH {
+                let channel = format!("seq_{}_{}", b, i);
+                let data = "datum".to_string();
+                let produce_ref = Produce::create(&channel, &data, false);
+                seq_rspace
+                    .event_log
+                    .lock()
+                    .expect("event log lock")
+                    .push(Event::IoEvent(IOEvent::Produce(produce_ref)));
+            }
+        }
+        let seq_ms = t_seq.elapsed().as_millis().max(1);
+
+        // Concurrent: PAR_BRANCHES tokio tasks, all sharing one event_log.
+        let par_rspace = Arc::new(make_rspace().await);
+        let t_par = Instant::now();
+        let handles: Vec<_> = (0..PAR_BRANCHES)
+            .map(|b| {
+                let s = par_rspace.clone();
+                tokio::spawn(async move {
+                    for i in 0..OPS_PER_BRANCH {
+                        let channel = format!("par_{}_{}", b, i);
+                        let data = "datum".to_string();
+                        let produce_ref = Produce::create(&channel, &data, false);
+                        s.event_log
+                            .lock()
+                            .expect("event log lock")
+                            .push(Event::IoEvent(IOEvent::Produce(produce_ref)));
+                    }
+                })
+            })
+            .collect();
+        for h in handles {
+            h.await.unwrap();
+        }
+        let par_ms = t_par.elapsed().as_millis().max(1);
+
+        let num_workers = tokio::runtime::Handle::current().metrics().num_workers();
+        let ideal = PAR_BRANCHES.min(num_workers).min(
+            std::thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(usize::MAX),
+        );
+        let speedup = seq_ms as f64 / par_ms as f64;
+        let efficiency = speedup / ideal as f64 * 100.0;
+
+        eprintln!(
+            "event_log isolated cost (produce_counter excluded): branches={PAR_BRANCHES} \
+             ops_per_branch={OPS_PER_BRANCH} total_ops={} sequential={seq_ms}ms \
+             concurrent={par_ms}ms speedup={:.2}x (ideal {ideal}x: {PAR_BRANCHES} branches on \
+             {num_workers} workers) efficiency={:.1}%",
+            PAR_BRANCHES * OPS_PER_BRANCH,
+            speedup,
+            efficiency,
+        );
+
+        // No assertion: diagnostic only, mirrors
+        // event_log_and_produce_counter_isolated_cost_at_rholang_par_scale but
+        // with produce_counter excluded to attribute cost specifically to
+        // event_log now that produce_counter is fixed.
+    }
+
+    // get_store() (rspace.rs:87-89) is `self.store.read().expect(...).clone()`
+    // — a std::sync::RwLock read lock, called twice per produce() (once inside
+    // produce_lock(), once inside locked_produce()). No writer ever contends
+    // it during the hot path (writes only happen at checkpoint boundaries),
+    // but RwLock read acquisition still does atomic RMW on shared state, which
+    // can scale badly under many concurrent readers on some platforms. This
+    // isolates just that call, at 2x the op count (matching produce()'s two
+    // calls per op), to check whether it explains the remaining gap between
+    // event_log_isolated (~5x) and bench_par_branches' full path (~0.92x).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+    async fn get_store_read_lock_isolated_cost_at_rholang_par_scale() {
+        const PAR_BRANCHES: usize = 32;
+        const OPS_PER_BRANCH: usize = 5000;
+
+        let seq_rspace = make_rspace().await;
+        let t_seq = Instant::now();
+        for _ in 0..(PAR_BRANCHES * OPS_PER_BRANCH) {
+            let _ = seq_rspace.get_store();
+            let _ = seq_rspace.get_store();
+        }
+        let seq_ms = t_seq.elapsed().as_millis().max(1);
+
+        let par_rspace = Arc::new(make_rspace().await);
+        let t_par = Instant::now();
+        let handles: Vec<_> = (0..PAR_BRANCHES)
+            .map(|_| {
+                let s = par_rspace.clone();
+                tokio::spawn(async move {
+                    for _ in 0..OPS_PER_BRANCH {
+                        let _ = s.get_store();
+                        let _ = s.get_store();
+                    }
+                })
+            })
+            .collect();
+        for h in handles {
+            h.await.unwrap();
+        }
+        let par_ms = t_par.elapsed().as_millis().max(1);
+
+        let num_workers = tokio::runtime::Handle::current().metrics().num_workers();
+        let ideal = PAR_BRANCHES.min(num_workers).min(
+            std::thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(usize::MAX),
+        );
+        let speedup = seq_ms as f64 / par_ms as f64;
+        let efficiency = speedup / ideal as f64 * 100.0;
+
+        eprintln!(
+            "get_store() RwLock read isolated cost (2 calls/op): branches={PAR_BRANCHES} \
+             ops_per_branch={OPS_PER_BRANCH} total_calls={} sequential={seq_ms}ms \
+             concurrent={par_ms}ms speedup={:.2}x (ideal {ideal}x) efficiency={:.1}%",
+            PAR_BRANCHES * OPS_PER_BRANCH * 2,
+            speedup,
+            efficiency,
+        );
+
+        // No assertion: diagnostic only (see issue #50 investigation).
     }
 }
