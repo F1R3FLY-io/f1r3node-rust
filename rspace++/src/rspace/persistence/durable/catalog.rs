@@ -1,5 +1,5 @@
 use super::error::DurableFormatError;
-use super::{INDEX_HEADER_LEN_V1, INDEX_RECORD_LEN_V1};
+use super::{INDEX_HEADER_LEN_V1, INDEX_RECORD_LEN_V1, PACK_HEADER_LEN_V1};
 use crate::rspace::persistence::canonical::{OBJECT_DIGEST_LEN, ObjectRefV1, ReadCursor};
 use crate::rspace::persistence::checksum::{
     CHECKSUM_FIELD_LEN, crc32c, decode_crc32c, encode_crc32c,
@@ -158,6 +158,12 @@ impl CatalogSlotV1 {
             return Err(DurableFormatError::CatalogCommitLength {
                 expected: TRANSACTION_COMMIT_RECORD_LEN_V1,
                 actual: commit_address.length(),
+            });
+        }
+        if commit_address.offset() < PACK_HEADER_LEN_V1 {
+            return Err(DurableFormatError::CatalogCommitBeforePackHeader {
+                offset: commit_address.offset(),
+                header_len: PACK_HEADER_LEN_V1,
             });
         }
         let commit_end = commit_address.end();
@@ -451,6 +457,70 @@ impl CatalogSelectionV1 {
     pub const fn ignored_corrupt_slot(self) -> Option<usize> { self.ignored_corrupt_slot }
 
     pub const fn inactive_slot_index(self) -> usize { 1 - self.slot_index }
+}
+
+/// Exact compare-and-swap token for one selected two-slot catalog image.
+///
+/// Holding only the decoded slot is insufficient: a concurrent writer can
+/// change the inactive slot without changing the selected semantic state.
+/// Publication therefore compares all 672 bytes captured here immediately
+/// before it overwrites the inactive slot.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CatalogAuthorityTokenV1 {
+    image: [u8; CATALOG_IMAGE_LEN],
+    selection: CatalogSelectionV1,
+}
+
+impl CatalogAuthorityTokenV1 {
+    pub fn select(image: [u8; CATALOG_IMAGE_LEN]) -> Result<Option<Self>, DurableFormatError> {
+        Ok(CatalogSelectionV1::select(&image)?.map(|selection| Self { image, selection }))
+    }
+
+    pub const fn selection(&self) -> CatalogSelectionV1 { self.selection }
+
+    pub const fn slot(&self) -> CatalogSlotV1 { self.selection.slot() }
+
+    pub const fn image(&self) -> &[u8; CATALOG_IMAGE_LEN] { &self.image }
+
+    pub fn matches_exactly(&self, candidate: &[u8; CATALOG_IMAGE_LEN]) -> bool {
+        self.image == *candidate
+    }
+
+    /// Construct the exact successor image without mutating the held token.
+    /// The successor must be the next epoch and preserve store/profile
+    /// identity; deeper state-transition checks belong to `CatalogSlotV1`.
+    pub fn successor_image(
+        &self,
+        successor: CatalogSlotV1,
+    ) -> Result<[u8; CATALOG_IMAGE_LEN], DurableFormatError> {
+        let current = self.slot();
+        let expected_epoch = current
+            .epoch()
+            .checked_add(1)
+            .ok_or(DurableFormatError::CatalogEpochOverflow(current.epoch()))?;
+        if successor.epoch() != expected_epoch {
+            return Err(DurableFormatError::CatalogSuccessorEpoch {
+                expected: expected_epoch,
+                actual: successor.epoch(),
+            });
+        }
+        if successor.store_id() != current.store_id() {
+            return Err(DurableFormatError::CatalogSuccessorStore {
+                expected: current.store_id(),
+                actual: successor.store_id(),
+            });
+        }
+        if successor.profile_id() != current.profile_id() {
+            return Err(DurableFormatError::CatalogSuccessorProfile {
+                expected: current.profile_id(),
+                actual: successor.profile_id(),
+            });
+        }
+        let mut image = self.image;
+        let offset = self.selection.inactive_slot_index() * CATALOG_SLOT_LEN;
+        image[offset..offset + CATALOG_SLOT_LEN].copy_from_slice(&successor.encode());
+        Ok(image)
+    }
 }
 
 fn select_two(

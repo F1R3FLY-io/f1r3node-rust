@@ -3,10 +3,10 @@ use std::convert::Infallible;
 use super::support::{TEST_SEMANTIC_PROFILE_ID, TestSemanticProfile, synthetic_ref};
 use super::transaction_sealing::{base_state, data_batch, seal_data};
 use crate::rspace::persistence::{
-    CATALOG_IMAGE_LEN, CATALOG_SLOT_LEN, CanonicalObjectStore, CatalogPackStateV1,
-    CatalogSelectionV1, CatalogSlotV1, CommittedObjectComparison, CommittedObjectLookup,
-    DurableFormatError, LogPackAddress, LogPackDecodeLimits, LogPackFormatError,
-    LogPackObjectPlanV1, LogPackSequence, ObjectRefV1, PhysicalDigest,
+    CATALOG_IMAGE_LEN, CATALOG_SLOT_LEN, CanonicalObjectStore, CatalogAuthorityTokenV1,
+    CatalogPackStateV1, CatalogSelectionV1, CatalogSlotV1, CommittedObjectComparison,
+    CommittedObjectLookup, DurableFormatError, LogPackAddress, LogPackDecodeLimits,
+    LogPackFormatError, LogPackObjectPlanV1, LogPackSequence, ObjectRefV1, PhysicalDigest,
     PreparedLogPackTransactionV1, SemanticProfileId, StateVersionV1, StoreId,
     TRANSACTION_COMMIT_RECORD_LEN_V1, TransactionCommitRecordV1, TransactionCommitViewV1,
 };
@@ -131,6 +131,40 @@ fn slot_round_trip_and_adjacent_epoch_selection_are_exact() {
     assert_eq!(selected.inactive_slot_index(), 0);
     assert_eq!(selected.slot(), second);
     assert_eq!(selected.ignored_corrupt_slot(), None);
+}
+
+#[test]
+fn authority_token_compares_the_full_image_and_only_replaces_the_inactive_slot() {
+    let current = slot(11, 20);
+    let current_image = image(Some(current), None);
+    let token = CatalogAuthorityTokenV1::select(current_image)
+        .unwrap()
+        .unwrap();
+    assert!(token.matches_exactly(&current_image));
+
+    let mut inactive_changed = current_image;
+    inactive_changed[CATALOG_SLOT_LEN] = 1;
+    assert!(!token.matches_exactly(&inactive_changed));
+
+    let successor = slot(12, 21);
+    let successor_image = token.successor_image(successor).unwrap();
+    assert_eq!(&successor_image[..CATALOG_SLOT_LEN], &current.encode());
+    assert_eq!(&successor_image[CATALOG_SLOT_LEN..], &successor.encode());
+    assert_eq!(
+        CatalogAuthorityTokenV1::select(successor_image)
+            .unwrap()
+            .unwrap()
+            .slot(),
+        successor
+    );
+
+    assert!(matches!(
+        token.successor_image(slot(13, 22)),
+        Err(DurableFormatError::CatalogSuccessorEpoch {
+            expected: 12,
+            actual: 13
+        })
+    ));
 }
 
 #[test]
@@ -320,6 +354,37 @@ fn catalog_rejects_wide_checksums_reserved_gaps_misaligned_indexes_and_inexact_t
             inexact_pack,
         ),
         Err(DurableFormatError::CatalogPackTail { .. })
+    ));
+
+    let inside_header = LogPackAddress::new(
+        current.active_pack(),
+        crate::rspace::persistence::PACK_HEADER_LEN_V1 - 1,
+        TRANSACTION_COMMIT_RECORD_LEN_V1,
+    )
+    .unwrap();
+    let inside_header_pack = CatalogPackStateV1::new(
+        current.pack().first_live_pack(),
+        current.active_pack(),
+        inside_header.end(),
+        current.pack().index_generation(),
+        current.pack().durable_index_tail(),
+        current.pack().retention_manifest(),
+        current.pack().current_state_canonical_bytes(),
+        current.pack().retained_canonical_bytes(),
+    )
+    .unwrap();
+    assert!(matches!(
+        CatalogSlotV1::new(
+            current.store_id(),
+            current.epoch(),
+            current.state(),
+            current.profile_id(),
+            current.commit_digest(),
+            current.commit_sequence(),
+            inside_header,
+            inside_header_pack,
+        ),
+        Err(DurableFormatError::CatalogCommitBeforePackHeader { .. })
     ));
 }
 

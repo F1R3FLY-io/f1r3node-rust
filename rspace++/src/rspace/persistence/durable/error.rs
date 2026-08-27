@@ -40,6 +40,10 @@ pub enum DurableFormatError {
         expected: u64,
         actual: u64,
     },
+    CatalogCommitBeforePackHeader {
+        offset: u64,
+        header_len: u64,
+    },
     CatalogPackTail {
         commit_end: u64,
         durable_tail: u64,
@@ -66,6 +70,18 @@ pub enum DurableFormatError {
     CatalogCompareAndSwap {
         expected: StateVersionV1,
         actual: StateVersionV1,
+    },
+    CatalogSuccessorEpoch {
+        expected: u64,
+        actual: u64,
+    },
+    CatalogSuccessorStore {
+        expected: StoreId,
+        actual: StoreId,
+    },
+    CatalogSuccessorProfile {
+        expected: SemanticProfileId,
+        actual: SemanticProfileId,
     },
     CatalogCommitStore {
         catalog: StoreId,
@@ -144,6 +160,10 @@ impl Display for DurableFormatError {
                 formatter,
                 "catalog commit length {actual} does not equal V1 length {expected}"
             ),
+            Self::CatalogCommitBeforePackHeader { offset, header_len } => write!(
+                formatter,
+                "catalog commit offset {offset} lies inside the {header_len}-byte pack header"
+            ),
             Self::CatalogPackTail {
                 commit_end,
                 durable_tail,
@@ -184,6 +204,17 @@ impl Display for DurableFormatError {
             Self::CatalogCompareAndSwap { expected, actual } => {
                 write!(formatter, "catalog state changed: expected {expected:?}, actual {actual:?}")
             }
+            Self::CatalogSuccessorEpoch { expected, actual } => write!(
+                formatter,
+                "catalog successor epoch {actual} does not immediately follow {expected}"
+            ),
+            Self::CatalogSuccessorStore { expected, actual } => {
+                write!(formatter, "catalog successor store {actual} does not preserve {expected}")
+            }
+            Self::CatalogSuccessorProfile { expected, actual } => write!(
+                formatter,
+                "catalog successor profile {actual:?} does not preserve {expected:?}"
+            ),
             Self::CatalogCommitStore { catalog, commit } => write!(
                 formatter,
                 "catalog store {catalog} does not match terminal commit store {commit}"

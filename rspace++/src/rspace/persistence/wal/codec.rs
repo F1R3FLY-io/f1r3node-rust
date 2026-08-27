@@ -12,12 +12,13 @@ use super::disposition::{
 use super::error::{LogPackFormatError, LogPackWriteError};
 use super::types::{CommitPublicationV1, LogPackAddress, LogPackDecodeLimits, LogPackSequence};
 use crate::rspace::persistence::canonical::{
-    CanonicalFormatError, CanonicalSink, OBJECT_DIGEST_LEN, OBJECT_DOMAIN_LEN, ObjectRefV1,
-    ReadCursor, checked_len, checked_sum, write_u64,
+    CanonicalFormatError, CanonicalSink, OBJECT_DIGEST_LEN, OBJECT_DOMAIN_LEN, ObjectDigest,
+    ObjectRefV1, ReadCursor, checked_len, checked_sum, write_u64,
 };
 use crate::rspace::persistence::checksum::{
     CHECKSUM_FIELD_LEN, Crc32c, crc32c, decode_crc32c, encode_crc32c,
 };
+use crate::rspace::persistence::durable::PACK_HEADER_LEN_V1;
 use crate::rspace::persistence::manifest::{SEMANTIC_PROFILE_ID_LEN, SemanticProfileId};
 use crate::rspace::persistence::mutation::{
     MutationBatchViewV1, MutationDecodeLimits, StateVersionV1,
@@ -39,7 +40,9 @@ const COMMIT_KIND: u64 = 2;
 const OBJECT_REF_LEN: u64 = (OBJECT_DIGEST_LEN + 8) as u64;
 const OBJECT_RECORD_HEADER_LEN: u64 = 8 + OBJECT_REF_LEN;
 const PREPARE_AUTH_HEADER_LEN: usize = 232;
-const PREPARE_HEADER_LEN: u64 = PREPARE_AUTH_HEADER_LEN as u64 + CHECKSUM_FIELD_LEN as u64;
+pub const TRANSACTION_PREPARE_HEADER_LEN_V1: u64 =
+    PREPARE_AUTH_HEADER_LEN as u64 + CHECKSUM_FIELD_LEN as u64;
+const PREPARE_HEADER_LEN: u64 = TRANSACTION_PREPARE_HEADER_LEN_V1;
 const PREPARE_TRAILER_LEN: u64 = CHECKSUM_FIELD_LEN as u64;
 const COMMIT_AUTH_LEN: usize = 376;
 pub const TRANSACTION_COMMIT_RECORD_LEN_V1: u64 = (COMMIT_AUTH_LEN + CHECKSUM_FIELD_LEN) as u64;
@@ -479,6 +482,102 @@ pub struct TransactionPrepareRecordViewV1<'a> {
     record_len: u64,
 }
 
+#[derive(Clone, Copy)]
+struct PrepareHeaderV1 {
+    declared_len: u64,
+    sequence: LogPackSequence,
+    store_id: StoreId,
+    base: StateVersionV1,
+    target: StateVersionV1,
+    profile_id: SemanticProfileId,
+    mutation_digest: ObjectDigest,
+    mutation_len: u64,
+    object_count: u64,
+    object_bytes: u64,
+}
+
+/// Validate the fixed prepare prefix before a durable reader trusts its
+/// declared record extent. The checksum covers every length/count field, and
+/// explicit limits are applied before allocation or a variable-size read.
+pub fn preflight_prepare_record_len_v1(
+    prefix: &[u8],
+    limits: LogPackDecodeLimits,
+) -> Result<u64, LogPackFormatError> {
+    Ok(parse_prepare_header_v1(prefix, limits)?.declared_len)
+}
+
+fn parse_prepare_header_v1(
+    prefix: &[u8],
+    limits: LogPackDecodeLimits,
+) -> Result<PrepareHeaderV1, LogPackFormatError> {
+    let actual = checked_len(prefix.len(), "WAL prepare header")?;
+    if actual != PREPARE_HEADER_LEN {
+        return Err(LogPackFormatError::LengthMismatch {
+            declared: PREPARE_HEADER_LEN,
+            actual,
+        });
+    }
+    let header = &prefix[..PREPARE_AUTH_HEADER_LEN];
+    let declared_header_crc = decode_crc32c(
+        prefix[PREPARE_AUTH_HEADER_LEN..]
+            .try_into()
+            .expect("fixed header CRC extent"),
+    )
+    .map_err(|encoded| LogPackFormatError::ChecksumOutOfRange {
+        field: "prepare header",
+        encoded,
+    })?;
+    let actual_header_crc = crc32c(header);
+    if declared_header_crc != actual_header_crc {
+        return Err(LogPackFormatError::HeaderChecksum {
+            expected: declared_header_crc,
+            actual: actual_header_crc,
+        });
+    }
+
+    let mut cursor = ReadCursor::new(header);
+    require_domain(&mut cursor, PREPARE_DOMAIN)?;
+    require_version_and_kind(&mut cursor, PREPARE_KIND)?;
+    let declared_len = cursor.read_u64()?;
+    let minimum = PREPARE_HEADER_LEN.checked_add(PREPARE_TRAILER_LEN).ok_or(
+        CanonicalFormatError::LengthOverflow {
+            field: "WAL minimum prepare record",
+        },
+    )?;
+    if declared_len < minimum {
+        return Err(LogPackFormatError::LengthMismatch {
+            declared: declared_len,
+            actual: minimum,
+        });
+    }
+    require_limit("record bytes", limits.max_record_bytes, declared_len)?;
+    let sequence = LogPackSequence::new(cursor.read_u64()?)?;
+    let store_id = read_store_id(&mut cursor)?;
+    let base = read_state(&mut cursor)?;
+    let target = read_state(&mut cursor)?;
+    let profile_id = read_profile_id(&mut cursor)?;
+    let mutation_digest = cursor.read_digest()?;
+    let mutation_len = cursor.read_u64()?;
+    let object_count = cursor.read_u64()?;
+    let object_bytes = cursor.read_u64()?;
+    cursor.finish()?;
+    require_limit("mutation bytes", limits.max_mutation_bytes, mutation_len)?;
+    require_limit("objects", limits.max_objects, object_count)?;
+    require_limit("canonical object bytes", limits.max_object_bytes, object_bytes)?;
+    Ok(PrepareHeaderV1 {
+        declared_len,
+        sequence,
+        store_id,
+        base,
+        target,
+        profile_id,
+        mutation_digest,
+        mutation_len,
+        object_count,
+        object_bytes,
+    })
+}
+
 impl<'a> TransactionPrepareRecordViewV1<'a> {
     pub fn parse(bytes: &'a [u8], limits: LogPackDecodeLimits) -> Result<Self, LogPackFormatError> {
         let actual_len = checked_len(bytes.len(), "WAL prepare record")?;
@@ -493,31 +592,10 @@ impl<'a> TransactionPrepareRecordViewV1<'a> {
             }
             .into());
         }
-        let header = &bytes[..PREPARE_AUTH_HEADER_LEN];
-        let declared_header_crc = decode_crc32c(
-            bytes[PREPARE_AUTH_HEADER_LEN..PREPARE_AUTH_HEADER_LEN + CHECKSUM_FIELD_LEN]
-                .try_into()
-                .expect("fixed header CRC extent"),
-        )
-        .map_err(|encoded| LogPackFormatError::ChecksumOutOfRange {
-            field: "prepare header",
-            encoded,
-        })?;
-        let actual_header_crc = crc32c(header);
-        if declared_header_crc != actual_header_crc {
-            return Err(LogPackFormatError::HeaderChecksum {
-                expected: declared_header_crc,
-                actual: actual_header_crc,
-            });
-        }
-
-        let mut cursor = ReadCursor::new(header);
-        require_domain(&mut cursor, PREPARE_DOMAIN)?;
-        require_version_and_kind(&mut cursor, PREPARE_KIND)?;
-        let declared_len = cursor.read_u64()?;
-        if declared_len != actual_len {
+        let header = parse_prepare_header_v1(&bytes[..PREPARE_HEADER_LEN as usize], limits)?;
+        if header.declared_len != actual_len {
             return Err(LogPackFormatError::LengthMismatch {
-                declared: declared_len,
+                declared: header.declared_len,
                 actual: actual_len,
             });
         }
@@ -539,35 +617,26 @@ impl<'a> TransactionPrepareRecordViewV1<'a> {
             });
         }
         let digest = PhysicalDigest::of_bytes(&bytes[..payload_end]);
-        let sequence = LogPackSequence::new(cursor.read_u64()?)?;
-        let store_id = read_store_id(&mut cursor)?;
-        let base = read_state(&mut cursor)?;
-        let target = read_state(&mut cursor)?;
-        let profile_id = read_profile_id(&mut cursor)?;
-        let mutation_digest = cursor.read_digest()?;
-        let mutation_len = cursor.read_u64()?;
-        let object_count = cursor.read_u64()?;
-        let object_bytes = cursor.read_u64()?;
-        cursor.finish()?;
-
-        require_limit("mutation bytes", limits.max_mutation_bytes, mutation_len)?;
-        require_limit("objects", limits.max_objects, object_count)?;
-        require_limit("canonical object bytes", limits.max_object_bytes, object_bytes)?;
         let payload = &bytes[PREPARE_HEADER_LEN as usize..payload_end];
         let mut payload_cursor = ReadCursor::new(payload);
-        let mutation_len =
-            usize::try_from(mutation_len).map_err(|_| CanonicalFormatError::LengthOutOfRange {
+        let mutation_len = usize::try_from(header.mutation_len).map_err(|_| {
+            CanonicalFormatError::LengthOutOfRange {
                 field: "WAL mutation",
-                value: mutation_len,
-            })?;
+                value: header.mutation_len,
+            }
+        })?;
         let mutation_bytes = payload_cursor.read_exact(mutation_len)?;
         let mutation =
             MutationBatchViewV1::parse_with_limits(mutation_bytes, MutationDecodeLimits {
                 max_entries: limits.max_mutation_entries,
                 max_key_bytes: limits.max_mutation_key_bytes,
             })?;
-        let receipt =
-            SealedTransitionV1::new_for_persistence(base, target, mutation_digest, profile_id);
+        let receipt = SealedTransitionV1::new_for_persistence(
+            header.base,
+            header.target,
+            header.mutation_digest,
+            header.profile_id,
+        );
         validate_mutation_receipt(mutation, receipt)?;
 
         let objects_start = payload_cursor.offset();
@@ -578,7 +647,7 @@ impl<'a> TransactionPrepareRecordViewV1<'a> {
         )?;
         let mut observed_object_bytes = 0u64;
         let mut previous = None;
-        for _ in 0..object_count {
+        for _ in 0..header.object_count {
             let disposition = read_object_disposition(&mut payload_cursor)?;
             let reference = ObjectRefV1::parse(&mut payload_cursor)?;
             if let Some(previous) = previous {
@@ -607,21 +676,21 @@ impl<'a> TransactionPrepareRecordViewV1<'a> {
             previous = Some(reference.digest());
         }
         payload_cursor.finish()?;
-        if observed_object_bytes != object_bytes {
+        if observed_object_bytes != header.object_bytes {
             return Err(LogPackFormatError::LengthMismatch {
-                declared: object_bytes,
+                declared: header.object_bytes,
                 actual: observed_object_bytes,
             });
         }
         let objects = &payload[objects_start..];
         Ok(Self {
-            sequence,
-            store_id,
+            sequence: header.sequence,
+            store_id: header.store_id,
             receipt,
             mutation,
             objects,
             objects_offset,
-            object_count,
+            object_count: header.object_count,
             digest,
             crc32c: declared_crc,
             record_len: actual_len,
@@ -693,6 +762,7 @@ impl TransactionCommitRecordV1 {
                 declared: prepare.record_len(),
             });
         }
+        require_record_address(prepare_address, "prepare record")?;
         if publication.current_state_canonical_bytes() < receipt.target().manifest().encoded_len() {
             return Err(LogPackFormatError::CurrentStateBytes {
                 minimum: receipt.target().manifest().encoded_len(),
@@ -799,6 +869,7 @@ impl TransactionCommitViewV1 {
         let previous_commit = read_physical_digest(&mut cursor)?;
         let prepare_address =
             LogPackAddress::new(cursor.read_u64()?, cursor.read_u64()?, cursor.read_u64()?)?;
+        require_record_address(prepare_address, "prepare record")?;
         let prepare_digest = read_physical_digest(&mut cursor)?;
         let base = read_state(&mut cursor)?;
         let target = read_state(&mut cursor)?;
@@ -893,6 +964,20 @@ impl TransactionCommitViewV1 {
         }
         Ok(())
     }
+}
+
+fn require_record_address(
+    address: LogPackAddress,
+    field: &'static str,
+) -> Result<(), LogPackFormatError> {
+    if address.offset() < PACK_HEADER_LEN_V1 {
+        return Err(LogPackFormatError::AddressBeforePackHeader {
+            field,
+            offset: address.offset(),
+            header_len: PACK_HEADER_LEN_V1,
+        });
+    }
+    Ok(())
 }
 
 fn validate_mutation_receipt(

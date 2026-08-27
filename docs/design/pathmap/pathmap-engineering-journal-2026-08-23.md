@@ -3016,6 +3016,59 @@ selected index location against its owning DATA record, rebuild an index, recove
 compact retained roots, migrate LMDB, alter the REPL, or claim a persistence performance/storage
 win.
 
+### J-042 — 2026-08-27: bind recovery work before trusting physical extents
+
+**PROBLEM.** A correct byte layout is not yet a safe disk reader. Three gaps remained between the
+frozen codecs and durable I/O: a valid generic address could still point inside a pack header; a
+decoded catalog state did not detect concurrent changes to the other catalog slot; and a reader
+had no authenticated fixed-prefix operation with which to bound a variable-size prepare read.
+Unbounded aggregate scan/collision work would also turn individually valid records into a startup
+resource-exhaustion vector.
+
+**DECISION.** Commit construction, commit parsing, and catalog construction now reject every
+prepare or terminal-commit offset below the exact 128-byte pack header. A
+`CatalogAuthorityTokenV1` retains and compares the complete **672-byte** two-slot image, then
+constructs a successor by replacing only the inactive slot while checking adjacent epoch,
+`StoreId`, and semantic-profile continuity. Comparing only a decoded state is forbidden because a
+second writer could change inactive bytes without changing that decoded state.
+
+The first **240 bytes** of a prepare record are now an authenticated preflight unit. Recovery can
+position-read that fixed prefix, verify its CRC32C plus domain/version/kind, and enforce declared
+record, mutation, object-count, and object-byte budgets before allocating or reading the variable
+remainder. A separate required `DurableLimits` value bounds live packs, bytes per pack, total scan
+bytes, transactions, object records, index bytes and records, and both individual and aggregate
+full-byte comparisons. It intentionally has neither `Default` nor an unbounded production
+constructor.
+
+The reconstructed committed-object lookup is a CoW `PathMap<ObjectIndexRecordV1>` keyed directly
+by the existing 32-byte canonical digest. Its value is a small `Copy` physical location record:
+neither a platform-sized surrogate ID nor an `Arc` around a primitive is introduced. A second DATA
+record for a digest fails closed, including an equal duplicate; later transactions must use REUSE.
+Conflicting lengths for one digest are reported separately. This rule makes the rebuild order and
+emitted index unique rather than dependent on last-write-wins behavior.
+
+**COMPLEXITY.** Fixed-prefix preflight is $`O(1)`$ retained memory and $`O(1)`$ native stack per
+record. Recovery-index lookup is proportional to the 32-byte digest path, independent of store
+cardinality. The PathMap clone shares unchanged trie structure through CoW; the recovery value
+adds no heap allocation or reference-count update of its own. Aggregate work remains explicitly
+bounded without imposing a trie-, term-, or traversal-depth cap.
+
+**EVIDENCE.** The affected persistence matrix passes **134/134** in **1.67 s** under a 4 GiB memory
+ceiling, zero swap, and an eight-core quota. New anti-vacuity cases authenticate the prefix before
+trusting an oversized declared record, mutate inactive catalog bytes while preserving selected
+state, reject commit/catalog offsets inside the pack header, preserve CoW index lookup, and reject
+equal and conflicting duplicate DATA records. The captured transcript is
+`target/scratch/persistence-bounded-recovery-authority-2026-08-27.log`.
+
+**PATHMAP LEARNING.** The best recovery index is not an intern table. Canonical digests are already
+portable, fixed-width identities; replacing them with insertion-order integers would add a second
+authority and destroy deterministic rebuild. PathMap is valuable here for direct byte-path lookup
+and CoW snapshots, while the compact physical location remains the value.
+
+**BOUNDARY.** This hardening still performs no filesystem write or synchronization. It prepares
+the exact authority token, bounded scanner prefix, and deterministic in-memory index that the
+single-writer publisher and restart recovery state machine consume next.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

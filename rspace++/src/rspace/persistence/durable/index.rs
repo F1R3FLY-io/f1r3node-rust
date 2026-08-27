@@ -6,8 +6,12 @@
 
 use std::fmt::{Display, Formatter};
 
+use pathmap::PathMap;
+
 use super::{INDEX_HEADER_LEN_V1, INDEX_RECORD_LEN_V1, PACK_HEADER_LEN_V1};
-use crate::rspace::persistence::canonical::{CanonicalFormatError, ObjectRefV1, ReadCursor};
+use crate::rspace::persistence::canonical::{
+    CanonicalFormatError, ObjectDigest, ObjectRefV1, ReadCursor,
+};
 use crate::rspace::persistence::checksum::{
     CHECKSUM_FIELD_LEN, crc32c, decode_crc32c, encode_crc32c,
 };
@@ -174,6 +178,63 @@ impl ObjectLocationV1 {
 pub struct ObjectIndexRecordV1 {
     reference: ObjectRefV1,
     location: ObjectLocationV1,
+}
+
+/// Copy-on-write, prefix-compressed lookup image reconstructed from the
+/// catalog-appointed index prefix.
+///
+/// Digests are already fixed 32-byte paths, so this structure introduces no
+/// symbol-table or platform-sized surrogate IDs. Values remain small `Copy`
+/// records; wrapping them in `Arc` would only add allocation and refcount
+/// traffic. The map is an accelerator and is never semantic authority.
+#[derive(Clone)]
+pub(crate) struct CommittedObjectIndexV1 {
+    records: PathMap<ObjectIndexRecordV1>,
+    record_count: u64,
+}
+
+impl CommittedObjectIndexV1 {
+    pub(crate) fn new() -> Self {
+        Self {
+            records: PathMap::new(),
+            record_count: 0,
+        }
+    }
+
+    pub(crate) const fn record_count(&self) -> u64 { self.record_count }
+
+    pub(crate) fn get(&self, digest: ObjectDigest) -> Option<ObjectIndexRecordV1> {
+        self.records.get_val_at(digest.as_bytes()).copied()
+    }
+
+    /// Admit one committed DATA record. A second DATA record for the same
+    /// digest is non-canonical even when its bytes are equal; subsequent
+    /// transactions must encode REUSE instead. Rejecting it gives recovery a
+    /// unique, byte-identical index rebuild order.
+    pub(crate) fn insert(&mut self, record: ObjectIndexRecordV1) -> Result<(), IndexFormatError> {
+        let digest = record.reference().digest();
+        if let Some(existing) = self.get(digest) {
+            if existing.reference() == record.reference() {
+                return Err(IndexFormatError::DuplicateData(record.reference()));
+            }
+            return Err(IndexFormatError::DigestReferenceConflict {
+                digest,
+                existing: existing.reference(),
+                candidate: record.reference(),
+            });
+        }
+        self.record_count = self
+            .record_count
+            .checked_add(1)
+            .ok_or(IndexFormatError::RecordCountOverflow)?;
+        let replaced = self.records.insert(digest.as_bytes(), record);
+        debug_assert!(replaced.is_none());
+        Ok(())
+    }
+}
+
+impl Default for CommittedObjectIndexV1 {
+    fn default() -> Self { Self::new() }
 }
 
 impl ObjectIndexRecordV1 {
@@ -499,6 +560,13 @@ pub enum IndexFormatError {
     },
     ReuseHasNoIndexLocation(ObjectRefV1),
     InlineObjectMissingOffset(ObjectRefV1),
+    DuplicateData(ObjectRefV1),
+    DigestReferenceConflict {
+        digest: ObjectDigest,
+        existing: ObjectRefV1,
+        candidate: ObjectRefV1,
+    },
+    RecordCountOverflow,
     DurableTailBeyondFile {
         durable_tail: u64,
         available: u64,
@@ -602,6 +670,22 @@ impl Display for IndexFormatError {
                 "inline object {} is missing its prepared body offset",
                 reference.digest()
             ),
+            Self::DuplicateData(reference) => write!(
+                formatter,
+                "object {} is encoded as DATA more than once in one live index generation",
+                reference.digest()
+            ),
+            Self::DigestReferenceConflict {
+                digest,
+                existing,
+                candidate,
+            } => write!(
+                formatter,
+                "object digest {digest} has conflicting references {existing:?} and {candidate:?}"
+            ),
+            Self::RecordCountOverflow => {
+                formatter.write_str("committed object index record count overflows u64")
+            }
             Self::DurableTailBeyondFile {
                 durable_tail,
                 available,

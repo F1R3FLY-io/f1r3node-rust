@@ -74,6 +74,11 @@ pub enum LogPackFormatError {
         address: LogPackAddress,
         declared: u64,
     },
+    AddressBeforePackHeader {
+        field: &'static str,
+        offset: u64,
+        header_len: u64,
+    },
     ZeroAddressLength,
     AddressOverflow {
         offset: u64,
@@ -173,6 +178,14 @@ impl Display for LogPackFormatError {
             Self::AddressLength { address, declared } => write!(
                 formatter,
                 "log-pack address {address:?} does not match declared length {declared}"
+            ),
+            Self::AddressBeforePackHeader {
+                field,
+                offset,
+                header_len,
+            } => write!(
+                formatter,
+                "log-pack {field} offset {offset} lies inside the {header_len}-byte pack header"
             ),
             Self::ZeroAddressLength => {
                 formatter.write_str("log-pack address length must be nonzero")

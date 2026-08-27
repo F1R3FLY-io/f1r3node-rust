@@ -2,11 +2,11 @@ use std::convert::Infallible;
 
 use super::support::{TestSemanticProfile, synthetic_ref};
 use super::transaction_sealing::{base_state, data_batch, seal_data};
-use crate::rspace::persistence::durable::PreparedIndexAppendV1;
+use crate::rspace::persistence::durable::{CommittedObjectIndexV1, PreparedIndexAppendV1};
 use crate::rspace::persistence::{
     CanonicalObjectStore, CommittedObjectComparison, CommittedObjectLookup, INDEX_HEADER_LEN_V1,
     INDEX_RECORD_LEN_V1, IndexFormatError, IndexGenerationV1, LogPackDecodeLimits,
-    LogPackFormatError, LogPackObjectPlanV1, LogPackSequence, ObjectIndexFileViewV1,
+    LogPackFormatError, LogPackObjectPlanV1, LogPackSequence, ObjectDigest, ObjectIndexFileViewV1,
     ObjectIndexHeaderV1, ObjectIndexRecordV1, ObjectLocationV1, ObjectRefV1, PACK_HEADER_LEN_V1,
     PackId, PreparedLogPackTransactionV1, StoreId,
 };
@@ -364,4 +364,36 @@ fn index_identity_counters_and_object_extent_overflow_are_checked() {
         ObjectIndexRecordV1::new(synthetic_ref(1), location),
         Err(IndexFormatError::ObjectEndOverflow { .. })
     ));
+}
+
+#[test]
+fn committed_index_is_a_cow_pathmap_and_rejects_every_second_data_record() {
+    let first = record();
+    let mut index = CommittedObjectIndexV1::new();
+    index.insert(first).unwrap();
+    assert_eq!(index.record_count(), 1);
+    assert_eq!(index.get(first.reference().digest()), Some(first));
+
+    let cloned = index.clone();
+    assert_eq!(cloned.get(first.reference().digest()), Some(first));
+    assert_eq!(index.insert(first), Err(IndexFormatError::DuplicateData(first.reference())));
+    assert_eq!(index.record_count(), 1);
+
+    let conflicting_reference = ObjectRefV1::new(
+        ObjectDigest::from_array(*first.reference().digest().as_array()),
+        first.reference().encoded_len() + 1,
+    )
+    .unwrap();
+    let conflicting = ObjectIndexRecordV1::new(conflicting_reference, first.location()).unwrap();
+    assert!(matches!(
+        index.insert(conflicting),
+        Err(IndexFormatError::DigestReferenceConflict {
+            digest,
+            existing,
+            candidate,
+        }) if digest == first.reference().digest()
+            && existing == first.reference()
+            && candidate == conflicting_reference
+    ));
+    assert_eq!(index.record_count(), 1);
 }

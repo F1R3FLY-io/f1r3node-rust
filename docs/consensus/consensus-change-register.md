@@ -5869,6 +5869,30 @@ zero-swap, four-core scope. Writer leasing, sync/publication order, selected-loc
 deterministic rebuild, crash recovery, compaction/garbage collection, LMDB migration, and measured
 LMDB comparison remain mandatory before production activation.
 
+**CBR-053 living continuation (2026-08-27, bounded recovery authority).** Recovery-facing
+constructors now reject every prepare and terminal-commit address inside the 128-byte pack header.
+The exact compare-and-swap token is the complete 672-byte two-slot catalog image rather than only
+its decoded current state; successor construction changes only the inactive slot and requires the
+next epoch plus identical store and semantic-profile identity. A fixed 240-byte authenticated
+prepare prefix exposes the declared record extent and count/byte inventories before any
+variable-size read.
+
+Production recovery must receive explicit nonzero ceilings for live packs, pack and aggregate scan
+bytes, transactions, object records, index bytes/records, and individual plus aggregate full-byte
+comparisons. These are work/space budgets, never artificial Rholang or trie-depth limits. The
+derived lookup accelerator is a CoW `PathMap<ObjectIndexRecordV1>` keyed by the canonical 32-byte
+digest with a small `Copy` value. Equal duplicate DATA and conflicting same-digest references both
+fail closed, giving one deterministic rebuild image; committed equality after the first DATA is
+represented as REUSE.
+
+The storage-cost split is unchanged. Logical current-state canonical closure bytes are the future
+consensus-metering input. Recovery scans, collision comparisons, index bytes, WAL framing,
+filesystem blocks, retention, candidate tails, repair, and compaction are separately measured
+physical work and storage. The current **134/134** dormant persistence tests pass in **1.67 s**
+under a 4 GiB, zero-swap, eight-core scope. This remains `NO_PRODUCTION_CHANGE_DERIVED`: no file is
+opened, no authority is published or recovered, and no matcher, COMM, root, accepted program,
+network byte, compute charge, or storage charge changes.
+
 ### B.2 The original commit-level exemptions
 
 Every commit in `7293d57c..dc383ed1` touching the consensus-critical path set, that is **not** a

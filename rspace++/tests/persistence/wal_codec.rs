@@ -5,9 +5,10 @@ use super::transaction_sealing::{base_state, data_batch, seal_data};
 use crate::rspace::persistence::{
     CanonicalObjectStore, CanonicalSink, CommitPublicationV1, CommittedObjectComparison,
     CommittedObjectLookup, LogPackAddress, LogPackDecodeLimits, LogPackFormatError,
-    LogPackObjectPlanV1, LogPackSequence, LogPackWriteError, ObjectRefV1, PhysicalDigest,
-    PreparedLogPackTransactionV1, StoreId, TransactionCommitRecordV1, TransactionCommitViewV1,
-    TransactionPrepareRecordViewV1,
+    LogPackObjectPlanV1, LogPackSequence, LogPackWriteError, ObjectRefV1, PACK_HEADER_LEN_V1,
+    PhysicalDigest, PreparedLogPackTransactionV1, StoreId, TRANSACTION_PREPARE_HEADER_LEN_V1,
+    TransactionCommitRecordV1, TransactionCommitViewV1, TransactionPrepareRecordViewV1,
+    preflight_prepare_record_len_v1,
 };
 
 struct MissingLookup;
@@ -112,6 +113,40 @@ fn prepare_stream_round_trips_without_projecting_objects() {
     }
     assert_eq!(next_record_offset + 8, view.record_len());
     assert_eq!(view.record_len(), bytes.len() as u64);
+}
+
+#[test]
+fn prepare_prefix_is_authenticated_and_bounded_before_variable_size_reads() {
+    let (bytes, _, _) = encoded_prepare();
+    let prefix = &bytes[..TRANSACTION_PREPARE_HEADER_LEN_V1 as usize];
+    assert_eq!(
+        preflight_prepare_record_len_v1(prefix, LogPackDecodeLimits::UNBOUNDED).unwrap(),
+        bytes.len() as u64
+    );
+
+    let mut corrupt = prefix.to_vec();
+    corrupt[80] ^= 1;
+    assert!(matches!(
+        preflight_prepare_record_len_v1(&corrupt, LogPackDecodeLimits::UNBOUNDED),
+        Err(LogPackFormatError::HeaderChecksum { .. })
+    ));
+
+    let mut oversized = prefix.to_vec();
+    oversized[32..40].copy_from_slice(&(bytes.len() as u64 + 1).to_le_bytes());
+    let header_crc = crate::rspace::persistence::checksum::crc32c(&oversized[..232]);
+    oversized[232..240]
+        .copy_from_slice(&crate::rspace::persistence::checksum::encode_crc32c(header_crc));
+    let limits = LogPackDecodeLimits {
+        max_record_bytes: bytes.len() as u64,
+        ..LogPackDecodeLimits::UNBOUNDED
+    };
+    assert!(matches!(
+        preflight_prepare_record_len_v1(&oversized, limits),
+        Err(LogPackFormatError::ResourceLimit {
+            resource: "record bytes",
+            ..
+        })
+    ));
 }
 
 #[test]
@@ -363,7 +398,7 @@ fn commit_has_a_fixed_portable_image_and_rejects_corruption() {
         receipt,
         store_id,
         PhysicalDigest::ZERO,
-        LogPackAddress::new(1, 0, prepare.record_len()).unwrap(),
+        LogPackAddress::new(1, PACK_HEADER_LEN_V1, prepare.record_len()).unwrap(),
         crate::rspace::persistence::PrepareRecordIdentityV1::from_record_view(prepare),
         publication(64),
     )
@@ -374,6 +409,13 @@ fn commit_has_a_fixed_portable_image_and_rejects_corruption() {
     assert!(matches!(
         TransactionCommitViewV1::parse(&corrupted),
         Err(LogPackFormatError::RecordChecksum { .. })
+    ));
+
+    let mut inside_header = *commit.canonical_bytes();
+    replace_u64_and_commit_crc(&mut inside_header, 104, PACK_HEADER_LEN_V1 - 1);
+    assert!(matches!(
+        TransactionCommitViewV1::parse(&inside_header),
+        Err(LogPackFormatError::AddressBeforePackHeader { .. })
     ));
 
     let mut streamed = Vec::new();
@@ -544,6 +586,21 @@ fn commit_construction_rejects_an_unrelated_receipt_and_invalid_extent() {
     ));
     assert!(matches!(LogPackAddress::new(1, 0, 0), Err(LogPackFormatError::ZeroAddressLength)));
     assert!(matches!(LogPackAddress::new(0, 0, 1), Err(LogPackFormatError::ZeroPackId)));
+    assert!(matches!(
+        TransactionCommitRecordV1::new(
+            receipt,
+            store_id,
+            PhysicalDigest::ZERO,
+            LogPackAddress::new(1, PACK_HEADER_LEN_V1 - 1, prepare.record_len()).unwrap(),
+            identity,
+            publication(64),
+        ),
+        Err(LogPackFormatError::AddressBeforePackHeader {
+            field: "prepare record",
+            offset,
+            header_len: PACK_HEADER_LEN_V1,
+        }) if offset == PACK_HEADER_LEN_V1 - 1
+    ));
 }
 
 #[test]

@@ -30,8 +30,9 @@ pub use closure::{
     verify_structural_closure, verify_structural_closure_with_limits,
 };
 pub use durable::{
-    CATALOG_IMAGE_LEN, CATALOG_SLOT_LEN, CatalogPackStateV1, CatalogSelectionV1, CatalogSlotV1,
-    DurableFormatError, INDEX_HEADER_LEN_V1, INDEX_RECORD_LEN_V1, IndexFormatError,
+    CATALOG_IMAGE_LEN, CATALOG_SLOT_LEN, CatalogAuthorityTokenV1, CatalogPackStateV1,
+    CatalogSelectionV1, CatalogSlotV1, DurableFormatError, DurableLimitConfig, DurableLimitError,
+    DurableLimitKind, DurableLimits, INDEX_HEADER_LEN_V1, INDEX_RECORD_LEN_V1, IndexFormatError,
     IndexGenerationV1, ObjectIndexFileViewV1, ObjectIndexHeaderV1, ObjectIndexRecordIter,
     ObjectIndexRecordV1, ObjectLocationV1, PACK_HEADER_LEN_V1, PackFormatError, PackHeaderV1,
     PackTerminalIdentityV1,
@@ -83,8 +84,8 @@ pub use wal::{
     LogPackDecodeLimits, LogPackFormatError, LogPackObjectDispositionV1, LogPackObjectIter,
     LogPackObjectPlanError, LogPackObjectPlanV1, LogPackObjectView, LogPackSequence,
     LogPackWriteError, PackId, PrepareRecordIdentityV1, PreparedLogPackTransactionV1,
-    TRANSACTION_COMMIT_RECORD_LEN_V1, TransactionCommitRecordV1, TransactionCommitViewV1,
-    TransactionPrepareRecordViewV1,
+    TRANSACTION_COMMIT_RECORD_LEN_V1, TRANSACTION_PREPARE_HEADER_LEN_V1, TransactionCommitRecordV1,
+    TransactionCommitViewV1, TransactionPrepareRecordViewV1, preflight_prepare_record_len_v1,
 };
 
 #[cfg(test)]
