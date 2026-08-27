@@ -4337,6 +4337,7 @@ mod tests {
             cadence: 1, // every block
             retain: 10,
             signer_sk: None,
+            payload_dir: None,
         };
 
         // Simulate play_deploys_for_state's block-scan loop with 3

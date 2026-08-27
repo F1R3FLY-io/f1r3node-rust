@@ -308,12 +308,22 @@ pub(crate) async fn setup_node_program<T: TransportLayer + Send + Sync + Clone +
             .validator_private_key
             .as_deref()
             .and_then(|hex_str| hex::decode(hex_str).ok());
+        // Phase 7b-2 retention (DD-7b-1 (y), 2026-08-27): thread
+        // the payload store dir through the writer so the
+        // finalization runner can prune payload files that no
+        // retained snapshot references anymore.  Kept in sync with
+        // the `data_dir_snapshot.join("wal_payload_store")` path
+        // used a few lines below to construct the payload store
+        // itself — if these ever disagree, retention would prune
+        // the wrong directory.
+        let payload_dir_for_retention = Some(data_dir_snapshot.join("wal_payload_store"));
         let writer = build_snapshot_writer(
             &merged,
             conf.storage.consensus_fs_snapshot_cadence,
             conf.storage.consensus_fs_snapshot_dir.as_deref(),
             conf.storage.consensus_fs_snapshot_retain,
             signer_sk,
+            payload_dir_for_retention,
         )
         // F-30b-1 (2026-08-24): retain is a required operator value.
         // Boot rejects with RetainTooSmall if <2 while consensus

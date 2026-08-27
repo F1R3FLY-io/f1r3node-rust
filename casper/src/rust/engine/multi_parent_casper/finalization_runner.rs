@@ -416,6 +416,58 @@ async fn apply_finalization_effects(
                                     .write()
                                     .await
                                     .insert(block.block_hash.to_vec(), (root, merkle_root));
+                                // Phase 7b-2 retention (DD-7b-1 (y),
+                                // 2026-08-27): after a successful
+                                // snapshot write the snapshot dir was
+                                // pruned by `maybe_write` to the
+                                // operator's retention window.  Prune
+                                // the sibling payload store the same
+                                // way — union the payload hashes
+                                // referenced by all retained snapshots
+                                // (via their `.hashes` sidecars) and
+                                // delete any payload files not in the
+                                // union.  Best-effort: failures logged.
+                                // Only runs when the operator has
+                                // configured a `payload_dir` on the
+                                // writer.
+                                if let Some(payload_dir) = writer.payload_dir.clone() {
+                                    let snapshot_dir = writer.dir.clone();
+                                    let block_hash_pretty_clone = block_hash_pretty.clone();
+                                    let prune_result = tokio::task::spawn_blocking(move || {
+                                        let keep = rholang::rust::interpreter::io::snapshot::
+                                            scan_retained_payload_hashes(&snapshot_dir)?;
+                                        crate::rust::engine::wal_payload_server::
+                                            prune_payload_store(&payload_dir, &keep)
+                                    })
+                                    .await;
+                                    match prune_result {
+                                        Ok(Ok(n)) => {
+                                            if n > 0 {
+                                                tracing::info!(
+                                                    target: "f1r3fly.fs_wal.payload_store",
+                                                    block_number = bn,
+                                                    block_hash = %block_hash_pretty_clone,
+                                                    removed = n,
+                                                    "Phase 7b-2 payload retention pruned entries"
+                                                );
+                                            }
+                                        }
+                                        Ok(Err(e)) => tracing::warn!(
+                                            target: "f1r3fly.fs_wal.payload_store",
+                                            block_number = bn,
+                                            block_hash = %block_hash_pretty_clone,
+                                            error = %e,
+                                            "Phase 7b-2 payload retention IO failed"
+                                        ),
+                                        Err(je) => tracing::warn!(
+                                            target: "f1r3fly.fs_wal.payload_store",
+                                            block_number = bn,
+                                            block_hash = %block_hash_pretty_clone,
+                                            error = %je,
+                                            "Phase 7b-2 payload retention spawn_blocking failed"
+                                        ),
+                                    }
+                                }
                             }
                             Ok(Ok(None)) => {
                                 // Cadence miss OR empty slice sentinel

@@ -185,6 +185,14 @@ pub fn build_snapshot_writer(
     // and a boot-time warning is logged so operators know their
     // manifests won't be verifiable by peers.
     signer_sk: Option<Vec<u8>>,
+    // Phase 7b-2 retention (DD-7b-1 (y), 2026-08-27): the on-disk
+    // payload-store directory (`<data-dir>/wal_payload_store/`),
+    // if wired.  When Some, the finalization runner's LFB-
+    // snapshot-write branch also prunes the payload store to the
+    // hashes referenced by retained snapshots.  When None (test
+    // harnesses, observer nodes without a store), no retention
+    // runs and the store grows unbounded.
+    payload_dir: Option<PathBuf>,
 ) -> Result<Option<SnapshotWriter>, SnapshotConfigError> {
     let canonical = validate_snapshot_config(provisioning, cadence, dir, retain)?;
     match canonical {
@@ -208,6 +216,7 @@ pub fn build_snapshot_writer(
                 cadence,
                 retain,
                 signer_sk,
+                payload_dir,
             }))
         }
     }
@@ -672,7 +681,7 @@ mod tests {
 
     #[test]
     fn build_snapshot_writer_returns_none_without_consensus_provisioning() {
-        let w = build_snapshot_writer(&empty_provisioning(), Some(100), None, 100, None).unwrap();
+        let w = build_snapshot_writer(&empty_provisioning(), Some(100), None, 100, None, None).unwrap();
         assert!(w.is_none());
     }
 
@@ -684,6 +693,7 @@ mod tests {
             Some(50),
             Some(dir.path()),
             200,
+            None,
             None,
         )
         .unwrap()
@@ -698,7 +708,7 @@ mod tests {
 
     #[test]
     fn build_snapshot_writer_propagates_validation_error() {
-        let err = build_snapshot_writer(&provisioning_with_consensus_file(), None, None, 100, None)
+        let err = build_snapshot_writer(&provisioning_with_consensus_file(), None, None, 100, None, None)
             .unwrap_err();
         assert_eq!(err, SnapshotConfigError::MissingCadence);
     }
@@ -718,6 +728,7 @@ mod tests {
                 Some(50),
                 Some(dir.path()),
                 retain,
+                None,
                 None,
             )
             .unwrap()
@@ -744,6 +755,7 @@ mod tests {
                 Some(dir.path()),
                 bad_retain,
                 None,
+                None,
             )
             .unwrap_err();
             assert_eq!(err, SnapshotConfigError::RetainTooSmall {
@@ -759,7 +771,7 @@ mod tests {
         // force a writer to exist, and any retain (including 0)
         // is accepted since it's unused.
         for retain in [0usize, 500, 999_999] {
-            let w = build_snapshot_writer(&empty_provisioning(), Some(100), None, retain, None)
+            let w = build_snapshot_writer(&empty_provisioning(), Some(100), None, retain, None, None)
                 .unwrap();
             assert!(
                 w.is_none(),

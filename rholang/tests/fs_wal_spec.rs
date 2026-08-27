@@ -2337,6 +2337,7 @@ mod tests {
             cadence: 1,
             retain: 4,
             signer_sk: None,
+            payload_dir: None,
         };
         runtime.set_fs_snapshot_writer(Some(writer.clone())).await;
 
@@ -2406,6 +2407,7 @@ mod tests {
             cadence: 10, // block 3 is a miss
             retain: 4,
             signer_sk: None,
+            payload_dir: None,
         };
 
         let term = format!(
@@ -2465,6 +2467,7 @@ mod tests {
             cadence: 1,
             retain: 3,
             signer_sk: None,
+            payload_dir: None,
         };
 
         // Craft 5 distinct WAL slices (different offsets → different

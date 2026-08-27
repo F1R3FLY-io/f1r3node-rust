@@ -518,6 +518,18 @@ pub fn write_snapshot(
 ) -> Result<(PathBuf, [u8; 32], [u8; 32]), SnapshotError> {
     let blob = snapshot_blob(entries);
     let final_path = snapshot_path(snapshot_dir, &blob.root);
+    // Phase 7b-2 retention sidecar (DD-7b-1 (y), 2026-08-27):
+    // extract the unique payload hashes referenced by this
+    // snapshot's WAL entries and stash them next to the snapshot
+    // file so payload-store retention can union across all
+    // retained snapshots without decoding the full WAL bytes.
+    // Sidecar failures are best-effort: a missing sidecar just
+    // means the corresponding payload hashes are not counted in
+    // the retained set (they will be over-eagerly deleted from the
+    // payload store on the next retention pass).  Deferred to the
+    // very end of `write_snapshot` so an error here does not
+    // shadow the more important snapshot-write result.
+    let referenced_hashes = referenced_payload_hashes(entries);
     // Ensure directory exists.  Callers should have validated this at
     // boot; a race that removed it mid-flight surfaces here as ENOENT.
     if let Some(parent) = final_path.parent() {
@@ -608,7 +620,180 @@ pub fn write_snapshot(
             }
         }
     }
+    // Sidecar write — best-effort.  Failures logged; don't abort
+    // the snapshot write (the snapshot file itself is already
+    // durable at this point).
+    let sidecar_path = hashes_sidecar_path(snapshot_dir, &blob.root);
+    if let Err(e) = write_hashes_sidecar(&sidecar_path, &referenced_hashes) {
+        tracing::warn!(
+            target: "f1r3fly.fs_wal.payload_store",
+            path = %sidecar_path.display(),
+            error = %e,
+            "Phase 7b-2 hashes sidecar write failed; payload retention will \
+             miss this snapshot's referenced hashes on the next pass"
+        );
+    }
     Ok((final_path, blob.root, blob.merkle_root))
+}
+
+/// Phase 7b-2 (2026-08-27): extract the set of unique payload
+/// hashes referenced by a WAL slice.  Skips entries whose
+/// `payload_ref` is None or `DeployRef` (only `Hash` variant
+/// references bytes that live in the payload store).  Deduplicates
+/// automatically via the HashSet.
+pub fn referenced_payload_hashes(
+    entries: &[WalEntry],
+) -> std::collections::HashSet<[u8; 32]> {
+    let mut set = std::collections::HashSet::new();
+    for e in entries {
+        if let Some(PayloadRef::Hash(h)) = e.payload_ref {
+            set.insert(h);
+        }
+    }
+    set
+}
+
+/// Phase 7b-2 (2026-08-27): path to the hashes-sidecar file for
+/// a snapshot with content-address `root`.  Colocated with the
+/// snapshot itself so `prune_snapshot_dir` can pair them up.
+pub fn hashes_sidecar_path(snapshot_dir: &Path, root: &[u8; 32]) -> PathBuf {
+    snapshot_dir.join(format!("{}.hashes", hex::encode(root)))
+}
+
+/// Phase 7b-2 sidecar format: `[u32-be count][32-byte hash × count]`.
+/// Writes atomically via tmp + rename so a mid-write crash leaves
+/// either no sidecar or a fully-durable one (never partial).
+fn write_hashes_sidecar(
+    sidecar_path: &Path,
+    hashes: &std::collections::HashSet<[u8; 32]>,
+) -> std::io::Result<()> {
+    use std::io::Write as _;
+    let count: u32 = hashes.len().try_into().unwrap_or(u32::MAX);
+    let mut buf = Vec::with_capacity(4 + hashes.len() * 32);
+    buf.extend_from_slice(&count.to_be_bytes());
+    // Sorted for deterministic on-disk byte layout across runs
+    // that produce equivalent hash sets (aids diff-review and
+    // makes the sidecar itself content-addressable if we ever
+    // need it).
+    let mut sorted: Vec<[u8; 32]> = hashes.iter().copied().collect();
+    sorted.sort();
+    for h in sorted {
+        buf.extend_from_slice(&h);
+    }
+    let now_nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let tmp_name = format!(
+        "{}.{}-{}.hashes.tmp",
+        sidecar_path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("sidecar"),
+        std::process::id(),
+        now_nanos
+    );
+    let tmp_path = sidecar_path.with_file_name(tmp_name);
+    {
+        let mut opts = std::fs::OpenOptions::new();
+        opts.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            opts.mode(0o644);
+        }
+        let mut file = opts.open(&tmp_path)?;
+        file.write_all(&buf)?;
+        file.sync_all()?;
+    }
+    std::fs::rename(&tmp_path, sidecar_path)?;
+    Ok(())
+}
+
+/// Phase 7b-2 (2026-08-27): read a hashes sidecar back into a
+/// HashSet.  On format/version issues returns an empty set +
+/// logs at debug — a corrupt sidecar just means the corresponding
+/// snapshot's payloads won't be counted in retention (over-eager
+/// prune on the next pass, which is safe if the operator hasn't
+/// added any new joiners).
+pub fn read_hashes_sidecar(
+    sidecar_path: &Path,
+) -> std::io::Result<std::collections::HashSet<[u8; 32]>> {
+    let bytes = std::fs::read(sidecar_path)?;
+    let mut set = std::collections::HashSet::new();
+    if bytes.len() < 4 {
+        tracing::debug!(
+            target: "f1r3fly.fs_wal.payload_store",
+            path = %sidecar_path.display(),
+            len = bytes.len(),
+            "hashes sidecar too short for u32-be count header"
+        );
+        return Ok(set);
+    }
+    let count = u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as usize;
+    let expected = 4usize.saturating_add(count.saturating_mul(32));
+    if bytes.len() != expected {
+        tracing::debug!(
+            target: "f1r3fly.fs_wal.payload_store",
+            path = %sidecar_path.display(),
+            got = bytes.len(),
+            expected,
+            "hashes sidecar body length disagrees with header count"
+        );
+        return Ok(set);
+    }
+    for i in 0..count {
+        let start = 4 + i * 32;
+        let mut buf = [0u8; 32];
+        buf.copy_from_slice(&bytes[start..start + 32]);
+        set.insert(buf);
+    }
+    Ok(set)
+}
+
+/// Phase 7b-2 (2026-08-27): union the payload hashes referenced
+/// by every retained snapshot in `snapshot_dir` via the
+/// `.hashes` sidecars.  Missing sidecars are skipped silently
+/// (see `write_snapshot`'s best-effort sidecar write).
+///
+/// Returns the union set — callers pass it to
+/// `wal_payload_server::prune_payload_store` to delete any
+/// non-referenced entries from the on-disk payload store.
+pub fn scan_retained_payload_hashes(
+    snapshot_dir: &Path,
+) -> std::io::Result<std::collections::HashSet<[u8; 32]>> {
+    let mut union = std::collections::HashSet::new();
+    let read_dir = match std::fs::read_dir(snapshot_dir) {
+        Ok(rd) => rd,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(union),
+        Err(e) => return Err(e),
+    };
+    for entry in read_dir.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|s| s.to_str()) != Some("hashes") {
+            continue;
+        }
+        // Skip symlinks — matches prune_snapshot_dir's posture.
+        let ft = match entry.file_type() {
+            Ok(ft) => ft,
+            Err(_) => continue,
+        };
+        if ft.is_symlink() {
+            continue;
+        }
+        match read_hashes_sidecar(&path) {
+            Ok(set) => union.extend(set),
+            Err(e) => {
+                tracing::debug!(
+                    target: "f1r3fly.fs_wal.payload_store",
+                    path = %path.display(),
+                    error = %e,
+                    "hashes sidecar read failed; skipping"
+                );
+            }
+        }
+    }
+    Ok(union)
 }
 
 /// M-30b-3 review fix (slice 30b round 2): sweep stale `.wal.tmp`
@@ -730,6 +915,27 @@ pub struct SnapshotWriter {
     /// verify against the writer's known pubkey before trusting
     /// `root`.
     pub signer_sk: Option<Vec<u8>>,
+
+    /// Phase 7b-2 retention (DD-7b-1 (y), 2026-08-27): operator-
+    /// configured on-disk payload store directory (typically
+    /// `<data-dir>/wal_payload_store/`).  When Some, the LFB-
+    /// triggered snapshot writer in the casper finalization runner
+    /// prunes the payload store alongside `prune_snapshot_dir` —
+    /// deleting any content-addressed payload file whose hash is
+    /// NOT referenced by any currently-retained snapshot.
+    ///
+    /// `None` on nodes without the payload store wired (test
+    /// harnesses, observer nodes with no on-disk cache).  When
+    /// None, no retention runs; the store grows unbounded (this
+    /// matches the pre-DD-7b-1-y posture).
+    ///
+    /// Populated at boot in setup.rs from
+    /// `<data-dir>/wal_payload_store/`.  Reads through the
+    /// finalization runner's `writer_opt.payload_dir.clone()`
+    /// call — the field is intentionally NOT wrapped in
+    /// `Arc<RwLock<>>` because the payload dir path is a
+    /// per-node config value set once at boot and never mutated.
+    pub payload_dir: Option<PathBuf>,
 }
 
 impl SnapshotWriter {
@@ -1357,6 +1563,25 @@ pub fn prune_snapshot_dir(snapshot_dir: &Path, keep_last_n: usize) -> std::io::R
                 path = %path.display(),
                 error = %e,
                 "prune_snapshot_dir: failed to remove old snapshot; continuing"
+            ),
+        }
+        // Phase 7b-2 (2026-08-27): also remove the `.hashes`
+        // sidecar so it doesn't outlive the snapshot it was
+        // paired with.  Otherwise stale sidecars keep contributing
+        // to the retention union forever, defeating retention.
+        // Best-effort: missing sidecar is fine (pre-Phase-7b-2
+        // snapshots don't have one; ENOENT is not a failure).
+        let sidecar_path = path.with_extension("hashes");
+        match std::fs::remove_file(&sidecar_path) {
+            Ok(()) => {}
+            Err(ref e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => tracing::warn!(
+                target: "f1r3fly.fs_wal.payload_store",
+                path = %sidecar_path.display(),
+                error = %e,
+                "prune_snapshot_dir: failed to remove hashes sidecar; \
+                 the sidecar file will leak but this is not a correctness bug \
+                 (retention over-counts hashes and prunes less aggressively)"
             ),
         }
     }
@@ -2068,6 +2293,7 @@ mod tests {
             cadence: 5,
             retain: 3,
             signer_sk: None,
+            payload_dir: None,
         };
         let entries = vec![mk_write_entry(b"a", "/x")];
         // Blocks 1..5 (not aligned to cadence=5 boundary; 5 is aligned)
@@ -2090,6 +2316,7 @@ mod tests {
             cadence: 10,
             retain: 5,
             signer_sk: None,
+            payload_dir: None,
         };
         // Block 0 is % 10 == 0 → cadence hit.
         let entries = vec![mk_write_entry(b"genesis", "/genesis")];
@@ -2105,6 +2332,7 @@ mod tests {
             cadence: 1,
             retain: 3,
             signer_sk: None,
+            payload_dir: None,
         };
         // Cadence=1 means every block is a hit, but empty entries
         // don't produce a `.wal` file (empty payloads all hash to
@@ -2144,6 +2372,7 @@ mod tests {
             cadence: 5,
             retain: 3,
             signer_sk: None,
+            payload_dir: None,
         };
         let entries = vec![mk_write_entry(b"x", "/x")];
         // Negative block numbers indicate "no block yet" state and
@@ -2173,6 +2402,7 @@ mod tests {
             cadence: 1, // any cadence — negative < 0 skip triggers first
             retain: 3,
             signer_sk: None,
+            payload_dir: None,
         };
         let entries = vec![mk_write_entry(b"x", "/x")];
         assert!(
@@ -2198,6 +2428,7 @@ mod tests {
             cadence: 1, // every block
             retain: 2,
             signer_sk: None,
+            payload_dir: None,
         };
         // Write snapshots for blocks 1..=5 with distinct content.
         for i in 1..=5u8 {
@@ -2372,6 +2603,7 @@ mod tests {
             cadence: 5,
             retain: 100,
             signer_sk: None,
+            payload_dir: None,
         };
         let entries = vec![mk_write_entry(b"x", "/x")];
         for bn in [5i64, 10, 15, 100, 1000] {
@@ -2400,6 +2632,7 @@ mod tests {
             cadence: 1_000_000,
             retain: 3,
             signer_sk: None,
+            payload_dir: None,
         };
         let entries = vec![mk_write_entry(b"x", "/x")];
         // A random-looking block number that's an exact multiple.
@@ -2424,6 +2657,7 @@ mod tests {
             cadence: 1,
             retain: 0,
             signer_sk: None,
+            payload_dir: None,
         };
         let entries_1 = vec![mk_write_entry(b"a", "/x")];
         let entries_2 = vec![mk_write_entry(b"b", "/y")];
@@ -2468,6 +2702,7 @@ mod tests {
             cadence: 1,
             retain: usize::MAX,
             signer_sk: None,
+            payload_dir: None,
         };
         for i in 1..=5u8 {
             let entries = vec![mk_write_entry(&[i], "/x")];
@@ -2837,6 +3072,7 @@ mod tests {
             cadence: 1,
             retain: 10,
             signer_sk: Some(sk),
+            payload_dir: None,
         };
         let entries = vec![mk_write_entry(b"payload", "/x")];
         writer
@@ -2916,6 +3152,7 @@ mod tests {
             cadence: 10,
             retain: 4,
             signer_sk: None,
+            payload_dir: None,
         };
         // Block 20: cadence hit (20 % 10 == 0) with zero entries.
         let res = writer.maybe_write(20, &[]).unwrap();
@@ -2939,6 +3176,7 @@ mod tests {
             cadence: 5,
             retain: 4,
             signer_sk: None,
+            payload_dir: None,
         };
         let entries = vec![WalEntry {
             op: WalOp::Write,
@@ -2976,6 +3214,7 @@ mod tests {
             cadence: 100,
             retain: 4,
             signer_sk: None,
+            payload_dir: None,
         };
         // Block 3 is a cadence miss (3 % 100 != 0).
         let res = writer.maybe_write(3, &[]).unwrap();
@@ -3115,5 +3354,210 @@ mod tests {
             err.contains("missing `v`"),
             "must reject unversioned line explicitly; got {err}"
         );
+    }
+
+    // ---------------------------------------------------------------
+    // Phase 7b-2 retention (DD-7b-1 (y), 2026-08-27) — sidecar tests.
+    // ---------------------------------------------------------------
+
+    /// `referenced_payload_hashes` extracts unique Hash refs and
+    /// skips None + DeployRef variants.  DeployRef is not currently
+    /// emitted by any handler but must be gracefully ignored here
+    /// so future write-payload-determinism reducer work doesn't
+    /// accidentally leak DeployRef bytes into the payload store.
+    #[test]
+    fn referenced_payload_hashes_extracts_only_hash_variants() {
+        let bytes_a = b"aaa".to_vec();
+        let bytes_b = b"bbb".to_vec();
+        let hash_a = hash_of(&bytes_a);
+        let hash_b = hash_of(&bytes_b);
+        let entries = vec![
+            WalEntry {
+                op: WalOp::Write,
+                path: PathBuf::from("/a"),
+                extra_path: None,
+                offset: Some(0),
+                length: Some(3),
+                payload_ref: Some(PayloadRef::Hash(hash_a)),
+                mode_bits: None,
+                owner: None,
+                group: None,
+                outcome: WalOutcome::Success,
+            },
+            WalEntry {
+                op: WalOp::Chmod,
+                path: PathBuf::from("/b"),
+                extra_path: None,
+                offset: None,
+                length: None,
+                payload_ref: None,
+                mode_bits: Some(0o600),
+                owner: None,
+                group: None,
+                outcome: WalOutcome::Success,
+            },
+            WalEntry {
+                op: WalOp::WriteAt,
+                path: PathBuf::from("/c"),
+                extra_path: None,
+                offset: Some(0),
+                length: Some(3),
+                payload_ref: Some(PayloadRef::Hash(hash_b)),
+                mode_bits: None,
+                owner: None,
+                group: None,
+                outcome: WalOutcome::Success,
+            },
+            // DeployRef must be skipped.
+            WalEntry {
+                op: WalOp::Write,
+                path: PathBuf::from("/d"),
+                extra_path: None,
+                offset: Some(0),
+                length: Some(1),
+                payload_ref: Some(PayloadRef::DeployRef {
+                    block_hash: [0u8; 32],
+                    deploy_index: 0,
+                    arg_index: 0,
+                }),
+                mode_bits: None,
+                owner: None,
+                group: None,
+                outcome: WalOutcome::Success,
+            },
+            // Duplicate of hash_a — still one entry in the set.
+            WalEntry {
+                op: WalOp::Write,
+                path: PathBuf::from("/e"),
+                extra_path: None,
+                offset: Some(0),
+                length: Some(3),
+                payload_ref: Some(PayloadRef::Hash(hash_a)),
+                mode_bits: None,
+                owner: None,
+                group: None,
+                outcome: WalOutcome::Success,
+            },
+        ];
+        let set = referenced_payload_hashes(&entries);
+        assert_eq!(set.len(), 2);
+        assert!(set.contains(&hash_a));
+        assert!(set.contains(&hash_b));
+    }
+
+    /// Hashes sidecar round-trips: write → read produces the
+    /// same set.  Uses sorted-write order internally so the bytes
+    /// are deterministic across identical hash sets.
+    #[test]
+    fn hashes_sidecar_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("root.hashes");
+        let mut set = std::collections::HashSet::new();
+        set.insert([0x11u8; 32]);
+        set.insert([0x22u8; 32]);
+        set.insert([0x33u8; 32]);
+        write_hashes_sidecar(&path, &set).unwrap();
+        let round = read_hashes_sidecar(&path).unwrap();
+        assert_eq!(round, set);
+    }
+
+    /// Corrupt sidecars (wrong header count, truncated body) are
+    /// treated as empty rather than propagating an error — a
+    /// corrupt sidecar just means the corresponding snapshot's
+    /// hashes don't count toward retention (over-eager prune on
+    /// the next pass, which is safe).
+    #[test]
+    fn hashes_sidecar_read_treats_corrupt_bytes_as_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        // Header claims 5 hashes, body has 0.
+        let path = dir.path().join("bad.hashes");
+        std::fs::write(&path, &[0, 0, 0, 5]).unwrap();
+        let set = read_hashes_sidecar(&path).unwrap();
+        assert!(set.is_empty());
+        // Header claims 1 hash, body has 16 bytes (too short).
+        let path2 = dir.path().join("short.hashes");
+        let mut buf = vec![0, 0, 0, 1];
+        buf.extend_from_slice(&[0u8; 16]);
+        std::fs::write(&path2, &buf).unwrap();
+        let set2 = read_hashes_sidecar(&path2).unwrap();
+        assert!(set2.is_empty());
+    }
+
+    /// `write_snapshot` populates a `.hashes` sidecar next to the
+    /// `.wal` file whose contents union to the entry set.
+    #[test]
+    fn write_snapshot_creates_hashes_sidecar() {
+        let dir = tempfile::tempdir().unwrap();
+        let payload = b"snapshot-sidecar".to_vec();
+        let entries = vec![mk_write_entry(&payload, "/f")];
+        let (final_path, root, _) = write_snapshot(dir.path(), &entries).unwrap();
+        assert!(final_path.exists());
+        let sidecar = hashes_sidecar_path(dir.path(), &root);
+        assert!(sidecar.exists(), "hashes sidecar must be written");
+        let set = read_hashes_sidecar(&sidecar).unwrap();
+        assert_eq!(set.len(), 1);
+        assert!(set.contains(&hash_of(&payload)));
+    }
+
+    /// `scan_retained_payload_hashes` unions across all `.hashes`
+    /// sidecars in the dir and skips corrupt/missing ones.
+    #[test]
+    fn scan_retained_payload_hashes_unions_across_snapshots() {
+        let dir = tempfile::tempdir().unwrap();
+        let entries_a = vec![mk_write_entry(b"one", "/a")];
+        let entries_b = vec![mk_write_entry(b"two", "/b")];
+        write_snapshot(dir.path(), &entries_a).unwrap();
+        write_snapshot(dir.path(), &entries_b).unwrap();
+        // A stray non-.hashes file — must be ignored.
+        std::fs::write(dir.path().join("README"), b"docs").unwrap();
+        let union = scan_retained_payload_hashes(dir.path()).unwrap();
+        assert_eq!(union.len(), 2);
+        assert!(union.contains(&hash_of(b"one")));
+        assert!(union.contains(&hash_of(b"two")));
+    }
+
+    /// `prune_snapshot_dir` removes `.hashes` sidecars alongside
+    /// the `.wal` files it prunes.  Without this, sidecars pile
+    /// up forever and inflate the retention set → payload store
+    /// retention becomes a no-op.
+    #[tokio::test]
+    async fn prune_snapshot_dir_also_removes_hashes_sidecars() {
+        let dir = tempfile::tempdir().unwrap();
+        let writer = SnapshotWriter {
+            dir: dir.path().to_path_buf(),
+            cadence: 1,
+            retain: 2,
+            signer_sk: None,
+            payload_dir: None,
+        };
+        // Write 3 snapshots with distinct payloads; retain=2 means
+        // the oldest gets pruned.  Each maybe_write on a distinct
+        // slice produces a distinct root + a distinct sidecar.
+        // Sleep 20ms between writes so mtimes differ enough for
+        // prune's newest-first sort.
+        let mut roots: Vec<[u8; 32]> = Vec::new();
+        for i in 0..3 {
+            let entries = vec![mk_write_entry(format!("payload-{i}").as_bytes(), "/x")];
+            let (root, _merkle_root) = writer.maybe_write(i, &entries).unwrap().unwrap();
+            roots.push(root);
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        // After 3 writes with retain=2, the oldest snapshot AND
+        // its sidecar are gone.
+        let oldest_wal = snapshot_path(dir.path(), &roots[0]);
+        let oldest_sidecar = hashes_sidecar_path(dir.path(), &roots[0]);
+        assert!(
+            !oldest_wal.exists(),
+            "oldest .wal must be pruned by prune_snapshot_dir"
+        );
+        assert!(
+            !oldest_sidecar.exists(),
+            "oldest .hashes sidecar must be pruned alongside .wal"
+        );
+        // Newest two survived.
+        assert!(snapshot_path(dir.path(), &roots[1]).exists());
+        assert!(hashes_sidecar_path(dir.path(), &roots[1]).exists());
+        assert!(snapshot_path(dir.path(), &roots[2]).exists());
+        assert!(hashes_sidecar_path(dir.path(), &roots[2]).exists());
     }
 }

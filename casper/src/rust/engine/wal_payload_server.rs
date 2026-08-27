@@ -327,6 +327,76 @@ impl PayloadStoreBundle {
     }
 }
 
+/// Phase 7b-2 retention (DD-7b-1 (y), 2026-08-27): delete any
+/// content-addressed payload files in `payload_dir` whose hex-
+/// hash filename is NOT in `keep`.  Files whose name does not
+/// decode as a 64-char hex string are left untouched (defensive:
+/// operators may have leftover tmp files, symlinks, README
+/// snippets, etc.).  Symlinks are skipped for the same reason
+/// `prune_snapshot_dir` skips them — attacker-planted symlinks to
+/// unrelated targets should not get followed.
+///
+/// The `keep` set typically comes from
+/// `rholang::rust::interpreter::io::snapshot::scan_retained_payload_hashes`
+/// which unions the hashes sidecars across all retained
+/// snapshots.
+///
+/// Returns the number of files removed.  Individual `remove_file`
+/// failures are logged, not propagated — retention is bounded by
+/// future passes anyway.
+pub fn prune_payload_store(
+    payload_dir: &Path,
+    keep: &std::collections::HashSet<[u8; 32]>,
+) -> std::io::Result<usize> {
+    let read_dir = match std::fs::read_dir(payload_dir) {
+        Ok(rd) => rd,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(e) => return Err(e),
+    };
+    let mut removed = 0;
+    for entry in read_dir.flatten() {
+        let path = entry.path();
+        let file_type = match entry.file_type() {
+            Ok(ft) => ft,
+            Err(_) => continue,
+        };
+        // Skip symlinks + non-regular entries (dirs, sockets, etc.).
+        if file_type.is_symlink() || file_type.is_dir() {
+            continue;
+        }
+        let name = match path.file_name().and_then(|s| s.to_str()) {
+            Some(n) => n,
+            None => continue,
+        };
+        // Content-addressed filenames are exactly 64 hex chars.
+        // Anything else is operator ephemera; leave alone.
+        if name.len() != 64 || !name.chars().all(|c| c.is_ascii_hexdigit()) {
+            continue;
+        }
+        let hash = match hex::decode(name) {
+            Ok(v) if v.len() == 32 => {
+                let mut buf = [0u8; 32];
+                buf.copy_from_slice(&v);
+                buf
+            }
+            _ => continue,
+        };
+        if keep.contains(&hash) {
+            continue;
+        }
+        match std::fs::remove_file(&path) {
+            Ok(()) => removed += 1,
+            Err(e) => tracing::warn!(
+                target: "f1r3fly.fs_wal.payload_store",
+                path = %path.display(),
+                error = %e,
+                "prune_payload_store: failed to remove non-retained payload; continuing"
+            ),
+        }
+    }
+    Ok(removed)
+}
+
 fn hash_bytes(bytes: &[u8]) -> [u8; 32] {
     let h = Blake2b256::hash(bytes.to_vec());
     assert_eq!(h.len(), 32, "Blake2b256 must produce 32-byte digest");
@@ -492,4 +562,87 @@ mod tests {
         let err = serve_payload(&[0u8; 32], &AlwaysFailStore).unwrap_err();
         assert!(matches!(err, ServeError::BackingStoreFailed(msg) if msg.contains("disk")));
     }
+
+    // -----------------------------------------------------------
+    // Phase 7b-2 retention (DD-7b-1 (y), 2026-08-27) tests.
+    // -----------------------------------------------------------
+
+    /// `prune_payload_store` deletes payload files whose
+    /// hex-hash filename is not in the keep set.
+    #[test]
+    fn prune_payload_store_removes_non_retained() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = DirectoryPayloadStore::new(dir.path().to_path_buf());
+        let keep_bytes = b"keep this".to_vec();
+        let drop_bytes = b"drop this".to_vec();
+        let keep_h = store.insert(&keep_bytes).unwrap();
+        let drop_h = store.insert(&drop_bytes).unwrap();
+        let mut keep_set = std::collections::HashSet::new();
+        keep_set.insert(keep_h);
+        let removed = prune_payload_store(dir.path(), &keep_set).unwrap();
+        assert_eq!(removed, 1);
+        // Keep still there; drop is gone.
+        assert!(store.get(&keep_h).unwrap().is_some());
+        assert!(store.get(&drop_h).unwrap().is_none());
+    }
+
+    /// `prune_payload_store` leaves non-hex-named files alone —
+    /// operators may drop READMEs or `.gitkeep` in the dir; they
+    /// must not disappear on retention.
+    #[test]
+    fn prune_payload_store_ignores_non_hex_named_files() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("README"), b"docs").unwrap();
+        std::fs::write(dir.path().join("some-junk.txt"), b"junk").unwrap();
+        // A 64-char filename that's NOT valid hex (contains 'g').
+        let bad_hex = "g".repeat(64);
+        std::fs::write(dir.path().join(&bad_hex), b"not hex").unwrap();
+        // Empty keep set → prune EVERY hex-64 file.  None of the
+        // above should qualify.
+        let empty: std::collections::HashSet<[u8; 32]> = std::collections::HashSet::new();
+        let removed = prune_payload_store(dir.path(), &empty).unwrap();
+        assert_eq!(removed, 0);
+        assert!(dir.path().join("README").exists());
+        assert!(dir.path().join("some-junk.txt").exists());
+        assert!(dir.path().join(&bad_hex).exists());
+    }
+
+    /// `prune_payload_store` on a non-existent dir returns Ok(0)
+    /// so a boot-time retention pass before the payload dir has
+    /// been created is a graceful no-op.
+    #[test]
+    fn prune_payload_store_missing_dir_is_ok_zero() {
+        let missing = std::path::Path::new("/tmp/does-not-exist-payload-prune");
+        let empty: std::collections::HashSet<[u8; 32]> = std::collections::HashSet::new();
+        assert_eq!(prune_payload_store(missing, &empty).unwrap(), 0);
+    }
+
+    /// `prune_payload_store` skips symlinks — defense in depth
+    /// against an attacker planting `<hex(hash)> -> /etc/passwd`
+    /// in the payload dir.  We do NOT follow such links to
+    /// unlink; the whole file gets left alone.
+    #[cfg(unix)]
+    #[test]
+    fn prune_payload_store_skips_symlinks() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = DirectoryPayloadStore::new(dir.path().to_path_buf());
+        let payload = b"real".to_vec();
+        let h_real = store.insert(&payload).unwrap();
+        // Create a symlink at another hex-64 hash name pointing
+        // at the real file.  If prune followed the link + unlinked,
+        // the target would vanish and we'd break the payload store.
+        let fake_hash_name = "0".repeat(64);
+        let symlink_path = dir.path().join(&fake_hash_name);
+        std::os::unix::fs::symlink(store.path_for(&h_real), &symlink_path).unwrap();
+        // Empty keep set → prune every regular hex-64 file.
+        // The symlink hash name is hex-64, but symlink filter
+        // skips it.  The real file's hex name is NOT in keep so
+        // it gets removed.
+        let empty: std::collections::HashSet<[u8; 32]> = std::collections::HashSet::new();
+        let _ = prune_payload_store(dir.path(), &empty).unwrap();
+        // Symlink itself still present.
+        let meta = std::fs::symlink_metadata(&symlink_path).unwrap();
+        assert!(meta.file_type().is_symlink());
+    }
 }
+
