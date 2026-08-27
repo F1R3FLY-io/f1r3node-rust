@@ -232,6 +232,17 @@ where
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
+    use std::sync::Mutex;
+    use std::time::Duration;
+
+    use async_trait::async_trait;
+    use comm::rust::errors::CommError;
+    use comm::rust::peer_node::{Endpoint, NodeIdentifier};
+    use comm::rust::rp::rp_conf::RPConf;
+    use comm::rust::transport::transport_layer::Blob;
+    use models::routing::{Packet, Protocol};
+
     use super::*;
     use crate::rust::engine::wal_payload_server::InMemoryPayloadStore;
 
@@ -242,7 +253,7 @@ mod tests {
     async fn response_routes_to_retriever() {
         let store = InMemoryPayloadStore::new();
         let payload = b"routed payload".to_vec();
-        let h = store.insert(payload.clone()).await;
+        let h = store.insert(payload.clone());
 
         let response = tokio::task::spawn_blocking({
             let store = store.clone();
@@ -257,5 +268,181 @@ mod tests {
         let outcome = handle_wal_payload_response(&response, &retriever).await;
         assert_eq!(outcome, AdmitOutcome::PayloadAccepted);
         assert!(retriever.is_complete().await);
+    }
+
+    /// Minimal test transport that records every `Protocol` sent
+    /// via `send` and every `broadcast` payload.  Enough surface
+    /// to verify wire-handler dispatch produces (or suppresses)
+    /// outbound packets of the expected type.
+    #[derive(Default)]
+    struct CapturingTransport {
+        sends: Mutex<Vec<(PeerNode, Protocol)>>,
+    }
+
+    impl CapturingTransport {
+        fn new() -> Self { Self::default() }
+        fn sent_packets(&self) -> Vec<Packet> {
+            self.sends
+                .lock()
+                .unwrap()
+                .iter()
+                .filter_map(|(_, p)| extract_packet(p))
+                .collect()
+        }
+    }
+
+    fn extract_packet(protocol: &Protocol) -> Option<Packet> {
+        comm::rust::rp::protocol_helper::to_packet(protocol).ok()
+    }
+
+    #[async_trait]
+    impl comm::rust::transport::transport_layer::TransportLayer for CapturingTransport {
+        async fn send(&self, peer: &PeerNode, msg: &Protocol) -> Result<(), CommError> {
+            self.sends.lock().unwrap().push((peer.clone(), msg.clone()));
+            Ok(())
+        }
+        async fn broadcast(
+            &self,
+            _peers: &[PeerNode],
+            _msg: &Protocol,
+        ) -> Result<(), CommError> {
+            Ok(())
+        }
+        async fn stream(&self, _peer: &PeerNode, _blob: &Blob) -> Result<(), CommError> {
+            Ok(())
+        }
+        async fn stream_mult(
+            &self,
+            _peers: &[PeerNode],
+            _blob: &Blob,
+        ) -> Result<(), CommError> {
+            Ok(())
+        }
+        async fn disconnect(&self, _peer: &PeerNode) -> Result<(), CommError> { Ok(()) }
+        async fn get_channeled_peers(&self) -> Result<HashSet<PeerNode>, CommError> {
+            Ok(HashSet::new())
+        }
+    }
+
+    fn mk_peer(name: &str) -> PeerNode {
+        PeerNode {
+            id: NodeIdentifier {
+                key: Bytes::copy_from_slice(name.as_bytes()),
+            },
+            endpoint: Endpoint {
+                host: format!("{name}.local"),
+                tcp_port: 40400,
+                udp_port: 40404,
+            },
+        }
+    }
+
+    fn mk_rpconf() -> RPConf {
+        RPConf::new(
+            mk_peer("local"),
+            "test-network".to_string(),
+            None,
+            Duration::from_secs(5),
+            10,
+            5,
+        )
+    }
+
+    /// T-1: `handle_get_wal_payload_request` with a hash the local
+    /// store CAN serve produces exactly one outbound
+    /// `WalPayloadResponse` packet aimed at the requester.
+    #[tokio::test]
+    async fn handle_get_wal_payload_request_serves_known_hash() {
+        let store = InMemoryPayloadStore::new();
+        let payload = b"served".to_vec();
+        let h = store.insert(payload.clone());
+
+        let transport = CapturingTransport::new();
+        let conf = mk_rpconf();
+        let sender = mk_peer("requester");
+        let request = GetWalPayloadRequest {
+            payload_hash: Bytes::copy_from_slice(&h),
+        };
+
+        handle_get_wal_payload_request(&transport, &conf, &sender, &request, &store).await;
+
+        let packets = transport.sent_packets();
+        assert_eq!(packets.len(), 1, "exactly one outbound packet");
+        assert_eq!(packets[0].type_id, "WalPayloadResponse");
+    }
+
+    /// T-1: `handle_get_wal_payload_request` for an UNKNOWN hash
+    /// sends nothing (silent decline — peer should ask someone
+    /// else, and we don't advertise our cache miss).
+    #[tokio::test]
+    async fn handle_get_wal_payload_request_silent_on_unknown_hash() {
+        let store = InMemoryPayloadStore::new();
+        let transport = CapturingTransport::new();
+        let conf = mk_rpconf();
+        let sender = mk_peer("requester");
+        let request = GetWalPayloadRequest {
+            payload_hash: Bytes::copy_from_slice(&[0xEEu8; 32]),
+        };
+
+        handle_get_wal_payload_request(&transport, &conf, &sender, &request, &store).await;
+
+        let packets = transport.sent_packets();
+        assert!(packets.is_empty(), "no outbound packet for cache miss");
+    }
+
+    /// T-1: `handle_has_wal_payload_request` produces exactly one
+    /// `HasWalPayload` announcement when we can serve.
+    #[tokio::test]
+    async fn handle_has_wal_payload_request_serves_known_hash() {
+        let store = InMemoryPayloadStore::new();
+        let payload = b"announce".to_vec();
+        let h = store.insert(payload.clone());
+
+        let transport = CapturingTransport::new();
+        let conf = mk_rpconf();
+        let sender = mk_peer("requester");
+        let request = HasWalPayloadRequest {
+            payload_hash: Bytes::copy_from_slice(&h),
+        };
+
+        handle_has_wal_payload_request(&transport, &conf, &sender, &request, &store).await;
+
+        let packets = transport.sent_packets();
+        assert_eq!(packets.len(), 1);
+        assert_eq!(packets[0].type_id, "HasWalPayload");
+    }
+
+    /// T-1: `handle_has_wal_payload_request` silent on cache miss.
+    #[tokio::test]
+    async fn handle_has_wal_payload_request_silent_on_unknown_hash() {
+        let store = InMemoryPayloadStore::new();
+        let transport = CapturingTransport::new();
+        let conf = mk_rpconf();
+        let sender = mk_peer("requester");
+        let request = HasWalPayloadRequest {
+            payload_hash: Bytes::copy_from_slice(&[0x11u8; 32]),
+        };
+
+        handle_has_wal_payload_request(&transport, &conf, &sender, &request, &store).await;
+
+        assert!(transport.sent_packets().is_empty());
+    }
+
+    /// T-1: `handle_get_wal_payload_request` with a malformed
+    /// (non-32-byte) hash is silent — the byzantine caller has
+    /// crafted an invalid request and gets no reply.
+    #[tokio::test]
+    async fn handle_get_wal_payload_request_silent_on_malformed_hash() {
+        let store = InMemoryPayloadStore::new();
+        let transport = CapturingTransport::new();
+        let conf = mk_rpconf();
+        let sender = mk_peer("requester");
+        let request = GetWalPayloadRequest {
+            payload_hash: Bytes::copy_from_slice(&[0u8; 16]), // wrong length
+        };
+
+        handle_get_wal_payload_request(&transport, &conf, &sender, &request, &store).await;
+
+        assert!(transport.sent_packets().is_empty());
     }
 }

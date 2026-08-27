@@ -75,13 +75,18 @@ pub const STALE_EVICTION_MS: u64 = 300_000;
 
 /// Security cap: max acceptable size for `payload_bytes` in a
 /// `WalPayloadResponse`.  Legit payloads are bounded by write-op
-/// semantics (single fs_write / fs_read reply).  Anything larger
-/// than the snapshot chunk size would already have been sharded by
-/// Phase 7b-1's chunker, so a between-snapshot payload above this
-/// cap is either malformed or a byzantine attempt to force us to
-/// hash arbitrary bytes.  Rejected with
-/// `AdmitOutcome::PayloadOversized` before any hashing runs.
-pub const MAX_PAYLOAD_BYTES: usize = 4 * 1024 * 1024; // == CHUNK_SIZE
+/// semantics: the handler-level `MAX_WRITE_BYTES` / `MAX_READ_BYTES`
+/// cap in `rholang::interpreter::io` limits a single fs_write /
+/// fs_read reply to 64 MiB.  A payload above that cap is either
+/// malformed or a byzantine attempt to force us to hash arbitrary
+/// bytes; rejected with `AdmitOutcome::PayloadOversized` before any
+/// hashing runs.
+///
+/// **Locked in sync with the handler-level cap** — a review-fix pin
+/// (`max_payload_bytes_matches_handler_write_cap`) asserts equality
+/// so future drift shows up as a test failure rather than silent
+/// protocol-breaking rejection of legit large payloads.
+pub const MAX_PAYLOAD_BYTES: usize = 64 * 1024 * 1024;
 
 /// Outcome of `admit_response`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -161,18 +166,31 @@ impl WalPayloadRetriever {
         g.get(payload_hash).and_then(|s| s.bytes.clone())
     }
 
-    /// Ingest a `WalPayloadResponse`.  Verifies:
-    ///   1. payload_bytes.len() <= MAX_PAYLOAD_BYTES.
-    ///   2. payload_hash is 32 bytes.
-    ///   3. Blake2b256(payload_bytes) == payload_hash.
+    /// Ingest a `WalPayloadResponse`.  Verifies (in order):
+    ///   1. payload_bytes.len() <= MAX_PAYLOAD_BYTES (cheap size cap).
+    ///   2. payload_hash is 32 bytes (cheap length check).
+    ///   3. payload_hash is in the pending set AND not yet resolved
+    ///      (cheap map lookup — rejects unsolicited + duplicate
+    ///      responses BEFORE any hashing to close a CPU-DoS vector).
+    ///   4. Blake2b256(payload_bytes) == payload_hash (expensive).
     ///
     /// On success, stores the verified bytes and returns
     /// `PayloadAccepted`.  On failure, returns the specific
     /// mismatch variant so the caller can log + retry appropriately.
+    ///
+    /// **Check ordering rationale (review-fix 2026-08-27):** the
+    /// prior version hashed BEFORE the pending-set lookup, which
+    /// meant unsolicited flood packets each burned a Blake2b256
+    /// hash (~200ms for a 64 MiB payload) before rejection.
+    /// Because `HasWalPayloadRequest` is broadcast, attackers can
+    /// enumerate our pending hashes and craft floods that all pass
+    /// the hash-check but land on already-accepted or
+    /// never-requested slots.  Reordering pushes the expensive
+    /// hash behind the cheap lookup so those floods cost O(1)
+    /// each.
     pub async fn admit_response(&self, response: &WalPayloadResponse) -> AdmitOutcome {
-        // Security cap — cheap, checked FIRST so byzantine oversized
-        // payloads are rejected before we do any hashing or map
-        // lookups.
+        // Cheap: size cap.  Rejected before any allocation-heavy
+        // work.
         if response.payload_bytes.len() > MAX_PAYLOAD_BYTES {
             debug!(
                 target: "f1r3fly.casper.wal_payload_retriever",
@@ -182,38 +200,45 @@ impl WalPayloadRetriever {
             );
             return AdmitOutcome::PayloadOversized;
         }
+        // Cheap: hash length.
         let requested_hash = match slice_to_hash(&response.payload_hash) {
             Some(h) => h,
             None => return AdmitOutcome::MalformedPayloadHash,
         };
-        // Verify the payload's self-consistency: Blake2b256 of the
-        // returned bytes must equal the requested hash.  This is
-        // the ONLY cryptographic check for WAL payloads — the hash
-        // IS the anchor, unlike snapshot chunks which need a
-        // Merkle-inclusion proof against a separately-anchored
-        // root.
-        let hash_of_bytes = hash_bytes(&response.payload_bytes);
-        if hash_of_bytes != requested_hash {
-            return AdmitOutcome::PayloadHashMismatch;
-        }
-        // Check that we actually asked for this hash.  Unsolicited
-        // responses are dropped silently.  (Doing this AFTER the
-        // hash check is deliberate: an unsolicited-but-correct
-        // response is still cheap to reject; an
-        // unsolicited-and-byzantine one is rejected on the same
-        // cheap path either way, and doing the hash check first
-        // gives us diagnostic information if a peer is spamming
-        // both.)
-        let mut g = self.payloads.write().await;
-        match g.get_mut(&requested_hash) {
-            Some(state) => {
-                if state.bytes.is_some() {
-                    // Duplicate arrival for a payload we already
-                    // verified.  Idempotent: drop silently.
+        // Cheap: pending-set lookup.  Rejects unsolicited AND
+        // duplicate responses without hashing.  We take the write
+        // lock here so the eventual mutation on success is one
+        // acquisition rather than upgrading from read → write.
+        {
+            let g = self.payloads.read().await;
+            match g.get(&requested_hash) {
+                Some(state) if state.bytes.is_some() => {
+                    // Idempotent duplicate for an accepted payload.
                     debug!(
                         target: "f1r3fly.casper.wal_payload_retriever",
                         "duplicate response for already-accepted payload"
                     );
+                    return AdmitOutcome::PayloadAccepted;
+                }
+                Some(_) => { /* pending — fall through to hash-check */ }
+                None => return AdmitOutcome::UnknownRequest,
+            }
+        }
+        // Expensive: verify self-consistency (the hash IS the
+        // anchor).  Blake2b256 of the returned bytes must equal
+        // the requested hash.
+        let hash_of_bytes = hash_bytes(&response.payload_bytes);
+        if hash_of_bytes != requested_hash {
+            return AdmitOutcome::PayloadHashMismatch;
+        }
+        // Race-safe accept: re-take the map under write lock and
+        // re-check pending state (a concurrent admit_response for
+        // the same hash may have won the race between our read
+        // above and the hash we just computed).
+        let mut g = self.payloads.write().await;
+        match g.get_mut(&requested_hash) {
+            Some(state) => {
+                if state.bytes.is_some() {
                     return AdmitOutcome::PayloadAccepted;
                 }
                 state.bytes = Some(response.payload_bytes.to_vec());
@@ -463,5 +488,109 @@ mod tests {
         let evicted = retriever.evict_stale().await;
         assert_eq!(evicted, 1);
         assert_eq!(retriever.pending_count().await, 0);
+    }
+
+    /// T-9: `MAX_PAYLOAD_BYTES` MUST equal the handler-level
+    /// `MAX_WRITE_BYTES` / `MAX_READ_BYTES` cap.  If the two drift
+    /// out of sync, legit large payloads get rejected as
+    /// PayloadOversized and joiners silently fail to catch up on
+    /// any block containing a large write (review-fix F-1
+    /// 2026-08-27).
+    #[test]
+    fn max_payload_bytes_matches_handler_write_cap() {
+        assert_eq!(
+            MAX_PAYLOAD_BYTES as u64,
+            rholang::rust::interpreter::io::handlers::MAX_WRITE_BYTES,
+            "MAX_PAYLOAD_BYTES must equal handler MAX_WRITE_BYTES",
+        );
+        assert_eq!(
+            MAX_PAYLOAD_BYTES as u64,
+            rholang::rust::interpreter::io::MAX_READ_BYTES,
+            "MAX_PAYLOAD_BYTES must equal handler MAX_READ_BYTES",
+        );
+    }
+
+    /// T-11: An empty payload is legit — Blake2b256([]) is a
+    /// well-defined 32-byte hash.  Retriever should accept.
+    #[tokio::test]
+    async fn accepts_empty_payload() {
+        let payload: Vec<u8> = Vec::new();
+        let h = hash(&payload);
+        let response = WalPayloadResponse {
+            payload_hash: Bytes::copy_from_slice(&h),
+            payload_bytes: Bytes::copy_from_slice(&payload),
+        };
+        let retriever = WalPayloadRetriever::new();
+        retriever.enqueue(h).await;
+        assert_eq!(
+            retriever.admit_response(&response).await,
+            AdmitOutcome::PayloadAccepted
+        );
+        assert_eq!(retriever.get_bytes(&h).await, Some(payload));
+    }
+
+    /// F-3 pin: an unsolicited response (hash never enqueued) is
+    /// rejected as `UnknownRequest` BEFORE any Blake2b256 work.
+    /// The way we exercise "no hashing" is to craft a response
+    /// whose payload_hash does NOT match its payload_bytes:
+    /// if we DID hash first, the outcome would be
+    /// `PayloadHashMismatch` (or `PayloadAccepted` if we happened
+    /// to hash-collide); if we correctly check the pending set
+    /// first, the outcome is `UnknownRequest` — proving the
+    /// hash was never computed.
+    #[tokio::test]
+    async fn unsolicited_response_rejected_before_hashing() {
+        let never_enqueued = [0xABu8; 32];
+        let response = WalPayloadResponse {
+            payload_hash: Bytes::copy_from_slice(&never_enqueued),
+            // Payload bytes hash to something OTHER than
+            // never_enqueued.  If admit_response hashed first, we'd
+            // see PayloadHashMismatch.
+            payload_bytes: Bytes::from_static(b"totally different bytes"),
+        };
+        let retriever = WalPayloadRetriever::new();
+        // Deliberately do NOT enqueue.
+        assert_eq!(
+            retriever.admit_response(&response).await,
+            AdmitOutcome::UnknownRequest,
+            "unsolicited response must be UnknownRequest (not \
+             PayloadHashMismatch), confirming no hashing occurred",
+        );
+    }
+
+    /// F-5 pin: a duplicate response for an already-accepted
+    /// payload is rejected as `PayloadAccepted` (idempotent)
+    /// BEFORE any Blake2b256 work.  Same shape as
+    /// `unsolicited_response_rejected_before_hashing`: if the
+    /// hash-check ran first, a duplicate with tampered bytes
+    /// would return `PayloadHashMismatch`.  With pending-check
+    /// first, the accepted-slot short-circuits and returns
+    /// `PayloadAccepted`.
+    #[tokio::test]
+    async fn duplicate_response_for_accepted_slot_short_circuits_before_hashing() {
+        let payload = b"pristine".to_vec();
+        let h = hash(&payload);
+        let retriever = WalPayloadRetriever::new();
+        retriever.enqueue(h).await;
+        let good = WalPayloadResponse {
+            payload_hash: Bytes::copy_from_slice(&h),
+            payload_bytes: Bytes::copy_from_slice(&payload),
+        };
+        assert_eq!(
+            retriever.admit_response(&good).await,
+            AdmitOutcome::PayloadAccepted
+        );
+        // Second admission for the same hash — with tampered bytes.
+        // If we hashed first, this would be PayloadHashMismatch.
+        let tampered = WalPayloadResponse {
+            payload_hash: Bytes::copy_from_slice(&h),
+            payload_bytes: Bytes::from_static(b"tampered"),
+        };
+        assert_eq!(
+            retriever.admit_response(&tampered).await,
+            AdmitOutcome::PayloadAccepted,
+            "duplicate on an accepted slot short-circuits BEFORE the \
+             hash check would fire (F-5 review-fix pin)",
+        );
     }
 }

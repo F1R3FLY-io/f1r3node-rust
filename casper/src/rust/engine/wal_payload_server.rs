@@ -26,12 +26,11 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use crypto::rust::hash::blake2b256::Blake2b256;
 use models::rust::casper::protocol::casper_message::{HasWalPayload, WalPayloadResponse};
 use prost::bytes::Bytes;
-use tokio::sync::RwLock;
 use tracing::debug;
 
 /// Errors from `serve_payload`.
@@ -126,6 +125,15 @@ pub fn has_wal_payload_announcement<L: PayloadLookup + ?Sized>(
 /// path that keeps recent write payloads in RAM.  Bytes MUST be
 /// content-addressed (`insert(bytes)` computes the hash and uses
 /// that as the key).
+///
+/// **Lock choice (review-fix 2026-08-27):** uses `std::sync::RwLock`
+/// rather than `tokio::sync::RwLock`.  Rationale: `PayloadLookup::get`
+/// is a synchronous trait method called from within the async wire
+/// handler; using `tokio::sync::RwLock::blocking_read` from inside
+/// a tokio runtime blocks the executor thread (documented tokio
+/// footgun).  A std lock is fine here because we never hold the
+/// guard across an `.await` — every access is a scoped read or
+/// write within a single function.
 #[derive(Debug, Clone, Default)]
 pub struct InMemoryPayloadStore {
     map: Arc<RwLock<HashMap<[u8; 32], Vec<u8>>>>,
@@ -137,9 +145,9 @@ impl InMemoryPayloadStore {
     /// Content-addressed insert: computes `Blake2b256(bytes)` and
     /// stores under that key.  Returns the computed hash so callers
     /// can echo it into a WAL entry.
-    pub async fn insert(&self, bytes: Vec<u8>) -> [u8; 32] {
+    pub fn insert(&self, bytes: Vec<u8>) -> [u8; 32] {
         let h = hash_bytes(&bytes);
-        self.map.write().await.insert(h, bytes);
+        self.map.write().expect("payload store lock poisoned").insert(h, bytes);
         h
     }
 
@@ -147,23 +155,23 @@ impl InMemoryPayloadStore {
     /// hash matches the bytes.  Panics on mismatch in debug builds
     /// (a programming error); silently accepts in release builds
     /// (the `serve_payload` rehash check would still catch it).
-    pub async fn insert_with_hash(&self, hash: [u8; 32], bytes: Vec<u8>) {
+    pub fn insert_with_hash(&self, hash: [u8; 32], bytes: Vec<u8>) {
         debug_assert_eq!(hash, hash_bytes(&bytes), "hash/bytes mismatch");
-        self.map.write().await.insert(hash, bytes);
+        self.map.write().expect("payload store lock poisoned").insert(hash, bytes);
     }
 
     /// Number of entries stored.
-    pub async fn len(&self) -> usize { self.map.read().await.len() }
-    pub async fn is_empty(&self) -> bool { self.map.read().await.is_empty() }
+    pub fn len(&self) -> usize {
+        self.map.read().expect("payload store lock poisoned").len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.map.read().expect("payload store lock poisoned").is_empty()
+    }
 }
 
 impl PayloadLookup for InMemoryPayloadStore {
     fn get(&self, payload_hash: &[u8; 32]) -> Result<Option<Vec<u8>>, String> {
-        // Blocking read on a std::sync guard would deadlock inside a
-        // tokio runtime, so use blocking_read on the tokio RwLock —
-        // safe because PayloadLookup callers use serve_payload
-        // synchronously from the outbound wire handler.
-        let g = self.map.blocking_read();
+        let g = self.map.read().map_err(|e| format!("lock poisoned: {e}"))?;
         Ok(g.get(payload_hash).cloned())
     }
 }
@@ -235,7 +243,7 @@ mod tests {
     async fn in_memory_round_trip_through_retriever() {
         let store = InMemoryPayloadStore::new();
         let payload = b"round-trip payload".to_vec();
-        let h = store.insert(payload.clone()).await;
+        let h = store.insert(payload.clone());
 
         // Server produces a response.
         let response = tokio::task::spawn_blocking({
@@ -284,7 +292,7 @@ mod tests {
     async fn has_wal_payload_announcement_returns_size() {
         let store = InMemoryPayloadStore::new();
         let payload = b"1234567890".to_vec();
-        let h = store.insert(payload.clone()).await;
+        let h = store.insert(payload.clone());
         let store2 = store.clone();
         let announcement = tokio::task::spawn_blocking(move || {
             has_wal_payload_announcement(&h, &store2).expect("announcement")
@@ -318,5 +326,53 @@ mod tests {
         std::fs::write(dir.path().join(hex::encode(h)), b"tampered").unwrap();
         let err = serve_payload(&h, &store).expect_err("mismatch");
         assert!(matches!(err, ServeError::PayloadHashMismatch));
+    }
+
+    /// T-7: a `DirectoryPayloadStore` pointed at a directory that
+    /// exists but where reads fail (unreadable file) surfaces the
+    /// underlying IO error as `ServeError::BackingStoreFailed`
+    /// rather than a silent None.  Simulated by chmod'ing a
+    /// deposited payload file to unreadable and rehashing.  Only
+    /// runs on Unix — file-permission semantics differ on Windows.
+    #[cfg(unix)]
+    #[test]
+    fn directory_store_surfaces_io_errors() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let store = DirectoryPayloadStore::new(dir.path().to_path_buf());
+        let payload = b"unreadable".to_vec();
+        let h = store.insert(&payload).expect("insert");
+        // Make the file unreadable.
+        let p = dir.path().join(hex::encode(h));
+        let mut perms = std::fs::metadata(&p).unwrap().permissions();
+        perms.set_mode(0o000);
+        std::fs::set_permissions(&p, perms).unwrap();
+        let got = store.get(&h);
+        // Restore perms so tempdir cleanup can delete.
+        let mut restore = std::fs::metadata(&p).unwrap().permissions();
+        restore.set_mode(0o600);
+        let _ = std::fs::set_permissions(&p, restore);
+        match got {
+            Err(e) => assert!(
+                e.contains("Permission denied") || e.contains("read"),
+                "expected read error, got {e}"
+            ),
+            Ok(other) => panic!("expected io error, got {other:?}"),
+        }
+    }
+
+    /// T-7: `serve_payload` surfaces backing-store errors as
+    /// `ServeError::BackingStoreFailed` (not swallowed as
+    /// UnknownPayload).
+    #[test]
+    fn serve_payload_surfaces_backing_store_error() {
+        struct AlwaysFailStore;
+        impl PayloadLookup for AlwaysFailStore {
+            fn get(&self, _: &[u8; 32]) -> Result<Option<Vec<u8>>, String> {
+                Err("simulated disk failure".to_string())
+            }
+        }
+        let err = serve_payload(&[0u8; 32], &AlwaysFailStore).unwrap_err();
+        assert!(matches!(err, ServeError::BackingStoreFailed(msg) if msg.contains("disk")));
     }
 }
