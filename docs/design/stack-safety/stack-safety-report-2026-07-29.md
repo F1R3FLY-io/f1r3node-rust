@@ -10671,6 +10671,56 @@ assertions: each RhoSpec emitted its terminal `testSuiteCompleted` signal.
 
 ---
 
+### 5.47 Continuation/join PathMap authority and rejected retained order indexes [SS-C20]
+
+SS-C20 concerns two different orders over the same resident continuation or join group. The
+**canonical order** is the bytewise order of complete frozen record bodies and is used for cold-
+store serialization. The **operational order** is the historical newest-first scheduler order.
+Canonical record bytes already form endpoint suffixes in the authoritative prefix-compressed
+`PathMap`, so a read zipper produces canonical order without decoding a record, projecting
+`Vec<Par>`, or sorting elements. Operational order cannot be inferred from trie order and remains
+explicit fixed-width `u64` metadata.
+
+The production operational projection walks the primary trie, collects borrowed `Arc` records with
+their scalar ordinals, and sorts only those descriptors. Pgmcp item 6079 tested whether retaining an
+additional ordinal-keyed PathMap would repay that sort. The 14-case matrix covers continuation,
+resting-join, and installed-join shapes; 1--4,096 distinct records; join multiplicities through
+4,096; shared and unshared prefixes; nine lifecycle operations; four projection-reuse levels; and
+31 retained counterbalanced sets per cell. All arms preserve complete visible values, canonical
+bytes and digest, primary/identity paths, multiplicities, ordinals, and length accounting.
+
+Both candidates are rejected. The shared record/order trie has retained-byte ratios 1.035--11.048
+and fails the 5% retained guardrail in 117 of 126 lifecycle cells. The payload-split candidate has
+ratios 1.845--11.052 and fails all 126. Projection medians can improve to 0.268 of control, but a
+single distinct join with multiplicity 4,096 makes deletion more than 304 times as expensive: the
+candidate occurrence-expands one Bag endpoint into 4,096 retained order endpoints. This is the
+wrong asymptotic representation even when repeated reads win. Production therefore retains its
+single membership authority and transient scalar/borrowed sort.
+
+The experiment is a heap/work and representation decision, not a native-stack conversion. Every
+arm traverses with PathMap zippers and has `O(1)` native-stack use in trie depth. It introduces no
+depth cap, recursive fallback, enlarged stack, `stacker` integration, or PathMap source change. The
+complete protocol, preregistered universal 5% guardrails, 100,000-replicate paired bootstrap,
+Benjamini--Hochberg correction, allocation counters, raw matrix, and hashes are in
+[`measurements/rspace-record-order-index-experiment-2026-08-26.md`](measurements/rspace-record-order-index-experiment-2026-08-26.md).
+
+This result closes the retained-order representation choice. Canonical continuation/join egress now
+preflights an immutable CoW root into a reusable plan containing the exact header, cardinality, and
+encoded length, then replays borrowed zipper ranges into a fallible private sink. Empty collections
+publish a delete without allocating a body. The current LMDB-compatible cold-store action is one
+sink and therefore materializes one exactly reserved `Vec<u8>` immediately before that legacy
+boundary; hashing, WAL, and page writers can consume the same plan without such a buffer. Replay
+performs no `Vec<Par>` projection, record decoding, or element sort, and a sink failure cannot be
+published.
+
+The complete legacy-versus-PathMap bind/select/COMM/checkpoint/reset/export/import/play/replay/
+post-state differential remains open at this reporting coordinate. The binary-WAL/content-addressed
+PathMap-DAG persistence backend is also still a design, not an implementation or throughput result.
+Those boundaries prevent this negative index experiment and cursor boundary from being misreported
+as complete lifecycle or persistence closure.
+
+---
+
 ## 6. Discussion
 
 ### 6.1 Why the explicit-worklist shape, and why it is *smaller* than what it replaces

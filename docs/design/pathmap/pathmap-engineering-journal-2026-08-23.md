@@ -2306,6 +2306,62 @@ PathMap/ACT object graph. It does not implement that backend, claim LMDB replace
 persistence throughput, recovery-time, storage-footprint, swizzled-pointer, or caching-overlay
 measurements.
 
+### J-033 — 2026-08-26: do not occurrence-expand scheduler order into another retained trie
+
+**OBSERVATION.** A continuation or join group has two lawful orderings. Complete canonical record
+bytes determine frozen cold-store order and already occupy the suffix of each primary PathMap
+endpoint. Scheduler order is newest-first and is stored as fixed-width `u64` ordinal metadata. The
+production projection sorts borrowed record references by those scalars. It does not decode a
+record or treat the collection as a `Vec<Par>`, but its transient sort motivated two plausible
+secondary-index designs.
+
+The first candidate retains an ordinal-keyed `PathMap<Arc<StoredRecord<_>>>` whose values share the
+primary record. The second splits immutable payloads from mutable ordinal state and retains
+separate primary, continuation-identity, and ordinal tries. Both use a reversed big-endian ordinal
+suffix so zipper order equals operational order. Both preserve the original authoritative roots;
+the experiment measures the additional index rather than silently changing production semantics.
+
+**EXPERIMENT.** Fourteen collection shapes cover continuation, resting join, and installed join;
+shared and unshared prefixes; 1--4,096 distinct records; and multiplicity through 4,096. Nine
+lifecycle operations and four ready-projection reuse counts have 31 retained counterbalanced sets
+per arm. The frozen gate requires complete observation equality, every 99% paired-bootstrap upper
+timing bound at most 1.05, and every retained-byte ratio at most 1.05. The analyzer validates the
+entire 33,894-row matrix before applying Benjamini--Hochberg correction.
+
+**DECISION.** Reject both additional order tries. Shared-record retained ratios are 1.035--11.048;
+split-payload ratios are 1.845--11.052. Projection can improve to approximately 0.268 of control,
+but deleting one canonical join endpoint at multiplicity 4,096 becomes more than 304 times as
+expensive because the secondary order trie stores 4,096 occurrence endpoints. That reverses the
+Bag compression law of the primary representation.
+
+The general rule is:
+
+```text
+if PathMap order equals the destination order:
+    traverse the authoritative trie directly with a zipper
+else:
+    sort scalar/borrowed descriptors transiently
+never retain one ordinal endpoint per Bag occurrence solely to remove that sort
+```
+
+Production keeps `sorted_prepared`. The feature-gated treatments remain only as executable negative
+evidence. No PathMap source, collection authority, scheduler order, canonical byte, hash, COMM,
+post-state, or meter changes. The complete report and raw/statistical artifacts are in
+[`../stack-safety/measurements/rspace-record-order-index-experiment-2026-08-26.md`](../stack-safety/measurements/rspace-record-order-index-experiment-2026-08-26.md).
+
+**CURSOR RESULT.** The selected next step is implemented as an immutable, preflighted view of the
+CoW primary root. It freezes the exact header, cardinality, and encoded length, then replays
+header/count/frame/body ranges directly from a read zipper into a fallible sink. The production
+checkpoint path obtains this plan before constructing an action. Empty groups become deletes
+without a body allocation. The existing LMDB-compatible action materializes one exactly reserved
+`Vec<u8>` as its final compatibility sink; future hash, WAL, and page sinks can consume the same
+plan directly. A failed sink remains private and cannot become a published checkpoint action.
+
+**BOUNDARY.** The cursor result removes repeated collection projection and makes the final legacy
+buffer a boundary choice, not authority. It does not itself close the complete continuation/join
+RSpace lifecycle differential, and it does not implement the binary-WAL/content-DAG persistence
+backend. Both remain separately tracked and unclaimed at this coordinate.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

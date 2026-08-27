@@ -57,11 +57,256 @@ impl fmt::Display for RecordIndexError {
 impl std::error::Error for RecordIndexError {}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum CanonicalRecordReplayError<E> {
+    Plan(RecordIndexError),
+    Sink(E),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct CanonicalRecordGroup {
     pub kind: CanonicalCollectionKind,
     pub history_key_hash: Blake2b256Hash,
     pub encoded_persisted_data: Vec<u8>,
     pub record_count: u64,
+}
+
+/// A validated, immutable view of one canonical continuation/join collection.
+///
+/// The plan owns a CoW clone of the record trie root rather than a projected
+/// record list. Mutations published through the live store therefore cannot
+/// alter either the endpoints or bytes observed by a later replay. Callers
+/// replay into private staging and publish only after `try_replay` succeeds.
+#[derive(Clone)]
+pub(crate) struct CanonicalRecordPlan<R: Clone + Send + Sync> {
+    records: PathMap<Arc<StoredRecord<R>>>,
+    prefix: Arc<[u8]>,
+    header: [u8; PERSISTED_DATA_HEADER_LEN],
+    next_order: u64,
+    record_count: u64,
+    encoded_entries_len: u128,
+    encoded_len: usize,
+}
+
+impl<R: Clone + Send + Sync> CanonicalRecordPlan<R> {
+    pub(crate) fn record_count(&self) -> u64 { self.record_count }
+
+    pub(crate) fn encoded_len(&self) -> usize { self.encoded_len }
+
+    /// Replay the preflighted frozen bytes directly from the PathMap cursor.
+    ///
+    /// The sink is intentionally fallible. It must be private staging: a
+    /// caller may expose/commit its staged bytes only after this method
+    /// returns `Ok(())`.
+    pub(crate) fn try_replay<E>(
+        &self,
+        mut sink: impl FnMut(&[u8]) -> Result<(), E>,
+    ) -> Result<(), CanonicalRecordReplayError<E>> {
+        sink(&self.header).map_err(CanonicalRecordReplayError::Sink)?;
+        sink(&self.record_count.to_le_bytes()).map_err(CanonicalRecordReplayError::Sink)?;
+
+        let mut emitted_count = 0u128;
+        let mut emitted_entries_len = 0u128;
+        let mut cursor = self
+            .records
+            .read_zipper_at_borrowed_path(self.prefix.as_ref());
+        if cursor.path_exists() {
+            if let Some(record) = cursor.val() {
+                self.replay_record(
+                    cursor.path(),
+                    record,
+                    &mut emitted_count,
+                    &mut emitted_entries_len,
+                    &mut sink,
+                )?;
+            }
+            while let Some(record) = cursor.to_next_get_val() {
+                self.replay_record(
+                    cursor.path(),
+                    record,
+                    &mut emitted_count,
+                    &mut emitted_entries_len,
+                    &mut sink,
+                )?;
+            }
+        }
+        if emitted_count != self.record_count as u128 {
+            return Err(CanonicalRecordReplayError::Plan(RecordIndexError::InvariantViolation(
+                "replayed multiplicities differ from the preflighted cardinality",
+            )));
+        }
+        if emitted_entries_len != self.encoded_entries_len {
+            return Err(CanonicalRecordReplayError::Plan(RecordIndexError::InvariantViolation(
+                "replayed record bytes differ from the preflighted encoded length",
+            )));
+        }
+        Ok(())
+    }
+
+    fn replay_record<E>(
+        &self,
+        canonical_bytes: &[u8],
+        record: &Arc<StoredRecord<R>>,
+        emitted_count: &mut u128,
+        emitted_entries_len: &mut u128,
+        sink: &mut impl FnMut(&[u8]) -> Result<(), E>,
+    ) -> Result<(), CanonicalRecordReplayError<E>> {
+        let (multiplicity, framed_len, record_len) = Self::validated_record_metrics(
+            self.prefix.as_ref(),
+            canonical_bytes,
+            record,
+            self.next_order,
+        )
+        .map_err(CanonicalRecordReplayError::Plan)?;
+        *emitted_count =
+            emitted_count
+                .checked_add(multiplicity)
+                .ok_or(CanonicalRecordReplayError::Plan(
+                    RecordIndexError::EncodedCardinalityOverflow(u128::MAX),
+                ))?;
+        *emitted_entries_len =
+            emitted_entries_len
+                .checked_add(framed_len)
+                .ok_or(CanonicalRecordReplayError::Plan(
+                    RecordIndexError::EncodedLengthOverflow(u128::MAX),
+                ))?;
+        let record_len = record_len.to_le_bytes();
+        for _ in record.orders.iter() {
+            sink(&record_len).map_err(CanonicalRecordReplayError::Sink)?;
+            sink(canonical_bytes).map_err(CanonicalRecordReplayError::Sink)?;
+        }
+        Ok(())
+    }
+
+    fn validated_record_metrics(
+        prefix: &[u8],
+        canonical_bytes: &[u8],
+        record: &Arc<StoredRecord<R>>,
+        next_order: u64,
+    ) -> Result<(u128, u128, u64), RecordIndexError> {
+        if record.prefix_len != prefix.len() || !record.path.starts_with(prefix) {
+            return Err(RecordIndexError::InvariantViolation(
+                "record endpoint is not owned by its group prefix",
+            ));
+        }
+        let expected_path_len = prefix
+            .len()
+            .checked_add(canonical_bytes.len())
+            .ok_or(RecordIndexError::EncodedLengthOverflow(u128::MAX))?;
+        if record.path.len() != expected_path_len || &record.path[prefix.len()..] != canonical_bytes
+        {
+            return Err(RecordIndexError::InvariantViolation(
+                "record endpoint path differs from its PathMap cursor",
+            ));
+        }
+        if canonical_bytes.len() != record.canonical_len {
+            return Err(RecordIndexError::InvariantViolation(
+                "record endpoint length differs from its metadata",
+            ));
+        }
+        if record.orders.is_empty() {
+            return Err(RecordIndexError::InvariantViolation(
+                "record endpoint has zero multiplicity",
+            ));
+        }
+        let mut previous_order = next_order;
+        for order in record.orders.iter().copied() {
+            if order == 0 || order >= previous_order {
+                return Err(RecordIndexError::InvariantViolation(
+                    "record endpoint orders are outside their strict live-order range",
+                ));
+            }
+            previous_order = order;
+        }
+        let record_len = u64::try_from(canonical_bytes.len())
+            .map_err(|_| RecordIndexError::EncodedLengthOverflow(canonical_bytes.len() as u128))?;
+        let multiplicity = record.orders.len() as u128;
+        let framed_len = ((u64::BITS / 8) as u128)
+            .checked_add(record_len as u128)
+            .and_then(|len| len.checked_mul(multiplicity))
+            .ok_or(RecordIndexError::EncodedLengthOverflow(u128::MAX))?;
+        Ok((multiplicity, framed_len, record_len))
+    }
+
+    /// Test-only convenience for inspecting one record plan. Production
+    /// compatibility materialization is owned by `CanonicalRecordGroupPlan`.
+    #[cfg(any(test, feature = "record-order-index-experiment"))]
+    fn encode_vec(&self) -> Result<Vec<u8>, RecordIndexError> {
+        let mut output = Vec::new();
+        output
+            .try_reserve_exact(self.encoded_len())
+            .map_err(|_| RecordIndexError::AllocationFailure(self.encoded_len()))?;
+        let replay = self.try_replay(|bytes| {
+            output.extend_from_slice(bytes);
+            Ok::<(), std::convert::Infallible>(())
+        });
+        match replay {
+            Ok(()) => {}
+            Err(CanonicalRecordReplayError::Plan(error)) => return Err(error),
+            Err(CanonicalRecordReplayError::Sink(error)) => match error {},
+        }
+        if output.len() != self.encoded_len() {
+            return Err(RecordIndexError::InvariantViolation(
+                "replayed bytes differ from the preflighted encoded length",
+            ));
+        }
+        Ok(output)
+    }
+}
+
+/// Collection metadata paired with a reusable canonical cursor plan.
+#[derive(Clone)]
+pub(crate) struct CanonicalRecordGroupPlan<R: Clone + Send + Sync> {
+    kind: CanonicalCollectionKind,
+    history_key_hash: Blake2b256Hash,
+    records: CanonicalRecordPlan<R>,
+}
+
+impl<R: Clone + Send + Sync> CanonicalRecordGroupPlan<R> {
+    pub(crate) fn kind(&self) -> CanonicalCollectionKind { self.kind }
+
+    pub(crate) fn history_key_hash(&self) -> &Blake2b256Hash { &self.history_key_hash }
+
+    pub(crate) fn record_count(&self) -> u64 { self.records.record_count() }
+
+    pub(crate) fn encoded_len(&self) -> usize { self.records.encoded_len() }
+
+    pub(crate) fn try_replay<E>(
+        &self,
+        sink: impl FnMut(&[u8]) -> Result<(), E>,
+    ) -> Result<(), CanonicalRecordReplayError<E>> {
+        self.records.try_replay(sink)
+    }
+
+    /// Compatibility materialization for the existing cold-history boundary.
+    /// The exact reserve happens before replay, so no partially encoded value
+    /// can escape and successful replay performs no capacity growth. Future
+    /// WAL, hashing, and page sinks use `try_replay` directly.
+    pub(crate) fn into_record_group(self) -> Result<CanonicalRecordGroup, RecordIndexError> {
+        let mut encoded_persisted_data = Vec::new();
+        encoded_persisted_data
+            .try_reserve_exact(self.encoded_len())
+            .map_err(|_| RecordIndexError::AllocationFailure(self.encoded_len()))?;
+        let replay = self.try_replay(|bytes| {
+            encoded_persisted_data.extend_from_slice(bytes);
+            Ok::<(), std::convert::Infallible>(())
+        });
+        match replay {
+            Ok(()) => {}
+            Err(CanonicalRecordReplayError::Plan(error)) => return Err(error),
+            Err(CanonicalRecordReplayError::Sink(error)) => match error {},
+        }
+        if encoded_persisted_data.len() != self.encoded_len() {
+            return Err(RecordIndexError::InvariantViolation(
+                "replayed group bytes differ from the preflighted encoded length",
+            ));
+        }
+        Ok(CanonicalRecordGroup {
+            kind: self.kind,
+            history_key_hash: self.history_key_hash,
+            encoded_persisted_data,
+            record_count: self.records.record_count(),
+        })
+    }
 }
 
 #[derive(Clone)]
@@ -609,69 +854,101 @@ impl<G: Clone + Send + Sync, R: Clone + Send + Sync, const SEPARATE_IDENTITY: bo
         found
     }
 
-    /// Emit one complete frozen cold-store envelope directly from resident
-    /// endpoint keys. The key suffix is the complete canonical record, so
-    /// PathMap order equals frozen record-byte order definitionally; ordinal
-    /// metadata is used only to expand equal join occurrences.
+    /// Preflight one canonical envelope against an immutable CoW record root.
+    /// The key suffix is the complete canonical record, so PathMap order equals
+    /// frozen record-byte order definitionally; ordinal metadata is used only
+    /// to expand equal join occurrences.
+    fn canonical_record_plan(
+        &self,
+        prefix: &[u8],
+        kind: CanonicalCollectionKind,
+    ) -> Result<CanonicalRecordPlan<R>, RecordIndexError> {
+        let group = self
+            .groups
+            .get(prefix)
+            .ok_or(RecordIndexError::InvariantViolation("loaded group marker is absent"))?;
+        let records = self.records.clone();
+        let record_count = u64::try_from(group.len)
+            .map_err(|_| RecordIndexError::EncodedCardinalityOverflow(group.len as u128))?;
+        let mut actual_count = 0u128;
+        let mut actual_entries_len = 0u128;
+        let mut cursor = records.read_zipper_at_borrowed_path(prefix);
+        if cursor.path_exists() {
+            if let Some(record) = cursor.val() {
+                let (multiplicity, framed_len, _) =
+                    CanonicalRecordPlan::<R>::validated_record_metrics(
+                        prefix,
+                        cursor.path(),
+                        record,
+                        group.next_order,
+                    )?;
+                actual_count = actual_count
+                    .checked_add(multiplicity)
+                    .ok_or(RecordIndexError::EncodedCardinalityOverflow(u128::MAX))?;
+                actual_entries_len = actual_entries_len
+                    .checked_add(framed_len)
+                    .ok_or(RecordIndexError::EncodedLengthOverflow(u128::MAX))?;
+            }
+            while let Some(record) = cursor.to_next_get_val() {
+                let (multiplicity, framed_len, _) =
+                    CanonicalRecordPlan::<R>::validated_record_metrics(
+                        prefix,
+                        cursor.path(),
+                        record,
+                        group.next_order,
+                    )?;
+                actual_count = actual_count
+                    .checked_add(multiplicity)
+                    .ok_or(RecordIndexError::EncodedCardinalityOverflow(u128::MAX))?;
+                actual_entries_len = actual_entries_len
+                    .checked_add(framed_len)
+                    .ok_or(RecordIndexError::EncodedLengthOverflow(u128::MAX))?;
+            }
+        }
+        drop(cursor);
+        if actual_count != group.len as u128 {
+            return Err(RecordIndexError::InvariantViolation(
+                "endpoint multiplicities differ from the group cardinality",
+            ));
+        }
+        if actual_entries_len != group.encoded_entries_len {
+            return Err(RecordIndexError::InvariantViolation(
+                "endpoint bytes differ from the transactionally maintained length",
+            ));
+        }
+
+        let payload_len = ((u64::BITS / 8) as u128)
+            .checked_add(actual_entries_len)
+            .ok_or(RecordIndexError::EncodedLengthOverflow(u128::MAX))?;
+        let payload_len_u64 = u64::try_from(payload_len)
+            .map_err(|_| RecordIndexError::EncodedLengthOverflow(payload_len))?;
+        let encoded_len_u128 = (PERSISTED_DATA_HEADER_LEN as u128)
+            .checked_add(payload_len)
+            .ok_or(RecordIndexError::EncodedLengthOverflow(u128::MAX))?;
+        let encoded_len = usize::try_from(encoded_len_u128)
+            .map_err(|_| RecordIndexError::EncodedLengthOverflow(encoded_len_u128))?;
+
+        Ok(CanonicalRecordPlan {
+            records,
+            prefix: Arc::from(prefix),
+            header: kind.persisted_kind().header(payload_len_u64),
+            next_order: group.next_order,
+            record_count,
+            encoded_entries_len: actual_entries_len,
+            encoded_len,
+        })
+    }
+
+    /// Materialize the compatibility `Vec<u8>` only after immutable preflight.
+    #[cfg(any(test, feature = "record-order-index-experiment"))]
     fn encode_canonical_group(
         &self,
         prefix: &[u8],
         kind: CanonicalCollectionKind,
     ) -> Result<(Vec<u8>, u64), RecordIndexError> {
-        let group = self
-            .groups
-            .get(prefix)
-            .ok_or(RecordIndexError::InvariantViolation("loaded group marker is absent"))?;
-        let record_count = u64::try_from(group.len)
-            .map_err(|_| RecordIndexError::EncodedCardinalityOverflow(group.len as u128))?;
-        let payload_len = ((u64::BITS / 8) as u128)
-            .checked_add(group.encoded_entries_len)
-            .ok_or(RecordIndexError::EncodedLengthOverflow(u128::MAX))?;
-        let payload_len_u64 = u64::try_from(payload_len)
-            .map_err(|_| RecordIndexError::EncodedLengthOverflow(payload_len))?;
-        let capacity_u128 = (PERSISTED_DATA_HEADER_LEN as u128)
-            .checked_add(payload_len)
-            .ok_or(RecordIndexError::EncodedLengthOverflow(u128::MAX))?;
-        let capacity = usize::try_from(capacity_u128)
-            .map_err(|_| RecordIndexError::EncodedLengthOverflow(capacity_u128))?;
-
-        let mut output = Vec::new();
-        output
-            .try_reserve_exact(capacity)
-            .map_err(|_| RecordIndexError::AllocationFailure(capacity))?;
-        kind.persisted_kind()
-            .write_header(payload_len_u64, &mut output);
-        output.extend_from_slice(&record_count.to_le_bytes());
-
-        let mut emitted = 0usize;
-        self.try_visit_group_records(prefix, |canonical_bytes, record| {
-            if canonical_bytes.len() != record.canonical_len {
-                return Err(RecordIndexError::InvariantViolation(
-                    "record endpoint length differs from its metadata",
-                ));
-            }
-            let record_len = u64::try_from(canonical_bytes.len()).map_err(|_| {
-                RecordIndexError::EncodedLengthOverflow(canonical_bytes.len() as u128)
-            })?;
-            for _ in record.orders.iter() {
-                output.extend_from_slice(&record_len.to_le_bytes());
-                output.extend_from_slice(canonical_bytes);
-                emitted = emitted
-                    .checked_add(1)
-                    .ok_or(RecordIndexError::EncodedCardinalityOverflow(u128::MAX))?;
-            }
-            Ok(())
-        })?;
-        if emitted != group.len {
-            return Err(RecordIndexError::InvariantViolation(
-                "endpoint multiplicities differ from the group cardinality",
-            ));
-        }
-        if output.len() != capacity {
-            return Err(RecordIndexError::InvariantViolation(
-                "emitted bytes differ from the transactionally maintained length",
-            ));
-        }
+        let plan = self.canonical_record_plan(prefix, kind)?;
+        let record_count = plan.record_count();
+        let output = plan.encode_vec()?;
         Ok((output, record_count))
     }
 
@@ -898,6 +1175,27 @@ where
         self.resting.has_nonempty_loaded_group()
     }
 
+    pub(crate) fn try_visit_loaded_canonical_plans(
+        &self,
+        mut visitor: impl FnMut(
+            CanonicalRecordGroupPlan<WaitingContinuation<P, K>>,
+        ) -> Result<(), RecordIndexError>,
+    ) -> Result<(), RecordIndexError>
+    where
+        C: StableHashSerialize,
+    {
+        self.resting.try_visit_groups(|prefix, group| {
+            visitor(CanonicalRecordGroupPlan {
+                kind: CanonicalCollectionKind::Continuations,
+                history_key_hash: hash_from_slice(&group.key),
+                records: self
+                    .resting
+                    .canonical_record_plan(prefix, CanonicalCollectionKind::Continuations)?,
+            })
+        })
+    }
+
+    #[cfg(any(test, feature = "record-order-index-experiment"))]
     pub(crate) fn try_visit_loaded_canonical_records(
         &self,
         mut visitor: impl FnMut(CanonicalRecordGroup) -> Result<(), RecordIndexError>,
@@ -905,17 +1203,7 @@ where
     where
         C: StableHashSerialize,
     {
-        self.resting.try_visit_groups(|prefix, group| {
-            let (encoded_persisted_data, record_count) = self
-                .resting
-                .encode_canonical_group(prefix, CanonicalCollectionKind::Continuations)?;
-            visitor(CanonicalRecordGroup {
-                kind: CanonicalCollectionKind::Continuations,
-                history_key_hash: hash_from_slice(&group.key),
-                encoded_persisted_data,
-                record_count,
-            })
-        })
+        self.try_visit_loaded_canonical_plans(|plan| visitor(plan.into_record_group()?))
     }
 
     pub(crate) fn installed_records(&self) -> Vec<(Arc<[C]>, WaitingContinuation<P, K>)> {
@@ -1058,9 +1346,9 @@ where C: Clone + RhoPathEncode + Send + Sync
         self.resting.has_nonempty_loaded_group()
     }
 
-    pub(crate) fn try_visit_loaded_canonical_records(
+    pub(crate) fn try_visit_loaded_canonical_plans(
         &self,
-        mut visitor: impl FnMut(CanonicalRecordGroup) -> Result<(), RecordIndexError>,
+        mut visitor: impl FnMut(CanonicalRecordGroupPlan<Vec<C>>) -> Result<(), RecordIndexError>,
     ) -> Result<(), RecordIndexError>
     where
         C: StableHashSerialize,
@@ -1070,16 +1358,25 @@ where C: Clone + RhoPathEncode + Send + Sync
                 .key
                 .first()
                 .ok_or(RecordIndexError::InvariantViolation("join group has no channel key"))?;
-            let (encoded_persisted_data, record_count) = self
-                .resting
-                .encode_canonical_group(prefix, CanonicalCollectionKind::Joins)?;
-            visitor(CanonicalRecordGroup {
+            visitor(CanonicalRecordGroupPlan {
                 kind: CanonicalCollectionKind::Joins,
                 history_key_hash: hash(channel),
-                encoded_persisted_data,
-                record_count,
+                records: self
+                    .resting
+                    .canonical_record_plan(prefix, CanonicalCollectionKind::Joins)?,
             })
         })
+    }
+
+    #[cfg(any(test, feature = "record-order-index-experiment"))]
+    pub(crate) fn try_visit_loaded_canonical_records(
+        &self,
+        mut visitor: impl FnMut(CanonicalRecordGroup) -> Result<(), RecordIndexError>,
+    ) -> Result<(), RecordIndexError>
+    where
+        C: StableHashSerialize,
+    {
+        self.try_visit_loaded_canonical_plans(|plan| visitor(plan.into_record_group()?))
     }
 
     pub(crate) fn installed_records(&self) -> Vec<(C, Vec<Vec<C>>)> {
@@ -1283,6 +1580,19 @@ mod tests {
             ]),
         })
         .into_legacy_bincode();
+        let prefix = RhoPathV1::join_prefix(&channel);
+        let plan = store
+            .resting
+            .canonical_record_plan(&prefix, CanonicalCollectionKind::Joins)
+            .expect("duplicate join plan");
+        let mut replayed = Vec::with_capacity(plan.encoded_len());
+        plan.try_replay(|bytes| {
+            replayed.extend_from_slice(bytes);
+            Ok::<(), std::convert::Infallible>(())
+        })
+        .unwrap();
+        assert_eq!(plan.record_count(), 4);
+        assert_eq!(replayed, expected);
         assert_eq!(canonical.len(), 1);
         assert_eq!(canonical[0].encoded_persisted_data, expected);
         assert_eq!(canonical[0].record_count, 4);
@@ -1315,6 +1625,19 @@ mod tests {
             bytes: encode_continuations(&visible),
         })
         .into_legacy_bincode();
+        let prefix = RhoPathV1::continuation_prefix(&channels);
+        let plan = store
+            .resting
+            .canonical_record_plan(&prefix, CanonicalCollectionKind::Continuations)
+            .expect("continuation plan");
+        let mut replayed = Vec::with_capacity(plan.encoded_len());
+        plan.try_replay(|bytes| {
+            replayed.extend_from_slice(bytes);
+            Ok::<(), std::convert::Infallible>(())
+        })
+        .unwrap();
+        assert_eq!(plan.record_count(), 2);
+        assert_eq!(replayed, expected);
         let mut canonical = Vec::new();
         store
             .try_visit_loaded_canonical_records(|record| {
@@ -1602,6 +1925,107 @@ mod tests {
             .encode_canonical_group(&prefix, CanonicalCollectionKind::Joins)
             .expect("CoW snapshot retains all duplicate joins");
         assert_eq!(snapshot_count, 3);
+    }
+
+    #[test]
+    fn canonical_plan_is_a_stable_cow_snapshot_and_failed_replay_is_not_published() {
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        struct InjectedFailure;
+
+        let prefix = RhoPathV1::join_prefix(&"channel".to_string());
+        let repeated = vec![0x10, 0x20];
+        let child = vec![0x10, 0x20, 0x30];
+        let mut store: OrderedGroupStore<String, u8, false> = OrderedGroupStore::default();
+        store
+            .set_group(
+                &prefix,
+                Arc::from(["channel".to_string()]),
+                vec![
+                    (repeated.clone(), repeated.clone(), 1),
+                    (child.clone(), child.clone(), 2),
+                    (repeated.clone(), repeated.clone(), 1),
+                ],
+                true,
+            )
+            .unwrap();
+        let plan = store
+            .canonical_record_plan(&prefix, CanonicalCollectionKind::Joins)
+            .expect("preflighted snapshot");
+        let expected = plan.encode_vec().expect("snapshot bytes");
+
+        store
+            .set_group(
+                &prefix,
+                Arc::from(["channel".to_string()]),
+                vec![(vec![0xff], vec![0xff], 9)],
+                true,
+            )
+            .unwrap();
+        let current = store
+            .encode_canonical_group(&prefix, CanonicalCollectionKind::Joins)
+            .unwrap()
+            .0;
+        assert_ne!(current, expected);
+        assert_eq!(plan.encode_vec().unwrap(), expected);
+
+        let published = vec![0xa5];
+        let mut staging = Vec::new();
+        let mut writes = 0usize;
+        let failure = plan.try_replay(|bytes| {
+            writes += 1;
+            if writes == 4 {
+                return Err(InjectedFailure);
+            }
+            staging.extend_from_slice(bytes);
+            Ok(())
+        });
+        assert_eq!(failure, Err(CanonicalRecordReplayError::Sink(InjectedFailure)));
+        assert!(!staging.is_empty(), "the injected failure exercises mid-stream replay");
+        assert_ne!(staging, expected, "failed private staging is incomplete");
+        assert_eq!(published, vec![0xa5], "failed staging was never published");
+    }
+
+    #[test]
+    fn canonical_preflight_rejects_length_and_zero_multiplicity_invariants() {
+        let prefix = RhoPathV1::join_prefix(&"channel".to_string());
+        let canonical = vec![0x42, 0x43];
+        let mut store: OrderedGroupStore<String, u8, false> = OrderedGroupStore::default();
+        store
+            .set_group(
+                &prefix,
+                Arc::from(["channel".to_string()]),
+                vec![(canonical.clone(), canonical.clone(), 7)],
+                true,
+            )
+            .unwrap();
+
+        let group = store.groups.get(&prefix).cloned().unwrap();
+        let mut corrupt_group = (*group).clone();
+        corrupt_group.encoded_entries_len += 1;
+        store.groups.insert(&prefix, Arc::new(corrupt_group));
+        assert_eq!(
+            store
+                .canonical_record_plan(&prefix, CanonicalCollectionKind::Joins)
+                .err(),
+            Some(RecordIndexError::InvariantViolation(
+                "endpoint bytes differ from the transactionally maintained length"
+            ))
+        );
+
+        store.groups.insert(&prefix, group);
+        let path = OrderedGroupStore::<String, u8, false>::record_path(&prefix, &canonical);
+        let record = store.records.get(path.as_ref()).cloned().unwrap();
+        let mut corrupt_record = (*record).clone();
+        corrupt_record.orders = Arc::from([]);
+        store
+            .records
+            .insert(path.as_ref(), Arc::new(corrupt_record));
+        assert_eq!(
+            store
+                .canonical_record_plan(&prefix, CanonicalCollectionKind::Joins)
+                .err(),
+            Some(RecordIndexError::InvariantViolation("record endpoint has zero multiplicity"))
+        );
     }
 
     #[test]

@@ -1080,12 +1080,16 @@ where
 
         cache
             .continuations
-            .try_visit_loaded_canonical_records(|record| {
-                actions.push(if record.record_count == 0 {
+            .try_visit_loaded_canonical_plans(|plan| {
+                actions.push(if plan.record_count() == 0 {
                     HotStoreAction::Delete(DeleteAction::DeleteCanonicalCollection(
-                        DeleteCanonicalCollection::new(record.kind, record.history_key_hash),
+                        DeleteCanonicalCollection::new(
+                            plan.kind(),
+                            plan.history_key_hash().clone(),
+                        ),
                     ))
                 } else {
+                    let record = plan.into_record_group()?;
                     HotStoreAction::Insert(InsertAction::InsertCanonicalCollection(
                         InsertCanonicalCollection::from_trusted_parts(
                             record.kind,
@@ -1115,12 +1119,13 @@ where
             Ok(())
         })?;
 
-        cache.joins.try_visit_loaded_canonical_records(|record| {
-            actions.push(if record.record_count == 0 {
+        cache.joins.try_visit_loaded_canonical_plans(|plan| {
+            actions.push(if plan.record_count() == 0 {
                 HotStoreAction::Delete(DeleteAction::DeleteCanonicalCollection(
-                    DeleteCanonicalCollection::new(record.kind, record.history_key_hash),
+                    DeleteCanonicalCollection::new(plan.kind(), plan.history_key_hash().clone()),
                 ))
             } else {
+                let record = plan.into_record_group()?;
                 HotStoreAction::Insert(InsertAction::InsertCanonicalCollection(
                     InsertCanonicalCollection::from_trusted_parts(
                         record.kind,

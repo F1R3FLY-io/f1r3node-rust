@@ -5602,6 +5602,38 @@ staging control **1/1**, `MakeMintTest.rho` with all seven registered tests comp
 `PoSTest.rho` with all eleven registered tests completing. These are compatibility and
 non-vacuity observations; they do not expand this continuation's persistence or consensus claims.
 
+**CBR-053 living continuation (2026-08-26, continuation/join record-order representation
+ruling).** The continuation/join authority stores complete frozen record bytes as primary PathMap
+endpoint suffixes and scheduler order as fixed-width ordinal metadata. Canonical checkpoint order
+is therefore direct trie order; newest-first scheduler order is a transient sort of scalar/borrowed
+record descriptors. A feature-gated three-arm experiment compared this production representation
+with a shared-value ordinal PathMap and a payload-split family of primary, identity, and ordinal
+PathMaps over continuation, resting-join, and installed-join lifecycle shapes.
+
+All 33,894 validated observations preserve complete logical state, canonical leaf bytes and digest,
+primary and identity paths, multiplicity, scheduler ordinals, and exact encoded-length accounting.
+Both candidates are rejected by the preregistered universal 5% lifecycle/resource gate. The shared
+candidate reaches 11.048 times the retained-byte floor and the split candidate 11.052 times; deleting
+one multiplicity-4,096 join endpoint becomes more than 304 times slower because either treatment
+retains one ordinal endpoint per logical occurrence. Production remains `sorted_prepared` and the
+experiment feature cannot affect a default build.
+
+Canonical egress now derives an immutable plan from the same CoW primary root and replays exact
+header/count/frame/body ranges through a fallible private sink. The LMDB-compatible action uses one
+exactly reserved final byte buffer; no record is decoded, projected through `Vec<Par>`, or sorted.
+The preflight and replay revalidate group ownership, endpoint bytes, multiplicity, ordinals,
+cardinality, and encoded length before publication. This changes representation and allocation
+placement only; the frozen canonical body and legacy leaf framing remain byte-identical.
+
+This is `NO_PRODUCTION_CHANGE_MEASURED`. No Rholang value, collection authority, selected
+continuation, join multiplicity, COMM order, canonical protobuf or bincode byte, logical leaf hash,
+history root, post-state, metering rule, or PathMap crate source moves. Stack-safety report §5.47
+and its durable report/raw/statistical artifacts preserve the negative result. CBR-053's verdict
+and post-state axes remain `UNVERIFIED`: the ruling does not substitute for the pending complete
+legacy-versus-PathMap continuation/join bind/select/checkpoint/reset/export/import/play/replay
+lifecycle differential. It also does not implement or authorize the planned binary-WAL/
+content-addressed PathMap-DAG persistence backend.
+
 ### B.2 The original commit-level exemptions
 
 Every commit in `7293d57c..dc383ed1` touching the consensus-critical path set, that is **not** a

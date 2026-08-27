@@ -148,9 +148,15 @@ impl PersistedDataKind {
         }
     }
 
+    pub(crate) fn header(self, payload_len: u64) -> [u8; PERSISTED_DATA_HEADER_LEN] {
+        let mut header = [0; PERSISTED_DATA_HEADER_LEN];
+        header[..PERSISTED_DATA_TAG_LEN].copy_from_slice(&self.discriminant().to_le_bytes());
+        header[PERSISTED_DATA_TAG_LEN..].copy_from_slice(&payload_len.to_le_bytes());
+        header
+    }
+
     pub(crate) fn write_header(self, payload_len: u64, output: &mut Vec<u8>) {
-        output.extend_from_slice(&self.discriminant().to_le_bytes());
-        output.extend_from_slice(&payload_len.to_le_bytes());
+        output.extend_from_slice(&self.header(payload_len));
     }
 
     fn from_discriminant(discriminant: u32) -> Result<Self, PersistedDataFrameError> {
