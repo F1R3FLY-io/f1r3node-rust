@@ -5651,6 +5651,43 @@ The verdict and post-state axes are therefore closed as **NO** and the entry is
 `NEUTRALITY-MEASURED`. This closure does not implement or authorize the separately planned binary
 WAL/content-addressed PathMap-DAG persistence backend.
 
+**CBR-053 living continuation (2026-08-27, canonical three-root PathMap-DAG format and semantic
+admission).** A dormant persistence module now defines schema epoch one of the planned logical
+RSpace object graph. The semantic manifest contains exactly `DataBag`, `ContinuationMap`, and
+`JoinBag` roots plus optional legacy-root provenance. Data and joins have nonzero `u64`
+multiplicity endpoints. Continuations map a framed source-free identity to one typed immutable
+source blob, preserving the resident store's observable first-representative rule. Installed
+continuations, installed joins, loaded-channel markers, receive/candidate catalogs, ACT images,
+page locations, and swizzled pointers are not semantic roots.
+
+Canonical objects use a fixed 16-byte domain, little-endian `u64` version and body length, and a
+BLAKE2b-256 digest paired with the exact canonical `u64` length. Prefix-compressed DAG nodes have one
+canonical child representation selected at 0, 1--4, 5--16, 17--48, or 49--256 children. The format
+rejects endpoint-free unary nodes, alternate branch classes, zero multiplicity, edge-order defects,
+bitmap/slot inconsistencies, unknown payloads, conflicting declared lengths for one digest, missing
+objects, cycles, and full-byte content collisions. ACT is intentionally excluded from semantic
+identity: it may later be a discardable accelerator or pack encoding, but PathMap's physical arena
+layout cannot silently rewrite state identity.
+
+Structural closure and RSpace semantics are separate iterative admission gates. The first verifies
+the immutable object graph and namespace endpoint policy. The second exactly decodes and re-encodes
+RhoPathV1 keys and frozen record bodies, checks channel/datum structure attribution, continuation
+arity and source bytes, indexed-channel membership in each join record, and the cross-root rule that
+every continuation has the corresponding JoinBag endpoint for every distinct channel. Join lookup
+descends adaptive DAG branches directly; neither gate flattens a trie, sorts entries, reconstructs a
+`Vec<Par>`, or recurses on native stack. Caller-supplied total-resource budgets are independent of
+trie depth.
+
+This is `NO_PRODUCTION_CHANGE_DERIVED`. No checkpoint, reset, startup, matcher, COMM, replay,
+history, network, or current-root caller can yet publish or consume the new manifest. Existing LMDB
+bytes, canonical Rholang protobuf/bincode bytes, logical cold leaves, history roots, post-state,
+metering, and accepted programs therefore remain unchanged. The focused persistence module passes
+29/29 cases, including exact three-root semantics, malformed-input refusal, collision/length
+contracts, adaptive child lookup, explicit budgets, and a 20,000-object structural closure on a
+256 KiB stack. This evidence establishes the dormant format and admission algorithms only. It does
+not implement the mutation WAL, crash recovery, pack compaction, legacy differential migration, or
+LMDB performance/storage comparison, and it does not authorize production cutover.
+
 ### B.2 The original commit-level exemptions
 
 Every commit in `7293d57c..dc383ed1` touching the consensus-critical path set, that is **not** a

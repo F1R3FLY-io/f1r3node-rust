@@ -571,6 +571,8 @@ fn take_escaped_byte(frame: &[u8], cursor: &mut usize) -> Result<u8, ()> {
 pub enum RhoPathError {
     InvalidMagic,
     InvalidKind(u8),
+    InvalidCollectionVersion(u8),
+    EmptyChannelGroup,
     TruncatedFrame,
     InvalidEscape(u8),
     TrailingBytes,
@@ -581,6 +583,10 @@ impl fmt::Display for RhoPathError {
         match self {
             Self::InvalidMagic => f.write_str("invalid RhoPathV1 magic"),
             Self::InvalidKind(kind) => write!(f, "invalid RhoPathV1 kind {kind}"),
+            Self::InvalidCollectionVersion(version) => {
+                write!(f, "invalid RhoPathV1 collection version {version}")
+            }
+            Self::EmptyChannelGroup => f.write_str("RhoPathV1 channel group is empty"),
             Self::TruncatedFrame => f.write_str("truncated RhoPathV1 frame"),
             Self::InvalidEscape(byte) => write!(f, "invalid RhoPathV1 escape {byte:#04x}"),
             Self::TrailingBytes => f.write_str("unexpected bytes after RhoPathV1 prefix"),
@@ -631,6 +637,65 @@ pub struct DatumPathView<'a> {
     encoded_datum_structure: &'a [u8],
     datum_identity: &'a [u8],
     channel_prefix_len: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ContinuationPathView<'a> {
+    encoded_channels: &'a [u8],
+    channel_count: usize,
+    encoded_continuation_identity: &'a [u8],
+}
+
+impl<'a> ContinuationPathView<'a> {
+    pub(crate) fn channel_identities(self) -> ContinuationChannelIdentities<'a> {
+        ContinuationChannelIdentities {
+            encoded: self.encoded_channels,
+            cursor: 0,
+            remaining: self.channel_count,
+        }
+    }
+
+    pub(crate) fn continuation_identity(&self) -> Vec<u8> {
+        decode_frame(self.encoded_continuation_identity)
+    }
+}
+
+pub(crate) struct ContinuationChannelIdentities<'a> {
+    encoded: &'a [u8],
+    cursor: usize,
+    remaining: usize,
+}
+
+impl Iterator for ContinuationChannelIdentities<'_> {
+    type Item = Vec<u8>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.remaining == 0 {
+            return None;
+        }
+        let frame = take_frame(self.encoded, &mut self.cursor)
+            .expect("ContinuationPathView contains validated channel frames");
+        self.remaining -= 1;
+        Some(decode_frame(frame))
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) { (self.remaining, Some(self.remaining)) }
+}
+
+impl ExactSizeIterator for ContinuationChannelIdentities<'_> {}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct JoinPathView<'a> {
+    encoded_indexed_channel_identity: &'a [u8],
+    join_identity: &'a [u8],
+}
+
+impl<'a> JoinPathView<'a> {
+    pub(crate) fn indexed_channel_identity(self) -> Vec<u8> {
+        decode_frame(self.encoded_indexed_channel_identity)
+    }
+
+    pub(crate) const fn join_identity(self) -> &'a [u8] { self.join_identity }
 }
 
 impl<'a> DatumPathView<'a> {
@@ -707,6 +772,52 @@ impl RhoPathV1 {
         output.extend_from_slice(prefix);
         append_frame(&mut output, identity);
         output
+    }
+
+    /// Parse the identity-keyed resting continuation path used by the
+    /// persistent semantic `ContinuationMap`.
+    pub(crate) fn parse_continuation(
+        path: &[u8],
+    ) -> Result<ContinuationPathView<'_>, RhoPathError> {
+        let mut cursor = parse_collection_header(path, CONTINUATION_KIND)?;
+        let channels_start = cursor;
+        let mut channel_count = 0usize;
+        while path.get(cursor..cursor.saturating_add(GROUP_END.len())) != Some(&GROUP_END) {
+            let _ = take_frame(path, &mut cursor)?;
+            channel_count += 1;
+        }
+        if channel_count == 0 {
+            return Err(RhoPathError::EmptyChannelGroup);
+        }
+        let channels_end = cursor;
+        cursor += GROUP_END.len();
+        let continuation_identity = take_frame(path, &mut cursor)?;
+        if cursor != path.len() {
+            return Err(RhoPathError::TrailingBytes);
+        }
+        Ok(ContinuationPathView {
+            encoded_channels: &path[channels_start..channels_end],
+            channel_count,
+            encoded_continuation_identity: continuation_identity,
+        })
+    }
+
+    /// Parse the resting join path indexed by one channel and ending in one
+    /// complete, ordered join record.
+    pub(crate) fn parse_join(path: &[u8]) -> Result<JoinPathView<'_>, RhoPathError> {
+        let mut cursor = parse_collection_header(path, JOIN_KIND)?;
+        let indexed_channel = take_frame(path, &mut cursor)?;
+        if path.get(cursor..cursor.saturating_add(GROUP_END.len())) != Some(&GROUP_END) {
+            return Err(RhoPathError::TruncatedFrame);
+        }
+        cursor += GROUP_END.len();
+        if cursor == path.len() {
+            return Err(RhoPathError::TruncatedFrame);
+        }
+        Ok(JoinPathView {
+            encoded_indexed_channel_identity: indexed_channel,
+            join_identity: &path[cursor..],
+        })
     }
 
     pub fn datum_key<C: RhoPathEncode>(
@@ -829,6 +940,23 @@ fn parse_channel(path: &[u8]) -> Result<(ChannelPathView<'_>, usize), RhoPathErr
         },
         cursor,
     ))
+}
+
+fn parse_collection_header(path: &[u8], expected_kind: u8) -> Result<usize, RhoPathError> {
+    if path.get(..MAGIC.len()) != Some(&MAGIC) {
+        return Err(RhoPathError::InvalidMagic);
+    }
+    let kind = *path.get(MAGIC.len()).ok_or(RhoPathError::TruncatedFrame)?;
+    if kind != expected_kind {
+        return Err(RhoPathError::InvalidKind(kind));
+    }
+    let version = *path
+        .get(MAGIC.len() + 1)
+        .ok_or(RhoPathError::TruncatedFrame)?;
+    if version != 1 {
+        return Err(RhoPathError::InvalidCollectionVersion(version));
+    }
+    Ok(MAGIC.len() + 2)
 }
 
 pub fn encode_structural_sequence<'a>(parts: impl IntoIterator<Item = &'a [u8]>) -> Vec<u8> {

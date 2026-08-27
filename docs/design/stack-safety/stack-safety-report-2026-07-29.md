@@ -10740,6 +10740,64 @@ obligation; none of the lifecycle evidence claims that it exists yet.
 
 ---
 
+### 5.48 Canonical PathMap-DAG structural and semantic admission PDAs [SS-C21]
+
+#### 5.48.1 Two proofs, because graph closure is not RSpace meaning
+
+The first persistence-format milestone separates two properties that the older history verifier
+could not safely conflate. A **structural closure** proves that every content-addressed object exists,
+hashes to its reference, has the declared length and canonical adaptive radix shape, uses the
+endpoint type assigned to its namespace, and does not form a cycle. **Semantic admission** proves
+that each logical trie endpoint is a complete frozen RSpace key/value relation and that the three
+roots agree across continuations and joins. A structurally canonical arbitrary byte path is not
+RSpace state.
+
+Both validators are explicit-worklist pushdown automata (PDAs). Structural traversal memoizes a
+digest only for the expectation already proved, and compares a repeated digest's declared length
+before taking that fast path. Semantic traversal deliberately does *not* memoize a DAG node by
+digest: one immutable node may be shared beneath different logical prefixes, and each resulting key
+must be checked. It carries one reusable byte path and work items of the form
+`(object reference, parent path length, optional edge)`. Sibling scheduling comes directly from the
+borrowed adaptive-node iterator; no child vector is constructed.
+
+#### 5.48.2 Native-stack and heap bounds
+
+For object count $`n`$, maximum logical key length $`k`$, and explicit frontier width $`f`$, native
+stack use is $`O(1)`$ in object and key depth. Required heap space is $`O(n + k + f)`$ for structural
+digest state, the semantic key buffer, and explicit worklists. Cross-root coherence performs exact
+JoinBag lookup in $`O(k)`$ byte descent and uses PathMap set membership to quotient repeated channel
+identities. Adaptive branch lookup is bounded binary search for Node4/Node16, direct slot-table
+addressing for Node48, and bitmap rank for Node256.
+
+Admission exposes total-resource ceilings for distinct objects, canonical bytes, references,
+worklist entries, logical nodes, endpoints, logical path bytes, continuation-source bytes, join
+lookups, and join-lookup steps. These limits bound hostile-input work; none is a recursion or
+traversal-depth cap. Worklists use fallible reservation before fanout is appended. The continuation
+RhoPath parser scans channel frames twice through a borrowed exact-size iterator rather than
+allocating a retained frame-index vector. Recursive datum, pattern, continuation, and channel bodies
+reuse the generated stack-safe cold decoders.
+
+#### 5.48.3 Executable evidence and current limit
+
+The focused resource-capped persistence module passes **29/29** cases. Its anti-vacuity matrix
+includes a 20,000-object closure on a 256 KiB native stack; every adaptive child-class boundary;
+direct lookup in all branch encodings; digest, length, collision, missing-object, endpoint,
+branch, compression, and malformed-payload refusal; valid exact three-root state; exact frozen
+decode/re-encode; channel/datum structure agreement; continuation pattern/channel arity;
+preservation of an independently selected first-wins source; missing cross-root join refusal;
+indexed-channel membership; repeated-channel quotienting; and independent structural and semantic
+budget failures. The affected crate also type-checks under a 6 GiB RSS ceiling, zero swap, and four
+compiler cores.
+
+These are correctness and resource-shape results, not a persistence performance result. The module
+is not connected to checkpoint publication, recovery, or current-root authority, so no LMDB/ACT
+latency, allocation, retained-byte, disk-footprint, recovery-time, or compaction claim is made. The
+next stack/resource obligation begins when the normalized mutation WAL streams these canonical
+objects into durable packs. PathMap journal J-034 records the representation decision; CBR-053
+records that the format remains dormant and consensus-neutral at this checkpoint.
+
+---
+
 ## 6. Discussion
 
 ### 6.1 Why the explicit-worklist shape, and why it is *smaller* than what it replaces

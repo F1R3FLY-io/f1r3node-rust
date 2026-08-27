@@ -2374,6 +2374,84 @@ and post-state equivalence. It makes the final legacy buffer a boundary choice, 
 does not implement the binary-WAL/content-DAG persistence backend; durable object publication,
 recovery, compaction, and LMDB comparison remain separately tracked and unclaimed.
 
+### J-034 — 2026-08-27: persist logical PathMap tries, not an ACT implementation snapshot
+
+**OBSERVATION.** A durable RSpace image needs both trie-native navigation and a stable identity
+across PathMap releases. Persisting one current `ArenaCompactTree` (ACT) arena as the state root
+would preserve prefix compression, but it would also make physical offsets, adaptive-node layout,
+and writer-version choices consensus-relevant. Flattening the state into cold-record vectors avoids
+that coupling only by discarding the PathMap representation that the persistence campaign is meant
+to retain. The resident lifecycle audit establishes a narrower semantic boundary: checkpoints
+contain resting data, resting continuations, and resting joins. Installed continuations are startup
+configuration; installed joins, loaded-empty markers, receive catalogs, and candidate indexes are
+derived state.
+
+**DECISION.** Schema epoch one is a canonical, content-addressed logical radix DAG with exactly
+three typed roots:
+
+| Root | Logical type | Endpoint | Canonical key |
+|---|---|---|---|
+| `DataBag` | `PathMap<Multiplicity>` | nonzero `u64` multiplicity | complete frozen RhoPathV1 datum path |
+| `ContinuationMap` | source-free identity map | `ObjectRefV1` to `ContinuationSourceV1` | nonempty ordered channel group plus framed continuation identity |
+| `JoinBag` | `PathMap<Multiplicity>` | nonzero `u64` multiplicity | indexed channel plus raw complete ordered join record |
+
+An `ObjectRefV1` contains a BLAKE2b-256 digest and checked `u64` canonical length. Nodes retain a
+compressed byte prefix and choose their one canonical adaptive branch class from child cardinality:
+leaf, Node4, Node16, Node48, or Node256. Endpoint-free unary nodes are rejected because they are not
+prefix-compressed. The only semantic content blob is the selected continuation source. The optional
+legacy history root is provenance in the manifest, not a fourth trie. ACT images, candidate
+catalogs, swizzled pointers, page locations, and cached summaries belong to a separately bound,
+discardable accelerator manifest.
+
+This representation deliberately uses the continuation relation that the resident store actually
+implements. Duplicate source-free identities retain the first selected source, so a continuation
+root is a map, not a Bag of complete records. Join import does preserve duplicate occurrences, so
+the join root is a Bag and its multiplicity must not be collapsed. For a continuation over repeated
+channels, the ordered join record retains every channel position, while cross-root coherence
+requires one JoinBag membership per *distinct* indexed channel.
+
+**ALGORITHM.** Admission is split into two explicit-worklist pushdown automata (PDAs). The structural
+PDA authenticates every digest and declared length, detects cycles, enforces branch normalization,
+checks namespace endpoint types, and resolves content references. The semantic PDA then traverses
+each logical occurrence of a shared node with one reusable key buffer. At every endpoint it:
+
+```text
+decode the frozen key components with stack-safe prefix decoders
+require exact consumption and exact re-encoding
+require encoded structure fields to equal decoded value structure
+for ContinuationMap:
+    decode and exactly re-encode the selected source blob
+    require pattern count = ordered channel count
+    form the raw ordered join record once
+    for each distinct channel identity:
+        descend JoinBag by bytes through adaptive child lookup
+        require a nonzero multiplicity endpoint
+```
+
+The direct JoinBag descent uses bounded binary search for Node4/Node16, the slot table for Node48,
+and bitmap rank for Node256. It does not project a trie into entries, sort endpoints, decode an
+unrelated value, or call `trie_snapshot()`. The continuation path parser now lends channel frames
+through a borrowed exact-size iterator instead of retaining a vector of frame slices. Both PDAs
+accept explicit total-object, canonical-byte, reference, worklist, logical-node, endpoint, path-byte,
+source-byte, and join-lookup budgets. None has a trie-depth or term-depth limit.
+
+**EVIDENCE.** The resource-capped focused module passes **29/29** tests. The matrix fixes exact empty
+bytes; all endpoint tags; the 0/1/4/5/16/17/48/49/256 adaptive boundaries and direct lookup;
+malformed envelopes, lengths, endpoints, tables, compression, digests, collisions, and missing
+objects; all three namespace policies; conflicting lengths for one digest; a 20,000-object closure
+on a 256 KiB native stack; exact valid three-root semantics; malformed RhoPath and source payloads;
+continuation arity; preservation of an independently selected first-wins source; missing cross-root
+joins; indexed-channel membership; repeated-channel distinctness; and explicit structural and
+semantic resource ceilings. The affected crate type-checks under the same 6 GiB, zero-swap,
+four-core scope.
+
+**BOUNDARY.** This checkpoint defines and verifies an in-memory canonical object format. It does
+not yet publish the format from checkpoint mutation, write a binary write-ahead log (WAL), recover a
+catalog, compact a pack, replace LMDB, or claim a persistence throughput/storage win. The next
+milestone must build the normalized three-namespace mutation journal against this validator; only a
+fully verified manifest may become durable current-root authority. Consensus register CBR-053 and
+stack-safety report §5.48 carry the corresponding dormant-format and resource claims.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

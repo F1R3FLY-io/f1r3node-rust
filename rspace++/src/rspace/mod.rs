@@ -6,6 +6,7 @@ pub(crate) mod candidate_digest_test_hook;
 pub mod data_index;
 pub mod hashing;
 pub mod pathmap_codec;
+pub(crate) mod persistence;
 pub mod history;
 pub mod hot_store;
 pub mod internal;
