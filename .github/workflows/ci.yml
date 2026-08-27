@@ -457,7 +457,10 @@ jobs:
     name: Test (${{ matrix.crate }})
     needs: [build_base, lint]
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # casper gets 45: its suite takes ~23 minutes on a nominal runner, so a
+    # slow-runner day (2026-08-27: 9m36s rebuild + degraded test throughput)
+    # overruns a flat 30. All other crates finish in under 10 minutes.
+    timeout-minutes: ${{ matrix.crate == 'casper' && 45 || 30 }}
     strategy:
       fail-fast: false
       matrix:
