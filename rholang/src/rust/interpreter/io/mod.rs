@@ -21,6 +21,7 @@ pub mod nss;
 pub mod path;
 pub mod response;
 pub mod snapshot;
+pub mod snapshot_chunk;
 pub mod stat;
 pub mod wal;
 
