@@ -29,7 +29,6 @@
 From Stdlib Require Import Lists.List.
 From Stdlib Require Import Arith.PeanoNat.
 From Stdlib Require Import Logic.Decidable.
-From Stdlib Require Import Logic.FunctionalExtensionality.
 Import ListNotations.
 
 Set Implicit Arguments.
@@ -41,6 +40,11 @@ Set Implicit Arguments.
    with decidable equality would do; using a concrete type keeps the
    proof axiom-free per the project's no-Hypothesis / no-Axiom rule).
    The DAG and Buffer are sets of block hashes (functions to bool).
+   Because a `HashSet` is a FUNCTION, set equality is stated and proved
+   POINTWISE (`forall x, s1 x = s2 x`) — the observational meaning of
+   "same set" — rather than as Leibniz equality `s1 = s2`, which would
+   require the functional-extensionality AXIOM. Pointwise keeps the
+   whole development axiom-free (no FunctionalExtensionality import).
    ═══════════════════════════════════════════════════════════════════════════ *)
 
 Definition BlockHash := nat.
@@ -214,14 +218,14 @@ Qed.
 Definition resume_step (s : SystemState) (h : BlockHash) (c : CrashPoint) : SystemState :=
   Step (reconcile_one (crash_step s h c) h) h.
 
-(* Step is idempotent on the slashing projection (and in fact on the
-   full SystemState — useful as a lemma). *)
+(* Step is idempotent on the dag projection, stated POINTWISE (forall x)
+   so it is provable WITHOUT functional extensionality (see the §1 note).
+   `forall x, ... x = ... x` is the observational meaning of "same dag". *)
 Lemma step_idempotent_dag :
-  forall s h, (Step (Step s h) h).(dag) = (Step s h).(dag).
+  forall s h x, (Step (Step s h) h).(dag) x = (Step s h).(dag) x.
 Proof.
-  intros s h.
+  intros s h x.
   rewrite !step_dag.
-  apply functional_extensionality. intro x.
   unfold set_insert.
   destruct (BlockHash_dec x h) as [E | _]; reflexivity.
 Qed.
@@ -253,20 +257,20 @@ Proof.
   destruct (set_contains s.(dag) h && set_contains s.(buffer) h)%bool; reflexivity.
 Qed.
 
+(* Pointwise (forall x) so it needs no functional extensionality. *)
 Lemma set_insert_idempotent :
-  forall s h, set_insert (set_insert s h) h = set_insert s h.
+  forall s h x, set_insert (set_insert s h) h x = set_insert s h x.
 Proof.
-  intros s h.
-  apply functional_extensionality. intro x.
+  intros s h x.
   unfold set_insert.
   destruct (BlockHash_dec x h) as [E | _]; reflexivity.
 Qed.
 
 Theorem t_9_20_recon :
-  forall s h c,
-    slashing_proj (resume_step s h c) = slashing_proj (Step s h).
+  forall s h c x,
+    slashing_proj (resume_step s h c) x = slashing_proj (Step s h) x.
 Proof.
-  intros s h c.
+  intros s h c x.
   unfold slashing_proj, resume_step.
   rewrite !step_dag.
   rewrite reconcile_one_preserves_dag.
@@ -312,10 +316,10 @@ Qed.
 (* Insert+remove idempotence: applying the helper twice for the same
    block is observationally equivalent to applying it once. *)
 Theorem t_9_20_step_idempotent_on_projection :
-  forall s h,
-    slashing_proj (Step (Step s h) h) = slashing_proj (Step s h).
+  forall s h x,
+    slashing_proj (Step (Step s h) h) x = slashing_proj (Step s h) x.
 Proof.
-  intros s h.
+  intros s h x.
   unfold slashing_proj.
   apply step_idempotent_dag.
 Qed.

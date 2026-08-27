@@ -20,6 +20,7 @@ use std::sync::Arc;
 
 use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
 use block_storage::rust::dag::block_metadata_store::BlockMetadataStore;
+use block_storage::rust::dag::deploy_lifecycle_types::DeployLifecycleTables;
 use casper::rust::casper::{CasperShardConf, CasperSnapshot, OnChainCasperState};
 use crypto::rust::public_key::PublicKey;
 use dashmap::DashSet;
@@ -167,9 +168,7 @@ fn empty_dag() -> KeyValueDagRepresentation {
         block_metadata_index: Arc::new(RwLock::new(BlockMetadataStore::new(metadata_store))),
         floor_index: floor_store,
         frontier_index: frontier_store,
-        lifecycle: Arc::new(RwLock::new(
-            block_storage::rust::dag::deploy_lifecycle_types::DeployLifecycleTables::in_memory(),
-        )),
+        lifecycle: Arc::new(RwLock::new(DeployLifecycleTables::in_memory())),
     }
 }
 
@@ -186,7 +185,7 @@ fn metadata(evidence: &Evidence) -> BlockMetadata {
         directly_finalized: false,
         finalized: false,
         fault_tolerance_value: 0.0,
-        merge_base: prost::bytes::Bytes::new(),
+        merge_base: Bytes::new(),
     }
 }
 
