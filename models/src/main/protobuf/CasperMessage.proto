@@ -36,6 +36,57 @@ message BlockRequestProto {
   bytes  hash = 1;
 }
 
+// -------- Phase 7b-1 snapshot chunk-fetch (2026-08-27) --------
+// Joiners request individual 4 MiB chunks of a finalized snapshot
+// by (block_hash, chunk_index).  block_hash keys into the
+// serving validator's `snapshot_merkle_roots` cache to locate the
+// on-disk snapshot; chunk_index selects the 4 MiB slice.  The
+// response carries the raw bytes plus the chunk's precomputed
+// Blake2b256 hash so the requester can verify against a
+// concurrently-fetched inclusion proof against the anchored root.
+
+message GetSnapshotChunkRequestProto {
+  option (scalapb.message).extends = "CasperMessageProto";
+  bytes  block_hash    = 1;   // finalized block hash whose snapshot to fetch
+  uint32 chunk_index   = 2;   // which 4 MiB piece
+}
+
+message SnapshotChunkResponseProto {
+  option (scalapb.message).extends = "CasperMessageProto";
+  bytes  block_hash    = 1;   // echo of the request's block_hash
+  uint32 chunk_index   = 2;   // echo of the request's chunk_index
+  bytes  chunk_bytes   = 3;   // raw chunk payload (may be < 4 MiB for tail)
+  bytes  chunk_hash    = 4;   // Blake2b256(chunk_bytes) — 32 bytes
+  bytes  merkle_root   = 5;   // Merkle root anchor over all chunk hashes
+  uint32 chunk_count   = 6;   // total number of chunks in this snapshot
+  repeated MerkleProofStepProto merkle_proof = 7; // inclusion proof for chunk_index
+}
+
+// One step of a bottom-up Merkle inclusion proof.  sibling_hash is
+// the co-child at this level; is_sibling_right = true means the
+// sibling is the right child (concat = current || sibling), false
+// means left (concat = sibling || current).
+message MerkleProofStepProto {
+  bytes sibling_hash        = 1;
+  bool  is_sibling_right    = 2;
+}
+
+// Sent by a joiner asking "do you have a serveable snapshot for
+// this block?"  Broadcast + point-to-point; serving nodes reply
+// with HasSnapshotProto when they can serve it.  Mirrors the
+// HasBlockRequestProto / HasBlockProto pattern.
+message HasSnapshotRequestProto {
+  option (scalapb.message).extends = "CasperMessageProto";
+  bytes block_hash = 1;
+}
+
+message HasSnapshotProto {
+  option (scalapb.message).extends = "CasperMessageProto";
+  bytes  block_hash  = 1;
+  bytes  merkle_root = 2;   // anchor the joiner can pin
+  uint32 chunk_count = 3;   // how many chunks to expect
+}
+
 message ForkChoiceTipRequestProto {
   option (scalapb.message).extends = "CasperMessageProto";
 }

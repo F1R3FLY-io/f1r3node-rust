@@ -4,9 +4,10 @@
 use comm::rust::rp::protocol_helper;
 use models::casper::{
     ApprovedBlockProto, ApprovedBlockRequestProto, BlockApprovalProto, BlockHashMessageProto,
-    BlockMessageProto, BlockRequestProto, ForkChoiceTipRequestProto, HasBlockProto,
-    HasBlockRequestProto, MergeableEntryRequestProto, MergeableEntryResponseProto,
-    NoApprovedBlockAvailableProto, StoreItemsMessageProto, StoreItemsMessageRequestProto,
+    BlockMessageProto, BlockRequestProto, ForkChoiceTipRequestProto, GetSnapshotChunkRequestProto,
+    HasBlockProto, HasBlockRequestProto, HasSnapshotProto, HasSnapshotRequestProto,
+    MergeableEntryRequestProto, MergeableEntryResponseProto, NoApprovedBlockAvailableProto,
+    SnapshotChunkResponseProto, StoreItemsMessageProto, StoreItemsMessageRequestProto,
     UnapprovedBlockProto,
 };
 use models::routing::{Packet, Protocol};
@@ -73,6 +74,11 @@ pub enum CasperMessageProto {
     StoreItemsMessage(StoreItemsMessageProto),
     MergeableEntryRequest(MergeableEntryRequestProto),
     MergeableEntryResponse(MergeableEntryResponseProto),
+    // Phase 7b-1 snapshot chunk-fetch (2026-08-27).
+    GetSnapshotChunkRequest(GetSnapshotChunkRequestProto),
+    SnapshotChunkResponse(SnapshotChunkResponseProto),
+    HasSnapshotRequest(HasSnapshotRequestProto),
+    HasSnapshot(HasSnapshotProto),
 }
 
 /// Extract a Packet from a Protocol message
@@ -98,6 +104,10 @@ pub fn to_casper_message_proto(packet: &Packet) -> PacketParseResult<CasperMessa
         "StoreItemsMessage" => convert_store_items_message(packet),
         "MergeableEntryRequest" => convert_mergeable_entry_request(packet),
         "MergeableEntryResponse" => convert_mergeable_entry_response(packet),
+        "GetSnapshotChunkRequest" => convert_get_snapshot_chunk_request(packet),
+        "SnapshotChunkResponse" => convert_snapshot_chunk_response(packet),
+        "HasSnapshotRequest" => convert_has_snapshot_request(packet),
+        "HasSnapshot" => convert_has_snapshot(packet),
         _ => PacketParseResult::IllegalPacket(format!("Unrecognized typeId: {}", packet.type_id)),
     }
 }
@@ -138,6 +148,16 @@ pub fn casper_message_from_proto(proto: CasperMessageProto) -> Result<CasperMess
         CasperMessageProto::MergeableEntryResponse(proto) => {
             Ok(CasperMessage::from_mergeable_entry_response(proto))
         }
+        CasperMessageProto::GetSnapshotChunkRequest(proto) => {
+            Ok(CasperMessage::from_get_snapshot_chunk_request(proto))
+        }
+        CasperMessageProto::SnapshotChunkResponse(proto) => {
+            Ok(CasperMessage::from_snapshot_chunk_response(proto))
+        }
+        CasperMessageProto::HasSnapshotRequest(proto) => {
+            Ok(CasperMessage::from_has_snapshot_request(proto))
+        }
+        CasperMessageProto::HasSnapshot(proto) => Ok(CasperMessage::from_has_snapshot(proto)),
     }
 }
 
@@ -204,6 +224,24 @@ fn convert_mergeable_entry_request(packet: &Packet) -> PacketParseResult<CasperM
 fn convert_mergeable_entry_response(packet: &Packet) -> PacketParseResult<CasperMessageProto> {
     parse_packet::<MergeableEntryResponseProto>(packet)
         .map(CasperMessageProto::MergeableEntryResponse)
+}
+
+fn convert_get_snapshot_chunk_request(packet: &Packet) -> PacketParseResult<CasperMessageProto> {
+    parse_packet::<GetSnapshotChunkRequestProto>(packet)
+        .map(CasperMessageProto::GetSnapshotChunkRequest)
+}
+
+fn convert_snapshot_chunk_response(packet: &Packet) -> PacketParseResult<CasperMessageProto> {
+    parse_packet::<SnapshotChunkResponseProto>(packet)
+        .map(CasperMessageProto::SnapshotChunkResponse)
+}
+
+fn convert_has_snapshot_request(packet: &Packet) -> PacketParseResult<CasperMessageProto> {
+    parse_packet::<HasSnapshotRequestProto>(packet).map(CasperMessageProto::HasSnapshotRequest)
+}
+
+fn convert_has_snapshot(packet: &Packet) -> PacketParseResult<CasperMessageProto> {
+    parse_packet::<HasSnapshotProto>(packet).map(CasperMessageProto::HasSnapshot)
 }
 
 /// Generic function to parse a packet into a specific protobuf message type

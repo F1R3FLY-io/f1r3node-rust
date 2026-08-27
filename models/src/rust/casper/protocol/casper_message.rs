@@ -38,6 +38,11 @@ pub enum CasperMessage {
     StoreItemsMessage(StoreItemsMessage),
     MergeableEntryRequest(MergeableEntryRequest),
     MergeableEntryResponse(MergeableEntryResponse),
+    // Phase 7b-1 snapshot chunk-fetch (2026-08-27)
+    GetSnapshotChunkRequest(GetSnapshotChunkRequest),
+    SnapshotChunkResponse(SnapshotChunkResponse),
+    HasSnapshotRequest(HasSnapshotRequest),
+    HasSnapshot(HasSnapshot),
 }
 
 impl CasperMessage {
@@ -117,6 +122,23 @@ impl CasperMessage {
 
     pub fn from_mergeable_entry_response(proto: MergeableEntryResponseProto) -> Self {
         CasperMessage::MergeableEntryResponse(MergeableEntryResponse::from_proto(proto))
+    }
+
+    // Phase 7b-1 snapshot chunk-fetch (2026-08-27).
+    pub fn from_get_snapshot_chunk_request(proto: GetSnapshotChunkRequestProto) -> Self {
+        CasperMessage::GetSnapshotChunkRequest(GetSnapshotChunkRequest::from_proto(proto))
+    }
+
+    pub fn from_snapshot_chunk_response(proto: SnapshotChunkResponseProto) -> Self {
+        CasperMessage::SnapshotChunkResponse(SnapshotChunkResponse::from_proto(proto))
+    }
+
+    pub fn from_has_snapshot_request(proto: HasSnapshotRequestProto) -> Self {
+        CasperMessage::HasSnapshotRequest(HasSnapshotRequest::from_proto(proto))
+    }
+
+    pub fn from_has_snapshot(proto: HasSnapshotProto) -> Self {
+        CasperMessage::HasSnapshot(HasSnapshot::from_proto(proto))
     }
 }
 
@@ -2361,6 +2383,136 @@ impl MergeableEntryResponse {
 // no-underflow kani proof lives with the settlement writer (Commit 2 fuzz/
 // kani retarget — see `docs/theory/cost-accounting-impl/d3-replace-phlo-with-tokens.md`
 // §Sequencing, Commit 2).
+
+// -------- Phase 7b-1 snapshot chunk-fetch (2026-08-27) --------
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct GetSnapshotChunkRequest {
+    pub block_hash: ByteString,
+    pub chunk_index: u32,
+}
+
+impl GetSnapshotChunkRequest {
+    pub fn from_proto(proto: GetSnapshotChunkRequestProto) -> Self {
+        Self {
+            block_hash: proto.block_hash,
+            chunk_index: proto.chunk_index,
+        }
+    }
+    pub fn to_proto(self) -> GetSnapshotChunkRequestProto {
+        GetSnapshotChunkRequestProto {
+            block_hash: self.block_hash,
+            chunk_index: self.chunk_index,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct MerkleProofStep {
+    pub sibling_hash: ByteString,
+    pub is_sibling_right: bool,
+}
+
+impl MerkleProofStep {
+    pub fn from_proto(proto: MerkleProofStepProto) -> Self {
+        Self {
+            sibling_hash: proto.sibling_hash,
+            is_sibling_right: proto.is_sibling_right,
+        }
+    }
+    pub fn to_proto(self) -> MerkleProofStepProto {
+        MerkleProofStepProto {
+            sibling_hash: self.sibling_hash,
+            is_sibling_right: self.is_sibling_right,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct SnapshotChunkResponse {
+    pub block_hash: ByteString,
+    pub chunk_index: u32,
+    pub chunk_bytes: ByteString,
+    pub chunk_hash: ByteString,
+    pub merkle_root: ByteString,
+    pub chunk_count: u32,
+    pub merkle_proof: Vec<MerkleProofStep>,
+}
+
+impl SnapshotChunkResponse {
+    pub fn from_proto(proto: SnapshotChunkResponseProto) -> Self {
+        Self {
+            block_hash: proto.block_hash,
+            chunk_index: proto.chunk_index,
+            chunk_bytes: proto.chunk_bytes,
+            chunk_hash: proto.chunk_hash,
+            merkle_root: proto.merkle_root,
+            chunk_count: proto.chunk_count,
+            merkle_proof: proto
+                .merkle_proof
+                .into_iter()
+                .map(MerkleProofStep::from_proto)
+                .collect(),
+        }
+    }
+    pub fn to_proto(self) -> SnapshotChunkResponseProto {
+        SnapshotChunkResponseProto {
+            block_hash: self.block_hash,
+            chunk_index: self.chunk_index,
+            chunk_bytes: self.chunk_bytes,
+            chunk_hash: self.chunk_hash,
+            merkle_root: self.merkle_root,
+            chunk_count: self.chunk_count,
+            merkle_proof: self
+                .merkle_proof
+                .into_iter()
+                .map(MerkleProofStep::to_proto)
+                .collect(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct HasSnapshotRequest {
+    pub block_hash: ByteString,
+}
+
+impl HasSnapshotRequest {
+    pub fn from_proto(proto: HasSnapshotRequestProto) -> Self {
+        Self {
+            block_hash: proto.block_hash,
+        }
+    }
+    pub fn to_proto(self) -> HasSnapshotRequestProto {
+        HasSnapshotRequestProto {
+            block_hash: self.block_hash,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct HasSnapshot {
+    pub block_hash: ByteString,
+    pub merkle_root: ByteString,
+    pub chunk_count: u32,
+}
+
+impl HasSnapshot {
+    pub fn from_proto(proto: HasSnapshotProto) -> Self {
+        Self {
+            block_hash: proto.block_hash,
+            merkle_root: proto.merkle_root,
+            chunk_count: proto.chunk_count,
+        }
+    }
+    pub fn to_proto(self) -> HasSnapshotProto {
+        HasSnapshotProto {
+            block_hash: self.block_hash,
+            merkle_root: self.merkle_root,
+            chunk_count: self.chunk_count,
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {

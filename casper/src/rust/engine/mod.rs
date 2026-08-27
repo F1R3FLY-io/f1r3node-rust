@@ -13,3 +13,5 @@ pub mod lfs_horizon_requester;
 pub mod lfs_tuple_space_requester;
 pub mod multi_parent_casper;
 pub mod running;
+pub mod snapshot_chunk_retriever;
+pub mod snapshot_chunk_server;
