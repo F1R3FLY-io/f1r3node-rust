@@ -1,4 +1,4 @@
-use super::support::{empty_roots, encode, synthetic_ref};
+use super::support::{TEST_SEMANTIC_PROFILE_ID, empty_roots, encode, synthetic_ref};
 use crate::rspace::persistence::{
     AcceleratorArtifact, AcceleratorArtifactKind, AcceleratorManifestV1, AcceleratorManifestView,
     CanonicalEncode, CanonicalFormatError, LegacyHistoryRoot, SemanticStateManifestV1,
@@ -9,11 +9,12 @@ use crate::rspace::persistence::{
 fn semantic_manifest_round_trips_three_roots_and_legacy_provenance() {
     let roots = empty_roots(synthetic_ref(1));
     let legacy = LegacyHistoryRoot::from_array([9; 32]);
-    let manifest =
-        SemanticStateManifestV1::new(1, roots, Some(legacy)).expect("schema-one manifest is valid");
+    let manifest = SemanticStateManifestV1::new(1, TEST_SEMANTIC_PROFILE_ID, roots, Some(legacy))
+        .expect("schema-one manifest is valid");
     let bytes = encode(&manifest);
     let parsed = SemanticStateManifestView::parse(&bytes).expect("manifest parses");
     assert_eq!(parsed.schema_epoch(), 1);
+    assert_eq!(parsed.profile_id(), TEST_SEMANTIC_PROFILE_ID);
     assert_eq!(parsed.roots(), roots);
     assert_eq!(parsed.legacy_history_root(), Some(legacy));
     assert_eq!(parsed.object_ref(), manifest.object_ref());
@@ -22,13 +23,23 @@ fn semantic_manifest_round_trips_three_roots_and_legacy_provenance() {
 #[test]
 fn unknown_semantic_schema_epoch_fails_closed() {
     assert!(matches!(
-        SemanticStateManifestV1::new(2, empty_roots(synthetic_ref(1)), None),
+        SemanticStateManifestV1::new(
+            2,
+            TEST_SEMANTIC_PROFILE_ID,
+            empty_roots(synthetic_ref(1)),
+            None,
+        ),
         Err(CanonicalFormatError::UnsupportedVersion { version: 2, .. })
     ));
 
     let mut bytes = encode(
-        &SemanticStateManifestV1::new(1, empty_roots(synthetic_ref(2)), None)
-            .expect("schema-one manifest is valid"),
+        &SemanticStateManifestV1::new(
+            1,
+            TEST_SEMANTIC_PROFILE_ID,
+            empty_roots(synthetic_ref(2)),
+            None,
+        )
+        .expect("schema-one manifest is valid"),
     );
     bytes[32] = 7;
     assert!(matches!(
@@ -39,17 +50,22 @@ fn unknown_semantic_schema_epoch_fails_closed() {
 
 #[test]
 fn semantic_root_count_and_order_are_canonical() {
-    let manifest = SemanticStateManifestV1::new(1, empty_roots(synthetic_ref(3)), None)
-        .expect("manifest is valid");
+    let manifest = SemanticStateManifestV1::new(
+        1,
+        TEST_SEMANTIC_PROFILE_ID,
+        empty_roots(synthetic_ref(3)),
+        None,
+    )
+    .expect("manifest is valid");
     let mut wrong_count = encode(&manifest);
-    wrong_count[40] = 4;
+    wrong_count[56] = 4;
     assert_eq!(
         SemanticStateManifestView::parse(&wrong_count).expect_err("wrong root count is rejected"),
         CanonicalFormatError::SemanticRootCount(4)
     );
 
     let mut wrong_order = encode(&manifest);
-    wrong_order[48] = 2;
+    wrong_order[64] = 2;
     assert_eq!(
         SemanticStateManifestView::parse(&wrong_order).expect_err("wrong root order is rejected"),
         CanonicalFormatError::SemanticRootOrder {
@@ -61,8 +77,13 @@ fn semantic_root_count_and_order_are_canonical() {
 
 #[test]
 fn accelerator_replacement_cannot_change_semantic_identity() {
-    let semantic = SemanticStateManifestV1::new(1, empty_roots(synthetic_ref(3)), None)
-        .expect("semantic manifest is valid");
+    let semantic = SemanticStateManifestV1::new(
+        1,
+        TEST_SEMANTIC_PROFILE_ID,
+        empty_roots(synthetic_ref(3)),
+        None,
+    )
+    .expect("semantic manifest is valid");
     let semantic_ref = semantic.object_ref();
     let before = semantic
         .try_canonical_bytes()

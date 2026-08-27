@@ -187,6 +187,10 @@ pub enum CanonicalFormatError {
         domain: &'static str,
         version: u64,
     },
+    SemanticProfileMismatch {
+        expected: [u8; 16],
+        actual: [u8; 16],
+    },
     TrailingBytes {
         offset: usize,
         trailing: usize,
@@ -295,6 +299,10 @@ impl Display for CanonicalFormatError {
             Self::UnsupportedVersion { domain, version } => {
                 write!(formatter, "unsupported {domain} version {version}")
             }
+            Self::SemanticProfileMismatch { expected, actual } => write!(
+                formatter,
+                "semantic profile mismatch: expected {expected:02x?}, got {actual:02x?}"
+            ),
             Self::TrailingBytes { offset, trailing } => {
                 write!(formatter, "{trailing} trailing canonical bytes after offset {offset}")
             }

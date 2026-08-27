@@ -372,6 +372,8 @@ fn require_contiguous_generation(base: u64, target: u64) -> Result<(), MutationE
 /// the producer-side normalization authority.
 #[derive(Clone, Copy, Debug)]
 pub struct MutationBatchViewV1<'a> {
+    canonical_bytes: &'a [u8],
+    payload_digest: ObjectDigest,
     base: StateVersionV1,
     target_generation: u64,
     data: CountSectionView<'a>,
@@ -437,6 +439,8 @@ impl<'a> MutationBatchViewV1<'a> {
             return Err(MutationError::EmptyBatch);
         }
         Ok(Self {
+            canonical_bytes: bytes,
+            payload_digest: ObjectDigest::of_canonical_bytes(bytes),
             base,
             target_generation,
             data,
@@ -448,6 +452,12 @@ impl<'a> MutationBatchViewV1<'a> {
     pub const fn base(self) -> StateVersionV1 { self.base }
 
     pub const fn target_generation(self) -> u64 { self.target_generation }
+
+    /// Exact validated bytes suitable for direct binary-WAL streaming.
+    pub const fn canonical_bytes(self) -> &'a [u8] { self.canonical_bytes }
+
+    /// Domain-separated transaction identity over the exact canonical payload.
+    pub const fn payload_digest(self) -> ObjectDigest { self.payload_digest }
 
     pub fn data(self) -> CountMutationIter<'a> { self.data.iter() }
 

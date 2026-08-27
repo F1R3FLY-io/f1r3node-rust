@@ -1,11 +1,75 @@
+use std::collections::BTreeMap;
 use std::num::NonZeroU64;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use crate::rspace::persistence::{
     CanonicalDagNode, CanonicalEncode, CanonicalFormatError, CanonicalObjectStore, DagChild,
-    EndpointValue, ObjectAdmission, ObjectDigest, ObjectRefV1, SemanticRoots,
-    SemanticStateManifestV1,
+    EndpointValue, ImmutableObjectStore, ObjectAdmission, ObjectDigest, ObjectRefV1,
+    SemanticProfile, SemanticProfileId, SemanticRoots, SemanticStateManifestV1,
+    semantic_profile_seal,
 };
+
+pub(super) const TEST_SEMANTIC_PROFILE_ID: SemanticProfileId =
+    SemanticProfileId::from_array(*b"RSpace.Test.V1\0\0");
+
+pub(super) struct TestSemanticProfile;
+
+impl semantic_profile_seal::Sealed for TestSemanticProfile {}
+
+impl SemanticProfile for TestSemanticProfile {
+    type Channel = String;
+    type Pattern = String;
+    type Datum = String;
+    type Continuation = String;
+
+    const ID: SemanticProfileId = TEST_SEMANTIC_PROFILE_ID;
+}
+
+#[derive(Default)]
+pub(super) struct TracingStore {
+    pub(super) inner: CanonicalObjectStore,
+    reads: Mutex<BTreeMap<ObjectDigest, u64>>,
+}
+
+impl TracingStore {
+    pub(super) fn clear_reads(&self) { self.reads.lock().unwrap().clear(); }
+
+    pub(super) fn read_count(&self, digest: ObjectDigest) -> u64 {
+        self.reads
+            .lock()
+            .unwrap()
+            .get(&digest)
+            .copied()
+            .unwrap_or(0)
+    }
+
+    pub(super) fn total_reads(&self) -> u64 { self.reads.lock().unwrap().values().copied().sum() }
+}
+
+impl ImmutableObjectStore for TracingStore {
+    type Error = CanonicalFormatError;
+    type Object = Arc<[u8]>;
+
+    fn get_bounded(
+        &self,
+        digest: &ObjectDigest,
+        max_encoded_len: u64,
+    ) -> Result<Option<Self::Object>, Self::Error> {
+        let mut reads = self.reads.lock().unwrap();
+        *reads.entry(*digest).or_default() += 1;
+        drop(reads);
+        self.inner.get_bounded(digest, max_encoded_len)
+    }
+
+    fn put_if_absent_or_equal(
+        &self,
+        reference: ObjectRefV1,
+        canonical_bytes: Arc<[u8]>,
+    ) -> Result<ObjectAdmission, Self::Error> {
+        self.inner
+            .put_if_absent_or_equal(reference, canonical_bytes)
+    }
+}
 
 pub(super) fn nonzero(value: u64) -> NonZeroU64 {
     NonZeroU64::new(value).expect("test multiplicities are nonzero")
@@ -38,7 +102,8 @@ pub(super) fn empty_roots(root: ObjectRefV1) -> SemanticRoots {
 }
 
 pub(super) fn manifest(roots: SemanticRoots) -> SemanticStateManifestV1 {
-    SemanticStateManifestV1::new(1, roots, None).expect("schema-one manifest is valid")
+    SemanticStateManifestV1::new(1, TEST_SEMANTIC_PROFILE_ID, roots, None)
+        .expect("schema-one manifest is valid")
 }
 
 pub(super) fn children(count: usize) -> Box<[DagChild]> {

@@ -42,6 +42,7 @@ in [§2](#2-background-and-definitions), which every axis table refers back to.
 | **RCI2** | *Rholang Channel Image, version 2* — the shadow logical channel-identity format. | **CBR-053** |
 | **CLI** | *command-line interface* — the noninteractive user observation surface paired with the REPL. | retired **CBR-023** evidence |
 | **WAL** | *write-ahead log* — the transaction journal planned for differential PathMap-DAG persistence. | consensus-neutral RSpace history continuations |
+| **CAS** | *compare-and-swap* — conditional publication that advances authority only from the exact expected base. | CBR-053 persistence continuations |
 | **TRIE** | not an acronym — typographic emphasis for the prefix-compressed trie that is the EPathMap representation. | **CBR-041** |
 | **D3 / DR-9 / OD-1 / OD-3** | the token cost model's design-record identifiers (`docs/theory/cost-accounting-impl/d3-replace-phlo-with-tokens.md`). | [§2.2](#22-language-and-runtime-vocabulary), [§3.3](#33-how-each-axis-value-was-established) |
 | **COMM** | the Rho-calculus synchronisation of a produce with a consume; realized by a committed RSpace rendezvous. | [§2.2](#22-language-and-runtime-vocabulary) |
@@ -5730,6 +5731,42 @@ protobuf/bincode byte, history root, replay result, metering rule, network messa
 state changes at this checkpoint. Physical prepare/commit WAL framing, verified target-manifest
 promotion, sync/catalog order, crash recovery, compaction, legacy migration, and comparative
 performance remain mandatory before this entry can authorize a production cutover.
+
+**CBR-053 living continuation (2026-08-27, profile-typed differential transaction sealing).** The
+dormant persistence module now binds every semantic manifest to a 16-byte sealed profile identifier
+and admits it only through that profile's channel, pattern, datum, continuation, and body codecs. A
+phase-typed driver requires a completely verified exact base, the mutation's identical base
+version, typed continuation-source staging, private affected-frontier rewrite, target-manifest
+construction, incremental structural/semantic validation, and sealing in that order. The sealed
+receipt names the exact base, target, mutation digest, and profile identifier; diagnostics do not
+enter identity. Its sorted object delta owns all reachable new bytes, including caller-staged bytes
+that happen to exist in the producer's ambient store, so later recovery cannot depend on undeclared
+producer-local state.
+
+Incremental closure may inherit an untouched base object only with the exact namespace, boundary
+kind, absolute logical byte path, and digest-plus-length reference carried from full base admission.
+This prevents Merkle sharing from turning digest equality into authority at a different RSpace
+path. Rewrite and closure share one segmentation-independent exact-path arena and one aggregate
+chunk cap; simultaneously retained eligible/inherited provenance and staged objects have aggregate
+caps as well. All new transaction hash-table growth is fallible. Incremental semantic validation
+checks changed endpoints and continuation/join obligations through direct adaptive-DAG probes and
+does not flatten, sort, or scan complete state.
+
+Full base admission now checks its distinct-object and advertised canonical-byte ceilings before
+loading or allocating state for a newly observed digest. A zero-object tracing-store mutant proves
+that only the initial manifest/profile authority read occurs before refusal.
+
+This checkpoint is `NO_PRODUCTION_CHANGE_DERIVED`. No current-root catalog, LMDB checkpoint,
+startup recovery, matcher, COMM, replay, network, metering, or REPL caller can consume the sealed
+transaction. The new profile bytes therefore affect only the dormant, not-yet-authoritative object
+format. Existing protobuf/bincode bytes, legacy history hashes, selected COMMs, accepted programs,
+post-state, charges, and stored RSpace remain unchanged. The complete persistence module passes
+**96/96**, including exact base/profile authority, portable delta closure, semantic rollback,
+failure-atomic exact-path accounting, cross-namespace provenance-union accounting, a 100,000-byte
+seal and independent rebuild oracle on a 256 KiB stack, and one-update physical-read bounds through
+cardinality 4,096. Binary WAL framing, sync ordering, catalog CAS, restart recovery, retained-root
+pack compaction, migration, and LMDB-control performance/storage evidence remain mandatory before
+production cutover.
 
 ### B.2 The original commit-level exemptions
 

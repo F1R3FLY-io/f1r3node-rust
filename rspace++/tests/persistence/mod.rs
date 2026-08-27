@@ -1,9 +1,12 @@
+mod canonical_rebuild_oracle;
 mod closure_validation;
 mod manifest_codec;
 mod mutation_codec;
 mod object_codec;
 mod object_store_collision;
+mod path_provenance;
 mod rewrite_differential;
 mod semantic_validation;
 mod staging_store;
 mod support;
+mod transaction_sealing;

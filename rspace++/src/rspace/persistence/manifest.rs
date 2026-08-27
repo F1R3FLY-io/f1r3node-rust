@@ -9,15 +9,32 @@ pub(crate) const SEMANTIC_MANIFEST_DOMAIN: &[u8; OBJECT_DOMAIN_LEN] = b"RSpaceDA
 pub(crate) const ACCELERATOR_MANIFEST_DOMAIN: &[u8; OBJECT_DOMAIN_LEN] = b"RSpaceDAG.AMan\0\0";
 const SEMANTIC_ROOT_COUNT: u64 = 3;
 pub(crate) const SEMANTIC_SCHEMA_EPOCH_V1: u64 = 1;
+pub(crate) const SEMANTIC_PROFILE_ID_LEN: usize = 16;
 const OBJECT_REF_LEN: u64 = (OBJECT_DIGEST_LEN + 8) as u64;
 pub(crate) const SEMANTIC_MANIFEST_MAX_CANONICAL_LEN: u64 = OBJECT_ENVELOPE_HEADER_LEN +
     8 +
+    SEMANTIC_PROFILE_ID_LEN as u64 +
     8 +
     SEMANTIC_ROOT_COUNT * (8 + OBJECT_REF_LEN) +
     1 +
     OBJECT_DIGEST_LEN as u64;
 
 pub type NamespaceRoot = ObjectRefV1;
+
+/// Stable identity of the concrete channel/pattern/datum/continuation codec
+/// profile used to interpret semantic keys and continuation-source payloads.
+///
+/// The profile is part of the authenticated manifest.  A caller therefore
+/// cannot validate identical DAG bytes under one Rust type family and later
+/// publish them under another interpretation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct SemanticProfileId([u8; SEMANTIC_PROFILE_ID_LEN]);
+
+impl SemanticProfileId {
+    pub const fn from_array(bytes: [u8; SEMANTIC_PROFILE_ID_LEN]) -> Self { Self(bytes) }
+
+    pub const fn as_bytes(&self) -> &[u8; SEMANTIC_PROFILE_ID_LEN] { &self.0 }
+}
 
 /// Provenance for the frozen legacy history root from which a semantic
 /// manifest was imported.
@@ -103,6 +120,7 @@ impl SemanticRoots {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SemanticStateManifestV1 {
     schema_epoch: u64,
+    profile_id: SemanticProfileId,
     roots: SemanticRoots,
     legacy_history_root: Option<LegacyHistoryRoot>,
     body_len: u64,
@@ -112,6 +130,7 @@ pub struct SemanticStateManifestV1 {
 impl SemanticStateManifestV1 {
     pub fn new(
         schema_epoch: u64,
+        profile_id: SemanticProfileId,
         roots: SemanticRoots,
         legacy_history_root: Option<LegacyHistoryRoot>,
     ) -> Result<Self, CanonicalFormatError> {
@@ -126,11 +145,17 @@ impl SemanticStateManifestV1 {
                 field: "semantic roots",
             },
         )?;
-        let body_len = 8 + 8 + roots_len + 1 + u64::from(legacy_history_root.is_some()) * 32;
+        let body_len = 8 +
+            SEMANTIC_PROFILE_ID_LEN as u64 +
+            8 +
+            roots_len +
+            1 +
+            u64::from(legacy_history_root.is_some()) * 32;
         let canonical_len =
             checked_sum(OBJECT_ENVELOPE_HEADER_LEN, body_len, "semantic manifest envelope")?;
         Ok(Self {
             schema_epoch,
+            profile_id,
             roots,
             legacy_history_root,
             body_len,
@@ -139,6 +164,8 @@ impl SemanticStateManifestV1 {
     }
 
     pub const fn schema_epoch(self) -> u64 { self.schema_epoch }
+
+    pub const fn profile_id(self) -> SemanticProfileId { self.profile_id }
 
     pub const fn roots(self) -> SemanticRoots { self.roots }
 
@@ -156,6 +183,7 @@ impl CanonicalEncode for SemanticStateManifestV1 {
     fn write_canonical<S: CanonicalSink>(&self, sink: &mut S) -> Result<(), S::Error> {
         write_envelope_header(sink, SEMANTIC_MANIFEST_DOMAIN, self.body_len)?;
         write_u64(sink, self.schema_epoch)?;
+        sink.write_all(self.profile_id.as_bytes())?;
         write_u64(sink, SEMANTIC_ROOT_COUNT)?;
         for (namespace, root) in self.roots.iter() {
             write_u64(sink, namespace as u64)?;
@@ -175,6 +203,7 @@ impl CanonicalEncode for SemanticStateManifestV1 {
 pub struct SemanticStateManifestView {
     bytes_len: u64,
     schema_epoch: u64,
+    profile_id: SemanticProfileId,
     roots: SemanticRoots,
     legacy_history_root: Option<LegacyHistoryRoot>,
     digest: ObjectDigest,
@@ -191,6 +220,12 @@ impl SemanticStateManifestView {
                 version: schema_epoch,
             });
         }
+        let profile_id = SemanticProfileId::from_array(
+            cursor
+                .read_exact(SEMANTIC_PROFILE_ID_LEN)?
+                .try_into()
+                .expect("read exact semantic profile identity length"),
+        );
         let root_count = cursor.read_u64()?;
         if root_count != SEMANTIC_ROOT_COUNT {
             return Err(CanonicalFormatError::SemanticRootCount(root_count));
@@ -224,6 +259,7 @@ impl SemanticStateManifestView {
         Ok(Self {
             bytes_len: checked_len(bytes.len(), "semantic manifest")?,
             schema_epoch,
+            profile_id,
             roots: SemanticRoots::from_ordered(roots),
             legacy_history_root,
             digest: ObjectDigest::of_canonical_bytes(bytes),
@@ -231,6 +267,8 @@ impl SemanticStateManifestView {
     }
 
     pub const fn schema_epoch(self) -> u64 { self.schema_epoch }
+
+    pub const fn profile_id(self) -> SemanticProfileId { self.profile_id }
 
     pub const fn roots(self) -> SemanticRoots { self.roots }
 

@@ -8,10 +8,11 @@
 //! corresponding JoinBag memberships.  Traversal and lookup are explicit
 //! pushdown machines; neither term depth nor trie depth consumes native stack.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashSet};
 use std::sync::Arc;
 
 use pathmap::PathMap;
+use pathmap::zipper::{ZipperMoving, ZipperReadOnlyIteration, ZipperValues};
 use serde::Serialize;
 
 use super::canonical::{CanonicalFormatError, ObjectDigest, ObjectRefV1, checked_len};
@@ -19,7 +20,8 @@ use super::closure::{
     ClosureError, StructuralClosureReport, StructuralValidationLimits,
     verify_structural_closure_with_limits,
 };
-use super::manifest::SemanticNamespace;
+use super::manifest::{SemanticNamespace, SemanticProfileId, SemanticRoots};
+use super::mutation::MutationBatchViewV1;
 use super::object::{CanonicalBlobKind, CanonicalObjectKind, CanonicalObjectView, EndpointValue};
 use super::store::ImmutableObjectStore;
 use crate::rspace::hashing::stable_hash_provider::StableHashSerialize;
@@ -33,6 +35,26 @@ use crate::rspace::serializers::serializers::{
     encode_join_record_into,
 };
 use crate::rspace::trace::event::Consume;
+
+/// Closed registry hook for semantic codec profiles.  Persistence entry
+/// points accept a profile type, never four independently chosen decoders.
+pub mod semantic_profile_seal {
+    pub trait Sealed {}
+}
+
+/// One stable interpretation of the canonical RSpace key and payload bytes.
+///
+/// The identifier is embedded in every semantic manifest and later WAL
+/// authority record.  Associated types therefore cannot be erased between
+/// full admission, local incremental transitions, recovery, and publication.
+pub trait SemanticProfile: semantic_profile_seal::Sealed + Send + Sync + 'static {
+    type Channel: ColdStoreDecode + RhoPathEncode;
+    type Pattern: Clone + ColdStoreDecode + StableHashSerialize;
+    type Datum: Clone + ColdStoreDecode + RhoPathEncode + Serialize;
+    type Continuation: Clone + ColdStoreDecode + StableHashSerialize;
+
+    const ID: SemanticProfileId;
+}
 
 /// Caller-selected admission budgets.
 ///
@@ -85,22 +107,208 @@ pub struct SemanticValidationReport {
     pub maximum_worklist: u64,
 }
 
+/// Work ceilings for one locally produced, verified-base transition.
+///
+/// These counters scale with changed keys, new payloads, and affected
+/// cross-root probes.  They deliberately contain no whole-state count and no
+/// depth ceiling.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct IncrementalSemanticLimits {
+    pub max_changed_endpoints: u64,
+    pub max_key_bytes: u64,
+    pub max_payload_bytes: u64,
+    pub max_join_lookups: u64,
+    pub max_join_lookup_steps: u64,
+    pub max_continuation_prefix_probes: u64,
+    pub max_continuation_prefix_steps: u64,
+}
+
+impl IncrementalSemanticLimits {
+    pub const UNBOUNDED: Self = Self {
+        max_changed_endpoints: u64::MAX,
+        max_key_bytes: u64::MAX,
+        max_payload_bytes: u64::MAX,
+        max_join_lookups: u64::MAX,
+        max_join_lookup_steps: u64::MAX,
+        max_continuation_prefix_probes: u64::MAX,
+        max_continuation_prefix_steps: u64::MAX,
+    };
+}
+
+impl Default for IncrementalSemanticLimits {
+    fn default() -> Self { Self::UNBOUNDED }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct IncrementalSemanticReport {
+    pub changed_endpoints: u64,
+    pub changed_data: u64,
+    pub changed_continuations: u64,
+    pub changed_joins: u64,
+    pub key_bytes: u64,
+    pub source_payload_bytes: u64,
+    pub join_lookups: u64,
+    pub join_lookup_steps: u64,
+    pub continuation_prefix_probes: u64,
+    pub continuation_prefix_steps: u64,
+}
+
+pub(crate) struct PreparedSemanticDelta {
+    required_joins: PathMap<()>,
+    vacated_join_groups: PathMap<()>,
+    report: IncrementalSemanticReport,
+}
+
+pub(crate) fn prepare_semantic_delta<P, S>(
+    store: &S,
+    mutation: MutationBatchViewV1<'_>,
+    staged_sources: &HashSet<ObjectRefV1>,
+    limits: IncrementalSemanticLimits,
+) -> Result<PreparedSemanticDelta, ClosureError<S::Error>>
+where
+    P: SemanticProfile,
+    S: ImmutableObjectStore,
+{
+    let mut report = IncrementalSemanticReport::default();
+    let mut required_joins = PathMap::<()>::new();
+    let mut vacated_join_groups = PathMap::<()>::new();
+    let mut required_sources = HashSet::<ObjectRefV1>::new();
+
+    for entry in mutation.data() {
+        charge_delta_entry(entry.key, SemanticNamespace::DataBag, &mut report, limits)?;
+        if entry.transition.after() != 0 {
+            validate_data_key::<P::Channel, P::Datum, S::Error>(entry.key)?;
+        }
+    }
+
+    for entry in mutation.continuations() {
+        charge_delta_entry(entry.key, SemanticNamespace::ContinuationMap, &mut report, limits)?;
+        let Some(source_ref) = entry.transition.after() else {
+            continue;
+        };
+        if !required_sources.contains(&source_ref) {
+            required_sources.try_reserve(1).map_err(|_| {
+                format_error(CanonicalFormatError::AllocationFailure { requested: 1 })
+            })?;
+            required_sources.insert(source_ref);
+        }
+        if !staged_sources.contains(&source_ref) {
+            return Err(format_error(CanonicalFormatError::SemanticCoherence {
+                detail: "continuation target source was not supplied to the exact transaction"
+                    .to_owned(),
+            }));
+        }
+        let validated = validate_continuation_record::<P::Channel, P::Pattern, P::Continuation, S>(
+            store,
+            entry.key,
+            source_ref,
+            limits.max_payload_bytes,
+            &mut report.source_payload_bytes,
+        )?;
+        for channel in &validated.channels {
+            let mut key = RhoPathV1::join_prefix(channel);
+            key.extend_from_slice(&validated.join_record);
+            required_joins.insert(&key, ());
+        }
+    }
+
+    for entry in mutation.joins() {
+        charge_delta_entry(entry.key, SemanticNamespace::JoinBag, &mut report, limits)?;
+        let channels = validate_join_key::<P::Channel, S::Error>(entry.key)?;
+        if entry.transition.after() == 0 {
+            let prefix = RhoPathV1::continuation_prefix(&channels);
+            vacated_join_groups.insert(&prefix, ());
+        }
+    }
+
+    if required_sources != *staged_sources {
+        return Err(format_error(CanonicalFormatError::SemanticCoherence {
+            detail: "transaction contains an unreferenced continuation-source object".to_owned(),
+        }));
+    }
+
+    Ok(PreparedSemanticDelta {
+        required_joins,
+        vacated_join_groups,
+        report,
+    })
+}
+
+pub(crate) fn complete_semantic_delta<S>(
+    store: &S,
+    roots: SemanticRoots,
+    mut prepared: PreparedSemanticDelta,
+    limits: IncrementalSemanticLimits,
+) -> Result<IncrementalSemanticReport, ClosureError<S::Error>>
+where
+    S: ImmutableObjectStore,
+{
+    try_visit_paths(&prepared.required_joins, |key| {
+        increment(&mut prepared.report.join_lookups, 1, "incremental join lookups")?;
+        check_limit(
+            "incremental join lookups",
+            limits.max_join_lookups,
+            prepared.report.join_lookups,
+        )?;
+        let found = lookup_endpoint_counted(
+            store,
+            roots.join_bag,
+            key,
+            limits.max_join_lookup_steps,
+            &mut prepared.report.join_lookup_steps,
+            "incremental join lookup steps",
+        )?;
+        if !matches!(found, Some(EndpointValue::Multiplicity(_))) {
+            return Err(format_error(CanonicalFormatError::SemanticCoherence {
+                detail: "changed continuation has no target JoinBag membership for one of its \
+                         distinct channels"
+                    .to_owned(),
+            }));
+        }
+        Ok(())
+    })?;
+
+    try_visit_paths(&prepared.vacated_join_groups, |prefix| {
+        increment(
+            &mut prepared.report.continuation_prefix_probes,
+            1,
+            "continuation prefix probes",
+        )?;
+        check_limit(
+            "continuation prefix probes",
+            limits.max_continuation_prefix_probes,
+            prepared.report.continuation_prefix_probes,
+        )?;
+        if subtree_has_endpoint_counted(
+            store,
+            roots.continuation_map,
+            prefix,
+            limits.max_continuation_prefix_steps,
+            &mut prepared.report.continuation_prefix_steps,
+        )? {
+            return Err(format_error(CanonicalFormatError::SemanticCoherence {
+                detail: "removed JoinBag membership is still required by a target continuation"
+                    .to_owned(),
+            }));
+        }
+        Ok(())
+    })?;
+
+    Ok(prepared.report)
+}
+
 /// Validate a complete canonical RSpace image without projecting any trie to
 /// a `Vec`, sorting endpoints, or recursively descending either the DAG or a
 /// decoded Rholang value.
-pub fn verify_rspace_semantics<C, P, A, K, S>(
+pub fn verify_rspace_semantics<P, S>(
     store: &S,
     manifest_ref: ObjectRefV1,
     limits: SemanticValidationLimits,
 ) -> Result<SemanticValidationReport, ClosureError<S::Error>>
 where
-    C: ColdStoreDecode + RhoPathEncode,
-    P: Clone + ColdStoreDecode + StableHashSerialize,
-    A: Clone + ColdStoreDecode + RhoPathEncode + Serialize,
-    K: Clone + ColdStoreDecode + StableHashSerialize,
+    P: SemanticProfile,
     S: ImmutableObjectStore,
 {
-    let structural = verify_structural_closure_with_limits(store, manifest_ref, limits.structural)?;
     let manifest_bytes = load_reference(store, manifest_ref)?;
     let manifest =
         match CanonicalObjectView::parse(manifest_bytes.as_ref()).map_err(format_error)? {
@@ -113,6 +321,13 @@ where
                 }));
             }
         };
+    if manifest.profile_id() != P::ID {
+        return Err(format_error(CanonicalFormatError::SemanticProfileMismatch {
+            expected: *P::ID.as_bytes(),
+            actual: *manifest.profile_id().as_bytes(),
+        }));
+    }
+    let structural = verify_structural_closure_with_limits(store, manifest_ref, limits.structural)?;
     let roots = manifest.roots();
     let mut report = SemanticValidationReport {
         structural,
@@ -120,17 +335,17 @@ where
     };
 
     walk_trie(store, roots.data_bag, limits, &mut report, |path, endpoint, report| {
-        validate_data_endpoint::<C, A, S::Error>(path, endpoint)?;
+        validate_data_endpoint::<P::Channel, P::Datum, S::Error>(path, endpoint)?;
         increment(&mut report.data_entries, 1, "data entries")
     })?;
 
     walk_trie(store, roots.join_bag, limits, &mut report, |path, endpoint, report| {
-        validate_join_endpoint::<C, S::Error>(path, endpoint)?;
+        validate_join_endpoint::<P::Channel, S::Error>(path, endpoint)?;
         increment(&mut report.join_entries, 1, "join entries")
     })?;
 
     walk_trie(store, roots.continuation_map, limits, &mut report, |path, endpoint, report| {
-        validate_continuation_endpoint::<C, P, K, S>(
+        validate_continuation_endpoint::<P::Channel, P::Pattern, P::Continuation, S>(
             store,
             roots.join_bag,
             path,
@@ -275,6 +490,14 @@ where
             endpoint: endpoint.name(),
         }));
     };
+    validate_data_key::<C, A, E>(path)
+}
+
+fn validate_data_key<C, A, E>(path: &[u8]) -> Result<(), ClosureError<E>>
+where
+    C: ColdStoreDecode + RhoPathEncode,
+    A: Clone + ColdStoreDecode + RhoPathEncode + Serialize,
+{
     let view = RhoPathV1::parse_datum(path)
         .map_err(|error| semantic_key(SemanticNamespace::DataBag, error.to_string()))?;
     let channel_identity = view.channel_identity();
@@ -323,6 +546,11 @@ where
             endpoint: endpoint.name(),
         }));
     };
+    validate_join_key::<C, E>(path).map(|_| ())
+}
+
+fn validate_join_key<C, E>(path: &[u8]) -> Result<Vec<C>, ClosureError<E>>
+where C: ColdStoreDecode + RhoPathEncode {
     let view = RhoPathV1::parse_join(path)
         .map_err(|error| semantic_key(SemanticNamespace::JoinBag, error.to_string()))?;
     let indexed_identity = view.indexed_channel_identity();
@@ -359,7 +587,7 @@ where
             "indexed channel is not a member of its join group",
         ));
     }
-    Ok(())
+    Ok(channels)
 }
 
 fn validate_continuation_endpoint<C, P, K, S>(
@@ -382,6 +610,52 @@ where
             endpoint: endpoint.name(),
         }));
     };
+    let validated = validate_continuation_record::<C, P, K, S>(
+        store,
+        path,
+        source_ref,
+        limits.max_payload_bytes,
+        &mut report.source_payload_bytes,
+    )?;
+    let mut distinct_channels = PathMap::<()>::new();
+    for channel in &validated.channels {
+        let identity = channel.rho_path_identity();
+        if distinct_channels.insert(&identity, ()).is_some() {
+            continue;
+        }
+        let mut join_key = RhoPathV1::join_prefix(channel);
+        join_key.extend_from_slice(&validated.join_record);
+        increment(&mut report.join_lookups, 1, "join lookups")?;
+        check_limit("join lookups", limits.max_join_lookups, report.join_lookups)?;
+        let found = lookup_endpoint(store, join_root, &join_key, limits, report)?;
+        if !matches!(found, Some(EndpointValue::Multiplicity(_))) {
+            return Err(format_error(CanonicalFormatError::SemanticCoherence {
+                detail: "continuation has no JoinBag membership for one of its distinct channels"
+                    .to_owned(),
+            }));
+        }
+    }
+    Ok(())
+}
+
+struct ValidatedContinuation<C> {
+    channels: Vec<C>,
+    join_record: Vec<u8>,
+}
+
+fn validate_continuation_record<C, P, K, S>(
+    store: &S,
+    path: &[u8],
+    source_ref: ObjectRefV1,
+    max_payload_bytes: u64,
+    source_payload_bytes: &mut u64,
+) -> Result<ValidatedContinuation<C>, ClosureError<S::Error>>
+where
+    C: ColdStoreDecode + RhoPathEncode,
+    P: Clone + ColdStoreDecode + StableHashSerialize,
+    K: Clone + ColdStoreDecode + StableHashSerialize,
+    S: ImmutableObjectStore,
+{
     let view = RhoPathV1::parse_continuation(path).map_err(|error| {
         semantic_key::<S::Error>(SemanticNamespace::ContinuationMap, error.to_string())
     })?;
@@ -465,12 +739,8 @@ where
     };
     let payload_len =
         checked_len(blob.payload().len(), "continuation source payload").map_err(format_error)?;
-    increment(&mut report.source_payload_bytes, payload_len, "continuation source payload bytes")?;
-    check_limit(
-        "continuation source payload bytes",
-        limits.max_payload_bytes,
-        report.source_payload_bytes,
-    )?;
+    increment(source_payload_bytes, payload_len, "continuation source payload bytes")?;
+    check_limit("continuation source payload bytes", max_payload_bytes, *source_payload_bytes)?;
     let (source, source_used) = legacy_prefix::<Consume>(blob.payload()).map_err(|error| {
         semantic_payload::<S::Error>(SemanticNamespace::ContinuationMap, error.to_string())
     })?;
@@ -507,25 +777,10 @@ where
 
     let mut join_record = Vec::new();
     encode_join_record_into(&channels, &mut join_record);
-    let mut distinct_channels = PathMap::<()>::new();
-    for channel in &channels {
-        let identity = channel.rho_path_identity();
-        if distinct_channels.insert(&identity, ()).is_some() {
-            continue;
-        }
-        let mut join_key = RhoPathV1::join_prefix(channel);
-        join_key.extend_from_slice(&join_record);
-        increment(&mut report.join_lookups, 1, "join lookups")?;
-        check_limit("join lookups", limits.max_join_lookups, report.join_lookups)?;
-        let found = lookup_endpoint(store, join_root, &join_key, limits, report)?;
-        if !matches!(found, Some(EndpointValue::Multiplicity(_))) {
-            return Err(format_error(CanonicalFormatError::SemanticCoherence {
-                detail: "continuation has no JoinBag membership for one of its distinct channels"
-                    .to_owned(),
-            }));
-        }
-    }
-    Ok(())
+    Ok(ValidatedContinuation {
+        channels,
+        join_record,
+    })
 }
 
 fn lookup_endpoint<S>(
@@ -538,11 +793,32 @@ fn lookup_endpoint<S>(
 where
     S: ImmutableObjectStore,
 {
+    lookup_endpoint_counted(
+        store,
+        root,
+        key,
+        limits.max_join_lookup_steps,
+        &mut report.join_lookup_steps,
+        "join lookup steps",
+    )
+}
+
+fn lookup_endpoint_counted<S>(
+    store: &S,
+    root: ObjectRefV1,
+    key: &[u8],
+    max_steps: u64,
+    steps: &mut u64,
+    resource: &'static str,
+) -> Result<Option<EndpointValue>, ClosureError<S::Error>>
+where
+    S: ImmutableObjectStore,
+{
     let mut reference = root;
     let mut offset = 0usize;
     loop {
-        increment(&mut report.join_lookup_steps, 1, "join lookup steps")?;
-        check_limit("join lookup steps", limits.max_join_lookup_steps, report.join_lookup_steps)?;
+        increment(steps, 1, resource)?;
+        check_limit(resource, max_steps, *steps)?;
         let bytes = load_reference(store, reference)?;
         let node = match CanonicalObjectView::parse(bytes.as_ref()).map_err(format_error)? {
             CanonicalObjectView::DagNode(node) => node,
@@ -571,6 +847,96 @@ where
         };
         reference = next;
     }
+}
+
+fn subtree_has_endpoint_counted<S>(
+    store: &S,
+    root: ObjectRefV1,
+    prefix: &[u8],
+    max_steps: u64,
+    steps: &mut u64,
+) -> Result<bool, ClosureError<S::Error>>
+where
+    S: ImmutableObjectStore,
+{
+    let mut reference = root;
+    let mut offset = 0usize;
+    loop {
+        increment(steps, 1, "continuation prefix probe steps")?;
+        check_limit("continuation prefix probe steps", max_steps, *steps)?;
+        let bytes = load_reference(store, reference)?;
+        let node = match CanonicalObjectView::parse(bytes.as_ref()).map_err(format_error)? {
+            CanonicalObjectView::DagNode(node) => node,
+            object => {
+                return Err(format_error(CanonicalFormatError::UnexpectedObjectKind {
+                    digest: reference.digest(),
+                    expected: CanonicalObjectKind::DagNode.name(),
+                    actual: object.kind().name(),
+                }));
+            }
+        };
+        let remaining = &prefix[offset..];
+        if remaining.len() <= node.prefix().len() {
+            if !node.prefix().starts_with(remaining) {
+                return Ok(false);
+            }
+            return Ok(
+                !matches!(node.endpoint(), EndpointValue::Absent) || !node.children().is_empty()
+            );
+        }
+        if !remaining.starts_with(node.prefix()) {
+            return Ok(false);
+        }
+        offset += node.prefix().len();
+        let edge = prefix[offset];
+        offset += 1;
+        let Some(next) = node.children().get(edge) else {
+            return Ok(false);
+        };
+        reference = next;
+    }
+}
+
+fn charge_delta_entry<E>(
+    key: &[u8],
+    namespace: SemanticNamespace,
+    report: &mut IncrementalSemanticReport,
+    limits: IncrementalSemanticLimits,
+) -> Result<(), ClosureError<E>> {
+    increment(&mut report.changed_endpoints, 1, "changed semantic endpoints")?;
+    check_limit(
+        "changed semantic endpoints",
+        limits.max_changed_endpoints,
+        report.changed_endpoints,
+    )?;
+    match namespace {
+        SemanticNamespace::DataBag => {
+            increment(&mut report.changed_data, 1, "changed data endpoints")?;
+        }
+        SemanticNamespace::ContinuationMap => {
+            increment(&mut report.changed_continuations, 1, "changed continuation endpoints")?;
+        }
+        SemanticNamespace::JoinBag => {
+            increment(&mut report.changed_joins, 1, "changed join endpoints")?;
+        }
+    }
+    let key_bytes = checked_len(key.len(), "incremental semantic key").map_err(format_error)?;
+    increment(&mut report.key_bytes, key_bytes, "incremental semantic key bytes")?;
+    check_limit("incremental semantic key bytes", limits.max_key_bytes, report.key_bytes)
+}
+
+fn try_visit_paths<E>(
+    map: &PathMap<()>,
+    mut visitor: impl FnMut(&[u8]) -> Result<(), ClosureError<E>>,
+) -> Result<(), ClosureError<E>> {
+    let mut cursor = map.read_zipper_at_borrowed_path(&[]);
+    if cursor.val().is_some() {
+        visitor(cursor.path())?;
+    }
+    while cursor.to_next_get_val().is_some() {
+        visitor(cursor.path())?;
+    }
+    Ok(())
 }
 
 fn load_reference<S>(

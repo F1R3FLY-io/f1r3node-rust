@@ -13,18 +13,21 @@ mod object;
 mod rewrite;
 mod semantic;
 mod store;
+mod transaction;
 
 pub use canonical::{
     CanonicalEncode, CanonicalFormatError, CanonicalSink, ObjectDigest, ObjectRefV1,
 };
+#[cfg(test)]
+pub(crate) use closure::verify_incremental_closure;
 pub use closure::{
-    ClosureError, StructuralClosureReport, StructuralValidationLimits, verify_structural_closure,
-    verify_structural_closure_with_limits,
+    ClosureError, IncrementalClosureLimits, StructuralClosureReport, StructuralValidationLimits,
+    verify_structural_closure, verify_structural_closure_with_limits,
 };
 pub use manifest::{
     AcceleratorArtifact, AcceleratorArtifactKind, AcceleratorManifestV1, AcceleratorManifestView,
-    LegacyHistoryRoot, NamespaceRoot, SemanticNamespace, SemanticRoots, SemanticStateManifestV1,
-    SemanticStateManifestView,
+    LegacyHistoryRoot, NamespaceRoot, SemanticNamespace, SemanticProfileId, SemanticRoots,
+    SemanticStateManifestV1, SemanticStateManifestView,
 };
 pub use mutation::{
     ContentMutationEntry, ContentMutationIter, ContentTransition, CountMutationEntry,
@@ -41,11 +44,23 @@ pub use rewrite::{
     rewrite_semantic_roots, rewrite_semantic_roots_with_limits,
 };
 #[cfg(test)]
+pub(crate) use rewrite::{
+    ExactPath, ExactPathArena, InheritedBoundaryKind, InheritedObjectRef, RewriteProvenance,
+};
+#[cfg(test)]
 pub(crate) use rewrite::{preflight_sensitive_copy_bytes, reset_preflight_sensitive_copy_bytes};
-pub use semantic::{SemanticValidationLimits, SemanticValidationReport, verify_rspace_semantics};
+pub(crate) use semantic::semantic_profile_seal;
+pub use semantic::{
+    IncrementalSemanticLimits, IncrementalSemanticReport, SemanticProfile,
+    SemanticValidationLimits, SemanticValidationReport, verify_rspace_semantics,
+};
 pub use store::{
     CanonicalObjectStore, ImmutableObjectStore, LayeredObject, ObjectAdmission, StagingObjectStore,
-    StagingStoreError, VisitStagedError,
+    StagingStoreError, StagingStoreLimits,
+};
+pub use transaction::{
+    DagTransactionDiagnostics, DagTransactionError, DagTransactionLimits, OpenDagTransaction,
+    SealedDagTransaction, SealedObject, SealedTransitionV1, VerifiedDagState,
 };
 
 #[cfg(test)]

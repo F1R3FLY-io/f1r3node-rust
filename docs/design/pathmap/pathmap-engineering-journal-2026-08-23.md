@@ -6,7 +6,7 @@ Campaign: `campaign-root-4131`
 
 Started: 2026-08-23
 
-Last updated: 2026-08-25
+Last updated: 2026-08-27
 
 ## Purpose
 
@@ -68,6 +68,14 @@ The journal complements, rather than duplicates, three living reports:
 | RSS | Resident set size: the process memory currently resident in physical memory. |
 | CBR | Consensus-Breaking Register: the historical stable identifier prefix retained by the living consensus-change register. |
 | WAL | Write-ahead log: the durable transaction journal that commits a parent root, new root, and mutation digest before catalog publication. |
+| SCC | Strongly connected component: a maximal dependency-graph region whose members are mutually reachable. |
+| LFS | Last Finalized State: the state-transfer protocol named by the tuple-space request streams. |
+| FFI | Foreign function interface: the typed boundary through which process code calls the RSpace importer. |
+| LMDB | Lightning Memory-Mapped Database: the legacy RSpace cold-store backend. |
+| REPL | Read-evaluate-print loop: the interactive Rholang command interface. |
+| TLA / TLA+ | Temporal Logic of Actions: the state-machine specification language used for lifecycle model checking. |
+| PATHMAP | Not an acronym in status text: the English identifier “PathMap” capitalized for emphasis. |
+| LIFECYCLE | Not an acronym in status text: the English word “lifecycle” capitalized for emphasis. |
 | PMU | PathMap maintainer/upstream request: the identifier prefix used by this journal's upstream-integration register. |
 | LF | Locally free: the root `locally_free` metadata summary named in H-012. |
 | CODEC | Not an acronym in status text: the English word “codec” capitalized for emphasis. |
@@ -2199,7 +2207,7 @@ abort-open, and abort-sealed—and exports none of the former independent mutato
 **PATHMAP BOUNDARY.** The imported state remains a content-addressed trie graph. Traversal is by
 authenticated cursor and the closure check is by explicit node/leaf worklists; no state page is
 projected to `Vec<Par>`, sorted, or rebuilt as a list. The verifier retains only a 1,024-entry/8 MiB
-decoded-node cache and a 4,096-address verified-leaf cache. Its native stack is `O(1)`; required
+decoded-node cache and a 4,096-address verified-leaf cache. Its native stack is $`O(1)`$; required
 frontier storage is proportional to the currently unresolved graph frontier, not to traversal depth,
 and repeated shared leaves do not create an unbounded visited set. The persistent PathMap-DAG/WAL
 backend is deliberately not claimed here: this checkpoint supplies the authenticated immutable
@@ -2625,6 +2633,118 @@ manifest, sync a binary WAL,
 compare-and-swap the durable catalog, recover torn writes, compact packs, migrate LMDB, or claim a
 latency, allocation, RSS, or disk-footprint win. J-037 must bind the verified target manifest into
 the physical prepare/commit/recovery protocol before any object becomes current-root authority.
+
+### J-037 — 2026-08-27: seal one profile-typed differential transition before persistence
+
+**TERMS.** A **semantic profile** is a sealed type-level binding between a manifest and the exact
+channel, pattern, datum, continuation, and canonical-body codecs used to interpret it. A
+**portable delta** owns every canonical object that is required beyond its declared base, even if
+the producer's ambient store already happens to contain an equal object. An **inherited boundary**
+is an untouched object reference proven to occur at one exact semantic namespace, boundary kind,
+and absolute logical byte path in the fully verified base. **Sealing** produces immutable
+publication input; it is not catalog publication itself.
+
+**PROBLEM.** J-036 returned canonical target roots and a private overlay, but a caller could not yet
+carry proof that the target manifest had been encoded under the same semantic profile, that every
+staged object was reachable, that changed continuation/join relations were coherent, or that a
+closure shortcut referred to the same logical path. A digest-only shortcut is unsound for a Merkle
+DAG because one immutable node can be shared beneath different logical prefixes. Omitting an
+ambient-equal continuation source from the delta would also make recovery depend on producer-local
+objects not named by the base.
+
+**DECISION.** The transaction advances through unforgeable Rust phases.
+
+**Algorithm 2 (Profile-typed transaction sealing).** Each phase consumes the preceding authority
+token and is the only constructor for its successor.
+
+```pseudocode
+Verified(base, profile)
+  -> Open(exact mutation base)
+  -> ContentReady(typed continuation sources)
+  -> Rewritten(private affected frontier)
+  -> Manifested(profile-bound target manifest)
+  -> Validated(incremental closure + semantic coherence)
+  -> Sealed(portable sorted object delta + borrowed mutation image)
+```
+
+`VerifiedDagState<Store, Profile>` comes only from complete structural and semantic admission of the
+exact base version. `OpenDagTransaction` requires byte-for-byte version equality with the mutation
+base. The target manifest stores `Profile::ID`; admission under another profile fails before typed
+decoding. The sealed receipt contains only base, target, mutation digest, and profile identifier;
+work counters remain a diagnostic sidecar and therefore cannot accidentally enter transaction
+identity. The sealed value no longer borrows the store and owns its reachable staged bytes in
+digest order, while it borrows the already-admitted mutation image for direct future WAL replay.
+
+Incremental validation uses direct radix-DAG probes. Changed endpoints and continuation-derived join
+obligations are traversed without rebuilding producer PathMaps, scanning total state, decoding
+untouched records, projecting entries, or sorting semantic elements. An untouched boundary is
+accepted only for the exact tuple `(namespace, boundary kind, absolute path, ObjectRefV1)` copied
+from the verified base. Absolute paths are interned as normalized 64-byte chunks; common prefixes
+are structurally shared across siblings and independent append segmentations yield the same path
+identity. Failed interning is transactional: all new chunk identifiers roll back and the input path
+is unchanged, so a caller may safely retry with a larger resource budget.
+
+One arena and one effective maximum govern exact-path chunks across rewrite and closure. The
+eligible and inherited provenance sets share one union cap even while both are retained; promotion
+reserves its destination before removing its source. Every new provenance, closure-visit,
+active-digest, declared-length, staged-source, required-source, and full-admission digest-state
+hash entry uses fallible reserve before insertion. Full admission preflights its distinct-object
+and advertised canonical-byte ceilings before loading a newly observed digest, and continuation
+source tracking reserves before mutating the private staging overlay. The staging overlay
+separately caps aggregate object count and canonical bytes and retains logically staged bytes even
+when the base contains an equal object. Distinct logical-path checks reuse path-independent digest
+and declared-length identity work, but retain path-aware canonical parsing, traversal, and
+provenance decisions.
+
+**Algorithm 3 (Path-exact incremental closure).** The validator separates path-independent object
+authentication from path-dependent semantic occurrence checking.
+
+```pseudocode
+for each target semantic root:
+    push (root reference, namespace, exact empty path, namespace expectation)
+while work remains:
+    pop one logical occurrence
+    if it is staged:
+        verify its digest and declared-length identity once per distinct digest
+        parse canonical framing at this exact path and schedule children with extended paths
+    else:
+        require an inherited-boundary certificate for this exact occurrence
+reject every staged object not reached from the target manifest
+```
+
+For changed frontier size $`f`$, changed-key bytes $`b`$, emitted bytes $`e`$, and distinct staged
+objects $`s`$, expected/amortized time is $`O(f+b+e+s)`$ apart from changed-body codec work and
+adaptive-branch lookup constants. Native stack remains $`O(1)`$ in trie and term depth. Exact-path
+retained space follows the number of distinct 64-byte prefix chunks rather than the sum of fully
+copied sibling paths.
+
+**EVIDENCE.** The complete persistence module passes **96/96** under a 6 GiB, zero-swap scope. A
+100,000-byte full transaction seals on a 256 KiB native stack; the independent canonical rebuild
+oracle handles the same path size on that stack using its own explicit post-order work machine.
+Exact-path tests cover wrong-location refusal, append-segmentation identity, 256 siblings sharing a
+100,000-byte prefix, aggregate caps, failure-atomic retry, one shared staged node appearing at
+multiple logical paths, and a cross-namespace union-cap mutant that reaches `inherited = 1` before
+attempting `eligible + inherited = 2` under limit 1. Transaction tests cover profile/base authority,
+portable ambient-equal sources, missing/unreachable sources, deterministic objects, complete
+rollback, and aggregate staging/semantic/closure/rewrite limits. A tracing-store matrix observes 2
+base reads for one entry, 5 for 256 entries, and enforces at most 8 through 4,096 entries for one
+update, demonstrating frontier-depth rather than cardinality scaling. A zero-distinct-object
+admission budget performs only the initial manifest/profile authority read and refuses structural
+loading before allocating a digest-state entry. The transcript SHA-256 is
+`4719f11ac0f0b6bfc6f682f9056fac166d755409ed6f53b1a62c9ced70330e54`.
+
+**PATHMAP LEARNING.** Content-addressed sharing is safe only when semantic validation preserves the
+logical path at which a shared node occurs. CoW reference reuse removes whole-state rebuilding; it
+does not authorize digest-only semantic memoization. Conversely, path-independent digest and
+declared-length identity checks should be memoized once per staged digest while canonical framing
+and path-dependent endpoint meaning continue to run per occurrence. This division retains Merkle
+sharing without confusing physical identity with logical RSpace location.
+
+**BOUNDARY.** The sealed transaction is still dormant, in-memory publication input. It does not
+write WAL frames, synchronize object/commit records, perform catalog CAS, recover a restart, pack
+objects, compact retained roots, migrate current RSpace, or change REPL output. J-038 must define
+and verify binary WAL/catalog recovery before any sealed object becomes durable authority. Pack
+compaction/garbage collection follows that protocol and is distinct from Merkleization.
 
 ## Upstream PathMap integration request register
 

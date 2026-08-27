@@ -1,19 +1,18 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::num::NonZeroU64;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
-use super::support::{empty_roots, encode, synthetic_ref};
+use super::canonical_rebuild_oracle::{Entries, admit_node as admit_any, rebuild};
+use super::support::{TEST_SEMANTIC_PROFILE_ID, TracingStore, empty_roots, encode, synthetic_ref};
 use crate::rspace::persistence::{
     CanonicalDagNode, CanonicalFormatError, CanonicalObjectStore, CanonicalObjectView, DagChild,
-    DagRewriteLimits, EndpointValue, ImmutableObjectStore, MutationBatchViewV1, ObjectAdmission,
-    ObjectDigest, ObjectRefV1, PreparedDagRewrite, RSpaceMutationBatchV1, RewriteError,
-    SemanticRoots, SemanticStateManifestV1, StagingStoreError, StateVersionV1,
-    preflight_sensitive_copy_bytes, reset_preflight_sensitive_copy_bytes, rewrite_semantic_roots,
+    DagRewriteLimits, EndpointValue, ImmutableObjectStore, MutationBatchViewV1, ObjectRefV1,
+    PreparedDagRewrite, RSpaceMutationBatchV1, RewriteError, SemanticRoots,
+    SemanticStateManifestV1, StagingStoreError, StateVersionV1, preflight_sensitive_copy_bytes,
+    reset_preflight_sensitive_copy_bytes, rewrite_semantic_roots,
     rewrite_semantic_roots_with_limits,
 };
 use crate::rspace::rho_path::RhoPathV1;
-
-type Entries = BTreeMap<Vec<u8>, EndpointValue>;
 
 fn datum(identity: &[u8]) -> Vec<u8> { RhoPathV1::datum_key(&7_u64, b"shape", identity) }
 
@@ -34,62 +33,6 @@ fn count(value: u64) -> EndpointValue {
         .unwrap_or(EndpointValue::Absent)
 }
 
-fn admit_any(store: &CanonicalObjectStore, node: &CanonicalDagNode) -> ObjectRefV1 {
-    let bytes: Arc<[u8]> = encode(node).into();
-    let (reference, admission) = store.admit(bytes).expect("oracle node is admitted");
-    assert!(matches!(admission, ObjectAdmission::Inserted | ObjectAdmission::AlreadyPresent));
-    reference
-}
-
-/// Independent canonical rebuild oracle.  It partitions an ordered logical
-/// map by the maximal common prefix at each level; it does not call the
-/// differential editor or mirror its mutable-node representation.
-fn rebuild(store: &CanonicalObjectStore, entries: &Entries) -> ObjectRefV1 {
-    if entries.is_empty() {
-        return admit_any(store, &CanonicalDagNode::empty());
-    }
-    let ordered = entries.iter().collect::<Vec<_>>();
-    rebuild_partition(store, &ordered, 0)
-}
-
-fn rebuild_partition(
-    store: &CanonicalObjectStore,
-    entries: &[(&Vec<u8>, &EndpointValue)],
-    depth: usize,
-) -> ObjectRefV1 {
-    let first = entries.first().expect("a partition is nonempty").0;
-    let last = entries.last().expect("a partition is nonempty").0;
-    let mut shared = depth;
-    let limit = first.len().min(last.len());
-    while shared < limit && first[shared] == last[shared] {
-        shared += 1;
-    }
-
-    let endpoint = entries
-        .iter()
-        .find_map(|(key, value)| (key.len() == shared).then_some(**value))
-        .unwrap_or(EndpointValue::Absent);
-    let mut children = Vec::new();
-    let mut start = entries.partition_point(|(key, _)| key.len() == shared);
-    while start < entries.len() {
-        let edge = entries[start].0[shared];
-        let mut end = start + 1;
-        while end < entries.len() && entries[end].0.len() > shared && entries[end].0[shared] == edge
-        {
-            end += 1;
-        }
-        children.push(DagChild {
-            edge,
-            target: rebuild_partition(store, &entries[start..end], shared + 1),
-        });
-        start = end;
-    }
-    let node =
-        CanonicalDagNode::new(first[depth..shared].to_vec(), endpoint, children.into_boxed_slice())
-            .expect("oracle partition is canonical");
-    admit_any(store, &node)
-}
-
 fn rewrite<'a>(
     base: &'a CanonicalObjectStore,
     batch: &RSpaceMutationBatchV1,
@@ -108,54 +51,10 @@ fn roots_with_data(base: &CanonicalObjectStore, entries: &Entries) -> SemanticRo
 }
 
 fn state(base: &CanonicalObjectStore, roots: SemanticRoots) -> StateVersionV1 {
-    let manifest = SemanticStateManifestV1::new(1, roots, None).unwrap();
+    let manifest = SemanticStateManifestV1::new(1, TEST_SEMANTIC_PROFILE_ID, roots, None).unwrap();
     let bytes: Arc<[u8]> = encode(&manifest).into();
     let (reference, _) = base.admit(bytes).unwrap();
     StateVersionV1::new(9, reference)
-}
-
-#[derive(Default)]
-struct TracingStore {
-    inner: CanonicalObjectStore,
-    reads: Mutex<BTreeMap<ObjectDigest, u64>>,
-}
-
-impl TracingStore {
-    fn clear_reads(&self) { self.reads.lock().unwrap().clear(); }
-
-    fn read_count(&self, digest: ObjectDigest) -> u64 {
-        self.reads
-            .lock()
-            .unwrap()
-            .get(&digest)
-            .copied()
-            .unwrap_or(0)
-    }
-}
-
-impl ImmutableObjectStore for TracingStore {
-    type Error = CanonicalFormatError;
-    type Object = Arc<[u8]>;
-
-    fn get_bounded(
-        &self,
-        digest: &ObjectDigest,
-        max_encoded_len: u64,
-    ) -> Result<Option<Self::Object>, Self::Error> {
-        let mut reads = self.reads.lock().unwrap();
-        *reads.entry(*digest).or_default() += 1;
-        drop(reads);
-        self.inner.get_bounded(digest, max_encoded_len)
-    }
-
-    fn put_if_absent_or_equal(
-        &self,
-        reference: ObjectRefV1,
-        canonical_bytes: Arc<[u8]>,
-    ) -> Result<ObjectAdmission, Self::Error> {
-        self.inner
-            .put_if_absent_or_equal(reference, canonical_bytes)
-    }
 }
 
 #[test]
@@ -335,22 +234,20 @@ fn recompiling_the_same_batch_from_the_immutable_base_is_idempotent() {
     let second =
         rewrite_semantic_roots(&base, MutationBatchViewV1::parse(&bytes).unwrap()).unwrap();
     assert_eq!(first.roots(), second.roots());
-    let mut first_staged = BTreeSet::new();
-    first
+    let first_staged = first
         .staging()
-        .try_visit_staged::<()>(|reference, _| {
-            first_staged.insert(reference.digest());
-            Ok(())
-        })
-        .unwrap();
-    let mut second_staged = BTreeSet::new();
-    second
+        .staged_snapshot()
+        .unwrap()
+        .iter()
+        .map(|(reference, _)| reference.digest())
+        .collect::<BTreeSet<_>>();
+    let second_staged = second
         .staging()
-        .try_visit_staged::<()>(|reference, _| {
-            second_staged.insert(reference.digest());
-            Ok(())
-        })
-        .unwrap();
+        .staged_snapshot()
+        .unwrap()
+        .iter()
+        .map(|(reference, _)| reference.digest())
+        .collect::<BTreeSet<_>>();
     assert_eq!(first_staged, second_staged);
 }
 
@@ -386,6 +283,54 @@ fn explicit_rewrite_budgets_fail_closed_without_partial_staging() {
         rewrite_semantic_roots_with_limits(&base, view, limits),
         Err(RewriteError::Format(CanonicalFormatError::ResourceLimit {
             resource: "rewrite mutations",
+            limit: 0,
+            attempted: 1,
+        }))
+    ));
+}
+
+#[test]
+fn exact_path_retention_is_bounded_without_limiting_trie_depth() {
+    let base = CanonicalObjectStore::new();
+    let key = datum(&vec![b'x'; 128]);
+    let roots = roots_with_data(&base, &Entries::from([(key.clone(), count(1))]));
+    let mut batch = RSpaceMutationBatchV1::new(state(&base, roots)).unwrap();
+    batch.record_data(&key, 1, 2).unwrap();
+    let bytes = encode(&batch.plan().unwrap());
+    let view = MutationBatchViewV1::parse(&bytes).unwrap();
+    let limits = DagRewriteLimits {
+        max_exact_path_chunks: 0,
+        ..DagRewriteLimits::UNBOUNDED
+    };
+    assert!(matches!(
+        rewrite_semantic_roots_with_limits(&base, view, limits),
+        Err(RewriteError::Format(CanonicalFormatError::ResourceLimit {
+            resource: "exact path chunks",
+            limit: 0,
+            attempted,
+        })) if attempted > 0
+    ));
+}
+
+#[test]
+fn inherited_boundary_evidence_is_explicitly_bounded() {
+    let base = CanonicalObjectStore::new();
+    let left = datum(b"alpha");
+    let right = datum(b"omega");
+    let roots =
+        roots_with_data(&base, &Entries::from([(left.clone(), count(1)), (right, count(2))]));
+    let mut batch = RSpaceMutationBatchV1::new(state(&base, roots)).unwrap();
+    batch.record_data(&left, 1, 3).unwrap();
+    let bytes = encode(&batch.plan().unwrap());
+    let view = MutationBatchViewV1::parse(&bytes).unwrap();
+    let limits = DagRewriteLimits {
+        max_inherited_boundaries: 0,
+        ..DagRewriteLimits::UNBOUNDED
+    };
+    assert!(matches!(
+        rewrite_semantic_roots_with_limits(&base, view, limits),
+        Err(RewriteError::Format(CanonicalFormatError::ResourceLimit {
+            resource: "inherited boundaries",
             limit: 0,
             attempted: 1,
         }))
@@ -514,7 +459,7 @@ fn exhausted_edit_budget_refuses_child_expansion_before_store_read() {
         data_bag: data_root,
         ..empty_roots(empty)
     };
-    let manifest = SemanticStateManifestV1::new(1, roots, None).unwrap();
+    let manifest = SemanticStateManifestV1::new(1, TEST_SEMANTIC_PROFILE_ID, roots, None).unwrap();
     let (manifest_ref, _) = tracing.inner.admit(encode(&manifest).into()).unwrap();
     let mut batch = RSpaceMutationBatchV1::new(StateVersionV1::new(5, manifest_ref)).unwrap();
     batch.record_data(&datum(b"alpha"), 1, 7).unwrap();
@@ -621,6 +566,7 @@ fn bounded_store_rejects_a_lying_reference_before_materializing_its_object() {
     let empty = rebuild(&base, &Entries::new());
     let manifest = SemanticStateManifestV1::new(
         1,
+        TEST_SEMANTIC_PROFILE_ID,
         SemanticRoots {
             data_bag: lying_ref,
             ..empty_roots(empty)
@@ -719,7 +665,7 @@ fn copy_on_write_never_loads_an_untouched_sibling_subtree() {
         .last()
         .expect("the controlled fixture branches")
         .target;
-    let manifest = SemanticStateManifestV1::new(1, roots, None).unwrap();
+    let manifest = SemanticStateManifestV1::new(1, TEST_SEMANTIC_PROFILE_ID, roots, None).unwrap();
     let (manifest_ref, _) = tracing.inner.admit(encode(&manifest).into()).unwrap();
     let mut batch = RSpaceMutationBatchV1::new(StateVersionV1::new(5, manifest_ref)).unwrap();
     batch.record_data(&datum(b"alpha"), 1, 7).unwrap();
@@ -748,13 +694,12 @@ fn every_staged_object_is_reachable_from_the_rewritten_roots() {
     let rewritten = prepared.roots();
     let overlay = prepared.staging();
 
-    let mut staged = BTreeSet::new();
-    overlay
-        .try_visit_staged::<()>(|reference, _| {
-            staged.insert(reference.digest());
-            Ok(())
-        })
-        .unwrap();
+    let staged = overlay
+        .staged_snapshot()
+        .unwrap()
+        .iter()
+        .map(|(reference, _)| reference.digest())
+        .collect::<BTreeSet<_>>();
     let mut reachable = BTreeSet::new();
     let mut work = vec![rewritten.data_bag, rewritten.continuation_map, rewritten.join_bag];
     while let Some(reference) = work.pop() {

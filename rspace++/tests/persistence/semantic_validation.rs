@@ -1,19 +1,19 @@
 use std::collections::BTreeSet;
 
-use super::support::{admit, empty_roots, manifest, nonzero};
+use super::support::{
+    TEST_SEMANTIC_PROFILE_ID, TestSemanticProfile, admit, empty_roots, manifest, nonzero,
+};
 use crate::rspace::data_index::RSpaceDataIndex;
 use crate::rspace::internal::{Datum, WaitingContinuation};
 use crate::rspace::persistence::{
     CanonicalBlob, CanonicalBlobKind, CanonicalDagNode, CanonicalFormatError, CanonicalObjectStore,
-    ClosureError, DagChild, EndpointValue, SemanticRoots, SemanticValidationLimits,
-    verify_rspace_semantics,
+    ClosureError, DagChild, EndpointValue, SemanticProfileId, SemanticRoots,
+    SemanticStateManifestV1, SemanticValidationLimits, verify_rspace_semantics,
 };
 use crate::rspace::rho_path::RhoPathV1;
 use crate::rspace::serializers::serializers::{
     encode_continuation_identity, encode_continuation_source_into, encode_datum, encode_join_record,
 };
-
-type TestType = String;
 
 struct StateImage {
     store: CanonicalObjectStore,
@@ -123,7 +123,7 @@ fn verify(
     image: &StateImage,
 ) -> Result<crate::rspace::persistence::SemanticValidationReport, ClosureError<CanonicalFormatError>>
 {
-    verify_rspace_semantics::<TestType, TestType, TestType, TestType, _>(
+    verify_rspace_semantics::<TestSemanticProfile, _>(
         &image.store,
         image.manifest,
         SemanticValidationLimits::unbounded(),
@@ -141,6 +141,32 @@ fn exact_three_root_image_validates_without_flattening_the_tries() {
     assert_eq!(report.join_lookups, 1);
     assert_eq!(report.join_lookup_steps, 1);
     assert!(report.source_payload_bytes > 0);
+}
+
+#[test]
+fn semantic_admission_is_bound_to_the_manifest_profile() {
+    let store = CanonicalObjectStore::new();
+    let empty = admit(&store, &CanonicalDagNode::empty());
+    let wrong_profile = SemanticProfileId::from_array(*b"RSpace.Other.V1\0");
+    assert_ne!(wrong_profile, TEST_SEMANTIC_PROFILE_ID);
+    let manifest_ref = admit(
+        &store,
+        &SemanticStateManifestV1::new(1, wrong_profile, empty_roots(empty), None)
+            .expect("the alternate profile identifier is structurally valid"),
+    );
+
+    assert!(matches!(
+        verify_rspace_semantics::<TestSemanticProfile, _>(
+            &store,
+            manifest_ref,
+            SemanticValidationLimits::unbounded(),
+        ),
+        Err(ClosureError::Format(CanonicalFormatError::SemanticProfileMismatch {
+            expected,
+            actual,
+        })) if expected == *TEST_SEMANTIC_PROFILE_ID.as_bytes()
+            && actual == *wrong_profile.as_bytes()
+    ));
 }
 
 #[test]
@@ -163,7 +189,7 @@ fn malformed_keys_and_payloads_fail_closed_after_structural_validation() {
             ..empty_roots(empty)
         }),
     );
-    let error = verify_rspace_semantics::<TestType, TestType, TestType, TestType, _>(
+    let error = verify_rspace_semantics::<TestSemanticProfile, _>(
         &store,
         manifest_ref,
         SemanticValidationLimits::unbounded(),
@@ -224,7 +250,7 @@ fn decoded_structure_and_indexed_join_membership_are_authenticated() {
         }),
     );
     assert!(matches!(
-        verify_rspace_semantics::<TestType, TestType, TestType, TestType, _>(
+        verify_rspace_semantics::<TestSemanticProfile, _>(
             &store,
             manifest_ref,
             SemanticValidationLimits::unbounded(),
@@ -255,7 +281,7 @@ fn decoded_structure_and_indexed_join_membership_are_authenticated() {
         }),
     );
     assert!(matches!(
-        verify_rspace_semantics::<TestType, TestType, TestType, TestType, _>(
+        verify_rspace_semantics::<TestSemanticProfile, _>(
             &store,
             manifest_ref,
             SemanticValidationLimits::unbounded(),
@@ -271,12 +297,9 @@ fn semantic_resource_budgets_are_not_hidden_depth_limits() {
         max_endpoints: 2,
         ..SemanticValidationLimits::unbounded()
     };
-    let error = verify_rspace_semantics::<TestType, TestType, TestType, TestType, _>(
-        &image.store,
-        image.manifest,
-        limits,
-    )
-    .expect_err("the explicit endpoint budget is enforced");
+    let error =
+        verify_rspace_semantics::<TestSemanticProfile, _>(&image.store, image.manifest, limits)
+            .expect_err("the explicit endpoint budget is enforced");
     assert!(matches!(
         error,
         ClosureError::Format(CanonicalFormatError::ResourceLimit {
@@ -338,7 +361,7 @@ fn duplicate_channels_require_only_one_join_membership() {
             join_bag: join,
         }),
     );
-    let report = verify_rspace_semantics::<TestType, TestType, TestType, TestType, _>(
+    let report = verify_rspace_semantics::<TestSemanticProfile, _>(
         &store,
         manifest_ref,
         SemanticValidationLimits::unbounded(),

@@ -19,13 +19,16 @@ fn staged_objects_are_visible_through_the_overlay_but_not_the_base() {
 }
 
 #[test]
-fn equal_base_content_is_reused_without_staging_a_duplicate() {
+fn equal_base_content_is_owned_by_the_private_staging_snapshot() {
     let base = CanonicalObjectStore::new();
     let reference = admit(&base, &CanonicalDagNode::empty());
     let bytes = base.get(&reference.digest()).unwrap().unwrap();
     let overlay = StagingObjectStore::new(&base);
-    assert_eq!(overlay.stage(bytes).unwrap(), (reference, ObjectAdmission::AlreadyPresent));
-    assert_eq!(overlay.len().unwrap(), 0);
+    assert_eq!(overlay.stage(bytes).unwrap(), (reference, ObjectAdmission::Inserted));
+    assert_eq!(overlay.len().unwrap(), 1);
+    let snapshot = overlay.staged_snapshot().unwrap();
+    assert_eq!(snapshot.len(), 1);
+    assert_eq!(snapshot[0].0, reference);
 }
 
 #[test]
@@ -49,7 +52,7 @@ fn staging_checks_declared_length_digest_and_full_byte_collisions() {
 }
 
 #[test]
-fn staged_iteration_is_digest_ordered_and_fallible() {
+fn owned_staged_snapshot_is_digest_ordered() {
     let base = CanonicalObjectStore::new();
     let overlay = StagingObjectStore::new(&base);
     let first = CanonicalDagNode::new(
@@ -66,12 +69,11 @@ fn staged_iteration_is_digest_ordered_and_fallible() {
     .unwrap();
     let _ = overlay.stage(encode(&second).into()).unwrap();
     let _ = overlay.stage(encode(&first).into()).unwrap();
-    let mut digests = Vec::new();
-    overlay
-        .try_visit_staged::<()>(|reference, _| {
-            digests.push(reference.digest());
-            Ok(())
-        })
-        .unwrap();
+    let digests = overlay
+        .staged_snapshot()
+        .unwrap()
+        .iter()
+        .map(|(reference, _)| reference.digest())
+        .collect::<Vec<_>>();
     assert!(digests.windows(2).all(|pair| pair[0] < pair[1]));
 }

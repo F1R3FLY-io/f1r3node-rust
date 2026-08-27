@@ -10,6 +10,23 @@ pub enum ObjectAdmission {
     AlreadyPresent,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StagingStoreLimits {
+    pub max_objects: u64,
+    pub max_canonical_bytes: u64,
+}
+
+impl StagingStoreLimits {
+    pub const UNBOUNDED: Self = Self {
+        max_objects: u64::MAX,
+        max_canonical_bytes: u64::MAX,
+    };
+}
+
+impl Default for StagingStoreLimits {
+    fn default() -> Self { Self::UNBOUNDED }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum StagingStoreError<E> {
     Base(E),
@@ -80,14 +97,24 @@ impl<O: AsRef<[u8]>> AsRef<[u8]> for LayeredObject<O> {
 /// can therefore be discarded without exposing a prefix of its object graph.
 pub struct StagingObjectStore<'a, S: ImmutableObjectStore> {
     base: &'a S,
-    objects: RwLock<BTreeMap<ObjectDigest, Arc<[u8]>>>,
+    limits: StagingStoreLimits,
+    state: RwLock<StagingState>,
+}
+
+#[derive(Default)]
+struct StagingState {
+    canonical_bytes: u64,
+    objects: BTreeMap<ObjectDigest, Arc<[u8]>>,
 }
 
 impl<'a, S: ImmutableObjectStore> StagingObjectStore<'a, S> {
-    pub fn new(base: &'a S) -> Self {
+    pub fn new(base: &'a S) -> Self { Self::with_limits(base, StagingStoreLimits::UNBOUNDED) }
+
+    pub fn with_limits(base: &'a S, limits: StagingStoreLimits) -> Self {
         Self {
             base,
-            objects: RwLock::new(BTreeMap::new()),
+            limits,
+            state: RwLock::new(StagingState::default()),
         }
     }
 
@@ -96,38 +123,91 @@ impl<'a, S: ImmutableObjectStore> StagingObjectStore<'a, S> {
         canonical_bytes: Arc<[u8]>,
     ) -> Result<(ObjectRefV1, ObjectAdmission), StagingStoreError<S::Error>> {
         let _ = CanonicalObjectView::parse(&canonical_bytes)?;
+        self.stage_prevalidated(canonical_bytes)
+    }
+
+    pub(super) fn stage_prevalidated(
+        &self,
+        canonical_bytes: Arc<[u8]>,
+    ) -> Result<(ObjectRefV1, ObjectAdmission), StagingStoreError<S::Error>> {
         let digest = ObjectDigest::of_canonical_bytes(&canonical_bytes);
         let encoded_len = checked_len(canonical_bytes.len(), "canonical object")?;
         let reference = ObjectRefV1::new(digest, encoded_len)?;
-        let admission = self.put_if_absent_or_equal(reference, canonical_bytes)?;
+        let admission = self.insert_or_compare(reference, canonical_bytes)?;
         Ok((reference, admission))
     }
 
     pub fn len(&self) -> Result<usize, StagingStoreError<S::Error>> {
         Ok(self
-            .objects
+            .state
             .read()
             .map_err(|_| StagingStoreError::Format(CanonicalFormatError::ObjectStorePoisoned))?
+            .objects
             .len())
     }
 
-    pub fn try_visit_staged<E>(
+    pub(super) fn staged_references(
         &self,
-        mut visitor: impl FnMut(ObjectRefV1, &[u8]) -> Result<(), E>,
-    ) -> Result<(), VisitStagedError<S::Error, E>> {
-        let objects = self.objects.read().map_err(|_| {
-            VisitStagedError::Store(StagingStoreError::Format(
-                CanonicalFormatError::ObjectStorePoisoned,
-            ))
-        })?;
-        for (digest, bytes) in objects.iter() {
-            let encoded_len = checked_len(bytes.len(), "canonical object")
-                .map_err(|error| VisitStagedError::Store(StagingStoreError::Format(error)))?;
-            let reference = ObjectRefV1::new(*digest, encoded_len)
-                .map_err(|error| VisitStagedError::Store(StagingStoreError::Format(error)))?;
-            visitor(reference, bytes).map_err(VisitStagedError::Visitor)?;
+    ) -> Result<Box<[ObjectRefV1]>, StagingStoreError<S::Error>> {
+        let state = self
+            .state
+            .read()
+            .map_err(|_| CanonicalFormatError::ObjectStorePoisoned)?;
+        let requested = checked_len(state.objects.len(), "staged object references")?;
+        let mut references = Vec::new();
+        references
+            .try_reserve_exact(state.objects.len())
+            .map_err(|_| CanonicalFormatError::AllocationFailure { requested })?;
+        for (digest, bytes) in &state.objects {
+            references
+                .push(ObjectRefV1::new(*digest, checked_len(bytes.len(), "canonical object")?)?);
         }
-        Ok(())
+        Ok(references.into_boxed_slice())
+    }
+
+    /// Test inspection owns Arc handles and releases the staging lock before
+    /// returning.  Production code consumes the overlay with `into_objects`;
+    /// it never invokes a sink or callback while a lock guard is live.
+    #[cfg(test)]
+    pub(crate) fn staged_snapshot(
+        &self,
+    ) -> Result<Box<[(ObjectRefV1, Arc<[u8]>)]>, StagingStoreError<S::Error>> {
+        let state = self
+            .state
+            .read()
+            .map_err(|_| CanonicalFormatError::ObjectStorePoisoned)?;
+        let requested = checked_len(state.objects.len(), "staged snapshot objects")?;
+        let mut snapshot = Vec::new();
+        snapshot
+            .try_reserve_exact(state.objects.len())
+            .map_err(|_| CanonicalFormatError::AllocationFailure { requested })?;
+        for (digest, bytes) in &state.objects {
+            let encoded_len = checked_len(bytes.len(), "canonical object")?;
+            snapshot.push((ObjectRefV1::new(*digest, encoded_len)?, Arc::clone(bytes)));
+        }
+        Ok(snapshot.into_boxed_slice())
+    }
+
+    /// Consume the mutable overlay into an immutable digest-ordered batch.
+    /// No lock, durable-store reference, or visitor callback escapes sealing.
+    pub(super) fn into_objects<T>(
+        self,
+        mut map: impl FnMut(ObjectRefV1, Arc<[u8]>) -> T,
+    ) -> Result<Box<[T]>, StagingStoreError<S::Error>> {
+        let state = self
+            .state
+            .into_inner()
+            .map_err(|_| CanonicalFormatError::ObjectStorePoisoned)?;
+        let mut objects = Vec::new();
+        let requested = checked_len(state.objects.len(), "staged objects")?;
+        objects
+            .try_reserve_exact(state.objects.len())
+            .map_err(|_| CanonicalFormatError::AllocationFailure { requested })?;
+        for (digest, bytes) in state.objects {
+            let encoded_len = checked_len(bytes.len(), "canonical object")?;
+            objects.push(map(ObjectRefV1::new(digest, encoded_len)?, bytes));
+        }
+        Ok(objects.into_boxed_slice())
     }
 
     fn insert_or_compare(
@@ -144,44 +224,46 @@ impl<'a, S: ImmutableObjectStore> StagingObjectStore<'a, S> {
                 Err(CanonicalFormatError::ContentCollision(reference.digest()).into())
             };
         }
-        if let Some(existing) = self
-            .base
-            .get_bounded(&reference.digest(), reference.encoded_len())
-            .map_err(StagingStoreError::Base)?
-        {
-            return if existing.as_ref() == bytes.as_ref() {
-                Ok(ObjectAdmission::AlreadyPresent)
-            } else {
-                Err(CanonicalFormatError::ContentCollision(reference.digest()).into())
-            };
-        }
-
-        let mut objects = self
-            .objects
+        let mut state = self
+            .state
             .write()
             .map_err(|_| CanonicalFormatError::ObjectStorePoisoned)?;
-        match objects.get(&reference.digest()) {
+        match state.objects.get(&reference.digest()) {
             Some(existing) if existing.as_ref() == bytes.as_ref() => {
                 Ok(ObjectAdmission::AlreadyPresent)
             }
             Some(_) => Err(CanonicalFormatError::ContentCollision(reference.digest()).into()),
             None => {
-                objects.insert(reference.digest(), bytes);
+                let object_count = checked_len(state.objects.len(), "staged objects")?
+                    .checked_add(1)
+                    .ok_or(CanonicalFormatError::CounterOverflow("staged objects"))?;
+                require_limit("staged objects", self.limits.max_objects, object_count)?;
+                let canonical_bytes = state
+                    .canonical_bytes
+                    .checked_add(reference.encoded_len())
+                    .ok_or(CanonicalFormatError::CounterOverflow("staged canonical bytes"))?;
+                require_limit(
+                    "staged canonical bytes",
+                    self.limits.max_canonical_bytes,
+                    canonical_bytes,
+                )?;
+                state.objects.insert(reference.digest(), bytes);
+                state.canonical_bytes = canonical_bytes;
                 Ok(ObjectAdmission::Inserted)
             }
         }
     }
 
-    fn get_staged_bounded(
+    pub(super) fn get_staged_bounded(
         &self,
         digest: &ObjectDigest,
         max_encoded_len: u64,
     ) -> Result<Option<Arc<[u8]>>, StagingStoreError<S::Error>> {
-        let objects = self
-            .objects
+        let state = self
+            .state
             .read()
             .map_err(|_| CanonicalFormatError::ObjectStorePoisoned)?;
-        let Some(object) = objects.get(digest) else {
+        let Some(object) = state.objects.get(digest) else {
             return Ok(None);
         };
         let attempted = checked_len(object.len(), "staged object")?;
@@ -197,10 +279,20 @@ impl<'a, S: ImmutableObjectStore> StagingObjectStore<'a, S> {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum VisitStagedError<SE, VE> {
-    Store(StagingStoreError<SE>),
-    Visitor(VE),
+fn require_limit(
+    resource: &'static str,
+    limit: u64,
+    attempted: u64,
+) -> Result<(), CanonicalFormatError> {
+    if attempted > limit {
+        Err(CanonicalFormatError::ResourceLimit {
+            resource,
+            limit,
+            attempted,
+        })
+    } else {
+        Ok(())
+    }
 }
 
 impl<S: ImmutableObjectStore> ImmutableObjectStore for StagingObjectStore<'_, S> {

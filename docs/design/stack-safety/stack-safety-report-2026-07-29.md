@@ -317,7 +317,11 @@ Abbreviations used throughout are ABI (application binary interface), CBR (conse
 | **SS-C17** | `3061b2501`, `70fae0a9d`; pgmcp #6026/#6030 | f1r3node | canonical DATA: PathMap $`\rightarrow`$ leaf payload $`\rightarrow`$ second final-value serialization; reads/imports: final value $`\rightarrow`$ copied payload | one checked allocation constructs the final envelope; reader/importer lend canonically admitted ranges; treatment/control median-time ratio **0.0323–0.3745**, with **24 to 36,878 fewer allocation calls**; native stack remains $`O(1)`$ | **yes for final persisted DATA bytes**; exact framing/admission, three lifecycle mutants, two final-byte mutants, formal gates, and 497/497 package tests | [5.44](#544-final-persisted-value-egress-and-borrowed-admission-ss-c17) |
 | **SS-C18** | this checkpoint; pgmcp #6025/#6027/#6030 | f1r3node | repeated ParBag owner occurrences in one protobuf frame: repeated PathMap zipper walks $`\rightarrow`$ one exact owner census, direct first emission, and certified typed-range replay | native stack remains $`O(1)`$; reuse-1 99% ratio upper bound **1.024510**; reuse-16 median ratio **0.174705**, traversals **16 $`\rightarrow`$ 1**, allocation calls **99,235 $`\rightarrow`$ 8,455** in the profile-only loop | **no** — heap/time refinement of the generated stack-safe codec; exact Prost bytes, owner-shape/fault differentials, seven transcript mutants, eleven owner-memo mutants, and full formal bundle | [5.45](#545-certified-parbag-protobuf-egress-and-atomic-replay-ss-c18) |
 | **SS-C19** | this checkpoint; campaign 4131 authenticated-egress/import slice | f1r3node | implicit node-derived pagination and independent history/DATA/root mutators $`\rightarrow`$ authenticated pages, iterative closure verification, typed immutable leaves, and one consuming `open -> sealed -> published` capability | native stack remains $`O(1)`$; decoded-node cache fixed at 1,024 entries/8 MiB, verified-leaf cache fixed at 4,096 addresses, horizon network window fixed at 32; no traversal-depth ceiling or full-state leaf visited set | **yes for transfer lifecycle and resource bounds**; 64 focused requester/import/catalog/FFI cases, caller type-check, one passing TLA+ model, and three required failing mutants | [5.46](#546-authenticated-rspace-egress-and-affine-import-lifecycle-ss-c19) |
-| **SS-C20** | this checkpoint; pgmcp #6029/#6030/#6079 | f1r3node | continuation/join cold egress: repeated record materialization $`\rightarrow`$ immutable checked CoW-root plan and fallible zipper-to-sink replay; retained occurrence-expanded order tries rejected | native stack remains $`O(1)`$; depth **20,000** on **256 KiB**; zero record decode, `Vec<Par>` projection, or element sort; one exactly reserved buffer only at the legacy LMDB action boundary | **yes for the complete continuation/join lifecycle**; independent HashMap/Vec differential through bind/select/checkpoint/reset/export/import/play/replay/post-state, nine killed mutants, 165/165 integration cases, and the full Rocq/Verus/Z3/TLC/mCRL2 gate | [5.47](#547-continuationjoin-pathmap-authority-and-rejected-retained-order-indexes-ss-c20) |
+| **SS-C20** | this checkpoint; pgmcp #6029/#6030/#6079 | f1r3node | continuation/join cold egress: repeated record materialization $`\rightarrow`$ immutable checked CoW-root plan and fallible zipper-to-sink replay; retained occurrence-expanded order tries rejected | native stack remains $`O(1)`$; depth **20,000** on **256 KiB**; zero record decode, `Vec<Par>` projection, or element sort; one exactly reserved buffer only at the legacy Lightning Memory-Mapped Database (LMDB) action boundary | **yes for the complete continuation/join lifecycle**; independent HashMap/Vec differential through bind/select/checkpoint/reset/export/import/play/replay/post-state, nine killed mutants, 165/165 integration cases, and the full Rocq/Verus/Z3/TLC/mCRL2 gate | [5.47](#547-continuationjoin-pathmap-authority-and-rejected-retained-order-indexes-ss-c20) |
+| **SS-C21** | this checkpoint; pgmcp #6098 | f1r3node | canonical three-root PathMap-DAG closure and semantic admission $`\rightarrow`$ separate explicit-worklist validators with adaptive child lookup and exact logical-path attribution | native stack $`O(1)`$ in graph/key depth; **20,000** objects on **256 KiB**; heap $`O(n+k+f)`$ under explicit total-resource budgets | **yes for dormant format admission**; 29/29 focused malformed, collision, branch, semantic, coherence, and depth cases | [5.48](#548-canonical-pathmap-dag-structural-and-semantic-admission-pdas-ss-c21) |
+| **SS-C22** | this checkpoint; pgmcp #6099 | f1r3node | normalized three-namespace mutation journal $`\rightarrow`$ immutable CoW PathMap compare-and-swap (CAS) tries with zipper preflight/replay and a zero-copy borrowed recovery view | native stack $`O(1)`$ in path depth; **100,000-byte** key on **256 KiB**; no entry vector, semantic sort, or arithmetic replay | **yes for dormant mutation bytes**; 14/14 mutation and 43/43 combined persistence cases | [5.49](#549-normalized-pathmap-mutation-journal-cursor-ss-c22) |
+| **SS-C23** | this checkpoint; pgmcp #6099 | f1r3node | whole-state rebuild/direct admission $`\rightarrow`$ transaction-private affected-frontier radix editor with adjacent-key cursor, CoW child reuse, and enter/exit finalization PDA | native stack $`O(1)`$; **20,000** endpoint-bearing nodes on **256 KiB**; cost follows changed key bytes and opened/emitted frontier, not total state | **yes for dormant canonical rewrite**; 22/22 rewrite, 4/4 staging, and 69/69 combined persistence cases | [5.50](#550-iterative-affected-frontier-radix-dag-rewrite-ss-c23) |
+| **SS-C24** | this checkpoint; pgmcp #6190 | f1r3node | unsealed private rewrite $`\rightarrow`$ profile-typed `verified -> open -> content-ready -> rewritten -> manifested -> validated -> sealed` transaction with path-exact inherited-boundary proof | native stack $`O(1)`$; **100,000-byte** seal and independent rebuild oracle on **256 KiB**; one update reads at most **8 objects** through base cardinality 4,096; exact-path/provenance/staging budgets aggregate | **yes for dormant transaction sealing**; 96/96 persistence cases including authority, portability, determinism, semantic coherence, hostile budgets, exact-path failure atomicity, and 20,000-level gates | [5.51](#551-profile-typed-differential-transaction-sealing-ss-c24) |
 | **SS-D1** | `d2591fa1` | f1r3node | task-spawn boundary per-branch deep clone | 2,867 $`\rightarrow`$ **0** *(this site)* | **yes** | [5.5.3](#553-the-three-repairs) |
 | **SS-D2** | `94dc983f` | f1r3node | ownership to the substitution; **15** deep copies | incl. $`O(n^2)`$ $`\rightarrow`$ $`O(n)`$ | **yes** | [5.5.3](#553-the-three-repairs) |
 | **SS-D3** | `9082d12c` | f1r3node | `inj_attempt` read-back clone $`\rightarrow`$ by-move | 2,852 $`\rightarrow`$ **0** | **yes** | [5.5.3](#553-the-three-repairs) |
@@ -10574,7 +10578,7 @@ initialization requires its terminal publication receipt before entering `Runnin
 #### 5.46.2 Stack, heap, and concurrency bounds
 
 Exporter traversal, page authentication, staging, and closure verification are explicit-loop
-machines and consume `O(1)` native stack with respect to trie depth. No operation introduces
+machines and consume $`O(1)`$ native stack with respect to trie depth. No operation introduces
 `RUST_MIN_STACK`, `stacker`, a recursive fallback, or an artificial traversal-depth limit. The
 closure verifier uses a fixed 1,024-entry/8 MiB CLOCK cache for decoded nodes and a fixed
 4,096-address CLOCK cache for already verified cold leaves. It therefore avoids the former
@@ -10699,7 +10703,7 @@ wrong asymptotic representation even when repeated reads win. Production therefo
 single membership authority and transient scalar/borrowed sort.
 
 The experiment is a heap/work and representation decision, not a native-stack conversion. Every
-arm traverses with PathMap zippers and has `O(1)` native-stack use in trie depth. It introduces no
+arm traverses with PathMap zippers and has $`O(1)`$ native-stack use in trie depth. It introduces no
 depth cap, recursive fallback, enlarged stack, `stacker` integration, or PathMap source change. The
 complete protocol, preregistered universal 5% guardrails, 100,000-replicate paired bootstrap,
 Benjamini--Hochberg correction, allocation counters, raw matrix, and hashes are in
@@ -10874,6 +10878,84 @@ SS-C23 proves native-stack flatness and canonical CoW rewrite equivalence only. 
 physical WAL scanning, durable object promotion, target-manifest validation, sync ordering,
 catalog CAS, crash recovery, pack compaction, or LMDB migration/performance. Those operations must
 receive their own explicit-worklist and failure-injection evidence before production activation.
+
+### 5.51 Profile-typed differential transaction sealing [SS-C24]
+
+SS-C23 deliberately stopped before a private rewrite could become publication authority. SS-C24
+closes that in-memory gap without activating persistence. A **semantic profile** is a sealed Rust
+type that binds one manifest to the exact channel, pattern, datum, continuation, and key-body
+codecs whose invariants were verified. A **sealed transaction** is an immutable, portable delta:
+it owns every newly required canonical object, borrows the exact admitted mutation bytes, and
+carries the exact base version, target version, mutation digest, and profile identifier. It still
+has no authority to update a durable catalog.
+
+**Algorithm 37 (PROFILE-TYPED-TRANSACTION-SEAL).** The phase-typed PDA consumes each proof token
+exactly once and exposes only the sealed result to the later durability layer.
+
+```pseudocode
+fully admit (base manifest, semantic profile) -> VerifiedDagState
+require mutation.base = verified.version       -> Open
+admit only referenced continuation-source blobs -> ContentReady
+rewrite the affected frontier privately         -> Rewritten
+encode and stage the profile-bound target manifest -> Manifested
+verify incremental structural closure and RSpace meaning -> Validated
+sort and own the reachable staged objects        -> Sealed
+```
+
+No method can skip a phase or manufacture its proof token. The target manifest embeds the
+16-byte semantic-profile identifier, and both full admission and incremental admission reject a
+different profile before typed interpretation. Staging retains caller-supplied logical bytes even
+when an ambient store already contains equal bytes; consequently the sealed delta is portable to a
+recovering process that has only the declared base. No production callback executes while the
+staging lock is held.
+
+Incremental closure may avoid reopening an untouched base subtree only with an inherited-boundary
+certificate containing the semantic namespace, boundary kind, exact absolute byte path, and full
+digest-plus-length reference. Digest equality alone is insufficient because one Merkle object may
+occur at multiple logical paths with different RSpace meaning. Exact paths use interned,
+segmentation-independent 64-byte chunks, so siblings share prefixes without retaining one complete
+path buffer apiece. Failed extension rolls back every newly interned chunk and leaves the caller's
+path unchanged. The rewrite and closure phases share one arena and one effective cap; the
+simultaneously retained eligible and inherited boundary sets share one union cap. All new
+provenance, closure, and full-admission digest-state hash-table growth is fallible. Full admission
+checks its distinct-object and advertised canonical-byte ceilings before loading a new digest.
+Staging object/byte ceilings and
+changed-endpoint, logical-visit, exact-path, and provenance ceilings are aggregate transaction
+budgets, not traversal-depth limits.
+
+The incremental semantic PDA validates only changed DataBag, ContinuationMap, and JoinBag
+endpoints. It computes the exact required JoinBag probes for changed continuations, detects vacated
+join groups, and verifies the target values through direct adaptive-trie descent. It neither scans
+the complete state nor projects trie entries into a vector. For affected frontier size $`f`$,
+changed-key bytes $`b`$, and newly emitted bytes $`e`$, sealing performs expected/amortized
+$`O(f+b+e)`$ rewrite and validation work, apart from codec cost for the changed values.
+Native-stack use is $`O(1)`$ in trie and Rholang-term depth.
+
+The independent canonical-rebuild oracle was itself converted to an explicit post-order work
+machine, so the stack gate does not hide recursion in its expected-value generator. It handles a
+100,000-byte path on a 256 KiB stack. A separately instrumented single-update matrix reads **2**
+base objects at cardinality 1 and **5** at cardinality 256, then enforces an upper bound of **8**
+through cardinality 4,096. This is affected-frontier evidence rather than a latency benchmark: the
+extra reads describe radix depth, not a whole-state scan.
+
+The resource-capped persistence module passes **96/96** cases in **1.81 s**. The transcript is
+`target/scratch/persistence-transaction-sealing-final.log`, SHA-256
+`4719f11ac0f0b6bfc6f682f9056fac166d755409ed6f53b1a62c9ced70330e54`. The matrix covers exact
+base/profile authority, portable ambient-equal sources, missing and unreachable source refusal,
+semantic rollback, deterministic object sets, aggregate staging and path budgets, path-location
+and segmentation counterexamples, shared staged objects at distinct logical paths, 256 long
+siblings, failure-atomic path interning, a cross-namespace provenance-union-cap mutant,
+20,000-level closure/rewrite, a 100,000-byte complete seal, and a zero-object preflight mutant that
+allows exactly one manifest/profile authority read and no structural object load. The run used a
+6 GiB memory ceiling and zero swap; the target was already built.
+
+SS-C24 still makes no physical durability, crash consistency, throughput, allocation, disk-space,
+recovery-time, or compaction claim. Binary WAL framing and checksums, fsync ordering, catalog CAS,
+restart recovery, pack publication, retained-root compaction/garbage collection, LMDB migration,
+REPL integration, and comparative measurements remain separate implementation and verification
+obligations. Merkleization supplies immutable object identity and sharing; later compaction traces
+those references from retained roots and reclaims obsolete physical records. The two operations are
+not synonyms.
 
 ---
 

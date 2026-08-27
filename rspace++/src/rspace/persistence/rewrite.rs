@@ -5,6 +5,7 @@
 //! finalizes the edited frontier bottom-up.  Untouched child references are
 //! never opened merely to reconstruct their parent.
 
+use std::collections::{HashMap, HashSet};
 use std::fmt::{Display, Formatter};
 use std::num::NonZeroU64;
 use std::sync::Arc;
@@ -12,7 +13,10 @@ use std::sync::Arc;
 use super::canonical::{
     CanonicalEncode, CanonicalFormatError, ObjectDigest, ObjectRefV1, checked_len,
 };
-use super::manifest::{SEMANTIC_MANIFEST_MAX_CANONICAL_LEN, SemanticNamespace, SemanticRoots};
+use super::manifest::{
+    LegacyHistoryRoot, SEMANTIC_MANIFEST_MAX_CANONICAL_LEN, SemanticNamespace, SemanticProfileId,
+    SemanticRoots,
+};
 use super::mutation::MutationBatchViewV1;
 use super::object::{
     CanonicalDagNode, CanonicalObjectKind, CanonicalObjectView, DagChild, EndpointValue,
@@ -82,6 +86,8 @@ pub struct DagRewriteReport {
     pub reused_child_references: u64,
     pub maximum_cursor_nodes: u64,
     pub maximum_finalize_worklist: u64,
+    pub exact_path_chunks: u64,
+    pub inherited_boundaries: u64,
 }
 
 impl DagRewriteReport {
@@ -108,31 +114,257 @@ impl DagRewriteReport {
         self.maximum_finalize_worklist = self
             .maximum_finalize_worklist
             .max(other.maximum_finalize_worklist);
+        self.exact_path_chunks =
+            checked_add(self.exact_path_chunks, other.exact_path_chunks, "exact path chunks")?;
+        self.inherited_boundaries = checked_add(
+            self.inherited_boundaries,
+            other.inherited_boundaries,
+            "inherited boundaries",
+        )?;
         Ok(())
     }
 }
 
 /// A successfully compiled, still-private state transition.  Dropping this
-/// value discards every staged object; later WAL code must validate the target
-/// manifest before it can consume the staged set for durable publication.
+/// value discards every staged object. Production publication uses the
+/// phase-ordered transaction sealer; this lower-level result remains available
+/// for rewrite differentials and offline inspection.
 pub struct PreparedDagRewrite<'a, S: ImmutableObjectStore> {
-    base: super::mutation::StateVersionV1,
-    target_generation: u64,
-    roots: SemanticRoots,
-    report: DagRewriteReport,
+    product: DagRewriteProduct,
     staging: StagingObjectStore<'a, S>,
 }
 
 impl<'a, S: ImmutableObjectStore> PreparedDagRewrite<'a, S> {
-    pub const fn base(&self) -> super::mutation::StateVersionV1 { self.base }
+    pub const fn base(&self) -> super::mutation::StateVersionV1 { self.product.base }
 
-    pub const fn target_generation(&self) -> u64 { self.target_generation }
+    pub const fn target_generation(&self) -> u64 { self.product.target_generation }
 
-    pub const fn roots(&self) -> SemanticRoots { self.roots }
+    pub const fn roots(&self) -> SemanticRoots { self.product.roots }
 
-    pub const fn report(&self) -> DagRewriteReport { self.report }
+    pub const fn report(&self) -> DagRewriteReport { self.product.report }
 
+    #[cfg(test)]
     pub const fn staging(&self) -> &StagingObjectStore<'a, S> { &self.staging }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct DagRewriteProduct {
+    pub(crate) base: super::mutation::StateVersionV1,
+    pub(crate) target_generation: u64,
+    pub(crate) schema_epoch: u64,
+    pub(crate) profile_id: SemanticProfileId,
+    pub(crate) legacy_history_root: Option<LegacyHistoryRoot>,
+    pub(crate) roots: SemanticRoots,
+    pub(crate) report: DagRewriteReport,
+    /// References copied from nodes reached through the exact verified base.
+    /// These are the only non-delta boundaries the local closure verifier may
+    /// inherit without reopening the complete base graph.
+    pub(crate) provenance: RewriteProvenance,
+}
+
+const EXACT_PATH_CHUNK_BYTES: usize = 64;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+struct PathChunkId(u64);
+
+/// Exact absolute byte path with structurally shared, segmentation-independent
+/// 64-byte chunks. Bytes beyond `tail_len` are always zero.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) struct ExactPath {
+    chain: PathChunkId,
+    tail: [u8; EXACT_PATH_CHUNK_BYTES],
+    tail_len: u8,
+    total_len: u64,
+}
+
+impl ExactPath {
+    pub(crate) const fn empty() -> Self {
+        Self {
+            chain: PathChunkId(0),
+            tail: [0; EXACT_PATH_CHUNK_BYTES],
+            tail_len: 0,
+            total_len: 0,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+struct PathChunkKey {
+    parent: PathChunkId,
+    bytes: [u8; EXACT_PATH_CHUNK_BYTES],
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ExactPathArena {
+    interned: HashMap<PathChunkKey, PathChunkId>,
+    next_id: u64,
+}
+
+impl ExactPathArena {
+    pub(crate) fn new() -> Self {
+        Self {
+            interned: HashMap::new(),
+            next_id: 1,
+        }
+    }
+
+    pub(crate) fn chunk_count(&self) -> u64 { self.next_id - 1 }
+
+    pub(crate) fn extend(
+        &mut self,
+        path: &mut ExactPath,
+        bytes: &[u8],
+        max_chunks: u64,
+    ) -> Result<(), CanonicalFormatError> {
+        // Commit in one pass on success. Newly assigned identifiers are a
+        // monotonic suffix, so a rare failure can roll that suffix back without
+        // doubling every successful path walk.
+        let rollback_id = self.next_id;
+        let mut candidate = *path;
+        candidate.total_len = candidate
+            .total_len
+            .checked_add(checked_len(bytes.len(), "exact logical path")?)
+            .ok_or(CanonicalFormatError::LengthOverflow {
+                field: "exact logical path",
+            })?;
+        let mut remaining = bytes;
+        while !remaining.is_empty() {
+            let tail_len = usize::from(candidate.tail_len);
+            let available = EXACT_PATH_CHUNK_BYTES - tail_len;
+            let copied = available.min(remaining.len());
+            candidate.tail[tail_len..tail_len + copied].copy_from_slice(&remaining[..copied]);
+            candidate.tail_len = u8::try_from(tail_len + copied)
+                .expect("the fixed exact-path tail is at most 64 bytes");
+            remaining = &remaining[copied..];
+            if usize::from(candidate.tail_len) == EXACT_PATH_CHUNK_BYTES {
+                let key = PathChunkKey {
+                    parent: candidate.chain,
+                    bytes: candidate.tail,
+                };
+                let chain = if let Some(chain) = self.interned.get(&key).copied() {
+                    chain
+                } else {
+                    if let Err(error) = require_limit(self.next_id, max_chunks, "exact path chunks")
+                    {
+                        self.rollback_to(rollback_id);
+                        return Err(error);
+                    }
+                    if self.interned.try_reserve(1).is_err() {
+                        self.rollback_to(rollback_id);
+                        return Err(CanonicalFormatError::AllocationFailure { requested: 1 });
+                    }
+                    let Some(next_id) = self.next_id.checked_add(1) else {
+                        self.rollback_to(rollback_id);
+                        return Err(CanonicalFormatError::CounterOverflow("exact path chunks"));
+                    };
+                    let chain = PathChunkId(self.next_id);
+                    self.next_id = next_id;
+                    let previous = self.interned.insert(key, chain);
+                    debug_assert!(previous.is_none());
+                    chain
+                };
+                candidate.chain = chain;
+                candidate.tail = [0; EXACT_PATH_CHUNK_BYTES];
+                candidate.tail_len = 0;
+            }
+        }
+        *path = candidate;
+        Ok(())
+    }
+
+    fn rollback_to(&mut self, next_id: u64) {
+        self.interned.retain(|_, id| id.0 < next_id);
+        self.next_id = next_id;
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) enum InheritedBoundaryKind {
+    NodeEntry,
+    ContentAtEndpoint,
+}
+
+/// Non-forgeable evidence that the rewrite carried a reference from the exact
+/// verified base into the same semantic namespace and exact absolute path.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) struct InheritedObjectRef {
+    pub(crate) namespace: SemanticNamespace,
+    pub(crate) kind: InheritedBoundaryKind,
+    pub(crate) path: ExactPath,
+    pub(crate) reference: ObjectRefV1,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct RewriteProvenance {
+    pub(crate) paths: ExactPathArena,
+    eligible: HashSet<InheritedObjectRef>,
+    pub(crate) inherited: HashSet<InheritedObjectRef>,
+    max_boundaries: u64,
+}
+
+impl RewriteProvenance {
+    pub(crate) fn new(max_boundaries: u64) -> Self {
+        Self {
+            paths: ExactPathArena::new(),
+            eligible: HashSet::new(),
+            inherited: HashSet::new(),
+            max_boundaries,
+        }
+    }
+
+    fn insert_eligible(
+        &mut self,
+        boundary: InheritedObjectRef,
+    ) -> Result<(), CanonicalFormatError> {
+        if !self.eligible.contains(&boundary) && !self.inherited.contains(&boundary) {
+            let attempted_len = self
+                .eligible
+                .len()
+                .checked_add(self.inherited.len())
+                .ok_or(CanonicalFormatError::CounterOverflow("inherited boundaries"))?
+                .checked_add(1)
+                .ok_or(CanonicalFormatError::CounterOverflow("inherited boundaries"))?;
+            let attempted = checked_len(attempted_len, "inherited boundaries")?;
+            require_limit(attempted, self.max_boundaries, "inherited boundaries")?;
+            self.eligible
+                .try_reserve(1)
+                .map_err(|_| CanonicalFormatError::AllocationFailure { requested: 1 })?;
+            self.eligible.insert(boundary);
+        }
+        Ok(())
+    }
+
+    fn inherit_if_eligible(
+        &mut self,
+        boundary: InheritedObjectRef,
+    ) -> Result<(), CanonicalFormatError> {
+        if self.eligible.contains(&boundary) {
+            if !self.inherited.contains(&boundary) {
+                self.inherited
+                    .try_reserve(1)
+                    .map_err(|_| CanonicalFormatError::AllocationFailure { requested: 1 })?;
+            }
+            let removed = self.eligible.remove(&boundary);
+            debug_assert!(removed);
+            self.inherited.insert(boundary);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn contains(&self, boundary: &InheritedObjectRef) -> bool {
+        self.inherited.contains(boundary)
+    }
+
+    fn finish_rewrite(&mut self) { self.eligible.clear(); }
+
+    #[cfg(test)]
+    pub(crate) fn admit_inherited(
+        &mut self,
+        boundary: InheritedObjectRef,
+    ) -> Result<(), CanonicalFormatError> {
+        self.insert_eligible(boundary)?;
+        self.inherit_if_eligible(boundary)
+    }
 }
 
 /// Explicit work/retention budgets for untrusted recovery input.  These are
@@ -149,6 +381,8 @@ pub struct DagRewriteLimits {
     pub max_emitted_bytes: u64,
     pub max_cursor_nodes: u64,
     pub max_finalize_worklist: u64,
+    pub max_exact_path_chunks: u64,
+    pub max_inherited_boundaries: u64,
 }
 
 impl DagRewriteLimits {
@@ -162,6 +396,8 @@ impl DagRewriteLimits {
         max_emitted_bytes: u64::MAX,
         max_cursor_nodes: u64::MAX,
         max_finalize_worklist: u64::MAX,
+        max_exact_path_chunks: u64::MAX,
+        max_inherited_boundaries: u64::MAX,
     };
 }
 
@@ -195,6 +431,8 @@ impl DagRewriteLimits {
             // sizes rather than cumulative work counters.
             max_cursor_nodes: self.max_cursor_nodes,
             max_finalize_worklist: self.max_finalize_worklist,
+            max_exact_path_chunks: self.max_exact_path_chunks,
+            max_inherited_boundaries: self.max_inherited_boundaries,
         })
     }
 }
@@ -216,11 +454,25 @@ pub fn rewrite_semantic_roots_with_limits<'a, S: ImmutableObjectStore>(
     limits: DagRewriteLimits,
 ) -> Result<PreparedDagRewrite<'a, S>, RewriteError<StagingStoreError<S::Error>>> {
     let store = StagingObjectStore::new(base);
+    let product = rewrite_semantic_roots_in_store(&store, mutation, limits)?;
+    Ok(PreparedDagRewrite {
+        product,
+        staging: store,
+    })
+}
+
+pub(crate) fn rewrite_semantic_roots_in_store<S: ImmutableObjectStore>(
+    store: &S,
+    mutation: MutationBatchViewV1<'_>,
+    limits: DagRewriteLimits,
+) -> Result<DagRewriteProduct, RewriteError<S::Error>> {
     let base_version = mutation.base();
     let target_generation = mutation.target_generation();
-    let roots = load_manifest_roots(&store, base_version.manifest())?;
+    let authority = load_manifest_authority(store, base_version.manifest())?;
+    let roots = authority.roots;
+    let mut provenance = RewriteProvenance::new(limits.max_inherited_boundaries);
     let (data_bag, data_report) = rewrite_root(
-        &store,
+        store,
         roots.data_bag,
         SemanticNamespace::DataBag,
         mutation.data().map(|entry| {
@@ -231,10 +483,11 @@ pub fn rewrite_semantic_roots_with_limits<'a, S: ImmutableObjectStore>(
             )
         }),
         limits,
+        &mut provenance,
     )?;
     let continuation_limits = limits.after(data_report)?;
     let (continuation_map, continuation_report) = rewrite_root(
-        &store,
+        store,
         roots.continuation_map,
         SemanticNamespace::ContinuationMap,
         mutation.continuations().map(|entry| {
@@ -245,12 +498,13 @@ pub fn rewrite_semantic_roots_with_limits<'a, S: ImmutableObjectStore>(
             )
         }),
         continuation_limits,
+        &mut provenance,
     )?;
     let mut report = data_report;
     report.absorb(continuation_report)?;
     let join_limits = limits.after(report)?;
     let (join_bag, join_report) = rewrite_root(
-        &store,
+        store,
         roots.join_bag,
         SemanticNamespace::JoinBag,
         mutation.joins().map(|entry| {
@@ -261,19 +515,27 @@ pub fn rewrite_semantic_roots_with_limits<'a, S: ImmutableObjectStore>(
             )
         }),
         join_limits,
+        &mut provenance,
     )?;
 
     report.absorb(join_report)?;
-    Ok(PreparedDagRewrite {
+    provenance.finish_rewrite();
+    report.exact_path_chunks = provenance.paths.chunk_count();
+    report.inherited_boundaries =
+        checked_len(provenance.inherited.len(), "target inherited boundaries")?;
+    Ok(DagRewriteProduct {
         base: base_version,
         target_generation,
+        schema_epoch: authority.schema_epoch,
+        profile_id: authority.profile_id,
+        legacy_history_root: authority.legacy_history_root,
         roots: SemanticRoots {
             data_bag,
             continuation_map,
             join_bag,
         },
         report,
-        staging: store,
+        provenance,
     })
 }
 
@@ -289,10 +551,18 @@ fn content_endpoint(content: Option<ObjectRefV1>) -> EndpointValue {
         .unwrap_or(EndpointValue::Absent)
 }
 
-fn load_manifest_roots<S: ImmutableObjectStore>(
+#[derive(Clone, Copy)]
+struct BaseManifestAuthority {
+    schema_epoch: u64,
+    profile_id: SemanticProfileId,
+    roots: SemanticRoots,
+    legacy_history_root: Option<LegacyHistoryRoot>,
+}
+
+fn load_manifest_authority<S: ImmutableObjectStore>(
     store: &S,
     reference: ObjectRefV1,
-) -> Result<SemanticRoots, RewriteError<S::Error>> {
+) -> Result<BaseManifestAuthority, RewriteError<S::Error>> {
     let object = load_exact_object(store, reference, SEMANTIC_MANIFEST_MAX_CANONICAL_LEN)?;
     let view = CanonicalObjectView::parse(object.as_ref())?;
     let CanonicalObjectView::SemanticManifest(manifest) = view else {
@@ -303,7 +573,12 @@ fn load_manifest_roots<S: ImmutableObjectStore>(
         }
         .into());
     };
-    Ok(manifest.roots())
+    Ok(BaseManifestAuthority {
+        schema_epoch: manifest.schema_epoch(),
+        profile_id: manifest.profile_id(),
+        roots: manifest.roots(),
+        legacy_history_root: manifest.legacy_history_root(),
+    })
 }
 
 fn rewrite_root<'a, S, I>(
@@ -312,6 +587,7 @@ fn rewrite_root<'a, S, I>(
     namespace: SemanticNamespace,
     mutations: I,
     limits: DagRewriteLimits,
+    provenance: &mut RewriteProvenance,
 ) -> Result<(ObjectRefV1, DagRewriteReport), RewriteError<S::Error>>
 where
     S: ImmutableObjectStore,
@@ -319,13 +595,37 @@ where
 {
     let mut mutations = mutations.into_iter();
     let Some((first_key, first_before, first_after)) = mutations.next() else {
+        let boundary = InheritedObjectRef {
+            namespace,
+            kind: InheritedBoundaryKind::NodeEntry,
+            path: ExactPath::empty(),
+            reference: root,
+        };
+        provenance.insert_eligible(boundary)?;
+        provenance.inherit_if_eligible(boundary)?;
         return Ok((root, DagRewriteReport::default()));
     };
     require_limit(1, limits.max_loaded_nodes, "loaded nodes")?;
     require_limit(1, limits.max_edited_nodes, "edited nodes")?;
-    let (root_node, loaded_bytes, prefix_bytes) =
-        load_node(store, root, limits.max_loaded_bytes, limits.max_retained_prefix_bytes)?;
-    let mut editor = RadixEditor::new(store, root_node, loaded_bytes, prefix_bytes, limits)?;
+    let (root_node, loaded_bytes, prefix_bytes) = load_node(
+        store,
+        root,
+        limits.max_loaded_bytes,
+        limits.max_retained_prefix_bytes,
+        namespace,
+        ExactPath::empty(),
+        provenance,
+        limits.max_exact_path_chunks,
+    )?;
+    let mut editor = RadixEditor::new(
+        store,
+        namespace,
+        root_node,
+        loaded_bytes,
+        prefix_bytes,
+        limits,
+        provenance,
+    )?;
     editor.apply(namespace, first_key, first_before, first_after)?;
     for (key, before, after) in mutations {
         editor.apply(namespace, key, before, after)?;
@@ -365,25 +665,32 @@ impl EditNode {
 struct CursorStep {
     node: usize,
     end: usize,
+    node_path: ExactPath,
 }
 
-struct RadixEditor<'a, S: ImmutableObjectStore> {
-    store: &'a S,
+struct RadixEditor<'store, 'mutation, 'provenance, S: ImmutableObjectStore> {
+    store: &'store S,
+    namespace: SemanticNamespace,
     nodes: Vec<EditNode>,
     root: usize,
     cursor: Vec<CursorStep>,
-    previous_key: Option<&'a [u8]>,
+    previous_key: Option<&'mutation [u8]>,
     report: DagRewriteReport,
     limits: DagRewriteLimits,
+    provenance: &'provenance mut RewriteProvenance,
 }
 
-impl<'a, S: ImmutableObjectStore> RadixEditor<'a, S> {
+impl<'store, 'mutation, 'provenance, S: ImmutableObjectStore>
+    RadixEditor<'store, 'mutation, 'provenance, S>
+{
     fn new(
-        store: &'a S,
+        store: &'store S,
+        namespace: SemanticNamespace,
         root: EditNode,
         loaded_bytes: u64,
         retained_prefix_bytes: u64,
         limits: DagRewriteLimits,
+        provenance: &'provenance mut RewriteProvenance,
     ) -> Result<Self, RewriteError<S::Error>> {
         let mut nodes = Vec::new();
         reserve_one(&mut nodes, "rewrite nodes")?;
@@ -398,6 +705,7 @@ impl<'a, S: ImmutableObjectStore> RadixEditor<'a, S> {
         )?;
         Ok(Self {
             store,
+            namespace,
             nodes,
             root: 0,
             cursor: Vec::new(),
@@ -410,13 +718,14 @@ impl<'a, S: ImmutableObjectStore> RadixEditor<'a, S> {
                 ..DagRewriteReport::default()
             },
             limits,
+            provenance,
         })
     }
 
     fn apply(
         &mut self,
         namespace: SemanticNamespace,
-        key: &'a [u8],
+        key: &'mutation [u8],
         before: EndpointValue,
         after: EndpointValue,
     ) -> Result<(), RewriteError<S::Error>> {
@@ -433,14 +742,21 @@ impl<'a, S: ImmutableObjectStore> RadixEditor<'a, S> {
             .count();
         self.cursor.truncate(keep);
 
-        let (mut node, mut position) = if let Some(step) = self.cursor.last().copied() {
-            (step.node, step.end)
-        } else {
-            self.ensure_root_prefix(key)?
-        };
+        let (mut node, mut position, mut node_path) =
+            if let Some(step) = self.cursor.last().copied() {
+                (step.node, step.end, step.node_path)
+            } else {
+                self.ensure_root_prefix(key)?
+            };
 
         while position < key.len() {
             let edge = key[position];
+            let mut child_entry_path = node_path;
+            self.provenance.paths.extend(
+                &mut child_entry_path,
+                &[edge],
+                self.limits.max_exact_path_chunks,
+            )?;
             let child_slot = self.nodes[node]
                 .children
                 .binary_search_by_key(&edge, |child| child.edge);
@@ -461,12 +777,18 @@ impl<'a, S: ImmutableObjectStore> RadixEditor<'a, S> {
                     });
                     position = key.len();
                     node = leaf;
-                    self.push_cursor(leaf, position)?;
+                    self.provenance.paths.extend(
+                        &mut child_entry_path,
+                        suffix,
+                        self.limits.max_exact_path_chunks,
+                    )?;
+                    node_path = child_entry_path;
+                    self.push_cursor(leaf, position, node_path)?;
                     break;
                 }
             };
 
-            let child = self.expand_child(node, slot)?;
+            let child = self.expand_child(node, slot, child_entry_path)?;
             let remaining = &key[position + 1..];
             let (shared, child_prefix_len) = {
                 let child_prefix = &self.nodes[child].prefix;
@@ -508,7 +830,13 @@ impl<'a, S: ImmutableObjectStore> RadixEditor<'a, S> {
                     .checked_add(advance)
                     .ok_or(CanonicalFormatError::CounterOverflow("rewrite key position"))?;
                 node = split;
-                self.push_cursor(split, position)?;
+                self.provenance.paths.extend(
+                    &mut child_entry_path,
+                    &self.nodes[split].prefix,
+                    self.limits.max_exact_path_chunks,
+                )?;
+                node_path = child_entry_path;
+                self.push_cursor(split, position, node_path)?;
                 continue;
             }
 
@@ -519,7 +847,13 @@ impl<'a, S: ImmutableObjectStore> RadixEditor<'a, S> {
                 .checked_add(advance)
                 .ok_or(CanonicalFormatError::CounterOverflow("rewrite key position"))?;
             node = child;
-            self.push_cursor(child, position)?;
+            self.provenance.paths.extend(
+                &mut child_entry_path,
+                &self.nodes[child].prefix,
+                self.limits.max_exact_path_chunks,
+            )?;
+            node_path = child_entry_path;
+            self.push_cursor(child, position, node_path)?;
         }
 
         let actual = self.nodes[node].endpoint;
@@ -538,7 +872,10 @@ impl<'a, S: ImmutableObjectStore> RadixEditor<'a, S> {
         Ok(())
     }
 
-    fn ensure_root_prefix(&mut self, key: &[u8]) -> Result<(usize, usize), RewriteError<S::Error>> {
+    fn ensure_root_prefix(
+        &mut self,
+        key: &[u8],
+    ) -> Result<(usize, usize, ExactPath), RewriteError<S::Error>> {
         let (shared, prefix_len) = {
             let prefix = &self.nodes[self.root].prefix;
             (lcp(prefix, key), prefix.len())
@@ -575,11 +912,22 @@ impl<'a, S: ImmutableObjectStore> RadixEditor<'a, S> {
             self.root = root;
         }
         let end = self.nodes[self.root].prefix.len();
-        self.push_cursor(self.root, end)?;
-        Ok((self.root, end))
+        let mut node_path = ExactPath::empty();
+        self.provenance.paths.extend(
+            &mut node_path,
+            &self.nodes[self.root].prefix,
+            self.limits.max_exact_path_chunks,
+        )?;
+        self.push_cursor(self.root, end, node_path)?;
+        Ok((self.root, end, node_path))
     }
 
-    fn push_cursor(&mut self, node: usize, end: usize) -> Result<(), RewriteError<S::Error>> {
+    fn push_cursor(
+        &mut self,
+        node: usize,
+        end: usize,
+        node_path: ExactPath,
+    ) -> Result<(), RewriteError<S::Error>> {
         let attempted = self
             .cursor
             .len()
@@ -588,7 +936,12 @@ impl<'a, S: ImmutableObjectStore> RadixEditor<'a, S> {
         let attempted = checked_len(attempted, "rewrite cursor")?;
         require_limit(attempted, self.limits.max_cursor_nodes, "rewrite cursor")?;
         reserve_one(&mut self.cursor, "rewrite cursor")?;
-        self.cursor.push(CursorStep { node, end });
+        debug_assert_eq!(node_path.total_len, end as u64);
+        self.cursor.push(CursorStep {
+            node,
+            end,
+            node_path,
+        });
         self.report.maximum_cursor_nodes = self.report.maximum_cursor_nodes.max(attempted);
         Ok(())
     }
@@ -597,6 +950,7 @@ impl<'a, S: ImmutableObjectStore> RadixEditor<'a, S> {
         &mut self,
         parent: usize,
         slot: usize,
+        child_entry_path: ExactPath,
     ) -> Result<usize, RewriteError<S::Error>> {
         match self.nodes[parent].children[slot].link {
             ChildLink::Edit(child) => Ok(child),
@@ -618,8 +972,16 @@ impl<'a, S: ImmutableObjectStore> RadixEditor<'a, S> {
                     self.report.loaded_bytes,
                     "loaded bytes",
                 )?;
-                let (node, loaded_bytes, _) =
-                    load_node(self.store, reference, remaining_bytes, remaining_prefix)?;
+                let (node, loaded_bytes, _) = load_node(
+                    self.store,
+                    reference,
+                    remaining_bytes,
+                    remaining_prefix,
+                    self.namespace,
+                    child_entry_path,
+                    self.provenance,
+                    self.limits.max_exact_path_chunks,
+                )?;
                 let child = self.push_node(node)?;
                 self.nodes[parent].children[slot].link = ChildLink::Edit(child);
                 self.report.loaded_nodes = loaded_nodes;
@@ -674,13 +1036,13 @@ impl<'a, S: ImmutableObjectStore> RadixEditor<'a, S> {
 
     fn finish(mut self) -> Result<(ObjectRefV1, DagRewriteReport), RewriteError<S::Error>> {
         enum Work {
-            Enter(usize),
-            Exit(usize),
+            Enter(usize, ExactPath),
+            Exit(usize, ExactPath),
         }
         let mut work = Vec::new();
         require_limit(1, self.limits.max_finalize_worklist, "rewrite finalization worklist")?;
         reserve_one(&mut work, "rewrite finalization worklist")?;
-        work.push(Work::Enter(self.root));
+        work.push(Work::Enter(self.root, ExactPath::empty()));
         let mut results: Vec<Option<FinalResult>> = Vec::new();
         let result_count = checked_len(self.nodes.len(), "rewrite results")?;
         results.try_reserve_exact(self.nodes.len()).map_err(|_| {
@@ -692,7 +1054,7 @@ impl<'a, S: ImmutableObjectStore> RadixEditor<'a, S> {
 
         while let Some(item) = work.pop() {
             match item {
-                Work::Enter(node) => {
+                Work::Enter(node, entry_path) => {
                     let edit_children = self.nodes[node]
                         .children
                         .iter()
@@ -719,18 +1081,30 @@ impl<'a, S: ImmutableObjectStore> RadixEditor<'a, S> {
                                 .unwrap_or(u64::MAX),
                         }
                     })?;
-                    work.push(Work::Exit(node));
+                    work.push(Work::Exit(node, entry_path));
+                    let mut node_path = entry_path;
+                    self.provenance.paths.extend(
+                        &mut node_path,
+                        &self.nodes[node].prefix,
+                        self.limits.max_exact_path_chunks,
+                    )?;
                     for child in self.nodes[node].children.iter().rev() {
-                        if let ChildLink::Edit(child) = child.link {
-                            work.push(Work::Enter(child));
+                        if let ChildLink::Edit(child_id) = child.link {
+                            let mut child_entry_path = node_path;
+                            self.provenance.paths.extend(
+                                &mut child_entry_path,
+                                &[child.edge],
+                                self.limits.max_exact_path_chunks,
+                            )?;
+                            work.push(Work::Enter(child_id, child_entry_path));
                         }
                     }
                     self.report.maximum_finalize_worklist =
                         self.report.maximum_finalize_worklist.max(attempted);
                 }
-                Work::Exit(node) => {
+                Work::Exit(node, entry_path) => {
                     let is_root = node == self.root;
-                    let result = self.finalize_node(node, is_root, &mut results)?;
+                    let result = self.finalize_node(node, is_root, entry_path, &mut results)?;
                     results[node] = Some(result);
                 }
             }
@@ -750,6 +1124,7 @@ impl<'a, S: ImmutableObjectStore> RadixEditor<'a, S> {
         &mut self,
         node_id: usize,
         is_root: bool,
+        entry_path: ExactPath,
         results: &mut [Option<FinalResult>],
     ) -> Result<FinalResult, RewriteError<S::Error>> {
         let node = std::mem::replace(&mut self.nodes[node_id], EditNode::vacant());
@@ -793,7 +1168,7 @@ impl<'a, S: ImmutableObjectStore> RadixEditor<'a, S> {
                 return Ok(FinalResult::Empty);
             }
             return self
-                .build_final(CanonicalDagNode::empty())
+                .build_final(CanonicalDagNode::empty(), entry_path)
                 .map(FinalResult::Present);
         }
 
@@ -814,8 +1189,27 @@ impl<'a, S: ImmutableObjectStore> RadixEditor<'a, S> {
                         self.report.loaded_bytes,
                         "loaded bytes",
                     )?;
-                    let (loaded, loaded_bytes, prefix_bytes) =
-                        load_node(self.store, child.reference, remaining_bytes, remaining_prefix)?;
+                    let mut child_entry_path = entry_path;
+                    self.provenance.paths.extend(
+                        &mut child_entry_path,
+                        &node.prefix,
+                        self.limits.max_exact_path_chunks,
+                    )?;
+                    self.provenance.paths.extend(
+                        &mut child_entry_path,
+                        &[child.edge],
+                        self.limits.max_exact_path_chunks,
+                    )?;
+                    let (loaded, loaded_bytes, prefix_bytes) = load_node(
+                        self.store,
+                        child.reference,
+                        remaining_bytes,
+                        remaining_prefix,
+                        self.namespace,
+                        child_entry_path,
+                        self.provenance,
+                        self.limits.max_exact_path_chunks,
+                    )?;
                     self.report.loaded_nodes = loaded_nodes;
                     self.report.loaded_bytes =
                         checked_add(self.report.loaded_bytes, loaded_bytes, "loaded bytes")?;
@@ -888,10 +1282,22 @@ impl<'a, S: ImmutableObjectStore> RadixEditor<'a, S> {
                 canonical_children.into_boxed_slice(),
             )?
         };
-        self.build_final(canonical).map(FinalResult::Present)
+        self.build_final(canonical, entry_path)
+            .map(FinalResult::Present)
     }
 
-    fn build_final(&mut self, node: CanonicalDagNode) -> Result<FinalNode, RewriteError<S::Error>> {
+    fn build_final(
+        &mut self,
+        node: CanonicalDagNode,
+        entry_path: ExactPath,
+    ) -> Result<FinalNode, RewriteError<S::Error>> {
+        record_target_inherited(
+            self.namespace,
+            &node,
+            entry_path,
+            self.provenance,
+            self.limits.max_exact_path_chunks,
+        )?;
         let encoded_len = node.canonical_len();
         self.preflight_emission(encoded_len)?;
         let emitted_nodes = checked_add(self.report.emitted_nodes, 1, "emitted nodes")?;
@@ -928,6 +1334,76 @@ impl<'a, S: ImmutableObjectStore> RadixEditor<'a, S> {
     }
 }
 
+fn record_base_boundaries(
+    namespace: SemanticNamespace,
+    node: &EditNode,
+    entry_path: ExactPath,
+    provenance: &mut RewriteProvenance,
+    max_exact_path_chunks: u64,
+) -> Result<(), CanonicalFormatError> {
+    let mut node_path = entry_path;
+    provenance
+        .paths
+        .extend(&mut node_path, &node.prefix, max_exact_path_chunks)?;
+    if let EndpointValue::Content(reference) = node.endpoint {
+        provenance.insert_eligible(InheritedObjectRef {
+            namespace,
+            kind: InheritedBoundaryKind::ContentAtEndpoint,
+            path: node_path,
+            reference,
+        })?;
+    }
+    for child in &node.children {
+        if let ChildLink::Reference(reference) = child.link {
+            let mut child_path = node_path;
+            provenance
+                .paths
+                .extend(&mut child_path, &[child.edge], max_exact_path_chunks)?;
+            provenance.insert_eligible(InheritedObjectRef {
+                namespace,
+                kind: InheritedBoundaryKind::NodeEntry,
+                path: child_path,
+                reference,
+            })?;
+        }
+    }
+    Ok(())
+}
+
+fn record_target_inherited(
+    namespace: SemanticNamespace,
+    node: &CanonicalDagNode,
+    entry_path: ExactPath,
+    provenance: &mut RewriteProvenance,
+    max_exact_path_chunks: u64,
+) -> Result<(), CanonicalFormatError> {
+    let mut node_path = entry_path;
+    provenance
+        .paths
+        .extend(&mut node_path, node.prefix(), max_exact_path_chunks)?;
+    if let EndpointValue::Content(reference) = node.endpoint() {
+        provenance.inherit_if_eligible(InheritedObjectRef {
+            namespace,
+            kind: InheritedBoundaryKind::ContentAtEndpoint,
+            path: node_path,
+            reference,
+        })?;
+    }
+    for child in node.children() {
+        let mut child_path = node_path;
+        provenance
+            .paths
+            .extend(&mut child_path, &[child.edge], max_exact_path_chunks)?;
+        provenance.inherit_if_eligible(InheritedObjectRef {
+            namespace,
+            kind: InheritedBoundaryKind::NodeEntry,
+            path: child_path,
+            reference: child.target,
+        })?;
+    }
+    Ok(())
+}
+
 struct ResolvedChild {
     edge: u8,
     reference: ObjectRefV1,
@@ -950,6 +1426,10 @@ fn load_node<S: ImmutableObjectStore>(
     reference: ObjectRefV1,
     max_loaded_bytes: u64,
     max_prefix_bytes: u64,
+    namespace: SemanticNamespace,
+    entry_path: ExactPath,
+    provenance: &mut RewriteProvenance,
+    max_exact_path_chunks: u64,
 ) -> Result<(EditNode, u64, u64), RewriteError<S::Error>> {
     require_limit(reference.encoded_len(), max_loaded_bytes, "loaded bytes")?;
     let object = load_exact_object(store, reference, max_loaded_bytes)?;
@@ -978,15 +1458,13 @@ fn load_node<S: ImmutableObjectStore>(
             link: ChildLink::Reference(child.target),
         });
     }
-    Ok((
-        EditNode {
-            prefix: copy_bytes(node.prefix(), "loaded node prefix")?,
-            endpoint: node.endpoint(),
-            children,
-        },
-        reference.encoded_len(),
-        prefix_bytes,
-    ))
+    let loaded = EditNode {
+        prefix: copy_bytes(node.prefix(), "loaded node prefix")?,
+        endpoint: node.endpoint(),
+        children,
+    };
+    record_base_boundaries(namespace, &loaded, entry_path, provenance, max_exact_path_chunks)?;
+    Ok((loaded, reference.encoded_len(), prefix_bytes))
 }
 
 fn load_exact_object<S: ImmutableObjectStore>(
