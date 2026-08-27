@@ -806,6 +806,42 @@ mod tests {
         }
     }
 
+    /// Enumerator dedup pin (2026-08-27, retrospective review):
+    /// a WAL slice with the same `payload_ref: Hash(h)` on
+    /// multiple entries (a Rholang deploy writing identical bytes
+    /// N times) MUST only enqueue / resolve once — the
+    /// `HashSet<[u8;32]> seen` inside the enumerator dedups.
+    /// Without this dedup, an adversarial deploy could inflate
+    /// pending_count and starve the fetch protocol.
+    #[tokio::test]
+    async fn enumerate_and_enqueue_deduplicates_repeated_hashes() {
+        use rholang::rust::interpreter::io::wal::{PayloadRef, WalEntry, WalOp, WalOutcome};
+        let driver = WalPayloadSyncDriver::new(Arc::new(WalPayloadRetriever::new()));
+        // Ten WAL entries, all referencing the same payload hash.
+        let payload = b"repeat".to_vec();
+        let h = hash_of(&payload);
+        let entries: Vec<WalEntry> = (0..10)
+            .map(|i| WalEntry {
+                op: WalOp::Write,
+                path: std::path::PathBuf::from(format!("/f{i}")),
+                extra_path: None,
+                offset: Some(0),
+                length: Some(payload.len() as u64),
+                payload_ref: Some(PayloadRef::Hash(h)),
+                mode_bits: None,
+                owner: None,
+                group: None,
+                outcome: WalOutcome::Success,
+            })
+            .collect();
+        let stats = enumerate_and_enqueue_payloads(&driver, &entries, |_| None).await;
+        assert_eq!(
+            stats.enqueued_for_fetch, 1,
+            "10 entries with same hash must enqueue only 1 fetch",
+        );
+        assert_eq!(driver.pending_count().await, 1);
+    }
+
     /// DD-7b-2 (a) safety pin: a buggy reducer that returns bytes
     /// which don't hash to the entry's `payload_ref` MUST fall
     /// back to peer fetch — otherwise the applier would
