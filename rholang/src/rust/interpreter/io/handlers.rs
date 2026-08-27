@@ -282,6 +282,61 @@ fn bool_par_false() -> Par { Par::default().with_exprs(vec![RhoBoolean::create_e
 /// need the numeric FSERR code without a string round-trip.
 fn io_err_code_u32(e: &std::io::Error) -> u32 { fserr_to_code(io_err_code(e)) }
 
+/// H-29-3 lift follow-up (2026-08-27): count for the fs_remove_dir
+/// per-entry cost supplement (LEADER path — reply is the fresh
+/// syscall reply).
+///
+/// Semantics (both sides must agree deterministically for D3):
+/// * `parsed = None` (arg-shape error before dispatch): 0.
+/// * Non-recursive (any cmode): 1 attempted entry — the target.
+/// * Recursive + Consensus: `len(reply.manifest)` — number of
+///   entries the leader actually deleted before returning.  Both
+///   success (`[true, [manifest]]`) and partial-failure
+///   (`[false, code, msg, [manifest]]`) shapes carry the manifest.
+/// * Recursive + Oracular: 0.  The Oracular reply doesn't carry a
+///   subtree count and we don't want to change the reply shape;
+///   both sides pick 0 based on args-visible `(recursive=true,
+///   cmode=Oracular)`.  Consequence: Oracular recursive removeDir
+///   under-charges relative to the true workload; documented as
+///   an Oracular-scope pricing choice ("per-validator local cost").
+fn fs_remove_dir_supplement_count(
+    parsed: &Option<(String, String, bool)>,
+    cmode: ConsensusMode,
+    reply: &Par,
+) -> u64 {
+    let Some((_, _, recursive)) = parsed else {
+        return 0;
+    };
+    if !*recursive {
+        return 1;
+    }
+    if cmode == ConsensusMode::Oracular {
+        return 0;
+    }
+    extract_removedir_manifest(std::slice::from_ref(reply)).len() as u64
+}
+
+/// Follower-path counterpart of `fs_remove_dir_supplement_count`.
+/// Same semantics but the count comes from `previous` instead of a
+/// fresh reply.  Split from the leader helper so callers can't
+/// accidentally slice-of-Par vs. Par-ref-swap the two.
+fn fs_remove_dir_supplement_count_from_previous(
+    parsed: &Option<(String, String, bool)>,
+    cmode: ConsensusMode,
+    previous: &[Par],
+) -> u64 {
+    let Some((_, _, recursive)) = parsed else {
+        return 0;
+    };
+    if !*recursive {
+        return 1;
+    }
+    if cmode == ConsensusMode::Oracular {
+        return 0;
+    }
+    extract_removedir_manifest(previous).len() as u64
+}
+
 /// Cap on `fs_entries` output size — prevents a malicious caller pointing
 /// the native at a million-entry directory and OOMing the node.
 pub const MAX_ENTRIES: usize = 65_536;
@@ -2669,11 +2724,23 @@ impl FsProcesses {
                     }
                 }
             }
+            // H-29-3 lift follow-up (2026-08-27): per-entry cost
+            // supplement (follower path).  Both sides derive the
+            // count from the reply's manifest (via
+            // extract_removedir_manifest) for Consensus recursive,
+            // or from `recursive`/`cmode`/reply-shape for the
+            // non-recursive and Oracular cases.  Same helper as
+            // the leader path below; keeps the D3 event log
+            // byte-identical.
+            let supp_n = fs_remove_dir_supplement_count_from_previous(&parsed, cmode, &previous);
+            self.metering.reserve_incremental_primitive(
+                costs::fs_remove_dir_per_entry_supplement_cost(supp_n),
+            )?;
             produce(&previous, ack).await?;
             return Ok(previous);
         }
         // Leader path.
-        let reply = match parsed {
+        let reply = match parsed.clone() {
             Some((root, rel, recursive)) => {
                 let root_pb = PathBuf::from(root);
                 let expected_root_id = self.handles.root_registry.get(&root_pb);
@@ -2844,6 +2911,18 @@ impl FsProcesses {
             }
             None => err(FSERR_BAD_ARG, "expected (String, String, Bool, String)"),
         };
+        // H-29-3 lift follow-up (2026-08-27): per-entry cost
+        // supplement.  Non-recursive → 1 attempted entry.  Consensus
+        // recursive → manifest length (leader from fresh reply /
+        // follower from `previous` — both derive the same count via
+        // extract_removedir_manifest).  Oracular recursive → 0 (no
+        // manifest available; both sides skip based on args-visible
+        // cmode + recursive).  reserve_incremental_primitive tolerates
+        // n=0 without a BugFoundError.
+        let supp_n = fs_remove_dir_supplement_count(&parsed, cmode, &reply);
+        self.metering.reserve_incremental_primitive(
+            costs::fs_remove_dir_per_entry_supplement_cost(supp_n),
+        )?;
         let out = vec![reply];
         produce(&out, ack).await?;
         Ok(out)

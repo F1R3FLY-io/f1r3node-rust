@@ -61,7 +61,8 @@ mod tests {
     use rholang::rust::interpreter::external_services::ExternalServices;
     use rholang::rust::interpreter::io::costs::{
         fs_entries_cost, fs_entries_stream_close_cost, fs_entries_stream_next_cost,
-        fs_entries_stream_open_cost, fs_entries_stream_per_entry_supplement_cost, fs_stat_cost,
+        fs_entries_stream_open_cost, fs_entries_stream_per_entry_supplement_cost,
+        fs_remove_dir_cost, fs_remove_dir_per_entry_supplement_cost, fs_stat_cost,
     };
     use rholang::rust::interpreter::matcher::r#match::Matcher;
     use rholang::rust::interpreter::rho_runtime::{create_rho_runtime, RhoRuntime, RhoRuntimeImpl};
@@ -529,5 +530,130 @@ mod tests {
             c - setup_only,
             setup_only + 32,
         );
+    }
+
+    // ---------------------------------------------------------------
+    // fs_remove_dir per-entry supplement (2026-08-27, H-29-3 lift
+    // follow-up).  Runtime pin proving the two-branch charge fires
+    // for Consensus recursive removeDir: leader charges from the
+    // walk's actual deletion count; follower would too (this test
+    // covers only the leader path — leader/follower symmetry is
+    // proved by fs_wal_spec's rig-based tests).
+    // ---------------------------------------------------------------
+
+    /// Consensus recursive removeDir on a 4-entry subtree (2 files +
+    /// 2 dirs including the target root itself) consumes:
+    ///   base fs_remove_dir_cost(0) = 200
+    /// + supplement fs_remove_dir_per_entry_supplement_cost(4) = 128
+    /// = 328 units for the fs_remove_dir call alone.
+    ///
+    /// Same lower-bound-only assertion pattern as
+    /// `fs_entries_five_children_charges_supplement_at_runtime`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn fs_remove_dir_recursive_consensus_charges_supplement_at_runtime() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        // Subtree:
+        //   top/
+        //     a.txt
+        //     nested/
+        //       b.txt
+        // Manifest post-order sorted: RemoveFile(top/a.txt),
+        // RemoveFile(top/nested/b.txt), RemoveDir(top/nested),
+        // RemoveDir(top).  Total = 4 entries.
+        std::fs::create_dir(root.join("top")).unwrap();
+        std::fs::write(root.join("top/a.txt"), b"").unwrap();
+        std::fs::create_dir(root.join("top/nested")).unwrap();
+        std::fs::write(root.join("top/nested/b.txt"), b"").unwrap();
+
+        let runtime = create_metered_runtime().await;
+        let term = format!(
+            r#"
+            new fsRemoveDir(`rho:io:fs:native:1.0.0/removeDir`), r in {{
+              fsRemoveDir!("{root}", "top", true, "consensus", *r) |
+              for (@_reply <- r) {{ Nil }}
+            }}
+            "#,
+            root = root.display(),
+        );
+        let result = runtime
+            .evaluate(
+                &term,
+                Cost::create(INITIAL_PHLO, "cost-harness initial".to_string()),
+                std::collections::HashMap::new(),
+                rand(),
+            )
+            .await
+            .unwrap();
+        assert!(
+            result.errors.is_empty(),
+            "removeDir must complete cleanly; got errors: {:?}",
+            result.errors,
+        );
+        let c = result.cost.value;
+        let expected_removedir =
+            fs_remove_dir_cost(0).value + fs_remove_dir_per_entry_supplement_cost(4).value;
+        assert!(
+            c >= expected_removedir,
+            "recursive-consensus removeDir on 4-entry subtree must charge at \
+             least {expected_removedir} (base {} + supplement for 4 = {}); got {c}. \
+             A regression that drops the supplement charge would consume only \
+             the base cost (200) and fail this lower bound.",
+            fs_remove_dir_cost(0).value,
+            fs_remove_dir_per_entry_supplement_cost(4).value,
+        );
+        // Rholang harness overhead for a bind + send + receive is
+        // typically ~2000-4000 units; 6000-unit ceiling absorbs
+        // harness churn but catches wildly-wrong values.
+        assert!(
+            c < expected_removedir + 6000,
+            "recursive-consensus removeDir consumed {c}, which is more than \
+             6000 above the expected {expected_removedir}.  Either harness \
+             overhead ballooned or a cost coefficient drifted."
+        );
+    }
+
+    /// Companion: non-recursive Consensus removeDir on an empty dir
+    /// consumes base + supplement(1) = 200 + 32 = 232.  Guards
+    /// against a regression that skips the supplement for the
+    /// non-recursive branch and drops back to the base 200 units.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn fs_remove_dir_non_recursive_consensus_charges_single_supplement_at_runtime() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        std::fs::create_dir(root.join("empty")).unwrap();
+
+        let runtime = create_metered_runtime().await;
+        let term = format!(
+            r#"
+            new fsRemoveDir(`rho:io:fs:native:1.0.0/removeDir`), r in {{
+              fsRemoveDir!("{root}", "empty", false, "consensus", *r) |
+              for (@_reply <- r) {{ Nil }}
+            }}
+            "#,
+            root = root.display(),
+        );
+        let result = runtime
+            .evaluate(
+                &term,
+                Cost::create(INITIAL_PHLO, "cost-harness initial".to_string()),
+                std::collections::HashMap::new(),
+                rand(),
+            )
+            .await
+            .unwrap();
+        assert!(result.errors.is_empty());
+        let c = result.cost.value;
+        let expected_removedir =
+            fs_remove_dir_cost(0).value + fs_remove_dir_per_entry_supplement_cost(1).value;
+        assert!(
+            c >= expected_removedir,
+            "non-recursive Consensus removeDir on empty dir must charge \
+             base + supplement(1) = {expected_removedir}; got {c}.  A \
+             regression that skips the supplement for the non-recursive \
+             branch would consume only 200 (the base) and fail this lower \
+             bound."
+        );
+        assert!(c < expected_removedir + 6000);
     }
 }

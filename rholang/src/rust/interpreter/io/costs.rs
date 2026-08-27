@@ -300,14 +300,14 @@ pub fn fs_release_all_for_holder_cost() -> Cost {
 // `fs_<name>_cost(n_entries)` — verified in
 // `fileio_cost_spec::entries_family_supplement_matches_combined_cost`.
 //
-// Wired: `fs_entries` charges its supplement post-reply.
+// Wired: `fs_entries` charges its supplement post-reply.  `fs_remove_dir`
+// wired 2026-08-27 after the H-29-3 lift added a manifest to the
+// recursive Consensus reply — leader charges from the walk's actual
+// deletion count; follower extracts the same count from `previous`'s
+// manifest.  Oracular recursive skips the supplement (no wire-visible
+// count — see `fs_remove_dir_per_entry_supplement_cost` docstring).
 // Deferred: `fs_entries_stream` (still a stub returning
-// FSERR_UNSUPPORTED — no entries to charge for), `fs_remove_dir`
-// (subtree count is not surfaced in the current `[true]` reply
-// shape; changing to `[true, n_deleted]` would ripple through
-// Dir.rho + file_dir_check + fs_generator callers.  The supplement
-// helper is available for both so wiring is a one-line change once
-// the blockers clear).
+// FSERR_UNSUPPORTED — no entries to charge for).
 
 /// Per-entry supplement for the `fs_entries` two-branch charge.
 /// Sits alongside `fs_entries_cost(0)` (the setup component at
@@ -333,14 +333,23 @@ pub fn fs_entries_stream_per_entry_supplement_cost(n_entries: u64) -> Cost {
     )
 }
 
-/// Per-entry supplement for `fs_remove_dir` — same shape.  Deferred
-/// wiring: the reply is currently `[true]` on success (no count),
-/// so leader and replay have no shared value to derive `n` from.
-/// Unblocking requires either (a) instrumenting `remove_dir_recursive`
-/// to count and threading the count into the reply as
-/// `[true, n_deleted]` with the Dir.rho + test callers updated, or
-/// (b) capping recursive removeDir at a fixed subtree entry budget
-/// and charging that flat.  Helper is ready for either path.
+/// Per-entry supplement for `fs_remove_dir` — same shape.  Wired
+/// post-H-29-3-lift (2026-08-27) via the manifest carried by the
+/// recursive Consensus reply.  Per-branch charge derivation:
+///
+/// * Non-recursive (any cmode): 1 attempted entry — supplement =
+///   `fs_remove_dir_per_entry_supplement_cost(1)` on both branches.
+/// * Recursive Consensus: leader derives count from its walk;
+///   follower derives the same count from `extract_removedir_manifest
+///   (previous)`.  Both sides charge identically.
+/// * Recursive Oracular: 0 (both sides).  The Oracular reply is
+///   `[true]` and doesn't carry a count; rather than change the
+///   Oracular reply shape or introduce cost-asymmetry across the
+///   leader/follower split, we accept the under-charge as an
+///   Oracular-scope pricing choice.  Oracular operations are per-
+///   validator-local by design (plan §Storage cases: "operators do
+///   what they want"), so exact cost fidelity here isn't a
+///   consensus concern.
 pub fn fs_remove_dir_per_entry_supplement_cost(subtree_entry_count: u64) -> Cost {
     Cost::create(
         saturate_linear(0, FS_ENTRIES_PER_ENTRY as u64, subtree_entry_count),
