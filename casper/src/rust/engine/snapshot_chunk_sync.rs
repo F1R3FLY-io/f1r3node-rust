@@ -411,6 +411,95 @@ impl SnapshotChunkSyncDriver {
     }
 }
 
+// -------------------------------------------------------------------
+// Boot-time enumerator + periodic tick driver.  Both compose the
+// primitives above into ready-to-spawn tasks — the running-engine
+// setup path calls these once at boot.
+// -------------------------------------------------------------------
+
+/// Enumerate finalized blocks whose Merkle-root anchor is cached in
+/// `snapshot_merkle_roots` but whose on-disk snapshot file is
+/// missing.  For each, call `driver.enqueue_snapshot(block_hash)`.
+///
+/// Returns the number of snapshots newly enqueued.
+///
+/// A snapshot's on-disk file lives at
+/// `snapshot_dir / <hex(atomic_root)>.wal` — the content-addressed
+/// filename produced by `SnapshotWriter::write_snapshot`.  If the
+/// file exists we treat the snapshot as already assembled; if not,
+/// the joiner needs to fetch it.
+pub async fn enumerate_and_enqueue_missing_snapshots(
+    driver: &SnapshotChunkSyncDriver,
+    snapshot_merkle_roots: &Arc<tokio::sync::RwLock<HashMap<Vec<u8>, ([u8; 32], [u8; 32])>>>,
+) -> usize {
+    let anchors: HashMap<Vec<u8>, ([u8; 32], [u8; 32])> =
+        snapshot_merkle_roots.read().await.clone();
+    let mut enqueued = 0;
+    for (block_hash, (atomic_root, _merkle_root)) in anchors {
+        let on_disk = rholang::rust::interpreter::io::snapshot::snapshot_path(
+            &driver.snapshot_dir,
+            &atomic_root,
+        );
+        if on_disk.exists() {
+            continue;
+        }
+        driver.enqueue_snapshot(block_hash).await;
+        enqueued += 1;
+    }
+    if enqueued > 0 {
+        info!(
+            target: "f1r3fly.casper.snapshot_chunk_sync",
+            enqueued,
+            "boot-time enumerator enqueued snapshots for fetch"
+        );
+    }
+    enqueued
+}
+
+/// Default tick period between outbound-request rounds.  Tuned to
+/// give peers time to respond before we re-request; matches
+/// BlockRetriever's REQUEST_INTERVAL scale.
+pub const TICK_PERIOD_MS: u64 = 5_000;
+
+/// Spawn a periodic tick task that calls
+/// `SnapshotChunkSyncDriver::tick` every `TICK_PERIOD_MS`.
+/// Returns the JoinHandle so the caller can abort on shutdown.
+///
+/// The task loops forever until aborted or the driver is dropped
+/// (in which case `Arc::weak_count` drops to 0 and the tick becomes
+/// a no-op).
+pub fn spawn_periodic_tick<T>(
+    driver: Arc<SnapshotChunkSyncDriver>,
+    transport: Arc<T>,
+    conf: comm::rust::rp::rp_conf::RPConf,
+    connections_cell: comm::rust::rp::connect::ConnectionsCell,
+) -> tokio::task::JoinHandle<()>
+where
+    T: TransportLayer + Send + Sync + 'static,
+{
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_millis(TICK_PERIOD_MS));
+        // Skip the immediate first tick — give the boot enumerator
+        // a chance to populate the driver before we start beating.
+        interval.tick().await;
+        loop {
+            interval.tick().await;
+            if driver.active_count().await == 0 {
+                // Nothing pending — cheap short-circuit that
+                // avoids allocating per-tick.
+                continue;
+            }
+            driver.tick(&*transport, &conf, &connections_cell).await;
+        }
+    })
+}
+
+// snapshot_dir accessor for the enumerator to call snapshot_path
+// without exposing the whole struct.
+impl SnapshotChunkSyncDriver {
+    pub fn snapshot_dir(&self) -> &std::path::Path { &self.snapshot_dir }
+}
+
 #[cfg(test)]
 mod tests {
     use prost::bytes::Bytes;
@@ -563,6 +652,31 @@ mod tests {
         let path =
             rholang::rust::interpreter::io::snapshot::snapshot_path(dest_dir.path(), &atomic_root);
         assert!(path.exists(), "assembled snapshot must exist on disk");
+    }
+
+    /// Boot enumerator: enqueue only anchors whose on-disk file is
+    /// missing.  A present file is skipped.
+    #[tokio::test]
+    async fn enumerator_enqueues_missing_but_skips_present() {
+        let snap_dir = tempfile::tempdir().unwrap();
+        // Anchor A: on-disk file present.  Anchor B: on-disk
+        // file missing.
+        let entries = vec![mk_entry("z")];
+        let (_p, atomic_a, merkle_a) = write_snapshot(snap_dir.path(), &entries).unwrap();
+        let block_a = vec![0x0A; 32];
+        let block_b = vec![0x0B; 32];
+        let atomic_b = [0xFFu8; 32];
+        let merkle_b = [0xEEu8; 32];
+
+        let anchors = Arc::new(tokio::sync::RwLock::new(HashMap::from([
+            (block_a.clone(), (atomic_a, merkle_a)),
+            (block_b.clone(), (atomic_b, merkle_b)),
+        ])));
+        let driver = SnapshotChunkSyncDriver::new(snap_dir.path().to_path_buf());
+        let n = enumerate_and_enqueue_missing_snapshots(&driver, &anchors).await;
+        assert_eq!(n, 1, "only block_b should be enqueued (block_a is on disk)");
+        assert!(driver.snapshots.read().await.contains_key(&block_b));
+        assert!(!driver.snapshots.read().await.contains_key(&block_a));
     }
 
     /// A byzantine chunk response blacklists the sender.

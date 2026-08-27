@@ -26,6 +26,10 @@ use crate::rust::casper::MultiParentCasper;
 use crate::rust::engine::block_retriever::{self, BlockRetriever};
 use crate::rust::engine::engine::{self, Engine};
 use crate::rust::engine::engine_cell::EngineCell;
+use crate::rust::engine::snapshot_chunk_sync::SnapshotChunkSyncDriver;
+use crate::rust::engine::snapshot_chunk_wire::{
+    handle_get_snapshot_chunk_request, handle_has_snapshot_request,
+};
 use crate::rust::errors::CasperError;
 use crate::rust::metrics_constants::{
     BLOCK_HASH_RECEIVED_METRIC, BLOCK_REQUEST_RECEIVED_METRIC, RUNNING_METRICS_SOURCE,
@@ -266,6 +270,52 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> Engine for Running<T> {
                 self.handle_mergeable_entry_request(peer, req.block_hash)
                     .await
             }
+            // Phase 7b-1 snapshot chunk-fetch dispatch (2026-08-27).
+            // Only routed if a SnapshotChunkContext has been
+            // installed (via `install_snapshot_chunk_context`);
+            // otherwise falls through as a silent no-op.
+            CasperMessage::GetSnapshotChunkRequest(req) => {
+                if let Some(ctx) = self.snapshot_chunk_ctx() {
+                    let anchors = ctx.snapshot_merkle_roots.read().await.clone();
+                    handle_get_snapshot_chunk_request(
+                        &*self.transport,
+                        &self.conf,
+                        &peer,
+                        &req,
+                        &ctx.snapshot_dir,
+                        |bh| anchors.get(bh).copied(),
+                    )
+                    .await;
+                }
+                Ok(())
+            }
+            CasperMessage::HasSnapshotRequest(req) => {
+                if let Some(ctx) = self.snapshot_chunk_ctx() {
+                    let anchors = ctx.snapshot_merkle_roots.read().await.clone();
+                    handle_has_snapshot_request(
+                        &*self.transport,
+                        &self.conf,
+                        &peer,
+                        &req,
+                        &ctx.snapshot_dir,
+                        |bh| anchors.get(bh).copied(),
+                    )
+                    .await;
+                }
+                Ok(())
+            }
+            CasperMessage::SnapshotChunkResponse(resp) => {
+                if let Some(ctx) = self.snapshot_chunk_ctx() {
+                    ctx.sync_driver.on_chunk_response(peer, &resp).await;
+                }
+                Ok(())
+            }
+            CasperMessage::HasSnapshot(hs) => {
+                if let Some(ctx) = self.snapshot_chunk_ctx() {
+                    ctx.sync_driver.on_has_snapshot(peer, &hs).await;
+                }
+                Ok(())
+            }
             _ => Ok(()),
         }
     }
@@ -301,11 +351,43 @@ pub struct Running<T: TransportLayer + Send + Sync> {
     conf: RPConf,
     block_retriever: BlockRetriever<T>,
     recovery_context: Option<RunningRecoveryContext>,
+    /// Phase 7b-1 (2026-08-27): snapshot chunk-fetch dispatch
+    /// context.  None on nodes without an fs_snapshot_writer or
+    /// on transitional engines that never observe finalized
+    /// blocks.  When Some, incoming
+    /// GetSnapshotChunkRequest / HasSnapshotRequest are served
+    /// from `snapshot_dir` + `snapshot_merkle_roots`; incoming
+    /// SnapshotChunkResponse / HasSnapshot are routed to
+    /// `sync_driver`.
+    snapshot_chunk_ctx: std::sync::Mutex<Option<SnapshotChunkContext>>,
 }
 
 #[derive(Clone)]
 pub struct RunningRecoveryContext {
     pub connections_cell: ConnectionsCell,
+}
+
+/// Phase 7b-1 (2026-08-27): snapshot chunk-fetch context threaded
+/// through the running engine's packet dispatch.  Optional so
+/// nodes without an fs_snapshot_writer (observer nodes / test
+/// harnesses / boot-time transitions) don't have to wire it up.
+///
+/// * `sync_driver` — the joiner-side orchestrator that admits
+///   incoming `SnapshotChunkResponse` / `HasSnapshot` replies via
+///   its `on_chunk_response` / `on_has_snapshot` hooks.
+/// * `snapshot_dir` — the local snapshot cache directory
+///   (`SnapshotWriter::dir`); server-side handlers read chunks
+///   from here.
+/// * `snapshot_merkle_roots` — the RuntimeManager's per-block
+///   anchor cache; server-side handlers look up
+///   `(atomic_root, merkle_root)` here by block hash before
+///   producing a `SnapshotChunkResponse`.
+#[derive(Clone)]
+pub struct SnapshotChunkContext {
+    pub sync_driver: Arc<SnapshotChunkSyncDriver>,
+    pub snapshot_dir: std::path::PathBuf,
+    pub snapshot_merkle_roots:
+        Arc<tokio::sync::RwLock<std::collections::HashMap<Vec<u8>, ([u8; 32], [u8; 32])>>>,
 }
 
 impl<T: TransportLayer + Send + Sync> Running<T> {
@@ -335,7 +417,28 @@ impl<T: TransportLayer + Send + Sync> Running<T> {
             conf,
             block_retriever,
             recovery_context,
+            snapshot_chunk_ctx: std::sync::Mutex::new(None),
         }
+    }
+
+    /// Phase 7b-1 boot hook: attach the snapshot chunk-fetch
+    /// context AFTER construction.  Callers (typically the
+    /// casper-launch driver) invoke this once the RuntimeManager +
+    /// SnapshotChunkSyncDriver are ready.  Idempotent: replacing an
+    /// existing context is intentional (allows tests to swap
+    /// mocks).
+    pub fn install_snapshot_chunk_context(&self, ctx: SnapshotChunkContext) {
+        *self
+            .snapshot_chunk_ctx
+            .lock()
+            .expect("snapshot_chunk_ctx mutex poisoned") = Some(ctx);
+    }
+
+    fn snapshot_chunk_ctx(&self) -> Option<SnapshotChunkContext> {
+        self.snapshot_chunk_ctx
+            .lock()
+            .expect("snapshot_chunk_ctx mutex poisoned")
+            .clone()
     }
 
     fn ignore_casper_message(&self, hash: BlockHash) -> Result<bool, CasperError> {
