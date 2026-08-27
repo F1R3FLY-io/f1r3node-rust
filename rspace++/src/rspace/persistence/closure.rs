@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::fmt::{Display, Formatter};
 
 use pathmap::PathMap;
+use pathmap::zipper::{ZipperMoving, ZipperReadOnlyIteration, ZipperValues};
 
 use super::canonical::{CanonicalFormatError, ObjectDigest, ObjectRefV1, checked_len};
 use super::manifest::{
@@ -254,6 +255,28 @@ impl StructuralClosureLedgerV1 {
         }
     }
 
+    /// Visit the retained closure directly in the digest order maintained by
+    /// the PathMap.  The callback receives exact content references rebuilt
+    /// from the trie key and its admitted declared length; no flattened list,
+    /// secondary sort, or surrogate identifier is introduced.
+    pub(crate) fn try_visit_retained_union<E>(
+        &self,
+        mut visitor: impl FnMut(ObjectRefV1) -> Result<(), E>,
+    ) -> Result<(), E> {
+        let mut cursor = self.states.read_zipper_at_borrowed_path(&[]);
+        if let Some(state) = cursor.val() {
+            if state.retained_union_member {
+                visitor(object_ref_from_ledger_entry(cursor.path(), *state))?;
+            }
+        }
+        while let Some(state) = cursor.to_next_get_val() {
+            if state.retained_union_member {
+                visitor(object_ref_from_ledger_entry(cursor.path(), *state))?;
+            }
+        }
+        Ok(())
+    }
+
     fn begin_epoch<E>(&mut self) -> Result<u64, ClosureError<E>> {
         let epoch = self.next_epoch;
         self.next_epoch = self.next_epoch.checked_add(1).ok_or_else(|| {
@@ -261,6 +284,13 @@ impl StructuralClosureLedgerV1 {
         })?;
         Ok(epoch)
     }
+}
+
+fn object_ref_from_ledger_entry(path: &[u8], state: DigestState) -> ObjectRefV1 {
+    let digest = ObjectDigest::from_slice(path)
+        .expect("the structural ledger is keyed only by fixed-width object digests");
+    ObjectRefV1::new(digest, state.declared_len)
+        .expect("the structural verifier admits only complete canonical object lengths")
 }
 
 impl Default for StructuralClosureLedgerV1 {

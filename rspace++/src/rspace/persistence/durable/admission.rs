@@ -19,6 +19,9 @@ use super::startup::{
 use crate::rspace::persistence::canonical::{
     CanonicalFormatError, ObjectDigest, ObjectRefV1, checked_len,
 };
+use crate::rspace::persistence::checkpoint::{
+    CheckpointObjectInventoryV1, GenerationCheckpointDescriptorV1, GenerationCheckpointErrorV1,
+};
 use crate::rspace::persistence::closure::{
     ClosureError, RetainedUnionClosureLimitsV1, RetainedUnionClosureReportV1,
     StructuralClosureLedgerV1, StructuralValidationLimits,
@@ -609,6 +612,7 @@ pub(crate) struct SemanticallyAdmittedDurableWriterV1<P: SemanticProfile> {
     version: StateVersionV1,
     retention_manifest_bytes: Box<[u8]>,
     semantic: SemanticallyAdmittedStateV1,
+    retained_closure: StructuralClosureLedgerV1,
     report: DurableAdmissionReportV1,
     profile: PhantomData<fn() -> P>,
 }
@@ -624,6 +628,30 @@ impl<P: SemanticProfile> SemanticallyAdmittedDurableWriterV1<P> {
     pub(crate) const fn authority(&self) -> &CatalogAuthorityTokenV1 { &self.authority }
 
     pub(crate) const fn retention_manifest_bytes(&self) -> &[u8] { &self.retention_manifest_bytes }
+
+    pub(crate) const fn retained_closure(&self) -> &StructuralClosureLedgerV1 {
+        &self.retained_closure
+    }
+
+    /// Derive fresh-generation checkpoint authority from the exact closure
+    /// and byte inventories admitted under this still-current catalog token.
+    pub(crate) fn checkpoint_descriptor(
+        &self,
+    ) -> Result<GenerationCheckpointDescriptorV1, GenerationCheckpointErrorV1> {
+        let pack = self.authority.slot().pack();
+        let retention_manifest = pack.retention_manifest();
+        let inventory = CheckpointObjectInventoryV1::from_retained_union(
+            &self.retained_closure,
+            retention_manifest,
+        )?;
+        GenerationCheckpointDescriptorV1::new(
+            P::ID,
+            self.version,
+            retention_manifest,
+            pack.current_state_canonical_bytes(),
+            inventory,
+        )
+    }
 
     /// Publication is an affine transition: later durable mutation code must
     /// consume this complete authority rather than borrowing the raw lease.
@@ -790,6 +818,7 @@ fn admit_physical_writer<P: SemanticProfile>(
         version: catalog.state(),
         retention_manifest_bytes,
         semantic,
+        retained_closure: ledger,
         report,
         profile: PhantomData,
     })

@@ -1,9 +1,10 @@
 use std::sync::Arc;
 
+use crate::rspace::persistence::checkpoint::CheckpointObjectInventoryV1;
 use crate::rspace::persistence::{
     CanonicalDagNode, CanonicalEncode, CanonicalFormatError, CanonicalObjectStore, ClosureError,
-    LegacyHistoryRoot, ObjectRefV1, RetainedUnionClosureLimitsV1, SemanticProfileId, SemanticRoots,
-    SemanticStateManifestV1, StructuralClosureLedgerV1, StructuralValidationLimits,
+    LegacyHistoryRoot, ObjectDigest, ObjectRefV1, RetainedUnionClosureLimitsV1, SemanticProfileId,
+    SemanticRoots, SemanticStateManifestV1, StructuralClosureLedgerV1, StructuralValidationLimits,
     verify_structural_closure_in_ledger_with_limits,
 };
 
@@ -75,6 +76,34 @@ fn retained_union_deduplicates_shared_objects_without_losing_per_state_inventori
         union.canonical_bytes,
         current_ref.encoded_len() + historical_ref.encoded_len() + empty.encoded_len()
     );
+
+    let mut references = Vec::new();
+    ledger
+        .try_visit_retained_union(|reference| {
+            references.push(reference);
+            Ok::<(), std::convert::Infallible>(())
+        })
+        .unwrap();
+    assert_eq!(references.len() as u64, union.distinct_objects);
+    assert_eq!(
+        references
+            .iter()
+            .map(|reference| reference.encoded_len())
+            .sum::<u64>(),
+        union.canonical_bytes
+    );
+    assert!(
+        references
+            .windows(2)
+            .all(|pair| pair[0].digest() < pair[1].digest())
+    );
+
+    let retention = ObjectRefV1::new(ObjectDigest::from_array([0xFF; 32]), 64).unwrap();
+    let checkpoint = CheckpointObjectInventoryV1::from_retained_union(&ledger, retention).unwrap();
+    assert_eq!(checkpoint.retained_union_objects(), union.distinct_objects);
+    assert_eq!(checkpoint.retained_union_canonical_bytes(), union.canonical_bytes);
+    assert_eq!(checkpoint.data_objects(), union.distinct_objects + 1);
+    assert_eq!(checkpoint.data_canonical_bytes(), union.canonical_bytes + retention.encoded_len());
 }
 
 #[test]

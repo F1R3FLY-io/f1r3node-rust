@@ -6,6 +6,7 @@
 //! process-local caches, or swizzled pointers.
 
 mod canonical;
+mod checkpoint;
 mod checksum;
 mod closure;
 mod durable;

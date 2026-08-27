@@ -1,4 +1,5 @@
 mod canonical_rebuild_oracle;
+mod checkpoint_codec;
 mod closure_validation;
 mod closure_union_inventory;
 mod durable_catalog;
