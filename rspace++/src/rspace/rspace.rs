@@ -1497,9 +1497,9 @@ mod tests {
     //
     // Calls log_produce() directly — the exact call log_produce() itself
     // takes (event_log.push then, for non-persist, produce_counter.insert)
-    // with no produce_lock(), no HotStore, no get_store() RwLock read, no
-    // matcher involved. Isolates these two locks from every other cost
-    // produce() incurs, at the same branch/op counts as bench_par_branches.
+    // with no produce_lock(), no HotStore, no get_store() call, no matcher
+    // involved. Isolates these two locks from every other cost produce()
+    // incurs, at the same branch/op counts as bench_par_branches.
     #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
     async fn event_log_and_produce_counter_isolated_cost_at_rholang_par_scale() {
         const PAR_BRANCHES: usize = 32;
@@ -1650,16 +1650,10 @@ mod tests {
         );
     }
 
-    // Historical note: before this PR, get_store() was
-    // `self.store.read().expect(...).clone()` — a std::sync::RwLock read
-    // lock, called at least 3x per produce()/consume(). No writer ever
-    // contended it on the hot path (writes only happen at checkpoint/spawn
-    // boundaries), but RwLock read acquisition still does atomic RMW on
-    // shared state, which measured genuine negative scaling under concurrent
-    // reads (this test's own numbers, pre-fix: sequential 16ms, concurrent
-    // 173ms — 10x slower under concurrency). This PR replaced `store` with
-    // `arc_swap::ArcSwap`, which this test now measures instead — kept as a
-    // regression sentinel against reintroducing a lock on this path.
+    // get_store() is called at least 3x per produce()/consume() (produce_lock,
+    // locked_produce, store_data) with no writer ever contending it on the
+    // hot path. Isolates just that call, at 2x the op count, as a regression
+    // sentinel against reintroducing lock-based contention on this path.
     #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
     async fn get_store_read_lock_isolated_cost_at_rholang_par_scale() {
         const PAR_BRANCHES: usize = 32;
